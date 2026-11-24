@@ -5,11 +5,13 @@ members = [
     "crates/nve-components",
     "crates/nve-engine",
     "crates/nve-dioxus",
+    "crates/nve-codegen",
     "crates/nve-backend-headless",
     "crates/nve-backend-skia",
     "crates/nve-backend-web",
     "crates/nve-cli",
     "examples/counter",
+    "hosts/web-shell",
 ]
 
 [workspace.package]
@@ -22,9 +24,11 @@ nve-abi = { path = "crates/nve-abi" }
 nve-components = { path = "crates/nve-components" }
 nve-engine = { path = "crates/nve-engine" }
 nve-dioxus = { path = "crates/nve-dioxus" }
+nve-codegen = { path = "crates/nve-codegen" }
 nve-backend-headless = { path = "crates/nve-backend-headless" }
 nve-backend-skia = { path = "crates/nve-backend-skia" }
 nve-backend-web = { path = "crates/nve-backend-web" }
+nve-example-counter = { path = "examples/counter" }
 
 dioxus-core = "0.7.10"
 dioxus-signals = "0.7.10"
@@ -39,8 +43,9 @@ tungstenite = "0.30.0"
 crossbeam-channel = "0.5.17"
 skia-safe = "0.157.0"
 winit = "0.30.13"
+softbuffer = "0.4.8"
 wasm-bindgen = "0.2.130"
-web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlElement", "CssStyleDeclaration", "Window", "Text", "Node"] }
+web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlElement", "CssStyleDeclaration", "Window", "Text", "Node", "MouseEvent", "EventTarget", "Event", "WebSocket", "MessageEvent", "console"] }
 
 # Fast incremental builds: keep workspace crates unoptimized while optimizing heavy deps once.
 [profile.dev]

@@ -72,6 +72,7 @@ struct ExportedApp {
     surface: DioxusSurface,
     last_frame_buf: Vec<u8>,
     last_state_buf: Vec<u8>,
+    last_emitted_events_buf: Vec<u8>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -84,6 +85,7 @@ unsafe extern "C" fn app_create(surface_id: u32) -> NveAppHandle {
         surface: create_surface(surface_id),
         last_frame_buf: Vec::new(),
         last_state_buf: Vec::new(),
+        last_emitted_events_buf: Vec::new(),
     });
     Box::into_raw(app) as NveAppHandle
 }
@@ -142,6 +144,26 @@ unsafe extern "C" fn app_restore_state(handle: NveAppHandle, state: NveBufferSli
     }
 }
 
+unsafe extern "C" fn app_set_props(handle: NveAppHandle, props: NveBufferSlice) -> u32 {
+    let app = unsafe { &mut *(handle as *mut ExportedApp) };
+    let raw = unsafe { props.as_slice() };
+    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(raw) {
+        if let Some(c) = val.get("initialCount").and_then(|v| v.as_i64()) {
+            INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
+            LATEST_COUNT.store(c as i32, Ordering::SeqCst);
+            app.surface = create_surface(1);
+            return 1;
+        }
+    }
+    0
+}
+
+unsafe extern "C" fn app_drain_emitted_events(handle: NveAppHandle) -> NveBufferSlice {
+    let app = unsafe { &mut *(handle as *mut ExportedApp) };
+    app.last_emitted_events_buf = nve_abi::encode_events(&[]);
+    NveBufferSlice::from_slice(&app.last_emitted_events_buf)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn nve_app_vtable() -> NveAppVTable {
     NveAppVTable {
@@ -153,5 +175,7 @@ pub extern "C" fn nve_app_vtable() -> NveAppVTable {
         apply_hot_patch: app_apply_hot_patch,
         snapshot_state: app_snapshot_state,
         restore_state: app_restore_state,
+        set_props: app_set_props,
+        drain_emitted_events: app_drain_emitted_events,
     }
 }

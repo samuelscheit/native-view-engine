@@ -6,8 +6,10 @@ license.workspace = true
 
 [features]
 default = []
-# Enable real GPU-accelerated Skia + winit desktop/mobile rendering.
-skia = ["dep:skia-safe", "dep:winit"]
+# Cross-platform desktop preview window (winit + softbuffer rasterizer + WS hot-reload, zero Skia build needed)
+desktop = ["dep:winit", "dep:softbuffer", "dep:tungstenite", "dep:crossbeam-channel", "dep:serde_json"]
+# Full hardware-accelerated Skia canvas (adds skia-safe on top of desktop)
+skia = ["desktop", "dep:skia-safe"]
 
 [dependencies]
 nve-abi = { workspace = true }
@@ -15,3 +17,7 @@ nve-engine = { workspace = true }
 nve-backend-headless = { workspace = true }
 skia-safe = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
+softbuffer = { workspace = true, optional = true }
+tungstenite = { workspace = true, optional = true }
+crossbeam-channel = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }

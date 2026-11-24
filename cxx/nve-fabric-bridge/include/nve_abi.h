@@ -71,6 +71,8 @@ typedef struct NveAppVTable {
   uint32_t (*apply_hot_patch)(NveAppHandle handle, NveBufferSlice patch_json);
   NveBufferSlice (*snapshot_state)(NveAppHandle handle);
   void (*restore_state)(NveAppHandle handle, NveBufferSlice state);
+  uint32_t (*set_props)(NveAppHandle handle, NveBufferSlice props);
+  NveBufferSlice (*drain_emitted_events)(NveAppHandle handle);
 } NveAppVTable;
 
 /* C API implemented by cxx/nve-fabric-bridge for iOS, Android, and headless Fabric tests. */

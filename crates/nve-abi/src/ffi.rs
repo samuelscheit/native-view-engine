@@ -83,4 +83,9 @@ pub struct NveAppVTable {
     pub snapshot_state: unsafe extern "C" fn(handle: NveAppHandle) -> NveBufferSlice,
     /// Restores previously snapshotted state after a Tier-2 dylib reload.
     pub restore_state: unsafe extern "C" fn(handle: NveAppHandle, state: NveBufferSlice),
+    /// Pushes host-supplied props (e.g. from React Native `<NveComponent />`) into an exported NVE component.
+    /// Encoded as a JSON or binary prop map; returns 1 if a re-render is required.
+    pub set_props: unsafe extern "C" fn(handle: NveAppHandle, props: NveBufferSlice) -> u32,
+    /// Drains component-emitted outbound events (encoded as an `EventRing` batch) for host RN `EventEmitter`s.
+    pub drain_emitted_events: unsafe extern "C" fn(handle: NveAppHandle) -> NveBufferSlice,
 }

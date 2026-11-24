@@ -118,6 +118,17 @@ impl HotAppInstance {
         }
     }
 
+    pub fn set_props(&mut self, props_bytes: &[u8]) -> bool {
+        unsafe { (self.vtable.set_props)(self.handle, NveBufferSlice::from_slice(props_bytes)) != 0 }
+    }
+
+    pub fn drain_emitted_events(&mut self) -> Vec<u8> {
+        unsafe {
+            let slice = (self.vtable.drain_emitted_events)(self.handle);
+            slice.as_slice().to_vec()
+        }
+    }
+
     /// Performs an atomic hot-swap to a freshly compiled dylib while preserving app state.
     pub fn reload(
         mut self,
