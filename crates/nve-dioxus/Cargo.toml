@@ -1,0 +1,13 @@
+[package]
+name = "nve-dioxus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-components = { workspace = true }
+nve-engine = { workspace = true }
+dioxus-core = { workspace = true }
+dioxus-signals = { workspace = true }
+dioxus-core-macro = { workspace = true }

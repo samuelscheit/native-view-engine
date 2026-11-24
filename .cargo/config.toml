@@ -1,0 +1,11 @@
+# Fast local iteration settings (inherits global kache rustc-wrapper automatically)
+
+[target.aarch64-apple-darwin]
+# Unpacked split-debuginfo avoids running dsymutil on every incremental link
+rustflags = ["-C", "split-debuginfo=unpacked"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "split-debuginfo=unpacked"]
+
+[alias]
+nve = "run --package nve-cli --"

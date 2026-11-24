@@ -1,0 +1,17 @@
+[package]
+name = "nve-backend-skia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Enable real GPU-accelerated Skia + winit desktop/mobile rendering.
+skia = ["dep:skia-safe", "dep:winit"]
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-engine = { workspace = true }
+nve-backend-headless = { workspace = true }
+skia-safe = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }

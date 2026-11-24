@@ -1,0 +1,8 @@
+[package]
+name = "nve-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nve-abi = { workspace = true }

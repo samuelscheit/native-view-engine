@@ -1,0 +1,29 @@
+# Build artifacts
+/target
+/build
+/cxx/build
+**/*.o
+**/*.a
+**/*.dylib
+**/*.so
+**/*.xcframework
+**/*.profraw
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Prebuilt caches & local traces
+/.nve-cache
+*.perfetto.json
+*.trace.json
+
+# Mobile shells
+hosts/ios-shell/Pods/
+hosts/ios-shell/build/
+hosts/ios-shell/*.xcworkspace
+hosts/android-shell/.gradle/
+hosts/android-shell/build/
+hosts/android-shell/local.properties

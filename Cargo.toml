@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nve-abi",
+    "crates/nve-components",
+    "crates/nve-engine",
+    "crates/nve-dioxus",
+    "crates/nve-backend-headless",
+    "crates/nve-backend-skia",
+    "crates/nve-backend-web",
+    "crates/nve-cli",
+    "examples/counter",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+nve-abi = { path = "crates/nve-abi" }
+nve-components = { path = "crates/nve-components" }
+nve-engine = { path = "crates/nve-engine" }
+nve-dioxus = { path = "crates/nve-dioxus" }
+nve-backend-headless = { path = "crates/nve-backend-headless" }
+nve-backend-skia = { path = "crates/nve-backend-skia" }
+nve-backend-web = { path = "crates/nve-backend-web" }
+
+dioxus-core = "0.7.10"
+dioxus-signals = "0.7.10"
+dioxus-core-macro = "0.7.10"
+taffy = "0.16.0"
+libloading = "0.9.1"
+clap = { version = "4.6.10", features = ["derive"] }
+notify = "9.0.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tungstenite = "0.30.0"
+crossbeam-channel = "0.5.17"
+skia-safe = "0.157.0"
+winit = "0.30.13"
+wasm-bindgen = "0.2.130"
+web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlElement", "CssStyleDeclaration", "Window", "Text", "Node"] }
+
+# Fast incremental builds: keep workspace crates unoptimized while optimizing heavy deps once.
+[profile.dev]
+opt-level = 0
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = 0
