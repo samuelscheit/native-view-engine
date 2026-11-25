@@ -1,27 +1,27 @@
 # Backlog
 
-Prioritized roadmap for `native-view-engine`, ordered from active foundational work to platform polish and flagship apps.
+Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 architecture & ergonomics and P2/flagship work. Completed milestones live in [docs/CHANGELOG_LOG.md](./CHANGELOG_LOG.md).
 
 ---
 
 ## P0 — Web SSR/Progressive Hydration, `nve-docs` Framework & Generated-File Hygiene (In Flight)
 
 - [ ] **Web Engine CSS Optimization, Keyed Diffing, Semantic HTML5 SSR & Progressive Hydration (`crates/nve-backend-web`, `hosts/web-shell`)** *(in flight — Docs Phase 1A)*
-  - **Option 5 Hybrid CSS Architecture** (adversarially verified: `-86.3%` CSS bytes on Studio Frame 0, `723 -> 269` flush crossings, `~95%+` Blink MPC / Stylo sharing): deferred end-of-frame `dirty_styles` flush, static `.nve` base reset (`font-family:inherit` replacing `font:inherit`), bounded content-addressed `.s<base36(fnv1a64)>` structural class cache via batched `CSSStyleSheet::replaceSync`/`insertRule`, volatile/continuous inline escape hatch (`> 2048px` `VirtualList` spacers, fractional px, animated opacity, `MAX_DYNAMIC_RULES = 4096`), `.nve-tl` text-leaf inheritance, and fix bogus HTML attributes for `font-weight`/`text-align`/`box-shadow`/`overflow`.
+  - **Option 5 Hybrid CSS Architecture** (`-86.3%` CSS bytes on Studio Frame 0, `723 -> 269` flush crossings, `~95%+` Blink MPC / Stylo sharing): deferred end-of-frame `dirty_styles` flush, static `.nve` base reset (`font-family:inherit` replacing `font:inherit`), bounded content-addressed `.s<base36(fnv1a64)>` structural class cache via batched `CSSStyleSheet::replaceSync`/`insertRule`, volatile/continuous inline escape hatch (`> 2048px` `VirtualList` spacers, fractional px, animated opacity, `MAX_DYNAMIC_RULES = 4096`), `.nve-tl` text-leaf inheritance, and fix bogus HTML attributes for `font-weight`/`text-align`/`box-shadow`/`overflow`.
   - **Keyed minimal-diff `SetChildren`**: replace `set_text_content(None)` child wipe with O(N) head/tail-trimmed DOM reconciliation preserving focus, IME, and scroll offsets.
   - **Semantic HTML5 SSR (`render_ssr`)**: map roles/levels/`href` to `<h1>..<h6>`, `<nav>`, `<main>`, `<article>`, `<a href>`, `<pre><code>`, plus deterministic `<style data-nve-base>` + `<style data-nve-ssr data-nve-hashes="...">`, Open Graph `<meta>`, and `sitemap.xml`.
   - **True zero-flicker progressive/island DOM hydration (`hydrate_into`)**: adopt existing `[data-nve-id]` DOM nodes without wiping `innerHTML`, root event delegation replacing per-node `Closure` fan-out, mismatch diagnostics + subtree recovery, and island triggers (`load` / `visible` via `IntersectionObserver` / `interaction` with event capture & replay / `idle`).
 
-- [x] **`nve-router::web` Browser History API Adapter (`crates/nve-router/src/web.rs`)** *(landed — `0827eab`)*
-  - Cross-platform `HistoryBackend` (`MemoryHistoryBackend` + `wasm32` `BrowserHistoryBackend`), `WebHistoryAdapter` with GitHub Pages `base_path` normalization, `pushState`/`replaceState`/`popstate` loop-free sync, browser-accurate link click interception, and `#anchor` scrolling.
+- [ ] **Reusable `crates/nve-docs` Framework (`crates/nve-docs`)** *(in flight — Docs Phase 2A)*
+  - Fumadocs × Linear dark/light 3-column shell built 100% on `nve-ui` + `nve-router` + `nve-sdk` + `nve-mdx` (sidebar, sticky TOC, `⌘K` `NVS1` search dialog, syntax-highlighted code blocks with Clipboard copy, `<LiveDemo>` `PlaygroundRegistry`, responsive `< 960pt` mobile drawer).
 
-- [ ] **Zero-Dep Pure-Rust `.md`/`.mdx` Compiler & Binary `NVS1` Search Index (`crates/nve-mdx`)** *(in flight — Docs Phase 1C)*
-  - Standard `.md`/`.mdx` authoring: CommonMark/GFM + frontmatter + Nextra-style `_meta.toml` + fenced directives (`:::callout`, `:::tabs`, `:::steps`, `:::cards`, `:::demo`) + declarative `<Component prop="val" num={42} />` tags + ` ```rsx live ` compiled playground blocks, compile-time schema/link/anchor validator, pure-Rust multi-language syntax highlighter, and binary `NVS1` full-text search index (`< 1 ms` `⌘K` search).
+- [ ] **Complete 6-Section NVE Documentation Content Suite (`docs/content/`)** *(in flight — Docs Phase 3A)*
+  - Grounded `.mdx` + `_meta.toml` pages covering Getting Started, Core Architecture, Building Apps, all 10 Platform Hosts, Interop/Codegen/Pairing, and CLI/Benchmarks/Upstream Reference.
 
-- [ ] **Reusable `crates/nve-docs` Framework, Full 6-Section Docs Suite, Native Docs App & GitHub Pages CI (Docs Phases 2–4)**
-  - Build Fumadocs × Linear dark/light docs framework 100% on `nve-ui` + `nve-router` + `nve-sdk` (`cargo nve docs build|dev|check`).
-  - Author all 6 documentation sections (`docs/content/`) + 5 live interactive playgrounds (`ui-playground`, `virtual-list-100k`, `router-sandbox`, `canvas-draw1`, `crdt-simulator`) + native desktop/mobile `examples/nve-docs-site` binary.
-  - Ship `.github/workflows/docs.yml` with link/schema checks, JS-off SSR + JS-on progressive hydration Chrome E2E, visual screenshot verification, and GitHub Pages deployment.
+- [ ] **Docs Site Assembly, `cargo nve docs` CLI, 5 Live Playgrounds, Native Docs App & GitHub Pages CI (Docs Phases 2B / 3B / 4)**
+  - Implement `cargo nve docs build|dev|check` in `crates/nve-cli/src/docs.rs` (MDRSX compile + per-route `WebBackend::render_ssr` static HTML + `search.nvs1` + `sitemap.xml` + `wasm-release` progressive hydrator + live dev watcher).
+  - Build `examples/nve-docs-site` with all 5 live interactive playgrounds (`ui-playground`, `virtual-list-100k`, `router-sandbox`, `canvas-draw1`, `crdt-simulator`) running as both static+hydrated web site AND native desktop/mobile app (`export_nve_app!`).
+  - Ship `.github/workflows/docs.yml` with link/schema checks, JS-off SSR + JS-on progressive hydration Chrome E2E, visual screenshot inspection, and GitHub Pages deployment.
 
 - [ ] **Enforce `.generated.<ext>` Naming (and Java `generated/` Package) Across All Codegen Targets** *(in flight)*
   - Rename all 8 non-Java generated ABI files to `*.generated.{h,dart,ts}`, move `NveCoreAbi.java` & `NveSceneBuffer.java` into package `dev.nve.android.generated`, update `nve-codegen` + `cargo nve codegen abi --check` + `AGENTS.md`, and keep zero legacy shim headers.
@@ -32,7 +32,7 @@ Prioritized roadmap for `native-view-engine`, ordered from active foundational w
 
 - [ ] **Post-Wave-13 Host Services & Multi-Window Integration Glue (`hosts/skia-shell`, `hosts/windows-shell`)**
   - Wire `SERVICE_WINDOW = 0x0002` into `DesktopWindowHost` (`NveHostCallbacks::invoke` → `WindowManager` + `HostWakeEvent::WindowCommand` + `NVH1` lifecycle pushes) and bind `NativeHostServices` (`NveHostApi::bind_host` + live OS theme/locale pushes on `CHANNEL_ID_THEME`/`CHANNEL_ID_LOCALE`).
-  - Live-verify `NveWinWindowManager` + `crates/nve-sdk/src/native/windows.rs` (Win32 Clipboard, `CredReadW`/`CredWriteW`, `ShellExecuteW`, Registry theme, `GetUserDefaultLocaleName`) natively on Windows 11 (`samuel-pc`).
+  - Live-verify `NveWinWindowManager`, `.generated.` MSVC builds, and `crates/nve-sdk/src/native/windows.rs` (Win32 Clipboard, `CredReadW`/`CredWriteW`, `ShellExecuteW`, Registry theme, `GetUserDefaultLocaleName`) natively on Windows 11 (`samuel-pc`).
 
 - [ ] **Unified Extensible Environment / Trait System (`crates/nve-interop`, `crates/nve-dioxus`, `crates/nve-ui`)**
   - Generalize `SurfaceEnvironment` into a typed, zero-string-lookup `TraitKey` / `Environment` system (SwiftUI `EnvironmentValues` × Compose `CompositionLocal` × CSS `@media`/`@container`):
@@ -73,25 +73,9 @@ Prioritized roadmap for `native-view-engine`, ordered from active foundational w
 
 ---
 
-## Completed Milestones (Waves 12–13)
-
-- [x] **Multi-Window Lifecycle Primitives (`21d86ac`)**: `SurfacePresentation`, `WindowManager` (modal blocking, cascading sheet/popover close, cancelable `CloseRequested` veto), binary `NVW1` codec, and multi-window host managers across Skia `winit`, macOS AppKit, iOS/iPadOS `UIWindowScene`, Windows Win32, GTK4, Qt 6, and Web WASM (`ACTIVE_SHELLS` + `BroadcastChannel`).
-- [x] **`NVE_IFACE_HOST = 5` & Tier-1 `nve-sdk` (`0aeee16`)**: Single zero-JSON binary host-capability C ABI (`NVH1`, `NVT2`, `NVL1`) across all 5 generated targets + zero-dep Clipboard, Filesystem/File Picker, Secure Store, Linking, live Theme/Locale `NveChannelBus` bridge, Notifications, and Haptics.
-- [x] **`nve-ui` & Extended ARIA/`tabIndex` (`0995977`)**: 15 accessible, themeable Dioxus components (`Stack`, `Row`, `Col`, `Separator`, `Card`, `Button`, `IconButton`, `Badge`, `Input`, `Checkbox`, `Switch`, `Tabs`, `Dialog`/`Modal`, `Popover`/`Tooltip`, `DropdownMenu`, `Toast`, 100k-row Fenwick `VirtualList`) with `UiTheme`, `StyleBuf`, `FocusTrap`/`RovingFocus`, and 12 typed ARIA/`tabIndex` attributes in `nve-dioxus`.
-- [x] **`nve-router` (`2c63272` + `0827eab`)**: Zero-proc-macro `define_routes!`, stack/tab/modal/guard/deep-link state machines, binary `NVN1` `navigation` channel bridge, Dioxus `RouterProvider`/`Outlet`/`Link`, and `nve-router::web` History API adapter.
-- [x] **Swift/Dart Direct FFI Codegen DRY, `NveDirectEncodable` & `offset_of!` ABI Checks (`66832d2`)**: Split `NveDirectFfi.swift` (exemption removed), deleted generated Swift `pinnedBuffers` and duplicate Dart `NveBinWriter` in favor of shared zero-alloc arenas/codecs, added `NveDirectEncodable` with `StaticString` keys, and cross-checked Rust `offset_of!` against C11 `_Static_assert(offsetof(...))` in `nve_abi.h`.
-- [x] **Direct3D 12 Skia GPU, RNW 0.88 & Live Windows 11 WinSock2 Verification (`58106d1`, `020f6d0`)**: Verified live on Windows 11 Pro (MSVC 19.51, Cargo 1.100): Skia D3D12 (32/32), full Rust workspace (257/257, 0 Clippy warnings), `cxx/nve-fabric-bridge` + `ws2_32`, `hosts/windows-shell` Standalone & RNW 0.88 Fabric (0 `/W4` warnings), and live cross-process `nve.exe pair` → `nve_windows_shell.exe --pair-connect` byte-for-byte identical across WebSocket, TCP, and UDP.
-
----
-
-## Flagship / Vision
+## Flagship / Vision (Remaining Work Only)
 
 - [ ] **NVE Studio (Meta Workbench)**
-  - Self-hosting multi-host workbench rendering AppKit, WinUI, Qt 6, GTK4, iOS/Android Fabric, Flutter Canvas, SwiftUI, Skia, and WASM surfaces side by side.
-  - *Landed*: Bidirectional `NVT1`/`NVD1` binary delta transport (`InputEvents = 11`, `5.18 KB/s` @ 60fps under 15% loss + 20% reorder), `nve pair` / `nve dev --pair` daemon with live `SyncTelemetry` pushing + `NVE_PAIR_READY` + live Chrome E2E, zero-cdylib `--pair-connect` thin clients across **Skia Desktop**, **Web Browser (`?pair=ws://...`)**, **macOS AppKit**, **Windows Direct2D/RNW (WinSock2)**, **iOS**, **Android**, **Qt 6 (Widgets + Quick)**, and **GTK4** (via modular zero-dep C++20 `nve::PairClient`), in-app **Multi-Viewport Meta Workbench**, and native `NVE_DRAW1` `SkiaCanvas` rendering across all 9 hosts.
-  - *Remaining*: Thin-client pairing UI for Flutter/SwiftUI shells.
-
-- [ ] **Flagship Local-First Workspace & Messaging App**
-  - Full Linear × Notion × Slack suite in one ~15 MB binary (`<50 ms` cold start, `<40 MB` RAM) with real native OS text, IME, accessibility, and `<Island>` embeds.
-  - *Landed*: 100k-row Fenwick virtualized stream, Notion-class **Block-Doc Editor** (`ActiveView::Docs` with Markdown export + Chrome E2E), crash-safe local-first **`MmapSnapshot` + `.nvewal` WAL persistence** (`NWS1` v2 + FNV-1a64), **zero-dependency binary CRDT engine** (`crates/nve-interop/src/crdt/` `NVC1` + `StudioCrdtDoc` 5-peer partition-heal convergence), live Taffy/Yoga switcher, mobile portrait collapse, `Cmd+K` palette, interactive `TextInput` with drag selection + zero-dep native clipboard, PNG avatars, `NVE_DRAW1` sparkline, `<Island>` sandbox, panic-isolated `nve_get_interface` plugin host, `285.8 KiB` gzipped WASM release build, and native accessibility/IME parity across all 9 hosts.
-  - *Remaining*: Live multi-peer CRDT transport wiring over paired `NVT1` sessions and adopting `nve-ui`/`nve-router`/`nve-sdk`/Environment Traits.
+  - Add thin-client pairing UI for Flutter and SwiftUI shells (Skia, Web, macOS, Windows WinSock2, iOS, Android, Qt 6, and GTK4 already landed).
+- [ ] **Flagship Local-First Workspace & Messaging App (`examples/studio-workspace`)**
+  - Wire live multi-peer `NVC1` CRDT delta exchange over paired `NVT1` transport sessions and migrate inline Studio UI chrome onto `nve-ui`, `nve-router`, `nve-sdk`, and Environment Traits.
