@@ -1,7 +1,9 @@
 #include "NveGtkHost.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -38,6 +40,24 @@ class BuiltinGtkDemoApp {
     return 0u;
   }
 
+  static NveBufferSlice snapshot_state(NveAppHandle h) {
+    auto* self = static_cast<BuiltinGtkDemoApp*>(h);
+    self->state_buf_ = std::to_string(self->count_);
+    return NveBufferSlice{
+        reinterpret_cast<const uint8_t*>(self->state_buf_.data()),
+        self->state_buf_.size(),
+    };
+  }
+
+  static void restore_state(NveAppHandle h, NveBufferSlice state) {
+    auto* self = static_cast<BuiltinGtkDemoApp*>(h);
+    if (state.ptr == nullptr || state.len == 0u) {
+      return;
+    }
+    const std::string raw(reinterpret_cast<const char*>(state.ptr), state.len);
+    self->count_ = std::atoi(raw.c_str());
+  }
+
   static const void* get_interface(uint32_t interface_id) {
     static const NveSurfaceApi kSurface{
         .create = &create,
@@ -46,7 +66,18 @@ class BuiltinGtkDemoApp {
         .dispatch_events = &dispatch_events,
         .dispatch_events_direct = nullptr,
     };
-    return (interface_id == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
+    static const NveDevApi kDev{
+        .apply_hot_patch = nullptr,
+        .snapshot_state = &snapshot_state,
+        .restore_state = &restore_state,
+    };
+    if (interface_id == NVE_IFACE_SURFACE) {
+      return &kSurface;
+    }
+    if (interface_id == NVE_IFACE_DEV) {
+      return &kDev;
+    }
+    return nullptr;
   }
 
  private:
@@ -170,14 +201,39 @@ class BuiltinGtkDemoApp {
   uint32_t surface_id_{1u};
   int count_{0};
   std::vector<uint8_t> cmd_buf_;
+  std::string state_buf_;
 };
 
 struct AppLaunchState {
   std::string dylib_path;
+  std::string snapshot_path;
+  uint32_t schema_version{1u};
+  bool snapshot_saved{false};
   int width{640};
   int height{420};
   std::unique_ptr<nve::NveGtkHost> host;
 };
+
+void persist_snapshot_if_configured(AppLaunchState* state) {
+  if (state == nullptr || state->snapshot_saved || state->snapshot_path.empty() ||
+      state->host == nullptr) {
+    return;
+  }
+  state->snapshot_saved = true;
+  if (state->host->save_snapshot(state->snapshot_path, state->schema_version)) {
+    std::cerr << "[nve-gtk-shell] Saved Frame-0 + state snapshot to " << state->snapshot_path
+              << " (schema v" << state->schema_version << ")\n";
+  } else {
+    std::cerr << "[nve-gtk-shell] Warning: failed to save snapshot to " << state->snapshot_path
+              << "\n";
+  }
+}
+
+gboolean on_window_close_request(GtkWindow* window, gpointer user_data) {
+  (void)window;
+  persist_snapshot_if_configured(static_cast<AppLaunchState*>(user_data));
+  return FALSE;
+}
 
 void on_app_activate(GtkApplication* app, gpointer user_data) {
   auto* state = static_cast<AppLaunchState*>(user_data);
@@ -194,6 +250,29 @@ void on_app_activate(GtkApplication* app, gpointer user_data) {
   };
   state->host = std::make_unique<nve::NveGtkHost>(cfg);
   state->host->attach_window_resize(GTK_WINDOW(window));
+  g_signal_connect(
+      window,
+      "close-request",
+      nve::gtk_detail::to_gcallback(&on_window_close_request),
+      state);
+
+  gtk_window_set_child(GTK_WINDOW(window), state->host->host_widget());
+
+  if (!state->snapshot_path.empty()) {
+    std::error_code ec;
+    if (std::filesystem::exists(state->snapshot_path, ec)) {
+      const auto t0 = std::chrono::steady_clock::now();
+      if (state->host->replay_snapshot(state->snapshot_path, state->schema_version)) {
+        const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now() - t0)
+                                    .count();
+        std::cerr << "[nve-gtk-shell] Instant-boot Frame-0 mmap restore from "
+                  << state->snapshot_path << " in " << elapsed_us << " us\n";
+      }
+    }
+  }
+
+  gtk_window_present(GTK_WINDOW(window));
 
   if (!state->dylib_path.empty()) {
     int err_code = 0;
@@ -206,13 +285,12 @@ void on_app_activate(GtkApplication* app, gpointer user_data) {
   } else {
     (void)state->host->attach_interface(&BuiltinGtkDemoApp::get_interface, 1u);
   }
-
-  gtk_window_set_child(GTK_WINDOW(window), state->host->host_widget());
-  gtk_window_present(GTK_WINDOW(window));
 }
 
 void print_usage(const char* argv0) {
-  std::cout << "Usage: " << argv0 << " [--dylib <path/to/libapp.so>] [--width W] [--height H]\n";
+  std::cout << "Usage: " << argv0
+            << " [--dylib <path/to/libapp.so>] [--snapshot <path/to/frame0.nvesnap>]"
+               " [--schema <ver>] [--width W] [--height H]\n";
 }
 
 } // namespace
@@ -226,6 +304,13 @@ int main(int argc, char* argv[]) {
     }
     if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
       state.dylib_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
+      state.snapshot_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--schema") == 0 && i + 1 < argc) {
+      const long parsed = std::strtol(argv[++i], nullptr, 10);
+      if (parsed >= 0) {
+        state.schema_version = static_cast<uint32_t>(parsed);
+      }
     } else if (std::strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
       const int parsed = std::atoi(argv[++i]);
       if (parsed > 0) {
@@ -243,6 +328,7 @@ int main(int argc, char* argv[]) {
   g_signal_connect(app, "activate", nve::gtk_detail::to_gcallback(&on_app_activate), &state);
   const int status = g_application_run(G_APPLICATION(app), 0, nullptr);
 
+  persist_snapshot_if_configured(&state);
   // Destroy host before releasing GtkApplication.
   state.host.reset();
   g_object_unref(app);

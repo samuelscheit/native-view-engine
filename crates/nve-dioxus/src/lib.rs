@@ -5,6 +5,13 @@
 //! backends identically.
 
 pub mod elements;
+pub mod signal_archive;
+
+pub use signal_archive::{
+    signal_slot_id, BinValueSlot, HydrationReport, SignalArchive, SignalArchiveError, SignalCodec,
+    SignalDelta, SignalDeltaOp, SignalRegistry, SignalTableSnapshot, SignalValue, SignalValueTag,
+    NVE_SIGNAL_ARCHIVE_MAGIC, NVE_SIGNAL_ARCHIVE_VERSION, NVE_SIGNAL_DELTA_MAGIC,
+};
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -634,6 +641,7 @@ pub struct DioxusSurface {
     writer: NveMutationWriter,
     initialized: bool,
     pending_hot_patches: Vec<HotPatchMsg>,
+    signal_registry: SignalRegistry,
 }
 
 impl DioxusSurface {
@@ -644,7 +652,27 @@ impl DioxusSurface {
             writer: NveMutationWriter::new(surface_id),
             initialized: false,
             pending_hot_patches: Vec::new(),
+            signal_registry: SignalRegistry::new(1),
         }
+    }
+
+    pub fn signal_registry(&self) -> &SignalRegistry {
+        &self.signal_registry
+    }
+
+    pub fn signal_registry_mut(&mut self) -> &mut SignalRegistry {
+        &mut self.signal_registry
+    }
+
+    /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.
+    pub fn snapshot_signals(&self) -> Result<Vec<u8>, SignalArchiveError> {
+        self.signal_registry.encode_full()
+    }
+
+    /// Hydrates registered signals on this surface from a binary `NVE_SIG1` archive with
+    /// schema-evolution safety.
+    pub fn hydrate_signals(&mut self, bytes: &[u8]) -> Result<HydrationReport, SignalArchiveError> {
+        self.signal_registry.hydrate_from_bytes(bytes)
     }
 
     /// Reconciles the `VirtualDom` and returns `(reconcile_us, encode_us, command_buffer_bytes)`.

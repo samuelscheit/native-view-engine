@@ -8,6 +8,7 @@ pub mod layout;
 pub mod loader;
 pub mod profiler;
 pub mod snapshot;
+pub mod snapshot_wal;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
@@ -22,6 +23,11 @@ pub use snapshot::{
     encode_snapshot, fnv1a_64, write_snapshot_atomic, MmapSnapshot, RelocatableStateArena,
     RelocatableTableView, RelocatableValue, SnapshotError, SnapshotHeader, NVE_SNAP_FORMAT_VERSION,
     NVE_SNAP_MAGIC, SNAPSHOT_HEADER_SIZE,
+};
+pub use snapshot_wal::{
+    SnapshotWal, WalDurability, WalError, WalHeader, WalRecord, WalRecordKind, WalRecordRef,
+    NVE_WAL_FORMAT_VERSION, NVE_WAL_MAGIC, WAL_HEADER_SIZE, WAL_RECORD_CHECKSUM_SIZE,
+    WAL_RECORD_HEADER_SIZE, WAL_RECORD_OVERHEAD,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

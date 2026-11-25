@@ -1,13 +1,15 @@
 //! Web WASM shell mounting NVE apps onto browser DOM with live interactive events
 //! and 2-tier WebSocket hot-reload (`HotPatchMsg::TemplatePatch` + `DylibReload` + `DevStatus`).
 
+use std::cell::RefCell;
+
 use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{BackendError, FrameTiming, HotPatchMsg, RenderBackend, SurfaceRunner, Viewport};
 
 #[cfg(target_arch = "wasm32")]
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
@@ -16,6 +18,86 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
+
+/// Default surface ID pre-materialized during `wizer.initialize`.
+pub const PREINIT_SURFACE_ID: SurfaceId = 1;
+
+/// Identifies which bundled NVE web demo app's Frame-0 VDOM + `CommandBuffer` was pre-baked
+/// into WASM linear memory by [`wizer_initialize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreinitApp {
+    StudioWorkspace,
+    Counter,
+}
+
+#[derive(Default)]
+struct PreinitCache {
+    initialized: bool,
+    studio_frame0: Option<Vec<u8>>,
+    counter_frame0: Option<Vec<u8>>,
+}
+
+thread_local! {
+    static PREINIT_CACHE: RefCell<PreinitCache> = RefCell::new(PreinitCache::default());
+}
+
+/// Build-time Wizer pre-initialization entry point (`wizer.initialize`).
+///
+/// Materializes the initial Dioxus `VirtualDom`s and bakes the Frame-0 binary `CommandBuffer`s
+/// for `StudioWorkspaceApp` and `CounterApp` directly into WASM linear memory (pure Rust, zero
+/// browser/WASI calls), dropping temporary VDOM arenas afterward to keep the Wizer snapshot compact.
+/// Idempotent: calling more than once leaves the cached buffers intact.
+#[cfg_attr(target_arch = "wasm32", unsafe(export_name = "wizer.initialize"))]
+pub extern "C" fn wizer_initialize() {
+    let already_init = PREINIT_CACHE.with(|cell| cell.borrow().initialized);
+    if already_init {
+        return;
+    }
+
+    let studio_frame0 = {
+        let mut studio = nve_studio_workspace::create_surface(PREINIT_SURFACE_ID);
+        let (_, _, bytes) = studio.render_frame(1);
+        bytes
+    };
+
+    let counter_frame0 = {
+        let mut counter = nve_example_counter::create_surface(PREINIT_SURFACE_ID);
+        let (_, _, bytes) = counter.render_frame(1);
+        bytes
+    };
+
+    PREINIT_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if !cache.initialized {
+            cache.studio_frame0 = Some(studio_frame0);
+            cache.counter_frame0 = Some(counter_frame0);
+            cache.initialized = true;
+        }
+    });
+}
+
+/// Returns `true` when [`wizer_initialize`] has populated the pre-baked Frame-0 cache.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn is_preinitialized() -> bool {
+    PREINIT_CACHE.with(|cell| cell.borrow().initialized)
+}
+
+/// Consumes and returns the pre-baked Frame-0 `CommandBuffer` for the default flagship app
+/// (`StudioWorkspaceApp`), if available.
+pub fn take_preinit_frame0_command_buffer() -> Option<Vec<u8>> {
+    take_preinit_frame0_command_buffer_for(PreinitApp::StudioWorkspace)
+}
+
+/// Consumes and returns the pre-baked Frame-0 `CommandBuffer` for a specific bundled app.
+pub fn take_preinit_frame0_command_buffer_for(app: PreinitApp) -> Option<Vec<u8>> {
+    PREINIT_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        match app {
+            PreinitApp::StudioWorkspace => cache.studio_frame0.take(),
+            PreinitApp::Counter => cache.counter_frame0.take(),
+        }
+    })
+}
 
 /// Outcome of handling one `nve dev` WebSocket `HotPatchMsg`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +124,8 @@ pub enum HotReloadAction {
 pub struct WebAppSession {
     surface: DioxusSurface,
     runner: SurfaceRunner<WebBackend>,
+    preinit_frame0: Option<Vec<u8>>,
+    needs_vdom_hydrate: bool,
 }
 
 impl WebAppSession {
@@ -54,31 +138,73 @@ impl WebAppSession {
         Self {
             surface,
             runner: SurfaceRunner::new(surface_id, viewport, backend),
+            preinit_frame0: None,
+            needs_vdom_hydrate: false,
+        }
+    }
+
+    fn new_with_preinit(
+        surface_id: SurfaceId,
+        surface: DioxusSurface,
+        preinit_frame0: Option<Vec<u8>>,
+        backend: WebBackend,
+        viewport: Viewport,
+    ) -> Self {
+        Self {
+            surface,
+            runner: SurfaceRunner::new(surface_id, viewport, backend),
+            preinit_frame0,
+            needs_vdom_hydrate: false,
         }
     }
 
     /// Boots the flagship `nve-studio-workspace` (Aether Workspace + NVE Studio) Dioxus surface.
+    ///
+    /// When [`wizer_initialize`] pre-baked Frame 0 for `surface_id == PREINIT_SURFACE_ID`,
+    /// mounts the pre-baked Frame-0 `CommandBuffer` immediately (0 us reconcile/encode) and
+    /// defers VDOM hydration until the first interactive event.
     pub fn new_studio_workspace(
         surface_id: SurfaceId,
         backend: WebBackend,
         viewport: Viewport,
     ) -> Self {
-        Self::new(
+        let preinit = if surface_id == PREINIT_SURFACE_ID {
+            take_preinit_frame0_command_buffer_for(PreinitApp::StudioWorkspace)
+        } else {
+            None
+        };
+        Self::new_with_preinit(
             surface_id,
             nve_studio_workspace::create_surface(surface_id),
+            preinit,
             backend,
             viewport,
         )
     }
 
     /// Boots the `nve-example-counter` Dioxus surface on `WebBackend`.
+    ///
+    /// Adopts the pre-baked `wizer.initialize` Frame-0 buffer when available for
+    /// `surface_id == PREINIT_SURFACE_ID`.
     pub fn new_counter(surface_id: SurfaceId, backend: WebBackend, viewport: Viewport) -> Self {
-        Self::new(
+        let preinit = if surface_id == PREINIT_SURFACE_ID {
+            take_preinit_frame0_command_buffer_for(PreinitApp::Counter)
+        } else {
+            None
+        };
+        Self::new_with_preinit(
             surface_id,
             nve_example_counter::create_surface(surface_id),
+            preinit,
             backend,
             viewport,
         )
+    }
+
+    /// Returns `true` if this session holds a pre-baked `wizer.initialize` Frame-0 buffer waiting
+    /// to be mounted by [`Self::render_initial`].
+    pub fn has_preinit_frame0(&self) -> bool {
+        self.preinit_frame0.is_some()
     }
 
     pub fn backend(&self) -> &WebBackend {
@@ -89,9 +215,24 @@ impl WebAppSession {
         self.runner.backend_mut()
     }
 
-    /// Renders and mounts the initial frame.
+    /// Renders and mounts the initial frame (or submits the pre-baked Wizer Frame-0 buffer
+    /// directly with 0 us reconcile/encode overhead when available).
     pub fn render_initial(&mut self) -> Result<FrameTiming, BackendError> {
+        if let Some(frame0) = self.preinit_frame0.take() {
+            self.needs_vdom_hydrate = true;
+            let frame_id = self.runner.next_frame_id();
+            return self.runner.submit_recorded_frame(frame_id, 0, 0, &frame0);
+        }
         self.render_and_submit()
+    }
+
+    fn ensure_vdom_hydrated(&mut self) {
+        if self.needs_vdom_hydrate {
+            // Rebuilds the Dioxus VDOM once to populate the deterministic ElementId <-> NodeId
+            // table matching the pre-baked Frame-0 DOM before dispatching live events.
+            let _ = self.surface.render_frame(1);
+            self.needs_vdom_hydrate = false;
+        }
     }
 
     /// Drains pending DOM events, dispatches them to Dioxus, and commits an incremental frame if handled.
@@ -100,6 +241,7 @@ impl WebAppSession {
         if events.is_empty() {
             return Ok(None);
         }
+        self.ensure_vdom_hydrated();
         if !self.surface.dispatch_events(&events) {
             return Ok(None);
         }
@@ -431,10 +573,10 @@ fn start_surface_app<F>(
     app_name: &'static str,
     mount_id: &str,
     ws_url: Option<String>,
-    create_surface: F,
+    build_session: F,
 ) -> Result<WebAppController, JsValue>
 where
-    F: FnOnce(SurfaceId) -> DioxusSurface,
+    F: FnOnce(SurfaceId, WebBackend, Viewport) -> WebAppSession,
 {
     install_panic_hook();
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("missing global window"))?;
@@ -447,13 +589,10 @@ where
 
     let viewport = browser_viewport(&container);
     let backend = WebBackend::mount_into(container);
-    let surface_id: SurfaceId = 1;
-    let session = Rc::new(RefCell::new(WebAppSession::new(
-        surface_id,
-        create_surface(surface_id),
-        backend,
-        viewport,
-    )));
+    let surface_id: SurfaceId = PREINIT_SURFACE_ID;
+    let session_val = build_session(surface_id, backend, viewport);
+    let used_preinit = session_val.has_preinit_frame0();
+    let session = Rc::new(RefCell::new(session_val));
 
     // Wire live DOM events -> DioxusSurface::dispatch_events -> incremental CommandBuffer -> live DOM patch.
     let session_for_events = Rc::clone(&session);
@@ -477,7 +616,7 @@ where
         .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
 
     web_sys::console::log_1(&JsValue::from_str(&format!(
-        "[NVE Web] Mounted {app_name} into '#{mount_id}' ({} ops, {} mutations, dec={}us mount={}us)",
+        "[NVE Web] Mounted {app_name} into '#{mount_id}' (preinit={used_preinit}, {} ops, {} mutations, dec={}us mount={}us)",
         initial_timing.op_count,
         initial_timing.mutation_count,
         initial_timing.decode_us,
@@ -536,7 +675,7 @@ pub fn start_studio_workspace_app(
         "StudioWorkspaceApp",
         mount_id,
         ws_url,
-        nve_studio_workspace::create_surface,
+        WebAppSession::new_studio_workspace,
     )
 }
 
@@ -547,12 +686,7 @@ pub fn start_counter_app(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_surface_app(
-        "CounterApp",
-        mount_id,
-        ws_url,
-        nve_example_counter::create_surface,
-    )
+    start_surface_app("CounterApp", mount_id, ws_url, WebAppSession::new_counter)
 }
 
 #[cfg(test)]
@@ -817,5 +951,58 @@ mod tests {
         assert!(html_live.contains("Snapshot 5 / 5"));
         assert!(html_live.contains("Accent -> Violet"));
         assert!(html_live.contains("Live Metrics"));
+    }
+
+    #[test]
+    fn wizer_initialize_populates_frame0_buffer_idempotently_and_hydrates_interactively() {
+        // Fresh test thread starts uninitialized.
+        assert!(!is_preinitialized());
+        assert!(take_preinit_frame0_command_buffer().is_none());
+
+        // First call pre-bakes both StudioWorkspace and Counter Frame-0 CommandBuffers.
+        wizer_initialize();
+        assert!(is_preinitialized());
+
+        // Second call is idempotent and preserves the pre-baked buffers.
+        wizer_initialize();
+        assert!(is_preinitialized());
+
+        // Direct consumer take_preinit_frame0_command_buffer() returns valid CommandBuffer once.
+        let studio_frame0 =
+            take_preinit_frame0_command_buffer().expect("expected pre-baked Studio Frame 0");
+        let (header, ops) = nve_abi::CommandDecoder::new(&studio_frame0)
+            .expect("pre-baked Frame-0 header must be valid")
+            .decode_all()
+            .expect("pre-baked Frame-0 buffer must decode cleanly");
+        assert_eq!(header.surface_id, PREINIT_SURFACE_ID);
+        assert_eq!(header.frame_id, 1);
+        assert!(!ops.is_empty());
+        assert!(take_preinit_frame0_command_buffer().is_none());
+
+        // CounterApp session adopts the pre-baked surface + Frame-0 buffer for 0 us initial reconcile
+        // and continues handling live clicks seamlessly.
+        let mut counter_session =
+            WebAppSession::new_counter(PREINIT_SURFACE_ID, WebBackend::new(), Viewport::default());
+        assert!(counter_session.has_preinit_frame0());
+        let init = counter_session.render_initial().unwrap();
+        assert_eq!(init.reconcile_us, 0);
+        assert_eq!(init.encode_us, 0);
+        assert!(init.op_count > 0);
+        assert!(counter_session.backend().render_html().contains("Count: 0"));
+
+        let buttons = find_pressable_nodes(counter_session.backend());
+        assert_eq!(buttons.len(), 2);
+        counter_session.backend().push_event(NativeEvent {
+            surface_id: PREINIT_SURFACE_ID,
+            node_id: buttons[0],
+            timestamp_us: 1000,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 40.0, y: 20.0 },
+        });
+        counter_session
+            .pump_events()
+            .unwrap()
+            .expect("post-wizer click should trigger incremental frame");
+        assert!(counter_session.backend().render_html().contains("Count: 1"));
     }
 }

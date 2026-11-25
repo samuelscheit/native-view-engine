@@ -72,6 +72,22 @@ echo "==> Running ${WASM_BINDGEN_BIN} --target web -> ${OUT_DIR}"
   "${WASM_INPUT}"
 
 WASM_OUT="${OUT_DIR}/nve_web_shell_bg.wasm"
+WIZER_BIN="${WIZER:-wizer}"
+if command -v "${WIZER_BIN}" >/dev/null 2>&1; then
+  PRE_WIZER_BYTES=$(wc -c < "${WASM_OUT}" | tr -d ' ')
+  WIZER_TMP="${WASM_OUT}.wizer.tmp"
+  echo "==> Running ${WIZER_BIN} --allow-wasi=false to pre-initialize Frame-0 VDOM (${PRE_WIZER_BYTES} bytes)"
+  if "${WIZER_BIN}" --allow-wasi=false "${WASM_OUT}" -o "${WIZER_TMP}"; then
+    mv "${WIZER_TMP}" "${WASM_OUT}"
+    echo "==> Wizer pre-initialization succeeded (wizer.initialize baked into linear memory)"
+  else
+    rm -f "${WIZER_TMP}"
+    echo "Warning: ${WIZER_BIN} pre-initialization failed; keeping standard wasm-bindgen output" >&2
+  fi
+else
+  echo "==> Info: '${WIZER_BIN}' not found on PATH; skipping build-time Frame-0 pre-initialization (install with: cargo install wizer --all-features)"
+fi
+
 RAW_BYTES=$(wc -c < "${WASM_OUT}" | tr -d ' ')
 echo "==> Built ${WASM_OUT} (${RAW_BYTES} bytes)"
 if command -v gzip >/dev/null 2>&1; then

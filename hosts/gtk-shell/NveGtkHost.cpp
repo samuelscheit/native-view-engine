@@ -322,6 +322,28 @@ bool NveGtkHost::reload_dylib(
   return true;
 }
 
+bool NveGtkHost::replay_snapshot(
+    std::string_view path,
+    uint32_t expected_schema_version,
+    NveFrameStats* out_stats,
+    SnapshotStatus* out_status) {
+  session_.set_surface_config(config_);
+  if (!session_.replay_frame0_snapshot(path, expected_schema_version, out_stats, out_status)) {
+    return false;
+  }
+  reconciler_.clear(adapter_);
+  sync_views();
+  return true;
+}
+
+bool NveGtkHost::save_snapshot(
+    std::string_view path,
+    uint32_t schema_version,
+    std::string_view meta,
+    SnapshotStatus* out_status) const {
+  return session_.save_snapshot(path, schema_version, meta, out_status);
+}
+
 bool NveGtkHost::apply_props_json(std::string_view props_json) {
   if (!session_.is_valid()) {
     return false;
@@ -377,7 +399,7 @@ void NveGtkHost::set_surface_size(float width, float height, float scale_factor)
     config_.scale_factor = scale_factor;
   }
   session_.set_surface_size(config_.width, config_.height, config_.scale_factor);
-  if (session_.is_valid()) {
+  if (session_.active_fabric_host() != nullptr) {
     sync_views();
   }
 }
@@ -448,7 +470,7 @@ GtkWidget* NveGtkHost::widget_for_node_id(uint32_t node_id) const noexcept {
 }
 
 uint32_t NveGtkHost::node_count() const noexcept {
-  return session_.is_valid() ? session_.bridge()->node_count() : 0u;
+  return session_.node_count();
 }
 
 void NveGtkHost::set_event_callback(EventCallback callback) {
@@ -456,7 +478,7 @@ void NveGtkHost::set_event_callback(EventCallback callback) {
 }
 
 void NveGtkHost::sync_views() {
-  if (!session_.is_valid()) {
+  if (session_.active_fabric_host() == nullptr) {
     return;
   }
   const std::vector<RenderedNodeSnapshot> snapshots = session_.snapshot_nodes();

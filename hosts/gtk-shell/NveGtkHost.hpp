@@ -72,6 +72,27 @@ class NveGtkHost {
       int* out_err_code = nullptr,
       std::string* out_err_msg = nullptr);
 
+  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
+  /// Immediately synchronizes GTK4 widgets so Frame 0 paints on first draw, and caches the
+  /// snapshot's state section for automatic restoration when `load_dylib()` / `attach_interface()`
+  /// runs next.
+  bool replay_snapshot(
+      std::string_view path,
+      uint32_t expected_schema_version,
+      NveFrameStats* out_stats = nullptr,
+      SnapshotStatus* out_status = nullptr);
+
+  /// Freeze-dries the active shadow tree (live app or replayed Frame-0 preview) plus
+  /// `NveDevApi::snapshot_state()` and persists it atomically to `path`.
+  bool save_snapshot(
+      std::string_view path,
+      uint32_t schema_version,
+      std::string_view meta = {},
+      SnapshotStatus* out_status = nullptr) const;
+
+  /// True when a Frame-0 snapshot is mounted prior to loading a live dylib/interface.
+  bool has_replayed_frame0() const noexcept { return session_.has_replayed_frame0(); }
+
   /// Push UTF-8 JSON props to `NveComponentApi::set_props`, sync GTK widgets if
   /// dirty, and drain outbound events.
   bool apply_props_json(std::string_view props_json);

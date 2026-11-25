@@ -20,12 +20,45 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
   return [[NSBundle mainBundle] pathForResource:@"libnve_app" ofType:@"dylib"];
 }
 
+NSString * _Nullable NveResolveSnapshotPath(void) {
+  NSDictionary<NSString *, NSString *> *env = NSProcessInfo.processInfo.environment;
+  NSString *disabled = env[@"NVE_SNAPSHOT_DISABLE"];
+  if ([disabled isEqualToString:@"1"] || [disabled.lowercaseString isEqualToString:@"true"]) {
+    return nil;
+  }
+  NSString *envPath = env[@"NVE_SNAPSHOT_PATH"];
+  if (envPath.length > 0) {
+    return envPath;
+  }
+  NSArray<NSString *> *caches =
+      NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+  NSString *cacheDir = caches.firstObject;
+  if (cacheDir.length == 0) {
+    return nil;
+  }
+  return [cacheDir stringByAppendingPathComponent:@"nve_frame0.nvesnap"];
+}
+
+uint32_t NveResolveSnapshotSchemaVersion(void) {
+  NSString *raw = NSProcessInfo.processInfo.environment[@"NVE_SNAPSHOT_SCHEMA"];
+  if (raw.length > 0) {
+    long parsed = strtol(raw.UTF8String, nullptr, 10);
+    if (parsed >= 0) {
+      return static_cast<uint32_t>(parsed);
+    }
+  }
+  return 1u;
+}
+
 }  // namespace
 
 @interface NveIosRootViewController : UIViewController
 @property (nonatomic, strong) RCTNveComponentView *componentView;
 @property (nonatomic, strong, nullable) UILabel *errorLabel;
+@property (nonatomic, copy, nullable) NSString *snapshotPath;
+@property (nonatomic, assign) uint32_t snapshotSchemaVersion;
 @property (nonatomic, assign) BOOL didAttemptLoad;
+- (void)saveSnapshotIfPossible;
 @end
 
 @implementation NveIosRootViewController
@@ -37,6 +70,8 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = NveDarkSlateColor();
+  self.snapshotPath = NveResolveSnapshotPath();
+  self.snapshotSchemaVersion = NveResolveSnapshotSchemaVersion();
 
   RCTNveComponentView *componentView = [[RCTNveComponentView alloc] initWithFrame:CGRectZero];
   componentView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -68,6 +103,19 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
 }
 
 - (void)_loadBundledApp {
+  if (self.snapshotPath.length > 0 &&
+      [[NSFileManager defaultManager] fileExistsAtPath:self.snapshotPath]) {
+    uint64_t restoreUs = 0;
+    if ([self.componentView replayFrame0SnapshotAtPath:self.snapshotPath
+                                 expectedSchemaVersion:self.snapshotSchemaVersion
+                                         restoreTimeUs:&restoreUs]) {
+      NSLog(@"NveIosShell: Instant-boot Frame-0 mmap restore from %@ in %llu us (nodes=%u)",
+            self.snapshotPath,
+            static_cast<unsigned long long>(restoreUs),
+            self.componentView.nveNodeCount);
+    }
+  }
+
   NSString *dylibPath = NveResolveAppDylibPath();
   if (dylibPath.length == 0) {
     NSString *msg =
@@ -92,6 +140,25 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
   NSLog(@"NveIosShell: Loaded NVE app dylib %@ (nodes=%u)",
         dylibPath,
         self.componentView.nveNodeCount);
+}
+
+- (void)saveSnapshotIfPossible {
+  if (self.snapshotPath.length == 0 || self.componentView == nil) {
+    return;
+  }
+  NSString *parentDir = [self.snapshotPath stringByDeletingLastPathComponent];
+  if (parentDir.length > 0) {
+    [[NSFileManager defaultManager] createDirectoryAtPath:parentDir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+  }
+  if ([self.componentView saveSnapshotAtPath:self.snapshotPath
+                               schemaVersion:self.snapshotSchemaVersion]) {
+    NSLog(@"NveIosShell: Saved Frame-0 + state snapshot to %@ (schema v%u)",
+          self.snapshotPath,
+          self.snapshotSchemaVersion);
+  }
 }
 
 - (void)_showErrorMessage:(NSString *)message {
@@ -139,6 +206,14 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
   [window makeKeyAndVisible];
 }
 
+- (void)sceneDidEnterBackground:(UIScene *)scene {
+  (void)scene;
+  UIViewController *root = self.window.rootViewController;
+  if ([root isKindOfClass:[NveIosRootViewController class]]) {
+    [(NveIosRootViewController *)root saveSnapshotIfPossible];
+  }
+}
+
 @end
 
 @interface NveIosAppDelegate : UIResponder <UIApplicationDelegate>
@@ -151,6 +226,21 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
   (void)application;
   (void)launchOptions;
   return YES;
+}
+
+- (void)applicationWillTerminate:(UIApplication *)application {
+  for (UIScene *scene in application.connectedScenes) {
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+      continue;
+    }
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    for (UIWindow *window in windowScene.windows) {
+      UIViewController *root = window.rootViewController;
+      if ([root isKindOfClass:[NveIosRootViewController class]]) {
+        [(NveIosRootViewController *)root saveSnapshotIfPossible];
+      }
+    }
+  }
 }
 
 - (UISceneConfiguration *)application:(UIApplication *)application
