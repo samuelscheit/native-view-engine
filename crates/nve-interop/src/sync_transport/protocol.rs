@@ -1,5 +1,6 @@
-//! `NVT1` binary wire protocol constants, errors, pairing config, envelope codecs,
-//! handshake helpers, and bounded inbound `EventRing` queue.
+//! Binary wire transport protocol v1 (`TRANSPORT_MAGIC = b"NT"`, `TRANSPORT_PROTOCOL_VERSION = 1`)
+//! constants, errors, pairing config, envelope codecs, handshake helpers, and bounded inbound
+//! `EventRing` queue.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -15,10 +16,10 @@ use crate::sync_delta::{
     fnv1a_64_pair, SyncDeltaError, DEFAULT_SYNC_WINDOW, DELTA_HEADER_SIZE, MAX_DECODED_FRAME_BYTES,
 };
 
-/// 2-byte transport envelope magic (`"NT"`).
+/// 2-byte transport envelope magic (`b"NT"`).
 pub const TRANSPORT_MAGIC: [u8; 2] = *b"NT";
 
-/// Current `NVT1` transport envelope version.
+/// Current binary transport envelope protocol version (`1`, paired with 2-byte magic `b"NT"`).
 pub const TRANSPORT_PROTOCOL_VERSION: u8 = 1;
 
 /// Fixed transport envelope header size (`magic[2] + version[1] + kind[1] + session_id[4]`).
@@ -302,7 +303,7 @@ pub(crate) fn ct_eq_16(a: &[u8; 16], b: &[u8; 16]) -> bool {
 }
 
 // =============================================================================
-// NVT1 Transport Message Codec (Zero-Copy Envelope)
+// Transport Message Codec (`b"NT"` + version 1 Zero-Copy Envelope)
 // =============================================================================
 
 /// Transport envelope message kind.
@@ -342,7 +343,7 @@ impl TransportMsgKind {
     }
 }
 
-/// Zero-copy parsed view of an incoming `NVT1` transport message.
+/// Zero-copy parsed view of an incoming binary transport message (`b"NT"` header + version 1).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TransportEnvelopeRef<'a> {
     pub kind: TransportMsgKind,

@@ -7,14 +7,19 @@ use std::collections::HashMap;
 use dioxus_core::{AttributeValue, ElementId, Template, TemplateAttribute, TemplateNode, WriteMutations};
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, EventMask, FrameId, LayoutProps, NodeId,
-    RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
+    RawPropValue, RawPropValueRef, StyleProps, SurfaceId, ROOT_NODE_ID,
 };
 use nve_components::{
     apply_typed_attr_with_raw, canonical_raw_style_key, resolve_tag, DrawListDecoder,
     DRAW_LIST_ATTR_PREFIX,
 };
+use nve_interop::native_view::{NativeViewHandleBinder, NATIVE_VIEW_KIND_PROP_KEY};
 
 use crate::hot_patch;
+use crate::native_view::{
+    NativeBinaryProp, NativeHandleAttr, NATIVE_VIEW_HANDLE_ATTR, NATIVE_VIEW_KIND_ATTR,
+    NATIVE_VIEW_TAG,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct NodeRecord {
@@ -30,6 +35,9 @@ pub(crate) struct NodeRecord {
     pub(crate) dioxus_id: Option<ElementId>,
     pub(crate) test_id: Option<String>,
     pub(crate) text: Option<String>,
+    pub(crate) deferred_native_create: bool,
+    pub(crate) native_kind: Option<String>,
+    pub(crate) native_handle_binder: Option<NativeViewHandleBinder>,
 }
 
 impl Default for NodeRecord {
@@ -47,6 +55,9 @@ impl Default for NodeRecord {
             dioxus_id: None,
             test_id: None,
             text: None,
+            deferred_native_create: false,
+            native_kind: None,
+            native_handle_binder: None,
         }
     }
 }
@@ -62,6 +73,7 @@ struct TextStyleWalkEntry {
 
 /// Bridges `dioxus_core::WriteMutations` into a single batched `nve_abi::CommandBuffer`.
 pub struct NveMutationWriter {
+    surface_id: SurfaceId,
     next_node_id: NodeId,
     /// Maps Dioxus `ElementId` -> NVE `NodeId`. (`ElementId(0)` == `ROOT_NODE_ID`).
     el_to_node: HashMap<ElementId, NodeId>,
@@ -76,6 +88,7 @@ pub struct NveMutationWriter {
     dirty_style: Vec<NodeId>,
     dirty_text_props: Vec<NodeId>,
     dirty_events: Vec<NodeId>,
+    deferred_native_nodes: Vec<NodeId>,
     pub(crate) patch_ids: Vec<NodeId>,
     pub(crate) patch_leaf_text_ids: Vec<NodeId>,
     pub(crate) builder: CommandBufferBuilder,
@@ -96,6 +109,7 @@ impl NveMutationWriter {
             },
         );
         Self {
+            surface_id,
             next_node_id: ROOT_NODE_ID + 1,
             el_to_node,
             node_to_el,
@@ -108,6 +122,7 @@ impl NveMutationWriter {
             dirty_style: Vec::with_capacity(16),
             dirty_text_props: Vec::new(),
             dirty_events: Vec::new(),
+            deferred_native_nodes: Vec::new(),
             patch_ids: Vec::new(),
             patch_leaf_text_ids: Vec::new(),
             builder: CommandBufferBuilder::new(surface_id, 1),
@@ -115,6 +130,7 @@ impl NveMutationWriter {
     }
 
     pub fn begin_frame(&mut self, surface_id: SurfaceId, frame_id: FrameId) {
+        self.surface_id = surface_id;
         self.builder.reset(surface_id, frame_id);
         self.stack.clear();
         self.style_sources.clear();
@@ -124,9 +140,18 @@ impl NveMutationWriter {
         self.dirty_style.clear();
         self.dirty_text_props.clear();
         self.dirty_events.clear();
+        self.deferred_native_nodes.clear();
     }
 
     pub fn finish_frame(&mut self, sync_mount: bool) -> &[u8] {
+        // Ensure any `<NativeView>` node whose `__nve_native_kind` attribute was omitted still
+        // emits `CreateNode` before layout/style/children ops.
+        if !self.deferred_native_nodes.is_empty() {
+            let pending = std::mem::take(&mut self.deferred_native_nodes);
+            for nid in pending {
+                self.ensure_native_node_created(nid, None);
+            }
+        }
         // Propagate inherited text_color, font_size, font_weight, and text_align from styled Text
         // parents to unstyled child Text leaves (Dioxus rsx! emits `text { style: "...", "leaf" }`
         // as parent Text -> child Text).
@@ -235,6 +260,35 @@ impl NveMutationWriter {
         id
     }
 
+    fn alloc_deferred_native_node(&mut self) -> NodeId {
+        let id = self.next_node_id;
+        self.next_node_id += 1;
+        self.nodes.insert(
+            id,
+            NodeRecord {
+                kind: ComponentKind::Custom,
+                deferred_native_create: true,
+                ..Default::default()
+            },
+        );
+        self.deferred_native_nodes.push(id);
+        id
+    }
+
+    fn ensure_native_node_created(&mut self, node_id: NodeId, kind_override: Option<&str>) {
+        let Some(rec) = self.nodes.get_mut(&node_id) else {
+            return;
+        };
+        if !rec.deferred_native_create {
+            return;
+        }
+        rec.deferred_native_create = false;
+        let resolved = kind_override.unwrap_or(NATIVE_VIEW_TAG);
+        rec.native_kind = Some(resolved.to_owned());
+        self.builder
+            .create_node(node_id, ComponentKind::Custom, Some(resolved));
+    }
+
     fn propagate_text_style_down(&mut self, root_parent_id: NodeId) {
         self.style_walk_stack.clear();
         let Some(root) = self.nodes.get(&root_parent_id) else {
@@ -321,8 +375,12 @@ impl NveMutationWriter {
                 children,
                 ..
             } => {
-                let (kind, custom) = resolve_tag(tag);
-                let id = self.alloc_node(kind, custom);
+                let id = if *tag == NATIVE_VIEW_TAG {
+                    self.alloc_deferred_native_node()
+                } else {
+                    let (kind, custom) = resolve_tag(tag);
+                    self.alloc_node(kind, custom)
+                };
                 for attr in *attrs {
                     if let TemplateAttribute::Static { name, value, .. } = attr {
                         self.apply_str_attr(id, name, value);
@@ -477,6 +535,9 @@ impl NveMutationWriter {
 
     fn remove_subtree(&mut self, node_id: NodeId) {
         if let Some(rec) = self.nodes.remove(&node_id) {
+            if let Some(binder) = rec.native_handle_binder {
+                binder.unbind();
+            }
             if let Some(el_id) = rec.dioxus_id {
                 self.el_to_node.remove(&el_id);
             }
@@ -634,6 +695,33 @@ impl WriteMutations for NveMutationWriter {
         let Some(node_id) = self.resolve_el(id) else {
             return;
         };
+        if name == NATIVE_VIEW_KIND_ATTR {
+            if let AttributeValue::Text(kind_str) = value {
+                let was_deferred = self
+                    .nodes
+                    .get(&node_id)
+                    .is_some_and(|r| r.deferred_native_create);
+                if was_deferred {
+                    self.ensure_native_node_created(node_id, Some(kind_str));
+                    self.builder
+                        .set_raw_prop_str(node_id, NATIVE_VIEW_KIND_PROP_KEY, kind_str);
+                } else if let Some(rec) = self.nodes.get_mut(&node_id)
+                    && rec.native_kind.as_deref() != Some(kind_str.as_str())
+                {
+                    rec.native_kind = Some(kind_str.clone());
+                    self.builder
+                        .set_raw_prop_str(node_id, NATIVE_VIEW_KIND_PROP_KEY, kind_str);
+                }
+            }
+            return;
+        }
+        if self
+            .nodes
+            .get(&node_id)
+            .is_some_and(|r| r.deferred_native_create)
+        {
+            self.ensure_native_node_created(node_id, None);
+        }
         match value {
             AttributeValue::Text(s) => self.apply_str_attr(node_id, name, s),
             AttributeValue::Float(f) => {
@@ -657,7 +745,34 @@ impl WriteMutations for NveMutationWriter {
                 self.builder
                     .set_raw_prop(node_id, prop_name, &RawPropValue::Null);
             }
-            AttributeValue::Listener(_) | AttributeValue::Any(_) => {}
+            AttributeValue::Any(any) => {
+                if let Some(bin) = any.as_any().downcast_ref::<NativeBinaryProp>() {
+                    self.builder.set_raw_prop_ref(
+                        node_id,
+                        name,
+                        RawPropValueRef::Bytes(&bin.0),
+                    );
+                } else if name == NATIVE_VIEW_HANDLE_ATTR
+                    && let Some(handle_attr) = any.as_any().downcast_ref::<NativeHandleAttr>()
+                {
+                    let surface_id = self.surface_id;
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        if let Some(prev) = rec.native_handle_binder.take()
+                            && !handle_attr
+                                .0
+                                .as_ref()
+                                .is_some_and(|next| next.ptr_eq(&prev))
+                        {
+                            prev.unbind();
+                        }
+                        if let Some(ref binder) = handle_attr.0 {
+                            binder.bind(surface_id, node_id);
+                            rec.native_handle_binder = Some(binder.clone());
+                        }
+                    }
+                }
+            }
+            AttributeValue::Listener(_) => {}
         }
     }
 

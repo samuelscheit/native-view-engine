@@ -44,6 +44,19 @@ impl FrameworkKind {
             Self::WebDom => "web_dom",
         }
     }
+
+    /// Maps this surface framework to its default [`crate::traits::HostToolkit`] trait value.
+    #[inline]
+    pub const fn default_host_toolkit(self) -> crate::traits::HostToolkit {
+        match self {
+            Self::Nve => crate::traits::HostToolkit::Skia,
+            Self::ReactNativeFabric => crate::traits::HostToolkit::UiKit,
+            Self::Flutter => crate::traits::HostToolkit::Flutter,
+            Self::SwiftUI => crate::traits::HostToolkit::SwiftUi,
+            Self::JetpackCompose => crate::traits::HostToolkit::AndroidCompose,
+            Self::WebDom => crate::traits::HostToolkit::WebDom,
+        }
+    }
 }
 
 /// Lifecycle state of an orchestrated surface across framework boundaries.
@@ -170,6 +183,69 @@ impl Default for SurfaceEnvironment {
             text_scale_factor: 1.0,
             locale: "en-US".to_owned(),
             reduced_motion: false,
+        }
+    }
+}
+
+impl SurfaceEnvironment {
+    /// Converts this cross-framework surface environment into a zero-alloc
+    /// [`crate::traits::TraitEnvironment`] snapshot.
+    pub fn to_trait_environment(&self) -> crate::traits::TraitEnvironment {
+        let high_contrast = matches!(
+            self.theme.color_scheme,
+            ColorScheme::HighContrastLight | ColorScheme::HighContrastDark
+        );
+        let builtins = crate::traits::BuiltinTraits {
+            color_scheme: self.theme.color_scheme.into(),
+            high_contrast,
+            safe_area: self.safe_area,
+            scale_factor: self.scale_factor,
+            text_scale: self.text_scale_factor,
+            locale: crate::traits::Locale::new(&self.locale),
+            reduced_motion: self.reduced_motion,
+            ..crate::traits::BuiltinTraits::default()
+        };
+        crate::traits::TraitEnvironment::from_builtins(builtins)
+    }
+
+    /// Applies this surface environment onto a live [`crate::traits::TraitStore`], bumping only
+    /// the revision counters for traits whose effective value actually changed.
+    pub fn apply_to_trait_store(&self, store: &mut crate::traits::TraitStore) {
+        let high_contrast = matches!(
+            self.theme.color_scheme,
+            ColorScheme::HighContrastLight | ColorScheme::HighContrastDark
+        );
+        store.set::<crate::traits::ColorScheme>(self.theme.color_scheme.into());
+        store.set::<crate::traits::HighContrast>(high_contrast);
+        store.set::<SafeAreaInsets>(self.safe_area);
+        store.set::<crate::traits::ScaleFactor>(self.scale_factor);
+        store.set::<crate::traits::TextScale>(self.text_scale_factor);
+        store.set::<crate::traits::Locale>(crate::traits::Locale::new(&self.locale));
+        store.set::<crate::traits::ReducedMotion>(self.reduced_motion);
+    }
+
+    /// Reconstructs a [`SurfaceEnvironment`] from a [`crate::traits::TraitEnvironment`].
+    pub fn from_trait_environment(env: &crate::traits::TraitEnvironment) -> Self {
+        let b = env.builtins();
+        let color_scheme = match (b.color_scheme, b.high_contrast) {
+            (crate::traits::ColorScheme::Light, false) => ColorScheme::Light,
+            (crate::traits::ColorScheme::Dark, false) => ColorScheme::Dark,
+            (crate::traits::ColorScheme::Light, true) => ColorScheme::HighContrastLight,
+            (crate::traits::ColorScheme::Dark, true) => ColorScheme::HighContrastDark,
+        };
+        let mut theme = if b.color_scheme.is_dark() {
+            ThemeContext::dark()
+        } else {
+            ThemeContext::default()
+        };
+        theme.color_scheme = color_scheme;
+        Self {
+            theme,
+            safe_area: b.safe_area,
+            scale_factor: b.scale_factor,
+            text_scale_factor: b.text_scale,
+            locale: b.locale.as_str().to_owned(),
+            reduced_motion: b.reduced_motion,
         }
     }
 }

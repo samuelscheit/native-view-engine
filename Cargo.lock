@@ -1618,6 +1618,7 @@ dependencies = [
  "nve-abi",
  "nve-components",
  "nve-engine",
+ "nve-interop",
 ]
 
 [[package]]

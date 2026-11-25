@@ -11,10 +11,12 @@ pub mod error;
 pub mod gesture;
 pub mod handoff;
 pub mod layout;
+pub mod native_view;
 pub mod plugin_host;
 pub mod surface;
 pub mod sync_delta;
 pub mod sync_transport;
+pub mod traits;
 pub mod window;
 
 pub use channel::{
@@ -67,6 +69,24 @@ pub use sync_transport::{
     UdpDeltaClient, UdpDeltaServer, WsFrame, WsOpcode, compute_ws_accept_key,
     decode_ws_frame_slice, derive_session_id, derive_token_proof, encode_ws_frame,
     packetize_udp_datagrams,
+};
+pub use native_view::{
+    BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
+    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, MAX_NATIVE_CMD_ARGS,
+    MAX_NATIVE_PROP_FIELDS, NATIVE_CMD_HEADER_SIZE, NATIVE_CMD_MAGIC, NATIVE_CMD_VERSION,
+    NATIVE_PROPS_HEADER_SIZE, NATIVE_PROPS_MAGIC, NATIVE_PROPS_VERSION, NATIVE_VIEW_KIND_PROP_KEY,
+    NATIVE_VIEW_PROPS_PROP_KEY, NativeCommandDecoder, NativeCommandEncoder, NativePropDecoder,
+    NativePropEncoder, NativeValueRef, NativeViewCodecError, NativeViewHandle as TypedNativeViewHandle,
+    NativeViewHandleBinder, NativeViewRegistry, NativeViewSpec, NoCommand, QueuedNativeCommand,
+    VideoPlayer, VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView,
+    WebViewCommand, WebViewProps,
+};
+pub use traits::{
+    BUILTIN_TRAIT_COUNT, BuiltinTraitSlot, BuiltinTraits, CanHover,
+    ColorScheme as TraitColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast, HostToolkit,
+    Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, ScaleFactor, SizeClass, TextScale,
+    TraitEnvironment, TraitKey, TraitOverrides, TraitResolver, TraitStore, UiDensity,
+    VerticalSizeClass, ViewportChangeMask,
 };
 
 use nve_abi::SurfaceId;
