@@ -54,17 +54,20 @@ enum Commands {
     /// Run the 2-tier hot-reload daemon (WebSocket server + incremental cdylib rebuild on save).
     Dev {
         /// Crate/package name of the cdylib example to watch and hot-rebuild.
-        #[arg(long, default_value = "nve-example-counter")]
+        #[arg(long, default_value = "nve-studio-workspace")]
         package: String,
-        /// Directory to watch for Rust source changes.
-        #[arg(long, default_value = "examples/counter/src")]
-        watch: PathBuf,
+        /// Directory to watch for Rust source changes (defaults to the package's `src/` directory).
+        #[arg(long)]
+        watch: Option<PathBuf>,
         /// Bind address for the hot-reload WebSocket server (`0.0.0.0` allows LAN/phone clients).
         #[arg(long, default_value = "0.0.0.0")]
         host: String,
         /// WebSocket port for Tier-1/Tier-2 hot-reload clients.
         #[arg(long, default_value_t = 8089)]
         port: u16,
+        /// Also rebuild the Web WASM bundle (`hosts/web-shell/build.sh`) before broadcasting reload.
+        #[arg(long, default_value_t = false)]
+        web: bool,
         /// Launch the live cross-platform desktop preview window (`winit` + `softbuffer`) connected to this daemon.
         #[arg(long, default_value_t = false)]
         skia: bool,
@@ -114,8 +117,12 @@ fn main() {
             watch,
             host,
             port,
+            web,
             skia,
-        } => cmd_dev(&package, &watch, &host, port, skia),
+        } => {
+            let watch_dir = watch.unwrap_or_else(|| default_watch_dir_for_package(&package));
+            cmd_dev(&package, &watch_dir, &host, port, web, skia);
+        }
         Commands::Codegen { action } => cmd_codegen(action),
     }
 }
@@ -387,6 +394,30 @@ fn dylib_path_for_package(package: &str) -> PathBuf {
     ))
 }
 
+fn default_watch_dir_for_package(package: &str) -> PathBuf {
+    match package {
+        "nve-studio-workspace" => PathBuf::from("examples/studio-workspace/src"),
+        "nve-example-counter" => PathBuf::from("examples/counter/src"),
+        other => {
+            let stripped = other
+                .strip_prefix("nve-example-")
+                .or_else(|| other.strip_prefix("nve-"))
+                .unwrap_or(other);
+            let example_src = PathBuf::from(format!("examples/{stripped}/src"));
+            if example_src.exists() {
+                example_src
+            } else {
+                let crate_src = PathBuf::from(format!("crates/{other}/src"));
+                if crate_src.exists() {
+                    crate_src
+                } else {
+                    PathBuf::from("examples")
+                }
+            }
+        }
+    }
+}
+
 fn ws_url_for_port(port: u16) -> String {
     format!("ws://127.0.0.1:{port}")
 }
@@ -396,7 +427,17 @@ fn ws_bind_addr(host: &str, port: u16) -> String {
 }
 
 fn should_trigger_rebuild(kind: &notify::EventKind) -> bool {
-    kind.is_modify() || kind.is_create()
+    matches!(kind, notify::EventKind::Any) || kind.is_modify() || kind.is_create()
+}
+
+fn is_relevant_source_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.starts_with('.') || name.ends_with('~') || name.ends_with(".swp") || name.ends_with(".tmp") {
+        return false;
+    }
+    true
 }
 
 fn make_dylib_reload_msg(generation: u64, dylib_path: &Path, build_ms: u64) -> HotPatchMsg {
@@ -424,7 +465,14 @@ fn parse_export_targets(target: &str) -> Result<Vec<ExportTarget>, String> {
     Ok(out)
 }
 
-fn cmd_dev(package: &str, watch_dir: &Path, host: &str, port: u16, launch_skia_window: bool) {
+fn cmd_dev(
+    package: &str,
+    watch_dir: &Path,
+    host: &str,
+    port: u16,
+    rebuild_web: bool,
+    launch_skia_window: bool,
+) {
     use crossbeam_channel::unbounded;
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -438,6 +486,9 @@ fn cmd_dev(package: &str, watch_dir: &Path, host: &str, port: u16, launch_skia_w
     println!("  package: {package}");
     println!("  watch:   {}", watch_dir.display());
     println!("  ws:      ws://{bind_addr} (local: {client_ws_url})");
+    if rebuild_web {
+        println!("  web:     rebuilding hosts/web-shell WASM bundle on change (--web)");
+    }
     if launch_skia_window {
         println!("  preview: live desktop window enabled (--skia)");
     }
@@ -474,12 +525,20 @@ fn cmd_dev(package: &str, watch_dir: &Path, host: &str, port: u16, launch_skia_w
             let status = ProcessCommand::new("cargo")
                 .args(["build", "-p", &package])
                 .status();
+            let web_ok = if rebuild_web && status.as_ref().is_ok_and(|s| s.success()) {
+                ProcessCommand::new("./hosts/web-shell/build.sh")
+                    .status()
+                    .is_ok_and(|s| s.success())
+            } else {
+                true
+            };
             let elapsed_ms = t0.elapsed().as_millis() as u64;
             match status {
-                Ok(s) if s.success() => {
+                Ok(s) if s.success() && web_ok => {
                     let msg = make_dylib_reload_msg(generation, &dylib_for_build, elapsed_ms);
                     println!(
-                        "[gen {generation}] rebuilt {package} in {elapsed_ms}ms -> {}",
+                        "[gen {generation}] rebuilt {package}{} in {elapsed_ms}ms -> {}",
+                        if rebuild_web { " + web-wasm" } else { "" },
                         dylib_for_build.display()
                     );
                     let payload = tungstenite::Message::Text(msg.to_json().into());
@@ -511,7 +570,18 @@ fn cmd_dev(package: &str, watch_dir: &Path, host: &str, port: u16, launch_skia_w
         println!("Watching for changes (Ctrl-C to stop)...");
         loop {
             if let Ok(Ok(event)) = rx.recv() {
-                if should_trigger_rebuild(&event.kind) {
+                let changed_paths: Vec<PathBuf> = event
+                    .paths
+                    .iter()
+                    .filter(|p| is_relevant_source_path(p))
+                    .cloned()
+                    .collect();
+                if should_trigger_rebuild(&event.kind)
+                    && (event.paths.is_empty() || !changed_paths.is_empty())
+                {
+                    if let Some(first) = changed_paths.first() {
+                        println!("[watch] changed: {}", first.display());
+                    }
                     std::thread::sleep(Duration::from_millis(40));
                     while rx.try_recv().is_ok() {}
                     generation += 1;
@@ -651,12 +721,14 @@ mod tests {
                 watch,
                 host,
                 port,
+                web,
                 skia,
             } => {
                 assert_eq!(package, "my-app");
-                assert_eq!(watch, PathBuf::from("src"));
+                assert_eq!(watch, Some(PathBuf::from("src")));
                 assert_eq!(host, "0.0.0.0");
                 assert_eq!(port, 9001);
+                assert!(!web);
                 assert!(skia);
             }
             _ => panic!("expected Dev"),
@@ -794,6 +866,16 @@ mod tests {
 
         assert_eq!(ws_url_for_port(8089), "ws://127.0.0.1:8089");
         assert_eq!(ws_bind_addr("0.0.0.0", 8089), "0.0.0.0:8089");
+        assert_eq!(
+            default_watch_dir_for_package("nve-studio-workspace"),
+            PathBuf::from("examples/studio-workspace/src")
+        );
+        assert_eq!(
+            default_watch_dir_for_package("nve-example-counter"),
+            PathBuf::from("examples/counter/src")
+        );
+        assert!(is_relevant_source_path(Path::new("examples/studio-workspace/src/ui.rs")));
+        assert!(!is_relevant_source_path(Path::new("examples/studio-workspace/src/.ui.rs.swp")));
 
         let msg = make_dylib_reload_msg(3, &dylib, 180);
         let decoded = HotPatchMsg::from_json(&msg.to_json()).unwrap();
