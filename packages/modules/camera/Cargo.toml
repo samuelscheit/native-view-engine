@@ -3,17 +3,18 @@ name = "nve-camera"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Unified opt-in NVE camera module (NVNP/NVNC/NVCF codecs, SERVICE_CAMERA host service, and Nitro bridge bindings)"
+description = "Unified opt-in NVE camera module (typed NativeViewSpec, zero-copy NVCF CameraFrameDescriptor, SERVICE_CAMERA host service, and Nitro bridge bindings)"
 
 [features]
 default = ["spec", "host-service"]
-spec = []
+spec = ["dep:nve-components"]
 interop = ["spec", "dep:nve-interop"]
 host-service = ["dep:nve-host-services"]
 nitro = []
 serde = ["dep:serde"]
 
 [dependencies]
+nve-components = { workspace = true, optional = true }
 nve-host-services = { workspace = true, optional = true }
 nve-interop = { path = "../../core/interop", optional = true, default-features = false, features = ["native-view"] }
 serde = { workspace = true, optional = true }

@@ -1660,6 +1660,7 @@ name = "nve-camera"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-components",
  "nve-host-services",
  "nve-interop",
  "serde",

@@ -1,15 +1,22 @@
-//! Typed zero-JSON `CameraPreview` (`"nve.camera.preview"`), `CameraPreviewProps` (`NVNP`),
-//! `CameraPreviewCommand` (`NVNC`), and 40-byte `#[repr(C)]` `CameraFrameDescriptor` (`NVCF`).
+//! Typed zero-serialization `CameraPreview` (`"nve.camera.preview"`), `CameraPreviewProps`,
+//! `CameraPreviewCommand`, and zero-copy `#[repr(C)]` `CameraFrameDescriptor` /
+//! `CameraFrameWireLayout` (`NVCF`).
+//!
+//! Reuses the single canonical `nve_components::native_view` typed & `NVNP`/`NVNC` wire codec.
 
-use std::mem::{offset_of, size_of};
+use nve_components::native_view::{
+    DecodeNativeCommand, DecodeNativeProps, EncodeNativeCommand, EncodeNativeProps,
+    NativeCommand, NativeCommandSink, NativeCommandSource, NativePropSink, NativePropSource,
+    NativeProps, NativeValueRef, NativeViewCodecError as CameraCodecError, NativeViewSpec,
+};
 
+pub use crate::frame::{
+    CameraFrameDescriptor, CameraFrameProcessor, CameraFrameWireLayout,
+    CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC, CAMERA_FRAME_VERSION,
+};
 use crate::types::CameraFacing;
-use crate::wire::{CameraCodecError, CommandDecoder, CommandEncoder, NativeValueRef, PropDecoder, PropEncoder};
 
 pub const CAMERA_PREVIEW_KIND: &str = "nve.camera.preview";
-pub const CAMERA_FRAME_MAGIC: [u8; 4] = *b"NVCF";
-pub const CAMERA_FRAME_VERSION: u8 = 1;
-pub const CAMERA_FRAME_DESCRIPTOR_SIZE: usize = 40;
 pub const MAX_CAMERA_FPS: u16 = 240;
 
 #[inline]
@@ -127,7 +134,13 @@ impl CameraPreview {
     pub const KIND: &'static str = CAMERA_PREVIEW_KIND;
 }
 
-/// Declarative zero-JSON props (`NVNP`) for [`CameraPreview`].
+impl NativeViewSpec for CameraPreview {
+    const KIND: &'static str = CAMERA_PREVIEW_KIND;
+    type Props = CameraPreviewProps;
+    type Command = CameraPreviewCommand;
+}
+
+/// Declarative zero-serialization props for [`CameraPreview`].
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CameraPreviewProps {
@@ -193,42 +206,62 @@ impl CameraPreviewProps {
         Ok(())
     }
 
-    pub fn to_prop_bytes(&self) -> Result<Vec<u8>, CameraCodecError> {
-        self.validate()?;
-        let mut enc = PropEncoder::new();
-        match self.device_id.as_deref() {
-            Some(id) => enc.field(Self::FIELD_DEVICE_ID, NativeValueRef::Str(id))?,
-            None => enc.field(Self::FIELD_DEVICE_ID, NativeValueRef::Null)?,
-        };
-        enc.field(Self::FIELD_FACING, NativeValueRef::U32(self.facing as u32))?
-            .field(Self::FIELD_TORCH, NativeValueRef::U32(self.torch as u32))?
-            .field(Self::FIELD_ZOOM, NativeValueRef::F32(self.zoom))?
-            .field(Self::FIELD_FPS, NativeValueRef::U32(u32::from(self.fps)))?
-            .field(Self::FIELD_HDR, NativeValueRef::Bool(self.hdr))?
-            .field(Self::FIELD_STABILIZATION, NativeValueRef::U32(self.stabilization as u32))?
-            .field(Self::FIELD_ENABLE_FRAME_PROCESSOR, NativeValueRef::Bool(self.enable_frame_processor))?
-            .field(Self::FIELD_AUDIO_ENABLED, NativeValueRef::Bool(self.audio_enabled))?
-            .field(Self::FIELD_ACTIVE, NativeValueRef::Bool(self.active))?;
-        Ok(enc.finish())
+    #[inline]
+    pub fn to_native_props(&self) -> Result<NativeProps, CameraCodecError> {
+        EncodeNativeProps::to_native_props(self)
     }
 
+    #[inline]
+    pub fn from_native_props(props: &NativeProps) -> Result<Self, CameraCodecError> {
+        DecodeNativeProps::from_native_props(props)
+    }
+
+    #[inline]
+    pub fn to_prop_bytes(&self) -> Result<Vec<u8>, CameraCodecError> {
+        EncodeNativeProps::to_prop_bytes(self)
+    }
+
+    #[inline]
     pub fn from_prop_bytes(bytes: &[u8]) -> Result<Self, CameraCodecError> {
-        let dec = PropDecoder::parse(bytes)?;
-        let device_id = match dec.require(Self::FIELD_DEVICE_ID)? {
+        DecodeNativeProps::from_prop_bytes(bytes)
+    }
+}
+
+impl EncodeNativeProps for CameraPreviewProps {
+    fn write_props<S: NativePropSink>(&self, sink: &mut S) -> Result<(), CameraCodecError> {
+        self.validate()?;
+        sink.opt_str_field(Self::FIELD_DEVICE_ID, self.device_id.as_deref())?
+            .u32_field(Self::FIELD_FACING, self.facing as u32)?
+            .u32_field(Self::FIELD_TORCH, self.torch as u32)?
+            .f32_field(Self::FIELD_ZOOM, self.zoom)?
+            .u32_field(Self::FIELD_FPS, u32::from(self.fps))?
+            .bool_field(Self::FIELD_HDR, self.hdr)?
+            .u32_field(Self::FIELD_STABILIZATION, self.stabilization as u32)?
+            .bool_field(Self::FIELD_ENABLE_FRAME_PROCESSOR, self.enable_frame_processor)?
+            .bool_field(Self::FIELD_AUDIO_ENABLED, self.audio_enabled)?
+            .bool_field(Self::FIELD_ACTIVE, self.active)?;
+        Ok(())
+    }
+}
+
+impl DecodeNativeProps for CameraPreviewProps {
+    fn read_props<S: NativePropSource>(src: &S) -> Result<Self, CameraCodecError> {
+        let device_id = match src.require_field(Self::FIELD_DEVICE_ID)? {
             NativeValueRef::Null => None,
             NativeValueRef::Str(s) => Some(s.to_owned()),
             _ => return Err(CameraCodecError::TypeMismatch { expected: "Option<str>" }),
         };
-        let facing = facing_from_preview_u32(dec.require(Self::FIELD_FACING)?.as_u32()?)?;
-        let torch = TorchMode::from_u32(dec.require(Self::FIELD_TORCH)?.as_u32()?)?;
-        let zoom = dec.require(Self::FIELD_ZOOM)?.as_f32()?;
+        let facing = facing_from_preview_u32(src.require_u32_field(Self::FIELD_FACING)?)?;
+        let torch = TorchMode::from_u32(src.require_u32_field(Self::FIELD_TORCH)?)?;
+        let zoom = src.require_f32_field(Self::FIELD_ZOOM)?;
         validate_zoom(zoom)?;
-        let fps = validate_fps(dec.require(Self::FIELD_FPS)?.as_u32()?)?;
-        let hdr = dec.require(Self::FIELD_HDR)?.as_bool()?;
-        let stabilization = StabilizationMode::from_u32(dec.require(Self::FIELD_STABILIZATION)?.as_u32()?)?;
-        let enable_frame_processor = dec.require(Self::FIELD_ENABLE_FRAME_PROCESSOR)?.as_bool()?;
-        let audio_enabled = dec.require(Self::FIELD_AUDIO_ENABLED)?.as_bool()?;
-        let active = dec.require(Self::FIELD_ACTIVE)?.as_bool()?;
+        let fps = validate_fps(src.require_u32_field(Self::FIELD_FPS)?)?;
+        let hdr = src.require_bool_field(Self::FIELD_HDR)?;
+        let stabilization =
+            StabilizationMode::from_u32(src.require_u32_field(Self::FIELD_STABILIZATION)?)?;
+        let enable_frame_processor = src.require_bool_field(Self::FIELD_ENABLE_FRAME_PROCESSOR)?;
+        let audio_enabled = src.require_bool_field(Self::FIELD_AUDIO_ENABLED)?;
+        let active = src.require_bool_field(Self::FIELD_ACTIVE)?;
         Ok(Self {
             device_id,
             facing,
@@ -244,7 +277,7 @@ impl CameraPreviewProps {
     }
 }
 
-/// Typed imperative commands (`NVNC`) for [`CameraPreview`].
+/// Typed imperative commands for [`CameraPreview`].
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CameraPreviewCommand {
@@ -300,223 +333,117 @@ impl CameraPreviewCommand {
         }
     }
 
+    #[inline]
+    pub fn to_native_command(&self) -> Result<NativeCommand, CameraCodecError> {
+        EncodeNativeCommand::to_native_command(self)
+    }
+
+    #[inline]
+    pub fn from_native_command(cmd: &NativeCommand) -> Result<Self, CameraCodecError> {
+        DecodeNativeCommand::from_native_command(cmd)
+    }
+
+    #[inline]
     pub fn encode_command(&self) -> Result<Vec<u8>, CameraCodecError> {
-        self.validate()?;
+        EncodeNativeCommand::encode_command(self)
+    }
+
+    #[inline]
+    pub fn from_command_bytes(bytes: &[u8]) -> Result<Self, CameraCodecError> {
+        DecodeNativeCommand::from_command_bytes(bytes)
+    }
+}
+
+impl EncodeNativeCommand for CameraPreviewCommand {
+    #[inline]
+    fn command_name(&self) -> &'static str {
+        CameraPreviewCommand::command_name(self)
+    }
+
+    fn command_opcode(&self) -> u16 {
         match self {
-            Self::SwitchFacing(facing) => {
-                let mut enc = CommandEncoder::new(Self::OP_SWITCH_FACING);
-                enc.arg(NativeValueRef::U32(*facing as u32))?;
-                Ok(enc.finish())
-            }
-            Self::SetTorch(mode) => {
-                let mut enc = CommandEncoder::new(Self::OP_SET_TORCH);
-                enc.arg(NativeValueRef::U32(*mode as u32))?;
-                Ok(enc.finish())
-            }
-            Self::SetZoom(zoom) => {
-                let mut enc = CommandEncoder::new(Self::OP_SET_ZOOM);
-                enc.arg(NativeValueRef::F32(*zoom))?;
-                Ok(enc.finish())
-            }
-            Self::FocusPoint { x, y } => {
-                let mut enc = CommandEncoder::new(Self::OP_FOCUS_POINT);
-                enc.arg(NativeValueRef::F32(*x))?.arg(NativeValueRef::F32(*y))?;
-                Ok(enc.finish())
-            }
-            Self::CapturePhoto { quality, flash } => {
-                let mut enc = CommandEncoder::new(Self::OP_CAPTURE_PHOTO);
-                enc.arg(NativeValueRef::U32(u32::from(*quality)))?
-                    .arg(NativeValueRef::U32(u32::from(*flash)))?;
-                Ok(enc.finish())
-            }
-            Self::StartRecording { output_path } => {
-                let mut enc = CommandEncoder::new(Self::OP_START_RECORDING);
-                enc.arg(NativeValueRef::Str(output_path))?;
-                Ok(enc.finish())
-            }
-            Self::StopRecording => Ok(CommandEncoder::new(Self::OP_STOP_RECORDING).finish()),
+            Self::SwitchFacing(_) => Self::OP_SWITCH_FACING,
+            Self::SetTorch(_) => Self::OP_SET_TORCH,
+            Self::SetZoom(_) => Self::OP_SET_ZOOM,
+            Self::FocusPoint { .. } => Self::OP_FOCUS_POINT,
+            Self::CapturePhoto { .. } => Self::OP_CAPTURE_PHOTO,
+            Self::StartRecording { .. } => Self::OP_START_RECORDING,
+            Self::StopRecording => Self::OP_STOP_RECORDING,
         }
     }
 
-    pub fn from_command_bytes(bytes: &[u8]) -> Result<Self, CameraCodecError> {
-        let dec = CommandDecoder::parse(bytes)?;
-        match dec.opcode() {
+    fn write_command_args<S: NativeCommandSink>(&self, sink: &mut S) -> Result<(), CameraCodecError> {
+        self.validate()?;
+        match self {
+            Self::SwitchFacing(facing) => {
+                sink.arg_u32(*facing as u32)?;
+            }
+            Self::SetTorch(mode) => {
+                sink.arg_u32(*mode as u32)?;
+            }
+            Self::SetZoom(zoom) => {
+                sink.arg_f32(*zoom)?;
+            }
+            Self::FocusPoint { x, y } => {
+                sink.arg_f32(*x)?.arg_f32(*y)?;
+            }
+            Self::CapturePhoto { quality, flash } => {
+                sink.arg_u32(u32::from(*quality))?.arg_u32(u32::from(*flash))?;
+            }
+            Self::StartRecording { output_path } => {
+                sink.arg_str(output_path)?;
+            }
+            Self::StopRecording => {}
+        }
+        Ok(())
+    }
+}
+
+impl DecodeNativeCommand for CameraPreviewCommand {
+    fn read_command<S: NativeCommandSource>(src: &S) -> Result<Self, CameraCodecError> {
+        match src.opcode() {
             Self::OP_SWITCH_FACING => {
-                dec.expect_arg_count(1)?;
+                src.expect_arg_count(1)?;
                 Ok(Self::SwitchFacing(facing_from_preview_u32(
-                    dec.require(0)?.as_u32()?,
+                    src.require_u32_arg(0)?,
                 )?))
             }
             Self::OP_SET_TORCH => {
-                dec.expect_arg_count(1)?;
-                Ok(Self::SetTorch(TorchMode::from_u32(dec.require(0)?.as_u32()?)?))
+                src.expect_arg_count(1)?;
+                Ok(Self::SetTorch(TorchMode::from_u32(src.require_u32_arg(0)?)?))
             }
             Self::OP_SET_ZOOM => {
-                dec.expect_arg_count(1)?;
-                let zoom = dec.require(0)?.as_f32()?;
+                src.expect_arg_count(1)?;
+                let zoom = src.require_f32_arg(0)?;
                 validate_zoom(zoom)?;
                 Ok(Self::SetZoom(zoom))
             }
             Self::OP_FOCUS_POINT => {
-                dec.expect_arg_count(2)?;
-                let x = dec.require(0)?.as_f32()?;
-                let y = dec.require(1)?.as_f32()?;
+                src.expect_arg_count(2)?;
+                let x = src.require_f32_arg(0)?;
+                let y = src.require_f32_arg(1)?;
                 validate_unit_coord(x, "focus_point.x in 0.0..=1.0")?;
                 validate_unit_coord(y, "focus_point.y in 0.0..=1.0")?;
                 Ok(Self::FocusPoint { x, y })
             }
             Self::OP_CAPTURE_PHOTO => {
-                dec.expect_arg_count(2)?;
-                let quality = validate_quality(dec.require(0)?.as_u32()?)?;
-                let flash = validate_flash(dec.require(1)?.as_u32()?)?;
+                src.expect_arg_count(2)?;
+                let quality = validate_quality(src.require_u32_arg(0)?)?;
+                let flash = validate_flash(src.require_u32_arg(1)?)?;
                 Ok(Self::CapturePhoto { quality, flash })
             }
             Self::OP_START_RECORDING => {
-                dec.expect_arg_count(1)?;
+                src.expect_arg_count(1)?;
                 Ok(Self::StartRecording {
-                    output_path: dec.require(0)?.as_str()?.to_owned(),
+                    output_path: src.require_str_arg(0)?.to_owned(),
                 })
             }
             Self::OP_STOP_RECORDING => {
-                dec.expect_arg_count(0)?;
+                src.expect_arg_count(0)?;
                 Ok(Self::StopRecording)
             }
             other => Err(CameraCodecError::UnknownCommandOpcode(other)),
         }
-    }
-}
-
-/// 40-byte `#[repr(C)]` wire layout for [`CameraFrameDescriptor`] (`NVCF`), locked at compile time.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CameraFrameWireLayout {
-    pub magic: [u8; 4],
-    pub version: u8,
-    pub pixel_format: u8,
-    pub rotation_deg: u16,
-    pub width: u32,
-    pub height: u32,
-    pub stride_bytes: u32,
-    pub reserved: u32,
-    pub timestamp_ns: u64,
-    pub native_handle_id: u64,
-}
-
-const _: () = {
-    assert!(size_of::<CameraFrameWireLayout>() == CAMERA_FRAME_DESCRIPTOR_SIZE);
-    assert!(offset_of!(CameraFrameWireLayout, magic) == 0);
-    assert!(offset_of!(CameraFrameWireLayout, version) == 4);
-    assert!(offset_of!(CameraFrameWireLayout, pixel_format) == 5);
-    assert!(offset_of!(CameraFrameWireLayout, rotation_deg) == 6);
-    assert!(offset_of!(CameraFrameWireLayout, width) == 8);
-    assert!(offset_of!(CameraFrameWireLayout, height) == 12);
-    assert!(offset_of!(CameraFrameWireLayout, stride_bytes) == 16);
-    assert!(offset_of!(CameraFrameWireLayout, reserved) == 20);
-    assert!(offset_of!(CameraFrameWireLayout, timestamp_ns) == 24);
-    assert!(offset_of!(CameraFrameWireLayout, native_handle_id) == 32);
-};
-
-/// Zero-copy 40-byte binary frame descriptor (`NVCF`) matching `packages/modules/camera/cxx` & `android`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CameraFrameDescriptor {
-    pub width: u32,
-    pub height: u32,
-    pub stride_bytes: u32,
-    pub pixel_format: CameraPixelFormat,
-    pub rotation_deg: u16,
-    pub timestamp_ns: u64,
-    pub native_handle_id: u64,
-}
-
-impl CameraFrameDescriptor {
-    pub fn validate(&self) -> Result<(), CameraCodecError> {
-        if self.width == 0 {
-            return Err(CameraCodecError::TypeMismatch { expected: "non-zero frame width" });
-        }
-        if self.height == 0 {
-            return Err(CameraCodecError::TypeMismatch { expected: "non-zero frame height" });
-        }
-        if !matches!(self.rotation_deg, 0 | 90 | 180 | 270) {
-            return Err(CameraCodecError::InvalidEnum(
-                "CameraRotationDeg",
-                u32::from(self.rotation_deg),
-            ));
-        }
-        let min_stride = self
-            .pixel_format
-            .min_stride_bytes(self.width)
-            .ok_or(CameraCodecError::PayloadTooLarge)?;
-        if self.stride_bytes < min_stride {
-            return Err(CameraCodecError::TypeMismatch {
-                expected: "stride_bytes >= width * bytes_per_pixel",
-            });
-        }
-        Ok(())
-    }
-
-    pub fn encode(&self) -> Result<[u8; CAMERA_FRAME_DESCRIPTOR_SIZE], CameraCodecError> {
-        let mut out = [0u8; CAMERA_FRAME_DESCRIPTOR_SIZE];
-        self.encode_into(&mut out)?;
-        Ok(out)
-    }
-
-    pub fn encode_into(&self, dst: &mut [u8; CAMERA_FRAME_DESCRIPTOR_SIZE]) -> Result<(), CameraCodecError> {
-        self.validate()?;
-        dst[0..4].copy_from_slice(&CAMERA_FRAME_MAGIC);
-        dst[4] = CAMERA_FRAME_VERSION;
-        dst[5] = self.pixel_format as u8;
-        dst[6..8].copy_from_slice(&self.rotation_deg.to_le_bytes());
-        dst[8..12].copy_from_slice(&self.width.to_le_bytes());
-        dst[12..16].copy_from_slice(&self.height.to_le_bytes());
-        dst[16..20].copy_from_slice(&self.stride_bytes.to_le_bytes());
-        dst[20..24].copy_from_slice(&0u32.to_le_bytes());
-        dst[24..32].copy_from_slice(&self.timestamp_ns.to_le_bytes());
-        dst[32..40].copy_from_slice(&self.native_handle_id.to_le_bytes());
-        Ok(())
-    }
-
-    pub fn to_bytes(&self) -> Result<Vec<u8>, CameraCodecError> {
-        Ok(self.encode()?.to_vec())
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, CameraCodecError> {
-        if bytes.len() < CAMERA_FRAME_DESCRIPTOR_SIZE {
-            return Err(CameraCodecError::Truncated);
-        }
-        if bytes.len() > CAMERA_FRAME_DESCRIPTOR_SIZE {
-            return Err(CameraCodecError::TrailingBytes(
-                bytes.len() - CAMERA_FRAME_DESCRIPTOR_SIZE,
-            ));
-        }
-        let magic: [u8; 4] = bytes[0..4].try_into().unwrap();
-        if magic != CAMERA_FRAME_MAGIC {
-            return Err(CameraCodecError::InvalidMagic(magic));
-        }
-        if bytes[4] != CAMERA_FRAME_VERSION {
-            return Err(CameraCodecError::UnsupportedVersion(bytes[4]));
-        }
-        let pixel_format = CameraPixelFormat::from_u32(u32::from(bytes[5]))?;
-        let rotation_deg = u16::from_le_bytes([bytes[6], bytes[7]]);
-        let width = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        let height = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-        let stride_bytes = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
-        let reserved = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
-        if reserved != 0 {
-            return Err(CameraCodecError::InvalidEnum("CameraFrameReserved", reserved));
-        }
-        let desc = Self {
-            width,
-            height,
-            stride_bytes,
-            pixel_format,
-            rotation_deg,
-            timestamp_ns: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
-            native_handle_id: u64::from_le_bytes(bytes[32..40].try_into().unwrap()),
-        };
-        desc.validate()?;
-        Ok(desc)
     }
 }
 

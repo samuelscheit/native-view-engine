@@ -58,51 +58,11 @@ use crate::WebBackend;
     )
 ))]
 fn nvnp_encode(fields: &[(u16, crate::NativeValueRef<'_>)]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&crate::native_view::NATIVE_PROPS_MAGIC);
-    buf.push(crate::native_view::NATIVE_PROPS_VERSION);
-    buf.extend_from_slice(&(fields.len() as u16).to_le_bytes());
+    let mut enc = nve_components::native_view::NativePropEncoder::new();
     for &(id, val) in fields {
-        buf.extend_from_slice(&id.to_le_bytes());
-        match val {
-            crate::NativeValueRef::Null => buf.push(0),
-            crate::NativeValueRef::Bool(b) => {
-                buf.push(1);
-                buf.push(u8::from(b));
-            }
-            crate::NativeValueRef::U32(n) => {
-                buf.push(2);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::I64(n) => {
-                buf.push(3);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::U64(n) => {
-                buf.push(4);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::F32(n) => {
-                buf.push(5);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::F64(n) => {
-                buf.push(6);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::Str(s) => {
-                buf.push(7);
-                buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
-                buf.extend_from_slice(s.as_bytes());
-            }
-            crate::NativeValueRef::Bytes(b) => {
-                buf.push(8);
-                buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
-                buf.extend_from_slice(b);
-            }
-        }
+        enc.field(id, val).unwrap();
     }
-    buf
+    enc.finish()
 }
 
 #[cfg(all(
@@ -119,34 +79,11 @@ fn nvnp_encode(fields: &[(u16, crate::NativeValueRef<'_>)]) -> Vec<u8> {
     )
 ))]
 fn nvnc_encode(opcode: u16, args: &[crate::NativeValueRef<'_>]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&crate::native_view::NATIVE_CMD_MAGIC);
-    buf.push(crate::native_view::NATIVE_CMD_VERSION);
-    buf.extend_from_slice(&opcode.to_le_bytes());
-    buf.push(args.len() as u8);
+    let mut enc = nve_components::native_view::NativeCommandEncoder::new(opcode);
     for &val in args {
-        match val {
-            crate::NativeValueRef::U32(n) => {
-                buf.push(2);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::U64(n) => {
-                buf.push(4);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::F32(n) => {
-                buf.push(5);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            crate::NativeValueRef::Str(s) => {
-                buf.push(7);
-                buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
-                buf.extend_from_slice(s.as_bytes());
-            }
-            _ => buf.push(0),
-        }
+        enc.arg(val).unwrap();
     }
-    buf
+    enc.finish()
 }
 
 #[cfg(all(
@@ -497,7 +434,7 @@ fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     let bad_zoom = encode_cam_props(None, 1, 0, f32::NAN, 30, false, 0, false, false, true);
     assert!(matches!(
         decode_camera_preview_props(&bad_zoom),
-        Err(NativeViewCodecError::TypeMismatch(_))
+        Err(NativeViewCodecError::TypeMismatch { .. })
     ));
     let bad_fps = encode_cam_props(None, 1, 0, 1.0, 241, false, 0, false, false, true);
     assert!(matches!(
@@ -506,11 +443,11 @@ fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     ));
     assert!(matches!(
         decode_camera_preview_command(&nvnc_encode(3, &[NativeValueRef::F32(-1.0)])),
-        Err(NativeViewCodecError::TypeMismatch(_))
+        Err(NativeViewCodecError::TypeMismatch { .. })
     ));
     assert!(matches!(
         decode_camera_preview_command(&nvnc_encode(4, &[NativeValueRef::F32(1.5), NativeValueRef::F32(0.5)])),
-        Err(NativeViewCodecError::TypeMismatch(_))
+        Err(NativeViewCodecError::TypeMismatch { .. })
     ));
     assert!(matches!(
         decode_camera_preview_command(&nvnc_encode(5, &[NativeValueRef::U32(101), NativeValueRef::U32(0)])),
@@ -538,4 +475,120 @@ fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     backend.submit_frame(b4.finish()).unwrap();
     assert_eq!(backend.native_view(2).unwrap().camera.facing, CameraFacing::Back);
     assert!((backend.native_view(2).unwrap().camera.zoom - 1.0).abs() < 1e-6);
+}
+
+#[cfg(all(
+    feature = "ssr",
+    feature = "nv-blur",
+    feature = "nv-webview",
+    feature = "nv-video",
+    feature = "nv-web-element",
+))]
+#[test]
+fn inprocess_zero_serialization_native_view_props_and_commands_bypass_nvnp_nvnc() {
+    use nve_components::native_view::{
+        BlurMaterial, BlurSurface, BlurSurfaceProps, EncodeNativeCommand, NativeViewSpec,
+        TypedNativeViewCommand, TypedNativeViewProps, VideoPlayer, VideoPlayerCommand,
+        VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand, WebViewProps,
+    };
+
+    // Mount Custom nodes with ZERO `nve.native_props` bytes in CommandBuffer.
+    let mut b = CommandBufferBuilder::new(1, 1);
+    b.create_node(1, ComponentKind::View, None);
+    b.create_node(2, ComponentKind::Custom, Some(BlurSurface::KIND));
+    b.create_node(3, ComponentKind::Custom, Some(WebView::KIND));
+    b.create_node(4, ComponentKind::Custom, Some(VideoPlayer::KIND));
+    b.create_node(5, ComponentKind::Custom, Some("web.details"));
+    b.set_children(1, &[2, 3, 4, 5]);
+    b.commit(true);
+
+    let mut backend = WebBackend::new();
+    backend.submit_frame(b.finish()).unwrap();
+
+    let blur_typed = TypedNativeViewProps::from_spec::<BlurSurface>(BlurSurfaceProps {
+        material: BlurMaterial::Chrome,
+        intensity: 0.75,
+        tint: Some(0x11223380),
+    })
+    .unwrap();
+    let webview_typed =
+        TypedNativeViewProps::from_spec::<WebView>(WebViewProps::new("https://nve.dev/docs"))
+            .unwrap();
+    let video_typed = TypedNativeViewProps::from_spec::<VideoPlayer>(VideoPlayerProps {
+        source_uri: "https://cdn.nve.dev/demo.mp4".into(),
+        autoplay: false,
+        muted: true,
+        looping: true,
+        controls: true,
+    })
+    .unwrap();
+    let web_el_typed = TypedNativeViewProps::from_spec::<WebElement>(
+        WebElementProps::new("details").with_attr("aria-label", "DirectTyped"),
+    )
+    .unwrap();
+
+    backend.sync_native_views_from([
+        (2, &blur_typed),
+        (3, &webview_typed),
+        (4, &video_typed),
+        (5, &web_el_typed),
+    ]);
+
+    let html = backend.render_ssr().html;
+    assert!(html.contains("<iframe data-nve-id=\"3\""));
+    assert!(html.contains("src=\"https://nve.dev/docs\""));
+    assert!(html.contains("<video data-nve-id=\"4\""));
+    assert!(html.contains("<details data-nve-id=\"5\""));
+    assert!(html.contains("aria-label=\"DirectTyped\""));
+    assert!(backend.native_view(2).unwrap().extra_css.contains("backdrop-filter:blur("));
+
+    // Direct typed commands (0 NVNC encoding).
+    let nav_cmd = TypedNativeViewCommand::from_spec::<WebView>(WebViewCommand::Navigate(
+        "https://nve.dev/benchmarks".into(),
+    ))
+    .unwrap();
+    assert!(backend.dispatch_typed_native_command(3, &nav_cmd));
+    assert_eq!(
+        backend.native_view(3).unwrap().current_url.as_deref(),
+        Some("https://nve.dev/benchmarks")
+    );
+
+    let play_cmd = VideoPlayerCommand::Play.to_native_command().unwrap();
+    assert!(backend.dispatch_native_command(4, &play_cmd));
+    assert!(backend.native_view(4).unwrap().playing);
+
+    let vol_cmd = TypedNativeViewCommand::from_spec::<VideoPlayer>(VideoPlayerCommand::SetVolume(
+        0.4,
+    ))
+    .unwrap();
+    assert!(backend.dispatch_typed_native_command(4, &vol_cmd));
+    assert!((backend.native_view(4).unwrap().volume - 0.4).abs() < 1e-6);
+
+    #[cfg(feature = "camera")]
+    {
+        use nve_camera::{CameraFacing, CameraPreview, CameraPreviewCommand, CameraPreviewProps};
+
+        let mut b_cam = CommandBufferBuilder::new(1, 2);
+        b_cam.create_node(6, ComponentKind::Custom, Some(CameraPreview::KIND));
+        b_cam.set_children(1, &[2, 3, 4, 5, 6]);
+        b_cam.commit(false);
+        backend.submit_frame(b_cam.finish()).unwrap();
+
+        let cam_props = TypedNativeViewProps::from_spec::<CameraPreview>(
+            CameraPreviewProps::new()
+                .with_facing(CameraFacing::Front)
+                .with_zoom(2.0),
+        )
+        .unwrap();
+        backend.set_native_view_props(6, &cam_props);
+        assert_eq!(backend.native_view(6).unwrap().camera.facing, CameraFacing::Front);
+        assert!((backend.native_view(6).unwrap().camera.zoom - 2.0).abs() < 1e-6);
+
+        let zoom_cmd = TypedNativeViewCommand::from_spec::<CameraPreview>(
+            CameraPreviewCommand::SetZoom(3.5),
+        )
+        .unwrap();
+        assert!(backend.dispatch_typed_native_command(6, &zoom_cmd));
+        assert!((backend.native_view(6).unwrap().camera.zoom - 3.5).abs() < 1e-6);
+    }
 }

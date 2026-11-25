@@ -270,7 +270,9 @@ impl RenderBackend for WebBackend {
                 Command::SetRawProp { node_id, key, value } => {
                     match raw_prop_route(&key) {
                         RawPropRoute::DrawList => {
-                            let decoded_ops = canvas::decode_draw_list_prop(&value).unwrap_or_default();
+                            let decoded_ops = canvas::decode_draw_list_prop(&value)
+                                .map(nve_components::canvas_ir::DrawList::from_ops)
+                                .unwrap_or_default();
                             if let Some(el) = self.nodes.get_mut(&node_id) {
                                 el.draw_op_count = decoded_ops.len();
                                 el.draw_ops = decoded_ops;

@@ -6,14 +6,14 @@ use std::borrow::Cow;
 use dioxus_core::{AttributeValue, ElementId};
 use nve_abi::{CommandBufferBuilder, LayoutProps, NodeId, RawPropValue, RawPropValueRef, StyleProps};
 use nve_components::{
-    apply_typed_attr_with_raw, canonical_raw_style_key, AutofillHint, DrawListDecoder, InputMode,
-    MediaQuery, DRAW_LIST_ATTR_PREFIX,
+    apply_typed_attr_with_raw, canonical_raw_style_key, AutofillHint, DrawList, DrawListDecoder,
+    InputMode, MediaQuery, DRAW_LIST_ATTR_PREFIX,
 };
 use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
 
 use crate::hot_patch;
 use crate::native_view::{
-    NativeBinaryProp, NativeHandleAttr, NATIVE_VIEW_HANDLE_ATTR, NATIVE_VIEW_KIND_ATTR,
+    NativeHandleAttr, NativeTypedPropsAttr, NATIVE_VIEW_HANDLE_ATTR, NATIVE_VIEW_KIND_ATTR,
 };
 use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
@@ -91,6 +91,14 @@ impl NveMutationWriter {
                     }
                     return;
                 }
+                if matches!(name, "drawList" | "draw_list") {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        rec.draw_list = None;
+                    }
+                    if self.in_process_mode {
+                        return;
+                    }
+                }
                 if hot_patch::is_test_id_attr_name(name) {
                     self.clear_test_id(node_id);
                 }
@@ -124,12 +132,35 @@ impl NveMutationWriter {
                         rec.explicit_show_on = Some(query);
                         rec.show_on = Some(query);
                     }
-                } else if let Some(bin) = any.as_any().downcast_ref::<NativeBinaryProp>() {
-                    self.builder.set_raw_prop_ref(
-                        node_id,
-                        name,
-                        RawPropValueRef::Bytes(&bin.0),
-                    );
+                } else if let Some(draw_list) = any.as_any().downcast_ref::<DrawList>() {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        if rec
+                            .draw_list
+                            .as_ref()
+                            .is_some_and(|prev| prev.ptr_eq(draw_list) || prev == draw_list)
+                        {
+                            return;
+                        }
+                        rec.draw_list = Some(draw_list.clone());
+                    }
+                    if !self.in_process_mode {
+                        let bytes = draw_list.to_nve_draw1_bytes();
+                        self.builder
+                            .set_raw_prop_ref(node_id, "drawList", RawPropValueRef::Bytes(&bytes));
+                    }
+                } else if let Some(typed_nv) = any.as_any().downcast_ref::<NativeTypedPropsAttr>() {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        if rec.native_props.as_ref() == Some(&typed_nv.0) {
+                            return;
+                        }
+                        rec.native_props = Some(typed_nv.0.clone());
+                    }
+                    if !self.in_process_mode
+                        && let Ok(bytes) = typed_nv.0.to_nvnp_bytes()
+                    {
+                        self.builder
+                            .set_raw_prop_ref(node_id, name, RawPropValueRef::Bytes(&bytes));
+                    }
                 } else if name == NATIVE_VIEW_HANDLE_ATTR
                     && let Some(handle_attr) = any.as_any().downcast_ref::<NativeHandleAttr>()
                 {

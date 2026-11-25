@@ -16,9 +16,11 @@ use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, FrameId, LayoutProps, NodeId, StyleProps,
     SurfaceId, ROOT_NODE_ID,
 };
+use nve_components::canvas_ir::DrawList;
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
+use nve_components::native_view::TypedNativeViewProps;
 use nve_interop::native_view::NativeViewHandleBinder;
 
 use crate::native_view::NATIVE_VIEW_TAG;
@@ -47,7 +49,9 @@ pub(crate) struct NodeRecord {
     pub(crate) text: Option<String>,
     pub(crate) deferred_native_create: bool,
     pub(crate) native_kind: Option<String>,
+    pub(crate) native_props: Option<TypedNativeViewProps>,
     pub(crate) native_handle_binder: Option<NativeViewHandleBinder>,
+    pub(crate) draw_list: Option<DrawList>,
     pub(crate) explicit_show_on: Option<MediaQuery>,
     pub(crate) show_on: Option<MediaQuery>,
     pub(crate) responsive_rules: Vec<ResponsiveRule>,
@@ -80,7 +84,9 @@ impl Default for NodeRecord {
             text: None,
             deferred_native_create: false,
             native_kind: None,
+            native_props: None,
             native_handle_binder: None,
+            draw_list: None,
             explicit_show_on: None,
             show_on: None,
             responsive_rules: Vec::new(),
@@ -120,6 +126,7 @@ pub struct NveMutationWriter {
     pub(super) deferred_native_nodes: Vec<NodeId>,
     pub(crate) patch_ids: Vec<NodeId>,
     pub(crate) patch_leaf_text_ids: Vec<NodeId>,
+    pub(crate) in_process_mode: bool,
     pub(crate) builder: CommandBufferBuilder,
 }
 
@@ -154,8 +161,26 @@ impl NveMutationWriter {
             deferred_native_nodes: Vec::new(),
             patch_ids: Vec::new(),
             patch_leaf_text_ids: Vec::new(),
+            in_process_mode: false,
             builder: CommandBufferBuilder::new(surface_id, 1),
         }
+    }
+
+    /// Enables or disables pure in-process mode.
+    ///
+    /// When `true`, typed [`DrawList`] (`Arc<[CanvasOp]>`) and [`TypedNativeViewProps`] are stored
+    /// directly on nodes for zero-serialization sync into Rust backends (`HeadlessBackend`,
+    /// `SkiaBackend`, `WebBackend`) without encoding `NVE_DRAW1` or `NVNP` bytes into the
+    /// `CommandBuffer`. When `false` (default, used for cross-language C ABI FFI hosts), binary
+    /// `NVE_DRAW1` / `NVNP` `RawPropValue::Bytes` are emitted directly (still zero base64).
+    #[inline]
+    pub fn set_in_process_mode(&mut self, enabled: bool) {
+        self.in_process_mode = enabled;
+    }
+
+    #[inline]
+    pub fn in_process_mode(&self) -> bool {
+        self.in_process_mode
     }
 
     pub fn begin_frame(&mut self, surface_id: SurfaceId, frame_id: FrameId) {
@@ -253,6 +278,36 @@ impl NveMutationWriter {
         self.nodes.iter().filter_map(|(&id, rec)| {
             (!rec.transitions.is_empty()).then_some((id, rec.transitions.as_slice()))
         })
+    }
+
+    /// Returns the direct zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) stored on `node_id`.
+    #[inline]
+    pub fn node_draw_list(&self, node_id: NodeId) -> Option<&DrawList> {
+        self.nodes.get(&node_id).and_then(|r| r.draw_list.as_ref())
+    }
+
+    /// Iterates over all active canvas nodes with a direct typed [`DrawList`].
+    #[inline]
+    pub fn iter_draw_lists(&self) -> impl Iterator<Item = (NodeId, &DrawList)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(&id, rec)| rec.draw_list.as_ref().map(|dl| (id, dl)))
+    }
+
+    /// Returns the direct zero-serialization [`TypedNativeViewProps`] stored on `node_id`.
+    #[inline]
+    pub fn node_native_view_props(&self, node_id: NodeId) -> Option<&TypedNativeViewProps> {
+        self.nodes
+            .get(&node_id)
+            .and_then(|r| r.native_props.as_ref())
+    }
+
+    /// Iterates over all active `<NativeView>` nodes with direct typed [`TypedNativeViewProps`].
+    #[inline]
+    pub fn iter_native_views(&self) -> impl Iterator<Item = (NodeId, &TypedNativeViewProps)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(&id, rec)| rec.native_props.as_ref().map(|p| (id, p)))
     }
 
     pub(crate) fn has_event_mask(&self, node_id: NodeId, bit: u64) -> bool {

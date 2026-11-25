@@ -1,5 +1,6 @@
-//! Zero-JSON compact binary encoders & decoders for native view props (`NVNP`) and imperative
-//! commands (`NVNC`).
+//! Single-source cross-language `NVNP` (native view props) and `NVNC` (native view commands)
+//! binary wire codecs plus unified sink/source traits shared by both in-process typed containers
+//! and FFI wire buffers.
 
 use super::wire::{
     read_value, take_slice, write_value, NativeValueRef, NativeViewCodecError, MAX_NATIVE_CMD_ARGS,
@@ -8,7 +9,199 @@ use super::wire::{
 };
 
 // =============================================================================
-// Binary Native Props Encoder & Decoder (`NVNP`)
+// Unified Prop/Command Sink & Source Traits (Zero Duplication Between Typed & Wire)
+// =============================================================================
+
+/// Unified target for writing numeric-ID native view prop fields — implemented by both
+/// in-process [`super::NativePropsBuilder`] (zero serialization) and FFI [`NativePropEncoder`].
+pub trait NativePropSink {
+    fn field(
+        &mut self,
+        field_id: u16,
+        value: NativeValueRef<'_>,
+    ) -> Result<&mut Self, NativeViewCodecError>;
+
+    #[inline]
+    fn bool_field(&mut self, field_id: u16, v: bool) -> Result<&mut Self, NativeViewCodecError> {
+        self.field(field_id, NativeValueRef::Bool(v))
+    }
+
+    #[inline]
+    fn u32_field(&mut self, field_id: u16, v: u32) -> Result<&mut Self, NativeViewCodecError> {
+        self.field(field_id, NativeValueRef::U32(v))
+    }
+
+    #[inline]
+    fn opt_u32_field(
+        &mut self,
+        field_id: u16,
+        v: Option<u32>,
+    ) -> Result<&mut Self, NativeViewCodecError> {
+        match v {
+            Some(n) => self.field(field_id, NativeValueRef::U32(n)),
+            None => self.field(field_id, NativeValueRef::Null),
+        }
+    }
+
+    #[inline]
+    fn u64_field(&mut self, field_id: u16, v: u64) -> Result<&mut Self, NativeViewCodecError> {
+        self.field(field_id, NativeValueRef::U64(v))
+    }
+
+    #[inline]
+    fn f32_field(&mut self, field_id: u16, v: f32) -> Result<&mut Self, NativeViewCodecError> {
+        self.field(field_id, NativeValueRef::F32(v))
+    }
+
+    #[inline]
+    fn str_field(&mut self, field_id: u16, s: &str) -> Result<&mut Self, NativeViewCodecError> {
+        self.field(field_id, NativeValueRef::Str(s))
+    }
+
+    #[inline]
+    fn opt_str_field(
+        &mut self,
+        field_id: u16,
+        s: Option<&str>,
+    ) -> Result<&mut Self, NativeViewCodecError> {
+        match s {
+            Some(v) => self.field(field_id, NativeValueRef::Str(v)),
+            None => self.field(field_id, NativeValueRef::Null),
+        }
+    }
+
+    #[inline]
+    fn bytes_field(&mut self, field_id: u16, b: &[u8]) -> Result<&mut Self, NativeViewCodecError> {
+        self.field(field_id, NativeValueRef::Bytes(b))
+    }
+}
+
+/// Unified source for reading numeric-ID native view prop fields — implemented by both
+/// in-process [`super::NativeProps`] (zero decoding) and FFI [`NativePropDecoder`].
+pub trait NativePropSource {
+    fn get_field(&self, field_id: u16) -> Option<NativeValueRef<'_>>;
+
+    #[inline]
+    fn require_field(&self, field_id: u16) -> Result<NativeValueRef<'_>, NativeViewCodecError> {
+        self.get_field(field_id)
+            .ok_or(NativeViewCodecError::MissingField(field_id))
+    }
+
+    #[inline]
+    fn require_bool_field(&self, field_id: u16) -> Result<bool, NativeViewCodecError> {
+        self.require_field(field_id)?.as_bool()
+    }
+
+    #[inline]
+    fn require_u32_field(&self, field_id: u16) -> Result<u32, NativeViewCodecError> {
+        self.require_field(field_id)?.as_u32()
+    }
+
+    #[inline]
+    fn require_opt_u32_field(&self, field_id: u16) -> Result<Option<u32>, NativeViewCodecError> {
+        self.require_field(field_id)?.as_opt_u32()
+    }
+
+    #[inline]
+    fn require_opt_str_field(&self, field_id: u16) -> Result<Option<&str>, NativeViewCodecError> {
+        self.require_field(field_id)?.as_opt_str()
+    }
+
+    #[inline]
+    fn require_f32_field(&self, field_id: u16) -> Result<f32, NativeViewCodecError> {
+        self.require_field(field_id)?.as_f32()
+    }
+
+    #[inline]
+    fn require_str_field(&self, field_id: u16) -> Result<&str, NativeViewCodecError> {
+        self.require_field(field_id)?.as_str()
+    }
+
+    #[inline]
+    fn require_bytes_field(&self, field_id: u16) -> Result<&[u8], NativeViewCodecError> {
+        self.require_field(field_id)?.as_bytes()
+    }
+}
+
+/// Unified target for writing imperative command arguments.
+pub trait NativeCommandSink {
+    fn arg(&mut self, value: NativeValueRef<'_>) -> Result<&mut Self, NativeViewCodecError>;
+
+    #[inline]
+    fn arg_u32(&mut self, v: u32) -> Result<&mut Self, NativeViewCodecError> {
+        self.arg(NativeValueRef::U32(v))
+    }
+
+    #[inline]
+    fn arg_u64(&mut self, v: u64) -> Result<&mut Self, NativeViewCodecError> {
+        self.arg(NativeValueRef::U64(v))
+    }
+
+    #[inline]
+    fn arg_f32(&mut self, v: f32) -> Result<&mut Self, NativeViewCodecError> {
+        self.arg(NativeValueRef::F32(v))
+    }
+
+    #[inline]
+    fn arg_str(&mut self, s: &str) -> Result<&mut Self, NativeViewCodecError> {
+        self.arg(NativeValueRef::Str(s))
+    }
+
+    #[inline]
+    fn arg_bool(&mut self, v: bool) -> Result<&mut Self, NativeViewCodecError> {
+        self.arg(NativeValueRef::Bool(v))
+    }
+
+    #[inline]
+    fn arg_bytes(&mut self, b: &[u8]) -> Result<&mut Self, NativeViewCodecError> {
+        self.arg(NativeValueRef::Bytes(b))
+    }
+}
+
+/// Unified source for reading imperative command opcode & arguments — implemented by both
+/// in-process [`super::NativeCommand`] and FFI [`NativeCommandDecoder`].
+pub trait NativeCommandSource {
+    fn opcode(&self) -> u16;
+    fn arg_count(&self) -> usize;
+    fn get_arg(&self, idx: usize) -> Option<NativeValueRef<'_>>;
+
+    #[inline]
+    fn expect_arg_count(&self, expected: usize) -> Result<(), NativeViewCodecError> {
+        let actual = self.arg_count();
+        if actual != expected {
+            return Err(NativeViewCodecError::UnexpectedArgCount { expected, actual });
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn require_arg(&self, idx: usize) -> Result<NativeValueRef<'_>, NativeViewCodecError> {
+        self.get_arg(idx).ok_or(NativeViewCodecError::MissingArg(idx))
+    }
+
+    #[inline]
+    fn require_u32_arg(&self, idx: usize) -> Result<u32, NativeViewCodecError> {
+        self.require_arg(idx)?.as_u32()
+    }
+
+    #[inline]
+    fn require_u64_arg(&self, idx: usize) -> Result<u64, NativeViewCodecError> {
+        self.require_arg(idx)?.as_u64()
+    }
+
+    #[inline]
+    fn require_f32_arg(&self, idx: usize) -> Result<f32, NativeViewCodecError> {
+        self.require_arg(idx)?.as_f32()
+    }
+
+    #[inline]
+    fn require_str_arg(&self, idx: usize) -> Result<&str, NativeViewCodecError> {
+        self.require_arg(idx)?.as_str()
+    }
+}
+
+// =============================================================================
+// Binary Native Props Encoder & Decoder (`NVNP`) — Cross-Language FFI Wire
 // =============================================================================
 
 /// Compact binary prop encoder writing numeric `field_id: u16` entries with zero JSON.
@@ -107,6 +300,17 @@ impl NativePropEncoder {
     }
 }
 
+impl NativePropSink for NativePropEncoder {
+    #[inline]
+    fn field(
+        &mut self,
+        field_id: u16,
+        value: NativeValueRef<'_>,
+    ) -> Result<&mut Self, NativeViewCodecError> {
+        NativePropEncoder::field(self, field_id, value)
+    }
+}
+
 /// Validated zero-copy view over a binary `NVNP` native view prop buffer.
 #[derive(Debug, Clone)]
 pub struct NativePropDecoder<'a> {
@@ -166,6 +370,7 @@ impl<'a> NativePropDecoder<'a> {
     pub fn get(&self, field_id: u16) -> Option<NativeValueRef<'a>> {
         self.fields
             .iter()
+            .rev()
             .find(|(id, _)| *id == field_id)
             .map(|(_, v)| *v)
     }
@@ -202,12 +407,19 @@ impl<'a> NativePropDecoder<'a> {
     }
 }
 
+impl NativePropSource for NativePropDecoder<'_> {
+    #[inline]
+    fn get_field(&self, field_id: u16) -> Option<NativeValueRef<'_>> {
+        self.get(field_id)
+    }
+}
+
 // =============================================================================
-// Binary Native Command Payload Encoder & Decoder (`NVNC`)
+// Binary Native Command Payload Encoder & Decoder (`NVNC`) — Cross-Language FFI
 // =============================================================================
 
 /// Compact binary imperative command payload encoder (`NVNC`), carried inside
-/// `nve_abi::Command::DispatchCommand::payload`.
+/// `nve_abi::Command::DispatchCommand::payload` across FFI boundaries.
 #[derive(Debug, Clone)]
 pub struct NativeCommandEncoder {
     buf: Vec<u8>,
@@ -231,6 +443,11 @@ impl NativeCommandEncoder {
         write_value(&mut self.buf, value)?;
         self.arg_count += 1;
         Ok(self)
+    }
+
+    #[inline]
+    pub fn arg_u32(&mut self, v: u32) -> Result<&mut Self, NativeViewCodecError> {
+        self.arg(NativeValueRef::U32(v))
     }
 
     #[inline]
@@ -261,6 +478,13 @@ impl NativeCommandEncoder {
     pub fn finish(mut self) -> Vec<u8> {
         self.buf[7] = self.arg_count as u8;
         self.buf
+    }
+}
+
+impl NativeCommandSink for NativeCommandEncoder {
+    #[inline]
+    fn arg(&mut self, value: NativeValueRef<'_>) -> Result<&mut Self, NativeViewCodecError> {
+        NativeCommandEncoder::arg(self, value)
     }
 }
 
@@ -338,6 +562,11 @@ impl<'a> NativeCommandDecoder<'a> {
     }
 
     #[inline]
+    pub fn require_u32(&self, idx: usize) -> Result<u32, NativeViewCodecError> {
+        self.require(idx)?.as_u32()
+    }
+
+    #[inline]
     pub fn require_u64(&self, idx: usize) -> Result<u64, NativeViewCodecError> {
         self.require(idx)?.as_u64()
     }
@@ -345,5 +574,22 @@ impl<'a> NativeCommandDecoder<'a> {
     #[inline]
     pub fn require_f32(&self, idx: usize) -> Result<f32, NativeViewCodecError> {
         self.require(idx)?.as_f32()
+    }
+}
+
+impl NativeCommandSource for NativeCommandDecoder<'_> {
+    #[inline]
+    fn opcode(&self) -> u16 {
+        self.opcode
+    }
+
+    #[inline]
+    fn arg_count(&self) -> usize {
+        self.args.len()
+    }
+
+    #[inline]
+    fn get_arg(&self, idx: usize) -> Option<NativeValueRef<'_>> {
+        self.args.get(idx).copied()
     }
 }

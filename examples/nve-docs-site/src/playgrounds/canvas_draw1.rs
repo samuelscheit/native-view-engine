@@ -2,24 +2,22 @@
 //! rendered by `<skia_canvas>` across Skia GPU, HTML5 Canvas2D, CoreGraphics, and Flutter/Compose.
 
 use nve_abi::ColorRgba;
-use nve_components::canvas_ir::DrawListBuilder;
 use nve_dioxus::prelude::*;
 use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, use_theme};
 
 pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_abi::ColorRgba;
-use nve_components::canvas_ir::DrawListBuilder;
 use nve_dioxus::prelude::*;
 
-let mut dl = DrawListBuilder::new();
+let mut dl = DrawList::builder();
 dl.clear(ColorRgba::rgb(12, 14, 22))
   .fill_rounded_rect(18.0, 20.0, 140.0, 74.0, 12.0, ColorRgba::rgba(56, 189, 248, 44))
   .stroke_polyline(&[(24.0, 118.0), (110.0, 76.0), (210.0, 96.0), (320.0, 42.0)], 2.5, ColorRgba::rgb(56, 189, 248))
   .fill_circle(320.0, 42.0, 7.0, ColorRgba::rgb(129, 140, 248));
 
-let encoded = dl.to_attr_string();
+let list = dl.finish();
 rsx! {
     skia_canvas {
-        draw_list: "{encoded}",
+        draw_list: CanvasDrawList(list),
         style: "width: 100%; height: 156px; border-radius: 8px;",
     }
 }"#;
@@ -63,12 +61,12 @@ impl PaletteChoice {
     }
 }
 
-fn build_scene_draw_list(mode: SceneMode, palette: PaletteChoice, stroke_width: f32) -> (String, u32, usize) {
+fn build_scene_draw_list(mode: SceneMode, palette: PaletteChoice, stroke_width: f32) -> (DrawList, u32, usize) {
     let (primary, secondary, tint, _) = palette.colors();
     let bg = ColorRgba::rgb(12, 13, 18);
     let grid = ColorRgba::rgba(148, 163, 184, 42);
 
-    let mut dl = DrawListBuilder::with_capacity(512);
+    let mut dl = DrawList::with_capacity(24);
     dl.clear(bg);
 
     // Subtle baseline grid lines
@@ -124,10 +122,10 @@ fn build_scene_draw_list(mode: SceneMode, palette: PaletteChoice, stroke_width: 
         }
     }
 
-    let op_count = dl.op_count();
-    let raw_len = dl.clone().finish().len();
-    let attr = dl.to_attr_string();
-    (attr, op_count, raw_len)
+    let list = dl.finish();
+    let op_count = list.op_count();
+    let raw_len = list.to_nve_draw1_bytes().len();
+    (list, op_count, raw_len)
 }
 
 #[component]
@@ -137,7 +135,7 @@ pub fn CanvasDraw1Demo() -> Element {
     let mut palette = use_signal(|| PaletteChoice::Cyan);
     let mut stroke_w = use_signal(|| 2.5f32);
 
-    let (draw_list_attr, op_count, byte_len) = build_scene_draw_list(mode(), palette(), stroke_w());
+    let (draw_list, op_count, byte_len) = build_scene_draw_list(mode(), palette(), stroke_w());
     let (_, _, _, palette_name) = palette().colors();
 
     rsx! {
@@ -176,7 +174,7 @@ pub fn CanvasDraw1Demo() -> Element {
             canvas {
                 test_id: "pg-canvas-surface",
                 accessibility_label: "Interactive NVE_DRAW1 vector canvas",
-                draw_list: "{draw_list_attr}",
+                draw_list: CanvasDrawList(draw_list),
                 style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.palette.border}; background-color: #0c0d12;",
             }
 

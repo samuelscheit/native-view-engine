@@ -203,11 +203,12 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
                 .native_dom_instance_id(nve_abi::ROOT_NODE_ID)
                 .expect("root SSR DOM instance");
 
-            let mut surface = create_nve_docs_surface(route, "", client_vp);
+            let mut surface = create_nve_docs_surface(route, "", client_vp).with_in_process_mode(true);
             let (_, _, frame_bytes) = surface.render_frame(1);
             hydrated
                 .submit_frame(&frame_bytes)
                 .expect("hydrate submit_frame");
+            hydrated.sync_draw_lists_from(surface.iter_draw_lists());
             hydrated.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
 
             let report = hydrated.hydration_report();

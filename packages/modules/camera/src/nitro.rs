@@ -8,6 +8,18 @@ pub const HYBRID_CAMERA_SESSION_NAME: &str = "CameraSession";
 /// Opaque handle mirroring `NveNitroHandle` in `packages/modules/nitro-bridge/include/nve_nitro_core.hpp`.
 pub type NveNitroHandle = *mut c_void;
 
+/// Zero-copy C-ABI callback receiving a validated `#[repr(C)]` [`crate::CameraFrameDescriptor`]
+/// directly by pointer (no 40-byte `NVCF` byte-slice serialization copy).
+#[cfg(feature = "spec")]
+pub type CameraFrameCallbackFn =
+    unsafe extern "C" fn(user_data: *mut c_void, frame: *const crate::CameraFrameDescriptor);
+
+/// Zero-copy C-ABI callback receiving a validated 40-byte `#[repr(C)]` [`crate::CameraFrameWireLayout`]
+/// directly by pointer.
+#[cfg(feature = "spec")]
+pub type CameraFrameWireCallbackFn =
+    unsafe extern "C" fn(user_data: *mut c_void, frame: *const crate::CameraFrameWireLayout);
+
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NitroStatus {

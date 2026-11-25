@@ -8,6 +8,7 @@ mod frame;
 mod interaction;
 pub mod slot_map;
 pub mod taffy_engine;
+mod typed_sync;
 mod validate;
 
 use std::collections::HashMap;
@@ -18,6 +19,8 @@ use nve_abi::{
     ColorRgba, ComponentKind, LayoutProps, NativeEvent, NodeId, RawPropValue, StyleProps,
     SurfaceId, ROOT_NODE_ID,
 };
+use nve_components::canvas_ir::DrawList;
+use nve_components::native_view::{TypedNativeViewCommand, TypedNativeViewProps};
 use nve_engine::{
     HeuristicTextMeasurer, LayoutEngine, LayoutRect, TextMeasurer, Viewport,
 };
@@ -43,6 +46,8 @@ pub struct HeadlessNode {
     pub style: StyleProps,
     pub has_explicit_style: bool,
     pub raw_props: HashMap<String, RawPropValue>,
+    pub draw_list: Option<DrawList>,
+    pub native_view_props: Option<TypedNativeViewProps>,
     pub event_mask: u64,
     pub cursor: Option<CursorKind>,
     pub state_rules: Vec<StateStyleRule>,
@@ -89,6 +94,7 @@ pub struct HeadlessBackend<L: LayoutEngine = TaffyLayoutEngine> {
     pub(crate) last_mutations: Vec<HeadlessMutation>,
     pub(crate) pending_events: Vec<NativeEvent>,
     pub(crate) dispatched_commands: Vec<(NodeId, String, Vec<u8>)>,
+    pub(crate) typed_dispatched_commands: Vec<(NodeId, TypedNativeViewCommand)>,
 }
 
 impl Default for HeadlessBackend<TaffyLayoutEngine> {
@@ -130,6 +136,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             last_mutations: Vec::new(),
             pending_events: Vec::new(),
             dispatched_commands: Vec::new(),
+            typed_dispatched_commands: Vec::new(),
         };
         this.ensure_node(ROOT_NODE_ID, ComponentKind::Root, None);
         this
@@ -209,6 +216,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             last_mutations: self.last_mutations,
             pending_events: self.pending_events,
             dispatched_commands: self.dispatched_commands,
+            typed_dispatched_commands: self.typed_dispatched_commands,
         };
         swapped.recompute_layout();
         swapped
@@ -321,6 +329,8 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                 style: StyleProps::default(),
                 has_explicit_style: false,
                 raw_props: HashMap::new(),
+                draw_list: None,
+                native_view_props: None,
                 event_mask: 0,
                 cursor: None,
                 state_rules: Vec::new(),

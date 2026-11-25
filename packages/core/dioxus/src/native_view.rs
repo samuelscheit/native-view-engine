@@ -1,6 +1,8 @@
 //! First-class `<NativeView>` Dioxus component, registry context, and zero-JSON binary prop/handle
 //! forwarding into `NveMutationWriter`.
 
+use std::sync::Arc;
+
 use dioxus_core::{
     provide_context, try_consume_context, use_hook, Attribute, AttributeValue, Element, VNode,
 };
@@ -9,10 +11,11 @@ use dioxus_signals::{ReadableExt, Signal, WritableExt};
 
 pub use nve_interop::native_view::{
     BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
-    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, NativeCommandDecoder,
-    NativeCommandEncoder, NativePropDecoder, NativePropEncoder, NativeValueRef,
-    NativeViewCodecError, NativeViewHandle, NativeViewHandleBinder, NativeViewRegistry,
-    NativeViewSpec, NoCommand, QueuedNativeCommand, VideoPlayer, VideoPlayerCommand,
+    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, NativeCommand,
+    NativeCommandDecoder, NativeCommandEncoder, NativeProp, NativePropDecoder, NativePropEncoder,
+    NativePropValue, NativeProps, NativeValueRef, NativeViewCodecError, NativeViewHandle,
+    NativeViewHandleBinder, NativeViewRegistry, NativeViewSpec, NoCommand, QueuedNativeCommand,
+    TypedNativeViewCommand, TypedNativeViewProps, VideoPlayer, VideoPlayerCommand,
     VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand, WebViewProps,
     NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC, NATIVE_VIEW_KIND_PROP_KEY, NATIVE_VIEW_PROPS_PROP_KEY,
 };
@@ -26,10 +29,10 @@ pub(crate) const NATIVE_VIEW_KIND_ATTR: &str = "__nve_native_kind";
 /// Internal attribute carrying a type-erased [`NativeViewHandleBinder`] for mount/unmount binding.
 pub(crate) const NATIVE_VIEW_HANDLE_ATTR: &str = "__nve_native_handle";
 
-/// Zero-JSON binary prop payload forwarded via `AttributeValue::Any` straight into
-/// `nve_abi::RawPropValue::Bytes` without base64 or string encoding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NativeBinaryProp(pub Vec<u8>);
+/// Zero-serialization typed prop payload forwarded via `AttributeValue::Any` straight into
+/// `NveMutationWriter` without `NVNP` binary encoding on in-process Rust hosts.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NativeTypedPropsAttr(pub TypedNativeViewProps);
 
 /// Type-erased handle binder forwarded via `AttributeValue::Any` so `NveMutationWriter` binds
 /// `(surface_id, node_id)` automatically on mount and unbinds on unmount.
@@ -172,8 +175,8 @@ pub fn NativeView<P: NativeViewSpec>(nv_props: NativeViewProps<P>) -> Element {
         return fallback.unwrap_or_else(VNode::empty);
     }
 
-    let encoded_props = match props.to_prop_bytes() {
-        Ok(bytes) => bytes,
+    let native_props = match props.to_native_props() {
+        Ok(p) => p,
         Err(_) => {
             if let Some(ref h) = handle {
                 h.unbind();
@@ -181,19 +184,25 @@ pub fn NativeView<P: NativeViewSpec>(nv_props: NativeViewProps<P>) -> Element {
             return fallback.unwrap_or_else(VNode::empty);
         }
     };
+    let kind_owned = kind.into_owned();
+    let typed_props = TypedNativeViewProps::with_typed(
+        kind_owned.as_str(),
+        native_props,
+        Arc::new(props),
+    );
 
     let mut attrs = Vec::with_capacity(5);
     // Must be first so `NveMutationWriter` emits `CreateNode { Custom, custom_name: Some(kind) }`
     // before any prop/layout/style op for this node.
     attrs.push(Attribute::new(
         NATIVE_VIEW_KIND_ATTR,
-        AttributeValue::Text(kind.into_owned()),
+        AttributeValue::Text(kind_owned),
         None,
         false,
     ));
     attrs.push(Attribute::new(
         NATIVE_VIEW_PROPS_PROP_KEY,
-        AttributeValue::any_value(NativeBinaryProp(encoded_props)),
+        AttributeValue::any_value(NativeTypedPropsAttr(typed_props)),
         None,
         false,
     ));

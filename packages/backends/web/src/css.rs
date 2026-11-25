@@ -10,7 +10,7 @@ use nve_abi::{
     ColorRgba, ComponentKind, Dimension, EdgeInsets, EventMask, FlexAlign, FlexDirection,
     FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
 };
-use nve_components::canvas_ir::CanvasOp;
+use nve_components::canvas_ir::DrawList;
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
@@ -383,7 +383,7 @@ pub struct MirrorElement {
     pub children: Vec<NodeId>,
     pub event_mask: u64,
     pub raw_props: HashMap<String, RawPropValue>,
-    pub draw_ops: Vec<CanvasOp>,
+    pub draw_ops: DrawList,
     pub draw_op_count: usize,
     pub show_on: Option<MediaQuery>,
     pub responsive_rules: Vec<ResponsiveRule>,
@@ -418,7 +418,7 @@ impl MirrorElement {
             children: Vec::new(),
             event_mask: EventMask::NONE,
             raw_props: HashMap::default(),
-            draw_ops: Vec::new(),
+            draw_ops: DrawList::empty(),
             draw_op_count: 0,
             show_on: None,
             responsive_rules: Vec::new(),

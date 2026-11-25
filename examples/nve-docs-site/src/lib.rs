@@ -95,12 +95,13 @@ pub fn create_nve_docs_surface_full(
 
 /// Render a single embedded route via `WebBackend::render_ssr` (convenience helper for tests & SSR).
 pub fn render_nve_docs_ssr(route: &str, base_path: &str, viewport: DocsViewport) -> SsrOutput {
-    let mut surface = create_nve_docs_surface(route, base_path, viewport);
+    let mut surface = create_nve_docs_surface(route, base_path, viewport).with_in_process_mode(true);
     let (_, _, frame_bytes) = surface.render_frame(1);
     let mut backend = WebBackend::new();
     backend
         .submit_frame(&frame_bytes)
         .expect("WebBackend submit_frame for docs SSR");
+    backend.sync_draw_lists_from(surface.iter_draw_lists());
     backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
     backend.render_ssr()
 }

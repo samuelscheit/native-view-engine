@@ -233,12 +233,14 @@ fn emit_ssr_page(
         base_path,
         DocsViewport::desktop_default(),
         true,
-    );
+    )
+    .with_in_process_mode(true);
     let (_, _, frame_bytes) = surface.render_frame(1);
     let mut backend = WebBackend::new();
     backend
         .submit_frame(&frame_bytes)
         .map_err(|e| format!("SSR submit_frame failed for '{public_route}': {e}"))?;
+    backend.sync_draw_lists_from(surface.iter_draw_lists());
     backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
 
     let ssr_preview = backend.render_ssr();
@@ -391,12 +393,14 @@ fn render_404_page(
         base_path,
         DocsViewport::desktop_default(),
         true,
-    );
+    )
+    .with_in_process_mode(true);
     let (_, _, frame_bytes) = surface.render_frame(1);
     let mut backend = WebBackend::new();
     backend
         .submit_frame(&frame_bytes)
         .map_err(|e| format!("SSR 404 submit_frame failed: {e}"))?;
+    backend.sync_draw_lists_from(surface.iter_draw_lists());
     backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
     Ok(backend.render_ssr_document(&SsrDocumentOptions {
         title: "Native View Engine — Documentation".to_string(),

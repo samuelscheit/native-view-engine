@@ -2,7 +2,7 @@
 //! wave progression series, and zero-JSON `NVE_DRAW1` bar/line chart draw-list builders.
 
 use nve_abi::ColorRgba;
-use nve_components::canvas_ir::DrawListBuilder;
+use nve_components::canvas_ir::DrawList;
 
 include!(concat!(
     env!("OUT_DIR"),
@@ -336,7 +336,7 @@ pub(crate) fn build_bar_chart_draw_list(
     width: f32,
     height: f32,
     dark: bool,
-) -> String {
+) -> DrawList {
     let bg = if dark {
         ColorRgba::rgb(12, 12, 15)
     } else {
@@ -348,7 +348,7 @@ pub(crate) fn build_bar_chart_draw_list(
         ColorRgba::rgba(100, 116, 139, 38)
     };
 
-    let mut dl = DrawListBuilder::with_capacity(768);
+    let mut dl = DrawList::with_capacity(values.len() * 2 + 6);
     dl.clear(bg);
 
     let pad_x = 16.0;
@@ -363,7 +363,7 @@ pub(crate) fn build_bar_chart_draw_list(
     }
 
     if values.is_empty() {
-        return dl.to_attr_string();
+        return dl.finish();
     }
 
     let min_v = values
@@ -391,7 +391,7 @@ pub(crate) fn build_bar_chart_draw_list(
         dl.fill_rounded_rect(x, y, bar_w, bh, 6.0, solid);
     }
 
-    dl.to_attr_string()
+    dl.finish()
 }
 
 pub(crate) fn build_line_chart_draw_list(
@@ -401,7 +401,7 @@ pub(crate) fn build_line_chart_draw_list(
     height: f32,
     dark: bool,
     color_idx: u8,
-) -> String {
+) -> DrawList {
     let bg = if dark {
         ColorRgba::rgb(12, 12, 15)
     } else {
@@ -414,7 +414,7 @@ pub(crate) fn build_line_chart_draw_list(
     };
     let (stroke, tint) = series_color(color_idx, dark);
 
-    let mut dl = DrawListBuilder::with_capacity(512);
+    let mut dl = DrawList::with_capacity(points.len() * 3 + 8);
     dl.clear(bg);
 
     let pad_x = 18.0;
@@ -429,7 +429,7 @@ pub(crate) fn build_line_chart_draw_list(
     }
 
     if points.len() < 2 {
-        return dl.to_attr_string();
+        return dl.finish();
     }
 
     let min_v = points
@@ -460,5 +460,5 @@ pub(crate) fn build_line_chart_draw_list(
         dl.fill_circle(x, y, 3.6, stroke);
     }
 
-    dl.to_attr_string()
+    dl.finish()
 }

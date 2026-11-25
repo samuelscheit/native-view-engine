@@ -33,8 +33,7 @@ pub(crate) fn render_metrics_view(
     let (card_bw, card_bc) = card_border(xray);
     let (row_bw, row_bc) = row_border(xray);
     let stress_rows = current.stress_rows;
-    let sparkline_attr = build_metrics_sparkline(&current.telemetry_samples_us, hist_len, accent_hex)
-        .to_attr_string();
+    let sparkline = build_metrics_sparkline(&current.telemetry_samples_us, hist_len, accent_hex);
 
     let s_stress8 = Arc::clone(store);
     let s_stress24 = Arc::clone(store);
@@ -114,7 +113,7 @@ pub(crate) fn render_metrics_view(
             }
             canvas {
                 test_id: "metrics-sparkline-canvas",
-                draw_list: "{sparkline_attr}",
+                draw_list: CanvasDrawList(sparkline),
                 accessibility_label: "Live telemetry frame timing sparkline",
                 accessibility_role: "image",
                 style: "width: 100%; height: 72px; flex-shrink: 0; background-color: {CARD_ALT_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
