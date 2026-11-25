@@ -1,0 +1,556 @@
+import CNveAbi
+import Foundation
+import NveSwiftUI
+import SwiftUI
+import XCTest
+
+#if canImport(AppKit)
+import AppKit
+#endif
+
+// MARK: - Isolated C-ABI Mock Fixture
+
+private final class MockSurfaceState: @unchecked Sendable {
+    let lock = NSLock()
+    let surfaceId: UInt32
+    var destroyed = false
+    var destroyCount = 0
+    var renderedFrameIds: [UInt64] = []
+    var renderOutput = Data([0x4E, 0x56, 0x45, 0x31])
+    var setPropsHistory: [Data] = []
+    var setPropsReturnValue: UInt32 = 1
+    var dispatchedEventBuffers: [Data] = []
+    var dispatchEventsReturnValue: UInt32 = 1
+    var hotPatchHistory: [String] = []
+    var hotPatchReturnValue: UInt32 = 1
+    var pendingOutboundEvents = Data()
+    var lastConstraints: NveSizeConstraints?
+    var intrinsicSize = NveIntrinsicSize(width: 180, height: 90)
+
+    init(surfaceId: UInt32) {
+        self.surfaceId = surfaceId
+    }
+}
+
+private final class MockAbiRegistry: @unchecked Sendable {
+    static let shared = MockAbiRegistry()
+
+    private let lock = NSLock()
+    private var nextToken: Int = 0x1_0000
+    private var instances: [UnsafeMutableRawPointer: MockSurfaceState] = [:]
+    private var onCreateHandler: ((MockSurfaceState) -> Void)?
+    private var createShouldReturnNil = false
+
+    func configureNextCreate(
+        returnNil: Bool = false,
+        configure: ((MockSurfaceState) -> Void)? = nil
+    ) {
+        lock.lock()
+        createShouldReturnNil = returnNil
+        onCreateHandler = configure
+        lock.unlock()
+    }
+
+    func resetNextCreate() {
+        lock.lock()
+        createShouldReturnNil = false
+        onCreateHandler = nil
+        lock.unlock()
+    }
+
+    func create(surfaceId: UInt32) -> NveAppHandle? {
+        lock.lock()
+        let shouldFail = createShouldReturnNil
+        let configure = onCreateHandler
+        createShouldReturnNil = false
+        onCreateHandler = nil
+        if shouldFail {
+            lock.unlock()
+            return nil
+        }
+        nextToken += 16
+        let handle = UnsafeMutableRawPointer(bitPattern: nextToken)!
+        let state = MockSurfaceState(surfaceId: surfaceId)
+        instances[handle] = state
+        lock.unlock()
+        configure?(state)
+        return handle
+    }
+
+    func state(for handle: NveAppHandle?) -> MockSurfaceState? {
+        guard let handle else { return nil }
+        lock.lock()
+        let s = instances[handle]
+        lock.unlock()
+        return s
+    }
+
+    func destroy(handle: NveAppHandle?) {
+        guard let handle else { return }
+        lock.lock()
+        let s = instances[handle]
+        lock.unlock()
+        guard let s else { return }
+        s.lock.lock()
+        s.destroyed = true
+        s.destroyCount += 1
+        s.lock.unlock()
+    }
+}
+
+private enum MockVtables {
+    static let surfaceApi: UnsafePointer<NveSurfaceApi> = {
+        let ptr = UnsafeMutablePointer<NveSurfaceApi>.allocate(capacity: 1)
+        ptr.initialize(
+            to: NveSurfaceApi(
+                create: { sid in MockAbiRegistry.shared.create(surfaceId: sid) },
+                destroy: { handle in MockAbiRegistry.shared.destroy(handle: handle) },
+                render: { handle, frameId in
+                    guard let state = MockAbiRegistry.shared.state(for: handle) else {
+                        return NveBufferSlice(ptr: nil, len: 0)
+                    }
+                    state.lock.lock()
+                    state.renderedFrameIds.append(frameId)
+                    let bytes = state.renderOutput
+                    state.lock.unlock()
+                    if bytes.isEmpty {
+                        return NveBufferSlice(ptr: nil, len: 0)
+                    }
+                    // Keep a stable buffer for the synchronous C ABI slice return.
+                    let copied = UnsafeMutablePointer<UInt8>.allocate(capacity: bytes.count)
+                    bytes.copyBytes(to: copied, count: bytes.count)
+                    return NveBufferSlice(ptr: UnsafePointer(copied), len: bytes.count)
+                },
+                dispatch_events: { handle, slice in
+                    guard let state = MockAbiRegistry.shared.state(for: handle) else { return 0 }
+                    let data = slice.ptr.map { Data(bytes: $0, count: slice.len) } ?? Data()
+                    state.lock.lock()
+                    state.dispatchedEventBuffers.append(data)
+                    let dirty = state.dispatchEventsReturnValue
+                    state.lock.unlock()
+                    return dirty
+                }
+            )
+        )
+        return UnsafePointer(ptr)
+    }()
+
+    static let surfaceApiNilCreate: UnsafePointer<NveSurfaceApi> = {
+        let ptr = UnsafeMutablePointer<NveSurfaceApi>.allocate(capacity: 1)
+        ptr.initialize(
+            to: NveSurfaceApi(create: nil, destroy: nil, render: nil, dispatch_events: nil)
+        )
+        return UnsafePointer(ptr)
+    }()
+
+    static let layoutApi: UnsafePointer<NveLayoutApi> = {
+        let ptr = UnsafeMutablePointer<NveLayoutApi>.allocate(capacity: 1)
+        ptr.initialize(
+            to: NveLayoutApi(
+                measure: { handle, constraints in
+                    guard let state = MockAbiRegistry.shared.state(for: handle) else {
+                        return NveIntrinsicSize(width: 0, height: 0)
+                    }
+                    state.lock.lock()
+                    state.lastConstraints = constraints
+                    let size = state.intrinsicSize
+                    state.lock.unlock()
+                    return size
+                },
+                hit_test: { _, _, _, _ in UInt8(NVE_GESTURE_CLAIM.rawValue) }
+            )
+        )
+        return UnsafePointer(ptr)
+    }()
+
+    static let componentApi: UnsafePointer<NveComponentApi> = {
+        let ptr = UnsafeMutablePointer<NveComponentApi>.allocate(capacity: 1)
+        ptr.initialize(
+            to: NveComponentApi(
+                set_props: { handle, slice in
+                    guard let state = MockAbiRegistry.shared.state(for: handle) else { return 0 }
+                    let data = slice.ptr.map { Data(bytes: $0, count: slice.len) } ?? Data()
+                    state.lock.lock()
+                    state.setPropsHistory.append(data)
+                    let dirty = state.setPropsReturnValue
+                    state.lock.unlock()
+                    return dirty
+                },
+                drain_emitted_events: { handle in
+                    guard let state = MockAbiRegistry.shared.state(for: handle) else {
+                        return NveBufferSlice(ptr: nil, len: 0)
+                    }
+                    state.lock.lock()
+                    let outbound = state.pendingOutboundEvents
+                    state.pendingOutboundEvents = Data()
+                    state.lock.unlock()
+                    if outbound.isEmpty {
+                        return NveBufferSlice(ptr: nil, len: 0)
+                    }
+                    let copied = UnsafeMutablePointer<UInt8>.allocate(capacity: outbound.count)
+                    outbound.copyBytes(to: copied, count: outbound.count)
+                    return NveBufferSlice(ptr: UnsafePointer(copied), len: outbound.count)
+                }
+            )
+        )
+        return UnsafePointer(ptr)
+    }()
+
+    static let devApi: UnsafePointer<NveDevApi> = {
+        let ptr = UnsafeMutablePointer<NveDevApi>.allocate(capacity: 1)
+        ptr.initialize(
+            to: NveDevApi(
+                apply_hot_patch: { handle, slice in
+                    guard let state = MockAbiRegistry.shared.state(for: handle) else { return 0 }
+                    let json = slice.ptr.flatMap {
+                        String(bytes: UnsafeBufferPointer(start: $0, count: slice.len), encoding: .utf8)
+                    } ?? ""
+                    state.lock.lock()
+                    state.hotPatchHistory.append(json)
+                    let dirty = state.hotPatchReturnValue
+                    state.lock.unlock()
+                    return dirty
+                },
+                snapshot_state: { _ in NveBufferSlice(ptr: nil, len: 0) },
+                restore_state: { _, _ in }
+            )
+        )
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func mockFullInterface(_ id: UInt32) -> UnsafeRawPointer? {
+    switch id {
+    case UInt32(NVE_IFACE_SURFACE): return UnsafeRawPointer(MockVtables.surfaceApi)
+    case UInt32(NVE_IFACE_LAYOUT): return UnsafeRawPointer(MockVtables.layoutApi)
+    case UInt32(NVE_IFACE_COMPONENT): return UnsafeRawPointer(MockVtables.componentApi)
+    case UInt32(NVE_IFACE_DEV): return UnsafeRawPointer(MockVtables.devApi)
+    default: return nil
+    }
+}
+
+private func mockSurfaceOnlyInterface(_ id: UInt32) -> UnsafeRawPointer? {
+    id == UInt32(NVE_IFACE_SURFACE) ? UnsafeRawPointer(MockVtables.surfaceApi) : nil
+}
+
+private func mockMissingSurfaceInterface(_ id: UInt32) -> UnsafeRawPointer? {
+    id == UInt32(NVE_IFACE_LAYOUT) ? UnsafeRawPointer(MockVtables.layoutApi) : nil
+}
+
+private func mockNilCreateInterface(_ id: UInt32) -> UnsafeRawPointer? {
+    id == UInt32(NVE_IFACE_SURFACE) ? UnsafeRawPointer(MockVtables.surfaceApiNilCreate) : nil
+}
+
+// MARK: - Tests
+
+final class NveSurfaceControllerTests: XCTestCase {
+    override func tearDown() {
+        MockAbiRegistry.shared.resetNextCreate()
+        super.tearDown()
+    }
+
+    private func makeMountedController(
+        surfaceId: UInt32 = 42,
+        backend: NveRenderBackend = .fabric,
+        getInterface: NveGetInterfaceFn = mockFullInterface
+    ) -> (NveSurfaceController, MockSurfaceState) {
+        var captured: MockSurfaceState?
+        MockAbiRegistry.shared.configureNextCreate { state in
+            captured = state
+        }
+        let controller = NveSurfaceController(
+            surfaceId: surfaceId,
+            backend: backend,
+            getInterface: getInterface
+        )
+        return (controller, captured!)
+    }
+
+    func testLifecycleMountDestroyReattachAndDeinit() {
+        let c1 = NveSurfaceController(vtableSymbol: "nve_nonexistent_symbol_1")
+        let c2 = NveSurfaceController(vtableSymbol: "nve_nonexistent_symbol_2")
+        XCTAssertEqual(c2.surfaceId, c1.surfaceId + 1)
+        XCTAssertFalse(c1.isMounted)
+        XCTAssertFalse(c2.isMounted)
+
+        var firstState: MockSurfaceState?
+        var secondState: MockSurfaceState?
+        do {
+            let (controller, state1) = makeMountedController(surfaceId: 77, backend: .skia)
+            firstState = state1
+            XCTAssertTrue(controller.isMounted)
+            XCTAssertEqual(controller.surfaceId, 77)
+            XCTAssertEqual(controller.backend, .skia)
+            XCTAssertEqual(state1.surfaceId, 77)
+
+            // Re-attaching destroys the prior handle before creating the new one.
+            MockAbiRegistry.shared.configureNextCreate { secondState = $0 }
+            controller.attach(getInterface: mockFullInterface)
+            XCTAssertTrue(state1.destroyed)
+            XCTAssertEqual(state1.destroyCount, 1)
+            XCTAssertTrue(controller.isMounted)
+            XCTAssertNotNil(secondState)
+            XCTAssertFalse(secondState?.destroyed ?? true)
+        }
+        // Controller deinit destroys the active handle.
+        XCTAssertEqual(firstState?.destroyCount, 1)
+        XCTAssertTrue(secondState?.destroyed ?? false)
+        XCTAssertEqual(secondState?.destroyCount, 1)
+
+        // Explicit destroy is idempotent.
+        let (controller, state) = makeMountedController(surfaceId: 88)
+        controller.destroy()
+        controller.destroy()
+        XCTAssertFalse(controller.isMounted)
+        XCTAssertEqual(state.destroyCount, 1)
+    }
+
+    func testAttachErrorStatesAndUnmountedSafeNoOps() {
+        let missingSurface = NveSurfaceController(
+            surfaceId: 10,
+            getInterface: mockMissingSurfaceInterface
+        )
+        XCTAssertFalse(missingSurface.isMounted)
+
+        let nilCreateFn = NveSurfaceController(
+            surfaceId: 11,
+            getInterface: mockNilCreateInterface
+        )
+        XCTAssertFalse(nilCreateFn.isMounted)
+
+        MockAbiRegistry.shared.configureNextCreate(returnNil: true)
+        let nullHandle = NveSurfaceController(
+            surfaceId: 12,
+            getInterface: mockFullInterface
+        )
+        XCTAssertFalse(nullHandle.isMounted)
+
+        let badDylib = NveSurfaceController(
+            surfaceId: 13,
+            vtableSymbol: "nve_get_interface",
+            dylibPath: "/nonexistent/path/libnve_missing.dylib"
+        )
+        XCTAssertFalse(badDylib.isMounted)
+
+        // All mutating/query operations degrade cleanly when unmounted.
+        XCTAssertFalse(badDylib.setProps(["title": "offline"]))
+        XCTAssertTrue(badDylib.renderFrame().isEmpty)
+        XCTAssertFalse(badDylib.applyHotPatch(json: "{}"))
+        XCTAssertTrue(badDylib.drainEmittedEvents().isEmpty)
+        badDylib.dispatchCommand(name: "noop", args: ["a": 1])
+    }
+
+    func testSetPropsDeduplicationDirtyRenderAndEventForwarding() throws {
+        let (controller, state) = makeMountedController(surfaceId: 5)
+        var forwarded: [NveEvent] = []
+        controller.onEvent = { forwarded.append($0) }
+
+        let emittedPayload = try JSONSerialization.data(withJSONObject: ["applied": true])
+        state.pendingOutboundEvents = NveEventRingCodec.encodeCustomEvent(
+            surfaceId: 5,
+            nodeId: 1,
+            name: "onPropsApplied",
+            payload: emittedPayload,
+            timestampUs: 555
+        )
+
+        // Dirty update renders frame and drains emitted events.
+        XCTAssertTrue(controller.setProps(["b": 2, "a": 1]))
+        XCTAssertEqual(state.setPropsHistory.count, 1)
+        XCTAssertEqual(String(data: state.setPropsHistory[0], encoding: .utf8), "{\"a\":1,\"b\":2}")
+        XCTAssertEqual(state.renderedFrameIds, [1])
+        XCTAssertEqual(forwarded.count, 1)
+        XCTAssertEqual(forwarded[0].name, "onPropsApplied")
+
+        // Identical props (regardless of key order) are deduplicated.
+        XCTAssertFalse(controller.setProps(["a": 1, "b": 2]))
+        XCTAssertEqual(state.setPropsHistory.count, 1)
+        XCTAssertEqual(state.renderedFrameIds, [1])
+
+        // Invalid JSON object is rejected without invoking C ABI.
+        XCTAssertFalse(controller.setProps(["bad": Date()]))
+        XCTAssertEqual(state.setPropsHistory.count, 1)
+
+        // Clean update (set_props returns 0) skips render but still drains events.
+        state.setPropsReturnValue = 0
+        state.pendingOutboundEvents = NveEventRingCodec.encodeCustomEvent(
+            surfaceId: 5,
+            nodeId: 2,
+            name: "onCleanAck",
+            payload: Data(),
+            timestampUs: 777
+        )
+        XCTAssertFalse(controller.setProps(["a": 2]))
+        XCTAssertEqual(state.setPropsHistory.count, 2)
+        XCTAssertEqual(state.renderedFrameIds, [1])
+        XCTAssertEqual(forwarded.count, 2)
+        XCTAssertEqual(forwarded[1].name, "onCleanAck")
+    }
+
+    func testDispatchCommandRenderFrameAndHotPatch() throws {
+        let (controller, state) = makeMountedController(surfaceId: 9)
+        var receivedEvents: [NveEvent] = []
+        controller.onEvent = { receivedEvents.append($0) }
+
+        // Dispatch dirty command -> encodes EventRing, triggers render, drains outbound events.
+        state.pendingOutboundEvents = NveEventRingCodec.encodeCustomEvent(
+            surfaceId: 9,
+            nodeId: 4,
+            name: "onResetComplete",
+            payload: Data("{\"count\":0}".utf8),
+            timestampUs: 1001
+        )
+        controller.dispatchCommand(name: "reset", args: ["animated": true])
+
+        XCTAssertEqual(state.dispatchedEventBuffers.count, 1)
+        let decodedInbound = NveEventRingCodec.decode(state.dispatchedEventBuffers[0])
+        XCTAssertEqual(decodedInbound.count, 1)
+        XCTAssertEqual(decodedInbound[0].surfaceId, 9)
+        XCTAssertEqual(decodedInbound[0].kind, .custom)
+        XCTAssertEqual(decodedInbound[0].name, "reset")
+        let argsJson = try XCTUnwrap(decodedInbound[0].decodePayloadJSON())
+        XCTAssertEqual(argsJson["animated"] as? Bool, true)
+        XCTAssertEqual(state.renderedFrameIds, [1])
+        XCTAssertEqual(receivedEvents.count, 1)
+        XCTAssertEqual(receivedEvents[0].name, "onResetComplete")
+
+        // Clean command -> does not trigger render.
+        state.dispatchEventsReturnValue = 0
+        controller.dispatchCommand(name: "ping")
+        XCTAssertEqual(state.dispatchedEventBuffers.count, 2)
+        XCTAssertEqual(state.renderedFrameIds, [1])
+
+        // Explicit renderFrame increments frame counter and returns slice bytes.
+        state.renderOutput = Data([1, 2, 3, 4, 5])
+        XCTAssertEqual(controller.renderFrame(), Data([1, 2, 3, 4, 5]))
+        XCTAssertEqual(state.renderedFrameIds, [1, 2])
+
+        state.renderOutput = Data()
+        XCTAssertTrue(controller.renderFrame().isEmpty)
+        XCTAssertEqual(state.renderedFrameIds, [1, 2, 3])
+
+        // Hot patch: dirty renders, clean skips render.
+        state.hotPatchReturnValue = 1
+        XCTAssertTrue(controller.applyHotPatch(json: "{\"op\":\"patch\"}"))
+        XCTAssertEqual(state.hotPatchHistory, ["{\"op\":\"patch\"}"])
+        XCTAssertEqual(state.renderedFrameIds, [1, 2, 3, 4])
+
+        state.hotPatchReturnValue = 0
+        XCTAssertFalse(controller.applyHotPatch(json: "{\"op\":\"noop\"}"))
+        XCTAssertEqual(state.renderedFrameIds, [1, 2, 3, 4])
+    }
+
+    func testOptionalInterfacesMissingGracefulFallback() {
+        let (controller, state) = makeMountedController(
+            surfaceId: 33,
+            getInterface: mockSurfaceOnlyInterface
+        )
+        XCTAssertTrue(controller.isMounted)
+        XCTAssertFalse(controller.setProps(["k": "v"]))
+        XCTAssertTrue(controller.drainEmittedEvents().isEmpty)
+        XCTAssertFalse(controller.applyHotPatch(json: "{}"))
+
+        // Surface-only module still renders and uses fallback intrinsic sizing.
+        XCTAssertEqual(controller.renderFrame(), state.renderOutput)
+        XCTAssertEqual(controller.measure(), CGSize(width: 240, height: 120))
+    }
+
+    func testLayoutConstraintNegotiationAndClamping() throws {
+        let (controller, state) = makeMountedController(surfaceId: 14)
+
+        // Normal within-bounds measurement
+        state.intrinsicSize = NveIntrinsicSize(width: 180, height: 90)
+        let normal = controller.measure(minWidth: 50, minHeight: 40, maxWidth: 300, maxHeight: 200)
+        XCTAssertEqual(normal, CGSize(width: 180, height: 90))
+        let constraints = try XCTUnwrap(state.lastConstraints)
+        XCTAssertEqual(constraints.min_w, 50)
+        XCTAssertEqual(constraints.min_h, 40)
+        XCTAssertEqual(constraints.max_w, 300)
+        XCTAssertEqual(constraints.max_h, 200)
+
+        // Clamped UP to minimum
+        state.intrinsicSize = NveIntrinsicSize(width: 10, height: 5)
+        let clampedUp = controller.measure(minWidth: 80, minHeight: 44, maxWidth: 300, maxHeight: 200)
+        XCTAssertEqual(clampedUp, CGSize(width: 80, height: 44))
+
+        // Clamped DOWN to maximum
+        state.intrinsicSize = NveIntrinsicSize(width: 900, height: 700)
+        let clampedDown = controller.measure(minWidth: 0, minHeight: 0, maxWidth: 320, maxHeight: 160)
+        XCTAssertEqual(clampedDown, CGSize(width: 320, height: 160))
+
+        // Unbounded max forwards .infinity and preserves intrinsic size >= min
+        state.intrinsicSize = NveIntrinsicSize(width: 420, height: 210)
+        let unbounded = controller.measure(minWidth: 100, minHeight: 50, maxWidth: .infinity, maxHeight: .infinity)
+        XCTAssertEqual(unbounded, CGSize(width: 420, height: 210))
+        let unboundedConstraints = try XCTUnwrap(state.lastConstraints)
+        XCTAssertTrue(unboundedConstraints.max_w.isInfinite)
+        XCTAssertTrue(unboundedConstraints.max_h.isInfinite)
+
+        // Fallback sizing when unmounted (after destroy)
+        controller.destroy()
+        XCTAssertEqual(controller.measure(), CGSize(width: 240, height: 120))
+        controller.setFallbackIntrinsicSize(CGSize(width: 310, height: 140))
+        XCTAssertEqual(controller.measure(), CGSize(width: 310, height: 140))
+        XCTAssertEqual(
+            controller.measure(minWidth: 350, minHeight: 200, maxWidth: .infinity, maxHeight: .infinity),
+            CGSize(width: 350, height: 200)
+        )
+        XCTAssertEqual(
+            controller.measure(minWidth: 100, minHeight: 50, maxWidth: 200, maxHeight: 80),
+            CGSize(width: 200, height: 80)
+        )
+    }
+
+    func testRepresentableCoordinatorOwnership() {
+        let (externalController, state) = makeMountedController(surfaceId: 50)
+        do {
+            let representable = NveSurfaceRepresentable(
+                componentName: "NveCounterCard",
+                props: ["count": 1],
+                controller: externalController
+            )
+            let coordinator = representable.makeCoordinator()
+            _ = coordinator
+        }
+        // External controller is NOT destroyed when Coordinator deinits.
+        XCTAssertTrue(externalController.isMounted)
+        XCTAssertFalse(state.destroyed)
+
+        // Internal coordinator owns its controller and destroys cleanly without crashing.
+        do {
+            let internalRepresentable = NveSurfaceRepresentable(
+                componentName: "NveOwnedCard",
+                vtableSymbol: "nve_missing_symbol_owned"
+            )
+            _ = internalRepresentable.makeCoordinator()
+        }
+    }
+
+    #if canImport(AppKit)
+    @MainActor
+    func testMacOSHostContainerViewAndRepresentableLayout() {
+        let (controller, state) = makeMountedController(surfaceId: 61)
+        state.intrinsicSize = NveIntrinsicSize(width: 220, height: 96)
+
+        let container = NveHostContainerView(frame: CGRect(x: 0, y: 0, width: 220, height: 96))
+        container.controller = controller
+        XCTAssertTrue(container.controller === controller)
+
+        let view = NveSurfaceRepresentable(
+            componentName: "NveCounterCard",
+            props: ["title": "macOS Test", "count": 3],
+            controller: controller
+        )
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = CGRect(x: 0, y: 0, width: 300, height: 200)
+        hostingView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(hostingView.fittingSize, CGSize(width: 220, height: 96))
+        XCTAssertEqual(state.setPropsHistory.count, 1)
+        XCTAssertEqual(
+            String(data: state.setPropsHistory[0], encoding: .utf8),
+            "{\"count\":3,\"title\":\"macOS Test\"}"
+        )
+    }
+    #endif
+}

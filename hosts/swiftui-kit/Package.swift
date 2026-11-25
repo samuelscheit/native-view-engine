@@ -24,5 +24,10 @@ let package = Package(
             dependencies: ["CNveAbi"],
             path: "Sources/NveSwiftUI"
         ),
+        .testTarget(
+            name: "NveSwiftUITests",
+            dependencies: ["NveSwiftUI", "CNveAbi"],
+            path: "Tests/NveSwiftUITests"
+        ),
     ]
 )
