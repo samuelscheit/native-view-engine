@@ -52,6 +52,10 @@ class MutableBuffer {
 class PropNameID {
  public:
   explicit PropNameID(std::string name) : name_(std::move(name)) {}
+  PropNameID(const PropNameID&) = delete;
+  PropNameID& operator=(const PropNameID&) = delete;
+  PropNameID(PropNameID&&) noexcept = default;
+  PropNameID& operator=(PropNameID&&) noexcept = default;
   static PropNameID forAscii(Runtime&, const char* name) { return PropNameID(name ? name : ""); }
   static PropNameID forAscii(Runtime&, const std::string& name) { return PropNameID(name); }
   static PropNameID forUtf8(Runtime&, const std::string& name) { return PropNameID(name); }

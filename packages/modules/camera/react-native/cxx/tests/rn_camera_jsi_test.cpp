@@ -95,7 +95,7 @@ void test_standalone_hybrid_camera_bridge() {
   NVE_CHECK(bridge.take_photo().await_result().is_err());
 }
 
-#if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
+#if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI && defined(NVE_USING_MOCK_JSI)
 void test_jsi_host_object_and_native_state() {
   facebook::jsi::Runtime rt;
   nve::InMemoryLinuxCameraBridge* captured_bridge = nullptr;
@@ -257,15 +257,33 @@ void test_jsi_host_object_and_native_state() {
 
   nve::nitro::HybridObjectRegistry::global().unregister_hybrid_object(nve::camera::kHybridCameraSessionName);
 }
+#elif defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
+void test_real_jsi_host_object_signatures() {
+  // Real facebook::jsi::Runtime is abstract (Hermes/V8 provides the concrete implementation).
+  // Verify all HostObject/NativeState types and install_nve_camera_jsi compile & link cleanly.
+  auto bridge = std::make_unique<nve::InMemoryLinuxCameraBridge>(nve::LinuxCameraTransport::PipeWire);
+  auto session = std::make_shared<nve::camera::HybridCameraSession>(
+      std::make_unique<nve::NveLinuxCameraBackend>(std::move(bridge)));
+  auto session_host = std::make_shared<nve::rn::camera::RnCameraSessionHostObject>(session);
+  auto module_host = std::make_shared<nve::rn::camera::RnCameraModuleHostObject>(nullptr);
+  auto installer = &nve::rn::camera::install_nve_camera_jsi;
+  NVE_CHECK(session_host != nullptr);
+  NVE_CHECK(module_host != nullptr);
+  NVE_CHECK(installer != nullptr);
+  session->dispose();
+}
 #endif
 
 } // namespace
 
 int main() {
   test_standalone_hybrid_camera_bridge();
-#if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
+#if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI && defined(NVE_USING_MOCK_JSI)
   test_jsi_host_object_and_native_state();
-  std::puts("nve_rn_camera_jsi_test (NVE_WITH_RN_JSI=1): ALL PASSED");
+  std::puts("nve_rn_camera_jsi_test (NVE_WITH_RN_JSI=1 mock): ALL PASSED");
+#elif defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
+  test_real_jsi_host_object_signatures();
+  std::puts("nve_rn_camera_jsi_test (NVE_WITH_RN_JSI=1 real JSI): ALL PASSED");
 #else
   std::puts("nve_rn_camera_jsi_test (standalone): ALL PASSED");
 #endif

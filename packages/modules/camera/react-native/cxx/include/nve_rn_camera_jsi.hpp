@@ -334,12 +334,13 @@ class RnCameraModuleHostObject final : public facebook::jsi::HostObject {
   explicit RnCameraModuleHostObject(BackendFactory factory) : factory_(std::move(factory)) {}
 
   std::vector<facebook::jsi::PropNameID> getPropertyNames(facebook::jsi::Runtime& rt) override {
-    return {
-        facebook::jsi::PropNameID::forAscii(rt, "createSession"),
-        facebook::jsi::PropNameID::forAscii(rt, "listDevices"),
-        facebook::jsi::PropNameID::forAscii(rt, "isAvailable"),
-        facebook::jsi::PropNameID::forAscii(rt, "hybridObjectName"),
-    };
+    std::vector<facebook::jsi::PropNameID> names;
+    names.reserve(4);
+    names.push_back(facebook::jsi::PropNameID::forAscii(rt, "createSession"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(rt, "listDevices"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(rt, "isAvailable"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(rt, "hybridObjectName"));
+    return names;
   }
 
   facebook::jsi::Value get(facebook::jsi::Runtime& rt, const facebook::jsi::PropNameID& prop) override {
