@@ -26,6 +26,8 @@ typedef UIImageView NveAppleBaseImageView;
 
 #ifdef __cplusplus
 #import "NveAppleSupport.h"
+#include "nve_native_view.hpp"
+#include <functional>
 #include <string_view>
 #endif
 
@@ -134,6 +136,22 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
 #ifdef __cplusplus
 namespace nve::apple {
 
+/// Optional runtime hook that registers native view adapters into a `NativeViewRegistry`.
+using NativeViewRegistrar = std::function<void(nve::NativeViewRegistry &registry)>;
+
+/// Optional runtime hook that binds registered native view kinds to an active `FabricHost`.
+using NativeViewBinder = std::function<void(
+    NveFabricHostHandle _Nullable host,
+    nve::NativeViewRegistry &registry)>;
+
+/// Configure process-wide runtime native-view hooks used by newly created
+/// `NveAppleComponentViewBase` instances (overrides compile-time `NVE_ENABLE_NATIVE_VIEWS`
+/// defaults when set).
+void set_default_native_view_hooks(NativeViewRegistrar registrar, NativeViewBinder binder);
+
+/// Clear any process-wide runtime native-view hooks.
+void clear_default_native_view_hooks();
+
 /// Update a shared `NveAppleImageView` from `text` (`src`) + `resizeMode` + `borderRadius`
 /// with source-string caching via `shared_image_cache()`.
 void update_image_view(
@@ -146,6 +164,27 @@ void update_image_view(
 void update_canvas_view(NvePlatformView * _Nonnull view, std::string_view drawBytes);
 
 } // namespace nve::apple
+
+@interface NveAppleComponentViewBase (NveNativeViewRegistry)
+
+/// Returns the active `nve::NativeViewRegistry` attached to this view, or `nullptr` when
+/// opt-in native views are disabled and no runtime registry has been attached.
+- (nve::NativeViewRegistry * _Nullable)nativeViewRegistry;
+
+/// Attach an external (non-owning) `NativeViewRegistry` and optional host binder.
+/// Passing `nullptr` detaches any external or owned registry. Immediately binds to the
+/// currently active `FabricHost` if one is mounted.
+- (void)attachNativeViewRegistry:(nve::NativeViewRegistry * _Nullable)registry
+                          binder:(nve::apple::NativeViewBinder)binder;
+
+/// Create and own a `NativeViewRegistry` populated by `registrar` and bound by `binder`.
+- (void)installNativeViewHooksWithRegistrar:(nve::apple::NativeViewRegistrar)registrar
+                                     binder:(nve::apple::NativeViewBinder)binder;
+
+/// Re-run the configured `NativeViewBinder` against the currently active `FabricHost` (if any).
+- (void)bindNativeViewsToActiveFabricHost;
+
+@end
 #endif
 
 NS_ASSUME_NONNULL_END

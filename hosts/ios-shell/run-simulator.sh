@@ -40,6 +40,8 @@ Environment:
                           to compile and link React Native Yoga (NVE_WITH_RN_YOGA=1).
   NVE_ENABLE_CAMERA       Set to 1 to opt in to packages/modules/camera/apple and link
                           AVFoundation/CoreMedia/CoreVideo (default: 0).
+  NVE_ENABLE_NATIVE_VIEWS Set to 1 to opt in to packages/modules/native-views/apple and link
+                          WebKit/AVFoundation according to NVE_NV_ENABLE_* (default: 0).
 EOF
 }
 
@@ -157,8 +159,34 @@ if [[ "$CAMERA_ENABLED" == "1" ]]; then
   CAMERA_LINK_FLAGS+=(-framework AVFoundation -framework CoreMedia -framework CoreVideo)
 fi
 
+NATIVE_VIEWS_ENABLED="${NVE_ENABLE_NATIVE_VIEWS:-0}"
+NV_BLUR_DEF="${NVE_NV_ENABLE_BLUR:-1}"
+NV_WEBVIEW_DEF="${NVE_NV_ENABLE_WEBVIEW:-1}"
+NV_VIDEO_DEF="${NVE_NV_ENABLE_VIDEO:-1}"
+NATIVE_VIEWS_TAG="no-native-views"
+NATIVE_VIEWS_LINK_FLAGS=()
+NATIVE_VIEWS_MM_SOURCES=()
+if [[ "$NATIVE_VIEWS_ENABLED" == "1" ]]; then
+  echo "    Enabling opt-in packages/modules/native-views/apple (blur=${NV_BLUR_DEF}, webview=${NV_WEBVIEW_DEF}, video=${NV_VIDEO_DEF})"
+  COMMON_FLAGS+=(
+    -DNVE_ENABLE_NATIVE_VIEWS=1
+    -DNVE_NV_ENABLE_BLUR="${NV_BLUR_DEF}"
+    -DNVE_NV_ENABLE_WEBVIEW="${NV_WEBVIEW_DEF}"
+    -DNVE_NV_ENABLE_VIDEO="${NV_VIDEO_DEF}"
+    -I"$REPO_ROOT/packages/modules/native-views/apple"
+  )
+  NATIVE_VIEWS_TAG="native-views-${NV_BLUR_DEF}-${NV_WEBVIEW_DEF}-${NV_VIDEO_DEF}"
+  NATIVE_VIEWS_MM_SOURCES+=("$REPO_ROOT/packages/modules/native-views/apple/NveAppleNativeViews.mm")
+  if [[ "$NV_WEBVIEW_DEF" == "1" ]]; then
+    NATIVE_VIEWS_LINK_FLAGS+=(-framework WebKit)
+  fi
+  if [[ "$NV_VIDEO_DEF" == "1" ]]; then
+    NATIVE_VIEWS_LINK_FLAGS+=(-framework AVFoundation -framework CoreMedia)
+  fi
+fi
+
 CONFIG_STAMP="$BUILD_DIR/.build-config"
-CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|${YOGA_TAG}|${RN_DIR}|${CAMERA_TAG}"
+CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|${YOGA_TAG}|${RN_DIR}|${CAMERA_TAG}|${NATIVE_VIEWS_TAG}"
 if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG" ]]; then
   rm -rf "$OBJ_DIR"
   mkdir -p "$OBJ_DIR"
@@ -192,13 +220,15 @@ HEADER_DEPS=(
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHostInternal.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.h"
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.h"
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.h"
 )
 if [[ "$CAMERA_ENABLED" == "1" ]]; then
   HEADER_DEPS+=("$REPO_ROOT/packages/modules/camera/apple/NveAppleCamera.h")
+fi
+if [[ "$NATIVE_VIEWS_ENABLED" == "1" ]]; then
+  HEADER_DEPS+=("$REPO_ROOT/packages/modules/native-views/apple/NveAppleNativeViews.h")
 fi
 
 needs_rebuild() {
@@ -258,7 +288,6 @@ for src in \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost+Session.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.mm" \
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.mm" \
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.mm" \
@@ -271,17 +300,21 @@ for src in "${CAMERA_MM_SOURCES[@]+"${CAMERA_MM_SOURCES[@]}"}"; do
   compile_unit "$src" mm
 done
 
+for src in "${NATIVE_VIEWS_MM_SOURCES[@]+"${NATIVE_VIEWS_MM_SOURCES[@]}"}"; do
+  compile_unit "$src" mm
+done
+
 "${CLANGXX[@]}" \
   -std=c++20 \
   -fobjc-arc \
   -target "arm64-apple-ios${IOS_MIN_VERSION}-simulator" \
   "${OBJ_FILES[@]}" \
   "${CAMERA_LINK_FLAGS[@]+"${CAMERA_LINK_FLAGS[@]}"}" \
+  "${NATIVE_VIEWS_LINK_FLAGS[@]+"${NATIVE_VIEWS_LINK_FLAGS[@]}"}" \
   -framework UIKit \
   -framework Foundation \
   -framework QuartzCore \
   -framework CoreGraphics \
-  -framework WebKit \
   -o "$APP_BIN"
 
 echo "==> [3/4] Assembling and ad-hoc signing $APP_BUNDLE..."
