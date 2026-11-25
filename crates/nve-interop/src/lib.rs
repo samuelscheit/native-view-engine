@@ -52,12 +52,13 @@ pub use sync_delta::{
 };
 pub use sync_transport::{
     DEFAULT_MAX_WIRE_FRAME_BYTES, DEFAULT_SCHEMA_VERSION, FRAG_SUBHEADER_SIZE,
-    MAX_ALLOWED_WIRE_FRAME_BYTES, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_FRAG_CHUNK,
-    MAX_UDP_SINGLE_PAYLOAD, PairingConfig, PairingMetrics, RejectReason, StreamFraming,
-    TRANSPORT_HEADER_SIZE, TRANSPORT_MAGIC, TRANSPORT_PROTOCOL_VERSION, TcpDeltaClient,
-    TcpDeltaServer, TransportError, TransportMsgKind, UdpDeltaClient, UdpDeltaServer, WsFrame,
-    WsOpcode, compute_ws_accept_key, decode_ws_frame_slice, derive_session_id, derive_token_proof,
-    encode_ws_frame, packetize_udp_datagrams,
+    MAX_ALLOWED_WIRE_FRAME_BYTES, MAX_INPUT_EVENT_BYTES, MAX_UDP_DATAGRAM_BYTES,
+    MAX_UDP_FRAG_CHUNK, MAX_UDP_SINGLE_PAYLOAD, PairingConfig, PairingMetrics, RejectReason,
+    StreamFraming, SyncTransportError, TRANSPORT_HEADER_SIZE, TRANSPORT_MAGIC,
+    TRANSPORT_PROTOCOL_VERSION, TcpDeltaClient, TcpDeltaServer, TransportError, TransportMsgKind,
+    UdpDeltaClient, UdpDeltaServer, WsFrame, WsOpcode, compute_ws_accept_key,
+    decode_ws_frame_slice, derive_session_id, derive_token_proof, encode_ws_frame,
+    packetize_udp_datagrams,
 };
 
 use nve_abi::SurfaceId;

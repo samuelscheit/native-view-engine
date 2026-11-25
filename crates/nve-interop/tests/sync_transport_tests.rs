@@ -7,13 +7,15 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, FlexDirection,
-    LayoutProps, StyleProps, ROOT_NODE_ID,
+    decode_events, encode_events, ColorRgba, CommandBufferBuilder, ComponentKind, Dimension,
+    EdgeInsets, EventPayload, FlexDirection, LayoutProps, NativeEvent, NativeEventKind, StyleProps,
+    ROOT_NODE_ID,
 };
 use nve_interop::{
-    compute_ws_accept_key, encode_ws_frame, PairingConfig, StreamFraming, TcpDeltaClient,
-    TcpDeltaServer, TransportError, UdpDeltaClient, UdpDeltaServer, WsOpcode,
-    MAX_UDP_DATAGRAM_BYTES,
+    compute_ws_accept_key, encode_ws_frame, PairingConfig, StreamFraming, SyncTransportError,
+    TcpDeltaClient, TcpDeltaServer, TransportError, TransportMsgKind, UdpDeltaClient,
+    UdpDeltaServer, WsOpcode, MAX_INPUT_EVENT_BYTES, MAX_UDP_DATAGRAM_BYTES,
+    MAX_UDP_SINGLE_PAYLOAD, TRANSPORT_MAGIC, TRANSPORT_PROTOCOL_VERSION,
 };
 
 // =============================================================================
@@ -884,4 +886,304 @@ fn adversarial_auth_schema_oom_bombs_truncation_and_leak_free_shutdown() {
         "teardown took too long ({:?}), possible thread hang",
         teardown_start.elapsed()
     );
+}
+
+// =============================================================================
+// Test 6: Bidirectional InputEvents Backchannel Across UDP, Raw TCP & WebSocket
+// =============================================================================
+
+#[test]
+fn bidirectional_input_events_backchannel_udp_tcp_and_websocket_triggers_live_deltas() {
+    let config = PairingConfig::new("studio-bidir-input-2026")
+        .with_schema_version(1)
+        .with_heartbeat_interval_ms(120);
+
+    let mut udp_server = UdpDeltaServer::bind("127.0.0.1:0", config.clone()).unwrap();
+    let mut tcp_server = TcpDeltaServer::bind("127.0.0.1:0", config.clone()).unwrap();
+
+    // Seed initial live frame (count = 0) before clients pair -> auto keyframe on connect!
+    let mut counter: u64 = 0;
+    let initial = make_studio_workspace_frame(
+        1,
+        ColorRgba::rgb(56, 189, 248),
+        &format!("Counter: {counter}"),
+        0,
+    );
+    assert_eq!(udp_server.send_frame(&initial).unwrap(), 0);
+    assert_eq!(tcp_server.send_frame(&initial).unwrap(), 0);
+
+    let mut udp_client = UdpDeltaClient::connect(udp_server.local_addr(), config.clone()).unwrap();
+    let mut tcp_client = TcpDeltaClient::connect(tcp_server.local_addr(), config.clone()).unwrap();
+    let mut ws_client =
+        TcpDeltaClient::connect_websocket(tcp_server.local_addr(), "/ws/nvd", config).unwrap();
+
+    assert!(udp_server.wait_for_peers(1, Duration::from_secs(2)));
+    assert!(tcp_server.wait_for_peers(2, Duration::from_secs(2)));
+
+    // Every client receives the initial keyframe immediately upon pairing.
+    assert_eq!(
+        udp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1,
+        initial
+    );
+    assert_eq!(
+        tcp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1,
+        initial
+    );
+    assert_eq!(
+        ws_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1,
+        initial
+    );
+
+    let make_press_ring = |node_id: u32, ts: u64| {
+        encode_events(&[NativeEvent {
+            surface_id: 1,
+            node_id,
+            timestamp_us: ts,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 48.0, y: 72.0 },
+        }])
+    };
+
+    // 1. UDP client sends InputEvents -> server ingests, mutates state, broadcasts NVD1 delta to ALL clients.
+    let udp_ev = make_press_ring(10, 1001);
+    udp_client.send_events(&udp_ev).unwrap();
+    let (udp_sid, udp_rx_bytes) = udp_server
+        .recv_events(Duration::from_secs(2))
+        .expect("UDP server should receive authenticated InputEvents");
+    assert_eq!(udp_sid, u64::from(udp_client.session_id()));
+    assert_eq!(udp_rx_bytes, udp_ev);
+    assert_eq!(decode_events(&udp_rx_bytes).unwrap()[0].node_id, 10);
+
+    counter += 1;
+    let f2 = make_studio_workspace_frame(
+        2,
+        ColorRgba::rgb(34, 197, 94),
+        &format!("Counter: {counter}"),
+        1,
+    );
+    assert_eq!(udp_server.send_frame(&f2).unwrap(), 1);
+    assert_eq!(tcp_server.send_frame(&f2).unwrap(), 2);
+    assert_eq!(udp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f2);
+    assert_eq!(tcp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f2);
+    assert_eq!(ws_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f2);
+
+    // 2. Raw TCP client sends InputEvents with text + press batch -> server ingests & broadcasts delta.
+    let tcp_ev = encode_events(&[
+        NativeEvent {
+            surface_id: 1,
+            node_id: 20,
+            timestamp_us: 2001,
+            kind: NativeEventKind::TextChange,
+            payload: EventPayload::Text("hello-nve".into()),
+        },
+        NativeEvent {
+            surface_id: 1,
+            node_id: 21,
+            timestamp_us: 2002,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 12.0, y: 34.0 },
+        },
+    ]);
+    tcp_client.send_events(&tcp_ev).unwrap();
+    let (tcp_sid, tcp_rx_bytes) = tcp_server
+        .recv_events(Duration::from_secs(2))
+        .expect("TCP server should receive raw TCP InputEvents");
+    assert_eq!(tcp_sid, u64::from(tcp_client.session_id()));
+    assert_eq!(tcp_rx_bytes, tcp_ev);
+    let decoded_tcp = decode_events(&tcp_rx_bytes).unwrap();
+    assert_eq!(decoded_tcp.len(), 2);
+    assert_eq!(decoded_tcp[0].payload, EventPayload::Text("hello-nve".into()));
+
+    counter += 1;
+    let f3 = make_studio_workspace_frame(
+        3,
+        ColorRgba::rgb(167, 139, 250),
+        &format!("Counter: {counter}"),
+        2,
+    );
+    assert_eq!(udp_server.send_frame(&f3).unwrap(), 1);
+    assert_eq!(tcp_server.send_frame(&f3).unwrap(), 2);
+    assert_eq!(udp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f3);
+    assert_eq!(tcp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f3);
+    assert_eq!(ws_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f3);
+
+    // 3. RFC-6455 Binary WebSocket client sends InputEvents -> server ingests via try_recv_events/recv_events & broadcasts.
+    let ws_ev = make_press_ring(30, 3001);
+    ws_client.send_events(&ws_ev).unwrap();
+    let (ws_sid, ws_rx_bytes) = tcp_server
+        .recv_events(Duration::from_secs(2))
+        .expect("TCP/WS server should receive WebSocket InputEvents");
+    assert_eq!(ws_sid, u64::from(ws_client.session_id()));
+    assert_eq!(ws_rx_bytes, ws_ev);
+    assert!(tcp_server.try_recv_events().is_none());
+
+    counter += 1;
+    let f4 = make_studio_workspace_frame(
+        4,
+        ColorRgba::rgb(251, 191, 36),
+        &format!("Counter: {counter}"),
+        3,
+    );
+    assert_eq!(udp_server.send_frame(&f4).unwrap(), 1);
+    assert_eq!(tcp_server.send_frame(&f4).unwrap(), 2);
+    assert_eq!(udp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f4);
+    assert_eq!(tcp_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f4);
+    assert_eq!(ws_client.recv_frame(Duration::from_secs(2)).unwrap().unwrap().1, f4);
+
+    // Verify metrics counters across servers and clients.
+    let um = udp_server.metrics();
+    let tm = tcp_server.metrics();
+    assert_eq!(um.events_rx, 1);
+    assert_eq!(um.event_bytes_rx, udp_ev.len() as u64);
+    assert_eq!(tm.events_rx, 2);
+    assert_eq!(tm.event_bytes_rx, (tcp_ev.len() + ws_ev.len()) as u64);
+    assert_eq!(udp_client.metrics().events_tx, 1);
+    assert_eq!(tcp_client.metrics().events_tx, 1);
+    assert_eq!(ws_client.metrics().events_tx, 1);
+
+    udp_client.shutdown();
+    tcp_client.shutdown();
+    ws_client.shutdown();
+    udp_server.shutdown();
+    tcp_server.shutdown();
+}
+
+// =============================================================================
+// Test 7: Adversarial Unauthenticated, Oversized & Corrupt InputEvents Rejection
+// =============================================================================
+
+#[test]
+fn adversarial_input_events_rejects_unauthenticated_oversized_and_corrupt_payloads() {
+    let config = PairingConfig::new("strict-input-guard-token")
+        .with_schema_version(1)
+        .with_handshake_timeout_ms(400);
+
+    let mut udp_server = UdpDeltaServer::bind("127.0.0.1:0", config.clone()).unwrap();
+    let mut tcp_server = TcpDeltaServer::bind("127.0.0.1:0", config.clone()).unwrap();
+
+    let valid_ev = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: 5,
+        timestamp_us: 99,
+        kind: NativeEventKind::Press,
+        payload: EventPayload::Empty,
+    }]);
+
+    let make_raw_input_envelope = |sid: u32, payload: &[u8]| {
+        let mut buf = Vec::with_capacity(8 + payload.len());
+        buf.extend_from_slice(&TRANSPORT_MAGIC);
+        buf.push(TRANSPORT_PROTOCOL_VERSION);
+        buf.push(TransportMsgKind::InputEvents as u8);
+        buf.extend_from_slice(&sid.to_le_bytes());
+        buf.extend_from_slice(payload);
+        buf
+    };
+
+    // 1. Unauthenticated UDP InputEvents (no Hello handshake) must be rejected & never queued.
+    {
+        let attacker = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let pkt = make_raw_input_envelope(0x1234_5678, &valid_ev);
+        attacker.send_to(&pkt, udp_server.local_addr()).unwrap();
+    }
+
+    // 2. Unauthenticated raw TCP InputEvents sent BEFORE Hello must be rejected & dropped.
+    {
+        let mut s = TcpStream::connect(tcp_server.local_addr()).unwrap();
+        let env = make_raw_input_envelope(0x1234_5678, &valid_ev);
+        s.write_all(&(env.len() as u32).to_le_bytes()).unwrap();
+        s.write_all(&env).unwrap();
+    }
+
+    // 3. Unauthenticated WebSocket InputEvents sent BEFORE Hello must be rejected & dropped.
+    {
+        let mut s = TcpStream::connect(tcp_server.local_addr()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let req = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        s.write_all(req.as_bytes()).unwrap();
+        let mut resp = [0u8; 256];
+        let _ = io::Read::read(&mut s, &mut resp);
+        let env = make_raw_input_envelope(0x1234_5678, &valid_ev);
+        let frame = encode_ws_frame(true, WsOpcode::Binary, &env, Some([1, 2, 3, 4]));
+        let _ = s.write_all(&frame);
+    }
+
+    thread::sleep(Duration::from_millis(60));
+    assert!(udp_server.try_recv_events().is_none());
+    assert!(tcp_server.try_recv_events().is_none());
+    assert_eq!(udp_server.metrics().events_rx, 0);
+    assert_eq!(tcp_server.metrics().events_rx, 0);
+    assert!(udp_server.metrics().malformed_packets_dropped >= 1);
+    assert!(tcp_server.metrics().malformed_packets_dropped >= 2);
+
+    // 4. Authenticated clients cannot send empty, corrupt, or oversized InputEvents payloads.
+    let mut udp_client = UdpDeltaClient::connect(udp_server.local_addr(), config.clone()).unwrap();
+    let mut tcp_client = TcpDeltaClient::connect(tcp_server.local_addr(), config).unwrap();
+    assert!(udp_server.wait_for_peers(1, Duration::from_secs(2)));
+    assert!(tcp_server.wait_for_peers(1, Duration::from_secs(2)));
+
+    // Empty / corrupt payloads fail cleanly on client API.
+    assert!(matches!(
+        udp_client.send_events(&[]),
+        Err(SyncTransportError::MalformedFrame(_))
+    ));
+    assert!(matches!(
+        tcp_client.send_events(&[0xFF, 0xFF, 0xFF, 0xFF]),
+        Err(SyncTransportError::MalformedFrame(_))
+    ));
+
+    // Oversized payload > MAX_UDP_SINGLE_PAYLOAD on UDP and > MAX_INPUT_EVENT_BYTES on TCP fail cleanly.
+    let big_udp_text = "x".repeat(MAX_UDP_SINGLE_PAYLOAD + 64);
+    let big_udp_ev = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: 1,
+        timestamp_us: 1,
+        kind: NativeEventKind::TextChange,
+        payload: EventPayload::Text(big_udp_text),
+    }]);
+    assert!(matches!(
+        udp_client.send_events(&big_udp_ev),
+        Err(SyncTransportError::FrameTooLarge { .. })
+    ));
+
+    let big_tcp_text = "y".repeat(MAX_INPUT_EVENT_BYTES + 64);
+    let big_tcp_ev = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: 1,
+        timestamp_us: 1,
+        kind: NativeEventKind::TextChange,
+        payload: EventPayload::Text(big_tcp_text),
+    }]);
+    assert!(matches!(
+        tcp_client.send_events(&big_tcp_ev),
+        Err(SyncTransportError::FrameTooLarge { .. })
+    ));
+
+    // 5. Even after valid pairing, spoofed session_id or raw corrupt InputEvents datagrams are dropped.
+    let spoof = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let bad_sid = udp_client.session_id().wrapping_add(1);
+    let _ = spoof.send_to(&make_raw_input_envelope(bad_sid, &valid_ev), udp_server.local_addr());
+    let _ = spoof.send_to(
+        &make_raw_input_envelope(udp_client.session_id(), &[0xDE, 0xAD, 0xBE, 0xEF]),
+        udp_server.local_addr(),
+    );
+    thread::sleep(Duration::from_millis(50));
+    assert!(udp_server.try_recv_events().is_none());
+    assert_eq!(udp_server.metrics().events_rx, 0);
+
+    // Legitimate authenticated InputEvents still succeed afterwards!
+    udp_client.send_events(&valid_ev).unwrap();
+    tcp_client.send_events(&valid_ev).unwrap();
+    assert_eq!(
+        udp_server.recv_events(Duration::from_secs(2)).unwrap().1,
+        valid_ev
+    );
+    assert_eq!(
+        tcp_server.recv_events(Duration::from_secs(2)).unwrap().1,
+        valid_ev
+    );
+
+    udp_client.shutdown();
+    tcp_client.shutdown();
+    udp_server.shutdown();
+    tcp_server.shutdown();
 }

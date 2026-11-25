@@ -1,0 +1,408 @@
+//! `nve dev` — 2-tier hot-reload daemon with optional `--skia` desktop preview and `--pair` live `NVD1` streaming.
+
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crossbeam_channel::{unbounded, Sender};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use nve_engine::HotPatchMsg;
+
+use crate::pair::{self, PairControlMsg};
+use crate::rsx_diff;
+
+pub(crate) struct DevOptions {
+    pub package: String,
+    pub watch: Option<PathBuf>,
+    pub host: String,
+    pub port: u16,
+    pub web: bool,
+    pub no_web: bool,
+    pub skia: bool,
+    pub pair: bool,
+    pub pair_udp_port: u16,
+    pub pair_ws_port: u16,
+    pub pair_token: Option<String>,
+}
+
+pub(crate) fn dylib_path_for_package(package: &str) -> PathBuf {
+    let ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else if cfg!(target_os = "windows") {
+        "dll"
+    } else {
+        "so"
+    };
+    let prefix = if cfg!(target_os = "windows") { "" } else { "lib" };
+    PathBuf::from(format!(
+        "target/debug/{prefix}{}.{ext}",
+        package.replace('-', "_")
+    ))
+}
+
+pub(crate) fn default_watch_dir_for_package(package: &str) -> PathBuf {
+    match package {
+        "nve-studio-workspace" => PathBuf::from("examples/studio-workspace/src"),
+        "nve-example-counter" => PathBuf::from("examples/counter/src"),
+        other => {
+            let stripped = other
+                .strip_prefix("nve-example-")
+                .or_else(|| other.strip_prefix("nve-"))
+                .unwrap_or(other);
+            let example_src = PathBuf::from(format!("examples/{stripped}/src"));
+            if example_src.exists() {
+                example_src
+            } else {
+                let crate_src = PathBuf::from(format!("crates/{other}/src"));
+                if crate_src.exists() {
+                    crate_src
+                } else {
+                    PathBuf::from("examples")
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn ws_url_for_port(port: u16) -> String {
+    format!("ws://127.0.0.1:{port}")
+}
+
+pub(crate) fn ws_bind_addr(host: &str, port: u16) -> String {
+    format!("{host}:{port}")
+}
+
+pub(crate) fn should_trigger_rebuild(kind: &notify::EventKind) -> bool {
+    matches!(kind, notify::EventKind::Any) || kind.is_modify() || kind.is_create()
+}
+
+pub(crate) fn is_relevant_source_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    !(name.starts_with('.') || name.ends_with('~') || name.ends_with(".swp") || name.ends_with(".tmp"))
+}
+
+pub(crate) fn make_dylib_reload_msg(generation: u64, dylib_path: &Path, build_ms: u64) -> HotPatchMsg {
+    HotPatchMsg::DylibReload {
+        generation,
+        dylib_path: dylib_path.to_string_lossy().into_owned(),
+        build_ms,
+    }
+}
+
+pub(crate) fn cmd_dev(opts: DevOptions) {
+    let watch_dir = opts
+        .watch
+        .unwrap_or_else(|| default_watch_dir_for_package(&opts.package));
+    let rebuild_web = !opts.no_web && (opts.web || Path::new("hosts/web-shell/build.sh").exists());
+    let bind_addr = ws_bind_addr(&opts.host, opts.port);
+    let client_ws_url = if opts.host == "0.0.0.0" || opts.host == "::" {
+        ws_url_for_port(opts.port)
+    } else {
+        format!("ws://{}:{}", opts.host, opts.port)
+    };
+
+    println!("nve dev — 2-Tier Hot Reload Daemon");
+    println!("  package: {}", opts.package);
+    println!("  watch:   {}", watch_dir.display());
+    println!("  ws:      ws://{bind_addr} (local: {client_ws_url})");
+    if rebuild_web {
+        println!("  web:     auto-rebuilding hosts/web-shell WASM (--dev) on save (pass --no-web to skip)");
+    }
+    if opts.skia {
+        println!("  preview: live desktop window enabled (--skia)");
+    }
+    if opts.pair {
+        println!(
+            "  pair:    enabled (udp:{}, tcp/ws:{})",
+            opts.pair_udp_port, opts.pair_ws_port
+        );
+    }
+    println!();
+
+    let clients: Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let ws_clients = Arc::clone(&clients);
+    let bind_addr_thread = bind_addr.clone();
+
+    std::thread::spawn(move || {
+        let listener = TcpListener::bind(&bind_addr_thread)
+            .unwrap_or_else(|e| panic!("bind hot-reload WS {bind_addr_thread}: {e}"));
+        for stream in listener.incoming().flatten() {
+            let _ = stream.set_nodelay(true);
+            if let Ok(mut ws) = tungstenite::accept(stream) {
+                let status = HotPatchMsg::DevStatus {
+                    message: "Hot reload: connected".into(),
+                    latency_ms: 0,
+                };
+                let _ = ws.send(tungstenite::Message::Text(status.to_json().into()));
+                ws_clients.lock().unwrap().push(ws);
+            }
+        }
+    });
+
+    let broadcast_msg = |clients: &Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>>,
+                         msg: &HotPatchMsg| {
+        let payload = tungstenite::Message::Text(msg.to_json().into());
+        let mut guard = clients.lock().unwrap();
+        guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
+    };
+
+    let dylib_path = dylib_path_for_package(&opts.package);
+    let pair_tx_slot: Arc<Mutex<Option<Sender<PairControlMsg>>>> = Arc::new(Mutex::new(None));
+
+    let build_once = {
+        let package = opts.package.clone();
+        let dylib_for_build = dylib_path.clone();
+        let clients = Arc::clone(&clients);
+        let pair_tx_slot = Arc::clone(&pair_tx_slot);
+        move |generation: u64| -> bool {
+            let t0 = Instant::now();
+            let status = ProcessCommand::new("cargo")
+                .args(["build", "-p", &package])
+                .status();
+            let web_ok = if rebuild_web && status.as_ref().is_ok_and(|s| s.success()) {
+                ProcessCommand::new("./hosts/web-shell/build.sh")
+                    .arg("--dev")
+                    .status()
+                    .is_ok_and(|s| s.success())
+            } else {
+                true
+            };
+            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            match status {
+                Ok(s) if s.success() && web_ok => {
+                    let msg = make_dylib_reload_msg(generation, &dylib_for_build, elapsed_ms);
+                    println!(
+                        "[gen {generation}] rebuilt {package}{} in {elapsed_ms}ms -> {}",
+                        if rebuild_web { " + web-wasm" } else { "" },
+                        dylib_for_build.display()
+                    );
+                    broadcast_msg(&clients, &msg);
+                    if let Some(tx) = pair_tx_slot.lock().unwrap().as_ref() {
+                        let _ = tx.send(PairControlMsg::DylibReload(dylib_for_build.clone()));
+                    }
+                    true
+                }
+                _ => {
+                    eprintln!("[gen {generation}] build failed after {elapsed_ms}ms");
+                    false
+                }
+            }
+        }
+    };
+
+    let initial_ok = build_once(1);
+
+    if opts.pair && initial_ok {
+        let token = pair::resolve_or_generate_token(opts.pair_token.clone());
+        match pair::spawn_dylib_pair_thread(
+            dylib_path.clone(),
+            opts.host.clone(),
+            opts.pair_udp_port,
+            opts.pair_ws_port,
+            token,
+            393.0,
+            852.0,
+            60,
+        ) {
+            Ok((tx, banner)) => {
+                println!("{banner}");
+                *pair_tx_slot.lock().unwrap() = Some(tx);
+            }
+            Err(err) => {
+                eprintln!("[pair] failed to start live pairing server: {err}");
+            }
+        }
+    }
+
+    let watch_owned = watch_dir.clone();
+    let clients_for_watch = Arc::clone(&clients);
+    let pair_tx_for_watch = Arc::clone(&pair_tx_slot);
+    let run_watch_loop = move || {
+        let mut rsx_cache = rsx_diff::RsxWatchCache::new();
+        rsx_cache.seed_dir(&watch_owned);
+
+        let (tx, rx) = unbounded();
+        let mut watcher = RecommendedWatcher::new(
+            move |res| {
+                let _ = tx.send(res);
+            },
+            Config::default(),
+        )
+        .expect("create file watcher");
+        watcher
+            .watch(&watch_owned, RecursiveMode::Recursive)
+            .expect("watch directory");
+
+        let mut generation = 1u64;
+        println!(
+            "Watching for changes ({} cached .rs file(s) for Tier-1 hot-patch; Ctrl-C to stop)...",
+            rsx_cache.len()
+        );
+        loop {
+            let Ok(Ok(event)) = rx.recv() else { continue };
+            let mut changed_paths: Vec<PathBuf> = event
+                .paths
+                .iter()
+                .filter(|p| is_relevant_source_path(p))
+                .cloned()
+                .collect();
+            if !(should_trigger_rebuild(&event.kind)
+                && (event.paths.is_empty() || !changed_paths.is_empty()))
+            {
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+            while let Ok(Ok(extra)) = rx.try_recv() {
+                if should_trigger_rebuild(&extra.kind) {
+                    for p in extra.paths {
+                        if is_relevant_source_path(&p) && !changed_paths.contains(&p) {
+                            changed_paths.push(p);
+                        }
+                    }
+                }
+            }
+
+            let t_diff = Instant::now();
+            let mut tier1_patches: Vec<(PathBuf, HotPatchMsg)> = Vec::new();
+            let mut fallback_reason: Option<String> = None;
+
+            if changed_paths.is_empty() {
+                fallback_reason = Some("unspecified path event".into());
+            } else {
+                for path in &changed_paths {
+                    match std::fs::read_to_string(path) {
+                        Ok(new_src) => match rsx_cache.diff_file(path, &new_src, generation + 1) {
+                            rsx_diff::DiffOutcome::NoOp => {}
+                            rsx_diff::DiffOutcome::Tier1Patch(msg) => {
+                                tier1_patches.push((path.clone(), msg));
+                            }
+                            rsx_diff::DiffOutcome::RequireTier2Rebuild { reason } => {
+                                fallback_reason = Some(reason);
+                                break;
+                            }
+                        },
+                        Err(err) => {
+                            fallback_reason =
+                                Some(format!("could not read {}: {err}", path.display()));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(reason) = fallback_reason {
+                if let Some(first) = changed_paths.first() {
+                    println!("[tier-2] {} ({reason}) — rebuilding...", first.display());
+                }
+                generation += 1;
+                if build_once(generation) {
+                    rsx_cache.seed_dir(&watch_owned);
+                }
+            } else if tier1_patches.is_empty() {
+                if let Some(first) = changed_paths.first() {
+                    println!(
+                        "[watch] {} — comment/whitespace-only edit (no-op)",
+                        first.display()
+                    );
+                }
+            } else {
+                let elapsed_ms = t_diff.elapsed().as_millis() as u64;
+                for (path, mut msg) in tier1_patches {
+                    generation += 1;
+                    if let HotPatchMsg::TemplatePatch {
+                        generation: ref mut g,
+                        ..
+                    } = msg
+                    {
+                        *g = generation;
+                    }
+                    broadcast_msg(&clients_for_watch, &msg);
+                    if let Some(tx) = pair_tx_for_watch.lock().unwrap().as_ref() {
+                        let _ = tx.send(PairControlMsg::Tier1Patch(msg.to_json()));
+                    }
+                    let status = HotPatchMsg::DevStatus {
+                        message: format!(
+                            "[tier-1] patched {} in {}ms (0 cargo build)",
+                            path.display(),
+                            elapsed_ms
+                        ),
+                        latency_ms: elapsed_ms,
+                    };
+                    broadcast_msg(&clients_for_watch, &status);
+                    println!(
+                        "[tier-1] patched {} in {elapsed_ms}ms (0 cargo build)",
+                        path.display()
+                    );
+                }
+            }
+        }
+    };
+
+    if opts.skia {
+        std::thread::spawn(run_watch_loop);
+        if let Err(err) = nve_skia_shell::run_desktop_preview(dylib_path, Some(client_ws_url)) {
+            eprintln!("Desktop preview exited with error: {err}");
+            std::process::exit(1);
+        }
+    } else {
+        run_watch_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hot_reload_helpers_cover_platform_paths_and_filters() {
+        let dylib = dylib_path_for_package("nve-example-counter");
+        let s = dylib.to_string_lossy();
+        assert!(s.contains("nve_example_counter"), "unexpected path: {s}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(s, "target/debug/libnve_example_counter.dylib");
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(s, "target/debug/nve_example_counter.dll");
+        } else {
+            assert_eq!(s, "target/debug/libnve_example_counter.so");
+        }
+
+        assert_eq!(ws_url_for_port(8089), "ws://127.0.0.1:8089");
+        assert_eq!(ws_bind_addr("0.0.0.0", 8089), "0.0.0.0:8089");
+        assert_eq!(
+            default_watch_dir_for_package("nve-studio-workspace"),
+            PathBuf::from("examples/studio-workspace/src")
+        );
+        assert_eq!(
+            default_watch_dir_for_package("nve-example-counter"),
+            PathBuf::from("examples/counter/src")
+        );
+        assert!(is_relevant_source_path(Path::new(
+            "examples/studio-workspace/src/ui.rs"
+        )));
+        assert!(!is_relevant_source_path(Path::new(
+            "examples/studio-workspace/src/.ui.rs.swp"
+        )));
+
+        let msg = make_dylib_reload_msg(3, &dylib, 180);
+        assert_eq!(HotPatchMsg::from_json(&msg.to_json()).unwrap(), msg);
+
+        use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
+        assert!(should_trigger_rebuild(&notify::EventKind::Create(
+            CreateKind::File
+        )));
+        assert!(should_trigger_rebuild(&notify::EventKind::Modify(
+            ModifyKind::Any
+        )));
+        assert!(!should_trigger_rebuild(&notify::EventKind::Access(
+            AccessKind::Any
+        )));
+        assert!(!should_trigger_rebuild(&notify::EventKind::Remove(
+            RemoveKind::File
+        )));
+    }
+}
