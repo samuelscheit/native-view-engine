@@ -24,7 +24,19 @@ use nve_engine::{
 };
 
 pub use font::{bitmap_font_metrics, BitmapFontMetrics, BitmapFontTextMeasurer};
-pub use gpu::{GpuBackendKind, GpuSurfaceConfig, GpuSurfaceError};
+pub use gpu::d3d12::D3D12SwapchainConfig;
+#[cfg(all(feature = "skia-d3d", target_os = "windows"))]
+pub use gpu::d3d12::D3D12Swapchain;
+pub use gpu::metal::MetalSwapchainConfig;
+#[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
+pub use gpu::metal::MetalSwapchain;
+pub use gpu::vulkan::{VulkanSemaphoreSyncHooks, VulkanSwapchainConfig};
+#[cfg(feature = "skia-vulkan")]
+pub use gpu::vulkan::VulkanSwapchain;
+pub use gpu::{
+    FrameLifecycleState, FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig,
+    GpuSurfaceError, GpuSwapchain, SoftwareFramePresenter, SwapchainExtent,
+};
 #[cfg(feature = "skia")]
 pub use gpu::{CpuSkiaSurface, GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 #[cfg(feature = "yoga")]

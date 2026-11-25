@@ -25,9 +25,13 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use crate::gpu::{
+    FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
+    GpuSwapchain,
+};
 use crate::raster::{draw_hud_banner, PixelBuffer};
 #[cfg(feature = "skia")]
-use crate::{GpuSurface, GpuSurfaceBackend, GpuSurfaceConfig, SkiaCanvasRenderer};
+use crate::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use crate::SkiaBackend;
 
 pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8089";
@@ -77,6 +81,8 @@ pub struct DesktopPreviewOptions {
     pub ws_url: Option<String>,
     pub surface_id: SurfaceId,
     pub show_hud: bool,
+    pub preferred_backend: GpuBackendKind,
+    pub vsync: bool,
 }
 
 impl Default for DesktopPreviewOptions {
@@ -89,6 +95,8 @@ impl Default for DesktopPreviewOptions {
             ws_url: Some(DEFAULT_WS_URL.to_string()),
             surface_id: 1,
             show_hud: true,
+            preferred_backend: GpuBackendKind::platform_preferred(),
+            vsync: true,
         }
     }
 }
@@ -203,6 +211,8 @@ pub struct DesktopSession<A: DesktopApp> {
     status_banner: Option<String>,
     show_hud: bool,
     last_frame_bytes: Vec<u8>,
+    frame_counter: u64,
+    last_telemetry: Option<FrameTelemetry>,
     #[cfg(feature = "skia")]
     skia_renderer: SkiaCanvasRenderer,
     #[cfg(feature = "skia")]
@@ -241,6 +251,8 @@ impl<A: DesktopApp> DesktopSession<A> {
             status_banner: None,
             show_hud,
             last_frame_bytes: Vec::new(),
+            frame_counter: 0,
+            last_telemetry: None,
             #[cfg(feature = "skia")]
             skia_renderer: SkiaCanvasRenderer::new(),
             #[cfg(feature = "skia")]
@@ -266,6 +278,51 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn status_banner(&self) -> Option<&str> {
         self.status_banner.as_deref()
+    }
+
+    pub fn active_backend(&self) -> GpuBackendKind {
+        #[cfg(feature = "skia")]
+        if let Some(surface) = &self.gpu_surface {
+            return surface.kind();
+        }
+        GpuBackendKind::Softbuffer
+    }
+
+    pub fn last_frame_telemetry(&self) -> Option<&FrameTelemetry> {
+        self.last_telemetry.as_ref()
+    }
+
+    pub fn clear_color(&self) -> ColorRgba {
+        self.clear_color
+    }
+
+    pub fn hud_banner_if_enabled(&self) -> Option<&str> {
+        if self.show_hud {
+            self.status_banner.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Presents the current retained `DisplayList` directly through a hardware or offscreen
+    /// [`GpuSwapchain`] without touching the CPU software `PixelBuffer`.
+    pub fn present_to_swapchain(
+        &mut self,
+        swapchain: &mut GpuSwapchain,
+    ) -> Result<FrameTelemetry, GpuSurfaceError> {
+        let hud = if self.show_hud {
+            self.status_banner.as_deref()
+        } else {
+            None
+        };
+        let telemetry = swapchain.execute_frame(
+            self.backend.display_list(),
+            self.viewport.scale_factor,
+            self.clear_color,
+            hud,
+        )?;
+        self.last_telemetry = Some(telemetry.clone());
+        Ok(telemetry)
     }
 
     pub fn set_cursor_logical(&mut self, x: f32, y: f32) {
@@ -324,21 +381,29 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     fn rasterize_current(&mut self) {
+        let t0 = Instant::now();
         #[cfg(feature = "skia")]
-        let painted_via_skia = if let Some(surface) = self.gpu_surface.as_mut() {
-            let pw = self.pixel_buffer.width();
-            let ph = self.pixel_buffer.height();
-            surface.resize(pw, ph).is_ok()
-                && self
-                    .backend
-                    .paint_to_surface(&self.skia_renderer, surface, self.clear_color)
-                    .is_ok()
-                && surface.copy_to_pixel_buffer(&mut self.pixel_buffer).is_ok()
-        } else {
-            false
-        };
+        let (painted_via_skia, active_kind, fallback_reason) =
+            if let Some(surface) = self.gpu_surface.as_mut() {
+                let pw = self.pixel_buffer.width();
+                let ph = self.pixel_buffer.height();
+                let ok = surface.resize(pw, ph).is_ok()
+                    && self
+                        .backend
+                        .paint_to_surface(&self.skia_renderer, surface, self.clear_color)
+                        .is_ok()
+                    && surface.copy_to_pixel_buffer(&mut self.pixel_buffer).is_ok();
+                (
+                    ok,
+                    surface.kind(),
+                    surface.fallback_reason().map(str::to_owned),
+                )
+            } else {
+                (false, GpuBackendKind::Softbuffer, None)
+            };
         #[cfg(not(feature = "skia"))]
-        let painted_via_skia = false;
+        let (painted_via_skia, active_kind, fallback_reason): (bool, GpuBackendKind, Option<String>) =
+            (false, GpuBackendKind::Softbuffer, None);
 
         if !painted_via_skia {
             self.backend
@@ -349,6 +414,26 @@ impl<A: DesktopApp> DesktopSession<A> {
                 draw_hud_banner(&mut self.pixel_buffer, self.viewport.scale_factor, banner);
             }
         }
+        let elapsed_us = t0.elapsed().as_micros() as u64;
+        self.frame_counter += 1;
+        self.last_telemetry = Some(FrameTelemetry {
+            backend: if painted_via_skia {
+                active_kind
+            } else {
+                GpuBackendKind::Softbuffer
+            },
+            frame_index: self.frame_counter,
+            width: self.pixel_buffer.width(),
+            height: self.pixel_buffer.height(),
+            scale_factor: self.viewport.scale_factor,
+            acquire_us: 0,
+            record_us: elapsed_us,
+            submit_us: 0,
+            present_us: 0,
+            total_us: elapsed_us,
+            swapchain_recreations: 0,
+            fallback_reason,
+        });
     }
 
     /// Translates a logical mouse click into hit-tested `NativeEventKind::Press` ->
@@ -559,15 +644,28 @@ enum HostWakeEvent {
     HotReload,
 }
 
-/// Live `winit` + `softbuffer` desktop preview host for any compiled NVE `cdylib`.
+enum WindowPresenter {
+    /// Direct hardware GPU swapchain (`CAMetalLayer` / `VkSwapchainKHR` / `IDXGISwapChain3`).
+    Hardware(GpuSwapchain),
+    /// Software `softbuffer` presenter (zero-C++ default, or automatic fallback when a hardware
+    /// GPU device/swapchain cannot be initialized).
+    Softbuffer {
+        _context: Context<Arc<Window>>,
+        surface: Surface<Arc<Window>, Arc<Window>>,
+        fallback_reason: Option<String>,
+    },
+}
+
+/// Live `winit` desktop preview host supporting direct hardware GPU swapchains (`skia-metal`,
+/// `skia-vulkan`, `skia-d3d`) with automatic graceful fallback to `softbuffer`.
 pub struct DesktopWindowHost {
     options: DesktopPreviewOptions,
     session: DesktopSession<HotAppSlot>,
     window: Option<Arc<Window>>,
-    _context: Option<Context<Arc<Window>>>,
-    surface: Option<Surface<Arc<Window>, Arc<Window>>>,
+    presenter: Option<WindowPresenter>,
     hot_reload: Option<HotReloadClient>,
     proxy: Option<EventLoopProxy<HostWakeEvent>>,
+    last_telemetry: Option<FrameTelemetry>,
 }
 
 impl DesktopWindowHost {
@@ -594,10 +692,10 @@ impl DesktopWindowHost {
             options,
             session,
             window: None,
-            _context: None,
-            surface: None,
+            presenter: None,
             hot_reload: None,
             proxy: None,
+            last_telemetry: None,
         })
     }
 
@@ -607,6 +705,20 @@ impl DesktopWindowHost {
 
     pub fn session_mut(&mut self) -> &mut DesktopSession<HotAppSlot> {
         &mut self.session
+    }
+
+    pub fn active_backend(&self) -> GpuBackendKind {
+        match &self.presenter {
+            Some(WindowPresenter::Hardware(sw)) => sw.kind(),
+            Some(WindowPresenter::Softbuffer { .. }) => self.session.active_backend(),
+            None => self.session.active_backend(),
+        }
+    }
+
+    pub fn last_frame_telemetry(&self) -> Option<&FrameTelemetry> {
+        self.last_telemetry
+            .as_ref()
+            .or_else(|| self.session.last_frame_telemetry())
     }
 
     /// Runs the native `winit` event loop until the user closes the window.
@@ -630,31 +742,72 @@ impl DesktopWindowHost {
     }
 
     fn present_pixels(&mut self) {
-        let Some(surface) = self.surface.as_mut() else {
+        let Some(presenter) = self.presenter.as_mut() else {
             return;
         };
-        let buf = self.session.pixel_buffer();
-        let (Some(w), Some(h)) = (NonZeroU32::new(buf.width()), NonZeroU32::new(buf.height()))
-        else {
-            return;
-        };
-        if surface.resize(w, h).is_err() {
-            return;
-        }
-        if let Ok(mut frame) = surface.buffer_mut() {
-            let src = buf.pixels();
-            let len = frame.len().min(src.len());
-            frame[..len].copy_from_slice(&src[..len]);
-            let _ = frame.present();
+        match presenter {
+            WindowPresenter::Hardware(swapchain) => {
+                let res = self.session.present_to_swapchain(swapchain);
+                match res {
+                    Ok(telemetry) => {
+                        self.last_telemetry = Some(telemetry);
+                    }
+                    Err(GpuSurfaceError::SwapchainOutOfDate(_)) => {
+                        let pw = self.session.pixel_buffer().width();
+                        let ph = self.session.pixel_buffer().height();
+                        let scale = self.session.viewport().scale_factor;
+                        if swapchain.resize(pw, ph, scale).is_ok() {
+                            if let Ok(telemetry) = self.session.present_to_swapchain(swapchain) {
+                                self.last_telemetry = Some(telemetry);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("[nve-desktop] hardware swapchain present error: {err}");
+                    }
+                }
+            }
+            WindowPresenter::Softbuffer {
+                surface,
+                fallback_reason,
+                ..
+            } => {
+                let buf = self.session.pixel_buffer();
+                let (Some(w), Some(h)) =
+                    (NonZeroU32::new(buf.width()), NonZeroU32::new(buf.height()))
+                else {
+                    return;
+                };
+                if surface.resize(w, h).is_err() {
+                    return;
+                }
+                let t_present = Instant::now();
+                if let Ok(mut frame) = surface.buffer_mut() {
+                    let src = buf.pixels();
+                    let len = frame.len().min(src.len());
+                    frame[..len].copy_from_slice(&src[..len]);
+                    let _ = frame.present();
+                    let present_us = t_present.elapsed().as_micros() as u64;
+                    if let Some(mut tel) = self.session.last_frame_telemetry().cloned() {
+                        tel.present_us = present_us;
+                        tel.total_us = tel.total_us.saturating_add(present_us);
+                        if tel.fallback_reason.is_none() {
+                            tel.fallback_reason = fallback_reason.clone();
+                        }
+                        self.last_telemetry = Some(tel);
+                    }
+                }
+            }
         }
     }
 
     fn sync_window_title(&self) {
         if let Some(window) = &self.window {
             let gen_num = self.session.app().generation();
+            let backend_label = self.active_backend().as_str();
             let title = match self.session.status_banner() {
-                Some(banner) => format!("{} — {banner}", self.options.title),
-                None => format!("{} — gen #{gen_num}", self.options.title),
+                Some(banner) => format!("{} [{backend_label}] — {banner}", self.options.title),
+                None => format!("{} [{backend_label}] — gen #{gen_num}", self.options.title),
             };
             window.set_title(&title);
         }
@@ -708,32 +861,79 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
             }
         };
 
-        let context = match Context::new(window.clone()) {
-            Ok(c) => c,
-            Err(err) => {
-                eprintln!("[nve-desktop] failed to create softbuffer context: {err}");
-                event_loop.exit();
-                return;
+        let size = window.inner_size();
+        let scale = window.scale_factor() as f32;
+        let phys_w = size.width.max(1);
+        let phys_h = size.height.max(1);
+
+        // Prefer a direct hardware GPU swapchain whenever compiled for this platform; fall back
+        // gracefully to `softbuffer` if no GPU feature is enabled or adapter init fails.
+        let mut fallback_reason = None;
+        let presenter = if self.options.preferred_backend.is_hardware()
+            && GpuBackendKind::selection_priority(self.options.preferred_backend, true)
+                .iter()
+                .any(|k| k.is_hardware() && k.is_compiled())
+        {
+            let gpu_cfg = GpuSurfaceConfig {
+                width: phys_w,
+                height: phys_h,
+                scale_factor: scale,
+                preferred_backend: self.options.preferred_backend,
+                allow_cpu_fallback: false,
+                vsync: self.options.vsync,
+                ..Default::default()
+            };
+            match GpuSwapchain::attach_window(window.clone(), gpu_cfg) {
+                Ok(sw) if sw.presents_directly() => Some(WindowPresenter::Hardware(sw)),
+                Ok(sw) => {
+                    fallback_reason = sw.fallback_reason().map(str::to_owned);
+                    None
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[nve-desktop] hardware GPU swapchain unavailable ({err}); falling back to softbuffer"
+                    );
+                    fallback_reason = Some(err.to_string());
+                    None
+                }
             }
+        } else {
+            None
         };
-        let surface = match Surface::new(&context, window.clone()) {
-            Ok(s) => s,
-            Err(err) => {
-                eprintln!("[nve-desktop] failed to create softbuffer surface: {err}");
-                event_loop.exit();
-                return;
+
+        let presenter = match presenter {
+            Some(hw) => hw,
+            None => {
+                let context = match Context::new(window.clone()) {
+                    Ok(c) => c,
+                    Err(err) => {
+                        eprintln!("[nve-desktop] failed to create softbuffer context: {err}");
+                        event_loop.exit();
+                        return;
+                    }
+                };
+                let surface = match Surface::new(&context, window.clone()) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        eprintln!("[nve-desktop] failed to create softbuffer surface: {err}");
+                        event_loop.exit();
+                        return;
+                    }
+                };
+                WindowPresenter::Softbuffer {
+                    _context: context,
+                    surface,
+                    fallback_reason,
+                }
             }
         };
 
-        let size = window.inner_size();
-        let scale = window.scale_factor() as f32;
-        if let Err(err) = self.session.resize(size.width, size.height, scale) {
+        if let Err(err) = self.session.resize(phys_w, phys_h, scale) {
             eprintln!("[nve-desktop] initial resize/render failed: {err}");
         }
 
         self.window = Some(window.clone());
-        self._context = Some(context);
-        self.surface = Some(surface);
+        self.presenter = Some(presenter);
         self.sync_window_title();
         window.request_redraw();
     }
@@ -753,9 +953,14 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
         match event {
             WindowEvent::CloseRequested => {
                 self.hot_reload.take();
+                self.presenter.take();
                 event_loop.exit();
             }
             WindowEvent::Resized(new_size) => {
+                if new_size.width == 0 || new_size.height == 0 {
+                    // Window minimized: skip swapchain recreation until restored.
+                    return;
+                }
                 let scale = self
                     .window
                     .as_ref()
@@ -763,6 +968,11 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                     .unwrap_or(self.session.viewport().scale_factor);
                 if let Err(err) = self.session.resize(new_size.width, new_size.height, scale) {
                     eprintln!("[nve-desktop] resize error: {err}");
+                }
+                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut() {
+                    if let Err(err) = sw.resize(new_size.width, new_size.height, scale) {
+                        eprintln!("[nve-desktop] hardware swapchain resize error: {err}");
+                    }
                 }
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -779,11 +989,19 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                             self.session.pixel_buffer().height(),
                         )
                     });
+                if size.width == 0 || size.height == 0 {
+                    return;
+                }
                 if let Err(err) = self
                     .session
                     .resize(size.width, size.height, scale_factor as f32)
                 {
                     eprintln!("[nve-desktop] scale change error: {err}");
+                }
+                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut() {
+                    if let Err(err) = sw.resize(size.width, size.height, scale_factor as f32) {
+                        eprintln!("[nve-desktop] hardware swapchain scale resize error: {err}");
+                    }
                 }
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -1188,6 +1406,57 @@ mod tests {
         let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
         let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
         assert_eq!(session.pixel_buffer().get_rgb(px, py), Some((37, 99, 235)));
+    }
+
+    #[test]
+    fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
+        let viewport = Viewport {
+            width: 240.0,
+            height: 160.0,
+            scale_factor: 1.0,
+        };
+        let mut session = DesktopSession::new(
+            MockCounterApp::new(),
+            1,
+            viewport,
+            ColorRgba::BLACK,
+            true,
+        );
+        session.render_and_rasterize().unwrap();
+        let init_tel = session
+            .last_frame_telemetry()
+            .expect("render_and_rasterize should record telemetry");
+        assert_eq!(init_tel.backend, session.active_backend());
+        assert_eq!(init_tel.frame_index, 1);
+
+        let mut sw = GpuSwapchain::new_offscreen(GpuSurfaceConfig {
+            width: 240,
+            height: 160,
+            scale_factor: 1.0,
+            preferred_backend: GpuBackendKind::platform_preferred(),
+            allow_cpu_fallback: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let tel = session.present_to_swapchain(&mut sw).unwrap();
+        assert_eq!(tel.backend, sw.kind());
+        assert_eq!(tel.width, 240);
+        assert_eq!(tel.height, 160);
+        assert_eq!(tel.frame_index, 1);
+
+        // Resize both session and swapchain to 2x Retina and verify presented button pixel.
+        session.resize(480, 320, 2.0).unwrap();
+        sw.resize(480, 320, 2.0).unwrap();
+        let tel2 = session.present_to_swapchain(&mut sw).unwrap();
+        assert_eq!(tel2.frame_index, 2);
+        assert_eq!(tel2.swapchain_recreations, 1);
+
+        let mut readback = PixelBuffer::new(1, 1);
+        sw.copy_to_pixel_buffer(&mut readback).unwrap();
+        let btn = session.backend().layout_of(4).unwrap();
+        let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
+        let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
+        assert_eq!(readback.get_rgb(px, py), Some((37, 99, 235)));
     }
 
     #[test]

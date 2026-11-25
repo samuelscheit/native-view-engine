@@ -8,8 +8,36 @@ license.workspace = true
 default = []
 # Cross-platform desktop preview window (winit + softbuffer rasterizer + WS hot-reload, zero Skia build needed)
 desktop = ["dep:winit", "dep:softbuffer", "dep:tungstenite", "dep:crossbeam-channel", "dep:serde_json"]
-# Full hardware-accelerated Skia canvas (adds skia-safe on top of desktop)
+# CPU-backed Skia canvas + raster surface (adds skia-safe on top of desktop)
 skia = ["desktop", "dep:skia-safe"]
+# Apple Metal hardware GPU swapchain & offscreen context (macOS / iOS)
+skia-metal = [
+    "skia",
+    "skia-safe/ganesh",
+    "skia-safe/metal",
+    "dep:raw-window-handle",
+    "dep:objc2",
+    "dep:objc2-core-foundation",
+    "dep:objc2-metal",
+    "dep:objc2-quartz-core",
+    "dep:objc2-app-kit",
+    "dep:objc2-ui-kit",
+]
+# Cross-platform Vulkan hardware GPU swapchain & offscreen context (Linux / Android / Windows / MoltenVK)
+skia-vulkan = [
+    "skia",
+    "skia-safe/ganesh",
+    "skia-safe/vulkan",
+    "dep:raw-window-handle",
+    "dep:ash",
+]
+# Windows Direct3D 12 + DXGI hardware GPU swapchain & offscreen context
+skia-d3d = [
+    "skia",
+    "skia-safe/d3d",
+    "dep:raw-window-handle",
+    "dep:windows",
+]
 # Real React Native Yoga C++20 layout engine integration (compiled when RN_REACT_COMMON_DIR is set)
 yoga = ["dep:nve-layout-yoga"]
 
@@ -25,6 +53,51 @@ softbuffer = { workspace = true, optional = true }
 tungstenite = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+raw-window-handle = { version = "0.6.2", optional = true }
+ash = { version = "0.38.0", optional = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = { version = "0.6.3", default-features = false, optional = true }
+objc2-core-foundation = { version = "0.3.2", default-features = false, optional = true }
+objc2-metal = { version = "0.3.2", default-features = false, optional = true, features = [
+    "MTLDevice",
+    "MTLCommandBuffer",
+    "MTLCommandQueue",
+    "MTLDrawable",
+    "MTLPixelFormat",
+    "MTLTexture",
+] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, optional = true, features = [
+    "objc2-core-foundation",
+    "objc2-metal",
+    "CALayer",
+    "CAMetalLayer",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, optional = true, features = [
+    "objc2-quartz-core",
+    "NSView",
+    "NSResponder",
+] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-ui-kit = { version = "0.3.2", default-features = false, optional = true, features = [
+    "objc2-quartz-core",
+    "UIView",
+    "UIResponder",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.0", optional = true, features = [
+    "Win32",
+    "Win32_Foundation",
+    "Win32_Graphics",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
 
 [[example]]
 name = "preview"
