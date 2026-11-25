@@ -1,0 +1,50 @@
+---
+title: "Native View Engine (NVE)"
+description: "Zero-JSON, multi-backend cross-platform UI engine in Rust and C++20 driving real native views, GPU Skia surfaces, and Web WASM DOM from one binary ABI."
+badge: "v0.1"
+order: 0
+---
+
+# Native View Engine (`nve`)
+
+**Native View Engine (`nve`)** is a native-speed, multi-backend UI engine written in Rust and C++20. You author declarative UI once using Rust `rsx!` and fine-grained signals (`nve-dioxus`) — or any custom frontend implementing `NveApp` — and render to **real platform-native views**, **hardware GPU Skia canvases**, and **Web WASM DOM** across 10 host targets from a single zero-copy binary ABI.
+
+There is no embedded JavaScript VM, no JSON bridge serialization, and no per-property FFI chatter. Every frame crosses the Rust-to-host boundary as one contiguous `NVE1` binary `CommandBuffer`, and native hosts publish laid-out geometry back via 64-byte cache-line `NveRenderNode` slabs (`NveSceneView`).
+
+## Architectural Pillars
+
+- **Single Binary IR & Modular C ABI** — Every NVE app module exports a single symbol: `nve_get_interface(uint32_t)`. Hosts resolve only the compact `const` function tables they need (`SURFACE = 1`, `LAYOUT = 2`, `COMPONENT = 3`, `DEV = 4`, `HOST = 5`) in **0.98 ns** with `catch_unwind` panic isolation.
+- **10 Native & GPU Host Targets** — macOS AppKit, iOS/iPadOS UIKit + RN Fabric, Windows 11 Win32/Direct2D/DirectWrite + RNW 0.88 Fabric, Linux GTK4/Pango/Cairo, Qt 6 Widgets & GPU Quick Scene Graph, Android JNI/Canvas + Jetpack Compose, SwiftUI, Flutter Impeller (`dart:ffi`), Desktop Skia (Metal/Vulkan/D3D12/`softbuffer`), and Web WASM DOM + Semantic HTML5 SSR.
+- **Pluggable Layout Engines** — Zero-cost generic `LayoutEngine` + `TextMeasurer` traits let backends monomorphize pure-Rust **Taffy** or link real C++20 **React Native Yoga** (`nve-layout-yoga`) — or hot-switch between them mid-session via `DynLayoutEngine`.
+- **Sub-Second 2-Tier Hot Reload & Live Pairing** — Patch RSX text and styles in `< 50 ms` over binary `NVP1` WebSockets (Tier 1), hot-swap compiled `.dylib`/`.so`/`.dll` logic in `150–400 ms` with state preservation (Tier 2), or stream `NVT1`/`NVD1` binary deltas at `~5.18 KB/s` @ 60fps to zero-`cdylib` thin clients over UDP, TCP, and WebSocket.
+- **Instant Cold Start & Local-First Sync** — Freeze-dry Frame-0 `CommandBuffer`s alongside pointer-free `MmapSnapshot` (`NVE_SNAP`) state arenas and append-only `.nvewal` logs (`NVE_WAL1`), paired with a zero-dependency binary CRDT engine (`NVC1`).
+
+## Verified Performance Baselines
+
+Measured on Apple Silicon (`arm64`, `Darwin`, 20 cores) from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Release `nve_fabric_bridge_bench`):
+
+| Pipeline Stage | Median Latency | Throughput / Notes |
+| :--- | ---: | :--- |
+| `nve_get_interface` lookup / render slice | **0.98 ns / 1.33 ns** | Panic-safe `extern "C"` dispatch |
+| `NveSceneView` dirty read (3 of 1,000 nodes) | **24.82 ns** | 64-byte `NveRenderNode`, zero decode |
+| `NveValueRef` nested field read | **17.09 ns** | Zero-copy borrow from C++ bump arena |
+| `GestureArbitrator` nested scroll | **64.51 ns** | Inline `SurfaceChain` + `FastU32Map` |
+| `CommandBuffer` encode / streaming decode (1,000 nodes) | **21.17 µs / 18.05 µs** | ~4.7 GiB/s zero-alloc `CommandRef` |
+| C++20 Fabric incremental patch (10 / 1,000 nodes) | **7.12 µs** | Direct `NveSceneView` publish: **7.54 µs** |
+| Dioxus incremental diff / Tier-1 hot-patch | **931 ns / 1.33 µs** | Real RSX AST hot-patch diff `< 2.5 ms` |
+| Web HTML5 SSR (100 / 500 rows) | **12.45 µs / 65.05 µs** | Studio WASM bundle: **285.8 KiB gzipped** |
+
+## Explore the Documentation
+
+:::cards
+::card{title="Quickstart" href="/getting-started/quickstart" description="Run NVE Studio on Skia, Web, macOS, or Windows and compile your first NveApp cdylib in under 5 minutes."}
+::card{title="Why NVE?" href="/getting-started/why-nve" description="Deep comparison against React Native, Flutter, and Electron with verified latency, binary size, and memory numbers."}
+::card{title="CommandBuffer & EventRing" href="/architecture/command-buffer-and-events" description="Binary wire layout of NVE1 frames, 10 opcodes, EventRing batching, and compact NK1 keydown encoding."}
+::card{title="64-Byte Scene ABI" href="/architecture/scene-abi" description="Cache-line NveRenderNode layout, zero-copy text_slab, NVE_DRAW1 vectors, and NVE_MET1 metadata slabs."}
+::card{title="Accessible UI Components" href="/guides/ui-components" description="15 zero-CSS nve-ui components, UiTheme, FocusTrap, and 100k-row Fenwick VirtualList with live playgrounds."}
+::card{title="Platform Hosts Matrix" href="/hosts/overview" description="Compare rendering pipelines, text shaping, accessibility, IME, and multi-window support across all 10 targets."}
+:::
+
+<Callout kind="tip" title="Try the CLI verification suite">
+Run `./scripts/check-all.sh --quick` from the repository root to verify Rust workspace tests, C++20 Fabric bridge CTest, and any locally installed platform toolchains in a single command.
+</Callout>

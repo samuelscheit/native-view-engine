@@ -1,0 +1,7 @@
+dioxus-rsx = "Dioxus RSX & Signals"
+ui-components = { title = "UI Components (nve-ui)", badge = "15" }
+routing = "Routing (nve-router)"
+native-sdk = "Native SDK (nve-sdk)"
+multi-window = "Multi-Window Lifecycle"
+local-first-crdt = "Local-First Storage & CRDTs"
+canvas-draw1 = "Vector Canvas (NVE_DRAW1)"

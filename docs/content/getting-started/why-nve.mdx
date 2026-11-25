@@ -1,0 +1,63 @@
+---
+title: "Why NVE?"
+description: "Why Native View Engine replaces JS bridges, JSON serialization, and per-prop FFI with a single zero-copy binary IR across native views, Skia, and Web WASM."
+order: 1
+---
+
+# Why NVE?
+
+Cross-platform UI toolkits force an uncomfortable trade-off between **native platform fidelity**, **runtime efficiency**, and **developer iteration speed**. Native View Engine (`nve`) resolves this triangle by collapsing the boundary between declarative application logic and platform rendering into one flat binary IR.
+
+## The Problem With Traditional Cross-Platform Bridges
+
+### 1. Per-Prop FFI & JS VM Tax (React Native)
+
+React Native renders real native views (`UIView`, `android.view.View`), which gives unmatched OS text editing, IME, VoiceOver/TalkBack, and scroll physics. However, standard React Native executes reconciliation in Hermes/JSC, allocates JS shadow objects, converts props across JSI into `folly::dynamic` maps, and runs string-key `RawProps` lookups in C++ Fabric.
+
+NVE keeps **React Native's real C++20 Fabric and Yoga engines** — and deletes the JavaScript VM entirely:
+
+- `UIManager` boots with a no-op `RuntimeExecutor` and `startEmptySurface` (**0 ms** Hermes startup, **0 MB** JS heap).
+- Native events are intercepted via `EventDispatcher::addListener` and written directly into a compact binary `EventRing` (or zero-copy `NveEventBatch`) using a lightweight recording `jsi::Runtime` subclass for third-party RN components whose payloads only implement `asJSIValue(jsi::Runtime&)`.
+- Mutations cross once per frame as a flat `NVE1` `CommandBuffer` instead of thousands of per-prop JSI calls.
+
+### 2. Pixel-Owned Canvas vs. Real Native Views (Flutter)
+
+Flutter achieves consistent 120fps rendering by drawing every widget onto its own Impeller/Skia canvas, but re-implements native scroll physics, platform accessibility semantics, desktop menus, and native controls from scratch — and embeds native views via expensive `PlatformView` synchronization.
+
+NVE lets you pick **real platform-native views** (`AppKit`, `UIKit`, `Win32/Direct2D`, `GTK4`, `Qt 6`, `Android`, `Web DOM`) *or* **direct GPU Skia / Impeller canvases** from the exact same `NveApp` binary. You can even embed an NVE surface inside an existing Flutter app on Flutter's own `Canvas` via `NveCanvasView` + `dart:ffi` with zero `PlatformView` overhead, or embed a native `<Island>` inside an NVE view tree.
+
+### 3. Browser Process Overhead (Electron / WebView Shells)
+
+Electron bundles Chromium and Node.js per application, paying 150–300 MB baseline RSS and hundreds of milliseconds of cold-start latency before the first frame paints.
+
+NVE compiles native apps directly to platform machine code (`~15 MB` class binaries, `< 40 MB` RSS) and supports `MmapSnapshot` Frame-0 boot (`29 µs` raw `mmap` open, `82–136 µs` Frame-0 + state restore for 100 rows). When you *do* want a browser share link or static site, the same Rust crate compiles to a **285.8 KiB gzipped** `wasm-release` bundle with pre-rendered semantic HTML5 SSR and progressive island hydration.
+
+## Measured Architecture Comparison
+
+| Capability | Native View Engine (`nve`) | React Native (Fabric + Hermes) | Flutter (Impeller) | Electron (Chromium) |
+| :--- | :--- | :--- | :--- | :--- |
+| **App Logic Runtime** | Ahead-of-time Rust (zero GC, zero VM) | Hermes JS VM (GC heap) | Dart AOT / JIT (GC heap) | V8 JS + Chromium Blink |
+| **Host Bridge Transport** | 1 batched binary `NVE1` buffer / frame + 64B `NveSceneView` | JSI + `RawProps` + `folly::dynamic` | Dart FFI / MethodChannel | IPC + DOM serialization |
+| **Real Native OS Views** | Yes (AppKit, UIKit, Win32/RNW, GTK4, Qt, Android, DOM) | Yes (iOS/Android/macOS/Windows) | No (canvas-drawn; `PlatformView` for native) | No (HTML/CSS only) |
+| **GPU Canvas Option** | Yes (Skia Metal/Vulkan/D3D12, Qt Quick, `NVE_DRAW1`) | Separate library (`react-native-skia`) | Always Impeller/Skia | WebGL / Canvas2D |
+| **Cold Start (Frame 0)** | **82–136 µs** (`MmapSnapshot` Frame-0 replay) | ~150–400 ms (Hermes + JS bundle eval) | ~100–300 ms (Dart VM + engine init) | ~400–1,200 ms (multi-process) |
+| **Incremental 10-Node Patch** | **7.12 µs** (C++20 Fabric) / **1.22 µs** (Web DOM) | ~0.5–2.0 ms (JS reconciler + JSI) | ~0.2–1.0 ms (Dart widget rebuild) | ~0.5–3.0 ms (VDOM + Blink) |
+| **Web Bundle Size** | **285.8 KiB gzip** (`wasm-release` Studio) | Requires `react-native-web` + JS bundle | ~1.5–3.0 MB CanvasKit / skwasm | Not applicable |
+| **Hot Reload Latency** | **< 50 ms** (Tier-1 `NVP1`) / **150–400 ms** (Tier-2 `cdylib`) | ~200–600 ms (Metro Fast Refresh) | ~100–400 ms (Dart JIT) | ~200–800 ms (Vite/Webpack HMR) |
+
+## Design Invariants
+
+Every crate in `native-view-engine` obeys four non-negotiable engineering invariants:
+
+1. **Zero JSON on hot paths** — Every wire protocol (`NVE1` commands, `EventRing`, `NK1` keydowns, `NVP1` hot patches, `NVH1` host events, `NVN1` routing, `NVW1` windows, `NVT2`/`NVL1` theme/locale, `NVE_DRAW1` vectors, `NVE_MET1` accessibility metadata, `NVC1` CRDTs, `NVD1`/`NVT1` live pairing) uses fixed-header little-endian binary encoding with bounds checks and FNV-1a64 integrity hashes.
+2. **Framework-agnostic engine core** — `nve-engine` has zero dependency on `dioxus-core`. Dioxus (`nve-dioxus`) is an adapter, not a hard requirement.
+3. **Single source of truth for ABIs** — Core and Scene ABIs are defined once in declarative Rust specs (`crates/nve-codegen/specs/nve_core_abi.nve.rs` and `nve_scene_abi.nve.rs`), locked by compile-time `offset_of!` assertions and 64-bit FNV-1a schema hashes (`0x54A4A32B6F258107` and `0x00F2CF037DB50CC8`), and verified in CI via `cargo nve codegen abi --check`.
+4. **Honest verification over smoke tests** — Every decoder and host boundary ships with truncated-buffer, fuzz/property, layout-parity, and state-preservation tests alongside Criterion and C++ statistical regression baselines.
+
+## Where to Go Next
+
+:::cards
+::card{title="Quickstart" href="/getting-started/quickstart" description="Build and run NVE Studio across Skia, Web, macOS, and Windows, and author your first NveApp."}
+::card{title="Workspace Architecture" href="/getting-started/workspace-architecture" description="Explore the 22-member Cargo workspace, crate dependency DAG, and C++/native host layers."}
+::card{title="Benchmarks & Profiling" href="/reference/benchmarks" description="Inspect every Criterion and C++20 Fabric benchmark baseline plus Perfetto trace exports."}
+:::

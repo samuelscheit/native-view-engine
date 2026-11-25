@@ -1,0 +1,49 @@
+---
+title: "Upstream & Platform Notes"
+description: "Summary of real upstream dependency bugs, OS SDK quirks, and local mitigations documented in docs/UPSTREAM.md."
+order: 3
+---
+
+# Upstream & Platform Notes
+
+Every upstream bug, platform SDK quirk, or toolchain footgun discovered during development and live multi-OS verification is tracked in the repository's canonical **`docs/UPSTREAM.md`** ledger. Below is the concise engineering summary and local mitigation for each active issue.
+
+## Layout & Frontend Dependencies
+
+### React Native Yoga (`yogacore`)
+
+- **`StyleValuePool` float-to-int UB on large scalars (`|v| > 1e7f`)** — Passing finite floats with magnitude `> 1e7f` triggers signed integer overflow UB under UBSan inside Yoga's `StyleValuePool`. **Mitigation:** `cxx/nve-fabric-bridge/src/command_decoder.hpp` (`is_valid_scalar`) rejects non-finite values and `|v| > 1e7f` before calling Yoga.
+- **Detached `YGNodeRef` returns `NaN` layout metrics** — Reading layout geometry on detached/unlaid-out nodes yields `NaN`, triggering AppKit's `_NSViewValidateGeometry` `SIGTRAP`. **Mitigation:** `fabric_adapter.cpp` sanitizes non-finite layout outputs to `0.0f` and `hosts/apple-common/NveAppleComponentHost.mm` guards `NSView.frame`.
+
+### Dioxus (`dioxus-core 0.7.10`) & `wasm32`
+
+- **Nested `Text` wrapper/leaf split** — Inline literals inside styled `text { style: "...", "hello" }` emit a styled parent `Text` wrapping an unstyled leaf `Text`. **Mitigation:** `nve-dioxus` and `fabric_adapter.cpp` propagate `text_color` and `font_size` downward; native hosts mount wrapper `Text` nodes as containers and leaf `Text` nodes as native text labels.
+- **Event attribute `"on"` prefix mismatch** — `WriteMutations` emits `"onclick"` while `VirtualDom::runtime().handle_event` expects `"click"`. **Mitigation:** `nve-dioxus` strips the leading `"on"`.
+- **`std::time::Instant::now()` panics on `wasm32-unknown-unknown`** — **Mitigation:** Target-gated `FrameTimer` in `crates/nve-dioxus/src/lib.rs`.
+
+## Apple, Android & Linux Toolkits
+
+### Xcode 27 & iOS 27 Simulator SDK (`iPhoneSimulator27.0.sdk`)
+
+- **`Simulator.app` replaced by `DeviceHub.app`** — `open -a Simulator` fails on Xcode 27 because the GUI moved to `Xcode.app/Contents/Applications/DeviceHub.app`. **Mitigation:** `hosts/ios-shell/run-simulator.sh` falls back to `DeviceHub.app` and treats GUI launch as non-fatal.
+- **Fatal `SIGTRAP` without `UIScene` adoption** — Creating a `UIWindow` in `UIApplicationDelegate` without `UIApplicationSceneManifest` traps immediately in `UIKitCore`. **Mitigation:** `hosts/ios-shell/Info.plist` + `main.mm` adopt `NveIosSceneDelegate` (`UIWindowSceneDelegate`).
+
+### GTK 4 (`gtk4 4.24.2`)
+
+- **`gtk_fixed_get_child_position` returns `(0, 0)` on unmapped widgets** — **Mitigation:** Headless GTK CTests read coordinates via `gtk_fixed_get_child_transform` + `gsk_transform_to_translate`.
+
+### Eclipse OpenJ9 (`0.59.0`) + Android SDK `d8` (`build-tools 36.0.0`)
+
+- **Scavenger GC assertion crash during `d8` dexing** — On macOS arm64, OpenJ9 crashes inside `ForkJoinPool` (`ScavengerRootScanner.hpp:105`) and hangs writing multi-GB dumps. **Mitigation:** `hosts/android-shell/run-emulator.sh` detects OpenJ9 and automatically switches `JAVA_HOME`/`PATH` to a HotSpot/JBR JDK (or passes `-JXgcpolicy:optthruput -JXdump:none` as fallback).
+
+## Windows 11 (`afd.sys`), MSVC `19.51` & Cargo `1.100.0`
+
+- **`afd.sys` `SO_RCVTIMEO` UDP datagram drops & `WSAECONNRESET`** — Short `SO_RCVTIMEO` values on Windows 11 cancel pending `IOCTL_AFD_RECV_DATAGRAM` IRPs (~75% flake). **Mitigation:** `crates/nve-interop/src/sync_transport/udp.rs` uses non-blocking sockets (`set_nonblocking(true)`) and ignores `ErrorKind::ConnectionReset`.
+- **Cargo `1.100.0` per-unit `build-dir` vs. 32 KiB `CreateProcessW` limit (`OS error 206`)** — Passing every dependency directory on the `rustc` CLI overflows Windows' 32,767-char command-line limit. **Mitigation:** `crates/nve-codegen/tests/hybrid_codegen_tests.rs` passes flags via a `rustc @response_file`.
+- **MSVC `link.exe` `LNK2005` duplicate `nve_get_interface`** — Workspace feature unification can pull `cdylib-export` into multi-app `rlib` test binaries. **Mitigation:** Wrap `export_nve_app!` inside a private `mod cdylib_export` so `rustc` isolates the symbol into its own CGU.
+- **MSVC `mspdbsrv.exe` `C1090` on concurrent Ninja `/Zi /FS` builds** — **Mitigation:** Serialize MSVC Ninja builds or use `/Z7` / `Release`.
+- **Windows `core.autocrlf = true` vs. LF-only ABI drift checks** — **Mitigation:** `nve-codegen` tests and `cargo nve codegen abi --check` normalize `\r\n` to `\n` before comparison.
+
+<Callout kind="info" title="Contributing new upstream findings">
+Whenever you hit a new upstream toolkit bug or OS SDK footgun, append a concise entry with exact version, symptom, and mitigation to `docs/UPSTREAM.md` in the repository root.
+</Callout>

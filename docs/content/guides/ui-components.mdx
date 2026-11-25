@@ -1,0 +1,93 @@
+---
+title: "UI Components (nve-ui)"
+description: "15 accessible, themeable, zero-external-CSS Dioxus UI components, UiTheme tokens, zero-alloc StyleBuf, FocusTrap/RovingFocus, and 100k-row Fenwick VirtualList."
+badge: "15"
+order: 2
+---
+
+# UI Components (`nve-ui`)
+
+`crates/nve-ui` is a first-party, accessible, zero-external-CSS component library built directly on `nve-dioxus` primitives and `nve-interop` theme contexts. Every component compiles identically to native views (AppKit, UIKit, Win32, GTK4, Qt 6, Android), GPU Skia, and Web DOM with zero external stylesheet dependencies.
+
+## Component Catalog (15 Primitives & Controls)
+
+| Category | Components | Key Capabilities |
+| :--- | :--- | :--- |
+| **Layout & Surface** | `Stack`, `Row`, `Col`, `Separator`, `Card` | Token-driven spacing, `CardVariant` (`Elevated`, `Outlined`, `Subtle`), horizontal/vertical separators |
+| **Actions & Status** | `Button`, `IconButton`, `Badge` | `ButtonVariant` (`Primary`, `Secondary`, `Ghost`, `Destructive`), `ButtonSize`, `BadgeVariant`, disabled/focus states |
+| **Form Controls** | `Input`, `Checkbox`, `Switch` | Native `TextInput` / ARIA `checkbox` & `switch` semantics, `aria_checked`, keyboard toggle (`Space`/`Enter`) |
+| **Navigation & Overlays** | `TabsRoot`/`TabList`/`TabTrigger`/`TabPanel`, `Dialog`/`Modal`, `Popover`/`Tooltip`, `DropdownMenu`, `ToastProvider`/`ToastViewport` | `RovingFocus` arrow-key navigation, `FocusTrap` + `Escape` dismissal, `aria_modal`, `aria_live` polite/assertive toasts (`use_toast`) |
+| **High-Scale Data** | `VirtualList` | O(log N) `FenwickHeightTree` variable-height virtualization for 100,000+ rows at 120fps |
+
+## Interactive Component Playground
+
+Explore live `nve-ui` buttons, badges, inputs, switches, tabs, cards, and theme tokens compiled straight into the interactive NVE runtime:
+
+<LiveDemo id="ui-playground" hydrate="visible" height={340} />
+
+## Design Tokens: `UiTheme` & `ThemeProvider`
+
+`ThemeProvider` injects a reactive `UiTheme` signal into the Dioxus tree (`use_theme()` / `use_theme_signal()`), synchronized with live OS appearance changes via `nve-sdk::SystemEnvBridge` (`NVT2`):
+
+- **`UiPalette`** — Semantic surface, elevated card, border, primary accent, destructive, muted foreground, and focus-ring RGBA colors (`rgba_to_hex` helper for inline styling).
+- **`SpacingScale` & `RadiiScale`** — Consistent numeric steps scaled automatically by `UiDensity` (`Compact`, `Comfortable`, `Spacious`).
+- **`TypographyScale`** — Heading, body, caption, and monospace sizes scaled by OS accessibility `font_scale_x1000`.
+
+```rust title="Using ThemeProvider, Card, Button, and use_toast" highlight="6-9,13-22"
+use nve_dioxus::prelude::*;
+use nve_ui::prelude::*;
+
+#[component]
+pub fn SettingsCard() -> Element {
+    let mut enabled = use_signal(|| true);
+    let toasts = use_toast();
+
+    rsx! {
+        ThemeProvider { theme: UiTheme::dark(),
+            Card { variant: CardVariant::Elevated,
+                Col { gap: 12.0,
+                    Row { justify: "space-between",
+                        text { "Hardware GPU Swapchain" }
+                        Switch {
+                            checked: enabled(),
+                            label: "Enable GPU swapchain",
+                            on_change: move |next| {
+                                enabled.set(next);
+                                toasts.push(ToastOptions::info("Updated GPU setting"));
+                            }
+                        }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        on_press: move |_| toasts.push(ToastOptions::success("Saved")),
+                        "Save Preferences"
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+## Zero-Allocation `StyleBuf`
+
+Formatting inline styles with `format!(...)` on every render allocates short-lived heap `String`s. `nve-ui::StyleBuf` (`crates/nve-ui/src/style_buf.rs`) builds style strings in a single pre-sized buffer (`SurfaceStyle`, `TextStyle`) with zero intermediate allocations and deterministic key ordering — maximizing structural CSS cache hits on Web and minimizing string churn on native backends.
+
+## Keyboard Accessibility: `FocusTrap` & `RovingFocus`
+
+`crates/nve-ui/src/focus.rs` ships pure-Rust keyboard focus managers that work identically on Skia, AppKit, Win32, GTK4, Qt 6, and Web:
+
+- **`FocusScopeProvider` & `FocusScope`** — Tracks registered `FocusableEntry` nodes (`tab_index`, `disabled`), active focus ID (`current_focused_id()`), and focus restoration on overlay close.
+- **`FocusTrap`** — Traps `Tab` / `Shift+Tab` cycling inside `Dialog` / `Modal` boundaries and returns `FocusTrapAction::Dismiss` on `Escape`.
+- **`RovingFocus`** — Implements WAI-ARIA roving `tabIndex` (`Orientation::Horizontal` / `Vertical`) for `TabList` and `DropdownMenu`, handling `ArrowLeft`/`ArrowRight`/`ArrowUp`/`ArrowDown`, `Home`, and `End`.
+
+## 100,000-Row `VirtualList` (`FenwickHeightTree`)
+
+Rendering 100,000 rows directly would overwhelm any layout engine. `nve-ui::VirtualList` mounts **only the visible viewport window plus overscan** (~15–30 DOM/native nodes) backed by a Binary Indexed Tree (`FenwickHeightTree`):
+
+- **Variable row heights (`RowHeights`)** — Supports both O(1) fixed-height lists and variable-height rows with O(log N) prefix-sum offset queries and O(log N) binary-search viewport slicing (`VirtualSlice`).
+- **Imperative scrolling (`ScrollAlign`)** — Jump smoothly to any index with `Start`, `Center`, `End`, or `Nearest` alignment via `VirtualListState`.
+
+Test 100,000 variable-height rows live below:
+
+<LiveDemo id="virtual-list-100k" hydrate="visible" height={340} />

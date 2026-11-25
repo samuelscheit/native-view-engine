@@ -1,0 +1,58 @@
+---
+title: "Windows & RNW 0.88"
+description: "Windows 11 MSVC native Win32/Direct2D/DirectWrite/WIC host, react-native-windows 0.88 Composition Fabric bridge, NveWinWindowManager, and WinSock2 PairClient."
+order: 5
+---
+
+# Windows 11 & `react-native-windows` 0.88 (`hosts/windows-shell`)
+
+`hosts/windows-shell` provides both a standalone DPI-aware **Win32 + Direct2D / DirectWrite / WIC** desktop shell and an embeddable **`react-native-windows` 0.83+/0.88+ Composition Fabric** component host — built cleanly on MSVC `19.51` with zero `/W4` warnings.
+
+## Architecture Components
+
+1. **DirectWrite Text Measurer (`NveWinTextMeasurer.hpp`)** — RAII `nve::win::DirectWriteTextMeasurer` backed by `IDWriteFactory`, cached Segoe UI `IDWriteTextFormat`, and `IDWriteTextLayout::GetMetrics`, plugged directly into `nve::NativeHostSession::set_text_measurer(...)`.
+2. **Direct2D & WIC Media Renderer (`NveWinD2DRenderer.cpp`, `NveWinD2DMedia.cpp`)** — Renders rounded rectangles, borders, opacity layers (`ID2D1Layer`), z-order stacking, WIC-decoded images (`ImageResizeMode`), and native `NVE_DRAW1` vector draw lists (`ID2D1PathGeometry`). Supports headless `--screenshot <path.bmp>` via `ID2D1DCRenderTarget`.
+3. **Multi-Window Manager (`NveWinWindowManager.{hpp,cpp}`)** — Manages owned `HWND`s (`GWLP_HWNDPARENT`), modal parent input blocking (`EnableWindow(parent, FALSE)`), per-monitor DPI scaling (`GetDpiForWindow` / `WM_DPICHANGED`), and cancelable `WM_CLOSE` veto (`NVW1`).
+4. **WinSock2 Live Pairing (`ws2_32`)** — `cxx/nve-fabric-bridge` compiles `nve::PairClient` natively against WinSock2 (`ws2_32`), verified live cross-process (`nve.exe pair` → `nve_windows_shell.exe --pair-connect`) byte-for-byte identical across WebSocket, TCP, and UDP.
+
+## Standalone Win32 Build & Run (PowerShell)
+
+```bash title="Build, test, and run on Windows 11 (MSVC + Ninja)"
+# Standalone build (requires only VS/MSVC + Windows SDK; zero RNW checkout needed)
+cmake -S hosts/windows-shell -B hosts/windows-shell/build -G Ninja
+cmake --build hosts/windows-shell/build
+ctest --test-dir hosts/windows-shell/build --output-on-failure
+
+# Build the Rust counter DLL and launch
+cargo build -p nve-example-counter
+.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_counter.dll
+
+# Or connect as a zero-DLL thin client over WinSock2
+.\hosts\windows-shell\build\nve_windows_shell.exe \
+  --pair-connect 127.0.0.1:8092 --pair-transport ws --pair-token dev-secret
+```
+
+## Embedding in `react-native-windows` 0.88 Composition Fabric
+
+Enable `-DNVE_WITH_RNW_FABRIC=ON` and point `-DRNW_GENERATED_DIR` at your RNW app's generated C++/WinRT headers (`winrt/Microsoft.ReactNative.Composition.h`):
+
+```bash title="Configure with RNW 0.88 Composition Fabric"
+cmake -S hosts/windows-shell -B hosts/windows-shell/build-rnw -G Ninja \
+  -DNVE_WITH_RNW_FABRIC=ON \
+  -DRNW_GENERATED_DIR="C:\path\to\rnw-app\Generated Files" \
+  -DRN_REACT_COMMON_DIR="C:\path\to\react-native\ReactCommon"
+cmake --build hosts/windows-shell/build-rnw
+```
+
+Register your Rust component inside `IReactPackageProvider::CreatePackage` (`NveRnwComponentView.hpp`):
+
+```cpp title="Registering an NVE component in RNW Composition Fabric" highlight="3-6"
+nve::win::NveRnwComponentRegistrationConfig cfg{};
+cfg.component_name = L"NveCounterView";
+cfg.default_dylib_path = "nve_example_counter.dll";
+nve::win::register_nve_rnw_component(packageBuilder, std::move(cfg));
+```
+
+<Callout kind="warning" title="Windows MSVC & afd.sys notes">
+Avoid running two concurrent Ninja MSVC builds sharing `/Zi /FS` PDB servers (`mspdbsrv.exe` `C1090`), and note that NVE's UDP transport uses non-blocking sockets on Windows 11 to avoid `afd.sys` `SO_RCVTIMEO` loopback datagram drops. See [Upstream Notes](/reference/upstream-notes) for details.
+</Callout>

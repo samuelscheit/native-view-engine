@@ -1,0 +1,70 @@
+---
+title: "Universal Interop & Islands"
+description: "SurfaceOrchestrator, LayoutNegotiator, GestureArbitrator, NveChannelBus, panic-isolated NvePluginHost, and opt-in foreign framework Island RenderHandoff."
+order: 2
+---
+
+# Universal Interop & Islands (`nve-interop`)
+
+`crates/nve-interop` coordinates hybrid applications in both directions: embedding NVE surfaces inside React Native, Flutter, SwiftUI, Jetpack Compose, or Web apps, **and** hosting opt-in foreign framework `<Island>` surfaces inside an NVE view tree — all unified behind `InteropRuntime`.
+
+## `InteropRuntime` Subsystems
+
+```rust title="crates/nve-interop/src/lib.rs"
+pub struct InteropRuntime {
+    pub surfaces: SurfaceOrchestrator,
+    pub layout: LayoutNegotiator,
+    pub gestures: GestureArbitrator,
+    pub channels: NveChannelBus,
+    pub windows: WindowManager,
+}
+```
+
+### 1. `SurfaceOrchestrator`
+
+Tracks the full parent/child tree of nested surfaces across heterogeneous `FrameworkKind`s (NVE, React Native, Flutter, SwiftUI, Compose, Web), manages `LifecycleState` transitions, propagates `SurfaceEnvironment` (`ColorScheme`, `ThemeContext`, `SafeAreaInsets`, `scale_factor`) with subtree `EnvironmentOverrides`, and performs atomic bottom-up cascading teardown (`destroy_surface_cascade`) so gesture locks, cached layouts, and channel subscriptions never leak.
+
+### 2. `LayoutNegotiator`
+
+Negotiates intrinsic sizing (`SizeConstraints` → `LayoutResult` + `BaselineMetrics`) across framework boundaries using `MeasurableSurface` and DPR pixel snapping (`LayoutProposal`).
+
+- **Cached hit:** **30.13 ns** (`rust::interop/intrinsic_layout/cached_hit`)
+- **Uncached measure & snap:** **72.69 ns** (`rust::interop/intrinsic_layout/uncached_measure_and_snap`)
+
+### 3. `GestureArbitrator`
+
+Resolves nested scroll and pointer ownership across mixed-framework ancestor chains (`SurfaceOrchestrator::ancestor_chain`) with zero heap allocations using inline `SurfaceChain` and `FastU32Map`:
+
+- Tracks `GestureCapabilities`, `ScrollAxes`, and `ScrollEdgeState` (so an inner Flutter or RN list at its top/bottom scroll boundary cleanly hands off overscroll to an outer NVE `ScrollView`).
+- Evaluates `PointerSample` (`PointerPhase`) into `ArbitrationDecision` (`GestureDisposition::Claim | PassThrough | DeferToParent` + `ArbitrationReason`).
+- **Measured nested scroll sequence:** **64.51 ns** (`rust::interop/gesture_arbitration/nested_scroll_sequence`).
+
+### 4. `NveChannelBus`
+
+Zero-JSON pub/sub and retained shared-state bus connecting Rust surfaces and native hosts (`ChannelId`, `ChannelMessage`, `ChannelPayload`, `PayloadEncoding`). Built-in retained channels:
+
+| `ChannelId` | Constant | Topic | Wire Format |
+| :--- | :--- | :--- | :--- |
+| `1` | `CHANNEL_ID_THEME` | `"theme"` | `NVT2` (16-byte fixed) |
+| `2` | `CHANNEL_ID_LOCALE` | `"locale"` | `NVL1` |
+| `3` | `CHANNEL_ID_AUTH` | `"auth"` | Binary / `NveBinValue` |
+| `4` | `CHANNEL_ID_NAVIGATION` | `"navigation"` | `NVN1` |
+
+- **Publish to 1 subscriber:** **47.49 ns**
+- **Publish to 8 subscribers:** **66.69 ns**
+- **Publish to 64 subscribers:** **385.82 ns**
+
+## Opt-In Foreign Framework `<Island>`s & `RenderHandoff`
+
+When an app needs a JS-only React Native library, an existing SwiftUI chart, a Jetpack Compose widget, or a Flutter `FlutterEngineGroup` view, declare an opt-in `IslandSpec` (`crates/nve-interop/src/handoff.rs`):
+
+- **Specs:** `RnIslandSpec`, `FlutterIslandSpec` (with `FlutterEngineGroupConfig`), `SwiftUIIslandSpec`, `ComposeIslandSpec`.
+- **Mount policies (`IslandMountPolicy`):** Eager or lazy mount on visibility/interaction so unused foreign VMs consume **0 MB** RAM until mounted.
+- **`RenderHandoff`:** Supports both native view hierarchy embedding (`NativeViewHandle` / `NativeViewHandleKind`) and zero-copy GPU texture sharing (`SharedGpuTexture` — `IOSurface`, `AHardwareBuffer`, `DXGI`, `DMA-BUF`, with `GpuTextureFormat`).
+
+## Panic-Isolated Plugin Host (`NvePluginHost`)
+
+`crates/nve-interop/src/plugin_host/` lets flagship applications like NVE Studio dynamically load third-party native-speed Rust plugins via `nve_get_interface` (`PluginMetadata`, `PluginCapabilities`, `PluginRequirement`, `DEFAULT_PLUGIN_SURFACE_BASE`):
+
+- Plugins render into isolated `NvePluginSlot`s with dedicated `SurfaceId`s.
+- Because `export_nve_app!` wraps every FFI call in `ffi_catch_unwind`, a bug inside a third-party plugin faults only its slot rather than crashing the host application.

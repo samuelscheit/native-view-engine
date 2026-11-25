@@ -1,0 +1,93 @@
+---
+title: "Vector Canvas (NVE_DRAW1)"
+description: "Zero-JSON binary vector draw-list IR (NVE_DRAW1) rendered natively across Skia, Web Canvas2D, CoreGraphics, Direct2D, Cairo, QPainter, Android Canvas, Compose, SwiftUI, and Flutter Impeller."
+order: 7
+---
+
+# Vector Canvas (`NVE_DRAW1`)
+
+For telemetry sparklines, charts, custom gauges, and bespoke vector chrome that should render at native refresh rate on **every** host — even hosts without Skia linked — `nve-components` provides **`NVE_DRAW1`**: a compact, zero-JSON binary vector draw-list IR carried by `ComponentKind::SkiaCanvas` (`skia_canvas` / `canvas`).
+
+## Wire Layout
+
+Defined in `crates/nve-components/src/canvas_ir/` (`NVE_DRAW_HEADER_SIZE = 15`):
+
+| Offset | Size | Field | Value / Bounds |
+| :--- | :--- | :--- | :--- |
+| `0..9` | 9 B | `magic` | `b"NVE_DRAW1"` |
+| `9..11` | 2 B | `version` | `u16 = 1` (`NVE_DRAW_VERSION`) |
+| `11..15` | 4 B | `op_count` | `u32` (strictly capped at `MAX_DRAW_OPS = 65_536`) |
+| `15..` | var | `ops` | Packed stream of 1-byte opcode + little-endian IEEE-754 `f32` / `u32` RGBA payloads |
+
+### Supported Operations (`CanvasOp`)
+
+| Opcode | Variant | Payload |
+| :--- | :--- | :--- |
+| `1` | `Clear` | `color: ColorRgba` |
+| `2` | `FillRect` | `x, y, w, h: f32`, `color: ColorRgba` |
+| `3` | `FillRoundedRect` | `x, y, w, h, radius: f32`, `color: ColorRgba` |
+| `4` | `FillCircle` | `cx, cy, radius: f32`, `color: ColorRgba` |
+| `5` | `StrokeLine` | `x0, y0, x1, y1, width: f32`, `color: ColorRgba` |
+| `6` | `StrokePolyline` | `point_count: u32` (max `16_384`), `[(x, y): (f32, f32)]`, `width: f32`, `color: ColorRgba` |
+| `7` | `ClipRect` | `x, y, w, h: f32` |
+| `8` | `RestoreClip` | *(empty — pops previous clip state)* |
+
+`DrawListDecoder` validates finite coordinates, clip stack balance, polyline point caps, and exact byte length before a single draw call hits the GPU or OS graphics context.
+
+## Interactive `NVE_DRAW1` Canvas Playground
+
+Toggle vector primitives, sparkline samples, clip bounds, and inspect the exact `NVE_DRAW1` byte size live:
+
+<LiveDemo id="canvas-draw1" hydrate="visible" height={340} />
+
+## Building a Draw List in Rust
+
+```rust title="Encoding a telemetry sparkline into NVE_DRAW1" highlight="4-17"
+use nve_abi::ColorRgba;
+use nve_components::{CanvasOp, DrawListBuilder};
+use nve_dioxus::prelude::*;
+
+#[component]
+pub fn FrameSparkline(samples: Vec<f32>) -> Element {
+    let mut b = DrawListBuilder::new();
+    b.push(CanvasOp::FillRoundedRect {
+        x: 0.0, y: 0.0, w: 280.0, h: 64.0, radius: 10.0,
+        color: ColorRgba::rgb(15, 23, 42),
+    });
+    b.push(CanvasOp::ClipRect { x: 8.0, y: 8.0, w: 264.0, h: 48.0 });
+    b.push(CanvasOp::StrokePolyline {
+        points: samples.iter().enumerate()
+            .map(|(i, &v)| (8.0 + i as f32 * 12.0, 56.0 - v.clamp(0.0, 48.0)))
+            .collect(),
+        width: 2.0,
+        color: ColorRgba::rgb(56, 189, 248),
+    });
+    b.push(CanvasOp::RestoreClip);
+
+    // Compact base64 RSX attribute (`nve-draw1;b64,...`) or raw `RawPropValue::Bytes`
+    let attr = b.finish_attr_string();
+    rsx! {
+        skia_canvas {
+            style: "width: 280px; height: 64px;",
+            draw_list: "{attr}"
+        }
+    }
+}
+```
+
+## Native 10-Host Renderer Mapping
+
+Every platform host decodes the exact same `NVE_DRAW1` byte stream via either Rust `DrawListDecoder` or shared C++20 `cxx/nve-fabric-bridge/include/nve_draw_list.hpp`:
+
+| Host Target | Native Graphics API | Implementation |
+| :--- | :--- | :--- |
+| **Desktop Skia** | Skia `Canvas` (Metal / Vulkan / D3D12) or software `PixelBuffer` | `crates/nve-backend-skia/src/display_list.rs` |
+| **Web WASM** | HTML5 `<canvas>` 2D (`CanvasRenderingContext2D`) | `crates/nve-backend-web/src/canvas.rs` |
+| **macOS & iOS** | CoreGraphics (`CGContext`) | `hosts/apple-common/NveAppleCanvasView.mm` |
+| **Windows** | Direct2D (`ID2D1RenderTarget` / `ID2D1PathGeometry`) | `hosts/windows-shell/NveWinD2DMedia.cpp` |
+| **Linux GTK4** | Cairo (`cairo_t` via `GtkDrawingArea` / `GtkSnapshot`) | `hosts/gtk-shell/NveGtkMedia.cpp` |
+| **Qt 6** | `QPainter` (Widgets & Quick texture) | `hosts/qt-shell/NveQtCustomWidgets.cpp` |
+| **Android JNI** | `android.graphics.Canvas` (`NveCanvasView.java`) | `hosts/android-shell/NveAndroidSurfaceJni.cpp` |
+| **Jetpack Compose** | Compose `Canvas` (`DrawScope`) | `hosts/compose-kit/.../NveSurfaceComposable.kt` |
+| **SwiftUI** | SwiftUI `Canvas` / CoreGraphics | `hosts/swiftui-kit/.../NveSceneCanvasView.swift` |
+| **Flutter** | Impeller / Skia `dart:ui.Canvas` (`RenderNveCanvas`) | `hosts/flutter-plugin/lib/src/nve_canvas_host.dart` |

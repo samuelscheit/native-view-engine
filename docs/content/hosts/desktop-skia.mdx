@@ -1,0 +1,61 @@
+---
+title: "Desktop Skia & winit"
+description: "Cross-platform GPU Skia (Metal, Vulkan, Direct3D 12) and zero-C++ softbuffer rendering via nve-backend-skia and nve-skia-shell."
+order: 2
+---
+
+# Desktop Skia & `winit` (`nve-backend-skia` + `nve-skia-shell`)
+
+`crates/nve-backend-skia` is a pure rendering backend consuming `NVE1` `CommandBuffer`s, computing Flexbox layout via any pluggable `LayoutEngine` (defaulting to Taffy), shaping text with `cosmic-text 0.19`, and emitting a retained `DisplayList`. `hosts/skia-shell` wraps it in a runnable cross-platform `winit 0.30` desktop window host (`nve-skia-shell`).
+
+## GPU Swapchains & Zero-C++ Default
+
+`crates/nve-backend-skia/src/gpu/` isolates hardware Skia backends behind opt-in Cargo features so the default build compiles with **zero C++ toolchain**:
+
+| Cargo Feature | `GpuBackendKind` | Target OS | Underlying Swapchain |
+| :--- | :--- | :--- | :--- |
+| *(default)* | `Softbuffer` | macOS, Windows, Linux | Pure-Rust `PixelBuffer` + `CosmicTextEngine` blitted via `softbuffer 0.4.8` |
+| `skia` | `CpuRaster` | All desktop | `skia_safe::surfaces::raster_n32_premul` + `SkiaCanvasRenderer` |
+| `skia-metal` | `Metal` | macOS / iOS | `MTLDevice` + `MTLCommandQueue` + `CAMetalLayer` + `make_metal` |
+| `skia-vulkan` | `Vulkan` | Linux / Windows / Android | `ash` Vulkan swapchain + `make_vulkan` + `BackendSemaphore` sync |
+| `skia-d3d` | `Direct3D12` | Windows 10/11 | `IDXGIFactory4` + `ID3D12Device` + `IDXGISwapChain3` + `make_d3d` |
+
+`GpuBackendKind::platform_preferred()` selects `Metal` on Apple, `Direct3D12` on Windows, and `Vulkan` on Linux/Android, falling back automatically to `CpuRaster` / `Softbuffer` when hardware features are disabled or unavailable in headless CI.
+
+## Text Shaping, `TextInput` IME & Clipboard
+
+- **`CosmicTextEngine`** (`crates/nve-backend-skia/src/text.rs`) — Plugs directly into `LayoutEngine::set_text_measurer` for accurate multi-line glyph shaping, font fallback, and cached glyph atlas rasterization (`text_cache.rs`).
+- **Interactive `TextInput`** (`crates/nve-backend-skia/src/text_input.rs`) — Full cursor positioning, click-and-drag text selection, `Shift+Arrow` selection, word-jump editing, clipboard copy/cut/paste, and `winit` IME composition (`Ime::Preedit` / `Ime::Commit`).
+- **Image cache & `NVE_DRAW1`** (`image_cache/`, `display_list.rs`) — Decodes PNG/JPEG assets with `ImageResizeMode` (`Cover`, `Contain`, `Stretch`, `Center`) and renders `NVE_DRAW1` vector draw lists natively on both GPU Skia and software `PixelBuffer`.
+- **Multi-window** — `nve-skia-shell` tracks multiple `winit` `WindowId`s mapped to independent `SurfaceId`s with per-window layout viewports and focus routing.
+
+## Running `nve-skia-shell`
+
+```bash title="Local cdylib preview, Frame-0 snapshot boot, headless PNG, and thin-client pairing"
+# 1. Local cdylib with live hot-reload WebSocket (default ws://127.0.0.1:8089)
+cargo run -p nve-skia-shell -- target/debug/libnve_studio_workspace.dylib \
+  --width 1280 --height 800
+
+# 2. Replay Frame-0 MmapSnapshot before dylib load & atomically save on exit
+cargo run -p nve-skia-shell -- target/debug/libnve_studio_workspace.dylib \
+  --no-ws --snapshot studio.nvesnap --schema 1
+
+# 3. Headless PNG or P6 PPM screenshot (CI-safe, no window opened)
+cargo run -p nve-skia-shell -- target/debug/libnve_example_counter.dylib \
+  --no-ws --screenshot counter.png --width 420 --height 780 --scale 2.0 --no-hud
+
+# 4. Zero-cdylib thin client connected to a remote `cargo nve pair` session
+cargo run -p nve-skia-shell -- \
+  --pair-connect 127.0.0.1:8091 --pair-transport udp --pair-token dev-secret
+```
+
+### Measured Rendering Latency
+
+From `benchmarks/baseline.json` (Apple Silicon):
+
+- **Card display list / rasterize (`393×852`):** `6.42 µs` / `136.6 µs`
+- **1,000-node display list / rasterize (`393×852`):** `961.7 µs` / `982.0 µs`
+
+<Callout kind="tip" title="Testing Skia D3D12 on Windows">
+On Windows 11 with MSVC, `cargo test -p nve-backend-skia --features skia-d3d` runs the full 32-test Direct3D 12 swapchain and surface suite.
+</Callout>

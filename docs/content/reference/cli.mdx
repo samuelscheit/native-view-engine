@@ -1,0 +1,93 @@
+---
+title: "CLI Reference (cargo nve)"
+description: "Complete flag-by-flag reference for the nve developer CLI: doctor, inspect, bench, dev, pair, codegen, and docs."
+order: 1
+---
+
+# CLI Reference (`cargo nve`)
+
+`crates/nve-cli` provides the workspace developer CLI invoked via `cargo nve <subcommand>` (configured via `.cargo/config.toml` alias) or `cargo run -p nve-cli -- <subcommand>`.
+
+## `cargo nve doctor`
+
+Inspects your local workstation for Rust targets (`wasm32-unknown-unknown`, `aarch64-apple-ios-sim`, `aarch64-linux-android`), compiler caches (`kache`, `ccache`), CMake/Ninja, Xcode/Simulator SDKs, Android SDK/NDK, Flutter/Swift toolchains, and optional `RN_REACT_COMMON_DIR` React Native Fabric sources.
+
+```bash title="Run environment diagnostics"
+cargo nve doctor
+```
+
+## `cargo nve inspect`
+
+Runs a Dioxus `rsx!` surface headlessly on `nve-backend-headless`, simulates native press events, and dumps the resolved ShadowTree and Flexbox layout rectangles in `< 300 ms` with zero GUI windows.
+
+```bash title="Headless ShadowTree & layout dump"
+cargo nve inspect
+```
+
+## `cargo nve bench`
+
+Runs multi-backend initial commit and incremental frame benchmarks across Headless (Taffy), Skia, and Web backends and optionally exports a Chrome / Perfetto JSON trace (`FrameTiming`: `reconcile_us`, `encode_us`, `decode_us`, `layout_us`, `diff_us`, `mount_us`).
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--rows <N>` | `1000` | Number of rows in the benchmarked virtual tree |
+| `--frames <N>` | `50` | Number of incremental update frames to execute |
+| `--trace <PATH>` | *(none)* | Write a Chrome / Perfetto trace JSON file (e.g. `bench.trace.json`) |
+
+```bash title="Benchmark 1,000 rows for 50 frames and export a Perfetto trace"
+cargo nve bench --rows 1000 --frames 50 --trace /tmp/nve-bench.trace.json
+```
+
+## `cargo nve dev`
+
+Starts the 2-tier hot-reload daemon (`NVP1` Tier-1 RSX/style patching `< 50 ms` + Tier-2 incremental `cdylib` hot-swap `150–400 ms`), with optional Skia desktop preview, Web WASM rebuilds, and live `NVD1` device pairing.
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--package <NAME>` | `nve-studio-workspace` | Workspace crate name of the `cdylib` to watch and rebuild |
+| `--watch <DIR>` | `<pkg>/src` | Directory to watch for `.rs` edits |
+| `--host <ADDR>` | `0.0.0.0` | Bind address for the WebSocket server (`0.0.0.0` allows LAN/phone clients) |
+| `--port <PORT>` | `8089` | WebSocket port for Tier-1/Tier-2 hot-reload clients |
+| `--web` / `--no-web` | `false` | Enable or skip rebuilding `hosts/web-shell/build.sh --dev` on save |
+| `--skia` | `false` | Launch live `nve-skia-shell` desktop window connected to the daemon |
+| `--pair` | `false` | Enable live `NVD1` delta pairing (UDP + TCP/WS + remote `InputEvents`) |
+| `--pair-udp-port <PORT>` | `8091` | UDP port for live `NVD1` pairing when `--pair` is active |
+| `--pair-ws-port <PORT>` | `8092` | TCP/WebSocket port for live `NVD1` pairing when `--pair` is active |
+| `--pair-token <SECRET>` | *(auto)* | Explicit pairing token (auto-generated when omitted) |
+
+```bash title="Start hot-reload daemon with Skia preview and LAN pairing"
+cargo nve dev --package nve-studio-workspace --skia --pair --pair-token dev-secret
+```
+
+## `cargo nve pair`
+
+Loads a compiled NVE `cdylib` (building it automatically if `--package` is given) and streams live `NVT1`/`NVD1` frame deltas over UDP and TCP/WebSocket while ingesting remote `InputEvents`.
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--dylib <PATH>` | *(none)* | Direct path to an already-built `cdylib` exporting `nve_get_interface` |
+| `--package <NAME>` | *(none)* | Workspace crate name to build/load |
+| `--host <ADDR>` | `0.0.0.0` | Bind address for UDP and TCP/WebSocket listeners |
+| `--udp-port <PORT>` | `8091` | UDP port for MTU-safe `NVD1` datagrams |
+| `--ws-port <PORT>` | `8092` | TCP / RFC-6455 binary WebSocket port |
+| `--token <SECRET>` | *(auto)* | Pairing authentication token |
+| `--width <PX>` | `393.0` | Initial logical viewport width |
+| `--height <PX>` | `852.0` | Initial logical viewport height |
+| `--fps <HZ>` | `60` | Target frame and poll cadence |
+
+## `cargo nve codegen`
+
+Unified code generator with four subcommands (see [Bi-Directional Codegen](/interop/codegen)):
+
+- `cargo nve codegen abi [--check] [--out <DIR>]` — Generate or verify all 10 Core + Scene ABI artifacts (`nve_abi.generated.h`, `nve_scene_abi.generated.h`, `nve_core_abi.generated.dart`, `nve_core_abi.generated.ts`, `dev.nve.android.generated.{NveCoreAbi,NveSceneBuffer}`, etc.).
+- `cargo nve codegen hybrid <SPEC> [--target rust,cpp,swift,kotlin,dart,ts|all] [--out generated/hybrid]` — Emit zero-JSON hybrid FFI bindings from a declarative `.nve.rs` spec.
+- `cargo nve codegen import-rn <SPEC> [--out generated/import-rn]` — Parse a React Native `*NativeComponent.{ts,js}` or `Native*.{ts,js}` spec into zero-JS Rust + C++20 adapters.
+- `cargo nve codegen export <SPEC_JSON> [--target rn,flutter,swiftui,compose,web|all] [--out generated/export]` — Export one `NveExportSpec` to 5 native host targets.
+
+## `cargo nve docs` *(Planned — `nve-docs` CLI)*
+
+As the reusable `crates/nve-docs` documentation framework lands (Docs Phase 2–4 in `docs/BACKLOG.md`), `cargo nve docs` adds three subcommands backed by `crates/nve-mdx` and `crates/nve-backend-web`:
+
+- `cargo nve docs check` — Compiles `docs/content/` with `nve-mdx`, validates frontmatter, component schemas, internal routes, and heading anchors with zero browser dependency.
+- `cargo nve docs build` — Emits static semantic HTML5 SSR pages, deterministic `<style>` sheets, `sitemap.xml`, `NVS1` binary search index, and the progressive-hydration WASM bundle.
+- `cargo nve docs dev` — Launches a live-reloading local docs server with instant `.mdx` recompilation.

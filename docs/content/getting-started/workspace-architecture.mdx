@@ -1,0 +1,110 @@
+---
+title: "Workspace Architecture"
+description: "Complete map of the 22 Cargo workspace crates, the strict framework-agnostic engine boundary, C++20 shared host runtime, and 12 platform host shells."
+order: 3
+---
+
+# Workspace Architecture
+
+The `native-view-engine` monorepo enforces a strict, layered dependency DAG. Low-level ABI and engine crates compile in hundreds of milliseconds and have zero dependency on Dioxus, Skia, or browser bindings.
+
+## Dependency DAG
+
+```text
+                       ┌──────────────────────┐
+                       │       nve-abi        │  Zero-JSON NVE1 CommandBuffer, EventRing,
+                       │   (no heavy deps)    │  NveSceneView (64B), NveValue, nve_get_interface
+                       └──────────┬───────────┘
+           ┌──────────────────────┼──────────────────────┐
+           ▼                      ▼                      ▼
+   ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
+   │nve-components │      │  nve-engine   │      │  nve-interop  │
+   │NVE_DRAW1 IR   │      │NveApp, Layout │      │Surfaces, CRDT │
+   │Style/Tag map  │      │Snapshot + WAL │      │NVT1/NVD1/NVW1 │
+   └───────┬───────┘      └───────┬───────┘      └───────┬───────┘
+           │                      │                      │
+     ┌─────┴──────────┬───────────┼───────────┬──────────┴─────┐
+     ▼                ▼           ▼           ▼                ▼
+┌──────────┐  ┌────────────┐ ┌─────────┐ ┌─────────┐   ┌──────────────┐
+│nve-dioxus│  │nve-layout- │ │nve-sdk  │ │nve-back-│   │nve-codegen   │
+│rsx!+sig  │  │yoga (C++20)│ │NVH1/NVT2│ │ends     │   │5-target + ABI│
+└────┬─────┘  └────────────┘ └────┬────┘ └────┬────┘   └──────────────┘
+     ├──────────────┬─────────────┤           │
+     ▼              ▼             ▼           ▼
+┌──────────┐  ┌──────────┐  ┌──────────┐ ┌────────────────────────────┐
+│  nve-ui  │  │nve-router│  │ nve-mdx  │ │ Hosts & Shells             │
+│15 comps  │  │NVN1 + web│  │NVS1 index│ │ cxx/nve-fabric-bridge +    │
+└────┬─────┘  └────┬─────┘  └────┬─────┘ │ hosts/{apple,win,qt,gtk,   │
+     └─────────────┴─────────────┘       │ android,compose,swiftui,   │
+                   ▼                     │ flutter,skia,web}          │
+             ┌──────────┐                └────────────────────────────┘
+             │ nve-docs │
+             └──────────┘
+```
+
+<Callout kind="warning" title="Strict framework-agnostic boundary">
+`crates/nve-engine` MUST maintain zero dependency on `dioxus-core` or `dioxus-signals`. All Dioxus `WriteMutations` bridging, RSX attributes, and `SignalArchive` hydration live exclusively inside `crates/nve-dioxus`.
+</Callout>
+
+## Rust Workspace Crates (`crates/`)
+
+The root `Cargo.toml` defines 22 workspace members split into core runtime, application frameworks, backends, tooling, and runnable examples:
+
+| Crate | Path | Responsibility |
+| :--- | :--- | :--- |
+| `nve-abi` | `crates/nve-abi` | `NVE1` binary `CommandBuffer` encoder/decoder, `EventRing`, `NK1` keydowns, `NveRenderNode` / `NveSceneView`, `NveValue` bump-arena types, `nve_get_interface(1..=5)`, and `NVH1` host event batch codec. |
+| `nve-components` | `crates/nve-components` | HTML/RN tag resolver (`resolve_tag`), typed style/layout attribute parser (`apply_typed_attr_with_raw`), `ImageResizeMode`, and `NVE_DRAW1` vector canvas draw-list IR (`DrawListBuilder` / `DrawListDecoder`). |
+| `nve-engine` | `crates/nve-engine` | `NveApp` trait + `export_nve_app!` panic-safe C ABI macro, `RenderBackend`, `SurfaceRunner`, 6-stage `FrameProfiler`, pluggable `LayoutEngine` + `TextMeasurer`, `MmapSnapshot` (`NVE_SNAP`), `SnapshotWal` (`NVE_WAL1`), `HotPatchMsg` (`NVP1`), and `cdylib` loader. |
+| `nve-layout-yoga` | `crates/nve-layout-yoga` | Real C++20 React Native Yoga (`yogacore`) `LayoutEngine` adapter with `YGNodeSetMeasureFunc` callbacks to Rust `TextMeasurer` (gracefully degrades when `RN_REACT_COMMON_DIR` is unset). |
+| `nve-dioxus` | `crates/nve-dioxus` | Dioxus `0.7.10` `WriteMutations` adapter emitting `CommandBuffer`s, native-first `dioxus_elements` (`view`, `text`, `pressable`, `scrollview`, `image`, `textinput`, `skia_canvas`), 12 ARIA/`tabIndex` attributes, Tier-1 RSX hot-patcher, and `SignalArchive` (`NVE_SIG1`/`NVE_SGD1`). |
+| `nve-ui` | `crates/nve-ui` | 15 accessible, zero-external-CSS Dioxus UI components, `UiTheme` / `ThemeProvider`, zero-alloc `StyleBuf`, `FocusTrap` / `RovingFocus`, and 100k-row `FenwickHeightTree` `VirtualList`. |
+| `nve-router` | `crates/nve-router` | Zero-proc-macro `define_routes!`, stack/tab/modal/guard/deep-link state machines, `NVN1` channel bridge (`CHANNEL_ID_NAVIGATION = 4`), Dioxus `RouterProvider`/`Outlet`/`Link`, and `nve-router::web` History API adapter. |
+| `nve-sdk` | `crates/nve-sdk` | Zero-JSON Tier-1 host capabilities over `NVE_IFACE_HOST = 5`: Clipboard, Filesystem/File Picker, Secure Store, Linking, live Theme/Locale (`NVT2`/`NVL1`), Notifications, Haptics, native OS drivers, and deterministic `MemoryHostServices`. |
+| `nve-interop` | `crates/nve-interop` | `SurfaceOrchestrator`, `LayoutNegotiator`, `GestureArbitrator`, `NveChannelBus`, `<Island>` `RenderHandoff`, `WindowManager` (`NVW1`), panic-isolated `NvePluginHost`, `NVC1` binary CRDT engine, and `NVT1`/`NVD1` live delta transport. |
+| `nve-codegen` | `crates/nve-codegen` | Single-source Core + Scene ABI generator (10 artifacts), Nitro-style `#[nve_hybrid_*]` 6-target codegen, React Native `import-rn`, and 5-target `NveExportSpec` exporters (RN, Flutter, SwiftUI, Compose, Web). |
+| `nve-mdx` | `crates/nve-mdx` | Zero-dependency pure-Rust `.md`/`.mdx` parser, Nextra-style `_meta.toml` nav builder, compile-time schema/link/anchor validator, multi-language syntax highlighter, and binary `NVS1` full-text search index. |
+| `nve-docs` | `crates/nve-docs` | Reusable Fumadocs × Linear documentation site framework built entirely on `nve-ui`, `nve-router`, `nve-sdk`, and `nve-mdx`. |
+| `nve-backend-headless` | `crates/nve-backend-headless` | Pure-Rust `taffy 0.16` Flexbox layout + mutation recorder + ASCII/JSON tree inspector for sub-millisecond unit/integration tests. |
+| `nve-backend-skia` | `crates/nve-backend-skia` | Cross-platform retained display list, `cosmic-text 0.19` text shaping, `PixelBuffer` software rasterizer, and opt-in `skia-safe` GPU swapchains (`skia`, `skia-metal`, `skia-vulkan`, `skia-d3d`). |
+| `nve-backend-web` | `crates/nve-backend-web` | `wasm32` DOM + CSS Flexbox backend, structural CSS class cache, `<canvas>` `NVE_DRAW1` renderer, semantic HTML5 SSR (`render_ssr`), and progressive DOM hydration (`hydrate_into`). |
+| `nve-cli` | `crates/nve-cli` | Developer CLI (`cargo nve`): `doctor`, `inspect`, `bench`, `dev`, `pair`, and `codegen`. |
+| `nve-bench` | `crates/nve-bench` | Criterion `0.8.2` statistical benchmark suite covering ABI, scene, value, layout, Skia, Web, Dioxus, and interop hot paths. |
+
+## C++20 Bridge & Platform Host Shells (`cxx/`, `hosts/`)
+
+All C++ and Objective-C++ platform shells share a single DRY runtime in `cxx/nve-fabric-bridge`:
+
+- **`cxx/nve-fabric-bridge`** — Decodes `NVE1` `CommandBuffer`s, drives real React Native Yoga/Fabric or standalone Flexbox (`NVE_WITH_RN_YOGA`, `NVE_WITH_RN_JSI`, `NVE_WITH_RN_FABRIC`), exposes `nve::NativeHostSession`, `nve::RetainedViewReconciler<ViewT, Adapter>`, `nve::SceneTableBuilder`, `nve::DrawListDecoder`, and zero-dep `nve::PairClient` (POSIX + WinSock2).
+- **`hosts/apple-common/`** — Shared UIKit/AppKit ABI loader, hot-swap controller, `NveAppleSceneReconciler`, CoreGraphics `NveAppleCanvasView`, and `NveAppleImageCache` reused by `hosts/macos-shell` and `hosts/ios-shell`.
+- **Desktop shells** — `hosts/skia-shell` (`winit` + GPU/`softbuffer`), `hosts/macos-shell` (AppKit + RN-macOS), `hosts/windows-shell` (Win32/Direct2D/DirectWrite + RNW 0.88 Fabric), `hosts/qt-shell` (Qt 6 Widgets + Quick `QSGNode`), `hosts/gtk-shell` (GTK4/Pango/Cairo).
+- **Mobile & embedder kits** — `hosts/ios-shell` (UIKit/iPadOS `UIScene`), `hosts/android-shell` (JNI DirectByteBuffers + zero-Gradle APK launcher), `hosts/compose-kit` (`dev.nve.compose`), `hosts/swiftui-kit` (`NveSwiftUI`), `hosts/flutter-plugin` (`nve_flutter`).
+- **Web shell** — `hosts/web-shell` (`wasm-bindgen`, `Wizer` Frame-0 pre-init, `ACTIVE_SHELLS` multi-window, `?pair=ws://` live pairing).
+
+## Workspace Build Profiles
+
+The root `Cargo.toml` tunes three Cargo profiles for fast iteration without sacrificing release or WASM size:
+
+```toml title="Cargo.toml" highlight="2-6,10-13,17-22"
+# Keep workspace crates fast to recompile while optimizing heavy deps once
+[profile.dev]
+opt-level = 0
+debug = 1
+[profile.dev.package."*"]
+opt-level = 2
+debug = 0
+
+# Native release preserves panic = "unwind" for catch_unwind FFI isolation
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
+# Size-optimized browser WASM profile (285.8 KiB gzipped Studio bundle)
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+```
