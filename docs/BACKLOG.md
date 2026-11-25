@@ -26,11 +26,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ## P1 — UI & Engine Maturity (from [ui-maturity-audit.md](./ui-maturity-audit.md))
 
-- [ ] **Layout & RTL Parity (`flex-basis`, CSS Grid, `position: sticky`, `aspect-ratio`, RTL Logical Props)**
-  - Expose Taffy's CSS Grid (`display: grid`, `grid-template-columns`, `minmax`, spanning), `flex-basis`, `aspect-ratio`, `position: sticky`, and RTL logical layout mirroring (`padding-inline-start`, selective icon mirroring) cleanly alongside Wave C1's `nve-abi` schema update.
-
-- [ ] **Rich Graphics (`transform`, Skia Gradients & Cached Skia SVG)**
-  - Closed-form interruptible springs (`SpringSpec`), `TransitionSpec`, Web native CSS `transition:` + `prefers-reduced-motion`, and Skia `MotionDriver` are landed (`e6a44f1`); remaining work is typed 2D `transform` (`translate`/`scale`/`rotate`), linear/radial gradients, and cached vector SVG rendering in `SkiaBackend`.
+- [ ] **Rich Graphics (Skia Gradients & Cached Skia SVG)**
+  - Closed-form interruptible springs (`SpringSpec`), `TransitionSpec`, Web native CSS `transition:` + `prefers-reduced-motion`, Skia `MotionDriver` (`e6a44f1`), and typed 2D `Transform2D` (`c09dd54`) are landed; remaining work is linear/radial gradients and cached vector SVG rendering in `SkiaBackend`.
 
 - [ ] **Text Input, IME, BiDi & Mobile Host Autofill/Keyboard Wiring**
   - Subtree `ErrorBoundary`, `AutofillHint`/`InputMode` + Web autofill sync, and `KeyboardInsets` + Web `visualViewport` + `KeyboardAvoidingView` are landed (`38b351c`); remaining work is unified IME `CompositionStart/Update/End` + caret screen-rect candidate-popup feedback, BiDi run/caret mapping & grapheme-safe selection in Skia, and native Apple/Android host wiring for `AutofillHint`/`KeyboardInsets`.
@@ -41,6 +38,12 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 ---
 
 ## Flagship / Vision (Remaining Work Only)
+
+- [ ] **Unified Multiplayer Collaboration (`nve-sync`: `Room` + `Presence` + `use_synced_state`)**
+  - Ergonomic `use_synced_state` / `use_synced_list` / `use_presence` hooks bridging server-authoritative thin-client rooms (0-JS Web & Native SDUI) and offline-first local CRDT peers (`packages/core/interop/src/crdt`) in the same live collaborative room, with ephemeral 20–30Hz cursors/selections/online presence.
+
+- [ ] **Self-Documenting Protocol & Format Naming Cleanup**
+  - Replace cryptic 4-letter format acronyms (`NVT1`, `NVD1`, `NVC1`, `NVERELOC`, `NVWS1`, `NVB1`, `NWS1`, `NVE_MET1`, etc.) across code, wire headers, and docs with clear human-readable names (`NveTransportPacket`, `NveFrameDelta`, `NveCrdtDelta`, `NveRelocContainer`, `NveWebSnapshot`, `NveWebState`, etc.) as part of the transport/SDUI upgrade wave.
 
 - [ ] **Flagship Local-First Workspace & Messaging App (`examples/studio-workspace`)**
   - Core modules (`nve-ui`, `nve-router`, `nve-host-services` + `nve-clipboard` + `nve-system-env`, Environment `TraitKey`s, live `NVC1` CRDT peer transport, 100k Fenwick stream, Docs editor, Meta Workbench, `NWS1` v2 + `.nvewal`) and live `/examples/studio/` GitHub Pages deploy are landed; next step is integrating opt-in `<NativeView<CameraPreview>>` / `BlurSurface` in Studio.
