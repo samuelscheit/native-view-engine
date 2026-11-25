@@ -6,11 +6,11 @@ order: 2
 
 # Desktop Skia & `winit` (`nve-backend-skia` + `nve-skia-shell`)
 
-`crates/nve-backend-skia` is a pure rendering backend consuming `NVE1` `CommandBuffer`s, computing Flexbox layout via any pluggable `LayoutEngine` (defaulting to Taffy), shaping text with `cosmic-text 0.19`, and emitting a retained `DisplayList`. `hosts/skia-shell` wraps it in a runnable cross-platform `winit 0.30` desktop window host (`nve-skia-shell`).
+`packages/backends/skia` is a pure rendering backend consuming `NVE1` `CommandBuffer`s, computing Flexbox layout via any pluggable `LayoutEngine` (defaulting to Taffy), shaping text with `cosmic-text 0.19`, and emitting a retained `DisplayList`. `hosts/skia-shell` wraps it in a runnable cross-platform `winit 0.30` desktop window host (`nve-skia-shell`).
 
 ## GPU Swapchains & Zero-C++ Default
 
-`crates/nve-backend-skia/src/gpu/` isolates hardware Skia backends behind opt-in Cargo features so the default build compiles with **zero C++ toolchain**:
+`packages/backends/skia/src/gpu/` isolates hardware Skia backends behind opt-in Cargo features so the default build compiles with **zero C++ toolchain**:
 
 | Cargo Feature | `GpuBackendKind` | Target OS | Underlying Swapchain |
 | :--- | :--- | :--- | :--- |
@@ -24,8 +24,8 @@ order: 2
 
 ## Text Shaping, `TextInput` IME & Clipboard
 
-- **`CosmicTextEngine`** (`crates/nve-backend-skia/src/text.rs`) — Plugs directly into `LayoutEngine::set_text_measurer` for accurate multi-line glyph shaping, font fallback, and cached glyph atlas rasterization (`text_cache.rs`).
-- **Interactive `TextInput`** (`crates/nve-backend-skia/src/text_input.rs`) — Full cursor positioning, click-and-drag text selection, `Shift+Arrow` selection, word-jump editing, clipboard copy/cut/paste, and `winit` IME composition (`Ime::Preedit` / `Ime::Commit`).
+- **`CosmicTextEngine`** (`packages/backends/skia/src/text.rs`) — Plugs directly into `LayoutEngine::set_text_measurer` for accurate multi-line glyph shaping, font fallback, and cached glyph atlas rasterization (`text_cache.rs`).
+- **Interactive `TextInput`** (`packages/backends/skia/src/text_input.rs`) — Full cursor positioning, click-and-drag text selection, `Shift+Arrow` selection, word-jump editing, clipboard copy/cut/paste, and `winit` IME composition (`Ime::Preedit` / `Ime::Commit`).
 - **Image cache & `NVE_DRAW1`** (`image_cache/`, `display_list.rs`) — Decodes PNG/JPEG assets with `ImageResizeMode` (`Cover`, `Contain`, `Stretch`, `Center`) and renders `NVE_DRAW1` vector draw lists natively on both GPU Skia and software `PixelBuffer`.
 - **Multi-window** — `nve-skia-shell` tracks multiple `winit` `WindowId`s mapped to independent `SurfaceId`s with per-window layout viewports and focus routing.
 

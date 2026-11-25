@@ -1,5 +1,5 @@
 //! Zero-JSON `NVNP` (native props) and `NVNC` (native commands) binary wire primitives
-//! byte-for-byte aligned with `crates/nve-interop` and `packages/modules/camera/cxx`.
+//! byte-for-byte aligned with `packages/core/interop` and `packages/modules/camera/cxx`.
 
 use std::fmt;
 

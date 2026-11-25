@@ -4,7 +4,7 @@ Cross-platform desktop host (`nve-skia-shell`) that loads any compiled NVE `cdyl
 
 ## Features
 
-- **Pure Library / Host Split**: Mirrors `crates/nve-backend-web` + `hosts/web-shell` — all `winit`, `softbuffer`, and WebSocket hot-reload host logic lives here while `crates/nve-backend-skia` remains a pure rendering backend library.
+- **Pure Library / Host Split**: Mirrors `packages/backends/web` + `hosts/web-shell` — all `winit`, `softbuffer`, and WebSocket hot-reload host logic lives here while `packages/backends/skia` remains a pure rendering backend library.
 - **2-Tier Hot Reload (`nve dev`)**: Connects to `ws://127.0.0.1:8089` (configurable via `--ws <url>` or disabled via `--no-ws`) to apply Tier-1 template patches and Tier-2 `cdylib` reloads with state preservation.
 - **Instant-Boot Frame-0 `MmapSnapshot`**: Pass `--snapshot <path.nvesnap> [--schema <ver>]` to replay a freeze-dried Frame-0 `CommandBuffer` directly from memory-mapped storage before `dlopen`, restore app state on boot, and atomically persist the latest snapshot on exit.
 - **Headless Screenshot Capture**: Pass `--screenshot <out.ppm> [--width W] [--height H] [--scale S]` to render headlessly without a display server and write a binary `P6` PPM image.

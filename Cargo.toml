@@ -1,23 +1,26 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nve-abi",
-    "crates/nve-components",
-    "crates/nve-engine",
-    "crates/nve-layout-yoga",
-    "crates/nve-dioxus",
-    "crates/nve-codegen",
-    "crates/nve-interop",
-    "crates/nve-sdk",
-    "crates/nve-ui",
-    "crates/nve-router",
-    "crates/nve-mdx",
-    "crates/nve-docs",
-    "crates/nve-backend-headless",
-    "crates/nve-backend-skia",
-    "crates/nve-backend-web",
-    "crates/nve-cli",
-    "crates/nve-bench",
+    "packages/core/abi",
+    "packages/core/components",
+    "packages/core/engine",
+    "packages/core/layout-yoga",
+    "packages/core/dioxus",
+    "packages/core/codegen",
+    "packages/core/interop",
+    "packages/backends/headless",
+    "packages/backends/skia",
+    "packages/backends/web",
+    "packages/framework/sdk",
+    "packages/framework/ui",
+    "packages/framework/router",
+    "packages/framework/mdx",
+    "packages/framework/docs",
+    "packages/tools/cli",
+    "packages/tools/bench",
+    "packages/modules/camera",
+    "packages/modules/tv",
+    "packages/modules/pair",
     "examples/counter",
     "examples/studio-workspace",
     "examples/nve-docs-site",
@@ -31,21 +34,24 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-nve-abi = { path = "crates/nve-abi" }
-nve-components = { path = "crates/nve-components" }
-nve-engine = { path = "crates/nve-engine" }
-nve-layout-yoga = { path = "crates/nve-layout-yoga" }
-nve-dioxus = { path = "crates/nve-dioxus" }
-nve-codegen = { path = "crates/nve-codegen" }
-nve-interop = { path = "crates/nve-interop" }
-nve-sdk = { path = "crates/nve-sdk" }
-nve-ui = { path = "crates/nve-ui" }
-nve-router = { path = "crates/nve-router" }
-nve-mdx = { path = "crates/nve-mdx" }
-nve-docs = { path = "crates/nve-docs" }
-nve-backend-headless = { path = "crates/nve-backend-headless" }
-nve-backend-skia = { path = "crates/nve-backend-skia" }
-nve-backend-web = { path = "crates/nve-backend-web" }
+nve-abi = { path = "packages/core/abi" }
+nve-components = { path = "packages/core/components" }
+nve-engine = { path = "packages/core/engine" }
+nve-layout-yoga = { path = "packages/core/layout-yoga" }
+nve-dioxus = { path = "packages/core/dioxus" }
+nve-codegen = { path = "packages/core/codegen" }
+nve-interop = { path = "packages/core/interop" }
+nve-sdk = { path = "packages/framework/sdk" }
+nve-ui = { path = "packages/framework/ui" }
+nve-router = { path = "packages/framework/router" }
+nve-mdx = { path = "packages/framework/mdx" }
+nve-docs = { path = "packages/framework/docs" }
+nve-backend-headless = { path = "packages/backends/headless" }
+nve-backend-skia = { path = "packages/backends/skia" }
+nve-backend-web = { path = "packages/backends/web" }
+nve-camera = { path = "packages/modules/camera" }
+nve-tv = { path = "packages/modules/tv" }
+nve-pair = { path = "packages/modules/pair" }
 nve-skia-shell = { path = "hosts/skia-shell" }
 nve-example-counter = { path = "examples/counter" }
 nve-studio-workspace = { path = "examples/studio-workspace", default-features = false }

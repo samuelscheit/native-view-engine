@@ -6,7 +6,7 @@ Swift Package Manager library that embeds any **Native View Engine (NVE)** Rust 
 
 - **`NveSurfaceRepresentable`**: Unified SwiftUI `View` across iOS and macOS with `sizeThatFits` intrinsic layout negotiation, reactive prop updates (`set_props`), and clean `dismantleUIView` / `dismantleNSView` teardown.
 - **`NveSurfaceController`**: Direct C ABI binding to modular `nve_get_interface` (`CNveAbi`: `NveSurfaceApi`, `NveLayoutApi`, `NveComponentApi`, `NveDevApi`).
-- **`NveEventRingCodec`**: Zero-dependency Swift binary decoder/encoder matching `crates/nve-abi/src/events.rs`.
+- **`NveEventRingCodec`**: Zero-dependency Swift binary decoder/encoder matching `packages/core/abi/src/events.rs`.
 - **`NveChannelClient`**: Thread-safe pub/sub and retained shared-state bridge to `NveChannelBus`.
 
 ## Usage Example

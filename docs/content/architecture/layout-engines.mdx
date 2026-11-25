@@ -6,11 +6,11 @@ order: 4
 
 # Pluggable Layout Engines
 
-Layout in `native-view-engine` is decoupled from rendering through two narrow traits in `crates/nve-engine/src/layout.rs`: **`LayoutEngine`** and **`TextMeasurer`**. Backends like `HeadlessBackend<L>` and `SkiaBackend<L>` are generic over `L: LayoutEngine` — giving zero-vtable monomorphization by default while allowing live mid-session engine switching through `DynLayoutEngine` (`Box<dyn LayoutEngine>`).
+Layout in `native-view-engine` is decoupled from rendering through two narrow traits in `packages/core/engine/src/layout.rs`: **`LayoutEngine`** and **`TextMeasurer`**. Backends like `HeadlessBackend<L>` and `SkiaBackend<L>` are generic over `L: LayoutEngine` — giving zero-vtable monomorphization by default while allowing live mid-session engine switching through `DynLayoutEngine` (`Box<dyn LayoutEngine>`).
 
 ## Core Traits
 
-```rust title="crates/nve-engine/src/layout.rs (excerpt)" highlight="2,13-22"
+```rust title="packages/core/engine/src/layout.rs (excerpt)" highlight="2,13-22"
 pub trait TextMeasurer: Send + Sync {
     /// Returns (width, height) in logical points under an optional max_width wrap constraint.
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32);
@@ -52,7 +52,7 @@ Because layout traversal dominates execution time, boxing the engine for runtime
 
 ## Real React Native Yoga (`nve-layout-yoga`)
 
-`crates/nve-layout-yoga` compiles React Native's actual `yogacore` C++20 sources when `RN_REACT_COMMON_DIR` is set at build time, bridging `YGNodeSetMeasureFunc` directly back into any Rust `TextMeasurer` (such as `CosmicTextEngine` or `HeuristicTextMeasurer`):
+`packages/core/layout-yoga` compiles React Native's actual `yogacore` C++20 sources when `RN_REACT_COMMON_DIR` is set at build time, bridging `YGNodeSetMeasureFunc` directly back into any Rust `TextMeasurer` (such as `CosmicTextEngine` or `HeuristicTextMeasurer`):
 
 - **Heap-stable measure contexts** — Each node's `BoxedMeasureState` (`NveYogaMeasureHook` + `MeasurePayload`) lives behind a `Box`, so rehashing the internal `HashMap<NodeId, YogaNodeEntry>` never invalidates pointers stored in `YGNodeSetContext`.
 - **Panic-safe measure callbacks** — `rust_measure_callback` wraps `TextMeasurer::measure` in `catch_unwind` so a panicking measurer never unwinds into C++ Yoga.

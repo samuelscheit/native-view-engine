@@ -1573,6 +1573,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-camera"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "nve-cli"
 version = "0.1.0"
 dependencies = [
@@ -1722,6 +1729,14 @@ name = "nve-mdx"
 version = "0.1.0"
 
 [[package]]
+name = "nve-pair"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-interop",
+]
+
+[[package]]
 name = "nve-router"
 version = "0.1.0"
 dependencies = [
@@ -1781,6 +1796,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "nve-tv"
+version = "0.1.0"
 
 [[package]]
 name = "nve-ui"

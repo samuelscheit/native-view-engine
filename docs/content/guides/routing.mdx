@@ -6,7 +6,7 @@ order: 3
 
 # Routing (`nve-router`)
 
-`crates/nve-router` provides type-safe stack, tab, modal, and deep-link navigation for `nve-dioxus` with **zero proc-macro compile tax**, a compact binary **`NVN1`** host bridge on `NveChannelBus`, and a portable **Web History API** adapter (`nve-router::web`).
+`packages/framework/router` provides type-safe stack, tab, modal, and deep-link navigation for `nve-dioxus` with **zero proc-macro compile tax**, a compact binary **`NVN1`** host bridge on `NveChannelBus`, and a portable **Web History API** adapter (`nve-router::web`).
 
 ## Defining Routes With `define_routes!`
 
@@ -72,14 +72,14 @@ Experiment with stack pushes, pops, modal sheets, guarded redirects, and deep-li
 
 ## Binary `NVN1` Host Channel Bridge
 
-`RouterChannelBridge` binds `RouterState` / `TabRouterState` onto `nve_interop::NveChannelBus` (`CHANNEL_ID_NAVIGATION = 4`, topic `"navigation"`) using the zero-JSON **`NVN1`** binary packet format (`crates/nve-router/src/nvn1.rs`, minimum 20 bytes):
+`RouterChannelBridge` binds `RouterState` / `TabRouterState` onto `nve_interop::NveChannelBus` (`CHANNEL_ID_NAVIGATION = 4`, topic `"navigation"`) using the zero-JSON **`NVN1`** binary packet format (`packages/framework/router/src/nvn1.rs`, minimum 20 bytes):
 
 - **Header:** `magic("NVN1")` (4 B) + `version(u8 = 1)` + `action(u8)` + `flags(u8: CAN_GO_BACK | CAN_GO_FORWARD | IS_MODAL)` + `reserved(u8 = 0)` + `stack_depth(u32)` + `active_tab_index(u32)` + `uri_len(u16)` + `uri_utf8` + `tab_id_len(u16)` + `tab_id_utf8`.
 - **Zero-copy decode (`NavPacketRef<'a>`)** — Native hosts (iOS `UINavigationController`, Android predictive back gesture, desktop title bars, or browser shells) inspect `can_go_back` and the current URI without allocating strings, and push inbound hardware-back or deep-link commands back into Rust over the same channel.
 
 ## Web History API Adapter (`nve-router::web`)
 
-`crates/nve-router/src/web.rs` connects `RouterState<R>` to browser URLs with zero JavaScript glue:
+`packages/framework/router/src/web.rs` connects `RouterState<R>` to browser URLs with zero JavaScript glue:
 
 - **`HistoryBackend` trait** — Implemented by **`BrowserHistoryBackend`** on `wasm32` (wrapping `web-sys` `window.history` with RAII `popstate` listener cleanup on `Drop`) and **`MemoryHistoryBackend`** on all targets for deterministic native unit tests.
 - **`WebHistoryAdapter`** — Handles subpath deployments (e.g. GitHub Pages `normalize_base_path("/native-view-engine")`), loop-free `pushState`/`replaceState`/`popstate` synchronization, browser-accurate `<a>` click interception (respecting `Cmd`/`Ctrl`/`Shift`/middle-click, `target="_blank"`, and external origins), and `#anchor` smooth scrolling (`ScrollTarget::Top` / `ScrollTarget::Anchor(id)`).

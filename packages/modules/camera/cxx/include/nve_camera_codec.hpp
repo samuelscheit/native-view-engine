@@ -26,7 +26,7 @@ inline constexpr size_t kCameraFrameDescriptorSize = 40u;
 inline constexpr uint16_t kMaxCameraFps = 240u;
 
 // =============================================================================
-// Wire Enums (Discriminants aligned 1:1 with crates/nve-interop & nve-sdk)
+// Wire Enums (Discriminants aligned 1:1 with packages/core/interop & nve-sdk)
 // =============================================================================
 
 enum class CameraFacing : uint8_t { Back = 1, Front = 2, External = 3 };

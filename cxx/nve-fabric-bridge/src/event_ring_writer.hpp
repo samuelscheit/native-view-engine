@@ -14,7 +14,7 @@
 namespace nve {
 
 /**
- * Lightweight binary EventRing writer matching `crates/nve-abi/src/events.rs`.
+ * Lightweight binary EventRing writer matching `packages/core/abi/src/events.rs`.
  *
  * When compiled with React Native Fabric (`NVE_WITH_RN_FABRIC=1`), our `EventListener`
  * intercepts `facebook::react::RawEvent` in C++ before JSI (returning `true` to suppress JS

@@ -1,5 +1,5 @@
 /// Zero-copy binary `NveBinValue` wire decoder and encoder matching
-/// `crates/nve-abi/src/value.rs` (tags 0..7, little-endian, max depth 64).
+/// `packages/core/abi/src/value.rs` (tags 0..7, little-endian, max depth 64).
 import 'dart:convert';
 import 'dart:typed_data';
 

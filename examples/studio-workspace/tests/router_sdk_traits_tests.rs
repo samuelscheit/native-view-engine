@@ -1,9 +1,9 @@
 //! Deep integration tests verifying Aether Studio Workspace's adoption of:
-//! 1. Typed `crates/nve-router` routing (`StudioRoute` deep links + Back/Forward stack sync),
+//! 1. Typed `packages/framework/router` routing (`StudioRoute` deep links + Back/Forward stack sync),
 //! 2. Unified Environment `TraitKey`s (`SizeClass`, `ColorScheme`, `UiDensity`, `Locale`,
 //!    `StudioAccentTrait`, `StudioCompactModeTrait`, `TraitProvider`, `<TraitScope>`, and
 //!    breakpoint-only `update_viewport` with zero churn on 1px desktop drags),
-//! 3. `crates/nve-sdk` (`ClipboardClient` Markdown & deep-link copy + `SystemEnvClient` theme &
+//! 3. `packages/framework/sdk` (`ClipboardClient` Markdown & deep-link copy + `SystemEnvClient` theme &
 //!    locale sync over both `MemoryHostServices` fallback and live `NVE_IFACE_HOST = 5` FFI).
 
 use std::sync::{Arc, Mutex};

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Continuous benchmark regression tracker for native-view-engine.
 
-Covers both Rust Criterion benchmarks (`crates/nve-bench`) and the C++20
+Covers both Rust Criterion benchmarks (`packages/tools/bench`) and the C++20
 Fabric/Yoga/JSI bridge benchmark (`nve_fabric_bridge_bench --json`) using
 pure Python 3 standard library modules with zero external dependencies.
 

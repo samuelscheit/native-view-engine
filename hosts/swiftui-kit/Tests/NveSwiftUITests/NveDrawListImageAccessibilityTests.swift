@@ -15,7 +15,7 @@ private func packRgba(_ r: UInt8, _ g: UInt8, _ b: UInt8, _ a: UInt8 = 255) -> U
     UInt32(r) | (UInt32(g) << 8) | (UInt32(b) << 16) | (UInt32(a) << 24)
 }
 
-/// Minimal `NVE_DRAW1` binary builder matching `crates/nve-components/src/canvas_ir.rs`.
+/// Minimal `NVE_DRAW1` binary builder matching `packages/core/components/src/canvas_ir.rs`.
 private struct DrawListBuilder {
     private var buf: [UInt8] = []
     private var opCount: UInt32 = 0

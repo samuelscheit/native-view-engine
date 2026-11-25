@@ -6,7 +6,7 @@ order: 3
 
 # Web WASM, CSS & SSR (`nve-backend-web` + `hosts/web-shell`)
 
-`crates/nve-backend-web` compiles the exact same `NVE1` `CommandBuffer` pipeline to `wasm32-unknown-unknown` (browser DOM + CSS Flexbox + HTML5 `<canvas>`) and native Rust (static **HTML5 SSR**). `hosts/web-shell` packages it into one production bundle per app (Cargo features `app-studio` / `app-counter`: **277.0 KB** / **105.1 KB** brotli, wasm + JS) plus a `dev` bundle with NVP1 hot reload, multi-surface `ACTIVE_SHELLS` popups, and live `?pair=ws://...` device pairing. Frame 0 comes from SSR HTML.
+`packages/backends/web` compiles the exact same `NVE1` `CommandBuffer` pipeline to `wasm32-unknown-unknown` (browser DOM + CSS Flexbox + HTML5 `<canvas>`) and native Rust (static **HTML5 SSR**). `hosts/web-shell` packages it into one production bundle per app (Cargo features `app-studio` / `app-counter`: **277.0 KB** / **105.1 KB** brotli, wasm + JS) plus a `dev` bundle with NVP1 hot reload, multi-surface `ACTIVE_SHELLS` popups, and live `?pair=ws://...` device pairing. Frame 0 comes from SSR HTML.
 
 ## Option 5 Hybrid CSS Architecture
 

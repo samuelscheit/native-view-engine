@@ -8,12 +8,12 @@ import java.nio.charset.StandardCharsets
 
 /**
  * Maximum container nesting depth permitted by the binary `NveBinValue` wire format
- * (matches `NVE_BIN_VALUE_MAX_DEPTH` in `crates/nve-abi/src/value.rs`).
+ * (matches `NVE_BIN_VALUE_MAX_DEPTH` in `packages/core/abi/src/value.rs`).
  */
 const val NVE_BIN_VALUE_MAX_DEPTH: Int = 64
 
 /**
- * Binary `NveBinValue` wire tags `0..7` matching `NveValueTag` in `crates/nve-abi/src/value.rs`.
+ * Binary `NveBinValue` wire tags `0..7` matching `NveValueTag` in `packages/core/abi/src/value.rs`.
  */
 enum class NveBinValueTag(val wireCode: Byte) {
     NULL(0),

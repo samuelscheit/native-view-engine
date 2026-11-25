@@ -6,11 +6,11 @@ order: 2
 
 # Universal Interop & Islands (`nve-interop`)
 
-`crates/nve-interop` coordinates hybrid applications in both directions: embedding NVE surfaces inside React Native, Flutter, SwiftUI, Jetpack Compose, or Web apps, **and** hosting opt-in foreign framework `<Island>` surfaces inside an NVE view tree — all unified behind `InteropRuntime`.
+`packages/core/interop` coordinates hybrid applications in both directions: embedding NVE surfaces inside React Native, Flutter, SwiftUI, Jetpack Compose, or Web apps, **and** hosting opt-in foreign framework `<Island>` surfaces inside an NVE view tree — all unified behind `InteropRuntime`.
 
 ## `InteropRuntime` Subsystems
 
-```rust title="crates/nve-interop/src/lib.rs"
+```rust title="packages/core/interop/src/lib.rs"
 pub struct InteropRuntime {
     pub surfaces: SurfaceOrchestrator,
     pub layout: LayoutNegotiator,
@@ -56,7 +56,7 @@ Zero-JSON pub/sub and retained shared-state bus connecting Rust surfaces and nat
 
 ## Opt-In Foreign Framework `<Island>`s & `RenderHandoff`
 
-When an app needs a JS-only React Native library, an existing SwiftUI chart, a Jetpack Compose widget, or a Flutter `FlutterEngineGroup` view, declare an opt-in `IslandSpec` (`crates/nve-interop/src/handoff.rs`):
+When an app needs a JS-only React Native library, an existing SwiftUI chart, a Jetpack Compose widget, or a Flutter `FlutterEngineGroup` view, declare an opt-in `IslandSpec` (`packages/core/interop/src/handoff.rs`):
 
 - **Specs:** `RnIslandSpec`, `FlutterIslandSpec` (with `FlutterEngineGroupConfig`), `SwiftUIIslandSpec`, `ComposeIslandSpec`.
 - **Mount policies (`IslandMountPolicy`):** Eager or lazy mount on visibility/interaction so unused foreign VMs consume **0 MB** RAM until mounted.
@@ -64,7 +64,7 @@ When an app needs a JS-only React Native library, an existing SwiftUI chart, a J
 
 ## Panic-Isolated Plugin Host (`NvePluginHost`)
 
-`crates/nve-interop/src/plugin_host/` lets flagship applications like NVE Studio dynamically load third-party native-speed Rust plugins via `nve_get_interface` (`PluginMetadata`, `PluginCapabilities`, `PluginRequirement`, `DEFAULT_PLUGIN_SURFACE_BASE`):
+`packages/core/interop/src/plugin_host/` lets flagship applications like NVE Studio dynamically load third-party native-speed Rust plugins via `nve_get_interface` (`PluginMetadata`, `PluginCapabilities`, `PluginRequirement`, `DEFAULT_PLUGIN_SURFACE_BASE`):
 
 - Plugins render into isolated `NvePluginSlot`s with dedicated `SurfaceId`s.
 - Because `export_nve_app!` wraps every FFI call in `ffi_catch_unwind`, a bug inside a third-party plugin faults only its slot rather than crashing the host application.

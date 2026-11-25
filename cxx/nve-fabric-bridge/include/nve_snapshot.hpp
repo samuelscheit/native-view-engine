@@ -34,7 +34,7 @@ namespace nve {
 /// 8-byte file magic identifying an NVE instant-boot snapshot container (`*b"NVE_SNAP"`).
 inline constexpr uint8_t kSnapshotMagic[8] = {'N', 'V', 'E', '_', 'S', 'N', 'A', 'P'};
 
-/// Current snapshot container format version (matches `crates/nve-engine/src/snapshot.rs`).
+/// Current snapshot container format version (matches `packages/core/engine/src/snapshot.rs`).
 inline constexpr uint32_t kSnapshotFormatVersion = 1u;
 
 /// Fixed byte length of the aligned `NVE_SNAP` header (32-byte prefix + 48-byte section table).
@@ -58,7 +58,7 @@ inline constexpr size_t kSnapshotStateLenField = 56u;
 inline constexpr size_t kSnapshotMetaOffsetField = 64u;
 inline constexpr size_t kSnapshotMetaLenField = 72u;
 
-/// FNV-1a 64-bit parameters matching `crates/nve-engine/src/snapshot.rs`.
+/// FNV-1a 64-bit parameters matching `packages/core/engine/src/snapshot.rs`.
 inline constexpr uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ULL;
 inline constexpr uint64_t kFnv1a64Prime = 0x00000100000001b3ULL;
 

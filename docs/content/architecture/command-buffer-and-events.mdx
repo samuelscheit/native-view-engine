@@ -10,7 +10,7 @@ Every UI mutation in Native View Engine travels across the Rust-to-host boundary
 
 ## `NVE1` CommandBuffer Binary Layout
 
-Defined in `crates/nve-abi/src/codec/` (`NVE_ABI_MAGIC = *b"NVE1"`, `NVE_ABI_VERSION = 1`, `HEADER_SIZE = 24`):
+Defined in `packages/core/abi/src/codec/` (`NVE_ABI_MAGIC = *b"NVE1"`, `NVE_ABI_VERSION = 1`, `HEADER_SIZE = 24`):
 
 | Byte Offset | Size | Field | Type / Value |
 | :--- | :--- | :--- | :--- |
@@ -97,7 +97,7 @@ In C++, `cxx/nve-fabric-bridge/src/command_decoder.hpp` validates every `f32` la
 
 ## `EventRing` Binary Batching
 
-Host input events (`NativeEvent`) flow back into Rust in one length-prefixed binary buffer via `encode_events` / `decode_events` (`crates/nve-abi/src/events.rs`), or zero-copy in-process via `NveSurfaceApi::dispatch_events_direct(handle, NveEventBatch)`.
+Host input events (`NativeEvent`) flow back into Rust in one length-prefixed binary buffer via `encode_events` / `decode_events` (`packages/core/abi/src/events.rs`), or zero-copy in-process via `NveSurfaceApi::dispatch_events_direct(handle, NveEventBatch)`.
 
 ### Subscription Bitmask (`EventMask`) & Event Kinds (`NativeEventKind`)
 

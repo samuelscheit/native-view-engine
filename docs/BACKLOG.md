@@ -9,9 +9,9 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Pluggable Camera Package — Thin SwiftUI/Flutter Wrappers & Live Emulator Camera Verification**
   - All primary camera adapters are landed (`CameraPreview` spec + `NVCF`, Android VisionCamera v5 + real Jetpack `CameraX` `PreviewView`, Apple `AVFoundation` + VisionCamera v5 iOS bridge, Web `getUserMedia` `<video>`, C++20 Windows `MediaCapture` + Linux PipeWire/V4L2); remaining follow-ups are thin SwiftUI & Flutter camera wrappers and live Android Emulator virtual-scene verification once Android SDK cmdline-tools are installed.
 
-- [ ] **Unified `packages/` Monorepo Layout (Wave B3)**
-  - Wave B1 (selective `default-features = false` feature flags) and Wave B2 (`nve-abi` Option 1A codegen-locked zero-copy `#[repr(C)]` `NvePropEntry`/`NvePropSlice`/`NveCommandSlice` + `feature = "wire"` isolation) are landed.
-  - Remaining: move `crates/*` into unified `packages/{core,backends,framework,tools}/` and fold `packages/modules/{camera,tv,pair}` into root `Cargo.toml` (zero `crates/` vs `packages/` split), and move `hosts/apple-common/NveAppleNativeViews.{h,mm}` into `packages/modules/native-views/apple/`.
+- [ ] **Unified `packages/` Monorepo Layout — Apple Native Views Follow-up**
+  - Wave B1 (selective `default-features = false` feature flags), Wave B2 (`nve-abi` Option 1A codegen-locked zero-copy `#[repr(C)]` `NvePropEntry`/`NvePropSlice`/`NveCommandSlice` + `feature = "wire"` isolation), and Wave B3 (unified `packages/{core,backends,framework,tools,modules}/` monorepo layout with `packages/modules/{camera,tv,pair}` folded into root `Cargo.toml`) are landed.
+  - Remaining: move `hosts/apple-common/NveAppleNativeViews.{h,mm}` into `packages/modules/native-views/apple/`.
 
 - [ ] **SSR Responsive `@media` Compilation & Pre-Hydration Event Capture/Replay**
   - Compile declarative responsive layout/style overrides and `show_on: SizeClassMask` into CSS `@media` rules so mobile SSR pages render with `0.000` CLS and zero hydration flicker, paired with a tiny inline pre-hydration event capture/replay shim (pending design sign-off).

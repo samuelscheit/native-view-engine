@@ -13,16 +13,16 @@ cdylib-export = []
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-backend-web = { path = "../../crates/nve-backend-web", default-features = false, features = ["ssr", "hydrate"] }
+nve-backend-web = { path = "../../packages/backends/web", default-features = false, features = ["ssr", "hydrate"] }
 nve-components = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-docs = { workspace = true }
 nve-engine = { workspace = true }
-nve-interop = { path = "../../crates/nve-interop", default-features = false, features = ["crdt"] }
+nve-interop = { path = "../../packages/core/interop", default-features = false, features = ["crdt"] }
 nve-mdx = { workspace = true }
 nve-router = { workspace = true }
-nve-sdk = { path = "../../crates/nve-sdk", default-features = false }
-nve-ui = { path = "../../crates/nve-ui", default-features = false, features = ["virtual-list"] }
+nve-sdk = { path = "../../packages/framework/sdk", default-features = false }
+nve-ui = { path = "../../packages/framework/ui", default-features = false, features = ["virtual-list"] }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }
 dioxus-signals = { workspace = true }

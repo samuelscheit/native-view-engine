@@ -1,5 +1,5 @@
 //! Unified Environment [`TraitKey`] definitions and breakpoint-only responsive layout resolution
-//! (`crates/nve-interop::traits` + `crates/nve-dioxus::traits`) for **Aether Studio Workspace**.
+//! (`packages/core/interop::traits` + `packages/core/dioxus::traits`) for **Aether Studio Workspace**.
 //!
 //! Replaces ad-hoc manual pixel width checks with [`SizeClass`], [`ColorScheme`], [`UiDensity`],
 //! [`Locale`], and Studio custom [`TraitKey`]s ([`StudioAccentTrait`], [`StudioCompactModeTrait`]).

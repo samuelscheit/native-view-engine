@@ -10,7 +10,7 @@ Live Pairing lets a single workstation run your Rust `NveApp` once and stream re
 
 ## Dual-Layer Wire Architecture
 
-### 1. Frame-Delta Codec (`NVD1`, `crates/nve-interop/src/sync_delta/`)
+### 1. Frame-Delta Codec (`NVD1`, `packages/core/interop/src/sync_delta/`)
 
 Each rendered `NVE1` `CommandBuffer` is diffed against the previous committed frame inside `SyncDeltaSession`, which automatically picks the smallest wire representation per frame inside a fixed 32-byte little-endian **`NVD1`** header with 64-bit FNV-1a integrity verification:
 
@@ -20,7 +20,7 @@ Each rendered `NVE1` `CommandBuffer` is diffed against the previous committed fr
 
 Under stress testing (**15% packet loss + 20% packet reordering** at 60fps), `NVD1` sustains **`5.18 KB/s`** wire bandwidth with zero corrupted frames.
 
-### 2. Transport Envelope (`NVT1`, `crates/nve-interop/src/sync_transport/`)
+### 2. Transport Envelope (`NVT1`, `packages/core/interop/src/sync_transport/`)
 
 `NVD1` packets travel inside an 8-byte transport envelope (`TRANSPORT_MAGIC = b"NT"`, `version = 1`, `kind: TransportMsgKind`, `session_id: u32`) over three transports:
 

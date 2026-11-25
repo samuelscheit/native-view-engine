@@ -7,7 +7,7 @@ order: 2
 
 # UI Components (`nve-ui`)
 
-`crates/nve-ui` is a first-party, accessible, zero-external-CSS component library built directly on `nve-dioxus` primitives and `nve-interop` theme contexts. Every component compiles identically to native views (AppKit, UIKit, Win32, GTK4, Qt 6, Android), GPU Skia, and Web DOM with zero external stylesheet dependencies.
+`packages/framework/ui` is a first-party, accessible, zero-external-CSS component library built directly on `nve-dioxus` primitives and `nve-interop` theme contexts. Every component compiles identically to native views (AppKit, UIKit, Win32, GTK4, Qt 6, Android), GPU Skia, and Web DOM with zero external stylesheet dependencies.
 
 ## Component Catalog (15 Primitives & Controls)
 
@@ -71,11 +71,11 @@ pub fn SettingsCard() -> Element {
 
 ## Zero-Allocation `StyleBuf`
 
-Formatting inline styles with `format!(...)` on every render allocates short-lived heap `String`s. `nve-ui::StyleBuf` (`crates/nve-ui/src/style_buf.rs`) builds style strings in a single pre-sized buffer (`SurfaceStyle`, `TextStyle`) with zero intermediate allocations and deterministic key ordering — maximizing structural CSS cache hits on Web and minimizing string churn on native backends.
+Formatting inline styles with `format!(...)` on every render allocates short-lived heap `String`s. `nve-ui::StyleBuf` (`packages/framework/ui/src/style_buf.rs`) builds style strings in a single pre-sized buffer (`SurfaceStyle`, `TextStyle`) with zero intermediate allocations and deterministic key ordering — maximizing structural CSS cache hits on Web and minimizing string churn on native backends.
 
 ## Keyboard Accessibility: `FocusTrap` & `RovingFocus`
 
-`crates/nve-ui/src/focus.rs` ships pure-Rust keyboard focus managers that work identically on Skia, AppKit, Win32, GTK4, Qt 6, and Web:
+`packages/framework/ui/src/focus.rs` ships pure-Rust keyboard focus managers that work identically on Skia, AppKit, Win32, GTK4, Qt 6, and Web:
 
 - **`FocusScopeProvider` & `FocusScope`** — Tracks registered `FocusableEntry` nodes (`tab_index`, `disabled`), active focus ID (`current_focused_id()`), and focus restoration on overlay close.
 - **`FocusTrap`** — Traps `Tab` / `Shift+Tab` cycling inside `Dialog` / `Modal` boundaries and returns `FocusTrapAction::Dismiss` on `Escape`.

@@ -1,4 +1,4 @@
-//! Native platform capability integration (`crates/nve-sdk`) for **Aether Studio Workspace**.
+//! Native platform capability integration (`packages/framework/sdk`) for **Aether Studio Workspace**.
 //!
 //! Wires [`ClipboardClient`] (Markdown export + deep-link route URLs) and [`SystemEnvClient`]
 //! (theme + locale sync) across both:

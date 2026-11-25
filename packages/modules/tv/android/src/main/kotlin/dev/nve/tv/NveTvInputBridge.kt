@@ -20,8 +20,8 @@ data class NveNk1KeyDown(
 )
 
 /**
- * Zero-JSON `NK1` binary keydown codec matching `crates/nve-codegen/src/wire_codecs/spec.rs` and
- * `crates/nve-abi/src/events.rs` byte-for-byte:
+ * Zero-JSON `NK1` binary keydown codec matching `packages/core/codegen/src/wire_codecs/spec.rs` and
+ * `packages/core/abi/src/events.rs` byte-for-byte:
  *
  * Layout: `[0x4E ('N'), 0x4B ('K'), 0x31 ('1'), flags_u8, utf8_key...]`
  * - `flags_u8` bit 0 (`0x01`): `meta`
@@ -124,7 +124,7 @@ data class NveTvCustomEvent(
 
 /**
  * Minimal standalone `EventRing` custom-event wire encoder/decoder matching
- * `crates/nve-abi/src/events.rs` byte-for-byte without depending on `hosts/compose-kit`.
+ * `packages/core/abi/src/events.rs` byte-for-byte without depending on `hosts/compose-kit`.
  */
 object NveTvEventRingWire {
     const val EVENT_KIND_CUSTOM: Int = 8

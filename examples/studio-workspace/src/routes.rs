@@ -1,4 +1,4 @@
-//! Typed deep-linkable routing (`crates/nve-router`) for **Aether Workspace** + **NVE Studio**.
+//! Typed deep-linkable routing (`packages/framework/router`) for **Aether Workspace** + **NVE Studio**.
 //!
 //! Maps every [`ActiveView`] plus typed detail endpoints (`/task/:id`, `/doc/:id`) onto clean
 //! URLs with a Back/Forward history stack synchronized with [`crate::state::WorkspaceState`].

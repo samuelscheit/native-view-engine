@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-/// Fixed `NVE_DRAW1` protocol constants matching `crates/nve-components/src/canvas_ir.rs`.
+/// Fixed `NVE_DRAW1` protocol constants matching `packages/core/components/src/canvas_ir.rs`.
 public enum NveDrawListConstants {
     public static let magic: [UInt8] = Array("NVE_DRAW1".utf8)
     public static let version: UInt16 = 1

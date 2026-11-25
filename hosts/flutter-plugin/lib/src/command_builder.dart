@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'command_types.dart';
 
-/// Binary `CommandBuffer` encoder mirroring `CommandBufferBuilder` in `crates/nve-abi/src/codec.rs`.
+/// Binary `CommandBuffer` encoder mirroring `CommandBufferBuilder` in `packages/core/abi/src/codec.rs`.
 ///
 /// Useful for tests, synthetic surfaces, and Dart-side golden fixtures.
 class NveCommandBufferBuilder {

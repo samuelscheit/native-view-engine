@@ -6,11 +6,11 @@ order: 4
 
 # Native SDK (`nve-sdk`)
 
-`crates/nve-sdk` exposes seven first-party Tier-1 native platform capabilities through one unified, zero-JSON binary C ABI (**`NVE_IFACE_HOST = 5`**) and `NveChannelBus`. Every capability is testable deterministically in sub-millisecond headless tests via `MemoryHostServices`.
+`packages/framework/sdk` exposes seven first-party Tier-1 native platform capabilities through one unified, zero-JSON binary C ABI (**`NVE_IFACE_HOST = 5`**) and `NveChannelBus`. Every capability is testable deterministically in sub-millisecond headless tests via `MemoryHostServices`.
 
 ## Capability Matrix & Service IDs
 
-| Client | Service ID | Operations | Native Drivers (`crates/nve-sdk/src/native/`) |
+| Client | Service ID | Operations | Native Drivers (`packages/framework/sdk/src/native/`) |
 | :--- | :--- | :--- | :--- |
 | `ClipboardClient` | `0x0010` | `read_text()`, `write_text(&str)`, `clear()` | macOS `NSPasteboard`, Windows Win32 `OpenClipboard`/`CF_UNICODETEXT`, Linux Wayland/X11, Web Clipboard API |
 | `FilesystemClient` | `0x0011` | `pick_open_files(FilePickerOptions)`, `pick_save_file(SaveFileOptions)`, `standard_path(StandardPathKind)` | Native OS dialogs (`NSOpenPanel`, Win32 `IFileDialog`, GTK Portal) & standard app data/cache/config/docs dirs |
@@ -70,4 +70,4 @@ System appearance and locale snapshots bypass JSON completely and publish direct
 
 ## Zero-Mock Testing With `MemoryHostServices`
 
-`MemoryHostServices` (`crates/nve-sdk/src/memory.rs`) implements the full `HostServiceProvider` contract in memory — including simulated file picker queues, secret storage, notification permission policies, haptic event capture (`RecordedHaptic`), and async `NVH1` push injection — so your entire capability logic runs deterministically in `cargo test` with zero OS dependencies.
+`MemoryHostServices` (`packages/framework/sdk/src/memory.rs`) implements the full `HostServiceProvider` contract in memory — including simulated file picker queues, secret storage, notification permission policies, haptic event capture (`RecordedHaptic`), and async `NVH1` push injection — so your entire capability logic runs deterministically in `cargo test` with zero OS dependencies.

@@ -1,10 +1,8 @@
-[workspace]
-
 [package]
 name = "nve-pair"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Shared zero-JSON NVT1/NVD1 pairing state machine and C ABI for NVE hosts"
 
 [lib]
@@ -12,5 +10,5 @@ name = "nve_pair"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
-nve-abi = { path = "../../../crates/nve-abi" }
-nve-interop = { path = "../../../crates/nve-interop" }
+nve-abi = { workspace = true }
+nve-interop = { workspace = true }

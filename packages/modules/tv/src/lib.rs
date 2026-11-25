@@ -5,7 +5,7 @@
 //!   navigation with per-group focus memory, modal focus trapping, optional axis wrap-around,
 //!   and scroll-into-view calculation.
 //! - Typed [`RemoteAction`] and W3C / NVE `NK1` binary keydown encoder/decoder
-//!   ([`Nk1KeyDown`], [`Nk1Flags`]) matching `crates/nve-abi/src/events.rs` byte-for-byte.
+//!   ([`Nk1KeyDown`], [`Nk1Flags`]) matching `packages/core/abi/src/events.rs` byte-for-byte.
 //! - Title-safe TV overscan safe-area calculator ([`TvOverscanInsets`]).
 
 pub mod overscan;

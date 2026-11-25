@@ -1,0 +1,58 @@
+[package]
+name = "nve-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["tier1", "tier2"]
+tier1 = [
+    "clipboard",
+    "filesystem",
+    "secure-store",
+    "linking",
+    "system-env",
+    "notifications",
+    "haptics",
+]
+tier2 = [
+    "storage",
+    "fonts",
+    "audio",
+    "camera",
+    "location",
+    "sensors",
+    "share",
+    "web-auth",
+]
+clipboard = []
+filesystem = []
+secure-store = []
+linking = []
+system-env = []
+notifications = []
+haptics = []
+storage = []
+fonts = []
+audio = []
+camera = []
+location = []
+sensors = []
+share = []
+web-auth = []
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-interop = { path = "../../core/interop", default-features = false, features = ["channel"] }
+
+[[test]]
+name = "sdk_tests"
+required-features = ["tier1"]
+
+[[test]]
+name = "tier2_sdk_tests"
+required-features = ["tier2"]
+
+[[test]]
+name = "fuzz_codecs_tests"
+required-features = ["tier1"]

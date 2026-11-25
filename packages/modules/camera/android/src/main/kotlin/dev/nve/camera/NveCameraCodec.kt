@@ -29,7 +29,7 @@ enum class NveTorchMode(val wireCode: Int) {
     }
 }
 
-/** Hardware video stabilization mode matching `StabilizationMode` in `crates/nve-interop`. */
+/** Hardware video stabilization mode matching `StabilizationMode` in `packages/core/interop`. */
 enum class NveStabilizationMode(val wireCode: Int) {
     OFF(0), STANDARD(1), CINEMATIC(2);
 
@@ -40,7 +40,7 @@ enum class NveStabilizationMode(val wireCode: Int) {
     }
 }
 
-/** Pixel layout matching `CameraPixelFormat` in `crates/nve-interop`. */
+/** Pixel layout matching `CameraPixelFormat` in `packages/core/interop`. */
 enum class NveCameraPixelFormat(val wireCode: Int, val bytesPerPrimarySample: Long) {
     RGBA8888(0, 4L), BGRA8888(1, 4L), NV12(2, 1L), YUV420_888(3, 1L);
 
@@ -156,7 +156,7 @@ sealed class NveCameraCodecException(message: String) : IllegalArgumentException
 
 /**
  * Pure-Kotlin zero-JSON binary `NVNP` / `NVNC` / `NVCF` codec matching
- * `crates/nve-interop/src/native_view/{wire,codec,camera}.rs` byte-for-byte.
+ * `packages/core/interop/src/native_view/{wire,codec,camera}.rs` byte-for-byte.
  */
 object NveCameraCodec {
     const val KIND: String = "nve.camera.preview"

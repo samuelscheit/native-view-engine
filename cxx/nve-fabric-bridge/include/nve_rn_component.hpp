@@ -26,7 +26,7 @@ struct LayoutRect {
   float height{0.0f};
 };
 
-/// Decoded native event kind matching `crates/nve-abi/src/events.rs` (`NativeEventKind`).
+/// Decoded native event kind matching `packages/core/abi/src/events.rs` (`NativeEventKind`).
 enum class EventKind : uint8_t {
   Press = 1,
   LongPress = 2,

@@ -11,7 +11,7 @@
 
 namespace nve {
 
-/// Zero-dependency binary CommandBuffer encoder matching `crates/nve-abi/src/commands.rs`
+/// Zero-dependency binary CommandBuffer encoder matching `packages/core/abi/src/commands.rs`
 /// and `cxx/nve-fabric-bridge/src/fabric_adapter.cpp`.
 class CommandBufferEncoder {
  public:

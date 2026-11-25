@@ -19,9 +19,9 @@ Iteration speed is an architectural invariant in `native-view-engine`. Native ho
 
 ## Binary Wire Protocol (`NVP1`)
 
-`crates/nve-engine/src/hotreload.rs` encodes `HotPatchMsg` using the compact **`NVP1`** binary framing (`HOT_PATCH_WIRE_MAGIC = *b"NVP1"`, capped at `MAX_WIRE_ITEMS = 65_536` per collection to guard against corrupt packets):
+`packages/core/engine/src/hotreload.rs` encodes `HotPatchMsg` using the compact **`NVP1`** binary framing (`HOT_PATCH_WIRE_MAGIC = *b"NVP1"`, capped at `MAX_WIRE_ITEMS = 65_536` per collection to guard against corrupt packets):
 
-```rust title="crates/nve-engine/src/hotreload.rs" highlight="2-15,17-22"
+```rust title="packages/core/engine/src/hotreload.rs" highlight="2-15,17-22"
 pub enum HotPatchMsg {
     /// Tier 1 (< 50 ms): Surgical text & style updates with zero Rust recompile.
     TemplatePatch {
@@ -51,7 +51,7 @@ pub enum HotPatchMsg {
 
 When you save a Rust file while `cargo nve dev` is running:
 
-1. `crates/nve-cli/src/rsx_diff/` parses the previous and new `rsx! { ... }` blocks and classifies the edit.
+1. `packages/tools/cli/src/rsx_diff/` parses the previous and new `rsx! { ... }` blocks and classifies the edit.
 2. If only static text literals or style/layout attributes changed (measured at `< 2.5 ms` for the AST diff), `nve dev` skips `cargo build` completely and broadcasts `HotPatchMsg::TemplatePatch` with exact `target_test_id`, structural `node_path`, `attr_updates`, and `text_replacements`.
 3. `DioxusSurface::apply_hot_patch` (via `NveDevApi::apply_hot_patch`) applies the patch directly onto the live retained tree in **1.33 µs** (`rust::dioxus/tier1_hot_patch_apply`) and emits a minimal incremental `CommandBuffer` frame.
 4. All Dioxus signals, scroll positions, focused `TextInput`s, and navigation stacks remain untouched.

@@ -128,7 +128,7 @@ void main() {
   });
 
   group('NveEventRingCodec', () {
-    test('decodes all 6 typed payload variants matching crates/nve-abi/src/events.rs', () {
+    test('decodes all 6 typed payload variants matching packages/core/abi/src/events.rs', () {
       final customBin = NveBinValueEncoder.encode(<String, Object?>{'delta': 5});
       final bytes = _buildEventRing(<void Function(BytesBuilder)>[
         // 0: Empty
