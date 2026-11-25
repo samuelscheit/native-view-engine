@@ -440,8 +440,8 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     let original = std::fs::read_to_string(&ui_path)
         .unwrap_or_else(|e| panic!("failed reading {}: {e}", ui_path.display()));
 
-    // 1. Static text edit inside `rsx!` ("QUICK REPLY" -> "FAST REPLY")
-    let edited_text = original.replacen("\"QUICK REPLY\"", "\"FAST REPLY\"", 1);
+    // 1. Static text edit inside `rsx!` ("AETHER" -> "AETHER STUDIO")
+    let edited_text = original.replacen("\"AETHER\"", "\"AETHER STUDIO\"", 1);
     assert_ne!(original, edited_text);
     let t0 = Instant::now();
     let text_patch = expect_patch(diff_rsx_source(
@@ -454,7 +454,7 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     assert!(text_patch.attr_updates.is_empty());
     assert_eq!(
         text_patch.text_replacements,
-        vec![("QUICK REPLY".into(), "FAST REPLY".into())]
+        vec![("AETHER".into(), "AETHER STUDIO".into())]
     );
     assert!(
         elapsed.as_millis() < 10,
@@ -463,10 +463,10 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
         elapsed
     );
 
-    // 2. Static style edit inside `rsx!` (`style: "width: 100%; flex: 1;"`)
+    // 2. Static style edit inside `rsx!` (`style: "flex-direction: row; align-items: center; gap: 8px;"`)
     let edited_style = original.replacen(
-        "style: \"width: 100%; flex: 1;\"",
-        "style: \"width: 100%; flex: 1; padding: 8px;\"",
+        "style: \"flex-direction: row; align-items: center; gap: 8px;\"",
+        "style: \"flex-direction: row; align-items: center; gap: 12px;\"",
         1,
     );
     assert_ne!(original, edited_style);
@@ -480,7 +480,10 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     let style_elapsed = t1.elapsed();
     assert_eq!(
         style_patch.attr_updates,
-        vec![("style".into(), "width: 100%; flex: 1; padding: 8px;".into())]
+        vec![(
+            "style".into(),
+            "flex-direction: row; align-items: center; gap: 12px;".into()
+        )]
     );
     assert!(
         style_elapsed.as_millis() < 10,
