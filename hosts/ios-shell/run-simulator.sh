@@ -199,7 +199,11 @@ compile_unit() {
 }
 
 for src in \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/fabric_adapter.cpp" \
+  "$REPO_ROOT/cxx/nve-fabric-bridge/src/shadow_tree.cpp" \
+  "$REPO_ROOT/cxx/nve-fabric-bridge/src/yoga_layout.cpp" \
+  "$REPO_ROOT/cxx/nve-fabric-bridge/src/flexbox_solver.cpp" \
+  "$REPO_ROOT/cxx/nve-fabric-bridge/src/scene_publisher.cpp" \
+  "$REPO_ROOT/cxx/nve-fabric-bridge/src/fabric_c_api.cpp" \
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/nve_rn_component.cpp"
 do
   compile_unit "$src" cpp
