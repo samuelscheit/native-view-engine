@@ -115,11 +115,8 @@ impl NveApp for DocsSiteModule {
         &self.last_emitted_events_buf
     }
 
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
-        let Ok(msg) = HotPatchMsg::from_json(patch_json) else {
-            return false;
-        };
-        self.surface.apply_hot_patch(&msg)
+    fn apply_hot_patch(&mut self, msg: &HotPatchMsg) -> bool {
+        self.surface.apply_hot_patch(msg)
     }
 
     fn snapshot_state(&mut self) -> &[u8] {

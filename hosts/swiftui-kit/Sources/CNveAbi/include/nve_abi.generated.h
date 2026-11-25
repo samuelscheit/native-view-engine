@@ -23,7 +23,7 @@ extern "C" {
 #endif
 #endif
 
-#define NVE_CORE_ABI_SCHEMA_HASH 0x54A4A32B6F258107ULL
+#define NVE_CORE_ABI_SCHEMA_HASH 0x5BE5D06CC7C01FEFULL
 #define NVE_ABI_MAGIC 0x3145564Eu
 #define NVE_ABI_VERSION 1u
 #define NVE_ROOT_NODE_ID 1u
@@ -319,7 +319,8 @@ typedef struct NveComponentApi {
 
 /* Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds). */
 typedef struct NveDevApi {
-  uint32_t (*apply_hot_patch)(NveAppHandle handle, NveBufferSlice patch_json);
+  /* Applies one binary `NVP1` `HotPatchMsg` frame exactly as broadcast by `nve dev` (returns 1 when the app changed; 0 for non-template or malformed frames). */
+  uint32_t (*apply_hot_patch)(NveAppHandle handle, NveBufferSlice patch_nvp1);
   NveBufferSlice (*snapshot_state)(NveAppHandle handle);
   void (*restore_state)(NveAppHandle handle, NveBufferSlice state);
 } NveDevApi;

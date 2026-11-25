@@ -237,10 +237,13 @@ pub(crate) fn collect_artifact_sizes(
         }
     }
 
-    push_if_exists(
-        "nve-web-shell WASM (pkg)".to_owned(),
-        workspace_root.join("hosts/web-shell/pkg/nve_web_shell_bg.wasm"),
-    );
+    // `hosts/web-shell/build.sh` bundles: one production bundle per app + the dev bundle.
+    for bundle in ["studio", "counter", "dev"] {
+        push_if_exists(
+            format!("nve-web-shell WASM (pkg/{bundle})"),
+            workspace_root.join(format!("hosts/web-shell/pkg/{bundle}/nve_web_shell_bg.wasm")),
+        );
+    }
     push_if_exists(
         "nve-web-shell WASM (wasm-release)".to_owned(),
         target_dir.join("wasm32-unknown-unknown/wasm-release/nve_web_shell.wasm"),
@@ -514,7 +517,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let release_dir = root.join("target/release");
-        let wasm_dir = root.join("hosts/web-shell/pkg");
+        let wasm_dir = root.join("hosts/web-shell/pkg/studio");
         std::fs::create_dir_all(&release_dir).unwrap();
         std::fs::create_dir_all(&wasm_dir).unwrap();
 

@@ -112,7 +112,7 @@ launch "Skia Desktop" "$ROOT_DIR/target/debug/nve-skia-shell" "$DYLIB_PATH" --no
 
 # 5. Web WASM host
 if [[ "$START_WEB" -eq 1 ]]; then
-  if [[ ! -f "$ROOT_DIR/hosts/web-shell/pkg/nve_web_shell.js" ]]; then
+  if [[ ! -f "$ROOT_DIR/hosts/web-shell/pkg/${WEB_APP}/nve_web_shell.js" ]]; then
     echo "==> Building hosts/web-shell WASM bundle..."
     "$ROOT_DIR/hosts/web-shell/build.sh"
   fi

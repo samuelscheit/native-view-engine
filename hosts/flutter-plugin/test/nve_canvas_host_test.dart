@@ -115,7 +115,7 @@ class _SyntheticNativeApp {
   String stateText = '';
   final List<NveEvent> receivedEvents = <NveEvent>[];
   final List<Uint8List> propsLog = <Uint8List>[];
-  final List<String> hotPatchLog = <String>[];
+  final List<Uint8List> hotPatchLog = <Uint8List>[];
   Uint8List pendingOutbound = Uint8List(0);
   int destroyCount = 0;
 
@@ -181,7 +181,7 @@ class _SyntheticNativeApp {
 
   int _onHotPatch(ffi.Pointer<ffi.Void> _, NveBufferSlice slice) {
     final bytes = Uint8List.fromList(slice.ptr.asTypedList(slice.len));
-    hotPatchLog.add(utf8.decode(bytes));
+    hotPatchLog.add(bytes);
     return 1;
   }
 
@@ -240,6 +240,13 @@ String _resolveCounterLibraryPath() {
     '(searched from ${Directory.current.path}).',
   );
 }
+
+/// A complete binary `NVP1` `DevStatus` frame ("x", 0 ms), as `nve dev` broadcasts it.
+final Uint8List _nvp1DevStatus = Uint8List.fromList(<int>[
+  0x4E, 0x56, 0x50, 0x31, 3, //
+  1, 0, 0, 0, 0x78, //
+  0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
 void main() {
   // =========================================================================
@@ -807,10 +814,11 @@ void main() {
         ),
       ]);
       expect(controller.setPropsDirect(<String, Object?>{'theme': 'dark'}), isTrue);
-      expect(controller.applyHotPatch('{"op":"patch"}'), isTrue);
+      expect(controller.applyHotPatch(_nvp1DevStatus), isTrue);
       expect(app1.propsLog, hasLength(1));
       expect(NveBinValueView.parse(app1.propsLog.single).get('theme')?.asString(), 'dark');
       expect(app1.hotPatchLog, hasLength(1));
+      expect(app1.hotPatchLog.single, _nvp1DevStatus);
       expect(outbound.map((e) => e.name), contains('onPing'));
 
       // State-preserving atomic reload into app2

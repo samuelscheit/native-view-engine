@@ -36,7 +36,8 @@ pub(crate) struct PairOptions {
 
 #[derive(Debug, Clone)]
 pub(crate) enum PairControlMsg {
-    Tier1Patch(String),
+    /// Binary `NVP1` hot-patch frame, forwarded unchanged to `NveDevApi::apply_hot_patch`.
+    Tier1Patch(Vec<u8>),
     DylibReload(PathBuf),
     Shutdown,
 }
@@ -48,7 +49,7 @@ pub(crate) trait PairedApp {
     fn set_props_direct(&mut self, _entries: &[NveMapEntry]) -> bool {
         false
     }
-    fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
+    fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
         false
     }
     fn reload(&mut self, _dylib_path: &Path) -> Result<u64, String> {
@@ -66,8 +67,8 @@ impl PairedApp for HotAppInstance {
     fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
         HotAppInstance::set_props_direct(self, entries)
     }
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
-        HotAppInstance::apply_hot_patch(self, patch_json)
+    fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
+        HotAppInstance::apply_hot_patch(self, patch_nvp1)
     }
     fn reload(&mut self, dylib_path: &Path) -> Result<u64, String> {
         HotAppInstance::reload(self, dylib_path)
@@ -422,8 +423,8 @@ impl<A: PairedApp> PairSession<A> {
         if let Some(rx) = control_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
-                    PairControlMsg::Tier1Patch(json) => {
-                        if self.app.apply_hot_patch(&json)
+                    PairControlMsg::Tier1Patch(patch) => {
+                        if self.app.apply_hot_patch(&patch)
                             && self.render_and_broadcast(true).unwrap_or(false)
                         {
                             outcome.frames_broadcast += 1;

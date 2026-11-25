@@ -137,8 +137,8 @@ class NveQtWidget : public QWidget {
   /// and drain outbound events.
   bool applyPropsJson(std::string_view propsJson);
 
-  /// Apply a Tier-1 RSX hot-patch JSON payload (`NveDevApi::apply_hot_patch`) and sync Qt views.
-  bool applyHotPatchJson(std::string_view patchJson);
+  /// Apply one binary `NVP1` Tier-1 hot-patch frame (`NveDevApi::apply_hot_patch`) and sync Qt views.
+  bool applyHotPatch(std::span<const uint8_t> patchNvp1);
 
   /// Render one frame from the loaded NVE app and reconcile retained Qt widgets.
   int32_t renderFrame();

@@ -157,11 +157,8 @@ impl NveApp for CounterModule {
         &self.last_emitted_events_buf
     }
 
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
-        let Ok(msg) = HotPatchMsg::from_json(patch_json) else {
-            return false;
-        };
-        self.surface.apply_hot_patch(&msg)
+    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
+        self.surface.apply_hot_patch(patch)
     }
 
     fn snapshot_state(&mut self) -> &[u8] {

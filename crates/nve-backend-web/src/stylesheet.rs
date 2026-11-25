@@ -1,8 +1,7 @@
 //! Option 5 Hybrid CSS stylesheet cache: compact declaration emitters, structural vs volatile
 //! lane resolution, bounded `MAX_DYNAMIC_RULES`, and batched `wasm32` `CSSStyleSheet` flushing.
 
-use core::fmt::Write as _;
-use std::collections::{HashMap, HashSet};
+use nve_abi::hash::{HashMap, HashSet};
 
 use nve_abi::{
     ColorRgba, ComponentKind, Dimension, EventMask, FlexAlign, FlexDirection, FlexJustify,
@@ -134,7 +133,9 @@ pub fn write_compact_style_into(
         out.push(';');
     }
     if s.z_index != 0 {
-        let _ = write!(out, "z-index:{};", s.z_index);
+        out.push_str("z-index:");
+        nve_abi::num::write_i64(out, i64::from(s.z_index));
+        out.push(';');
     }
     raw.write_compact_into(leaf_text, out);
 }
@@ -266,6 +267,16 @@ extern "C" {
     fn nve_adopt_stylesheet(doc: &web_sys::Document, sheet: &web_sys::CssStyleSheet) -> bool;
 }
 
+/// Appends one `.{class}{{decls}}` rule (no `core::fmt` on the wasm hot path).
+#[cfg(target_arch = "wasm32")]
+fn push_rule(out: &mut String, class_name: &str, decls: &str) {
+    out.push('.');
+    out.push_str(class_name);
+    out.push('{');
+    out.push_str(decls);
+    out.push('}');
+}
+
 /// Bounded content-addressed structural CSS cache with batched `wasm32` stylesheet flushing.
 #[derive(Default)]
 pub struct StyleSheetCache {
@@ -382,7 +393,8 @@ impl StyleSheetCache {
             {
                 let mut text = String::with_capacity(batch.len() * 64);
                 for (cls, decls) in &batch {
-                    let _ = writeln!(&mut text, ".{cls}{{{decls}}}");
+                    push_rule(&mut text, cls, decls);
+                    text.push('\n');
                 }
                 if let Ok(sheet) = web_sys::CssStyleSheet::new()
                     && sheet.replace_sync(&text).is_ok()
@@ -399,7 +411,7 @@ impl StyleSheetCache {
                 let mut rule = String::with_capacity(96);
                 for (cls, decls) in &batch {
                     rule.clear();
-                    let _ = write!(&mut rule, ".{cls}{{{decls}}}");
+                    push_rule(&mut rule, cls, decls);
                     if sheet.insert_rule(&rule).is_err() {
                         all_ok = false;
                         break;
@@ -471,7 +483,8 @@ impl StyleSheetCache {
         };
         let mut css = style_el.text_content().unwrap_or_default();
         for (cls, decls) in batch {
-            let _ = writeln!(&mut css, ".{cls}{{{decls}}}");
+            push_rule(&mut css, cls, decls);
+            css.push('\n');
         }
         style_el.set_text_content(Some(&css));
     }

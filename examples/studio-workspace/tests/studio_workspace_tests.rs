@@ -285,7 +285,7 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     // 1. Live Accent switch -> Violet (#a78bfa)
     h.press("accent-violet");
     assert!(h.ascii().contains("Accent -> Violet"));
-    assert!(h.html().contains("rgba(167,139,250,1.000)"));
+    assert!(h.html().contains("rgba(167,139,250,1)"));
 
     // 2. Corner Radius -> Pill (18px) and Sharp (0px)
     h.press("radius-pill");
@@ -331,7 +331,7 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     h.press("tt-first"); // Back to 1 / 8 (Workspace Boot, Cyan accent)
     assert!(h.ascii().contains("Snapshot 1 / 8"));
     assert!(h.ascii().contains("Workspace Boot"));
-    assert!(h.html().contains("rgba(56,189,248,1.000)"));
+    assert!(h.html().contains("rgba(56,189,248,1)"));
 
     h.press("tt-redo"); // Forward to 2 / 8 (Accent -> Violet)
     assert!(h.ascii().contains("Snapshot 2 / 8"));
@@ -418,7 +418,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         text_updates: vec![],
         text_replacements: vec![],
     };
-    assert!(app.apply_hot_patch_wire(&patch.to_bytes()));
+    assert!(app.apply_hot_patch(&patch));
     let _ = app.render(2);
 
     let saved = app.snapshot_state().to_vec();

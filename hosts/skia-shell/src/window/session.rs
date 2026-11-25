@@ -455,8 +455,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     pub fn handle_hot_patch(&mut self, msg: HotPatchMsg) -> Result<bool, DesktopHostError> {
         match &msg {
             HotPatchMsg::TemplatePatch { generation, .. } => {
-                let raw = msg.to_json();
-                let changed = self.app.apply_hot_patch(&raw);
+                let changed = self.app.apply_hot_patch(&msg.to_bytes());
                 self.status_banner = Some(format!("Tier-1 patch gen #{generation}"));
                 if changed {
                     self.render_and_rasterize()?;

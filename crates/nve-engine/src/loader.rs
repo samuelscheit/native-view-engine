@@ -235,13 +235,11 @@ impl HotAppInstance {
         }
     }
 
-    pub fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
+    /// Forwards one binary `NVP1` hot-patch frame (as received from `nve dev`) to the module.
+    pub fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
         match self.dev {
             Some(api) => unsafe {
-                (api.apply_hot_patch)(
-                    self.handle,
-                    NveBufferSlice::from_slice(patch_json.as_bytes()),
-                ) != 0
+                (api.apply_hot_patch)(self.handle, NveBufferSlice::from_slice(patch_nvp1)) != 0
             },
             None => false,
         }

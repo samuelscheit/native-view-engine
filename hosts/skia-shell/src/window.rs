@@ -145,7 +145,8 @@ pub trait DesktopApp {
     fn generation(&self) -> u64;
     fn render(&mut self, frame_id: FrameId) -> &[u8];
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool;
+    /// Forwards one binary `NVP1` hot-patch frame to the app's `NveDevApi::apply_hot_patch`.
+    fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool;
     fn reload(
         &mut self,
         new_dylib_path: &Path,
@@ -254,9 +255,9 @@ impl DesktopApp for HotAppSlot {
         }
     }
 
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
+    fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
         match self.instance.as_mut() {
-            Some(inst) => inst.apply_hot_patch(patch_json),
+            Some(inst) => inst.apply_hot_patch(patch_nvp1),
             None => false,
         }
     }

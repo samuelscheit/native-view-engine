@@ -211,7 +211,7 @@ class _MockNativeModule {
   final List<Map<String, Object?>> propsDirectHistory = <Map<String, Object?>>[];
   int setPropsReturn = 1;
   Uint8List outboundEvents = Uint8List(0);
-  final List<String> hotPatches = <String>[];
+  final List<Uint8List> hotPatches = <Uint8List>[];
   int hotPatchReturn = 1;
   Uint8List savedState = Uint8List.fromList(utf8.encode('state-v1'));
   Uint8List? restoredState;
@@ -358,7 +358,7 @@ class _MockNativeModule {
     final bytes = slice.ptr == ffi.nullptr || slice.len == 0
         ? Uint8List(0)
         : Uint8List.fromList(slice.ptr.asTypedList(slice.len));
-    hotPatches.add(utf8.decode(bytes));
+    hotPatches.add(bytes);
     return hotPatchReturn;
   }
 
@@ -399,6 +399,13 @@ class _MockNativeModule {
     _alloc.dispose();
   }
 }
+
+/// A complete binary `NVP1` `DevStatus` frame ("x", 0 ms), as `nve dev` broadcasts it.
+final Uint8List _nvp1DevStatus = Uint8List.fromList(<int>[
+  0x4E, 0x56, 0x50, 0x31, 3, //
+  1, 0, 0, 0, 0x78, //
+  0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
 void main() {
   group('NveAppInstance FFI contracts', () {
@@ -516,8 +523,9 @@ void main() {
 
       // applyHotPatch, snapshotState, restoreState
       mock.hotPatchReturn = 1;
-      expect(instance.applyHotPatch('{"op":"patch"}'), isTrue);
-      expect(mock.hotPatches, <String>['{"op":"patch"}']);
+      expect(instance.applyHotPatch(_nvp1DevStatus), isTrue);
+      expect(mock.hotPatches, hasLength(1));
+      expect(mock.hotPatches.single, _nvp1DevStatus, reason: 'NVP1 bytes forwarded unchanged');
 
       final snap = instance.snapshotState();
       expect(utf8.decode(snap), 'state-v1');
@@ -559,7 +567,7 @@ void main() {
       expect(instance.renderNextFrame, throwsStateError);
       expect(() => instance.dispatchEvents(Uint8List(0)), throwsStateError);
       expect(() => instance.dispatchEventsDirect(const <NveEvent>[]), throwsStateError);
-      expect(() => instance.applyHotPatch('{}'), throwsStateError);
+      expect(() => instance.applyHotPatch(_nvp1DevStatus), throwsStateError);
       expect(instance.snapshotState, throwsStateError);
       expect(() => instance.restoreState(Uint8List(0)), throwsStateError);
       expect(instance.drainEmittedEvents, throwsStateError);
@@ -624,7 +632,7 @@ void main() {
       expect(instance.supportsLayoutAndHitTest, isFalse);
       expect(instance.setPropsDirect(<String, Object?>{'a': 1}), isFalse);
       expect(instance.drainEmittedEvents(), isEmpty);
-      expect(instance.applyHotPatch('{}'), isFalse);
+      expect(instance.applyHotPatch(_nvp1DevStatus), isFalse);
       expect(instance.snapshotState(), isEmpty);
       instance.restoreState(Uint8List.fromList(<int>[1, 2]));
       expect(instance.measure(const BoxConstraints(maxWidth: 300, maxHeight: 200)), isNull);

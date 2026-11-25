@@ -190,8 +190,8 @@ class NveGtkHost {
   /// and drain outbound events.
   bool apply_props_json(std::string_view props_json);
 
-  /// Apply a Tier-1 JSON hot patch (`NveDevApi::apply_hot_patch`) and sync GTK widgets.
-  bool apply_hot_patch_json(std::string_view patch_json);
+  /// Apply one binary `NVP1` Tier-1 hot-patch frame (`NveDevApi::apply_hot_patch`) and sync GTK widgets.
+  bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
 
   /// Render a new frame from the active app, reconcile GTK widgets, and drain events.
   int32_t render_frame(NveFrameStats* out_stats = nullptr);

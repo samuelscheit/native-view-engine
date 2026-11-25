@@ -2,8 +2,8 @@
 //! command decoding, allowlisted `"web.<tag>"` DOM passthrough, CSS `BlurSurface`,
 //! sandboxed `WebView` `<iframe>`, and `<video>` `VideoPlayer` for live DOM and Semantic SSR.
 
-use core::fmt::Write as _;
-use nve_abi::{ComponentKind, NodeId, RawPropValue};
+use nve_abi::num::write_f32;
+use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue};
 use crate::css::MirrorElement;
 use crate::WebBackend;
 
@@ -329,15 +329,26 @@ fn format_blur_css(props: BlurSurfaceProps) -> String {
     let (base_px, default_alpha) = props.material.css_params();
     let intensity = if props.intensity.is_finite() { props.intensity.clamp(0.0, 1.0) } else { 1.0 };
     let blur_px = ((base_px * intensity) * 100.0).round() / 100.0;
+    // `nve_abi::num` CSS number format (no `core::fmt` float printing in wasm).
     let mut css = String::with_capacity(96);
-    let _ = write!(&mut css, "backdrop-filter:blur({blur_px}px);-webkit-backdrop-filter:blur({blur_px}px);");
-    if let Some(rgba) = props.tint {
-        let (r, g, b, a) = ((rgba >> 24) & 0xFF, (rgba >> 16) & 0xFF, (rgba >> 8) & 0xFF, rgba & 0xFF);
-        let alpha = format!("{:.3}", a as f32 / 255.0);
-        let _ = write!(&mut css, "background-color:rgba({r},{g},{b},{});", alpha.trim_end_matches('0').trim_end_matches('.'));
-    } else {
-        let _ = write!(&mut css, "background-color:rgba(255,255,255,{default_alpha});");
+    for prop in ["backdrop-filter:blur(", "-webkit-backdrop-filter:blur("] {
+        css.push_str(prop);
+        write_f32(&mut css, blur_px);
+        css.push_str("px);");
     }
+    css.push_str("background-color:");
+    match props.tint {
+        Some(rgba) => {
+            let [r, g, b, a] = rgba.to_be_bytes();
+            crate::css::write_rgba(ColorRgba { r, g, b, a }, &mut css);
+        }
+        None => {
+            css.push_str("rgba(255,255,255,");
+            css.push_str(default_alpha);
+            css.push(')');
+        }
+    }
+    css.push(';');
     css
 }
 

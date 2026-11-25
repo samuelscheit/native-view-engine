@@ -187,8 +187,9 @@ pub trait NveApp: Sized + 'static {
         &[]
     }
 
-    /// Applies a Tier-1 hot-reload JSON patch (`HotPatchMsg`).
-    fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
+    /// Applies a Tier-1 hot-reload patch, decoded from the `NVP1` bytes the host passed to
+    /// `NveDevApi::apply_hot_patch`.
+    fn apply_hot_patch(&mut self, _patch: &crate::HotPatchMsg) -> bool {
         false
     }
 
@@ -384,17 +385,18 @@ macro_rules! export_nve_app {
 
             unsafe extern "C" fn __nve_apply_hot_patch(
                 handle: NveAppHandle,
-                patch_json: NveBufferSlice,
+                patch_nvp1: NveBufferSlice,
             ) -> u32 {
                 if handle.is_null() {
                     return 0;
                 }
                 $crate::app::ffi_catch_unwind("NveDevApi::apply_hot_patch", 0, || {
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
-                    let Ok(s) = ::std::str::from_utf8(unsafe { patch_json.as_slice() }) else {
+                    let Ok(msg) = $crate::HotPatchMsg::from_bytes(unsafe { patch_nvp1.as_slice() })
+                    else {
                         return 0;
                     };
-                    u32::from(app.apply_hot_patch(s))
+                    u32::from(app.apply_hot_patch(&msg))
                 })
             }
 
@@ -639,7 +641,7 @@ mod tests {
             &self.emitted_buf
         }
 
-        fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
+        fn apply_hot_patch(&mut self, _patch: &crate::HotPatchMsg) -> bool {
             if current_panic_target() == PanicTarget::ApplyHotPatch {
                 panic!("boom in apply_hot_patch");
             }
@@ -844,8 +846,9 @@ mod tests {
         );
 
         set_panic_target(PanicTarget::ApplyHotPatch);
+        let patch = crate::HotPatchMsg::DevStatus { message: "x".into(), latency_ms: 0 }.to_bytes();
         assert_eq!(
-            unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(b"{}")) },
+            unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&patch)) },
             0
         );
         let msg = take_last_ffi_panic().unwrap();

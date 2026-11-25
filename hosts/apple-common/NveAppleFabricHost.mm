@@ -179,11 +179,9 @@
   return rc;
 }
 
-- (BOOL)applyHotPatchJson:(NSString *)patchJson {
-  if (!_appHandle || !_module.dev || !_module.dev->apply_hot_patch) return NO;
-  NSData *utf8 = [patchJson dataUsingEncoding:NSUTF8StringEncoding];
-  if (!utf8) return NO;
-  const NveBufferSlice slice = {reinterpret_cast<const uint8_t *>(utf8.bytes), utf8.length};
+- (BOOL)applyHotPatch:(NSData *)patchNvp1 {
+  if (!_appHandle || !_module.dev || !_module.dev->apply_hot_patch || !patchNvp1) return NO;
+  const NveBufferSlice slice = {reinterpret_cast<const uint8_t *>(patchNvp1.bytes), patchNvp1.length};
   if (_module.dev->apply_hot_patch(_appHandle, slice) != 0) {
     [self renderNextFrame];
     return YES;

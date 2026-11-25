@@ -234,12 +234,12 @@ public final class NveSurfaceController: ObservableObject {
         return Data(bytes: ptr, count: slice.len)
     }
 
-    /// Applies a Tier-1 RSX hot-reload patch via `NveDevApi.apply_hot_patch`.
+    /// Applies one binary `NVP1` Tier-1 hot-patch frame (as broadcast by `nve dev`) via
+    /// `NveDevApi.apply_hot_patch`.
     @discardableResult
-    public func applyHotPatch(json: String) -> Bool {
+    public func applyHotPatch(_ patchNvp1: Data) -> Bool {
         guard let handle, let patchFn = module.dev?.pointee.apply_hot_patch else { return false }
-        let data = Data(json.utf8)
-        let dirty = data.withUnsafeBytes { raw -> UInt32 in
+        let dirty = patchNvp1.withUnsafeBytes { raw -> UInt32 in
             let slice = NveBufferSlice(
                 ptr: raw.bindMemory(to: UInt8.self).baseAddress,
                 len: raw.count

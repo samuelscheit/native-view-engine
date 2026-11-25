@@ -104,7 +104,7 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
                 node_path: vec![],
                 text_replacements: vec![],
             },
-            "template_patch",
+            1,
         ),
         (
             HotPatchMsg::TemplatePatch {
@@ -116,7 +116,7 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
                 node_path: vec![],
                 text_replacements: vec![],
             },
-            "template_patch",
+            1,
         ),
         (
             HotPatchMsg::DylibReload {
@@ -124,44 +124,38 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
                 dylib_path: "/tmp/libnve_app.dylib".into(),
                 build_ms: 215,
             },
-            "dylib_reload",
+            2,
         ),
         (
             HotPatchMsg::DevStatus {
                 message: "Hot swap ready (gen 7)".into(),
                 latency_ms: 12,
             },
-            "dev_status",
+            3,
         ),
     ];
 
     for (msg, expected_tag) in cases {
-        let json = msg.to_json();
-        let raw: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(raw["type"].as_str(), Some(expected_tag));
-
-        let decoded = HotPatchMsg::from_json(&json).expect("roundtrip decode");
+        let bytes = msg.to_bytes();
+        assert_eq!(&bytes[..4], b"NVP1");
+        assert_eq!(bytes[4], expected_tag, "variant tag");
+        let decoded = HotPatchMsg::from_bytes(&bytes).expect("roundtrip decode");
         assert_eq!(decoded, msg);
     }
 }
 
 #[test]
-fn hot_patch_msg_rejects_invalid_and_malformed_json() {
-    let invalid_payloads = [
-        "",
-        "{",
-        "null",
-        r#"{"type":"unknown_variant","generation":1}"#,
-        r#"{"type":"template_patch","generation":1}"#, // missing fields
-        r#"{"type":"dylib_reload","generation":"not_a_number","dylib_path":"x","build_ms":1}"#,
-        r#"{"type":"dev_status","message":123,"latency_ms":5}"#,
+fn hot_patch_msg_rejects_json_and_malformed_frames() {
+    let invalid_payloads: [&[u8]; 6] = [
+        b"",
+        b"NVP",
+        b"NVP1",
+        b"null",
+        br#"{"type":"dev_status","message":"x","latency_ms":5}"#,
+        b"NVP1\x03\x05\x00\x00\x00hi",
     ];
-
     for raw in invalid_payloads {
-        assert!(
-            HotPatchMsg::from_json(raw).is_err(),
-            "expected error for malformed HotPatchMsg: {raw}"
-        );
+        assert!(HotPatchMsg::from_bytes(raw).is_err(), "expected error for {raw:?}");
     }
 }
 
@@ -216,10 +210,10 @@ impl NveApp for RoutingTestApp {
         &self.emitted
     }
 
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
-        match HotPatchMsg::from_json(patch_json) {
-            Ok(msg @ HotPatchMsg::TemplatePatch { .. }) => {
-                self.patches_received.push(msg);
+    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
+        match patch {
+            HotPatchMsg::TemplatePatch { .. } => {
+                self.patches_received.push(patch.clone());
                 true
             }
             _ => false,
@@ -343,7 +337,7 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         NveGestureDisposition::PassThrough
     );
 
-    // Valid TemplatePatch JSON routes cleanly -> returns 1.
+    // Valid TemplatePatch NVP1 frame routes cleanly -> returns 1.
     let valid_patch = HotPatchMsg::TemplatePatch {
         generation: 1,
         template_id: "root".into(),
@@ -353,9 +347,9 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         node_path: vec![],
         text_replacements: vec![],
     }
-    .to_json();
+    .to_bytes();
     assert_eq!(
-        unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(valid_patch.as_bytes())) },
+        unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&valid_patch)) },
         1
     );
 
@@ -364,18 +358,17 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         message: "ping".into(),
         latency_ms: 1,
     }
-    .to_json();
+    .to_bytes();
     assert_eq!(
-        unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(status_patch.as_bytes())) },
+        unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&status_patch)) },
         0
     );
 
-    // Invalid UTF-8 bytes safely rejected with 0.
-    let bad_utf8 = [0xFFu8, 0xFE, 0x80];
-    assert_eq!(
-        unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&bad_utf8)) },
-        0
-    );
+    // Garbage, JSON text and truncated frames are rejected with 0 before reaching the app.
+    let json_patch = br#"{"type":"template_patch","generation":1,"template_id":"root","attr_updates":[],"text_updates":[]}"#;
+    for bad in [&[0xFFu8, 0xFE, 0x80][..], &json_patch[..], &valid_patch[..valid_patch.len() - 1]] {
+        assert_eq!(unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(bad)) }, 0);
+    }
 
     // State snapshot & restore roundtrip.
     let new_state = b"saved-v2";
@@ -519,7 +512,7 @@ fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
     );
     assert!(!inst.set_props(b"{}"));
     assert!(inst.drain_emitted_events().is_empty());
-    assert!(!inst.apply_hot_patch("{}"));
+    assert!(!inst.apply_hot_patch(b"NVP1"));
     assert!(inst.snapshot_state().is_empty());
 }
 
@@ -696,7 +689,8 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert!(inst.set_props(&5u32.to_le_bytes()));
     assert!(inst.dispatch_events(b"tap"));
     assert_eq!(inst.drain_emitted_events(), &[0xEE, 6]);
-    assert!(inst.apply_hot_patch(r#"{"type":"template_patch"}"#));
+    let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }.to_bytes();
+    assert!(inst.apply_hot_patch(&patch));
     assert_eq!(inst.render(2), b"frame=2;counter=16");
     assert_eq!(inst.snapshot_state(), 16u32.to_le_bytes());
 

@@ -58,10 +58,14 @@ impl NveMutationWriter {
         match value {
             AttributeValue::Text(s) => self.apply_str_attr(node_id, name, s),
             AttributeValue::Float(f) => {
-                self.apply_str_attr(node_id, name, &f.to_string());
+                let mut s = String::new();
+                nve_abi::num::write_f64(&mut s, *f);
+                self.apply_str_attr(node_id, name, &s);
             }
             AttributeValue::Int(i) => {
-                self.apply_str_attr(node_id, name, &i.to_string());
+                let mut s = String::new();
+                nve_abi::num::write_i64(&mut s, *i);
+                self.apply_str_attr(node_id, name, &s);
             }
             AttributeValue::Bool(b) => {
                 let prop_name = canonical_a11y_attr_key(name).unwrap_or(name);

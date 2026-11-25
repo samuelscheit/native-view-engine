@@ -4,7 +4,7 @@
 //! position by emitting `Remove` and `InsertBefore` operations ONLY for removed, inserted, or
 //! genuinely moved children.
 
-use std::collections::{HashMap, HashSet};
+use nve_abi::hash::{HashMap, HashSet};
 
 use nve_abi::NodeId;
 
@@ -30,7 +30,7 @@ pub fn plan_keyed_child_ops(old: &[NodeId], new: &[NodeId]) -> Vec<ChildDiffOp> 
 
     // 1. Remove obsolete children that are absent in `new`.
     let mut surviving = Vec::with_capacity(old.len().min(new.len()));
-    let mut seen_surviving = HashSet::with_capacity(old.len());
+    let mut seen_surviving = HashSet::with_capacity_and_hasher(old.len(), Default::default());
     for &id in old {
         if new_set.contains(&id) && seen_surviving.insert(id) {
             surviving.push(id);
@@ -70,7 +70,7 @@ pub fn plan_keyed_child_ops(old: &[NodeId], new: &[NodeId]) -> Vec<ChildDiffOp> 
 
     // 3. Compute LIS of surviving positions inside the trimmed middle window.
     let mid_len = end_n - start;
-    let mut old_pos_map: HashMap<NodeId, usize> = HashMap::with_capacity(end_s - start);
+    let mut old_pos_map: HashMap<NodeId, usize> = HashMap::with_capacity_and_hasher(end_s - start, Default::default());
     for (idx, &id) in surviving[start..end_s].iter().enumerate() {
         old_pos_map.insert(id, idx);
     }

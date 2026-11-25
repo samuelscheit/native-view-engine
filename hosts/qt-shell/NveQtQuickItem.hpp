@@ -10,6 +10,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <cstdint>
+#include <span>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -137,8 +138,8 @@ class NveQtQuickItem : public QQuickItem {
   /// Forward structured zero-copy props to `NveComponentApi::set_props_direct`.
   bool applyPropsDirect(const NveMapEntry* entries, uint32_t count);
 
-  /// Apply a Tier-1 RSX hot-patch JSON payload (`NveDevApi::apply_hot_patch`) and sync scene.
-  bool applyHotPatchJson(std::string_view patchJson);
+  /// Apply one binary `NVP1` Tier-1 hot-patch frame (`NveDevApi::apply_hot_patch`) and sync scene.
+  bool applyHotPatch(std::span<const uint8_t> patchNvp1);
 
   /// Render one frame from the loaded NVE app and synchronize the flat `NveSceneView`.
   Q_INVOKABLE int32_t renderFrame();

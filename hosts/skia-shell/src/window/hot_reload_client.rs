@@ -59,16 +59,8 @@ impl HotReloadClient {
                             }
                             while !stop_flag.load(Ordering::Relaxed) {
                                 match ws.read() {
-                                    Ok(Message::Text(text)) => {
-                                        if let Ok(msg) = HotPatchMsg::from_wire(text.as_bytes()) {
-                                            if tx.send(msg).is_err() {
-                                                return;
-                                            }
-                                            on_wake();
-                                        }
-                                    }
                                     Ok(Message::Binary(bytes)) => {
-                                        if let Ok(msg) = HotPatchMsg::from_wire(&bytes) {
+                                        if let Ok(msg) = HotPatchMsg::from_bytes(&bytes) {
                                             if tx.send(msg).is_err() {
                                                 return;
                                             }

@@ -14,8 +14,6 @@
 
 mod typed;
 
-use std::fmt::Write as _;
-
 use nve_dioxus::TypedStyle;
 
 pub use typed::{parse_color_rgba, TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
@@ -94,11 +92,30 @@ impl StyleBuf {
         if v.is_finite() { v } else { 0.0 }
     }
 
+    /// Appends `key: value; `.
+    #[inline]
+    fn decl(&mut self, key: &str, value: &str) -> &mut Self {
+        self.buf.push_str(key);
+        self.buf.push_str(": ");
+        self.buf.push_str(value);
+        self.buf.push_str("; ");
+        self
+    }
+
+    /// Appends `key: <number><unit>; ` with the `nve_abi::num` CSS number format (no `core::fmt`).
+    #[inline]
+    fn decl_num(&mut self, key: &str, value: f32, unit: &str) -> &mut Self {
+        self.buf.push_str(key);
+        self.buf.push_str(": ");
+        nve_abi::num::write_f32(&mut self.buf, Self::sanitize(value));
+        self.buf.push_str(unit);
+        self.buf.push_str("; ");
+        self
+    }
+
     #[inline]
     fn write_px(&mut self, key: &str, value: f32) -> &mut Self {
-        let v = Self::sanitize(value);
-        let _ = write!(self.buf, "{key}: {v}px; ");
-        self
+        self.decl_num(key, value, "px")
     }
 
     pub fn width_px(&mut self, v: f32) -> &mut Self {
@@ -106,9 +123,7 @@ impl StyleBuf {
     }
 
     pub fn width_pct(&mut self, v: f32) -> &mut Self {
-        let v = Self::sanitize(v).clamp(0.0, 100.0);
-        let _ = write!(self.buf, "width: {v}%; ");
-        self
+        self.decl_num("width", Self::sanitize(v).clamp(0.0, 100.0), "%")
     }
 
     pub fn width_auto(&mut self) -> &mut Self {
@@ -121,9 +136,7 @@ impl StyleBuf {
     }
 
     pub fn height_pct(&mut self, v: f32) -> &mut Self {
-        let v = Self::sanitize(v).clamp(0.0, 100.0);
-        let _ = write!(self.buf, "height: {v}%; ");
-        self
+        self.decl_num("height", Self::sanitize(v).clamp(0.0, 100.0), "%")
     }
 
     pub fn height_auto(&mut self) -> &mut Self {
@@ -148,30 +161,23 @@ impl StyleBuf {
     }
 
     pub fn flex_direction(&mut self, dir: &str) -> &mut Self {
-        let _ = write!(self.buf, "flex-direction: {dir}; ");
-        self
+        self.decl("flex-direction", dir)
     }
 
     pub fn justify_content(&mut self, justify: &str) -> &mut Self {
-        let _ = write!(self.buf, "justify-content: {justify}; ");
-        self
+        self.decl("justify-content", justify)
     }
 
     pub fn align_items(&mut self, align: &str) -> &mut Self {
-        let _ = write!(self.buf, "align-items: {align}; ");
-        self
+        self.decl("align-items", align)
     }
 
     pub fn flex_grow(&mut self, v: f32) -> &mut Self {
-        let v = Self::sanitize(v).max(0.0);
-        let _ = write!(self.buf, "flex-grow: {v}; ");
-        self
+        self.decl_num("flex-grow", Self::sanitize(v).max(0.0), "")
     }
 
     pub fn flex_shrink(&mut self, v: f32) -> &mut Self {
-        let v = Self::sanitize(v).max(0.0);
-        let _ = write!(self.buf, "flex-shrink: {v}; ");
-        self
+        self.decl_num("flex-shrink", Self::sanitize(v).max(0.0), "")
     }
 
     pub fn gap(&mut self, v: f32) -> &mut Self {
@@ -192,19 +198,16 @@ impl StyleBuf {
     }
 
     pub fn background(&mut self, color: &str) -> &mut Self {
-        let _ = write!(self.buf, "background-color: {color}; ");
-        self
+        self.decl("background-color", color)
     }
 
     pub fn color(&mut self, color: &str) -> &mut Self {
-        let _ = write!(self.buf, "color: {color}; ");
-        self
+        self.decl("color", color)
     }
 
     pub fn border(&mut self, width: f32, color: &str) -> &mut Self {
         self.write_px("border-width", width.max(0.0));
-        let _ = write!(self.buf, "border-color: {color}; ");
-        self
+        self.decl("border-color", color)
     }
 
     pub fn border_radius(&mut self, radius: f32) -> &mut Self {
@@ -212,9 +215,7 @@ impl StyleBuf {
     }
 
     pub fn opacity(&mut self, opacity: f32) -> &mut Self {
-        let v = Self::sanitize(opacity).clamp(0.0, 1.0);
-        let _ = write!(self.buf, "opacity: {v}; ");
-        self
+        self.decl_num("opacity", Self::sanitize(opacity).clamp(0.0, 1.0), "")
     }
 
     pub fn font_size(&mut self, px: f32) -> &mut Self {
@@ -222,28 +223,26 @@ impl StyleBuf {
     }
 
     pub fn font_weight(&mut self, weight: &str) -> &mut Self {
-        let _ = write!(self.buf, "font-weight: {weight}; ");
-        self
+        self.decl("font-weight", weight)
     }
 
     pub fn text_align(&mut self, align: &str) -> &mut Self {
-        let _ = write!(self.buf, "text-align: {align}; ");
-        self
+        self.decl("text-align", align)
     }
 
     pub fn box_shadow(&mut self, shadow: &str) -> &mut Self {
-        let _ = write!(self.buf, "box-shadow: {shadow}; ");
-        self
+        self.decl("box-shadow", shadow)
     }
 
     pub fn z_index(&mut self, z: i32) -> &mut Self {
-        let _ = write!(self.buf, "z-index: {z}; ");
+        self.buf.push_str("z-index: ");
+        nve_abi::num::write_i64(&mut self.buf, i64::from(z));
+        self.buf.push_str("; ");
         self
     }
 
     pub fn overflow(&mut self, mode: &str) -> &mut Self {
-        let _ = write!(self.buf, "overflow: {mode}; ");
-        self
+        self.decl("overflow", mode)
     }
 
     /// Appends arbitrary user style declarations (trailing `;` added automatically if needed).

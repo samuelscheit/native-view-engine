@@ -84,7 +84,7 @@ impl DesktopApp for SurfaceCounterApp {
         handled
     }
 
-    fn apply_hot_patch(&mut self, _patch_json: &str) -> bool { false }
+    fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool { false }
     fn reload(&mut self, _path: &Path, _surface_id: SurfaceId) -> Result<u64, DesktopHostError> {
         Ok(1)
     }

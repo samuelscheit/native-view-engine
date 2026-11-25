@@ -214,19 +214,6 @@ impl StudioWorkspaceModule {
             .map(|g| g.clone())
             .unwrap_or_else(|e| e.into_inner().clone())
     }
-
-    /// Applies an already-decoded [`HotPatchMsg`] directly with zero serialization.
-    pub fn apply_hot_patch_msg(&mut self, msg: &HotPatchMsg) -> bool {
-        self.surface.apply_hot_patch(msg)
-    }
-
-    /// Decodes a wire hot-patch frame (`NVP1` binary or UTF-8 JSON) and queues it on the surface.
-    pub fn apply_hot_patch_wire(&mut self, raw: &[u8]) -> bool {
-        let Ok(msg) = HotPatchMsg::from_wire(raw) else {
-            return false;
-        };
-        self.surface.apply_hot_patch(&msg)
-    }
 }
 
 impl NveApp for StudioWorkspaceModule {
@@ -531,8 +518,8 @@ impl NveApp for StudioWorkspaceModule {
         &self.last_emitted_events_buf
     }
 
-    fn apply_hot_patch(&mut self, patch_wire: &str) -> bool {
-        self.apply_hot_patch_wire(patch_wire.as_bytes())
+    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
+        self.surface.apply_hot_patch(patch)
     }
 
     fn snapshot_state(&mut self) -> &[u8] {

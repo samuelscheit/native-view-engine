@@ -81,6 +81,11 @@ cargo nve dev --package nve-studio-workspace --skia
 cargo nve dev --package nve-studio-workspace --host 0.0.0.0 --port 8089 --web --pair
 ```
 
+With the web rebuild on, `nve dev` also serves `hosts/web-shell` on `--web-port` (default
+`8088`). Opening `http://<host>:8088/` redirects to the `dev` bundle wired to the daemon's
+hot-reload socket (`?ws=ws://<host>:8089`). Production bundles (`pkg/studio`, `pkg/counter`) contain
+no hot-reload code.
+
 <Callout kind="info" title="Physical iOS and Android devices">
 On physical iOS devices (where dynamic `dlopen` of unsigned libraries is restricted by the OS), Tier-1 `NVP1` patches still deliver `< 50 ms` style and copy iteration over Wi-Fi, while **live `NVD1` pairing** (`--pair`) streams full logic updates from your workstation to the device thin client at 60fps without rebuilding or re-signing the app.
 </Callout>

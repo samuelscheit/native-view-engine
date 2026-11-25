@@ -381,14 +381,14 @@ impl NvePluginSlot {
         }
     }
 
-    /// Applies a Tier-1 JSON hot patch via `NVE_IFACE_DEV` if exported.
-    pub fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
+    /// Forwards one binary `NVP1` Tier-1 hot-patch frame via `NVE_IFACE_DEV` if exported.
+    pub fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
         let Some(api) = self.dev else {
             return false;
         };
         nve_engine::clear_last_ffi_panic();
         let res = catch_unwind(AssertUnwindSafe(|| unsafe {
-            (api.apply_hot_patch)(self.handle, NveBufferSlice::from_slice(patch_json.as_bytes())) != 0
+            (api.apply_hot_patch)(self.handle, NveBufferSlice::from_slice(patch_nvp1)) != 0
         }))
         .unwrap_or(false);
         if nve_engine::take_last_ffi_panic().is_some() {

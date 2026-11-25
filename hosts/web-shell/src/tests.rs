@@ -1,7 +1,8 @@
 use super::*;
 use nve_abi::{
-    EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, NveSceneRef, RawPropValue,
-    NVE_SCENE_SCHEMA_HASH, ROOT_NODE_ID,
+    component_kind_to_scene_u8, ComponentKind, EventMask, EventPayload, NativeEvent,
+    NativeEventKind, NodeId, NveRenderNode, NveSceneRef, RawPropValue, NVE_SCENE_SCHEMA_HASH,
+    ROOT_NODE_ID,
 };
 
 fn find_pressable_nodes(backend: &WebBackend) -> Vec<NodeId> {
@@ -69,8 +70,8 @@ fn assert_valid_dom_html(html: &str) {
 }
 
 fn assert_scene_view_matches_backend(session: &WebAppSession) {
-    let view = session.scene_view();
-    let ptr_view = unsafe { *session.scene_view_ptr() };
+    let view = session.scene().view();
+    let ptr_view = unsafe { *session.scene().view_ptr() };
     assert_eq!(view.schema_hash, NVE_SCENE_SCHEMA_HASH);
     assert_eq!(ptr_view.schema_hash, NVE_SCENE_SCHEMA_HASH);
     assert_eq!(ptr_view.frame_id, view.frame_id);
@@ -151,7 +152,7 @@ fn counter_app_mounts_clicks_incrementally_and_resets() {
         let html = session.backend().render_html();
         assert!(html.contains(&format!("Count: {expected}")));
         assert_scene_view_matches_backend(&session);
-        let view = session.scene_view();
+        let view = session.scene().view();
         assert!(view.dirty_count >= 1 && view.dirty_count < view.node_count);
         assert_eq!(view.removed_count, 0);
     }
@@ -169,7 +170,7 @@ fn counter_app_mounts_clicks_incrementally_and_resets() {
 }
 
 #[test]
-fn handles_hot_patch_messages_for_tier1_tier2_and_status_over_json_and_nvp1() {
+fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     let mut session = WebAppSession::new_counter(1, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
     assert_scene_view_matches_backend(&session);
@@ -184,7 +185,7 @@ fn handles_hot_patch_messages_for_tier1_tier2_and_status_over_json_and_nvp1() {
         node_path: vec![],
         text_replacements: vec![],
     };
-    let act1 = session.handle_hot_patch_wire(&tpl.to_bytes()).unwrap();
+    let act1 = session.handle_hot_patch_frame(&tpl.to_bytes()).unwrap();
     match act1 {
         HotReloadAction::TemplatePatched {
             generation,
@@ -199,20 +200,20 @@ fn handles_hot_patch_messages_for_tier1_tier2_and_status_over_json_and_nvp1() {
     }
     assert!(session.backend().render_html().contains("NVE LIVE PATCHED"));
     assert_scene_view_matches_backend(&session);
-    let scene_ref = session.scene_ref();
+    let scene_ref = session.scene().as_ref();
     let patched_in_scene = scene_ref
         .nodes()
         .iter()
         .any(|node| scene_ref.node_text(node).ok() == Some("NVE LIVE PATCHED"));
     assert!(patched_in_scene);
 
-    // Tier-2 DylibReload over JSON wire frame.
+    // Tier-2 DylibReload over a binary NVP1 frame.
     let reload = HotPatchMsg::DylibReload {
         generation: 4,
         dylib_path: "target/debug/libnve_example_counter.dylib".into(),
         build_ms: 215,
     };
-    let act2 = session.handle_hot_patch_json(&reload.to_json()).unwrap();
+    let act2 = session.handle_hot_patch_frame(&reload.to_bytes()).unwrap();
     assert_eq!(
         act2,
         HotReloadAction::ReloadPage {
@@ -227,7 +228,7 @@ fn handles_hot_patch_messages_for_tier1_tier2_and_status_over_json_and_nvp1() {
         message: "watching examples/counter/src".into(),
         latency_ms: 12,
     };
-    let act3 = session.handle_hot_patch_wire(&status.to_bytes()).unwrap();
+    let act3 = session.handle_hot_patch_frame(&status.to_bytes()).unwrap();
     assert_eq!(
         act3,
         HotReloadAction::DevStatus {
@@ -236,8 +237,14 @@ fn handles_hot_patch_messages_for_tier1_tier2_and_status_over_json_and_nvp1() {
         }
     );
 
-    assert!(session.handle_hot_patch_json("{not valid json").is_err());
-    assert!(session.handle_hot_patch_wire(b"NVP1\xFF").is_err());
+    // Legacy JSON text, unknown variants, truncation and trailing bytes are all rejected.
+    assert!(session.handle_hot_patch_frame(br#"{"type":"dev_status"}"#).is_err());
+    assert!(session.handle_hot_patch_frame(b"NVP1\xFF").is_err());
+    let frame = status.to_bytes();
+    assert!(session.handle_hot_patch_frame(&frame[..frame.len() - 1]).is_err());
+    let mut trailing = frame.clone();
+    trailing.push(0);
+    assert!(session.handle_hot_patch_frame(&trailing).is_err());
 }
 
 #[test]
@@ -280,7 +287,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
 
     press_test_id(&mut session, "nav-engineering", 2000);
     assert!(
-        session.scene_view().removed_count > 0,
+        session.scene().view().removed_count > 0,
         "switching views should report removed nodes in NveSceneView"
     );
     assert_scene_view_matches_backend(&session);
@@ -304,7 +311,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     let html_violet = session.backend().render_html();
     assert_valid_dom_html(&html_violet);
     assert!(html_violet.contains("Accent -> Violet"));
-    assert!(html_violet.contains("rgba(167,139,250,1.000)"));
+    assert!(html_violet.contains("rgba(167,139,250,1)"));
     assert!(html_violet.contains("Snapshot 5 / 5"));
 
     press_test_id(&mut session, "tt-undo", 5000);
@@ -331,58 +338,9 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
 }
 
 #[test]
-fn wizer_initialize_populates_frame0_buffer_idempotently_and_hydrates_interactively() {
-    assert!(!is_preinitialized());
-    assert!(take_preinit_frame0_command_buffer().is_none());
-
-    wizer_initialize();
-    assert!(is_preinitialized());
-
-    wizer_initialize();
-    assert!(is_preinitialized());
-
-    let studio_frame0 =
-        take_preinit_frame0_command_buffer().expect("expected pre-baked Studio Frame 0");
-    let (header, ops) = nve_abi::CommandDecoder::new(&studio_frame0)
-        .expect("pre-baked Frame-0 header must be valid")
-        .decode_all()
-        .expect("pre-baked Frame-0 buffer must decode cleanly");
-    assert_eq!(header.surface_id, PREINIT_SURFACE_ID);
-    assert_eq!(header.frame_id, 1);
-    assert!(!ops.is_empty());
-    assert!(take_preinit_frame0_command_buffer().is_none());
-
-    let mut counter_session =
-        WebAppSession::new_counter(PREINIT_SURFACE_ID, WebBackend::new(), Viewport::default());
-    assert!(counter_session.has_preinit_frame0());
-    let init = counter_session.render_initial().unwrap();
-    assert_eq!(init.reconcile_us, 0);
-    assert_eq!(init.encode_us, 0);
-    assert!(init.op_count > 0);
-    assert!(counter_session.backend().render_html().contains("Count: 0"));
-    assert_scene_view_matches_backend(&counter_session);
-
-    let buttons = find_pressable_nodes(counter_session.backend());
-    assert_eq!(buttons.len(), 2);
-    counter_session.backend().push_event(NativeEvent {
-        surface_id: PREINIT_SURFACE_ID,
-        node_id: buttons[0],
-        timestamp_us: 1000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 40.0, y: 20.0 },
-    });
-    counter_session
-        .pump_events()
-        .unwrap()
-        .expect("post-wizer click should trigger incremental frame");
-    assert!(counter_session.backend().render_html().contains("Count: 1"));
-    assert_scene_view_matches_backend(&counter_session);
-}
-
-#[test]
 fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
     let mut session = WebAppSession::new_counter(1, WebBackend::new(), Viewport::default());
-    let ptr_before = session.scene_view_ptr();
+    let ptr_before = session.scene().view_ptr();
     let empty_view = unsafe { *ptr_before };
     assert_eq!(empty_view.schema_hash, NVE_SCENE_SCHEMA_HASH);
     assert_eq!(empty_view.node_count, 0);
@@ -390,7 +348,7 @@ fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
     assert!(empty_ref.nodes().is_empty());
 
     session.render_initial().unwrap();
-    assert_eq!(session.scene_view_ptr(), ptr_before);
+    assert_eq!(session.scene().view_ptr(), ptr_before);
     let mounted_view = unsafe { *ptr_before };
     assert_eq!(mounted_view.frame_id, 1);
     assert_eq!(

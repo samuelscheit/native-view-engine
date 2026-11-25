@@ -1,4 +1,3 @@
-import 'dart:convert' show utf8;
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
@@ -161,13 +160,13 @@ class NveAppInstance {
     return _withSlice(eventRingBytes, (NveBufferSlice slice) => _dispatchEvents(_handle, slice) != 0);
   }
 
-  /// Applies a Tier-1 RSX hot-reload patch (`NveDevApi.apply_hot_patch`).
-  bool applyHotPatch(String patchJson) {
+  /// Applies one binary `NVP1` Tier-1 hot-patch frame, as broadcast by `nve dev`
+  /// (`NveDevApi.apply_hot_patch`).
+  bool applyHotPatch(Uint8List patchNvp1) {
     _ensureLive();
     final fn = _applyHotPatch;
     if (fn == null) return false;
-    final bytes = Uint8List.fromList(utf8.encode(patchJson));
-    return _withSlice(bytes, (NveBufferSlice slice) => fn(_handle, slice) != 0);
+    return _withSlice(patchNvp1, (NveBufferSlice slice) => fn(_handle, slice) != 0);
   }
 
   /// Snapshots app state for Tier-2 hot-reload preservation (`NveDevApi.snapshot_state`).

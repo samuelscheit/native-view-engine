@@ -197,7 +197,7 @@
 				</div>
 			</header>
 			<main id="app">
-				<div class="boot-fallback">Loading <code>./pkg/nve_web_shell.js</code>…</div>
+				<div class="boot-fallback">Loading the NVE Web WASM bundle…</div>
 			</main>
 		</div>
 
@@ -214,8 +214,24 @@
 			const pairParam = (params.get("pair") || "").trim();
 			const pairToken = (params.get("token") || params.get("pair_token") || "").trim();
 			const isPaired = pairParam.length > 0;
-			const wsParam = params.get("ws");
-			const hotReloadWsUrl = wsParam === "off" || wsParam === "none" ? null : wsParam || `ws://${window.location.hostname}:8089`;
+			// `nve dev` hot reload: `?ws=<url>`, or `?dev` for the default `ws://<host>:8089`.
+			const wsParam = (params.get("ws") || "").trim();
+			const hotReloadWsUrl =
+				wsParam === "off" || wsParam === "none"
+					? null
+					: wsParam || (params.has("dev") ? `ws://${window.location.hostname}:8089` : null);
+			// One production bundle per app (`pkg/studio`, `pkg/counter`); hot reload and pairing
+			// live only in `pkg/dev` (hosts/web-shell/build.sh). `?bundle=<name>` overrides.
+			const BUNDLES = ["studio", "counter", "dev"];
+			const bundleParam = (params.get("bundle") || "").trim().toLowerCase();
+			const bundle = BUNDLES.includes(bundleParam)
+				? bundleParam
+				: isPaired || hotReloadWsUrl
+					? "dev"
+					: isCounter
+						? "counter"
+						: "studio";
+			window.__nveBundle = bundle;
 
 			// Preserve any `?ws=...` setting when switching apps via the topbar links.
 			const buildAppHref = (appName) => {
@@ -223,6 +239,8 @@
 				next.delete("pair");
 				next.delete("token");
 				next.delete("pair_token");
+				// A production bundle holds one app; only the dev bundle can switch apps.
+				if (next.get("bundle") !== "dev") next.delete("bundle");
 				if (appName === "studio") {
 					next.delete("app");
 				} else {
@@ -398,8 +416,10 @@
 			async function boot() {
 				try {
 					const bust = Date.now();
-					const wasmMod = await import(`./pkg/nve_web_shell.js?v=${bust}`);
-					await wasmMod.default(new URL(`./pkg/nve_web_shell_bg.wasm?v=${bust}`, window.location.href));
+					const wasmMod = await import(`./pkg/${bundle}/nve_web_shell.js?v=${bust}`);
+					await wasmMod.default(
+						new URL(`./pkg/${bundle}/nve_web_shell_bg.wasm?v=${bust}`, window.location.href)
+					);
 					window.__nveWasmMod = wasmMod;
 
 					if (isPaired) {
@@ -457,8 +477,8 @@
 					if (appEl) {
 						appEl.innerHTML = `
               <div class="boot-fallback">
-                <strong>Failed to load NVE Web WASM bundle.</strong><br />
-                Run <code>./hosts/web-shell/build.sh</code> from the repository root, then serve
+                <strong>Failed to load the <code>${bundle}</code> NVE Web WASM bundle.</strong><br />
+                Run <code>./hosts/web-shell/build.sh</code> (or <code>--dev</code>) from the repository root, then serve
                 <code>hosts/web-shell</code> over HTTP.<br /><br />
                 <code>${String(err)}</code>
               </div>

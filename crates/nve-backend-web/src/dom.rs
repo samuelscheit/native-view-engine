@@ -3,7 +3,7 @@
 //! canvas repainting, and orphan pruning.
 
 use core::fmt::Write as _;
-use std::collections::HashSet;
+use nve_abi::hash::HashSet;
 
 use nve_abi::{ComponentKind, NodeId, RawPropValue, ROOT_NODE_ID};
 #[cfg(target_arch = "wasm32")]
@@ -324,7 +324,7 @@ impl WebBackend {
         let len = child_nodes.length();
         let mut to_remove: Vec<web_sys::Node> = Vec::new();
         let mut old_ids: Vec<NodeId> = Vec::with_capacity(len as usize);
-        let mut seen_old: HashSet<NodeId> = HashSet::with_capacity(len as usize);
+        let mut seen_old: HashSet<NodeId> = HashSet::with_capacity_and_hasher(len as usize, Default::default());
         let keep_text_node = new_children.is_empty()
             && self
                 .nodes
@@ -465,12 +465,12 @@ impl WebBackend {
             }
             RawPropValue::I64(n) => {
                 self.attr_scratch.clear();
-                let _ = write!(&mut self.attr_scratch, "{n}");
+                nve_abi::num::write_i64(&mut self.attr_scratch, *n);
                 set_attr_if_changed(dom_el, key, &self.attr_scratch);
             }
             RawPropValue::F64(n) => {
                 self.attr_scratch.clear();
-                let _ = write!(&mut self.attr_scratch, "{n}");
+                nve_abi::num::write_f64(&mut self.attr_scratch, *n);
                 set_attr_if_changed(dom_el, key, &self.attr_scratch);
             }
             RawPropValue::Bytes(_) => {}
@@ -559,7 +559,7 @@ impl WebBackend {
 
     /// Removes nodes no longer reachable from `ROOT_NODE_ID` after a full VDOM rebuild/reset.
     pub(crate) fn prune_unreachable_nodes(&mut self) {
-        let mut reachable = HashSet::with_capacity(self.nodes.len());
+        let mut reachable = HashSet::with_capacity_and_hasher(self.nodes.len(), Default::default());
         let mut stack = vec![ROOT_NODE_ID];
         while let Some(nid) = stack.pop() {
             if reachable.insert(nid)

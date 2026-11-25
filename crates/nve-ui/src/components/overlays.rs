@@ -142,8 +142,11 @@ pub fn Dialog(
 
     let active_focus = trap.read().active().map(str::to_owned);
 
+    // The scrim is a plain `view` with a press listener (a `pressable` would nest the panel's
+    // buttons and text fields inside a `<button>`); the panel swallows presses so a click on its
+    // padding or a text field never bubbles to the scrim and dismisses the dialog.
     rsx! {
-        pressable {
+        view {
             test_id: "{backdrop_id}",
             accessibility_role: "presentation",
             nve_style: backdrop_style,
@@ -173,6 +176,7 @@ pub fn Dialog(
                 tab_index: -1,
                 nve_style: panel_style,
                 style: style,
+                onpress: move |ev: PressEvent| ev.stop_propagation(),
                 onkeydown: move |ev: KeyEvent| {
                     let data = ev.data();
                     let action = trap.write().handle_key(&data.key, data.shift);

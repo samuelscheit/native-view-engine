@@ -1,9 +1,8 @@
 //! CSS Flexbox/style translation, Option 5 Hybrid compact formatting, semantic HTML5 tag
 //! resolution, raw CSS style properties (`RawStyleProps`), and [`MirrorElement`].
 
-use core::fmt::Write as _;
-use std::collections::HashMap;
-
+use nve_abi::hash::HashMap;
+use nve_abi::num::{write_f32, write_f64, write_i64, write_u64};
 use nve_abi::{
     ColorRgba, ComponentKind, Dimension, EdgeInsets, EventMask, FlexAlign, FlexDirection,
     FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
@@ -105,8 +104,16 @@ fn raw_prop_trimmed_string(value: &RawPropValue) -> Option<String> {
             let trimmed = s.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
         }
-        RawPropValue::I64(n) => Some(n.to_string()),
-        RawPropValue::F64(n) if n.is_finite() => Some(n.to_string()),
+        RawPropValue::I64(n) => {
+            let mut s = String::new();
+            write_i64(&mut s, *n);
+            Some(s)
+        }
+        RawPropValue::F64(n) if n.is_finite() => {
+            let mut s = String::new();
+            write_f64(&mut s, *n);
+            Some(s)
+        }
         _ => None,
     }
 }
@@ -343,22 +350,51 @@ pub(crate) fn canonical_f32(v: f32) -> f32 {
     }
 }
 
-/// Formats a compact CSS numeric value (`0` instead of `-0`, no trailing `.0`).
+/// Formats a compact CSS numeric value (`nve_abi::num` fixed point: `0` instead of `-0`, no
+/// trailing `.0`, at most 3 decimals).
 #[inline]
 pub(crate) fn write_compact_num(v: f32, out: &mut String) {
-    let v = canonical_f32(v);
-    let _ = write!(out, "{v}");
+    write_f32(out, v);
+}
+
+/// Appends `v` followed by `unit`, or a bare `0` when `v` formats as zero.
+#[inline]
+fn write_compact_unit(v: f32, unit: &str, out: &mut String) {
+    let start = out.len();
+    write_f32(out, v);
+    if &out[start..] != "0" {
+        out.push_str(unit);
+    }
 }
 
 /// Formats a compact CSS pixel length (`0` without unit, otherwise `{v}px`).
 #[inline]
 pub(crate) fn write_compact_px(v: f32, out: &mut String) {
-    let v = canonical_f32(v);
-    if v == 0.0 {
-        out.push('0');
-    } else {
-        let _ = write!(out, "{v}px");
+    write_compact_unit(v, "px", out);
+}
+
+/// Appends `v` followed by `unit`, always keeping the unit (full, non-compact CSS).
+#[inline]
+fn write_full_unit(v: f32, unit: &str, out: &mut String) {
+    write_f32(out, v);
+    out.push_str(unit);
+}
+
+fn push_hex_byte(b: u8, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push(HEX[usize::from(b >> 4)] as char);
+    out.push(HEX[usize::from(b & 15)] as char);
+}
+
+/// Appends `rgba(r,g,b,a)` with the alpha channel as an `nve_abi::num` fixed-point fraction.
+pub(crate) fn write_rgba(c: ColorRgba, out: &mut String) {
+    out.push_str("rgba(");
+    for ch in [c.r, c.g, c.b] {
+        write_u64(out, u64::from(ch));
+        out.push(',');
     }
+    write_f32(out, f32::from(c.a) / 255.0);
+    out.push(')');
 }
 
 /// Formats a compact [`Dimension`] into `out`.
@@ -367,14 +403,7 @@ pub(crate) fn write_compact_dim(d: Dimension, out: &mut String) {
     match d {
         Dimension::Auto => out.push_str("auto"),
         Dimension::Points(v) => write_compact_px(v, out),
-        Dimension::Percent(v) => {
-            let v = canonical_f32(v);
-            if v == 0.0 {
-                out.push('0');
-            } else {
-                let _ = write!(out, "{v}%");
-            }
-        }
+        Dimension::Percent(v) => write_compact_unit(v, "%", out),
     }
 }
 
@@ -383,13 +412,14 @@ pub(crate) fn write_compact_dim(d: Dimension, out: &mut String) {
 #[inline]
 pub fn write_compact_color(c: ColorRgba, out: &mut String) {
     if c.a == 255 {
-        let _ = write!(out, "#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+        out.push('#');
+        for ch in [c.r, c.g, c.b] {
+            push_hex_byte(ch, out);
+        }
     } else if c.a == 0 {
         out.push_str("transparent");
     } else {
-        let alpha = format!("{:.3}", c.a as f32 / 255.0);
-        let trimmed = alpha.trim_end_matches('0').trim_end_matches('.');
-        let _ = write!(out, "rgba({},{},{},{trimmed})", c.r, c.g, c.b);
+        write_rgba(c, out);
     }
 }
 
@@ -432,25 +462,9 @@ pub fn write_compact_edges(prop: &str, e: EdgeInsets, out: &mut String) {
 fn write_dim_full(d: Dimension, out: &mut String) {
     match d {
         Dimension::Auto => out.push_str("auto"),
-        Dimension::Points(v) => {
-            let _ = write!(out, "{v}px");
-        }
-        Dimension::Percent(v) => {
-            let _ = write!(out, "{v}%");
-        }
+        Dimension::Points(v) => write_full_unit(v, "px", out),
+        Dimension::Percent(v) => write_full_unit(v, "%", out),
     }
-}
-
-#[inline]
-fn write_rgba_full(c: ColorRgba, out: &mut String) {
-    let _ = write!(
-        out,
-        "rgba({},{},{},{:.3})",
-        c.r,
-        c.g,
-        c.b,
-        c.a as f32 / 255.0
-    );
 }
 
 /// Appends full Flexbox CSS declarations for `l` directly into `out` (used by `render_html`).
@@ -483,26 +497,26 @@ pub fn layout_to_css_into(l: &LayoutProps, out: &mut String) {
     out.push_str(justify);
     out.push_str(";align-items:");
     out.push_str(align);
-    let _ = write!(
-        out,
-        ";flex-grow:{};flex-shrink:{};gap:{}px;width:",
-        l.flex_grow, l.flex_shrink, l.gap
-    );
+    out.push_str(";flex-grow:");
+    write_f32(out, l.flex_grow);
+    out.push_str(";flex-shrink:");
+    write_f32(out, l.flex_shrink);
+    out.push_str(";gap:");
+    write_full_unit(l.gap, "px", out);
+    out.push_str(";width:");
     write_dim_full(l.width, out);
     out.push_str(";height:");
     write_dim_full(l.height, out);
-    let _ = write!(
-        out,
-        ";padding:{}px {}px {}px {}px;margin:{}px {}px {}px {}px;",
-        l.padding.top,
-        l.padding.right,
-        l.padding.bottom,
-        l.padding.left,
-        l.margin.top,
-        l.margin.right,
-        l.margin.bottom,
-        l.margin.left,
-    );
+    for (prop, e) in [(";padding:", l.padding), (";margin:", l.margin)] {
+        out.push_str(prop);
+        for (i, v) in [e.top, e.right, e.bottom, e.left].into_iter().enumerate() {
+            if i != 0 {
+                out.push(' ');
+            }
+            write_full_unit(v, "px", out);
+        }
+    }
+    out.push(';');
 
     if l.min_width != Dimension::Auto {
         out.push_str("min-width:");
@@ -535,16 +549,21 @@ pub fn layout_to_css(l: &LayoutProps) -> String {
 /// Appends full visual style CSS declarations for `s` directly into `out` (used by `render_html`).
 pub fn style_to_css_into(s: &StyleProps, out: &mut String) {
     out.push_str("background-color:");
-    write_rgba_full(s.background, out);
+    write_rgba(s.background, out);
     out.push_str(";color:");
-    write_rgba_full(s.text_color, out);
-    let _ = write!(out, ";border:{}px solid ", s.border_width);
-    write_rgba_full(s.border_color, out);
-    let _ = write!(
-        out,
-        ";border-radius:{}px;opacity:{};font-size:{}px;z-index:{};",
-        s.border_radius, s.opacity, s.font_size, s.z_index,
-    );
+    write_rgba(s.text_color, out);
+    out.push_str(";border:");
+    write_full_unit(s.border_width, "px solid ", out);
+    write_rgba(s.border_color, out);
+    out.push_str(";border-radius:");
+    write_full_unit(s.border_radius, "px", out);
+    out.push_str(";opacity:");
+    write_f32(out, s.opacity);
+    out.push_str(";font-size:");
+    write_full_unit(s.font_size, "px", out);
+    out.push_str(";z-index:");
+    write_i64(out, i64::from(s.z_index));
+    out.push(';');
 }
 
 pub fn style_to_css(s: &StyleProps) -> String {
@@ -604,7 +623,7 @@ impl MirrorElement {
             text: None,
             children: Vec::new(),
             event_mask: EventMask::NONE,
-            raw_props: HashMap::new(),
+            raw_props: HashMap::default(),
             draw_ops: Vec::new(),
             draw_op_count: 0,
         }

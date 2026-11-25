@@ -157,9 +157,9 @@ static NveBufferSlice fixture_drain_events(NveAppHandle handle) {
   return empty;
 }
 
-static uint32_t fixture_apply_hot_patch(NveAppHandle handle, NveBufferSlice patch_json) {
+static uint32_t fixture_apply_hot_patch(NveAppHandle handle, NveBufferSlice patch) {
   (void)handle;
-  (void)patch_json;
+  (void)patch;
   return 0u;
 }
 

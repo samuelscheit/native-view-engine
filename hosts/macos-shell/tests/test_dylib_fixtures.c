@@ -115,14 +115,14 @@ static uint32_t fixture_dispatch_events(NveAppHandle h, NveBufferSlice events) {
   return 0;
 }
 
-static uint32_t fixture_apply_hot_patch(NveAppHandle h, NveBufferSlice patch_json) {
+static uint32_t fixture_apply_hot_patch(NveAppHandle h, NveBufferSlice patch) {
   StatefulFixtureApp *app = (StatefulFixtureApp *)h;
-  if (!patch_json.ptr || patch_json.len == 0) {
+  if (!patch.ptr || patch.len == 0) {
     return 0;
   }
   char buf[32];
-  const size_t n = patch_json.len < sizeof(buf) - 1 ? patch_json.len : sizeof(buf) - 1;
-  memcpy(buf, patch_json.ptr, n);
+  const size_t n = patch.len < sizeof(buf) - 1 ? patch.len : sizeof(buf) - 1;
+  memcpy(buf, patch.ptr, n);
   buf[n] = '\0';
   app->counter = (int32_t)strtol(buf, NULL, 10);
   return 1;

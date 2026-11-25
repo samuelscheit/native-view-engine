@@ -9,7 +9,7 @@ mod mutations;
 mod tests;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 
 use dioxus_core::ElementId;
 use nve_abi::{
@@ -110,9 +110,9 @@ pub struct NveMutationWriter {
 
 impl NveMutationWriter {
     pub fn new(surface_id: SurfaceId) -> Self {
-        let mut el_to_node = HashMap::with_capacity(16);
-        let mut node_to_el = HashMap::with_capacity(16);
-        let mut nodes = HashMap::with_capacity(16);
+        let mut el_to_node = HashMap::with_capacity_and_hasher(16, Default::default());
+        let mut node_to_el = HashMap::with_capacity_and_hasher(16, Default::default());
+        let mut nodes = HashMap::with_capacity_and_hasher(16, Default::default());
         el_to_node.insert(ElementId(0), ROOT_NODE_ID);
         node_to_el.insert(ROOT_NODE_ID, ElementId(0));
         nodes.insert(

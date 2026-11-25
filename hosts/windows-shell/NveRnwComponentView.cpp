@@ -515,11 +515,11 @@ bool NveRnwComponentHost::update_props_json(std::string_view props_json) {
   return dirty;
 }
 
-bool NveRnwComponentHost::apply_hot_patch_json(std::string_view patch_json) {
+bool NveRnwComponentHost::apply_hot_patch(std::span<const uint8_t> patch_nvp1) {
   if (!session_.is_valid()) {
     return false;
   }
-  const bool dirty = session_.bridge()->apply_hot_patch_json(patch_json, /*auto_render=*/false);
+  const bool dirty = session_.bridge()->apply_hot_patch(patch_nvp1, /*auto_render=*/false);
   if (dirty) {
     const int32_t rc = session_.render(nullptr);
     if (rc == 0) {

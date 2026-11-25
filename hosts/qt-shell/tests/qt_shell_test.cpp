@@ -324,9 +324,9 @@ struct MockQtRustComponent {
     return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
   }
 
-  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_json) {
+  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch) {
     auto* self = static_cast<MockQtRustComponent*>(h);
-    self->title.assign(reinterpret_cast<const char*>(patch_json.ptr), patch_json.len);
+    self->title.assign(reinterpret_cast<const char*>(patch.ptr), patch.len);
     return 1;
   }
 

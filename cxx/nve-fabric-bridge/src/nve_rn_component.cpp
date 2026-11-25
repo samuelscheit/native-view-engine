@@ -326,12 +326,11 @@ std::vector<DecodedEvent> NveRnComponentBridge::drain_emitted_events() {
   return events;
 }
 
-bool NveRnComponentBridge::apply_hot_patch_json(std::string_view patch_json, bool auto_render) {
+bool NveRnComponentBridge::apply_hot_patch(std::span<const uint8_t> patch_nvp1, bool auto_render) {
   if (!is_valid() || !module_.dev || !module_.dev->apply_hot_patch) {
     return false;
   }
-  const NveBufferSlice slice{
-      reinterpret_cast<const uint8_t*>(patch_json.data()), patch_json.size()};
+  const NveBufferSlice slice{patch_nvp1.data(), patch_nvp1.size()};
   const uint32_t dirty = module_.dev->apply_hot_patch(app_handle_, slice);
   if (dirty != 0 && auto_render) {
     render(nullptr);

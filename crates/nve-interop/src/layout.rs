@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 
 use nve_abi::SurfaceId;
 use serde::{Deserialize, Serialize};

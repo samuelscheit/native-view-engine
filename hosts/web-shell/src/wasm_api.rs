@@ -8,18 +8,34 @@ use std::rc::Rc;
 use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_engine::Viewport;
+#[cfg(feature = "multi-window")]
 use nve_interop::WindowHandleId;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::wasm_hydrate::SsrRenderResult;
-use crate::session::{HotReloadAction, WebAppSession, PREINIT_SURFACE_ID};
-use crate::wasm_pair::{active_paired_scene_view_ptr, nve_extract_binary_message};
+#[cfg(feature = "dev")]
+use crate::session::HotReloadAction;
+use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
+#[cfg(all(feature = "dev", feature = "scene-view"))]
+use crate::wasm_pair::active_paired_scene_view_ptr;
+#[cfg(feature = "multi-window")]
 use crate::wasm_popup::{
     popup_window_for_surface, register_mounted_surface_window, unregister_surface_window,
 };
 
+#[cfg(any(feature = "dev", feature = "multi-window"))]
+#[wasm_bindgen(inline_js = "export function nve_extract_binary_message(data) {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return new Uint8Array(0);
+}")]
+extern "C" {
+    pub(crate) fn nve_extract_binary_message(data: &JsValue) -> Vec<u8>;
+}
+
+#[cfg(feature = "dev")]
 struct HotReloadSocket {
     socket: web_sys::WebSocket,
     _on_open: Closure<dyn FnMut(web_sys::Event)>,
@@ -28,6 +44,7 @@ struct HotReloadSocket {
     _on_close: Closure<dyn FnMut(web_sys::CloseEvent)>,
 }
 
+#[cfg(feature = "dev")]
 impl Drop for HotReloadSocket {
     fn drop(&mut self) {
         self.socket.set_onopen(None);
@@ -106,31 +123,39 @@ impl Drop for WindowResizeListener {
 
 struct ActiveShell {
     generation: u64,
+    #[cfg(feature = "multi-window")]
     window_handle: Option<WindowHandleId>,
+    /// Owns the session for the page lifetime (only read by the scene-view exports).
+    #[cfg_attr(not(feature = "scene-view"), allow(dead_code))]
     session: Rc<RefCell<WebAppSession>>,
+    #[cfg(feature = "dev")]
     _hot_reload: Option<HotReloadSocket>,
     _resize_listener: Option<WindowResizeListener>,
 }
 
 thread_local! {
     static ACTIVE_SHELLS: RefCell<BTreeMap<SurfaceId, ActiveShell>> = const { RefCell::new(BTreeMap::new()) };
-    static PRIMARY_SURFACE_ID: Cell<SurfaceId> = const { Cell::new(PREINIT_SURFACE_ID) };
+    static PRIMARY_SURFACE_ID: Cell<SurfaceId> = const { Cell::new(DEFAULT_SURFACE_ID) };
     static NEXT_SHELL_GENERATION: Cell<u64> = const { Cell::new(1) };
 }
 
+#[cfg(feature = "multi-window")]
 pub(crate) fn primary_surface_id_if_mounted() -> Option<SurfaceId> {
     let primary = PRIMARY_SURFACE_ID.with(Cell::get);
     ACTIVE_SHELLS.with(|shells| shells.borrow().contains_key(&primary).then_some(primary))
 }
 
+#[cfg(feature = "multi-window")]
 pub(crate) fn remove_active_shell(surface_id: SurfaceId) {
     ACTIVE_SHELLS.with(|shells| {
         shells.borrow_mut().remove(&surface_id);
     });
 }
 
+#[cfg(feature = "scene-view")]
 #[wasm_bindgen]
 pub fn nve_web_scene_view_ptr() -> usize {
+    #[cfg(feature = "dev")]
     if let Some(ptr) = active_paired_scene_view_ptr() {
         return ptr;
     }
@@ -139,18 +164,19 @@ pub fn nve_web_scene_view_ptr() -> usize {
         let map = shells.borrow();
         map.get(&primary)
             .or_else(|| map.values().next())
-            .map(|active| active.session.borrow().scene_view_ptr() as usize)
+            .map(|active| active.session.borrow().scene().view_ptr() as usize)
             .unwrap_or(0)
     })
 }
 
+#[cfg(feature = "scene-view")]
 #[wasm_bindgen]
 pub fn nve_web_scene_view_ptr_for_surface(surface_id: SurfaceId) -> usize {
     ACTIVE_SHELLS.with(|shells| {
         shells
             .borrow()
             .get(&surface_id)
-            .map(|active| active.session.borrow().scene_view_ptr() as usize)
+            .map(|active| active.session.borrow().scene().view_ptr() as usize)
             .unwrap_or(0)
     })
 }
@@ -217,7 +243,8 @@ impl WebAppController {
         self.session.borrow().backend().stylesheet().rule_count()
     }
 
-    pub fn scene_view_ptr(&self) -> usize { self.session.borrow().scene_view_ptr() as usize }
+    #[cfg(feature = "scene-view")]
+    pub fn scene_view_ptr(&self) -> usize { self.session.borrow().scene().view_ptr() as usize }
 
     pub fn dispatch_viewport_resize(&self, width: f32, height: f32) -> Result<bool, JsValue> {
         let scale_factor = web_sys::window()
@@ -240,16 +267,17 @@ impl WebAppController {
     }
 
     pub fn unmount(&self) {
-        let removed_handle = ACTIVE_SHELLS.with(|shells| {
+        let removed = ACTIVE_SHELLS.with(|shells| {
             let mut map = shells.borrow_mut();
             if map.get(&self.surface_id).is_some_and(|a| a.generation == self.generation) {
-                map.remove(&self.surface_id).map(|a| a.window_handle)
+                map.remove(&self.surface_id)
             } else {
                 None
             }
         });
-        if let Some(maybe_handle) = removed_handle {
-            if let Some(handle) = maybe_handle {
+        if let Some(_shell) = removed {
+            #[cfg(feature = "multi-window")]
+            if let Some(handle) = _shell.window_handle {
                 unregister_surface_window(handle);
             }
             if let Some(el) = web_sys::window()
@@ -265,6 +293,7 @@ impl WebAppController {
     }
 }
 
+#[cfg(feature = "dev")]
 fn browser_now_ms() -> f64 {
     web_sys::window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
 }
@@ -313,6 +342,7 @@ pub(crate) fn set_hud_status(state: &str, text: &str) {
     }
 }
 
+#[cfg(feature = "dev")]
 fn connect_hot_reload(
     ws_url: &str,
     session: Rc<RefCell<WebAppSession>>,
@@ -330,17 +360,16 @@ fn connect_hot_reload(
     let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
         move |ev: web_sys::MessageEvent| {
             let t0 = browser_now_ms();
-            let result = if let Some(raw) = ev.data().as_string() {
-                session.borrow_mut().handle_hot_patch_wire(raw.as_bytes())
-            } else {
-                let bytes = nve_extract_binary_message(&ev.data());
-                if bytes.is_empty() { return; }
-                session.borrow_mut().handle_hot_patch_wire(&bytes)
-            };
-            let elapsed_ms = (browser_now_ms() - t0).max(0.0);
+            let bytes = nve_extract_binary_message(&ev.data());
+            if bytes.is_empty() {
+                return;
+            }
+            let result = session.borrow_mut().handle_hot_patch_frame(&bytes);
             match result {
                 Ok(HotReloadAction::TemplatePatched { generation, .. }) => {
-                    set_hud_status("patched", &format!("Patched gen {generation} ({elapsed_ms:.1}ms)"));
+                    let mut ms = String::new();
+                    nve_abi::num::write_f64(&mut ms, (browser_now_ms() - t0).max(0.0));
+                    set_hud_status("patched", &format!("Patched gen {generation} ({ms}ms)"));
                 }
                 Ok(HotReloadAction::ReloadPage { generation, build_ms, .. }) => {
                     set_hud_status("reloading", &format!("Reloading gen {generation} ({build_ms}ms)..."));
@@ -387,10 +416,12 @@ pub(crate) fn install_panic_hook() {
     });
 }
 
+#[cfg_attr(not(feature = "multi-window"), allow(unused_variables))]
 fn find_mount_container(
     surface_id: SurfaceId,
     mount_id: &str,
 ) -> Result<(web_sys::Window, web_sys::Element), JsValue> {
+    #[cfg(feature = "multi-window")]
     if let Some(popup_win) = popup_window_for_surface(surface_id)
         && let Some(doc) = popup_win.document()
         && let Some(el) = doc.get_element_by_id(mount_id)
@@ -453,35 +484,46 @@ where
         }
     });
 
+    #[cfg(feature = "dev")]
     let hot_reload = match ws_url.filter(|u| !u.trim().is_empty()) {
         Some(url) => connect_hot_reload(&url, Rc::clone(&session)).ok(),
         None => {
-            if surface_id == PREINIT_SURFACE_ID {
+            if surface_id == DEFAULT_SURFACE_ID {
                 set_hud_status("disabled", "Hot reload: disabled");
             }
             None
         }
     };
+    #[cfg(not(feature = "dev"))]
+    {
+        let _ = ws_url;
+        if surface_id == DEFAULT_SURFACE_ID {
+            set_hud_status("ready", "Live");
+        }
+    }
 
     let generation = NEXT_SHELL_GENERATION.with(|c| {
         let next = c.get();
         c.set(next.wrapping_add(1));
         next
     });
+    #[cfg(feature = "multi-window")]
     let window_handle =
         register_mounted_surface_window(surface_id, app_name, viewport.width, viewport.height);
 
     ACTIVE_SHELLS.with(|shells| {
         let mut map = shells.borrow_mut();
-        if map.is_empty() || surface_id == PREINIT_SURFACE_ID {
+        if map.is_empty() || surface_id == DEFAULT_SURFACE_ID {
             PRIMARY_SURFACE_ID.with(|p| p.set(surface_id));
         }
         map.insert(
             surface_id,
             ActiveShell {
                 generation,
+                #[cfg(feature = "multi-window")]
                 window_handle,
                 session: Rc::clone(&session),
+                #[cfg(feature = "dev")]
                 _hot_reload: hot_reload,
                 _resize_listener: resize_listener,
             },
@@ -497,14 +539,16 @@ where
     })
 }
 
+#[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn start_studio_workspace_app(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_studio_workspace_app_on_surface(PREINIT_SURFACE_ID, mount_id, ws_url)
+    start_studio_workspace_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
 }
 
+#[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn start_studio_workspace_app_on_surface(
     surface_id: SurfaceId,
@@ -514,14 +558,16 @@ pub fn start_studio_workspace_app_on_surface(
     start_surface_app_inner("StudioWorkspaceApp", surface_id, mount_id, ws_url, false, WebAppSession::new_studio_workspace)
 }
 
+#[cfg(feature = "app-counter")]
 #[wasm_bindgen]
 pub fn start_counter_app(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_counter_app_on_surface(PREINIT_SURFACE_ID, mount_id, ws_url)
+    start_counter_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
 }
 
+#[cfg(feature = "app-counter")]
 #[wasm_bindgen]
 pub fn start_counter_app_on_surface(
     surface_id: SurfaceId,

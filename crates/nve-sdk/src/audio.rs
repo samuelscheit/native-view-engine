@@ -152,9 +152,11 @@ fn validate_handle(handle: AudioHandle) -> Result<(), SdkError> {
 
 fn validate_volume(volume: f32) -> Result<(), SdkError> {
     if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
-        return Err(SdkError::InvalidArg(format!(
-            "audio volume {volume} must be finite and in 0.0..=1.0"
-        )));
+        // Static message: `{volume}` would link `core::fmt` float printing into every wasm bundle
+        // that uses the SDK (flt2dec/Grisu/Dragon4); NaN/inf make the value useless here anyway.
+        return Err(SdkError::InvalidArg(
+            "audio volume must be finite and in 0.0..=1.0".to_owned(),
+        ));
     }
     Ok(())
 }

@@ -238,7 +238,7 @@ impl WebMultiWindowHost {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "app-counter"))]
 mod tests {
     use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind};
     use nve_backend_web::WebBackend;

@@ -17,20 +17,11 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::pairing::PairedWebSession;
-use crate::session::PREINIT_SURFACE_ID;
+use crate::session::DEFAULT_SURFACE_ID;
 use crate::wasm_api::{
-    browser_viewport, install_panic_hook, install_resize_listener, set_hud_status,
-    WindowResizeListener,
+    browser_viewport, install_panic_hook, install_resize_listener, nve_extract_binary_message,
+    set_hud_status, WindowResizeListener,
 };
-
-#[wasm_bindgen(inline_js = "export function nve_extract_binary_message(data) {
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  return new Uint8Array(0);
-}")]
-extern "C" {
-    pub(crate) fn nve_extract_binary_message(data: &JsValue) -> Vec<u8>;
-}
 
 struct PairSocketHandle {
     socket: web_sys::WebSocket,
@@ -52,6 +43,8 @@ impl Drop for PairSocketHandle {
 
 struct ActivePairedHost {
     generation: u64,
+    /// Owns the session for the page lifetime (only read by the scene-view exports).
+    #[cfg_attr(not(feature = "scene-view"), allow(dead_code))]
     session: Rc<RefCell<PairedWebSession>>,
     _owned_socket: Option<PairSocketHandle>,
     _resize_listener: Option<WindowResizeListener>,
@@ -62,11 +55,12 @@ thread_local! {
     static NEXT_PAIRED_GENERATION: Cell<u64> = const { Cell::new(1) };
 }
 
+#[cfg(feature = "scene-view")]
 pub(crate) fn active_paired_scene_view_ptr() -> Option<usize> {
     ACTIVE_PAIRED_HOST.with(|slot| {
         slot.borrow()
             .as_ref()
-            .map(|active| active.session.borrow().scene_view_ptr() as usize)
+            .map(|active| active.session.borrow().scene().view_ptr() as usize)
     })
 }
 
@@ -229,8 +223,9 @@ impl NveWebHost {
         self.session.borrow().backend().render_html()
     }
 
+    #[cfg(feature = "scene-view")]
     pub fn scene_view_ptr(&self) -> usize {
-        self.session.borrow().scene_view_ptr() as usize
+        self.session.borrow().scene().view_ptr() as usize
     }
 
     /// Sends a graceful `Bye` frame, closes any attached WebSocket, and unmounts the surface.
@@ -290,7 +285,7 @@ impl NveWebHost {
         let viewport = browser_viewport(&container);
         let container_for_resize = container.clone();
         let backend = WebBackend::mount_into(container);
-        let surface_id: SurfaceId = PREINIT_SURFACE_ID;
+        let surface_id: SurfaceId = DEFAULT_SURFACE_ID;
         let session = Rc::new(RefCell::new(PairedWebSession::new(
             surface_id,
             backend,

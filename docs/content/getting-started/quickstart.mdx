@@ -42,8 +42,8 @@ cargo run -p nve-skia-shell -- \
 ```
 ::tab{label="Web WASM"}
 ```bash title="Build the size-optimized WASM bundle and serve locally"
-# Compiles nve-web-shell with --profile wasm-release, runs wasm-bindgen,
-# optional Wizer Frame-0 pre-initialization, and wasm-opt -Oz
+# Builds pkg/studio, pkg/counter (production, one app each) and pkg/dev
+# (hot reload, pairing) with the size-tuned release pipeline
 ./hosts/web-shell/build.sh
 
 # Serve hosts/web-shell over HTTP (e.g., Python or miniserve)

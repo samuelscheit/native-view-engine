@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 use crate::{FrameId, NodeId};
 
@@ -36,7 +36,7 @@ impl NveSceneTable {
         Self {
             frame_id: 0,
             nodes: Vec::with_capacity(node_capacity),
-            id_to_index: HashMap::with_capacity(node_capacity),
+            id_to_index: HashMap::with_capacity_and_hasher(node_capacity, Default::default()),
             text_slab: Vec::with_capacity(node_capacity * 16),
             children_slab: Vec::with_capacity(node_capacity),
             dirty_indices: Vec::with_capacity(node_capacity.min(64)),

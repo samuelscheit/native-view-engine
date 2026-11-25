@@ -5,8 +5,10 @@
 pub mod codec;
 pub mod events;
 pub mod ffi;
+pub mod hash;
 pub mod host;
 mod layout_asserts;
+pub mod num;
 pub mod scene;
 pub mod value;
 

@@ -1,7 +1,8 @@
 //! Low-latency UDP delta transport (`UdpDeltaServer` & `UdpDeltaClient`) with MTU-safe
 //! fragmentation, SACK/NACK/FragNack retransmission, RTT probing, and `InputEvents` backchannel.
 
-use std::collections::{HashMap, VecDeque};
+use nve_abi::hash::HashMap;
+use std::collections::VecDeque;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -136,7 +137,7 @@ impl UdpDeltaServer {
                 config,
                 expected_proof,
                 started_at: Instant::now(),
-                peers: HashMap::new(),
+                peers: HashMap::default(),
                 seen_peers_total: 0,
                 latest_frame: None,
                 metrics,
@@ -573,7 +574,7 @@ fn udp_client_loop(
     shutdown: Arc<AtomicBool>,
 ) {
     let mut reassembler = FragReassembler::new(shared.lock().unwrap().config.clamped_max_frame_bytes());
-    let mut nack_cooldowns: HashMap<u32, Instant> = HashMap::new();
+    let mut nack_cooldowns: HashMap<u32, Instant> = HashMap::default();
     let mut last_kf_req: Option<Instant> = None;
     let (mut last_tick, mut last_ping_sent) = (Instant::now(), Instant::now());
     let mut buf = [0u8; 2048];

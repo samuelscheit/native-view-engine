@@ -361,12 +361,11 @@ bool NveQtWidget::applyPropsJson(std::string_view propsJson) {
   return dirty;
 }
 
-bool NveQtWidget::applyHotPatchJson(std::string_view patchJson) {
+bool NveQtWidget::applyHotPatch(std::span<const uint8_t> patchNvp1) {
   if (!impl_->session_.is_valid() || impl_->session_.bridge() == nullptr) {
     return false;
   }
-  const bool dirty =
-      impl_->session_.bridge()->apply_hot_patch_json(patchJson, /*auto_render=*/true);
+  const bool dirty = impl_->session_.bridge()->apply_hot_patch(patchNvp1, /*auto_render=*/true);
   if (dirty) {
     impl_->syncViews(/*check_raw_props=*/true);
   }

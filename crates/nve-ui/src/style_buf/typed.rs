@@ -337,11 +337,11 @@ impl IntoAttributeValue for TypedStyleBuilder {
 }
 
 fn parse_px(raw: &str) -> Option<f32> {
-    raw.trim()
+    let s = raw
+        .trim()
         .strip_suffix("px")
-        .unwrap_or(raw.trim())
-        .parse::<f32>()
-        .ok()
+        .unwrap_or(raw.trim());
+    nve_abi::num::parse_f32(s)
 }
 
 fn parse_dim(raw: &str) -> Dimension {
@@ -349,8 +349,7 @@ fn parse_dim(raw: &str) -> Dimension {
     if s.eq_ignore_ascii_case("auto") {
         Dimension::Auto
     } else if let Some(pct) = s.strip_suffix('%') {
-        pct.trim()
-            .parse::<f32>()
+        nve_abi::num::parse_f32(pct.trim())
             .map(Dimension::Percent)
             .unwrap_or(Dimension::Auto)
     } else {
@@ -380,12 +379,12 @@ pub(super) fn parse_inline_css_to_typed(css: &str) -> TypedStyle {
             "justify-content" | "justifyContent" => ts = ts.justify_content(parse_flex_justify(v)),
             "align-items" | "alignItems" => ts = ts.align_items(parse_flex_align(v)),
             "flex" | "flex-grow" | "flexGrow" => {
-                if let Ok(f) = v.parse::<f32>() {
+                if let Some(f) = nve_abi::num::parse_f32(v) {
                     ts = ts.flex_grow(f);
                 }
             }
             "flex-shrink" | "flexShrink" => {
-                if let Ok(f) = v.parse::<f32>() {
+                if let Some(f) = nve_abi::num::parse_f32(v) {
                     ts = ts.flex_shrink(f);
                 }
             }
@@ -446,7 +445,7 @@ pub(super) fn parse_inline_css_to_typed(css: &str) -> TypedStyle {
                 }
             }
             "opacity" => {
-                if let Ok(f) = v.parse::<f32>() {
+                if let Some(f) = nve_abi::num::parse_f32(v) {
                     ts = ts.opacity(f);
                 }
             }

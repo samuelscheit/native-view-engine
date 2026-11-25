@@ -226,9 +226,9 @@ struct MockMacRustComponent {
     return 0;
   }
 
-  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_json) {
+  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch) {
     auto *self = static_cast<MockMacRustComponent *>(h);
-    self->title.assign(reinterpret_cast<const char *>(patch_json.ptr), patch_json.len);
+    self->title.assign(reinterpret_cast<const char *>(patch.ptr), patch.len);
     return 1;
   }
 
@@ -1135,7 +1135,7 @@ int main() {
     assert([ctrl attachInterface:&MockMacRustComponent::get_interface]);
     assert(ctrl.isAppLoaded == YES);
     assert(ctrl.nodeCount == 4);
-    assert([ctrl applyHotPatchJson:@"Patched"]);
+    assert([ctrl applyHotPatch:[@"Patched" dataUsingEncoding:NSUTF8StringEncoding]]);
 
     NSString *noEntryPath = @NVE_TEST_NO_ENTRY_DYLIB;
     NSString *noSurfacePath = @NVE_TEST_NO_SURFACE_DYLIB;
@@ -1194,7 +1194,7 @@ int main() {
     assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=0");
 
     // Mutate state via hot patch, then reload -> snapshot_state/restore_state preserves "state=77"
-    assert([reloadCtrl applyHotPatchJson:@"77"] == YES);
+    assert([reloadCtrl applyHotPatch:[@"77" dataUsingEncoding:NSUTF8StringEncoding]] == YES);
     assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=77");
 
     // Failed reloads (codes 1/2/3) must leave the live app and its state intact

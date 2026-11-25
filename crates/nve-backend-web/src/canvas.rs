@@ -5,8 +5,6 @@ use nve_abi::RawPropValue;
 use nve_components::canvas_ir::{CanvasOp, DrawListDecoder, DrawListError};
 
 #[cfg(target_arch = "wasm32")]
-use core::fmt::Write as _;
-#[cfg(target_arch = "wasm32")]
 use nve_abi::ColorRgba;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
@@ -30,14 +28,7 @@ pub fn decode_draw_list_prop(value: &RawPropValue) -> Result<Vec<CanvasOp>, Draw
 #[inline]
 fn rgba_css(c: ColorRgba, buf: &mut String) {
     buf.clear();
-    let _ = write!(
-        buf,
-        "rgba({},{},{},{:.3})",
-        c.r,
-        c.g,
-        c.b,
-        c.a as f32 / 255.0
-    );
+    crate::css::write_rgba(c, buf);
 }
 
 /// Paints decoded `NVE_DRAW1` [`CanvasOp`]s onto a live browser `<canvas>` element with crisp

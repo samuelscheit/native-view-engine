@@ -4,8 +4,7 @@
 use std::collections::VecDeque;
 
 use nve_abi::{
-    encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveSceneRef,
-    NveSceneTable, NveSceneView, SurfaceId, ROOT_NODE_ID,
+    encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId, ROOT_NODE_ID,
 };
 use nve_backend_web::{encode_keydown_payload, WebBackend};
 use nve_engine::{BackendError, RenderBackend, SurfaceRunner, Viewport};
@@ -15,9 +14,10 @@ use nve_interop::{
     TRANSPORT_HEADER_SIZE, TRANSPORT_MAGIC, TRANSPORT_PROTOCOL_VERSION,
 };
 
-use crate::session::mirror_to_scene_input;
+#[cfg(feature = "scene-view")]
+use crate::scene::SceneMirror;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "app-counter"))]
 #[path = "pairing_tests.rs"]
 mod tests;
 
@@ -366,16 +366,15 @@ impl PairClientMachine {
 }
 
 /// Cross-target paired thin-client web session binding [`PairClientMachine`] directly to
-/// `SurfaceRunner<WebBackend>` and a zero-copy [`NveSceneTable`] mirror (zero local app VDOM).
+/// `SurfaceRunner<WebBackend>` (plus, with `scene-view`, a zero-copy [`SceneMirror`]; zero local
+/// app VDOM).
 pub struct PairedWebSession {
     client: PairClientMachine,
     runner: SurfaceRunner<WebBackend>,
     viewport: Viewport,
     outbound_queue: VecDeque<Vec<u8>>,
-    scene_table: NveSceneTable,
-    scene_view_box: Box<NveSceneView>,
-    scene_sort_scratch: Vec<NodeId>,
-    scene_frame_id: FrameId,
+    #[cfg(feature = "scene-view")]
+    scene: SceneMirror,
 }
 
 impl PairedWebSession {
@@ -385,17 +384,13 @@ impl PairedWebSession {
         viewport: Viewport,
         token: impl Into<String>,
     ) -> Self {
-        let scene_table = NveSceneTable::new();
-        let scene_view_box = Box::new(scene_table.as_view());
         Self {
             client: PairClientMachine::new(token),
             runner: SurfaceRunner::new(surface_id, viewport, backend),
             viewport,
             outbound_queue: VecDeque::new(),
-            scene_table,
-            scene_view_box,
-            scene_sort_scratch: Vec::new(),
-            scene_frame_id: 0,
+            #[cfg(feature = "scene-view")]
+            scene: SceneMirror::new(),
         }
     }
 
@@ -427,20 +422,10 @@ impl PairedWebSession {
         self.client.last_applied_seq()
     }
 
-    pub fn scene_table(&self) -> &NveSceneTable {
-        &self.scene_table
-    }
-
-    pub fn scene_view(&self) -> NveSceneView {
-        *self.scene_view_box
-    }
-
-    pub fn scene_view_ptr(&self) -> *const NveSceneView {
-        &*self.scene_view_box as *const NveSceneView
-    }
-
-    pub fn scene_ref(&self) -> NveSceneRef<'_> {
-        self.scene_table.as_ref()
+    /// The zero-copy scene mirror of the remote frames applied so far.
+    #[cfg(feature = "scene-view")]
+    pub fn scene(&self) -> &SceneMirror {
+        &self.scene
     }
 
     /// Generates the initial `NVT1` `Hello` binary message to send upon WebSocket open.
@@ -571,26 +556,8 @@ impl PairedWebSession {
         let _ = self
             .runner
             .submit_recorded_frame(frame_id.max(1), 0, 0, command_bytes)?;
-        self.sync_scene_table(frame_id.max(1));
+        #[cfg(feature = "scene-view")]
+        self.scene.sync(self.runner.backend(), frame_id.max(1));
         Ok(())
-    }
-
-    fn sync_scene_table(&mut self, frame_id: FrameId) {
-        self.scene_frame_id = frame_id;
-        let backend = self.runner.backend();
-        self.scene_sort_scratch.clear();
-        self.scene_sort_scratch
-            .extend(backend.iter_nodes().map(|(id, _)| id));
-        self.scene_sort_scratch.sort_unstable();
-
-        let sort_ids = &self.scene_sort_scratch;
-        let _ = self.scene_table.sync_frame(
-            frame_id,
-            sort_ids.iter().filter_map(|&node_id| {
-                let el = backend.node(node_id)?;
-                Some(mirror_to_scene_input(backend, node_id, el))
-            }),
-        );
-        *self.scene_view_box = self.scene_table.as_view();
     }
 }

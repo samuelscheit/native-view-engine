@@ -212,7 +212,7 @@ impl DesktopApp for MockTextInputApp {
         handled
     }
 
-    fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
+    fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
         false
     }
 
@@ -582,7 +582,7 @@ impl DesktopApp for MockScrollAndKeyApp {
         handled
     }
 
-    fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
+    fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
         false
     }
 
