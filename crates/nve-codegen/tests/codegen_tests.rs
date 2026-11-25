@@ -958,7 +958,7 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
 
     assert_eq!(core_files.len(), 5);
     assert_eq!(scene_files.len(), 5);
-    assert_eq!(all_files.len(), 10);
+    assert_eq!(all_files.len(), 15);
 
     // Cross-check both deterministic FNV-1a schema hashes against `crates/nve-abi`.
     assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
