@@ -9,12 +9,12 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Pluggable Camera Package — Thin SwiftUI/Flutter Wrappers & Live Emulator Camera Verification**
   - All primary camera adapters are landed (`CameraPreview` spec + `NVCF`, Android VisionCamera v5 + real Jetpack `CameraX` `PreviewView`, Apple `AVFoundation` + VisionCamera v5 iOS bridge, Web `getUserMedia` `<video>`, C++20 Windows `MediaCapture` + Linux PipeWire/V4L2); remaining follow-ups are thin SwiftUI & Flutter camera wrappers and live Android Emulator virtual-scene verification once Android SDK cmdline-tools are installed.
 
-- [ ] **TV, Watch & Spatial Platform Backends (`tvOS`, `watchOS`, `visionOS`, `Android TV` / `Fire TV`)** *(Phase 1 landed; Phase 2 next)*
-  - **Phase 2 (Multi-Apple `hosts/swiftui-kit` — `tvOS`, `watchOS`, `visionOS`)**:
-    - Extend `hosts/swiftui-kit/Package.swift` with `.tvOS(.v16)`, `.watchOS(.v9)`, `.visionOS(.v1)`.
-    - Add `#if os(tvOS)` (`.focusable()` + `onMoveCommand` + Siri Remote), `#if os(watchOS)` (pure-SwiftUI view path without UIKit/AppKit + `.digitalCrownRotation`), and `#if os(visionOS)` (`.hoverEffect()` + `.glassBackgroundEffect()` + ornaments), guard `WKWebView` with `#if !os(tvOS) && !os(watchOS)`, and add static-linked `NveInterfaceResolver` for App Store `tvOS`/`watchOS`/`visionOS` targets.
-  - **Phase 3 (`cargo nve build` Tier-3 Target Recipes & Web TV / Tizen / webOS)**:
-    - Add `aarch64-apple-tvos`, `aarch64-apple-visionos`, and `aarch64-apple-watchos` staticlib build recipes in `crates/nve-cli`, plus Web TV D-Pad key handling in `crates/nve-backend-web`.
+- [ ] **Unified `packages/` Monorepo Layout & `nve-abi` Option 1A Zero-Copy Raw Memory Refactor (Wave B)** *(Wave B1 selective feature flags in flight)*
+  - Move `crates/*` into unified `packages/{core,backends,framework,tools}/` once Wave A3 & B1 merge (zero `crates/` vs `packages/` split).
+  - Slim `nve-abi` to codegen-driven pure `#[repr(C)]` zero-copy raw-memory / `mmap` slabs (`NveSceneView`, `NveEventBatch`, `NvePropSlice`, `NveCommandSlice`), deleting duplicate `value/bin_*`, unused `ffi_views`, and local in-process codecs; isolate transport/disk/WASM serialization in optional `packages/core/wire/`.
+
+- [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (`cargo nve build` Tier-3 Target Recipes & Web TV)**
+  - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad) and Phase 2 (standalone `packages/modules/tv` + real `tvOS`, `watchOS`, `visionOS`, and `iOS` SDK builds + static `NveInterfaceResolver` in `hosts/swiftui-kit`) are landed; remaining work is adding `aarch64-apple-{tvos,visionos,watchos}` staticlib recipes in `nve-cli` and Web TV D-Pad key handling in `nve-backend-web`.
 
 ---
 
