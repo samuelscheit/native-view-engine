@@ -431,3 +431,164 @@ fn writer_decodes_draw_list_attr_directly_to_bytes_and_render_frame_slice_is_zer
         "corrupt base64 drawList should degrade safely without panicking"
     );
 }
+
+#[component]
+fn AriaAttributesApp() -> Element {
+    let mut expanded = use_signal(|| false);
+    let expanded_str = if expanded() { "true" } else { "false" };
+    let val_now: i64 = if expanded() { 75 } else { 25 };
+    let described: Option<&str> = if expanded() {
+        Some("help-2")
+    } else {
+        None
+    };
+
+    let manual_kebab = Attribute::new(
+        "aria-live",
+        AttributeValue::Text("assertive".into()),
+        None,
+        false,
+    );
+
+    rsx! {
+        view {
+            test_id: "aria-dialog",
+            accessibility_role: "dialog",
+            aria_modal: "true",
+            aria_labelledby: "dialog-title",
+            aria_describedby: described,
+            aria_live: "polite",
+            tab_index: -1,
+            style: "background-color: #111827; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);",
+            pressable {
+                test_id: "aria-trigger",
+                accessibility_role: "tab",
+                tab_index: 0,
+                aria_checked: "mixed",
+                aria_selected: "true",
+                aria_expanded: "{expanded_str}",
+                aria_controls: "panel-1",
+                aria_valuenow: val_now,
+                aria_valuemin: 0,
+                aria_valuemax: 100,
+                onpress: move |_| expanded.toggle(),
+                text {
+                    style: "font-size: 14px; font-weight: 600; text-align: center; color: #ffffff;",
+                    "Toggle"
+                }
+            }
+            view {
+                test_id: "aria-kebab",
+                ..vec![manual_kebab],
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_aria_and_tab_index_attributes_forward_cleanly_via_set_raw_prop() {
+    let mut surface = DioxusSurface::new(1, AriaAttributesApp);
+    let (_, _, frame1) = surface.render_frame(1);
+    let (_, cmds1) = CommandDecoder::new(&frame1)
+        .expect("valid header")
+        .decode_all()
+        .expect("valid frame 1");
+
+    let find_node = |cmds: &[Command], tid: &str| -> NodeId {
+        cmds.iter()
+            .find_map(|c| match c {
+                Command::SetRawProp {
+                    node_id,
+                    key,
+                    value: RawPropValue::String(v),
+                } if key == "testID" && v == tid => Some(*node_id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing node with testID={tid}"))
+    };
+
+    let has_str_prop = |cmds: &[Command], nid: NodeId, k: &str, expected: &str| {
+        cmds.iter().any(|c| {
+            matches!(
+                c,
+                Command::SetRawProp {
+                    node_id,
+                    key,
+                    value: RawPropValue::String(v),
+                } if *node_id == nid && key == k && v == expected
+            )
+        })
+    };
+
+    let dialog_id = find_node(&cmds1, "aria-dialog");
+    let trigger_id = find_node(&cmds1, "aria-trigger");
+    let kebab_id = find_node(&cmds1, "aria-kebab");
+
+    // Verify all 12 typed ARIA/focus attributes plus preserved Wave 12D inline style forwarding.
+    assert!(has_str_prop(&cmds1, dialog_id, "accessibilityRole", "dialog"));
+    assert!(has_str_prop(&cmds1, dialog_id, "ariaModal", "true"));
+    assert!(has_str_prop(&cmds1, dialog_id, "ariaLabelledBy", "dialog-title"));
+    assert!(has_str_prop(&cmds1, dialog_id, "ariaLive", "polite"));
+    assert!(has_str_prop(&cmds1, dialog_id, "tabIndex", "-1"));
+    assert!(has_str_prop(
+        &cmds1,
+        dialog_id,
+        "box-shadow",
+        "0 8px 24px rgba(0, 0, 0, 0.4)"
+    ));
+    assert!(cmds1.iter().any(|c| matches!(
+        c,
+        Command::SetRawProp {
+            node_id,
+            key,
+            value: RawPropValue::Null,
+        } if *node_id == dialog_id && key == "ariaDescribedBy"
+    )));
+
+    assert!(has_str_prop(&cmds1, trigger_id, "tabIndex", "0"));
+    assert!(has_str_prop(&cmds1, trigger_id, "ariaChecked", "mixed"));
+    assert!(has_str_prop(&cmds1, trigger_id, "ariaSelected", "true"));
+    assert!(has_str_prop(&cmds1, trigger_id, "ariaExpanded", "false"));
+    assert!(has_str_prop(&cmds1, trigger_id, "ariaControls", "panel-1"));
+    assert!(has_str_prop(&cmds1, trigger_id, "ariaValueNow", "25"));
+    assert!(has_str_prop(&cmds1, trigger_id, "ariaValueMin", "0"));
+    assert!(has_str_prop(&cmds1, trigger_id, "ariaValueMax", "100"));
+
+    // Manual kebab-case attribute normalizes to canonical camelCase key.
+    assert!(has_str_prop(&cmds1, kebab_id, "ariaLive", "assertive"));
+
+    // Preserved Wave 12D inline text style forwarding.
+    assert!(cmds1.iter().any(|c| matches!(
+        c,
+        Command::SetRawProp {
+            key,
+            value: RawPropValue::String(v),
+            ..
+        } if key == "font-weight" && v == "600"
+    )));
+    assert!(cmds1.iter().any(|c| matches!(
+        c,
+        Command::SetRawProp {
+            key,
+            value: RawPropValue::String(v),
+            ..
+        } if key == "text-align" && v == "center"
+    )));
+
+    // Trigger press toggles reactive ARIA attributes and updates CommandBuffer cleanly.
+    assert!(surface.dispatch_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: trigger_id,
+        timestamp_us: 100,
+        kind: NativeEventKind::Press,
+        payload: EventPayload::Point { x: 10.0, y: 10.0 },
+    }]));
+    let (_, _, frame2) = surface.render_frame(2);
+    let (_, cmds2) = CommandDecoder::new(&frame2)
+        .expect("valid header")
+        .decode_all()
+        .expect("valid frame 2");
+    assert!(has_str_prop(&cmds2, trigger_id, "ariaExpanded", "true"));
+    assert!(has_str_prop(&cmds2, trigger_id, "ariaValueNow", "75"));
+    assert!(has_str_prop(&cmds2, dialog_id, "ariaDescribedBy", "help-2"));
+}

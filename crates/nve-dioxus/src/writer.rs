@@ -431,7 +431,9 @@ impl NveMutationWriter {
                 .set_raw_prop(node_id, name, &RawPropValue::Bytes(raw_draw_bytes));
             return;
         }
-        let prop_name = canonical_raw_style_key(name).unwrap_or(name);
+        let prop_name = canonical_raw_style_key(name)
+            .or_else(|| canonical_a11y_attr_key(name))
+            .unwrap_or(name);
         self.builder
             .set_raw_prop(node_id, prop_name, &RawPropValue::String(value.to_owned()));
     }
@@ -641,15 +643,19 @@ impl WriteMutations for NveMutationWriter {
                 self.apply_str_attr(node_id, name, &i.to_string());
             }
             AttributeValue::Bool(b) => {
+                let prop_name = canonical_a11y_attr_key(name).unwrap_or(name);
                 self.builder
-                    .set_raw_prop(node_id, name, &RawPropValue::Bool(*b));
+                    .set_raw_prop(node_id, prop_name, &RawPropValue::Bool(*b));
             }
             AttributeValue::None => {
                 if hot_patch::is_test_id_attr_name(name) {
                     self.clear_test_id(node_id);
                 }
+                let prop_name = canonical_raw_style_key(name)
+                    .or_else(|| canonical_a11y_attr_key(name))
+                    .unwrap_or(name);
                 self.builder
-                    .set_raw_prop(node_id, name, &RawPropValue::Null);
+                    .set_raw_prop(node_id, prop_name, &RawPropValue::Null);
             }
             AttributeValue::Listener(_) | AttributeValue::Any(_) => {}
         }
@@ -695,6 +701,27 @@ impl WriteMutations for NveMutationWriter {
         if let Some(node_id) = self.resolve_el(id) {
             self.stack.push(node_id);
         }
+    }
+}
+
+/// Canonicalizes ARIA state and focus attribute keys (kebab-case, snake_case, or camelCase)
+/// into their standard camelCase raw-prop wire names with zero binary ABI changes.
+#[inline]
+pub(crate) fn canonical_a11y_attr_key(name: &str) -> Option<&'static str> {
+    match name {
+        "tabIndex" | "tab-index" | "tab_index" => Some("tabIndex"),
+        "ariaChecked" | "aria-checked" | "aria_checked" => Some("ariaChecked"),
+        "ariaSelected" | "aria-selected" | "aria_selected" => Some("ariaSelected"),
+        "ariaExpanded" | "aria-expanded" | "aria_expanded" => Some("ariaExpanded"),
+        "ariaModal" | "aria-modal" | "aria_modal" => Some("ariaModal"),
+        "ariaLive" | "aria-live" | "aria_live" => Some("ariaLive"),
+        "ariaControls" | "aria-controls" | "aria_controls" => Some("ariaControls"),
+        "ariaLabelledBy" | "aria-labelledby" | "aria_labelledby" => Some("ariaLabelledBy"),
+        "ariaDescribedBy" | "aria-describedby" | "aria_describedby" => Some("ariaDescribedBy"),
+        "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => Some("ariaValueNow"),
+        "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => Some("ariaValueMin"),
+        "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => Some("ariaValueMax"),
+        _ => None,
     }
 }
 

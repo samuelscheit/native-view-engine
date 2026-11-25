@@ -61,6 +61,30 @@ macro_rules! define_attrs {
     };
 }
 
+macro_rules! define_a11y_attrs {
+    () => {
+        define_attrs! {
+            test_id => "testID",
+            accessibility_label => "accessibilityLabel",
+            accessibility_role => "accessibilityRole",
+            accessibility_hint => "accessibilityHint",
+            disabled => "disabled",
+            tab_index => "tabIndex",
+            aria_checked => "ariaChecked",
+            aria_selected => "ariaSelected",
+            aria_expanded => "ariaExpanded",
+            aria_modal => "ariaModal",
+            aria_live => "ariaLive",
+            aria_controls => "ariaControls",
+            aria_labelledby => "ariaLabelledBy",
+            aria_describedby => "ariaDescribedBy",
+            aria_valuenow => "ariaValueNow",
+            aria_valuemin => "ariaValueMin",
+            aria_valuemax => "ariaValueMax",
+        }
+    };
+}
+
 macro_rules! define_element {
     ($mod_name:ident, $tag:literal $(, { $($extra_ident:ident => $extra_name:literal),* $(,)? })?) => {
         pub mod $mod_name {
@@ -96,13 +120,9 @@ macro_rules! define_element {
                 opacity => "opacity",
                 font_size => "font-size",
                 z_index => "z-index",
-                test_id => "testID",
-                accessibility_label => "accessibilityLabel",
-                accessibility_role => "accessibilityRole",
-                accessibility_hint => "accessibilityHint",
-                disabled => "disabled",
                 $($( $extra_ident => $extra_name, )*)?
             }
+            define_a11y_attrs!();
         }
     };
 }
@@ -178,10 +198,11 @@ pub mod GlobalAttributes {
     use super::AttributeDescription;
     define_attrs! {
         style => "style",
-        test_id => "testID",
-        accessibility_label => "accessibilityLabel",
-        accessibility_role => "accessibilityRole",
-        accessibility_hint => "accessibilityHint",
-        disabled => "disabled",
     }
+    define_a11y_attrs!();
+}
+
+/// Engine backend traits re-exported for downstream UI crates and headless surface harnesses.
+pub mod backend {
+    pub use nve_engine::{BackendApplyStats, BackendError, LayoutRect, RenderBackend, Viewport};
 }

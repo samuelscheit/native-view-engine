@@ -1,0 +1,350 @@
+//! Accessible Tabs compound component: [`TabsRoot`], [`TabList`], [`TabTrigger`], and [`TabPanel`].
+//!
+//! Emits WAI-ARIA `tablist`/`tab`/`tabpanel`, `aria-selected`, `aria-controls`,
+//! `aria-labelledby`, and roving `tabIndex` with keyboard arrow/`Home`/`End` navigation
+//! powered by [`RovingFocus`].
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use dioxus_core::{provide_context, try_consume_context, use_hook, EventHandler};
+use dioxus_core_macro::Props;
+use nve_dioxus::prelude::*;
+
+use crate::focus::{FocusableEntry, Orientation, RovingFocus};
+use crate::style_buf::{StyleBuf, SurfaceStyle, TextStyle};
+use crate::theme::use_theme;
+
+#[derive(Clone)]
+struct TabsContext {
+    active: Signal<String>,
+    roster: Rc<RefCell<Vec<FocusableEntry>>>,
+    orientation: Orientation,
+    id_prefix: String,
+    on_change: Option<EventHandler<String>>,
+}
+
+impl TabsContext {
+    fn register_tab(&self, value: &str, disabled: bool) {
+        let mut list = self.roster.borrow_mut();
+        if let Some(entry) = list.iter_mut().find(|e| e.id == value) {
+            entry.disabled = disabled;
+        } else {
+            list.push(FocusableEntry::disabled(value.to_owned(), disabled));
+        }
+    }
+
+    fn select(&mut self, next: String) {
+        if *self.active.peek() != next {
+            self.active.set(next.clone());
+            if let Some(handler) = self.on_change {
+                handler.call(next);
+            }
+        }
+    }
+
+    fn navigate_key(&mut self, key: &str) {
+        let items = self.roster.borrow().clone();
+        let mut roving = RovingFocus::with_items(self.orientation, items);
+        let cur = self.active.peek().clone();
+        let _ = roving.set_active_id(&cur);
+        if let Some(next_idx) = roving.handle_key(key)
+            && let Some(entry) = roving.items().get(next_idx)
+        {
+            self.select(entry.id.clone());
+        }
+    }
+
+    fn tab_id(&self, value: &str) -> String {
+        format!("{}-tab-{value}", self.id_prefix)
+    }
+
+    fn panel_id(&self, value: &str) -> String {
+        format!("{}-panel-{value}", self.id_prefix)
+    }
+}
+
+/// Root provider for a tabbed interface.
+#[component]
+pub fn TabsRoot(
+    #[props(default)] value: Option<String>,
+    #[props(default)] default_value: String,
+    #[props(default)] orientation: Orientation,
+    #[props(default)] id_prefix: Option<String>,
+    #[props(default)] on_change: Option<EventHandler<String>>,
+    #[props(default)] test_id: Option<String>,
+    #[props(default)] style: Option<String>,
+    children: Element,
+) -> Element {
+    let initial = value.clone().unwrap_or_else(|| default_value.clone());
+    let prefix = id_prefix.unwrap_or_else(|| "tabs".to_owned());
+
+    let mut ctx = use_hook(|| {
+        let active = Signal::new(initial.clone());
+        provide_context(TabsContext {
+            active,
+            roster: Rc::new(RefCell::new(Vec::new())),
+            orientation,
+            id_prefix: prefix.clone(),
+            on_change,
+        })
+    });
+
+    if let Some(ref controlled) = value
+        && *ctx.active.peek() != *controlled
+    {
+        ctx.active.set(controlled.clone());
+    }
+
+    let mut sb = StyleBuf::new();
+    sb.flex_direction(match orientation {
+        Orientation::Horizontal => "column",
+        Orientation::Vertical => "row",
+    })
+    .gap(8.0)
+    .width_pct(100.0);
+    if let Some(ref extra) = style {
+        sb.raw(extra);
+    }
+    let root_style = sb.finish();
+
+    rsx! {
+        view {
+            test_id: test_id,
+            style: "{root_style}",
+            {children}
+        }
+    }
+}
+
+/// Container for [`TabTrigger`] items (`accessibilityRole="tablist"`).
+#[component]
+pub fn TabList(
+    #[props(default)] accessibility_label: Option<String>,
+    #[props(default)] test_id: Option<String>,
+    #[props(default)] style: Option<String>,
+    children: Element,
+) -> Element {
+    let theme = use_theme();
+    let orientation = try_consume_context::<TabsContext>()
+        .map(|c| c.orientation)
+        .unwrap_or(Orientation::Horizontal);
+
+    let mut sb = StyleBuf::new();
+    sb.flex_direction(match orientation {
+        Orientation::Horizontal => "row",
+        Orientation::Vertical => "column",
+    })
+    .gap(theme.spacing.xs)
+    .padding(theme.spacing.xs)
+    .surface(SurfaceStyle {
+        background: theme.palette.surface_subtle.as_ref(),
+        border_width: 1.0,
+        border_color: theme.palette.border.as_ref(),
+        border_radius: theme.radii.md,
+        opacity: 1.0,
+        box_shadow: "none",
+    });
+    if let Some(ref extra) = style {
+        sb.raw(extra);
+    }
+    let list_style = sb.finish();
+
+    rsx! {
+        view {
+            test_id: test_id,
+            accessibility_role: "tablist",
+            accessibility_label: accessibility_label,
+            style: "{list_style}",
+            {children}
+        }
+    }
+}
+
+/// Individual tab button (`accessibilityRole="tab"`, `aria-selected`, `aria-controls`,
+/// roving `tabIndex`, and arrow/`Home`/`End` keyboard navigation).
+#[component]
+pub fn TabTrigger(
+    value: String,
+    #[props(default)] disabled: bool,
+    #[props(default)] test_id: Option<String>,
+    #[props(default)] style: Option<String>,
+    children: Element,
+) -> Element {
+    let theme = use_theme();
+    let mut focused = use_signal(|| false);
+    let ctx = try_consume_context::<TabsContext>();
+
+    if let Some(ref c) = ctx {
+        c.register_tab(&value, disabled);
+    }
+
+    let is_selected = ctx
+        .as_ref()
+        .is_some_and(|c| *c.active.read() == value);
+    let controls_id = ctx
+        .as_ref()
+        .map(|c| c.panel_id(&value))
+        .unwrap_or_else(|| format!("tabs-panel-{value}"));
+    let tab_id_default = ctx
+        .as_ref()
+        .map(|c| c.tab_id(&value))
+        .unwrap_or_else(|| format!("tabs-tab-{value}"));
+    let resolved_test_id = test_id.unwrap_or(tab_id_default);
+
+    let (bg, fg, bw, bc) = if focused() && !disabled {
+        (
+            if is_selected {
+                theme.palette.surface.as_ref()
+            } else {
+                "transparent"
+            },
+            if is_selected {
+                theme.palette.accent.as_ref()
+            } else {
+                theme.palette.text_primary.as_ref()
+            },
+            2.0,
+            theme.palette.border_focus.as_ref(),
+        )
+    } else if is_selected {
+        (
+            theme.palette.surface.as_ref(),
+            theme.palette.accent.as_ref(),
+            1.0,
+            theme.palette.border.as_ref(),
+        )
+    } else {
+        (
+            "transparent",
+            theme.palette.text_secondary.as_ref(),
+            0.0,
+            "transparent",
+        )
+    };
+
+    let mut sb = StyleBuf::new();
+    sb.padding_xy(theme.spacing.md, theme.spacing.sm)
+        .justify_content("center")
+        .align_items("center")
+        .surface(SurfaceStyle {
+            background: bg,
+            border_width: bw,
+            border_color: bc,
+            border_radius: theme.radii.sm,
+            opacity: if disabled { 0.45 } else { 1.0 },
+            box_shadow: "none",
+        });
+    if let Some(ref extra) = style {
+        sb.raw(extra);
+    }
+    let trigger_style = sb.finish();
+
+    let mut ts = StyleBuf::new();
+    ts.text_style(TextStyle {
+        color: fg,
+        font_size: theme.typography.sm,
+        font_weight: if is_selected { "600" } else { "500" },
+        text_align: "center",
+        opacity: 1.0,
+    });
+    let text_style = ts.finish();
+
+    let aria_selected = if is_selected { "true" } else { "false" };
+    let tab_index = if is_selected && !disabled { 0 } else { -1 };
+
+    let ctx_press = ctx.clone();
+    let val_press = value.clone();
+    let ctx_key = ctx;
+    let val_key = value;
+
+    rsx! {
+        pressable {
+            test_id: "{resolved_test_id}",
+            accessibility_role: "tab",
+            aria_selected: "{aria_selected}",
+            aria_controls: "{controls_id}",
+            disabled: disabled,
+            tab_index: tab_index,
+            style: "{trigger_style}",
+            onfocus: move |_| focused.set(true),
+            onblur: move |_| focused.set(false),
+            onpress: move |_| {
+                if !disabled && let Some(mut c) = ctx_press.clone() {
+                    c.select(val_press.clone());
+                }
+            },
+            onkeydown: move |ev: KeyEvent| {
+                let data = ev.data();
+                let key = data.key.as_str();
+                if let Some(mut c) = ctx_key.clone() {
+                    match key {
+                        "Enter" | " " | "Space" if !disabled => c.select(val_key.clone()),
+                        _ => c.navigate_key(key),
+                    }
+                }
+            },
+            text {
+                style: "{text_style}",
+                {children}
+            }
+        }
+    }
+}
+
+/// Content panel paired with a [`TabTrigger`] (`accessibilityRole="tabpanel"`, `aria-labelledby`).
+#[component]
+pub fn TabPanel(
+    value: String,
+    #[props(default)] test_id: Option<String>,
+    #[props(default)] style: Option<String>,
+    children: Element,
+) -> Element {
+    let theme = use_theme();
+    let ctx = try_consume_context::<TabsContext>();
+    let is_active = ctx
+        .as_ref()
+        .is_some_and(|c| *c.active.read() == value);
+
+    if !is_active {
+        return rsx! {};
+    }
+
+    let labelled_by = ctx
+        .as_ref()
+        .map(|c| c.tab_id(&value))
+        .unwrap_or_else(|| format!("tabs-tab-{value}"));
+    let panel_id = test_id.unwrap_or_else(|| {
+        ctx.as_ref()
+            .map(|c| c.panel_id(&value))
+            .unwrap_or_else(|| format!("tabs-panel-{value}"))
+    });
+
+    let mut sb = StyleBuf::new();
+    sb.flex_direction("column")
+        .padding(theme.spacing.md)
+        .gap(theme.spacing.sm)
+        .surface(SurfaceStyle {
+            background: theme.palette.surface.as_ref(),
+            border_width: 1.0,
+            border_color: theme.palette.border.as_ref(),
+            border_radius: theme.radii.md,
+            opacity: 1.0,
+            box_shadow: "none",
+        });
+    if let Some(ref extra) = style {
+        sb.raw(extra);
+    }
+    let panel_style = sb.finish();
+
+    rsx! {
+        view {
+            test_id: "{panel_id}",
+            accessibility_role: "tabpanel",
+            aria_labelledby: "{labelled_by}",
+            tab_index: 0,
+            style: "{panel_style}",
+            {children}
+        }
+    }
+}
