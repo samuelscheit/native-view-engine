@@ -39,6 +39,7 @@ struct RetainedSGNodeSlot {
   QSGSimpleTextureNode* content_tex_node{nullptr};
   bool has_text_texture{false};
   bool has_image_texture{false};
+  bool has_canvas_texture{false};
   std::string active_image_uri;
   QSGGeometryNode* border_node{nullptr};
   std::vector<uint32_t> mounted_children;

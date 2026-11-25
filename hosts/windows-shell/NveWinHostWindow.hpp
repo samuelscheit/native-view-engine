@@ -1,8 +1,10 @@
 #pragma once
 
 #include "NveRnwComponentView.hpp"
+#include "nve_draw_list.hpp"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -29,6 +31,16 @@ struct WinHostWindowOptions {
 };
 
 #if defined(_WIN32)
+
+/// Stream-decode and paint all 8 `NVE_DRAW1` opcodes (`Clear`, `FillRect`, `FillRoundedRect`,
+/// `FillCircle`, `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`) onto an
+/// `ID2D1RenderTarget` inside `bounds`, with a balanced `PushAxisAlignedClip`/`PopAxisAlignedClip`
+/// stack guard even on corrupt payloads or unbalanced clip streams.
+nve::DrawListDecodeResult render_draw_list_to_d2d(
+    ID2D1RenderTarget* rt,
+    ID2D1SolidColorBrush* brush,
+    const D2D1_RECT_F& bounds,
+    std::span<const uint8_t> bytes) noexcept;
 
 /// Paint an entire reconciled `NveWinVisualTree` onto any Direct2D render target
 /// (`ID2D1HwndRenderTarget` for live windows or `ID2D1DCRenderTarget` for offscreen screenshots).

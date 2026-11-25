@@ -48,6 +48,7 @@ struct NveWinNodeVisual {
   bool clip_bounds{false};
   std::string text;
   std::string image_src;
+  std::vector<uint8_t> draw_list;
   ImageResizeMode resize_mode{ImageResizeMode::Cover};
   nve::LayoutRect layout{};
   uint32_t background_rgba{0};

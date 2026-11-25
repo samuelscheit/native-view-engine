@@ -8,11 +8,59 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace nve::qt {
+
+/// Native `QWidget` for `NVE_NODE_KIND_SKIA_CANVAS` caching raw `NVE_DRAW1` bytes from
+/// `NveSceneView::text_slab`, repainting only when bytes or visual style change, and painting
+/// via the shared `renderDrawListToPainter` helper.
+class NveQtCanvasWidget final : public QWidget {
+  Q_OBJECT
+
+ public:
+  using PressHandler = std::function<void(uint32_t, float, float)>;
+
+  explicit NveQtCanvasWidget(
+      uint32_t nodeId,
+      PressHandler onPress = {},
+      QWidget* parent = nullptr);
+  ~NveQtCanvasWidget() override = default;
+
+  void applyNode(
+      const NveRenderNode& node,
+      std::span<const uint8_t> drawListBytes,
+      bool interactive);
+
+  bool setDrawListBytes(std::span<const uint8_t> bytes);
+  void setInteractive(bool interactive);
+
+  std::span<const uint8_t> drawListBytes() const noexcept { return draw_list_bytes_; }
+  uint64_t redrawRequestCount() const noexcept { return redraw_request_count_; }
+
+ protected:
+  void paintEvent(QPaintEvent* event) override;
+  void mousePressEvent(QMouseEvent* event) override;
+  void mouseReleaseEvent(QMouseEvent* event) override;
+
+ private:
+  uint32_t node_id_{0};
+  PressHandler on_press_;
+  QColor bg_color_{0, 0, 0, 0};
+  QColor border_color_{0, 0, 0, 0};
+  float border_width_{0.0f};
+  float border_radius_{0.0f};
+  float opacity_{1.0f};
+  bool interactive_{false};
+  bool pressed_{false};
+  std::vector<uint8_t> draw_list_bytes_;
+  uint64_t redraw_request_count_{0};
+};
 
 /// Embeddable Qt 6 (`QWidget`) host for any Native View Engine (`nve_get_interface`) app or component.
 ///

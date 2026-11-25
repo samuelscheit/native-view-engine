@@ -588,6 +588,147 @@ class NveQtImageWidget final : public QWidget {
 
 } // namespace
 
+// -----------------------------------------------------------------------------
+// NveQtCanvasWidget
+// -----------------------------------------------------------------------------
+
+NveQtCanvasWidget::NveQtCanvasWidget(
+    uint32_t nodeId,
+    PressHandler onPress,
+    QWidget* parent)
+    : QWidget(parent), node_id_(nodeId), on_press_(std::move(onPress)) {
+  setAutoFillBackground(false);
+  setAttribute(Qt::WA_NoSystemBackground, true);
+  setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(nodeId));
+}
+
+bool NveQtCanvasWidget::setDrawListBytes(std::span<const uint8_t> bytes) {
+  if (draw_list_bytes_.size() == bytes.size() &&
+      (bytes.empty() ||
+       std::memcmp(draw_list_bytes_.data(), bytes.data(), bytes.size()) == 0)) {
+    return false;
+  }
+  draw_list_bytes_.assign(bytes.begin(), bytes.end());
+  ++redraw_request_count_;
+  update();
+  return true;
+}
+
+void NveQtCanvasWidget::applyNode(
+    const NveRenderNode& node,
+    std::span<const uint8_t> drawListBytes,
+    bool interactive) {
+  const QColor next_bg = qcolorFromRgba(node.bg_rgba);
+  const QColor next_border = qcolorFromRgba(node.border_rgba);
+  const float next_bw = std::max(0.0f, node.border_width);
+  const float next_br = std::max(0.0f, node.border_radius);
+  const float next_opacity = opacityFromU8(node.opacity_u8);
+
+  const bool style_changed = (bg_color_ != next_bg) || (border_color_ != next_border) ||
+                             (border_width_ != next_bw) || (border_radius_ != next_br) ||
+                             (opacity_ != next_opacity);
+
+  bg_color_ = next_bg;
+  border_color_ = next_border;
+  border_width_ = next_bw;
+  border_radius_ = next_br;
+  opacity_ = next_opacity;
+
+  setInteractive(interactive);
+
+  const bool bytes_changed = setDrawListBytes(drawListBytes);
+  if (!bytes_changed && style_changed) {
+    ++redraw_request_count_;
+    update();
+  }
+}
+
+void NveQtCanvasWidget::setInteractive(bool interactive) {
+  if (interactive_ != interactive) {
+    interactive_ = interactive;
+    if (interactive_) {
+      setCursor(Qt::PointingHandCursor);
+    } else {
+      unsetCursor();
+    }
+  }
+}
+
+void NveQtCanvasWidget::paintEvent(QPaintEvent* /*event*/) {
+  const QRectF bounds(rect());
+  if (bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+    return;
+  }
+
+  const bool has_bg = bg_color_.alpha() > 0;
+  const bool has_draw_list = !draw_list_bytes_.empty();
+  const bool has_border = (border_width_ > 0.0f) && (border_color_.alpha() > 0);
+  if (!has_bg && !has_draw_list && !has_border) {
+    return;
+  }
+
+  QPainter painter(this);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  if (opacity_ < 0.999f) {
+    painter.setOpacity(static_cast<qreal>(opacity_));
+  }
+
+  const qreal max_r = std::min(bounds.width(), bounds.height()) * 0.5;
+  const qreal radius = std::clamp(static_cast<qreal>(border_radius_), 0.0, max_r);
+
+  painter.save();
+  if (radius > 0.0) {
+    QPainterPath clip_path;
+    clip_path.addRoundedRect(bounds, radius, radius);
+    painter.setClipPath(clip_path);
+  }
+  if (has_bg) {
+    painter.fillRect(bounds, bg_color_);
+  }
+  if (has_draw_list) {
+    (void)renderDrawListToPainter(painter, bounds, draw_list_bytes_);
+  }
+  painter.restore();
+
+  if (has_border) {
+    const qreal half_pen = static_cast<qreal>(border_width_) * 0.5;
+    const QRectF stroke_rect = bounds.adjusted(half_pen, half_pen, -half_pen, -half_pen);
+    if (stroke_rect.width() > 0.0 && stroke_rect.height() > 0.0) {
+      const qreal stroke_r = std::max<qreal>(0.0, radius - half_pen);
+      QPen pen(border_color_, static_cast<qreal>(border_width_));
+      pen.setJoinStyle(Qt::RoundJoin);
+      painter.setPen(pen);
+      painter.setBrush(Qt::NoBrush);
+      painter.drawRoundedRect(stroke_rect, stroke_r, stroke_r);
+    }
+  }
+}
+
+void NveQtCanvasWidget::mousePressEvent(QMouseEvent* event) {
+  if (interactive_ && event->button() == Qt::LeftButton) {
+    pressed_ = true;
+    event->accept();
+    return;
+  }
+  event->ignore();
+}
+
+void NveQtCanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
+  if (interactive_ && event->button() == Qt::LeftButton) {
+    const bool was_pressed = pressed_;
+    pressed_ = false;
+    const QPointF pos = event->position();
+    event->accept();
+    if (was_pressed && rect().contains(pos.toPoint()) && on_press_) {
+      auto cb = on_press_;
+      const uint32_t id = node_id_;
+      cb(id, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
+    }
+    return;
+  }
+  event->ignore();
+}
+
 class NveQtWidget::Impl {
  public:
   explicit Impl(NveQtWidget* owner) : owner_(owner), adapter_(this) {
@@ -658,6 +799,8 @@ class NveQtWidget::Impl {
               box->setInteractive(eff_interactive);
             } else if (auto* img = dynamic_cast<NveQtImageWidget*>(w)) {
               img->setInteractive(eff_interactive);
+            } else if (auto* canvas = qobject_cast<NveQtCanvasWidget*>(w)) {
+              canvas->setInteractive(eff_interactive);
             } else if (auto* edit = dynamic_cast<NveQtLineEdit*>(w)) {
               edit->applySemantics(sem);
             } else if (auto* scroll = qobject_cast<QScrollArea*>(w)) {
@@ -885,6 +1028,15 @@ class NveQtWidget::Impl {
                 self->owner_);
             break;
           }
+          case NVE_NODE_KIND_SKIA_CANVAS: {
+            widget = new NveQtCanvasWidget(
+                node.node_id,
+                [owner_impl = self](uint32_t nid, float x, float y) {
+                  owner_impl->handlePressFromWidget(nid, x, y);
+                },
+                self->owner_);
+            break;
+          }
           case NVE_NODE_KIND_SCROLL_VIEW: {
             auto* scroll = new QScrollArea(self->owner_);
             scroll->setFrameShape(QFrame::NoFrame);
@@ -975,6 +1127,10 @@ class NveQtWidget::Impl {
         box->applyStyle(node, interactive);
       } else if (auto* img = dynamic_cast<NveQtImageWidget*>(widget)) {
         img->applyNode(node, text, self->findResizeMode(node.node_id), interactive);
+      } else if (auto* canvas = qobject_cast<NveQtCanvasWidget*>(widget)) {
+        const std::span<const uint8_t> raw_bytes(
+            reinterpret_cast<const uint8_t*>(text.data()), text.size());
+        canvas->applyNode(node, raw_bytes, interactive);
       } else if (auto* label = qobject_cast<QLabel*>(widget)) {
         const QString qtext = detail::qstringFromUtf8(text);
         if (label->text() != qtext) {

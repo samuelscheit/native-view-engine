@@ -132,6 +132,39 @@ QImage rasterizeTextImage(
   return img;
 }
 
+QImage rasterizeDrawListImage(
+    std::span<const uint8_t> bytes,
+    float layout_w,
+    float layout_h,
+    qreal dpr,
+    QSizeF& out_logical_size) {
+  out_logical_size = QSizeF();
+  if (bytes.empty() || !std::isfinite(layout_w) || !std::isfinite(layout_h) ||
+      layout_w <= 0.0f || layout_h <= 0.0f) {
+    return {};
+  }
+  if (!nve::validate_draw_list(bytes).ok()) {
+    return {};
+  }
+
+  const qreal eff_dpr = (dpr > 0.0 && std::isfinite(dpr)) ? dpr : 1.0;
+  const qreal logical_w = std::max<qreal>(1.0, std::ceil(static_cast<qreal>(layout_w)));
+  const qreal logical_h = std::max<qreal>(1.0, std::ceil(static_cast<qreal>(layout_h)));
+  out_logical_size = QSizeF(logical_w, logical_h);
+
+  const int img_w = std::max(1, static_cast<int>(std::ceil(logical_w * eff_dpr)));
+  const int img_h = std::max(1, static_cast<int>(std::ceil(logical_h * eff_dpr)));
+
+  QImage img(img_w, img_h, QImage::Format_RGBA8888_Premultiplied);
+  img.setDevicePixelRatio(eff_dpr);
+  img.fill(Qt::transparent);
+
+  QPainter painter(&img);
+  (void)renderDrawListToPainter(painter, QRectF(0.0, 0.0, logical_w, logical_h), bytes);
+  painter.end();
+  return img;
+}
+
 QSGTexture* NveQtTextCache::acquireTextTexture(
     uint32_t node_id,
     const std::string& text,
@@ -248,13 +281,84 @@ QSGTexture* NveQtTextCache::acquireImageTexture(
   return inserted->second.texture.get();
 }
 
+QSGTexture* NveQtTextCache::acquireCanvasTexture(
+    uint32_t node_id,
+    std::span<const uint8_t> bytes,
+    float layout_w,
+    float layout_h,
+    qreal dpr,
+    int dpr_centis,
+    uint64_t scene_generation,
+    QQuickWindow* win,
+    QSizeF& out_logical_size,
+    bool& out_rasterized) {
+  out_rasterized = false;
+  if (bytes.empty() || !std::isfinite(layout_w) || !std::isfinite(layout_h) ||
+      layout_w <= 0.0f || layout_h <= 0.0f) {
+    canvas_cache_.erase(node_id);
+    return nullptr;
+  }
+
+  const int qw = std::max(1, static_cast<int>(std::lround(layout_w * 2.0f)));
+  const int qh = std::max(1, static_cast<int>(std::lround(layout_h * 2.0f)));
+  const uint64_t byte_hash = hashDrawListBytes(bytes);
+
+  auto it = canvas_cache_.find(node_id);
+  if (it != canvas_cache_.end()) {
+    CanvasTextureCacheEntry& entry = it->second;
+    const bool hit = entry.texture_generation != 0u &&
+                     (win == nullptr || entry.texture != nullptr) &&
+                     entry.matches(qw, qh, dpr_centis, byte_hash, bytes);
+    if (hit) {
+      entry.last_used_generation = scene_generation;
+      out_logical_size = entry.logical_size;
+      ++total_canvas_cache_hits_;
+      return entry.texture.get();
+    }
+  }
+
+  QSizeF logical_size;
+  const QImage img = rasterizeDrawListImage(bytes, layout_w, layout_h, dpr, logical_size);
+  if (img.isNull()) {
+    canvas_cache_.erase(node_id);
+    return nullptr;
+  }
+
+  auto& entry = canvas_cache_[node_id];
+  entry.quant_w = qw;
+  entry.quant_h = qh;
+  entry.quant_dpr = dpr_centis;
+  entry.byte_hash = byte_hash;
+  entry.bytes.assign(bytes.begin(), bytes.end());
+  entry.logical_size = logical_size;
+  entry.last_used_generation = scene_generation;
+  ++entry.texture_generation;
+  ++total_canvas_rasterizations_;
+
+  if (win != nullptr) {
+    entry.texture.reset(
+        win->createTextureFromImage(img, QQuickWindow::TextureHasAlphaChannel));
+  } else {
+    entry.texture.reset();
+  }
+
+  out_logical_size = entry.logical_size;
+  out_rasterized = true;
+  return entry.texture.get();
+}
+
 void NveQtTextCache::eraseText(uint32_t node_id) {
   text_cache_.erase(node_id);
+}
+
+void NveQtTextCache::eraseCanvas(uint32_t node_id) {
+  canvas_cache_.erase(node_id);
 }
 
 void NveQtTextCache::clear() {
   text_cache_.clear();
   image_cache_.clear();
+  canvas_cache_.clear();
 }
 
 ResolvedContentTexture resolveNodeContentTexture(
@@ -327,6 +431,23 @@ ResolvedContentTexture resolveNodeContentTexture(
   }
 
   cache.eraseText(node.node_id);
+  if (node.kind == NVE_NODE_KIND_SKIA_CANVAS && w > 0.0f && h > 0.0f) {
+    const std::string_view raw = nve::scene_node_text(view, node);
+    const std::span<const uint8_t> bytes(
+        reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
+    QSizeF logical_size;
+    bool canvas_rasterized = false;
+    res.texture = cache.acquireCanvasTexture(
+        node.node_id, bytes, w, h, dpr, dpr_centis, scene_generation, win, logical_size,
+        canvas_rasterized);
+    if (res.texture != nullptr) {
+      res.dst_rect = QRectF(0.0, 0.0, static_cast<qreal>(w), static_cast<qreal>(h));
+      res.is_canvas = true;
+    }
+    return res;
+  }
+
+  cache.eraseCanvas(node.node_id);
   if (node.kind == NVE_NODE_KIND_IMAGE && w > 0.0f && h > 0.0f) {
     const std::string_view uri = nve::scene_node_text(view, node);
     if (!uri.empty()) {

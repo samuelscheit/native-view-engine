@@ -1261,6 +1261,243 @@ void test_image_picture_scroll_and_incremental_reconcile() {
   std::filesystem::remove(tmp_png, ec);
 }
 
+struct MockGtkCanvasComponent {
+  static inline MockGtkCanvasComponent* last_instance = nullptr;
+  uint32_t surface_id{1u};
+  std::string draw_list_attr;
+  bool emit_raw_corrupt{false};
+  std::string raw_corrupt;
+  int tick{0};
+  std::vector<uint8_t> cmd_buf;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockGtkCanvasComponent();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockGtkCanvasComponent*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+  template <typename T>
+  void push(T v) {
+    const auto* p = reinterpret_cast<const uint8_t*>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockGtkCanvasComponent*>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0u;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0u);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0u);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0u);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_text = [&](uint32_t id, const std::string& s) {
+      self->push<uint8_t>(NVE_OP_SET_TEXT);
+      self->push<uint32_t>(id);
+      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1u); self->push<float>(w);
+      self->push<uint8_t>(1u); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
+      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
+      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4u);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+
+    create_node(2u, NVE_COMP_VIEW);
+    create_node(3u, NVE_COMP_SKIA_CANVAS);
+    create_node(4u, NVE_COMP_TEXT);
+
+    set_children(NVE_ROOT_NODE_ID, {2u});
+    set_children(2u, {3u, 4u});
+
+    set_box(2u, 240.0f, 140.0f);
+    set_box(3u, 200.0f, 80.0f);
+    if (self->emit_raw_corrupt) {
+      set_raw_str(3u, "drawList", "");
+      set_text(3u, self->raw_corrupt);
+    } else {
+      set_raw_str(3u, "drawList", self->draw_list_attr);
+    }
+
+    set_box(4u, 120.0f, 24.0f);
+    set_text(4u, "Tick:" + std::to_string(self->tick));
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1u);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events(NveAppHandle, NveBufferSlice) { return 0u; }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    return (iface == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
+  }
+};
+
+void test_cairo_draw_list_sparkline_and_drawing_area() {
+  const std::vector<float> samples{14.0f, 28.0f, 19.0f, 47.0f, 38.0f, 70.0f};
+  const nve::DrawColorRgba bg_col = nve::DrawColorRgba::rgb(15u, 23u, 42u);
+  const nve::DrawColorRgba stroke_col = nve::DrawColorRgba::rgb(56u, 189u, 248u);
+
+  nve::DrawListEncoder spark_enc;
+  spark_enc.sparkline(samples, 200.0f, 80.0f, stroke_col, bg_col);
+  const std::vector<uint8_t> spark_bytes = spark_enc.finish();
+
+  // 1. Rasterize sparkline onto offscreen cairo_image_surface_t and assert exact pixels!
+  {
+    cairo_surface_t* surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 200, 80);
+    cairo_t* cr = cairo_create(surf);
+    const auto res = nve::render_draw_list_to_cairo(cr, 200.0, 80.0, spark_bytes);
+    NVE_CHECK(res.ok());
+    NVE_CHECK(res.ops_decoded >= 8u);
+    NVE_CHECK(cairo_status(cr) == CAIRO_STATUS_SUCCESS);
+    cairo_surface_flush(surf);
+
+    const unsigned char* data = cairo_image_surface_get_data(surf);
+    const int stride = cairo_image_surface_get_stride(surf);
+    NVE_CHECK(data != nullptr && stride >= 200 * 4);
+
+    int bg_pixels = 0;
+    int stroke_pixels = 0;
+    for (int y = 0; y < 80; ++y) {
+      const auto* row = reinterpret_cast<const uint32_t*>(data + y * stride);
+      for (int x = 0; x < 200; ++x) {
+        const uint32_t px = row[x]; // Native-endian premultiplied ARGB32
+        const uint8_t a = static_cast<uint8_t>((px >> 24u) & 0xFFu);
+        const uint8_t r = static_cast<uint8_t>((px >> 16u) & 0xFFu);
+        const uint8_t g = static_cast<uint8_t>((px >> 8u) & 0xFFu);
+        const uint8_t b = static_cast<uint8_t>(px & 0xFFu);
+        if (a == 255u && std::abs(static_cast<int>(r) - 15) <= 2 &&
+            std::abs(static_cast<int>(g) - 23) <= 2 &&
+            std::abs(static_cast<int>(b) - 42) <= 2) {
+          ++bg_pixels;
+        }
+        if (a == 255u && b > 210u && g > 150u && r < 90u) {
+          ++stroke_pixels;
+        }
+      }
+    }
+    NVE_CHECK(bg_pixels > 5000);
+    NVE_CHECK(stroke_pixels > 40);
+
+    // 2. Unbalanced ClipRect + extra RestoreClip must leave Cairo clip extents intact!
+    double cx0 = 0.0, cy0 = 0.0, cx1 = 0.0, cy1 = 0.0;
+    cairo_clip_extents(cr, &cx0, &cy0, &cx1, &cy1);
+
+    nve::DrawListEncoder unbal;
+    unbal.clip_rect(10.0f, 10.0f, 30.0f, 30.0f)
+        .clip_rect(15.0f, 15.0f, 20.0f, 20.0f)
+        .fill_rect(0.0f, 0.0f, 200.0f, 80.0f, nve::DrawColorRgba::rgb(240u, 30u, 50u));
+    NVE_CHECK(nve::render_draw_list_to_cairo(cr, 200.0, 80.0, unbal.finish()).ok());
+
+    double ax0 = 0.0, ay0 = 0.0, ax1 = 0.0, ay1 = 0.0;
+    cairo_clip_extents(cr, &ax0, &ay0, &ax1, &ay1);
+    NVE_CHECK(approx_eq(ax0, cx0) && approx_eq(ay0, cy0) &&
+              approx_eq(ax1, cx1) && approx_eq(ay1, cy1));
+
+    nve::DrawListEncoder extra_pop;
+    extra_pop.restore_clip().restore_clip().fill_circle(
+        50.0f, 40.0f, 6.0f, nve::DrawColorRgba::rgb(34u, 197u, 94u));
+    NVE_CHECK(nve::render_draw_list_to_cairo(cr, 200.0, 80.0, extra_pop.finish()).ok());
+    NVE_CHECK(cairo_status(cr) == CAIRO_STATUS_SUCCESS);
+
+    // 3. Corrupt buffers (bad magic, truncated, trailing bytes) fail cleanly without corrupting Cairo!
+    const std::vector<uint8_t> bad_magic{'N', 'O', 'P', 'E', '0', '0', '0', '0', '0', 1, 0, 0, 0, 0, 0};
+    NVE_CHECK(nve::render_draw_list_to_cairo(cr, 200.0, 80.0, bad_magic).error ==
+              nve::DrawListError::BadMagic);
+
+    std::vector<uint8_t> truncated = spark_bytes;
+    truncated.resize(20u);
+    NVE_CHECK(!nve::render_draw_list_to_cairo(cr, 200.0, 80.0, truncated).ok());
+
+    std::vector<uint8_t> trailing = spark_bytes;
+    trailing.push_back(0xFFu);
+    NVE_CHECK(nve::render_draw_list_to_cairo(cr, 200.0, 80.0, trailing).error ==
+              nve::DrawListError::TrailingBytes);
+    NVE_CHECK(cairo_status(cr) == CAIRO_STATUS_SUCCESS);
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(surf);
+  }
+
+  // 4. End-to-end NveGtkHost -> GtkDrawingArea mounting, byte caching, and redraw deduplication!
+  NveSurfaceConfig cfg{.surface_id = 21u, .width = 240.0f, .height = 140.0f, .scale_factor = 1.0f};
+  nve::NveGtkHost host(cfg);
+  NVE_CHECK(host.attach_interface(&MockGtkCanvasComponent::get_interface, 21u));
+  NVE_CHECK(MockGtkCanvasComponent::last_instance != nullptr);
+  auto* mock = MockGtkCanvasComponent::last_instance;
+
+  GtkWidget* canvas = host.widget_for_node_id(3u);
+  NVE_CHECK(canvas != nullptr && GTK_IS_DRAWING_AREA(canvas));
+  NVE_CHECK(host.canvas_draw_list_for_node_id(3u).empty());
+
+  mock->draw_list_attr = nve::encode_draw_list_attr_base64(spark_bytes);
+  NVE_CHECK(host.render_frame() == 0);
+  const auto cached = host.canvas_draw_list_for_node_id(3u);
+  NVE_CHECK(cached.size() == spark_bytes.size());
+  NVE_CHECK(std::memcmp(cached.data(), spark_bytes.data(), spark_bytes.size()) == 0);
+  NVE_CHECK(host.canvas_redraw_count_for_node_id(3u) == 1u);
+
+  // Sibling-only mutation with identical canvas bytes must NOT increment redraw count!
+  mock->tick = 1;
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(host.canvas_redraw_count_for_node_id(3u) == 1u);
+
+  // Updating drawList bytes triggers exactly 1 new queue_draw!
+  nve::DrawListEncoder alt_enc;
+  alt_enc.sparkline(samples, 200.0f, 80.0f, nve::DrawColorRgba::rgb(236u, 72u, 153u), bg_col);
+  mock->draw_list_attr = alt_enc.to_attr_string();
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(host.canvas_redraw_count_for_node_id(3u) == 2u);
+
+  // Corrupt raw bytes survive host update cleanly.
+  mock->emit_raw_corrupt = true;
+  mock->raw_corrupt.assign(reinterpret_cast<const char*>(spark_bytes.data()), 18u);
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(host.canvas_redraw_count_for_node_id(3u) == 3u);
+}
+
 } // namespace
 
 int main() {
@@ -1276,6 +1513,7 @@ int main() {
   test_live_counter_dylib_if_present();
   test_accessibility_and_ime_text_input();
   test_image_picture_scroll_and_incremental_reconcile();
+  test_cairo_draw_list_sparkline_and_drawing_area();
 
   std::cout << "nve_gtk_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+GTK4" : "Standalone+GTK4")

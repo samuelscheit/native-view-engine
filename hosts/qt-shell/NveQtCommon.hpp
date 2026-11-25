@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nve_draw_list.hpp"
 #include "nve_host_runtime.hpp"
 
 #include <QAccessible>
@@ -9,7 +10,12 @@
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QImage>
+#include <QPaintDevice>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPen>
 #include <QPixmap>
+#include <QPointF>
 #include <QRectF>
 #include <QSizeF>
 #include <QString>
@@ -22,6 +28,7 @@
 #include <cstring>
 #include <list>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -580,6 +587,180 @@ class NveQtImageCache {
 inline QColor qcolorFromRgba(uint32_t rgba) noexcept {
   const auto c = nve::unpack_rgba(rgba);
   return QColor(c.r8, c.g8, c.b8, c.a8);
+}
+
+inline QColor qcolorFromDrawColor(nve::DrawColorRgba c) noexcept {
+  return QColor(c.r, c.g, c.b, c.a);
+}
+
+/// Fast 64-bit FNV-1a hash for `NVE_DRAW1` byte streams (used for GPU canvas texture caching).
+inline uint64_t hashDrawListBytes(std::span<const uint8_t> bytes) noexcept {
+  uint64_t h = 14695981039346656037ull;
+  for (uint8_t b : bytes) {
+    h ^= static_cast<uint64_t>(b);
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+/// Stream-decode and paint all 8 `NVE_DRAW1` opcodes (`Clear`, `FillRect`, `FillRoundedRect`,
+/// `FillCircle`, `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`) onto `painter`
+/// inside `bounds`. Validates the stream first and guarantees balanced `painter.save()` /
+/// `painter.restore()` even on corrupt payloads or unbalanced clip stacks.
+inline nve::DrawListDecodeResult renderDrawListToPainter(
+    QPainter& painter,
+    QRectF bounds,
+    std::span<const uint8_t> bytes) {
+  if (bytes.empty()) {
+    return nve::DrawListDecodeResult{nve::DrawListError::Ok, 0u, 0u};
+  }
+  const nve::DrawListDecodeResult check = nve::validate_draw_list(bytes);
+  if (!check.ok()) {
+    return check;
+  }
+
+  const qreal bw = std::max<qreal>(0.0, bounds.width());
+  const qreal bh = std::max<qreal>(0.0, bounds.height());
+  if (bw <= 0.0 || bh <= 0.0) {
+    return nve::DrawListDecodeResult{nve::DrawListError::Ok, 0u, bytes.size()};
+  }
+
+  const QRectF local_bounds(0.0, 0.0, bw, bh);
+  const bool is_image_device =
+      (painter.device() != nullptr && painter.device()->devType() == QInternal::Image);
+
+  painter.save();
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  if (bounds.x() != 0.0 || bounds.y() != 0.0) {
+    painter.translate(bounds.topLeft());
+  }
+  painter.setClipRect(local_bounds, Qt::IntersectClip);
+
+  struct QPainterDrawVisitor {
+    QPainter& p;
+    QRectF local_rect;
+    bool source_clear;
+    uint32_t clip_depth{0u};
+
+    void on_clear(const nve::DrawClearOp& op) {
+      if (source_clear) {
+        const auto prev_mode = p.compositionMode();
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(local_rect, qcolorFromDrawColor(op.color));
+        p.setCompositionMode(prev_mode);
+      } else if (op.color.a > 0u) {
+        p.fillRect(local_rect, qcolorFromDrawColor(op.color));
+      }
+    }
+
+    void on_fill_rect(const nve::DrawFillRectOp& op) {
+      if (op.w <= 0.0f || op.h <= 0.0f || op.color.a == 0u) {
+        return;
+      }
+      p.fillRect(
+          QRectF(
+              static_cast<qreal>(op.x),
+              static_cast<qreal>(op.y),
+              static_cast<qreal>(op.w),
+              static_cast<qreal>(op.h)),
+          qcolorFromDrawColor(op.color));
+    }
+
+    void on_fill_rounded_rect(const nve::DrawFillRoundedRectOp& op) {
+      if (op.w <= 0.0f || op.h <= 0.0f || op.color.a == 0u) {
+        return;
+      }
+      const QRectF rc(
+          static_cast<qreal>(op.x),
+          static_cast<qreal>(op.y),
+          static_cast<qreal>(op.w),
+          static_cast<qreal>(op.h));
+      const qreal max_r = std::min(rc.width(), rc.height()) * 0.5;
+      const qreal r = std::clamp(static_cast<qreal>(op.radius), 0.0, max_r);
+      if (r <= 0.0) {
+        p.fillRect(rc, qcolorFromDrawColor(op.color));
+        return;
+      }
+      QPainterPath path;
+      path.addRoundedRect(rc, r, r);
+      p.fillPath(path, qcolorFromDrawColor(op.color));
+    }
+
+    void on_fill_circle(const nve::DrawFillCircleOp& op) {
+      if (op.radius <= 0.0f || op.color.a == 0u) {
+        return;
+      }
+      p.setPen(Qt::NoPen);
+      p.setBrush(qcolorFromDrawColor(op.color));
+      const qreal r = static_cast<qreal>(op.radius);
+      p.drawEllipse(QPointF(static_cast<qreal>(op.cx), static_cast<qreal>(op.cy)), r, r);
+    }
+
+    void on_stroke_line(const nve::DrawStrokeLineOp& op) {
+      if (op.width <= 0.0f || op.color.a == 0u) {
+        return;
+      }
+      QPen pen(
+          qcolorFromDrawColor(op.color),
+          static_cast<qreal>(op.width),
+          Qt::SolidLine,
+          Qt::RoundCap,
+          Qt::RoundJoin);
+      p.setPen(pen);
+      p.setBrush(Qt::NoBrush);
+      p.drawLine(
+          QPointF(static_cast<qreal>(op.x0), static_cast<qreal>(op.y0)),
+          QPointF(static_cast<qreal>(op.x1), static_cast<qreal>(op.y1)));
+    }
+
+    void on_stroke_polyline(const nve::DrawStrokePolylineOp& op) {
+      if (op.points.size() < 2u || op.width <= 0.0f || op.color.a == 0u) {
+        return;
+      }
+      QPen pen(
+          qcolorFromDrawColor(op.color),
+          static_cast<qreal>(op.width),
+          Qt::SolidLine,
+          Qt::RoundCap,
+          Qt::RoundJoin);
+      p.setPen(pen);
+      p.setBrush(Qt::NoBrush);
+      QPainterPath path;
+      const nve::DrawPoint p0 = op.points[0u];
+      path.moveTo(static_cast<qreal>(p0.x), static_cast<qreal>(p0.y));
+      for (size_t i = 1u; i < op.points.size(); ++i) {
+        const nve::DrawPoint pt = op.points[i];
+        path.lineTo(static_cast<qreal>(pt.x), static_cast<qreal>(pt.y));
+      }
+      p.drawPath(path);
+    }
+
+    void on_clip_rect(const nve::DrawClipRectOp& op) {
+      p.save();
+      ++clip_depth;
+      const qreal cw = (op.w > 0.0f) ? static_cast<qreal>(op.w) : 0.0;
+      const qreal ch = (op.h > 0.0f) ? static_cast<qreal>(op.h) : 0.0;
+      p.setClipRect(
+          QRectF(static_cast<qreal>(op.x), static_cast<qreal>(op.y), cw, ch),
+          Qt::IntersectClip);
+    }
+
+    void on_restore_clip(const nve::DrawRestoreClipOp&) {
+      if (clip_depth > 0u) {
+        p.restore();
+        --clip_depth;
+      }
+    }
+  };
+
+  QPainterDrawVisitor visitor{painter, local_bounds, is_image_device, 0u};
+  const nve::DrawListDecodeResult res = nve::decode_draw_list(bytes, visitor);
+  while (visitor.clip_depth > 0u) {
+    painter.restore();
+    --visitor.clip_depth;
+  }
+  painter.restore();
+  return res;
 }
 
 inline QFont makeNveFont(float font_size) {

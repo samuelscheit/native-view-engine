@@ -28,10 +28,14 @@ struct SceneGraphStats {
   uint32_t opacityNodes{0};
   uint32_t textTextureNodes{0};
   uint32_t imageTextureNodes{0};
+  uint32_t canvasTextureNodes{0};
   uint64_t textRasterizations{0};
   uint64_t textCacheHits{0};
+  uint64_t canvasRasterizations{0};
+  uint64_t canvasCacheHits{0};
   uint32_t cachedTextTextures{0};
   uint32_t cachedImageTextures{0};
+  uint32_t cachedCanvasTextures{0};
   uint64_t dirtyNodesUpdated{0};
   uint64_t retainedNodesReused{0};
 };

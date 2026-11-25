@@ -1092,6 +1092,226 @@ void test_image_scroll_and_incremental_scene_view() {
   NVE_CHECK(host.visual_tree().updated_count() - updates_before == 1u);
 }
 
+struct MockWinCanvasComponent {
+  static inline MockWinCanvasComponent* last_instance = nullptr;
+  uint32_t surface_id{1};
+  std::string draw_list_attr;
+  bool emit_corrupt_raw{false};
+  std::string corrupt_raw;
+  int tick{0};
+  std::vector<uint8_t> cmd_buf;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockWinCanvasComponent();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockWinCanvasComponent*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+  template <typename T>
+  void push(T v) {
+    const auto* p = reinterpret_cast<const uint8_t*>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockWinCanvasComponent*>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0u;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0u);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0u);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0u);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_text = [&](uint32_t id, const std::string& s) {
+      self->push<uint8_t>(NVE_OP_SET_TEXT);
+      self->push<uint32_t>(id);
+      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1u); self->push<float>(w);
+      self->push<uint8_t>(1u); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
+      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
+      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4u);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+
+    create_node(2u, NVE_COMP_VIEW);
+    create_node(3u, NVE_COMP_SKIA_CANVAS);
+    create_node(4u, NVE_COMP_TEXT);
+
+    set_children(NVE_ROOT_NODE_ID, {2u});
+    set_children(2u, {3u, 4u});
+
+    set_box(2u, 240.0f, 140.0f);
+    set_box(3u, 200.0f, 80.0f);
+    if (self->emit_corrupt_raw) {
+      set_raw_str(3u, "drawList", "");
+      set_text(3u, self->corrupt_raw);
+    } else {
+      set_raw_str(3u, "drawList", self->draw_list_attr);
+    }
+
+    set_box(4u, 120.0f, 24.0f);
+    set_text(4u, "WinTick:" + std::to_string(self->tick));
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1u);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events(NveAppHandle, NveBufferSlice) { return 0u; }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    return (iface == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
+  }
+};
+
+struct DrawListOpCounts {
+  uint32_t clear_ops{0};
+  uint32_t fill_rect_ops{0};
+  uint32_t fill_rounded_rect_ops{0};
+  uint32_t fill_circle_ops{0};
+  uint32_t stroke_line_ops{0};
+  uint32_t stroke_polyline_ops{0};
+  uint32_t polyline_vertices{0};
+  uint32_t clip_rect_ops{0};
+  uint32_t restore_clip_ops{0};
+
+  void on_clear(const nve::DrawClearOp&) noexcept { ++clear_ops; }
+  void on_fill_rect(const nve::DrawFillRectOp&) noexcept { ++fill_rect_ops; }
+  void on_fill_rounded_rect(const nve::DrawFillRoundedRectOp&) noexcept { ++fill_rounded_rect_ops; }
+  void on_fill_circle(const nve::DrawFillCircleOp&) noexcept { ++fill_circle_ops; }
+  void on_stroke_line(const nve::DrawStrokeLineOp&) noexcept { ++stroke_line_ops; }
+  void on_stroke_polyline(const nve::DrawStrokePolylineOp& op) noexcept {
+    ++stroke_polyline_ops;
+    polyline_vertices += static_cast<uint32_t>(op.points.size());
+  }
+  void on_clip_rect(const nve::DrawClipRectOp&) noexcept { ++clip_rect_ops; }
+  void on_restore_clip(const nve::DrawRestoreClipOp&) noexcept { ++restore_clip_ops; }
+};
+
+void test_draw_list_visual_tree_extraction_and_corrupt_survival() {
+  const std::vector<float> samples{12.0f, 25.0f, 18.0f, 44.0f, 39.0f, 68.0f};
+  const nve::DrawColorRgba bg_col = nve::DrawColorRgba::rgb(15u, 23u, 42u);
+  const nve::DrawColorRgba stroke_col = nve::DrawColorRgba::rgb(56u, 189u, 248u);
+
+  nve::DrawListEncoder spark_enc;
+  spark_enc.sparkline(samples, 200.0f, 80.0f, stroke_col, bg_col);
+  const std::vector<uint8_t> spark_bytes = spark_enc.finish();
+
+  nve::win::NveRnwComponentHost host;
+  const NveSurfaceConfig cfg{.surface_id = 23u, .width = 240.0f, .height = 140.0f, .scale_factor = 1.0f};
+  NVE_CHECK(host.attach_interface(&MockWinCanvasComponent::get_interface, cfg));
+  NVE_CHECK(MockWinCanvasComponent::last_instance != nullptr);
+  auto* mock = MockWinCanvasComponent::last_instance;
+
+  const auto* canvas0 = host.visual_tree().find(3u);
+  NVE_CHECK(canvas0 != nullptr && canvas0->kind == NVE_NODE_KIND_SKIA_CANVAS);
+  NVE_CHECK(canvas0->draw_list.empty());
+
+  // 1. Publish NVE_DRAW1 sparkline through text_slab and verify incremental extraction + decode!
+  const uint64_t updates_before_draw = host.visual_tree().updated_count();
+  mock->draw_list_attr = nve::encode_draw_list_attr_base64(spark_bytes);
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(host.visual_tree().updated_count() == updates_before_draw + 1u);
+
+  const auto* canvas1 = host.visual_tree().find(3u);
+  NVE_CHECK(canvas1 != nullptr);
+  NVE_CHECK(canvas1->draw_list == spark_bytes);
+  NVE_CHECK(canvas1->text.empty() && canvas1->image_src.empty());
+
+  DrawListOpCounts counts{};
+  const auto decoded = nve::decode_draw_list(canvas1->draw_list, counts);
+  NVE_CHECK(decoded.ok());
+  NVE_CHECK(counts.clear_ops == 1u);
+  NVE_CHECK(counts.fill_rounded_rect_ops == 1u);
+  NVE_CHECK(counts.clip_rect_ops == 1u);
+  NVE_CHECK(counts.stroke_line_ops == 3u);
+  NVE_CHECK(counts.fill_rect_ops == 1u);
+  NVE_CHECK(counts.stroke_polyline_ops == 1u);
+  NVE_CHECK(counts.polyline_vertices == 6u);
+  NVE_CHECK(counts.fill_circle_ops == 1u);
+  NVE_CHECK(counts.restore_clip_ops == 1u);
+
+  // 2. Sibling-only mutation updates ONLY 1 node (text 4), leaving canvas draw_list untouched!
+  const uint64_t updates_before_sibling = host.visual_tree().updated_count();
+  mock->tick = 1;
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(host.visual_tree().updated_count() == updates_before_sibling + 1u);
+  NVE_CHECK(host.visual_tree().find(4u)->text == "WinTick:1");
+  NVE_CHECK(host.visual_tree().find(3u)->draw_list == spark_bytes);
+
+  // 3. Updating sparkline bytes incrementally updates ONLY canvas node 3!
+  const std::vector<float> next_samples{5.0f, 50.0f, 95.0f};
+  nve::DrawListEncoder next_enc;
+  next_enc.sparkline(next_samples, 200.0f, 80.0f, nve::DrawColorRgba::rgb(244u, 63u, 94u), bg_col);
+  const std::vector<uint8_t> next_bytes = next_enc.finish();
+  const uint64_t updates_before_next = host.visual_tree().updated_count();
+  mock->draw_list_attr = nve::encode_draw_list_attr_base64(next_bytes);
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(host.visual_tree().updated_count() == updates_before_next + 1u);
+  NVE_CHECK(host.visual_tree().find(3u)->draw_list == next_bytes);
+
+  // 4. Corrupt NVE_DRAW1 buffers (truncated, bad magic, trailing bytes) survive extraction & decode!
+  mock->emit_corrupt_raw = true;
+  mock->corrupt_raw.assign(reinterpret_cast<const char*>(spark_bytes.data()), 18u);
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(host.visual_tree().find(3u)->draw_list.size() == 18u);
+  NVE_CHECK(!nve::validate_draw_list(host.visual_tree().find(3u)->draw_list).ok());
+
+  mock->corrupt_raw = "BAD_MAGIC_HEADER_DATA";
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(nve::validate_draw_list(host.visual_tree().find(3u)->draw_list).error ==
+            nve::DrawListError::BadMagic);
+
+  std::vector<uint8_t> with_trailing = spark_bytes;
+  with_trailing.push_back(0xEEu);
+  mock->corrupt_raw.assign(reinterpret_cast<const char*>(with_trailing.data()), with_trailing.size());
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(nve::validate_draw_list(host.visual_tree().find(3u)->draw_list).error ==
+            nve::DrawListError::TrailingBytes);
+}
+
 } // namespace
 
 int main() {
@@ -1101,6 +1321,7 @@ int main() {
   test_live_counter_dylib_if_configured();
   test_frame0_mmap_snapshot_roundtrip();
   test_image_scroll_and_incremental_scene_view();
+  test_draw_list_visual_tree_extraction_and_corrupt_survival();
 
   std::cout << "nve_windows_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI" : "Standalone") << "+"

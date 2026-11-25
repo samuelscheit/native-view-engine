@@ -1194,6 +1194,220 @@ void test_image_scroll_and_incremental_reconciliation() {
   QFile::remove(tmp_png);
 }
 
+struct MockQtCanvasApp {
+  static inline MockQtCanvasApp* last_instance = nullptr;
+  uint32_t surface_id{1};
+  std::string draw_list_attr;
+  bool emit_raw_corrupt_text{false};
+  std::string raw_corrupt_bytes;
+  int sibling_tick{0};
+  BinaryCmdHelper cmd;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockQtCanvasApp();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockQtCanvasApp*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockQtCanvasApp*>(h);
+    self->cmd.begin(self->surface_id, frame_id);
+
+    self->cmd.create_node(2, NVE_COMP_VIEW);
+    self->cmd.create_node(3, NVE_COMP_SKIA_CANVAS);
+    self->cmd.create_node(4, NVE_COMP_TEXT);
+
+    self->cmd.set_children(NVE_ROOT_NODE_ID, {2});
+    self->cmd.set_children(2, {3, 4});
+
+    self->cmd.set_layout(2, 0, 1, 240.0f, 1, 140.0f, 0.0f, 8.0f, 6.0f);
+    self->cmd.set_style(2, 0xFF0F172Au, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    self->cmd.set_layout(3, 0, 1, 200.0f, 1, 80.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_style(3, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+    if (self->emit_raw_corrupt_text) {
+      self->cmd.set_raw_prop_string(3, "drawList", "");
+      self->cmd.set_text(3, self->raw_corrupt_bytes);
+    } else {
+      self->cmd.set_raw_prop_string(3, "drawList", self->draw_list_attr);
+    }
+
+    self->cmd.set_layout(4, 0, 1, 120.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(4, "Tick:" + std::to_string(self->sibling_tick));
+    self->cmd.set_style(4, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    return self->cmd.finish();
+  }
+
+  static uint32_t dispatch_events(NveAppHandle, NveBufferSlice) { return 0; }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    return (iface == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
+  }
+};
+
+void test_draw_list_canvas_widget_and_corrupt_survival() {
+  // 1. Direct renderDrawListToPainter verification: all 8 opcodes + Studio sparkline + clip balance.
+  const std::vector<float> samples{12.0f, 24.0f, 18.0f, 42.0f, 35.0f, 64.0f};
+  const nve::DrawColorRgba bg_col = nve::DrawColorRgba::rgb(15u, 23u, 42u);
+  const nve::DrawColorRgba stroke_col = nve::DrawColorRgba::rgb(56u, 189u, 248u);
+  nve::DrawListEncoder spark_enc;
+  spark_enc.sparkline(samples, 200.0f, 80.0f, stroke_col, bg_col);
+  const std::vector<uint8_t> spark_bytes = spark_enc.finish();
+
+  {
+    QImage img(200, 80, QImage::Format_RGBA8888_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    const auto res = nve::qt::renderDrawListToPainter(p, QRectF(0.0, 0.0, 200.0, 80.0), spark_bytes);
+    NVE_CHECK(res.ok());
+    NVE_CHECK(res.ops_decoded >= 8u);
+    p.end();
+
+    // Verify background rounded-rect interior color and cyan sparkline stroke/endpoint circle pixels.
+    int bg_pixels = 0;
+    int cyan_pixels = 0;
+    for (int y = 0; y < img.height(); ++y) {
+      for (int x = 0; x < img.width(); ++x) {
+        const QColor c = img.pixelColor(x, y);
+        if (std::abs(c.red() - 15) <= 2 && std::abs(c.green() - 23) <= 2 &&
+            std::abs(c.blue() - 42) <= 2 && c.alpha() == 255) {
+          ++bg_pixels;
+        }
+        if (c.blue() > 210 && c.green() > 150 && c.red() < 90 && c.alpha() == 255) {
+          ++cyan_pixels;
+        }
+      }
+    }
+    NVE_CHECK(bg_pixels > 5000);
+    NVE_CHECK(cyan_pixels > 40);
+  }
+
+  // 2. Unbalanced clip stream (2 ClipRects, 0 RestoreClips) + extra RestoreClip must leave QPainter balanced.
+  {
+    nve::DrawListEncoder unbal;
+    unbal.clear(nve::DrawColorRgba::rgb(20u, 20u, 20u))
+        .clip_rect(10.0f, 10.0f, 30.0f, 30.0f)
+        .clip_rect(15.0f, 15.0f, 20.0f, 20.0f)
+        .fill_rect(0.0f, 0.0f, 64.0f, 64.0f, nve::DrawColorRgba::rgb(240u, 30u, 50u));
+    const std::vector<uint8_t> unbal_bytes = unbal.finish();
+
+    QImage img(64, 64, QImage::Format_RGBA8888_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    const auto res = nve::qt::renderDrawListToPainter(p, QRectF(0.0, 0.0, 64.0, 64.0), unbal_bytes);
+    NVE_CHECK(res.ok());
+    // Outer QPainter must NOT remain clipped after unbalanced stream returns!
+    NVE_CHECK(!p.hasClipping());
+    // Inside nested clip (20, 20) -> red; outside clip (4, 4) -> clear color (20, 20, 20).
+    const QColor inside = img.pixelColor(20, 20);
+    const QColor outside = img.pixelColor(4, 4);
+    NVE_CHECK(inside.red() > 220 && inside.green() < 50);
+    NVE_CHECK(std::abs(outside.red() - 20) <= 2 && std::abs(outside.green() - 20) <= 2);
+
+    // Extra RestoreClip with empty clip stack must also survive cleanly.
+    nve::DrawListEncoder extra_pop;
+    extra_pop.restore_clip().restore_clip().fill_circle(32.0f, 32.0f, 8.0f, nve::DrawColorRgba::rgb(10u, 220u, 90u));
+    const auto pop_res = nve::qt::renderDrawListToPainter(p, QRectF(0.0, 0.0, 64.0, 64.0), extra_pop.finish());
+    NVE_CHECK(pop_res.ok());
+    NVE_CHECK(!p.hasClipping());
+    p.end();
+    const QColor center = img.pixelColor(32, 32);
+    NVE_CHECK(center.green() > 200 && center.red() < 40);
+  }
+
+  // 3. Corrupt buffers (bad magic, truncated, unknown opcode, trailing bytes) must fail cleanly without painting.
+  {
+    QImage img(64, 64, QImage::Format_RGBA8888_Premultiplied);
+    img.fill(QColor(11, 22, 33, 255));
+    QPainter p(&img);
+
+    const std::vector<uint8_t> bad_magic{'B', 'A', 'D', '_', 'M', 'A', 'G', 'I', 'C', 1, 0, 0, 0, 0, 0};
+    NVE_CHECK(nve::qt::renderDrawListToPainter(p, QRectF(0, 0, 64, 64), bad_magic).error ==
+              nve::DrawListError::BadMagic);
+
+    std::vector<uint8_t> truncated = spark_bytes;
+    truncated.resize(spark_bytes.size() / 2u);
+    NVE_CHECK(!nve::qt::renderDrawListToPainter(p, QRectF(0, 0, 64, 64), truncated).ok());
+
+    std::vector<uint8_t> trailing = spark_bytes;
+    trailing.push_back(0xAAu);
+    NVE_CHECK(nve::qt::renderDrawListToPainter(p, QRectF(0, 0, 64, 64), trailing).error ==
+              nve::DrawListError::TrailingBytes);
+    p.end();
+
+    // Image must remain untouched!
+    const QColor untouched = img.pixelColor(32, 32);
+    NVE_CHECK(untouched == QColor(11, 22, 33, 255));
+  }
+
+  // 4. End-to-end NveQtWidget -> NveQtCanvasWidget caching, byte-equality skip, grab() pixels & corrupt survival.
+  nve::qt::NveQtWidget widget;
+  widget.resize(240, 140);
+  NVE_CHECK(widget.attachInterface(&MockQtCanvasApp::get_interface, 41));
+  NVE_CHECK(MockQtCanvasApp::last_instance != nullptr);
+  auto* mock = MockQtCanvasApp::last_instance;
+
+  auto* canvas = qobject_cast<nve::qt::NveQtCanvasWidget*>(widget.nativeWidgetForNodeId(3));
+  NVE_CHECK(canvas != nullptr);
+  NVE_CHECK(canvas->drawListBytes().empty());
+
+  mock->draw_list_attr = nve::encode_draw_list_attr_base64(spark_bytes);
+  NVE_CHECK(widget.renderFrame() == 0);
+  NVE_CHECK(canvas->drawListBytes().size() == spark_bytes.size());
+  NVE_CHECK(std::memcmp(canvas->drawListBytes().data(), spark_bytes.data(), spark_bytes.size()) == 0);
+  const uint64_t redraws_after_first = canvas->redrawRequestCount();
+  NVE_CHECK(redraws_after_first == 1u);
+
+  // Re-rendering with identical bytes + sibling text mutation must NOT trigger canvas redraw!
+  mock->sibling_tick = 1;
+  NVE_CHECK(widget.renderFrame() == 0);
+  NVE_CHECK(canvas->redrawRequestCount() == redraws_after_first);
+
+  widget.show();
+  QCoreApplication::processEvents();
+  const QImage grabbed = canvas->grab().toImage();
+  NVE_CHECK(!grabbed.isNull() && grabbed.width() == 200 && grabbed.height() == 80);
+  int grabbed_bg = 0;
+  int grabbed_cyan = 0;
+  for (int y = 0; y < grabbed.height(); ++y) {
+    for (int x = 0; x < grabbed.width(); ++x) {
+      const QColor c = grabbed.pixelColor(x, y);
+      if (std::abs(c.red() - 15) <= 2 && std::abs(c.green() - 23) <= 2 &&
+          std::abs(c.blue() - 42) <= 2) {
+        ++grabbed_bg;
+      }
+      if (c.blue() > 210 && c.green() > 150 && c.red() < 90) {
+        ++grabbed_cyan;
+      }
+    }
+  }
+  NVE_CHECK(grabbed_bg > 5000);
+  NVE_CHECK(grabbed_cyan > 40);
+
+  // Updating drawList bytes triggers exactly 1 new redraw and paints the new accent color!
+  nve::DrawListEncoder violet_enc;
+  violet_enc.sparkline(samples, 200.0f, 80.0f, nve::DrawColorRgba::rgb(236u, 72u, 153u), bg_col);
+  mock->draw_list_attr = violet_enc.to_attr_string();
+  NVE_CHECK(widget.renderFrame() == 0);
+  NVE_CHECK(canvas->redrawRequestCount() == redraws_after_first + 1u);
+
+  // Feeding raw corrupt bytes via text_slab must survive grab() cleanly without crash.
+  mock->emit_raw_corrupt_text = true;
+  mock->raw_corrupt_bytes.assign(reinterpret_cast<const char*>(spark_bytes.data()), 19u);
+  NVE_CHECK(widget.renderFrame() == 0);
+  const QImage corrupt_grab = canvas->grab().toImage();
+  NVE_CHECK(!corrupt_grab.isNull() && corrupt_grab.width() == 200 && corrupt_grab.height() == 80);
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -1205,6 +1419,7 @@ int main(int argc, char* argv[]) {
   test_frame0_mmap_snapshot_roundtrip();
   test_accessibility_and_ime_text_input();
   test_image_scroll_and_incremental_reconciliation();
+  test_draw_list_canvas_widget_and_corrupt_survival();
 
   std::cout << "nve_qt_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6" : "Standalone+Qt6") << ")\n";

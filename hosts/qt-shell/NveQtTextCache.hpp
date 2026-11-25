@@ -12,7 +12,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -42,6 +44,15 @@ QImage rasterizeTextImage(
     qreal dpr,
     bool is_text_input,
     bool focused,
+    QSizeF& out_logical_size);
+
+/// Rasterize an `NVE_DRAW1` binary draw list into a HiDPI premultiplied RGBA `QImage`.
+/// Returns a null `QImage` when `bytes` is empty or fails validation.
+QImage rasterizeDrawListImage(
+    std::span<const uint8_t> bytes,
+    float layout_w,
+    float layout_h,
+    qreal dpr,
     QSizeF& out_logical_size);
 
 /// Cached per-node GPU text texture owned on the Scene Graph render thread.
@@ -87,7 +98,37 @@ struct ImageTextureCacheEntry {
   uint64_t last_used_generation{0};
 };
 
-/// Render-thread GPU texture cache for both rasterized text nodes and decoded `Image` nodes.
+/// Cached per-node GPU canvas texture rasterized from `NVE_DRAW1` bytes, keyed by
+/// `(node_id, quant_w, quant_h, quant_dpr, byte_hash, bytes)`.
+struct CanvasTextureCacheEntry {
+  int quant_w{0};
+  int quant_h{0};
+  int quant_dpr{100};
+  uint64_t byte_hash{0};
+  std::vector<uint8_t> bytes;
+
+  std::unique_ptr<QSGTexture> texture;
+  QSizeF logical_size;
+  uint64_t last_used_generation{0};
+  uint64_t texture_generation{0};
+
+  bool matches(
+      int next_qw,
+      int next_qh,
+      int next_qdpr,
+      uint64_t next_hash,
+      std::span<const uint8_t> next_bytes) const noexcept {
+    return quant_w == next_qw &&
+           quant_h == next_qh &&
+           quant_dpr == next_qdpr &&
+           byte_hash == next_hash &&
+           bytes.size() == next_bytes.size() &&
+           (next_bytes.empty() ||
+            std::memcmp(bytes.data(), next_bytes.data(), next_bytes.size()) == 0);
+  }
+};
+
+/// Render-thread GPU texture cache for rasterized text, decoded `Image`, and `NVE_DRAW1` canvas nodes.
 class NveQtTextCache {
  public:
   NveQtTextCache() = default;
@@ -121,8 +162,25 @@ class NveQtTextCache {
       QQuickWindow* win,
       QSizeF& out_image_size);
 
+  /// Acquire or rasterize a HiDPI GPU canvas texture for `NVE_NODE_KIND_SKIA_CANVAS`, keyed by
+  /// `(node_id, width, height, byte_hash)`. Returns `nullptr` for empty or corrupt draw lists.
+  QSGTexture* acquireCanvasTexture(
+      uint32_t node_id,
+      std::span<const uint8_t> bytes,
+      float layout_w,
+      float layout_h,
+      qreal dpr,
+      int dpr_centis,
+      uint64_t scene_generation,
+      QQuickWindow* win,
+      QSizeF& out_logical_size,
+      bool& out_rasterized);
+
   /// Immediately release the cached GPU text texture for a removed or non-text node.
   void eraseText(uint32_t node_id);
+
+  /// Immediately release the cached GPU canvas texture for a removed or non-canvas node.
+  void eraseCanvas(uint32_t node_id);
 
   /// Release cached text textures whose `node_id` is not present in `live_text_nodes`.
   template <typename Predicate>
@@ -148,22 +206,40 @@ class NveQtTextCache {
     }
   }
 
+  /// Release cached canvas textures whose `node_id` is no longer a live canvas node.
+  template <typename Predicate>
+  void pruneCanvasIf(Predicate&& should_erase) {
+    for (auto it = canvas_cache_.begin(); it != canvas_cache_.end();) {
+      if (should_erase(it->first)) {
+        it = canvas_cache_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
   void clear();
 
   uint32_t textCount() const noexcept { return static_cast<uint32_t>(text_cache_.size()); }
   uint32_t imageCount() const noexcept { return static_cast<uint32_t>(image_cache_.size()); }
+  uint32_t canvasCount() const noexcept { return static_cast<uint32_t>(canvas_cache_.size()); }
   uint64_t totalRasterizations() const noexcept { return total_rasterizations_; }
   uint64_t totalCacheHits() const noexcept { return total_cache_hits_; }
+  uint64_t totalCanvasRasterizations() const noexcept { return total_canvas_rasterizations_; }
+  uint64_t totalCanvasCacheHits() const noexcept { return total_canvas_cache_hits_; }
   void addRetainedCacheHits(uint64_t hits) noexcept { total_cache_hits_ += hits; }
 
  private:
   std::unordered_map<uint32_t, TextTextureCacheEntry> text_cache_;
   std::unordered_map<std::string, ImageTextureCacheEntry> image_cache_;
+  std::unordered_map<uint32_t, CanvasTextureCacheEntry> canvas_cache_;
   uint64_t total_rasterizations_{0};
   uint64_t total_cache_hits_{0};
+  uint64_t total_canvas_rasterizations_{0};
+  uint64_t total_canvas_cache_hits_{0};
 };
 
-/// Resolved GPU texture and geometry rects for a leaf text, TextInput, or Image node.
+/// Resolved GPU texture and geometry rects for a leaf text, TextInput, Image, or Canvas node.
 struct ResolvedContentTexture {
   QSGTexture* texture{nullptr};
   QRectF dst_rect;
@@ -171,6 +247,7 @@ struct ResolvedContentTexture {
   bool use_src_rect{false};
   bool is_text{false};
   bool is_image{false};
+  bool is_canvas{false};
   std::string image_uri;
 };
 

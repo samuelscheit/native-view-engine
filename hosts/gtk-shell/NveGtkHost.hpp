@@ -1,7 +1,9 @@
 #pragma once
 
+#include "nve_draw_list.hpp"
 #include "nve_host_runtime.hpp"
 
+#include <cairo.h>
 #include <gtk/gtk.h>
 
 #include <cstdint>
@@ -101,6 +103,15 @@ class GtkTextureLruCache {
   uint64_t hits_{0};
   uint64_t misses_{0};
 };
+
+/// Stream-decode and paint all 8 `NVE_DRAW1` opcodes onto a Cairo context (`cairo_t*`).
+/// Validates the payload first and guarantees balanced `cairo_save()` / `cairo_restore()`
+/// even on corrupt payloads or unbalanced clip stacks.
+DrawListDecodeResult render_draw_list_to_cairo(
+    cairo_t* cr,
+    double width,
+    double height,
+    std::span<const uint8_t> bytes) noexcept;
 
 /// Native GTK4 host shell backed by `nve::NativeHostSession` and
 /// `nve::IncrementalSceneReconciler<GtkWidget*, GtkViewAdapter>`.
@@ -215,6 +226,10 @@ class NveGtkHost {
   /// Access the bounded `GdkTexture` LRU image cache (for inspection/tests).
   const GtkTextureLruCache& texture_cache() const noexcept { return texture_cache_; }
 
+  /// Inspect cached `NVE_DRAW1` bytes and redraw count for a `NVE_NODE_KIND_SKIA_CANVAS` node.
+  std::span<const uint8_t> canvas_draw_list_for_node_id(uint32_t node_id) const noexcept;
+  uint64_t canvas_redraw_count_for_node_id(uint32_t node_id) const noexcept;
+
   void set_event_callback(EventCallback callback);
 
   const NativeHostSession& session() const noexcept { return session_; }
@@ -282,6 +297,14 @@ class NveGtkHost {
     std::string last_dispatched_text;
   };
 
+  struct CanvasBinding {
+    NveGtkHost* host{nullptr};
+    uint32_t node_id{0};
+    GtkWidget* drawing_area{nullptr};
+    std::vector<uint8_t> draw_list_bytes;
+    uint64_t redraw_count{0};
+  };
+
   struct WindowBinding {
     GtkWindow* window{nullptr};
     gulong width_handler{0};
@@ -297,6 +320,8 @@ class NveGtkHost {
   void apply_picture_fit(GtkWidget* picture, const std::string& resize_mode);
   EntryBinding* ensure_entry_binding(uint32_t node_id, GtkWidget* widget);
   void remove_entry_binding(uint32_t node_id, GtkWidget* widget);
+  CanvasBinding* ensure_canvas_binding(uint32_t node_id, GtkWidget* widget);
+  void remove_canvas_binding(uint32_t node_id, GtkWidget* widget);
   ScrollBinding* ensure_scroll_binding(uint32_t node_id, GtkWidget* widget);
   void remove_scroll_binding(uint32_t node_id);
   uint32_t dispatch_single_direct_event(const NveDirectEvent& ev);
@@ -326,6 +351,12 @@ class NveGtkHost {
   static void on_entry_activate(GtkEntry* entry, gpointer user_data);
   static void on_entry_focus_enter(GtkEventControllerFocus* controller, gpointer user_data);
   static void on_entry_focus_leave(GtkEventControllerFocus* controller, gpointer user_data);
+  static void on_canvas_draw(
+      GtkDrawingArea* area,
+      cairo_t* cr,
+      int width,
+      int height,
+      gpointer user_data);
   static gboolean on_tick_callback(
       GtkWidget* widget,
       GdkFrameClock* frame_clock,
@@ -361,6 +392,7 @@ class NveGtkHost {
   std::unordered_map<uint32_t, std::unique_ptr<ClickBinding>> click_bindings_;
   std::unordered_map<uint32_t, std::unique_ptr<ScrollBinding>> scroll_bindings_;
   std::unordered_map<uint32_t, std::unique_ptr<EntryBinding>> entry_bindings_;
+  std::unordered_map<uint32_t, std::unique_ptr<CanvasBinding>> canvas_bindings_;
   std::unordered_map<uint32_t, std::string> node_css_;
   std::string root_css_;
   std::string active_css_;

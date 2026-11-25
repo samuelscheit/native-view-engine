@@ -186,7 +186,11 @@ void detachMountedChildren(NveSGRootNode& root, RetainedSGNodeSlot& slot) {
 
 void destroySlot(NveSGRootNode& root, uint32_t node_id) {
   auto it = root.slots_.find(node_id);
-  if (it == root.slots_.end()) { root.cache_.eraseText(node_id); return; }
+  if (it == root.slots_.end()) {
+    root.cache_.eraseText(node_id);
+    root.cache_.eraseCanvas(node_id);
+    return;
+  }
   RetainedSGNodeSlot& slot = it->second;
   detachMountedChildren(root, slot);
   if (slot.parent_id != 0u) {
@@ -201,6 +205,7 @@ void destroySlot(NveSGRootNode& root, uint32_t node_id) {
     slot.wrapper = nullptr;
   }
   root.cache_.eraseText(node_id);
+  root.cache_.eraseCanvas(node_id);
   root.slots_.erase(it);
 }
 
@@ -291,6 +296,7 @@ void updateSlotContentTexture(
     slot.content_tex_node->setSourceRect(res.use_src_rect ? res.src_rect : QRectF(0.0, 0.0, ts.width(), ts.height()));
     slot.has_text_texture = res.is_text;
     slot.has_image_texture = res.is_image;
+    slot.has_canvas_texture = res.is_canvas;
     slot.active_image_uri = std::move(res.image_uri);
   } else {
     QSGNode* tex_base = slot.content_tex_node;
@@ -298,6 +304,7 @@ void updateSlotContentTexture(
     slot.content_tex_node = nullptr;
     slot.has_text_texture = false;
     slot.has_image_texture = false;
+    slot.has_canvas_texture = false;
     slot.active_image_uri.clear();
   }
 }
@@ -329,7 +336,8 @@ void upsertSlot(
   const bool needs_clip =
       (w > 0.0f && h > 0.0f) &&
       (node.kind == NVE_NODE_KIND_SCROLL_VIEW || node.kind == NVE_NODE_KIND_TEXT_INPUT ||
-       (node.kind == NVE_NODE_KIND_IMAGE && node.border_radius > kMinRadiusForTessellation) ||
+       ((node.kind == NVE_NODE_KIND_IMAGE || node.kind == NVE_NODE_KIND_SKIA_CANVAS) &&
+        node.border_radius > kMinRadiusForTessellation) ||
        ((node.flags & NVE_NODE_CLIP_BOUNDS) != 0u && node.child_count > 0u));
 
   QPointF scroll_off;
@@ -425,6 +433,7 @@ void computeStats(const NveSGRootNode& root, SceneGraphStats& out) {
       ++out.totalSGNodes;
       if (slot.has_text_texture) ++out.textTextureNodes;
       else if (slot.has_image_texture) ++out.imageTextureNodes;
+      else if (slot.has_canvas_texture) ++out.canvasTextureNodes;
     }
     if (slot.border_node) { ++out.totalSGNodes; ++out.geometryNodes; }
   }
@@ -509,6 +518,10 @@ QSGNode* syncRetainedSceneGraph(
     auto it = root->slots_.find(nid);
     return it == root->slots_.end() || !it->second.has_text_texture;
   });
+  root->cache_.pruneCanvasIf([&](uint32_t nid) {
+    auto it = root->slots_.find(nid);
+    return it == root->slots_.end() || !it->second.has_canvas_texture;
+  });
   std::unordered_set<std::string> live_uris;
   for (const auto& [_, slot] : root->slots_) {
     if (slot.has_image_texture && !slot.active_image_uri.empty()) live_uris.insert(slot.active_image_uri);
@@ -527,8 +540,11 @@ QSGNode* syncRetainedSceneGraph(
   root->last_built_dpr_centis = ctx.dpr_centis;
   next_stats.textRasterizations = root->cache_.totalRasterizations();
   next_stats.textCacheHits = root->cache_.totalCacheHits();
+  next_stats.canvasRasterizations = root->cache_.totalCanvasRasterizations();
+  next_stats.canvasCacheHits = root->cache_.totalCanvasCacheHits();
   next_stats.cachedTextTextures = root->cache_.textCount();
   next_stats.cachedImageTextures = root->cache_.imageCount();
+  next_stats.cachedCanvasTextures = root->cache_.canvasCount();
   next_stats.dirtyNodesUpdated = dirty_updated;
   next_stats.retainedNodesReused =
       (root->slots_.size() >= dirty_updated) ? static_cast<uint64_t>(root->slots_.size() - dirty_updated) : 0u;

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 namespace nve::win {
@@ -107,14 +108,27 @@ void NveWinVisualTree::Adapter::update_view(
   if (node.kind == NVE_NODE_KIND_IMAGE) {
     visual.image_src.assign(payload.data(), payload.size());
     visual.text.clear();
+    visual.draw_list.clear();
     if (raw_props != nullptr) {
       const auto it = raw_props->find(node.node_id);
       visual.resize_mode =
           (it != raw_props->end()) ? extract_resize_mode(&it->second) : ImageResizeMode::Cover;
     }
+  } else if (node.kind == NVE_NODE_KIND_SKIA_CANVAS) {
+    const auto* raw_ptr = reinterpret_cast<const uint8_t*>(payload.data());
+    const bool same =
+        visual.draw_list.size() == payload.size() &&
+        (payload.empty() ||
+         std::memcmp(visual.draw_list.data(), raw_ptr, payload.size()) == 0);
+    if (!same) {
+      visual.draw_list.assign(raw_ptr, raw_ptr + payload.size());
+    }
+    visual.text.clear();
+    visual.image_src.clear();
   } else {
     visual.text.assign(payload.data(), payload.size());
     visual.image_src.clear();
+    visual.draw_list.clear();
   }
 
   visual.layout = nve::LayoutRect{node.x, node.y, node.width, node.height};
