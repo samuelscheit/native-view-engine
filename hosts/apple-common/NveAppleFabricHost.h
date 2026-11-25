@@ -31,7 +31,8 @@ NS_ASSUME_NONNULL_BEGIN
                            error:(NSError * _Nullable * _Nullable)error;
 - (void)setSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor;
 - (int32_t)renderNextFrame;
-- (BOOL)applyHotPatchJson:(NSString *)patchJson;
+/// Applies one binary `NVP1` Tier-1 hot-patch frame exactly as `nve dev` broadcasts it.
+- (BOOL)applyHotPatch:(NSData *)patchNvp1;
 
 @end
 

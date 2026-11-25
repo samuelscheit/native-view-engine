@@ -135,10 +135,10 @@ struct MockEmbeddedRustComponent {
     return dirty;
   }
 
-  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_json) {
+  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch) {
     auto* self = static_cast<MockEmbeddedRustComponent*>(h);
     self->last_props_json.assign(
-        reinterpret_cast<const char*>(patch_json.ptr), patch_json.len);
+        reinterpret_cast<const char*>(patch.ptr), patch.len);
     return 1;
   }
 

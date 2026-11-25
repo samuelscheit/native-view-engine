@@ -10,6 +10,7 @@ pub use canvas_ir::{
     NVE_DRAW_VERSION,
 };
 
+use nve_abi::num::parse_f32;
 use nve_abi::{
     ColorRgba, ComponentKind, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify,
     LayoutProps, StyleProps,
@@ -129,12 +130,12 @@ fn apply_typed_attr_single(
             };
         }
         "flex" | "flex-grow" | "flexGrow" => {
-            if let Ok(v) = value.parse::<f32>() {
+            if let Some(v) = parse_f32(value) {
                 layout.flex_grow = v;
             }
         }
         "flex-shrink" | "flexShrink" => {
-            if let Ok(v) = value.parse::<f32>() {
+            if let Some(v) = parse_f32(value) {
                 layout.flex_shrink = v;
             }
         }
@@ -191,7 +192,7 @@ fn apply_typed_attr_single(
             }
         }
         "opacity" => {
-            if let Ok(v) = value.parse::<f32>() {
+            if let Some(v) = parse_f32(value) {
                 style.opacity = v.clamp(0.0, 1.0);
             }
         }
@@ -212,7 +213,7 @@ fn apply_typed_attr_single(
 
 pub fn parse_px(raw: &str) -> Option<f32> {
     let s = raw.trim().strip_suffix("px").unwrap_or(raw.trim());
-    s.parse::<f32>().ok()
+    parse_f32(s)
 }
 
 pub fn parse_dim(raw: &str) -> Dimension {
@@ -220,8 +221,7 @@ pub fn parse_dim(raw: &str) -> Dimension {
     if s.eq_ignore_ascii_case("auto") {
         Dimension::Auto
     } else if let Some(pct) = s.strip_suffix('%') {
-        pct.trim()
-            .parse::<f32>()
+        parse_f32(pct.trim())
             .map(Dimension::Percent)
             .unwrap_or(Dimension::Auto)
     } else {
@@ -283,6 +283,34 @@ mod tests {
         assert_eq!(s.background, ColorRgba::rgb(15, 23, 42));
         assert_eq!(s.text_color, ColorRgba::WHITE);
         assert_eq!(s.border_radius, 8.0);
+    }
+
+    #[test]
+    fn numeric_style_values_use_the_fixed_point_parser() {
+        assert_eq!(parse_px("12px"), Some(12.0));
+        assert_eq!(parse_px(" 12.5 "), Some(12.5));
+        assert_eq!(parse_px("-0px").map(f32::to_bits), Some((-0.0f32).to_bits()));
+        assert_eq!(parse_px("1e2px"), Some(100.0));
+        assert_eq!(parse_px(".5"), Some(0.5));
+        for bad in ["", "px", "12 px", "12pt", "inf", "NaN", "1e39", "0x10", "1,5px", "--1"] {
+            assert_eq!(parse_px(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_dim("33.5%"), Dimension::Percent(33.5));
+        assert_eq!(parse_dim(" 50 % "), Dimension::Percent(50.0));
+        assert_eq!(parse_dim("AUTO"), Dimension::Auto);
+        assert_eq!(parse_dim("abc%"), Dimension::Auto);
+        assert_eq!(parse_dim("7px"), Dimension::Points(7.0));
+
+        let mut l = LayoutProps::default();
+        let mut s = StyleProps::default();
+        assert!(apply_typed_attr(&mut l, &mut s, "flex-grow", "2.5"));
+        assert!(apply_typed_attr(&mut l, &mut s, "flexShrink", "0"));
+        assert!(apply_typed_attr(&mut l, &mut s, "opacity", "1.5"));
+        assert_eq!((l.flex_grow, l.flex_shrink, s.opacity), (2.5, 0.0, 1.0));
+        // Malformed numbers leave the previous value untouched.
+        assert!(apply_typed_attr(&mut l, &mut s, "flex-grow", "fast"));
+        assert!(apply_typed_attr(&mut l, &mut s, "opacity", "nan"));
+        assert_eq!((l.flex_grow, s.opacity), (2.5, 1.0));
     }
 
     #[test]

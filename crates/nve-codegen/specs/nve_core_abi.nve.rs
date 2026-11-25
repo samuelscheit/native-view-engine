@@ -332,7 +332,9 @@ pub trait NveComponentApiSpec {
 /// Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds).
 #[nve_hybrid_module(name = "Dev", interface_id = 4, c_name = "NveDevApi")]
 pub trait NveDevApiSpec {
-    fn apply_hot_patch(&mut self, patch_json: NveBufferSlice) -> u32;
+    /// Applies one binary `NVP1` `HotPatchMsg` frame exactly as broadcast by `nve dev`
+    /// (returns 1 when the app changed; 0 for non-template or malformed frames).
+    fn apply_hot_patch(&mut self, patch_nvp1: NveBufferSlice) -> u32;
     fn snapshot_state(&self) -> NveBufferSlice;
     fn restore_state(&mut self, state: NveBufferSlice);
 }

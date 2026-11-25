@@ -3,21 +3,26 @@
 //! (`ProgressiveIslandHost`), and a live `RawStyleProps`/semantic HTML5 SSR probe.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 use std::rc::Rc;
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, EdgeInsets, EventMask, LayoutProps, NodeId,
-    RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
-};
-use nve_backend_web::{SsrDocumentOptions, WebBackend};
-use nve_engine::{RenderBackend, Viewport};
+use nve_abi::NodeId;
+#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+use nve_abi::SurfaceId;
+#[cfg(feature = "app-studio")]
+use nve_backend_web::SsrDocumentOptions;
+#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+use nve_backend_web::WebBackend;
+#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+use nve_engine::Viewport;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler};
-use crate::session::{WebAppSession, PREINIT_SURFACE_ID};
+#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
+#[cfg(any(feature = "app-studio", feature = "app-counter"))]
 use crate::wasm_api::{start_surface_app_inner, WebAppController};
 
 #[wasm_bindgen(inline_js = "
@@ -153,6 +158,7 @@ impl SsrRenderResult {
 
 /// Renders StudioWorkspace Frame 0 into a headless `WebBackend` and returns its Semantic HTML5 +
 /// Option 5 Hybrid CSS SSR payload without touching the live DOM.
+#[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn render_studio_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
     let vp = Viewport {
@@ -160,33 +166,37 @@ pub fn render_studio_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
         height: 800.0,
         scale_factor: 1.0,
     };
-    let mut session = WebAppSession::new_studio_workspace(PREINIT_SURFACE_ID, WebBackend::new(), vp);
+    let mut session = WebAppSession::new_studio_workspace(DEFAULT_SURFACE_ID, WebBackend::new(), vp);
     session
         .render_initial()
         .map_err(|e| JsValue::from_str(&format!("studio SSR render failed: {e}")))?;
     Ok(SsrRenderResult::from_output(session.backend().render_ssr()))
 }
 
+#[cfg(feature = "app-counter")]
 #[wasm_bindgen]
 pub fn render_counter_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
-    let mut session = WebAppSession::new_counter(PREINIT_SURFACE_ID, WebBackend::new(), Viewport::default());
+    let mut session = WebAppSession::new_counter(DEFAULT_SURFACE_ID, WebBackend::new(), Viewport::default());
     session.render_initial().map_err(|e| JsValue::from_str(&format!("counter SSR render failed: {e}")))?;
     Ok(SsrRenderResult::from_output(session.backend().render_ssr()))
 }
 
+#[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn render_studio_ssr_document(title: &str) -> Result<String, JsValue> {
     let vp = Viewport { width: 1280.0, height: 800.0, scale_factor: 1.0 };
-    let mut session = WebAppSession::new_studio_workspace(PREINIT_SURFACE_ID, WebBackend::new(), vp);
+    let mut session = WebAppSession::new_studio_workspace(DEFAULT_SURFACE_ID, WebBackend::new(), vp);
     session.render_initial().map_err(|e| JsValue::from_str(&format!("studio SSR document render failed: {e}")))?;
     Ok(session.backend().render_ssr_document(&SsrDocumentOptions { title: title.to_owned(), ..Default::default() }))
 }
 
+#[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn hydrate_studio_workspace_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
-    hydrate_studio_workspace_app_on_surface(PREINIT_SURFACE_ID, mount_id, ws_url)
+    hydrate_studio_workspace_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
 }
 
+#[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn hydrate_studio_workspace_app_on_surface(
     surface_id: SurfaceId,
@@ -196,11 +206,13 @@ pub fn hydrate_studio_workspace_app_on_surface(
     start_surface_app_inner("StudioWorkspaceApp", surface_id, mount_id, ws_url, true, WebAppSession::new_studio_workspace)
 }
 
+#[cfg(feature = "app-counter")]
 #[wasm_bindgen]
 pub fn hydrate_counter_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
-    hydrate_counter_app_on_surface(PREINIT_SURFACE_ID, mount_id, ws_url)
+    hydrate_counter_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
 }
 
+#[cfg(feature = "app-counter")]
 #[wasm_bindgen]
 pub fn hydrate_counter_app_on_surface(
     surface_id: SurfaceId,
@@ -208,97 +220,6 @@ pub fn hydrate_counter_app_on_surface(
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner("CounterApp", surface_id, mount_id, ws_url, true, WebAppSession::new_counter)
-}
-
-/// Hydrates a semantic HTML5 + `RawStyleProps` (`box-shadow`/`font-weight`/`text-align`)
-/// CommandBuffer into `#<mount_id>`, returning the mismatch count (0 on clean hydration).
-#[wasm_bindgen]
-pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsValue> {
-    let doc = web_sys::window()
-        .and_then(|w| w.document())
-        .ok_or_else(|| JsValue::from_str("missing document"))?;
-    let container = doc
-        .get_element_by_id(mount_id)
-        .ok_or_else(|| JsValue::from_str(&format!("mount '#{mount_id}' not found")))?;
-
-    let mut b = CommandBufferBuilder::new(99, 1);
-    b.create_node(2, ComponentKind::View, None);
-    b.set_raw_prop(2, "testID", &RawPropValue::String("probe-card".into()));
-    b.set_raw_prop(2, "accessibilityRole", &RawPropValue::String("article".into()));
-    b.set_raw_prop(
-        2,
-        "box-shadow",
-        &RawPropValue::String("0 8px 24px rgba(0, 0, 0, 0.45)".into()),
-    );
-    b.set_layout(
-        2,
-        &LayoutProps {
-            padding: EdgeInsets::all(12.0),
-            ..Default::default()
-        },
-    );
-    b.set_style(
-        2,
-        &StyleProps {
-            background: ColorRgba::rgb(17, 24, 39),
-            border_radius: 10.0,
-            ..Default::default()
-        },
-    );
-
-    b.create_node(3, ComponentKind::Text, None);
-    b.set_raw_prop(3, "testID", &RawPropValue::String("probe-heading".into()));
-    b.set_raw_prop(3, "accessibilityRole", &RawPropValue::String("heading".into()));
-    b.set_raw_prop(3, "ariaLevel", &RawPropValue::I64(1));
-    b.set_raw_prop(3, "font-weight", &RawPropValue::String("700".into()));
-    b.set_raw_prop(3, "text-align", &RawPropValue::String("center".into()));
-    b.set_style(
-        3,
-        &StyleProps {
-            text_color: ColorRgba::WHITE,
-            font_size: 20.0,
-            ..Default::default()
-        },
-    );
-    b.set_text(3, "Semantic SSR Heading");
-
-    b.create_node(4, ComponentKind::Pressable, None);
-    b.set_raw_prop(4, "testID", &RawPropValue::String("probe-link".into()));
-    b.set_raw_prop(4, "accessibilityRole", &RawPropValue::String("link".into()));
-    b.set_raw_prop(4, "href", &RawPropValue::String("/docs/ssr".into()));
-    b.set_event_mask(4, EventMask::PRESS);
-    b.set_text(4, "Docs Link");
-
-    b.set_children(2, &[3, 4]);
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    let frame = b.finish().to_vec();
-
-    // 1. Server render SSR HTML + styles into container if empty.
-    if container.query_selector("[data-nve-ssr-hash]").ok().flatten().is_none() {
-        let mut server = WebBackend::new();
-        server
-            .submit_frame(&frame)
-            .map_err(|e| JsValue::from_str(&format!("probe server render failed: {e}")))?;
-        let ssr = server.render_ssr();
-        if let Ok(style_el) = doc.create_element("style") {
-            let _ = style_el.set_attribute("data-nve-ssr", "");
-            let _ = style_el.set_attribute("data-nve-hashes", &ssr.rule_hashes.join(","));
-            style_el.set_text_content(Some(&ssr.style_css));
-            if let Some(head) = doc.query_selector("head").ok().flatten() {
-                let _ = head.append_child(&style_el);
-            }
-        }
-        container.set_inner_html(&ssr.html);
-    }
-
-    // 2. Hydrate in-place and return mismatch count.
-    let mut client = WebBackend::hydrate_into(container);
-    client
-        .submit_frame(&frame)
-        .map_err(|e| JsValue::from_str(&format!("probe hydrate failed: {e}")))?;
-    let mismatches = client.hydration_report().mismatches.len();
-    Ok(mismatches)
 }
 
 struct InteractionCaptureHandle {
@@ -487,7 +408,7 @@ impl ProgressiveIslandHost {
         let scheduler = Rc::new(RefCell::new(IslandHydrationScheduler::new()));
         let replayed_count = Rc::new(Cell::new(0usize));
         let island_elements: Rc<RefCell<HashMap<String, web_sys::Element>>> =
-            Rc::new(RefCell::new(HashMap::new()));
+            Rc::new(RefCell::new(HashMap::default()));
 
         let mut visible_els = Vec::new();
         let mut interaction_els = Vec::new();

@@ -2,7 +2,7 @@
 //! `nve_abi::CommandBuffer` with single-pass `DRAW_LIST_ATTR_PREFIX` -> `RawPropValue::Bytes`
 //! decoding and persistent zero-alloc scratch buffers.
 
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 
 use dioxus_core::{AttributeValue, ElementId, Template, TemplateAttribute, TemplateNode, WriteMutations};
 use nve_abi::{
@@ -96,9 +96,9 @@ pub struct NveMutationWriter {
 
 impl NveMutationWriter {
     pub fn new(surface_id: SurfaceId) -> Self {
-        let mut el_to_node = HashMap::with_capacity(16);
-        let mut node_to_el = HashMap::with_capacity(16);
-        let mut nodes = HashMap::with_capacity(16);
+        let mut el_to_node = HashMap::with_capacity_and_hasher(16, Default::default());
+        let mut node_to_el = HashMap::with_capacity_and_hasher(16, Default::default());
+        let mut nodes = HashMap::with_capacity_and_hasher(16, Default::default());
         el_to_node.insert(ElementId(0), ROOT_NODE_ID);
         node_to_el.insert(ROOT_NODE_ID, ElementId(0));
         nodes.insert(
@@ -725,10 +725,14 @@ impl WriteMutations for NveMutationWriter {
         match value {
             AttributeValue::Text(s) => self.apply_str_attr(node_id, name, s),
             AttributeValue::Float(f) => {
-                self.apply_str_attr(node_id, name, &f.to_string());
+                let mut s = String::new();
+                nve_abi::num::write_f64(&mut s, *f);
+                self.apply_str_attr(node_id, name, &s);
             }
             AttributeValue::Int(i) => {
-                self.apply_str_attr(node_id, name, &i.to_string());
+                let mut s = String::new();
+                nve_abi::num::write_i64(&mut s, *i);
+                self.apply_str_attr(node_id, name, &s);
             }
             AttributeValue::Bool(b) => {
                 let prop_name = canonical_a11y_attr_key(name).unwrap_or(name);

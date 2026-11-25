@@ -10,7 +10,7 @@
 
 use std::any::TypeId;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 use std::rc::Rc;
 
 use dioxus_core::{
@@ -61,7 +61,7 @@ impl ReactiveTraitStore {
                 store,
                 owner_scope,
                 builtin_signals: [None; BUILTIN_TRAIT_COUNT],
-                custom_signals: HashMap::new(),
+                custom_signals: HashMap::default(),
                 any_signal: None,
             })),
         }

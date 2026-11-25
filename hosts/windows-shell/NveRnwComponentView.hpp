@@ -254,7 +254,7 @@ class NveRnwComponentHost {
   void set_surface_size(float width, float height, float scale_factor = 0.0f);
 
   bool update_props_json(std::string_view props_json);
-  bool apply_hot_patch_json(std::string_view patch_json);
+  bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   int32_t render_frame(NveFrameStats* out_stats = nullptr);
 
   uint32_t dispatch_press(uint32_t node_id, float local_x, float local_y);

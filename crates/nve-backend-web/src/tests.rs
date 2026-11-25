@@ -78,7 +78,7 @@ fn css_into_writers_match_wrappers_and_reuse_buffers() {
     assert_eq!(buf, style_to_css(&style));
     assert_eq!(buf.capacity(), cap_before);
     assert!(buf.contains("background-color:rgba(17,24,39,0.502);"));
-    assert!(buf.contains("border:2px solid rgba(56,189,248,1.000);"));
+    assert!(buf.contains("border:2px solid rgba(56,189,248,1);"));
     assert!(buf.contains("z-index:5;"));
 }
 
@@ -120,7 +120,7 @@ fn updates_style_and_layout_incrementally() {
     assert!(css1.contains("flex-direction:row;"));
     assert!(css1.contains("min-width:120px;"));
     assert!(css1.contains("max-width:480px;"));
-    assert!(css1.contains("background-color:rgba(37,99,235,1.000);"));
+    assert!(css1.contains("background-color:rgba(37,99,235,1);"));
     assert!(css1.contains("border-radius:12px;"));
 
     let mut b2 = CommandBufferBuilder::new(1, 2);
@@ -142,7 +142,7 @@ fn updates_style_and_layout_incrementally() {
     let css2 = web.node(2).unwrap().combined_css();
     assert!(css2.contains("flex-direction:row;"));
     assert!(css2.contains("padding:16px 16px 16px 16px;"));
-    assert!(css2.contains("background-color:rgba(15,23,42,1.000);"));
+    assert!(css2.contains("background-color:rgba(15,23,42,1);"));
     assert!(css2.contains("border-radius:20px;"));
     assert!(css2.contains("opacity:0.75;"));
 }

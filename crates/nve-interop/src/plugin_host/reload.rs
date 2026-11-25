@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
@@ -34,8 +34,8 @@ impl NvePluginHost {
         Self {
             next_plugin_id: 1,
             next_surface_id: base_surface_id.max(1),
-            slots: HashMap::new(),
-            name_index: HashMap::new(),
+            slots: HashMap::default(),
+            name_index: HashMap::default(),
         }
     }
 

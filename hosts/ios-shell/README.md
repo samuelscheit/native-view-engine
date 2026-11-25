@@ -35,7 +35,7 @@ At runtime `main.mm` mounts `RCTNveComponentView` pinned inside the root view co
 
 Links prebuilt React Native Fabric XCFrameworks (`ReactNativeDependencies`, `React-Fabric`) plus `cxx/nve-fabric-bridge` **once**:
 
-- **Tier 1 (<50 ms, Simulator & physical iPhone):** `nve dev` pushes JSON `HotPatchMsg::TemplatePatch` messages over WebSocket to `-[NveFabricHostController applyHotPatchJson:]`.
+- **Tier 1 (<50 ms, Simulator & physical iPhone):** `nve dev` pushes binary `NVP1` `HotPatchMsg::TemplatePatch` frames over WebSocket; the host forwards the bytes unchanged to `-[NveFabricHostController applyHotPatch:]` (`NSData`), which hands them to `NveDevApi::apply_hot_patch`.
 - **Tier 2 (150–400 ms, iOS Simulator):** `nve dev` recompiles only the Rust app crate for `aarch64-apple-ios-sim` as a `cdylib` and signals `-[NveFabricHostController reloadRustAppDylibAtPath:error:]`, preserving state via `NveDevApi::snapshot_state` / `restore_state` without invoking `xcodebuild`.
 
 ## 2. Embeddable React Native Fabric Component (`RCTNveComponentView.h` / `RCTNveComponentView.mm`)

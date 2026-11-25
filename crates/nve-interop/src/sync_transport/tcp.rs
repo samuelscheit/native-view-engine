@@ -1,7 +1,7 @@
 //! Framed binary TCP + auto-detected RFC 6455 binary WebSocket delta transport
 //! (`TcpDeltaServer` & `TcpDeltaClient`) with mid-stream reconnect and `InputEvents` backchannel.
 
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 use std::io;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,7 +82,7 @@ impl TcpDeltaServer {
                 started_at: Instant::now(),
                 next_peer_id: 1,
                 seen_peers_total: 0,
-                peers: HashMap::new(),
+                peers: HashMap::default(),
                 latest_frame: None,
                 metrics,
             }),

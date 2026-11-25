@@ -1,6 +1,6 @@
 // Codec B: NVE1 CommandBuffer Changed-Op Delta (Zero-Copy Boundary Scanner)
 
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 
 use nve_abi::{NVE_ABI_MAGIC, NVE_ABI_VERSION};
 
@@ -183,8 +183,8 @@ pub fn encode_command_op_delta(base: &[u8], next: &[u8]) -> Option<Vec<u8>> {
     let (next_hdr, next_ranges) = scan_nve_command_slices(next)?;
 
     // Index previous op slices by exact FNV-1a hash AND by `(opcode, node_id)` for per-op XOR patching.
-    let mut prev_exact: HashMap<u64, Vec<usize>> = HashMap::with_capacity(prev_ranges.len());
-    let mut prev_by_node: HashMap<(u8, u32), usize> = HashMap::with_capacity(prev_ranges.len());
+    let mut prev_exact: HashMap<u64, Vec<usize>> = HashMap::with_capacity_and_hasher(prev_ranges.len(), Default::default());
+    let mut prev_by_node: HashMap<(u8, u32), usize> = HashMap::with_capacity_and_hasher(prev_ranges.len(), Default::default());
     for (idx, &(s, e)) in prev_ranges.iter().enumerate() {
         let slice = &base[s..e];
         let h = fnv1a_64(slice);

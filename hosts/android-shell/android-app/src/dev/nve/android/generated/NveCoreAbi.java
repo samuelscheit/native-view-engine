@@ -8,8 +8,8 @@ package dev.nve.android.generated;
 public final class NveCoreAbi {
     private NveCoreAbi() {}
 
-    public static final long CORE_ABI_SCHEMA_HASH = 0x54A4A32B6F258107L;
-    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x54A4A32B6F258107";
+    public static final long CORE_ABI_SCHEMA_HASH = 0x5BE5D06CC7C01FEFL;
+    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x5BE5D06CC7C01FEF";
 
     public static final int ABI_MAGIC = 0x3145564E;
     public static final int ABI_VERSION = 1;

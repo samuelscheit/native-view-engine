@@ -3,12 +3,12 @@
 //!
 //! Browser `wasm32` bindings live in `wasm_hydrate.rs`.
 
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 
 use nve_abi::{NodeId, RawPropValue};
 use nve_backend_web::WebBackend;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "app-studio", feature = "app-counter"))]
 #[path = "hydrate_tests.rs"]
 mod hydrate_tests;
 

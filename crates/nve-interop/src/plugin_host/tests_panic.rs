@@ -141,7 +141,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         &self.out_events
     }
 
-    fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
+    fn apply_hot_patch(&mut self, _patch: &nve_engine::HotPatchMsg) -> bool {
         if get_host_panic_mode() == HostPanicMode::PanicHotPatch {
             panic!("flaky plugin exploded in apply_hot_patch");
         }

@@ -1,6 +1,7 @@
 //! App/surface-scoped `SignalRegistry` for registration, snapshotting, WAL streaming, and hydration.
 
-use std::collections::{BTreeMap, HashSet};
+use nve_abi::hash::HashSet;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
@@ -223,7 +224,7 @@ impl SignalRegistry {
             source_schema_version: table.schema_version(),
             ..Default::default()
         };
-        let mut seen_registered = HashSet::with_capacity(self.slots.len());
+        let mut seen_registered = HashSet::with_capacity_and_hasher(self.slots.len(), Default::default());
 
         for (slot_id, value) in table.iter() {
             if let Some(entry) = self.slots.get(&slot_id) {

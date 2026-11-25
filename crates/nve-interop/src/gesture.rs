@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::hash::{BuildHasher, Hasher};
+use nve_abi::hash::HashMap;
 
 use nve_abi::SurfaceId;
 use serde::{Deserialize, Serialize};
@@ -70,49 +69,6 @@ impl SurfaceChain {
     }
 }
 
-/// Minimal zero-dependency FxHasher for integer keys (`u32` surface/pointer IDs).
-#[derive(Default, Clone)]
-struct FxHasher {
-    hash: u64,
-}
-
-impl Hasher for FxHasher {
-    #[inline(always)]
-    fn finish(&self) -> u64 {
-        self.hash
-    }
-
-    #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.hash = (self.hash.rotate_left(5) ^ u64::from(b))
-                .wrapping_mul(0x517c_c1b7_2722_0a95);
-        }
-    }
-
-    #[inline(always)]
-    fn write_u32(&mut self, i: u32) {
-        self.hash = (self.hash.rotate_left(5) ^ u64::from(i)).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-
-    #[inline(always)]
-    fn write_u64(&mut self, i: u64) {
-        self.hash = (self.hash.rotate_left(5) ^ i).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-struct BuildFxHasher;
-
-impl BuildHasher for BuildFxHasher {
-    type Hasher = FxHasher;
-
-    #[inline(always)]
-    fn build_hasher(&self) -> FxHasher {
-        FxHasher { hash: 0 }
-    }
-}
-
 /// Fast integer-keyed map optimized for typical small counts (<= `N` entries stored inline with
 /// zero heap allocation and cache-local linear key scan) with seamless spill to an Fx-hashed
 /// `HashMap` for larger tables.
@@ -123,7 +79,7 @@ enum FastU32Map<V, const N: usize> {
         keys: [u32; N],
         vals: [Option<V>; N],
     },
-    Spill(HashMap<u32, V, BuildFxHasher>),
+    Spill(HashMap<u32, V>),
 }
 
 impl<V, const N: usize> Default for FastU32Map<V, N> {
@@ -206,7 +162,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
                     return None;
                 }
                 // Spill inline entries to FxHashMap.
-                let mut map = HashMap::with_capacity_and_hasher(N * 2, BuildFxHasher);
+                let mut map = HashMap::with_capacity_and_hasher(N * 2, Default::default());
                 for idx in 0..n {
                     if let Some(existing) = vals[idx].take() {
                         map.insert(keys[idx], existing);

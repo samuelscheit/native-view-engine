@@ -61,6 +61,9 @@ private struct RecordedDirectEvent: Equatable {
 
 // MARK: - Isolated C-ABI Mock Fixture
 
+/// A complete binary `NVP1` `DevStatus` frame ("x", 0 ms), as `nve dev` broadcasts it.
+private let nvp1DevStatus = Data([0x4E, 0x56, 0x50, 0x31, 3, 1, 0, 0, 0, 0x78, 0, 0, 0, 0, 0, 0, 0, 0])
+
 private final class MockSurfaceState: @unchecked Sendable {
     let lock = NSLock()
     let surfaceId: UInt32
@@ -74,7 +77,7 @@ private final class MockSurfaceState: @unchecked Sendable {
     var dispatchedEventBuffers: [Data] = []
     var dispatchedDirectEvents: [[RecordedDirectEvent]] = []
     var dispatchEventsReturnValue: UInt32 = 1
-    var hotPatchHistory: [String] = []
+    var hotPatchHistory: [Data] = []
     var hotPatchReturnValue: UInt32 = 1
     var pendingOutboundEvents = Data()
     var lastConstraints: NveSizeConstraints?
@@ -320,11 +323,9 @@ private enum MockVtables {
             to: NveDevApi(
                 apply_hot_patch: { handle, slice in
                     guard let state = MockAbiRegistry.shared.state(for: handle) else { return 0 }
-                    let json = slice.ptr.flatMap {
-                        String(bytes: UnsafeBufferPointer(start: $0, count: slice.len), encoding: .utf8)
-                    } ?? ""
+                    let frame = slice.ptr.map { Data(bytes: $0, count: slice.len) } ?? Data()
                     state.lock.lock()
-                    state.hotPatchHistory.append(json)
+                    state.hotPatchHistory.append(frame)
                     let dirty = state.hotPatchReturnValue
                     state.lock.unlock()
                     return dirty
@@ -459,7 +460,7 @@ final class NveSurfaceControllerTests: XCTestCase {
 
         XCTAssertFalse(badDylib.setProps(["title": "offline"]))
         XCTAssertTrue(badDylib.renderFrame().isEmpty)
-        XCTAssertFalse(badDylib.applyHotPatch(json: "{}"))
+        XCTAssertFalse(badDylib.applyHotPatch(nvp1DevStatus))
         XCTAssertTrue(badDylib.drainEmittedEvents().isEmpty)
         badDylib.dispatchCommand(name: "noop", args: ["a": 1])
     }
@@ -584,12 +585,12 @@ final class NveSurfaceControllerTests: XCTestCase {
 
         // Hot patch: dirty renders, clean skips render.
         state.hotPatchReturnValue = 1
-        XCTAssertTrue(controller.applyHotPatch(json: "{\"op\":\"patch\"}"))
-        XCTAssertEqual(state.hotPatchHistory, ["{\"op\":\"patch\"}"])
+        XCTAssertTrue(controller.applyHotPatch(nvp1DevStatus))
+        XCTAssertEqual(state.hotPatchHistory, [nvp1DevStatus], "NVP1 bytes forwarded unchanged")
         XCTAssertEqual(state.renderedFrameIds, [1, 2, 3, 4])
 
         state.hotPatchReturnValue = 0
-        XCTAssertFalse(controller.applyHotPatch(json: "{\"op\":\"noop\"}"))
+        XCTAssertFalse(controller.applyHotPatch(Data(nvp1DevStatus.dropLast())))
         XCTAssertEqual(state.renderedFrameIds, [1, 2, 3, 4])
     }
 
@@ -601,7 +602,7 @@ final class NveSurfaceControllerTests: XCTestCase {
         XCTAssertTrue(controller.isMounted)
         XCTAssertFalse(controller.setProps(["k": "v"]))
         XCTAssertTrue(controller.drainEmittedEvents().isEmpty)
-        XCTAssertFalse(controller.applyHotPatch(json: "{}"))
+        XCTAssertFalse(controller.applyHotPatch(nvp1DevStatus))
 
         XCTAssertEqual(controller.renderFrame(), state.renderOutput)
         XCTAssertEqual(controller.measure(), CGSize(width: 240, height: 120))

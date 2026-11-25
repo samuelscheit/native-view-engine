@@ -3,8 +3,8 @@
 //! structured [`HydrationMismatch`] reporting, and selective mismatched-subtree replacement.
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashMap;
-use std::collections::HashSet;
+use nve_abi::hash::HashMap;
+use nve_abi::hash::HashSet;
 
 use nve_abi::{NodeId, ROOT_NODE_ID};
 
@@ -50,7 +50,7 @@ pub(crate) struct NativeSsrNode {
 /// hydration simulation tests.
 #[cfg(not(target_arch = "wasm32"))]
 fn parse_ssr_html_nodes(html: &str) -> (Option<String>, HashMap<NodeId, NativeSsrNode>) {
-    let mut nodes = HashMap::new();
+    let mut nodes = HashMap::default();
     let mut root_hash = None;
     let mut next_instance_id = 1u64;
     let bytes = html.as_bytes();
@@ -257,7 +257,7 @@ impl WebBackend {
         seen_ids: &[NodeId],
         dirty_styles: &mut Vec<NodeId>,
     ) {
-        let mut checked: HashSet<NodeId> = HashSet::with_capacity(seen_ids.len() + 1);
+        let mut checked: HashSet<NodeId> = HashSet::with_capacity_and_hasher(seen_ids.len() + 1, Default::default());
         let mut to_check: Vec<NodeId> = Vec::with_capacity(seen_ids.len() + 1);
         if self.hydrated_dom_tags.contains_key(&ROOT_NODE_ID) && self.nodes.contains_key(&ROOT_NODE_ID)
         {

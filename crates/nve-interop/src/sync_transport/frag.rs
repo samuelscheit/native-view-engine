@@ -1,6 +1,7 @@
 //! UDP MTU-safe packetization (`<= 1200` bytes) and bounded fragment reassembly.
 
-use std::collections::{HashMap, VecDeque};
+use nve_abi::hash::HashMap;
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::sync_delta::{fnv1a_64, DELTA_HEADER_SIZE};
@@ -92,7 +93,7 @@ impl FragReassembler {
     pub(crate) fn new(max_frame_bytes: usize) -> Self {
         Self {
             max_frame_bytes,
-            inflight: HashMap::new(),
+            inflight: HashMap::default(),
             order: VecDeque::new(),
         }
     }

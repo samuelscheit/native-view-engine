@@ -24,6 +24,8 @@ mod stylesheet;
 mod ssr_hydrate_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod css_format_tests;
 
 pub use css::{
     canonical_f32_bits, component_to_html_tag, is_image_fit_prop, is_raw_style_prop,
@@ -50,7 +52,7 @@ pub use stylesheet::{
 #[cfg(target_arch = "wasm32")]
 use core::fmt::Write as _;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use nve_abi::hash::{HashMap, HashSet};
 use std::rc::Rc;
 
 use nve_abi::{
@@ -129,9 +131,9 @@ impl Default for WebBackend {
 
 impl WebBackend {
     pub fn new() -> Self {
-        let mut nodes = HashMap::new();
+        let mut nodes = HashMap::default();
         nodes.insert(ROOT_NODE_ID, MirrorElement::new(ComponentKind::Root));
-        let mut meta = HashMap::new();
+        let mut meta = HashMap::default();
         meta.insert(
             ROOT_NODE_ID,
             NodeEventMeta {
@@ -144,25 +146,25 @@ impl WebBackend {
             viewport: Viewport::default(),
             frame_counter: 0,
             nodes,
-            parent_of: HashMap::new(),
+            parent_of: HashMap::default(),
             stylesheet: StyleSheetCache::new(),
             events: Rc::new(RefCell::new(Vec::new())),
             on_event: Rc::new(RefCell::new(None)),
             node_event_meta: Rc::new(RefCell::new(meta)),
             hydrating: false,
-            hydrated_dom_tags: HashMap::new(),
-            hydrated_inline_nodes: HashSet::new(),
+            hydrated_dom_tags: HashMap::default(),
+            hydrated_inline_nodes: HashSet::default(),
             hydration_report: HydrationReport::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            native_ssr_nodes: HashMap::new(),
+            native_ssr_nodes: HashMap::default(),
             #[cfg(not(target_arch = "wasm32"))]
             next_native_instance_id: 1,
             #[cfg(target_arch = "wasm32")]
             attr_scratch: String::with_capacity(64),
             #[cfg(target_arch = "wasm32")]
-            dom_nodes: HashMap::new(),
+            dom_nodes: HashMap::default(),
             #[cfg(target_arch = "wasm32")]
-            ime_guards: Rc::new(RefCell::new(HashMap::new())),
+            ime_guards: Rc::new(RefCell::new(HashMap::default())),
             #[cfg(target_arch = "wasm32")]
             root_delegator: None,
             #[cfg(target_arch = "wasm32")]

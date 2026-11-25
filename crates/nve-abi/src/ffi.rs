@@ -15,7 +15,7 @@ use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
 /// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.generated.h`).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x54A4_A32B_6F25_8107;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x5BE5_D06C_C7C0_1FEF;
 
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
@@ -175,7 +175,7 @@ pub struct NveComponentApi {
 #[derive(Debug, Clone, Copy)]
 pub struct NveDevApi {
     pub apply_hot_patch:
-        unsafe extern "C" fn(handle: NveAppHandle, patch_json: NveBufferSlice) -> u32,
+        unsafe extern "C" fn(handle: NveAppHandle, patch_nvp1: NveBufferSlice) -> u32,
     pub snapshot_state: unsafe extern "C" fn(handle: NveAppHandle) -> NveBufferSlice,
     pub restore_state: unsafe extern "C" fn(handle: NveAppHandle, state: NveBufferSlice),
 }

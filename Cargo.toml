@@ -60,6 +60,7 @@ clap = { version = "4.6.10", features = ["derive"] }
 notify = "9.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+rustc-hash = "2.1.1"
 tungstenite = "0.30.0"
 crossbeam-channel = "0.5.17"
 skia-safe = "0.157.0"
@@ -99,3 +100,16 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "debuginfo"
+
+# Dioxus 0.7.10 + three wasm-size fixes (upstream PR candidates), see docs/UPSTREAM.md "Dioxus":
+# anyhow without `std`, FxHashSet subscriber sets, subsecond's wasm32 loader behind `wasm-patching`.
+# Every crate of the dioxus workspace that we link is patched so `cargo tree -d` shows one copy.
+[patch.crates-io]
+dioxus-core = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }
+dioxus-core-macro = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }
+dioxus-core-types = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }
+dioxus-rsx = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }
+dioxus-signals = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }
+generational-box = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }
+subsecond = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }
+subsecond-types = { git = "https://github.com/samuelscheit/dioxus", rev = "e617997a169b9c5f77cea932ec75201cc28d40c9" }

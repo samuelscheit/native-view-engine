@@ -36,6 +36,14 @@
 #include <string>
 #include <vector>
 
+#include <span>
+#include <string_view>
+
+// Mock modules treat the forwarded hot-patch frame as opaque bytes (hosts never decode NVP1).
+[[maybe_unused]] static std::span<const uint8_t> nve_test_patch(std::string_view text) {
+  return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+}
+
 #define NVE_CHECK(expr)                                                                         \
   do {                                                                                          \
     if (!(expr)) {                                                                              \
@@ -451,9 +459,9 @@ struct MockQuickComponent {
     return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
   }
 
-  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_json) {
+  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch) {
     auto* self = static_cast<MockQuickComponent*>(h);
-    self->title.assign(reinterpret_cast<const char*>(patch_json.ptr), patch_json.len);
+    self->title.assign(reinterpret_cast<const char*>(patch.ptr), patch.len);
     return 1;
   }
 
@@ -889,7 +897,7 @@ void test_scene_hit_test_direct_events_and_scene_graph_caching() {
   NVE_CHECK(stats4.textCacheHits == 12u);     // All 6 remaining nodes hit cache!
 
   // Hot-patch updates title text node 3 (only 1 rasterization, 5 cache hits)
-  NVE_CHECK(item->applyHotPatchJson("PatchedQuickTitle"));
+  NVE_CHECK(item->applyHotPatch(nve_test_patch("PatchedQuickTitle")));
   NVE_CHECK(item->sceneNodeText(3) == "PatchedQuickTitle");
   (void)item->syncSceneGraphNode(sg_root.get());
   const nve::SceneGraphStats stats5 = item->sceneGraphStats();

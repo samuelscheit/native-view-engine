@@ -138,7 +138,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                     message: "Hot reload: connected".into(),
                     latency_ms: 0,
                 };
-                let _ = ws.send(tungstenite::Message::Text(status.to_json().into()));
+                let _ = ws.send(tungstenite::Message::Binary(status.to_bytes().into()));
                 ws_clients.lock().unwrap().push(ws);
             }
         }
@@ -146,7 +146,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
 
     let broadcast_msg = |clients: &Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>>,
                          msg: &HotPatchMsg| {
-        let payload = tungstenite::Message::Text(msg.to_json().into());
+        let payload = tungstenite::Message::Binary(msg.to_bytes().into());
         let mut guard = clients.lock().unwrap();
         guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
     };
@@ -323,7 +323,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                     }
                     broadcast_msg(&clients_for_watch, &msg);
                     if let Some(tx) = pair_tx_for_watch.lock().unwrap().as_ref() {
-                        let _ = tx.send(PairControlMsg::Tier1Patch(msg.to_json()));
+                        let _ = tx.send(PairControlMsg::Tier1Patch(msg.to_bytes()));
                     }
                     let status = HotPatchMsg::DevStatus {
                         message: format!(
@@ -393,7 +393,7 @@ mod tests {
         )));
 
         let msg = make_dylib_reload_msg(3, &dylib, 180);
-        assert_eq!(HotPatchMsg::from_json(&msg.to_json()).unwrap(), msg);
+        assert_eq!(HotPatchMsg::from_bytes(&msg.to_bytes()).unwrap(), msg);
 
         use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
         assert!(should_trigger_rebuild(&notify::EventKind::Create(

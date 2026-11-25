@@ -40,6 +40,14 @@
 #include <thread>
 #include <vector>
 
+#include <span>
+#include <string_view>
+
+// Mock modules treat the forwarded hot-patch frame as opaque bytes (hosts never decode NVP1).
+[[maybe_unused]] static std::span<const uint8_t> nve_test_patch(std::string_view text) {
+  return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+}
+
 #define NVE_CHECK(expr)                                                                         \
   do {                                                                                          \
     if (!(expr)) {                                                                              \
@@ -299,9 +307,9 @@ struct MockWinRustComponent {
     return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
   }
 
-  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_json) {
+  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch) {
     auto* self = static_cast<MockWinRustComponent*>(h);
-    self->title.assign(reinterpret_cast<const char*>(patch_json.ptr), patch_json.len);
+    self->title.assign(reinterpret_cast<const char*>(patch.ptr), patch.len);
     return 1;
   }
 
@@ -574,7 +582,7 @@ void test_rnw_component_host_and_dylib_lifecycle() {
   NVE_CHECK(err_code == 0 && err_msg.empty());
   NVE_CHECK(reload_host.visual_tree().find(2)->text == "state=0");
 
-  NVE_CHECK(reload_host.apply_hot_patch_json("77"));
+  NVE_CHECK(reload_host.apply_hot_patch(nve_test_patch("77")));
   NVE_CHECK(reload_host.visual_tree().find(2)->text == "state=77");
 
   // Failed reload codes 1/2/3 must preserve state=77.
@@ -813,7 +821,7 @@ void test_frame0_mmap_snapshot_roundtrip() {
   {
     nve::win::NveRnwComponentHost writer;
     NVE_CHECK(writer.load_dylib(NVE_WIN_TEST_STATEFUL_DYLIB, cfg));
-    NVE_CHECK(writer.apply_hot_patch_json("42"));
+    NVE_CHECK(writer.apply_hot_patch(nve_test_patch("42")));
     NVE_CHECK(writer.dispatch_press(3, 5.0f, 5.0f) != 0);
     NVE_CHECK(writer.visual_tree().find(2)->text == "state=43");
     NVE_CHECK(writer.save_snapshot(snap_path.string(), 3u));

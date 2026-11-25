@@ -337,10 +337,10 @@ class NveCanvasController extends ChangeNotifier {
     return ok;
   }
 
-  /// Applies a Tier-1 RSX hot-reload patch via `NveDevApi.apply_hot_patch`.
-  bool applyHotPatch(String patchJson, {bool rerender = true}) {
+  /// Applies one binary `NVP1` Tier-1 hot-patch frame via `NveDevApi.apply_hot_patch`.
+  bool applyHotPatch(Uint8List patchNvp1, {bool rerender = true}) {
     _ensureLive();
-    final ok = _instance.applyHotPatch(patchJson);
+    final ok = _instance.applyHotPatch(patchNvp1);
     if (rerender) {
       renderNextFrame();
     }

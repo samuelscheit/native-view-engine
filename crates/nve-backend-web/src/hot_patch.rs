@@ -1,7 +1,7 @@
 //! Targeted Tier-1 `HotPatchMsg::TemplatePatch` application for `WebBackend` DOM + mirror nodes.
 
 use core::fmt::Write as _;
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 
 use nve_abi::{ComponentKind, NodeId, RawPropValue, ROOT_NODE_ID};
 

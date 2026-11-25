@@ -1,14 +1,12 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 /// 4-byte wire magic identifying a zero-JSON compact binary `HotPatchMsg` frame (`NVP1`).
 pub const HOT_PATCH_WIRE_MAGIC: [u8; 4] = *b"NVP1";
 
 /// Maximum item count accepted per vector inside a binary `NVP1` frame to prevent OOM on corrupt input.
 const MAX_WIRE_ITEMS: usize = 65_536;
 
-/// Error returned when decoding a `HotPatchMsg` from binary (`NVP1`) or auto-detected wire bytes.
+/// Error returned when decoding a binary `NVP1` `HotPatchMsg` frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotPatchDecodeError {
     Truncated,
@@ -18,7 +16,6 @@ pub enum HotPatchDecodeError {
     InvalidUtf8,
     LimitExceeded,
     TrailingBytes(usize),
-    Json(String),
 }
 
 impl fmt::Display for HotPatchDecodeError {
@@ -28,20 +25,20 @@ impl fmt::Display for HotPatchDecodeError {
             Self::InvalidMagic => f.write_str("invalid NVP1 hot-patch magic"),
             Self::UnknownVariant(v) => write!(f, "unknown NVP1 hot-patch variant tag {v}"),
             Self::InvalidBool(v) => write!(f, "invalid NVP1 boolean tag {v}"),
-            Self::InvalidUtf8 => f.write_str("invalid UTF-8 in hot-patch payload"),
+            Self::InvalidUtf8 => f.write_str("invalid UTF-8 in NVP1 hot-patch string"),
             Self::LimitExceeded => f.write_str("NVP1 collection limit exceeded"),
             Self::TrailingBytes(n) => write!(f, "trailing {n} byte(s) in NVP1 hot-patch buffer"),
-            Self::Json(msg) => write!(f, "invalid JSON hot-patch payload: {msg}"),
         }
     }
 }
 
 impl std::error::Error for HotPatchDecodeError {}
 
-/// Unified 2-tier hot-reload wire protocol broadcast by `nve dev` over WebSocket
-/// to Desktop Skia, iOS Simulator/Device, Android Emulator/Device, and Web clients.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+/// Unified 2-tier hot-reload protocol broadcast by `nve dev` over WebSocket (binary `NVP1`
+/// frames, see [`HotPatchMsg::to_bytes`]) to Desktop Skia, iOS Simulator/Device, Android
+/// Emulator/Device, and Web clients, and handed to apps through `NveDevApi::apply_hot_patch`.
+/// There is no JSON form.
+#[derive(Debug, Clone, PartialEq)]
 pub enum HotPatchMsg {
     /// Tier 1 (<10ms, zero recompile, works on physical iOS devices & browsers):
     /// Patches targeted text or style literals inside a live node/template without restarting Rust.
@@ -51,13 +48,10 @@ pub enum HotPatchMsg {
         attr_updates: Vec<(String, String)>,
         text_updates: Vec<(usize, String)>,
         /// Optional `test_id` / `data-testid` / `testID` targeting a specific RSX element.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         target_test_id: Option<String>,
         /// Optional structural child index path inside the template tree (from root).
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         node_path: Vec<usize>,
         /// Exact `(old_text, new_text)` static text replacements for surgical multi-node patching.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         text_replacements: Vec<(String, String)>,
     },
     /// Tier 2 (150-400ms, desktop + iOS Simulator + Android):
@@ -290,24 +284,6 @@ impl HotPatchMsg {
         r.finish()?;
         Ok(msg)
     }
-
-    /// Auto-detects wire framing: decodes `NVP1` binary frames with zero JSON parsing,
-    /// and falls back to UTF-8 JSON text frames for dev WebSocket compatibility.
-    pub fn from_wire(raw: &[u8]) -> Result<Self, HotPatchDecodeError> {
-        if raw.starts_with(&HOT_PATCH_WIRE_MAGIC) {
-            return Self::from_bytes(raw);
-        }
-        let text = std::str::from_utf8(raw).map_err(|_| HotPatchDecodeError::InvalidUtf8)?;
-        Self::from_json(text).map_err(|e| HotPatchDecodeError::Json(e.to_string()))
-    }
-
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).expect("HotPatchMsg serialization cannot fail")
-    }
-
-    pub fn from_json(raw: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(raw)
-    }
 }
 
 #[cfg(test)]
@@ -315,48 +291,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn template_patch_targeted_fields_roundtrip_and_default_cleanly() {
-        let targeted = HotPatchMsg::TemplatePatch {
-            generation: 7,
-            template_id: "examples/studio-workspace/src/ui.rs".into(),
-            attr_updates: vec![("style".into(), "padding: 16px; background-color: #111827;".into())],
-            text_updates: vec![(2, "AETHER PRO".into())],
-            target_test_id: Some("workspace-root".into()),
-            node_path: vec![0, 1, 0],
-            text_replacements: vec![("AETHER".into(), "AETHER PRO".into())],
-        };
-        let json = targeted.to_json();
-        assert!(json.contains("\"target_test_id\":\"workspace-root\""));
-        assert!(json.contains("\"node_path\":[0,1,0]"));
-        assert!(json.contains("\"text_replacements\":[[\"AETHER\",\"AETHER PRO\"]]"));
-        let decoded = HotPatchMsg::from_json(&json).expect("targeted patch roundtrip");
-        assert_eq!(decoded, targeted);
-
-        // Legacy wire payload omitting the optional targeted fields must deserialize cleanly.
-        let legacy_json = r#"{"type":"template_patch","generation":3,"template_id":"card","attr_updates":[["opacity","0.5"]],"text_updates":[[0,"Hi"]]}"#;
-        let legacy = HotPatchMsg::from_json(legacy_json).expect("legacy JSON deserialize");
-        assert_eq!(
-            legacy,
-            HotPatchMsg::TemplatePatch {
-                generation: 3,
-                template_id: "card".into(),
-                attr_updates: vec![("opacity".into(), "0.5".into())],
-                text_updates: vec![(0, "Hi".into())],
-                target_test_id: None,
-                node_path: vec![],
-                text_replacements: vec![],
-            }
-        );
-
-        // Empty optional fields are skipped when serializing to keep wire JSON compact.
-        let compact_json = legacy.to_json();
-        assert!(!compact_json.contains("target_test_id"));
-        assert!(!compact_json.contains("node_path"));
-        assert!(!compact_json.contains("text_replacements"));
-    }
-
-    #[test]
-    fn nvp1_binary_and_from_wire_roundtrip_all_variants_and_reject_corrupt_inputs() {
+    fn nvp1_roundtrips_all_variants_and_rejects_corrupt_inputs() {
         let cases = vec![
             HotPatchMsg::TemplatePatch {
                 generation: 42,
@@ -394,10 +329,6 @@ mod tests {
             let bin = msg.to_bytes();
             assert!(bin.starts_with(&HOT_PATCH_WIRE_MAGIC));
             assert_eq!(HotPatchMsg::from_bytes(&bin).unwrap(), *msg);
-            assert_eq!(HotPatchMsg::from_wire(&bin).unwrap(), *msg);
-            // JSON compatibility via from_wire
-            let json = msg.to_json();
-            assert_eq!(HotPatchMsg::from_wire(json.as_bytes()).unwrap(), *msg);
             // Every truncated prefix must fail with Truncated (never panic)
             for cut in 0..bin.len() {
                 assert_eq!(
@@ -432,13 +363,22 @@ mod tests {
             HotPatchMsg::from_bytes(&bad_oom),
             Err(HotPatchDecodeError::LimitExceeded)
         );
-        assert!(matches!(
-            HotPatchMsg::from_wire(b"{not-valid-json"),
-            Err(HotPatchDecodeError::Json(_))
-        ));
+        // A JSON text frame (the removed legacy format) is rejected by magic, never parsed.
         assert_eq!(
-            HotPatchMsg::from_wire(&[0xFF, 0xFE]),
-            Err(HotPatchDecodeError::InvalidUtf8)
+            HotPatchMsg::from_bytes(br#"{"type":"dev_status","message":"x","latency_ms":0}"#),
+            Err(HotPatchDecodeError::InvalidMagic)
         );
+        let mut bad_utf8 = Vec::from(*b"NVP1");
+        bad_utf8.push(3);
+        bad_utf8.extend_from_slice(&2u32.to_le_bytes());
+        bad_utf8.extend_from_slice(&[0xFF, 0xFE]);
+        bad_utf8.extend_from_slice(&0u64.to_le_bytes());
+        assert_eq!(HotPatchMsg::from_bytes(&bad_utf8), Err(HotPatchDecodeError::InvalidUtf8));
+        let mut bad_bool = Vec::from(*b"NVP1");
+        bad_bool.push(1);
+        bad_bool.extend_from_slice(&1u64.to_le_bytes());
+        bad_bool.extend_from_slice(&[0; 12]); // template_id, attr count, text count
+        bad_bool.push(7);
+        assert_eq!(HotPatchMsg::from_bytes(&bad_bool), Err(HotPatchDecodeError::InvalidBool(7)));
     }
 }

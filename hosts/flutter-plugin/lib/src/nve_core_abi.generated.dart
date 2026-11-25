@@ -3,9 +3,9 @@
 
 import 'dart:ffi' as ffi;
 
-/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x54A4A32B6F258107`).
-const int nveCoreAbiSchemaHash = 6099179202310144263;
-const String nveCoreAbiSchemaHashHex = '0x54A4A32B6F258107';
+/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x5BE5D06CC7C01FEF`).
+const int nveCoreAbiSchemaHash = 6621927992744484847;
+const String nveCoreAbiSchemaHashHex = '0x5BE5D06CC7C01FEF';
 
 const int nveAbiMagic = 0x3145564E;
 const int nveAbiVersion = 1;
@@ -399,7 +399,7 @@ typedef NveSetPropsDirectNative = ffi.Uint32 Function(
 );
 typedef NveApplyHotPatchNative = ffi.Uint32 Function(
   ffi.Pointer<ffi.Void> handle,
-  NveBufferSlice patchJson,
+  NveBufferSlice patchNvp1,
 );
 typedef NveSnapshotStateNative = NveBufferSlice Function(
   ffi.Pointer<ffi.Void> handle,

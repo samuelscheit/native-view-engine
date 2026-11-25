@@ -9,15 +9,37 @@ license.workspace = true
 # for `wasm32-unknown-unknown` so workspace tests never link a redundant native cdylib.
 crate-type = ["rlib"]
 
+[features]
+# Default = the `nve dev` / test shell: both demo apps and all dev infrastructure.
+# Production bundles (hosts/web-shell/build.sh): `--no-default-features --features app-studio`
+# (or `app-counter`): exactly one app, no hot reload, pairing, popups or scene mirror.
+default = ["app-studio", "app-counter", "dev", "multi-window", "scene-view"]
+app-studio = ["dep:nve-studio-workspace"]
+app-counter = ["dep:nve-example-counter"]
+# `nve dev` Tier-1/2 hot-reload WebSocket (binary NVP1), the `NveWebHost` NVT1/NVD1 pairing client
+# and the semantic-style hydration probe used by the E2E suite.
+dev = []
+# Popup windows + `NVW1` `BroadcastChannel` window sync (`nve-interop` WindowManager).
+multi-window = []
+# Per-frame `NveSceneTable` mirror behind `nve_web_scene_view_ptr` (zero-copy JS inspection).
+scene-view = []
+
 [dependencies]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-interop = { workspace = true }
-nve-example-counter = { path = "../../examples/counter", default-features = false }
-nve-studio-workspace = { workspace = true }
+nve-example-counter = { path = "../../examples/counter", default-features = false, optional = true }
+nve-studio-workspace = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "Performance", "ResizeObserver"] }
+# Global allocator on wasm32: smaller (-2.5 KB brotli) and faster than std's dlmalloc
+# (docs/research/wasm-size/runtime.md).
+talc = "5.1.1"
+
+[[test]]
+name = "wasm_dom_tests"
+required-features = ["app-studio", "app-counter", "dev"]

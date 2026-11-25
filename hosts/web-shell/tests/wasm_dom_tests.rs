@@ -234,7 +234,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         text_replacements: vec![],
     };
     let action = session
-        .handle_hot_patch_json(&empty_patch.to_json())
+        .handle_hot_patch_frame(&empty_patch.to_bytes())
         .expect("empty template patch");
     assert_eq!(
         action,
@@ -256,7 +256,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         text_replacements: vec![],
     };
     let oob_action = session
-        .handle_hot_patch_json(&oob_patch.to_json())
+        .handle_hot_patch_frame(&oob_patch.to_bytes())
         .expect("oob patch");
     match oob_action {
         HotReloadAction::TemplatePatched {
@@ -272,9 +272,10 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
     assert_balanced_dom(&session.backend().render_html());
 
     // Malformed payloads return Err without corrupting the session.
-    assert!(session.handle_hot_patch_json("").is_err());
-    assert!(session.handle_hot_patch_json("null").is_err());
-    assert!(session.handle_hot_patch_json("{\"type\":\"unknown\"}").is_err());
+    assert!(session.handle_hot_patch_frame(b"").is_err());
+    assert!(session.handle_hot_patch_frame(b"null").is_err());
+    assert!(session.handle_hot_patch_frame(b"{\"type\":\"unknown\"}").is_err());
+    assert!(session.handle_hot_patch_frame(b"NVP1\x01").is_err());
 }
 
 #[cfg(target_arch = "wasm32")]

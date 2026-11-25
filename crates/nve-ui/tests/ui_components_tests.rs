@@ -14,6 +14,9 @@ use nve_dioxus::elements::backend::RenderBackend;
 use nve_dioxus::prelude::*;
 use nve_interop::{ColorScheme, ThemeContext};
 use nve_ui::prelude::*;
+// `nve_dioxus::prelude` re-exports nve-interop's environment `Orientation`/`UiDensity` traits
+// types; the components under test take nve-ui's own enums.
+use nve_ui::{Orientation, UiDensity};
 
 #[component]
 fn LayoutActionsThemeApp() -> Element {

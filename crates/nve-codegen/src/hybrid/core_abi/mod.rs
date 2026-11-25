@@ -50,7 +50,7 @@ pub const NVE_RENDER_NODE_ALIGN: usize = 64;
 
 /// Deterministic FNV-1a 64-bit Core ABI schema hash (must match `crates/nve-abi/src/ffi.rs`
 /// and `core_abi_schema_hash()` verbatim).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x54A4_A32B_6F25_8107;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x5BE5_D06C_C7C0_1FEF;
 
 /// Deterministic FNV-1a 64-bit scene schema hash (must match `crates/nve-abi/src/scene.rs`
 /// and `compute_scene_schema_hash(&scene_abi_spec())` verbatim).

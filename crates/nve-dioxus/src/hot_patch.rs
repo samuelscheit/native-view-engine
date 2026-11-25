@@ -264,7 +264,7 @@ impl NveMutationWriter {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use nve_abi::hash::HashMap;
 
     use nve_abi::{ColorRgba, Command, CommandDecoder, NodeId, RawPropValue, StyleProps};
     use nve_engine::HotPatchMsg;
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn targeted_template_patch_only_mutates_matching_node_and_preserves_siblings() {
         let mut surface = DioxusSurface::new(1, MultiNodeSurface);
-        let mut nodes = HashMap::new();
+        let mut nodes = HashMap::default();
 
         let (_, _, f1) = surface.render_frame(1);
         apply_frame(&f1, &mut nodes);

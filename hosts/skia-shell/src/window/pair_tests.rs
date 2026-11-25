@@ -222,7 +222,7 @@ fn wait_until_pixel(
 }
 
 #[test]
-fn hot_reload_client_decodes_nvp1_binary_and_json_frames() {
+fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral ws port");
     let addr = listener.local_addr().unwrap();
 
@@ -238,13 +238,17 @@ fn hot_reload_client_decodes_nvp1_binary_and_json_frames() {
             node_path: vec![0, 1],
             text_replacements: vec![("Count: 0".into(), "Live NVP1".into())],
         };
-        let json_msg = HotPatchMsg::DevStatus {
+        let status_msg = HotPatchMsg::DevStatus {
             message: "Synced".into(),
             latency_ms: 2,
         };
         ws.send(Message::Binary(binary_msg.to_bytes().into()))
             .unwrap();
-        ws.send(Message::Text(json_msg.to_json().into())).unwrap();
+        // Legacy JSON text frames and corrupt binary frames are dropped, never parsed.
+        ws.send(Message::Text(r#"{"type":"dev_status","message":"x","latency_ms":0}"#.into()))
+            .unwrap();
+        ws.send(Message::Binary(b"NVP1\x03garbage".to_vec().into())).unwrap();
+        ws.send(Message::Binary(status_msg.to_bytes().into())).unwrap();
         let _ = ws.close(None);
     });
 
@@ -261,7 +265,7 @@ fn hot_reload_client_decodes_nvp1_binary_and_json_frames() {
     let second = client
         .receiver()
         .recv_timeout(Duration::from_secs(3))
-        .expect("json text message");
+        .expect("second NVP1 message");
 
     assert_eq!(
         first,

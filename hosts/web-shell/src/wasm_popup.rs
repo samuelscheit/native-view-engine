@@ -14,8 +14,10 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::multi_window::{PopupWindowError, PopupWindowSpec, DEFAULT_WINDOW_SYNC_CHANNEL};
-use crate::wasm_api::{install_panic_hook, primary_surface_id_if_mounted, remove_active_shell};
-use crate::wasm_pair::nve_extract_binary_message;
+use crate::wasm_api::{
+    install_panic_hook, nve_extract_binary_message, primary_surface_id_if_mounted,
+    remove_active_shell,
+};
 
 #[wasm_bindgen(inline_js = "export function nve_slice_to_uint8array(bytes) {
   return bytes;

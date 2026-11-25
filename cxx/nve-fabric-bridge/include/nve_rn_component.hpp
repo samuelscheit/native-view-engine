@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -232,8 +233,9 @@ class NveRnComponentBridge {
   /// decode them, invoke the registered `EventEmitterCallback` for each, and return them.
   std::vector<DecodedEvent> drain_emitted_events();
 
-  /// Apply a Tier-1 hot-patch JSON payload (`NveDevApi::apply_hot_patch`).
-  bool apply_hot_patch_json(std::string_view patch_json, bool auto_render = true);
+  /// Apply one binary `NVP1` Tier-1 hot-patch frame, forwarded unchanged from `nve dev`
+  /// (`NveDevApi::apply_hot_patch`).
+  bool apply_hot_patch(std::span<const uint8_t> patch_nvp1, bool auto_render = true);
 
   /// Snapshot & restore component state across Tier-2 dylib hot reloads (`NveDevApi`).
   std::vector<uint8_t> snapshot_state() const;

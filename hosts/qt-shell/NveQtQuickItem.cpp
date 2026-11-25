@@ -439,9 +439,9 @@ bool NveQtQuickItem::applyPropsJson(std::string_view propsJson) {
 bool NveQtQuickItem::applyPropsDirect(const NveMapEntry* entries, uint32_t count) {
   return impl_->session_.is_valid() && impl_->finishPropUpdate(impl_->session_.update_props_direct(entries, count, true));
 }
-bool NveQtQuickItem::applyHotPatchJson(std::string_view patchJson) {
+bool NveQtQuickItem::applyHotPatch(std::span<const uint8_t> patchNvp1) {
   return impl_->session_.is_valid() && impl_->session_.bridge() != nullptr &&
-         impl_->finishPropUpdate(impl_->session_.bridge()->apply_hot_patch_json(patchJson, true));
+         impl_->finishPropUpdate(impl_->session_.bridge()->apply_hot_patch(patchNvp1, true));
 }
 
 int32_t NveQtQuickItem::renderFrame() {

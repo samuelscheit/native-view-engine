@@ -10,7 +10,7 @@ use nve_abi::{ComponentKind, EventMask, NodeId};
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
-use std::collections::HashMap;
+use nve_abi::hash::HashMap;
 #[cfg(target_arch = "wasm32")]
 use nve_abi::{EventPayload, NativeEvent, NativeEventKind, ROOT_NODE_ID};
 #[cfg(target_arch = "wasm32")]

@@ -119,8 +119,8 @@ impl DesktopApp for MockCounterApp {
         handled
     }
 
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
-        match HotPatchMsg::from_json(patch_json) {
+    fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
+        match HotPatchMsg::from_bytes(patch_nvp1) {
             Ok(HotPatchMsg::TemplatePatch {
                 text_updates,
                 attr_updates,
@@ -279,8 +279,8 @@ fn websocket_hot_reload_client_receives_messages_and_invokes_wake() {
             dylib_path: "target/debug/libdemo.dylib".into(),
             build_ms: 210,
         };
-        ws.send(Message::Text(m1.to_json().into())).unwrap();
-        ws.send(Message::Text(m2.to_json().into())).unwrap();
+        ws.send(Message::Binary(m1.to_bytes().into())).unwrap();
+        ws.send(Message::Binary(m2.to_bytes().into())).unwrap();
         let _ = ws.close(None);
     });
 

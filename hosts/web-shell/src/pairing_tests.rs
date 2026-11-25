@@ -139,7 +139,8 @@ fn web_pair_client_full_nvt1_ws_handshake_delta_dom_render_and_input_events_with
         html_f1.contains("Count: 0"),
         "expected remote CounterApp Frame 1 DOM mirror to contain 'Count: 0', got: {html_f1}"
     );
-    assert!(web_session.scene_view().node_count > 0);
+    #[cfg(feature = "scene-view")]
+    assert!(web_session.scene().view().node_count > 0);
 
     // Server should have received the initial Layout InputEvents automatically on handshake!
     let (_sid, layout_ring) = server
