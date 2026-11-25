@@ -1,16 +1,22 @@
 # `nve_flutter` — Native View Engine Host Plugin for Flutter
 
-Embed any Rust **Native View Engine (NVE)** component inside a Flutter app with **zero-copy 120fps Skia texture compositing** (`NveTextureHostWidget`) or **native Fabric platform views** (`NvePlatformViewWidget`), plus direct `dart:ffi` access to modular `nve_get_interface` and shared-state streaming via `NveChannelClient`.
+Embed any compiled Rust **Native View Engine (NVE)** app or island inside Flutter on macOS, Windows, Linux, iOS, and Android:
+
+- **Path 1 — Direct `RenderBox` + Impeller/Skia `Canvas` (`NveCanvasView`)**: renders NVE's binary `CommandBuffer` straight onto Flutter's own `Canvas` via `dart:ffi` with **zero PlatformViews** and **zero native plugin boilerplate**.
+- **Path 2 — GPU Texture Compositing (`NveTextureHostWidget`)**: zero-copy 120fps Skia compositing via `FlutterTextureRegistry`.
+- **Path 3 — Native Fabric Platform Views (`NvePlatformViewWidget`)**: `UiKitView` / `AndroidView` embedding.
+- **Direct FFI & Channels**: `NveAppInstance` (modular `nve_get_interface`) and `NveChannelClient` (`NveChannelBus` Dart `Stream`s).
 
 ## Architecture
 
 ```
 Flutter Widget Tree
+  ├── NveCanvasView         ──► Custom RenderBox + Impeller/Skia Canvas (zero PlatformViews)
+  │                             └── dart:ffi -> NveRetainedTree -> NveFlexLayoutSolver (TextPainter) -> Canvas
   ├── NveTextureHostWidget  ──► FlutterTextureRegistry (IOSurface / AHardwareBuffer / DXGI / DMA-BUF)
-  │                             └── 120fps zero-copy Skia compositing on iOS, Android, macOS, Windows, Linux
   ├── NvePlatformViewWidget ──► UiKitView (iOS) / AndroidView (Android) ──► NVE Fabric Bridge
-  ├── NveAppInstance        ──► Direct dart:ffi bindings to modular nve_get_interface (`NveSurfaceApi`, `NveLayoutApi`, `NveComponentApi`, `NveDevApi`)
-  └── NveChannelClient      ──► Dart Stream<NveChannelMessage> ◄──► NveChannelBus (theme, locale, auth, nav)
+  ├── NveAppInstance        ──► Direct dart:ffi bindings to modular nve_get_interface
+  └── NveChannelClient      ──► Dart Stream<NveChannelMessage> ◄──► NveChannelBus
 ```
 
 ### Modular C ABI (`nve_get_interface`)
@@ -20,7 +26,57 @@ Flutter Widget Tree
 - **`NveComponentApi` (`3`)**: `set_props`, `drain_emitted_events`.
 - **`NveDevApi` (`4`)**: `apply_hot_patch`, `snapshot_state`, `restore_state` (optional; may be NULL in release builds).
 
-## Usage Example (`NveCounterCard` inside Flutter)
+## Quickstart: Direct `NveCanvasView` (Zero PlatformViews)
+
+Build any NVE Rust cdylib (e.g. `cargo build -p nve-example-counter`), then mount it directly on Flutter's Canvas:
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:nve_flutter/nve_canvas.dart';
+
+class DirectCounterScreen extends StatefulWidget {
+  const DirectCounterScreen({super.key, required this.libraryPath});
+  final String libraryPath;
+
+  @override
+  State<DirectCounterScreen> createState() => _DirectCounterScreenState();
+}
+
+class _DirectCounterScreenState extends State<DirectCounterScreen> {
+  late final NveCanvasController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = NveCanvasController.open(
+      surfaceId: 1,
+      libraryPath: widget.libraryPath,
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: NveCanvasView(controller: _controller),
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'State-preserving Hot Reload',
+        onPressed: () => _controller.reloadLibrary(widget.libraryPath),
+        child: const Icon(Icons.refresh),
+      ),
+    );
+  }
+}
+```
+
+See [example/main.dart](example/main.dart) for a complete app with runtime library switching, hot-reload, and frame/node counters.
+
+## Texture / PlatformView Usage (`NveCounterCard`)
 
 ```dart
 import 'package:flutter/material.dart';
@@ -76,6 +132,13 @@ class _CounterScreenState extends State<CounterScreen> {
 }
 ```
 
+## Verification
+
+```bash
+cargo build -p nve-example-counter
+(cd hosts/flutter-plugin && flutter analyze && flutter test)
+```
+
 ## Codegen Integration
 
-Run `nve-codegen` (`export_flutter`) on any `NveExportSpec` to generate a strongly typed Dart `StatefulWidget` wrapping `NveTextureHostWidget` (for Skia) or `NvePlatformViewWidget` (for Fabric) with typed prop serialization, typed event callbacks, and typed controller commands.
+Run `nve-codegen` (`export_flutter`) on any `NveExportSpec` to generate a strongly typed Dart `StatefulWidget` wrapping `NveCanvasView`, `NveTextureHostWidget`, or `NvePlatformViewWidget` with typed prop serialization, typed event callbacks, and typed controller commands.
