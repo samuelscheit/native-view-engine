@@ -1741,6 +1741,7 @@ dependencies = [
  "nve-backend-skia",
  "nve-engine",
  "nve-interop",
+ "nve-sdk",
  "serde_json",
  "softbuffer",
  "tungstenite",

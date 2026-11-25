@@ -13,6 +13,8 @@ mod window_commands;
 pub mod window_host;
 
 #[cfg(test)]
+mod host_services_tests;
+#[cfg(test)]
 mod input_tests;
 #[cfg(test)]
 mod multi_window_tests;
@@ -33,6 +35,8 @@ use nve_backend_skia::raster::PixelBuffer;
 use nve_backend_skia::SkiaBackend;
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{BackendError, MmapSnapshot, RenderBackend, SnapshotError, Viewport};
+
+use crate::host_services::SkiaHostServices;
 
 pub use clipboard::{default_clipboard, ClipboardProvider, InMemoryClipboard};
 pub use hot_reload_client::HotReloadClient;
@@ -139,7 +143,7 @@ impl Default for DesktopPreviewOptions {
 /// in unit tests without spawning an OS window.
 pub trait DesktopApp {
     fn generation(&self) -> u64;
-    fn render(&mut self, frame_id: FrameId) -> Vec<u8>;
+    fn render(&mut self, frame_id: FrameId) -> &[u8];
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
     fn apply_hot_patch(&mut self, patch_json: &str) -> bool;
     fn reload(
@@ -149,8 +153,24 @@ pub trait DesktopApp {
     ) -> Result<u64, DesktopHostError>;
 
     /// Serializes the current app state for snapshot persistence or hot-swap preservation.
-    fn snapshot_state(&mut self) -> Vec<u8> {
-        Vec::new()
+    fn snapshot_state(&mut self) -> &[u8] {
+        &[]
+    }
+
+    /// Returns `true` when this app exposes `NVE_IFACE_HOST = 5`.
+    fn has_host_interface(&self) -> bool {
+        false
+    }
+
+    /// Binds (or unbinds when `None`) the host's [`SkiaHostServices`] callbacks onto this app
+    /// via `NveHostApi::bind_host`. Returns `true` if the app bound the host callbacks.
+    fn bind_host_services(&mut self, _services: Option<Arc<SkiaHostServices>>) -> bool {
+        false
+    }
+
+    /// Dispatches a binary `NVH1` host-event batch via `NveHostApi::dispatch_host_events`.
+    fn dispatch_host_events(&mut self, _batch: &[u8]) -> bool {
+        false
     }
 
     /// Registers an optional event-loop wake callback invoked when asynchronous remote frames
@@ -168,12 +188,15 @@ pub trait DesktopApp {
     }
 }
 
-/// Owns a live [`HotAppInstance`] and preserves the last state snapshot across Tier-2 reloads
-/// (including recovery if an intermediate reload fails).
+/// Owns a live [`HotAppInstance`] and preserves the last state snapshot and bound
+/// [`SkiaHostServices`] across Tier-2 reloads (including recovery if an intermediate reload fails).
 pub struct HotAppSlot {
+    // Field order is load-bearing: `instance` MUST drop before `host_services` so the loaded
+    // cdylib never observes a dangling `host_ctx` pointer during `destroy`.
     instance: Option<HotAppInstance>,
     generation: u64,
     last_saved_state: Vec<u8>,
+    host_services: Option<Arc<SkiaHostServices>>,
 }
 
 impl HotAppSlot {
@@ -192,7 +215,23 @@ impl HotAppSlot {
             instance: Some(instance),
             generation,
             last_saved_state: prior_state.map(|s| s.to_vec()).unwrap_or_default(),
+            host_services: None,
         })
+    }
+
+    /// Returns the currently bound [`SkiaHostServices`], if any.
+    pub fn host_services(&self) -> Option<&Arc<SkiaHostServices>> {
+        self.host_services.as_ref()
+    }
+}
+
+impl Drop for HotAppSlot {
+    fn drop(&mut self) {
+        if let Some(inst) = self.instance.as_mut() {
+            let _ = inst.bind_host(None);
+        }
+        self.instance.take();
+        self.host_services.take();
     }
 }
 
@@ -201,10 +240,10 @@ impl DesktopApp for HotAppSlot {
         self.generation
     }
 
-    fn render(&mut self, frame_id: FrameId) -> Vec<u8> {
+    fn render(&mut self, frame_id: FrameId) -> &[u8] {
         match self.instance.as_mut() {
             Some(inst) => inst.render(frame_id),
-            None => Vec::new(),
+            None => &[],
         }
     }
 
@@ -230,34 +269,88 @@ impl DesktopApp for HotAppSlot {
         if let Some(inst) = self.instance.as_mut() {
             let state = inst.snapshot_state();
             if !state.is_empty() {
-                self.last_saved_state = state;
+                self.last_saved_state.clear();
+                self.last_saved_state.extend_from_slice(state);
             }
             let outcome = inst.reload(new_dylib_path)?;
             self.generation = outcome.generation;
+            // Re-bind explicitly (also covers gen 1 lacking NVE_IFACE_HOST while gen 2 exposes it)
+            // and push retained initial theme/locale snapshots onto the new generation.
+            if let Some(svc) = self.host_services.as_ref()
+                && inst.bind_host(Some(svc.callbacks()))
+            {
+                let init_batch = svc.encode_initial_env_batch();
+                let _ = inst.dispatch_host_events(&init_batch);
+            }
             Ok(self.generation)
         } else {
             let next_gen = self.generation + 1;
-            let prior = if self.last_saved_state.is_empty() {
-                None
-            } else {
-                Some(self.last_saved_state.as_slice())
-            };
-            let loaded = HotAppInstance::load(new_dylib_path, surface_id, next_gen, prior)?;
+            let prior = (!self.last_saved_state.is_empty())
+                .then_some(self.last_saved_state.as_slice());
+            let mut loaded = HotAppInstance::load(new_dylib_path, surface_id, next_gen, prior)?;
+            if let Some(svc) = self.host_services.as_ref()
+                && loaded.bind_host(Some(svc.callbacks()))
+            {
+                let init_batch = svc.encode_initial_env_batch();
+                let _ = loaded.dispatch_host_events(&init_batch);
+            }
             self.generation = loaded.generation();
             self.instance = Some(loaded);
             Ok(self.generation)
         }
     }
 
-    fn snapshot_state(&mut self) -> Vec<u8> {
+    fn snapshot_state(&mut self) -> &[u8] {
         if let Some(inst) = self.instance.as_mut() {
             let state = inst.snapshot_state();
             if !state.is_empty() {
-                self.last_saved_state = state.clone();
+                self.last_saved_state.clear();
+                self.last_saved_state.extend_from_slice(state);
             }
-            state
-        } else {
-            self.last_saved_state.clone()
+        }
+        &self.last_saved_state
+    }
+
+    fn has_host_interface(&self) -> bool {
+        self.instance
+            .as_ref()
+            .is_some_and(HotAppInstance::has_host_interface)
+    }
+
+    fn bind_host_services(&mut self, services: Option<Arc<SkiaHostServices>>) -> bool {
+        match services {
+            Some(svc) => {
+                let cb = svc.callbacks();
+                let bound = self
+                    .instance
+                    .as_mut()
+                    .is_some_and(|inst| inst.bind_host(Some(cb)));
+                // Store the new Arc AFTER `bind_host` updates the dylib's pointer so any previous
+                // Arc stays alive during the swap (zero dangling-pointer window).
+                self.host_services = Some(svc);
+                if bound && let Some(svc_ref) = self.host_services.as_ref() {
+                    let init_batch = svc_ref.encode_initial_env_batch();
+                    if let Some(inst) = self.instance.as_mut() {
+                        let _ = inst.dispatch_host_events(&init_batch);
+                    }
+                }
+                bound
+            }
+            None => {
+                let had = self
+                    .instance
+                    .as_mut()
+                    .is_some_and(|inst| inst.bind_host(None));
+                self.host_services = None;
+                had
+            }
+        }
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        match self.instance.as_mut() {
+            Some(inst) => inst.dispatch_host_events(batch),
+            None => false,
         }
     }
 }

@@ -5,8 +5,14 @@
 //! `skia-vulkan`, `skia-d3d`), zero-C++ `softbuffer` fallback, 2-tier WebSocket hot reload
 //! (`HotPatchMsg`), instant-boot Frame-0 `MmapSnapshot` replay/save, and headless PPM capture.
 
+pub mod host_services;
 pub mod window;
 
+pub use host_services::{
+    encode_locale_channel_batch, encode_system_env_batch, encode_theme_channel_batch,
+    encode_window_lifecycle_batch, winit_theme_to_color_scheme, SkiaHostServices,
+    WindowCommandSink, EVENT_WINDOW_LIFECYCLE, METHOD_WINDOW_DISPATCH_BATCH,
+};
 pub use window::{
     render_headless_screenshot, render_paired_headless_screenshot, replay_snapshot_into_backend,
     run_desktop_preview, run_desktop_preview_with_options, run_paired_desktop_preview,

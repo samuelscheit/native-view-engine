@@ -10,23 +10,25 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::SurfaceId;
+use nve_abi::{ColorRgba, SurfaceId};
 use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
     GpuSwapchain,
 };
-use nve_engine::RenderBackend;
+use nve_engine::{RenderBackend, Viewport};
 use nve_interop::{
     SurfacePresentation, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
     WindowManager, WindowRect, WindowState,
 };
+use nve_sdk::LocaleSnapshot;
 use softbuffer::{Context, Surface};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::keyboard::ModifiersState;
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowLevel};
+use winit::window::{Fullscreen, Theme as WinitTheme, Window, WindowAttributes, WindowLevel};
 
 use super::session::DesktopSession;
 use super::{DesktopApp, DesktopHostError};
+use crate::host_services::{encode_window_lifecycle_batch, SkiaHostServices};
 
 /// Cross-thread event loop wake signals for [`super::DesktopWindowHost`].
 #[derive(Debug, Clone)]
@@ -268,9 +270,11 @@ pub struct HeadlessMultiWindowHost<K: Eq + Hash + Copy, A: DesktopApp> {
     windows: HashMap<K, HeadlessSurfaceWindow<A>>,
     surface_to_window: BTreeMap<SurfaceId, K>,
     window_manager: WindowManager,
+    host_services: Arc<SkiaHostServices>,
     primary_handle: Option<WindowHandleId>,
     exit_on_primary_close: bool,
     close_veto_handler: Option<CloseVetoHandler>,
+    secondary_app_factory: Option<SecondaryAppFactory<A>>,
 }
 
 pub struct HeadlessSurfaceWindow<A: DesktopApp> {
@@ -287,15 +291,23 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> Default for HeadlessMultiWindowHost<K, 
 
 impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
     pub fn new() -> Self {
+        Self::with_host_services(SkiaHostServices::new())
+    }
+
+    pub fn with_host_services(host_services: Arc<SkiaHostServices>) -> Self {
         Self {
             windows: HashMap::new(),
             surface_to_window: BTreeMap::new(),
             window_manager: WindowManager::new(),
+            host_services,
             primary_handle: None,
             exit_on_primary_close: true,
             close_veto_handler: None,
+            secondary_app_factory: None,
         }
     }
+
+    pub fn host_services(&self) -> &Arc<SkiaHostServices> { &self.host_services }
 
     pub fn set_exit_on_primary_close(&mut self, exit: bool) {
         self.exit_on_primary_close = exit;
@@ -306,6 +318,13 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
         F: FnMut(WindowHandleId, SurfaceId) -> bool + 'static,
     {
         self.close_veto_handler = Some(Box::new(handler));
+    }
+
+    pub fn set_secondary_app_factory<F>(&mut self, factory: F)
+    where
+        F: FnMut(SurfaceId, &WindowDescriptor) -> Result<A, DesktopHostError> + 'static,
+    {
+        self.secondary_app_factory = Some(Box::new(factory));
     }
 
     pub fn open_window(
@@ -320,6 +339,9 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
             .window_manager
             .open_window(surface_id, presentation)
             .map_err(|e| DesktopHostError::Window(e.to_string()))?;
+        let _ = session
+            .app_mut()
+            .bind_host_services(Some(Arc::clone(&self.host_services)));
         session.render_and_rasterize()?;
         let ime_allowed = session
             .focused_node()
@@ -338,6 +360,7 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
                 ime_allowed,
             },
         );
+        let _ = self.flush_window_lifecycle_events();
         Ok(handle_id)
     }
 
@@ -367,9 +390,10 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
             return Ok(false);
         };
         win.session.resize(width_px, height_px, scale_factor)?;
+        let handle_id = win.handle_id;
         let cur = self
             .window_manager
-            .get(win.handle_id)
+            .get(handle_id)
             .map(|w| w.descriptor.bounds)
             .unwrap_or_default();
         let next_bounds = WindowRect::new(
@@ -380,7 +404,8 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
         );
         let _ = self
             .window_manager
-            .set_bounds_with_scale(win.handle_id, next_bounds, scale_factor);
+            .set_bounds_with_scale(handle_id, next_bounds, scale_factor);
+        let _ = self.flush_window_lifecycle_events();
         Ok(true)
     }
 
@@ -388,7 +413,10 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
         let Some(win) = self.windows.get(&window_key) else {
             return Ok(());
         };
-        self.window_manager.focus_window(win.handle_id)
+        let handle_id = win.handle_id;
+        self.window_manager.focus_window(handle_id)?;
+        let _ = self.flush_window_lifecycle_events();
+        Ok(())
     }
 
     pub fn handle_close_requested(&mut self, window_key: K) -> Result<CloseOutcome, WindowError> {
@@ -403,7 +431,21 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
                 should_exit_loop: self.windows.is_empty(),
             });
         };
+        if let Some(modal_child) = self.window_manager.active_modal_blocker(handle_id) {
+            return Err(WindowError::BlockedByModalChild {
+                target: handle_id,
+                modal_child,
+            });
+        }
         self.window_manager.request_close(handle_id)?;
+        let app_intercepted = self.flush_window_lifecycle_events();
+        if app_intercepted || self.host_services.has_pending_close_response(handle_id) {
+            return Ok(CloseOutcome {
+                vetoed: true,
+                closed_handles: Vec::new(),
+                should_exit_loop: false,
+            });
+        }
         let allow = match self.close_veto_handler.as_mut() {
             Some(cb) => cb(handle_id, surface_id),
             None => true,
@@ -411,12 +453,119 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
         self.finish_close_response(handle_id, allow)
     }
 
+    pub fn close_window(&mut self, handle_id: WindowHandleId) -> Result<CloseOutcome, WindowError> {
+        if let Some(modal_child) = self.window_manager.active_modal_blocker(handle_id) {
+            return Err(WindowError::BlockedByModalChild {
+                target: handle_id,
+                modal_child,
+            });
+        }
+        let closed_handles = self.window_manager.close_window(handle_id)?;
+        let outcome = self.finalize_closed(closed_handles);
+        let _ = self.flush_window_lifecycle_events();
+        Ok(outcome)
+    }
+
     pub fn respond_close_request(
         &mut self,
         handle_id: WindowHandleId,
         allow: bool,
     ) -> Result<CloseOutcome, WindowError> {
+        self.host_services.take_pending_close_response(handle_id);
+        if allow && let Some(modal_child) = self.window_manager.active_modal_blocker(handle_id) {
+            let _ = self.window_manager.respond_close_request(handle_id, false);
+            return Err(WindowError::BlockedByModalChild {
+                target: handle_id,
+                modal_child,
+            });
+        }
         self.finish_close_response(handle_id, allow)
+    }
+
+    pub fn apply_window_command(
+        &mut self,
+        cmd: WindowCommand,
+        mut key_alloc: impl FnMut(SurfaceId) -> K,
+    ) -> Result<Option<WindowHandleId>, WindowError> {
+        match cmd {
+            WindowCommand::OpenWindow { surface_id, presentation } => {
+                let desc = presentation
+                    .descriptor()
+                    .ok_or_else(|| WindowError::InvalidDescriptor("Embedded presentation".into()))?
+                    .clone();
+                let app = match self.secondary_app_factory.as_mut() {
+                    Some(factory) => factory(surface_id, &desc)
+                        .map_err(|e| WindowError::InvalidDescriptor(e.to_string()))?,
+                    None => {
+                        return Err(WindowError::InvalidDescriptor("no secondary_app_factory".into()));
+                    }
+                };
+                let vp = Viewport {
+                    width: desc.bounds.width,
+                    height: desc.bounds.height,
+                    scale_factor: 1.0,
+                };
+                let session = DesktopSession::new(app, surface_id, vp, ColorRgba::BLACK, false);
+                let handle = self
+                    .open_window(key_alloc(surface_id), surface_id, presentation, session)
+                    .map_err(|e| WindowError::InvalidDescriptor(e.to_string()))?;
+                Ok(Some(handle))
+            }
+            WindowCommand::CloseWindow { handle } => {
+                self.close_window(handle)?;
+                Ok(None)
+            }
+            WindowCommand::RespondCloseRequest { handle, allow } => {
+                self.respond_close_request(handle, allow)?;
+                Ok(None)
+            }
+            other => {
+                let res = self.window_manager.apply_command(other)?;
+                let _ = self.flush_window_lifecycle_events();
+                Ok(res)
+            }
+        }
+    }
+
+    pub fn drain_window_commands(
+        &mut self,
+        mut key_alloc: impl FnMut(SurfaceId) -> K,
+    ) -> Vec<Result<Option<WindowHandleId>, WindowError>> {
+        self.host_services
+            .drain_queued_window_commands()
+            .into_iter()
+            .map(|cmd| self.apply_window_command(cmd, &mut key_alloc))
+            .collect()
+    }
+
+    pub fn simulate_theme_change(&mut self, theme: WinitTheme, scale_factor: f32) -> bool {
+        let (_snap, batch) = self.host_services.update_theme_from_winit(theme, scale_factor);
+        self.broadcast_host_event_batch(&batch)
+    }
+
+    pub fn simulate_locale_change(&mut self, locale: LocaleSnapshot) -> bool {
+        let batch = self.host_services.update_locale(locale);
+        self.broadcast_host_event_batch(&batch)
+    }
+
+    pub fn flush_window_lifecycle_events(&mut self) -> bool {
+        let events = self.window_manager.drain_events();
+        if events.is_empty() {
+            return false;
+        }
+        let batch = encode_window_lifecycle_batch(&events);
+        self.broadcast_host_event_batch(&batch)
+    }
+
+    fn broadcast_host_event_batch(&mut self, batch: &[u8]) -> bool {
+        let mut any_handled = false;
+        for win in self.windows.values_mut() {
+            if win.session.dispatch_host_events(batch) {
+                any_handled = true;
+                let _ = win.session.render_and_rasterize();
+            }
+        }
+        any_handled
     }
 
     fn finish_close_response(
@@ -426,12 +575,19 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
     ) -> Result<CloseOutcome, WindowError> {
         let closed_handles = self.window_manager.respond_close_request(handle_id, allow)?;
         if !allow {
+            let _ = self.flush_window_lifecycle_events();
             return Ok(CloseOutcome {
                 vetoed: true,
                 closed_handles,
                 should_exit_loop: false,
             });
         }
+        let outcome = self.finalize_closed(closed_handles);
+        let _ = self.flush_window_lifecycle_events();
+        Ok(outcome)
+    }
+
+    fn finalize_closed(&mut self, closed_handles: Vec<WindowHandleId>) -> CloseOutcome {
         let primary_closed = self.primary_handle.is_some_and(|p| closed_handles.contains(&p));
         self.remove_closed_handles(&closed_handles);
         if primary_closed {
@@ -439,11 +595,11 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
         }
         let should_exit_loop =
             self.windows.is_empty() || (primary_closed && self.exit_on_primary_close);
-        Ok(CloseOutcome {
+        CloseOutcome {
             vetoed: false,
             closed_handles,
             should_exit_loop,
-        })
+        }
     }
 
     fn remove_closed_handles(&mut self, closed_handles: &[WindowHandleId]) {
@@ -460,6 +616,7 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
     }
 
     pub fn window(&self, key: K) -> Option<&HeadlessSurfaceWindow<A>> { self.windows.get(&key) }
+    pub fn window_mut(&mut self, key: K) -> Option<&mut HeadlessSurfaceWindow<A>> { self.windows.get_mut(&key) }
     pub fn window_by_surface(&self, sid: SurfaceId) -> Option<&HeadlessSurfaceWindow<A>> {
         self.surface_to_window.get(&sid).and_then(|k| self.windows.get(k))
     }

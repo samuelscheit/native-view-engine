@@ -22,6 +22,7 @@ struct MockTextInputApp {
     text_changes: Vec<(NodeId, String)>,
     submits: Vec<(NodeId, String)>,
     keydowns: Vec<(NodeId, String)>,
+    frame_buf: Vec<u8>,
 }
 
 impl MockTextInputApp {
@@ -34,6 +35,7 @@ impl MockTextInputApp {
             text_changes: Vec::new(),
             submits: Vec::new(),
             keydowns: Vec::new(),
+            frame_buf: Vec::new(),
         }
     }
 }
@@ -43,7 +45,7 @@ impl DesktopApp for MockTextInputApp {
         1
     }
 
-    fn render(&mut self, frame_id: FrameId) -> Vec<u8> {
+    fn render(&mut self, frame_id: FrameId) -> &[u8] {
         let mut b = CommandBufferBuilder::new(1, frame_id);
         b.create_node(2, ComponentKind::View, None);
         b.set_layout(
@@ -151,7 +153,8 @@ impl DesktopApp for MockTextInputApp {
         b.set_children(2, &[10, 11, 12]);
         b.set_children(ROOT_NODE_ID, &[2]);
         b.commit(true);
-        b.into_bytes()
+        self.frame_buf = b.into_bytes();
+        &self.frame_buf
     }
 
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
@@ -487,6 +490,7 @@ struct MockScrollAndKeyApp {
     scroll_events: Vec<(u32, f32, f32, f32, f32)>,
     keydown_payloads: Vec<(u32, String)>,
     palette_open: bool,
+    frame_buf: Vec<u8>,
 }
 
 impl DesktopApp for MockScrollAndKeyApp {
@@ -494,7 +498,7 @@ impl DesktopApp for MockScrollAndKeyApp {
         1
     }
 
-    fn render(&mut self, frame_id: FrameId) -> Vec<u8> {
+    fn render(&mut self, frame_id: FrameId) -> &[u8] {
         let mut b = CommandBufferBuilder::new(1, frame_id);
         b.create_node(2, ComponentKind::ScrollView, None);
         b.set_layout(
@@ -537,7 +541,8 @@ impl DesktopApp for MockScrollAndKeyApp {
         b.set_children(2, &[10, 11, 12]);
         b.set_children(ROOT_NODE_ID, &[2]);
         b.commit(true);
-        b.into_bytes()
+        self.frame_buf = b.into_bytes();
+        &self.frame_buf
     }
 
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
@@ -593,6 +598,7 @@ fn desktop_session_forwards_wheel_scroll_and_zero_json_keydown_events() {
         scroll_events: Vec::new(),
         keydown_payloads: Vec::new(),
         palette_open: false,
+        frame_buf: Vec::new(),
     };
     let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::BLACK, false);
     session.render_and_rasterize().unwrap();

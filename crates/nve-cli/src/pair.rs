@@ -1,6 +1,7 @@
 //! `nve pair` — Live `NVD1` binary delta device pairing server over BOTH UDP and TCP/WebSocket
 //! with zero-JSON bidirectional `InputEvents` ingestion back into the live app instance.
 
+use std::borrow::Cow;
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -42,7 +43,7 @@ pub(crate) enum PairControlMsg {
 
 /// Runtime abstraction over a live NVE app hosted by [`PairSession`].
 pub(crate) trait PairedApp {
-    fn render(&mut self, frame_id: u64) -> Vec<u8>;
+    fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]>;
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
     fn set_props_direct(&mut self, _entries: &[NveMapEntry]) -> bool {
         false
@@ -56,8 +57,8 @@ pub(crate) trait PairedApp {
 }
 
 impl PairedApp for HotAppInstance {
-    fn render(&mut self, frame_id: u64) -> Vec<u8> {
-        HotAppInstance::render(self, frame_id)
+    fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
+        Cow::Borrowed(HotAppInstance::render(self, frame_id))
     }
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
         HotAppInstance::dispatch_events(self, encoded_events)
@@ -76,8 +77,8 @@ impl PairedApp for HotAppInstance {
 }
 
 impl PairedApp for DioxusSurface {
-    fn render(&mut self, frame_id: u64) -> Vec<u8> {
-        self.render_frame(frame_id).2
+    fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
+        Cow::Owned(self.render_frame(frame_id).2)
     }
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
         decode_events(encoded_events)
@@ -396,12 +397,20 @@ impl<A: PairedApp> PairSession<A> {
     pub(crate) fn render_and_broadcast(&mut self, force: bool) -> Result<bool, String> {
         self.frame_id += 1;
         let frame = self.app.render(self.frame_id);
-        if frame.is_empty() || (!force && frame == self.last_frame) {
+        if frame.is_empty() || (!force && frame.as_ref() == self.last_frame.as_slice()) {
             return Ok(false);
         }
         self.udp.send_frame(&frame).map_err(|e| format!("UDP send_frame failed: {e}"))?;
         self.tcp.send_frame(&frame).map_err(|e| format!("TCP/WS send_frame failed: {e}"))?;
-        self.last_frame = frame;
+        match frame {
+            Cow::Borrowed(slice) => {
+                self.last_frame.clear();
+                self.last_frame.extend_from_slice(slice);
+            }
+            Cow::Owned(vec) => {
+                self.last_frame = vec;
+            }
+        }
         Ok(true)
     }
 
@@ -699,7 +708,7 @@ mod tests {
         }
 
         impl PairedApp for TelemetryMockApp {
-            fn render(&mut self, frame_id: u64) -> Vec<u8> {
+            fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
                 self.renders += 1;
                 let mut b = nve_abi::CommandBufferBuilder::new(1, frame_id);
                 b.create_node(2, nve_abi::ComponentKind::Text, None);
@@ -712,7 +721,7 @@ mod tests {
                 );
                 b.set_children(ROOT_NODE_ID, &[2]);
                 b.commit(true);
-                b.into_bytes()
+                Cow::Owned(b.into_bytes())
             }
 
             fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {

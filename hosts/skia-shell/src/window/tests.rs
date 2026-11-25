@@ -29,6 +29,8 @@ struct MockCounterApp {
     label: String,
     button_color: ColorRgba,
     reloaded_paths: Vec<PathBuf>,
+    frame_buf: Vec<u8>,
+    state_buf: Vec<u8>,
 }
 
 impl MockCounterApp {
@@ -39,6 +41,8 @@ impl MockCounterApp {
             label: "Counter".to_string(),
             button_color: ColorRgba::rgb(37, 99, 235),
             reloaded_paths: Vec::new(),
+            frame_buf: Vec::new(),
+            state_buf: Vec::new(),
         }
     }
 }
@@ -48,7 +52,7 @@ impl DesktopApp for MockCounterApp {
         self.generation
     }
 
-    fn render(&mut self, frame_id: FrameId) -> Vec<u8> {
+    fn render(&mut self, frame_id: FrameId) -> &[u8] {
         let mut b = CommandBufferBuilder::new(1, frame_id);
         b.create_node(2, ComponentKind::View, None);
         b.set_layout(
@@ -103,7 +107,8 @@ impl DesktopApp for MockCounterApp {
         b.set_children(2, &[3, 4]);
         b.set_children(ROOT_NODE_ID, &[2]);
         b.commit(true);
-        b.into_bytes()
+        self.frame_buf = b.into_bytes();
+        &self.frame_buf
     }
 
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
@@ -151,8 +156,9 @@ impl DesktopApp for MockCounterApp {
         Ok(self.generation)
     }
 
-    fn snapshot_state(&mut self) -> Vec<u8> {
-        format!("count={};label={}", self.count, self.label).into_bytes()
+    fn snapshot_state(&mut self) -> &[u8] {
+        self.state_buf = format!("count={};label={}", self.count, self.label).into_bytes();
+        &self.state_buf
     }
 }
 
