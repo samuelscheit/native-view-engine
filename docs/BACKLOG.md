@@ -21,9 +21,6 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining host harden
 - [ ] **Qt Quick GPU adapter**
   - Add a GPU-composited `QQuickItem` adapter alongside `QWidget` in `hosts/qt-shell`.
 
-- [ ] **Continuous benchmark regression tracking**
-  - Track Criterion (`cargo bench`) and `nve_fabric_bridge_bench --json` baselines to catch frame/layout/ABI regressions.
-
 - [ ] **Instant-Boot Frame-0 `CommandBuffer` + `mmap` Zero-Copy State Snapshot**
   - Integrate Dioxus signal table archiving into the relocatable state snapshot format (`crates/nve-engine/src/snapshot.rs`).
   - Add append-only WAL compaction for incremental state persistence between full snapshots.
