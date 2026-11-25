@@ -4,8 +4,8 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining host harden
 
 ## P1 — Host & Runtime Hardening
 
-- [ ] **Bi-directional codegen (`crates/nve-codegen`)**
-  - Support zero-copy `NveValue` typed props and event bindings.
+- [ ] **Dogfood Nitro-style hybrid generator on NVE's own core & scene ABI**
+  - Generate `nve_abi.h` (fixing the stale Swift `CNveAbi/include/nve_abi.h` copy), `nve_scene_abi.h`, Dart `dart:ffi`, Android Java, and Web TS from NVE's unified `hybrid` codegen pipeline, delete legacy `abi_schema.rs`, and wire `cargo nve codegen {hybrid,abi}`.
 
 ## P2 — Core Engine & Platform Completeness
 
