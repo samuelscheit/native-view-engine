@@ -1,5 +1,4 @@
 #import "NveAppleNativeViews.h"
-#import "NveAppleCamera.h"
 
 #include <algorithm>
 #include <cctype>
@@ -351,7 +350,6 @@ void register_apple_native_views(nve::NativeViewRegistry &registry) {
   registry.register_adapter(nve::kNativeKindBlurAlias, make_blur_adapter());
   registry.register_adapter(nve::kNativeKindWebView, make_webview_adapter());
   registry.register_adapter(nve::kNativeKindWebViewAlias, make_webview_adapter());
-  register_apple_camera_native_view(registry);
 }
 
 void bind_apple_native_views_to_fabric_host(
@@ -362,7 +360,6 @@ void bind_apple_native_views_to_fabric_host(
   registry.bind_to_fabric_host(host, nve::kNativeKindBlurAlias);
   registry.bind_to_fabric_host(host, nve::kNativeKindWebView);
   registry.bind_to_fabric_host(host, nve::kNativeKindWebViewAlias);
-  bind_apple_camera_native_view_to_fabric_host(host, registry);
 }
 
 NvePlatformView * _Nullable native_view_for_node(

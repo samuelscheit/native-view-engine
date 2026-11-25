@@ -51,14 +51,6 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
-    // Jetpack CameraX (zero React Native / VisionCamera dependency)
-    val cameraXVersion = "1.4.2"
-    implementation("androidx.camera:camera-core:$cameraXVersion")
-    implementation("androidx.camera:camera-camera2:$cameraXVersion")
-    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
-    implementation("androidx.camera:camera-video:$cameraXVersion")
-    implementation("androidx.camera:camera-view:$cameraXVersion")
-
     // JUnit 5 (pure-JVM binary codec, scene buffer, state & controller tests)
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")

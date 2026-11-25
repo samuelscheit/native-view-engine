@@ -1,4 +1,4 @@
-package dev.nve.compose.camera
+package dev.nve.camera
 
 /**
  * Declarative session constraint bundle mapped onto Margelo `react-native-vision-camera` v5's
