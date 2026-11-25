@@ -9,9 +9,6 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
 - [ ] **Reusable `crates/nve-docs` Framework (`crates/nve-docs`)** *(in flight — Docs Phase 2A)*
   - Fumadocs × Linear dark/light 3-column shell built 100% on `nve-ui` + `nve-router` + `nve-sdk` + `nve-mdx` (sidebar, sticky TOC, `⌘K` `NVS1` search dialog, syntax-highlighted code blocks with Clipboard copy, `<LiveDemo>` `PlaygroundRegistry`, responsive `< 960pt` mobile drawer).
 
-- [ ] **Complete 6-Section NVE Documentation Content Suite (`docs/content/`)** *(in flight — Docs Phase 3A)*
-  - Grounded `.mdx` + `_meta.toml` pages covering Getting Started, Core Architecture, Building Apps, all 10 Platform Hosts, Interop/Codegen/Pairing, and CLI/Benchmarks/Upstream Reference.
-
 - [ ] **Docs Site Assembly, `cargo nve docs` CLI, 5 Live Playgrounds, Native Docs App & GitHub Pages CI (Docs Phases 2B / 3B / 4)**
   - Implement `cargo nve docs build|dev|check` in `crates/nve-cli/src/docs.rs` (MDRSX compile + per-route `WebBackend::render_ssr` static HTML + `search.nvs1` + `sitemap.xml` + `wasm-release` progressive hydrator + live dev watcher).
   - Build `examples/nve-docs-site` with all 5 live interactive playgrounds (`ui-playground`, `virtual-list-100k`, `router-sandbox`, `canvas-draw1`, `crdt-simulator`) running as both static+hydrated web site AND native desktop/mobile app (`export_nve_app!`).
