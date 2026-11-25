@@ -4,6 +4,7 @@
 #include "nve_rn_component.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <dlfcn.h>
 #include <memory>
 #include <unordered_map>
@@ -99,7 +100,7 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
   void *_dylibHandle;
   uint32_t _surfaceId;
   std::unordered_map<uint32_t, NSView *> _nodeViews;
-  std::unordered_map<uint32_t, uint16_t> _nodeKinds;
+  std::unordered_map<uint32_t, uint32_t> _nodeViewTags;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -182,6 +183,31 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
   if (!bridge->is_valid()) {
     return NO;
   }
+  nve::fabric_host_set_text_measurer(
+      bridge->fabric_host(),
+      [](std::string_view text, float font_size, float max_width) -> NveIntrinsicSize {
+        if (text.empty()) {
+          return NveIntrinsicSize{0.0f, 0.0f};
+        }
+        @autoreleasepool {
+          NSString *str = [[NSString alloc] initWithBytes:text.data()
+                                                   length:text.size()
+                                                 encoding:NSUTF8StringEncoding];
+          if (!str) {
+            return NveIntrinsicSize{0.0f, 0.0f};
+          }
+          NSFont *font = [NSFont systemFontOfSize:static_cast<CGFloat>(font_size > 0.0f ? font_size : 16.0f)];
+          const CGFloat constraintW = (max_width > 0.0f && std::isfinite(max_width)) ? static_cast<CGFloat>(max_width) : CGFLOAT_MAX;
+          const NSRect bounds = [str boundingRectWithSize:NSMakeSize(constraintW, CGFLOAT_MAX)
+                                                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                               attributes:@{NSFontAttributeName : font}];
+          // Add 4pt horizontal slack for NSTextFieldCell's 2pt leading/trailing text inset.
+          return NveIntrinsicSize{
+              static_cast<float>(std::ceil(bounds.size.width) + 4.0),
+              static_cast<float>(std::ceil(bounds.size.height)),
+          };
+        }
+      });
   _bridge = std::move(bridge);
   [self renderNveFrame];
   return YES;
@@ -382,11 +408,24 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
     [view removeFromSuperview];
   }
   _nodeViews.clear();
-  _nodeKinds.clear();
+  _nodeViewTags.clear();
+}
+
+- (uint32_t)_viewTagForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
+  // Distinguish leaf text nodes (NSTextField) from wrapper text containers (NveFlippedContainerView).
+  const uint32_t isContainerText = (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) ? 0x10000u : 0u;
+  return static_cast<uint32_t>(snap.kind) | isContainerText;
 }
 
 - (NSView *)_createNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
   NSView *view = nil;
+  if (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) {
+    NveFlippedContainerView *container =
+        [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
+    container.nveNodeId = snap.node_id;
+    container.wantsLayer = YES;
+    return container;
+  }
   switch (snap.kind) {
     case NVE_COMP_TEXT: {
       NSTextField *label = [[NSTextField alloc] initWithFrame:NSZeroRect];
@@ -396,6 +435,8 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
       label.drawsBackground = NO;
       label.usesSingleLineMode = NO;
       label.lineBreakMode = NSLineBreakByWordWrapping;
+      label.cell.wraps = YES;
+      label.cell.scrollable = NO;
       label.wantsLayer = YES;
       view = label;
       break;
@@ -445,7 +486,7 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
   for (auto it = _nodeViews.begin(); it != _nodeViews.end();) {
     if (liveIds.find(it->first) == liveIds.end()) {
       [it->second removeFromSuperview];
-      _nodeKinds.erase(it->first);
+      _nodeViewTags.erase(it->first);
       it = _nodeViews.erase(it);
     } else {
       ++it;
@@ -462,8 +503,9 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
     }
 
     NSView *view = nil;
+    const uint32_t viewTag = [self _viewTagForSnapshot:snap];
     auto existingIt = _nodeViews.find(snap.node_id);
-    if (existingIt != _nodeViews.end() && _nodeKinds[snap.node_id] == snap.kind) {
+    if (existingIt != _nodeViews.end() && _nodeViewTags[snap.node_id] == viewTag) {
       view = existingIt->second;
     } else {
       if (existingIt != _nodeViews.end()) {
@@ -471,7 +513,7 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
       }
       view = [self _createNativeViewForSnapshot:snap];
       _nodeViews[snap.node_id] = view;
-      _nodeKinds[snap.node_id] = snap.kind;
+      _nodeViewTags[snap.node_id] = viewTag;
     }
 
     view.frame = NSMakeRect(snap.layout.x, snap.layout.y, snap.layout.width, snap.layout.height);

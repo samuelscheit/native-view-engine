@@ -43,14 +43,14 @@ struct LayoutProps {
 };
 
 struct StyleProps {
-  uint32_t background_rgba{};
-  uint32_t text_color_rgba{};
-  uint32_t border_color_rgba{};
-  float border_width{};
-  float border_radius{};
+  uint32_t background_rgba{0u};
+  uint32_t text_color_rgba{0xFF000000u};
+  uint32_t border_color_rgba{0u};
+  float border_width{0.0f};
+  float border_radius{0.0f};
   float opacity{1.0f};
   float font_size{16.0f};
-  int32_t z_index{};
+  int32_t z_index{0};
 };
 
 inline bool is_valid_component_kind(uint16_t kind) noexcept {

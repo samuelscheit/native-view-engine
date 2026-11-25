@@ -168,12 +168,14 @@ struct ShadowNodeEntry {
   std::string text;
   LayoutProps layout{};
   StyleProps style{};
+  bool has_explicit_style{false};
   LayoutRect computed_layout{};
   bool has_computed_layout{false};
   bool raw_props_dirty{false};
   RawPropMap raw_props;
   uint64_t event_mask{0};
   std::vector<uint32_t> children;
+  const TextMeasurerCallback* text_measurer{nullptr};
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
   YGNodeRef yg_node{nullptr};
 #endif
@@ -188,20 +190,41 @@ static YGSize measure_text_node(
     YGMeasureMode height_mode) {
   const auto* entry = static_cast<const ShadowNodeEntry*>(YGNodeGetContext(node));
   const float font_size = (entry && entry->style.font_size > 0.0f) ? entry->style.font_size : 16.0f;
-  const float char_width = font_size * 0.55f;
-  const float line_height = font_size * 1.25f;
   const size_t len = entry ? entry->text.size() : 0;
-  float intrinsic_w = static_cast<float>(len) * char_width;
+
+  float out_w = 0.0f;
+  float out_h = 0.0f;
+  if (len > 0 && entry && entry->text_measurer && *entry->text_measurer) {
+    const float max_w = (width_mode == YGMeasureModeUndefined) ? 0.0f : width;
+    const NveIntrinsicSize measured = (*entry->text_measurer)(entry->text, font_size, max_w);
+    out_w = measured.width;
+    out_h = measured.height;
+    if (width_mode == YGMeasureModeExactly) {
+      out_w = width;
+    } else if (width_mode == YGMeasureModeAtMost) {
+      out_w = std::min(out_w, width);
+    }
+    if (height_mode == YGMeasureModeExactly) {
+      out_h = height;
+    } else if (height_mode == YGMeasureModeAtMost) {
+      out_h = std::min(out_h, height);
+    }
+    return YGSize{out_w, out_h};
+  }
+
+  const float char_width = font_size * 0.55f;
+  const float line_height = font_size * 1.3f;
+  float intrinsic_w = len > 0 ? (static_cast<float>(len) * char_width + 4.0f) : 0.0f;
   float intrinsic_h = len > 0 ? line_height : 0.0f;
 
-  float out_w = intrinsic_w;
+  out_w = intrinsic_w;
   if (width_mode == YGMeasureModeExactly) {
     out_w = width;
   } else if (width_mode == YGMeasureModeAtMost) {
     out_w = std::min(intrinsic_w, width);
   }
 
-  float out_h = intrinsic_h;
+  out_h = intrinsic_h;
   if (out_w > 0.0f && intrinsic_w > out_w && len > 0) {
     const float lines = std::ceil(intrinsic_w / out_w);
     out_h = lines * line_height;
@@ -267,6 +290,18 @@ class FabricHost {
 #endif
     }
     run_layout_pass();
+  }
+
+  void set_text_measurer(TextMeasurerCallback measurer) {
+    text_measurer_ = std::move(measurer);
+    for (auto& [_, entry] : nodes_) {
+      entry.text_measurer = &text_measurer_;
+#if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
+      if (entry.yg_node && YGNodeHasMeasureFunc(entry.yg_node)) {
+        YGNodeMarkDirty(entry.yg_node);
+      }
+#endif
+    }
   }
 
   void register_custom_component(CustomComponentDescriptor descriptor) {
@@ -457,6 +492,7 @@ class FabricHost {
           auto it = nodes_.find(id);
           if (it == nodes_.end()) return -5;
           it->second.style = style;
+          it->second.has_explicit_style = true;
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
           if (it->second.yg_node && YGNodeHasMeasureFunc(it->second.yg_node)) {
             YGNodeMarkDirty(it->second.yg_node);
@@ -615,6 +651,7 @@ class FabricHost {
 
  private:
   void init_node_yoga(ShadowNodeEntry& entry) {
+    entry.text_measurer = &text_measurer_;
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
     entry.yg_node = YGNodeNewWithConfig(yg_config_);
     YGNodeSetContext(entry.yg_node, &entry);
@@ -669,9 +706,39 @@ class FabricHost {
 #endif
   }
 
+  void propagate_text_styles_rec(uint32_t node_id, uint32_t inherited_color, float inherited_font_size, bool has_inherited) {
+    auto it = nodes_.find(node_id);
+    if (it == nodes_.end()) return;
+    auto& entry = it->second;
+
+    if (entry.kind == NVE_COMP_TEXT) {
+      if (!entry.has_explicit_style && has_inherited) {
+        if (entry.style.text_color_rgba != inherited_color ||
+            std::fabs(entry.style.font_size - inherited_font_size) > 1e-3f) {
+          entry.style.text_color_rgba = inherited_color;
+          entry.style.font_size = inherited_font_size;
+#if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
+          if (entry.yg_node && YGNodeHasMeasureFunc(entry.yg_node)) {
+            YGNodeMarkDirty(entry.yg_node);
+          }
+#endif
+        }
+      }
+      inherited_color = entry.style.text_color_rgba;
+      inherited_font_size = entry.style.font_size;
+      has_inherited = true;
+    }
+
+    const auto children = entry.children;
+    for (uint32_t cid : children) {
+      propagate_text_styles_rec(cid, inherited_color, inherited_font_size, has_inherited);
+    }
+  }
+
   void run_layout_pass() {
     auto root_it = nodes_.find(NVE_ROOT_NODE_ID);
     if (root_it == nodes_.end()) return;
+    propagate_text_styles_rec(NVE_ROOT_NODE_ID, 0xFF000000u, 16.0f, false);
 
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
     YGNodeRef root_yg = root_it->second.yg_node;
@@ -889,6 +956,7 @@ class FabricHost {
   NveSurfaceConfig config_;
   std::unordered_map<uint32_t, ShadowNodeEntry> nodes_;
   std::unordered_map<std::string, CustomComponentDescriptor> custom_components_;
+  TextMeasurerCallback text_measurer_;
   mutable std::mutex event_mutex_;
   EventRingWriter event_ring_;
   std::vector<uint8_t> drained_snapshot_;
@@ -946,6 +1014,13 @@ void fabric_host_enqueue_custom_event(
     size_t len) {
   if (!host) return;
   static_cast<FabricHost*>(host)->enqueue_custom_event(node_id, timestamp_us, name, data, len);
+}
+
+void fabric_host_set_text_measurer(
+    NveFabricHostHandle host,
+    TextMeasurerCallback measurer) {
+  if (!host) return;
+  static_cast<FabricHost*>(host)->set_text_measurer(std::move(measurer));
 }
 
 void fabric_host_register_custom_component(

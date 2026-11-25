@@ -129,6 +129,15 @@ void fabric_host_enqueue_custom_event(
     std::string_view name,
     const uint8_t* data,
     size_t len);
+/// Platform text measurement callback invoked by Yoga (`measure_text_node`) when registered.
+/// Given UTF-8 text, font size in points, and max width (<= 0 or non-finite means unconstrained),
+/// returns exact native glyph bounds `(width, height)` in points.
+using TextMeasurerCallback =
+    std::function<NveIntrinsicSize(std::string_view text, float font_size, float max_width)>;
+
+void fabric_host_set_text_measurer(
+    NveFabricHostHandle host,
+    TextMeasurerCallback measurer);
 void fabric_host_register_custom_component(
     NveFabricHostHandle host,
     CustomComponentDescriptor descriptor);

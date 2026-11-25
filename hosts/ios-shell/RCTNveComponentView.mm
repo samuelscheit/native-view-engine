@@ -4,6 +4,7 @@
 #include "nve_rn_component.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <dlfcn.h>
 #include <memory>
 #include <unordered_map>
@@ -88,7 +89,7 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
   void *_dylibHandle;
   uint32_t _surfaceId;
   std::unordered_map<uint32_t, UIView *> _nodeViews;
-  std::unordered_map<uint32_t, uint16_t> _nodeKinds;
+  std::unordered_map<uint32_t, uint32_t> _nodeViewTags;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -161,6 +162,36 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
   if (!bridge->is_valid()) {
     return NO;
   }
+  nve::fabric_host_set_text_measurer(
+      bridge->fabric_host(),
+      [](std::string_view text, float font_size, float max_width) -> NveIntrinsicSize {
+        if (text.empty()) {
+          return NveIntrinsicSize{0.0f, 0.0f};
+        }
+        @autoreleasepool {
+          NSString *str = [[NSString alloc] initWithBytes:text.data()
+                                                   length:text.size()
+                                                 encoding:NSUTF8StringEncoding];
+          if (!str) {
+            return NveIntrinsicSize{0.0f, 0.0f};
+          }
+          UIFont *font =
+              [UIFont systemFontOfSize:static_cast<CGFloat>(font_size > 0.0f ? font_size : 16.0f)];
+          const CGFloat constraintW =
+              (max_width > 0.0f && std::isfinite(max_width)) ? static_cast<CGFloat>(max_width)
+                                                             : CGFLOAT_MAX;
+          const CGRect bounds =
+              [str boundingRectWithSize:CGSizeMake(constraintW, CGFLOAT_MAX)
+                                options:NSStringDrawingUsesLineFragmentOrigin |
+                                        NSStringDrawingUsesFontLeading
+                             attributes:@{NSFontAttributeName : font}
+                                context:nil];
+          return NveIntrinsicSize{
+              static_cast<float>(std::ceil(bounds.size.width)),
+              static_cast<float>(std::ceil(bounds.size.height)),
+          };
+        }
+      });
   _bridge = std::move(bridge);
   [self renderNveFrame];
   return YES;
@@ -311,11 +342,21 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
     [view removeFromSuperview];
   }
   _nodeViews.clear();
-  _nodeKinds.clear();
+  _nodeViewTags.clear();
+}
+
+- (uint32_t)_viewTagForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
+  const uint32_t isContainerText = (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) ? 0x10000u : 0u;
+  return static_cast<uint32_t>(snap.kind) | isContainerText;
 }
 
 - (UIView *)_createNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
   UIView *view = nil;
+  if (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) {
+    view = [[UIView alloc] initWithFrame:CGRectZero];
+    view.tag = static_cast<NSInteger>(snap.node_id);
+    return view;
+  }
   switch (snap.kind) {
     case NVE_COMP_TEXT: {
       UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
@@ -353,7 +394,7 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
   for (auto it = _nodeViews.begin(); it != _nodeViews.end();) {
     if (liveIds.find(it->first) == liveIds.end()) {
       [it->second removeFromSuperview];
-      _nodeKinds.erase(it->first);
+      _nodeViewTags.erase(it->first);
       it = _nodeViews.erase(it);
     } else {
       ++it;
@@ -369,8 +410,9 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
     }
 
     UIView *view = nil;
+    const uint32_t viewTag = [self _viewTagForSnapshot:snap];
     auto existingIt = _nodeViews.find(snap.node_id);
-    if (existingIt != _nodeViews.end() && _nodeKinds[snap.node_id] == snap.kind) {
+    if (existingIt != _nodeViews.end() && _nodeViewTags[snap.node_id] == viewTag) {
       view = existingIt->second;
     } else {
       if (existingIt != _nodeViews.end()) {
@@ -378,7 +420,7 @@ NSDictionary<NSString *, id> *payloadDictionaryFromEvent(const nve::DecodedEvent
       }
       view = [self _createNativeViewForSnapshot:snap];
       _nodeViews[snap.node_id] = view;
-      _nodeKinds[snap.node_id] = snap.kind;
+      _nodeViewTags[snap.node_id] = viewTag;
     }
 
     view.frame = CGRectMake(

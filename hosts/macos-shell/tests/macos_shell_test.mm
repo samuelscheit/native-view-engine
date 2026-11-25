@@ -350,6 +350,58 @@ int main() {
     assert([ctrl loadRustAppDylibAtPath:@"/nonexistent/libmissing.dylib" error:&loadErr] == NO);
     assert(loadErr != nil);
 
+    // 6. Real Rust Dioxus cdylib test: verify nested Text->Text inheritance, visible colors,
+    //    non-zero AppKit label frames, live click -> Count: 1, and optional PNG render.
+    const char *dylibEnv = std::getenv("NVE_TEST_COUNTER_DYLIB");
+    if (dylibEnv && dylibEnv[0] != '\0') {
+      RCTNveMacComponentView *counterView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 640, 420)];
+      NSError *counterErr = nil;
+      assert([counterView loadNveDylibAtPath:[NSString stringWithUTF8String:dylibEnv]
+                                   surfaceId:1
+                                       error:&counterErr]);
+      assert(counterErr == nil);
+
+      // Collect all leaf NSTextField labels recursively.
+      std::vector<NSTextField *> labels;
+      std::function<void(NSView *)> walk = [&](NSView *v) {
+        if ([v isKindOfClass:[NSTextField class]]) {
+          labels.push_back((NSTextField *)v);
+        }
+        for (NSView *sub in v.subviews) {
+          walk(sub);
+        }
+      };
+      walk(counterView);
+      assert(labels.size() >= 4);
+
+      bool sawTitle = false, sawCount0 = false, sawInc = false, sawReset = false;
+      for (NSTextField *lbl : labels) {
+        assert(lbl.frame.size.width > 20.0);
+        assert(lbl.frame.size.height >= 16.0);
+        NSColor *srgb = [lbl.textColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+        assert(srgb != nil && srgb.alphaComponent > 0.99);
+        if ([lbl.stringValue isEqualToString:@"NATIVE VIEW ENGINE"]) sawTitle = true;
+        if ([lbl.stringValue isEqualToString:@"Count: 0"]) {
+          sawCount0 = true;
+          assert(approx_eq(lbl.font.pointSize, 28.0));
+        }
+        if ([lbl.stringValue isEqualToString:@"Increment +"]) sawInc = true;
+        if ([lbl.stringValue isEqualToString:@"Reset"]) sawReset = true;
+      }
+      assert(sawTitle && sawCount0 && sawInc && sawReset);
+
+      const char *shotPath = std::getenv("NVE_TEST_SCREENSHOT_PATH");
+      if (shotPath && shotPath[0] != '\0') {
+        NSBitmapImageRep *rep =
+            [counterView bitmapImageRepForCachingDisplayInRect:counterView.bounds];
+        [counterView cacheDisplayInRect:counterView.bounds toBitmapImageRep:rep];
+        NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        assert(png != nil && png.length > 0);
+        [png writeToFile:[NSString stringWithUTF8String:shotPath] atomically:YES];
+      }
+    }
+
     std::cout << "nve_macos_shell_test passed ("
               << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+AppKit" : "Standalone+AppKit")
               << ")\n";

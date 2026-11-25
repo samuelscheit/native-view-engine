@@ -40,10 +40,12 @@ pub fn use_signal<T: 'static>(init: impl FnOnce() -> T) -> dioxus_signals::Signa
 
 #[derive(Debug, Clone)]
 struct NodeRecord {
+    kind: ComponentKind,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
     layout: LayoutProps,
     style: StyleProps,
+    has_explicit_style: bool,
     event_mask: u64,
     dioxus_id: Option<ElementId>,
 }
@@ -51,10 +53,12 @@ struct NodeRecord {
 impl Default for NodeRecord {
     fn default() -> Self {
         Self {
+            kind: ComponentKind::View,
             parent: None,
             children: Vec::new(),
             layout: LayoutProps::default(),
             style: StyleProps::default(),
+            has_explicit_style: false,
             event_mask: 0,
             dioxus_id: None,
         }
@@ -114,6 +118,20 @@ impl NveMutationWriter {
     }
 
     pub fn finish_frame(&mut self, sync_mount: bool) -> &[u8] {
+        // Propagate inherited text_color and font_size from styled Text parents to unstyled child
+        // Text leaves (Dioxus rsx! emits `text { style: "...", "leaf" }` as parent Text -> child Text).
+        let mut style_sources: Vec<NodeId> = self
+            .dirty_children
+            .iter()
+            .chain(self.dirty_style.iter())
+            .copied()
+            .collect();
+        style_sources.sort_unstable();
+        style_sources.dedup();
+        for pid in style_sources {
+            self.propagate_text_style_down(pid);
+        }
+
         // Coalesce all structural/style/layout mutations into one deterministic batch per frame.
         let mut dirty_children: Vec<NodeId> = self.dirty_children.drain().collect();
         dirty_children.sort_unstable();
@@ -158,9 +176,51 @@ impl NveMutationWriter {
     fn alloc_node(&mut self, kind: ComponentKind, custom_name: Option<&str>) -> NodeId {
         let id = self.next_node_id;
         self.next_node_id += 1;
-        self.nodes.insert(id, NodeRecord::default());
+        self.nodes.insert(
+            id,
+            NodeRecord {
+                kind,
+                ..Default::default()
+            },
+        );
         self.builder.create_node(id, kind, custom_name);
         id
+    }
+
+    fn propagate_text_style_down(&mut self, parent_id: NodeId) {
+        let Some((parent_kind, parent_color, parent_font_size, children)) =
+            self.nodes.get(&parent_id).map(|r| {
+                (
+                    r.kind,
+                    r.style.text_color,
+                    r.style.font_size,
+                    r.children.clone(),
+                )
+            })
+        else {
+            return;
+        };
+        if parent_kind != ComponentKind::Text {
+            return;
+        }
+        for cid in children {
+            let mut recurse = false;
+            if let Some(child) = self.nodes.get_mut(&cid) {
+                if child.kind == ComponentKind::Text && !child.has_explicit_style {
+                    if child.style.text_color != parent_color
+                        || (child.style.font_size - parent_font_size).abs() > f32::EPSILON
+                    {
+                        child.style.text_color = parent_color;
+                        child.style.font_size = parent_font_size;
+                        self.dirty_style.insert(cid);
+                    }
+                    recurse = !child.children.is_empty();
+                }
+            }
+            if recurse {
+                self.propagate_text_style_down(cid);
+            }
+        }
     }
 
     fn bind_element_id(&mut self, node_id: NodeId, el_id: ElementId) {
@@ -241,6 +301,7 @@ impl NveMutationWriter {
                     self.dirty_layout.insert(node_id);
                 }
                 if rec.style != prev_style {
+                    rec.has_explicit_style = true;
                     self.dirty_style.insert(node_id);
                 }
                 return;
