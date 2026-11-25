@@ -12,8 +12,8 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining host harden
 
 ## P2 — Core Engine & Platform Completeness
 
-- [ ] **Hardware GPU Skia swapchains (`crates/nve-backend-skia`)**
-  - Wire live Metal, Direct3D 12, and Vulkan GPU context/swapchain creation behind `--features skia` (building on the `cosmic-text` shaper and `SkiaCanvasRenderer` / `GpuSurface` scaffolding).
+- [ ] **Direct3D 12 Skia GPU compile check on Windows (`crates/nve-backend-skia`)**
+  - Verify `cargo check -p nve-backend-skia --features skia-d3d` on `samuel-pc` (Metal GPU and Vulkan compile/runtime are verified on macOS).
 
 ## Flagship / Vision
 
