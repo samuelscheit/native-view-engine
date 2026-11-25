@@ -2013,6 +2013,7 @@ dependencies = [
  "nve-abi",
  "nve-backend-headless",
  "nve-dioxus",
+ "nve-i18n",
  "nve-interop",
 ]
 
