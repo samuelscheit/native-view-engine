@@ -15,7 +15,7 @@ mod type_helpers;
 
 use std::fmt::Write as _;
 use codec_emitter::emit_cpp20_spec;
-use type_helpers::{c_param_type, c_pod_type, c_return_type};
+use type_helpers::{c_abi_field_decl, c_fn_type, c_param_type, c_pod_type, c_return_type, is_c_abi_struct};
 
 use crate::error::CodegenError;
 use crate::hybrid::ir::{
@@ -107,15 +107,15 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
         writeln!(out).unwrap();
     }
 
-    // POD structs (topological order so embedded POD fields are always complete)
+    // POD & direct C-ABI view structs (topological order so embedded POD fields are always complete)
     for s in spec.structs_topological() {
-        if !s.is_pod(spec) {
+        if !is_c_abi_struct(s, spec) {
             continue;
         }
         writeln!(out, "typedef struct NveHybrid{} {{", s.name).unwrap();
         for f in &s.fields {
             let fname = c_field_ident(&f.name);
-            writeln!(out, "  {} {fname};", c_pod_type(&f.ty)).unwrap();
+            writeln!(out, "  {};", c_abi_field_decl(&f.ty, &fname)).unwrap();
         }
         writeln!(out, "}} NveHybrid{};", s.name).unwrap();
         if let Some(sz) = s.expected_size {
@@ -166,7 +166,29 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
         writeln!(out).unwrap();
     }
 
-    // Module vtables
+    // Direct static `extern "C"` functions (default for statically linked builds; zero vtable, LTO-inlinable)
+    if !spec.c_functions.is_empty() {
+        for f in &spec.c_functions {
+            let ret = match &f.return_type {
+                HybridType::Void => "void".to_string(),
+                other => c_fn_type(other, spec),
+            };
+            let params: Vec<String> = f
+                .params
+                .iter()
+                .map(|p| format!("{} {}", c_fn_type(&p.ty, spec), c_field_ident(&p.name)))
+                .collect();
+            let param_list = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params.join(", ")
+            };
+            writeln!(out, "NVE_API {ret} {}({param_list});", c_field_ident(&f.name)).unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
+    // Optional module vtables (for dynamic `dlopen`/`LoadLibrary` `cdylib` hot-reload boundaries)
     for m in &spec.modules {
         emit_c11_vtable(
             &mut out,
