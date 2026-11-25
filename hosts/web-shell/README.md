@@ -4,7 +4,7 @@ Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-ba
 
 ## Architecture
 
-1. **`DioxusSurface`** (`nve_example_counter::create_surface(1)`) reconciles `rsx!` into a batched binary `CommandBuffer`.
+1. **`DioxusSurface`** (`nve_studio_workspace::create_surface(1)` by default, or `nve_example_counter::create_surface(1)` via `?app=counter`) reconciles `rsx!` into a batched binary `CommandBuffer`.
 2. **`WebBackend::mount_into(container)`** decodes the `CommandBuffer` and mutates real `web_sys::Element` nodes, applying Flexbox `LayoutProps` + `StyleProps` via `HtmlElement::style().set_css_text(...)`.
 3. **Interactive DOM Events**: `EventMask::PRESS` (`click`) and `EventMask::TEXT_CHANGE` (`input`) attach real `wasm_bindgen::closure::Closure` listeners that push `NativeEvent`s into a shared `Rc<RefCell<Vec<NativeEvent>>>` and trigger an immediate incremental re-render (`drain_events -> DioxusSurface::dispatch_events -> render_frame -> submit_recorded_frame`).
 4. **2-Tier Hot Reload (`nve dev`)**: Connects a browser `WebSocket` (default `ws://127.0.0.1:8089`, configurable via `?ws=<url>` or disabled via `?ws=off`) consuming `nve_engine::HotPatchMsg` JSON:

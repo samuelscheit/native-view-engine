@@ -178,4 +178,5 @@ impl NveApp for StudioWorkspaceModule {
     }
 }
 
+#[cfg(all(feature = "cdylib-export", not(target_arch = "wasm32")))]
 nve_engine::export_nve_app!(StudioWorkspaceModule);

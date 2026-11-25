@@ -7,7 +7,7 @@ use nve_dioxus::DioxusSurface;
 use nve_engine::{BackendError, FrameTiming, HotPatchMsg, RenderBackend, SurfaceRunner, Viewport};
 
 #[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
@@ -55,6 +55,20 @@ impl WebAppSession {
             surface,
             runner: SurfaceRunner::new(surface_id, viewport, backend),
         }
+    }
+
+    /// Boots the flagship `nve-studio-workspace` (Aether Workspace + NVE Studio) Dioxus surface.
+    pub fn new_studio_workspace(
+        surface_id: SurfaceId,
+        backend: WebBackend,
+        viewport: Viewport,
+    ) -> Self {
+        Self::new(
+            surface_id,
+            nve_studio_workspace::create_surface(surface_id),
+            backend,
+            viewport,
+        )
     }
 
     /// Boots the `nve-example-counter` Dioxus surface on `WebBackend`.
@@ -173,6 +187,7 @@ impl Drop for HotReloadSocket {
 
 #[cfg(target_arch = "wasm32")]
 struct ActiveShell {
+    generation: u64,
     _session: Rc<RefCell<WebAppSession>>,
     _hot_reload: Option<HotReloadSocket>,
 }
@@ -180,6 +195,70 @@ struct ActiveShell {
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static ACTIVE_SHELL: RefCell<Option<ActiveShell>> = const { RefCell::new(None) };
+    static NEXT_SHELL_GENERATION: Cell<u64> = const { Cell::new(1) };
+}
+
+/// Handle to a mounted NVE Web WASM application.
+///
+/// The active surface and hot-reload socket are owned by the shell slot so callers can safely
+/// ignore this handle without unmounting the app; call `unmount()` to detach explicitly.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct WebAppController {
+    app_name: &'static str,
+    mount_id: String,
+    generation: u64,
+    session: Rc<RefCell<WebAppSession>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl WebAppController {
+    /// Name of the mounted NVE application (e.g. `"StudioWorkspaceApp"` or `"CounterApp"`).
+    #[wasm_bindgen(getter)]
+    pub fn app_name(&self) -> String {
+        self.app_name.to_string()
+    }
+
+    /// DOM element ID where the surface is mounted.
+    #[wasm_bindgen(getter)]
+    pub fn mount_id(&self) -> String {
+        self.mount_id.clone()
+    }
+
+    /// Number of nodes currently tracked in the WebBackend DOM mirror.
+    pub fn node_count(&self) -> usize {
+        self.session.borrow().backend().node_count()
+    }
+
+    /// Serializes the current DOM mirror tree to HTML for inspection or diagnostics.
+    pub fn render_html(&self) -> String {
+        self.session.borrow().backend().render_html()
+    }
+
+    /// Detaches this app if it is still active, clearing its mount root and closing any WS.
+    pub fn unmount(&self) {
+        let removed = ACTIVE_SHELL.with(|slot| {
+            let mut guard = slot.borrow_mut();
+            if guard
+                .as_ref()
+                .is_some_and(|active| active.generation == self.generation)
+            {
+                guard.take().is_some()
+            } else {
+                false
+            }
+        });
+        if removed {
+            if let Some(el) = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id(&self.mount_id))
+            {
+                el.set_text_content(None);
+            }
+            set_hud_status("offline", "Unmounted");
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -347,25 +426,34 @@ fn install_panic_hook() {
     });
 }
 
-/// Mounts the NVE `CounterApp` into `#<root_element_id>` and optionally connects to `nve dev` WebSocket.
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub fn start_counter_app(
-    root_element_id: &str,
-    hot_reload_ws_url: Option<String>,
-) -> Result<(), JsValue> {
+fn start_surface_app<F>(
+    app_name: &'static str,
+    mount_id: &str,
+    ws_url: Option<String>,
+    create_surface: F,
+) -> Result<WebAppController, JsValue>
+where
+    F: FnOnce(SurfaceId) -> DioxusSurface,
+{
     install_panic_hook();
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("missing global window"))?;
     let document = window
         .document()
         .ok_or_else(|| JsValue::from_str("missing window.document"))?;
     let container = document
-        .get_element_by_id(root_element_id)
-        .ok_or_else(|| JsValue::from_str(&format!("root element '#{root_element_id}' not found")))?;
+        .get_element_by_id(mount_id)
+        .ok_or_else(|| JsValue::from_str(&format!("root element '#{mount_id}' not found")))?;
 
     let viewport = browser_viewport(&container);
     let backend = WebBackend::mount_into(container);
-    let session = Rc::new(RefCell::new(WebAppSession::new_counter(1, backend, viewport)));
+    let surface_id: SurfaceId = 1;
+    let session = Rc::new(RefCell::new(WebAppSession::new(
+        surface_id,
+        create_surface(surface_id),
+        backend,
+        viewport,
+    )));
 
     // Wire live DOM events -> DioxusSurface::dispatch_events -> incremental CommandBuffer -> live DOM patch.
     let session_for_events = Rc::clone(&session);
@@ -389,14 +477,14 @@ pub fn start_counter_app(
         .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
 
     web_sys::console::log_1(&JsValue::from_str(&format!(
-        "[NVE Web] Mounted CounterApp into '#{root_element_id}' ({} ops, {} mutations, dec={}us mount={}us)",
+        "[NVE Web] Mounted {app_name} into '#{mount_id}' ({} ops, {} mutations, dec={}us mount={}us)",
         initial_timing.op_count,
         initial_timing.mutation_count,
         initial_timing.decode_us,
         initial_timing.mount_us
     )));
 
-    let hot_reload = match hot_reload_ws_url.filter(|u| !u.trim().is_empty()) {
+    let hot_reload = match ws_url.filter(|u| !u.trim().is_empty()) {
         Some(url) => match connect_hot_reload(&url, Rc::clone(&session)) {
             Ok(sock) => Some(sock),
             Err(err) => {
@@ -413,21 +501,66 @@ pub fn start_counter_app(
         }
     };
 
+    let generation = NEXT_SHELL_GENERATION.with(|counter| {
+        let next = counter.get();
+        counter.set(next.wrapping_add(1));
+        next
+    });
+
     // Replace any previously mounted shell cleanly (dropping prior WS & closures).
     ACTIVE_SHELL.with(|slot| {
         *slot.borrow_mut() = Some(ActiveShell {
-            _session: session,
+            generation,
+            _session: Rc::clone(&session),
             _hot_reload: hot_reload,
         });
     });
 
-    Ok(())
+    Ok(WebAppController {
+        app_name,
+        mount_id: mount_id.to_string(),
+        generation,
+        session,
+    })
+}
+
+/// Mounts the flagship Aether Workspace + NVE Studio app into `#<mount_id>` and optionally
+/// connects to the `nve dev` WebSocket.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn start_studio_workspace_app(
+    mount_id: &str,
+    ws_url: Option<String>,
+) -> Result<WebAppController, JsValue> {
+    start_surface_app(
+        "StudioWorkspaceApp",
+        mount_id,
+        ws_url,
+        nve_studio_workspace::create_surface,
+    )
+}
+
+/// Mounts the NVE `CounterApp` into `#<mount_id>` and optionally connects to `nve dev` WebSocket.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn start_counter_app(
+    mount_id: &str,
+    ws_url: Option<String>,
+) -> Result<WebAppController, JsValue> {
+    start_surface_app(
+        "CounterApp",
+        mount_id,
+        ws_url,
+        nve_example_counter::create_surface,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId};
+    use nve_abi::{
+        EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue, ROOT_NODE_ID,
+    };
 
     fn find_pressable_nodes(backend: &WebBackend) -> Vec<NodeId> {
         let mut ids: Vec<NodeId> = (1..=64)
@@ -435,6 +568,62 @@ mod tests {
             .collect();
         ids.sort_unstable();
         ids
+    }
+
+    fn find_node_by_test_id(backend: &WebBackend, target: &str) -> Option<NodeId> {
+        fn walk(backend: &WebBackend, id: NodeId, target: &str) -> Option<NodeId> {
+            let el = backend.node(id)?;
+            if matches!(
+                el.raw_props.get("testID"),
+                Some(RawPropValue::String(s)) if s == target
+            ) {
+                return Some(id);
+            }
+            for &child in &el.children {
+                if let Some(found) = walk(backend, child, target) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(backend, ROOT_NODE_ID, target)
+    }
+
+    fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
+        let node_id = find_node_by_test_id(session.backend(), test_id)
+            .unwrap_or_else(|| panic!("expected mounted node with test_id='{test_id}'"));
+        assert_ne!(
+            session.backend().event_mask_of(node_id) & EventMask::PRESS,
+            0,
+            "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
+        );
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id,
+            timestamp_us,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 16.0, y: 12.0 },
+        });
+        session
+            .pump_events()
+            .unwrap()
+            .unwrap_or_else(|| panic!("pressing '{test_id}' should trigger an incremental frame"))
+    }
+
+    fn assert_valid_dom_html(html: &str) {
+        assert!(
+            html.starts_with("<div data-nve-id=\"1\""),
+            "DOM root should be node 1 <div>"
+        );
+        assert!(html.ends_with("</div>"), "DOM HTML should close root </div>");
+        for tag in ["div", "button", "span"] {
+            let opens = html.matches(&format!("<{tag} ")).count();
+            let closes = html.matches(&format!("</{tag}>")).count();
+            assert_eq!(
+                opens, closes,
+                "unbalanced <{tag}> tags in rendered DOM HTML (opens={opens}, closes={closes})"
+            );
+        }
     }
 
     #[test]
@@ -545,5 +734,88 @@ mod tests {
 
         // Malformed JSON returns descriptive error without panicking.
         assert!(session.handle_hot_patch_json("{not valid json").is_err());
+    }
+
+    #[test]
+    fn studio_workspace_mounts_interacts_and_time_travels() {
+        let viewport = Viewport {
+            width: 1280.0,
+            height: 800.0,
+            scale_factor: 1.0,
+        };
+        let mut session = WebAppSession::new_studio_workspace(1, WebBackend::new(), viewport);
+
+        // 1. Initial mount renders the 3-column Aether Workspace + NVE Studio DOM.
+        let init = session.render_initial().unwrap();
+        assert!(init.op_count > 0);
+        assert!(init.mutation_count > 0);
+        assert!(session.backend().node_count() > 20);
+
+        let html0 = session.backend().render_html();
+        assert_valid_dom_html(&html0);
+        assert!(html0.contains("AETHER"));
+        assert!(html0.contains("Issue Board"));
+        assert!(html0.contains("NVE STUDIO"));
+        assert!(html0.contains("AET-101"));
+        assert!(html0.contains("Zero-copy EventRing ABI"));
+        assert!(html0.contains("In Progress"));
+        assert!(html0.contains("Done (1)"));
+        assert!(html0.contains("Snapshot 1 / 1"));
+        assert!(html0.contains("Workspace Boot"));
+
+        // 2. Click status pill on AET-101 -> cycles In Progress -> Done.
+        let t_status = press_test_id(&mut session, "task-status-1", 1000);
+        assert!(t_status.mutation_count > 0);
+        let html_after_status = session.backend().render_html();
+        assert_valid_dom_html(&html_after_status);
+        assert!(html_after_status.contains("Status -> Done"));
+        assert!(html_after_status.contains("Done (2)"));
+        assert!(html_after_status.contains("Snapshot 2 / 2"));
+
+        // 3. Switch views: Board -> # engineering -> Live Metrics.
+        press_test_id(&mut session, "nav-engineering", 2000);
+        let html_eng = session.backend().render_html();
+        assert_valid_dom_html(&html_eng);
+        assert!(html_eng.contains("# engineering"));
+        assert!(html_eng.contains("Single ABI drives all 4 hosts!"));
+        assert!(html_eng.contains("QUICK REPLY"));
+        assert!(html_eng.contains("Snapshot 3 / 3"));
+
+        press_test_id(&mut session, "nav-metrics", 3000);
+        let html_metrics = session.backend().render_html();
+        assert_valid_dom_html(&html_metrics);
+        assert!(html_metrics.contains("Live Metrics"));
+        assert!(html_metrics.contains("Node Batch #01"));
+        assert!(html_metrics.contains("Snapshot 4 / 4"));
+
+        // 4. Live self-edit in docked NVE Studio panel (Accent -> Violet).
+        press_test_id(&mut session, "accent-violet", 4000);
+        let html_violet = session.backend().render_html();
+        assert_valid_dom_html(&html_violet);
+        assert!(html_violet.contains("Accent -> Violet"));
+        assert!(html_violet.contains("rgba(167,139,250,1.000)"));
+        assert!(html_violet.contains("Snapshot 5 / 5"));
+
+        // 5. Deterministic time-travel: Undo -> First (#1) -> Live.
+        press_test_id(&mut session, "tt-undo", 5000);
+        let html_undo = session.backend().render_html();
+        assert_valid_dom_html(&html_undo);
+        assert!(html_undo.contains("Snapshot 4 / 5"));
+        assert!(html_undo.contains("Live Metrics"));
+
+        press_test_id(&mut session, "tt-first", 6000);
+        let html_first = session.backend().render_html();
+        assert_valid_dom_html(&html_first);
+        assert!(html_first.contains("Snapshot 1 / 5"));
+        assert!(html_first.contains("Workspace Boot"));
+        assert!(html_first.contains("Issue Board"));
+        assert!(html_first.contains("Done (1)"));
+
+        press_test_id(&mut session, "tt-live", 7000);
+        let html_live = session.backend().render_html();
+        assert_valid_dom_html(&html_live);
+        assert!(html_live.contains("Snapshot 5 / 5"));
+        assert!(html_live.contains("Accent -> Violet"));
+        assert!(html_live.contains("Live Metrics"));
     }
 }

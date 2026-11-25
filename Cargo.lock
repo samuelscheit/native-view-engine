@@ -1575,6 +1575,7 @@ dependencies = [
  "nve-dioxus",
  "nve-engine",
  "nve-example-counter",
+ "nve-studio-workspace",
  "wasm-bindgen",
  "web-sys",
 ]

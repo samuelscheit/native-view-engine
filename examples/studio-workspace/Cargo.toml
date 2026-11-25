@@ -9,6 +9,10 @@ name = "nve_studio_workspace"
 # rlib for direct headless/CLI/WASM embedding + cdylib for native hosts & Tier-2 hot-swap.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["cdylib-export"]
+cdylib-export = []
+
 [dependencies]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }

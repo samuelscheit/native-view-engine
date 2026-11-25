@@ -13,6 +13,7 @@ nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-example-counter = { workspace = true }
+nve-studio-workspace = { path = "../../examples/studio-workspace", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
