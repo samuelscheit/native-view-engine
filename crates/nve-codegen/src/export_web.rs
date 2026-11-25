@@ -55,6 +55,64 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "let _wasmModulePromise = null;");
+    let _ = writeln!(out, "const _utf8Encoder = new TextEncoder();");
+    let _ = writeln!(out, "const _utf8Decoder = new TextDecoder('utf-8', {{ fatal: true }});");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "function _encodeNveBinValue(value, chunks = []) {{");
+    let _ = writeln!(out, "  if (value === null || value === undefined) {{ chunks.push(new Uint8Array([0])); return chunks; }}");
+    let _ = writeln!(out, "  if (typeof value === 'boolean') {{ chunks.push(new Uint8Array([1, value ? 1 : 0])); return chunks; }}");
+    let _ = writeln!(out, "  if (typeof value === 'number') {{");
+    let _ = writeln!(out, "    const buf = new ArrayBuffer(9); const dv = new DataView(buf);");
+    let _ = writeln!(out, "    if (Number.isInteger(value) && Number.isSafeInteger(value)) {{ dv.setUint8(0, 2); dv.setBigInt64(1, BigInt(value), true); }}");
+    let _ = writeln!(out, "    else {{ dv.setUint8(0, 3); dv.setFloat64(1, value, true); }}");
+    let _ = writeln!(out, "    chunks.push(new Uint8Array(buf)); return chunks;");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out, "  if (typeof value === 'string') {{");
+    let _ = writeln!(out, "    const bytes = _utf8Encoder.encode(value); const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
+    let _ = writeln!(out, "    dv.setUint8(0, 4); dv.setUint32(1, bytes.byteLength, true); chunks.push(new Uint8Array(hdr), bytes); return chunks;");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out, "  if (value instanceof Uint8Array) {{");
+    let _ = writeln!(out, "    const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
+    let _ = writeln!(out, "    dv.setUint8(0, 5); dv.setUint32(1, value.byteLength, true); chunks.push(new Uint8Array(hdr), value); return chunks;");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out, "  if (Array.isArray(value)) {{");
+    let _ = writeln!(out, "    const inner = []; const cnt = new ArrayBuffer(4); new DataView(cnt).setUint32(0, value.length, true); inner.push(new Uint8Array(cnt));");
+    let _ = writeln!(out, "    for (const item of value) _encodeNveBinValue(item, inner);");
+    let _ = writeln!(out, "    const bodyLen = inner.reduce((a, b) => a + b.byteLength, 0); const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
+    let _ = writeln!(out, "    dv.setUint8(0, 6); dv.setUint32(1, bodyLen, true); chunks.push(new Uint8Array(hdr), ...inner); return chunks;");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out, "  const entries = Object.entries(value).filter(([, v]) => v !== undefined);");
+    let _ = writeln!(out, "  const inner = []; const cnt = new ArrayBuffer(4); new DataView(cnt).setUint32(0, entries.length, true); inner.push(new Uint8Array(cnt));");
+    let _ = writeln!(out, "  for (const [k, v] of entries) {{");
+    let _ = writeln!(out, "    const kb = _utf8Encoder.encode(k); const kl = new ArrayBuffer(4); new DataView(kl).setUint32(0, kb.byteLength, true);");
+    let _ = writeln!(out, "    inner.push(new Uint8Array(kl), kb); _encodeNveBinValue(v, inner);");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out, "  const bodyLen = inner.reduce((a, b) => a + b.byteLength, 0); const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
+    let _ = writeln!(out, "  dv.setUint8(0, 7); dv.setUint32(1, bodyLen, true); chunks.push(new Uint8Array(hdr), ...inner); return chunks;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "function encodeNveBinValue(value) {{");
+    let _ = writeln!(out, "  const chunks = _encodeNveBinValue(value);");
+    let _ = writeln!(out, "  const total = chunks.reduce((a, b) => a + b.byteLength, 0);");
+    let _ = writeln!(out, "  const out = new Uint8Array(total); let off = 0;");
+    let _ = writeln!(out, "  for (const c of chunks) {{ out.set(c, off); off += c.byteLength; }}");
+    let _ = writeln!(out, "  return out;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "function decodeNveBinValue(bytes, state = {{ off: 0 }}) {{");
+    let _ = writeln!(out, "  if (!(bytes instanceof Uint8Array) || state.off >= bytes.byteLength) return null;");
+    let _ = writeln!(out, "  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);");
+    let _ = writeln!(out, "  const tag = bytes[state.off++];");
+    let _ = writeln!(out, "  if (tag === 0) return null;");
+    let _ = writeln!(out, "  if (tag === 1) return bytes[state.off++] !== 0;");
+    let _ = writeln!(out, "  if (tag === 2) {{ const v = Number(dv.getBigInt64(state.off, true)); state.off += 8; return v; }}");
+    let _ = writeln!(out, "  if (tag === 3) {{ const v = dv.getFloat64(state.off, true); state.off += 8; return v; }}");
+    let _ = writeln!(out, "  if (tag === 4) {{ const n = dv.getUint32(state.off, true); state.off += 4; const s = _utf8Decoder.decode(bytes.subarray(state.off, state.off + n)); state.off += n; return s; }}");
+    let _ = writeln!(out, "  if (tag === 5) {{ const n = dv.getUint32(state.off, true); state.off += 4; const b = bytes.subarray(state.off, state.off + n); state.off += n; return b; }}");
+    let _ = writeln!(out, "  if (tag === 6) {{ state.off += 4; const n = dv.getUint32(state.off, true); state.off += 4; const arr = []; for (let i = 0; i < n; i++) arr.push(decodeNveBinValue(bytes, state)); return arr; }}");
+    let _ = writeln!(out, "  if (tag === 7) {{ state.off += 4; const n = dv.getUint32(state.off, true); state.off += 4; const obj = {{}}; for (let i = 0; i < n; i++) {{ const kl = dv.getUint32(state.off, true); state.off += 4; const k = _utf8Decoder.decode(bytes.subarray(state.off, state.off + kl)); state.off += kl; obj[k] = decodeNveBinValue(bytes, state); }} return obj; }}");
+    let _ = writeln!(out, "  return null;");
+    let _ = writeln!(out, "}}");
     let _ = writeln!(out);
     let _ = writeln!(out, "async function loadWasmModule(moduleUrl) {{");
     let _ = writeln!(out, "  if (!_wasmModulePromise) {{");
@@ -151,8 +209,8 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     let _ = writeln!(out, "      this._surface = mod.mount_nve_component(");
     let _ = writeln!(out, "        '{}',", escape_ts_single_quoted(name));
     let _ = writeln!(out, "        this._mountRoot,");
-    let _ = writeln!(out, "        JSON.stringify(this._props),");
-    let _ = writeln!(out, "        (eventName, payloadJson) => this._dispatchNativeEvent(eventName, payloadJson),");
+    let _ = writeln!(out, "        encodeNveBinValue(this._props),");
+    let _ = writeln!(out, "        (eventName, payloadBin) => this._dispatchNativeEvent(eventName, payloadBin),");
     let _ = writeln!(out, "        hotReloadUrl,");
     let _ = writeln!(out, "      );");
     let _ = writeln!(out, "    }} else if (typeof mod.start_counter_app === 'function') {{");
@@ -187,17 +245,17 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     let _ = writeln!(out, "  }}");
     let _ = writeln!(out);
 
-    // Imperative commands
+    // Imperative commands (compact binary `NveBinValue`)
     for cmd in &spec.commands {
         let mname = to_camel_case(&cmd.name);
         let pnames: Vec<String> = cmd.params.iter().map(|p| to_camel_case(&p.name)).collect();
         let _ = writeln!(out, "  {mname}({}) {{", pnames.join(", "));
         let _ = writeln!(
             out,
-            "    if (this._surface && typeof this._surface.dispatch_command === 'function') {{"
+            "    if (this._surface && typeof this._surface.dispatch_command_binary === 'function') {{"
         );
         let args_obj = if cmd.params.is_empty() {
-            "{}".to_owned()
+            "null".to_owned()
         } else {
             let pairs: Vec<String> = cmd
                 .params
@@ -208,7 +266,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
         };
         let _ = writeln!(
             out,
-            "      this._surface.dispatch_command('{}', JSON.stringify({args_obj}));",
+            "      this._surface.dispatch_command_binary('{}', encodeNveBinValue({args_obj}));",
             escape_ts_single_quoted(&cmd.name)
         );
         let _ = writeln!(out, "    }}");
@@ -216,24 +274,24 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
         let _ = writeln!(out);
     }
 
-    // Internal prop sync + CustomEvent dispatcher
+    // Internal binary prop sync + CustomEvent dispatcher
     let _ = writeln!(out, "  _syncProps() {{");
     let _ = writeln!(
         out,
-        "    if (this._surface && typeof this._surface.set_props_json === 'function') {{"
+        "    if (this._surface && typeof this._surface.set_props_binary === 'function') {{"
     );
     let _ = writeln!(
         out,
-        "      this._surface.set_props_json(JSON.stringify(this._props));"
+        "      this._surface.set_props_binary(encodeNveBinValue(this._props));"
     );
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "  }}");
     let _ = writeln!(out);
 
-    let _ = writeln!(out, "  _dispatchNativeEvent(eventName, payloadJson) {{");
+    let _ = writeln!(out, "  _dispatchNativeEvent(eventName, payloadBin) {{");
     let _ = writeln!(
         out,
-        "    const detail = payloadJson ? JSON.parse(payloadJson) : null;"
+        "    const detail = payloadBin instanceof Uint8Array && payloadBin.byteLength > 0 ? decodeNveBinValue(payloadBin) : null;"
     );
     let _ = writeln!(out, "    switch (eventName) {{");
     for ev in &spec.events {
@@ -422,7 +480,7 @@ fn js_parse_attr_expr(ty: &PropType) -> &'static str {
         PropType::Bool => "newValue !== null && newValue !== 'false'",
         PropType::Int32 | PropType::IntEnum { .. } => "newValue === null ? undefined : Number.parseInt(newValue, 10)",
         PropType::Float | PropType::Double => "newValue === null ? undefined : Number.parseFloat(newValue)",
-        PropType::Array { .. } | PropType::Object { .. } => "newValue ? JSON.parse(newValue) : undefined",
+        PropType::Array { .. } => "newValue === null ? undefined : newValue.split(',').map((s) => s.trim()).filter(Boolean)",
         _ => "newValue ?? undefined",
     }
 }

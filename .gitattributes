@@ -1,0 +1,14 @@
+# Enforce LF line endings across generated ABI artifacts and source files so
+# Windows checkouts never introduce CRLF drift on `codegen abi --check`.
+*.generated.* text eol=lf
+**/generated/*.java text eol=lf
+*.rs text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cpp text eol=lf
+*.mm text eol=lf
+*.swift text eol=lf
+*.dart text eol=lf
+*.ts text eol=lf
+*.kt text eol=lf
+*.sh text eol=lf

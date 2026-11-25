@@ -8,9 +8,16 @@
 
 #ifdef __cplusplus
 extern "C" {
-#define NVE_SCENE_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#endif
+
+#ifndef NVE_STATIC_ASSERT
+#if defined(__cplusplus)
+#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define NVE_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)
 #else
-#define NVE_SCENE_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#define NVE_STATIC_ASSERT(cond, msg)
+#endif
 #endif
 
 #define NVE_SCENE_SCHEMA_HASH 0x00F2CF037DB50CC8ULL
@@ -74,37 +81,41 @@ typedef struct NveSceneView {
   const uint32_t* removed_ids;
 } NveSceneView;
 
-NVE_SCENE_STATIC_ASSERT(sizeof(NveRenderNode) == 64u, "NveRenderNode must be 64 bytes");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, node_id) == 0u, "NveRenderNode.node_id offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, kind) == 4u, "NveRenderNode.kind offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, flags) == 5u, "NveRenderNode.flags offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, opacity_u8) == 6u, "NveRenderNode.opacity_u8 offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, _pad0) == 7u, "NveRenderNode._pad0 offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, x) == 8u, "NveRenderNode.x offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, y) == 12u, "NveRenderNode.y offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, width) == 16u, "NveRenderNode.width offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, height) == 20u, "NveRenderNode.height offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, bg_rgba) == 24u, "NveRenderNode.bg_rgba offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, text_rgba) == 28u, "NveRenderNode.text_rgba offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, border_rgba) == 32u, "NveRenderNode.border_rgba offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, border_radius) == 36u, "NveRenderNode.border_radius offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, border_width) == 40u, "NveRenderNode.border_width offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, font_size) == 44u, "NveRenderNode.font_size offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, text_offset) == 48u, "NveRenderNode.text_offset offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, text_len) == 52u, "NveRenderNode.text_len offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, child_count) == 54u, "NveRenderNode.child_count offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, child_offset) == 56u, "NveRenderNode.child_offset offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveRenderNode, z_index) == 60u, "NveRenderNode.z_index offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, schema_hash) == 0u, "NveSceneView.schema_hash offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, frame_id) == 8u, "NveSceneView.frame_id offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, node_count) == 16u, "NveSceneView.node_count offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, dirty_count) == 20u, "NveSceneView.dirty_count offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, removed_count) == 24u, "NveSceneView.removed_count offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, text_slab_len) == 28u, "NveSceneView.text_slab_len offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, children_slab_len) == 32u, "NveSceneView.children_slab_len offset mismatch");
-NVE_SCENE_STATIC_ASSERT(offsetof(NveSceneView, _pad) == 36u, "NveSceneView._pad offset mismatch");
-
-#undef NVE_SCENE_STATIC_ASSERT
+NVE_STATIC_ASSERT(sizeof(NveRenderNode) == 64u, "NveRenderNode must be 64 bytes");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, node_id) == 0u, "NveRenderNode.node_id offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, kind) == 4u, "NveRenderNode.kind offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, flags) == 5u, "NveRenderNode.flags offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, opacity_u8) == 6u, "NveRenderNode.opacity_u8 offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, _pad0) == 7u, "NveRenderNode._pad0 offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, x) == 8u, "NveRenderNode.x offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, y) == 12u, "NveRenderNode.y offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, width) == 16u, "NveRenderNode.width offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, height) == 20u, "NveRenderNode.height offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, bg_rgba) == 24u, "NveRenderNode.bg_rgba offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, text_rgba) == 28u, "NveRenderNode.text_rgba offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, border_rgba) == 32u, "NveRenderNode.border_rgba offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, border_radius) == 36u, "NveRenderNode.border_radius offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, border_width) == 40u, "NveRenderNode.border_width offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, font_size) == 44u, "NveRenderNode.font_size offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, text_offset) == 48u, "NveRenderNode.text_offset offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, text_len) == 52u, "NveRenderNode.text_len offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, child_count) == 54u, "NveRenderNode.child_count offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, child_offset) == 56u, "NveRenderNode.child_offset offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveRenderNode, z_index) == 60u, "NveRenderNode.z_index offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, schema_hash) == 0u, "NveSceneView.schema_hash offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, frame_id) == 8u, "NveSceneView.frame_id offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, node_count) == 16u, "NveSceneView.node_count offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, dirty_count) == 20u, "NveSceneView.dirty_count offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, removed_count) == 24u, "NveSceneView.removed_count offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, text_slab_len) == 28u, "NveSceneView.text_slab_len offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, children_slab_len) == 32u, "NveSceneView.children_slab_len offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, _pad) == 36u, "NveSceneView._pad offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, nodes) == 40u + 0u * sizeof(void*), "NveSceneView.nodes offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, text_slab) == 40u + 1u * sizeof(void*), "NveSceneView.text_slab offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, children_slab) == 40u + 2u * sizeof(void*), "NveSceneView.children_slab offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, dirty_indices) == 40u + 3u * sizeof(void*), "NveSceneView.dirty_indices offset mismatch");
+NVE_STATIC_ASSERT(offsetof(NveSceneView, removed_ids) == 40u + 4u * sizeof(void*), "NveSceneView.removed_ids offset mismatch");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveSceneView) == 80u, "NveSceneView size must be 80 on 64-bit");
 
 #ifdef __cplusplus
 } /* extern "C" */

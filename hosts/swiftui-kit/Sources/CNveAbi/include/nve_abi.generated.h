@@ -226,12 +226,28 @@ typedef struct NveHostCallbacks {
 #endif
 
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveBufferSlice) == 16u, "NveBufferSlice size must be 16 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(NveBufferSlice) == 2u * sizeof(void*), "NveBufferSlice size must be 2 pointers");
+NVE_STATIC_ASSERT(offsetof(NveBufferSlice, ptr) == 0u, "NveBufferSlice::ptr offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NveBufferSlice, len) == sizeof(void*), "NveBufferSlice::len offset must be sizeof(void*)");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveStrSlice) == 16u, "NveStrSlice size must be 16 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(NveStrSlice) == 2u * sizeof(void*), "NveStrSlice size must be 2 pointers");
+NVE_STATIC_ASSERT(offsetof(NveStrSlice, ptr) == 0u, "NveStrSlice::ptr offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NveStrSlice, len) == sizeof(void*), "NveStrSlice::len offset must be sizeof(void*)");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveValueArray) == 16u, "NveValueArray size must be 16 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(NveValueArray) == 2u * sizeof(void*), "NveValueArray size must be 2 pointers");
+NVE_STATIC_ASSERT(offsetof(NveValueArray, ptr) == 0u, "NveValueArray::ptr offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NveValueArray, len) == sizeof(void*), "NveValueArray::len offset must be sizeof(void*)");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveValueMap) == 16u, "NveValueMap size must be 16 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(NveValueMap) == 2u * sizeof(void*), "NveValueMap size must be 2 pointers");
+NVE_STATIC_ASSERT(offsetof(NveValueMap, ptr) == 0u, "NveValueMap::ptr offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NveValueMap, len) == sizeof(void*), "NveValueMap::len offset must be sizeof(void*)");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveValueData) == 16u, "NveValueData size must be 16 on 64-bit");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveValue) == 24u, "NveValue size must be 24 on 64-bit");
+NVE_STATIC_ASSERT(offsetof(NveValue, tag) == 0u, "NveValue::tag offset must be 0");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveValue, data) == 8u, "NveValue::data offset must be 8 on 64-bit");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveMapEntry) == 40u, "NveMapEntry size must be 40 on 64-bit");
+NVE_STATIC_ASSERT(offsetof(NveMapEntry, key) == 0u, "NveMapEntry::key offset must be 0");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveMapEntry, value) == 16u, "NveMapEntry::value offset must be 16 on 64-bit");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveDirectEvent) == 96u, "NveDirectEvent size must be 96 on 64-bit");
 NVE_STATIC_ASSERT(offsetof(NveDirectEvent, surface_id) == 0u, "NveDirectEvent::surface_id offset must be 0");
 NVE_STATIC_ASSERT(offsetof(NveDirectEvent, node_id) == 4u, "NveDirectEvent::node_id offset must be 4");
@@ -246,6 +262,8 @@ NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveDirectEvent, height) == 52u,
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveDirectEvent, text) == 56u, "NveDirectEvent::text offset must be 56");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveDirectEvent, value) == 72u, "NveDirectEvent::value offset must be 72");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveEventBatch) == 16u, "NveEventBatch size must be 16 on 64-bit");
+NVE_STATIC_ASSERT(offsetof(NveEventBatch, ptr) == 0u, "NveEventBatch::ptr offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NveEventBatch, len) == sizeof(void*), "NveEventBatch::len offset must be sizeof(void*)");
 NVE_STATIC_ASSERT(sizeof(NveSurfaceConfig) == 16u, "NveSurfaceConfig size must be 16");
 NVE_STATIC_ASSERT(offsetof(NveSurfaceConfig, surface_id) == 0u, "NveSurfaceConfig::surface_id offset must be 0");
 NVE_STATIC_ASSERT(offsetof(NveSurfaceConfig, width) == 4u, "NveSurfaceConfig::width offset must be 4");
@@ -267,9 +285,10 @@ NVE_STATIC_ASSERT(sizeof(NveIntrinsicSize) == 8u, "NveIntrinsicSize size must be
 NVE_STATIC_ASSERT(offsetof(NveIntrinsicSize, width) == 0u, "NveIntrinsicSize::width offset must be 0");
 NVE_STATIC_ASSERT(offsetof(NveIntrinsicSize, height) == 4u, "NveIntrinsicSize::height offset must be 4");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveHostCallbacks) == 24u, "NveHostCallbacks size must be 24 on 64-bit");
-NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveHostCallbacks, host_ctx) == 0u, "NveHostCallbacks::host_ctx offset must be 0");
-NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveHostCallbacks, invoke) == 8u, "NveHostCallbacks::invoke offset must be 8");
-NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveHostCallbacks, channel_publish) == 16u, "NveHostCallbacks::channel_publish offset must be 16");
+NVE_STATIC_ASSERT(sizeof(NveHostCallbacks) == 3u * sizeof(void*), "NveHostCallbacks size must be 3 pointers");
+NVE_STATIC_ASSERT(offsetof(NveHostCallbacks, host_ctx) == 0u, "NveHostCallbacks::host_ctx offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NveHostCallbacks, invoke) == sizeof(void*), "NveHostCallbacks::invoke offset must be sizeof(void*)");
+NVE_STATIC_ASSERT(offsetof(NveHostCallbacks, channel_publish) == 2u * sizeof(void*), "NveHostCallbacks::channel_publish offset must be 2 * sizeof(void*)");
 
 typedef void* NveAppHandle;
 typedef void* NveFabricHostHandle;
@@ -310,6 +329,27 @@ typedef struct NveHostApi {
   void (*bind_host)(NveAppHandle handle, const NveHostCallbacks* callbacks);
   uint32_t (*dispatch_host_events)(NveAppHandle handle, NveBufferSlice batch);
 } NveHostApi;
+
+NVE_STATIC_ASSERT(sizeof(NveSurfaceApi) == 5u * sizeof(void*), "NveSurfaceApi size must be 5 function pointers");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceApi, create) == 0u * sizeof(void*), "NveSurfaceApi::create offset must be slot 0");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceApi, destroy) == 1u * sizeof(void*), "NveSurfaceApi::destroy offset must be slot 1");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceApi, render) == 2u * sizeof(void*), "NveSurfaceApi::render offset must be slot 2");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceApi, dispatch_events) == 3u * sizeof(void*), "NveSurfaceApi::dispatch_events offset must be slot 3");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceApi, dispatch_events_direct) == 4u * sizeof(void*), "NveSurfaceApi::dispatch_events_direct offset must be slot 4");
+NVE_STATIC_ASSERT(sizeof(NveLayoutApi) == 2u * sizeof(void*), "NveLayoutApi size must be 2 function pointers");
+NVE_STATIC_ASSERT(offsetof(NveLayoutApi, measure) == 0u * sizeof(void*), "NveLayoutApi::measure offset must be slot 0");
+NVE_STATIC_ASSERT(offsetof(NveLayoutApi, hit_test) == 1u * sizeof(void*), "NveLayoutApi::hit_test offset must be slot 1");
+NVE_STATIC_ASSERT(sizeof(NveComponentApi) == 3u * sizeof(void*), "NveComponentApi size must be 3 function pointers");
+NVE_STATIC_ASSERT(offsetof(NveComponentApi, set_props) == 0u * sizeof(void*), "NveComponentApi::set_props offset must be slot 0");
+NVE_STATIC_ASSERT(offsetof(NveComponentApi, drain_emitted_events) == 1u * sizeof(void*), "NveComponentApi::drain_emitted_events offset must be slot 1");
+NVE_STATIC_ASSERT(offsetof(NveComponentApi, set_props_direct) == 2u * sizeof(void*), "NveComponentApi::set_props_direct offset must be slot 2");
+NVE_STATIC_ASSERT(sizeof(NveDevApi) == 3u * sizeof(void*), "NveDevApi size must be 3 function pointers");
+NVE_STATIC_ASSERT(offsetof(NveDevApi, apply_hot_patch) == 0u * sizeof(void*), "NveDevApi::apply_hot_patch offset must be slot 0");
+NVE_STATIC_ASSERT(offsetof(NveDevApi, snapshot_state) == 1u * sizeof(void*), "NveDevApi::snapshot_state offset must be slot 1");
+NVE_STATIC_ASSERT(offsetof(NveDevApi, restore_state) == 2u * sizeof(void*), "NveDevApi::restore_state offset must be slot 2");
+NVE_STATIC_ASSERT(sizeof(NveHostApi) == 2u * sizeof(void*), "NveHostApi size must be 2 function pointers");
+NVE_STATIC_ASSERT(offsetof(NveHostApi, bind_host) == 0u * sizeof(void*), "NveHostApi::bind_host offset must be slot 0");
+NVE_STATIC_ASSERT(offsetof(NveHostApi, dispatch_host_events) == 1u * sizeof(void*), "NveHostApi::dispatch_host_events offset must be slot 1");
 
 /* Single exported symbol per NVE module (`nve_get_interface`). */
 typedef const void* (*NveGetInterfaceFn)(uint32_t interface_id);

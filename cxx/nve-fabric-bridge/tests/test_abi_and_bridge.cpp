@@ -1,15 +1,90 @@
 #include "test_common.hpp"
 #include "nve_draw_list.hpp"
 #include "nve_host_runtime.hpp"
+#include "nve_pair_client.hpp"
+#include "nve_scene_abi.generated.h"
+#include "nve_snapshot.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 
 namespace nve_test {
 
+// Compile-time ABI & wire-header layout checks across C11/C++20 structs and vtables.
+static_assert(sizeof(NveSurfaceApi) == 5u * sizeof(void*), "NveSurfaceApi vtable size mismatch");
+static_assert(offsetof(NveSurfaceApi, dispatch_events_direct) == 4u * sizeof(void*), "NveSurfaceApi::dispatch_events_direct slot mismatch");
+static_assert(sizeof(NveLayoutApi) == 2u * sizeof(void*), "NveLayoutApi vtable size mismatch");
+static_assert(offsetof(NveLayoutApi, hit_test) == sizeof(void*), "NveLayoutApi::hit_test slot mismatch");
+static_assert(sizeof(NveComponentApi) == 3u * sizeof(void*), "NveComponentApi vtable size mismatch");
+static_assert(offsetof(NveComponentApi, set_props_direct) == 2u * sizeof(void*), "NveComponentApi::set_props_direct slot mismatch");
+static_assert(sizeof(NveDevApi) == 3u * sizeof(void*), "NveDevApi vtable size mismatch");
+static_assert(offsetof(NveDevApi, restore_state) == 2u * sizeof(void*), "NveDevApi::restore_state slot mismatch");
+static_assert(sizeof(NveHostApi) == 2u * sizeof(void*), "NveHostApi vtable size mismatch");
+static_assert(offsetof(NveHostApi, dispatch_host_events) == sizeof(void*), "NveHostApi::dispatch_host_events slot mismatch");
+static_assert(sizeof(NveHostCallbacks) == 3u * sizeof(void*), "NveHostCallbacks size mismatch");
+static_assert(offsetof(NveHostCallbacks, channel_publish) == 2u * sizeof(void*), "NveHostCallbacks::channel_publish offset mismatch");
+static_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE, "NveRenderNode size mismatch");
+static_assert(offsetof(NveSceneView, removed_ids) == 40u + 4u * sizeof(void*), "NveSceneView::removed_ids offset mismatch");
+static_assert(nve::kSnapshotHeaderSize == 80u, "NVE_SNAP header wire size mismatch");
+static_assert(offsetof(nve::SnapshotHeader, flags) == nve::kSnapshotFlagsOffset, "SnapshotHeader::flags offset mismatch");
+static_assert(sizeof(nve::HelloPayload) == nve::kHelloPayloadWireSize, "HelloPayload size mismatch");
+static_assert(offsetof(nve::HelloPayload, token_proof) == 16u, "HelloPayload::token_proof offset mismatch");
+static_assert(offsetof(nve::HelloAckPayload, resync_required) == 16u, "HelloAckPayload::resync_required offset mismatch");
+static_assert(offsetof(nve::DeltaPacketHeader, payload_len) == 16u, "DeltaPacketHeader::payload_len offset mismatch");
+
 // 1. Test all 10 NveOpcode variants + custom component hooks + snapshot inspection.
 void test_all_opcodes_and_custom_components() {
+  // Verify NVE_SNAP and pair/NVD1 wire headers encode at their exact asserted offsets.
+  {
+    const uint8_t f0[4] = {0x4E, 0x56, 0x45, 0x31};
+    const auto snap = nve::encode_snapshot(
+        7u,
+        3u,
+        NveBufferSlice{f0, sizeof(f0)},
+        NveBufferSlice{nullptr, 0u});
+    assert(snap.size() >= nve::kSnapshotHeaderSize);
+    assert(std::memcmp(snap.data() + nve::kSnapshotMagicOffset, nve::kSnapshotMagic, 8u) == 0);
+    nve::MmapSnapshot parsed;
+    assert(nve::MmapSnapshot::from_bytes(snap, parsed));
+    assert(parsed.header().app_schema_version == 7u);
+    assert(parsed.header().flags == 3u);
+    assert(parsed.header().frame0_offset == nve::kSnapshotHeaderSize);
+    assert(parsed.header().frame0_len == sizeof(f0));
+
+    nve::HelloPayload hello{};
+    hello.schema_version = 2u;
+    hello.max_window = 32u;
+    hello.client_last_seq = 9u;
+    hello.client_nonce = 0x1122334455667788ULL;
+    const auto hello_wire = nve::pair_wire::encode_hello_payload(hello);
+    assert(hello_wire.size() == nve::kHelloPayloadWireSize);
+    nve::HelloPayload decoded_hello{};
+    assert(nve::pair_wire::decode_hello_payload(hello_wire, decoded_hello));
+    assert(decoded_hello.client_nonce == hello.client_nonce);
+
+    nve::HelloAckPayload ack{};
+    ack.schema_version = 2u;
+    ack.server_max_window = 16u;
+    ack.server_seq = 5u;
+    ack.server_nonce = 0x8877665544332211ULL;
+    ack.resync_required = true;
+    const auto ack_wire = nve::pair_wire::encode_hello_ack_payload(ack);
+    assert(ack_wire.size() == nve::kHelloAckPayloadWireSize);
+    nve::HelloAckPayload decoded_ack{};
+    assert(nve::pair_wire::decode_hello_ack_payload(ack_wire, decoded_ack));
+    assert(decoded_ack.resync_required);
+
+    const std::array<uint8_t, 3> delta_body = {1u, 2u, 3u};
+    const auto nvd_wire = nve::pair_wire::encode_nvd_packet(
+        nve::DeltaPacketKind::Keyframe, 0u, 10u, 0u, 0u, delta_body);
+    assert(nvd_wire.size() == nve::kDeltaHeaderSize + delta_body.size());
+    nve::DeltaPacketView nvd_view{};
+    assert(nve::pair_wire::parse_nvd_packet(nvd_wire, nvd_view));
+    assert(nvd_view.header.seq == 10u);
+    assert(nvd_view.header.payload_len == delta_body.size());
+  }
   NveSurfaceConfig cfg{.surface_id = 7, .width = 400.0f, .height = 600.0f, .scale_factor = 2.0f};
   NveFabricHostHandle host = nve_fabric_host_create(cfg);
   assert(host != nullptr);

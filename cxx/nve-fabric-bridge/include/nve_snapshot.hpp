@@ -43,9 +43,20 @@ inline constexpr size_t kSnapshotHeaderSize = 80u;
 /// Byte alignment enforced for every payload section offset.
 inline constexpr size_t kSnapshotSectionAlign = 8u;
 
-/// Header offset of the 8-byte `checksum_fnv64` field.
+/// Header offset of each fixed field in the 80-byte `NVE_SNAP` wire header.
+inline constexpr size_t kSnapshotMagicOffset = 0u;
+inline constexpr size_t kSnapshotFormatVersionOffset = 8u;
+inline constexpr size_t kSnapshotSchemaVersionOffset = 12u;
+inline constexpr size_t kSnapshotFlagsOffset = 16u;
+inline constexpr size_t kSnapshotReservedOffset = 20u;
 inline constexpr size_t kSnapshotChecksumOffset = 24u;
 inline constexpr size_t kSnapshotChecksumEnd = 32u;
+inline constexpr size_t kSnapshotFrame0OffsetField = 32u;
+inline constexpr size_t kSnapshotFrame0LenField = 40u;
+inline constexpr size_t kSnapshotStateOffsetField = 48u;
+inline constexpr size_t kSnapshotStateLenField = 56u;
+inline constexpr size_t kSnapshotMetaOffsetField = 64u;
+inline constexpr size_t kSnapshotMetaLenField = 72u;
 
 /// FNV-1a 64-bit parameters matching `crates/nve-engine/src/snapshot.rs`.
 inline constexpr uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ULL;
@@ -80,6 +91,23 @@ struct SnapshotHeader {
   uint64_t meta_offset{0};
   uint64_t meta_len{0};
 };
+
+// Compile-time layout & wire-offset verification for `NVE_SNAP` header.
+static_assert(sizeof(kSnapshotMagic) == 8u, "NVE_SNAP magic must be 8 bytes");
+static_assert(kSnapshotHeaderSize == 80u, "NVE_SNAP wire header must be 80 bytes");
+static_assert(kSnapshotChecksumEnd - kSnapshotChecksumOffset == 8u, "NVE_SNAP checksum must be 8 bytes");
+static_assert(offsetof(SnapshotHeader, magic) == kSnapshotMagicOffset, "SnapshotHeader::magic offset mismatch");
+static_assert(offsetof(SnapshotHeader, format_version) == kSnapshotFormatVersionOffset, "SnapshotHeader::format_version offset mismatch");
+static_assert(offsetof(SnapshotHeader, app_schema_version) == kSnapshotSchemaVersionOffset, "SnapshotHeader::app_schema_version offset mismatch");
+static_assert(offsetof(SnapshotHeader, flags) == kSnapshotFlagsOffset, "SnapshotHeader::flags offset mismatch");
+static_assert(alignof(uint64_t) != 8u || sizeof(SnapshotHeader) == kSnapshotHeaderSize, "SnapshotHeader size must be 80 bytes on 8-byte-aligned u64 targets");
+static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, checksum_fnv64) == kSnapshotChecksumOffset, "SnapshotHeader::checksum_fnv64 offset mismatch");
+static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, frame0_offset) == kSnapshotFrame0OffsetField, "SnapshotHeader::frame0_offset offset mismatch");
+static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, frame0_len) == kSnapshotFrame0LenField, "SnapshotHeader::frame0_len offset mismatch");
+static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, state_offset) == kSnapshotStateOffsetField, "SnapshotHeader::state_offset offset mismatch");
+static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, state_len) == kSnapshotStateLenField, "SnapshotHeader::state_len offset mismatch");
+static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, meta_offset) == kSnapshotMetaOffsetField, "SnapshotHeader::meta_offset offset mismatch");
+static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, meta_len) == kSnapshotMetaLenField, "SnapshotHeader::meta_len offset mismatch");
 
 /// Continues an FNV-1a 64-bit hash with additional bytes.
 inline uint64_t fnv1a_64_update(uint64_t hash, const uint8_t* data, size_t len) noexcept {

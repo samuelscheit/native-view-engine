@@ -2,12 +2,12 @@ use std::path::Path;
 
 use nve_codegen::{
     compute_scene_schema_hash, core_abi_schema_hash, export_all_targets, export_compose,
-    export_flutter, export_rn_json, export_rn_spec, export_swiftui, export_target,
-    export_web_component, generate_all_abi_files, generate_all_core_abi_files,
-    generate_all_scene_abi_files, import_rn_file, import_rn_source, parse_rn_spec,
-    parse_rn_spec_file, scene_abi_spec, CommandSpec, DefaultValue, EventBubbling, EventSpec,
-    ExportBackend, ExportTarget, NveExportSpec, ObjectField, ParamSpec, ParsedRnSpec, PropSpec,
-    PropType, NVE_CORE_ABI_SCHEMA_HASH, NVE_SCENE_SCHEMA_HASH,
+    export_flutter, export_rn_spec, export_swiftui, export_target, export_web_component,
+    generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
+    import_rn_file, import_rn_source, parse_rn_spec, parse_rn_spec_file, scene_abi_spec,
+    CommandSpec, DefaultValue, EventBubbling, EventSpec, ExportBackend, ExportTarget,
+    NveExportSpec, ObjectField, ParamSpec, ParsedRnSpec, PropSpec, PropType,
+    NVE_CORE_ABI_SCHEMA_HASH, NVE_SCENE_SCHEMA_HASH,
 };
 
 const RN_LIBRARIES_DIR: &str =
@@ -493,7 +493,8 @@ fn import_rn_handles_ts_edge_cases_comments_keywords_unions_and_negative_default
 fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn() {
     let spec = counter_card_export_spec(ExportBackend::Fabric);
     let json = spec.to_json_pretty().expect("serialize NveExportSpec");
-    let out = export_rn_json(&json).expect("export_rn_json");
+    let parsed_spec = NveExportSpec::from_json(&json).expect("deserialize NveExportSpec");
+    let out = export_rn_spec(&parsed_spec).expect("export_rn_spec");
 
     assert_eq!(
         out.native_component_ts.relative_path,
@@ -532,15 +533,19 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(ts.contains("export default codegenNativeComponent<NativeProps>('NveCounterCard');"));
     assert_balanced_delimiters("NveCounterCardNativeComponent.generated.ts", ts);
 
-    // 2. C++20 glue assertions (verbatim match with Slice 2 `nve_rn_component.hpp`)
+    // 2. C++20 glue assertions (verbatim match with Slice 2 `nve_rn_component.hpp`, zero JSON)
     let hpp = &out.cpp_bridge_hpp.content;
     let cpp = &out.cpp_bridge_cpp.content;
     assert!(hpp.contains("#include \"nve_rn_component.hpp\""));
     assert!(hpp.contains("std::unique_ptr<nve::NveRnComponentBridge> bridge_;"));
     assert!(hpp.contains("const void* nve_counter_card_vtable(uint32_t interface_id);"));
+    assert!(hpp.contains("update_props_direct"));
+    assert!(!hpp.contains("update_props_json"));
+    assert!(!hpp.contains("payload_json"));
     assert!(cpp.contains("bridge_->update_props(to_prop_map(props), auto_render)"));
+    assert!(cpp.contains("bridge_->update_props_direct(entries, count, auto_render)"));
     assert!(cpp.contains("bridge_->drain_emitted_events()"));
-    assert!(cpp.contains("ev.payload_as_string()"));
+    assert!(cpp.contains("ev.payload_bytes"));
     assert_balanced_delimiters("NveCounterCardNveBridge.generated.hpp", hpp);
     assert_balanced_delimiters("NveCounterCardNveBridge.generated.cpp", cpp);
 
@@ -554,10 +559,14 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(mm.contains("- (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload"));
     assert_balanced_delimiters("NveCounterCardComponentView.generated.mm", mm);
 
-    // 4. Android Kotlin assertions (wrapping `dev.nve.host.NveNativeBridge`)
+    // 4. Android Kotlin assertions (zero-JSON binary NveBinValue wrapping `dev.nve.host.NveNativeBridge`)
     let kt = &out.android_view_manager_kt.content;
     assert!(kt.contains("package dev.nve.components"));
     assert!(kt.contains("import dev.nve.host.NveNativeBridge"));
+    assert!(kt.contains("import dev.nve.compose.NveBinValue"));
+    assert!(kt.contains("import dev.nve.compose.NveBinValueView"));
+    assert!(!kt.contains("JSONObject"));
+    assert!(!kt.contains("org.json"));
     assert!(kt.contains("NveNativeBridge.nativeCreateHost"));
     assert!(kt.contains("@ReactProp(name = \"initialCount\", defaultInt = 0)"));
     assert!(kt.contains("@ReactProp(name = \"accentColor\", customType = \"Color\")"));
@@ -606,7 +615,9 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(dart_s.contains("return NveTextureHostWidget("));
     assert!(dart_s.contains("NveSurfaceController"));
     assert!(dart_s.contains("NveEventKind.custom"));
-    assert!(dart_s.contains("NveCounterCardCountChangeEvent.fromJson"));
+    assert!(dart_s.contains("NveCounterCardCountChangeEvent.fromBinView"));
+    assert!(!dart_s.contains("fromJson"));
+    assert!(!dart_s.contains("payloadJson"));
     assert!(dart_s.contains("if (Platform.isIOS)"));
     assert!(!dart_s.contains("Platform.isIOS || Platform.isMacOS"));
     assert!(dart_s.contains(
@@ -620,7 +631,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
         .content
         .contains("return NvePlatformViewWidget("));
 
-    // 2. SwiftUI (`NveSwiftUI.NveSurfaceRepresentable`)
+    // 2. SwiftUI (`NveSwiftUI.NveSurfaceRepresentable` via zero-boxing `NveDirectEncodable`)
     let sw_out = export_swiftui(&skia_spec).expect("export_swiftui");
     assert_eq!(
         sw_out.swift_view.relative_path,
@@ -629,14 +640,17 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     let swift = &sw_out.swift_view.content;
     assert!(swift.contains("import SwiftUI"));
     assert!(swift.contains("import NveSwiftUI"));
+    assert!(swift.contains("public struct NveCounterCardDirectProps: NveDirectEncodable, Equatable, Sendable"));
     assert!(swift.contains("public struct NveCounterCardView: View"));
     assert!(swift.contains("NveSurfaceRepresentable("));
     assert!(swift.contains("backend: .skia"));
-    assert!(swift.contains("event.decodePayload(NveCounterCardCountChangeEvent.self)"));
+    assert!(swift.contains("directProps: makeDirectProps()"));
+    assert!(swift.contains("event.withBinValueView"));
+    assert!(!swift.contains("[String: Any]"));
     assert!(swift.contains("NveSurfaceController"));
     assert_balanced_delimiters("NveCounterCardView.generated.swift", swift);
 
-    // 3. Jetpack Compose (`dev.nve.compose.NveSurface`)
+    // 3. Jetpack Compose (`dev.nve.compose.NveSurface` via zero-JSON `NveBinValue` direct writer)
     let cmp_out = export_compose(&fabric_spec).expect("export_compose");
     assert_eq!(
         cmp_out.compose_kt.relative_path,
@@ -644,14 +658,21 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     );
     let compose = &cmp_out.compose_kt.content;
     assert!(compose.contains("import dev.nve.compose.NveSurface"));
+    assert!(compose.contains("import dev.nve.compose.NveBinValue"));
+    assert!(compose.contains("import dev.nve.compose.NveBinValueView"));
     assert!(compose.contains("import dev.nve.compose.NveRenderBackend"));
     assert!(compose.contains("import dev.nve.compose.rememberNveSurfaceController"));
+    assert!(compose.contains("object NveCounterCardDirectPropsWriter"));
+    assert!(compose.contains("updatePropsBinary(encodedPropsBin)"));
     assert!(compose.contains("@Composable\nfun NveCounterCard("));
     assert!(compose.contains("backend = NveRenderBackend.FABRIC"));
     assert!(compose.contains("NveEventKind.CUSTOM"));
+    assert!(!compose.contains("JSONObject"));
+    assert!(!compose.contains("org.json"));
+    assert!(!compose.contains("buildMap<String, Any?>"));
     assert_balanced_delimiters("NveCounterCardComposable.generated.kt", compose);
 
-    // 4. Web Component (`<nve-counter-card>` + `.d.ts` wrapping `wasm-bindgen`)
+    // 4. Web Component (`<nve-counter-card>` + `.d.ts` wrapping `wasm-bindgen`, zero JSON)
     let web_out = export_web_component(&skia_spec).expect("export_web_component");
     assert_eq!(web_out.tag_name, "nve-counter-card");
     assert_eq!(
@@ -668,6 +689,11 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(js.contains("static tagName = 'nve-counter-card';"));
     assert!(js.contains("this.attachShadow({ mode: 'open' })"));
     assert!(js.contains("mod.mount_nve_component("));
+    assert!(js.contains("encodeNveBinValue"));
+    assert!(js.contains("decodeNveBinValue"));
+    assert!(!js.contains("JSON.stringify"));
+    assert!(!js.contains("JSON.parse"));
+    assert!(!js.contains("set_props_json"));
     assert!(js.contains("new CustomEvent('count-change'"));
     assert!(js.contains("customElements.define(tagName, NveCounterCardElement)"));
     assert_balanced_delimiters("nve-counter-card.generated.js", js);
@@ -708,9 +734,32 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
 fn validates_invalid_specs_cleanly() {
     assert!(export_rn_spec(&NveExportSpec::new("", ExportBackend::Fabric)).is_err());
     assert!(export_rn_spec(&NveExportSpec::new("123BadName", ExportBackend::Fabric)).is_err());
-    assert!(export_rn_json("{invalid json").is_err());
+    assert!(NveExportSpec::from_json("{invalid json").is_err());
     assert!(parse_rn_spec("export const x = 42;").is_err());
     assert!(ExportTarget::from_name("unknown-platform").is_err());
+}
+
+#[test]
+fn all_generated_import_and_export_bindings_are_strictly_zero_json() {
+    let imported = import_rn_source(EMBEDDED_SWITCH_SPEC).expect("import Switch");
+    for file in [&imported.rust_module, &imported.cpp_adapter] {
+        assert!(!file.content.contains("serde_json"), "{} must not use serde_json", file.relative_path);
+        assert!(!file.content.contains("payload_json"), "{} must not use payload_json", file.relative_path);
+    }
+
+    let spec = counter_card_export_spec(ExportBackend::Fabric);
+    for bundle in export_all_targets(&spec, ExportTarget::ALL).expect("export all targets") {
+        for file in &bundle.files {
+            assert!(!file.content.contains("serde_json"), "{} must not use serde_json", file.relative_path);
+            assert!(!file.content.contains("JSONObject"), "{} must not use JSONObject", file.relative_path);
+            assert!(!file.content.contains("org.json"), "{} must not use org.json", file.relative_path);
+            assert!(!file.content.contains("[String: Any]"), "{} must not use [String: Any]", file.relative_path);
+            assert!(!file.content.contains("buildMap<String, Any?>"), "{} must not use buildMap<String, Any?>", file.relative_path);
+            assert!(!file.content.contains("JSON.stringify"), "{} must not use JSON.stringify", file.relative_path);
+            assert!(!file.content.contains("JSON.parse"), "{} must not use JSON.parse", file.relative_path);
+            assert!(!file.content.contains("update_props_json"), "{} must not use update_props_json", file.relative_path);
+        }
+    }
 }
 
 #[test]

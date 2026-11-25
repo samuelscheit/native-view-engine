@@ -1,5 +1,5 @@
-//! `export_compose`: `NveExportSpec` -> typed Kotlin `@Composable` wrapping
-//! `dev.nve.compose.NveSurface`.
+//! `export_compose`: `NveExportSpec` -> typed zero-JSON Kotlin `@Composable` wrapping
+//! `dev.nve.compose.NveSurface` via binary `NveBinValue` / `NveBinValueView` direct FFI encoding.
 
 use std::fmt::Write as _;
 
@@ -13,7 +13,7 @@ use crate::naming::{
     sanitize_block_comment, strip_on_prefix, to_pascal_case,
 };
 
-/// Generates a typed Jetpack Compose `@Composable` wrapper targeting `dev.nve.compose.NveSurface`.
+/// Generates a typed zero-JSON Jetpack Compose `@Composable` wrapper targeting `dev.nve.compose.NveSurface`.
 pub fn generate_export_compose(spec: &NveExportSpec) -> Result<ExportComposeOutput, CodegenError> {
     spec.validate()?;
     let content = emit_compose_kotlin(spec);
@@ -44,22 +44,24 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// Typed Jetpack Compose @Composable wrapping `dev.nve.compose.NveSurface`."
+        "// Zero-JSON typed Jetpack Compose @Composable wrapping `dev.nve.compose.NveSurface`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "package {pkg}");
     let _ = writeln!(out);
     let _ = writeln!(out, "import androidx.compose.runtime.Composable");
     let _ = writeln!(out, "import androidx.compose.runtime.Immutable");
+    let _ = writeln!(out, "import androidx.compose.runtime.LaunchedEffect");
     let _ = writeln!(out, "import androidx.compose.runtime.remember");
     let _ = writeln!(out, "import androidx.compose.ui.Modifier");
+    let _ = writeln!(out, "import dev.nve.compose.NveBinValue");
+    let _ = writeln!(out, "import dev.nve.compose.NveBinValueView");
     let _ = writeln!(out, "import dev.nve.compose.NveEvent");
     let _ = writeln!(out, "import dev.nve.compose.NveEventKind");
     let _ = writeln!(out, "import dev.nve.compose.NveRenderBackend");
     let _ = writeln!(out, "import dev.nve.compose.NveSurface");
     let _ = writeln!(out, "import dev.nve.compose.NveSurfaceController");
     let _ = writeln!(out, "import dev.nve.compose.rememberNveSurfaceController");
-    let _ = writeln!(out, "import org.json.JSONObject");
     let _ = writeln!(out);
 
     // 1. Typed Kotlin enums
@@ -67,15 +69,18 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
         emit_kotlin_aux_enum(&mut out, name, prop);
     }
 
-    // 2. Typed @Immutable event payload data classes
+    // 2. Typed @Immutable binary event payload data classes
     for ev in &spec.events {
         emit_kotlin_event_data_class(&mut out, name, ev);
     }
 
-    // 3. Typed imperative controller + remember helper
+    // 3. Zero-boxing binary direct props writer
+    emit_kotlin_direct_props_writer(&mut out, spec);
+
+    // 4. Typed imperative controller + remember helper
     let _ = writeln!(
         out,
-        "/** Imperative command controller for `{}` backed by `NveSurfaceController`. */",
+        "/** Imperative binary command controller for `{}` backed by `NveSurfaceController`. */",
         sanitize_block_comment(name)
     );
     let _ = writeln!(
@@ -99,20 +104,32 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
         if cmd.params.is_empty() {
             let _ = writeln!(
                 out,
-                "        inner.dispatchCommand(\"{}\")",
+                "        inner.dispatchCommandBinary(\"{}\", NveBinValue.Null.encode())",
                 escape_kotlin_string(&cmd.name)
             );
         } else {
-            let _ = writeln!(out, "        val args = buildMap<String, Any?> {{");
+            let _ = writeln!(
+                out,
+                "        val entries = ArrayList<Pair<String, NveBinValue>>({})",
+                cmd.params.len()
+            );
             for p in &cmd.params {
                 let pname = kotlin_ident(&p.name);
                 let key = escape_kotlin_string(&p.name);
-                let _ = writeln!(out, "            put(\"{key}\", {pname})");
+                if p.optional {
+                    let expr = kotlin_bin_value_expr("v", &p.param_type);
+                    let _ = writeln!(
+                        out,
+                        "        {pname}?.let {{ v -> entries.add(\"{key}\" to {expr}) }}"
+                    );
+                } else {
+                    let expr = kotlin_bin_value_expr(&pname, &p.param_type);
+                    let _ = writeln!(out, "        entries.add(\"{key}\" to {expr})");
+                }
             }
-            let _ = writeln!(out, "        }}");
             let _ = writeln!(
                 out,
-                "        inner.dispatchCommand(\"{}\", args)",
+                "        inner.dispatchCommandBinary(\"{}\", NveBinValue.Map(entries).encode())",
                 escape_kotlin_string(&cmd.name)
             );
         }
@@ -140,7 +157,7 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
 
-    // 4. Typed `@Composable` function
+    // 5. Typed `@Composable` function
     if let Some(doc) = &spec.doc {
         let _ = writeln!(out, "/**");
         for line in sanitize_block_comment(doc).lines() {
@@ -170,19 +187,24 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "    controller: {name}Controller? = null,");
     let _ = writeln!(out, ") {{");
 
-    // Encode props map
-    let _ = writeln!(out, "    val encodedProps = buildMap<String, Any?> {{");
-    for prop in &spec.props {
-        let key = escape_kotlin_string(&prop.name);
-        let param = kotlin_ident(&prop.name);
-        let nullable = compose_prop_is_nullable(prop);
-        let expr = compose_encode_prop_expr(&param, prop, nullable);
-        if nullable {
-            let _ = writeln!(out, "        if ({param} != null) put(\"{key}\", {expr})");
-        } else {
-            let _ = writeln!(out, "        put(\"{key}\", {expr})");
-        }
-    }
+    let _ = writeln!(
+        out,
+        "    val activeController = controller ?: remember{name}Controller()"
+    );
+    let prop_args: Vec<String> = spec.props.iter().map(|p| kotlin_ident(&p.name)).collect();
+    let _ = writeln!(
+        out,
+        "    val encodedPropsBin = {name}DirectPropsWriter.encode({})",
+        prop_args.join(", ")
+    );
+    let _ = writeln!(
+        out,
+        "    LaunchedEffect(activeController, encodedPropsBin.contentHashCode()) {{"
+    );
+    let _ = writeln!(
+        out,
+        "        activeController.inner.updatePropsBinary(encodedPropsBin)"
+    );
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
 
@@ -200,8 +222,7 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
         escape_kotlin_string(vtable_sym)
     );
     let _ = writeln!(out, "        backend = {backend_enum},");
-    let _ = writeln!(out, "        props = encodedProps,");
-    let _ = writeln!(out, "        controller = controller?.inner,");
+    let _ = writeln!(out, "        controller = activeController.inner,");
     let _ = writeln!(out, "        onEvent = {{ event: NveEvent ->");
     let _ = writeln!(
         out,
@@ -223,11 +244,7 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
             let ev_cls = compose_event_class_name(name, ev);
             let _ = writeln!(
                 out,
-                "                        val raw = event.payloadJson ?: \"{{}}\""
-            );
-            let _ = writeln!(
-                out,
-                "                        {cb}?.invoke({ev_cls}.fromJson(JSONObject(raw)))"
+                "                        {ev_cls}.fromBinBytes(event.payloadBytes)?.let {{ {cb}?.invoke(it) }}"
             );
         }
         let _ = writeln!(out, "                    }}");
@@ -239,6 +256,69 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "}}");
 
     out
+}
+
+fn emit_kotlin_direct_props_writer(out: &mut String, spec: &NveExportSpec) {
+    let name = &spec.name;
+    let _ = writeln!(
+        out,
+        "/** Typed zero-JSON binary encoder writing `{}` props directly into `NveBinValue` bytes. */",
+        sanitize_block_comment(name)
+    );
+    let _ = writeln!(out, "object {name}DirectPropsWriter {{");
+    let params: Vec<String> = spec
+        .props
+        .iter()
+        .map(|p| format!("{}: {}", kotlin_ident(&p.name), compose_prop_type(name, p)))
+        .collect();
+    let _ = writeln!(out, "    fun encode({}): ByteArray {{", params.join(", "));
+    let _ = writeln!(
+        out,
+        "        val entries = ArrayList<Pair<String, NveBinValue>>({})",
+        spec.props.len()
+    );
+    for prop in &spec.props {
+        let key = escape_kotlin_string(&prop.name);
+        let param = kotlin_ident(&prop.name);
+        let nullable = compose_prop_is_nullable(prop);
+        if nullable {
+            let expr = compose_bin_value_expr("v", prop);
+            let _ = writeln!(
+                out,
+                "        {param}?.let {{ v -> entries.add(\"{key}\" to {expr}) }}"
+            );
+        } else {
+            let expr = compose_bin_value_expr(&param, prop);
+            let _ = writeln!(out, "        entries.add(\"{key}\" to {expr})");
+        }
+    }
+    let _ = writeln!(out, "        return NveBinValue.Map(entries).encode()");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+}
+
+fn compose_bin_value_expr(var: &str, prop: &PropSpec) -> String {
+    match &prop.prop_type {
+        PropType::StringEnum { .. } => format!("NveBinValue.Str({var}.wireValue)"),
+        PropType::IntEnum { .. } => format!("NveBinValue.I64({var}.wireValue.toLong())"),
+        other => kotlin_bin_value_expr(var, other),
+    }
+}
+
+fn kotlin_bin_value_expr(var: &str, ty: &PropType) -> String {
+    match ty {
+        PropType::Bool => format!("NveBinValue.Bool({var})"),
+        PropType::Int32 | PropType::IntEnum { .. } => format!("NveBinValue.I64({var}.toLong())"),
+        PropType::Float => format!("NveBinValue.F64({var}.toDouble())"),
+        PropType::Double => format!("NveBinValue.F64({var})"),
+        PropType::Array { item } => format!(
+            "NveBinValue.Array({var}.map {{ item -> {} }})",
+            kotlin_bin_value_expr("item", item)
+        ),
+        PropType::Object { .. } => var.to_owned(),
+        _ => format!("NveBinValue.Str({var})"),
+    }
 }
 
 fn emit_kotlin_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
@@ -292,55 +372,69 @@ fn emit_kotlin_event_data_class(out: &mut String, comp_name: &str, ev: &EventSpe
     }
     let _ = writeln!(out, ") {{");
     let _ = writeln!(out, "    companion object {{");
-    let _ = writeln!(out, "        fun fromJson(json: JSONObject): {cls} = {cls}(");
+    let _ = writeln!(out, "        fun fromBinView(view: NveBinValueView): {cls} = {cls}(");
     for f in &ev.payload {
         let fname = kotlin_ident(&f.name);
         let key = escape_kotlin_string(&f.name);
-        let expr = kotlin_from_json_expr(&key, f);
+        let expr = kotlin_from_bin_view_expr(&key, f);
         let _ = writeln!(out, "            {fname} = {expr},");
     }
     let _ = writeln!(out, "        )");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "        fun fromBinBytes(bytes: ByteArray): {cls}? {{");
+    let _ = writeln!(out, "            if (bytes.isEmpty()) return null");
+    let _ = writeln!(out, "            return runCatching {{");
+    let _ = writeln!(out, "                fromBinView(NveBinValueView.parse(bytes))");
+    let _ = writeln!(out, "            }}.getOrNull()");
+    let _ = writeln!(out, "        }}");
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
 }
 
-fn kotlin_from_json_expr(key: &str, f: &ObjectField) -> String {
+fn kotlin_from_bin_view_expr(key: &str, f: &ObjectField) -> String {
     let opt = f.optional || f.nullable;
     match &f.field_type {
         PropType::Bool => {
             if opt {
-                format!("if (json.has(\"{key}\")) json.getBoolean(\"{key}\") else null")
+                format!("view.mapValue(\"{key}\")?.boolValue")
             } else {
-                format!("json.optBoolean(\"{key}\", false)")
+                format!("view.mapValue(\"{key}\")?.boolValue ?: false")
             }
         }
         PropType::Int32 | PropType::IntEnum { .. } => {
             if opt {
-                format!("if (json.has(\"{key}\")) json.getInt(\"{key}\") else null")
+                format!("view.mapValue(\"{key}\")?.int64Value?.toInt()")
             } else {
-                format!("json.optInt(\"{key}\", 0)")
+                format!("view.mapValue(\"{key}\")?.int64Value?.toInt() ?: 0")
             }
         }
         PropType::Float => {
             if opt {
-                format!("if (json.has(\"{key}\")) json.getDouble(\"{key}\").toFloat() else null")
+                format!("view.mapValue(\"{key}\")?.numberValue?.toFloat()")
             } else {
-                format!("json.optDouble(\"{key}\", 0.0).toFloat()")
+                format!("view.mapValue(\"{key}\")?.numberValue?.toFloat() ?: 0.0f")
             }
         }
         PropType::Double => {
             if opt {
-                format!("if (json.has(\"{key}\")) json.getDouble(\"{key}\") else null")
+                format!("view.mapValue(\"{key}\")?.numberValue")
             } else {
-                format!("json.optDouble(\"{key}\", 0.0)")
+                format!("view.mapValue(\"{key}\")?.numberValue ?: 0.0")
+            }
+        }
+        PropType::Object { .. } => {
+            if opt {
+                format!("view.mapValue(\"{key}\")?.toOwned()")
+            } else {
+                format!("view.mapValue(\"{key}\")?.toOwned() ?: NveBinValue.Null")
             }
         }
         _ => {
             if opt {
-                format!("if (json.has(\"{key}\")) json.getString(\"{key}\") else null")
+                format!("view.mapValue(\"{key}\")?.stringValue")
             } else {
-                format!("json.optString(\"{key}\", \"\")")
+                format!("view.mapValue(\"{key}\")?.stringValue ?: \"\"")
             }
         }
     }
@@ -379,7 +473,7 @@ fn kotlin_simple_type(ty: &PropType) -> String {
         PropType::Float => "Float".to_owned(),
         PropType::Double => "Double".to_owned(),
         PropType::Array { item } => format!("List<{}>", kotlin_simple_type(item)),
-        PropType::Object { .. } => "Map<String, Any?>".to_owned(),
+        PropType::Object { .. } => "NveBinValue".to_owned(),
         _ => "String".to_owned(),
     }
 }
@@ -412,12 +506,5 @@ fn compose_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
             Some(format!("{comp_name}{}.{vname}", to_pascal_case(&prop.name)))
         }
         _ => None,
-    }
-}
-
-fn compose_encode_prop_expr(param: &str, prop: &PropSpec, _nullable: bool) -> String {
-    match &prop.prop_type {
-        PropType::StringEnum { .. } | PropType::IntEnum { .. } => format!("{param}.wireValue"),
-        _ => param.to_owned(),
     }
 }

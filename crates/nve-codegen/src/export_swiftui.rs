@@ -1,19 +1,19 @@
-//! `export_swiftui`: `NveExportSpec` -> typed SwiftUI `View` wrapping
-//! `NveSwiftUI`'s `NveSurfaceRepresentable`.
+//! `export_swiftui`: `NveExportSpec` -> typed zero-boxing SwiftUI `View` wrapping
+//! `NveSwiftUI`'s `NveSurfaceRepresentable` via `NveDirectEncodable` + `NveDirectPropsBuilder`.
 
 use std::fmt::Write as _;
 
 use crate::error::CodegenError;
 use crate::ir::{
     DefaultValue, EventSpec, ExportBackend, ExportSwiftUiOutput, GeneratedFile, NveExportSpec,
-    PropSpec, PropType,
+    ObjectField, PropSpec, PropType,
 };
 use crate::naming::{
     escape_c_like_string, format_float_literal, int_enum_variant_camel,
     sanitize_single_line_comment, strip_on_prefix, swift_ident, to_pascal_case,
 };
 
-/// Generates a typed SwiftUI `View` wrapping `NveSwiftUI.NveSurfaceRepresentable`.
+/// Generates a typed zero-boxing SwiftUI `View` wrapping `NveSwiftUI.NveSurfaceRepresentable`.
 pub fn generate_export_swiftui(spec: &NveExportSpec) -> Result<ExportSwiftUiOutput, CodegenError> {
     spec.validate()?;
     let content = emit_swiftui_view(spec);
@@ -43,7 +43,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// Typed SwiftUI View wrapping `NveSwiftUI.NveSurfaceRepresentable`."
+        "// Zero-boxing SwiftUI View wrapping `NveSwiftUI.NveSurfaceRepresentable` via `NveDirectEncodable`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "import Foundation");
@@ -56,12 +56,15 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
         emit_swift_aux_enum(&mut out, name, prop);
     }
 
-    // 2. Codable + Sendable event payload structs
+    // 2. Zero-JSON binary event payload structs (`NveBinValueView`)
     for ev in &spec.events {
         emit_swift_event_struct(&mut out, name, ev);
     }
 
-    // 3. ObservableObject Controller wrapping `NveSurfaceController`
+    // 3. Zero-boxing `NveDirectEncodable` props struct
+    emit_swift_direct_props_struct(&mut out, spec);
+
+    // 4. ObservableObject Controller wrapping `NveSurfaceController`
     let _ = writeln!(
         out,
         "/// Imperative command controller for `{}` wrapping `NveSwiftUI.NveSurfaceController`.",
@@ -93,23 +96,29 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
         if cmd.params.is_empty() {
             let _ = writeln!(
                 out,
-                "        inner.dispatchCommand(name: \"{}\")",
+                "        inner.dispatchCommand(name: \"{}\", value: .null)",
                 escape_c_like_string(&cmd.name)
             );
         } else {
-            let _ = writeln!(out, "        var args: [String: Any] = [:]");
+            let _ = writeln!(out, "        var entries: [(String, NveBinValue)] = []");
+            let _ = writeln!(out, "        entries.reserveCapacity({})", cmd.params.len());
             for p in &cmd.params {
                 let pname = swift_ident(&p.name);
                 let key = escape_c_like_string(&p.name);
                 if p.optional {
-                    let _ = writeln!(out, "        if let {pname} {{ args[\"{key}\"] = {pname} }}");
+                    let expr = swift_bin_value_expr("val", &p.param_type);
+                    let _ = writeln!(
+                        out,
+                        "        if let val = {pname} {{ entries.append((\"{key}\", {expr})) }}"
+                    );
                 } else {
-                    let _ = writeln!(out, "        args[\"{key}\"] = {pname}");
+                    let expr = swift_bin_value_expr(&pname, &p.param_type);
+                    let _ = writeln!(out, "        entries.append((\"{key}\", {expr}))");
                 }
             }
             let _ = writeln!(
                 out,
-                "        inner.dispatchCommand(name: \"{}\", args: args)",
+                "        inner.dispatchCommand(name: \"{}\", value: .map(entries))",
                 escape_c_like_string(&cmd.name)
             );
         }
@@ -118,7 +127,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
 
-    // 4. Typed SwiftUI View struct
+    // 5. Typed SwiftUI View struct
     if let Some(doc) = &spec.doc {
         for line in doc.lines() {
             let _ = writeln!(out, "/// {}", sanitize_single_line_comment(line));
@@ -181,27 +190,19 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
 
-    // Props dictionary encoder
-    let _ = writeln!(out, "    private func encodedProps() -> [String: Any] {{");
-    let _ = writeln!(out, "        var dict: [String: Any] = [:]");
-    for prop in &spec.props {
-        let key = escape_c_like_string(&prop.name);
+    // Zero-boxing direct props snapshot
+    let _ = writeln!(out, "    private func makeDirectProps() -> {name}DirectProps {{");
+    let _ = writeln!(out, "        {name}DirectProps(");
+    for (i, prop) in spec.props.iter().enumerate() {
         let field = swift_ident(&prop.name);
-        let is_opt = swift_prop_is_optional(prop);
-        let expr = swift_encode_prop_expr(&field, prop, is_opt);
-        if is_opt {
-            let _ = writeln!(out, "        if let val = {field} {{");
-            let _ = writeln!(out, "            dict[\"{key}\"] = {expr}");
-            let _ = writeln!(out, "        }}");
-        } else {
-            let _ = writeln!(out, "        dict[\"{key}\"] = {expr}");
-        }
+        let sep = if i + 1 == spec.props.len() { "" } else { "," };
+        let _ = writeln!(out, "            {field}: {field}{sep}");
     }
-    let _ = writeln!(out, "        return dict");
+    let _ = writeln!(out, "        )");
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
 
-    // Event router
+    // Binary event router (`NveBinValueView`)
     let _ = writeln!(out, "    private func handleEvent(_ event: NveEvent) {{");
     let _ = writeln!(
         out,
@@ -223,7 +224,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
             let ev_ty = swift_event_struct_name(name, ev);
             let _ = writeln!(
                 out,
-                "            if let decoded = try? event.decodePayload({ev_ty}.self) {{\n                {cb}?(decoded)\n            }}"
+                "            if let decoded = (try? event.withBinValueView {{ {ev_ty}(binView: $0) }}) ?? nil {{\n                {cb}?(decoded)\n            }}"
             );
         }
     }
@@ -233,7 +234,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
 
-    // SwiftUI body
+    // SwiftUI body using zero-boxing `NveDirectEncodable` initializer
     let _ = writeln!(out, "    public var body: some View {{");
     let _ = writeln!(out, "        NveSurfaceRepresentable(");
     let _ = writeln!(
@@ -247,7 +248,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
         escape_c_like_string(vtable_sym)
     );
     let _ = writeln!(out, "            backend: {backend_case},");
-    let _ = writeln!(out, "            props: encodedProps(),");
+    let _ = writeln!(out, "            directProps: makeDirectProps(),");
     let _ = writeln!(out, "            controller: controller?.inner,");
     let _ = writeln!(out, "            onEvent: handleEvent");
     let _ = writeln!(out, "        )");
@@ -257,13 +258,147 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     out
 }
 
+fn emit_swift_direct_props_struct(out: &mut String, spec: &NveExportSpec) {
+    let name = &spec.name;
+    let _ = writeln!(
+        out,
+        "/// Zero-boxing direct FFI prop payload encoded via `NveDirectPropsWriter` / `NveDirectPropsBuilder`."
+    );
+    let _ = writeln!(
+        out,
+        "public struct {name}DirectProps: NveDirectEncodable, Equatable, Sendable {{"
+    );
+    for prop in &spec.props {
+        let field = swift_ident(&prop.name);
+        let ty = swift_prop_type(name, prop);
+        let _ = writeln!(out, "    public let {field}: {ty}");
+    }
+    let _ = writeln!(out);
+    if spec.props.is_empty() {
+        let _ = writeln!(out, "    public init() {{}}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "    public var directPropCount: Int {{ 0 }}");
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "    public func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {{}}"
+        );
+    } else {
+        let _ = writeln!(out, "    public init(");
+        for (i, prop) in spec.props.iter().enumerate() {
+            let field = swift_ident(&prop.name);
+            let ty = swift_prop_type(name, prop);
+            let sep = if i + 1 == spec.props.len() { "" } else { "," };
+            let _ = writeln!(out, "        {field}: {ty}{sep}");
+        }
+        let _ = writeln!(out, "    ) {{");
+        for prop in &spec.props {
+            let field = swift_ident(&prop.name);
+            let _ = writeln!(out, "        self.{field} = {field}");
+        }
+        let _ = writeln!(out, "    }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "    public var directPropCount: Int {{");
+        let _ = writeln!(out, "        var count = 0");
+        for prop in &spec.props {
+            let field = swift_ident(&prop.name);
+            if swift_prop_is_optional(prop) {
+                let _ = writeln!(out, "        if {field} != nil {{ count += 1 }}");
+            } else {
+                let _ = writeln!(out, "        count += 1");
+            }
+        }
+        let _ = writeln!(out, "        return count");
+        let _ = writeln!(out, "    }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(
+            out,
+            "    public func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {{"
+        );
+        for prop in &spec.props {
+            let key = escape_c_like_string(&prop.name);
+            let field = swift_ident(&prop.name);
+            let is_opt = swift_prop_is_optional(prop);
+            if is_opt {
+                let _ = writeln!(out, "        if let val = {field} {{");
+                emit_swift_direct_write_stmt(out, "            ", &key, "val", prop);
+                let _ = writeln!(out, "        }}");
+            } else {
+                emit_swift_direct_write_stmt(out, "        ", &key, &field, prop);
+            }
+        }
+        let _ = writeln!(out, "    }}");
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+}
+
+fn emit_swift_direct_write_stmt(
+    out: &mut String,
+    indent: &str,
+    key: &str,
+    var: &str,
+    prop: &PropSpec,
+) {
+    match &prop.prop_type {
+        PropType::Bool
+        | PropType::Int32
+        | PropType::Float
+        | PropType::Double
+        | PropType::String
+        | PropType::Color
+        | PropType::ImageSource
+        | PropType::Dimension
+        | PropType::Mixed
+        | PropType::Point
+        | PropType::EdgeInsets
+        | PropType::Void
+        | PropType::Promise { .. }
+        | PropType::Callback { .. } => {
+            let _ = writeln!(out, "{indent}builder.write(\"{key}\", {var})");
+        }
+        PropType::StringEnum { .. } | PropType::IntEnum { .. } => {
+            let _ = writeln!(out, "{indent}builder.write(\"{key}\", {var}.rawValue)");
+        }
+        PropType::Object { .. } => {
+            let _ = writeln!(
+                out,
+                "{indent}builder.write(\"{key}\", value: try builder.arena.writeValue({var}))"
+            );
+        }
+        PropType::Array { item } => {
+            let elem_expr = swift_bin_value_expr("$0", item);
+            let _ = writeln!(
+                out,
+                "{indent}builder.write(\"{key}\", value: try builder.arena.writeValue(.array({var}.map {{ {elem_expr} }})))"
+            );
+        }
+    }
+}
+
+fn swift_bin_value_expr(var: &str, ty: &PropType) -> String {
+    match ty {
+        PropType::Bool => format!(".bool({var})"),
+        PropType::Int32 | PropType::IntEnum { .. } => format!(".int64(Int64({var}))"),
+        PropType::Float => format!(".float64(Double({var}))"),
+        PropType::Double => format!(".float64({var})"),
+        PropType::Object { .. } => var.to_owned(),
+        PropType::Array { item } => {
+            format!(".array({var}.map {{ {} }})", swift_bin_value_expr("$0", item))
+        }
+        _ => format!(".string({var})"),
+    }
+}
+
 fn emit_swift_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
     match &prop.prop_type {
         PropType::StringEnum { variants } => {
             let enum_name = format!("{comp_name}{}", to_pascal_case(&prop.name));
             let _ = writeln!(
                 out,
-                "public enum {enum_name}: String, Sendable, Hashable, Codable, CaseIterable {{"
+                "public enum {enum_name}: String, Sendable, Hashable, CaseIterable {{"
             );
             for v in variants {
                 let _ = writeln!(
@@ -280,7 +415,7 @@ fn emit_swift_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
             let enum_name = format!("{comp_name}{}", to_pascal_case(&prop.name));
             let _ = writeln!(
                 out,
-                "public enum {enum_name}: Int32, Sendable, Hashable, Codable, CaseIterable {{"
+                "public enum {enum_name}: Int32, Sendable, Hashable, CaseIterable {{"
             );
             for v in variants {
                 let vname = int_enum_variant_camel(*v);
@@ -302,15 +437,72 @@ fn emit_swift_event_struct(out: &mut String, comp_name: &str, ev: &EventSpec) {
         return;
     }
     let st = swift_event_struct_name(comp_name, ev);
-    let _ = writeln!(out, "public struct {st}: Codable, Sendable, Equatable {{");
+    let _ = writeln!(out, "public struct {st}: Sendable, Equatable {{");
     for f in &ev.payload {
         let fname = swift_ident(&f.name);
         let fty = swift_simple_type(&f.field_type);
         let q = if f.optional || f.nullable { "?" } else { "" };
         let _ = writeln!(out, "    public let {fname}: {fty}{q}");
     }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "    public init(binView: NveBinValueView) {{");
+    for f in &ev.payload {
+        let fname = swift_ident(&f.name);
+        let key = escape_c_like_string(&f.name);
+        let expr = swift_from_bin_view_expr(&key, f);
+        let _ = writeln!(out, "        self.{fname} = {expr}");
+    }
+    let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
+}
+
+fn swift_from_bin_view_expr(key: &str, f: &ObjectField) -> String {
+    let opt = f.optional || f.nullable;
+    match &f.field_type {
+        PropType::Bool => {
+            if opt {
+                format!("binView.mapValue(forKey: \"{key}\")?.boolValue")
+            } else {
+                format!("binView.mapValue(forKey: \"{key}\")?.boolValue ?? false")
+            }
+        }
+        PropType::Int32 | PropType::IntEnum { .. } => {
+            if opt {
+                format!("binView.mapValue(forKey: \"{key}\")?.int64Value.map(Int32.init(truncatingIfNeeded:))")
+            } else {
+                format!("binView.mapValue(forKey: \"{key}\")?.int64Value.map(Int32.init(truncatingIfNeeded:)) ?? 0")
+            }
+        }
+        PropType::Float => {
+            if opt {
+                format!("binView.mapValue(forKey: \"{key}\")?.numberValue.map(Float.init)")
+            } else {
+                format!("binView.mapValue(forKey: \"{key}\")?.numberValue.map(Float.init) ?? 0.0")
+            }
+        }
+        PropType::Double => {
+            if opt {
+                format!("binView.mapValue(forKey: \"{key}\")?.numberValue")
+            } else {
+                format!("binView.mapValue(forKey: \"{key}\")?.numberValue ?? 0.0")
+            }
+        }
+        PropType::Object { .. } => {
+            if opt {
+                format!("binView.mapValue(forKey: \"{key}\")?.toOwned()")
+            } else {
+                format!("binView.mapValue(forKey: \"{key}\")?.toOwned() ?? .null")
+            }
+        }
+        _ => {
+            if opt {
+                format!("binView.mapValue(forKey: \"{key}\")?.stringValue")
+            } else {
+                format!("binView.mapValue(forKey: \"{key}\")?.stringValue ?? \"\"")
+            }
+        }
+    }
 }
 
 fn swift_event_closure_type(comp_name: &str, ev: &EventSpec) -> String {
@@ -347,7 +539,7 @@ fn swift_simple_type(ty: &PropType) -> String {
         PropType::Float => "Float".to_owned(),
         PropType::Double => "Double".to_owned(),
         PropType::Array { item } => format!("[{}]", swift_simple_type(item)),
-        PropType::Object { .. } => "[String: Any]".to_owned(),
+        PropType::Object { .. } => "NveBinValue".to_owned(),
         _ => "String".to_owned(),
     }
 }
@@ -375,13 +567,5 @@ fn swift_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
             Some(format!(".{vname}"))
         }
         _ => None,
-    }
-}
-
-fn swift_encode_prop_expr(field: &str, prop: &PropSpec, is_opt: bool) -> String {
-    let var = if is_opt { "val" } else { field };
-    match &prop.prop_type {
-        PropType::StringEnum { .. } | PropType::IntEnum { .. } => format!("{var}.rawValue"),
-        _ => var.to_owned(),
     }
 }
