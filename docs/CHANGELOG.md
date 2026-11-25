@@ -6,6 +6,9 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Wave 14 (Zero-Copy, DRY & Production Docs)
 
+- **Flagship Studio Adoption of `nve-router`, `nve-sdk` & Unified Environment `TraitKey`s** (`9762be7`)
+  - Added typed `StudioRoute` (`define_routes!` for `/board`, `/task/:id`, `/channels`, `/docs`, `/doc/:id`, `/workbench`, `/stream`, `/islands`, `/metrics`) with Back/Forward stack sync and `aether://studio/...` deep links (`routes.rs`, `state/navigation.rs`).
+  - Wired root `TraitProvider` + `ReactiveTraitStore` with custom `StudioAccentTrait`/`StudioCompactModeTrait` and breakpoint-only `use_trait::<SizeClass>()` + `env.resolve()` (eliminating 1px desktop drag churn), plus dual-mode `StudioHostServices` (`FfiHostServices` over `NVE_IFACE_HOST = 5` with `MemoryHostServices` fallback) for `ClipboardClient` Markdown/URL copy and `SystemEnvClient` theme/locale sync (`34/34` tests, `0` Clippy warnings, `wasm32` clean).
 - **Wave 14D — Single-Source Generated `EventRing`, `NVE_DRAW1` & FNV-1a Wire Codecs** (`f970d29`)
   - Added single-source declarative wire codec spec (`crates/nve-codegen/src/wire_codecs/`, schema hash `0x95F1C5176E2F6C99`) emitting compiler-verified `.generated.` wire codecs (`nve_wire_codecs.generated.{hpp,dart,ts}`, `NveWireCodecs.generated.swift`, `dev.nve.android.generated.NveWireCodecs`) wired into `cargo nve codegen abi [--check]` (`15/15` artifacts) and `cargo nve codegen wire [--check]`.
   - Cross-checked every opcode/constant against `nve-abi`/`nve-components` and verified real cross-language execution (`clang++`, `swiftc`, `dart`, `javac`/`java`, `node`) decoding each host's emitted `EventRing` + `NK1` wire bytes through Rust (`62/62` Rust tests, `0` Clippy warnings, `50/50` Swift, `61/61` Flutter).

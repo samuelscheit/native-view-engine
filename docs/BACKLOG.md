@@ -25,4 +25,4 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 ## Flagship / Vision (Remaining Work Only)
 
 - [ ] **Flagship Local-First Workspace & Messaging App (`examples/studio-workspace`)**
-  - Adopt `nve-router`, `nve-sdk`, and Environment `TraitKey`s across Studio (live multi-peer `NVC1` CRDT delta transport + `nve-ui` chrome migration already landed).
+  - All core modules (`nve-ui`, `nve-router`, `nve-sdk`, Environment `TraitKey`s, live `NVC1` CRDT peer transport, 100k Fenwick stream, Docs editor, Meta Workbench, `NWS1` v2 + `.nvewal`) are landed; next step is deploying Studio live at `/examples/studio/` on GitHub Pages and integrating `<NativeView<CameraPreview>>` / `BlurSurface` once host adapters land.
