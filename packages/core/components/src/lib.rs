@@ -3,11 +3,22 @@
 //! draw-list IR (`NVE_DRAW1`).
 
 pub mod canvas_ir;
+pub mod media;
+pub mod reconcile;
 
 pub use canvas_ir::{
     CanvasOp, DrawListBuilder, DrawListDecoder, DrawListError, DrawListHeader, ImageResizeMode,
     DRAW_LIST_ATTR_PREFIX, MAX_DRAW_OPS, MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC,
     NVE_DRAW_VERSION,
+};
+pub use media::{
+    FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
+    ResponsiveStylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH,
+    MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
+};
+pub use reconcile::{
+    reconcile_three_way, ConflictPolicy, DivergenceKind, LogicalClock, ReconcileBatch,
+    ReconcileDecision, StateReconciler, ThreeWayEntry,
 };
 
 use nve_abi::num::parse_f32;

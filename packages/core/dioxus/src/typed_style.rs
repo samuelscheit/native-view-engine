@@ -10,15 +10,38 @@ use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps, StyleProps};
+use nve_components::media::{MediaQuery, ResponsiveRule, ResponsiveStylePatch};
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
 pub const NVE_TYPED_STYLE_ATTR: &str = "nve_style";
 
+/// Attribute wire name recognized by [`crate::NveMutationWriter`] for standalone [`MediaQuery`]
+/// conditional visibility (`nve_show_on`).
+pub const NVE_SHOW_ON_ATTR: &str = "nve_show_on";
+
+/// Ergonomic `IntoAttributeValue` wrapper carrying a [`MediaQuery`] into `rsx!` `nve_show_on`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShowOn(pub MediaQuery);
+
+impl From<MediaQuery> for ShowOn {
+    #[inline]
+    fn from(query: MediaQuery) -> Self {
+        Self(query)
+    }
+}
+
+impl IntoAttributeValue for ShowOn {
+    #[inline]
+    fn into_value(self) -> AttributeValue {
+        AttributeValue::Any(Rc::new(self.0))
+    }
+}
+
 /// Direct binary layout + visual style payload forwarded via Dioxus `AttributeValue::Any`.
 ///
-/// Copies `LayoutProps`, `StyleProps`, and optional raw style fields (`font-weight`, `text-align`,
-/// `box-shadow`, `overflow`, `object-fit`) straight into `NodeRecord` inside `NveMutationWriter`
-/// without formatting or parsing any CSS string.
+/// Copies `LayoutProps`, `StyleProps`, optional raw style fields (`font-weight`, `text-align`,
+/// `box-shadow`, `overflow`, `object-fit`), and optional responsive `@media` visibility/rules
+/// straight into `NodeRecord` inside `NveMutationWriter` without formatting or parsing any CSS.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
     pub layout: LayoutProps,
@@ -30,6 +53,8 @@ pub struct TypedStyle {
     pub box_shadow: Option<Cow<'static, str>>,
     pub overflow: Option<Cow<'static, str>>,
     pub object_fit: Option<Cow<'static, str>>,
+    pub show_on: Option<MediaQuery>,
+    pub responsive: Vec<ResponsiveRule>,
 }
 
 impl Default for TypedStyle {
@@ -54,6 +79,8 @@ impl TypedStyle {
             box_shadow: None,
             overflow: None,
             object_fit: None,
+            show_on: None,
+            responsive: Vec::new(),
         }
     }
 
@@ -403,6 +430,51 @@ impl TypedStyle {
     pub fn object_fit(mut self, mode: impl Into<Cow<'static, str>>) -> Self {
         self.object_fit = Some(mode.into());
         self
+    }
+
+    // --- Declarative responsive visibility & `@media` style rules ---
+
+    /// Declares that this node is visible only when `query` matches (stored directly as an
+    /// 8-byte `#[repr(C)]` [`MediaQuery`] on `NodeRecord` with zero serialization).
+    #[inline]
+    pub fn show_on(mut self, query: MediaQuery) -> Self {
+        self.show_on = Some(query);
+        self
+    }
+
+    /// Appends a conditional [`ResponsiveRule`] applying `patch` whenever `query` matches.
+    #[inline]
+    pub fn at(mut self, query: MediaQuery, patch: ResponsiveStylePatch) -> Self {
+        self.responsive.push(ResponsiveRule::new(query, patch));
+        self
+    }
+
+    /// Builder-closure variant of [`Self::at`] for inline patch construction.
+    #[inline]
+    pub fn at_with(
+        self,
+        query: MediaQuery,
+        build: impl FnOnce(ResponsiveStylePatch) -> ResponsiveStylePatch,
+    ) -> Self {
+        self.at(query, build(ResponsiveStylePatch::new()))
+    }
+
+    /// Shorthand for `.at(MediaQuery::compact(), patch)` (`< 600pt`).
+    #[inline]
+    pub fn on_compact(self, patch: ResponsiveStylePatch) -> Self {
+        self.at(MediaQuery::compact(), patch)
+    }
+
+    /// Shorthand for `.at(MediaQuery::medium(), patch)` (`600..1024pt`).
+    #[inline]
+    pub fn on_medium(self, patch: ResponsiveStylePatch) -> Self {
+        self.at(MediaQuery::medium(), patch)
+    }
+
+    /// Shorthand for `.at(MediaQuery::expanded(), patch)` (`>= 1024pt`).
+    #[inline]
+    pub fn on_expanded(self, patch: ResponsiveStylePatch) -> Self {
+        self.at(MediaQuery::expanded(), patch)
     }
 }
 

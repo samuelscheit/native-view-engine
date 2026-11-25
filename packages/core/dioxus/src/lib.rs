@@ -31,10 +31,16 @@ pub use native_view::{
     WebElementProps, WebView, WebViewCommand, WebViewProps, NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC,
     NATIVE_VIEW_KIND_PROP_KEY, NATIVE_VIEW_PROPS_PROP_KEY,
 };
+pub use nve_components::media::{
+    FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
+    ResponsiveStylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH,
+    MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
+};
 pub use signal_archive::{
-    signal_slot_id, BinValueSlot, HydrationReport, SignalArchive, SignalArchiveError, SignalCodec,
-    SignalDelta, SignalDeltaOp, SignalRegistry, SignalTableSnapshot, SignalValue, SignalValueTag,
-    NVE_SIGNAL_ARCHIVE_MAGIC, NVE_SIGNAL_ARCHIVE_VERSION, NVE_SIGNAL_DELTA_MAGIC,
+    reconcile_signal_entry, signal_slot_id, BinValueSlot, HydrationReport, SignalArchive,
+    SignalArchiveError, SignalCodec, SignalDelta, SignalDeltaOp, SignalRegistry,
+    SignalTableSnapshot, SignalValue, SignalValueTag, NVE_SIGNAL_ARCHIVE_MAGIC,
+    NVE_SIGNAL_ARCHIVE_VERSION, NVE_SIGNAL_DELTA_MAGIC,
 };
 pub use surface::DioxusSurface;
 pub use traits::{
@@ -47,7 +53,8 @@ pub use traits::{
     ViewportChangeMask,
 };
 pub use typed_style::{
-    parse_flex_align, parse_flex_direction, parse_flex_justify, TypedStyle, NVE_TYPED_STYLE_ATTR,
+    parse_flex_align, parse_flex_direction, parse_flex_justify, ShowOn, TypedStyle,
+    NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR,
 };
 pub use writer::NveMutationWriter;
 
@@ -86,11 +93,15 @@ pub mod prelude {
         TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitScope, TraitStore,
         TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
     };
-    pub use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
+    pub use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
     pub use crate::use_signal;
     pub use crate::{
         BlurEvent, BlurEventData, CustomEvent, CustomEventData, FocusEvent, FocusEventData,
         ScrollEvent, ScrollEventData,
+    };
+    pub use nve_components::media::{
+        FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
+        ResponsiveStylePatch, TextAlign,
     };
     pub use dioxus_core;
     pub use dioxus_core::{Element, VirtualDom};

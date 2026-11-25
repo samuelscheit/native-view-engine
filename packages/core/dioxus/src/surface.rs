@@ -4,7 +4,8 @@
 use std::time::Instant;
 
 use dioxus_core::{Element, VirtualDom};
-use nve_abi::{FrameId, SurfaceId};
+use nve_abi::{FrameId, NodeId, SurfaceId};
+use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_engine::HotPatchMsg;
 
 use crate::signal_archive::{HydrationReport, SignalArchiveError, SignalRegistry};
@@ -66,6 +67,30 @@ impl DioxusSurface {
 
     pub fn signal_registry_mut(&mut self) -> &mut SignalRegistry {
         &mut self.signal_registry
+    }
+
+    /// Direct typed [`MediaQuery`] visibility gate stored on `node_id` (zero serialization).
+    #[inline]
+    pub fn node_show_on(&self, node_id: NodeId) -> Option<MediaQuery> {
+        self.writer.node_show_on(node_id)
+    }
+
+    /// Direct typed [`ResponsiveRule`] slice stored on `node_id` (zero serialization).
+    #[inline]
+    pub fn node_responsive_rules(&self, node_id: NodeId) -> &[ResponsiveRule] {
+        self.writer.node_responsive_rules(node_id)
+    }
+
+    /// Iterates over all active nodes with a declarative [`MediaQuery`] visibility gate.
+    #[inline]
+    pub fn iter_show_on(&self) -> impl Iterator<Item = (NodeId, MediaQuery)> + '_ {
+        self.writer.iter_show_on()
+    }
+
+    /// Iterates over all active nodes with one or more [`ResponsiveRule`] style overrides.
+    #[inline]
+    pub fn iter_responsive_rules(&self) -> impl Iterator<Item = (NodeId, &[ResponsiveRule])> + '_ {
+        self.writer.iter_responsive_rules()
     }
 
     /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.

@@ -19,6 +19,8 @@ pub mod layout;
 pub mod native_view;
 #[cfg(feature = "plugin-host")]
 pub mod plugin_host;
+#[cfg(feature = "reconcile")]
+pub mod reconcile;
 pub mod surface;
 #[cfg(feature = "sync")]
 pub mod sync_delta;
@@ -55,6 +57,13 @@ pub use layout::{
 pub use plugin_host::{
     DEFAULT_PLUGIN_SURFACE_BASE, NvePluginHost, NvePluginSlot, PluginCapabilities, PluginError,
     PluginId, PluginMetadata, PluginRequirement, PluginSourceKind,
+};
+#[cfg(all(feature = "reconcile", feature = "crdt"))]
+pub use reconcile::{CrdtReconcileAdapter, hlc_to_logical_clock};
+#[cfg(feature = "reconcile")]
+pub use reconcile::{
+    ConflictPolicy, DivergenceKind, LogicalClock, ReconcileBatch, ReconcileDecision,
+    StateReconciler, ThreeWayEntry, reconcile_three_way,
 };
 #[cfg(feature = "window")]
 pub use surface::SurfacePresentation;

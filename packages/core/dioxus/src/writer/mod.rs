@@ -16,6 +16,7 @@ use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, FrameId, LayoutProps, NodeId, StyleProps,
     SurfaceId, ROOT_NODE_ID,
 };
+use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_interop::native_view::NativeViewHandleBinder;
 
 use crate::native_view::NATIVE_VIEW_TAG;
@@ -45,6 +46,9 @@ pub(crate) struct NodeRecord {
     pub(crate) deferred_native_create: bool,
     pub(crate) native_kind: Option<String>,
     pub(crate) native_handle_binder: Option<NativeViewHandleBinder>,
+    pub(crate) explicit_show_on: Option<MediaQuery>,
+    pub(crate) show_on: Option<MediaQuery>,
+    pub(crate) responsive_rules: Vec<ResponsiveRule>,
 }
 
 impl Default for NodeRecord {
@@ -72,6 +76,9 @@ impl Default for NodeRecord {
             deferred_native_create: false,
             native_kind: None,
             native_handle_binder: None,
+            explicit_show_on: None,
+            show_on: None,
+            responsive_rules: Vec::new(),
         }
     }
 }
@@ -159,6 +166,37 @@ impl NveMutationWriter {
 
     pub fn element_id_of(&self, node_id: NodeId) -> Option<ElementId> {
         self.node_to_el.get(&node_id).copied()
+    }
+
+    /// Returns the direct typed [`MediaQuery`] visibility gate for `node_id` (zero serialization).
+    #[inline]
+    pub fn node_show_on(&self, node_id: NodeId) -> Option<MediaQuery> {
+        self.nodes.get(&node_id).and_then(|r| r.show_on)
+    }
+
+    /// Returns the direct typed [`ResponsiveRule`] slice for `node_id` (zero serialization).
+    #[inline]
+    pub fn node_responsive_rules(&self, node_id: NodeId) -> &[ResponsiveRule] {
+        self.nodes
+            .get(&node_id)
+            .map(|r| r.responsive_rules.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Iterates over all active nodes with a declarative [`MediaQuery`] visibility gate.
+    #[inline]
+    pub fn iter_show_on(&self) -> impl Iterator<Item = (NodeId, MediaQuery)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(&id, rec)| rec.show_on.map(|q| (id, q)))
+    }
+
+    /// Iterates over all active nodes with one or more [`ResponsiveRule`] style overrides.
+    #[inline]
+    pub fn iter_responsive_rules(&self) -> impl Iterator<Item = (NodeId, &[ResponsiveRule])> + '_ {
+        self.nodes.iter().filter_map(|(&id, rec)| {
+            (!rec.responsive_rules.is_empty()).then_some((id, rec.responsive_rules.as_slice()))
+        })
     }
 
     pub(crate) fn has_event_mask(&self, node_id: NodeId, bit: u64) -> bool {
