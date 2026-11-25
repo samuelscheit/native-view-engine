@@ -14,7 +14,7 @@ pub use signal_archive::{
 };
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -24,7 +24,7 @@ use dioxus_core::{
     VirtualDom, WriteMutations,
 };
 use nve_abi::{
-    CommandBufferBuilder, ComponentKind, EventMask, EventPayload, FrameId, LayoutProps,
+    ColorRgba, CommandBufferBuilder, ComponentKind, EventMask, EventPayload, FrameId, LayoutProps,
     NativeEvent, NativeEventKind, NodeId, NveEventBatchRef, RawPropValue, StyleProps, SurfaceId,
     ROOT_NODE_ID,
 };
@@ -81,18 +81,23 @@ pub struct NveMutationWriter {
     node_to_el: HashMap<NodeId, ElementId>,
     nodes: HashMap<NodeId, NodeRecord>,
     stack: Vec<NodeId>,
-    dirty_children: HashSet<NodeId>,
-    dirty_layout: HashSet<NodeId>,
-    dirty_style: HashSet<NodeId>,
-    dirty_events: HashSet<NodeId>,
+    /// Persistent scratch buffers reused across frames (cleared + sorted/deduped in place).
+    style_sources: Vec<NodeId>,
+    style_walk_stack: Vec<(NodeId, ColorRgba, f32)>,
+    dirty_children: Vec<NodeId>,
+    dirty_layout: Vec<NodeId>,
+    dirty_style: Vec<NodeId>,
+    dirty_events: Vec<NodeId>,
+    patch_ids: Vec<NodeId>,
+    patch_leaf_text_ids: Vec<NodeId>,
     builder: CommandBufferBuilder,
 }
 
 impl NveMutationWriter {
     pub fn new(surface_id: SurfaceId) -> Self {
-        let mut el_to_node = HashMap::new();
-        let mut node_to_el = HashMap::new();
-        let mut nodes = HashMap::new();
+        let mut el_to_node = HashMap::with_capacity(16);
+        let mut node_to_el = HashMap::with_capacity(16);
+        let mut nodes = HashMap::with_capacity(16);
         el_to_node.insert(ElementId(0), ROOT_NODE_ID);
         node_to_el.insert(ROOT_NODE_ID, ElementId(0));
         nodes.insert(
@@ -108,10 +113,14 @@ impl NveMutationWriter {
             node_to_el,
             nodes,
             stack: Vec::with_capacity(64),
-            dirty_children: HashSet::new(),
-            dirty_layout: HashSet::new(),
-            dirty_style: HashSet::new(),
-            dirty_events: HashSet::new(),
+            style_sources: Vec::with_capacity(16),
+            style_walk_stack: Vec::new(),
+            dirty_children: Vec::with_capacity(16),
+            dirty_layout: Vec::with_capacity(16),
+            dirty_style: Vec::with_capacity(16),
+            dirty_events: Vec::new(),
+            patch_ids: Vec::new(),
+            patch_leaf_text_ids: Vec::new(),
             builder: CommandBufferBuilder::new(surface_id, 1),
         }
     }
@@ -119,6 +128,8 @@ impl NveMutationWriter {
     pub fn begin_frame(&mut self, surface_id: SurfaceId, frame_id: FrameId) {
         self.builder.reset(surface_id, frame_id);
         self.stack.clear();
+        self.style_sources.clear();
+        self.style_walk_stack.clear();
         self.dirty_children.clear();
         self.dirty_layout.clear();
         self.dirty_style.clear();
@@ -128,49 +139,63 @@ impl NveMutationWriter {
     pub fn finish_frame(&mut self, sync_mount: bool) -> &[u8] {
         // Propagate inherited text_color and font_size from styled Text parents to unstyled child
         // Text leaves (Dioxus rsx! emits `text { style: "...", "leaf" }` as parent Text -> child Text).
-        let mut style_sources: Vec<NodeId> = self
-            .dirty_children
-            .iter()
-            .chain(self.dirty_style.iter())
-            .copied()
-            .collect();
-        style_sources.sort_unstable();
-        style_sources.dedup();
-        for pid in style_sources {
-            self.propagate_text_style_down(pid);
+        if !self.dirty_children.is_empty() || !self.dirty_style.is_empty() {
+            self.style_sources.clear();
+            self.style_sources.extend_from_slice(&self.dirty_children);
+            self.style_sources.extend_from_slice(&self.dirty_style);
+            self.style_sources.sort_unstable();
+            self.style_sources.dedup();
+            for i in 0..self.style_sources.len() {
+                let pid = self.style_sources[i];
+                self.propagate_text_style_down(pid);
+            }
+            self.style_sources.clear();
         }
 
-        // Coalesce all structural/style/layout mutations into one deterministic batch per frame.
-        let mut dirty_children: Vec<NodeId> = self.dirty_children.drain().collect();
-        dirty_children.sort_unstable();
-        for pid in dirty_children {
-            if let Some(rec) = self.nodes.get(&pid) {
-                self.builder.set_children(pid, &rec.children);
+        // Coalesce all structural/style/layout mutations into one deterministic batch per frame
+        // using persistent scratch Vecs sorted & deduped in place (zero per-frame heap allocs).
+        if !self.dirty_children.is_empty() {
+            self.dirty_children.sort_unstable();
+            self.dirty_children.dedup();
+            for &pid in &self.dirty_children {
+                if let Some(rec) = self.nodes.get(&pid) {
+                    self.builder.set_children(pid, &rec.children);
+                }
             }
+            self.dirty_children.clear();
         }
 
-        let mut dirty_layout: Vec<NodeId> = self.dirty_layout.drain().collect();
-        dirty_layout.sort_unstable();
-        for nid in dirty_layout {
-            if let Some(rec) = self.nodes.get(&nid) {
-                self.builder.set_layout(nid, &rec.layout);
+        if !self.dirty_layout.is_empty() {
+            self.dirty_layout.sort_unstable();
+            self.dirty_layout.dedup();
+            for &nid in &self.dirty_layout {
+                if let Some(rec) = self.nodes.get(&nid) {
+                    self.builder.set_layout(nid, &rec.layout);
+                }
             }
+            self.dirty_layout.clear();
         }
 
-        let mut dirty_style: Vec<NodeId> = self.dirty_style.drain().collect();
-        dirty_style.sort_unstable();
-        for nid in dirty_style {
-            if let Some(rec) = self.nodes.get(&nid) {
-                self.builder.set_style(nid, &rec.style);
+        if !self.dirty_style.is_empty() {
+            self.dirty_style.sort_unstable();
+            self.dirty_style.dedup();
+            for &nid in &self.dirty_style {
+                if let Some(rec) = self.nodes.get(&nid) {
+                    self.builder.set_style(nid, &rec.style);
+                }
             }
+            self.dirty_style.clear();
         }
 
-        let mut dirty_events: Vec<NodeId> = self.dirty_events.drain().collect();
-        dirty_events.sort_unstable();
-        for nid in dirty_events {
-            if let Some(rec) = self.nodes.get(&nid) {
-                self.builder.set_event_mask(nid, rec.event_mask);
+        if !self.dirty_events.is_empty() {
+            self.dirty_events.sort_unstable();
+            self.dirty_events.dedup();
+            for &nid in &self.dirty_events {
+                if let Some(rec) = self.nodes.get(&nid) {
+                    self.builder.set_event_mask(nid, rec.event_mask);
+                }
             }
+            self.dirty_events.clear();
         }
 
         self.builder.commit(sync_mount);
@@ -195,24 +220,21 @@ impl NveMutationWriter {
         id
     }
 
-    fn propagate_text_style_down(&mut self, parent_id: NodeId) {
-        let Some((parent_kind, parent_color, parent_font_size, children)) =
-            self.nodes.get(&parent_id).map(|r| {
-                (
-                    r.kind,
-                    r.style.text_color,
-                    r.style.font_size,
-                    r.children.clone(),
-                )
-            })
-        else {
+    fn propagate_text_style_down(&mut self, root_parent_id: NodeId) {
+        self.style_walk_stack.clear();
+        let Some(root) = self.nodes.get(&root_parent_id) else {
             return;
         };
-        if parent_kind != ComponentKind::Text {
+        if root.kind != ComponentKind::Text || root.children.is_empty() {
             return;
         }
-        for cid in children {
-            let mut recurse = false;
+        let root_color = root.style.text_color;
+        let root_font_size = root.style.font_size;
+        for &cid in &root.children {
+            self.style_walk_stack.push((cid, root_color, root_font_size));
+        }
+
+        while let Some((cid, parent_color, parent_font_size)) = self.style_walk_stack.pop() {
             if let Some(child) = self.nodes.get_mut(&cid) {
                 if child.kind == ComponentKind::Text && !child.has_explicit_style {
                     if child.style.text_color != parent_color
@@ -220,13 +242,15 @@ impl NveMutationWriter {
                     {
                         child.style.text_color = parent_color;
                         child.style.font_size = parent_font_size;
-                        self.dirty_style.insert(cid);
+                        self.dirty_style.push(cid);
                     }
-                    recurse = !child.children.is_empty();
+                    let next_color = child.style.text_color;
+                    let next_font_size = child.style.font_size;
+                    for &grandchild in &child.children {
+                        self.style_walk_stack
+                            .push((grandchild, next_color, next_font_size));
+                    }
                 }
-            }
-            if recurse {
-                self.propagate_text_style_down(cid);
             }
         }
     }
@@ -241,11 +265,6 @@ impl NveMutationWriter {
 
     fn resolve_el(&self, el_id: ElementId) -> Option<NodeId> {
         self.el_to_node.get(&el_id).copied()
-    }
-
-    fn pop_n(&mut self, m: usize) -> Vec<NodeId> {
-        let split = self.stack.len().saturating_sub(m);
-        self.stack.split_off(split)
     }
 
     fn instantiate_template_node(&mut self, tnode: &TemplateNode) -> NodeId {
@@ -263,19 +282,19 @@ impl NveMutationWriter {
                         self.apply_str_attr(id, name, value);
                     }
                 }
-                let mut child_ids = Vec::with_capacity(children.len());
-                for child in *children {
-                    let cid = self.instantiate_template_node(child);
-                    if let Some(crec) = self.nodes.get_mut(&cid) {
-                        crec.parent = Some(id);
+                if !children.is_empty() {
+                    let mut child_ids = Vec::with_capacity(children.len());
+                    for child in *children {
+                        let cid = self.instantiate_template_node(child);
+                        if let Some(crec) = self.nodes.get_mut(&cid) {
+                            crec.parent = Some(id);
+                        }
+                        child_ids.push(cid);
                     }
-                    child_ids.push(cid);
-                }
-                if !child_ids.is_empty() {
                     if let Some(rec) = self.nodes.get_mut(&id) {
                         rec.children = child_ids;
                     }
-                    self.dirty_children.insert(id);
+                    self.dirty_children.push(id);
                 }
                 id
             }
@@ -306,11 +325,11 @@ impl NveMutationWriter {
             let prev_style = rec.style;
             if apply_typed_attr(&mut rec.layout, &mut rec.style, name, value) {
                 if rec.layout != prev_layout {
-                    self.dirty_layout.insert(node_id);
+                    self.dirty_layout.push(node_id);
                 }
                 if rec.style != prev_style {
                     rec.has_explicit_style = true;
-                    self.dirty_style.insert(node_id);
+                    self.dirty_style.push(node_id);
                 }
                 return;
             }
@@ -324,18 +343,20 @@ impl NveMutationWriter {
             if let Some(parent) = self.nodes.get_mut(&parent_id) {
                 parent.children.retain(|&c| c != node_id);
             }
-            self.dirty_children.insert(parent_id);
+            self.dirty_children.push(parent_id);
         }
         if let Some(rec) = self.nodes.get_mut(&node_id) {
             rec.parent = None;
         }
     }
 
-    fn replace_node_in_parent(&mut self, target_id: NodeId, replacements: Vec<NodeId>) {
+    fn replace_node_in_parent_from_stack(&mut self, target_id: NodeId, split: usize) {
         let Some(parent_id) = self.nodes.get(&target_id).and_then(|r| r.parent) else {
+            self.stack.truncate(split);
             return;
         };
-        for &r in &replacements {
+        for i in split..self.stack.len() {
+            let r = self.stack[i];
             self.detach_from_parent(r);
             if let Some(rec) = self.nodes.get_mut(&r) {
                 rec.parent = Some(parent_id);
@@ -343,10 +364,14 @@ impl NveMutationWriter {
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
             if let Some(pos) = parent.children.iter().position(|&c| c == target_id) {
-                parent.children.splice(pos..=pos, replacements);
+                parent.children.splice(pos..=pos, self.stack.drain(split..));
+            } else {
+                self.stack.truncate(split);
             }
+        } else {
+            self.stack.truncate(split);
         }
-        self.dirty_children.insert(parent_id);
+        self.dirty_children.push(parent_id);
         self.remove_subtree(target_id);
     }
 
@@ -371,34 +396,35 @@ impl NveMutationWriter {
                 text_updates,
                 ..
             } => {
-                let mut ids: Vec<NodeId> = self.nodes.keys().copied().collect();
-                ids.sort_unstable();
+                self.patch_ids.clear();
+                self.patch_ids
+                    .extend(self.nodes.keys().copied().filter(|&id| id != ROOT_NODE_ID));
+                self.patch_ids.sort_unstable();
                 let mut changed = false;
                 for (k, v) in attr_updates {
-                    for &nid in &ids {
-                        if nid != ROOT_NODE_ID {
-                            self.apply_str_attr(nid, k, v);
-                            changed = true;
-                        }
+                    for i in 0..self.patch_ids.len() {
+                        let nid = self.patch_ids[i];
+                        self.apply_str_attr(nid, k, v);
+                        changed = true;
                     }
                 }
                 if !text_updates.is_empty() {
-                    let leaf_text_ids: Vec<NodeId> = ids
-                        .iter()
-                        .copied()
-                        .filter(|id| {
-                            self.nodes.get(id).is_some_and(|n| {
-                                n.kind == ComponentKind::Text && n.children.is_empty()
-                            })
-                        })
-                        .collect();
-                    let non_root_ids: Vec<NodeId> =
-                        ids.iter().copied().filter(|&id| id != ROOT_NODE_ID).collect();
+                    self.patch_leaf_text_ids.clear();
+                    for &id in &self.patch_ids {
+                        if self
+                            .nodes
+                            .get(&id)
+                            .is_some_and(|n| n.kind == ComponentKind::Text && n.children.is_empty())
+                        {
+                            self.patch_leaf_text_ids.push(id);
+                        }
+                    }
                     for (idx, text) in text_updates {
-                        let target = leaf_text_ids
+                        let target = self
+                            .patch_leaf_text_ids
                             .get(*idx)
                             .copied()
-                            .or_else(|| non_root_ids.get(*idx).copied());
+                            .or_else(|| self.patch_ids.get(*idx).copied());
                         if let Some(nid) = target {
                             self.builder.set_text(nid, text);
                             changed = true;
@@ -414,20 +440,24 @@ impl NveMutationWriter {
 
 impl WriteMutations for NveMutationWriter {
     fn append_children(&mut self, id: ElementId, m: usize) {
-        let children = self.pop_n(m);
+        let split = self.stack.len().saturating_sub(m);
         let Some(parent_id) = self.resolve_el(id) else {
+            self.stack.truncate(split);
             return;
         };
-        for &cid in &children {
+        for i in split..self.stack.len() {
+            let cid = self.stack[i];
             self.detach_from_parent(cid);
             if let Some(crec) = self.nodes.get_mut(&cid) {
                 crec.parent = Some(parent_id);
             }
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
-            parent.children.extend(children);
+            parent.children.extend(self.stack.drain(split..));
+        } else {
+            self.stack.truncate(split);
         }
-        self.dirty_children.insert(parent_id);
+        self.dirty_children.push(parent_id);
     }
 
     fn assign_node_id(&mut self, path: &'static [u8], id: ElementId) {
@@ -461,31 +491,39 @@ impl WriteMutations for NveMutationWriter {
     }
 
     fn replace_node_with(&mut self, id: ElementId, m: usize) {
-        let replacements = self.pop_n(m);
+        let split = self.stack.len().saturating_sub(m);
         if let Some(target_id) = self.resolve_el(id) {
-            self.replace_node_in_parent(target_id, replacements);
+            self.replace_node_in_parent_from_stack(target_id, split);
+        } else {
+            self.stack.truncate(split);
         }
     }
 
     fn replace_placeholder_with_nodes(&mut self, path: &'static [u8], m: usize) {
-        let replacements = self.pop_n(m);
-        let Some(&top) = self.stack.last() else {
+        let split = self.stack.len().saturating_sub(m);
+        let Some(&top) = split.checked_sub(1).and_then(|i| self.stack.get(i)) else {
+            self.stack.truncate(split);
             return;
         };
         if let Some(placeholder) = self.walk_path(top, path) {
-            self.replace_node_in_parent(placeholder, replacements);
+            self.replace_node_in_parent_from_stack(placeholder, split);
+        } else {
+            self.stack.truncate(split);
         }
     }
 
     fn insert_nodes_after(&mut self, id: ElementId, m: usize) {
-        let new_nodes = self.pop_n(m);
+        let split = self.stack.len().saturating_sub(m);
         let Some(anchor) = self.resolve_el(id) else {
+            self.stack.truncate(split);
             return;
         };
         let Some(parent_id) = self.nodes.get(&anchor).and_then(|r| r.parent) else {
+            self.stack.truncate(split);
             return;
         };
-        for &n in &new_nodes {
+        for i in split..self.stack.len() {
+            let n = self.stack[i];
             self.detach_from_parent(n);
             if let Some(rec) = self.nodes.get_mut(&n) {
                 rec.parent = Some(parent_id);
@@ -493,21 +531,30 @@ impl WriteMutations for NveMutationWriter {
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
             if let Some(pos) = parent.children.iter().position(|&c| c == anchor) {
-                parent.children.splice(pos + 1..pos + 1, new_nodes);
+                parent
+                    .children
+                    .splice(pos + 1..pos + 1, self.stack.drain(split..));
+            } else {
+                self.stack.truncate(split);
             }
+        } else {
+            self.stack.truncate(split);
         }
-        self.dirty_children.insert(parent_id);
+        self.dirty_children.push(parent_id);
     }
 
     fn insert_nodes_before(&mut self, id: ElementId, m: usize) {
-        let new_nodes = self.pop_n(m);
+        let split = self.stack.len().saturating_sub(m);
         let Some(anchor) = self.resolve_el(id) else {
+            self.stack.truncate(split);
             return;
         };
         let Some(parent_id) = self.nodes.get(&anchor).and_then(|r| r.parent) else {
+            self.stack.truncate(split);
             return;
         };
-        for &n in &new_nodes {
+        for i in split..self.stack.len() {
+            let n = self.stack[i];
             self.detach_from_parent(n);
             if let Some(rec) = self.nodes.get_mut(&n) {
                 rec.parent = Some(parent_id);
@@ -515,10 +562,14 @@ impl WriteMutations for NveMutationWriter {
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
             if let Some(pos) = parent.children.iter().position(|&c| c == anchor) {
-                parent.children.splice(pos..pos, new_nodes);
+                parent.children.splice(pos..pos, self.stack.drain(split..));
+            } else {
+                self.stack.truncate(split);
             }
+        } else {
+            self.stack.truncate(split);
         }
-        self.dirty_children.insert(parent_id);
+        self.dirty_children.push(parent_id);
     }
 
     fn set_attribute(
@@ -564,7 +615,7 @@ impl WriteMutations for NveMutationWriter {
         let bit = event_name_to_mask(name);
         if let Some(rec) = self.nodes.get_mut(&node_id) {
             rec.event_mask |= bit;
-            self.dirty_events.insert(node_id);
+            self.dirty_events.push(node_id);
         }
     }
 
@@ -575,7 +626,7 @@ impl WriteMutations for NveMutationWriter {
         let bit = event_name_to_mask(name);
         if let Some(rec) = self.nodes.get_mut(&node_id) {
             rec.event_mask &= !bit;
-            self.dirty_events.insert(node_id);
+            self.dirty_events.push(node_id);
         }
     }
 

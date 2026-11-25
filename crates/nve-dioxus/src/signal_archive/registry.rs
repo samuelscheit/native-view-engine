@@ -1,0 +1,265 @@
+//! App/surface-scoped `SignalRegistry` for registration, snapshotting, WAL streaming, and hydration.
+
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
+
+use dioxus_signals::{ReadableExt, Signal, WritableExt};
+use nve_engine::{MmapSnapshot, SnapshotHeader, SnapshotWal, WalRecordKind};
+
+use super::codec::{SignalArchive, SignalCodec, SignalTableSnapshot};
+use super::{signal_slot_id, SignalArchiveError, SignalValue};
+
+/// Summary returned by [`SignalRegistry::hydrate_from_table`] describing exact schema-evolution
+/// behavior on cold start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HydrationReport {
+    /// Registered slots restored successfully from the archive.
+    pub hydrated_slots: usize,
+    /// Archived slots absent from the current app version (safely ignored).
+    pub skipped_unknown_slots: usize,
+    /// Archived slots whose stored value type did not match the current slot's type (safely skipped).
+    pub skipped_type_mismatches: usize,
+    /// Newly added registered slots absent from the archive (retained their default values).
+    pub untouched_new_slots: usize,
+    /// Schema version recorded in the hydrated archive.
+    pub source_schema_version: u32,
+}
+
+struct RegisteredSlot {
+    slot_id: u64,
+    component_path: String,
+    signal_name: String,
+    read: Box<dyn Fn() -> SignalValue>,
+    write: Box<dyn Fn(&SignalValue) -> bool>,
+}
+
+/// App/surface-scoped signal table registry for one-time signal registration, deterministic
+/// full & incremental snapshotting, WAL delta streaming, and schema-tolerant cold hydration.
+pub struct SignalRegistry {
+    schema_version: u32,
+    slots: BTreeMap<u64, RegisteredSlot>,
+    last_persisted: SignalTableSnapshot,
+}
+
+impl Default for SignalRegistry {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
+
+impl SignalRegistry {
+    pub fn new(schema_version: u32) -> Self {
+        Self {
+            schema_version,
+            slots: BTreeMap::new(),
+            last_persisted: SignalTableSnapshot::new(schema_version),
+        }
+    }
+
+    #[inline]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    #[inline]
+    pub fn set_schema_version(&mut self, schema_version: u32) {
+        self.schema_version = schema_version;
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Registers a typed signal backed by custom getter/setter closures.
+    pub fn register_slot<T: SignalCodec + 'static>(
+        &mut self,
+        component_path: impl Into<String>,
+        signal_name: impl Into<String>,
+        read: impl Fn() -> T + 'static,
+        write: impl Fn(T) + 'static,
+    ) -> u64 {
+        let component_path = component_path.into();
+        let signal_name = signal_name.into();
+        let slot_id = signal_slot_id(&component_path, &signal_name);
+        self.slots.insert(
+            slot_id,
+            RegisteredSlot {
+                slot_id,
+                component_path,
+                signal_name,
+                read: Box::new(move || read().to_signal_value()),
+                write: Box::new(move |val| {
+                    if let Some(decoded) = T::from_signal_value(val) {
+                        write(decoded);
+                        true
+                    } else {
+                        false
+                    }
+                }),
+            },
+        );
+        slot_id
+    }
+
+    /// Registers a live `dioxus_signals::Signal<T>` directly for snapshot/WAL persistence and
+    /// schema-safe cold hydration.
+    pub fn register_signal<T: SignalCodec + Clone + 'static>(
+        &mut self,
+        component_path: impl Into<String>,
+        signal_name: impl Into<String>,
+        signal: Signal<T>,
+    ) -> u64 {
+        self.register_slot(
+            component_path,
+            signal_name,
+            move || signal.cloned(),
+            move |val| {
+                let mut sig = signal;
+                sig.set(val);
+            },
+        )
+    }
+
+    /// Unregisters a slot by `(component_path, signal_name)`.
+    pub fn unregister(&mut self, component_path: &str, signal_name: &str) -> bool {
+        self.slots
+            .remove(&signal_slot_id(component_path, signal_name))
+            .is_some()
+    }
+
+    /// Returns `(slot_id, component_path, signal_name)` for all registered slots.
+    pub fn registered_slots(&self) -> Vec<(u64, &str, &str)> {
+        self.slots
+            .values()
+            .map(|s| (s.slot_id, s.component_path.as_str(), s.signal_name.as_str()))
+            .collect()
+    }
+
+    /// Captures all currently registered signals into a deterministic [`SignalTableSnapshot`].
+    pub fn capture(&self) -> SignalTableSnapshot {
+        let mut snap = SignalTableSnapshot::new(self.schema_version);
+        for (&slot_id, entry) in &self.slots {
+            snap.set(slot_id, (entry.read)());
+        }
+        snap
+    }
+
+    /// Encodes a full `NVE_SIG1` snapshot of all registered signals for `MmapSnapshot.state_bytes()`.
+    pub fn encode_full(&self) -> Result<Vec<u8>, SignalArchiveError> {
+        self.capture().encode()
+    }
+
+    /// Captures current signal state and marks it as the clean baseline for future incremental diffs.
+    pub fn mark_baseline(&mut self) -> SignalTableSnapshot {
+        let current = self.capture();
+        self.last_persisted = current.clone();
+        current
+    }
+
+    /// Computes dirty slots since the last persisted baseline and returns `Some(delta_bytes)` if
+    /// any registered slot changed, advancing the baseline.
+    pub fn encode_delta_since_last(&mut self) -> Result<Option<Vec<u8>>, SignalArchiveError> {
+        let current = self.capture();
+        let delta = current.diff_since(&self.last_persisted);
+        if delta.is_empty() {
+            return Ok(None);
+        }
+        let encoded = delta.encode()?;
+        self.last_persisted = current;
+        Ok(Some(encoded))
+    }
+
+    /// Appends an incremental dirty-slot delta to `wal` when any signal changed since last persist.
+    ///
+    /// Returns `Ok(Some(seq))` if a delta record was appended, or `Ok(None)` if clean.
+    pub fn persist_delta_to_wal(
+        &mut self,
+        wal: &mut SnapshotWal,
+    ) -> Result<Option<u64>, SignalArchiveError> {
+        let current = self.capture();
+        let delta = current.diff_since(&self.last_persisted);
+        if delta.is_empty() {
+            return Ok(None);
+        }
+        let encoded = delta.encode()?;
+        let seq = wal.append_delta(WalRecordKind::StateDelta, &encoded)?;
+        self.last_persisted = current;
+        Ok(Some(seq))
+    }
+
+    /// Captures the full signal table, atomically compacts Frame-0 + state into `snapshot_path`,
+    /// rotates `wal_path`, and refreshes the incremental diff baseline.
+    pub fn compact_to_snapshot(
+        &mut self,
+        snapshot_path: impl AsRef<Path>,
+        wal_path: impl AsRef<Path>,
+        frame0_bytes: &[u8],
+        metadata_bytes: &[u8],
+    ) -> Result<(SnapshotHeader, SnapshotWal), SignalArchiveError> {
+        let current = self.capture();
+        let state_bytes = current.encode()?;
+        let res = SnapshotWal::compact_into_snapshot(
+            snapshot_path,
+            wal_path,
+            self.schema_version,
+            frame0_bytes,
+            &state_bytes,
+            metadata_bytes,
+        )?;
+        self.last_persisted = current;
+        Ok(res)
+    }
+
+    /// Hydrates all matching registered signals from `table` with strict schema-evolution safety:
+    /// unknown/removed slots and re-typed slots are safely skipped instead of failing boot.
+    pub fn hydrate_from_table(&mut self, table: &SignalTableSnapshot) -> HydrationReport {
+        let mut report = HydrationReport {
+            source_schema_version: table.schema_version(),
+            ..Default::default()
+        };
+        let mut seen_registered = HashSet::with_capacity(self.slots.len());
+
+        for (slot_id, value) in table.iter() {
+            if let Some(entry) = self.slots.get(&slot_id) {
+                seen_registered.insert(slot_id);
+                if (entry.write)(value) {
+                    report.hydrated_slots += 1;
+                } else {
+                    report.skipped_type_mismatches += 1;
+                }
+            } else {
+                report.skipped_unknown_slots += 1;
+            }
+        }
+
+        report.untouched_new_slots = self.slots.len().saturating_sub(seen_registered.len());
+        self.last_persisted = self.capture();
+        report
+    }
+
+    /// Decodes a full `NVE_SIG1` byte slice and hydrates matching registered signals.
+    pub fn hydrate_from_bytes(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<HydrationReport, SignalArchiveError> {
+        let table = SignalTableSnapshot::decode(bytes)?;
+        Ok(self.hydrate_from_table(&table))
+    }
+
+    /// Loads state from an [`MmapSnapshot`], folds any companion [`SnapshotWal`] state deltas on
+    /// top, and hydrates all matching registered signals deterministically.
+    pub fn hydrate_from_snapshot_and_wal(
+        &mut self,
+        snapshot: &MmapSnapshot,
+        wal: Option<&SnapshotWal>,
+    ) -> Result<HydrationReport, SignalArchiveError> {
+        let table = SignalArchive::open_from_snapshot_and_wal(snapshot, wal)?;
+        Ok(self.hydrate_from_table(&table))
+    }
+}

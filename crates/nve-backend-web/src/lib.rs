@@ -5,6 +5,7 @@
 //! - On native targets: runs `WebDomMirror` so CSS translation, event masks, incremental patches,
 //!   and DOM mutations are unit-tested headlessly in `cargo test` in milliseconds.
 
+use core::fmt::Write as _;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -37,12 +38,33 @@ pub fn component_to_html_tag(kind: ComponentKind) -> &'static str {
     }
 }
 
-pub fn layout_to_css(l: &LayoutProps) -> String {
-    let dim = |d: Dimension| match d {
-        Dimension::Auto => "auto".to_string(),
-        Dimension::Points(v) => format!("{v}px"),
-        Dimension::Percent(v) => format!("{v}%"),
-    };
+#[inline]
+fn write_dim(d: Dimension, out: &mut String) {
+    match d {
+        Dimension::Auto => out.push_str("auto"),
+        Dimension::Points(v) => {
+            let _ = write!(out, "{v}px");
+        }
+        Dimension::Percent(v) => {
+            let _ = write!(out, "{v}%");
+        }
+    }
+}
+
+#[inline]
+fn write_rgba(c: ColorRgba, out: &mut String) {
+    let _ = write!(
+        out,
+        "rgba({},{},{},{:.3})",
+        c.r,
+        c.g,
+        c.b,
+        c.a as f32 / 255.0
+    );
+}
+
+/// Appends Flexbox CSS declarations for `l` directly into `out` with zero intermediate allocations.
+pub fn layout_to_css_into(l: &LayoutProps, out: &mut String) {
     let dir = match l.flex_direction {
         FlexDirection::Column => "column",
         FlexDirection::Row => "row",
@@ -64,13 +86,24 @@ pub fn layout_to_css(l: &LayoutProps) -> String {
         FlexAlign::FlexEnd => "flex-end",
         FlexAlign::Baseline => "baseline",
     };
-    let mut css = format!(
-        "display:flex;box-sizing:border-box;flex-direction:{dir};justify-content:{justify};align-items:{align};flex-grow:{};flex-shrink:{};gap:{}px;width:{};height:{};padding:{}px {}px {}px {}px;margin:{}px {}px {}px {}px;",
-        l.flex_grow,
-        l.flex_shrink,
-        l.gap,
-        dim(l.width),
-        dim(l.height),
+
+    out.push_str("display:flex;box-sizing:border-box;flex-direction:");
+    out.push_str(dir);
+    out.push_str(";justify-content:");
+    out.push_str(justify);
+    out.push_str(";align-items:");
+    out.push_str(align);
+    let _ = write!(
+        out,
+        ";flex-grow:{};flex-shrink:{};gap:{}px;width:",
+        l.flex_grow, l.flex_shrink, l.gap
+    );
+    write_dim(l.width, out);
+    out.push_str(";height:");
+    write_dim(l.height, out);
+    let _ = write!(
+        out,
+        ";padding:{}px {}px {}px {}px;margin:{}px {}px {}px {}px;",
         l.padding.top,
         l.padding.right,
         l.padding.bottom,
@@ -80,34 +113,54 @@ pub fn layout_to_css(l: &LayoutProps) -> String {
         l.margin.bottom,
         l.margin.left,
     );
+
     if l.min_width != Dimension::Auto {
-        css.push_str(&format!("min-width:{};", dim(l.min_width)));
+        out.push_str("min-width:");
+        write_dim(l.min_width, out);
+        out.push(';');
     }
     if l.min_height != Dimension::Auto {
-        css.push_str(&format!("min-height:{};", dim(l.min_height)));
+        out.push_str("min-height:");
+        write_dim(l.min_height, out);
+        out.push(';');
     }
     if l.max_width != Dimension::Auto {
-        css.push_str(&format!("max-width:{};", dim(l.max_width)));
+        out.push_str("max-width:");
+        write_dim(l.max_width, out);
+        out.push(';');
     }
     if l.max_height != Dimension::Auto {
-        css.push_str(&format!("max-height:{};", dim(l.max_height)));
+        out.push_str("max-height:");
+        write_dim(l.max_height, out);
+        out.push(';');
     }
-    css
+}
+
+pub fn layout_to_css(l: &LayoutProps) -> String {
+    let mut out = String::with_capacity(256);
+    layout_to_css_into(l, &mut out);
+    out
+}
+
+/// Appends visual style CSS declarations for `s` directly into `out` with zero intermediate allocations.
+pub fn style_to_css_into(s: &StyleProps, out: &mut String) {
+    out.push_str("background-color:");
+    write_rgba(s.background, out);
+    out.push_str(";color:");
+    write_rgba(s.text_color, out);
+    let _ = write!(out, ";border:{}px solid ", s.border_width);
+    write_rgba(s.border_color, out);
+    let _ = write!(
+        out,
+        ";border-radius:{}px;opacity:{};font-size:{}px;z-index:{};",
+        s.border_radius, s.opacity, s.font_size, s.z_index,
+    );
 }
 
 pub fn style_to_css(s: &StyleProps) -> String {
-    let rgba = |c: ColorRgba| format!("rgba({},{},{},{:.3})", c.r, c.g, c.b, c.a as f32 / 255.0);
-    format!(
-        "background-color:{};color:{};border:{}px solid {};border-radius:{}px;opacity:{};font-size:{}px;z-index:{};",
-        rgba(s.background),
-        rgba(s.text_color),
-        s.border_width,
-        rgba(s.border_color),
-        s.border_radius,
-        s.opacity,
-        s.font_size,
-        s.z_index,
-    )
+    let mut out = String::with_capacity(192);
+    style_to_css_into(s, &mut out);
+    out
 }
 
 fn kind_default_css(kind: ComponentKind, event_mask: u64) -> &'static str {
@@ -124,6 +177,8 @@ fn kind_default_css(kind: ComponentKind, event_mask: u64) -> &'static str {
 pub struct MirrorElement {
     pub kind: ComponentKind,
     pub tag: &'static str,
+    pub layout: LayoutProps,
+    pub style: StyleProps,
     pub layout_css: String,
     pub style_css: String,
     pub patch_css: String,
@@ -138,6 +193,8 @@ impl MirrorElement {
         Self {
             kind,
             tag: component_to_html_tag(kind),
+            layout: LayoutProps::default(),
+            style: StyleProps::default(),
             layout_css: String::new(),
             style_css: String::new(),
             patch_css: String::new(),
@@ -148,16 +205,22 @@ impl MirrorElement {
         }
     }
 
+    /// Appends full inline `style` text into `out` without allocating an intermediate `String`.
+    #[inline]
+    pub fn combined_css_into(&self, out: &mut String) {
+        out.push_str(kind_default_css(self.kind, self.event_mask));
+        out.push_str(&self.layout_css);
+        out.push_str(&self.style_css);
+        out.push_str(&self.patch_css);
+    }
+
     /// Full inline `style` text combining kind defaults, typed layout, typed style, and Tier-1 patches.
     pub fn combined_css(&self) -> String {
         let base = kind_default_css(self.kind, self.event_mask);
         let mut out = String::with_capacity(
             base.len() + self.layout_css.len() + self.style_css.len() + self.patch_css.len(),
         );
-        out.push_str(base);
-        out.push_str(&self.layout_css);
-        out.push_str(&self.style_css);
-        out.push_str(&self.patch_css);
+        self.combined_css_into(&mut out);
         out
     }
 }
@@ -175,6 +238,8 @@ pub struct WebBackend {
     nodes: HashMap<NodeId, MirrorElement>,
     events: Rc<RefCell<Vec<NativeEvent>>>,
     on_event: Rc<RefCell<Option<RenderCallback>>>,
+    #[cfg(target_arch = "wasm32")]
+    css_scratch: String,
     #[cfg(target_arch = "wasm32")]
     dom_nodes: HashMap<NodeId, web_sys::Element>,
     #[cfg(target_arch = "wasm32")]
@@ -197,6 +262,8 @@ impl WebBackend {
             events: Rc::new(RefCell::new(Vec::new())),
             on_event: Rc::new(RefCell::new(None)),
             #[cfg(target_arch = "wasm32")]
+            css_scratch: String::with_capacity(512),
+            #[cfg(target_arch = "wasm32")]
             dom_nodes: HashMap::new(),
             #[cfg(target_arch = "wasm32")]
             listeners: HashMap::new(),
@@ -208,11 +275,14 @@ impl WebBackend {
     pub fn mount_into(container: web_sys::Element) -> Self {
         let mut backend = Self::new();
         container.set_text_content(None);
-        let _ = container.set_attribute("data-nve-id", &ROOT_NODE_ID.to_string());
+        backend.css_scratch.clear();
+        let _ = write!(&mut backend.css_scratch, "{ROOT_NODE_ID}");
+        let _ = container.set_attribute("data-nve-id", &backend.css_scratch);
         let root_css =
             "display:flex;flex-direction:column;box-sizing:border-box;width:100%;height:100%;";
         if let Some(root) = backend.nodes.get_mut(&ROOT_NODE_ID) {
-            root.layout_css = root_css.to_string();
+            root.layout_css.clear();
+            root.layout_css.push_str(root_css);
         }
         if let Some(html_el) = container.dyn_ref::<web_sys::HtmlElement>() {
             html_el.style().set_css_text(root_css);
@@ -250,6 +320,11 @@ impl WebBackend {
         self.nodes.get(&node_id)
     }
 
+    /// Iterates over every live `(NodeId, &MirrorElement)` currently mounted in the DOM mirror.
+    pub fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &MirrorElement)> {
+        self.nodes.iter().map(|(&id, el)| (id, el))
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -272,7 +347,7 @@ impl WebBackend {
         let mut mutations = 0u32;
 
         if !attr_updates.is_empty() {
-            let mut css_fragment = String::new();
+            let mut css_fragment = String::with_capacity(attr_updates.len() * 32);
             for (k, v) in attr_updates {
                 if k == "style" {
                     css_fragment.push_str(v.trim());
@@ -280,7 +355,7 @@ impl WebBackend {
                         css_fragment.push(';');
                     }
                 } else {
-                    css_fragment.push_str(&format!("{k}:{v};"));
+                    let _ = write!(&mut css_fragment, "{k}:{v};");
                 }
             }
             for &nid in &sorted_ids {
@@ -320,24 +395,33 @@ impl WebBackend {
         mutations
     }
 
-    pub fn render_html(&self) -> String {
-        self.fmt_html(ROOT_NODE_ID)
-    }
-
-    fn fmt_html(&self, id: NodeId) -> String {
+    /// Serializes the DOM mirror subtree rooted at `id` directly into `out` with zero intermediate allocations.
+    pub fn fmt_html_into(&self, id: NodeId, out: &mut String) {
         let Some(el) = self.nodes.get(&id) else {
-            return String::new();
+            return;
         };
-        let css = el.combined_css();
-        let mut s = format!("<{} data-nve-id=\"{}\" style=\"{}\">", el.tag, id, css);
+        out.push('<');
+        out.push_str(el.tag);
+        out.push_str(" data-nve-id=\"");
+        let _ = write!(out, "{id}");
+        out.push_str("\" style=\"");
+        el.combined_css_into(out);
+        out.push_str("\">");
         if let Some(t) = &el.text {
-            s.push_str(t);
+            out.push_str(t);
         }
         for &child in &el.children {
-            s.push_str(&self.fmt_html(child));
+            self.fmt_html_into(child, out);
         }
-        s.push_str(&format!("</{}>", el.tag));
-        s
+        out.push_str("</");
+        out.push_str(el.tag);
+        out.push('>');
+    }
+
+    pub fn render_html(&self) -> String {
+        let mut out = String::with_capacity(self.nodes.len().saturating_mul(384).max(64));
+        self.fmt_html_into(ROOT_NODE_ID, &mut out);
+        out
     }
 
     fn apply_text_mutation(&mut self, node_id: NodeId, text: &str) {
@@ -348,7 +432,13 @@ impl WebBackend {
             .is_some_and(|n| n.kind == ComponentKind::TextInput);
 
         if let Some(el) = self.nodes.get_mut(&node_id) {
-            el.text = Some(text.to_owned());
+            match &mut el.text {
+                Some(existing) => {
+                    existing.clear();
+                    existing.push_str(text);
+                }
+                None => el.text = Some(text.to_owned()),
+            }
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -366,7 +456,7 @@ impl WebBackend {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn sync_dom_style(&self, node_id: NodeId) {
+    fn sync_dom_style(&mut self, node_id: NodeId) {
         let Some(mirror) = self.nodes.get(&node_id) else {
             return;
         };
@@ -374,12 +464,14 @@ impl WebBackend {
             return;
         };
         if let Some(html_el) = dom_el.dyn_ref::<web_sys::HtmlElement>() {
-            html_el.style().set_css_text(&mirror.combined_css());
+            self.css_scratch.clear();
+            mirror.combined_css_into(&mut self.css_scratch);
+            html_el.style().set_css_text(&self.css_scratch);
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn sync_dom_raw_prop(&self, node_id: NodeId, key: &str, value: &RawPropValue) {
+    fn sync_dom_raw_prop(&mut self, node_id: NodeId, key: &str, value: &RawPropValue) {
         let Some(dom_el) = self.dom_nodes.get(&node_id) else {
             return;
         };
@@ -405,10 +497,14 @@ impl WebBackend {
                 let _ = dom_el.set_attribute(key, s);
             }
             RawPropValue::I64(n) => {
-                let _ = dom_el.set_attribute(key, &n.to_string());
+                self.css_scratch.clear();
+                let _ = write!(&mut self.css_scratch, "{n}");
+                let _ = dom_el.set_attribute(key, &self.css_scratch);
             }
             RawPropValue::F64(n) => {
-                let _ = dom_el.set_attribute(key, &n.to_string());
+                self.css_scratch.clear();
+                let _ = write!(&mut self.css_scratch, "{n}");
+                let _ = dom_el.set_attribute(key, &self.css_scratch);
             }
             RawPropValue::Bytes(_) => {}
         }
@@ -575,7 +671,9 @@ impl RenderBackend for WebBackend {
                     #[cfg(target_arch = "wasm32")]
                     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                         if let Ok(el) = doc.create_element(tag) {
-                            let _ = el.set_attribute("data-nve-id", &node_id.to_string());
+                            self.css_scratch.clear();
+                            let _ = write!(&mut self.css_scratch, "{node_id}");
+                            let _ = el.set_attribute("data-nve-id", &self.css_scratch);
                             self.dom_nodes.insert(node_id, el);
                             self.sync_dom_style(node_id);
                         }
@@ -600,9 +698,6 @@ impl RenderBackend for WebBackend {
                     parent_id,
                     children,
                 } => {
-                    if let Some(p) = self.nodes.get_mut(&parent_id) {
-                        p.children = children.clone();
-                    }
                     #[cfg(target_arch = "wasm32")]
                     if let Some(parent_el) = self.dom_nodes.get(&parent_id) {
                         parent_el.set_text_content(None);
@@ -612,6 +707,9 @@ impl RenderBackend for WebBackend {
                             }
                         }
                     }
+                    if let Some(p) = self.nodes.get_mut(&parent_id) {
+                        p.children = children;
+                    }
                     mutations += 1;
                 }
                 Command::SetText { node_id, text } => {
@@ -619,18 +717,20 @@ impl RenderBackend for WebBackend {
                     mutations += 1;
                 }
                 Command::SetLayout { node_id, layout } => {
-                    let css = layout_to_css(&layout);
                     if let Some(el) = self.nodes.get_mut(&node_id) {
-                        el.layout_css = css;
+                        el.layout = layout;
+                        el.layout_css.clear();
+                        layout_to_css_into(&layout, &mut el.layout_css);
                     }
                     #[cfg(target_arch = "wasm32")]
                     self.sync_dom_style(node_id);
                     mutations += 1;
                 }
                 Command::SetStyle { node_id, style } => {
-                    let css = style_to_css(&style);
                     if let Some(el) = self.nodes.get_mut(&node_id) {
-                        el.style_css = css;
+                        el.style = style;
+                        el.style_css.clear();
+                        style_to_css_into(&style, &mut el.style_css);
                     }
                     #[cfg(target_arch = "wasm32")]
                     self.sync_dom_style(node_id);
@@ -641,11 +741,11 @@ impl RenderBackend for WebBackend {
                     key,
                     value,
                 } => {
-                    if let Some(el) = self.nodes.get_mut(&node_id) {
-                        el.raw_props.insert(key.clone(), value.clone());
-                    }
                     #[cfg(target_arch = "wasm32")]
                     self.sync_dom_raw_prop(node_id, &key, &value);
+                    if let Some(el) = self.nodes.get_mut(&node_id) {
+                        el.raw_props.insert(key, value);
+                    }
                     mutations += 1;
                 }
                 Command::SetEventMask { node_id, mask } => {
@@ -717,6 +817,58 @@ mod tests {
         let html = web.render_html();
         assert!(html.contains("<button data-nve-id=\"2\""));
         assert!(html.contains("Click</button>"));
+
+        // Reusing a scratch String via `fmt_html_into` matches `render_html` identically.
+        let mut scratch = String::with_capacity(256);
+        web.fmt_html_into(ROOT_NODE_ID, &mut scratch);
+        assert_eq!(scratch, html);
+    }
+
+    #[test]
+    fn css_into_writers_match_wrappers_and_reuse_buffers() {
+        let layout = LayoutProps {
+            width: Dimension::Percent(100.0),
+            height: Dimension::Points(64.0),
+            min_width: Dimension::Points(120.0),
+            min_height: Dimension::Points(32.0),
+            max_width: Dimension::Points(480.0),
+            max_height: Dimension::Percent(90.0),
+            flex_direction: FlexDirection::RowReverse,
+            justify_content: FlexJustify::SpaceBetween,
+            align_items: FlexAlign::Baseline,
+            flex_grow: 1.0,
+            flex_shrink: 0.0,
+            gap: 8.0,
+            padding: EdgeInsets::symmetric(10.0, 14.0),
+            margin: EdgeInsets::all(4.0),
+        };
+        let style = StyleProps {
+            background: ColorRgba::rgba(17, 24, 39, 128),
+            text_color: ColorRgba::WHITE,
+            border_color: ColorRgba::rgb(56, 189, 248),
+            border_width: 2.0,
+            border_radius: 12.0,
+            opacity: 0.9,
+            font_size: 18.0,
+            z_index: 5,
+        };
+
+        let mut buf = String::with_capacity(512);
+        layout_to_css_into(&layout, &mut buf);
+        assert_eq!(buf, layout_to_css(&layout));
+        assert!(buf.contains("min-width:120px;"));
+        assert!(buf.contains("min-height:32px;"));
+        assert!(buf.contains("max-width:480px;"));
+        assert!(buf.contains("max-height:90%;"));
+
+        let cap_before = buf.capacity();
+        buf.clear();
+        style_to_css_into(&style, &mut buf);
+        assert_eq!(buf, style_to_css(&style));
+        assert_eq!(buf.capacity(), cap_before);
+        assert!(buf.contains("background-color:rgba(17,24,39,0.502);"));
+        assert!(buf.contains("border:2px solid rgba(56,189,248,1.000);"));
+        assert!(buf.contains("z-index:5;"));
     }
 
     #[test]
