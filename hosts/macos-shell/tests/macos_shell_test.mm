@@ -2051,24 +2051,28 @@ int main() {
         }
         return true;
       };
-      auto read_msg = [&](int fd, std::vector<uint8_t> &out) -> bool {
-        uint8_t hdr[4]{};
-        if (!read_exact(fd, hdr, 4u)) return false;
-        const uint32_t len = static_cast<uint32_t>(hdr[0]) | (static_cast<uint32_t>(hdr[1]) << 8u) |
-                             (static_cast<uint32_t>(hdr[2]) << 16u) |
-                             (static_cast<uint32_t>(hdr[3]) << 24u);
-        out.resize(len);
-        return read_exact(fd, out.data(), len);
+      auto read_frame = [&](int fd, std::vector<uint8_t> &buf, nve::WireFrameView &out) -> bool {
+        uint8_t hdr_bytes[nve::kWireHeaderSize]{};
+        if (!read_exact(fd, hdr_bytes, nve::kWireHeaderSize)) return false;
+        nve::WireHeader hdr{};
+        if (!nve::wire_v2::decode_header(hdr_bytes, hdr)) return false;
+        buf.resize(hdr.total_wire_len());
+        std::memcpy(buf.data(), hdr_bytes, nve::kWireHeaderSize);
+        if (buf.size() > nve::kWireHeaderSize &&
+            !read_exact(fd, buf.data() + nve::kWireHeaderSize,
+                        buf.size() - nve::kWireHeaderSize)) {
+          return false;
+        }
+        return nve::wire_v2::decode_frame(buf, out);
       };
-      auto write_msg = [](int fd, std::span<const uint8_t> p) -> bool {
-        uint8_t hdr[4]{
-            static_cast<uint8_t>(p.size() & 0xFFu),
-            static_cast<uint8_t>((p.size() >> 8u) & 0xFFu),
-            static_cast<uint8_t>((p.size() >> 16u) & 0xFFu),
-            static_cast<uint8_t>((p.size() >> 24u) & 0xFFu),
-        };
-        return ::send(fd, hdr, 4u, 0) == 4 &&
-               ::send(fd, p.data(), p.size(), 0) == static_cast<ssize_t>(p.size());
+      auto write_all = [](int fd, std::span<const uint8_t> p) -> bool {
+        size_t off = 0;
+        while (off < p.size()) {
+          const ssize_t n = ::send(fd, p.data() + off, p.size() - off, 0);
+          if (n <= 0) return false;
+          off += static_cast<size_t>(n);
+        }
+        return true;
       };
 
       std::atomic<bool> saw_press{false};
@@ -2076,45 +2080,31 @@ int main() {
         int cfd = ::accept(lfd, nullptr, nullptr);
         assert(cfd >= 0);
         std::vector<uint8_t> msg;
-        assert(read_msg(cfd, msg));
-        nve::TransportEnvelopeView env{};
-        assert(nve::pair_wire::parse_envelope(msg, env) &&
-               env.kind == nve::TransportMsgKind::Hello);
-        nve::HelloPayload hp{};
-        assert(nve::pair_wire::decode_hello_payload(env.payload, hp));
-        const uint64_t sn = 0xAABBCCDDEEFF0011ULL;
-        const uint32_t sid = nve::pair_wire::derive_session_id(token, 1u, hp.client_nonce, sn);
-        nve::HelloAckPayload ack{};
-        ack.schema_version = 1u;
-        ack.server_max_window = 64u;
-        ack.server_nonce = sn;
-        const auto ack_b = nve::pair_wire::encode_hello_ack_payload(ack);
-        assert(write_msg(
-            cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::HelloAck, sid, ack_b)));
+        nve::WireFrameView v{};
+        assert(read_frame(cfd, msg, v) && v.header.kind == nve::WireKind::Hello);
+        nve::WireHello hp{};
+        assert(nve::wire_v2::decode_hello(v.payload, hp));
+        assert(nve::wire_v2::constant_time_eq(hp.bearer_token, token));
+        const auto ack_b = nve::wire_v2::encode_hello_ack({77u, 2u, 0x0Fu});
+        assert(write_all(cfd, nve::wire_v2::encode_frame(
+                                  nve::WireChannel::Control, nve::WireKind::HelloAck, 1u, ack_b)));
 
-        const auto kf1 = nve::pair_wire::encode_nvd_packet(
-            nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, f1);
-        assert(write_msg(
-            cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, kf1)));
+        assert(write_all(cfd, nve::wire_v2::encode_frame(
+                                  nve::WireChannel::UiScene, nve::WireKind::CommandDelta, 1u, f1)));
+        assert(write_all(cfd, nve::wire_v2::encode_frame(
+                                  nve::WireChannel::UiScene, nve::WireKind::CommandDelta, 2u, f2)));
 
-        const auto d2 = nve::pair_wire::encode_command_op_delta(f1, f2);
-        assert(d2.has_value());
-        const auto p2 = nve::pair_wire::encode_nvd_packet(
-            nve::DeltaPacketKind::CommandOpDelta, 0u, 2u, 1u, 0u, *d2);
-        assert(write_msg(
-            cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, p2)));
-
-        while (read_msg(cfd, msg)) {
-          nve::TransportEnvelopeView in{};
-          if (nve::pair_wire::parse_envelope(msg, in) && in.session_id == sid &&
-              in.kind == nve::TransportMsgKind::InputEvents) {
+        while (read_frame(cfd, msg, v)) {
+          if (v.header.kind == nve::WireKind::EventBatch) {
             std::vector<nve::DecodedEvent> dec;
             if (nve::decode_event_ring(
-                    NveBufferSlice{in.payload.data(), in.payload.size()}, dec) &&
+                    NveBufferSlice{v.payload.data(), v.payload.size()}, dec) &&
                 dec.size() == 1u && dec[0].kind == nve::EventKind::Press && dec[0].node_id == 4u) {
               saw_press.store(true);
               break;
             }
+          } else if (v.header.kind == nve::WireKind::Bye) {
+            break;
           }
         }
         ::close(cfd);

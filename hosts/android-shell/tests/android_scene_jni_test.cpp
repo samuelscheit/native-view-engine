@@ -796,22 +796,23 @@ bool jni_pair_recv_exact(int fd, uint8_t* p, size_t n, int timeout_ms = 2000) {
 }
 
 bool jni_pair_write_tcp(int fd, std::span<const uint8_t> payload) {
-  uint8_t hdr[4]{
-      static_cast<uint8_t>(payload.size() & 0xFFu),
-      static_cast<uint8_t>((payload.size() >> 8u) & 0xFFu),
-      static_cast<uint8_t>((payload.size() >> 16u) & 0xFFu),
-      static_cast<uint8_t>((payload.size() >> 24u) & 0xFFu),
-  };
-  return jni_pair_send_all(fd, hdr, 4u) && jni_pair_send_all(fd, payload.data(), payload.size());
+  return jni_pair_send_all(fd, payload.data(), payload.size());
 }
 
-bool jni_pair_read_tcp(int fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
-  uint8_t hdr[4]{};
-  if (!jni_pair_recv_exact(fd, hdr, 4u, timeout_ms)) return false;
-  const uint32_t len = read_u32_le(hdr);
-  if (len == 0u || len > 4u * 1024u * 1024u) return false;
-  out.resize(len);
-  return jni_pair_recv_exact(fd, out.data(), len, timeout_ms);
+bool jni_pair_read_frame(
+    int fd, std::vector<uint8_t>& buf, nve::WireFrameView& out, int timeout_ms = 2000) {
+  uint8_t hdr_bytes[nve::kWireHeaderSize]{};
+  if (!jni_pair_recv_exact(fd, hdr_bytes, nve::kWireHeaderSize, timeout_ms)) return false;
+  nve::WireHeader hdr{};
+  if (!nve::wire_v2::decode_header(hdr_bytes, hdr)) return false;
+  buf.resize(hdr.total_wire_len());
+  std::memcpy(buf.data(), hdr_bytes, nve::kWireHeaderSize);
+  if (buf.size() > nve::kWireHeaderSize &&
+      !jni_pair_recv_exact(
+          fd, buf.data() + nve::kWireHeaderSize, buf.size() - nve::kWireHeaderSize, timeout_ms)) {
+    return false;
+  }
+  return nve::wire_v2::decode_frame(buf, out);
 }
 
 std::vector<uint8_t> build_android_pair_frame(uint64_t frame_id, const std::string& label_text) {
@@ -937,7 +938,6 @@ void test_paired_thin_client_jni_loopback() {
   vm_state.callback_env.functions = &vm_state.callback_table;
 
   const std::string token = "nve-android-pair-token";
-  const auto expected_proof = nve::pair_wire::derive_token_proof(token, 1u);
   const auto frame1 = build_android_pair_frame(1u, "Android Paired 1");
   const auto frame2 = build_android_pair_frame(2u, "Android Paired 2");
 
@@ -964,60 +964,52 @@ void test_paired_thin_client_jni_loopback() {
       int cfd = ::accept(listen_fd, nullptr, nullptr);
       NVE_CHECK(cfd >= 0);
       std::vector<uint8_t> msg;
-      NVE_CHECK(jni_pair_read_tcp(cfd, msg));
-      const auto rej =
-          nve::pair_wire::encode_reject_envelope(nve::PairRejectReason::InvalidPairingToken, 1u);
+      nve::WireFrameView v{};
+      NVE_CHECK(jni_pair_read_frame(cfd, msg, v) && v.header.kind == nve::WireKind::Hello);
+      const auto rej = nve::wire_v2::encode_frame(
+          nve::WireChannel::Control,
+          nve::WireKind::Reject,
+          1u,
+          nve::wire_v2::encode_reject(nve::WireRejectReason::Unauthorized, "bad bearer token"));
       NVE_CHECK(jni_pair_write_tcp(cfd, rej));
       ::close(cfd);
     }
 
-    // 2. Accept valid token, send Keyframe + CommandOpDelta, collect 3 upstream input events.
+    // 2. Accept valid token, send CommandDelta frames, collect 3 upstream EventBatch events.
     {
       int cfd = ::accept(listen_fd, nullptr, nullptr);
       NVE_CHECK(cfd >= 0);
       std::vector<uint8_t> msg;
-      NVE_CHECK(jni_pair_read_tcp(cfd, msg));
-      nve::TransportEnvelopeView env_view{};
-      NVE_CHECK(nve::pair_wire::parse_envelope(msg, env_view) &&
-                env_view.kind == nve::TransportMsgKind::Hello);
-      nve::HelloPayload hp{};
-      NVE_CHECK(nve::pair_wire::decode_hello_payload(env_view.payload, hp));
-      NVE_CHECK(nve::pair_wire::ct_eq_16(hp.token_proof, expected_proof));
+      nve::WireFrameView v{};
+      NVE_CHECK(jni_pair_read_frame(cfd, msg, v) && v.header.kind == nve::WireKind::Hello);
+      nve::WireHello hp{};
+      NVE_CHECK(nve::wire_v2::decode_hello(v.payload, hp));
+      NVE_CHECK(nve::wire_v2::constant_time_eq(hp.bearer_token, token));
 
-      const uint64_t sn = 0xABCDEF0123456789ULL;
-      const uint32_t sid = nve::pair_wire::derive_session_id(token, 1u, hp.client_nonce, sn);
-      nve::HelloAckPayload ack{};
-      ack.schema_version = 1u;
-      ack.server_max_window = 64u;
-      ack.server_nonce = sn;
+      const auto ack_b = nve::wire_v2::encode_hello_ack({77u, 2u, 0x0Fu});
       NVE_CHECK(jni_pair_write_tcp(
           cfd,
-          nve::pair_wire::encode_envelope(
-              nve::TransportMsgKind::HelloAck, sid, nve::pair_wire::encode_hello_ack_payload(ack))));
+          nve::wire_v2::encode_frame(
+              nve::WireChannel::Control, nve::WireKind::HelloAck, 1u, ack_b)));
 
-      const auto kf1 = nve::pair_wire::encode_nvd_packet(
-          nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, frame1);
       NVE_CHECK(jni_pair_write_tcp(
-          cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, kf1)));
-
-      const auto delta2 = nve::pair_wire::encode_command_op_delta(frame1, frame2);
-      NVE_CHECK(delta2.has_value());
-      const auto pkt2 = nve::pair_wire::encode_nvd_packet(
-          nve::DeltaPacketKind::CommandOpDelta, 0u, 2u, 1u, 0u, *delta2);
+          cfd,
+          nve::wire_v2::encode_frame(
+              nve::WireChannel::UiScene, nve::WireKind::CommandDelta, 1u, frame1)));
       NVE_CHECK(jni_pair_write_tcp(
-          cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, pkt2)));
+          cfd,
+          nve::wire_v2::encode_frame(
+              nve::WireChannel::UiScene, nve::WireKind::CommandDelta, 2u, frame2)));
 
-      while (jni_pair_read_tcp(cfd, msg, 3000)) {
-        nve::TransportEnvelopeView in{};
-        if (!nve::pair_wire::parse_envelope(msg, in) || in.session_id != sid) continue;
-        if (in.kind == nve::TransportMsgKind::InputEvents) {
+      while (jni_pair_read_frame(cfd, msg, v, 3000)) {
+        if (v.header.kind == nve::WireKind::EventBatch) {
           std::vector<nve::DecodedEvent> batch;
-          if (nve::decode_event_ring(NveBufferSlice{in.payload.data(), in.payload.size()}, batch)) {
+          if (nve::decode_event_ring(NveBufferSlice{v.payload.data(), v.payload.size()}, batch)) {
             std::lock_guard<std::mutex> lock(rx_mtx);
             rx_events.insert(rx_events.end(), batch.begin(), batch.end());
             if (rx_events.size() >= 3u) break;
           }
-        } else if (in.kind == nve::TransportMsgKind::Bye) {
+        } else if (v.header.kind == nve::WireKind::Bye) {
           break;
         }
       }

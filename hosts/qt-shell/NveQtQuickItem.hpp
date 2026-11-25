@@ -95,7 +95,7 @@ class NveQtQuickItem : public QQuickItem {
 
   /// Connect in paired thin-client mode (zero local cdylib required). Incoming `NVD1` frames wake
   /// the Qt GUI thread via `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`; UI input events
-  /// stream upstream as `TransportMsgKind::InputEvents = 11`.
+  /// stream upstream as `WireKind::EventBatch`.
   Q_INVOKABLE bool connectPaired(
       const QString& endpoint,
       const QString& token,

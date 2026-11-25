@@ -154,7 +154,7 @@ class NveGtkHost {
 
   /// Connect in paired thin-client mode (zero local cdylib required). Incoming `NVD1` frames wake
   /// the GLib main loop via `g_main_context_invoke`; UI input events stream upstream as
-  /// `TransportMsgKind::InputEvents = 11`.
+  /// `WireKind::EventBatch`.
   bool connect_paired_endpoint(
       std::string_view endpoint,
       std::string_view token,
