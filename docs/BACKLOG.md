@@ -19,8 +19,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (Web TV D-Pad Remaining)**
   - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad), Phase 2 (standalone `packages/modules/tv` + real `tvOS`/`watchOS`/`visionOS`/`iOS` SDK builds + static `NveInterfaceResolver`), and Phase 3 CLI (`nve build --target tvos/visionos/watchos` + `.xcframework` recipes) are landed; remaining work is Web TV D-Pad key handling in `nve-backend-web`.
 
-- [ ] **Collapse 4 Persistence Formats → 2 (`NVERELOC` + `MmapOffsetArena`), Native Instant-Boot & Hot-Path `FrameArena`**
-  - `XXH64`, `FrameArena`, and crash-atomic double-buffered `MmapOffsetArena` are now production primitives in `nve-engine` (`023d77a`); remaining work is promoting `NVERELOC` into `nve-engine` + `cxx/nve-fabric-bridge`, deleting legacy `NVE_SNAP` & `NVE_WAL`, adding generic `InstantBootApp` + `nve prerender` (`frame0.nvereloc` cold boot + `MmapOffsetArena` per-user state restore), and adopting `FrameArena` on hot `nve-dioxus`/`nve-engine` per-frame allocation paths.
+- [ ] **Adopt `FrameArena` on Hot `nve-dioxus` / `nve-engine` Per-Frame Allocation Paths**
+  - `XXH64`, `FrameArena`, crash-atomic `MmapOffsetArena` (`023d77a`), 4→2 persistence collapse (`NVERELOC` + `MmapOffsetArena`, deleting `NVE_SNAP`/`NVE_WAL`), and reusable Native Instant-Boot (`nve prerender` + `NativeInstantBootStore`, `2ef5a78`) are landed; remaining work is wiring `FrameArena` bump-reset allocation into hot `nve-dioxus`/`nve-engine` per-frame paths.
 
 ---
 
