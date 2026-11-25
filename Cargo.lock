@@ -1652,6 +1652,7 @@ dependencies = [
 name = "nve-interop"
 version = "0.1.0"
 dependencies = [
+ "libloading 0.9.1",
  "nve-abi",
  "serde",
  "serde_json",
@@ -1681,6 +1682,8 @@ dependencies = [
  "nve-backend-web",
  "nve-dioxus",
  "nve-engine",
+ "nve-interop",
+ "nve-layout-yoga",
  "serde",
  "serde_json",
 ]

@@ -10,7 +10,9 @@ pub mod error;
 pub mod gesture;
 pub mod handoff;
 pub mod layout;
+pub mod plugin_host;
 pub mod surface;
+pub mod sync_delta;
 
 pub use channel::{
     CHANNEL_ID_AUTH, CHANNEL_ID_LOCALE, CHANNEL_ID_NAVIGATION, CHANNEL_ID_THEME, ChannelId,
@@ -31,10 +33,21 @@ pub use layout::{
     BaselineMetrics, IntrinsicSize, LayoutNegotiator, LayoutProposal, LayoutResult,
     MeasurableSurface, SizeConstraints,
 };
+pub use plugin_host::{
+    DEFAULT_PLUGIN_SURFACE_BASE, NvePluginHost, NvePluginSlot, PluginCapabilities, PluginError,
+    PluginId, PluginMetadata, PluginRequirement, PluginSourceKind,
+};
 pub use surface::{
     ColorScheme, EnvironmentOverrides, FrameworkKind, LifecycleState, SafeAreaInsets,
     SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent, SurfaceOrchestrator, SurfaceRecord,
     TeardownRecord, ThemeContext,
+};
+pub use sync_delta::{
+    DEFAULT_SYNC_WINDOW, DELTA_HEADER_SIZE, DeltaPacketHeader, DeltaPacketRef, FLAG_RETRANSMIT,
+    MAX_DECODED_FRAME_BYTES, PacketKind, ReceiveOutcome, SYNC_DELTA_MAGIC, SYNC_DELTA_VERSION,
+    SyncDeltaError, SyncDeltaSession, SyncMetrics, decode_command_op_delta, decode_xor_rle_delta,
+    decode_xor_rle_delta_into, encode_command_op_delta, encode_packet, encode_xor_rle_delta,
+    encode_xor_rle_delta_into, fnv1a_64, fnv1a_64_pair, write_packet_into,
 };
 
 use nve_abi::SurfaceId;

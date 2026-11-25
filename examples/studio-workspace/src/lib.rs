@@ -8,25 +8,57 @@
 pub mod state;
 pub mod theme;
 pub mod ui;
+pub mod ui_stream;
+pub mod ui_studio;
+pub mod virtual_list;
 
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    decode_events, encode_events, FrameId, NveGestureDisposition, NveIntrinsicSize,
-    NveSizeConstraints, SurfaceId,
+    decode_events, encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind,
+    NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
 
 pub use state::{
     AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
-    Priority, StudioConfig, TaskItem, TaskStatus, WorkspaceSnapshot, WorkspaceState, MAX_HISTORY,
+    LayoutEngineMode, Priority, Stream100kState, StudioConfig, TaskItem, TaskStatus,
+    WorkspaceSnapshot, WorkspaceState, MAX_HISTORY, MOBILE_BREAKPOINT_PT,
 };
 pub use ui::StudioWorkspaceApp;
+pub use virtual_list::{
+    FenwickHeightTree, StreamVirtualEngine, VirtualListIndex, VirtualRowMeta, VirtualWindow,
+    DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT,
+};
 
 /// Creates a standalone `DioxusSurface` initialized with default `WorkspaceState`.
 pub fn create_surface(surface_id: SurfaceId) -> DioxusSurface {
     DioxusSurface::new(surface_id, StudioWorkspaceApp)
+}
+
+/// Creates a standalone `DioxusSurface` initialized for a specific viewport size (e.g. `393x852`
+/// mobile portrait or `960x640` desktop) so responsive layout activates on Frame 1.
+pub fn create_surface_for_viewport(
+    surface_id: SurfaceId,
+    width: f32,
+    height: f32,
+) -> DioxusSurface {
+    let mut initial = WorkspaceState::default();
+    initial.set_viewport_size(width, height);
+    create_surface_with_store(surface_id, Arc::new(Mutex::new(initial)))
+}
+
+/// Creates a `DioxusSurface` bound to a caller-supplied shared `WorkspaceState` store.
+pub fn create_surface_with_store(
+    surface_id: SurfaceId,
+    store: Arc<Mutex<WorkspaceState>>,
+) -> DioxusSurface {
+    ui::set_pending_store(store);
+    let mut surface = DioxusSurface::new(surface_id, StudioWorkspaceApp);
+    // Do not force render yet; caller invokes `render_frame(1)` which consumes `PENDING_STORE`.
+    let _ = &mut surface;
+    surface
 }
 
 /// Safe `NveApp` wrapper exported via `nve_get_interface` for native shells & Tier-2 hot-swap.
@@ -35,6 +67,7 @@ pub struct StudioWorkspaceModule {
     store: Arc<Mutex<WorkspaceState>>,
     surface: DioxusSurface,
     mounted: bool,
+    last_reported_layout_engine: LayoutEngineMode,
     last_frame_buf: Vec<u8>,
     last_state_buf: Vec<u8>,
     last_emitted_events_buf: Vec<u8>,
@@ -62,6 +95,7 @@ impl NveApp for StudioWorkspaceModule {
             store,
             surface: create_surface(surface_id),
             mounted: false,
+            last_reported_layout_engine: LayoutEngineMode::Taffy,
             last_frame_buf: Vec::new(),
             last_state_buf: Vec::new(),
             last_emitted_events_buf: Vec::new(),
@@ -86,12 +120,58 @@ impl NveApp for StudioWorkspaceModule {
         let Ok(decoded) = decode_events(encoded_events) else {
             return false;
         };
-        self.surface.dispatch_events(&decoded)
+        let mut handled_host_event = false;
+        for ev in &decoded {
+            match (ev.kind, &ev.payload) {
+                (NativeEventKind::Layout, EventPayload::Layout { width, height, .. })
+                    if ev.node_id == ROOT_NODE_ID && *width > 0.0 =>
+                {
+                    if let Ok(mut guard) = self.store.lock() {
+                        if guard.set_viewport_size(*width, *height) {
+                            handled_host_event = true;
+                        }
+                    }
+                }
+                (NativeEventKind::Scroll, EventPayload::Scroll { y, .. }) => {
+                    if let Ok(mut guard) = self.store.lock() {
+                        if guard.current.active_view == ActiveView::Stream100k {
+                            let target_y = if y.is_finite() && *y >= 0.0 {
+                                *y as u32
+                            } else {
+                                0
+                            };
+                            guard.set_stream_scroll_offset(target_y);
+                            handled_host_event = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if handled_host_event {
+            self.reset_surface_with_current_store();
+        }
+        let handled_ui = self.surface.dispatch_events(&decoded);
+        handled_host_event || handled_ui
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {
-        let w = constraints.max_w.clamp(constraints.min_w.max(640.0), 1280.0);
-        let h = constraints.max_h.clamp(constraints.min_h.max(420.0), 840.0);
+        let min_w = constraints.min_w.max(320.0).min(1280.0);
+        let max_w = if constraints.max_w.is_finite() && constraints.max_w > 0.0 {
+            constraints.max_w.min(1280.0)
+        } else {
+            960.0
+        };
+        let w = if max_w < min_w { max_w } else { max_w.clamp(min_w, 1280.0) };
+
+        let min_h = constraints.min_h.max(240.0).min(840.0);
+        let max_h = if constraints.max_h.is_finite() && constraints.max_h > 0.0 {
+            constraints.max_h.min(840.0)
+        } else {
+            640.0
+        };
+        let h = if max_h < min_h { max_h } else { max_h.clamp(min_h, 840.0) };
+
         NveIntrinsicSize {
             width: w,
             height: h,
@@ -127,11 +207,23 @@ impl NveApp for StudioWorkspaceModule {
                     changed = true;
                 }
             }
+            if let Some(engine) = val.get("layoutEngine").and_then(|v| v.as_str()) {
+                let parsed = match engine.to_ascii_lowercase().as_str() {
+                    "taffy" => Some(LayoutEngineMode::Taffy),
+                    "yoga" => Some(LayoutEngineMode::Yoga),
+                    _ => None,
+                };
+                if let Some(mode) = parsed {
+                    guard.set_layout_engine(mode);
+                    changed = true;
+                }
+            }
             if let Some(view) = val.get("view").and_then(|v| v.as_str()) {
                 let parsed = match view.to_ascii_lowercase().as_str() {
                     "board" => Some(ActiveView::Board),
                     "engineering" => Some(ActiveView::ChannelEngineering),
                     "design" => Some(ActiveView::ChannelDesign),
+                    "stream" | "stream100k" | "100k" => Some(ActiveView::Stream100k),
                     "metrics" => Some(ActiveView::Metrics),
                     _ => None,
                 };
@@ -139,6 +231,21 @@ impl NveApp for StudioWorkspaceModule {
                     guard.select_view(v);
                     changed = true;
                 }
+            }
+            let vp_w = val.get("viewportWidth").and_then(|v| v.as_f64());
+            let vp_h = val.get("viewportHeight").and_then(|v| v.as_f64());
+            if vp_w.is_some() || vp_h.is_some() {
+                let next_w = vp_w.map(|v| v as f32).unwrap_or(guard.current.viewport_width as f32);
+                let next_h = vp_h
+                    .map(|v| v as f32)
+                    .unwrap_or(guard.current.viewport_height as f32);
+                if guard.set_viewport_size(next_w, next_h) {
+                    changed = true;
+                }
+            }
+            if let Some(scroll_y) = val.get("streamScrollY").and_then(|v| v.as_u64()) {
+                guard.set_stream_scroll_offset(scroll_y.min(u32::MAX as u64) as u32);
+                changed = true;
             }
         }
         if changed {
@@ -148,7 +255,27 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn drain_emitted_events(&mut self) -> &[u8] {
-        self.last_emitted_events_buf = encode_events(&[]);
+        let current_engine = self
+            .store
+            .lock()
+            .map(|g| g.current.studio.layout_engine)
+            .unwrap_or(self.last_reported_layout_engine);
+        if current_engine != self.last_reported_layout_engine {
+            self.last_reported_layout_engine = current_engine;
+            let ev = NativeEvent {
+                surface_id: self.surface_id,
+                node_id: ROOT_NODE_ID,
+                timestamp_us: 0,
+                kind: NativeEventKind::Custom,
+                payload: EventPayload::Custom {
+                    name: "layout_engine_changed".into(),
+                    data: current_engine.as_str().as_bytes().to_vec(),
+                },
+            };
+            self.last_emitted_events_buf = encode_events(&[ev]);
+        } else {
+            self.last_emitted_events_buf = encode_events(&[]);
+        }
         &self.last_emitted_events_buf
     }
 

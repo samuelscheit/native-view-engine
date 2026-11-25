@@ -1,6 +1,7 @@
 //! Deterministic state machine, workspace domain model, and bounded time-travel history
 //! for **Aether Workspace** + **NVE Studio**.
 
+use nve_engine::BuiltinLayout;
 use serde::{Deserialize, Serialize};
 
 /// Maximum number of retained deterministic snapshots in the time-travel ring.
@@ -9,11 +10,16 @@ pub const MAX_HISTORY: usize = 64;
 /// Maximum stress rows rendered in the Metrics view to keep frame sizes snappy.
 pub const MAX_STRESS_ROWS: usize = 96;
 
+/// Responsive breakpoint (in logical points) below which the desktop 3-column layout
+/// collapses into a single-column mobile portrait layout with collapsible drawers.
+pub const MOBILE_BREAKPOINT_PT: f32 = 620.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActiveView {
     Board,
     ChannelEngineering,
     ChannelDesign,
+    Stream100k,
     Metrics,
 }
 
@@ -23,6 +29,7 @@ impl ActiveView {
             Self::Board => "Issue Board",
             Self::ChannelEngineering => "# engineering",
             Self::ChannelDesign => "# design-sync",
+            Self::Stream100k => "100k Stream",
             Self::Metrics => "Live Metrics",
         }
     }
@@ -245,6 +252,79 @@ impl DensityMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LayoutEngineMode {
+    #[default]
+    Taffy,
+    Yoga,
+}
+
+impl LayoutEngineMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Taffy => "Taffy",
+            Self::Yoga => "Yoga",
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Taffy => "taffy",
+            Self::Yoga => "yoga",
+        }
+    }
+
+    pub const fn readout_label(self) -> &'static str {
+        match self {
+            Self::Taffy => "Active: Taffy (Rust)",
+            Self::Yoga => "Active: Yoga (C++20)",
+        }
+    }
+
+    pub const fn to_builtin(self) -> BuiltinLayout {
+        match self {
+            Self::Taffy => BuiltinLayout::Taffy,
+            Self::Yoga => BuiltinLayout::Yoga,
+        }
+    }
+
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Taffy => Self::Yoga,
+            Self::Yoga => Self::Taffy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stream100kState {
+    pub scroll_offset_y: u32,
+    pub viewport_height: u32,
+    pub overscan: usize,
+    pub variable_heights: bool,
+    pub expanded_rows: Vec<usize>,
+}
+
+impl Default for Stream100kState {
+    fn default() -> Self {
+        Self {
+            scroll_offset_y: 0,
+            viewport_height: 360,
+            overscan: 2,
+            variable_heights: true,
+            expanded_rows: Vec::new(),
+        }
+    }
+}
+
+fn default_viewport_width() -> u32 {
+    960
+}
+
+fn default_viewport_height() -> u32 {
+    640
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StudioConfig {
     pub panel_open: bool,
@@ -252,6 +332,8 @@ pub struct StudioConfig {
     pub radius: CornerRadiusMode,
     pub density: DensityMode,
     pub xray: bool,
+    #[serde(default)]
+    pub layout_engine: LayoutEngineMode,
 }
 
 impl Default for StudioConfig {
@@ -262,6 +344,7 @@ impl Default for StudioConfig {
             radius: CornerRadiusMode::Soft,
             density: DensityMode::Normal,
             xray: false,
+            layout_engine: LayoutEngineMode::Taffy,
         }
     }
 }
@@ -277,8 +360,18 @@ pub struct WorkspaceSnapshot {
     pub design_messages: Vec<ChatMessage>,
     pub next_msg_id: u32,
     pub stress_rows: usize,
+    #[serde(default)]
+    pub stream: Stream100kState,
     pub studio: StudioConfig,
     pub action_label: String,
+    #[serde(default = "default_viewport_width")]
+    pub viewport_width: u32,
+    #[serde(default = "default_viewport_height")]
+    pub viewport_height: u32,
+    #[serde(default)]
+    pub mobile_nav_open: bool,
+    #[serde(default)]
+    pub mobile_studio_open: bool,
 }
 
 impl Default for WorkspaceSnapshot {
@@ -376,8 +469,13 @@ impl Default for WorkspaceSnapshot {
             ],
             next_msg_id: 200,
             stress_rows: 4,
+            stream: Stream100kState::default(),
             studio: StudioConfig::default(),
             action_label: "Workspace Boot".into(),
+            viewport_width: default_viewport_width(),
+            viewport_height: default_viewport_height(),
+            mobile_nav_open: false,
+            mobile_studio_open: false,
         }
     }
 }
@@ -432,12 +530,111 @@ impl WorkspaceState {
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
+    pub fn is_mobile_portrait(&self) -> bool {
+        (self.current.viewport_width as f32) < MOBILE_BREAKPOINT_PT
+    }
+
+    /// Updates viewport dimensions without creating a spurious time-travel snapshot.
+    /// Returns `true` if layout-relevant dimensions changed.
+    pub fn set_viewport_size(&mut self, width: f32, height: f32) -> bool {
+        let w = if width.is_finite() && width > 0.0 {
+            width.round() as u32
+        } else {
+            return false;
+        };
+        let h = if height.is_finite() && height > 0.0 {
+            height.round() as u32
+        } else {
+            self.current.viewport_height
+        };
+        if self.current.viewport_width == w && self.current.viewport_height == h {
+            return false;
+        }
+        let was_mobile = self.is_mobile_portrait();
+        self.current.viewport_width = w;
+        self.current.viewport_height = h;
+        // Keep the 100k Stream viewport height proportional to available center height so
+        // the rendered visible + overscan window stays strictly inside the viewport bounds.
+        self.current.stream.viewport_height = h.saturating_sub(280).max(180);
+        if was_mobile && !self.is_mobile_portrait() {
+            self.current.mobile_nav_open = false;
+            self.current.mobile_studio_open = false;
+        }
+        // Keep initial snapshot in sync when resized before first user action.
+        if self.history.len() == 1 && self.cursor == 0 {
+            self.history[0].viewport_width = w;
+            self.history[0].viewport_height = h;
+            self.history[0].stream.viewport_height = self.current.stream.viewport_height;
+        }
+        true
+    }
+
     pub fn select_view(&mut self, view: ActiveView) {
         if self.current.active_view == view {
+            if self.current.mobile_nav_open {
+                self.current.mobile_nav_open = false;
+            }
             return;
         }
         let label = format!("View -> {}", view.title());
-        self.commit_action(label, |s| s.active_view = view);
+        self.commit_action(label, |s| {
+            s.active_view = view;
+            s.mobile_nav_open = false;
+        });
+    }
+
+    pub fn toggle_mobile_nav(&mut self) {
+        let next = !self.current.mobile_nav_open;
+        let label = if next { "Nav -> Open" } else { "Nav -> Close" };
+        self.commit_action(label, |s| {
+            s.mobile_nav_open = next;
+            if next {
+                s.mobile_studio_open = false;
+            }
+        });
+    }
+
+    pub fn set_stream_scroll_offset(&mut self, offset_y: u32) {
+        if self.current.stream.scroll_offset_y == offset_y {
+            return;
+        }
+        self.current.stream.scroll_offset_y = offset_y;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn jump_stream_offset(&mut self, offset_y: u32, label: impl Into<String>) {
+        self.commit_action(label, |s| {
+            s.stream.scroll_offset_y = offset_y;
+        });
+    }
+
+    pub fn toggle_stream_variable_heights(&mut self) {
+        let next = !self.current.stream.variable_heights;
+        let label = if next {
+            "Stream -> Variable H"
+        } else {
+            "Stream -> Fixed H"
+        };
+        self.commit_action(label, |s| {
+            s.stream.variable_heights = next;
+        });
+    }
+
+    pub fn toggle_stream_row_expanded(&mut self, row_index: usize) {
+        let will_expand = !self.current.stream.expanded_rows.contains(&row_index);
+        let label = if will_expand {
+            format!("Expand #{row_index}")
+        } else {
+            format!("Collapse #{row_index}")
+        };
+        self.commit_action(label, |s| {
+            if let Some(pos) = s.stream.expanded_rows.iter().position(|&r| r == row_index) {
+                s.stream.expanded_rows.remove(pos);
+            } else {
+                s.stream.expanded_rows.push(row_index);
+                s.stream.expanded_rows.sort_unstable();
+            }
+        });
     }
 
     pub fn set_board_filter(&mut self, filter: BoardFilter) {
@@ -557,9 +754,33 @@ impl WorkspaceState {
     }
 
     pub fn toggle_studio_panel(&mut self) {
-        let next = !self.current.studio.panel_open;
-        let label = if next { "Studio -> ON" } else { "Studio -> OFF" };
-        self.commit_action(label, |s| s.studio.panel_open = next);
+        if self.is_mobile_portrait() {
+            let next = !self.current.mobile_studio_open;
+            let label = if next { "Studio -> ON" } else { "Studio -> OFF" };
+            self.commit_action(label, |s| {
+                s.mobile_studio_open = next;
+                if next {
+                    s.mobile_nav_open = false;
+                }
+            });
+        } else {
+            let next = !self.current.studio.panel_open;
+            let label = if next { "Studio -> ON" } else { "Studio -> OFF" };
+            self.commit_action(label, |s| s.studio.panel_open = next);
+        }
+    }
+
+    pub fn set_layout_engine(&mut self, mode: LayoutEngineMode) {
+        if self.current.studio.layout_engine == mode {
+            return;
+        }
+        let label = format!("Layout -> {}", mode.label());
+        self.commit_action(label, |s| s.studio.layout_engine = mode);
+    }
+
+    pub fn toggle_layout_engine(&mut self) {
+        let next = self.current.studio.layout_engine.toggled();
+        self.set_layout_engine(next);
     }
 
     pub fn set_accent(&mut self, accent: AccentTheme) {

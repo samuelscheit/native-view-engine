@@ -28,6 +28,8 @@ pub enum InteropError {
     SubscriptionNotFound(SubscriptionId),
     Serialization(String),
     InvalidIslandSpec(String),
+    SyncDelta(String),
+    Plugin(String),
 }
 
 impl fmt::Display for InteropError {
@@ -54,6 +56,8 @@ impl fmt::Display for InteropError {
             Self::SubscriptionNotFound(id) => write!(f, "subscription id {id} not found"),
             Self::Serialization(msg) => write!(f, "serialization error: {msg}"),
             Self::InvalidIslandSpec(msg) => write!(f, "invalid island spec: {msg}"),
+            Self::SyncDelta(msg) => write!(f, "sync delta protocol error: {msg}"),
+            Self::Plugin(msg) => write!(f, "plugin host error: {msg}"),
         }
     }
 }

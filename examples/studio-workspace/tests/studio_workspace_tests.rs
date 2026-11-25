@@ -1,20 +1,30 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{
-    encode_events, ColorRgba, ComponentKind, EventPayload, NativeEvent, NativeEventKind, NodeId,
-    NveGestureDisposition, NveSizeConstraints, RawPropValue,
+    decode_events, encode_events, ColorRgba, ComponentKind, EventPayload, LayoutProps, NativeEvent,
+    NativeEventKind, NodeId, NveGestureDisposition, NveSizeConstraints, RawPropValue, StyleProps,
+    ROOT_NODE_ID,
 };
-use nve_backend_headless::HeadlessBackend;
+use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::snapshot::{write_snapshot_atomic, MmapSnapshot};
-use nve_engine::{HotPatchMsg, NveApp, RenderBackend, Viewport};
+use nve_engine::{
+    DynLayoutEngine, HotPatchMsg, LayoutEngine, LayoutRect, NveApp, RenderBackend, TextMeasurer,
+    Viewport,
+};
+use nve_interop::{
+    DeltaPacketRef, NvePluginHost, PluginRequirement, SyncDeltaSession, SyncMetrics,
+};
+use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
-    create_surface, AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode,
-    StudioWorkspaceModule, WorkspaceState, MAX_HISTORY,
+    create_surface_for_viewport, AccentTheme, ActiveView, ChannelKind, CornerRadiusMode,
+    DensityMode, LayoutEngineMode, StudioWorkspaceModule, WorkspaceState, MAX_HISTORY,
+    MOBILE_BREAKPOINT_PT,
 };
 
 struct MultiBackendHarness {
@@ -41,7 +51,7 @@ impl MultiBackendHarness {
         web.set_viewport(1, viewport);
 
         let mut h = Self {
-            surface: create_surface(1),
+            surface: create_surface_for_viewport(1, width, height),
             headless,
             skia,
             web,
@@ -726,4 +736,606 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
 
     drop(snap);
     let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+#[test]
+fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
+    let mut h = MultiBackendHarness::new(960.0, 640.0);
+
+    // Navigate to the 100k Stream tab.
+    h.press("nav-stream");
+    assert!(h.ascii().contains("100k Stream"));
+    assert!(h.ascii().contains("STR-00001"));
+    h.assert_no_horizontal_overflow("960x640-stream-top");
+
+    let read_stream_prop = |h: &MultiBackendHarness, key: &str| -> u32 {
+        let vp_id = h.find_by_test_id("stream-viewport").expect("stream-viewport");
+        let node = h.headless.node(vp_id).unwrap();
+        match node.raw_props.get(key) {
+            Some(RawPropValue::String(s)) => s.parse::<u32>().expect("numeric virtual prop"),
+            other => panic!("unexpected prop {key}={other:?}"),
+        }
+    };
+
+    let mounted_top = read_stream_prop(&h, "virtual-rendered-count");
+    let total_h_initial = read_stream_prop(&h, "virtual-total-height");
+    assert!(
+        (8..=28).contains(&mounted_top),
+        "expected O(viewport) ~15-24 mounted rows, got {mounted_top}"
+    );
+    assert!(
+        total_h_initial > 3_500_000,
+        "expected 100,000-row virtual document height > 3.5M px, got {total_h_initial}"
+    );
+
+    // Measure incremental 100k-row jumps (#50,000 -> #99,999 -> #0 -> #50,000) directly on
+    // DioxusSurface + HeadlessBackend (warm path).
+    let mut frontend_frame_us = Vec::new();
+    let mut e2e_frame_us = Vec::new();
+    for tid in [
+        "stream-jump-50k",
+        "stream-jump-end",
+        "stream-jump-top",
+        "stream-jump-50k",
+        "stream-jump-end",
+        "stream-jump-50k",
+    ] {
+        let nid = h.find_by_test_id(tid).unwrap();
+        let rect = h.headless.layout_of(nid).unwrap();
+        let cx = rect.x + rect.width * 0.5;
+        let cy = rect.y + rect.height * 0.5;
+
+        let t0 = Instant::now();
+        let handled = h.surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: nid,
+            timestamp_us: h.next_frame * 16_000,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: cx, y: cy },
+        }]);
+        assert!(handled);
+        let t_disp = t0.elapsed().as_micros();
+        let fid = h.next_frame;
+        h.next_frame += 1;
+        let (rec_us, enc_us, bytes) = h.surface.render_frame(fid);
+        let fe_us = t0.elapsed().as_micros();
+        let stats = h.headless.submit_frame(&bytes).unwrap();
+        let total_us = t0.elapsed().as_micros();
+        eprintln!(
+            "  [{tid}] fe={fe_us}us total={total_us}us | disp={t_disp}us rec={rec_us}us enc={enc_us}us | dec={}us lay={}us diff={}us | ops={} muts={} bytes={}",
+            stats.decode_us,
+            stats.layout_us,
+            stats.diff_us,
+            stats.op_count,
+            stats.mutation_count,
+            bytes.len()
+        );
+        frontend_frame_us.push(fe_us);
+        e2e_frame_us.push(total_us);
+        // Keep secondary backends synced as well.
+        h.skia.submit_frame(&bytes).unwrap();
+        h.web.submit_frame(&bytes).unwrap();
+    }
+
+    // Verify we landed at row #50,000 with O(viewport) mounted rows.
+    let tree_50k = h.ascii();
+    assert!(
+        tree_50k.contains("STR-50001"),
+        "expected row #50,000 (STR-50001) visible:\n{tree_50k}"
+    );
+    assert!(!tree_50k.contains("STR-00001"));
+    let mounted_50k = read_stream_prop(&h, "virtual-rendered-count");
+    assert!(
+        (8..=28).contains(&mounted_50k),
+        "expected ~20 mounted rows at #50,000, got {mounted_50k}"
+    );
+
+    // Jump to #99,999 and verify tail row STR-100000 renders cleanly.
+    h.press("stream-jump-end");
+    let tree_end = h.ascii();
+    assert!(
+        tree_end.contains("STR-100000"),
+        "expected final row #99,999 (STR-100000) visible:\n{tree_end}"
+    );
+    let mounted_end = read_stream_prop(&h, "virtual-rendered-count");
+    assert!(
+        (8..=28).contains(&mounted_end),
+        "expected ~20 mounted rows at #99,999, got {mounted_end}"
+    );
+    h.assert_no_horizontal_overflow("960x640-stream-end");
+
+    // Expand visible row #99,999 live -> verifies O(log N) Fenwick height update increases total height!
+    let h_before_expand = read_stream_prop(&h, "virtual-total-height");
+    h.press("stream-row-99999");
+    let h_after_expand = read_stream_prop(&h, "virtual-total-height");
+    assert!(
+        h_after_expand > h_before_expand,
+        "expanding row #99,999 must increase Fenwick total height ({h_before_expand} -> {h_after_expand})"
+    );
+
+    // Toggle variable <-> fixed height mode cleanly.
+    h.press("stream-toggle-heights");
+    assert!(h.ascii().contains("O(1) FixedH"));
+    h.press("stream-toggle-heights");
+    assert!(h.ascii().contains("Fenwick VarH"));
+
+    frontend_frame_us.sort_unstable();
+    e2e_frame_us.sort_unstable();
+    let fe_median_us = frontend_frame_us[frontend_frame_us.len() / 2];
+    let e2e_median_us = e2e_frame_us[e2e_frame_us.len() / 2];
+
+    // Also benchmark 1,000 consecutive Fenwick O(log N) window slices across 100,000 rows.
+    let v_idx = nve_studio_workspace::VirtualListIndex::for_stream(
+        nve_studio_workspace::DEFAULT_STREAM_ROW_COUNT,
+        DensityMode::Normal,
+        true,
+        &[50_000, 99_999],
+    );
+    let t_slice = Instant::now();
+    let mut acc_rows = 0usize;
+    for step in 0..1_000usize {
+        let target = (step * 97) % nve_studio_workspace::DEFAULT_STREAM_ROW_COUNT;
+        let off = v_idx.row_offset(target) as f32;
+        let w = v_idx.slice_window(off, 480.0, 2);
+        acc_rows += w.rendered_count();
+    }
+    let slice_1k_us = t_slice.elapsed().as_micros();
+    assert!(acc_rows > 10_000);
+
+    eprintln!(
+        "[100k stream] mounted={mounted_50k} rows | frontend jump median={fe_median_us}us (all={frontend_frame_us:?}) | e2e debug median={e2e_median_us}us (all={e2e_frame_us:?}) | 1000x Fenwick slices={slice_1k_us}us ({:.2}us/slice)",
+        slice_1k_us as f64 / 1000.0
+    );
+    assert!(
+        fe_median_us < 2_000,
+        "expected 100k-row virtualized incremental frame time < 2ms (2000us) in debug, got {fe_median_us}us ({frontend_frame_us:?})"
+    );
+    assert!(
+        e2e_median_us < 8_330,
+        "expected 100k-row end-to-end jump (incl. debug layout) within 8.33ms 120fps budget, got {e2e_median_us}us"
+    );
+}
+
+/// Secondary [`LayoutEngine`] wrapper used when `RN_REACT_COMMON_DIR` is absent so live
+/// `HeadlessBackend::swap_layout_engine` mid-session switching is exercised on every machine,
+/// while real `YogaLayoutEngine` parity executes automatically whenever RN Yoga is compiled in.
+struct HostMirrorLayoutEngine {
+    inner: TaffyLayoutEngine,
+}
+
+impl HostMirrorLayoutEngine {
+    fn new() -> Self {
+        Self {
+            inner: TaffyLayoutEngine::new(),
+        }
+    }
+}
+
+impl LayoutEngine for HostMirrorLayoutEngine {
+    fn name(&self) -> &'static str {
+        "yoga-host-mirror"
+    }
+
+    fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
+        self.inner.upsert_node(id, kind);
+    }
+
+    fn remove_node(&mut self, id: NodeId) {
+        self.inner.remove_node(id);
+    }
+
+    fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
+        self.inner.set_layout(id, layout);
+    }
+
+    fn set_style(&mut self, id: NodeId, style: &StyleProps) {
+        self.inner.set_style(id, style);
+    }
+
+    fn set_text(&mut self, id: NodeId, text: &str) {
+        self.inner.set_text(id, text);
+    }
+
+    fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
+        self.inner.set_children(parent, children);
+    }
+
+    fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
+        self.inner.set_text_measurer(measurer);
+    }
+
+    fn compute_layout(&mut self, root: NodeId, viewport: Viewport) {
+        self.inner.compute_layout(root, viewport);
+    }
+
+    fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
+        self.inner.layout_of(id)
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+}
+
+fn read_root_layout_engine_prop<L: LayoutEngine>(backend: &HeadlessBackend<L>) -> String {
+    backend
+        .nodes()
+        .values()
+        .find(|n| {
+            matches!(
+                n.raw_props.get("testID"),
+                Some(RawPropValue::String(s)) if s == "workspace-root"
+            )
+        })
+        .and_then(|n| match n.raw_props.get("layout-engine") {
+            Some(RawPropValue::String(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("workspace-root must emit 'layout-engine' raw prop")
+}
+
+#[test]
+fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
+    let vp = Viewport {
+        width: 960.0,
+        height: 640.0,
+        scale_factor: 1.0,
+    };
+
+    // 1. Mutate workspace mid-session BEFORE switching layout engines.
+    let mut app = StudioWorkspaceModule::create(1);
+    let mut dyn_backend: HeadlessBackend<DynLayoutEngine> =
+        HeadlessBackend::with_layout(Box::new(TaffyLayoutEngine::new()));
+    dyn_backend.set_viewport(1, vp);
+
+    let f1 = app.render(1).to_vec();
+    dyn_backend.submit_frame(&f1).unwrap();
+    assert_eq!(dyn_backend.layout_engine().name(), "taffy");
+    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "taffy");
+    assert!(dyn_backend.render_ascii_tree().contains("Active: Taffy (Rust)"));
+
+    let press_dyn = |backend: &mut HeadlessBackend<DynLayoutEngine>,
+                     app: &mut StudioWorkspaceModule,
+                     tid: &str,
+                     fid: u64| -> Vec<u8> {
+        let nid = backend
+            .nodes()
+            .values()
+            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"))
+            .id;
+        let rect = backend.layout_of(nid).unwrap();
+        let ev = encode_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: nid,
+            timestamp_us: fid * 16_000,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point {
+                x: rect.x + rect.width * 0.5,
+                y: rect.y + rect.height * 0.5,
+            },
+        }]);
+        assert!(app.dispatch_events(&ev));
+        let frame = app.render(fid).to_vec();
+        backend.submit_frame(&frame).unwrap();
+        frame
+    };
+
+    // Create a task and switch accent so we prove state survives layout-engine swaps!
+    press_dyn(&mut dyn_backend, &mut app, "btn-new-task", 2);
+    press_dyn(&mut dyn_backend, &mut app, "accent-violet", 3);
+    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
+
+    // 2. Toggle Studio toolbar to Yoga -> verify prop, readout, and outbound custom event!
+    press_dyn(&mut dyn_backend, &mut app, "layout-yoga", 4);
+    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "yoga");
+    assert!(dyn_backend.render_ascii_tree().contains("Active: Yoga (C++20)"));
+    assert_eq!(
+        app.state_snapshot().current.studio.layout_engine,
+        LayoutEngineMode::Yoga
+    );
+
+    let emitted = decode_events(app.drain_emitted_events()).unwrap();
+    assert_eq!(emitted.len(), 1);
+    assert!(matches!(
+        &emitted[0].payload,
+        EventPayload::Custom { name, data } if name == "layout_engine_changed" && data == b"yoga"
+    ));
+
+    // Capture full rects under Taffy before swapping engine live mid-session.
+    let taffy_rects_before: Vec<(NodeId, LayoutRect)> = {
+        let mut pairs: Vec<(NodeId, LayoutRect)> = dyn_backend
+            .nodes()
+            .keys()
+            .filter_map(|&id| dyn_backend.layout_of(id).map(|r| (id, r)))
+            .collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        pairs
+    };
+
+    // 3. Hot-swap live backend engine Taffy -> Yoga (real RN Yoga when available, else host mirror)
+    // WITHOUT dropping state or recreating the surface!
+    let next_engine: DynLayoutEngine = if YogaLayoutEngine::is_available() {
+        Box::new(YogaLayoutEngine::new().expect("real RN Yoga available"))
+    } else {
+        assert!(YogaLayoutEngine::new().is_err());
+        Box::new(HostMirrorLayoutEngine::new())
+    };
+    let expected_swapped_name = next_engine.name();
+    dyn_backend = dyn_backend.swap_layout_engine(next_engine);
+    assert_eq!(dyn_backend.layout_engine().name(), expected_swapped_name);
+
+    // Compare every computed LayoutRect against Taffy parity tolerance (<= 2.0px).
+    for (id, taffy_rect) in &taffy_rects_before {
+        let swapped_rect = dyn_backend
+            .layout_of(*id)
+            .unwrap_or_else(|| panic!("missing swapped rect for node #{id}"));
+        assert!(
+            (taffy_rect.x - swapped_rect.x).abs() <= 2.0
+                && (taffy_rect.y - swapped_rect.y).abs() <= 2.0
+                && (taffy_rect.width - swapped_rect.width).abs() <= 2.0
+                && (taffy_rect.height - swapped_rect.height).abs() <= 2.0,
+            "node #{id} diverged across Taffy <-> {expected_swapped_name}: taffy={taffy_rect:?}, swapped={swapped_rect:?}"
+        );
+    }
+
+    // State must remain 100% intact after mid-session swap, and further clicks still work!
+    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
+    press_dyn(&mut dyn_backend, &mut app, "layout-taffy", 5);
+    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "taffy");
+    dyn_backend = dyn_backend.swap_layout_engine(Box::new(TaffyLayoutEngine::new()));
+    assert_eq!(dyn_backend.layout_engine().name(), "taffy");
+    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
+
+    // Undo restores Yoga mode cleanly through deterministic time-travel!
+    press_dyn(&mut dyn_backend, &mut app, "tt-undo", 6);
+    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "yoga");
+    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
+}
+
+#[test]
+fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing_center() {
+    assert_eq!(MOBILE_BREAKPOINT_PT, 620.0);
+
+    // 1. Direct iPhone 17 portrait boot: 393 x 852 pt.
+    let mut h = MultiBackendHarness::new(393.0, 852.0);
+    h.assert_no_horizontal_overflow("393x852-board");
+
+    // Verify mobile-portrait mode collapsed left sidebar & right Studio drawer.
+    assert!(h.find_by_test_id("mobile-top-bar").is_some());
+    assert!(h.find_by_test_id("desktop-sidebar").is_none());
+    assert!(
+        h.find_by_test_id("studio-panel").is_none(),
+        "Studio drawer must start collapsed on < 620pt portrait screens"
+    );
+
+    let root_id = h.find_by_test_id("workspace-root").unwrap();
+    assert_eq!(
+        h.headless.node(root_id).unwrap().raw_props.get("viewport-mode"),
+        Some(&RawPropValue::String("mobile-portrait".into()))
+    );
+
+    // Center workspace must occupy the full 393pt width (never crushed or negative!).
+    let center_id = h.find_by_test_id("center-workspace").unwrap();
+    let center_rect = h.headless.layout_of(center_id).unwrap();
+    assert!(
+        center_rect.width >= 390.0 && center_rect.width <= 393.5,
+        "expected full-width center workspace at 393pt portrait, got {center_rect:?}"
+    );
+    assert!(
+        center_rect.height >= 790.0,
+        "expected tall center workspace below 42pt top bar, got {center_rect:?}"
+    );
+
+    // Open mobile Nav drawer -> navigate to 100k Stream -> nav drawer auto-closes!
+    h.press("mobile-toggle-nav");
+    assert!(h.find_by_test_id("mobile-nav-drawer").is_some());
+    h.assert_no_horizontal_overflow("393x852-nav-open");
+
+    h.press("nav-stream");
+    assert!(
+        h.find_by_test_id("mobile-nav-drawer").is_none(),
+        "mobile nav drawer should auto-close after selecting a tab"
+    );
+    assert!(h.ascii().contains("100k Stream"));
+    h.assert_no_horizontal_overflow("393x852-stream");
+
+    // Jump to #50k on mobile portrait and verify clean fit.
+    h.press("stream-jump-50k");
+    assert!(h.ascii().contains("STR-50001"));
+    h.assert_no_horizontal_overflow("393x852-stream-50k");
+
+    // Toggle Studio drawer ON on mobile -> full-width stacked drawer, zero clipping!
+    h.press("btn-toggle-studio");
+    let studio_id = h
+        .find_by_test_id("studio-panel")
+        .expect("mobile studio drawer should open");
+    let studio_rect = h.headless.layout_of(studio_id).unwrap();
+    assert!(
+        studio_rect.width >= 390.0 && studio_rect.width <= 393.5,
+        "expected full-width mobile studio drawer, got {studio_rect:?}"
+    );
+    h.assert_no_horizontal_overflow("393x852-studio-open");
+
+    // Center workspace still has full positive width and positive height below the Studio drawer!
+    let center_after_studio = h
+        .headless
+        .layout_of(h.find_by_test_id("center-workspace").unwrap())
+        .unwrap();
+    assert!(center_after_studio.width >= 390.0);
+    assert!(center_after_studio.height > 100.0);
+
+    // Mutate accent & layout engine inside mobile Studio drawer, then collapse drawer.
+    h.press("accent-amber");
+    h.press("layout-yoga");
+    assert!(h.ascii().contains("Active: Yoga (C++20)"));
+    h.press("btn-toggle-studio");
+    assert!(h.find_by_test_id("studio-panel").is_none());
+
+    // 2. Dynamic resize via NativeEventKind::Layout on StudioWorkspaceModule (960pt -> 393pt -> 960pt).
+    let mut app = StudioWorkspaceModule::create(1);
+    let _ = app.render(1);
+    assert!(!app.state_snapshot().is_mobile_portrait());
+
+    let resize_mobile = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: ROOT_NODE_ID,
+        timestamp_us: 1000,
+        kind: NativeEventKind::Layout,
+        payload: EventPayload::Layout {
+            x: 0.0,
+            y: 0.0,
+            width: 393.0,
+            height: 852.0,
+        },
+    }]);
+    assert!(app.dispatch_events(&resize_mobile));
+    assert!(app.state_snapshot().is_mobile_portrait());
+    let mobile_frame = app.render(2).to_vec();
+    let mut host = HeadlessBackend::new();
+    host.set_viewport(
+        1,
+        Viewport {
+            width: 393.0,
+            height: 852.0,
+            scale_factor: 3.0,
+        },
+    );
+    host.submit_frame(&mobile_frame).unwrap();
+    assert!(host.render_ascii_tree().contains("Studio OFF"));
+
+    // Verify `measure` respects narrow mobile portrait constraints instead of forcing 640pt!
+    let measured_mobile = app.measure(NveSizeConstraints {
+        min_w: 0.0,
+        max_w: 393.0,
+        min_h: 0.0,
+        max_h: 852.0,
+    });
+    assert_eq!(measured_mobile.width, 393.0);
+}
+
+#[test]
+fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
+    // 1. Real StudioWorkspace incremental edits over SyncDeltaSession (< 256 B/frame, < 10 KB/s).
+    let h = MultiBackendHarness::new(960.0, 640.0);
+    let mut sender = SyncDeltaSession::default();
+    let mut receiver = SyncDeltaSession::default();
+
+    // Sync initial full frame as keyframe.
+    let mut snap_app = StudioWorkspaceModule::create(1);
+    let f1 = snap_app.render(1).to_vec();
+    let p1 = sender.encode_frame(&f1, 0);
+    let r1 = receiver.receive_packet(&p1).unwrap();
+    assert_eq!(r1.applied_frames[0].1, f1);
+    sender.handle_ack(r1.ack_packet.as_ref().unwrap()).unwrap();
+
+    // Perform an incremental Studio edit (cycle task status AET-102: Todo -> In Progress).
+    let nid = h.find_by_test_id("task-status-2").unwrap();
+    let rect = h.headless.layout_of(nid).unwrap();
+    let ev = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: nid,
+        timestamp_us: 16_000,
+        kind: NativeEventKind::Press,
+        payload: EventPayload::Point {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * 0.5,
+        },
+    }]);
+    assert!(snap_app.dispatch_events(&ev));
+    let f2_incremental = snap_app.render(2).to_vec();
+
+    let p2 = sender.encode_frame(&f2_incremental, 16);
+    let parsed = DeltaPacketRef::parse(&p2).unwrap();
+    assert!(parsed.header().seq == 2);
+    let r2 = receiver.receive_packet(&p2).unwrap();
+    assert_eq!(r2.applied_frames[0].1, f2_incremental);
+
+    // Also measure a second consecutive incremental edit (In Progress -> Done).
+    assert!(snap_app.dispatch_events(&ev));
+    let f3_incremental = snap_app.render(3).to_vec();
+    let p3 = sender.encode_frame(&f3_incremental, 33);
+    let r3 = receiver.receive_packet(&p3).unwrap();
+    assert_eq!(r3.applied_frames[0].1, f3_incremental);
+
+    let delta_bytes = p3.len();
+    let kbps_60 = SyncMetrics::estimated_kbps(delta_bytes, 60.0);
+    eprintln!(
+        "[studio live pairing] frame2_inc={}B -> wire={}B | frame3_inc={}B -> wire={}B ({:.2} KB/s @60fps)",
+        f2_incremental.len(),
+        p2.len(),
+        f3_incremental.len(),
+        delta_bytes,
+        kbps_60
+    );
+    assert!(
+        delta_bytes < 256,
+        "expected incremental Studio edit wire delta < 256B, got {delta_bytes}B (raw {}B)",
+        f3_incremental.len()
+    );
+    assert!(
+        kbps_60 < 10.0,
+        "expected < 10 KB/s @ 60 edits/sec, got {kbps_60:.2} KB/s"
+    );
+
+    // 2. Real dynamic cdylib plugin loading + isolated surface ID + transactional hot-swap via NvePluginHost.
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let dylib_ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else if cfg!(target_os = "windows") {
+        "dll"
+    } else {
+        "so"
+    };
+    let dylib_path =
+        workspace_root.join(format!("target/debug/libnve_studio_workspace.{dylib_ext}"));
+    if !dylib_path.exists() {
+        let status = std::process::Command::new("cargo")
+            .args(["build", "-p", "nve-studio-workspace"])
+            .current_dir(workspace_root)
+            .status()
+            .expect("build nve-studio-workspace cdylib");
+        assert!(status.success());
+    }
+
+    let mut plugin_host = NvePluginHost::with_surface_base(50_000);
+    let pid = plugin_host
+        .load_dynamic("aether-studio", &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
+        .expect("load studio cdylib as plugin");
+    let slot = plugin_host.get_mut(pid).unwrap();
+    assert_eq!(slot.surface_id(), 50_000);
+    assert!(slot.capabilities().surface);
+    assert!(slot.capabilities().layout);
+    assert!(slot.capabilities().component);
+    assert!(slot.capabilities().dev);
+
+    assert!(slot
+        .set_props(br#"{"accent":"green","layoutEngine":"yoga","view":"stream"}"#)
+        .unwrap());
+    let pf1 = slot.render(1).unwrap().to_vec();
+    assert!(pf1.len() > 24);
+
+    // Transactional hot-swap preserves isolated surface_id=50_000 and full mutated state!
+    let gen2 = plugin_host
+        .hot_swap_dynamic(pid, &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
+        .expect("hot-swap studio plugin");
+    assert_eq!(gen2, 2);
+    let slot2 = plugin_host.get_mut(pid).unwrap();
+    assert_eq!(slot2.surface_id(), 50_000);
+    let pf2 = slot2.render(2).unwrap().to_vec();
+
+    let mut verify_host = HeadlessBackend::new();
+    verify_host.set_viewport(
+        50_000,
+        Viewport {
+            width: 960.0,
+            height: 640.0,
+            scale_factor: 1.0,
+        },
+    );
+    verify_host.submit_frame(&pf2).unwrap();
+    let tree = verify_host.render_ascii_tree();
+    assert!(tree.contains("100k Stream"));
+    assert!(tree.contains("Active: Yoga (C++20)"));
 }
