@@ -7,6 +7,8 @@ set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(NVE_ENABLE_CAMERA "Enable packages/modules/camera" OFF)
+
 if(NOT TARGET nve_fabric_bridge)
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge" "${CMAKE_CURRENT_BINARY_DIR}/nve_fabric_bridge")
 endif()
@@ -23,7 +25,6 @@ add_library(nve_macos_shell_lib STATIC
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost+Session.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentViewBase.mm"
-  "${NVE_APPLE_COMMON_DIR}/NveAppleCamera.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleNativeViews.mm"
   NveMacFabricHost.mm
   NveMacWindowManager.mm
@@ -40,13 +41,18 @@ target_compile_options(nve_macos_shell_lib PRIVATE -fobjc-arc -Wall -Wextra -Wer
 target_link_libraries(nve_macos_shell_lib
   PUBLIC
     nve_fabric_bridge
-    "-framework AVFoundation"
     "-framework Cocoa"
-    "-framework CoreMedia"
-    "-framework CoreVideo"
     "-framework QuartzCore"
     "-framework WebKit"
 )
+
+if(NVE_ENABLE_CAMERA)
+  if(NOT TARGET nve_camera_apple)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../packages/modules/camera/apple" "${CMAKE_CURRENT_BINARY_DIR}/nve_camera_apple")
+  endif()
+  target_link_libraries(nve_macos_shell_lib PUBLIC nve_camera_apple)
+  target_compile_definitions(nve_macos_shell_lib PUBLIC NVE_ENABLE_CAMERA=1)
+endif()
 
 add_executable(nve_macos_shell main.mm)
 target_compile_options(nve_macos_shell PRIVATE -fobjc-arc -Wall -Wextra -Werror)

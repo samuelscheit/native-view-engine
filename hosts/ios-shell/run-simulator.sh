@@ -38,6 +38,8 @@ Options:
 Environment:
   RN_REACT_COMMON_DIR     Optional path to react-native/packages/react-native/ReactCommon
                           to compile and link React Native Yoga (NVE_WITH_RN_YOGA=1).
+  NVE_ENABLE_CAMERA       Set to 1 to opt in to packages/modules/camera/apple and link
+                          AVFoundation/CoreMedia/CoreVideo (default: 0).
 EOF
 }
 
@@ -143,8 +145,20 @@ if [[ -n "$RN_DIR" && -d "$RN_DIR/yoga/yoga" ]]; then
   done < <(find "$RN_DIR/yoga/yoga" -name '*.cpp' | sort)
 fi
 
+CAMERA_ENABLED="${NVE_ENABLE_CAMERA:-0}"
+CAMERA_TAG="no-camera"
+CAMERA_LINK_FLAGS=()
+CAMERA_MM_SOURCES=()
+if [[ "$CAMERA_ENABLED" == "1" ]]; then
+  echo "    Enabling opt-in packages/modules/camera/apple"
+  COMMON_FLAGS+=(-DNVE_ENABLE_CAMERA=1 -I"$REPO_ROOT/packages/modules/camera/apple")
+  CAMERA_TAG="camera"
+  CAMERA_MM_SOURCES+=("$REPO_ROOT/packages/modules/camera/apple/NveAppleCamera.mm")
+  CAMERA_LINK_FLAGS+=(-framework AVFoundation -framework CoreMedia -framework CoreVideo)
+fi
+
 CONFIG_STAMP="$BUILD_DIR/.build-config"
-CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|${YOGA_TAG}|${RN_DIR}"
+CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|${YOGA_TAG}|${RN_DIR}|${CAMERA_TAG}"
 if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG" ]]; then
   rm -rf "$OBJ_DIR"
   mkdir -p "$OBJ_DIR"
@@ -178,12 +192,14 @@ HEADER_DEPS=(
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHostInternal.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleCamera.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.h"
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.h"
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.h"
 )
+if [[ "$CAMERA_ENABLED" == "1" ]]; then
+  HEADER_DEPS+=("$REPO_ROOT/packages/modules/camera/apple/NveAppleCamera.h")
+fi
 
 needs_rebuild() {
   local obj="$1"
@@ -242,7 +258,6 @@ for src in \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost+Session.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleCamera.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.mm" \
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.mm" \
@@ -252,14 +267,16 @@ do
   compile_unit "$src" mm
 done
 
+for src in "${CAMERA_MM_SOURCES[@]+"${CAMERA_MM_SOURCES[@]}"}"; do
+  compile_unit "$src" mm
+done
+
 "${CLANGXX[@]}" \
   -std=c++20 \
   -fobjc-arc \
   -target "arm64-apple-ios${IOS_MIN_VERSION}-simulator" \
   "${OBJ_FILES[@]}" \
-  -framework AVFoundation \
-  -framework CoreMedia \
-  -framework CoreVideo \
+  "${CAMERA_LINK_FLAGS[@]+"${CAMERA_LINK_FLAGS[@]}"}" \
   -framework UIKit \
   -framework Foundation \
   -framework QuartzCore \

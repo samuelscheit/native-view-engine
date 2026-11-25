@@ -1,0 +1,17 @@
+[package]
+name = "nve-camera"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Unified opt-in NVE camera module (zero-JSON NVNP/NVNC/NVCF codecs + Nitro bridge bindings)"
+
+[features]
+default = ["spec"]
+spec = []
+nitro = []
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+
+[workspace]

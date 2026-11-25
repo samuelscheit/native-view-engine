@@ -1,4 +1,4 @@
-package dev.nve.compose.camera
+package dev.nve.camera
 
 /**
  * CameraX use-case binding configuration mirroring `ProcessCameraProvider.bindToLifecycle(...)`

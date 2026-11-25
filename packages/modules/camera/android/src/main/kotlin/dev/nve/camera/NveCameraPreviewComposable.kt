@@ -1,4 +1,4 @@
-package dev.nve.compose.camera
+package dev.nve.camera
 
 import android.content.Context
 import android.view.ViewGroup

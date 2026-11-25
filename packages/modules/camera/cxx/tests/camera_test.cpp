@@ -1,6 +1,7 @@
 #include "nve_camera.hpp"
 #include "nve_camera_linux.hpp"
 #include "nve_camera_windows.hpp"
+#include "nve_vision_camera_hybrid.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -310,6 +311,113 @@ void test_linux_pipewire_v4l2_and_registry_precedence() {
   NVE_CHECK(raw_bridge->closed());
 }
 
+void test_vision_camera_v5_nitro_hybrid_standalone() {
+  // Register VisionCamera v5 HybridCameraSession in standalone Nitro registry (zero RN / zero JSI)
+  nve::nitro::HybridObjectRegistry registry{};
+  InMemoryLinuxCameraBridge* captured_bridge = nullptr;
+  nve::camera::register_vision_camera_hybrid(registry, [&]() -> std::unique_ptr<NveCameraBackend> {
+    auto bridge = std::make_unique<InMemoryLinuxCameraBridge>(LinuxCameraTransport::PipeWire);
+    captured_bridge = bridge.get();
+    return std::make_unique<NveLinuxCameraBackend>(std::move(bridge));
+  });
+
+  NVE_CHECK(registry.has_hybrid_object(nve::camera::kHybridCameraSessionName));
+  auto session = registry.create<nve::camera::HybridCameraSession>(nve::camera::kHybridCameraSessionName);
+  NVE_CHECK(session != nullptr);
+  NVE_CHECK(session->name() == "CameraSession");
+  NVE_CHECK(session->memory_size() >= sizeof(nve::camera::HybridCameraSession));
+  NVE_CHECK(session->get_available_devices().size() == 2u);
+
+  // Configure via binary NVNP props and attach zero-copy NVCF frame processor
+  std::vector<CameraFrameDescriptor> received_frames;
+  bool saw_borrowed_array_buffer = false;
+  session->set_frame_processor(
+      [&](const CameraFrameDescriptor& desc,
+          std::span<const uint8_t, kCameraFrameDescriptorSize> nvcf,
+          std::shared_ptr<nve::nitro::ArrayBuffer> ab) {
+        CameraFrameDescriptor parsed{};
+        NVE_CHECK(decode_camera_frame(nvcf, parsed) == NativeViewCodecError::Ok);
+        NVE_CHECK(parsed == desc);
+        NVE_CHECK(ab != nullptr && !ab->is_owning() && ab->size() == kCameraFrameDescriptorSize);
+        saw_borrowed_array_buffer = true;
+        received_frames.push_back(desc);
+      });
+
+  CameraPreviewProps props{};
+  props.facing = CameraFacing::External;
+  props.torch = CameraTorchMode::On;
+  props.zoom = 2.25f;
+  props.fps = 60u;
+  props.hdr = true;
+  props.enable_frame_processor = true;
+  props.audio_enabled = true;
+  props.active = true;
+  std::vector<uint8_t> nvnp;
+  NVE_CHECK(encode_camera_props(props, nvnp) == NativeViewCodecError::Ok);
+  NVE_CHECK(session->apply_encoded_props(nvnp) == NativeViewCodecError::Ok);
+  NVE_CHECK(session->state() == CameraSessionState::Running);
+
+  // Zero-copy NVCF frame delivery through HybridCameraSession
+  const CameraFrameDescriptor frame{1920u, 1080u, 1920u, CameraPixelFormat::Nv12, 90u, 424242ull, 0xABCD1234ull};
+  NVE_CHECK(captured_bridge != nullptr);
+  captured_bridge->push_dmabuf_frame(frame);
+  NVE_CHECK(received_frames.size() == 1u && received_frames[0] == frame);
+  NVE_CHECK(saw_borrowed_array_buffer);
+  NVE_CHECK(session->frame_count() == 1u);
+  NVE_CHECK(session->last_frame_nvcf().has_value());
+
+  // VisionCamera v5 Promise-returning take_photo() + invalid option rejection
+  auto bad_photo = session->take_photo(101u, 0u).await_result();
+  NVE_CHECK(bad_photo.is_err() && bad_photo.error() == "INVALID_CAPTURE_OPTIONS");
+  auto photo_res = session->take_photo(92u, 1u).await_result();
+  NVE_CHECK(photo_res.is_ok());
+  NVE_CHECK(photo_res.value().quality == 92u && photo_res.value().flash_mode == 1u);
+
+  // VisionCamera v5 Promise-returning start_recording() / stop_recording()
+  NVE_CHECK(session->start_recording("").await_result().is_err());
+  NVE_CHECK(session->stop_recording().await_result().is_err());
+  NVE_CHECK(session->start_recording("/tmp/nitro_vc_clip.mp4").await_result().is_ok());
+  NVE_CHECK(session->state() == CameraSessionState::Recording);
+  auto rec_res = session->stop_recording().await_result();
+  NVE_CHECK(rec_res.is_ok());
+  NVE_CHECK(rec_res.value().output_path == "/tmp/nitro_vc_clip.mp4");
+  NVE_CHECK(rec_res.value().has_audio);
+  NVE_CHECK(session->state() == CameraSessionState::Running);
+
+  // Direct C-ABI NveNitroHandle zero-JS-VM bridge test against global registry
+  auto& global_reg = nve::nitro::HybridObjectRegistry::global();
+  nve::camera::register_vision_camera_hybrid(global_reg, []() {
+    return std::make_unique<NveWindowsCameraBackend>();
+  });
+  NveNitroHandle handle = nve_nitro_create("CameraSession");
+  NVE_CHECK(handle != nullptr);
+  NVE_CHECK(std::string_view(nve_nitro_get_name(handle)) == "CameraSession");
+  uint8_t out_buf[64]{};
+  size_t out_len = 0u;
+  NVE_CHECK(nve_nitro_invoke_bytes(handle, "applyProps", nvnp.data(), nvnp.size(), out_buf, sizeof(out_buf), &out_len) ==
+            NVE_NITRO_OK);
+  NVE_CHECK(out_len == 1u && out_buf[0] == 1u);
+
+  std::vector<uint8_t> zoom_cmd;
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::set_zoom(3.0f), zoom_cmd) == NativeViewCodecError::Ok);
+  NVE_CHECK(nve_nitro_invoke_bytes(handle, "dispatchCommand", zoom_cmd.data(), zoom_cmd.size(), out_buf, sizeof(out_buf), &out_len) ==
+            NVE_NITRO_OK);
+  NVE_CHECK(out_len == 1u && out_buf[0] == 1u);
+
+  nve_nitro_dispose(handle);
+  NVE_CHECK(nve_nitro_is_disposed(handle) == 1);
+  NVE_CHECK(nve_nitro_invoke_bytes(handle, "start", nullptr, 0u, out_buf, sizeof(out_buf), &out_len) ==
+            NVE_NITRO_ERR_DISPOSED);
+  nve_nitro_release(handle);
+  global_reg.unregister_hybrid_object("CameraSession");
+
+  // Disposing session cleans up backend & rejects subsequent captures
+  session->dispose();
+  NVE_CHECK(session->is_disposed());
+  NVE_CHECK(session->state() == CameraSessionState::Released);
+  NVE_CHECK(session->take_photo().await_result().is_err());
+}
+
 } // namespace
 
 int main() {
@@ -317,6 +425,7 @@ int main() {
   test_corrupt_nan_truncated_and_fuzz_rejection();
   test_windows_media_capture_backend();
   test_linux_pipewire_v4l2_and_registry_precedence();
+  test_vision_camera_v5_nitro_hybrid_standalone();
   std::puts("nve_camera_test: ALL PASSED");
   return 0;
 }

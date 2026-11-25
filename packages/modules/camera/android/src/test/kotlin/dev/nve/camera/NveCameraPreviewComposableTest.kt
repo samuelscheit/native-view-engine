@@ -1,4 +1,4 @@
-package dev.nve.compose.camera
+package dev.nve.camera
 
 import android.graphics.ImageFormat
 import android.graphics.PixelFormat

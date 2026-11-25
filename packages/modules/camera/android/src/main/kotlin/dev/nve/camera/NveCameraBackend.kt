@@ -1,4 +1,4 @@
-package dev.nve.compose.camera
+package dev.nve.camera
 
 /**
  * Concrete Android camera backend implementation powering an `"nve.camera.preview"` node.
