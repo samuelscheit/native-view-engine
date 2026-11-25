@@ -153,16 +153,19 @@ fi
 
 HEADER_DEPS=(
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.h"
+  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_draw_list.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_host_runtime.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_rn_component.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_value.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_decoder.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_encoder.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_recorder.hpp"
+  "$REPO_ROOT/hosts/apple-common/NveAppleCanvasView.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleImageCache.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleSupport.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleFabricHost.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.h"
+  "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.h"
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.h"
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.h"
 )
@@ -215,10 +218,12 @@ for src in "${YOGA_SOURCES[@]+"${YOGA_SOURCES[@]}"}"; do
 done
 
 for src in \
+  "$REPO_ROOT/hosts/apple-common/NveAppleCanvasView.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleImageCache.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleSupport.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleFabricHost.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.mm" \
+  "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.mm" \
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.mm" \
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.mm" \
   "$REPO_ROOT/hosts/ios-shell/main.mm"
