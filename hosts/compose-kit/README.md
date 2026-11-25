@@ -1,13 +1,33 @@
 # `dev.nve.compose` — Native View Engine Host Kit for Jetpack Compose
 
-Idiomatic Jetpack Compose adapter (`NveSurfaceComposable.kt`) for embedding any **Native View Engine (NVE)** Rust component natively inside an Android Jetpack Compose tree.
+Android Library Gradle module (`dev.nve.compose`) for embedding **Native View Engine (NVE)** Rust components inside Jetpack Compose and Android `ComponentActivity` hosts with zero-JSON binary FFI.
 
-## Features
+## Architecture
 
-- **`@Composable fun NveSurface(...)`**: Wraps `AndroidView` + `NveSurfaceView`, syncing Compose state maps into `NveComponentApi.set_props` via `LaunchedEffect`, participating in `Modifier` sizing, and disposing native surfaces cleanly via `DisposableEffect`.
-- **Intrinsic Layout & Nested Scroll Arbitration**: `NveSurfaceView` hooks into `onMeasure` (`NveNativeBridge.nativeMeasureSurface`) and `onTouchEvent` (`requestDisallowInterceptTouchEvent`) to cooperate with parent Compose `LazyColumn` / `HorizontalPager` scrollables.
-- **`NveSurfaceController` & `rememberNveSurfaceController`**: Imperative command dispatch (`dispatchCommand`), explicit render triggering, and event draining.
-- **`NveChannelClient`**: Pub/sub and retained shared-state bridge to `NveChannelBus`.
+- **`NveSceneBuffer.kt`**: Zero-copy, zero-GC direct `ByteBuffer` reader over 64-byte `NveRenderNode` + `NveSceneView` slabs (`SCHEMA_HASH = 0x00F2CF037DB50CC8`), with schema/bounds/UTF-8 validation and incremental dirty-index diffing.
+- **`NveBinValue.kt`**: Compact little-endian binary `NveBinValue` encoder and zero-copy `NveBinValueView` (tags `0..7`, O(1) container skipping, max depth `64`) replacing JSON for props, commands, and channel messages.
+- **`NveEventRingCodec.kt`**: Binary `EventRing` encoder & decoder matching `crates/nve-abi/src/events.rs` for press, long-press, scroll, text change, focus/blur, layout, and custom binary events.
+- **`NveSurfaceState.kt` & `NveNativeBridge.kt`**: Pluggable `NveBridgeBackend`, reactive `NveSurfaceState`, `NveSurfaceController`, and binary `NveChannelClient`.
+- **`NveSurfaceComposable.kt`**: `@Composable fun NveSurface(...)`, `rememberNveSurfaceController(...)`, and `NveSurfaceView` (`onMeasure` intrinsic sizing, `onSizeChanged` viewport forwarding, and `requestDisallowInterceptTouchEvent` gesture arbitration).
+- **`NveHostActivity.kt`**: Reusable `ComponentActivity` host wiring Android lifecycle transitions (attach/detach/re-attach/dispose), viewport resize, `surfaceId` preservation, and Tier-2 `.so` hot-reload.
+
+## Build & Test
+
+Run all JVM (JUnit 5) and Android lifecycle (Robolectric) unit tests:
+
+```bash
+cd hosts/compose-kit
+./run-tests.sh
+```
+
+Or invoke Gradle directly with a HotSpot/JBR JDK 17–21 and `ANDROID_HOME` configured (avoid Eclipse OpenJ9; see `docs/UPSTREAM.md`):
+
+```bash
+cd hosts/compose-kit
+JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home \
+  ANDROID_HOME="$HOME/Library/Android/sdk" \
+  ./gradlew testDebugUnitTest assembleDebug
+```
 
 ## Usage Example
 
@@ -17,8 +37,6 @@ package com.example.app
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -58,13 +76,6 @@ fun CounterScreen() {
                 }
             },
         )
-        Button(onClick = { controller.dispatchCommand("reset") }) {
-            Text("Reset")
-        }
     }
 }
 ```
-
-## Codegen Integration
-
-`nve-codegen` (`export_compose`) generates strongly typed `@Composable` functions targeting `package dev.nve.compose` (`NveSurface`, `NveRenderBackend`, `NveEvent`, `NveSurfaceController`, `rememberNveSurfaceController`).
