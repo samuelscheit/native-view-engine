@@ -678,6 +678,10 @@ fn nvnc_encode(opcode: u16, args: &[crate::NativeValueRef<'_>]) -> Vec<u8> {
     buf.push(args.len() as u8);
     for &val in args {
         match val {
+            crate::NativeValueRef::U32(n) => {
+                buf.push(2);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
             crate::NativeValueRef::U64(n) => {
                 buf.push(4);
                 buf.extend_from_slice(&n.to_le_bytes());
@@ -892,4 +896,181 @@ fn native_view_web_element_blur_webview_and_video_ssr_hydration_and_commands() {
     assert_eq!(backend.native_view(10).unwrap().resolved_tag, "div");
     assert!(backend.native_view(10).unwrap().extra_css.contains("backdrop-filter:blur("));
     assert_eq!(backend.native_view(3).unwrap().current_url.as_deref(), Some("https://nve.dev/next"));
+}
+
+#[test]
+fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
+    use crate::native_view::{
+        decode_camera_preview_command, decode_camera_preview_props, CameraPreviewCommand,
+        CameraPreviewFacing, NativePropDecoder, NativeViewCodecError, StabilizationMode, TorchMode,
+        KIND_CAMERA_ALIAS, KIND_CAMERA_PREVIEW, NATIVE_VIEW_KIND_PROP_KEY,
+        NATIVE_VIEW_PROPS_PROP_KEY,
+    };
+    use crate::NativeValueRef;
+
+    let encode_cam_props = |dev: Option<&str>,
+                            facing: u32,
+                            torch: u32,
+                            zoom: f32,
+                            fps: u32,
+                            hdr: bool,
+                            stab: u32,
+                            fp: bool,
+                            audio: bool,
+                            active: bool| {
+        nvnp_encode(&[
+            (1, dev.map_or(NativeValueRef::Null, NativeValueRef::Str)),
+            (2, NativeValueRef::U32(facing)),
+            (3, NativeValueRef::U32(torch)),
+            (4, NativeValueRef::F32(zoom)),
+            (5, NativeValueRef::U32(fps)),
+            (6, NativeValueRef::Bool(hdr)),
+            (7, NativeValueRef::U32(stab)),
+            (8, NativeValueRef::Bool(fp)),
+            (9, NativeValueRef::Bool(audio)),
+            (10, NativeValueRef::Bool(active)),
+        ])
+    };
+
+    // 1. SSR + mirror HTML emission for `"nve.camera.preview"` with full NVNP fields.
+    let props1 = encode_cam_props(Some("usb-cam-1"), 2, 1, 2.5, 60, true, 2, true, true, true);
+    let mut b = CommandBufferBuilder::new(1, 1);
+    b.create_node(2, ComponentKind::Custom, Some(KIND_CAMERA_PREVIEW));
+    b.set_raw_prop(2, NATIVE_VIEW_KIND_PROP_KEY, &RawPropValue::String(KIND_CAMERA_PREVIEW.into()));
+    b.set_raw_prop(2, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(props1));
+    b.create_node(3, ComponentKind::Custom, Some(KIND_CAMERA_ALIAS));
+    b.set_children(ROOT_NODE_ID, &[2, 3]);
+    b.commit(true);
+    let frame0 = b.finish().to_vec();
+
+    let mut backend = WebBackend::new();
+    backend.submit_frame(&frame0).unwrap();
+    let ssr = backend.render_ssr();
+    let mirror = backend.render_html();
+
+    for html in [&ssr.html, &mirror] {
+        assert!(html.contains("<video data-nve-id=\"2\""));
+        assert!(html.contains("data-nve-native-kind=\"nve.camera.preview\""));
+        assert!(html.contains(" autoplay playsinline muted data-nve-camera=\"1\""));
+        assert!(html.contains("data-nve-camera-facing=\"front\""));
+        assert!(html.contains("data-nve-camera-torch=\"on\""));
+        assert!(html.contains("data-nve-camera-zoom=\"2.5\""));
+        assert!(html.contains("data-nve-camera-fps=\"60\""));
+        assert!(html.contains("data-nve-camera-active=\"1\""));
+        assert!(html.contains("data-nve-camera-audio=\"1\""));
+        assert!(html.contains("data-nve-camera-device=\"usb-cam-1\""));
+        // Default alias node without NVNP still renders `<video autoplay playsinline muted data-nve-camera="1">`.
+        assert!(html.contains("<video data-nve-id=\"3\""));
+        assert!(html.contains("data-nve-camera-facing=\"back\""));
+    }
+
+    // 2. Zero-flicker SSR hydration adopts camera `<video>` nodes with 0 mismatches & exact DOM identity.
+    let mut cli = WebBackend::hydrate_from_ssr(&ssr);
+    let cam_id_before = cli.native_dom_instance_id(2).unwrap();
+    let alias_id_before = cli.native_dom_instance_id(3).unwrap();
+    cli.submit_frame(&frame0).unwrap();
+    assert!(cli.hydration_report().mismatches.is_empty());
+    assert_eq!(cli.hydration_report().adopted_nodes, 3);
+    assert_eq!(cli.native_dom_instance_id(2), Some(cam_id_before));
+    assert_eq!(cli.native_dom_instance_id(3), Some(alias_id_before));
+
+    // 3. Imperative NVNC commands (opcodes 1..=7) update state & reflected HTML attributes.
+    let mut b2 = CommandBufferBuilder::new(1, 2);
+    b2.dispatch_command(2, "switch_facing", &nvnc_encode(1, &[NativeValueRef::U32(3)]));
+    b2.dispatch_command(2, "set_torch", &nvnc_encode(2, &[NativeValueRef::U32(2)]));
+    b2.dispatch_command(2, "set_zoom", &nvnc_encode(3, &[NativeValueRef::F32(3.25)]));
+    b2.dispatch_command(2, "focus_point", &nvnc_encode(4, &[NativeValueRef::F32(0.25), NativeValueRef::F32(0.75)]));
+    b2.dispatch_command(2, "capture_photo", &nvnc_encode(5, &[NativeValueRef::U32(88), NativeValueRef::U32(2)]));
+    b2.dispatch_command(2, "start_recording", &nvnc_encode(6, &[NativeValueRef::Str("/tmp/web.webm")]));
+    b2.commit(false);
+    backend.submit_frame(b2.finish()).unwrap();
+
+    let cam = &backend.native_view(2).unwrap().camera;
+    assert_eq!(cam.facing, CameraPreviewFacing::External);
+    assert_eq!(cam.torch, TorchMode::Auto);
+    assert!((cam.zoom - 3.25).abs() < 1e-6);
+    assert_eq!(cam.last_focus_point, Some((0.25, 0.75)));
+    assert_eq!(cam.photo_capture_count, 1);
+    assert_eq!(cam.last_photo_quality, Some(88));
+    assert_eq!(cam.last_photo_flash, Some(2));
+    assert!(cam.recording);
+    assert_eq!(cam.last_recording_path.as_deref(), Some("/tmp/web.webm"));
+    let ssr_rec = backend.render_ssr();
+    assert!(ssr_rec.html.contains("data-nve-camera-facing=\"external\""));
+    assert!(ssr_rec.html.contains("data-nve-camera-torch=\"auto\""));
+    assert!(ssr_rec.html.contains("data-nve-camera-zoom=\"3.25\""));
+    assert!(ssr_rec.html.contains("data-nve-camera-recording=\"1\""));
+
+    // StopRecording + deactivate via NVNP prop update.
+    let props_inactive = encode_cam_props(None, 1, 0, 1.0, 30, false, 0, false, false, false);
+    let mut b3 = CommandBufferBuilder::new(1, 3);
+    b3.dispatch_command(2, "stop_recording", &nvnc_encode(7, &[]));
+    b3.set_raw_prop(2, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(props_inactive));
+    b3.commit(true);
+    backend.submit_frame(b3.finish()).unwrap();
+    let cam_off = &backend.native_view(2).unwrap().camera;
+    assert!(!cam_off.recording);
+    assert!(!cam_off.active);
+    assert_eq!(cam_off.device_id, None);
+    assert_eq!(cam_off.stabilization, StabilizationMode::Off);
+    let ssr_off = backend.render_ssr();
+    assert!(ssr_off.html.contains("data-nve-camera-active=\"0\""));
+    assert!(!ssr_off.html.contains("data-nve-camera-recording="));
+    assert!(!ssr_off.html.contains("data-nve-camera-device="));
+
+    // 4. Corrupt buffer, out-of-range enum, and invalid numeric argument resilience.
+    let bad_facing = encode_cam_props(None, 0, 0, 1.0, 30, false, 0, false, false, true);
+    assert!(matches!(
+        decode_camera_preview_props(&NativePropDecoder::decode(&bad_facing).unwrap()),
+        Err(NativeViewCodecError::InvalidEnum("CameraPreviewFacing", 0))
+    ));
+    let bad_torch = encode_cam_props(None, 1, 3, 1.0, 30, false, 0, false, false, true);
+    assert!(matches!(
+        decode_camera_preview_props(&NativePropDecoder::decode(&bad_torch).unwrap()),
+        Err(NativeViewCodecError::InvalidEnum("TorchMode", 3))
+    ));
+    let bad_zoom = encode_cam_props(None, 1, 0, f32::NAN, 30, false, 0, false, false, true);
+    assert!(matches!(
+        decode_camera_preview_props(&NativePropDecoder::decode(&bad_zoom).unwrap()),
+        Err(NativeViewCodecError::TypeMismatch(_))
+    ));
+    let bad_fps = encode_cam_props(None, 1, 0, 1.0, 241, false, 0, false, false, true);
+    assert!(matches!(
+        decode_camera_preview_props(&NativePropDecoder::decode(&bad_fps).unwrap()),
+        Err(NativeViewCodecError::InvalidEnum("CameraFps", 241))
+    ));
+    assert!(matches!(
+        decode_camera_preview_command(&nvnc_encode(3, &[NativeValueRef::F32(-1.0)])),
+        Err(NativeViewCodecError::TypeMismatch(_))
+    ));
+    assert!(matches!(
+        decode_camera_preview_command(&nvnc_encode(4, &[NativeValueRef::F32(1.5), NativeValueRef::F32(0.5)])),
+        Err(NativeViewCodecError::TypeMismatch(_))
+    ));
+    assert!(matches!(
+        decode_camera_preview_command(&nvnc_encode(5, &[NativeValueRef::U32(101), NativeValueRef::U32(0)])),
+        Err(NativeViewCodecError::InvalidEnum("PhotoQuality", 101))
+    ));
+    assert!(matches!(
+        decode_camera_preview_command(&nvnc_encode(5, &[NativeValueRef::U32(90), NativeValueRef::U32(3)])),
+        Err(NativeViewCodecError::InvalidEnum("FlashMode", 3))
+    ));
+    assert!(matches!(
+        decode_camera_preview_command(&nvnc_encode(99, &[])),
+        Err(NativeViewCodecError::UnknownCommandOpcode(99))
+    ));
+    assert_eq!(
+        decode_camera_preview_command(&nvnc_encode(7, &[])).unwrap(),
+        CameraPreviewCommand::StopRecording
+    );
+
+    // Submitting corrupt NVNP / NVNC frames does not panic or overwrite valid state.
+    let mut b4 = CommandBufferBuilder::new(1, 4);
+    b4.set_raw_prop(2, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(vec![0xDE, 0xAD]));
+    b4.dispatch_command(2, "set_zoom", &[0x00, 0x01, 0x02]);
+    b4.dispatch_command(2, "switch_facing", &nvnc_encode(1, &[NativeValueRef::U32(99)]));
+    b4.commit(false);
+    backend.submit_frame(b4.finish()).unwrap();
+    assert_eq!(backend.native_view(2).unwrap().camera.facing, CameraPreviewFacing::Back);
+    assert!((backend.native_view(2).unwrap().camera.zoom - 1.0).abs() < 1e-6);
 }

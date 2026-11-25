@@ -178,6 +178,7 @@ HEADER_DEPS=(
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHostInternal.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.h"
+  "$REPO_ROOT/hosts/apple-common/NveAppleCamera.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.h"
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.h"
@@ -241,6 +242,7 @@ for src in \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost+Session.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.mm" \
+  "$REPO_ROOT/hosts/apple-common/NveAppleCamera.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.mm" \
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.mm" \
@@ -255,6 +257,9 @@ done
   -fobjc-arc \
   -target "arm64-apple-ios${IOS_MIN_VERSION}-simulator" \
   "${OBJ_FILES[@]}" \
+  -framework AVFoundation \
+  -framework CoreMedia \
+  -framework CoreVideo \
   -framework UIKit \
   -framework Foundation \
   -framework QuartzCore \
