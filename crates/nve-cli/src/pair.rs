@@ -1,6 +1,7 @@
 //! `nve pair` — Live `NVD1` binary delta device pairing server over BOTH UDP and TCP/WebSocket
 //! with zero-JSON bidirectional `InputEvents` ingestion back into the live app instance.
 
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -109,8 +110,29 @@ pub(crate) fn resolve_or_generate_token(token: Option<String>) -> String {
     }
 }
 
+pub(crate) fn format_bind_addr(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 pub(crate) fn display_host_for_uri(host: &str) -> &str {
-    if host == "0.0.0.0" || host == "::" { "127.0.0.1" } else { host }
+    if host == "0.0.0.0" || host == "::" || host == "[::]" {
+        "127.0.0.1"
+    } else {
+        host
+    }
+}
+
+pub(crate) fn format_ws_url(host: &str, ws_port: u16) -> String {
+    let disp = display_host_for_uri(host);
+    if disp.contains(':') && !disp.starts_with('[') {
+        format!("ws://[{disp}]:{ws_port}")
+    } else {
+        format!("ws://{disp}:{ws_port}")
+    }
 }
 
 pub(crate) fn format_pairing_uri(
@@ -129,6 +151,20 @@ pub(crate) fn format_pairing_uri(
     )
 }
 
+pub(crate) fn format_browser_pair_query(host: &str, ws_port: u16, token: &str) -> String {
+    format!("?pair={}&token={token}", format_ws_url(host, ws_port))
+}
+
+pub(crate) fn format_pair_ready_line(
+    host: &str,
+    udp_addr: SocketAddr,
+    ws_addr: SocketAddr,
+    token: &str,
+) -> String {
+    let ws_url = format_ws_url(host, ws_addr.port());
+    format!("NVE_PAIR_READY ws={ws_url} token={token} udp={udp_addr} tcp={ws_addr}")
+}
+
 pub(crate) fn format_pair_banner(
     dylib_path: &Path,
     host: &str,
@@ -138,12 +174,12 @@ pub(crate) fn format_pair_banner(
     width: f32,
     height: f32,
 ) -> String {
-    let disp = display_host_for_uri(host);
+    let ws_url = format_ws_url(host, ws_addr.port());
     let uri = format_pairing_uri(host, udp_addr.port(), ws_addr.port(), token, width, height);
+    let browser_query = format_browser_pair_query(host, ws_addr.port(), token);
     format!(
-        "nve pair — Live Binary NVD1 Device Pairing\n  dylib:   {}\n  udp:     {udp_addr}\n  tcp/ws:  ws://{disp}:{}/ws/nvd (bound {ws_addr})\n  token:   {token}\n  uri:     {uri}\n",
+        "nve pair — Live Binary NVD1 Device Pairing\n  dylib:   {}\n  udp:     {udp_addr}\n  tcp/ws:  {ws_url}/ws/nvd (bound {ws_addr})\n  token:   {token}\n  uri:     {uri}\n  browser: {browser_query}\n",
         dylib_path.display(),
-        ws_addr.port()
     )
 }
 
@@ -294,10 +330,12 @@ impl<A: PairedApp> PairSession<A> {
         height: f32,
     ) -> Result<Self, String> {
         let cfg = PairingConfig::new(token.clone());
-        let udp = UdpDeltaServer::bind(format!("{host}:{udp_port}"), cfg.clone())
-            .map_err(|e| format!("bind UDP pairing server on {host}:{udp_port}: {e}"))?;
-        let tcp = TcpDeltaServer::bind(format!("{host}:{ws_port}"), cfg)
-            .map_err(|e| format!("bind TCP/WS pairing server on {host}:{ws_port}: {e}"))?;
+        let udp_bind = format_bind_addr(host, udp_port);
+        let ws_bind = format_bind_addr(host, ws_port);
+        let udp = UdpDeltaServer::bind(&udp_bind, cfg.clone())
+            .map_err(|e| format!("bind UDP pairing server on {udp_bind}: {e}"))?;
+        let tcp = TcpDeltaServer::bind(&ws_bind, cfg)
+            .map_err(|e| format!("bind TCP/WS pairing server on {ws_bind}: {e}"))?;
 
         if width > 0.0 && height > 0.0 {
             let layout_ev = encode_events(&[NativeEvent {
@@ -503,10 +541,21 @@ pub(crate) fn cmd_pair(opts: PairOptions) {
     print!(
         "{}",
         format_pair_banner(
-            &dylib_path, &opts.host, session.udp_addr(), session.ws_addr(), &token, opts.width, opts.height,
+            &dylib_path,
+            &opts.host,
+            session.udp_addr(),
+            session.ws_addr(),
+            &token,
+            opts.width,
+            opts.height,
         )
     );
+    println!(
+        "{}",
+        format_pair_ready_line(&opts.host, session.udp_addr(), session.ws_addr(), &token)
+    );
     println!("Streaming live NVD1 frames & listening for remote InputEvents (Ctrl-C to stop)...");
+    let _ = std::io::stdout().flush();
     session.run_until(opts.fps, &AtomicBool::new(false), None);
 }
 
@@ -530,8 +579,33 @@ mod tests {
             format_pairing_uri("0.0.0.0", 8091, 8092, "tok123", 393.0, 852.0),
             "nve://pair?host=127.0.0.1&udp=8091&ws=8092&token=tok123&w=393&h=852"
         );
+        assert_eq!(
+            format_browser_pair_query("0.0.0.0", 8092, "tok123"),
+            "?pair=ws://127.0.0.1:8092&token=tok123"
+        );
         assert!(format_pairing_uri("192.168.1.42", 9001, 9002, "lan", 430.0, 932.0)
             .contains("host=192.168.1.42"));
+        assert_eq!(format_bind_addr("127.0.0.1", 0), "127.0.0.1:0");
+        assert_eq!(format_bind_addr("::1", 0), "[::1]:0");
+
+        let udp_addr: SocketAddr = "127.0.0.1:41001".parse().unwrap();
+        let ws_addr: SocketAddr = "127.0.0.1:41002".parse().unwrap();
+        let ready = format_pair_ready_line("0.0.0.0", udp_addr, ws_addr, "tok123");
+        assert_eq!(
+            ready,
+            "NVE_PAIR_READY ws=ws://127.0.0.1:41002 token=tok123 udp=127.0.0.1:41001 tcp=127.0.0.1:41002"
+        );
+        let banner = format_pair_banner(
+            Path::new("target/debug/libnve_example_counter.dylib"),
+            "0.0.0.0",
+            udp_addr,
+            ws_addr,
+            "tok123",
+            393.0,
+            852.0,
+        );
+        assert!(banner.contains("nve://pair?host=127.0.0.1&udp=41001&ws=41002&token=tok123"));
+        assert!(banner.contains("?pair=ws://127.0.0.1:41002&token=tok123"));
     }
 
     #[test]

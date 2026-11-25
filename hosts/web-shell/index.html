@@ -149,6 +149,11 @@
 				border-color: rgba(245, 158, 11, 0.45);
 			}
 
+			.status-pill[data-state="offline"] {
+				color: #fca5a5;
+				border-color: rgba(239, 68, 68, 0.45);
+			}
+
 			#app {
 				flex: 1 1 0;
 				width: 100%;
@@ -247,19 +252,55 @@
 				}
 			}
 
-			function normalizePairWsUrl(raw) {
-				if (/^wss?:\/\//i.test(raw)) {
-					return raw;
+			function parsePairTarget(rawPair, explicitToken) {
+				if (/^nve:\/\/pair/i.test(rawPair)) {
+					const parsed = new URL(rawPair.replace(/^nve:\/\//i, "http://"));
+					const host = (parsed.searchParams.get("host") || window.location.hostname || "127.0.0.1").trim();
+					const wsPort = (parsed.searchParams.get("ws") || "").trim();
+					const uriToken = (parsed.searchParams.get("token") || "").trim();
+					if (!wsPort) {
+						throw new Error("nve://pair URI is missing the ws=<port> parameter.");
+					}
+					const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+					const hostPart = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+					return {
+						wsUrl: `${proto}${hostPart}:${wsPort}/ws/nvd`,
+						token: explicitToken || uriToken,
+					};
 				}
-				const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
-				return `${proto}${raw}`;
+				const wsUrl = /^wss?:\/\//i.test(rawPair)
+					? rawPair
+					: `${window.location.protocol === "https:" ? "wss://" : "ws://"}${rawPair}`;
+				return { wsUrl, token: explicitToken };
 			}
 
-			function bootPairedClient(wasmMod, rawPairUrl, token) {
+			function setPairConnectionAttrs(state, connected, extra = {}) {
+				if (statusEl) {
+					statusEl.dataset.mode = "paired";
+					statusEl.dataset.pairState = state;
+					statusEl.dataset.pairConnected = String(Boolean(connected));
+					if (extra.url !== undefined) statusEl.dataset.pairUrl = extra.url;
+					if (extra.sessionId !== undefined) statusEl.dataset.pairSessionId = String(extra.sessionId);
+					if (extra.frames !== undefined) statusEl.dataset.pairFrames = String(extra.frames);
+				}
+				if (appEl) {
+					appEl.dataset.nveMode = "paired";
+					appEl.dataset.pairState = state;
+					appEl.dataset.pairConnected = String(Boolean(connected));
+					if (extra.frames !== undefined) appEl.dataset.pairFrames = String(extra.frames);
+				}
+			}
+
+			function bootPairedClient(wasmMod, rawPairUrl, explicitToken) {
+				const { wsUrl, token } = parsePairTarget(rawPairUrl, explicitToken);
 				if (!token) {
 					throw new Error("Missing ?token=<pairing_token> query parameter for ?pair= live pairing mode.");
 				}
-				const wsUrl = normalizePairWsUrl(rawPairUrl);
+				setPairConnectionAttrs("connecting", false, { url: wsUrl, sessionId: 0, frames: 0 });
+				if (statusEl) {
+					statusEl.textContent = "Pair: connecting…";
+					statusEl.dataset.state = "connecting";
+				}
 				const host = wasmMod.NveWebHost.create_paired("app", token);
 				const ws = new WebSocket(wsUrl);
 				ws.binaryType = "arraybuffer";
@@ -272,6 +313,11 @@
 				};
 
 				ws.addEventListener("open", () => {
+					setPairConnectionAttrs("authenticating", false, {
+						url: wsUrl,
+						sessionId: host.session_id(),
+						frames: host.frames_received(),
+					});
 					if (statusEl) {
 						statusEl.textContent = "Pair: authenticating…";
 						statusEl.dataset.state = "connecting";
@@ -290,8 +336,19 @@
 						while ((extra = host.take_outbound_message()) && extra.length > 0) {
 							sendBinary(extra);
 						}
+						const connected = host.is_connected();
+						setPairConnectionAttrs(connected ? "connected" : "authenticating", connected, {
+							url: wsUrl,
+							sessionId: host.session_id(),
+							frames: host.frames_received(),
+						});
 					} catch (err) {
 						console.error("[NVE Pair] Binary frame error:", err);
+						setPairConnectionAttrs("error", false, {
+							url: wsUrl,
+							sessionId: host.session_id(),
+							frames: host.frames_received(),
+						});
 						if (statusEl) {
 							statusEl.textContent = `Pair error: ${err}`;
 							statusEl.dataset.state = "offline";
@@ -300,6 +357,11 @@
 				});
 
 				ws.addEventListener("error", () => {
+					setPairConnectionAttrs("error", false, {
+						url: wsUrl,
+						sessionId: host.session_id(),
+						frames: host.frames_received(),
+					});
 					if (statusEl) {
 						statusEl.textContent = "Pair: socket error";
 						statusEl.dataset.state = "offline";
@@ -307,11 +369,26 @@
 				});
 
 				ws.addEventListener("close", () => {
+					setPairConnectionAttrs("disconnected", false, {
+						url: wsUrl,
+						sessionId: host.session_id(),
+						frames: host.frames_received(),
+					});
 					if (statusEl) {
 						statusEl.textContent = "Pair: disconnected";
 						statusEl.dataset.state = "offline";
 					}
 				});
+
+				window.addEventListener(
+					"pagehide",
+					() => {
+						try {
+							host.disconnect();
+						} catch {}
+					},
+					{ once: true }
+				);
 
 				window.__nvePairHost = host;
 				window.__nvePairSocket = ws;
@@ -326,6 +403,9 @@
 					if (isPaired) {
 						bootPairedClient(wasmMod, pairParam, pairToken);
 					} else {
+						const mode = isCounter ? "counter" : "studio";
+						if (statusEl) statusEl.dataset.mode = mode;
+						if (appEl) appEl.dataset.nveMode = mode;
 						const controller = isCounter
 							? wasmMod.start_counter_app("app", hotReloadWsUrl)
 							: wasmMod.start_studio_workspace_app("app", hotReloadWsUrl);

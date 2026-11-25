@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WEB_SHELL_DIR = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(WEB_SHELL_DIR, "..", "..");
 const PKG_DIR = path.join(WEB_SHELL_DIR, "pkg");
 
 const MIME_TYPES = {
@@ -409,6 +410,193 @@ async function getAppText(cdp) {
   return (await evalJs(cdp, `document.getElementById('app')?.innerText || ''`)) || "";
 }
 
+function resolveTargetDir() {
+  const envDir = process.env.CARGO_TARGET_DIR;
+  if (!envDir) {
+    return path.join(REPO_ROOT, "target");
+  }
+  return path.isAbsolute(envDir) ? envDir : path.resolve(REPO_ROOT, envDir);
+}
+
+function resolvePairArtifacts() {
+  const targetDir = resolveTargetDir();
+  const exeExt = process.platform === "win32" ? ".exe" : "";
+  const libPrefix = process.platform === "win32" ? "" : "lib";
+  const libExt =
+    process.platform === "darwin" ? "dylib" : process.platform === "win32" ? "dll" : "so";
+
+  const nveBin = path.join(targetDir, "debug", `nve${exeExt}`);
+  const counterDylib = path.join(targetDir, "debug", `${libPrefix}nve_example_counter.${libExt}`);
+  return { nveBin, counterDylib };
+}
+
+function ensurePairArtifacts() {
+  const { nveBin, counterDylib } = resolvePairArtifacts();
+  if (fs.existsSync(nveBin) && fs.existsSync(counterDylib)) {
+    return { nveBin, counterDylib };
+  }
+  console.log("==> Building nve-cli + nve-example-counter for live pair E2E...");
+  const res = spawnSync("cargo", ["build", "-p", "nve-example-counter", "-p", "nve-cli"], {
+    cwd: REPO_ROOT,
+    stdio: "inherit",
+  });
+  if (res.status !== 0) {
+    throw new Error(`cargo build -p nve-example-counter -p nve-cli failed with exit code ${res.status}`);
+  }
+  if (!fs.existsSync(nveBin) || !fs.existsSync(counterDylib)) {
+    throw new Error(
+      `Expected live pair artifacts after build:\n  nveBin=${nveBin} (exists=${fs.existsSync(nveBin)})\n  counterDylib=${counterDylib} (exists=${fs.existsSync(counterDylib)})`
+    );
+  }
+  return { nveBin, counterDylib };
+}
+
+async function stopChildProcess(proc) {
+  if (!proc) return;
+  if (proc.exitCode === null && !proc.killed) {
+    try {
+      proc.kill("SIGTERM");
+    } catch {}
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+        resolve();
+      }, 3000);
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+}
+
+function launchPairServer(nveBin, dylibPath) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      nveBin,
+      [
+        "pair",
+        "--dylib",
+        dylibPath,
+        "--host",
+        "127.0.0.1",
+        "--udp-port",
+        "0",
+        "--ws-port",
+        "0",
+      ],
+      {
+        cwd: REPO_ROOT,
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    let stdoutBuf = "";
+    let stderrBuf = "";
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
+      reject(err);
+    };
+
+    const timeout = setTimeout(() => {
+      fail(
+        new Error(
+          `Timed out waiting for NVE_PAIR_READY from nve pair.\nstdout:\n${stdoutBuf}\nstderr:\n${stderrBuf}`
+        )
+      );
+    }, 15000);
+
+    proc.stdout.on("data", (chunk) => {
+      stdoutBuf += chunk.toString("utf8");
+      const match = stdoutBuf.match(
+        /^NVE_PAIR_READY\s+ws=(\S+)\s+token=(\S+)\s+udp=(\S+)\s+tcp=(\S+)\s*$/m
+      );
+      if (match && !settled) {
+        const [, wsUrl, token, udpAddr, tcpAddr] = match;
+        const wsPort = Number(new URL(wsUrl).port);
+        const udpPort = Number(udpAddr.split(":").pop());
+        const tcpPort = Number(tcpAddr.split(":").pop());
+        if (!(wsPort > 0 && udpPort > 0 && tcpPort === wsPort)) {
+          fail(
+            new Error(
+              `Invalid resolved ports in NVE_PAIR_READY: ws=${wsUrl} udp=${udpAddr} tcp=${tcpAddr}`
+            )
+          );
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        resolve({
+          proc,
+          wsUrl,
+          token,
+          udpAddr,
+          tcpAddr,
+          wsPort,
+          udpPort,
+          stdout: stdoutBuf,
+        });
+      }
+    });
+
+    proc.stderr.on("data", (chunk) => {
+      stderrBuf += chunk.toString("utf8");
+    });
+
+    proc.on("error", (err) => {
+      fail(new Error(`Failed to spawn nve pair (${nveBin}): ${err.message}`));
+    });
+
+    proc.on("exit", (code, signal) => {
+      if (!settled) {
+        fail(
+          new Error(
+            `nve pair exited before NVE_PAIR_READY (code=${code}, signal=${signal}).\nstdout:\n${stdoutBuf}\nstderr:\n${stderrBuf}`
+          )
+        );
+      }
+    });
+  });
+}
+
+function assertNonCollapsedAndNonOverlapping(items, minW, minH, context) {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error(`Geometry assertion failed (${context}): empty item list`);
+  }
+  for (const item of items) {
+    if (!(item.w >= minW && item.h >= minH)) {
+      throw new Error(
+        `Collapsed geometry (${context}): ${item.id} has ${item.w}x${item.h} (min ${minW}x${minH})`
+      );
+    }
+  }
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i];
+      const b = items[j];
+      const separated =
+        a.right <= b.left + 1 ||
+        b.right <= a.left + 1 ||
+        a.bottom <= b.top + 1 ||
+        b.bottom <= a.top + 1;
+      if (!separated) {
+        throw new Error(
+          `Overlapping geometry (${context}): ${a.id} ${JSON.stringify(a)} overlaps ${b.id} ${JSON.stringify(b)}`
+        );
+      }
+    }
+  }
+}
+
 async function stopChrome(chrome) {
   if (!chrome) return;
   const { proc, userDataDir } = chrome;
@@ -441,11 +629,14 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${port}`;
   let chrome = null;
   let cdp = null;
+  let pairServer = null;
 
   const cleanup = async () => {
     try {
       cdp?.close();
     } catch {}
+    await stopChildProcess(pairServer?.proc);
+    pairServer = null;
     await stopChrome(chrome);
     await new Promise((resolve) => server.close(() => resolve()));
   };
@@ -514,7 +705,7 @@ async function main() {
     // =========================================================================
     // 1. Aether Workspace + NVE Studio Desktop 1280x800 (`/?app=studio&ws=off`)
     // =========================================================================
-    console.log("==> [1/3] Testing Aether Workspace + NVE Studio Desktop 1280x800 (?app=studio&ws=off)...");
+    console.log("==> [1/6] Testing Aether Workspace + NVE Studio Desktop 1280x800 (?app=studio&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off` });
 
     await waitForCondition(
@@ -844,7 +1035,7 @@ async function main() {
     // =========================================================================
     // 2. Responsive Mobile Portrait Resize (`393x852`, < 620pt breakpoint)
     // =========================================================================
-    console.log("==> [2/3] Testing Responsive Mobile Portrait Resize (393x852 -> 1280x800)...");
+    console.log("==> [2/6] Testing Responsive Mobile Portrait Resize (393x852 -> 1280x800)...");
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 393,
       height: 852,
@@ -901,7 +1092,7 @@ async function main() {
     // =========================================================================
     // 3. Counter App (`/?app=counter&ws=off`)
     // =========================================================================
-    console.log("==> [3/3] Testing Counter App (?app=counter&ws=off)...");
+    console.log("==> [3/6] Testing Counter App (?app=counter&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=counter&ws=off` });
 
     await waitForCondition(
@@ -949,13 +1140,395 @@ async function main() {
 
     console.log("    PASS Counter App (Increment x2 -> Count: 2 -> Reset -> Count: 0)");
 
+    // =========================================================================
+    // 4. Studio Docs View (`ActiveView::Docs`)
+    // =========================================================================
+    console.log("==> [4/6] Testing Studio Docs View (ActiveView::Docs)...");
+    await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off` });
+    await waitForCondition(
+      cdp,
+      "StudioWorkspaceApp remounted with nav-docs and nav-workbench",
+      () =>
+        window.__nveController?.app_name === "StudioWorkspaceApp" &&
+        Boolean(document.querySelector('[testid="nav-docs"]')) &&
+        Boolean(document.querySelector('[testid="nav-workbench"]'))
+    );
+
+    await clickElement(cdp, `document.querySelector('[testid="nav-docs"]')`, "nav-docs");
+    await waitForCondition(
+      cdp,
+      "Docs view rendered seeded RFC-042 and Release Checklist docs",
+      () => {
+        const hdr = document.querySelector('[testid="docs-header"]')?.innerText || "";
+        const list = document.querySelector('[testid="docs-blocks-list"]')?.innerText || "";
+        return (
+          Boolean(document.querySelector('[testid="doc-tab-1"]')) &&
+          Boolean(document.querySelector('[testid="doc-tab-2"]')) &&
+          hdr.includes("7 blocks | 1/2 checks") &&
+          list.includes("RFC-042: Zero-Copy NveSceneView") &&
+          list.includes("Enable crash-safe NVE_SNAP + .nvewal local persistence in Studio")
+        );
+      }
+    );
+
+    // Switch to second seeded doc and back to RFC-042.
+    await clickElement(cdp, `document.querySelector('[testid="doc-tab-2"]')`, "doc-tab-2");
+    await waitForCondition(
+      cdp,
+      "Switched to Release Checklist: v1.0 seeded doc",
+      () => {
+        const text = document.getElementById("app")?.innerText || "";
+        return text.includes("Pre-Flight Gates") && text.includes("8 blocks | 2/3 checks");
+      }
+    );
+    await clickElement(cdp, `document.querySelector('[testid="doc-tab-1"]')`, "doc-tab-1");
+    await waitForCondition(
+      cdp,
+      "Switched back to RFC-042 seeded doc",
+      () => (document.querySelector('[testid="docs-header"]')?.innerText || "").includes("7 blocks | 1/2 checks")
+    );
+
+    // Add a new block via the Docs composer.
+    const addedBlockDraft = "Stream binary NVD1 deltas over WebSocket";
+    await typeIntoInput(
+      cdp,
+      `document.querySelector('[testid="doc-new-block-input"]')`,
+      addedBlockDraft,
+      "doc-new-block-input"
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="doc-new-block-submit"]')`,
+      "doc-new-block-submit"
+    );
+    await waitForCondition(
+      cdp,
+      "New block #16 appended to RFC-042 doc",
+      () => {
+        const hdr = document.querySelector('[testid="docs-header"]')?.innerText || "";
+        const blk = document.querySelector('[testid="doc-block-16"]')?.innerText || "";
+        return hdr.includes("8 blocks | 1/2 checks") && blk.includes("Stream binary NVD1 deltas over WebSocket");
+      }
+    );
+
+    // Edit block #16 inline text and save.
+    const editedBlockText = "Verified zero-JSON binary NVD1 WebSocket streaming";
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="doc-block-edit-16"]')`,
+      "doc-block-edit-16"
+    );
+    await waitForCondition(
+      cdp,
+      "Inline editor opened for block #16",
+      () => Boolean(document.querySelector('[testid="doc-block-input-16"]'))
+    );
+    await typeIntoInput(
+      cdp,
+      `document.querySelector('[testid="doc-block-input-16"]')`,
+      editedBlockText,
+      "doc-block-input-16"
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="doc-block-save-16"]')`,
+      "doc-block-save-16"
+    );
+    await waitForCondition(
+      cdp,
+      "Edited block #16 saved and inline input closed",
+      () =>
+        !document.querySelector('[testid="doc-block-input-16"]') &&
+        (document.querySelector('[testid="doc-block-16"]')?.innerText || "").includes(
+          "Verified zero-JSON binary NVD1 WebSocket streaming"
+        )
+    );
+
+    // Toggle unchecked checklist item #7 -> [x] (2/2 checks).
+    await clickElement(cdp, `document.querySelector('[testid="doc-check-7"]')`, "doc-check-7");
+    await waitForCondition(
+      cdp,
+      "Checklist item #7 toggled to [x] (2/2 checks)",
+      () => {
+        const hdr = document.querySelector('[testid="docs-header"]')?.innerText || "";
+        const chk = document.querySelector('[testid="doc-check-7"]')?.innerText || "";
+        return chk.includes("[x]") && hdr.includes("2/2 checks");
+      }
+    );
+
+    // Reorder block #16 up above block #7 and verify DOM order changed.
+    const orderBefore = await evalJs(
+      cdp,
+      `Array.from(document.querySelectorAll('[testid="docs-blocks-list"] [testid^="doc-block-"]'))
+        .map((el) => el.getAttribute('testid'))
+        .filter((id) => /^doc-block-\\d+$/.test(id))`
+    );
+    if (!(orderBefore.indexOf("doc-block-7") >= 0 && orderBefore.indexOf("doc-block-7") < orderBefore.indexOf("doc-block-16"))) {
+      throw new Error(`Unexpected block order before reorder: ${JSON.stringify(orderBefore)}`);
+    }
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="doc-block-up-16"]')`,
+      "doc-block-up-16"
+    );
+    await waitForCondition(
+      cdp,
+      "Block #16 reordered above block #7",
+      () => {
+        const ids = Array.from(
+          document.querySelectorAll('[testid="docs-blocks-list"] [testid^="doc-block-"]')
+        )
+          .map((el) => el.getAttribute("testid"))
+          .filter((id) => /^doc-block-\d+$/.test(id));
+        const idx16 = ids.indexOf("doc-block-16");
+        const idx7 = ids.indexOf("doc-block-7");
+        return idx16 >= 0 && idx7 >= 0 && idx16 < idx7;
+      }
+    );
+
+    // Export Markdown and assert full structure, checked item, edited text, and reordered sequence.
+    await clickElement(cdp, `document.querySelector('[testid="doc-export-md"]')`, "doc-export-md");
+    await waitForCondition(
+      cdp,
+      "Markdown export preview rendered with edited & reordered blocks",
+      () => {
+        const md = document.querySelector('[testid="doc-markdown-preview"]')?.innerText || "";
+        return (
+          md.includes("MARKDOWN EXPORT") &&
+          md.includes("# RFC-042: Zero-Copy NveSceneView") &&
+          md.includes("- [x] Enable crash-safe NVE_SNAP + .nvewal local persistence in Studio") &&
+          md.includes("Verified zero-JSON binary NVD1 WebSocket streaming")
+        );
+      }
+    );
+    const mdText = await evalJs(
+      cdp,
+      `document.querySelector('[testid="doc-markdown-preview"]')?.innerText || ''`
+    );
+    const editedPos = mdText.indexOf(editedBlockText);
+    const checkPos = mdText.indexOf("- [x] Enable crash-safe NVE_SNAP");
+    if (!(editedPos >= 0 && checkPos > editedPos)) {
+      throw new Error(
+        `Markdown export did not reflect block reorder (editedPos=${editedPos}, checkPos=${checkPos}):\n${mdText}`
+      );
+    }
+    console.log(
+      "    PASS Studio Docs View (seeded docs, tab switch, add/edit block, checklist toggle, reorder, Markdown export)"
+    );
+
+    // =========================================================================
+    // 5. Studio Workbench View (`ActiveView::Workbench`)
+    // =========================================================================
+    console.log("==> [5/6] Testing Studio Workbench View (ActiveView::Workbench)...");
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="nav-workbench"]')`,
+      "nav-workbench"
+    );
+    await waitForCondition(
+      cdp,
+      "Workbench view rendered with 3 viewport presets and 9 connected host cards",
+      () => {
+        const grid = document.querySelector('[testid="wb-viewport-grid"]');
+        const hosts = document.querySelectorAll('[testid^="wb-host-"]');
+        return (
+          grid?.getAttribute("workbench-preset") === "all" &&
+          Boolean(document.querySelector('[testid="wb-frame-desktop"]')) &&
+          Boolean(document.querySelector('[testid="wb-frame-tablet"]')) &&
+          Boolean(document.querySelector('[testid="wb-frame-mobile"]')) &&
+          Boolean(document.querySelector('[testid="wb-telemetry-banner"]')) &&
+          hosts.length === 9
+        );
+      }
+    );
+
+    const wbAllGeom = await evalJs(
+      cdp,
+      `(() => {
+        const readRect = (el) => {
+          const r = el.getBoundingClientRect();
+          return {
+            id: el.getAttribute('testid'),
+            left: Math.round(r.left),
+            top: Math.round(r.top),
+            right: Math.round(r.right),
+            bottom: Math.round(r.bottom),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+          };
+        };
+        const frames = ['wb-frame-desktop', 'wb-frame-tablet', 'wb-frame-mobile']
+          .map((id) => readRect(document.querySelector('[testid="' + id + '"]')));
+        const hosts = Array.from(document.querySelectorAll('[testid^="wb-host-"]')).map(readRect);
+        return { frames, hosts };
+      })()`
+    );
+    assertNonCollapsedAndNonOverlapping(wbAllGeom.frames, 80, 60, "workbench viewport frames (all)");
+    assertNonCollapsedAndNonOverlapping(wbAllGeom.hosts, 80, 35, "workbench 9 host-matrix cards");
+
+    // Cycle viewport presets: Desktop -> Tablet -> Mobile -> All.
+    for (const [btnId, presetName, expectedFrame, absentFrames] of [
+      ["wb-preset-desktop", "desktop", "wb-frame-desktop", ["wb-frame-tablet", "wb-frame-mobile"]],
+      ["wb-preset-tablet", "tablet", "wb-frame-tablet", ["wb-frame-desktop", "wb-frame-mobile"]],
+      ["wb-preset-mobile", "mobile", "wb-frame-mobile", ["wb-frame-desktop", "wb-frame-tablet"]],
+    ]) {
+      await clickElement(cdp, `document.querySelector('[testid="${btnId}"]')`, btnId);
+      await waitForCondition(
+        cdp,
+        `Workbench preset switched to ${presetName}`,
+        `() => {
+          const grid = document.querySelector('[testid="wb-viewport-grid"]');
+          const active = document.querySelector('[testid="${expectedFrame}"]');
+          const absentOk = ${JSON.stringify(absentFrames)}.every(
+            (id) => !document.querySelector('[testid="' + id + '"]')
+          );
+          if (!grid || !active || !absentOk) return false;
+          const r = active.getBoundingClientRect();
+          return grid.getAttribute('workbench-preset') === ${JSON.stringify(presetName)} && r.width > 120 && r.height > 60;
+        }`
+      );
+    }
+
+    await clickElement(cdp, `document.querySelector('[testid="wb-preset-all"]')`, "wb-preset-all");
+    await waitForCondition(
+      cdp,
+      "Workbench preset restored to all (3) frames",
+      () =>
+        document.querySelector('[testid="wb-viewport-grid"]')?.getAttribute("workbench-preset") ===
+          "all" &&
+        Boolean(document.querySelector('[testid="wb-frame-desktop"]')) &&
+        Boolean(document.querySelector('[testid="wb-frame-tablet"]')) &&
+        Boolean(document.querySelector('[testid="wb-frame-mobile"]'))
+    );
+
+    // Toggle device chrome off/on and select a host card to verify interactivity.
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="wb-toggle-chrome"]')`,
+      "wb-toggle-chrome (off)"
+    );
+    await waitForCondition(
+      cdp,
+      "Workbench device chrome toggled off",
+      () => !(document.querySelector('[testid="wb-frame-desktop"]')?.innerText || "").includes("1280x800")
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="wb-toggle-chrome"]')`,
+      "wb-toggle-chrome (on)"
+    );
+    await waitForCondition(
+      cdp,
+      "Workbench device chrome restored",
+      () => (document.querySelector('[testid="wb-frame-desktop"]')?.innerText || "").includes("1280x800")
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid^="wb-host-"]')`,
+      "workbench first host card"
+    );
+    console.log(
+      `    PASS Studio Workbench View (presets all/desktop/tablet/mobile, 3 frames + 9 host cards non-collapsed & non-overlapping)`
+    );
+
+    // =========================================================================
+    // 6. Live `nve pair` Binary WebSocket Thin-Client (`?pair=ws://...&token=...`)
+    // =========================================================================
+    console.log("==> [6/6] Testing Live nve pair Binary WebSocket Thin-Client (?pair=ws://...&token=...)...");
+    const { nveBin, counterDylib } = ensurePairArtifacts();
+    try {
+      pairServer = await launchPairServer(nveBin, counterDylib);
+      assertIncludes(pairServer.stdout, "nve://pair?", "nve pair stdout URI");
+      assertIncludes(
+        pairServer.stdout,
+        `?pair=${pairServer.wsUrl}&token=${pairServer.token}`,
+        "nve pair stdout browser query"
+      );
+      console.log(
+        `    Spawned nve pair (ws=${pairServer.wsUrl}, udp=${pairServer.udpAddr}, tcp=${pairServer.tcpAddr})`
+      );
+
+      const pairPageUrl = `${baseUrl}/?pair=${encodeURIComponent(pairServer.wsUrl)}&token=${encodeURIComponent(pairServer.token)}`;
+      await cdp.send("Page.navigate", { url: pairPageUrl });
+
+      await waitForCondition(
+        cdp,
+        "Live paired thin-client connected with ZERO local WASM app and rendered Counter Count: 0",
+        () => {
+          const host = window.__nvePairHost;
+          const status = document.getElementById("nve-status");
+          const app = document.getElementById("app");
+          const text = app?.innerText || "";
+          return (
+            window.__nveController === undefined &&
+            Boolean(host) &&
+            host.is_connected() &&
+            host.frames_received() >= 1 &&
+            status?.dataset.state === "connected" &&
+            status?.dataset.pairConnected === "true" &&
+            app?.dataset.nveMode === "paired" &&
+            text.includes("NATIVE VIEW ENGINE") &&
+            text.includes("Count: 0") &&
+            text.includes("Increment +") &&
+            text.includes("Reset")
+          );
+        }
+      );
+
+      // Click Increment + twice -> live InputEvents=11 -> Rust CounterModule -> NVD1 delta -> DOM.
+      await clickElement(cdp, findButtonByText("Increment +"), "Paired Increment + (1st click)");
+      await waitForCondition(
+        cdp,
+        "Paired Counter incremented to Count: 1 over live binary WebSocket",
+        () => (document.getElementById("app")?.innerText || "").includes("Count: 1")
+      );
+
+      await clickElement(cdp, findButtonByText("Increment +"), "Paired Increment + (2nd click)");
+      await waitForCondition(
+        cdp,
+        "Paired Counter incremented to Count: 2 over live binary WebSocket",
+        () =>
+          (document.getElementById("app")?.innerText || "").includes("Count: 2") &&
+          Number(window.__nvePairHost?.frames_received() || 0) >= 3
+      );
+
+      // Click Reset -> verify Count: 0 round-trip.
+      await clickElement(cdp, findButtonByText("Reset"), "Paired Reset");
+      await waitForCondition(
+        cdp,
+        "Paired Counter reset to Count: 0 over live binary WebSocket",
+        () => (document.getElementById("app")?.innerText || "").includes("Count: 0")
+      );
+
+      const pairStats = await evalJs(
+        cdp,
+        `(() => ({
+          sessionId: window.__nvePairHost?.session_id(),
+          framesReceived: Number(window.__nvePairHost?.frames_received() || 0),
+          nodeCount: Number(window.__nvePairHost?.node_count() || 0),
+          statusText: document.getElementById('nve-status')?.textContent,
+          pairState: document.getElementById('nve-status')?.dataset.pairState,
+        }))()`
+      );
+      console.log(
+        `    PASS Live nve pair Thin-Client (session=${pairStats.sessionId}, frames=${pairStats.framesReceived}, nodes=${pairStats.nodeCount}, Count: 0 -> 1 -> 2 -> 0, status="${pairStats.statusText}")`
+      );
+
+      // Gracefully disconnect before terminating the nve pair subprocess so Chrome logs no close error.
+      await evalJs(cdp, `window.__nvePairHost?.disconnect(); true`);
+      await cdp.send("Page.navigate", { url: "about:blank" });
+    } finally {
+      await stopChildProcess(pairServer?.proc);
+      pairServer = null;
+    }
+
     if (errors.length > 0) {
       throw new Error(
         `Browser console/runtime errors detected (${errors.length}):\n${errors.join("\n")}`
       );
     }
 
-    console.log(`==> ALL WEB WASM E2E CHECKS PASSED (0 console errors, 0 WASM panics)`);
+    console.log(`==> ALL 6 WEB WASM + LIVE PAIR E2E SUITES PASSED (0 console errors, 0 WASM panics)`);
   } finally {
     await cleanup();
   }
