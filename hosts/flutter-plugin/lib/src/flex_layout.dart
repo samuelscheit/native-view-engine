@@ -452,7 +452,7 @@ class NveFlexLayoutSolver {
           );
         }
       }
-    } else if (freeMain < 0.0) {
+    } else if (freeMain < 0.0 && node.kind != NveComponentKind.scrollView) {
       var totalScaledShrink = 0.0;
       for (var i = 0; i < count; i++) {
         final cl = tree.node(liveChildren[i])!.layout;

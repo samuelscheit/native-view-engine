@@ -72,19 +72,20 @@ void main() {
   });
 
   group('NveEvent', () {
-    test('defaults rawPayload to empty Uint8List', () {
+    test('defaults payload to NveEmptyPayload and empty rawPayload', () {
       const event = NveEvent(
         surfaceId: 1,
         nodeId: 2,
         timestampUs: 3,
         kind: NveEventKind.press,
       );
+      expect(event.payload, isA<NveEmptyPayload>());
       expect(event.rawPayload, isEmpty);
       expect(event.name, isNull);
-      expect(event.payloadJson, isNull);
+      expect(event.parseBinValue(), isNull);
     });
 
-    test('fromPlatformMap parses map payload, raw JSON payload, and defaults', () {
+    test('fromPlatformMap parses map payload (as NveBinValue), raw binary payload, and typed fields', () {
       final fromMap = NveEvent.fromPlatformMap(<Object?, Object?>{
         'surfaceId': 7,
         'nodeId': 14,
@@ -98,34 +99,37 @@ void main() {
       expect(fromMap.timestampUs, 9001);
       expect(fromMap.kind, NveEventKind.custom);
       expect(fromMap.name, 'onIncrement');
-      expect(fromMap.payloadJson, <String, dynamic>{'count': 3, 'ok': true});
+      final view = fromMap.parseBinValue();
+      expect(view?.get('count')?.asInt64(), 3);
+      expect(view?.get('ok')?.asBool(), isTrue);
 
-      final rawJson = Uint8List.fromList(utf8.encode('{"value":"abc"}'));
-      final fromRawJson = NveEvent.fromPlatformMap(<Object?, Object?>{
+      final rawBin = NveBinValueEncoder.encode(<String, Object?>{'value': 'abc'});
+      final fromRawBin = NveEvent.fromPlatformMap(<Object?, Object?>{
         'surfaceId': 2,
         'nodeId': 3,
         'timestampUs': 4,
         'kind': NveEventKind.custom.code,
-        'rawPayload': rawJson,
+        'rawPayload': rawBin,
       });
-      expect(fromRawJson.payloadJson, <String, dynamic>{'value': 'abc'});
-      expect(fromRawJson.rawPayload, rawJson);
+      expect(fromRawBin.parseBinValue()?.get('value')?.asString(), 'abc');
+      expect(fromRawBin.rawPayload, rawBin);
 
-      final fromBinary = NveEvent.fromPlatformMap(<Object?, Object?>{
+      final fromInvalidBinary = NveEvent.fromPlatformMap(<Object?, Object?>{
         'kind': 'not-an-int',
         'rawPayload': Uint8List.fromList(<int>[0xFF, 0x00, 0x01]),
       });
-      expect(fromBinary.surfaceId, 0);
-      expect(fromBinary.nodeId, 0);
-      expect(fromBinary.timestampUs, 0);
-      expect(fromBinary.kind, NveEventKind.custom);
-      expect(fromBinary.payloadJson, isNull);
-      expect(fromBinary.rawPayload, Uint8List.fromList(<int>[0xFF, 0x00, 0x01]));
+      expect(fromInvalidBinary.surfaceId, 0);
+      expect(fromInvalidBinary.nodeId, 0);
+      expect(fromInvalidBinary.timestampUs, 0);
+      expect(fromInvalidBinary.kind, NveEventKind.custom);
+      expect(fromInvalidBinary.parseBinValue(), isNull);
+      expect(fromInvalidBinary.rawPayload, Uint8List.fromList(<int>[0xFF, 0x00, 0x01]));
     });
   });
 
   group('NveEventRingCodec', () {
-    test('decodes all 6 payload variants matching crates/nve-abi/src/events.rs', () {
+    test('decodes all 6 typed payload variants matching crates/nve-abi/src/events.rs', () {
+      final customBin = NveBinValueEncoder.encode(<String, Object?>{'delta': 5});
       final bytes = _buildEventRing(<void Function(BytesBuilder)>[
         // 0: Empty
         (b) => _writeEventHeader(
@@ -200,7 +204,7 @@ void main() {
             ..setFloat32(12, 180.0, Endian.little);
           b.add(layout.buffer.asUint8List());
         },
-        // 5: Custom with JSON payload
+        // 5: Custom with binary NveBinValue payload
         (b) {
           _writeEventHeader(
             b,
@@ -211,13 +215,12 @@ void main() {
             payloadTag: 5,
           );
           final nameBytes = utf8.encode('onIncrement');
-          final dataBytes = utf8.encode('{"delta":5}');
           final nameLen = ByteData(2)..setUint16(0, nameBytes.length, Endian.little);
-          final dataLen = ByteData(4)..setUint32(0, dataBytes.length, Endian.little);
+          final dataLen = ByteData(4)..setUint32(0, customBin.length, Endian.little);
           b.add(nameLen.buffer.asUint8List());
           b.add(nameBytes);
           b.add(dataLen.buffer.asUint8List());
-          b.add(dataBytes);
+          b.add(customBin);
         },
       ]);
 
@@ -225,144 +228,179 @@ void main() {
       expect(events, hasLength(6));
 
       expect(events[0].kind, NveEventKind.blur);
-      expect(events[0].payloadJson, isNull);
+      expect(events[0].payload, isA<NveEmptyPayload>());
 
       expect(events[1].kind, NveEventKind.press);
-      expect(events[1].payloadJson?['x'], closeTo(42.5, 0.001));
-      expect(events[1].payloadJson?['y'], closeTo(18.25, 0.001));
+      final pt = events[1].payload as NvePointPayload;
+      expect(pt.x, closeTo(42.5, 0.001));
+      expect(pt.y, closeTo(18.25, 0.001));
 
       expect(events[2].kind, NveEventKind.scroll);
-      expect(events[2].payloadJson?['x'], closeTo(12.0, 0.001));
-      expect(events[2].payloadJson?['y'], closeTo(240.5, 0.001));
-      expect(events[2].payloadJson?['contentWidth'], closeTo(390.0, 0.001));
-      expect(events[2].payloadJson?['contentHeight'], closeTo(1600.0, 0.001));
+      final sc = events[2].payload as NveScrollPayload;
+      expect(sc.x, closeTo(12.0, 0.001));
+      expect(sc.y, closeTo(240.5, 0.001));
+      expect(sc.contentWidth, closeTo(390.0, 0.001));
+      expect(sc.contentHeight, closeTo(1600.0, 0.001));
 
       expect(events[3].kind, NveEventKind.textChange);
-      expect(events[3].payloadJson?['text'], 'Hello Flutter 🚀');
+      expect((events[3].payload as NveTextPayload).text, 'Hello Flutter 🚀');
 
       expect(events[4].kind, NveEventKind.layout);
-      expect(events[4].payloadJson?['x'], closeTo(8.0, 0.001));
-      expect(events[4].payloadJson?['y'], closeTo(16.0, 0.001));
-      expect(events[4].payloadJson?['width'], closeTo(320.0, 0.001));
-      expect(events[4].payloadJson?['height'], closeTo(180.0, 0.001));
+      final lay = events[4].payload as NveLayoutPayload;
+      expect(lay.x, closeTo(8.0, 0.001));
+      expect(lay.y, closeTo(16.0, 0.001));
+      expect(lay.width, closeTo(320.0, 0.001));
+      expect(lay.height, closeTo(180.0, 0.001));
 
       expect(events[5].kind, NveEventKind.custom);
       expect(events[5].name, 'onIncrement');
-      expect(events[5].payloadJson, <String, dynamic>{'delta': 5});
+      expect(events[5].parseBinValue()?.get('delta')?.asInt64(), 5);
     });
 
-    test('encodeCustomEvents roundtrips JSON, raw binary, and empty payloads', () {
+    test('encodeEvents roundtrips all payload types including binary NveBinValue and raw blobs', () {
       final rawBlob = Uint8List.fromList(<int>[9, 8, 7, 6]);
       final input = <NveEvent>[
         const NveEvent(
           surfaceId: 10,
-          nodeId: 2,
-          timestampUs: 123456,
-          kind: NveEventKind.custom,
-          name: 'onSave',
-          payloadJson: <String, dynamic>{'title': 'Draft', 'count': 4},
+          nodeId: 1,
+          timestampUs: 100,
+          kind: NveEventKind.focus,
         ),
-        NveEvent(
+        const NveEvent(
+          surfaceId: 10,
+          nodeId: 2,
+          timestampUs: 200,
+          kind: NveEventKind.press,
+          payload: NvePointPayload(x: 15.5, y: 25.25),
+        ),
+        const NveEvent(
           surfaceId: 10,
           nodeId: 3,
-          timestampUs: 123789,
-          kind: NveEventKind.custom,
-          name: 'onRaw',
-          payloadJson: const <String, dynamic>{'ignored': true},
-          rawPayload: rawBlob,
+          timestampUs: 300,
+          kind: NveEventKind.scroll,
+          payload: NveScrollPayload(x: 0.0, y: 120.5, contentWidth: 300.0, contentHeight: 900.0),
         ),
         const NveEvent(
           surfaceId: 10,
           nodeId: 4,
-          timestampUs: 123999,
-          kind: NveEventKind.custom,
-          name: 'onEmpty',
+          timestampUs: 400,
+          kind: NveEventKind.textChange,
+          payload: NveTextPayload('Typed'),
+        ),
+        const NveEvent(
+          surfaceId: 10,
+          nodeId: 5,
+          timestampUs: 500,
+          kind: NveEventKind.layout,
+          payload: NveLayoutPayload(x: 1.0, y: 2.0, width: 100.0, height: 50.0),
+        ),
+        NveEvent.custom(
+          surfaceId: 10,
+          nodeId: 6,
+          timestampUs: 600,
+          name: 'onSave',
+          value: <String, Object?>{'title': 'Draft', 'count': 4},
+        ),
+        NveEvent.custom(
+          surfaceId: 10,
+          nodeId: 7,
+          timestampUs: 700,
+          name: 'onRaw',
+          rawBytes: rawBlob,
         ),
       ];
 
-      final encoded = NveEventRingCodec.encodeCustomEvents(input);
+      final encoded = NveEventRingCodec.encodeEvents(input);
       final decoded = NveEventRingCodec.decode(encoded);
-      expect(decoded, hasLength(3));
+      expect(decoded, hasLength(7));
 
-      expect(decoded[0].surfaceId, 10);
-      expect(decoded[0].nodeId, 2);
-      expect(decoded[0].timestampUs, 123456);
-      expect(decoded[0].name, 'onSave');
-      expect(decoded[0].payloadJson, <String, dynamic>{'title': 'Draft', 'count': 4});
+      expect(decoded[0].payload, const NveEmptyPayload());
+      expect(decoded[1].payload, const NvePointPayload(x: 15.5, y: 25.25));
+      expect(
+        decoded[2].payload,
+        const NveScrollPayload(x: 0.0, y: 120.5, contentWidth: 300.0, contentHeight: 900.0),
+      );
+      expect(decoded[3].payload, const NveTextPayload('Typed'));
+      expect(decoded[4].payload, const NveLayoutPayload(x: 1.0, y: 2.0, width: 100.0, height: 50.0));
+      expect(decoded[5].name, 'onSave');
+      expect(decoded[5].parseBinValue()?.get('title')?.asString(), 'Draft');
+      expect(decoded[5].parseBinValue()?.get('count')?.asInt64(), 4);
+      expect(decoded[6].name, 'onRaw');
+      expect(decoded[6].rawPayload, rawBlob);
+      expect(decoded[6].parseBinValue(), isNull);
+    });
 
-      // rawPayload takes precedence over payloadJson when non-empty.
-      expect(decoded[1].name, 'onRaw');
-      expect(decoded[1].rawPayload, rawBlob);
-      expect(decoded[1].payloadJson, isNull);
-
-      expect(decoded[2].name, 'onEmpty');
-      expect(decoded[2].rawPayload, isEmpty);
-      expect(decoded[2].payloadJson, isNull);
+    test('encodeScrollEvent matches wire EventRing format', () {
+      final bytes = encodeScrollEvent(
+        surfaceId: 4,
+        nodeId: 12,
+        x: 10.5,
+        y: 250.25,
+        contentWidth: 400.0,
+        contentHeight: 1200.0,
+        timestampUs: 999999,
+      );
+      expect(bytes.length, 38);
+      final decoded = NveEventRingCodec.decode(bytes);
+      expect(decoded, hasLength(1));
+      expect(decoded.single.surfaceId, 4);
+      expect(decoded.single.nodeId, 12);
+      expect(decoded.single.timestampUs, 999999);
+      expect(decoded.single.kind, NveEventKind.scroll);
+      expect(
+        decoded.single.payload,
+        const NveScrollPayload(x: 10.5, y: 250.25, contentWidth: 400.0, contentHeight: 1200.0),
+      );
     });
 
     test('handles short, empty, and truncated buffers safely', () {
       expect(NveEventRingCodec.decode(Uint8List(0)), isEmpty);
       expect(NveEventRingCodec.decode(Uint8List.fromList(<int>[1, 2, 3])), isEmpty);
+      expect(NveEventRingCodec.decode(Uint8List(4)), isEmpty);
 
-      final zeroCount = Uint8List(4);
-      expect(NveEventRingCodec.decode(zeroCount), isEmpty);
-
-      // Header claims 2 events, only 1 complete event + 4 trailing bytes exist.
-      final truncated = BytesBuilder()
-        ..add((ByteData(4)..setUint32(0, 2, Endian.little)).buffer.asUint8List());
-      _writeEventHeader(
-        truncated,
-        surfaceId: 4,
-        nodeId: 5,
-        timestampUs: 6,
-        kindCode: NveEventKind.focus.code,
-        payloadTag: 0,
-      );
-      truncated.add(<int>[1, 2, 3, 4]);
-
-      final decoded = NveEventRingCodec.decode(truncated.toBytes());
-      expect(decoded, hasLength(1));
-      expect(decoded[0].surfaceId, 4);
-      expect(decoded[0].kind, NveEventKind.focus);
-
-      // Every prefix truncation of a rich multi-payload EventRing must return cleanly without throwing.
-      final full = _buildEventRing(<void Function(BytesBuilder)>[
-        (b) {
-          _writeEventHeader(b, surfaceId: 1, nodeId: 1, timestampUs: 1, kindCode: 1, payloadTag: 1);
-          b.add((ByteData(8)..setFloat32(0, 1.0, Endian.little)..setFloat32(4, 2.0, Endian.little))
-              .buffer
-              .asUint8List());
-        },
-        (b) {
-          _writeEventHeader(b, surfaceId: 1, nodeId: 2, timestampUs: 2, kindCode: 3, payloadTag: 2);
-          b.add(Uint8List(16));
-        },
-        (b) {
-          _writeEventHeader(b, surfaceId: 1, nodeId: 3, timestampUs: 3, kindCode: 4, payloadTag: 3);
-          final txt = utf8.encode('hello');
-          b.add((ByteData(4)..setUint32(0, txt.length, Endian.little)).buffer.asUint8List());
-          b.add(txt);
-        },
-        (b) {
-          _writeEventHeader(b, surfaceId: 1, nodeId: 4, timestampUs: 4, kindCode: 7, payloadTag: 4);
-          b.add(Uint8List(16));
-        },
-        (b) {
-          _writeEventHeader(b, surfaceId: 1, nodeId: 5, timestampUs: 5, kindCode: 8, payloadTag: 5);
-          final name = utf8.encode('ev');
-          final data = utf8.encode('{"a":1}');
-          b.add((ByteData(2)..setUint16(0, name.length, Endian.little)).buffer.asUint8List());
-          b.add(name);
-          b.add((ByteData(4)..setUint32(0, data.length, Endian.little)).buffer.asUint8List());
-          b.add(data);
-        },
+      final full = NveEventRingCodec.encodeEvents(<NveEvent>[
+        const NveEvent(
+          surfaceId: 1,
+          nodeId: 1,
+          timestampUs: 1,
+          kind: NveEventKind.press,
+          payload: NvePointPayload(x: 1.0, y: 2.0),
+        ),
+        const NveEvent(
+          surfaceId: 1,
+          nodeId: 2,
+          timestampUs: 2,
+          kind: NveEventKind.scroll,
+          payload: NveScrollPayload(x: 0.0, y: 50.0, contentWidth: 100.0, contentHeight: 400.0),
+        ),
+        const NveEvent(
+          surfaceId: 1,
+          nodeId: 3,
+          timestampUs: 3,
+          kind: NveEventKind.textChange,
+          payload: NveTextPayload('hello'),
+        ),
+        const NveEvent(
+          surfaceId: 1,
+          nodeId: 4,
+          timestampUs: 4,
+          kind: NveEventKind.layout,
+          payload: NveLayoutPayload(x: 0.0, y: 0.0, width: 100.0, height: 50.0),
+        ),
+        NveEvent.custom(
+          surfaceId: 1,
+          nodeId: 5,
+          timestampUs: 5,
+          name: 'ev',
+          value: <String, Object?>{'a': 1},
+        ),
       ]);
       for (var cut = 0; cut < full.length; cut++) {
         final partial = NveEventRingCodec.decode(Uint8List.sublistView(full, 0, cut));
         expect(partial.length, lessThan(5));
       }
 
-      // Oversized length (0xFFFFFFFF) in Text and Custom payloads must never throw RangeError.
+      // Oversized length (0xFFFFFFFF) must never throw RangeError.
       final oversizedText = BytesBuilder()
         ..add((ByteData(4)..setUint32(0, 1, Endian.little)).buffer.asUint8List());
       _writeEventHeader(

@@ -7,6 +7,63 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_flutter.dart';
 
+String _readStrSlice(NveStrSlice slice) {
+  if (slice.ptr == ffi.nullptr || slice.len == 0) return '';
+  return utf8.decode(slice.ptr.asTypedList(slice.len));
+}
+
+Object? _readNveValue(NveValue v) {
+  return switch (NveValueTag.fromCode(v.tag)) {
+    NveValueTag.nullValue => null,
+    NveValueTag.boolValue => v.data.boolVal != 0,
+    NveValueTag.i64 => v.data.i64Val,
+    NveValueTag.f64 => v.data.f64Val,
+    NveValueTag.str => _readStrSlice(v.data.strVal),
+    NveValueTag.bytes => v.data.bytesVal.ptr == ffi.nullptr || v.data.bytesVal.len == 0
+        ? Uint8List(0)
+        : Uint8List.fromList(v.data.bytesVal.ptr.asTypedList(v.data.bytesVal.len)),
+    NveValueTag.array => List<Object?>.generate(
+        v.data.arrayVal.len,
+        (int i) => _readNveValue(v.data.arrayVal.ptr[i]),
+      ),
+    NveValueTag.map => <String, Object?>{
+        for (var i = 0; i < v.data.mapVal.len; i++)
+          _readStrSlice(v.data.mapVal.ptr[i].key): _readNveValue(v.data.mapVal.ptr[i].value),
+      },
+    null => null,
+  };
+}
+
+class _RecordedDirectEvent {
+  const _RecordedDirectEvent({
+    required this.surfaceId,
+    required this.nodeId,
+    required this.timestampUs,
+    required this.kind,
+    required this.payloadTag,
+    required this.name,
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.text,
+    required this.value,
+  });
+
+  final int surfaceId;
+  final int nodeId;
+  final int timestampUs;
+  final int kind;
+  final int payloadTag;
+  final String name;
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+  final String text;
+  final Object? value;
+}
+
 class _TestAlloc {
   static final ffi.DynamicLibrary _libc = Platform.isWindows
       ? ffi.DynamicLibrary.open('ucrtbase.dll')
@@ -50,6 +107,7 @@ class _MockNativeModule {
     this.includeComponent = true,
     this.includeDev = true,
     this.includeSurface = true,
+    this.includeDirectApis = true,
     this.createReturnsNull = false,
   }) {
     _scratchSlice = _alloc.allocate<NveBufferSlice>(ffi.sizeOf<NveBufferSlice>());
@@ -62,6 +120,10 @@ class _MockNativeModule {
       _onDispatchEvents,
       exceptionalReturn: 0,
     );
+    _dispatchDirectCb = ffi.NativeCallable<NveDispatchEventsDirectNative>.isolateLocal(
+      _onDispatchEventsDirect,
+      exceptionalReturn: 0,
+    );
     _measureCb = ffi.NativeCallable<NveMeasureNative>.isolateLocal(_onMeasure);
     _hitTestCb = ffi.NativeCallable<NveHitTestNative>.isolateLocal(
       _onHitTest,
@@ -69,6 +131,10 @@ class _MockNativeModule {
     );
     _setPropsCb = ffi.NativeCallable<NveSetPropsNative>.isolateLocal(
       _onSetProps,
+      exceptionalReturn: 0,
+    );
+    _setPropsDirectCb = ffi.NativeCallable<NveSetPropsDirectNative>.isolateLocal(
+      _onSetPropsDirect,
       exceptionalReturn: 0,
     );
     _drainCb = ffi.NativeCallable<NveDrainEmittedEventsNative>.isolateLocal(_onDrain);
@@ -85,7 +151,7 @@ class _MockNativeModule {
       ..destroy = _destroyCb.nativeFunction
       ..render = _renderCb.nativeFunction
       ..dispatchEvents = _dispatchEventsCb.nativeFunction
-      ..dispatchEventsDirect = ffi.nullptr;
+      ..dispatchEventsDirect = includeDirectApis ? _dispatchDirectCb.nativeFunction : ffi.nullptr;
 
     _layoutApi = _alloc.allocate<NveLayoutApi>(ffi.sizeOf<NveLayoutApi>());
     _layoutApi.ref
@@ -96,7 +162,7 @@ class _MockNativeModule {
     _componentApi.ref
       ..setProps = _setPropsCb.nativeFunction
       ..drainEmittedEvents = _drainCb.nativeFunction
-      ..setPropsDirect = ffi.nullptr;
+      ..setPropsDirect = includeDirectApis ? _setPropsDirectCb.nativeFunction : ffi.nullptr;
 
     _devApi = _alloc.allocate<NveDevApi>(ffi.sizeOf<NveDevApi>());
     _devApi.ref
@@ -109,6 +175,7 @@ class _MockNativeModule {
   final bool includeLayout;
   final bool includeComponent;
   final bool includeDev;
+  final bool includeDirectApis;
   final bool createReturnsNull;
 
   final _TestAlloc _alloc = _TestAlloc();
@@ -123,9 +190,11 @@ class _MockNativeModule {
   late final ffi.NativeCallable<NveDestroyNative> _destroyCb;
   late final ffi.NativeCallable<NveRenderNative> _renderCb;
   late final ffi.NativeCallable<NveDispatchEventsNative> _dispatchEventsCb;
+  late final ffi.NativeCallable<NveDispatchEventsDirectNative> _dispatchDirectCb;
   late final ffi.NativeCallable<NveMeasureNative> _measureCb;
   late final ffi.NativeCallable<NveHitTestNative> _hitTestCb;
   late final ffi.NativeCallable<NveSetPropsNative> _setPropsCb;
+  late final ffi.NativeCallable<NveSetPropsDirectNative> _setPropsDirectCb;
   late final ffi.NativeCallable<NveDrainEmittedEventsNative> _drainCb;
   late final ffi.NativeCallable<NveApplyHotPatchNative> _hotPatchCb;
   late final ffi.NativeCallable<NveSnapshotStateNative> _snapshotCb;
@@ -136,8 +205,10 @@ class _MockNativeModule {
   final List<int> renderedFrameIds = <int>[];
   Uint8List nextRenderBytes = Uint8List.fromList(<int>[0x4E, 0x56, 0x45, 0x31]);
   final List<Uint8List> dispatchedEvents = <Uint8List>[];
+  final List<List<_RecordedDirectEvent>> dispatchedDirectBatches = <List<_RecordedDirectEvent>>[];
   int dispatchReturn = 1;
-  final List<String> propsHistory = <String>[];
+  final List<Uint8List> propsBinHistory = <Uint8List>[];
+  final List<Map<String, Object?>> propsDirectHistory = <Map<String, Object?>>[];
   int setPropsReturn = 1;
   Uint8List outboundEvents = Uint8List(0);
   final List<String> hotPatches = <String>[];
@@ -199,6 +270,33 @@ class _MockNativeModule {
     return dispatchReturn;
   }
 
+  int _onDispatchEventsDirect(ffi.Pointer<ffi.Void> handle, NveEventBatch batch) {
+    final captured = <_RecordedDirectEvent>[];
+    if (batch.ptr != ffi.nullptr && batch.len > 0) {
+      for (var i = 0; i < batch.len; i++) {
+        final ev = batch.ptr[i];
+        captured.add(
+          _RecordedDirectEvent(
+            surfaceId: ev.surfaceId,
+            nodeId: ev.nodeId,
+            timestampUs: ev.timestampUs,
+            kind: ev.kind,
+            payloadTag: ev.payloadTag,
+            name: _readStrSlice(ev.name),
+            x: ev.x,
+            y: ev.y,
+            width: ev.width,
+            height: ev.height,
+            text: _readStrSlice(ev.text),
+            value: _readNveValue(ev.value),
+          ),
+        );
+      }
+    }
+    dispatchedDirectBatches.add(captured);
+    return dispatchReturn;
+  }
+
   NveIntrinsicSize _onMeasure(ffi.Pointer<ffi.Void> handle, NveSizeConstraints c) {
     lastMinW = c.minW;
     lastMinH = c.minH;
@@ -221,7 +319,22 @@ class _MockNativeModule {
     final bytes = slice.ptr == ffi.nullptr || slice.len == 0
         ? Uint8List(0)
         : Uint8List.fromList(slice.ptr.asTypedList(slice.len));
-    propsHistory.add(utf8.decode(bytes));
+    propsBinHistory.add(bytes);
+    return setPropsReturn;
+  }
+
+  int _onSetPropsDirect(
+    ffi.Pointer<ffi.Void> handle,
+    ffi.Pointer<NveMapEntry> entries,
+    int count,
+  ) {
+    final captured = <String, Object?>{};
+    if (entries != ffi.nullptr && count > 0) {
+      for (var i = 0; i < count; i++) {
+        captured[_readStrSlice(entries[i].key)] = _readNveValue(entries[i].value);
+      }
+    }
+    propsDirectHistory.add(captured);
     return setPropsReturn;
   }
 
@@ -274,9 +387,11 @@ class _MockNativeModule {
     _destroyCb.close();
     _renderCb.close();
     _dispatchEventsCb.close();
+    _dispatchDirectCb.close();
     _measureCb.close();
     _hitTestCb.close();
     _setPropsCb.close();
+    _setPropsDirectCb.close();
     _drainCb.close();
     _hotPatchCb.close();
     _snapshotCb.close();
@@ -287,7 +402,7 @@ class _MockNativeModule {
 
 void main() {
   group('NveAppInstance FFI contracts', () {
-    test('full vtable lifecycle, props, rendering, events, dev, layout, hitTest', () {
+    test('full vtable lifecycle, direct props & events, rendering, dev, layout, hitTest', () {
       final mock = _MockNativeModule();
       addTearDown(mock.close);
 
@@ -298,15 +413,43 @@ void main() {
       expect(instance.surfaceId, 42);
       expect(instance.isDisposed, isFalse);
       expect(instance.supportsLayoutAndHitTest, isTrue);
+      expect(instance.supportsDirectProps, isTrue);
+      expect(instance.supportsDirectEvents, isTrue);
       expect(mock.createdSurfaceId, 42);
 
-      // setPropsJson
+      // setPropsDirect with all types including nested arrays/maps & bytes
       mock.setPropsReturn = 1;
-      expect(instance.setPropsJson(<String, dynamic>{'count': 5, 'title': 'Hi'}), isTrue);
-      expect(jsonDecode(mock.propsHistory.single), <String, dynamic>{'count': 5, 'title': 'Hi'});
+      final blob = Uint8List.fromList(<int>[0xDE, 0xAD, 0xBE, 0xEF]);
+      expect(
+        instance.setPropsDirect(<String, Object?>{
+          'nullVal': null,
+          'flag': true,
+          'count': 5,
+          'ratio': 2.5,
+          'title': 'Hi 🚀',
+          'blob': blob,
+          'nested': <Object?>[
+            1,
+            <String, Object?>{'inner': 'ok'},
+          ],
+        }),
+        isTrue,
+      );
+      expect(mock.propsBinHistory, isEmpty);
+      expect(mock.propsDirectHistory, hasLength(1));
+      expect(mock.propsDirectHistory.single['nullVal'], isNull);
+      expect(mock.propsDirectHistory.single['flag'], isTrue);
+      expect(mock.propsDirectHistory.single['count'], 5);
+      expect(mock.propsDirectHistory.single['ratio'], closeTo(2.5, 1e-9));
+      expect(mock.propsDirectHistory.single['title'], 'Hi 🚀');
+      expect(mock.propsDirectHistory.single['blob'], blob);
+      expect(mock.propsDirectHistory.single['nested'], <Object?>[
+        1,
+        <String, Object?>{'inner': 'ok'},
+      ]);
 
       mock.setPropsReturn = 0;
-      expect(instance.setPropsJson(<String, dynamic>{'count': 5}), isFalse);
+      expect(instance.setPropsDirect(<String, Object?>{'count': 5}), isFalse);
 
       // renderNextFrame increments frame ID and handles empty slice
       expect(instance.renderNextFrame(), Uint8List.fromList(<int>[0x4E, 0x56, 0x45, 0x31]));
@@ -314,39 +457,61 @@ void main() {
       expect(instance.renderNextFrame(), isEmpty);
       expect(mock.renderedFrameIds, <int>[1, 2]);
 
-      // dispatchEvents
-      final encodedIn = NveEventRingCodec.encodeCustomEvents(<NveEvent>[
-        const NveEvent(
-          surfaceId: 42,
-          nodeId: 1,
-          timestampUs: 500,
-          kind: NveEventKind.custom,
-          name: 'reset',
-          payloadJson: <String, dynamic>{'hard': true},
-        ),
-      ]);
+      // dispatchEventsDirect roundtrips all event kinds
       mock.dispatchReturn = 1;
-      expect(instance.dispatchEvents(encodedIn), isTrue);
-      expect(mock.dispatchedEvents.single, encodedIn);
-
-      mock.dispatchReturn = 0;
-      expect(instance.dispatchEvents(Uint8List(0)), isFalse);
+      expect(
+        instance.dispatchEventsDirect(<NveEvent>[
+          const NveEvent(
+            surfaceId: 42,
+            nodeId: 2,
+            timestampUs: 100,
+            kind: NveEventKind.press,
+            payload: NvePointPayload(x: 10.5, y: 20.25),
+          ),
+          const NveEvent(
+            surfaceId: 42,
+            nodeId: 3,
+            timestampUs: 200,
+            kind: NveEventKind.scroll,
+            payload: NveScrollPayload(x: 0.0, y: 80.0, contentWidth: 320.0, contentHeight: 900.0),
+          ),
+          NveEvent.custom(
+            surfaceId: 42,
+            nodeId: 1,
+            timestampUs: 500,
+            name: 'reset',
+            value: <String, Object?>{'hard': true},
+          ),
+        ]),
+        isTrue,
+      );
+      expect(mock.dispatchedEvents, isEmpty);
+      expect(mock.dispatchedDirectBatches, hasLength(1));
+      final batch = mock.dispatchedDirectBatches.single;
+      expect(batch, hasLength(3));
+      expect(batch[0].kind, NveEventKind.press.code);
+      expect(batch[0].x, closeTo(10.5, 1e-3));
+      expect(batch[0].y, closeTo(20.25, 1e-3));
+      expect(batch[1].kind, NveEventKind.scroll.code);
+      expect(batch[1].y, closeTo(80.0, 1e-3));
+      expect(batch[1].height, closeTo(900.0, 1e-3));
+      expect(batch[2].name, 'reset');
+      expect(batch[2].value, <String, Object?>{'hard': true});
 
       // drainEmittedEvents
-      mock.outboundEvents = NveEventRingCodec.encodeCustomEvents(<NveEvent>[
-        const NveEvent(
+      mock.outboundEvents = NveEventRingCodec.encodeEvents(<NveEvent>[
+        NveEvent.custom(
           surfaceId: 42,
           nodeId: 3,
           timestampUs: 999,
-          kind: NveEventKind.custom,
           name: 'onIncrement',
-          payloadJson: <String, dynamic>{'count': 6},
+          value: <String, Object?>{'count': 6},
         ),
       ]);
       final drained = instance.drainEmittedEvents();
       expect(drained, hasLength(1));
       expect(drained.single.name, 'onIncrement');
-      expect(drained.single.payloadJson, <String, dynamic>{'count': 6});
+      expect(drained.single.parseBinValue()?.get('count')?.asInt64(), 6);
       expect(instance.drainEmittedEvents(), isEmpty);
 
       // applyHotPatch, snapshotState, restoreState
@@ -390,15 +555,56 @@ void main() {
       expect(mock.destroyCount, 1);
 
       // Post-disposal calls throw StateError
-      expect(() => instance.setPropsJson(<String, dynamic>{}), throwsStateError);
+      expect(() => instance.setPropsDirect(<String, Object?>{}), throwsStateError);
       expect(instance.renderNextFrame, throwsStateError);
       expect(() => instance.dispatchEvents(Uint8List(0)), throwsStateError);
+      expect(() => instance.dispatchEventsDirect(const <NveEvent>[]), throwsStateError);
       expect(() => instance.applyHotPatch('{}'), throwsStateError);
       expect(instance.snapshotState, throwsStateError);
       expect(() => instance.restoreState(Uint8List(0)), throwsStateError);
       expect(instance.drainEmittedEvents, throwsStateError);
       expect(() => instance.measure(const BoxConstraints()), throwsStateError);
       expect(() => instance.hitTest(Offset.zero), throwsStateError);
+    });
+
+    test('falls back to binary NveBinValue set_props and EventRing dispatch_events when direct pointers are null', () {
+      final mock = _MockNativeModule(includeDirectApis: false);
+      addTearDown(mock.close);
+
+      final instance = NveAppInstance.fromInterfaceResolver(
+        surfaceId: 7,
+        getInterface: mock.getInterface,
+      );
+      addTearDown(instance.dispose);
+
+      expect(instance.supportsDirectProps, isFalse);
+      expect(instance.supportsDirectEvents, isFalse);
+
+      expect(instance.setPropsDirect(<String, Object?>{'count': 9, 'mode': 'bin'}), isTrue);
+      expect(mock.propsDirectHistory, isEmpty);
+      expect(mock.propsBinHistory, hasLength(1));
+      final view = NveBinValueView.parse(mock.propsBinHistory.single);
+      expect(view.get('count')?.asInt64(), 9);
+      expect(view.get('mode')?.asString(), 'bin');
+
+      expect(
+        instance.dispatchEventsDirect(<NveEvent>[
+          NveEvent.custom(
+            surfaceId: 7,
+            nodeId: 2,
+            timestampUs: 123,
+            name: 'ping',
+            value: <String, Object?>{'ok': true},
+          ),
+        ]),
+        isTrue,
+      );
+      expect(mock.dispatchedDirectBatches, isEmpty);
+      expect(mock.dispatchedEvents, hasLength(1));
+      final decoded = NveEventRingCodec.decode(mock.dispatchedEvents.single);
+      expect(decoded, hasLength(1));
+      expect(decoded.single.name, 'ping');
+      expect(decoded.single.parseBinValue()?.get('ok')?.asBool(), isTrue);
     });
 
     test('optional interfaces (layout, component, dev) degrade cleanly when NULL', () {
@@ -416,7 +622,7 @@ void main() {
       addTearDown(instance.dispose);
 
       expect(instance.supportsLayoutAndHitTest, isFalse);
-      expect(instance.setPropsJson(<String, dynamic>{'a': 1}), isFalse);
+      expect(instance.setPropsDirect(<String, Object?>{'a': 1}), isFalse);
       expect(instance.drainEmittedEvents(), isEmpty);
       expect(instance.applyHotPatch('{}'), isFalse);
       expect(instance.snapshotState(), isEmpty);

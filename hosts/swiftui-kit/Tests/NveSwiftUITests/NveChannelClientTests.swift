@@ -29,18 +29,24 @@ final class NveChannelClientTests: XCTestCase {
         XCTAssertEqual(themeMessages[1].seq, 3)
     }
 
-    func testRetainedReplayAndOptOut() throws {
+    func testRetainedReplayAndOptOutWithBinValue() throws {
         let client = NveChannelClient()
-        client.publishJSON(topic: "theme", object: ["mode": "dark"], retain: true)
-        client.publishJSON(topic: "theme", object: ["mode": "transient"], retain: false)
+        try client.publishValue(
+            topic: "theme",
+            value: .map([("mode", .string("dark"))]),
+            retain: true
+        )
+        try client.publishValue(
+            topic: "theme",
+            value: .map([("mode", .string("transient"))]),
+            retain: false
+        )
 
         var replayed: [NveChannelClient.Message] = []
         client.subscribe(topic: "theme", replayRetained: true) { replayed.append($0) }
         XCTAssertEqual(replayed.count, 1)
-        let json = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: replayed[0].payload) as? [String: Any]
-        )
-        XCTAssertEqual(json["mode"] as? String, "dark")
+        let mode1 = try replayed[0].withBinValueView { $0.mapValue(forKey: "mode")?.stringValue }
+        XCTAssertEqual(mode1, "dark")
         XCTAssertEqual(replayed[0].seq, 1)
 
         var noReplay: [NveChannelClient.Message] = []
@@ -48,17 +54,21 @@ final class NveChannelClientTests: XCTestCase {
         XCTAssertTrue(noReplay.isEmpty)
 
         // Overwrite retained value
-        client.publishJSON(topic: "theme", object: ["mode": "high-contrast"], retain: true)
+        try client.publishValue(
+            topic: "theme",
+            value: .map([("mode", .string("high-contrast"))]),
+            retain: true
+        )
         XCTAssertEqual(replayed.count, 2)
         XCTAssertEqual(noReplay.count, 1)
 
         var lateSubscriber: [NveChannelClient.Message] = []
         client.subscribe(topic: "theme", replayRetained: true) { lateSubscriber.append($0) }
         XCTAssertEqual(lateSubscriber.count, 1)
-        let latestJson = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: lateSubscriber[0].payload) as? [String: Any]
-        )
-        XCTAssertEqual(latestJson["mode"] as? String, "high-contrast")
+        let latestMode = try lateSubscriber[0].withBinValueView {
+            $0.mapValue(forKey: "mode")?.stringValue
+        }
+        XCTAssertEqual(latestMode, "high-contrast")
     }
 
     func testUnsubscribeStopsOnlyTargetedListener() {

@@ -75,12 +75,14 @@ class _SyntheticNativeApp {
       ..create = _createCb.nativeFunction
       ..destroy = _destroyCb.nativeFunction
       ..render = _renderCb.nativeFunction
-      ..dispatchEvents = _dispatchCb.nativeFunction;
+      ..dispatchEvents = _dispatchCb.nativeFunction
+      ..dispatchEventsDirect = ffi.nullptr;
 
     _componentApi = _heap.allocate<NveComponentApi>(ffi.sizeOf<NveComponentApi>());
     _componentApi.ref
       ..setProps = _setPropsCb.nativeFunction
-      ..drainEmittedEvents = _drainCb.nativeFunction;
+      ..drainEmittedEvents = _drainCb.nativeFunction
+      ..setPropsDirect = ffi.nullptr;
 
     _devApi = _heap.allocate<NveDevApi>(ffi.sizeOf<NveDevApi>());
     _devApi.ref
@@ -112,7 +114,7 @@ class _SyntheticNativeApp {
 
   String stateText = '';
   final List<NveEvent> receivedEvents = <NveEvent>[];
-  final List<String> propsLog = <String>[];
+  final List<Uint8List> propsLog = <Uint8List>[];
   final List<String> hotPatchLog = <String>[];
   Uint8List pendingOutbound = Uint8List(0);
   int destroyCount = 0;
@@ -157,7 +159,7 @@ class _SyntheticNativeApp {
 
   int _onSetProps(ffi.Pointer<ffi.Void> _, NveBufferSlice slice) {
     final bytes = Uint8List.fromList(slice.ptr.asTypedList(slice.len));
-    propsLog.add(utf8.decode(bytes));
+    propsLog.add(bytes);
     return 1;
   }
 
@@ -681,8 +683,9 @@ void main() {
       expect(ev.nodeId, 42);
       expect(ev.timestampUs, 987654321);
       expect(ev.kind, NveEventKind.press);
-      expect(ev.payloadJson!['x'], closeTo(123.5, 1e-3));
-      expect(ev.payloadJson!['y'], closeTo(67.25, 1e-3));
+      final pt = ev.payload as NvePointPayload;
+      expect(pt.x, closeTo(123.5, 1e-3));
+      expect(pt.y, closeTo(67.25, 1e-3));
     });
 
     testWidgets('zIndex reverse hit-testing, opacity painting, props, hot-patch, and atomic reload',
@@ -794,19 +797,19 @@ void main() {
       expect(app1.receivedEvents, hasLength(1));
 
       // Props, hot-patch, outbound event draining
-      app1.pendingOutbound = NveEventRingCodec.encodeCustomEvents(<NveEvent>[
-        const NveEvent(
+      app1.pendingOutbound = NveEventRingCodec.encodeEvents(<NveEvent>[
+        NveEvent.custom(
           surfaceId: 1,
           nodeId: 4,
           timestampUs: 100,
-          kind: NveEventKind.custom,
           name: 'onPing',
-          payloadJson: <String, dynamic>{'ok': true},
+          value: <String, Object?>{'ok': true},
         ),
       ]);
-      expect(controller.setPropsJson(<String, dynamic>{'theme': 'dark'}), isTrue);
+      expect(controller.setPropsDirect(<String, Object?>{'theme': 'dark'}), isTrue);
       expect(controller.applyHotPatch('{"op":"patch"}'), isTrue);
       expect(app1.propsLog, hasLength(1));
+      expect(NveBinValueView.parse(app1.propsLog.single).get('theme')?.asString(), 'dark');
       expect(app1.hotPatchLog, hasLength(1));
       expect(outbound.map((e) => e.name), contains('onPing'));
 
@@ -857,7 +860,7 @@ void main() {
         addTearDown(controller.dispose);
 
         // Ensure deterministic starting state (`Count: 0`) even across repeated runs.
-        controller.setPropsJson(<String, dynamic>{'initialCount': 0}, rerender: false);
+        controller.setPropsDirect(<String, Object?>{'initialCount': 0}, rerender: false);
 
         final boundaryKey = GlobalKey();
         await tester.pumpWidget(

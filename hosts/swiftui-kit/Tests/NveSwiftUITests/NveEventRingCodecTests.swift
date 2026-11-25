@@ -3,11 +3,6 @@ import NveSwiftUI
 import XCTest
 
 final class NveEventRingCodecTests: XCTestCase {
-    private struct CounterPayload: Codable, Equatable {
-        let count: Int
-        let label: String
-    }
-
     private func appendLE<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
         withUnsafeBytes(of: value.littleEndian) { raw in
             data.append(contentsOf: raw)
@@ -47,49 +42,60 @@ final class NveEventRingCodecTests: XCTestCase {
         XCTAssertEqual(NveEventKind.custom.rawValue, 8)
     }
 
-    func testEventPayloadDecodingHelpers() throws {
-        let expected = CounterPayload(count: 7, label: "clicks")
-        let data = try JSONEncoder().encode(expected)
+    func testTypedEventPayloadBinValueZeroCopyHelper() throws {
+        let binData = try NveBinValue.map([
+            ("count", .int64(7)),
+            ("label", .string("clicks")),
+        ]).encode()
+
         let event = NveEvent(
             surfaceId: 3,
             nodeId: 9,
             timestampUs: 99_000,
             kind: .custom,
             name: "onIncrement",
-            payload: data
+            payload: .binValue(binData)
         )
 
-        let decodedDict = try XCTUnwrap(event.decodePayloadJSON())
-        XCTAssertEqual(decodedDict["count"] as? Int, 7)
-        XCTAssertEqual(decodedDict["label"] as? String, "clicks")
-        XCTAssertEqual(try event.decodePayload(CounterPayload.self), expected)
+        let decodedCount: Int64? = try event.withBinValueView { view in
+            view.mapValue(forKey: "count")?.int64Value
+        } ?? nil
+        let decodedLabel: String? = try event.withBinValueView { view in
+            view.mapValue(forKey: "label")?.stringValue
+        } ?? nil
+        XCTAssertEqual(decodedCount, 7)
+        XCTAssertEqual(decodedLabel, "clicks")
 
         let emptyEvent = NveEvent(surfaceId: 1, nodeId: 1, timestampUs: 0, kind: .focus)
-        XCTAssertNil(emptyEvent.decodePayloadJSON())
+        XCTAssertEqual(emptyEvent.payload, .empty)
+        let nilView: Int? = try emptyEvent.withBinValueView { _ in 1 }
+        XCTAssertNil(nilView)
 
-        let binaryEvent = NveEvent(
+        let invalidBinEvent = NveEvent(
             surfaceId: 1,
             nodeId: 1,
             timestampUs: 0,
             kind: .custom,
-            name: "bin",
-            payload: Data([0xFF, 0x00, 0xAB])
+            name: "raw",
+            payload: .binValue(Data([0xFF, 0x00, 0xAB]))
         )
-        XCTAssertNil(binaryEvent.decodePayloadJSON())
-        XCTAssertThrowsError(try binaryEvent.decodePayload(CounterPayload.self))
+        XCTAssertThrowsError(try invalidBinEvent.withBinValueView { _ in })
     }
 
     func testEncodeAndDecodeCustomEventRoundtrip() throws {
-        let payload = try JSONSerialization.data(withJSONObject: ["delta": 2, "source": "button"])
-        let encoded = NveEventRingCodec.encodeCustomEvent(
+        let binPayload = NveBinValue.map([
+            ("delta", .int64(2)),
+            ("source", .string("button")),
+        ])
+        let encoded = try NveEventRingCodec.encodeCustomEvent(
             surfaceId: 11,
             nodeId: 22,
             name: "onCounterChange_π",
-            payload: payload,
+            value: binPayload,
             timestampUs: 1_234_567_890
         )
 
-        let decoded = NveEventRingCodec.decode(encoded)
+        let decoded = try NveEventRingCodec.decodeStrict(encoded)
         XCTAssertEqual(decoded.count, 1)
         let ev = try XCTUnwrap(decoded.first)
         XCTAssertEqual(ev.surfaceId, 11)
@@ -97,163 +103,214 @@ final class NveEventRingCodecTests: XCTestCase {
         XCTAssertEqual(ev.timestampUs, 1_234_567_890)
         XCTAssertEqual(ev.kind, .custom)
         XCTAssertEqual(ev.name, "onCounterChange_π")
-        XCTAssertEqual(ev.payload, payload)
-        let json = try XCTUnwrap(ev.decodePayloadJSON())
-        XCTAssertEqual(json["delta"] as? Int, 2)
-        XCTAssertEqual(json["source"] as? String, "button")
+
+        try ev.withBinValueView { view in
+            XCTAssertEqual(view.mapValue(forKey: "delta")?.int64Value, 2)
+            XCTAssertEqual(view.mapValue(forKey: "source")?.stringValue, "button")
+        }
     }
 
-    func testDecodeAllPayloadVariantsInSingleBatch() throws {
-        var ring = Data()
-        appendLE(UInt32(6), to: &ring)
+    func testEncodeAndDecodeAllPayloadVariantsInSingleBatch() throws {
+        let binData = try NveBinValue.map([("ok", .bool(true))]).encode()
+        let input: [NveEvent] = [
+            NveEvent(surfaceId: 1, nodeId: 10, timestampUs: 100, kind: .focus, payload: .empty),
+            NveEvent(
+                surfaceId: 1,
+                nodeId: 11,
+                timestampUs: 200,
+                kind: .press,
+                payload: .point(x: 42.5, y: 18.25)
+            ),
+            NveEvent(
+                surfaceId: 2,
+                nodeId: 12,
+                timestampUs: 300,
+                kind: .scroll,
+                payload: .scroll(x: 10.0, y: 250.5, contentWidth: 390.0, contentHeight: 1200.0)
+            ),
+            NveEvent(
+                surfaceId: 2,
+                nodeId: 13,
+                timestampUs: 400,
+                kind: .textChange,
+                payload: .text("Hello 🌍")
+            ),
+            NveEvent(
+                surfaceId: 3,
+                nodeId: 14,
+                timestampUs: 500,
+                kind: .layout,
+                payload: .layout(x: 4.0, y: 8.0, width: 320.0, height: 180.0)
+            ),
+            NveEvent(
+                surfaceId: 3,
+                nodeId: 15,
+                timestampUs: 600,
+                kind: .custom,
+                name: "onBlob",
+                payload: .binValue(binData)
+            ),
+            NveEvent(
+                surfaceId: 4,
+                nodeId: 16,
+                timestampUs: 700,
+                kind: .longPress,
+                payload: .point(x: 1.0, y: 2.0)
+            ),
+            NveEvent(surfaceId: 4, nodeId: 17, timestampUs: 800, kind: .blur, payload: .empty),
+        ]
 
-        // 0: Empty (Focus)
-        appendEventHeader(
-            surfaceId: 1, nodeId: 10, timestampUs: 100,
-            kind: NveEventKind.focus.rawValue, payloadTag: 0, to: &ring
-        )
+        let ring = NveEventRingCodec.encode(input)
+        let strictDecoded = try NveEventRingCodec.decodeStrict(ring)
+        XCTAssertEqual(strictDecoded, input)
 
-        // 1: Point (Press)
-        appendEventHeader(
-            surfaceId: 1, nodeId: 11, timestampUs: 200,
-            kind: NveEventKind.press.rawValue, payloadTag: 1, to: &ring
-        )
-        appendF32(42.5, to: &ring)
-        appendF32(18.25, to: &ring)
+        let bestEffort = NveEventRingCodec.decode(ring)
+        XCTAssertEqual(bestEffort, input)
 
-        // 2: Scroll
-        appendEventHeader(
-            surfaceId: 2, nodeId: 12, timestampUs: 300,
-            kind: NveEventKind.scroll.rawValue, payloadTag: 2, to: &ring
-        )
-        appendF32(10.0, to: &ring)
-        appendF32(250.5, to: &ring)
-        appendF32(390.0, to: &ring)
-        appendF32(1200.0, to: &ring)
-
-        // 3: Text (UTF-8)
-        let textBytes = Data("Hello 🌍".utf8)
-        appendEventHeader(
-            surfaceId: 2, nodeId: 13, timestampUs: 400,
-            kind: NveEventKind.textChange.rawValue, payloadTag: 3, to: &ring
-        )
-        appendLE(UInt32(textBytes.count), to: &ring)
-        ring.append(textBytes)
-
-        // 4: Layout
-        appendEventHeader(
-            surfaceId: 3, nodeId: 14, timestampUs: 500,
-            kind: NveEventKind.layout.rawValue, payloadTag: 4, to: &ring
-        )
-        appendF32(4.0, to: &ring)
-        appendF32(8.0, to: &ring)
-        appendF32(320.0, to: &ring)
-        appendF32(180.0, to: &ring)
-
-        // 5: Custom (raw binary)
-        let customName = Data("onBlob".utf8)
-        let customBytes = Data([9, 8, 7, 6])
-        appendEventHeader(
-            surfaceId: 3, nodeId: 15, timestampUs: 600,
-            kind: NveEventKind.custom.rawValue, payloadTag: 5, to: &ring
-        )
-        appendLE(UInt16(customName.count), to: &ring)
-        ring.append(customName)
-        appendLE(UInt32(customBytes.count), to: &ring)
-        ring.append(customBytes)
-
-        let events = NveEventRingCodec.decode(ring)
-        XCTAssertEqual(events.count, 6)
-
-        XCTAssertEqual(events[0].kind, .focus)
-        XCTAssertTrue(events[0].payload.isEmpty)
-
-        XCTAssertEqual(events[1].kind, .press)
-        let pt = try XCTUnwrap(events[1].decodePayloadJSON())
-        XCTAssertEqual((pt["x"] as? NSNumber)?.floatValue ?? -1, 42.5, accuracy: 0.001)
-        XCTAssertEqual((pt["y"] as? NSNumber)?.floatValue ?? -1, 18.25, accuracy: 0.001)
-
-        XCTAssertEqual(events[2].kind, .scroll)
-        let sc = try XCTUnwrap(events[2].decodePayloadJSON())
-        XCTAssertEqual((sc["x"] as? NSNumber)?.floatValue ?? -1, 10.0, accuracy: 0.001)
-        XCTAssertEqual((sc["y"] as? NSNumber)?.floatValue ?? -1, 250.5, accuracy: 0.001)
-        XCTAssertEqual((sc["contentWidth"] as? NSNumber)?.floatValue ?? -1, 390.0, accuracy: 0.001)
-        XCTAssertEqual((sc["contentHeight"] as? NSNumber)?.floatValue ?? -1, 1200.0, accuracy: 0.001)
-
-        XCTAssertEqual(events[3].kind, .textChange)
-        let txt = try XCTUnwrap(events[3].decodePayloadJSON())
-        XCTAssertEqual(txt["text"] as? String, "Hello 🌍")
-
-        XCTAssertEqual(events[4].kind, .layout)
-        let layout = try XCTUnwrap(events[4].decodePayloadJSON())
-        XCTAssertEqual((layout["x"] as? NSNumber)?.floatValue ?? -1, 4.0, accuracy: 0.001)
-        XCTAssertEqual((layout["y"] as? NSNumber)?.floatValue ?? -1, 8.0, accuracy: 0.001)
-        XCTAssertEqual((layout["width"] as? NSNumber)?.floatValue ?? -1, 320.0, accuracy: 0.001)
-        XCTAssertEqual((layout["height"] as? NSNumber)?.floatValue ?? -1, 180.0, accuracy: 0.001)
-
-        XCTAssertEqual(events[5].kind, .custom)
-        XCTAssertEqual(events[5].name, "onBlob")
-        XCTAssertEqual(events[5].payload, customBytes)
+        // Verify default parameter convenience cases construct cleanly.
+        let scrollShort = NveEventPayload.scroll(x: 5, y: 10)
+        XCTAssertEqual(scrollShort, .scroll(x: 5, y: 10, contentWidth: 0, contentHeight: 0))
+        let layoutShort = NveEventPayload.layout(width: 100, height: 50)
+        XCTAssertEqual(layoutShort, .layout(x: 0, y: 0, width: 100, height: 50))
     }
 
-    func testDecodeMalformedAndTruncatedBuffersDegradeSafely() {
+    func testDecodeRejectsCorruptAndTruncatedEventRings() throws {
+        // Empty and short headers
         XCTAssertTrue(NveEventRingCodec.decode(Data()).isEmpty)
         XCTAssertTrue(NveEventRingCodec.decode(Data([1, 2, 3])).isEmpty)
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(Data())) { err in
+            XCTAssertEqual(err as? NveEventRingError, .truncated)
+        }
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(Data([1, 2, 3]))) { err in
+            XCTAssertEqual(err as? NveEventRingError, .truncated)
+        }
 
+        // Zero count is valid
         var zeroCount = Data()
         appendLE(UInt32(0), to: &zeroCount)
-        XCTAssertTrue(NveEventRingCodec.decode(zeroCount).isEmpty)
+        XCTAssertEqual(try NveEventRingCodec.decodeStrict(zeroCount), [])
 
-        // Claims 2 events, only has 1 full empty event + 5 trailing bytes
-        var truncated = Data()
-        appendLE(UInt32(2), to: &truncated)
+        // Every strict prefix of a rich batch throws `.truncated` on decodeStrict and never crashes decode.
+        let full = NveEventRingCodec.encode([
+            NveEvent(surfaceId: 1, nodeId: 1, timestampUs: 1, kind: .press, payload: .point(x: 1, y: 2)),
+            NveEvent(
+                surfaceId: 1,
+                nodeId: 2,
+                timestampUs: 2,
+                kind: .scroll,
+                payload: .scroll(x: 3, y: 4, contentWidth: 100, contentHeight: 200)
+            ),
+            NveEvent(surfaceId: 1, nodeId: 3, timestampUs: 3, kind: .textChange, payload: .text("abc")),
+            NveEvent(
+                surfaceId: 1,
+                nodeId: 4,
+                timestampUs: 4,
+                kind: .layout,
+                payload: .layout(x: 1, y: 2, width: 30, height: 40)
+            ),
+            NveEvent(
+                surfaceId: 1,
+                nodeId: 5,
+                timestampUs: 5,
+                kind: .custom,
+                name: "ev",
+                payload: .binValue(Data([1, 2, 3]))
+            ),
+        ])
+        for cut in 0 ..< full.count {
+            let prefix = full.prefix(cut)
+            XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(prefix)) { err in
+                XCTAssertEqual(err as? NveEventRingError, .truncated)
+            }
+            XCTAssertLessThan(NveEventRingCodec.decode(prefix).count, 5)
+        }
+
+        // Trailing bytes rejected by decodeStrict
+        var withTrailing = full
+        withTrailing.append(0xAA)
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(withTrailing)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .trailingBytes(1))
+        }
+
+        // Unknown event kind rejected by decodeStrict
+        var badKind = Data()
+        appendLE(UInt32(1), to: &badKind)
         appendEventHeader(
-            surfaceId: 5, nodeId: 6, timestampUs: 77,
-            kind: 250, // unknown kind -> falls back to .custom
-            payloadTag: 0, // valid empty payload
-            to: &truncated
+            surfaceId: 5,
+            nodeId: 6,
+            timestampUs: 77,
+            kind: 250,
+            payloadTag: 0,
+            to: &badKind
         )
-        truncated.append(contentsOf: [1, 2, 3, 4, 5])
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badKind)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .invalidEventKind(250))
+        }
 
-        let decoded = NveEventRingCodec.decode(truncated)
-        XCTAssertEqual(decoded.count, 1)
-        XCTAssertEqual(decoded[0].surfaceId, 5)
-        XCTAssertEqual(decoded[0].nodeId, 6)
-        XCTAssertEqual(decoded[0].timestampUs, 77)
-        XCTAssertEqual(decoded[0].kind, .custom)
-        XCTAssertTrue(decoded[0].payload.isEmpty)
-
-        // Unknown payload tag stops cleanly without appending a corrupt event.
+        // Unknown payload tag rejected by both decodeStrict and decode
         var unknownTag = Data()
         appendLE(UInt32(1), to: &unknownTag)
         appendEventHeader(
-            surfaceId: 5, nodeId: 6, timestampUs: 77,
+            surfaceId: 5,
+            nodeId: 6,
+            timestampUs: 77,
             kind: NveEventKind.custom.rawValue,
             payloadTag: 99,
             to: &unknownTag
         )
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(unknownTag)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .invalidPayloadTag(99))
+        }
         XCTAssertTrue(NveEventRingCodec.decode(unknownTag).isEmpty)
 
-        // Custom event whose claimed payload length exceeds remaining bytes must NOT emit a partial event.
+        // Invalid UTF-8 in Text event rejected
+        var badTextUtf8 = Data()
+        appendLE(UInt32(1), to: &badTextUtf8)
+        appendEventHeader(
+            surfaceId: 1,
+            nodeId: 2,
+            timestampUs: 3,
+            kind: NveEventKind.textChange.rawValue,
+            payloadTag: 3,
+            to: &badTextUtf8
+        )
+        appendLE(UInt32(2), to: &badTextUtf8)
+        badTextUtf8.append(contentsOf: [0xFF, 0xFE])
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badTextUtf8)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .invalidUtf8)
+        }
+        XCTAssertTrue(NveEventRingCodec.decode(badTextUtf8).isEmpty)
+
+        // Oversized custom payload length rejected cleanly
         var oversized = Data()
         appendLE(UInt32(1), to: &oversized)
         appendEventHeader(
-            surfaceId: 1, nodeId: 1, timestampUs: 1,
-            kind: NveEventKind.custom.rawValue, payloadTag: 5, to: &oversized
+            surfaceId: 1,
+            nodeId: 1,
+            timestampUs: 1,
+            kind: NveEventKind.custom.rawValue,
+            payloadTag: 5,
+            to: &oversized
         )
         appendLE(UInt16(2), to: &oversized)
         oversized.append(Data("ok".utf8))
         appendLE(UInt32(9999), to: &oversized)
         oversized.append(Data([1, 2]))
-
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(oversized)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .truncated)
+        }
         XCTAssertTrue(NveEventRingCodec.decode(oversized).isEmpty)
 
-        // Mid-payload truncation on Point (4 of 8 bytes) must NOT emit a partial event.
+        // Mid-payload truncation on Point (4 of 8 bytes)
         var partialPoint = Data()
         appendLE(UInt32(1), to: &partialPoint)
         appendEventHeader(
-            surfaceId: 1, nodeId: 2, timestampUs: 3,
-            kind: NveEventKind.press.rawValue, payloadTag: 1, to: &partialPoint
+            surfaceId: 1,
+            nodeId: 2,
+            timestampUs: 3,
+            kind: NveEventKind.press.rawValue,
+            payloadTag: 1,
+            to: &partialPoint
         )
         appendF32(12.5, to: &partialPoint)
         XCTAssertTrue(NveEventRingCodec.decode(partialPoint).isEmpty)

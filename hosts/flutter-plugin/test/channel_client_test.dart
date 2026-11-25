@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_flutter.dart';
@@ -8,31 +6,32 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('NveChannelMessage', () {
-    test('decodeJson parses valid JSON objects and ignores non-object/binary payloads', () {
+    test('decodeBinValue parses valid NveBinValue payloads and ignores invalid raw bytes', () {
       final valid = NveChannelMessage(
         channelId: 1,
         topic: 'theme',
         seq: 1,
-        payload: Uint8List.fromList(utf8.encode('{"mode":"dark"}')),
+        payload: NveBinValueEncoder.encode(<String, Object?>{'mode': 'dark'}),
       );
-      expect(valid.decodeJson(), <String, dynamic>{'mode': 'dark'});
+      expect(valid.decodeBinValue()?.get('mode')?.asString(), 'dark');
 
       final arrayPayload = NveChannelMessage(
         channelId: 1,
         topic: 'theme',
         seq: 2,
-        payload: Uint8List.fromList(utf8.encode('[1,2,3]')),
+        payload: NveBinValueEncoder.encode(<Object?>[1, 2, 3]),
       );
-      expect(arrayPayload.decodeJson(), isNull);
+      expect(arrayPayload.decodeBinValue()?.arrayLength, 3);
+      expect(arrayPayload.decodeBinValue()?.arrayAt(1)?.asInt64(), 2);
 
       final binary = NveChannelMessage(
         channelId: 1,
         topic: 'bin',
         seq: 3,
         payload: Uint8List.fromList(<int>[0xFF, 0x00]),
-        isJson: false,
+        isBinValue: false,
       );
-      expect(binary.decodeJson(), isNull);
+      expect(binary.decodeBinValue(), isNull);
     });
   });
 
@@ -50,15 +49,15 @@ void main() {
         await sub2.cancel();
       });
 
-      await client.publishJson(
+      await client.publishValue(
         NveChannelClient.topicTheme,
-        <String, dynamic>{'mode': 'dark'},
+        <String, Object?>{'mode': 'dark'},
         senderSurfaceId: 1001,
       );
       await client.publish(
         'custom.analytics',
         Uint8List.fromList(<int>[1, 2, 3]),
-        isJson: false,
+        isBinValue: false,
       );
       await pumpEventQueue();
 
@@ -66,13 +65,13 @@ void main() {
       expect(themeEvents.single.channelId, 1);
       expect(themeEvents.single.seq, 1);
       expect(themeEvents.single.senderSurfaceId, 1001);
-      expect(themeEvents.single.isJson, isTrue);
-      expect(themeEvents.single.decodeJson(), <String, dynamic>{'mode': 'dark'});
+      expect(themeEvents.single.isBinValue, isTrue);
+      expect(themeEvents.single.decodeBinValue()?.get('mode')?.asString(), 'dark');
 
       expect(customEvents, hasLength(1));
       expect(customEvents.single.channelId, 100);
       expect(customEvents.single.seq, 2);
-      expect(customEvents.single.isJson, isFalse);
+      expect(customEvents.single.isBinValue, isFalse);
       expect(customEvents.single.payload, Uint8List.fromList(<int>[1, 2, 3]));
     });
 
@@ -80,20 +79,21 @@ void main() {
       final client = NveChannelClient();
       addTearDown(client.dispose);
 
-      await client.publishJson(
+      await client.publishValue(
         NveChannelClient.topicLocale,
-        <String, dynamic>{'lang': 'de-DE'},
+        <String, Object?>{'lang': 'de-DE'},
         retain: true,
       );
-      await client.publishJson(
+      await client.publishValue(
         NveChannelClient.topicLocale,
-        <String, dynamic>{'lang': 'transient'},
+        <String, Object?>{'lang': 'transient'},
         retain: false,
       );
 
-      expect(client.retained(NveChannelClient.topicLocale)?.decodeJson(), <String, dynamic>{
-        'lang': 'de-DE',
-      });
+      expect(
+        client.retained(NveChannelClient.topicLocale)?.decodeBinValue()?.get('lang')?.asString(),
+        'de-DE',
+      );
 
       final replayed = <NveChannelMessage>[];
       final nonReplayed = <NveChannelMessage>[];
@@ -110,20 +110,20 @@ void main() {
 
       await pumpEventQueue();
       expect(replayed, hasLength(1));
-      expect(replayed.single.decodeJson(), <String, dynamic>{'lang': 'de-DE'});
+      expect(replayed.single.decodeBinValue()?.get('lang')?.asString(), 'de-DE');
       expect(nonReplayed, isEmpty);
 
-      await client.publishJson(
+      await client.publishValue(
         NveChannelClient.topicLocale,
-        <String, dynamic>{'lang': 'en-US'},
+        <String, Object?>{'lang': 'en-US'},
         retain: true,
       );
       await pumpEventQueue();
 
       expect(replayed, hasLength(2));
-      expect(replayed.last.decodeJson(), <String, dynamic>{'lang': 'en-US'});
+      expect(replayed.last.decodeBinValue()?.get('lang')?.asString(), 'en-US');
       expect(nonReplayed, hasLength(1));
-      expect(nonReplayed.single.decodeJson(), <String, dynamic>{'lang': 'en-US'});
+      expect(nonReplayed.single.decodeBinValue()?.get('lang')?.asString(), 'en-US');
     });
 
     test('unsubscribe closes topic stream and dispose cleans up all topics', () async {
@@ -175,11 +175,10 @@ void main() {
       final sub = client.subscribe('theme').listen(received.add);
       addTearDown(sub.cancel);
 
-      await client.publishJson('theme', <String, dynamic>{'mode': 'light'}, retain: true);
+      await client.publishValue('theme', <String, Object?>{'mode': 'light'}, retain: true);
 
-      // Simulate native EventChannel pushing a retained message from Rust NveChannelBus.
       const codec = StandardMethodCodec();
-      final nativePayload = Uint8List.fromList(utf8.encode('{"mode":"system"}'));
+      final nativePayload = NveBinValueEncoder.encode(<String, Object?>{'mode': 'system'});
       await messenger.handlePlatformMessage(
         eventChannel.name,
         codec.encodeSuccessEnvelope(<String, dynamic>{
@@ -188,7 +187,7 @@ void main() {
           'seq': 99,
           'payload': nativePayload,
           'senderSurfaceId': 7,
-          'isJson': true,
+          'isBinValue': true,
           'retained': true,
         }),
         (_) {},
@@ -199,7 +198,7 @@ void main() {
       expect(received, hasLength(2));
       expect(received.last.seq, 99);
       expect(received.last.senderSurfaceId, 7);
-      expect(received.last.decodeJson(), <String, dynamic>{'mode': 'system'});
+      expect(received.last.decodeBinValue()?.get('mode')?.asString(), 'system');
       expect(client.retained('theme')?.seq, 99);
 
       await client.unsubscribe('theme');

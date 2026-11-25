@@ -1,516 +1,11 @@
-import 'dart:convert';
+import 'dart:convert' show utf8;
 import 'dart:typed_data';
-import 'dart:ui' show Color, Rect;
+import 'dart:ui' show Rect;
 
-import 'nve_core_abi_gen.dart';
+import 'command_types.dart';
 
-export 'nve_core_abi_gen.dart'
-    show NveComponentKind, NveOpcode, nveAbiMagic, nveAbiVersion, nveRootNodeId;
-
-/// Fixed 24-byte `CommandBufferHeader` size.
-const int nveHeaderSize = 24;
-
-/// Safety cap for incoming binary command buffers (64 MiB).
-const int nveMaxBufferBytes = 64 * 1024 * 1024;
-
-/// Safety cap for operations per frame.
-const int nveMaxOpCount = 1000000;
-
-/// Maximum finite layout/style scalar magnitude (matches `kMaxLayoutScalar` in C++).
-const double nveMaxLayoutScalar = 1e7;
-
-/// Event subscription bitflags matching `EventMask` in `crates/nve-abi/src/events.rs`.
-abstract final class NveEventMask {
-  static const int none = 0;
-  static const int press = 1 << 0;
-  static const int longPress = 1 << 1;
-  static const int scroll = 1 << 2;
-  static const int textChange = 1 << 3;
-  static const int focus = 1 << 4;
-  static const int blur = 1 << 5;
-  static const int layout = 1 << 6;
-  static const int custom = 1 << 7;
-}
-
-/// Dimension unit tag matching `Dimension` in `crates/nve-abi/src/codec.rs`.
-enum NveDimensionUnit {
-  auto(0),
-  points(1),
-  percent(2);
-
-  const NveDimensionUnit(this.code);
-  final int code;
-
-  static NveDimensionUnit? fromCode(int code) {
-    return switch (code) {
-      0 => NveDimensionUnit.auto,
-      1 => NveDimensionUnit.points,
-      2 => NveDimensionUnit.percent,
-      _ => null,
-    };
-  }
-}
-
-/// CSS/Yoga dimension value (`Auto`, `Points(v)`, `Percent(v)`).
-class NveDimension {
-  const NveDimension(this.unit, this.value);
-
-  const NveDimension.auto()
-      : unit = NveDimensionUnit.auto,
-        value = 0.0;
-
-  const NveDimension.points(this.value) : unit = NveDimensionUnit.points;
-
-  const NveDimension.percent(this.value) : unit = NveDimensionUnit.percent;
-
-  final NveDimensionUnit unit;
-  final double value;
-
-  bool get isAuto => unit == NveDimensionUnit.auto;
-  bool get isPoints => unit == NveDimensionUnit.points;
-  bool get isPercent => unit == NveDimensionUnit.percent;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        (other is NveDimension && other.unit == unit && other.value == value);
-  }
-
-  @override
-  int get hashCode => Object.hash(unit, value);
-
-  @override
-  String toString() => switch (unit) {
-        NveDimensionUnit.auto => 'auto',
-        NveDimensionUnit.points => '${value}pt',
-        NveDimensionUnit.percent => '$value%',
-      };
-}
-
-/// Flexbox main-axis direction matching `FlexDirection` in `crates/nve-abi/src/codec.rs`.
-enum NveFlexDirection {
-  column(0),
-  row(1),
-  columnReverse(2),
-  rowReverse(3);
-
-  const NveFlexDirection(this.code);
-  final int code;
-
-  bool get isRow => this == row || this == rowReverse;
-  bool get isReverse => this == columnReverse || this == rowReverse;
-
-  static NveFlexDirection? fromCode(int code) {
-    return switch (code) {
-      0 => NveFlexDirection.column,
-      1 => NveFlexDirection.row,
-      2 => NveFlexDirection.columnReverse,
-      3 => NveFlexDirection.rowReverse,
-      _ => null,
-    };
-  }
-}
-
-/// Flexbox main-axis justification matching `FlexJustify` in `crates/nve-abi/src/codec.rs`.
-enum NveFlexJustify {
-  flexStart(0),
-  center(1),
-  flexEnd(2),
-  spaceBetween(3),
-  spaceAround(4),
-  spaceEvenly(5);
-
-  const NveFlexJustify(this.code);
-  final int code;
-
-  static NveFlexJustify? fromCode(int code) {
-    return switch (code) {
-      0 => NveFlexJustify.flexStart,
-      1 => NveFlexJustify.center,
-      2 => NveFlexJustify.flexEnd,
-      3 => NveFlexJustify.spaceBetween,
-      4 => NveFlexJustify.spaceAround,
-      5 => NveFlexJustify.spaceEvenly,
-      _ => null,
-    };
-  }
-}
-
-/// Flexbox cross-axis alignment matching `FlexAlign` in `crates/nve-abi/src/codec.rs`.
-enum NveFlexAlign {
-  stretch(0),
-  flexStart(1),
-  center(2),
-  flexEnd(3),
-  baseline(4);
-
-  const NveFlexAlign(this.code);
-  final int code;
-
-  static NveFlexAlign? fromCode(int code) {
-    return switch (code) {
-      0 => NveFlexAlign.stretch,
-      1 => NveFlexAlign.flexStart,
-      2 => NveFlexAlign.center,
-      3 => NveFlexAlign.flexEnd,
-      4 => NveFlexAlign.baseline,
-      _ => null,
-    };
-  }
-}
-
-/// Edge insets matching `EdgeInsets` in `crates/nve-abi/src/codec.rs`.
-class NveEdgeInsets {
-  const NveEdgeInsets({
-    this.top = 0.0,
-    this.right = 0.0,
-    this.bottom = 0.0,
-    this.left = 0.0,
-  });
-
-  const NveEdgeInsets.all(double value)
-      : top = value,
-        right = value,
-        bottom = value,
-        left = value;
-
-  const NveEdgeInsets.symmetric({double vertical = 0.0, double horizontal = 0.0})
-      : top = vertical,
-        right = horizontal,
-        bottom = vertical,
-        left = horizontal;
-
-  static const NveEdgeInsets zero = NveEdgeInsets();
-
-  final double top;
-  final double right;
-  final double bottom;
-  final double left;
-
-  double get horizontal => left + right;
-  double get vertical => top + bottom;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        (other is NveEdgeInsets &&
-            other.top == top &&
-            other.right == right &&
-            other.bottom == bottom &&
-            other.left == left);
-  }
-
-  @override
-  int get hashCode => Object.hash(top, right, bottom, left);
-}
-
-/// Flexbox layout properties matching `LayoutProps` in `crates/nve-abi/src/codec.rs`.
-class NveLayoutProps {
-  const NveLayoutProps({
-    this.width = const NveDimension.auto(),
-    this.height = const NveDimension.auto(),
-    this.minWidth = const NveDimension.auto(),
-    this.minHeight = const NveDimension.auto(),
-    this.maxWidth = const NveDimension.auto(),
-    this.maxHeight = const NveDimension.auto(),
-    this.flexDirection = NveFlexDirection.column,
-    this.justifyContent = NveFlexJustify.flexStart,
-    this.alignItems = NveFlexAlign.stretch,
-    this.flexGrow = 0.0,
-    this.flexShrink = 1.0,
-    this.gap = 0.0,
-    this.padding = NveEdgeInsets.zero,
-    this.margin = NveEdgeInsets.zero,
-  });
-
-  static const NveLayoutProps defaults = NveLayoutProps();
-
-  final NveDimension width;
-  final NveDimension height;
-  final NveDimension minWidth;
-  final NveDimension minHeight;
-  final NveDimension maxWidth;
-  final NveDimension maxHeight;
-  final NveFlexDirection flexDirection;
-  final NveFlexJustify justifyContent;
-  final NveFlexAlign alignItems;
-  final double flexGrow;
-  final double flexShrink;
-  final double gap;
-  final NveEdgeInsets padding;
-  final NveEdgeInsets margin;
-}
-
-/// Wire RGBA color matching `ColorRgba` in `crates/nve-abi/src/codec.rs`.
-///
-/// On the wire (`ColorRgba::to_u32().to_le_bytes()`), bytes are laid out as
-/// `[r, g, b, a]` (so little-endian `uint32` is `0xAABBGGRR`).
-class NveColorRgba {
-  const NveColorRgba(this.r, this.g, this.b, this.a);
-
-  const NveColorRgba.rgb(this.r, this.g, this.b) : a = 255;
-
-  static const NveColorRgba transparent = NveColorRgba(0, 0, 0, 0);
-  static const NveColorRgba black = NveColorRgba(0, 0, 0, 255);
-  static const NveColorRgba white = NveColorRgba(255, 255, 255, 255);
-
-  /// Decodes little-endian wire `uint32` (`u32::from_le_bytes([r, g, b, a])`).
-  factory NveColorRgba.fromWireUint32(int value) {
-    return NveColorRgba(
-      value & 0xFF,
-      (value >> 8) & 0xFF,
-      (value >> 16) & 0xFF,
-      (value >> 24) & 0xFF,
-    );
-  }
-
-  final int r;
-  final int g;
-  final int b;
-  final int a;
-
-  /// Encodes to little-endian wire `uint32` (`[r, g, b, a]`).
-  int toWireUint32() => (r & 0xFF) | ((g & 0xFF) << 8) | ((b & 0xFF) << 16) | ((a & 0xFF) << 24);
-
-  /// Converts to Flutter `Color` (`ARGB` order).
-  Color toFlutterColor() => Color.fromARGB(a & 0xFF, r & 0xFF, g & 0xFF, b & 0xFF);
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        (other is NveColorRgba && other.r == r && other.g == g && other.b == b && other.a == a);
-  }
-
-  @override
-  int get hashCode => Object.hash(r, g, b, a);
-
-  @override
-  String toString() => 'NveColorRgba($r, $g, $b, $a)';
-}
-
-/// Visual style properties matching `StyleProps` in `crates/nve-abi/src/codec.rs`.
-class NveStyleProps {
-  const NveStyleProps({
-    this.background = NveColorRgba.transparent,
-    this.textColor = NveColorRgba.black,
-    this.borderColor = NveColorRgba.transparent,
-    this.borderWidth = 0.0,
-    this.borderRadius = 0.0,
-    this.opacity = 1.0,
-    this.fontSize = 16.0,
-    this.zIndex = 0,
-  });
-
-  static const NveStyleProps defaults = NveStyleProps();
-
-  final NveColorRgba background;
-  final NveColorRgba textColor;
-  final NveColorRgba borderColor;
-  final double borderWidth;
-  final double borderRadius;
-  final double opacity;
-  final double fontSize;
-  final int zIndex;
-
-  NveStyleProps copyWith({
-    NveColorRgba? background,
-    NveColorRgba? textColor,
-    NveColorRgba? borderColor,
-    double? borderWidth,
-    double? borderRadius,
-    double? opacity,
-    double? fontSize,
-    int? zIndex,
-  }) {
-    return NveStyleProps(
-      background: background ?? this.background,
-      textColor: textColor ?? this.textColor,
-      borderColor: borderColor ?? this.borderColor,
-      borderWidth: borderWidth ?? this.borderWidth,
-      borderRadius: borderRadius ?? this.borderRadius,
-      opacity: opacity ?? this.opacity,
-      fontSize: fontSize ?? this.fontSize,
-      zIndex: zIndex ?? this.zIndex,
-    );
-  }
-}
-
-/// Discriminator for `RawPropValue` in `crates/nve-abi/src/codec.rs`.
-enum NveRawPropKind {
-  nullValue(0),
-  boolValue(1),
-  i64Value(2),
-  f64Value(3),
-  stringValue(4),
-  bytesValue(5);
-
-  const NveRawPropKind(this.code);
-  final int code;
-
-  static NveRawPropKind? fromCode(int code) {
-    return switch (code) {
-      0 => NveRawPropKind.nullValue,
-      1 => NveRawPropKind.boolValue,
-      2 => NveRawPropKind.i64Value,
-      3 => NveRawPropKind.f64Value,
-      4 => NveRawPropKind.stringValue,
-      5 => NveRawPropKind.bytesValue,
-      _ => null,
-    };
-  }
-}
-
-/// Decoded raw prop value (`Command::SetRawProp`).
-class NveRawPropValue {
-  const NveRawPropValue._(this.kind, this.value);
-
-  const NveRawPropValue.nullValue()
-      : kind = NveRawPropKind.nullValue,
-        value = null;
-
-  const NveRawPropValue.boolValue(bool v) : this._(NveRawPropKind.boolValue, v);
-  const NveRawPropValue.i64Value(int v) : this._(NveRawPropKind.i64Value, v);
-  const NveRawPropValue.f64Value(double v) : this._(NveRawPropKind.f64Value, v);
-  const NveRawPropValue.stringValue(String v) : this._(NveRawPropKind.stringValue, v);
-  NveRawPropValue.bytesValue(Uint8List v) : this._(NveRawPropKind.bytesValue, v);
-
-  final NveRawPropKind kind;
-  final Object? value;
-
-  bool? get asBool => kind == NveRawPropKind.boolValue ? value as bool : null;
-  int? get asInt => kind == NveRawPropKind.i64Value ? value as int : null;
-  double? get asDouble => kind == NveRawPropKind.f64Value ? value as double : null;
-  String? get asString => kind == NveRawPropKind.stringValue ? value as String : null;
-  Uint8List? get asBytes => kind == NveRawPropKind.bytesValue ? value as Uint8List : null;
-}
-
-/// Imperative command emitted by `Opcode::DispatchCommand`.
-class NveDispatchedCommand {
-  const NveDispatchedCommand({
-    required this.nodeId,
-    required this.commandName,
-    required this.payload,
-  });
-
-  final int nodeId;
-  final String commandName;
-  final Uint8List payload;
-}
-
-/// Decoded `CommandBufferHeader` (24 bytes).
-class NveCommandBufferHeader {
-  const NveCommandBufferHeader({
-    required this.magic,
-    required this.version,
-    required this.flags,
-    required this.surfaceId,
-    required this.frameId,
-    required this.opCount,
-  });
-
-  final int magic;
-  final int version;
-  final int flags;
-  final int surfaceId;
-  final int frameId;
-  final int opCount;
-}
-
-/// Error categories returned when decoding or applying a `CommandBuffer`.
-enum NveDecodeErrorCode {
-  truncated,
-  invalidMagic,
-  unsupportedVersion,
-  unknownOpcode,
-  invalidEnum,
-  invalidUtf8,
-  invalidScalar,
-  trailingBytes,
-  bufferTooLarge,
-  unknownNode,
-  cannotRemoveRoot,
-  cycleOrDuplicateChild,
-}
-
-/// Structured, non-throwing decode/apply error.
-class NveDecodeError {
-  const NveDecodeError(this.code, this.message, {this.offset = 0});
-
-  final NveDecodeErrorCode code;
-  final String message;
-  final int offset;
-
-  @override
-  String toString() => 'NveDecodeError($code at $offset: $message)';
-}
-
-/// Result of decoding and applying a binary `CommandBuffer` to an [NveRetainedTree].
-class NveFrameApplyResult {
-  const NveFrameApplyResult.ok({
-    required this.header,
-    required this.mutationCount,
-    required this.committed,
-    required this.syncMount,
-    required this.dispatchedCommands,
-  }) : error = null;
-
-  const NveFrameApplyResult.err(this.error, {this.header})
-      : mutationCount = 0,
-        committed = false,
-        syncMount = false,
-        dispatchedCommands = const <NveDispatchedCommand>[];
-
-  final NveCommandBufferHeader? header;
-  final NveDecodeError? error;
-  final int mutationCount;
-  final bool committed;
-  final bool syncMount;
-  final List<NveDispatchedCommand> dispatchedCommands;
-
-  bool get isOk => error == null;
-}
-
-/// Retained node inside [NveRetainedTree].
-class NveNode {
-  NveNode({
-    required this.id,
-    required this.kind,
-    this.customName,
-    this.text,
-    this.layout = NveLayoutProps.defaults,
-    this.style = NveStyleProps.defaults,
-    this.hasExplicitStyle = false,
-    this.eventMask = 0,
-    List<int>? children,
-    Map<String, NveRawPropValue>? rawProps,
-    this.parentId,
-    this.computedRect = Rect.zero,
-    this.hasComputedLayout = false,
-  })  : children = children ?? <int>[],
-        rawProps = rawProps ?? <String, NveRawPropValue>{};
-
-  final int id;
-  NveComponentKind kind;
-  String? customName;
-  String? text;
-  NveLayoutProps layout;
-  NveStyleProps style;
-  bool hasExplicitStyle;
-  int eventMask;
-  List<int> children;
-  final Map<String, NveRawPropValue> rawProps;
-  int? parentId;
-
-  /// Surface-absolute bounding rectangle computed by [NveFlexLayoutSolver].
-  Rect computedRect;
-  bool hasComputedLayout;
-
-  /// True for leaf `Text` nodes that actually paint glyphs (skips wrapper `Text` nodes with children).
-  bool get isTextLeaf => kind == NveComponentKind.text && children.isEmpty;
-
-  /// True for nodes that accept pointer hit-testing (`Pressable` or non-zero `eventMask`).
-  bool get isInteractive => kind == NveComponentKind.pressable || eventMask != 0;
-}
+export 'command_builder.dart';
+export 'command_types.dart';
 
 sealed class _DecodedCmd {
   const _DecodedCmd();
@@ -579,40 +74,36 @@ final class _CommitCmd extends _DecodedCmd {
 
 bool _isValidScalar(double v) => v.isFinite && v.abs() <= nveMaxLayoutScalar;
 
-bool _isValidDimension(NveDimension d) {
-  return d.isAuto || ((d.isPoints || d.isPercent) && _isValidScalar(d.value));
-}
+bool _isValidDimension(NveDimension d) =>
+    d.isAuto || ((d.isPoints || d.isPercent) && _isValidScalar(d.value));
 
-bool _isValidInsets(NveEdgeInsets e) {
-  return _isValidScalar(e.top) &&
-      _isValidScalar(e.right) &&
-      _isValidScalar(e.bottom) &&
-      _isValidScalar(e.left);
-}
+bool _isValidInsets(NveEdgeInsets e) =>
+    _isValidScalar(e.top) &&
+    _isValidScalar(e.right) &&
+    _isValidScalar(e.bottom) &&
+    _isValidScalar(e.left);
 
-bool _isValidLayout(NveLayoutProps l) {
-  return _isValidDimension(l.width) &&
-      _isValidDimension(l.height) &&
-      _isValidDimension(l.minWidth) &&
-      _isValidDimension(l.minHeight) &&
-      _isValidDimension(l.maxWidth) &&
-      _isValidDimension(l.maxHeight) &&
-      _isValidScalar(l.flexGrow) &&
-      l.flexGrow >= 0.0 &&
-      _isValidScalar(l.flexShrink) &&
-      l.flexShrink >= 0.0 &&
-      _isValidScalar(l.gap) &&
-      l.gap >= 0.0 &&
-      _isValidInsets(l.padding) &&
-      _isValidInsets(l.margin);
-}
+bool _isValidLayout(NveLayoutProps l) =>
+    _isValidDimension(l.width) &&
+    _isValidDimension(l.height) &&
+    _isValidDimension(l.minWidth) &&
+    _isValidDimension(l.minHeight) &&
+    _isValidDimension(l.maxWidth) &&
+    _isValidDimension(l.maxHeight) &&
+    _isValidScalar(l.flexGrow) &&
+    l.flexGrow >= 0.0 &&
+    _isValidScalar(l.flexShrink) &&
+    l.flexShrink >= 0.0 &&
+    _isValidScalar(l.gap) &&
+    l.gap >= 0.0 &&
+    _isValidInsets(l.padding) &&
+    _isValidInsets(l.margin);
 
-bool _isValidStyle(NveStyleProps s) {
-  return _isValidScalar(s.borderWidth) &&
-      _isValidScalar(s.borderRadius) &&
-      _isValidScalar(s.opacity) &&
-      _isValidScalar(s.fontSize);
-}
+bool _isValidStyle(NveStyleProps s) =>
+    _isValidScalar(s.borderWidth) &&
+    _isValidScalar(s.borderRadius) &&
+    _isValidScalar(s.opacity) &&
+    _isValidScalar(s.fontSize);
 
 /// Zero-copy bounds-checked binary reader over `ByteData.sublistView(Uint8List)`.
 class _ZeroCopyReader {
@@ -716,37 +207,27 @@ class NveRetainedTree {
 
   final Map<int, NveNode> _nodes = <int, NveNode>{};
 
-  /// Unmodifiable map of all live retained nodes keyed by `nodeId`.
   Map<int, NveNode> get nodes => Map<int, NveNode>.unmodifiable(_nodes);
 
-  /// Live node count (always >= 1 because [nveRootNodeId] is always present).
   int get nodeCount => _nodes.length;
 
-  /// Returns a node by ID, or `null` if absent.
   NveNode? node(int nodeId) => _nodes[nodeId];
 
-  /// Returns the root node (`id == 1`).
   NveNode get root => _nodes[nveRootNodeId]!;
 
-  /// Returns the computed surface-local [Rect] for `nodeId`, or `null` if not laid out.
   Rect? layoutOf(int nodeId) {
     final n = _nodes[nodeId];
     if (n == null || !n.hasComputedLayout) return null;
     return n.computedRect;
   }
 
-  /// Resets the tree to a fresh root-only state (used on module hot-swap).
   void reset() {
     _nodes
       ..clear()
       ..[nveRootNodeId] = NveNode(id: nveRootNodeId, kind: NveComponentKind.root);
   }
 
-  /// Decodes and atomically applies a binary `CommandBuffer` frame.
-  ///
-  /// Never throws `RangeError` or `FormatException` on corrupt, truncated, or
-  /// malformed inputs; returns [NveFrameApplyResult.err] while leaving the
-  /// existing tree unmodified when decoding fails.
+  /// Decodes and atomically applies a binary `CommandBuffer` frame without throwing.
   NveFrameApplyResult applyCommandBuffer(Uint8List bytes) {
     if (bytes.length > nveMaxBufferBytes) {
       return NveFrameApplyResult.err(
@@ -812,421 +293,10 @@ class NveRetainedTree {
       );
     }
 
-    // Phase 1: Decode and validate the entire binary stream without mutating state.
     final decoded = <_DecodedCmd>[];
-    for (var i = 0; i < opCount; i++) {
-      final opOffset = reader.pos;
-      if (!reader.has(1)) {
-        return NveFrameApplyResult.err(
-          NveDecodeError(
-            NveDecodeErrorCode.truncated,
-            'Truncated before opcode #$i',
-            offset: opOffset,
-          ),
-          header: header,
-        );
-      }
-      final opByte = reader.readU8();
-      final opcode = NveOpcode.fromCode(opByte);
-      if (opcode == null) {
-        return NveFrameApplyResult.err(
-          NveDecodeError(
-            NveDecodeErrorCode.unknownOpcode,
-            'Unknown opcode $opByte',
-            offset: opOffset,
-          ),
-          header: header,
-        );
-      }
-
-      switch (opcode) {
-        case NveOpcode.createNode:
-          if (!reader.has(8)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated CreateNode', offset: opOffset),
-              header: header,
-            );
-          }
-          final nodeId = reader.readU32();
-          final kindCode = reader.readU16();
-          final kind = NveComponentKind.fromCode(kindCode);
-          if (kind == null) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidEnum,
-                'Invalid ComponentKind $kindCode',
-                offset: opOffset,
-              ),
-              header: header,
-            );
-          }
-          final nameLen = reader.readU16();
-          if (!reader.has(nameLen)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.truncated,
-                'Truncated custom component name ($nameLen bytes)',
-                offset: reader.pos,
-              ),
-              header: header,
-            );
-          }
-          String? customName;
-          if (nameLen > 0) {
-            customName = reader.readUtf8(nameLen);
-            if (customName == null) {
-              return NveFrameApplyResult.err(
-                NveDecodeError(
-                  NveDecodeErrorCode.invalidUtf8,
-                  'Invalid UTF-8 in custom component name',
-                  offset: opOffset,
-                ),
-                header: header,
-              );
-            }
-          }
-          decoded.add(_CreateNodeCmd(nodeId, kind, customName));
-
-        case NveOpcode.removeNode:
-          if (!reader.has(4)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated RemoveNode', offset: opOffset),
-              header: header,
-            );
-          }
-          decoded.add(_RemoveNodeCmd(reader.readU32()));
-
-        case NveOpcode.setChildren:
-          if (!reader.has(8)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetChildren', offset: opOffset),
-              header: header,
-            );
-          }
-          final parentId = reader.readU32();
-          final count = reader.readU32();
-          if (count > reader.remaining ~/ 4) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.truncated,
-                'Truncated SetChildren list ($count children)',
-                offset: reader.pos,
-              ),
-              header: header,
-            );
-          }
-          final children = List<int>.generate(count, (_) => reader.readU32(), growable: false);
-          decoded.add(_SetChildrenCmd(parentId, children));
-
-        case NveOpcode.setText:
-          if (!reader.has(8)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetText', offset: opOffset),
-              header: header,
-            );
-          }
-          final nodeId = reader.readU32();
-          final len = reader.readU32();
-          if (!reader.has(len)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.truncated,
-                'Truncated SetText payload ($len bytes)',
-                offset: reader.pos,
-              ),
-              header: header,
-            );
-          }
-          final text = reader.readUtf8(len);
-          if (text == null) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidUtf8,
-                'Invalid UTF-8 in SetText',
-                offset: opOffset,
-              ),
-              header: header,
-            );
-          }
-          decoded.add(_SetTextCmd(nodeId, text));
-
-        case NveOpcode.setLayout:
-          // nodeId (4) + 6 * Dimension (30) + 3 enums (3) + 3 f32 (12) + 2 * EdgeInsets (32) = 81 bytes.
-          if (!reader.has(81)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetLayout', offset: opOffset),
-              header: header,
-            );
-          }
-          final nodeId = reader.readU32();
-          final width = reader.readDimension();
-          final height = reader.readDimension();
-          final minWidth = reader.readDimension();
-          final minHeight = reader.readDimension();
-          final maxWidth = reader.readDimension();
-          final maxHeight = reader.readDimension();
-          if (width == null ||
-              height == null ||
-              minWidth == null ||
-              minHeight == null ||
-              maxWidth == null ||
-              maxHeight == null) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidEnum,
-                'Invalid Dimension unit in SetLayout',
-                offset: opOffset,
-              ),
-              header: header,
-            );
-          }
-          final flexDir = NveFlexDirection.fromCode(reader.readU8());
-          final justify = NveFlexJustify.fromCode(reader.readU8());
-          final align = NveFlexAlign.fromCode(reader.readU8());
-          if (flexDir == null || justify == null || align == null) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidEnum,
-                'Invalid Flexbox enum in SetLayout',
-                offset: opOffset,
-              ),
-              header: header,
-            );
-          }
-          final flexGrow = reader.readF32();
-          final flexShrink = reader.readF32();
-          final gap = reader.readF32();
-          final padding = reader.readInsets();
-          final margin = reader.readInsets();
-          final layout = NveLayoutProps(
-            width: width,
-            height: height,
-            minWidth: minWidth,
-            minHeight: minHeight,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            flexDirection: flexDir,
-            justifyContent: justify,
-            alignItems: align,
-            flexGrow: flexGrow,
-            flexShrink: flexShrink,
-            gap: gap,
-            padding: padding,
-            margin: margin,
-          );
-          if (!_isValidLayout(layout)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidScalar,
-                'Non-finite or out-of-range scalar in SetLayout',
-                offset: opOffset,
-              ),
-              header: header,
-            );
-          }
-          decoded.add(_SetLayoutCmd(nodeId, layout));
-
-        case NveOpcode.setStyle:
-          // nodeId (4) + 3 * u32 (12) + 4 * f32 (16) + i32 (4) = 36 bytes.
-          if (!reader.has(36)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetStyle', offset: opOffset),
-              header: header,
-            );
-          }
-          final nodeId = reader.readU32();
-          final bg = NveColorRgba.fromWireUint32(reader.readU32());
-          final textColor = NveColorRgba.fromWireUint32(reader.readU32());
-          final borderColor = NveColorRgba.fromWireUint32(reader.readU32());
-          final borderWidth = reader.readF32();
-          final borderRadius = reader.readF32();
-          final opacity = reader.readF32();
-          final fontSize = reader.readF32();
-          final zIndex = reader.readI32();
-          final style = NveStyleProps(
-            background: bg,
-            textColor: textColor,
-            borderColor: borderColor,
-            borderWidth: borderWidth,
-            borderRadius: borderRadius,
-            opacity: opacity,
-            fontSize: fontSize,
-            zIndex: zIndex,
-          );
-          if (!_isValidStyle(style)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidScalar,
-                'Non-finite or out-of-range scalar in SetStyle',
-                offset: opOffset,
-              ),
-              header: header,
-            );
-          }
-          decoded.add(_SetStyleCmd(nodeId, style));
-
-        case NveOpcode.setRawProp:
-          if (!reader.has(6)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetRawProp', offset: opOffset),
-              header: header,
-            );
-          }
-          final nodeId = reader.readU32();
-          final keyLen = reader.readU16();
-          if (!reader.has(keyLen + 1)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.truncated,
-                'Truncated SetRawProp key/tag',
-                offset: reader.pos,
-              ),
-              header: header,
-            );
-          }
-          final key = reader.readUtf8(keyLen);
-          if (key == null) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidUtf8,
-                'Invalid UTF-8 in SetRawProp key',
-                offset: opOffset,
-              ),
-              header: header,
-            );
-          }
-          final tag = reader.readU8();
-          final valKind = NveRawPropKind.fromCode(tag);
-          if (valKind == null) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(
-                NveDecodeErrorCode.invalidEnum,
-                'Invalid RawPropValue tag $tag',
-                offset: reader.pos - 1,
-              ),
-              header: header,
-            );
-          }
-          NveRawPropValue propValue;
-          switch (valKind) {
-            case NveRawPropKind.nullValue:
-              propValue = const NveRawPropValue.nullValue();
-            case NveRawPropKind.boolValue:
-              if (!reader.has(1)) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Bool prop', offset: reader.pos),
-                  header: header,
-                );
-              }
-              propValue = NveRawPropValue.boolValue(reader.readU8() != 0);
-            case NveRawPropKind.i64Value:
-              if (!reader.has(8)) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated I64 prop', offset: reader.pos),
-                  header: header,
-                );
-              }
-              propValue = NveRawPropValue.i64Value(reader.readI64());
-            case NveRawPropKind.f64Value:
-              if (!reader.has(8)) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated F64 prop', offset: reader.pos),
-                  header: header,
-                );
-              }
-              propValue = NveRawPropValue.f64Value(reader.readF64());
-            case NveRawPropKind.stringValue:
-              if (!reader.has(4)) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated String prop length', offset: reader.pos),
-                  header: header,
-                );
-              }
-              final vlen = reader.readU32();
-              if (!reader.has(vlen)) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated String prop bytes', offset: reader.pos),
-                  header: header,
-                );
-              }
-              final str = reader.readUtf8(vlen);
-              if (str == null) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.invalidUtf8, 'Invalid UTF-8 in String prop', offset: opOffset),
-                  header: header,
-                );
-              }
-              propValue = NveRawPropValue.stringValue(str);
-            case NveRawPropKind.bytesValue:
-              if (!reader.has(4)) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Bytes prop length', offset: reader.pos),
-                  header: header,
-                );
-              }
-              final vlen = reader.readU32();
-              if (!reader.has(vlen)) {
-                return NveFrameApplyResult.err(
-                  NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Bytes prop payload', offset: reader.pos),
-                  header: header,
-                );
-              }
-              propValue = NveRawPropValue.bytesValue(reader.readBytesCopy(vlen));
-          }
-          decoded.add(_SetRawPropCmd(nodeId, key, propValue));
-
-        case NveOpcode.setEventMask:
-          if (!reader.has(12)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetEventMask', offset: opOffset),
-              header: header,
-            );
-          }
-          final nodeId = reader.readU32();
-          final mask = reader.readU64();
-          decoded.add(_SetEventMaskCmd(nodeId, mask));
-
-        case NveOpcode.dispatchCommand:
-          if (!reader.has(6)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated DispatchCommand', offset: opOffset),
-              header: header,
-            );
-          }
-          final nodeId = reader.readU32();
-          final nameLen = reader.readU16();
-          if (!reader.has(nameLen + 4)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated DispatchCommand name/len', offset: reader.pos),
-              header: header,
-            );
-          }
-          final name = reader.readUtf8(nameLen);
-          if (name == null) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.invalidUtf8, 'Invalid UTF-8 in command name', offset: opOffset),
-              header: header,
-            );
-          }
-          final payloadLen = reader.readU32();
-          if (!reader.has(payloadLen)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated DispatchCommand payload', offset: reader.pos),
-              header: header,
-            );
-          }
-          final payload = reader.readBytesCopy(payloadLen);
-          decoded.add(_DispatchCommandCmd(nodeId, name, payload));
-
-        case NveOpcode.commit:
-          if (!reader.has(1)) {
-            return NveFrameApplyResult.err(
-              NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Commit', offset: opOffset),
-              header: header,
-            );
-          }
-          decoded.add(_CommitCmd(reader.readU8() != 0));
-      }
+    final decodeErr = _decodeStream(reader, opCount, decoded);
+    if (decodeErr != null) {
+      return NveFrameApplyResult.err(decodeErr, header: header);
     }
 
     if (reader.remaining != 0) {
@@ -1240,7 +310,265 @@ class NveRetainedTree {
       );
     }
 
-    // Phase 2: Apply validated commands to the retained tree.
+    return _applyCommands(header, decoded);
+  }
+
+  NveDecodeError? _decodeStream(
+    _ZeroCopyReader reader,
+    int opCount,
+    List<_DecodedCmd> decoded,
+  ) {
+    for (var i = 0; i < opCount; i++) {
+      final opOffset = reader.pos;
+      if (!reader.has(1)) {
+        return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated before opcode #$i', offset: opOffset);
+      }
+      final opByte = reader.readU8();
+      final opcode = NveOpcode.fromCode(opByte);
+      if (opcode == null) {
+        return NveDecodeError(NveDecodeErrorCode.unknownOpcode, 'Unknown opcode $opByte', offset: opOffset);
+      }
+
+      switch (opcode) {
+        case NveOpcode.createNode:
+          if (!reader.has(8)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated CreateNode', offset: opOffset);
+          }
+          final nodeId = reader.readU32();
+          final kindCode = reader.readU16();
+          final kind = NveComponentKind.fromCode(kindCode);
+          if (kind == null) {
+            return NveDecodeError(NveDecodeErrorCode.invalidEnum, 'Invalid ComponentKind $kindCode', offset: opOffset);
+          }
+          final nameLen = reader.readU16();
+          if (!reader.has(nameLen)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated custom name', offset: reader.pos);
+          }
+          String? customName;
+          if (nameLen > 0) {
+            customName = reader.readUtf8(nameLen);
+            if (customName == null) {
+              return NveDecodeError(NveDecodeErrorCode.invalidUtf8, 'Invalid UTF-8 in custom name', offset: opOffset);
+            }
+          }
+          decoded.add(_CreateNodeCmd(nodeId, kind, customName));
+
+        case NveOpcode.removeNode:
+          if (!reader.has(4)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated RemoveNode', offset: opOffset);
+          }
+          decoded.add(_RemoveNodeCmd(reader.readU32()));
+
+        case NveOpcode.setChildren:
+          if (!reader.has(8)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetChildren', offset: opOffset);
+          }
+          final parentId = reader.readU32();
+          final count = reader.readU32();
+          if (count > reader.remaining ~/ 4) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetChildren list', offset: reader.pos);
+          }
+          decoded.add(_SetChildrenCmd(parentId, List<int>.generate(count, (_) => reader.readU32(), growable: false)));
+
+        case NveOpcode.setText:
+          if (!reader.has(8)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetText', offset: opOffset);
+          }
+          final nodeId = reader.readU32();
+          final len = reader.readU32();
+          if (!reader.has(len)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetText payload', offset: reader.pos);
+          }
+          final text = reader.readUtf8(len);
+          if (text == null) {
+            return NveDecodeError(NveDecodeErrorCode.invalidUtf8, 'Invalid UTF-8 in SetText', offset: opOffset);
+          }
+          decoded.add(_SetTextCmd(nodeId, text));
+
+        case NveOpcode.setLayout:
+          final err = _decodeSetLayout(reader, opOffset, decoded);
+          if (err != null) return err;
+
+        case NveOpcode.setStyle:
+          if (!reader.has(36)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetStyle', offset: opOffset);
+          }
+          final nodeId = reader.readU32();
+          final style = NveStyleProps(
+            background: NveColorRgba.fromWireUint32(reader.readU32()),
+            textColor: NveColorRgba.fromWireUint32(reader.readU32()),
+            borderColor: NveColorRgba.fromWireUint32(reader.readU32()),
+            borderWidth: reader.readF32(),
+            borderRadius: reader.readF32(),
+            opacity: reader.readF32(),
+            fontSize: reader.readF32(),
+            zIndex: reader.readI32(),
+          );
+          if (!_isValidStyle(style)) {
+            return NveDecodeError(NveDecodeErrorCode.invalidScalar, 'Invalid scalar in SetStyle', offset: opOffset);
+          }
+          decoded.add(_SetStyleCmd(nodeId, style));
+
+        case NveOpcode.setRawProp:
+          final err = _decodeSetRawProp(reader, opOffset, decoded);
+          if (err != null) return err;
+
+        case NveOpcode.setEventMask:
+          if (!reader.has(12)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetEventMask', offset: opOffset);
+          }
+          decoded.add(_SetEventMaskCmd(reader.readU32(), reader.readU64()));
+
+        case NveOpcode.dispatchCommand:
+          if (!reader.has(6)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated DispatchCommand', offset: opOffset);
+          }
+          final nodeId = reader.readU32();
+          final nameLen = reader.readU16();
+          if (!reader.has(nameLen + 4)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated DispatchCommand name/len', offset: reader.pos);
+          }
+          final name = reader.readUtf8(nameLen);
+          if (name == null) {
+            return NveDecodeError(NveDecodeErrorCode.invalidUtf8, 'Invalid UTF-8 in command name', offset: opOffset);
+          }
+          final payloadLen = reader.readU32();
+          if (!reader.has(payloadLen)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated DispatchCommand payload', offset: reader.pos);
+          }
+          decoded.add(_DispatchCommandCmd(nodeId, name, reader.readBytesCopy(payloadLen)));
+
+        case NveOpcode.commit:
+          if (!reader.has(1)) {
+            return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Commit', offset: opOffset);
+          }
+          decoded.add(_CommitCmd(reader.readU8() != 0));
+      }
+    }
+    return null;
+  }
+
+  NveDecodeError? _decodeSetLayout(
+    _ZeroCopyReader reader,
+    int opOffset,
+    List<_DecodedCmd> decoded,
+  ) {
+    if (!reader.has(81)) {
+      return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetLayout', offset: opOffset);
+    }
+    final nodeId = reader.readU32();
+    final width = reader.readDimension();
+    final height = reader.readDimension();
+    final minWidth = reader.readDimension();
+    final minHeight = reader.readDimension();
+    final maxWidth = reader.readDimension();
+    final maxHeight = reader.readDimension();
+    if (width == null ||
+        height == null ||
+        minWidth == null ||
+        minHeight == null ||
+        maxWidth == null ||
+        maxHeight == null) {
+      return NveDecodeError(NveDecodeErrorCode.invalidEnum, 'Invalid Dimension unit in SetLayout', offset: opOffset);
+    }
+    final flexDir = NveFlexDirection.fromCode(reader.readU8());
+    final justify = NveFlexJustify.fromCode(reader.readU8());
+    final align = NveFlexAlign.fromCode(reader.readU8());
+    if (flexDir == null || justify == null || align == null) {
+      return NveDecodeError(NveDecodeErrorCode.invalidEnum, 'Invalid Flexbox enum in SetLayout', offset: opOffset);
+    }
+    final layout = NveLayoutProps(
+      width: width,
+      height: height,
+      minWidth: minWidth,
+      minHeight: minHeight,
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+      flexDirection: flexDir,
+      justifyContent: justify,
+      alignItems: align,
+      flexGrow: reader.readF32(),
+      flexShrink: reader.readF32(),
+      gap: reader.readF32(),
+      padding: reader.readInsets(),
+      margin: reader.readInsets(),
+    );
+    if (!_isValidLayout(layout)) {
+      return NveDecodeError(NveDecodeErrorCode.invalidScalar, 'Invalid scalar in SetLayout', offset: opOffset);
+    }
+    decoded.add(_SetLayoutCmd(nodeId, layout));
+    return null;
+  }
+
+  NveDecodeError? _decodeSetRawProp(
+    _ZeroCopyReader reader,
+    int opOffset,
+    List<_DecodedCmd> decoded,
+  ) {
+    if (!reader.has(6)) {
+      return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetRawProp', offset: opOffset);
+    }
+    final nodeId = reader.readU32();
+    final keyLen = reader.readU16();
+    if (!reader.has(keyLen + 1)) {
+      return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated SetRawProp key/tag', offset: reader.pos);
+    }
+    final key = reader.readUtf8(keyLen);
+    if (key == null) {
+      return NveDecodeError(NveDecodeErrorCode.invalidUtf8, 'Invalid UTF-8 in SetRawProp key', offset: opOffset);
+    }
+    final tag = reader.readU8();
+    final valKind = NveRawPropKind.fromCode(tag);
+    if (valKind == null) {
+      return NveDecodeError(NveDecodeErrorCode.invalidEnum, 'Invalid RawPropValue tag $tag', offset: reader.pos - 1);
+    }
+    final NveRawPropValue propValue;
+    switch (valKind) {
+      case NveRawPropKind.nullValue:
+        propValue = const NveRawPropValue.nullValue();
+      case NveRawPropKind.boolValue:
+        if (!reader.has(1)) {
+          return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Bool prop', offset: reader.pos);
+        }
+        propValue = NveRawPropValue.boolValue(reader.readU8() != 0);
+      case NveRawPropKind.i64Value:
+        if (!reader.has(8)) {
+          return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated I64 prop', offset: reader.pos);
+        }
+        propValue = NveRawPropValue.i64Value(reader.readI64());
+      case NveRawPropKind.f64Value:
+        if (!reader.has(8)) {
+          return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated F64 prop', offset: reader.pos);
+        }
+        propValue = NveRawPropValue.f64Value(reader.readF64());
+      case NveRawPropKind.stringValue:
+        if (!reader.has(4)) {
+          return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated String prop length', offset: reader.pos);
+        }
+        final vlen = reader.readU32();
+        if (!reader.has(vlen)) {
+          return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated String prop bytes', offset: reader.pos);
+        }
+        final str = reader.readUtf8(vlen);
+        if (str == null) {
+          return NveDecodeError(NveDecodeErrorCode.invalidUtf8, 'Invalid UTF-8 in String prop', offset: opOffset);
+        }
+        propValue = NveRawPropValue.stringValue(str);
+      case NveRawPropKind.bytesValue:
+        if (!reader.has(4)) {
+          return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Bytes prop length', offset: reader.pos);
+        }
+        final vlen = reader.readU32();
+        if (!reader.has(vlen)) {
+          return NveDecodeError(NveDecodeErrorCode.truncated, 'Truncated Bytes prop payload', offset: reader.pos);
+        }
+        propValue = NveRawPropValue.bytesValue(reader.readBytesCopy(vlen));
+    }
+    decoded.add(_SetRawPropCmd(nodeId, key, propValue));
+    return null;
+  }
+
+  NveFrameApplyResult _applyCommands(NveCommandBufferHeader header, List<_DecodedCmd> decoded) {
     var mutations = 0;
     var committed = false;
     var syncMount = false;
@@ -1364,9 +692,6 @@ class NveRetainedTree {
 
   /// Propagates `textColor` and `fontSize` from parent `Text` nodes to child
   /// `Text` nodes that lack an explicit `SetStyle` (matching `fabric_adapter.cpp`).
-  ///
-  /// Defaults to opaque black (`0xFF000000`) and `16.0` when no `Text` ancestor
-  /// defines a style.
   void propagateTextStyles() {
     if (!_nodes.containsKey(nveRootNodeId)) return;
 
@@ -1445,7 +770,6 @@ class NveRetainedTree {
       );
     }
 
-    // Collect ancestors of parentId to reject any cycle.
     final ancestors = <int>{};
     int? walk = parentId;
     for (var hops = 0; walk != null && hops <= _nodes.length; hops++) {
@@ -1475,7 +799,6 @@ class NveRetainedTree {
       }
     }
 
-    // Clear old parent back-links.
     for (final oldCid in parent.children) {
       final oldChild = _nodes[oldCid];
       if (oldChild != null && oldChild.parentId == parentId) {
@@ -1483,7 +806,6 @@ class NveRetainedTree {
       }
     }
 
-    // Reparent new children cleanly.
     for (final cid in children) {
       final child = _nodes[cid];
       if (child != null) {
@@ -1512,204 +834,4 @@ class _TextInheritFrame {
   final NveColorRgba color;
   final double fontSize;
   final bool hasInherited;
-}
-
-/// Binary `CommandBuffer` encoder mirroring `CommandBufferBuilder` in `crates/nve-abi/src/codec.rs`.
-///
-/// Useful for tests, synthetic surfaces, and Dart-side golden fixtures.
-class NveCommandBufferBuilder {
-  NveCommandBufferBuilder({this.surfaceId = 1, this.frameId = 1, this.flags = 0});
-
-  final int surfaceId;
-  final int frameId;
-  final int flags;
-  final BytesBuilder _body = BytesBuilder(copy: false);
-  int _opCount = 0;
-
-  int get opCount => _opCount;
-
-  void createNode(int nodeId, NveComponentKind kind, {String? customName}) {
-    final nameBytes = customName != null ? utf8.encode(customName) : const <int>[];
-    final hdr = ByteData(9)
-      ..setUint8(0, NveOpcode.createNode.code)
-      ..setUint32(1, nodeId, Endian.little)
-      ..setUint16(5, kind.code, Endian.little)
-      ..setUint16(7, nameBytes.length, Endian.little);
-    _body.add(hdr.buffer.asUint8List());
-    if (nameBytes.isNotEmpty) {
-      _body.add(nameBytes);
-    }
-    _opCount += 1;
-  }
-
-  void createCustomNode(int nodeId, String customName) {
-    createNode(nodeId, NveComponentKind.custom, customName: customName);
-  }
-
-  void removeNode(int nodeId) {
-    final b = ByteData(5)
-      ..setUint8(0, NveOpcode.removeNode.code)
-      ..setUint32(1, nodeId, Endian.little);
-    _body.add(b.buffer.asUint8List());
-    _opCount += 1;
-  }
-
-  void setChildren(int parentId, List<int> children) {
-    final b = ByteData(9 + children.length * 4)
-      ..setUint8(0, NveOpcode.setChildren.code)
-      ..setUint32(1, parentId, Endian.little)
-      ..setUint32(5, children.length, Endian.little);
-    for (var i = 0; i < children.length; i++) {
-      b.setUint32(9 + i * 4, children[i], Endian.little);
-    }
-    _body.add(b.buffer.asUint8List());
-    _opCount += 1;
-  }
-
-  void setText(int nodeId, String text) {
-    final encoded = utf8.encode(text);
-    final b = ByteData(9)
-      ..setUint8(0, NveOpcode.setText.code)
-      ..setUint32(1, nodeId, Endian.little)
-      ..setUint32(5, encoded.length, Endian.little);
-    _body.add(b.buffer.asUint8List());
-    _body.add(encoded);
-    _opCount += 1;
-  }
-
-  void setLayout(int nodeId, NveLayoutProps layout) {
-    final b = ByteData(82);
-    var pos = 0;
-    b.setUint8(pos++, NveOpcode.setLayout.code);
-    b.setUint32(pos, nodeId, Endian.little);
-    pos += 4;
-    void writeDim(NveDimension d) {
-      b.setUint8(pos++, d.unit.code);
-      b.setFloat32(pos, d.value, Endian.little);
-      pos += 4;
-    }
-
-    writeDim(layout.width);
-    writeDim(layout.height);
-    writeDim(layout.minWidth);
-    writeDim(layout.minHeight);
-    writeDim(layout.maxWidth);
-    writeDim(layout.maxHeight);
-    b.setUint8(pos++, layout.flexDirection.code);
-    b.setUint8(pos++, layout.justifyContent.code);
-    b.setUint8(pos++, layout.alignItems.code);
-    b.setFloat32(pos, layout.flexGrow, Endian.little);
-    pos += 4;
-    b.setFloat32(pos, layout.flexShrink, Endian.little);
-    pos += 4;
-    b.setFloat32(pos, layout.gap, Endian.little);
-    pos += 4;
-    void writeInsets(NveEdgeInsets e) {
-      b.setFloat32(pos, e.top, Endian.little);
-      b.setFloat32(pos + 4, e.right, Endian.little);
-      b.setFloat32(pos + 8, e.bottom, Endian.little);
-      b.setFloat32(pos + 12, e.left, Endian.little);
-      pos += 16;
-    }
-
-    writeInsets(layout.padding);
-    writeInsets(layout.margin);
-    _body.add(b.buffer.asUint8List());
-    _opCount += 1;
-  }
-
-  void setStyle(int nodeId, NveStyleProps style) {
-    final b = ByteData(37)
-      ..setUint8(0, NveOpcode.setStyle.code)
-      ..setUint32(1, nodeId, Endian.little)
-      ..setUint32(5, style.background.toWireUint32(), Endian.little)
-      ..setUint32(9, style.textColor.toWireUint32(), Endian.little)
-      ..setUint32(13, style.borderColor.toWireUint32(), Endian.little)
-      ..setFloat32(17, style.borderWidth, Endian.little)
-      ..setFloat32(21, style.borderRadius, Endian.little)
-      ..setFloat32(25, style.opacity, Endian.little)
-      ..setFloat32(29, style.fontSize, Endian.little)
-      ..setInt32(33, style.zIndex, Endian.little);
-    _body.add(b.buffer.asUint8List());
-    _opCount += 1;
-  }
-
-  void setRawProp(int nodeId, String key, NveRawPropValue value) {
-    final keyBytes = utf8.encode(key);
-    final hdr = ByteData(7)
-      ..setUint8(0, NveOpcode.setRawProp.code)
-      ..setUint32(1, nodeId, Endian.little)
-      ..setUint16(5, keyBytes.length, Endian.little);
-    _body.add(hdr.buffer.asUint8List());
-    _body.add(keyBytes);
-    _body.addByte(value.kind.code);
-
-    switch (value.kind) {
-      case NveRawPropKind.nullValue:
-        break;
-      case NveRawPropKind.boolValue:
-        _body.addByte((value.asBool ?? false) ? 1 : 0);
-      case NveRawPropKind.i64Value:
-        final b = ByteData(8)..setInt64(0, value.asInt ?? 0, Endian.little);
-        _body.add(b.buffer.asUint8List());
-      case NveRawPropKind.f64Value:
-        final b = ByteData(8)..setFloat64(0, value.asDouble ?? 0.0, Endian.little);
-        _body.add(b.buffer.asUint8List());
-      case NveRawPropKind.stringValue:
-        final bytes = utf8.encode(value.asString ?? '');
-        final len = ByteData(4)..setUint32(0, bytes.length, Endian.little);
-        _body.add(len.buffer.asUint8List());
-        _body.add(bytes);
-      case NveRawPropKind.bytesValue:
-        final bytes = value.asBytes ?? Uint8List(0);
-        final len = ByteData(4)..setUint32(0, bytes.length, Endian.little);
-        _body.add(len.buffer.asUint8List());
-        _body.add(bytes);
-    }
-    _opCount += 1;
-  }
-
-  void setEventMask(int nodeId, int mask) {
-    final b = ByteData(13)
-      ..setUint8(0, NveOpcode.setEventMask.code)
-      ..setUint32(1, nodeId, Endian.little)
-      ..setUint64(5, mask, Endian.little);
-    _body.add(b.buffer.asUint8List());
-    _opCount += 1;
-  }
-
-  void dispatchCommand(int nodeId, String commandName, Uint8List payload) {
-    final nameBytes = utf8.encode(commandName);
-    final hdr = ByteData(7)
-      ..setUint8(0, NveOpcode.dispatchCommand.code)
-      ..setUint32(1, nodeId, Endian.little)
-      ..setUint16(5, nameBytes.length, Endian.little);
-    _body.add(hdr.buffer.asUint8List());
-    _body.add(nameBytes);
-    final len = ByteData(4)..setUint32(0, payload.length, Endian.little);
-    _body.add(len.buffer.asUint8List());
-    _body.add(payload);
-    _opCount += 1;
-  }
-
-  void commit({bool syncMount = false}) {
-    _body.add(<int>[NveOpcode.commit.code, syncMount ? 1 : 0]);
-    _opCount += 1;
-  }
-
-  /// Finalizes the 24-byte header + opcode stream into a contiguous `Uint8List`.
-  Uint8List toBytes() {
-    final bodyBytes = _body.toBytes();
-    final out = Uint8List(nveHeaderSize + bodyBytes.length);
-    final bd = ByteData.sublistView(out);
-    bd
-      ..setUint32(0, nveAbiMagic, Endian.little)
-      ..setUint16(4, nveAbiVersion, Endian.little)
-      ..setUint16(6, flags, Endian.little)
-      ..setUint32(8, surfaceId, Endian.little)
-      ..setUint64(12, frameId, Endian.little)
-      ..setUint32(20, _opCount, Endian.little);
-    out.setRange(nveHeaderSize, out.length, bodyBytes);
-    return out;
-  }
 }

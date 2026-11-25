@@ -1,381 +1,20 @@
-import 'dart:ffi' as ffi;
 import 'dart:math' as math;
-import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
 import '../nve_flutter.dart';
 import 'command_decoder.dart';
-import 'flex_layout.dart';
+import 'nve_canvas_controller.dart';
+import 'scene_canvas_store.dart';
 
-/// Encodes a single pointer `Press` event matching `crates/nve-abi/src/events.rs`
-/// (`NativeEventKind::Press = 1`, `EventPayload::Point { x, y } = tag 1`).
-Uint8List encodePressEvent({
-  required int surfaceId,
-  required int nodeId,
-  required double x,
-  required double y,
-  int? timestampUs,
-}) {
-  final ts = timestampUs ?? DateTime.now().microsecondsSinceEpoch;
-  // 4 (count) + 4 (surfaceId) + 4 (nodeId) + 8 (timestampUs) + 1 (kind) + 1 (payloadTag) + 8 (x, y)
-  final out = Uint8List(30);
-  final bd = ByteData.sublistView(out)
-    ..setUint32(0, 1, Endian.little)
-    ..setUint32(4, surfaceId, Endian.little)
-    ..setUint32(8, nodeId, Endian.little)
-    ..setUint64(12, ts, Endian.little)
-    ..setUint8(20, NveEventKind.press.code)
-    ..setUint8(21, 1) // EventPayload::Point
-    ..setFloat32(22, x, Endian.little)
-    ..setFloat32(26, y, Endian.little);
-  assert(bd.lengthInBytes == 30);
-  return out;
-}
-
-/// Controller driving a direct `dart:ffi` NVE app instance rendered straight onto
-/// Flutter's Impeller/Skia [Canvas] via [NveCanvasView].
-class NveCanvasController extends ChangeNotifier {
-  NveCanvasController.fromInstance(
-    NveAppInstance instance, {
-    String? libraryPath,
-    NveTextMeasurer? textMeasurer,
-    this.defaultFontFamily,
-    this.onEvent,
-  })  : _instance = instance,
-        _libraryPath = libraryPath,
-        tree = NveRetainedTree(),
-        layoutSolver = NveFlexLayoutSolver(
-          textMeasurer: textMeasurer,
-          defaultFontFamily: defaultFontFamily,
-        );
-
-  /// Loads an NVE dynamic library (`lib*.dylib`, `*.so`, `*.dll`) via `nve_get_interface`.
-  factory NveCanvasController.open({
-    int surfaceId = 1,
-    String? libraryPath,
-    String vtableSymbol = 'nve_get_interface',
-    NveTextMeasurer? textMeasurer,
-    String? defaultFontFamily,
-    NveEventCallback? onEvent,
-  }) {
-    final instance = NveAppInstance.open(
-      surfaceId: surfaceId,
-      libraryPath: libraryPath,
-      vtableSymbol: vtableSymbol,
-    );
-    return NveCanvasController.fromInstance(
-      instance,
-      libraryPath: libraryPath,
-      textMeasurer: textMeasurer,
-      defaultFontFamily: defaultFontFamily,
-      onEvent: onEvent,
-    );
-  }
-
-  /// Creates a controller backed by an explicit `nve_get_interface` resolver (ideal for tests).
-  factory NveCanvasController.fromInterfaceResolver({
-    required ffi.Pointer<ffi.Void> Function(int) getInterface,
-    int surfaceId = 1,
-    NveTextMeasurer? textMeasurer,
-    String? defaultFontFamily,
-    NveEventCallback? onEvent,
-  }) {
-    final instance = NveAppInstance.fromInterfaceResolver(
-      surfaceId: surfaceId,
-      getInterface: getInterface,
-    );
-    return NveCanvasController.fromInstance(
-      instance,
-      textMeasurer: textMeasurer,
-      defaultFontFamily: defaultFontFamily,
-      onEvent: onEvent,
-    );
-  }
-
-  NveAppInstance _instance;
-  String? _libraryPath;
-
-  /// Optional default font family shared by [layoutSolver] and [RenderNveCanvas].
-  final String? defaultFontFamily;
-
-  /// Retained node tree decoded from the latest binary `CommandBuffer` frames.
-  final NveRetainedTree tree;
-
-  /// Flexbox layout solver computing node rects with Flutter's [TextPainter].
-  final NveFlexLayoutSolver layoutSolver;
-
-  /// Optional callback invoked for every outbound event drained from the Rust app.
-  NveEventCallback? onEvent;
-
-  int _frameCount = 0;
-  NveFrameApplyResult? _lastFrameResult;
-  NveDecodeError? _lastError;
-  Size _viewportSize = Size.zero;
-  double _devicePixelRatio = 1.0;
-  bool _disposed = false;
-
-  int get surfaceId => _instance.surfaceId;
-  String? get libraryPath => _libraryPath;
-  int get frameCount => _frameCount;
-  int get nodeCount => tree.nodeCount;
-  NveFrameApplyResult? get lastFrameResult => _lastFrameResult;
-  NveDecodeError? get lastError => _lastError;
-  Size get viewportSize => _viewportSize;
-  double get devicePixelRatio => _devicePixelRatio;
-  bool get isDisposed => _disposed;
-
-  /// Snapshot of all retained nodes for diagnostics and geometry tests.
-  Map<int, NveNode> get debugNodes => tree.nodes;
-
-  /// Returns the computed surface-local bounding rect of `nodeId`, or `null`.
-  Rect? layoutOf(int nodeId) => tree.layoutOf(nodeId);
-
-  /// Updates viewport dimensions and recomputes Flexbox layout if needed.
-  void updateViewport(Size size, {double devicePixelRatio = 1.0}) {
-    _ensureLive();
-    _viewportSize = size;
-    _devicePixelRatio = devicePixelRatio > 0.0 ? devicePixelRatio : 1.0;
-    layoutSolver.layout(tree, _viewportSize);
-  }
-
-  /// Queries optional `NveLayoutApi.measure` if exported by the module.
-  Size? measure(BoxConstraints constraints) {
-    _ensureLive();
-    return _instance.measure(constraints);
-  }
-
-  /// Pulls the next binary `CommandBuffer` frame from Rust, decodes it into [tree],
-  /// recomputes Flexbox layout, drains outbound events, and notifies listeners.
-  NveFrameApplyResult renderNextFrame({bool notify = true}) {
-    _ensureLive();
-    final bytes = _instance.renderNextFrame();
-    if (bytes.isEmpty) {
-      const emptyResult = NveFrameApplyResult.ok(
-        header: NveCommandBufferHeader(
-          magic: nveAbiMagic,
-          version: nveAbiVersion,
-          flags: 0,
-          surfaceId: 0,
-          frameId: 0,
-          opCount: 0,
-        ),
-        mutationCount: 0,
-        committed: false,
-        syncMount: false,
-        dispatchedCommands: <NveDispatchedCommand>[],
-      );
-      _lastFrameResult = emptyResult;
-      return emptyResult;
-    }
-
-    final result = tree.applyCommandBuffer(bytes);
-    _lastFrameResult = result;
-    if (result.isOk) {
-      _lastError = null;
-      _frameCount += 1;
-      if (!_viewportSize.isEmpty) {
-        layoutSolver.layout(tree, _viewportSize);
-      }
-      drainEmittedEvents();
-      if (notify) {
-        notifyListeners();
-      }
-    } else {
-      _lastError = result.error;
-    }
-    return result;
-  }
-
-  /// Dispatches a binary pointer `Press` event to `nodeId` at surface-local [position],
-  /// then immediately renders the updated frame.
-  bool dispatchPress(int nodeId, Offset position, {int? timestampUs, bool rerender = true}) {
-    _ensureLive();
-    final encoded = encodePressEvent(
-      surfaceId: surfaceId,
-      nodeId: nodeId,
-      x: position.dx,
-      y: position.dy,
-      timestampUs: timestampUs,
-    );
-    return dispatchEvents(encoded, rerender: rerender);
-  }
-
-  /// Dispatches raw binary `EventRing` bytes into the Rust app.
-  bool dispatchEvents(Uint8List eventRingBytes, {bool rerender = true}) {
-    _ensureLive();
-    final ok = _instance.dispatchEvents(eventRingBytes);
-    if (rerender) {
-      renderNextFrame();
-    }
-    return ok;
-  }
-
-  /// Drains outbound events emitted by the Rust component and forwards them to [onEvent].
-  List<NveEvent> drainEmittedEvents() {
-    _ensureLive();
-    final events = _instance.drainEmittedEvents();
-    final cb = onEvent;
-    if (cb != null) {
-      for (final ev in events) {
-        cb(ev);
-      }
-    }
-    return events;
-  }
-
-  /// Pushes JSON props to `NveComponentApi.set_props` and optionally re-renders.
-  bool setPropsJson(Map<String, dynamic> props, {bool rerender = true}) {
-    _ensureLive();
-    final ok = _instance.setPropsJson(props);
-    if (rerender) {
-      renderNextFrame();
-    }
-    return ok;
-  }
-
-  /// Applies a Tier-1 RSX hot-reload patch via `NveDevApi.apply_hot_patch`.
-  bool applyHotPatch(String patchJson, {bool rerender = true}) {
-    _ensureLive();
-    final ok = _instance.applyHotPatch(patchJson);
-    if (rerender) {
-      renderNextFrame();
-    }
-    return ok;
-  }
-
-  /// Captures serialized app state via `NveDevApi.snapshot_state`.
-  Uint8List snapshotState() {
-    _ensureLive();
-    return _instance.snapshotState();
-  }
-
-  /// Restores serialized app state via `NveDevApi.restore_state`.
-  void restoreState(Uint8List stateBytes) {
-    _ensureLive();
-    _instance.restoreState(stateBytes);
-  }
-
-  /// Atomically hot-swaps the loaded NVE dynamic library while preserving app state:
-  /// `snapshotState` -> open new library -> `restoreState` -> reset tree -> `renderNextFrame`.
-  ///
-  /// If opening `newLibraryPath` fails, the current live instance remains intact.
-  NveFrameApplyResult reloadLibrary(
-    String newLibraryPath, {
-    String vtableSymbol = 'nve_get_interface',
-  }) {
-    _ensureLive();
-    final savedState = _instance.snapshotState();
-    final nextInstance = NveAppInstance.open(
-      surfaceId: surfaceId,
-      libraryPath: newLibraryPath,
-      vtableSymbol: vtableSymbol,
-    );
-    return _swapInstance(nextInstance, savedState, libraryPath: newLibraryPath);
-  }
-
-  /// Atomically hot-swaps the backing module using an explicit `nve_get_interface` resolver.
-  NveFrameApplyResult reloadWithInterfaceResolver(
-    ffi.Pointer<ffi.Void> Function(int) getInterface,
-  ) {
-    _ensureLive();
-    final savedState = _instance.snapshotState();
-    final nextInstance = NveAppInstance.fromInterfaceResolver(
-      surfaceId: surfaceId,
-      getInterface: getInterface,
-    );
-    return _swapInstance(nextInstance, savedState, libraryPath: _libraryPath);
-  }
-
-  NveFrameApplyResult _swapInstance(
-    NveAppInstance nextInstance,
-    Uint8List savedState, {
-    required String? libraryPath,
-  }) {
-    if (savedState.isNotEmpty) {
-      nextInstance.restoreState(savedState);
-    }
-    final previous = _instance;
-    _instance = nextInstance;
-    _libraryPath = libraryPath;
-    previous.dispose();
-    tree.reset();
-    return renderNextFrame();
-  }
-
-  /// Reverse z-order hit-test returning the topmost interactive node at [localPosition].
-  int? hitTestNode(Offset localPosition, {bool interactiveOnly = true}) {
-    return _hitTestRecursive(nveRootNodeId, localPosition, interactiveOnly);
-  }
-
-  int? _hitTestRecursive(int nodeId, Offset pos, bool interactiveOnly) {
-    final node = tree.node(nodeId);
-    if (node == null || !node.hasComputedLayout) return null;
-    if (node.style.opacity <= 0.001) return null;
-
-    final inside = node.computedRect.contains(pos);
-    if (!inside && nodeId != nveRootNodeId) return null;
-
-    final ordered = _childrenInPaintOrder(tree, node.children);
-    for (var i = ordered.length - 1; i >= 0; i--) {
-      final hit = _hitTestRecursive(ordered[i], pos, interactiveOnly);
-      if (hit != null) return hit;
-    }
-
-    if (inside && (!interactiveOnly || node.isInteractive)) {
-      return nodeId;
-    }
-    return null;
-  }
-
-  void _ensureLive() {
-    if (_disposed) {
-      throw StateError('NveCanvasController has been disposed');
-    }
-  }
-
-  @override
-  void dispose() {
-    if (_disposed) return;
-    _disposed = true;
-    _instance.dispose();
-    super.dispose();
-  }
-}
-
-List<int> _childrenInPaintOrder(NveRetainedTree tree, List<int> children) {
-  if (children.length <= 1) return children;
-  var hasNonZeroZ = false;
-  for (final cid in children) {
-    final c = tree.node(cid);
-    if (c != null && c.style.zIndex != 0) {
-      hasNonZeroZ = true;
-      break;
-    }
-  }
-  if (!hasNonZeroZ) return children;
-
-  final sorted = List<int>.of(children);
-  // Dart's List.sort is not guaranteed stable; use insertion sort to preserve tree order on ties.
-  for (var i = 1; i < sorted.length; i++) {
-    final key = sorted[i];
-    final keyZ = tree.node(key)?.style.zIndex ?? 0;
-    var j = i - 1;
-    while (j >= 0 && (tree.node(sorted[j])?.style.zIndex ?? 0) > keyZ) {
-      sorted[j + 1] = sorted[j];
-      j -= 1;
-    }
-    sorted[j + 1] = key;
-  }
-  return sorted;
-}
+export 'event_codec.dart' show encodePressEvent, encodeScrollEvent;
+export 'nve_canvas_controller.dart' show NveCanvasController;
+export 'scene_canvas_store.dart' show NveSceneCanvasStore, NveSceneNodeSnapshot, NveScrollUpdate;
 
 /// Direct Flutter `RenderBox` + Impeller/Skia [Canvas] host widget for any
 /// compiled NVE Rust app/island.
-///
-/// Requires zero PlatformViews and zero native platform plugin boilerplate —
-/// renders the binary `CommandBuffer` directly onto Flutter's own [Canvas].
 class NveCanvasView extends LeafRenderObjectWidget {
   const NveCanvasView({
     super.key,
@@ -385,11 +24,7 @@ class NveCanvasView extends LeafRenderObjectWidget {
   });
 
   final NveCanvasController controller;
-
-  /// Optional canvas backdrop color painted before the root node.
   final Color? backgroundColor;
-
-  /// Optional convenience listener synced onto [controller.onEvent].
   final NveEventCallback? onEvent;
 
   @override
@@ -418,33 +53,62 @@ class NveCanvasView extends LeafRenderObjectWidget {
   }
 }
 
-/// Custom [RenderBox] that lays out and paints an NVE retained tree directly
-/// onto Flutter's [Canvas] and handles reverse z-order pointer hit-testing.
+class _PointerScrollSession {
+  _PointerScrollSession({
+    required this.scrollNodeId,
+    required this.startPosition,
+  });
+
+  final int scrollNodeId;
+  final Offset startPosition;
+  bool isDragging = false;
+}
+
+/// Custom [RenderBox] that paints either a retained [NveRetainedTree] or a direct
+/// zero-decode `NveSceneView` slab ([updateFromSceneView]) onto Flutter's [Canvas],
+/// handling reverse z-order hit-testing, `ScrollView` clipping, and wheel/drag scrolling.
 class RenderNveCanvas extends RenderBox {
   RenderNveCanvas({
-    required NveCanvasController controller,
+    NveCanvasController? controller,
     double devicePixelRatio = 1.0,
     Color? backgroundColor,
+    int surfaceId = 1,
+    String? defaultFontFamily,
+    NveEventCallback? onSceneEvent,
   })  : _controller = controller,
         _devicePixelRatio = devicePixelRatio,
-        _backgroundColor = backgroundColor;
+        _backgroundColor = backgroundColor,
+        _surfaceId = surfaceId,
+        _defaultFontFamily = defaultFontFamily,
+        _onSceneEvent = onSceneEvent;
 
-  NveCanvasController _controller;
+  static const double _scrollDragSlop = 4.0;
+
+  NveCanvasController? _controller;
   double _devicePixelRatio;
   Color? _backgroundColor;
+  final int _surfaceId;
+  final String? _defaultFontFamily;
+  NveEventCallback? _onSceneEvent;
+
+  final NveSceneCanvasStore _sceneStore = NveSceneCanvasStore();
+  bool _sceneMode = false;
+
   final Map<int, int> _activePointerTargets = <int, int>{};
+  final Map<int, _PointerScrollSession> _activeScrollSessions = <int, _PointerScrollSession>{};
 
-  NveCanvasController get controller => _controller;
+  NveCanvasController? get controller => _controller;
 
-  set controller(NveCanvasController value) {
+  set controller(NveCanvasController? value) {
     if (identical(_controller, value)) return;
     if (attached) {
-      _controller.removeListener(_onControllerChanged);
+      _controller?.removeListener(_onControllerChanged);
     }
     _controller = value;
     _activePointerTargets.clear();
+    _activeScrollSessions.clear();
     if (attached) {
-      _controller.addListener(_onControllerChanged);
+      _controller?.addListener(_onControllerChanged);
     }
     markNeedsLayout();
   }
@@ -465,22 +129,49 @@ class RenderNveCanvas extends RenderBox {
     markNeedsPaint();
   }
 
+  NveEventCallback? get onSceneEvent => _onSceneEvent;
+
+  set onSceneEvent(NveEventCallback? value) {
+    _onSceneEvent = value;
+  }
+
+  /// True once [updateFromSceneView] has ingested a direct `NveSceneView` snapshot.
+  bool get isSceneMode => _sceneMode;
+
+  /// Direct `NveSceneView` snapshot store (for diagnostics and tests).
+  NveSceneCanvasStore get sceneStore => _sceneStore;
+
+  /// Updates this [RenderBox] directly from a zero-copy `dart:ffi` [NveSceneReader]
+  /// (`dirtyIndices` / `removedIds`) with zero per-node Dart command decoding.
+  void updateFromSceneView(NveSceneReader reader) {
+    _sceneStore.updateFromSceneView(reader);
+    _sceneMode = true;
+    markNeedsPaint();
+  }
+
   /// Exposes computed surface-local node geometry for tests and tooling.
-  Rect? layoutOf(int nodeId) => _controller.layoutOf(nodeId);
+  Rect? layoutOf(int nodeId) =>
+      _sceneMode ? _sceneStore.layoutOf(nodeId) : _controller?.layoutOf(nodeId);
+
+  /// Returns current scroll offset for a `ScrollView` node.
+  Offset scrollOffsetOf(int nodeId) => _sceneMode
+      ? _sceneStore.scrollOffsetOf(nodeId)
+      : (_controller?.scrollOffsetOf(nodeId) ?? Offset.zero);
 
   /// Exposes retained nodes for tests and diagnostics.
-  Map<int, NveNode> get debugNodes => _controller.debugNodes;
+  Map<int, NveNode> get debugNodes => _controller?.debugNodes ?? const <int, NveNode>{};
 
   @override
   void attach(PipelineOwner owner) {
     super.attach(owner);
-    _controller.addListener(_onControllerChanged);
+    _controller?.addListener(_onControllerChanged);
   }
 
   @override
   void detach() {
-    _controller.removeListener(_onControllerChanged);
+    _controller?.removeListener(_onControllerChanged);
     _activePointerTargets.clear();
+    _activeScrollSessions.clear();
     super.detach();
   }
 
@@ -495,22 +186,26 @@ class RenderNveCanvas extends RenderBox {
 
   @override
   void performLayout() {
-    if (!_controller.isDisposed && _controller.frameCount == 0) {
-      _controller.renderNextFrame(notify: false);
+    final ctrl = _controller;
+    if (!_sceneMode && ctrl != null && !ctrl.isDisposed && ctrl.frameCount == 0) {
+      ctrl.renderNextFrame(notify: false);
     }
 
     if (constraints.hasBoundedWidth && constraints.hasBoundedHeight) {
       size = constraints.biggest;
-    } else {
-      final intrinsic = !_controller.isDisposed
-          ? (_controller.measure(constraints) ??
-              _controller.layoutSolver.measureRoot(_controller.tree, constraints))
-          : Size.zero;
+    } else if (_sceneMode) {
+      final rootRect = _sceneStore.layoutOf(nveRootNodeId);
+      size = constraints.constrain(rootRect?.size ?? Size.zero);
+    } else if (ctrl != null && !ctrl.isDisposed) {
+      final intrinsic = ctrl.measure(constraints) ??
+          ctrl.layoutSolver.measureRoot(ctrl.tree, constraints);
       size = constraints.constrain(intrinsic);
+    } else {
+      size = constraints.smallest;
     }
 
-    if (!_controller.isDisposed) {
-      _controller.updateViewport(size, devicePixelRatio: _devicePixelRatio);
+    if (!_sceneMode && ctrl != null && !ctrl.isDisposed) {
+      ctrl.updateViewport(size, devicePixelRatio: _devicePixelRatio);
     }
   }
 
@@ -519,24 +214,128 @@ class RenderNveCanvas extends RenderBox {
 
   @override
   void handleEvent(PointerEvent event, BoxHitTestEntry entry) {
-    if (_controller.isDisposed) return;
+    final ctrl = _controller;
+    if (!_sceneMode && (ctrl == null || ctrl.isDisposed)) return;
+
+    if (event is PointerScrollEvent) {
+      _handleScrollDelta(event.localPosition, event.scrollDelta);
+      return;
+    }
 
     if (event is PointerDownEvent) {
-      final hitId = _controller.hitTestNode(event.localPosition, interactiveOnly: true);
+      final hitId = _sceneMode
+          ? _sceneStore.hitTestNode(event.localPosition, interactiveOnly: true)
+          : ctrl!.hitTestNode(event.localPosition, interactiveOnly: true);
       if (hitId != null) {
         _activePointerTargets[event.pointer] = hitId;
       }
+      final scrollId = _sceneMode
+          ? _sceneStore.hitTestScrollable(event.localPosition)
+          : ctrl!.hitTestScrollable(event.localPosition);
+      if (scrollId != null) {
+        _activeScrollSessions[event.pointer] = _PointerScrollSession(
+          scrollNodeId: scrollId,
+          startPosition: event.localPosition,
+        );
+      }
+    } else if (event is PointerMoveEvent) {
+      final session = _activeScrollSessions[event.pointer];
+      if (session != null) {
+        if (!session.isDragging &&
+            (event.localPosition - session.startPosition).distance >= _scrollDragSlop) {
+          session.isDragging = true;
+          _activePointerTargets.remove(event.pointer);
+        }
+        if (session.isDragging && event.localDelta != Offset.zero) {
+          // Natural drag direction: dragging pointer upward increases scroll offset.
+          _applyScroll(session.scrollNodeId, Offset(-event.localDelta.dx, -event.localDelta.dy));
+        }
+      }
     } else if (event is PointerUpEvent) {
+      final session = _activeScrollSessions.remove(event.pointer);
       final targetId = _activePointerTargets.remove(event.pointer);
-      if (targetId != null) {
-        final targetRect = _controller.layoutOf(targetId);
-        if (targetRect != null && targetRect.contains(event.localPosition)) {
-          _controller.dispatchPress(targetId, event.localPosition);
+      if ((session == null || !session.isDragging) && targetId != null) {
+        final hitOnUp = _sceneMode
+            ? _sceneStore.hitTestNode(event.localPosition, interactiveOnly: true)
+            : ctrl!.hitTestNode(event.localPosition, interactiveOnly: true);
+        if (hitOnUp == targetId) {
+          _emitPress(targetId, event.localPosition);
           markNeedsPaint();
         }
       }
     } else if (event is PointerCancelEvent) {
       _activePointerTargets.remove(event.pointer);
+      _activeScrollSessions.remove(event.pointer);
+    }
+  }
+
+  void _handleScrollDelta(Offset localPosition, Offset delta) {
+    final scrollId = _sceneMode
+        ? _sceneStore.hitTestScrollable(localPosition)
+        : _controller!.hitTestScrollable(localPosition);
+    if (scrollId != null) {
+      _applyScroll(scrollId, delta);
+    }
+  }
+
+  void _applyScroll(int scrollNodeId, Offset delta) {
+    if (_sceneMode) {
+      final updated = _sceneStore.scrollBy(scrollNodeId, delta);
+      if (updated == null) return;
+      markNeedsPaint();
+      final ts = DateTime.now().microsecondsSinceEpoch;
+      final ctrl = _controller;
+      if (ctrl != null && !ctrl.isDisposed) {
+        ctrl.dispatchScroll(
+          scrollNodeId,
+          x: updated.offset.dx,
+          y: updated.offset.dy,
+          contentWidth: updated.contentSize.width,
+          contentHeight: updated.contentSize.height,
+          timestampUs: ts,
+        );
+      }
+      _onSceneEvent?.call(
+        NveEvent(
+          surfaceId: ctrl?.surfaceId ?? _surfaceId,
+          nodeId: scrollNodeId,
+          timestampUs: ts,
+          kind: NveEventKind.scroll,
+          payload: NveScrollPayload(
+            x: updated.offset.dx,
+            y: updated.offset.dy,
+            contentWidth: updated.contentSize.width,
+            contentHeight: updated.contentSize.height,
+          ),
+        ),
+      );
+      return;
+    }
+
+    final ctrl = _controller;
+    if (ctrl == null || ctrl.isDisposed) return;
+    final updated = ctrl.scrollNodeBy(scrollNodeId, delta);
+    if (updated != null) {
+      markNeedsPaint();
+    }
+  }
+
+  void _emitPress(int nodeId, Offset localPosition) {
+    final ts = DateTime.now().microsecondsSinceEpoch;
+    final ctrl = _controller;
+    if (ctrl != null && !ctrl.isDisposed) {
+      ctrl.dispatchPress(nodeId, localPosition, timestampUs: ts, rerender: !_sceneMode);
+    }
+    if (_sceneMode) {
+      _onSceneEvent?.call(
+        NveEvent(
+          surfaceId: ctrl?.surfaceId ?? _surfaceId,
+          nodeId: nodeId,
+          timestampUs: ts,
+          kind: NveEventKind.press,
+          payload: NvePointPayload(x: localPosition.dx, y: localPosition.dy),
+        ),
+      );
     }
   }
 
@@ -552,8 +351,18 @@ class RenderNveCanvas extends RenderBox {
       canvas.drawRect(bounds, Paint()..color = _backgroundColor!);
     }
 
-    if (!_controller.isDisposed) {
-      _paintNode(canvas, _controller.tree, nveRootNodeId, offset, bounds);
+    if (_sceneMode) {
+      _sceneStore.paint(
+        canvas,
+        offset,
+        bounds,
+        defaultFontFamily: _controller?.defaultFontFamily ?? _defaultFontFamily,
+      );
+    } else {
+      final ctrl = _controller;
+      if (ctrl != null && !ctrl.isDisposed) {
+        _paintNode(canvas, ctrl, nveRootNodeId, offset, bounds);
+      }
     }
 
     canvas.restore();
@@ -561,11 +370,12 @@ class RenderNveCanvas extends RenderBox {
 
   void _paintNode(
     Canvas canvas,
-    NveRetainedTree tree,
+    NveCanvasController ctrl,
     int nodeId,
     Offset surfaceOffset,
     Rect surfaceBounds,
   ) {
+    final tree = ctrl.tree;
     final node = tree.node(nodeId);
     if (node == null || !node.hasComputedLayout) return;
 
@@ -619,7 +429,7 @@ class RenderNveCanvas extends RenderBox {
       }
     }
 
-    // 3. Leaf Text node glyph painting (skips wrapper Text nodes with children).
+    // 3. Leaf Text node glyph painting.
     if (node.isTextLeaf &&
         node.text != null &&
         node.text!.isNotEmpty &&
@@ -633,7 +443,7 @@ class RenderNveCanvas extends RenderBox {
           style: TextStyle(
             color: node.style.textColor.toFlutterColor(),
             fontSize: fontSize,
-            fontFamily: _controller.defaultFontFamily,
+            fontFamily: ctrl.defaultFontFamily,
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -642,10 +452,32 @@ class RenderNveCanvas extends RenderBox {
       painter.dispose();
     }
 
-    // 4. Children in ascending zIndex order.
-    final orderedChildren = _childrenInPaintOrder(tree, node.children);
+    // 4. Children in ascending zIndex order (with ScrollView clip rect & offset translation).
+    final isScrollView = node.kind == NveComponentKind.scrollView;
+    final scrollOffset = isScrollView ? ctrl.scrollOffsetOf(nodeId) : Offset.zero;
+    final clipChildren = hasArea && isScrollView;
+    final needsSave = clipChildren || scrollOffset != Offset.zero;
+    if (needsSave) {
+      canvas.save();
+      if (clipChildren) {
+        if (radius > 0.0) {
+          canvas.clipRRect(RRect.fromRectAndRadius(rect, Radius.circular(radius)));
+        } else {
+          canvas.clipRect(rect);
+        }
+      }
+      if (scrollOffset != Offset.zero) {
+        canvas.translate(-scrollOffset.dx, -scrollOffset.dy);
+      }
+    }
+
+    final orderedChildren = childrenInPaintOrder(tree, node.children);
     for (final childId in orderedChildren) {
-      _paintNode(canvas, tree, childId, surfaceOffset, surfaceBounds);
+      _paintNode(canvas, ctrl, childId, surfaceOffset, surfaceBounds);
+    }
+
+    if (needsSave) {
+      canvas.restore();
     }
 
     if (pushedLayer) {

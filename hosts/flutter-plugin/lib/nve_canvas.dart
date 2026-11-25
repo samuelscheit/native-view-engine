@@ -2,10 +2,11 @@
 ///
 /// Re-exports the core `nve_flutter` FFI bindings alongside the zero-PlatformView
 /// [NveCanvasView] widget, [NveCanvasController], zero-copy binary [NveRetainedTree]
-/// decoder, and Flutter [NveFlexLayoutSolver].
+/// decoder, direct [NveSceneCanvasStore] `NveSceneView` painter, and Flutter [NveFlexLayoutSolver].
 library nve_canvas;
 
 export 'nve_flutter.dart';
 export 'src/command_decoder.dart';
 export 'src/flex_layout.dart';
 export 'src/nve_canvas_host.dart';
+export 'src/scene_canvas_store.dart';
