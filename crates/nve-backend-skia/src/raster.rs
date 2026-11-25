@@ -1,13 +1,15 @@
 //! Pure-Rust anti-aliased software rasterizer for NVE `DisplayList`.
 //!
-//! Renders `FillRoundedRect`, `StrokeRoundedRect`, `DrawText` (using the embedded 5x7 bitmap
-//! font scaled cleanly to `font_size`), and `SaveOpacity`/`Restore` into a `0x00RRGGBB`
+//! Renders `FillRoundedRect`, `StrokeRoundedRect`, `DrawText` (using `CosmicTextEngine`
+//! native system font shaping & antialiased glyph rasterization, with automatic fallback to
+//! the embedded 5x7 bitmap font), and `SaveOpacity`/`Restore` into a `0x00RRGGBB`
 //! `PixelBuffer` directly compatible with `softbuffer`.
 
 use nve_abi::ColorRgba;
-use nve_engine::LayoutRect;
+use nve_engine::{LayoutRect, TextMeasurer};
 
 use crate::font::{glyph_bitmap, GLYPH_HEIGHT, GLYPH_WIDTH};
+use crate::text::CosmicTextEngine;
 use crate::{DisplayList, PaintOp};
 
 /// Contiguous `0x00RRGGBB` pixel buffer suitable for direct blitting into `softbuffer`.
@@ -301,7 +303,7 @@ fn stroke_rounded_rect(
     }
 }
 
-fn draw_text(
+pub(crate) fn draw_bitmap_text(
     buf: &mut PixelBuffer,
     rect: LayoutRect,
     text: &str,
@@ -329,6 +331,13 @@ fn draw_text(
 
     let buf_w = buf.width() as i32;
     let buf_h = buf.height() as i32;
+    let clip_x0 = (rect.x.floor() as i32).max(0);
+    let clip_y0 = (rect.y.floor() as i32).max(0);
+    let clip_x1 = ((rect.x + rect.width).ceil() as i32).min(buf_w);
+    let clip_y1 = ((rect.y + rect.height).ceil() as i32).min(buf_h);
+    if clip_x0 >= clip_x1 || clip_y0 >= clip_y1 {
+        return;
+    }
 
     let mut cursor_x = rect.x;
     let mut cursor_y = rect.y + vertical_pad;
@@ -345,10 +354,10 @@ fn draw_text(
         }
 
         let bitmap = glyph_bitmap(ch);
-        let x0 = (cursor_x.floor() as i32).max(0);
-        let x1 = ((cursor_x + glyph_w).ceil() as i32).min(buf_w);
-        let y0 = (cursor_y.floor() as i32).max(0);
-        let y1 = ((cursor_y + glyph_h).ceil() as i32).min(buf_h);
+        let x0 = (cursor_x.floor() as i32).max(clip_x0);
+        let x1 = ((cursor_x + glyph_w).ceil() as i32).min(clip_x1);
+        let y0 = (cursor_y.floor() as i32).max(clip_y0);
+        let y1 = ((cursor_y + glyph_h).ceil() as i32).min(clip_y1);
 
         if x0 < x1 && y0 < y1 {
             let inv_w = GLYPH_WIDTH as f32 / glyph_w;
@@ -381,12 +390,58 @@ fn draw_text(
     }
 }
 
-/// Rasterizes a retained `DisplayList` into `buffer`, scaling logical points by `scale_factor`.
+/// Rasterizes a retained `DisplayList` into `buffer` using the shared [`CosmicTextEngine`],
+/// scaling logical points by `scale_factor`.
 pub fn rasterize_display_list(
     display_list: &DisplayList,
     buffer: &mut PixelBuffer,
     scale_factor: f32,
     clear_color: ColorRgba,
+) {
+    let engine = CosmicTextEngine::shared();
+    rasterize_display_list_with_text_engine(
+        display_list,
+        buffer,
+        scale_factor,
+        clear_color,
+        engine.as_ref(),
+    );
+}
+
+/// Rasterizes a retained `DisplayList` into `buffer` using an explicit [`CosmicTextEngine`].
+pub fn rasterize_display_list_with_text_engine(
+    display_list: &DisplayList,
+    buffer: &mut PixelBuffer,
+    scale_factor: f32,
+    clear_color: ColorRgba,
+    text_engine: &CosmicTextEngine,
+) {
+    rasterize_display_list_inner(
+        display_list,
+        buffer,
+        scale_factor,
+        clear_color,
+        Some(text_engine),
+    );
+}
+
+/// Rasterizes a retained `DisplayList` into `buffer` using the deterministic embedded 5x7
+/// bitmap font (useful for headless pixel regression tests independent of installed OS fonts).
+pub fn rasterize_display_list_bitmap(
+    display_list: &DisplayList,
+    buffer: &mut PixelBuffer,
+    scale_factor: f32,
+    clear_color: ColorRgba,
+) {
+    rasterize_display_list_inner(display_list, buffer, scale_factor, clear_color, None);
+}
+
+fn rasterize_display_list_inner(
+    display_list: &DisplayList,
+    buffer: &mut PixelBuffer,
+    scale_factor: f32,
+    clear_color: ColorRgba,
+    text_engine: Option<&CosmicTextEngine>,
 ) {
     let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -443,14 +498,26 @@ pub fn rasterize_display_list(
                 font_size,
                 color,
             } => {
-                draw_text(
-                    buffer,
-                    scale_rect(*rect, scale),
-                    text,
-                    font_size * scale,
-                    *color,
-                    cur_opacity,
-                );
+                if let Some(engine) = text_engine {
+                    engine.rasterize_text(
+                        buffer,
+                        *rect,
+                        text,
+                        *font_size,
+                        scale,
+                        *color,
+                        cur_opacity,
+                    );
+                } else {
+                    draw_bitmap_text(
+                        buffer,
+                        scale_rect(*rect, scale),
+                        text,
+                        font_size * scale,
+                        *color,
+                        cur_opacity,
+                    );
+                }
             }
             PaintOp::CustomSkiaCanvas { rect, .. } => {
                 // Draw a subtle dashed-style border placeholder in software mode.
@@ -477,21 +544,24 @@ pub fn draw_hud_banner(buffer: &mut PixelBuffer, scale_factor: f32, text: &str) 
     } else {
         1.0
     };
-    let font_size = 11.0 * scale;
-    let pad_x = 10.0 * scale;
-    let pad_y = 6.0 * scale;
-    let margin = 10.0 * scale;
-    let text_w = (text.chars().count() as f32) * font_size * 0.58;
-    let pill_w = (text_w + pad_x * 2.0).min(buffer.width() as f32 - margin * 2.0);
-    let pill_h = font_size * 1.35 + pad_y * 2.0;
-    let pill_x = (buffer.width() as f32 - pill_w - margin).max(margin);
-    let pill_y = (buffer.height() as f32 - pill_h - margin).max(margin);
+    let text_engine = CosmicTextEngine::shared();
+    let logical_font_size = 11.0f32;
+    let pad_x = 10.0f32;
+    let pad_y = 5.0f32;
+    let margin = 10.0f32;
+    let max_logical_w = (buffer.width() as f32 / scale - margin * 2.0 - pad_x * 2.0).max(16.0);
+    let (measured_w, measured_h) = text_engine.measure(text, logical_font_size, Some(max_logical_w));
+
+    let pill_w_logical = (measured_w + pad_x * 2.0).min(buffer.width() as f32 / scale - margin * 2.0);
+    let pill_h_logical = measured_h + pad_y * 2.0;
+    let pill_x_logical = (buffer.width() as f32 / scale - pill_w_logical - margin).max(margin);
+    let pill_y_logical = (buffer.height() as f32 / scale - pill_h_logical - margin).max(margin);
 
     let pill_rect = LayoutRect {
-        x: pill_x,
-        y: pill_y,
-        width: pill_w,
-        height: pill_h,
+        x: pill_x_logical * scale,
+        y: pill_y_logical * scale,
+        width: pill_w_logical * scale,
+        height: pill_h_logical * scale,
     };
     fill_rounded_rect(
         buffer,
@@ -508,16 +578,17 @@ pub fn draw_hud_banner(buffer: &mut PixelBuffer, scale_factor: f32, text: &str) 
         ColorRgba::rgba(56, 189, 248, 180),
         1.0,
     );
-    draw_text(
+    text_engine.rasterize_text(
         buffer,
         LayoutRect {
-            x: pill_x + pad_x,
-            y: pill_y + pad_y,
-            width: pill_w - pad_x * 2.0,
-            height: pill_h - pad_y * 2.0,
+            x: pill_x_logical + pad_x,
+            y: pill_y_logical + pad_y,
+            width: (pill_w_logical - pad_x * 2.0).max(1.0),
+            height: (pill_h_logical - pad_y * 2.0).max(1.0),
         },
         text,
-        font_size,
+        logical_font_size,
+        scale,
         ColorRgba::rgb(226, 232, 240),
         1.0,
     );

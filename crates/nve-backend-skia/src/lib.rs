@@ -7,7 +7,9 @@
 //! onto a `skia_safe::Canvas`.
 
 pub mod font;
+pub mod gpu;
 pub mod raster;
+pub mod text;
 #[cfg(feature = "desktop")]
 pub mod window;
 
@@ -22,9 +24,16 @@ use nve_engine::{
 };
 
 pub use font::{bitmap_font_metrics, BitmapFontMetrics, BitmapFontTextMeasurer};
+pub use gpu::{GpuBackendKind, GpuSurfaceConfig, GpuSurfaceError};
+#[cfg(feature = "skia")]
+pub use gpu::{CpuSkiaSurface, GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
-pub use raster::{draw_hud_banner, rasterize_display_list, PixelBuffer};
+pub use raster::{
+    draw_hud_banner, rasterize_display_list, rasterize_display_list_bitmap,
+    rasterize_display_list_with_text_engine, PixelBuffer,
+};
+pub use text::CosmicTextEngine;
 #[cfg(feature = "desktop")]
 pub use window::{
     run_desktop_preview, run_desktop_preview_with_options, DesktopApp, DesktopHostError,
@@ -68,6 +77,7 @@ pub struct SkiaBackend<L: LayoutEngine = TaffyLayoutEngine> {
     layout_tree: HeadlessBackend<L>,
     display_list: DisplayList,
     viewport: Viewport,
+    text_engine: Arc<CosmicTextEngine>,
 }
 
 impl Default for SkiaBackend<TaffyLayoutEngine> {
@@ -91,15 +101,26 @@ impl SkiaBackend<YogaLayoutEngine> {
 }
 
 impl<L: LayoutEngine> SkiaBackend<L> {
-    /// Creates a [`SkiaBackend`] using any concrete or boxed [`LayoutEngine`].
+    /// Creates a [`SkiaBackend`] using any concrete or boxed [`LayoutEngine`], defaulting to
+    /// the shared native [`CosmicTextEngine`] for both layout measurement and rasterization.
     pub fn with_layout(layout: L) -> Self {
+        Self::with_layout_and_text_engine(layout, CosmicTextEngine::shared())
+    }
+
+    /// Creates a [`SkiaBackend`] with an explicit [`LayoutEngine`] and [`CosmicTextEngine`].
+    pub fn with_layout_and_text_engine(layout: L, text_engine: Arc<CosmicTextEngine>) -> Self {
         let mut layout_tree = HeadlessBackend::with_layout(layout);
-        layout_tree.set_text_measurer(Arc::new(BitmapFontTextMeasurer));
+        layout_tree.set_text_measurer(Arc::clone(&text_engine) as Arc<dyn TextMeasurer>);
         Self {
             layout_tree,
             display_list: DisplayList::default(),
             viewport: Viewport::default(),
+            text_engine,
         }
+    }
+
+    pub fn text_engine(&self) -> &Arc<CosmicTextEngine> {
+        &self.text_engine
     }
 
     pub fn layout_engine(&self) -> &L {
@@ -123,6 +144,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             layout_tree,
             display_list: DisplayList::default(),
             viewport: self.viewport,
+            text_engine: self.text_engine,
         };
         swapped.rebuild_display_list();
         swapped
@@ -142,11 +164,12 @@ impl<L: LayoutEngine> SkiaBackend<L> {
 
     /// Rasterizes the retained `DisplayList` into `buffer` using the current viewport scale factor.
     pub fn rasterize(&self, buffer: &mut PixelBuffer, clear_color: ColorRgba) {
-        rasterize_display_list(
+        rasterize_display_list_with_text_engine(
             &self.display_list,
             buffer,
             self.viewport.scale_factor,
             clear_color,
+            self.text_engine.as_ref(),
         );
     }
 
@@ -157,7 +180,13 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         scale_factor: f32,
         clear_color: ColorRgba,
     ) {
-        rasterize_display_list(&self.display_list, buffer, scale_factor, clear_color);
+        rasterize_display_list_with_text_engine(
+            &self.display_list,
+            buffer,
+            scale_factor,
+            clear_color,
+            self.text_engine.as_ref(),
+        );
     }
 
     fn intersects_viewport(&self, rect: LayoutRect, outset: f32) -> bool {
@@ -264,58 +293,22 @@ impl<L: LayoutEngine> SkiaBackend<L> {
 
     #[cfg(feature = "skia")]
     pub fn paint_to_canvas(&self, canvas: &skia_safe::Canvas) {
-        use skia_safe::{Color, Font, Paint, PaintStyle, RRect, Rect};
-        let to_color = |c: ColorRgba| Color::from_argb(c.a, c.r, c.g, c.b);
-        for op in &self.display_list.ops {
-            match op {
-                PaintOp::SaveOpacity(alpha) => {
-                    let mut p = Paint::default();
-                    p.set_alpha_f(*alpha);
-                    canvas.save_layer(&skia_safe::canvas::SaveLayerRec::default().paint(&p));
-                }
-                PaintOp::Restore => {
-                    canvas.restore();
-                }
-                PaintOp::FillRoundedRect {
-                    rect,
-                    radius,
-                    color,
-                } => {
-                    let mut p = Paint::default();
-                    p.set_anti_alias(true);
-                    p.set_color(to_color(*color));
-                    let r = Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
-                    canvas.draw_rrect(RRect::new_rect_xy(r, *radius, *radius), &p);
-                }
-                PaintOp::StrokeRoundedRect {
-                    rect,
-                    radius,
-                    width,
-                    color,
-                } => {
-                    let mut p = Paint::default();
-                    p.set_anti_alias(true);
-                    p.set_style(PaintStyle::Stroke);
-                    p.set_stroke_width(*width);
-                    p.set_color(to_color(*color));
-                    let r = Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
-                    canvas.draw_rrect(RRect::new_rect_xy(r, *radius, *radius), &p);
-                }
-                PaintOp::DrawText {
-                    rect,
-                    text,
-                    font_size,
-                    color,
-                } => {
-                    let mut p = Paint::default();
-                    p.set_anti_alias(true);
-                    p.set_color(to_color(*color));
-                    let font = Font::default().with_size(*font_size).unwrap_or_default();
-                    canvas.draw_str(text, (rect.x, rect.y + *font_size), &font, &p);
-                }
-                PaintOp::CustomSkiaCanvas { .. } => {}
-            }
-        }
+        SkiaCanvasRenderer::new().paint_display_list(&self.display_list, canvas, 1.0);
+    }
+
+    #[cfg(feature = "skia")]
+    pub fn paint_to_surface<S: GpuSurfaceBackend>(
+        &self,
+        renderer: &SkiaCanvasRenderer,
+        surface: &mut S,
+        clear_color: ColorRgba,
+    ) -> Result<(), GpuSurfaceError> {
+        surface.render_display_list(
+            renderer,
+            &self.display_list,
+            self.viewport.scale_factor,
+            clear_color,
+        )
     }
 }
 

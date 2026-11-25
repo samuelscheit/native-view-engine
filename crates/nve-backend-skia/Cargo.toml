@@ -17,6 +17,7 @@ yoga = ["dep:nve-layout-yoga"]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }
 nve-backend-headless = { workspace = true }
+cosmic-text = { workspace = true }
 nve-layout-yoga = { workspace = true, optional = true }
 skia-safe = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }

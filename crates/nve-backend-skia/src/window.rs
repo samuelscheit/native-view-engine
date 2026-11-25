@@ -26,6 +26,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
 use crate::raster::{draw_hud_banner, PixelBuffer};
+#[cfg(feature = "skia")]
+use crate::{GpuSurface, GpuSurfaceBackend, GpuSurfaceConfig, SkiaCanvasRenderer};
 use crate::SkiaBackend;
 
 pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8089";
@@ -201,6 +203,10 @@ pub struct DesktopSession<A: DesktopApp> {
     status_banner: Option<String>,
     show_hud: bool,
     last_frame_bytes: Vec<u8>,
+    #[cfg(feature = "skia")]
+    skia_renderer: SkiaCanvasRenderer,
+    #[cfg(feature = "skia")]
+    gpu_surface: Option<GpuSurface>,
 }
 
 impl<A: DesktopApp> DesktopSession<A> {
@@ -215,6 +221,14 @@ impl<A: DesktopApp> DesktopSession<A> {
         backend.set_viewport(surface_id, viewport);
         let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
         let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
+        #[cfg(feature = "skia")]
+        let gpu_surface = GpuSurface::new(GpuSurfaceConfig {
+            width: phys_w,
+            height: phys_h,
+            scale_factor: viewport.scale_factor,
+            ..Default::default()
+        })
+        .ok();
         Self {
             app,
             backend,
@@ -227,6 +241,10 @@ impl<A: DesktopApp> DesktopSession<A> {
             status_banner: None,
             show_hud,
             last_frame_bytes: Vec::new(),
+            #[cfg(feature = "skia")]
+            skia_renderer: SkiaCanvasRenderer::new(),
+            #[cfg(feature = "skia")]
+            gpu_surface,
         }
     }
 
@@ -306,8 +324,26 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     fn rasterize_current(&mut self) {
-        self.backend
-            .rasterize(&mut self.pixel_buffer, self.clear_color);
+        #[cfg(feature = "skia")]
+        let painted_via_skia = if let Some(surface) = self.gpu_surface.as_mut() {
+            let pw = self.pixel_buffer.width();
+            let ph = self.pixel_buffer.height();
+            surface.resize(pw, ph).is_ok()
+                && self
+                    .backend
+                    .paint_to_surface(&self.skia_renderer, surface, self.clear_color)
+                    .is_ok()
+                && surface.copy_to_pixel_buffer(&mut self.pixel_buffer).is_ok()
+        } else {
+            false
+        };
+        #[cfg(not(feature = "skia"))]
+        let painted_via_skia = false;
+
+        if !painted_via_skia {
+            self.backend
+                .rasterize(&mut self.pixel_buffer, self.clear_color);
+        }
         if self.show_hud {
             if let Some(banner) = &self.status_banner {
                 draw_hud_banner(&mut self.pixel_buffer, self.viewport.scale_factor, banner);
@@ -1160,5 +1196,66 @@ mod tests {
             .err()
             .expect("expected loader error for nonexistent dylib");
         assert!(matches!(err, DesktopHostError::Loader(LoaderError::Io(_))));
+    }
+
+    #[test]
+    #[ignore = "renders 2x HiDPI visual verification PPMs from compiled example cdylibs"]
+    fn render_visual_verification_ppms_at_2x_hidpi() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
+        let dylib_ext = if cfg!(target_os = "macos") {
+            "dylib"
+        } else if cfg!(target_os = "windows") {
+            "dll"
+        } else {
+            "so"
+        };
+
+        let targets = [
+            (
+                "libnve_studio_workspace",
+                960.0f32,
+                640.0f32,
+                ColorRgba::rgb(11, 17, 32),
+                "/tmp/nve_skia_cosmic_studio.ppm",
+            ),
+            (
+                "libnve_example_counter",
+                640.0f32,
+                420.0f32,
+                ColorRgba::rgb(15, 23, 42),
+                "/tmp/nve_skia_cosmic_counter.ppm",
+            ),
+        ];
+
+        for (lib_stem, w, h, clear, out_path) in targets {
+            let dylib = workspace_root.join(format!("target/debug/{lib_stem}.{dylib_ext}"));
+            let app = HotAppSlot::load(&dylib, 1)
+                .unwrap_or_else(|e| panic!("failed to load {dylib:?}: {e}"));
+            let viewport = Viewport {
+                width: w,
+                height: h,
+                scale_factor: 2.0,
+            };
+            let mut session = DesktopSession::new(app, 1, viewport, clear, false);
+            session
+                .render_and_rasterize()
+                .expect("render and rasterize at 2x HiDPI");
+            let buf = session.pixel_buffer();
+            assert_eq!(buf.width(), (w * 2.0) as u32);
+            assert_eq!(buf.height(), (h * 2.0) as u32);
+
+            let mut out = Vec::with_capacity((buf.width() * buf.height() * 3) as usize + 32);
+            out.extend_from_slice(format!("P6\n{} {}\n255\n", buf.width(), buf.height()).as_bytes());
+            for y in 0..buf.height() {
+                for x in 0..buf.width() {
+                    let (r, g, b) = buf.get_rgb(x, y).unwrap_or((0, 0, 0));
+                    out.push(r);
+                    out.push(g);
+                    out.push(b);
+                }
+            }
+            std::fs::write(out_path, out).expect("write ppm");
+        }
     }
 }
