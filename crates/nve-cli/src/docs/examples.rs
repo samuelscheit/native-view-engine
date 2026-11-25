@@ -195,16 +195,25 @@ fn is_unified_bundle_dir(dir: &Path) -> bool {
 }
 
 fn dir_has_wasm_or_js(dir: &Path) -> bool {
+    dir_has_wasm_or_js_depth(dir, 2)
+}
+
+fn dir_has_wasm_or_js_depth(dir: &Path, max_depth: usize) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
         return false;
     };
     entries.flatten().any(|entry| {
         let p = entry.path();
-        p.is_file()
-            && matches!(
+        if p.is_file() {
+            matches!(
                 p.extension().and_then(|e| e.to_str()),
                 Some("wasm" | "js" | "mjs")
             )
+        } else if p.is_dir() && max_depth > 1 {
+            dir_has_wasm_or_js_depth(&p, max_depth - 1)
+        } else {
+            false
+        }
     })
 }
 
@@ -216,10 +225,14 @@ fn run_web_shell_build(repo_root: &Path) -> Result<(), String> {
             script.display()
         ));
     }
-    println!("==> Building hosts/web-shell WASM example bundle ({})...", script.display());
+    println!(
+        "==> Building hosts/web-shell WASM example bundles ({} studio counter)...",
+        script.display()
+    );
     let status = Command::new("bash")
         .current_dir(repo_root)
         .arg(&script)
+        .args(["studio", "counter"])
         .status()
         .map_err(|e| format!("failed to execute {}: {e}", script.display()))?;
     if !status.success() {
@@ -249,9 +262,35 @@ fn stage_unified_runtime(root_dir: &Path, runtime_dir: &Path) -> Result<(), Stri
 
     let src_pkg = root_dir.join("pkg");
     if src_pkg.is_dir() {
-        copy_dir_recursive(&src_pkg, &runtime_dir.join("pkg"))?;
+        copy_pkg_runtime_dir(&src_pkg, &runtime_dir.join("pkg"))?;
     }
     copy_top_level_shared_assets(root_dir, runtime_dir)?;
+    Ok(())
+}
+
+/// Copies `hosts/web-shell/pkg/` while excluding the dev-only `pkg/dev/` bundle from production
+/// static site outputs (saving ~310 KiB when `hosts/web-shell/build.sh` built all 3 bundles).
+fn copy_pkg_runtime_dir(src_pkg: &Path, dst_pkg: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst_pkg)
+        .map_err(|e| format!("failed to create {}: {e}", dst_pkg.display()))?;
+    let entries = fs::read_dir(src_pkg)
+        .map_err(|e| format!("failed to read {}: {e}", src_pkg.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("failed to iterate {}: {e}", src_pkg.display()))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        if path.is_dir() && name == "dev" {
+            continue;
+        }
+        let target = dst_pkg.join(&name);
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else if path.is_file() {
+            fs::copy(&path, &target).map_err(|e| {
+                format!("failed to copy {} -> {}: {e}", path.display(), target.display())
+            })?;
+        }
+    }
     Ok(())
 }
 

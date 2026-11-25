@@ -4,22 +4,14 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ---
 
-## P0 — Public Landing Page, Live Examples Showcase & GitHub Pages Deploy
+## P1 — Host `<NativeView>` Registries, Camera Adapters & Multi-Device Backends
 
-- [ ] **Landing Page + Docs + Interactive Example Apps on GitHub Pages**
-  - Build a dedicated NVE landing page at `/` (with `/docs/...` for the documentation suite and `/examples/{studio,counter,...}` hosting live interactive WASM apps like **Studio Workspace** and **Counter** directly in the browser) deployed automatically via `.github/workflows/docs.yml`.
-
----
-
-## P1 — Host `<NativeView>` Registries & Single-Source Wire Codecs
-
-- [ ] **Remaining Host `NativeViewRegistry` Mount Adapters (`hosts/windows-shell`, `hosts/qt-shell`, `hosts/gtk-shell`, `hosts/swiftui-kit`, `hosts/flutter-plugin`, `hosts/compose-kit`)**
+- [ ] **Remaining Host `NativeViewRegistry` Mount Adapters (`hosts/windows-shell`, `hosts/qt-shell`, `hosts/gtk-shell`, `hosts/swiftui-kit`, `hosts/flutter-plugin`, `hosts/compose-kit`)** *(in flight)*
   - Extend `nve_native_view.hpp` (`NVNP`/`NVNC`) adapters to Windows (`Mica` / `WebView2`), Android/Compose, Qt 6, GTK4, SwiftUI, and Flutter (Web `"web.<tag>"` + `BlurSurface`/`WebView`/`VideoPlayer`, C++20 `nve_native_view.hpp`, and Apple `NSVisualEffectView`/`UIVisualEffectView`/`WKWebView` already landed).
 
-- [ ] **Pluggable Camera Package — Remaining Host Adapters (Apple `AVFoundation` + VisionCamera v5 iOS, Web `getUserMedia`, Android real `CameraX`, Windows `MediaCapture`, Linux PipeWire/V4L2)** *(in flight across 2 disjoint branches)*
-  - Branch 1 (`t3/camera-apple-web-adapters`): wire `"nve.camera.preview"` (`NVNP`/`NVNC`/`NVCF`) into `hosts/apple-common` (shared `AVFoundation` for macOS + standalone iOS + pluggable VisionCamera v5 iOS bridge) and `crates/nve-backend-web` (`getUserMedia` → `<video>`).
-  - Branch 2 (`t3/camera-preview-core-android`): wire real Jetpack `androidx.camera` `CameraX` + `NveCameraPreview` Composable in `hosts/compose-kit`, plus C++20 `NVNP`/`NVNC`/`NVCF` codec + Windows `MediaCapture`/Media Foundation and Linux PipeWire/V4L2 backends in `cxx/nve-fabric-bridge`.
-  - Follow-up after `NativeViewRegistry` lands: thin SwiftUI & Flutter camera wrappers and live Android Emulator virtual-scene verification once Android SDK cmdline-tools are installed.
+- [ ] **Pluggable Camera Package — Remaining Host Adapters (Apple `AVFoundation` + VisionCamera v5 iOS, Web `getUserMedia`, SwiftUI/Flutter Wrappers)** *(Apple + Web in flight)*
+  - Branch in flight (`t3/camera-apple-web-adapters`): wire `"nve.camera.preview"` (`NVNP`/`NVNC`/`NVCF`) into `hosts/apple-common` (shared `AVFoundation` for macOS + standalone iOS + pluggable VisionCamera v5 iOS bridge) and `crates/nve-backend-web` (`getUserMedia` → `<video>`).
+  - Follow-up after `NativeViewRegistry` lands: thin SwiftUI & Flutter camera wrappers and live Android Emulator virtual-scene verification once Android SDK cmdline-tools are installed (`CameraPreview` spec + `NVCF`, Android VisionCamera v5 + real Jetpack `CameraX` `PreviewView`, and C++20 Windows `MediaCapture` + Linux PipeWire/V4L2 backends already landed).
 
 - [ ] **TV, Watch & Spatial Platform Backends (`tvOS`, `watchOS`, `visionOS`, `Android TV` / `Fire TV`)** *(Phase 1 in flight)*
   - **Phase 1 (Core Traits + 2D Spatial Focus + Android TV D-Pad)**:

@@ -2,12 +2,21 @@
 #include "nve_camera_linux.hpp"
 #include "nve_camera_windows.hpp"
 
-#include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <vector>
+
+#define NVE_CHECK(expr)                                                               \
+  do {                                                                                \
+    if (!(expr)) {                                                                    \
+      std::fprintf(stderr, "NVE_CHECK failed at %s:%d: %s\n", __FILE__, __LINE__,     \
+                   #expr);                                                            \
+      std::abort();                                                                   \
+    }                                                                                 \
+  } while (false)
 
 using namespace nve;
 
@@ -52,11 +61,11 @@ void test_golden_wire_parity_with_rust_and_kotlin() {
       10, 0, 1, 1,
   };
   std::vector<uint8_t> encoded_props;
-  assert(encode_camera_props(CameraPreviewProps{}, encoded_props) == NativeViewCodecError::Ok);
-  assert(encoded_props == expected_default_props);
+  NVE_CHECK(encode_camera_props(CameraPreviewProps{}, encoded_props) == NativeViewCodecError::Ok);
+  NVE_CHECK(encoded_props == expected_default_props);
   CameraPreviewProps decoded_props{};
-  assert(decode_camera_props(expected_default_props, decoded_props) == NativeViewCodecError::Ok);
-  assert(decoded_props == CameraPreviewProps{});
+  NVE_CHECK(decode_camera_props(expected_default_props, decoded_props) == NativeViewCodecError::Ok);
+  NVE_CHECK(decoded_props == CameraPreviewProps{});
 
   // Golden NVNC bytes for FocusPoint(0.25f, 0.75f)
   const std::vector<uint8_t> expected_focus = {
@@ -65,12 +74,12 @@ void test_golden_wire_parity_with_rust_and_kotlin() {
       5, 0x00, 0x00, 0x40, 0x3F,
   };
   std::vector<uint8_t> encoded_focus;
-  assert(encode_camera_command(CameraPreviewCommand::focus_point(0.25f, 0.75f), encoded_focus) ==
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::focus_point(0.25f, 0.75f), encoded_focus) ==
          NativeViewCodecError::Ok);
-  assert(encoded_focus == expected_focus);
+  NVE_CHECK(encoded_focus == expected_focus);
   CameraPreviewCommand decoded_cmd{};
-  assert(decode_camera_command(expected_focus, decoded_cmd) == NativeViewCodecError::Ok);
-  assert(decoded_cmd == CameraPreviewCommand::focus_point(0.25f, 0.75f));
+  NVE_CHECK(decode_camera_command(expected_focus, decoded_cmd) == NativeViewCodecError::Ok);
+  NVE_CHECK(decoded_cmd == CameraPreviewCommand::focus_point(0.25f, 0.75f));
 
   // Golden NVCF 40-byte frame descriptor
   const std::array<uint8_t, 40> expected_nvcf = {
@@ -92,51 +101,51 @@ void test_golden_wire_parity_with_rust_and_kotlin() {
       .native_handle_id = 0x1122334455667788ull,
   };
   std::array<uint8_t, kCameraFrameDescriptorSize> encoded_nvcf{};
-  assert(encode_camera_frame(desc, encoded_nvcf) == NativeViewCodecError::Ok);
-  assert(encoded_nvcf == expected_nvcf);
+  NVE_CHECK(encode_camera_frame(desc, encoded_nvcf) == NativeViewCodecError::Ok);
+  NVE_CHECK(encoded_nvcf == expected_nvcf);
   CameraFrameDescriptor decoded_nvcf{};
-  assert(decode_camera_frame(expected_nvcf, decoded_nvcf) == NativeViewCodecError::Ok);
-  assert(decoded_nvcf == desc);
+  NVE_CHECK(decode_camera_frame(expected_nvcf, decoded_nvcf) == NativeViewCodecError::Ok);
+  NVE_CHECK(decoded_nvcf == desc);
 }
 
 void test_corrupt_nan_truncated_and_fuzz_rejection() {
   std::vector<uint8_t> buf;
   CameraPreviewProps bad_zoom{};
   bad_zoom.zoom = std::numeric_limits<float>::quiet_NaN();
-  assert(encode_camera_props(bad_zoom, buf) == NativeViewCodecError::TypeMismatch);
+  NVE_CHECK(encode_camera_props(bad_zoom, buf) == NativeViewCodecError::TypeMismatch);
   bad_zoom.zoom = -1.0f;
-  assert(encode_camera_props(bad_zoom, buf) == NativeViewCodecError::TypeMismatch);
+  NVE_CHECK(encode_camera_props(bad_zoom, buf) == NativeViewCodecError::TypeMismatch);
 
   CameraPreviewProps bad_fps{};
   bad_fps.fps = 241u;
-  assert(encode_camera_props(bad_fps, buf) == NativeViewCodecError::InvalidEnum);
+  NVE_CHECK(encode_camera_props(bad_fps, buf) == NativeViewCodecError::InvalidEnum);
 
-  assert(encode_camera_command(CameraPreviewCommand::focus_point(1.2f, 0.5f), buf) ==
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::focus_point(1.2f, 0.5f), buf) ==
          NativeViewCodecError::TypeMismatch);
-  assert(encode_camera_command(CameraPreviewCommand::capture_photo(101u, 0u), buf) ==
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::capture_photo(101u, 0u), buf) ==
          NativeViewCodecError::InvalidEnum);
-  assert(encode_camera_command(CameraPreviewCommand::capture_photo(80u, 3u), buf) ==
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::capture_photo(80u, 3u), buf) ==
          NativeViewCodecError::InvalidEnum);
 
   // Truncated and trailing-byte NVCF rejection
   const CameraFrameDescriptor valid_desc{1280u, 720u, 1280u * 4u, CameraPixelFormat::Rgba8888, 90u, 100ull, 200ull};
   std::array<uint8_t, kCameraFrameDescriptorSize> valid_nvcf{};
-  assert(encode_camera_frame(valid_desc, valid_nvcf) == NativeViewCodecError::Ok);
+  NVE_CHECK(encode_camera_frame(valid_desc, valid_nvcf) == NativeViewCodecError::Ok);
   CameraFrameDescriptor out_desc{};
   for (size_t cut = 0u; cut < kCameraFrameDescriptorSize; ++cut) {
-    assert(decode_camera_frame(std::span<const uint8_t>(valid_nvcf.data(), cut), out_desc) ==
+    NVE_CHECK(decode_camera_frame(std::span<const uint8_t>(valid_nvcf.data(), cut), out_desc) ==
            NativeViewCodecError::Truncated);
   }
   std::vector<uint8_t> extra(valid_nvcf.begin(), valid_nvcf.end());
   extra.push_back(0xAA);
-  assert(decode_camera_frame(extra, out_desc) == NativeViewCodecError::TrailingBytes);
+  NVE_CHECK(decode_camera_frame(extra, out_desc) == NativeViewCodecError::TrailingBytes);
 
   auto bad_rot = valid_nvcf;
   bad_rot[6] = 45u;
-  assert(decode_camera_frame(bad_rot, out_desc) == NativeViewCodecError::InvalidEnum);
+  NVE_CHECK(decode_camera_frame(bad_rot, out_desc) == NativeViewCodecError::InvalidEnum);
   auto bad_res = valid_nvcf;
   bad_res[20] = 1u;
-  assert(decode_camera_frame(bad_res, out_desc) == NativeViewCodecError::InvalidEnum);
+  NVE_CHECK(decode_camera_frame(bad_res, out_desc) == NativeViewCodecError::InvalidEnum);
 
   // Deterministic 1,000-case fuzz loop across all 3 decoders
   uint64_t state = 0xCAFEBABE12345678ull;
@@ -169,8 +178,8 @@ void test_windows_media_capture_backend() {
   RecordingCameraListener listener{};
   backend.attach_listener(&listener);
 
-  assert(backend.backend_kind() == CameraBackendKind::WindowsMediaCapture);
-  assert(backend.list_devices().size() == 2u);
+  NVE_CHECK(backend.backend_kind() == CameraBackendKind::WindowsMediaCapture);
+  NVE_CHECK(backend.list_devices().size() == 2u);
 
   CameraPreviewProps props{};
   props.facing = CameraFacing::Front;
@@ -184,84 +193,84 @@ void test_windows_media_capture_backend() {
   props.active = true;
 
   std::vector<uint8_t> nvnp;
-  assert(encode_camera_props(props, nvnp) == NativeViewCodecError::Ok);
-  assert(backend.apply_encoded_props(nvnp) == NativeViewCodecError::Ok);
-  assert(backend.state() == CameraSessionState::Running);
-  assert(raw_bridge->configure_count() == 1u);
-  assert(raw_bridge->torch() == CameraTorchMode::Off);
-  assert(raw_bridge->zoom() == 4.0f);
-  assert(backend.active_props().fps == 60u);
-  assert(backend.active_props().stabilization == CameraStabilizationMode::Off);
+  NVE_CHECK(encode_camera_props(props, nvnp) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.apply_encoded_props(nvnp) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.state() == CameraSessionState::Running);
+  NVE_CHECK(raw_bridge->configure_count() == 1u);
+  NVE_CHECK(raw_bridge->torch() == CameraTorchMode::Off);
+  NVE_CHECK(raw_bridge->zoom() == 4.0f);
+  NVE_CHECK(backend.active_props().fps == 60u);
+  NVE_CHECK(backend.active_props().stabilization == CameraStabilizationMode::Off);
 
   // Diff-aware zoom update must NOT reconfigure stream
   auto next = backend.active_props();
   next.zoom = 2.0f;
-  assert(backend.apply_props(next));
-  assert(raw_bridge->configure_count() == 1u);
-  assert(raw_bridge->zoom() == 2.0f);
+  NVE_CHECK(backend.apply_props(next));
+  NVE_CHECK(raw_bridge->configure_count() == 1u);
+  NVE_CHECK(raw_bridge->zoom() == 2.0f);
 
   // Zero-copy NVCF frame emission
   const CameraFrameDescriptor frame{1920u, 1080u, 1920u, CameraPixelFormat::Nv12, 0u, 777ull, 0xD3D11BEEFull};
   raw_bridge->push_simulated_frame(frame);
-  assert(listener.frames.size() == 1u);
+  NVE_CHECK(listener.frames.size() == 1u);
   CameraFrameDescriptor decoded{};
-  assert(decode_camera_frame(listener.frames[0].second, decoded) == NativeViewCodecError::Ok);
-  assert(decoded == frame);
+  NVE_CHECK(decode_camera_frame(listener.frames[0].second, decoded) == NativeViewCodecError::Ok);
+  NVE_CHECK(decoded == frame);
 
   // Encoded NVNC commands: switch to Back, torch, focus, photo, record
   std::vector<uint8_t> cmd_bytes;
-  assert(encode_camera_command(CameraPreviewCommand::switch_facing(CameraFacing::Back), cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
-  assert(raw_bridge->configure_count() == 2u);
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::switch_facing(CameraFacing::Back), cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(raw_bridge->configure_count() == 2u);
 
-  assert(encode_camera_command(CameraPreviewCommand::set_torch(CameraTorchMode::Auto), cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
-  assert(raw_bridge->torch() == CameraTorchMode::Auto);
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::set_torch(CameraTorchMode::Auto), cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(raw_bridge->torch() == CameraTorchMode::Auto);
 
-  assert(encode_camera_command(CameraPreviewCommand::focus_point(0.3f, 0.7f), cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
-  assert(std::abs(raw_bridge->last_focus().first - 0.3f) < 1e-5f);
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::focus_point(0.3f, 0.7f), cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(std::abs(raw_bridge->last_focus().first - 0.3f) < 1e-5f);
 
-  assert(encode_camera_command(CameraPreviewCommand::capture_photo(95u, 1u), cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
-  assert(listener.photos.size() == 1u);
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::capture_photo(95u, 1u), cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(listener.photos.size() == 1u);
 
-  assert(encode_camera_command(CameraPreviewCommand::start_recording("C:\\temp\\win_clip.mp4"), cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.state() == CameraSessionState::Recording);
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::start_recording("C:\\temp\\win_clip.mp4"), cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.state() == CameraSessionState::Recording);
 
-  assert(encode_camera_command(CameraPreviewCommand::stop_recording(), cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
-  assert(backend.state() == CameraSessionState::Running);
-  assert(listener.videos.size() == 1u);
-  assert(listener.videos[0].output_path == "C:\\temp\\win_clip.mp4");
+  NVE_CHECK(encode_camera_command(CameraPreviewCommand::stop_recording(), cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.dispatch_encoded_command(cmd_bytes) == NativeViewCodecError::Ok);
+  NVE_CHECK(backend.state() == CameraSessionState::Running);
+  NVE_CHECK(listener.videos.size() == 1u);
+  NVE_CHECK(listener.videos[0].output_path == "C:\\temp\\win_clip.mp4");
 
   backend.release();
-  assert(backend.state() == CameraSessionState::Released);
-  assert(raw_bridge->released());
-  assert(!backend.dispatch_command(CameraPreviewCommand::set_zoom(2.0f)));
+  NVE_CHECK(backend.state() == CameraSessionState::Released);
+  NVE_CHECK(raw_bridge->released());
+  NVE_CHECK(!backend.dispatch_command(CameraPreviewCommand::set_zoom(2.0f)));
 }
 
 void test_linux_pipewire_v4l2_and_registry_precedence() {
   NveCameraRegistry registry{};
   register_linux_camera_backends(registry);
-  assert(registry.resolve_backend_kind() == CameraBackendKind::LinuxPipeWire);
+  NVE_CHECK(registry.resolve_backend_kind() == CameraBackendKind::LinuxPipeWire);
 
   // PipeWire preferred over V4L2
   auto pw = registry.create_backend(1u, 10u);
-  assert(pw != nullptr);
-  assert(pw->backend_kind() == CameraBackendKind::LinuxPipeWire);
-  assert(pw->backend_name() == "linux-pipewire");
+  NVE_CHECK(pw != nullptr);
+  NVE_CHECK(pw->backend_kind() == CameraBackendKind::LinuxPipeWire);
+  NVE_CHECK(pw->backend_name() == "linux-pipewire");
 
   // Explicit V4L2 fallback
   auto v4l2 = registry.create_backend(1u, 11u, CameraBackendKind::LinuxV4l2);
-  assert(v4l2 != nullptr);
-  assert(v4l2->backend_kind() == CameraBackendKind::LinuxV4l2);
-  assert(v4l2->backend_name() == "linux-v4l2");
+  NVE_CHECK(v4l2 != nullptr);
+  NVE_CHECK(v4l2->backend_kind() == CameraBackendKind::LinuxV4l2);
+  NVE_CHECK(v4l2->backend_name() == "linux-v4l2");
 
   // Unregister PipeWire -> falls back to V4L2 automatically
-  assert(registry.unregister_backend(CameraBackendKind::LinuxPipeWire));
-  assert(registry.resolve_backend_kind() == CameraBackendKind::LinuxV4l2);
+  NVE_CHECK(registry.unregister_backend(CameraBackendKind::LinuxPipeWire));
+  NVE_CHECK(registry.resolve_backend_kind() == CameraBackendKind::LinuxV4l2);
 
   // Exercise full Linux PipeWire DMA-BUF + recording lifecycle
   auto bridge_ptr = std::make_unique<InMemoryLinuxCameraBridge>(LinuxCameraTransport::PipeWire);
@@ -278,27 +287,27 @@ void test_linux_pipewire_v4l2_and_registry_precedence() {
   props.hdr = true;
   props.enable_frame_processor = true;
   props.active = true;
-  assert(linux_cam.apply_props(props));
-  assert(linux_cam.state() == CameraSessionState::Running);
-  assert(raw_bridge->streaming());
-  assert(raw_bridge->last_config()->device_id == "pipewire-node:2");
-  assert(raw_bridge->last_config()->enable_dmabuf_frames);
+  NVE_CHECK(linux_cam.apply_props(props));
+  NVE_CHECK(linux_cam.state() == CameraSessionState::Running);
+  NVE_CHECK(raw_bridge->streaming());
+  NVE_CHECK(raw_bridge->last_config()->device_id == "pipewire-node:2");
+  NVE_CHECK(raw_bridge->last_config()->enable_dmabuf_frames);
 
   const CameraFrameDescriptor dmabuf_frame{1280u, 720u, 1280u, CameraPixelFormat::Nv12, 0u, 123456ull, 42ull};
   raw_bridge->push_dmabuf_frame(dmabuf_frame);
-  assert(listener.frames.size() == 1u);
-  assert(listener.frames[0].first == dmabuf_frame);
+  NVE_CHECK(listener.frames.size() == 1u);
+  NVE_CHECK(listener.frames[0].first == dmabuf_frame);
 
-  assert(linux_cam.dispatch_command(CameraPreviewCommand::start_recording("/tmp/pw_clip.mkv")));
-  assert(linux_cam.state() == CameraSessionState::Recording);
+  NVE_CHECK(linux_cam.dispatch_command(CameraPreviewCommand::start_recording("/tmp/pw_clip.mkv")));
+  NVE_CHECK(linux_cam.state() == CameraSessionState::Recording);
   linux_cam.stop();
-  assert(linux_cam.state() == CameraSessionState::Stopped);
-  assert(listener.videos.size() == 1u);
-  assert(!raw_bridge->streaming());
+  NVE_CHECK(linux_cam.state() == CameraSessionState::Stopped);
+  NVE_CHECK(listener.videos.size() == 1u);
+  NVE_CHECK(!raw_bridge->streaming());
 
   linux_cam.release();
-  assert(linux_cam.state() == CameraSessionState::Released);
-  assert(raw_bridge->closed());
+  NVE_CHECK(linux_cam.state() == CameraSessionState::Released);
+  NVE_CHECK(raw_bridge->closed());
 }
 
 } // namespace

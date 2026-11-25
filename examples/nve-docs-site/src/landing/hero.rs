@@ -226,7 +226,7 @@ fn HeroInteractiveCard() -> Element {
     rsx! {
         view {
             test_id: "landing-hero-preview",
-            style: "width: {card_width}; max-width: 100%; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border}; overflow: hidden;",
+            style: "width: {card_width}; max-width: 100%; align-self: flex-start; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border}; overflow: hidden;",
 
             // Card chrome header: window dots + switchable mode tabs (stacked on mobile)
             view {
@@ -250,7 +250,11 @@ fn HeroInteractiveCard() -> Element {
                 // Tablist
                 view {
                     accessibility_role: "tablist",
-                    style: "flex-direction: row; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};",
+                    style: if is_mobile {
+                        "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};"
+                    } else {
+                        "flex-direction: row; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};"
+                    },
                     for (id, label, tid) in tabs {
                         {
                             let selected = tab == id;
@@ -283,7 +287,7 @@ fn HeroInteractiveCard() -> Element {
             view {
                 test_id: "hero-preview-body",
                 accessibility_role: "tabpanel",
-                style: "width: 100%; min-height: 292px; flex-direction: column; justify-content: space-between; padding: 18px; gap: 16px; background-color: {theme.code_bg};",
+                style: "width: 100%; min-height: 236px; flex-direction: column; justify-content: space-between; padding: 18px; gap: 16px; background-color: {theme.code_bg};",
 
                 if tab == "code" {
                     view {
@@ -368,7 +372,11 @@ fn HeroInteractiveCard() -> Element {
 
                         // Host target selector pills
                         view {
-                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                            style: if is_mobile {
+                                "width: 100%; flex-direction: column; align-items: flex-start; gap: 6px;"
+                            } else {
+                                "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;"
+                            },
                             text {
                                 style: "font-size: 11px; font-weight: 700; color: {theme.muted};",
                                 "RENDER TARGET"

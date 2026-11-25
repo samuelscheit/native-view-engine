@@ -9,7 +9,8 @@ use crate::landing::PillBadge;
 use crate::landing::benchmarks_data::{
     BASELINE_BENCHMARKS, BASELINE_GENERATED_AT, BASELINE_MACHINE, BenchCategory,
     EmbeddedBaselineEntry, LATEST_BARS, LatestBarSpec, PROGRESSION_SERIES, ProgressionSeries,
-    build_bar_chart_draw_list, build_line_chart_draw_list, format_ns, format_val, lookup_baseline,
+    bar_chart_lo_bound, build_bar_chart_draw_list, build_line_chart_draw_list, category_swatch_hex,
+    format_ns, format_val, line_chart_lo_bound, lookup_baseline,
 };
 
 /// Interactive Purple-Garden-style Benchmark Progression Dashboard powered 100% by `NVE_DRAW1`.
@@ -40,7 +41,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
         .filter(|s| active_cat == BenchCategory::All || s.category == active_cat)
         .collect();
 
-    let bar_canvas_w: f32 = if is_mobile { 270.0 } else { 980.0 };
+    let bar_canvas_w: f32 = if is_mobile { 270.0 } else { 1040.0 };
     let bar_canvas_h: f32 = 176.0;
     let bar_values: Vec<(f64, u8)> = filtered_bars
         .iter()
@@ -58,10 +59,16 @@ pub fn BenchmarkProgressionDashboard() -> Element {
         .iter()
         .map(|(_, e)| e.median_ns)
         .fold(f64::INFINITY, f64::min);
+    let lo_bar_ns = bar_chart_lo_bound(min_bar_ns, is_log);
     let mid_bar_ns = if is_log {
-        (max_bar_ns * min_bar_ns.max(0.5)).sqrt()
+        (max_bar_ns * lo_bar_ns.max(0.5)).sqrt()
     } else {
         max_bar_ns * 0.5
+    };
+    let lo_bar_label = if is_log {
+        format_ns(lo_bar_ns)
+    } else {
+        "0 ns".to_string()
     };
 
     let scale_badge = if is_log { "Log10 Y-Axis" } else { "Linear Y-Axis" };
@@ -93,14 +100,20 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             let fg = if sel { theme.accent } else { theme.muted };
                             let bc = if sel { theme.accent } else { theme.border };
                             let tid = format!("bench-filter-{}", cat.id());
+                            let swatch = cat.color_idx().map(|ci| category_swatch_hex(ci, theme.is_dark));
                             rsx! {
                                 pressable {
                                     key: "cat-{cat.id()}",
                                     test_id: "{tid}",
                                     accessibility_role: "button",
                                     "aria-pressed": if sel { "true" } else { "false" },
-                                    style: "flex-shrink: 0; padding-horizontal: 11px; padding-vertical: 6px; border-radius: 7px; background-color: {bg}; border-width: 1px; border-color: {bc};",
+                                    style: "flex-shrink: 0; flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 11px; padding-vertical: 6px; border-radius: 7px; background-color: {bg}; border-width: 1px; border-color: {bc};",
                                     onpress: move |_| category.set(cat),
+                                    if let Some(hex) = swatch {
+                                        view {
+                                            style: "width: 7px; height: 7px; border-radius: 999px; background-color: {hex}; flex-shrink: 0;",
+                                        }
+                                    }
                                     text {
                                         style: "font-size: 12px; font-weight: 600; color: {fg};",
                                         "{cat.label()}"
@@ -203,7 +216,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                 style: "width: 58px; flex-shrink: 0; flex-direction: column; justify-content: space-between; padding-vertical: 10px; align-items: flex-end;",
                                 text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_ns(max_bar_ns)}" }
                                 text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_ns(mid_bar_ns)}" }
-                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_ns(min_bar_ns.min(1.0))}" }
+                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{lo_bar_label}" }
                             }
                             canvas {
                                 test_id: "bench-latest-canvas",
@@ -215,12 +228,22 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                         view {
                             test_id: "bench-bar-legend",
                             style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px; padding-left: 68px;",
-                            for (spec, entry) in &filtered_bars {
-                                view {
-                                    key: "bar-lbl-{spec.short_label}",
-                                    style: "flex-shrink: 0; flex-direction: row; align-items: center; gap: 5px; padding-horizontal: 8px; padding-vertical: 3px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
-                                    text { style: "font-size: 11px; color: {theme.muted};", "{spec.short_label}" }
-                                    text { style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.text};", "{format_ns(entry.median_ns)}" }
+                            for (bar_idx, (spec, entry)) in filtered_bars.iter().enumerate() {
+                                {
+                                    let swatch = category_swatch_hex(spec.color_idx, theme.is_dark);
+                                    let ordinal = bar_idx + 1;
+                                    rsx! {
+                                        view {
+                                            key: "bar-lbl-{spec.short_label}",
+                                            style: "flex-shrink: 0; flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                            view {
+                                                style: "width: 7px; height: 7px; border-radius: 999px; background-color: {swatch}; flex-shrink: 0;",
+                                            }
+                                            text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "#{ordinal}" }
+                                            text { style: "font-size: 11px; color: {theme.muted};", "{spec.short_label}" }
+                                            text { style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.text};", "{format_ns(entry.median_ns)}" }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -250,13 +273,19 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                 let last_pt = series.points.last().map(|p| p.value).unwrap_or(0.0);
                                 let max_pt = series.points.iter().map(|p| p.value).fold(0.0_f64, f64::max);
                                 let min_pt = series.points.iter().map(|p| p.value).fold(f64::INFINITY, f64::min);
+                                let lo_pt = line_chart_lo_bound(min_pt, is_log);
+                                let lo_label = if is_log {
+                                    format_val(lo_pt, series.unit)
+                                } else {
+                                    format!("0 {}", series.unit)
+                                };
                                 let start_str = format_val(first_pt, series.unit);
                                 let end_str = format_val(last_pt, series.unit);
                                 rsx! {
                                     view {
                                         key: "prog-{series.id}",
                                         test_id: "bench-card-{series.id}",
-                                        style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; gap: 12px; padding: 18px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                                        style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; gap: 10px; padding: 18px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
 
                                         view {
                                             style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: flex-start; gap: 10px;",
@@ -271,15 +300,22 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                                     "{series.subtitle}"
                                                 }
                                             }
-                                            PillBadge { label: series.delta_badge.to_string(), accent: true }
+                                            view {
+                                                style: "flex-shrink: 0; flex-direction: column; align-items: flex-end; gap: 4px;",
+                                                PillBadge { label: series.delta_badge.to_string(), accent: true }
+                                                text {
+                                                    style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.success};",
+                                                    "{start_str} → {end_str}"
+                                                }
+                                            }
                                         }
 
                                         view {
                                             style: "width: 100%; flex-direction: row; align-items: stretch; gap: 8px;",
                                             view {
-                                                style: "width: 52px; flex-shrink: 0; flex-direction: column; justify-content: space-between; padding-vertical: 10px; align-items: flex-end;",
+                                                style: "width: 56px; flex-shrink: 0; flex-direction: column; justify-content: space-between; padding-vertical: 10px; align-items: flex-end;",
                                                 text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_val(max_pt, series.unit)}" }
-                                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_val(min_pt, series.unit)}" }
+                                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{lo_label}" }
                                             }
                                             canvas {
                                                 test_id: "bench-canvas-{series.id}",
@@ -290,20 +326,13 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                         }
 
                                         view {
-                                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 6px; padding-left: 60px;",
-                                            view {
-                                                style: "flex-direction: row; gap: 14px; align-items: center;",
-                                                for pt in series.points {
-                                                    text {
-                                                        key: "pt-{series.id}-{pt.label}",
-                                                        style: "font-size: 10px; font-family: monospace; color: {theme.muted};",
-                                                        "{pt.label}"
-                                                    }
+                                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-left: 72px; padding-right: 12px;",
+                                            for pt in series.points {
+                                                text {
+                                                    key: "pt-{series.id}-{pt.label}",
+                                                    style: "font-size: 10px; font-family: monospace; color: {theme.muted};",
+                                                    "{pt.label}"
                                                 }
-                                            }
-                                            text {
-                                                style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.success};",
-                                                "{start_str} → {end_str}"
                                             }
                                         }
                                     }

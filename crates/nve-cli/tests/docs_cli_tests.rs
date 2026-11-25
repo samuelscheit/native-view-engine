@@ -261,10 +261,50 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
     assert!(studio_per.contains("./app/index.html?ws=off&embed=1"));
     assert!(studio_per.contains("data-bundle-mode=\"per-app\""));
 
+    // 3. Stage-2 split `pkg/{studio,counter,dev}` layout (produced by `hosts/web-shell/build.sh`):
+    let split_pkg_src = temp_test_dir("ws-split-pkg-src");
+    fs::create_dir_all(split_pkg_src.join("pkg/studio")).unwrap();
+    fs::create_dir_all(split_pkg_src.join("pkg/counter")).unwrap();
+    fs::create_dir_all(split_pkg_src.join("pkg/dev")).unwrap();
+    fs::write(
+        split_pkg_src.join("index.html"),
+        "<html><head></head><body>split-pkg runtime</body></html>",
+    )
+    .unwrap();
+    fs::write(split_pkg_src.join("pkg/studio/nve_web_shell.js"), "export default 1;").unwrap();
+    fs::write(split_pkg_src.join("pkg/counter/nve_web_shell.js"), "export default 2;").unwrap();
+    fs::write(split_pkg_src.join("pkg/dev/nve_web_shell.js"), "export default 3;").unwrap();
+
+    let out_split = temp_test_dir("ws-split-pkg-out");
+    let status3 = Command::new(nve_bin())
+        .current_dir(repo_root())
+        .args([
+            "docs",
+            "build",
+            "--content",
+            "docs/content",
+            "--skip-wasm",
+            "--web-shell-dist",
+        ])
+        .arg(&split_pkg_src)
+        .arg("--out")
+        .arg(&out_split)
+        .status()
+        .expect("run docs build with split pkg web-shell");
+    assert!(status3.success());
+    assert!(out_split.join("examples/_runtime/pkg/studio/nve_web_shell.js").is_file());
+    assert!(out_split.join("examples/_runtime/pkg/counter/nve_web_shell.js").is_file());
+    assert!(
+        !out_split.join("examples/_runtime/pkg/dev").exists(),
+        "dev-only bundle should be excluded from production static docs output"
+    );
+
     let _ = fs::remove_dir_all(&unified_src);
     let _ = fs::remove_dir_all(&out_unified);
     let _ = fs::remove_dir_all(&per_app_src);
     let _ = fs::remove_dir_all(&out_per_app);
+    let _ = fs::remove_dir_all(&split_pkg_src);
+    let _ = fs::remove_dir_all(&out_split);
 }
 
 fn count_html_files(dir: &Path) -> usize {

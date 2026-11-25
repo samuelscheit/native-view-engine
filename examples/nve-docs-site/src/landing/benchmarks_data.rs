@@ -46,6 +46,45 @@ impl BenchCategory {
             Self::SyncLayout => "Sync & Layout",
         }
     }
+
+    pub(crate) fn color_idx(self) -> Option<u8> {
+        match self {
+            Self::All => None,
+            Self::RustCore => Some(0),
+            Self::CxxBridge => Some(1),
+            Self::WebWasm => Some(2),
+            Self::SyncLayout => Some(3),
+        }
+    }
+}
+
+pub(crate) fn category_swatch_hex(color_idx: u8, dark: bool) -> &'static str {
+    match (color_idx, dark) {
+        (0, true) => "#38bdf8",
+        (0, false) => "#0284c7",
+        (1, true) => "#818cf8",
+        (1, false) => "#4f46e5",
+        (2, true) => "#34d399",
+        (2, false) => "#059669",
+        (_, true) => "#fbbf24",
+        (_, false) => "#d97706",
+    }
+}
+
+pub(crate) fn bar_chart_lo_bound(min_v: f64, log_scale: bool) -> f64 {
+    if log_scale {
+        (min_v * 0.5).max(0.5)
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn line_chart_lo_bound(min_v: f64, log_scale: bool) -> f64 {
+    if log_scale {
+        (min_v * 0.6).max(0.1)
+    } else {
+        0.0
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -189,8 +228,8 @@ pub(crate) const PROGRESSION_SERIES: [ProgressionSeries; 6] = [
     ProgressionSeries {
         id: "wasm-release",
         title: "Web WASM Release Bundle (Raw Size)",
-        subtitle: "wasm-release + wasm-opt -> 285.8 KiB gzip · commit 9545a54",
-        unit: "KB",
+        subtitle: "wasm-release + wasm-opt → 285.8 KiB gzip · commit 9545a54",
+        unit: "KiB",
         delta_badge: "-47.6%",
         category: BenchCategory::WebWasm,
         color_idx: 2,
@@ -341,8 +380,9 @@ pub(crate) fn build_bar_chart_draw_list(
     let slot_w = plot_w / values.len() as f32;
     let bar_w = (slot_w * 0.56).clamp(14.0, 56.0);
 
+    let lo_bound = bar_chart_lo_bound(min_v, log_scale);
     for (idx, &(val, cidx)) in values.iter().enumerate() {
-        let norm = scale_norm(val, min_v * 0.5, max_v, log_scale);
+        let norm = scale_norm(val, lo_bound, max_v, log_scale);
         let bh = (plot_h * norm).max(6.0);
         let x = pad_x + idx as f32 * slot_w + (slot_w - bar_w) * 0.5;
         let y = pad_top + plot_h - bh;
@@ -397,7 +437,7 @@ pub(crate) fn build_line_chart_draw_list(
         .map(|p| p.value)
         .fold(f64::INFINITY, f64::min);
     let max_v = points.iter().map(|p| p.value).fold(0.0_f64, f64::max);
-    let lo_bound = if log_scale { min_v * 0.6 } else { 0.0 };
+    let lo_bound = line_chart_lo_bound(min_v, log_scale);
 
     let mut coords: Vec<(f32, f32)> = Vec::with_capacity(points.len());
     let denom = (points.len() - 1) as f32;

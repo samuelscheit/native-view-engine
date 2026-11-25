@@ -436,7 +436,7 @@ fn watch_cache_chains_consecutive_tier1_patches_and_protects_baseline_on_error()
 #[test]
 fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     let ui_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/studio-workspace/src/ui.rs");
+        .join("../../examples/studio-workspace/src/ui_chrome.rs");
     let original = std::fs::read_to_string(&ui_path)
         .unwrap_or_else(|e| panic!("failed reading {}: {e}", ui_path.display()));
 
@@ -445,7 +445,7 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     assert_ne!(original, edited_text);
     let t0 = Instant::now();
     let text_patch = expect_patch(diff_rsx_source(
-        "examples/studio-workspace/src/ui.rs",
+        "examples/studio-workspace/src/ui_chrome.rs",
         &original,
         &edited_text,
         2,
@@ -458,7 +458,7 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     );
     assert!(
         elapsed.as_millis() < 10,
-        "expected Tier-1 diff on real ui.rs ({} bytes) in < 10ms, took {:?}",
+        "expected Tier-1 diff on real ui_chrome.rs ({} bytes) in < 10ms, took {:?}",
         original.len(),
         elapsed
     );
@@ -472,7 +472,7 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     assert_ne!(original, edited_style);
     let t1 = Instant::now();
     let style_patch = expect_patch(diff_rsx_source(
-        "examples/studio-workspace/src/ui.rs",
+        "examples/studio-workspace/src/ui_chrome.rs",
         &original,
         &edited_style,
         3,
@@ -487,14 +487,15 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     );
     assert!(
         style_elapsed.as_millis() < 10,
-        "expected Tier-1 style diff on ui.rs in < 10ms, took {:?}",
+        "expected Tier-1 style diff on ui_chrome.rs in < 10ms, took {:?}",
         style_elapsed
     );
 
-    // 3. Rust logic / tuple data edit outside `rsx!` falls back cleanly to Tier-2.
-    let edited_outside = original.replacen("\"# engineering\"", "\"# ergoiherg\"", 1);
+    // 3. Rust logic / string data edit outside `rsx!` falls back cleanly to Tier-2.
+    let edited_outside = original.replacen("\"Close\"", "\"Hide\"", 1);
+    assert_ne!(original, edited_outside);
     assert_tier2(
-        "examples/studio-workspace/src/ui.rs",
+        "examples/studio-workspace/src/ui_chrome.rs",
         &original,
         &edited_outside,
         4,

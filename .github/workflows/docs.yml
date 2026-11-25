@@ -76,7 +76,7 @@ jobs:
         run: cargo run --locked -p nve-cli -- docs check
 
       - name: Build lazy-loaded hosts/web-shell WASM example apps (Studio & Counter)
-        run: ./hosts/web-shell/build.sh
+        run: ./hosts/web-shell/build.sh studio counter
 
       - name: Build unified static SSR Landing, Docs & Examples site for GitHub Pages
         run: |
