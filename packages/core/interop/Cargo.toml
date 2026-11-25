@@ -16,6 +16,7 @@ default = [
     "gesture",
     "channel",
     "layout",
+    "reconcile",
 ]
 crdt = []
 sync = []
@@ -27,9 +28,11 @@ plugin-host = []
 gesture = []
 channel = []
 layout = []
+reconcile = []
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-components = { workspace = true }
 nve-engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -52,6 +55,10 @@ required-features = ["sync"]
 [[test]]
 name = "traits_and_native_view_tests"
 required-features = ["traits", "native-view"]
+
+[[test]]
+name = "reconcile_crdt_tests"
+required-features = ["reconcile", "crdt"]
 
 [[test]]
 name = "window_manager_tests"

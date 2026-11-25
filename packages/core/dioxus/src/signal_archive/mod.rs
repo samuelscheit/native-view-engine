@@ -38,8 +38,37 @@ pub use signal_codec::{BinValueSlot, SignalCodec};
 use std::fmt;
 
 use nve_abi::{encode_bin_value_to_vec, BinValueView, DecodeError, NveValueRef};
+use nve_components::reconcile::{
+    reconcile_three_way, ConflictPolicy, ReconcileDecision, ThreeWayEntry,
+};
 use nve_engine::snapshot::fnv1a_64_update;
 use nve_engine::WalError;
+
+/// Reconciles one signal slot during hot-reload using 3-way merge (`ConflictPolicy::PreferLocal`).
+///
+/// - When the user never modified the signal (`archived_local == base_default`), adopts
+///   `incoming_default` (`DivergenceKind::IncomingOnly`, `apply_local = true`).
+/// - When the user mutated the signal (`archived_local != base_default`), preserves
+///   `archived_local` even when the code default changed (`LocalOnlyDirty` / `Conflict`).
+/// - When both changed identically, classifies as `DivergenceKind::Converged`.
+#[inline]
+pub fn reconcile_signal_entry<V: PartialEq + Clone>(
+    base_default: V,
+    archived_local: V,
+    incoming_default: V,
+) -> ReconcileDecision<(), V> {
+    reconcile_three_way(
+        ThreeWayEntry {
+            key: (),
+            base: base_default,
+            local: archived_local,
+            incoming: incoming_default,
+            local_clock: None,
+            incoming_clock: None,
+        },
+        ConflictPolicy::PreferLocal,
+    )
+}
 
 /// 8-byte magic identifying a full binary signal table archive.
 pub const NVE_SIGNAL_ARCHIVE_MAGIC: [u8; 8] = *b"NVE_SIG1";

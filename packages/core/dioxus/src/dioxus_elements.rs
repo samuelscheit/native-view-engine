@@ -95,6 +95,7 @@ macro_rules! define_element {
             define_attrs! {
                 style => "style",
                 nve_style => "nve_style",
+                nve_show_on => "nve-show-on",
                 width => "width",
                 height => "height",
                 min_width => "min-width",
@@ -200,6 +201,7 @@ pub mod GlobalAttributes {
     define_attrs! {
         style => "style",
         nve_style => "nve_style",
+        nve_show_on => "nve-show-on",
     }
     define_a11y_attrs!();
 }

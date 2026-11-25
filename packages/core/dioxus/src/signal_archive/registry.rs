@@ -9,7 +9,8 @@ use nve_engine::{MmapSnapshot, SnapshotHeader, SnapshotWal, WalRecordKind};
 
 use super::codec::{SignalArchive, SignalTableSnapshot};
 use super::signal_codec::SignalCodec;
-use super::{signal_slot_id, SignalArchiveError, SignalValue};
+use super::{reconcile_signal_entry, signal_slot_id, SignalArchiveError, SignalValue};
+use nve_components::reconcile::DivergenceKind;
 
 /// Summary returned by [`SignalRegistry::hydrate_from_table`] describing exact schema-evolution
 /// behavior on cold start.
@@ -231,6 +232,62 @@ impl SignalRegistry {
             if let Some(entry) = self.slots.get(&slot_id) {
                 seen_registered.insert(slot_id);
                 if (entry.write)(value) {
+                    report.hydrated_slots += 1;
+                } else {
+                    report.skipped_type_mismatches += 1;
+                }
+            } else {
+                report.skipped_unknown_slots += 1;
+            }
+        }
+
+        report.untouched_new_slots = self.slots.len().saturating_sub(seen_registered.len());
+        self.last_persisted = self.capture();
+        report
+    }
+
+    /// Reconciles archived hot-reload state against prior `base_defaults` and the currently
+    /// registered live code defaults using [`reconcile_signal_entry`].
+    ///
+    /// User-mutated slots are preserved while untouched slots adopt updated code defaults.
+    pub fn hydrate_hot_reload(
+        &mut self,
+        base_defaults: &SignalTableSnapshot,
+        archived_local: &SignalTableSnapshot,
+    ) -> HydrationReport {
+        let mut report = HydrationReport {
+            source_schema_version: archived_local.schema_version(),
+            ..Default::default()
+        };
+        let mut seen_registered =
+            HashSet::with_capacity_and_hasher(self.slots.len(), Default::default());
+
+        for (slot_id, archived_val) in archived_local.iter() {
+            if let Some(entry) = self.slots.get(&slot_id) {
+                seen_registered.insert(slot_id);
+                let incoming_default = (entry.read)();
+                if let Some(base_default) = base_defaults.get(slot_id) {
+                    let decision = reconcile_signal_entry(
+                        base_default.clone(),
+                        archived_val.clone(),
+                        incoming_default,
+                    );
+                    match decision.kind {
+                        DivergenceKind::LocalOnlyDirty | DivergenceKind::Conflict => {
+                            if (entry.write)(&decision.resolved) {
+                                report.hydrated_slots += 1;
+                            } else {
+                                report.skipped_type_mismatches += 1;
+                            }
+                        }
+                        DivergenceKind::Clean
+                        | DivergenceKind::IncomingOnly
+                        | DivergenceKind::Converged => {
+                            // Live signal already holds the winning incoming/converged value.
+                            report.hydrated_slots += 1;
+                        }
+                    }
+                } else if (entry.write)(archived_val) {
                     report.hydrated_slots += 1;
                 } else {
                     report.skipped_type_mismatches += 1;

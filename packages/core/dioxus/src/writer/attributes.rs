@@ -6,7 +6,8 @@ use std::borrow::Cow;
 use dioxus_core::{AttributeValue, ElementId};
 use nve_abi::{CommandBufferBuilder, LayoutProps, NodeId, RawPropValue, RawPropValueRef, StyleProps};
 use nve_components::{
-    apply_typed_attr_with_raw, canonical_raw_style_key, DrawListDecoder, DRAW_LIST_ATTR_PREFIX,
+    apply_typed_attr_with_raw, canonical_raw_style_key, DrawListDecoder, MediaQuery,
+    DRAW_LIST_ATTR_PREFIX,
 };
 use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
 
@@ -14,7 +15,9 @@ use crate::hot_patch;
 use crate::native_view::{
     NativeBinaryProp, NativeHandleAttr, NATIVE_VIEW_HANDLE_ATTR, NATIVE_VIEW_KIND_ATTR,
 };
-use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
+use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
+
+const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
 
 use super::NveMutationWriter;
 
@@ -81,6 +84,13 @@ impl NveMutationWriter {
                     self.clear_typed_style(node_id);
                     return;
                 }
+                if name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        rec.explicit_show_on = None;
+                        rec.show_on = rec.typed_style.as_ref().and_then(|t| t.show_on);
+                    }
+                    return;
+                }
                 if hot_patch::is_test_id_attr_name(name) {
                     self.clear_test_id(node_id);
                 }
@@ -102,6 +112,17 @@ impl NveMutationWriter {
                         return;
                     }
                     self.apply_typed_style(node_id, typed.clone());
+                } else if (name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR)
+                    && let Some(query) = any
+                        .as_any()
+                        .downcast_ref::<MediaQuery>()
+                        .copied()
+                        .or_else(|| any.as_any().downcast_ref::<ShowOn>().map(|s| s.0))
+                {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        rec.explicit_show_on = Some(query);
+                        rec.show_on = Some(query);
+                    }
                 } else if let Some(bin) = any.as_any().downcast_ref::<NativeBinaryProp>() {
                     self.builder.set_raw_prop_ref(
                         node_id,
@@ -142,6 +163,8 @@ impl NveMutationWriter {
             || rec.inline_style_override.is_some();
         let reset_style = rec.typed_style.as_ref().is_some_and(|t| t.has_style)
             || rec.inline_style_override.is_some();
+        rec.show_on = rec.explicit_show_on.or(typed.show_on);
+        rec.responsive_rules.clone_from(&typed.responsive);
         rec.typed_style = Some(typed);
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
@@ -155,6 +178,8 @@ impl NveMutationWriter {
         };
         let reset_layout = prev.has_layout || rec.inline_style_override.is_some();
         let reset_style = prev.has_style || rec.inline_style_override.is_some();
+        rec.show_on = rec.explicit_show_on;
+        rec.responsive_rules.clear();
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
 
