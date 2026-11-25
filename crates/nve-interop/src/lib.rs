@@ -13,6 +13,7 @@ pub mod layout;
 pub mod plugin_host;
 pub mod surface;
 pub mod sync_delta;
+pub mod sync_transport;
 
 pub use channel::{
     CHANNEL_ID_AUTH, CHANNEL_ID_LOCALE, CHANNEL_ID_NAVIGATION, CHANNEL_ID_THEME, ChannelId,
@@ -48,6 +49,15 @@ pub use sync_delta::{
     SyncDeltaError, SyncDeltaSession, SyncMetrics, decode_command_op_delta, decode_xor_rle_delta,
     decode_xor_rle_delta_into, encode_command_op_delta, encode_packet, encode_xor_rle_delta,
     encode_xor_rle_delta_into, fnv1a_64, fnv1a_64_pair, write_packet_into,
+};
+pub use sync_transport::{
+    DEFAULT_MAX_WIRE_FRAME_BYTES, DEFAULT_SCHEMA_VERSION, FRAG_SUBHEADER_SIZE,
+    MAX_ALLOWED_WIRE_FRAME_BYTES, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_FRAG_CHUNK,
+    MAX_UDP_SINGLE_PAYLOAD, PairingConfig, PairingMetrics, RejectReason, StreamFraming,
+    TRANSPORT_HEADER_SIZE, TRANSPORT_MAGIC, TRANSPORT_PROTOCOL_VERSION, TcpDeltaClient,
+    TcpDeltaServer, TransportError, TransportMsgKind, UdpDeltaClient, UdpDeltaServer, WsFrame,
+    WsOpcode, compute_ws_accept_key, decode_ws_frame_slice, derive_session_id, derive_token_proof,
+    encode_ws_frame, packetize_udp_datagrams,
 };
 
 use nve_abi::SurfaceId;

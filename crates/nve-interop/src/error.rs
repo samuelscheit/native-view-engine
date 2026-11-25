@@ -29,6 +29,7 @@ pub enum InteropError {
     Serialization(String),
     InvalidIslandSpec(String),
     SyncDelta(String),
+    SyncTransport(String),
     Plugin(String),
 }
 
@@ -57,6 +58,7 @@ impl fmt::Display for InteropError {
             Self::Serialization(msg) => write!(f, "serialization error: {msg}"),
             Self::InvalidIslandSpec(msg) => write!(f, "invalid island spec: {msg}"),
             Self::SyncDelta(msg) => write!(f, "sync delta protocol error: {msg}"),
+            Self::SyncTransport(msg) => write!(f, "sync transport error: {msg}"),
             Self::Plugin(msg) => write!(f, "plugin host error: {msg}"),
         }
     }

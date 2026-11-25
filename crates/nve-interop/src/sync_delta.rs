@@ -952,6 +952,55 @@ impl SyncDeltaSession {
         &self.last_applied_frame
     }
 
+    pub fn max_window(&self) -> usize {
+        self.max_window
+    }
+
+    pub fn last_sent_seq(&self) -> u32 {
+        self.last_sent_seq
+    }
+
+    pub fn last_sent_frame(&self) -> &[u8] {
+        &self.last_sent_frame
+    }
+
+    pub fn reorder_buffer_len(&self) -> usize {
+        self.reorder_buf.len()
+    }
+
+    /// Returns the earliest missing sequence number when out-of-order packets are buffered.
+    pub fn next_missing_seq(&self) -> Option<u32> {
+        if self.reorder_buf.is_empty() {
+            None
+        } else {
+            Some(self.last_applied_seq.wrapping_add(1))
+        }
+    }
+
+    /// Resets receiver sequence tracking (used when re-pairing to a fresh server epoch).
+    pub fn reset_receiver(&mut self) {
+        self.last_applied_seq = 0;
+        self.last_applied_frame.clear();
+        self.reorder_buf.clear();
+    }
+
+    /// Builds an explicit NACK packet requesting `missing_seq`.
+    pub fn build_nack_packet(&self, missing_seq: u32) -> Vec<u8> {
+        encode_packet(
+            PacketKind::Nack,
+            0,
+            0,
+            0,
+            self.last_applied_seq,
+            &missing_seq.to_le_bytes(),
+        )
+    }
+
+    /// Builds an up-to-date cumulative ACK + 64-bit SACK packet.
+    pub fn build_current_ack_packet(&self) -> Vec<u8> {
+        self.build_ack_packet()
+    }
+
     /// Encodes `frame_bytes`, automatically choosing the smallest of `Keyframe`, `XorRleDelta`,
     /// or `CommandOpDelta`, and inserts the packet into the bounded retransmit window.
     pub fn encode_frame(&mut self, frame_bytes: &[u8], now_ms: u64) -> Vec<u8> {
