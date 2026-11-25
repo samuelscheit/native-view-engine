@@ -128,6 +128,18 @@ impl CosmicTextEngine {
 
     /// Measures `text` at logical `font_size` under an optional `max_width` wrapping bound.
     pub fn measure_text(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
+        self.measure_text_with_weight(text, font_size, DEFAULT_FONT_WEIGHT, max_width)
+    }
+
+    /// Measures `text` at logical `font_size` and CSS `font_weight` (`100..=900`) under an optional
+    /// `max_width` wrapping bound.
+    pub fn measure_text_with_weight(
+        &self,
+        text: &str,
+        font_size: f32,
+        font_weight: u16,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
         if text.is_empty() {
             return (0.0, 0.0);
         }
@@ -136,6 +148,7 @@ impl CosmicTextEngine {
         }
 
         let fs = sanitize_font_size(font_size);
+        let weight = sanitize_font_weight(font_weight);
         let lh = line_height_for(fs);
 
         let normalized_max_w = match max_width {
@@ -149,11 +162,11 @@ impl CosmicTextEngine {
 
         let fs_bits = fs.to_bits();
         let mw_bits = normalized_max_w.map_or(u32::MAX, f32::to_bits);
-        let cache_hash = hash_measure_key(text, fs_bits, mw_bits);
+        let cache_hash = hash_measure_key(text, fs_bits, weight, mw_bits);
 
         if let Ok(cache) = self.measure_cache.lock()
             && let Some(entry) = cache.get(&cache_hash)
-            && entry.matches(text, fs_bits, mw_bits)
+            && entry.matches(text, fs_bits, weight, mw_bits)
         {
             return entry.size;
         }
@@ -166,7 +179,7 @@ impl CosmicTextEngine {
             let mut buffer = Buffer::new_empty(Metrics::new(fs, lh));
             buffer.set_wrap(Wrap::WordOrGlyph);
             buffer.set_size(normalized_max_w, None);
-            let attrs = Self::attrs_for_weight(DEFAULT_FONT_WEIGHT);
+            let attrs = Self::attrs_for_weight(weight);
             buffer.set_text(text, &attrs, Shaping::Advanced, None);
             buffer.shape_until_scroll(&mut font_system, false);
 
@@ -183,7 +196,9 @@ impl CosmicTextEngine {
                 let explicit_lines = text.split('\n').count().max(1) as f32;
                 (1.0, (explicit_lines * lh).ceil())
             } else {
-                let ceiled_w = max_line_w.ceil().max(1.0);
+                // Add a 1px subpixel/hinting margin so subsequent shaping against `rect.width`
+                // never wraps the final word or clips right-side glyph overhang.
+                let ceiled_w = (max_line_w + 1.0).ceil().max(1.0);
                 let final_w = match normalized_max_w {
                     Some(mw) => ceiled_w.min(mw),
                     None => ceiled_w,
@@ -202,6 +217,7 @@ impl CosmicTextEngine {
                 MeasureCacheEntry {
                     text: text.to_owned(),
                     font_size_bits: fs_bits,
+                    font_weight: weight,
                     max_width_bits: mw_bits,
                     size,
                 },
@@ -543,5 +559,15 @@ impl CosmicTextEngine {
 impl TextMeasurer for CosmicTextEngine {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
         self.measure_text(text, font_size, max_width)
+    }
+
+    fn measure_with_weight(
+        &self,
+        text: &str,
+        font_size: f32,
+        font_weight: u16,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
+        self.measure_text_with_weight(text, font_size, font_weight, max_width)
     }
 }

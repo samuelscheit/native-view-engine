@@ -106,10 +106,16 @@ fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 #[inline]
-pub(crate) fn hash_measure_key(text: &str, font_size_bits: u32, max_width_bits: u32) -> u64 {
+pub(crate) fn hash_measure_key(
+    text: &str,
+    font_size_bits: u32,
+    font_weight: u16,
+    max_width_bits: u32,
+) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     h = fnv1a_step(h, text.as_bytes());
     h = fnv1a_step(h, &[0xFF]);
+    h = fnv1a_step(h, &font_weight.to_le_bytes());
     h = fnv1a_step(h, &font_size_bits.to_le_bytes());
     h = fnv1a_step(h, &max_width_bits.to_le_bytes());
     h
@@ -140,14 +146,22 @@ pub(crate) fn hash_shaped_key(
 pub(crate) struct MeasureCacheEntry {
     pub(crate) text: String,
     pub(crate) font_size_bits: u32,
+    pub(crate) font_weight: u16,
     pub(crate) max_width_bits: u32,
     pub(crate) size: (f32, f32),
 }
 
 impl MeasureCacheEntry {
     #[inline]
-    pub(crate) fn matches(&self, text: &str, font_size_bits: u32, max_width_bits: u32) -> bool {
+    pub(crate) fn matches(
+        &self,
+        text: &str,
+        font_size_bits: u32,
+        font_weight: u16,
+        max_width_bits: u32,
+    ) -> bool {
         self.font_size_bits == font_size_bits
+            && self.font_weight == font_weight
             && self.max_width_bits == max_width_bits
             && self.text == text
     }

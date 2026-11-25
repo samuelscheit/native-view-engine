@@ -17,6 +17,19 @@ pub trait TextMeasurer: Send + Sync {
     ///
     /// Returns `(width, height)` in logical points.
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32);
+
+    /// Measures `text` at `font_size` logical points and CSS `font_weight` (`100..=900`, default `400`).
+    ///
+    /// Defaults to [`TextMeasurer::measure`] for measurers that are weight-invariant.
+    fn measure_with_weight(
+        &self,
+        text: &str,
+        font_size: f32,
+        _font_weight: u16,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
+        self.measure(text, font_size, max_width)
+    }
 }
 
 /// Default deterministic text measurer matching NVE's cross-platform heuristic
@@ -93,6 +106,16 @@ impl<T: TextMeasurer + ?Sized> TextMeasurer for Arc<T> {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
         (**self).measure(text, font_size, max_width)
     }
+
+    fn measure_with_weight(
+        &self,
+        text: &str,
+        font_size: f32,
+        font_weight: u16,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
+        (**self).measure_with_weight(text, font_size, font_weight, max_width)
+    }
 }
 
 /// Identifies built-in layout engines shipped with NVE.
@@ -131,6 +154,9 @@ pub trait LayoutEngine: Send {
 
     /// Applies visual style properties (`StyleProps`) relevant to layout (e.g. `font_size`).
     fn set_style(&mut self, id: NodeId, style: &StyleProps);
+
+    /// Applies non-ABI raw style/layout hints relevant to layout (e.g. `flex-wrap`, `font-weight`).
+    fn set_raw_layout_prop(&mut self, _id: NodeId, _key: &str, _value: &str) {}
 
     /// Updates a node's text payload used for intrinsic text measurement.
     fn set_text(&mut self, id: NodeId, text: &str);
@@ -173,6 +199,10 @@ impl<L: LayoutEngine + ?Sized> LayoutEngine for Box<L> {
 
     fn set_style(&mut self, id: NodeId, style: &StyleProps) {
         (**self).set_style(id, style);
+    }
+
+    fn set_raw_layout_prop(&mut self, id: NodeId, key: &str, value: &str) {
+        (**self).set_raw_layout_prop(id, key, value);
     }
 
     fn set_text(&mut self, id: NodeId, text: &str) {

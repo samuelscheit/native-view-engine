@@ -39,6 +39,7 @@ pub fn canonical_raw_style_key(key: &str) -> Option<&'static str> {
         "text-align" | "textAlign" => Some("text-align"),
         "box-shadow" | "boxShadow" => Some("box-shadow"),
         "overflow" => Some("overflow"),
+        "flex-wrap" | "flexWrap" => Some("flex-wrap"),
         _ => None,
     }
 }

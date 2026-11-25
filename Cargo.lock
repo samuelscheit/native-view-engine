@@ -1773,6 +1773,7 @@ dependencies = [
  "nve-engine",
  "nve-interop",
  "nve-layout-yoga",
+ "nve-ui",
  "serde",
  "serde_json",
 ]

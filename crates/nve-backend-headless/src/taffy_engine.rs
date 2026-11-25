@@ -18,14 +18,43 @@ struct TaffyNodeContext {
     kind: ComponentKind,
     text: Option<String>,
     font_size: f32,
+    font_weight: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TaffySlot {
     taffy_id: tf::NodeId,
     layout: LayoutProps,
+    flex_wrap: tf::FlexWrap,
     computed_rect: LayoutRect,
     rect_gen: u64,
+}
+
+fn parse_raw_font_weight(raw: &str) -> u16 {
+    let trimmed = raw.trim();
+    if let Ok(n) = trimmed.parse::<u16>() {
+        return n.clamp(100, 900);
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "thin" => 100,
+        "extralight" | "ultralight" => 200,
+        "light" => 300,
+        "normal" | "regular" => 400,
+        "medium" => 500,
+        "semibold" | "demibold" => 600,
+        "bold" => 700,
+        "extrabold" | "ultrabold" => 800,
+        "black" | "heavy" => 900,
+        _ => 400,
+    }
+}
+
+fn parse_raw_flex_wrap(raw: &str) -> tf::FlexWrap {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "wrap" => tf::FlexWrap::Wrap,
+        "wrap-reverse" => tf::FlexWrap::WrapReverse,
+        _ => tf::FlexWrap::NoWrap,
+    }
 }
 
 /// Pure-Rust `taffy` Flexbox implementation of [`LayoutEngine`].
@@ -79,6 +108,7 @@ impl TaffyLayoutEngine {
         };
         let tid = slot.taffy_id;
         let mut style = to_taffy_style(&slot.layout);
+        style.flex_wrap = slot.flex_wrap;
         if let Some((w, h)) = override_size {
             style.size = tf::Size {
                 width: tf::Dimension::length(w),
@@ -148,6 +178,7 @@ impl LayoutEngine for TaffyLayoutEngine {
             kind,
             text: None,
             font_size: StyleProps::default().font_size,
+            font_weight: 400,
         };
         let tid = self
             .taffy
@@ -158,6 +189,7 @@ impl LayoutEngine for TaffyLayoutEngine {
             TaffySlot {
                 taffy_id: tid,
                 layout: default_layout,
+                flex_wrap: tf::FlexWrap::NoWrap,
                 computed_rect: LayoutRect::default(),
                 rect_gen: 0,
             },
@@ -182,10 +214,13 @@ impl LayoutEngine for TaffyLayoutEngine {
         }
         slot.layout = *layout;
         let tid = slot.taffy_id;
+        let flex_wrap = slot.flex_wrap;
         if self.last_root_viewport.is_some_and(|(rid, _, _)| rid == id) {
             self.last_root_viewport = None;
         }
-        let _ = self.taffy.set_style(tid, to_taffy_style(layout));
+        let mut style = to_taffy_style(layout);
+        style.flex_wrap = flex_wrap;
+        let _ = self.taffy.set_style(tid, style);
     }
 
     fn set_style(&mut self, id: NodeId, style: &StyleProps) {
@@ -205,6 +240,37 @@ impl LayoutEngine for TaffyLayoutEngine {
             if ctx.kind == ComponentKind::Text {
                 let _ = self.taffy.mark_dirty(tid);
             }
+        }
+    }
+
+    fn set_raw_layout_prop(&mut self, id: NodeId, key: &str, value: &str) {
+        match key {
+            "flex-wrap" | "flexWrap" => {
+                let wrap = parse_raw_flex_wrap(value);
+                let Some(slot) = self.slots.get_mut(id) else {
+                    return;
+                };
+                if slot.flex_wrap != wrap {
+                    slot.flex_wrap = wrap;
+                    self.sync_node_style(id, None);
+                }
+            }
+            "font-weight" | "fontWeight" => {
+                let weight = parse_raw_font_weight(value);
+                let Some(slot) = self.slots.get(id) else {
+                    return;
+                };
+                let tid = slot.taffy_id;
+                if let Some(ctx) = self.taffy.get_node_context_mut(tid)
+                    && ctx.font_weight != weight
+                {
+                    ctx.font_weight = weight;
+                    if ctx.kind == ComponentKind::Text {
+                        let _ = self.taffy.mark_dirty(tid);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -304,8 +370,12 @@ impl LayoutEngine for TaffyLayoutEngine {
                             tf::AvailableSpace::MinContent => Some(0.0),
                             tf::AvailableSpace::MaxContent => None,
                         });
-                        let (measured_w, measured_h) =
-                            measurer.measure(text, ctx.font_size, max_width);
+                        let (measured_w, measured_h) = measurer.measure_with_weight(
+                            text,
+                            ctx.font_size,
+                            ctx.font_weight,
+                            max_width,
+                        );
                         let safe_w = if measured_w.is_finite() && measured_w >= 0.0 {
                             measured_w
                         } else {
