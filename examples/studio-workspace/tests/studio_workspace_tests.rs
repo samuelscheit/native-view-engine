@@ -493,12 +493,13 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     assert!(host.render_ascii_tree().contains("Snapshot 4 / 4"));
 
     // Live Tier-2 reload to generation 2: every task, theme, X-Ray, and snapshot survives!
-    let mut inst2 = inst.reload(&dylib_path, 1).expect("reload gen 2");
-    assert_eq!(inst2.generation(), 2);
+    let outcome = inst.reload(&dylib_path).expect("reload gen 2");
+    assert_eq!(outcome.generation, 2);
+    assert_eq!(inst.generation(), 2);
 
     let mut host2 = HeadlessBackend::new();
     host2.set_viewport(1, vp);
-    let f5 = inst2.render(5);
+    let f5 = inst.render(5);
     host2.submit_frame(&f5).unwrap();
     let tree2 = host2.render_ascii_tree();
     assert!(tree2.contains("AET-105"), "lost new task after reload:\n{tree2}");
