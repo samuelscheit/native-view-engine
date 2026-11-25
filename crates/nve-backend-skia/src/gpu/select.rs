@@ -67,7 +67,13 @@ where
     let candidates =
         GpuBackendKind::selection_priority(config.preferred_backend, config.allow_cpu_fallback);
     let mut fallback_reasons: Vec<String> = Vec::new();
-    let is_window = matches!(mode, SelectionMode::WindowSwapchain(_));
+    let is_window = match mode {
+        SelectionMode::WindowSwapchain(w) => {
+            let _ = w;
+            true
+        }
+        _ => false,
+    };
 
     for candidate in candidates {
         match candidate {
