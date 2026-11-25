@@ -4,6 +4,11 @@
 //! (such as `border-width`, `border-color`, `background-color`, `border-radius`)
 //! so incremental `CommandBuffer` style updates cleanly reset prior values.
 
+use std::borrow::Cow;
+
+use nve_interop::ColorScheme;
+use nve_ui::{RadiiScale, SpacingScale, TypographyScale, UiDensity, UiPalette, UiTheme};
+
 use crate::state::{DensityMode, StudioConfig};
 
 pub const CANVAS_BG: &str = "#0b1120";
@@ -99,5 +104,78 @@ pub fn control_border(xray: bool, active: bool, accent_hex: &'static str) -> (u3
         (1, accent_hex)
     } else {
         (1, BORDER_DEFAULT)
+    }
+}
+
+/// Flex override applied to `nve-ui` `Button`, `TabTrigger`, and `Badge` containers so their
+/// centered SemiBold (`font-weight: 600`) text spans the full control width without wrapping.
+pub const STRETCH_COL: &str = "flex-direction: column; justify-content: center; align-items: stretch;";
+
+/// Computes a SemiBold-safe `min-width` in logical pixels for a compact `nve-ui::Badge` label.
+pub fn badge_min_w(label: &str) -> u32 {
+    let chars = label.chars().count() as u32;
+    (chars.saturating_mul(6).saturating_add(16)).max(24)
+}
+
+/// Builds a live [`nve_ui::UiTheme`] synchronized with Studio's active Accent, Corner Radius,
+/// and Density tokens so every shared `nve-ui` component updates reactively on self-edits.
+pub fn studio_ui_theme(studio: &StudioConfig) -> UiTheme {
+    let m = LayoutMetrics::from_studio(studio);
+    let accent_hex = studio.accent.hex();
+    let (density, spacing) = match studio.density {
+        DensityMode::Normal => (
+            UiDensity::Normal,
+            SpacingScale {
+                xs: 3.0,
+                sm: 6.0,
+                md: 8.0,
+                lg: 11.0,
+                xl: 12.0,
+            },
+        ),
+        DensityMode::Compact => (
+            UiDensity::Compact,
+            SpacingScale {
+                xs: 2.0,
+                sm: 4.0,
+                md: 6.0,
+                lg: 8.0,
+                xl: 8.0,
+            },
+        ),
+    };
+    UiTheme {
+        color_scheme: ColorScheme::Dark,
+        palette: UiPalette {
+            surface: Cow::Borrowed(PANEL_BG),
+            surface_elevated: Cow::Borrowed(CARD_BG),
+            surface_subtle: Cow::Borrowed(CARD_ALT_BG),
+            text_primary: Cow::Borrowed(TEXT_PRIMARY),
+            text_secondary: Cow::Borrowed(TEXT_SECONDARY),
+            text_muted: Cow::Borrowed(TEXT_MUTED),
+            border: Cow::Borrowed(BORDER_DEFAULT),
+            border_focus: Cow::Borrowed(accent_hex),
+            accent: Cow::Borrowed(accent_hex),
+            accent_fg: Cow::Borrowed(studio.accent.on_accent_fg()),
+            danger: Cow::Borrowed("#ef4444"),
+            danger_fg: Cow::Borrowed("#fca5a5"),
+            success: Cow::Borrowed("#22c55e"),
+            warning: Cow::Borrowed("#f59e0b"),
+        },
+        spacing,
+        radii: RadiiScale {
+            sm: 4.0,
+            md: m.button_radius as f32,
+            lg: m.card_radius as f32,
+            full: m.pill_radius as f32,
+        },
+        typography: TypographyScale {
+            xs: 9.0,
+            sm: 10.0,
+            md: 11.0,
+            lg: 12.0,
+            xl: 14.0,
+        },
+        density,
     }
 }

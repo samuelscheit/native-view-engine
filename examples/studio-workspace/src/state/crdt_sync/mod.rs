@@ -5,9 +5,22 @@
 //! - [`ChatMessage`]s (`Engineering` & `Design`): [`OrSet`] membership + [`LwwRegister`] fields + [`PnCounter`] reactions
 //! - [`WorkspaceDoc`] / [`DocBlock`]: [`OrSet`] docs + [`RgaList`] block ordering + per-block [`LwwRegister`]s for kind/text/checked
 
+mod live_ui;
+pub mod mesh_transport;
 mod mutations;
 mod project;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tcp_transport;
+pub mod transport;
 mod wire;
+
+pub use transport::{
+    CRDT_DIGEST_MAGIC, CRDT_DIGEST_MIN_LEN, CRDT_DIGEST_VERSION, CrdtPeerNode, CrdtPeerTransport,
+    CrdtPumpReport, CrdtSyncMetrics, CrdtTransportError, CrdtWireFrame, InMemoryMeshHub,
+    InMemoryMeshTransport, MeshFaultConfig, TOPIC_CRDT_NVC1, version_vector_has_unseen_ops,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use transport::{LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport};
 
 use std::collections::BTreeMap;
 

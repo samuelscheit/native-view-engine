@@ -1,18 +1,22 @@
-//! Notion-class Block-Doc Editor view (`ActiveView::Docs`).
+//! Notion-class Block-Doc Editor view (`ActiveView::Docs`) built on shared `nve-ui` components
+//! (`TabsRoot`, `TabList`, `TabTrigger`, `Card`, `Button`, `Input`, `Separator`).
 //!
 //! Supports document switching, typed blocks (`H1`, `H2`, `Paragraph`, `Checklist`, `Code`,
-//! `Callout`), interactive checklist toggles, inline `TextInput` block editing (`onchange` +
-//! `onsubmit`), block creation, kind cycling, up/down reordering, deletion, and live Markdown
-//! export (`WorkspaceDoc::to_markdown`), with every mutation tracked in Time-Travel history.
+//! `Callout`), interactive checklist toggles, inline `Input` block editing, block creation,
+//! kind cycling, up/down reordering, deletion, and live Markdown export.
 
 use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
+use nve_ui::{
+    Button, ButtonSize, ButtonVariant, Card, CardVariant, Input, Separator, TabList, TabTrigger,
+    TabsRoot,
+};
 
 use crate::state::{DocBlockKind, WorkspaceSnapshot, WorkspaceState};
 use crate::theme::{
-    card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CARD_ALT_BG, CARD_BG,
-    CONTROL_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    badge_min_w, card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CARD_BG,
+    CONTROL_BG, PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 use crate::ui::mutate_state;
 
@@ -60,6 +64,7 @@ pub(crate) fn render_docs_view(
         .iter()
         .find(|d| d.id == current.active_doc_id)
         .or_else(|| current.docs.first());
+    let active_doc_val = active_doc.map(|d| d.id.to_string()).unwrap_or_default();
 
     let (done_checks, total_checks) = active_doc
         .map(|d| d.checklist_progress())
@@ -81,17 +86,13 @@ pub(crate) fn render_docs_view(
     } else {
         CONTROL_BG
     };
-    let md_fg = if current.doc_markdown_preview_open {
-        accent_hex
-    } else {
-        TEXT_SECONDARY
-    };
     let md_btn_lbl = if current.doc_markdown_preview_open {
         "Hide MD"
     } else {
         "Export MD"
     };
 
+    let s_sel_tab = Arc::clone(store);
     let s_new_doc = Arc::clone(store);
     let s_export_md = Arc::clone(store);
     let s_new_kind = Arc::clone(store);
@@ -102,38 +103,89 @@ pub(crate) fn render_docs_view(
     let composer_kind_lbl = current.doc_new_block_kind.label();
     let tab_bar_dir = if is_mobile { "column" } else { "row" };
 
+    let header_card_style = format!(
+        "width: 100%; flex-shrink: 0; padding: 8px; gap: 6px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+        m.button_radius
+    );
+    let new_doc_btn_style = format!(
+        "min-width: {}px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
+        badge_min_w("+ Doc"),
+        m.pill_radius
+    );
+    let md_btn_style = format!(
+        "min-width: {}px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {md_bg}; border-radius: {}px; border-width: {md_bw}px; border-color: {md_bc};",
+        badge_min_w(md_btn_lbl),
+        m.pill_radius
+    );
+    let md_card_style = format!(
+        "width: 100%; flex-shrink: 0; padding: 8px; gap: 4px; background-color: #090f1d; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
+        m.button_radius
+    );
+    let composer_card_style = format!(
+        "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 5px; padding: 8px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+        m.button_radius
+    );
+    let kind_cycle_style = format!(
+        "width: 54px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: {}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+        m.button_radius
+    );
+    let add_block_btn_style = format!(
+        "width: 58px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; border-radius: {}px;",
+        m.button_radius
+    );
+
     rsx! {
-        // 1. Document Switcher + Action Header
-        view {
-            test_id: "docs-header",
-            style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 8px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+        // 1. Document Switcher Tabs + Action Header (`nve-ui` Card + TabsRoot/TabList/TabTrigger + Button)
+        Card {
+            variant: CardVariant::Outlined,
+            test_id: Some("docs-header".into()),
+            padding: Some(8.0),
+            gap: Some(6.0),
+            style: Some(header_card_style),
             view {
                 style: "width: 100%; flex-shrink: 0; flex-direction: {tab_bar_dir}; justify-content: space-between; align-items: center; gap: 6px; border-width: {row_bw}px; border-color: {row_bc};",
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 5px; flex: 1;",
-                    for doc in current.docs.iter() {
-                        {
-                            let doc_id = doc.id;
-                            let is_sel = active_doc.is_some_and(|a| a.id == doc_id);
-                            let (bw, bc) = control_border(xray, is_sel, accent_hex);
-                            let bg = if is_sel { accent_tint } else { CONTROL_BG };
-                            let fg = if is_sel { accent_hex } else { TEXT_SECONDARY };
-                            let tab_tid = format!("doc-tab-{doc_id}");
-                            let short_title = if doc.title.len() > 22 && is_mobile {
-                                format!("{}...", &doc.title[..19])
-                            } else if doc.title.len() > 26 {
-                                format!("{}...", &doc.title[..23])
-                            } else {
-                                doc.title.clone()
-                            };
-                            let s_sel = Arc::clone(store);
-                            rsx! {
-                                pressable {
-                                    key: "doc-tab-{doc_id}",
-                                    test_id: "{tab_tid}",
-                                    style: "height: 24px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 8px; background-color: {bg}; border-radius: {m.pill_radius}px; border-width: {bw}px; border-color: {bc};",
-                                    onpress: move |_| mutate_state(&s_sel, version, |st| st.select_doc(doc_id)),
-                                    text { style: "color: {fg}; font-size: 10px;", "{short_title}" }
+                    style: "flex: 1; width: 100%;",
+                    TabsRoot {
+                        value: Some(active_doc_val),
+                        id_prefix: Some("docs-tabs".into()),
+                        style: Some("width: 100%; gap: 0px;".into()),
+                        on_change: move |next: String| {
+                            if let Ok(doc_id) = next.parse::<u32>() {
+                                mutate_state(&s_sel_tab, version, |st| st.select_doc(doc_id));
+                            }
+                        },
+                        TabList {
+                            accessibility_label: Some("Workspace documents".into()),
+                            style: Some("flex-direction: row; align-items: center; gap: 5px; padding: 0px; background-color: transparent; border-width: 0px; border-color: transparent; border-radius: 0px;".into()),
+                            for doc in current.docs.iter() {
+                                {
+                                    let doc_id = doc.id;
+                                    let is_sel = active_doc.is_some_and(|a| a.id == doc_id);
+                                    let (bw, bc) = control_border(xray, is_sel, accent_hex);
+                                    let bg = if is_sel { accent_tint } else { CONTROL_BG };
+                                    let tab_tid = format!("doc-tab-{doc_id}");
+                                    let short_title = if doc.title.len() > 20 && is_mobile {
+                                        format!("{}...", &doc.title[..17])
+                                    } else if doc.title.len() > 26 {
+                                        format!("{}...", &doc.title[..23])
+                                    } else {
+                                        doc.title.clone()
+                                    };
+                                    let trig_style = format!(
+                                        "min-width: {}px; height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
+                                        badge_min_w(&short_title),
+                                        m.pill_radius
+                                    );
+                                    rsx! {
+                                        TabTrigger {
+                                            key: "doc-tab-{doc_id}",
+                                            value: doc_id.to_string(),
+                                            test_id: Some(tab_tid),
+                                            style: Some(trig_style),
+                                            "{short_title}"
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -141,30 +193,38 @@ pub(crate) fn render_docs_view(
                 }
                 view {
                     style: "flex-direction: row; align-items: center; gap: 5px; flex-shrink: 0;",
-                    pressable {
-                        test_id: "doc-new-btn",
-                        style: "height: 24px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 7px; background-color: {accent_tint}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {accent_hex};",
-                        onpress: move |_| mutate_state(&s_new_doc, version, |st| {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Sm,
+                        test_id: Some("doc-new-btn".into()),
+                        style: Some(new_doc_btn_style),
+                        on_press: move |_| mutate_state(&s_new_doc, version, |st| {
                             let _ = st.create_new_doc();
                         }),
-                        text { style: "color: {accent_hex}; font-size: 10px;", "+ Doc" }
+                        "+ Doc"
                     }
-                    pressable {
-                        test_id: "doc-export-md",
-                        style: "height: 24px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 7px; background-color: {md_bg}; border-radius: {m.pill_radius}px; border-width: {md_bw}px; border-color: {md_bc};",
-                        onpress: move |_| mutate_state(&s_export_md, version, |st| st.toggle_doc_markdown_preview()),
-                        text { style: "color: {md_fg}; font-size: 10px;", "{md_btn_lbl}" }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Sm,
+                        test_id: Some("doc-export-md".into()),
+                        style: Some(md_btn_style),
+                        on_press: move |_| mutate_state(&s_export_md, version, |st| st.toggle_doc_markdown_preview()),
+                        "{md_btn_lbl}"
                     }
                 }
             }
+            Separator {}
             text { style: "color: {TEXT_MUTED}; font-size: 10px;", "{meta_summary}" }
         }
 
         // 2. Live Exported Markdown Preview Panel (when toggled ON)
         if current.doc_markdown_preview_open {
-            view {
-                test_id: "doc-markdown-preview",
-                style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 4px; padding: 8px; background-color: #090f1d; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
+            Card {
+                variant: CardVariant::Outlined,
+                test_id: Some("doc-markdown-preview".into()),
+                padding: Some(8.0),
+                gap: Some(4.0),
+                style: Some(md_card_style),
                 text { style: "color: {accent_hex}; font-size: 9px;", "MARKDOWN EXPORT" }
                 text { style: "color: #cbd5e1; font-size: 10px;", "{md_preview_text}" }
             }
@@ -200,6 +260,34 @@ pub(crate) fn render_docs_view(
                         let up_op = if can_up { "1.0" } else { "0.35" };
                         let down_op = if can_down { "1.0" } else { "0.35" };
 
+                        let blk_card_style = format!(
+                            "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
+                            m.card_pad, m.card_gap, m.card_radius
+                        );
+                        let kind_btn_style = format!(
+                            "min-width: {}px; height: 18px; min-height: 18px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: {}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                            badge_min_w(kind_lbl),
+                            m.pill_radius
+                        );
+                        let up_btn_style = format!(
+                            "width: 22px; height: 18px; min-height: 18px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 0px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 1px; border-color: {BORDER_DEFAULT}; opacity: {up_op};"
+                        );
+                        let down_btn_style = format!(
+                            "width: 22px; height: 18px; min-height: 18px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 0px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 1px; border-color: {BORDER_DEFAULT}; opacity: {down_op};"
+                        );
+                        let edit_btn_style = format!(
+                            "min-width: 34px; height: 18px; min-height: 18px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 1px; border-color: {BORDER_DEFAULT};"
+                        );
+                        let del_btn_style = format!("width: 22px; height: 18px; min-height: 18px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 0px; padding-vertical: 0px; background-color: #450a0a; border-radius: 4px; border-width: 1px; border-color: #ef4444;");
+                        let save_btn_style = format!(
+                            "width: 46px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; border-radius: {}px;",
+                            m.button_radius
+                        );
+                        let cancel_btn_style = format!(
+                            "width: 50px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: {}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                            m.button_radius
+                        );
+
                         let s_kind = Arc::clone(store);
                         let s_up = Arc::clone(store);
                         let s_down = Arc::clone(store);
@@ -212,112 +300,134 @@ pub(crate) fn render_docs_view(
                         let s_cancel = Arc::clone(store);
 
                         rsx! {
-                            view {
+                            Card {
                                 key: "doc-blk-{bid}",
-                                test_id: "{block_tid}",
-                                style: "width: 100%; flex-shrink: 0; flex-direction: column; padding: {m.card_pad}px; gap: {m.card_gap}px; background-color: {bg}; border-radius: {m.card_radius}px; border-width: {bw}px; border-color: {bc};",
+                                variant: CardVariant::Elevated,
+                                test_id: Some(block_tid),
+                                padding: Some(m.card_pad as f32),
+                                gap: Some(m.card_gap as f32),
+                                style: Some(blk_card_style),
 
                                 // Top micro-toolbar: Kind pill + Reorder + Edit + Delete
                                 view {
                                     style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; gap: 4px;",
-                                    pressable {
-                                        test_id: "{kind_tid}",
-                                        style: "height: 18px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 6px; background-color: {CONTROL_BG}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                        onpress: move |_| mutate_state(&s_kind, version, |st| {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        size: ButtonSize::Sm,
+                                        test_id: Some(kind_tid),
+                                        style: Some(kind_btn_style),
+                                        on_press: move |_| mutate_state(&s_kind, version, |st| {
                                             let _ = st.cycle_doc_block_kind(bid);
                                         }),
-                                        text { style: "color: {accent_hex}; font-size: 9px;", "{kind_lbl}" }
+                                        "{kind_lbl}"
                                     }
                                     view {
                                         style: "flex-direction: row; align-items: center; gap: 4px; flex-shrink: 0;",
-                                        pressable {
-                                            test_id: "{up_tid}",
-                                            style: "width: 22px; height: 18px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 1px; border-color: {BORDER_DEFAULT}; opacity: {up_op};",
-                                            onpress: move |_| mutate_state(&s_up, version, |st| {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            size: ButtonSize::Sm,
+                                            test_id: Some(up_tid),
+                                            style: Some(up_btn_style),
+                                            on_press: move |_| mutate_state(&s_up, version, |st| {
                                                 let _ = st.move_doc_block(bid, -1);
                                             }),
-                                            text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "^" }
+                                            "^"
                                         }
-                                        pressable {
-                                            test_id: "{down_tid}",
-                                            style: "width: 22px; height: 18px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 1px; border-color: {BORDER_DEFAULT}; opacity: {down_op};",
-                                            onpress: move |_| mutate_state(&s_down, version, |st| {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            size: ButtonSize::Sm,
+                                            test_id: Some(down_tid),
+                                            style: Some(down_btn_style),
+                                            on_press: move |_| mutate_state(&s_down, version, |st| {
                                                 let _ = st.move_doc_block(bid, 1);
                                             }),
-                                            text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "v" }
+                                            "v"
                                         }
-                                        pressable {
-                                            test_id: "{edit_tid}",
-                                            style: "height: 18px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 6px; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                            onpress: move |_| mutate_state(&s_edit, version, |st| {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            size: ButtonSize::Sm,
+                                            test_id: Some(edit_tid),
+                                            style: Some(edit_btn_style),
+                                            on_press: move |_| mutate_state(&s_edit, version, |st| {
                                                 let _ = st.begin_edit_doc_block(bid);
                                             }),
-                                            text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "Edit" }
+                                            "Edit"
                                         }
-                                        pressable {
-                                            test_id: "{del_tid}",
-                                            style: "width: 22px; height: 18px; flex-shrink: 0; justify-content: center; align-items: center; background-color: #450a0a; border-radius: 4px; border-width: 1px; border-color: #ef4444;",
-                                            onpress: move |_| mutate_state(&s_del, version, |st| {
+                                        Button {
+                                            variant: ButtonVariant::Destructive,
+                                            size: ButtonSize::Sm,
+                                            test_id: Some(del_tid),
+                                            style: Some(del_btn_style),
+                                            on_press: move |_| mutate_state(&s_del, version, |st| {
                                                 let _ = st.delete_doc_block(bid);
                                             }),
-                                            text { style: "color: #fca5a5; font-size: 9px;", "x" }
+                                            "x"
                                         }
                                     }
                                 }
 
-                                // Block Content or Inline TextInput Editor
+                                // Block Content or Inline Input Editor
                                 if is_editing {
                                     view {
                                         style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 5px;",
-                                        textinput {
-                                            test_id: "{input_tid}",
-                                            placeholder: "Edit block text...",
-                                            value: "{current.doc_edit_draft}",
-                                            multiline: false,
-                                            accessibility_label: "Edit document block text",
-                                            style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {CARD_ALT_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
-                                            onchange: move |ev| {
-                                                let txt = ev.data().value.clone();
-                                                mutate_state(&s_inp, version, |st| st.set_doc_edit_draft(txt));
-                                            },
-                                            onsubmit: move |_| {
-                                                mutate_state(&s_sub, version, |st| {
-                                                    let _ = st.commit_doc_block_edit();
-                                                });
-                                            },
+                                        view {
+                                            style: "flex: 1;",
+                                            Input {
+                                                test_id: Some(input_tid),
+                                                placeholder: Some("Edit block text...".into()),
+                                                value: current.doc_edit_draft.clone(),
+                                                accessibility_label: Some("Edit document block text".into()),
+                                                on_change: move |txt: String| {
+                                                    mutate_state(&s_inp, version, |st| st.set_doc_edit_draft(txt));
+                                                },
+                                                on_submit: move |_| {
+                                                    mutate_state(&s_sub, version, |st| {
+                                                        let _ = st.commit_doc_block_edit();
+                                                    });
+                                                },
+                                            }
                                         }
-                                        pressable {
-                                            test_id: "{save_tid}",
-                                            style: "width: 42px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_hex}; border-radius: {m.button_radius}px;",
-                                            onpress: move |_| mutate_state(&s_save, version, |st| {
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            size: ButtonSize::Sm,
+                                            test_id: Some(save_tid),
+                                            style: Some(save_btn_style),
+                                            on_press: move |_| mutate_state(&s_save, version, |st| {
                                                 let _ = st.commit_doc_block_edit();
                                             }),
-                                            text { style: "color: #0b1120; font-size: 10px;", "Save" }
+                                            "Save"
                                         }
-                                        pressable {
-                                            test_id: "{cancel_tid}",
-                                            style: "width: 44px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                            onpress: move |_| mutate_state(&s_cancel, version, |st| st.cancel_edit_doc_block()),
-                                            text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "Cancel" }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            size: ButtonSize::Sm,
+                                            test_id: Some(cancel_tid),
+                                            style: Some(cancel_btn_style),
+                                            on_press: move |_| mutate_state(&s_cancel, version, |st| st.cancel_edit_doc_block()),
+                                            "Cancel"
                                         }
                                     }
                                 } else if let DocBlockKind::Checklist { checked } = block.kind {
                                     {
                                         let chk_lbl = if checked { "[x]" } else { "[ ]" };
                                         let chk_bg = if checked { "#052e16" } else { CONTROL_BG };
-                                        let chk_fg = if checked { "#86efac" } else { TEXT_SECONDARY };
                                         let chk_bc = if checked { "#22c55e" } else { BORDER_DEFAULT };
+                                        let chk_btn_style = format!(
+                                            "width: 30px; height: 22px; min-height: 22px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 0px; padding-vertical: 0px; background-color: {chk_bg}; border-radius: {}px; border-width: 1px; border-color: {chk_bc};",
+                                            m.pill_radius
+                                        );
                                         rsx! {
                                             view {
                                                 style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 8px;",
-                                                pressable {
-                                                    test_id: "{check_tid}",
-                                                    accessibility_label: "Toggle checklist item",
-                                                    style: "width: 28px; height: 22px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {chk_bg}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {chk_bc};",
-                                                    onpress: move |_| mutate_state(&s_check, version, |st| {
+                                                Button {
+                                                    variant: ButtonVariant::Secondary,
+                                                    size: ButtonSize::Sm,
+                                                    test_id: Some(check_tid),
+                                                    accessibility_label: Some("Toggle checklist item".into()),
+                                                    style: Some(chk_btn_style),
+                                                    on_press: move |_| mutate_state(&s_check, version, |st| {
                                                         let _ = st.toggle_doc_checklist(bid);
                                                     }),
-                                                    text { style: "color: {chk_fg}; font-size: 10px;", "{chk_lbl}" }
+                                                    "{chk_lbl}"
                                                 }
                                                 text { style: "flex: 1; color: {fg}; font-size: {font_sz}px;", "{block.text}" }
                                             }
@@ -333,40 +443,47 @@ pub(crate) fn render_docs_view(
             }
         }
 
-        // 4. Add-Block Composer Bar (real TextInput + Kind cycler)
-        view {
-            test_id: "docs-composer",
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 5px; padding: 8px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-            pressable {
-                test_id: "doc-new-block-kind",
-                style: "width: 50px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                onpress: move |_| mutate_state(&s_new_kind, version, |st| st.cycle_doc_new_block_kind()),
-                text { style: "color: {accent_hex}; font-size: 9px;", "{composer_kind_lbl}" }
+        // 4. Add-Block Composer Bar (`nve-ui` Card + Button + Input)
+        Card {
+            variant: CardVariant::Outlined,
+            test_id: Some("docs-composer".into()),
+            padding: Some(8.0),
+            gap: Some(5.0),
+            style: Some(composer_card_style),
+            Button {
+                variant: ButtonVariant::Secondary,
+                size: ButtonSize::Sm,
+                test_id: Some("doc-new-block-kind".into()),
+                style: Some(kind_cycle_style),
+                on_press: move |_| mutate_state(&s_new_kind, version, |st| st.cycle_doc_new_block_kind()),
+                "{composer_kind_lbl}"
             }
-            textinput {
-                test_id: "doc-new-block-input",
-                placeholder: "Add block text (Enter to append)...",
-                value: "{current.doc_new_block_draft}",
-                multiline: false,
-                accessibility_label: "New document block text",
-                style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {CARD_ALT_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                onchange: move |ev| {
-                    let txt = ev.data().value.clone();
-                    mutate_state(&s_new_input, version, |st| st.set_doc_new_block_draft(txt));
-                },
-                onsubmit: move |_| {
-                    mutate_state(&s_new_submit, version, |st| {
-                        let _ = st.submit_new_doc_block_draft();
-                    });
-                },
+            view {
+                style: "flex: 1;",
+                Input {
+                    test_id: Some("doc-new-block-input".into()),
+                    placeholder: Some("Add block text (Enter to append)...".into()),
+                    value: current.doc_new_block_draft.clone(),
+                    accessibility_label: Some("New document block text".into()),
+                    on_change: move |txt: String| {
+                        mutate_state(&s_new_input, version, |st| st.set_doc_new_block_draft(txt));
+                    },
+                    on_submit: move |_| {
+                        mutate_state(&s_new_submit, version, |st| {
+                            let _ = st.submit_new_doc_block_draft();
+                        });
+                    },
+                }
             }
-            pressable {
-                test_id: "doc-new-block-submit",
-                style: "width: 52px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_hex}; border-radius: {m.button_radius}px;",
-                onpress: move |_| mutate_state(&s_new_btn, version, |st| {
+            Button {
+                variant: ButtonVariant::Primary,
+                size: ButtonSize::Sm,
+                test_id: Some("doc-new-block-submit".into()),
+                style: Some(add_block_btn_style),
+                on_press: move |_| mutate_state(&s_new_btn, version, |st| {
                     let _ = st.submit_new_doc_block_draft();
                 }),
-                text { style: "color: #0b1120; font-size: 10px;", "+ Block" }
+                "+ Block"
             }
         }
     }
