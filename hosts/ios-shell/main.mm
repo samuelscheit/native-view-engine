@@ -116,8 +116,32 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
 
 @end
 
-@interface NveIosAppDelegate : UIResponder <UIApplicationDelegate>
+@interface NveIosSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (nonatomic, strong) UIWindow *window;
+@end
+
+@implementation NveIosSceneDelegate
+
+- (void)scene:(UIScene *)scene
+    willConnectToSession:(UISceneSession *)session
+                 options:(UISceneConnectionOptions *)connectionOptions {
+  (void)session;
+  (void)connectionOptions;
+  if (![scene isKindOfClass:[UIWindowScene class]]) {
+    return;
+  }
+
+  UIWindowScene *windowScene = (UIWindowScene *)scene;
+  UIWindow *window = [[UIWindow alloc] initWithWindowScene:windowScene];
+  window.backgroundColor = NveDarkSlateColor();
+  window.rootViewController = [[NveIosRootViewController alloc] init];
+  self.window = window;
+  [window makeKeyAndVisible];
+}
+
+@end
+
+@interface NveIosAppDelegate : UIResponder <UIApplicationDelegate>
 @end
 
 @implementation NveIosAppDelegate
@@ -126,18 +150,19 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
     didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
   (void)application;
   (void)launchOptions;
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  CGRect screenBounds = [UIScreen mainScreen].bounds;
-#pragma clang diagnostic pop
-
-  UIWindow *window = [[UIWindow alloc] initWithFrame:screenBounds];
-  window.backgroundColor = NveDarkSlateColor();
-  window.rootViewController = [[NveIosRootViewController alloc] init];
-  self.window = window;
-  [window makeKeyAndVisible];
   return YES;
+}
+
+- (UISceneConfiguration *)application:(UIApplication *)application
+    configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
+                                   options:(UISceneConnectionOptions *)options {
+  (void)application;
+  (void)options;
+  UISceneConfiguration *config =
+      [[UISceneConfiguration alloc] initWithName:@"Default Configuration"
+                                     sessionRole:connectingSceneSession.role];
+  config.delegateClass = [NveIosSceneDelegate class];
+  return config;
 }
 
 @end
