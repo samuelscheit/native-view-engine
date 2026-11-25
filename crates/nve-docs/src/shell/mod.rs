@@ -1,0 +1,126 @@
+//! 3-column responsive Fumadocs × Linear application shell (`Navbar`, `Sidebar`, `Toc`, `SearchModal`, `Footer`).
+
+pub mod footer;
+pub mod navbar;
+pub mod search_modal;
+pub mod sidebar;
+pub mod toc;
+
+pub use footer::{Breadcrumbs, PageFooter};
+pub use navbar::DocsNavbar;
+pub use search_modal::SearchModal;
+pub use sidebar::{DocsSidebar, route_test_id_slug};
+pub use toc::DocsToc;
+
+use nve_dioxus::prelude::*;
+use nve_ui::ThemeProvider;
+
+use crate::render::DocsArticle;
+use crate::state::use_docs_state;
+
+/// Full 3-column responsive Fumadocs × Linear shell wrapping the active compiled page.
+#[component]
+pub fn DocsShell() -> Element {
+    let mut state = use_docs_state();
+    let snap = state.read();
+    let theme = snap.theme();
+    let ui_theme = theme.to_ui_theme();
+    let viewport = snap.viewport;
+    let is_mobile = viewport.is_mobile();
+    let show_toc = viewport.show_toc();
+    let mobile_drawer_open = snap.mobile_drawer_open;
+    let viewport_mode = viewport.mode_label();
+    let site_title = snap.config.site_title.clone();
+    let page = snap.current_page().cloned();
+    let page_toc_enabled = page.as_ref().is_none_or(|p| p.frontmatter.toc);
+    let color_scheme_attr = if theme.is_dark { "dark" } else { "light" };
+    drop(snap);
+
+    let main_padding_h = if is_mobile { "16px" } else { "40px" };
+    let main_padding_v = if is_mobile { "20px" } else { "32px" };
+
+    rsx! {
+        ThemeProvider {
+            theme: ui_theme,
+            view {
+                test_id: "docs-root",
+                accessibility_label: "{site_title}",
+                "viewport-mode": "{viewport_mode}",
+                "data-theme": "{color_scheme_attr}",
+                style: "width: 100%; height: 100%; flex-direction: column; background-color: {theme.canvas}; color: {theme.text};",
+                onkeydown: move |ev: KeyEvent| {
+                    let data = ev.data();
+                    let is_k = data.key.eq_ignore_ascii_case("k");
+                    if is_k && (data.meta || data.ctrl) {
+                        let currently_open = state.read().search_open;
+                        if currently_open {
+                            state.write().close_search();
+                        } else {
+                            state.write().open_search();
+                        }
+                    } else if data.key == "Escape" {
+                        let mut s = state.write();
+                        if s.search_open {
+                            s.close_search();
+                        } else if s.mobile_drawer_open {
+                            s.set_mobile_drawer(false);
+                        }
+                    }
+                },
+
+                // Sticky top navbar
+                DocsNavbar {}
+
+                // Body row: Desktop Sidebar (260px) | Main Scrollable Article | Right TOC (220px)
+                view {
+                    test_id: "docs-body",
+                    style: "flex-grow: 1; flex-shrink: 1; width: 100%; flex-direction: row; background-color: {theme.canvas};",
+
+                    if !is_mobile {
+                        DocsSidebar { mobile_overlay: false }
+                    }
+
+                    // Center content scroll column
+                    scrollview {
+                        test_id: "docs-main-scroll",
+                        accessibility_role: "main",
+                        style: "flex-grow: 1; flex-shrink: 1; height: 100%; flex-direction: column; background-color: {theme.canvas};",
+                        view {
+                            test_id: "docs-article-container",
+                            style: "width: 100%; max-width: 820px; flex-direction: column; padding-horizontal: {main_padding_h}; padding-vertical: {main_padding_v}; gap: 20px;",
+
+                            Breadcrumbs {}
+
+                            if let Some(compiled_page) = page {
+                                DocsArticle { page: compiled_page }
+                            } else {
+                                view {
+                                    test_id: "docs-empty-page",
+                                    style: "padding: 24px; border-width: 1px; border-color: {theme.border}; border-radius: 10px; background-color: {theme.surface};",
+                                    text {
+                                        style: "font-size: 16px; color: {theme.muted};",
+                                        "No documentation pages found for this route."
+                                    }
+                                }
+                            }
+
+                            PageFooter {}
+                        }
+                    }
+
+                    if show_toc && page_toc_enabled {
+                        DocsToc {}
+                    }
+                }
+
+                // Mobile slide-over drawer overlay (< 960pt)
+                if is_mobile && mobile_drawer_open {
+                    DocsSidebar { mobile_overlay: true }
+                }
+
+                // Global ⌘K search dialog
+                SearchModal {}
+            }
+        }
+    }
+}
