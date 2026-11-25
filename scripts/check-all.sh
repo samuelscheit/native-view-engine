@@ -243,6 +243,7 @@ suite_rust_workspace() {
   cd "$REPO_ROOT"
   cargo build -p nve-example-counter
   cargo test --workspace
+  cargo run -p nve-skia-shell -- --help >/dev/null
   cargo bench --no-run
   if [ "$QUICK_MODE" -eq 0 ]; then
     cargo bench --workspace

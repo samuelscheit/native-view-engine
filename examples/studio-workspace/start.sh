@@ -47,9 +47,9 @@ case "$(uname -s)" in
   *)      DYLIB_PATH="$ROOT_DIR/target/debug/${APP_LIB}.dll" ;;
 esac
 
-echo "==> Building $APP_PKG cdylib + Skia desktop preview..."
+echo "==> Building $APP_PKG cdylib + Skia desktop shell..."
 cargo build -p "$APP_PKG"
-cargo build -p nve-backend-skia --features desktop --example preview
+cargo build -p nve-skia-shell
 
 PIDS=()
 cleanup() {
@@ -107,8 +107,8 @@ else
   echo "==> Skipping [GTK4] (gtk4 not installed via pkg-config)"
 fi
 
-# 4. Cross-platform Skia / winit Desktop Preview
-launch "Skia Desktop" "$ROOT_DIR/target/debug/examples/preview" "$DYLIB_PATH" --no-ws
+# 4. Cross-platform Skia / winit Desktop Shell
+launch "Skia Desktop" "$ROOT_DIR/target/debug/nve-skia-shell" "$DYLIB_PATH" --no-ws
 
 # 5. Web WASM host
 if [[ "$START_WEB" -eq 1 ]]; then

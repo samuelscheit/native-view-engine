@@ -42,7 +42,7 @@ nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot, Profiler, 2
   │     ├──► hosts/gtk-shell                                     (GTK4 + Pango)
   │     └──► hosts/android-shell                                 (JNI + NDK)
   ├──► hosts/{swiftui-kit,flutter-plugin,compose-kit}            (SwiftUI, Flutter dart:ffi, Jetpack Compose)
-  ├──► nve-backend-skia                                          (Desktop winit/softbuffer + optional skia-safe)
+  ├──► nve-backend-skia + hosts/skia-shell                       (Skia renderer + desktop winit/softbuffer/GPU host)
   ├──► nve-backend-web + hosts/web-shell                         (WASM -> Browser DOM + CSS Flexbox)
   ├──► nve-backend-headless + nve-layout-yoga                    (Generic Taffy / real RN Yoga + sub-ms tests)
   └──► nve-codegen + nve-interop                                 (5-target codegen + multi-framework islands)
@@ -65,8 +65,8 @@ cargo build -p nve-example-counter -p nve-studio-workspace
 cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja && cmake --build hosts/macos-shell/build
 ./hosts/macos-shell/build/nve_macos_shell --dylib target/debug/libnve_example_counter.dylib
 
-# 5. Launch in the cross-platform Skia desktop preview window
-cargo run -p nve-backend-skia --features desktop --example preview -- \
+# 5. Launch in the cross-platform Skia desktop shell
+cargo run -p nve-skia-shell -- \
   target/debug/libnve_example_counter.dylib --no-ws
 
 # 6. Start the 2-tier hot-reload dev daemon

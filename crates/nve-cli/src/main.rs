@@ -599,7 +599,7 @@ fn cmd_dev(
 
     if launch_skia_window {
         std::thread::spawn(run_watch_loop);
-        if let Err(err) = nve_backend_skia::run_desktop_preview(dylib_path, Some(client_ws_url)) {
+        if let Err(err) = nve_skia_shell::run_desktop_preview(dylib_path, Some(client_ws_url)) {
             eprintln!("Desktop preview exited with error: {err}");
             std::process::exit(1);
         }

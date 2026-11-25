@@ -1,7 +1,7 @@
 //! Hardware GPU & CPU Skia swapchain/surface architecture.
 //!
 //! Organizes platform GPU swapchain backends cleanly behind opt-in Cargo features while keeping
-//! the default and `--features desktop` builds 100% zero-C++:
+//! the default build 100% zero-C++:
 //!
 //! - `skia-metal` (`macos` / `ios`): `MTLDevice` + `MTLCommandQueue` + `CAMetalLayer` +
 //!   `skia_safe::gpu::direct_contexts::make_metal` + `backend_render_targets::make_mtl` /
@@ -12,8 +12,8 @@
 //! - `skia-d3d` (`windows`): `IDXGIFactory4` + `ID3D12Device` + `IDXGISwapChain3` +
 //!   `skia_safe::gpu::direct_contexts::make_d3d` + `backend_render_targets::make_d3d`.
 //! - `skia`: `CpuSkiaSurface` (`skia_safe::surfaces::raster_n32_premul`) + `SkiaCanvasRenderer`.
-//! - default / `desktop`: Zero-C++ `SoftwareFramePresenter` (backed by `PixelBuffer` +
-//!   `CosmicTextEngine`, blitted to `softbuffer` when attached to a live `winit` window).
+//! - default: Zero-C++ `SoftwareFramePresenter` (backed by `PixelBuffer` +
+//!   `CosmicTextEngine`, blitted to `softbuffer` by `hosts/skia-shell`).
 
 pub mod d3d12;
 pub mod metal;
@@ -399,7 +399,7 @@ pub trait GpuFramePresenter {
 
 /// Zero-C++ pure-Rust software frame presenter (`PixelBuffer` + `CosmicTextEngine`).
 ///
-/// Used as the default presenter when `--features desktop` is compiled without `skia`, or as the
+/// Used as the default presenter when compiled without `skia`, or as the
 /// final graceful fallback when neither hardware GPU nor CPU Skia is available.
 pub struct SoftwareFramePresenter {
     extent: SwapchainExtent,
@@ -709,14 +709,16 @@ impl GpuSwapchain {
         Err(GpuSurfaceError::UnsupportedBackend(config.preferred_backend))
     }
 
-    /// Attaches a hardware GPU swapchain directly to a native window handle (`winit::window::Window`),
+    /// Attaches a hardware GPU swapchain directly to a native `raw-window-handle` window,
     /// automatically falling back to `CpuSkia` / `Software` when hardware GPU initialization is
     /// unavailable and `config.allow_cpu_fallback` is `true`.
-    #[cfg(feature = "desktop")]
-    pub fn attach_window(
-        window: Arc<winit::window::Window>,
+    pub fn attach_window<W>(
+        window: &W,
         config: GpuSurfaceConfig,
-    ) -> Result<Self, GpuSurfaceError> {
+    ) -> Result<Self, GpuSurfaceError>
+    where
+        W: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle,
+    {
         let extent = config.extent()?;
         let candidates =
             GpuBackendKind::selection_priority(config.preferred_backend, config.allow_cpu_fallback);
@@ -726,7 +728,7 @@ impl GpuSwapchain {
             match candidate {
                 #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
                 GpuBackendKind::Metal => {
-                    match metal::MetalSwapchain::from_window(&window, config) {
+                    match metal::MetalSwapchain::from_window(window, config) {
                         Ok(sw) => return Ok(Self::Metal(Box::new(sw))),
                         Err(err) => {
                             if !config.allow_cpu_fallback {
@@ -738,7 +740,7 @@ impl GpuSwapchain {
                 }
                 #[cfg(feature = "skia-vulkan")]
                 GpuBackendKind::Vulkan => {
-                    match vulkan::VulkanSwapchain::from_window(&window, config) {
+                    match vulkan::VulkanSwapchain::from_window(window, config) {
                         Ok(sw) => return Ok(Self::Vulkan(Box::new(sw))),
                         Err(err) => {
                             if !config.allow_cpu_fallback {
@@ -750,7 +752,7 @@ impl GpuSwapchain {
                 }
                 #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
                 GpuBackendKind::Direct3D12 => {
-                    match d3d12::D3D12Swapchain::from_window(&window, config) {
+                    match d3d12::D3D12Swapchain::from_window(window, config) {
                         Ok(sw) => return Ok(Self::Direct3D12(Box::new(sw))),
                         Err(err) => {
                             if !config.allow_cpu_fallback {
@@ -783,7 +785,7 @@ impl GpuSwapchain {
                     return Ok(Self::CpuSkia(Box::new(cpu)));
                 }
                 GpuBackendKind::Softbuffer => {
-                    let _ = &window;
+                    let _ = window;
                     let reason = if fallback_reasons.is_empty() {
                         if config.preferred_backend != GpuBackendKind::Softbuffer {
                             Some(format!(

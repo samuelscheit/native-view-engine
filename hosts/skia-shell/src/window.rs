@@ -1,5 +1,6 @@
-//! Cross-platform desktop preview window (`winit` + `softbuffer`) with live hit-testing and
-//! 2-tier WebSocket hot reload (`HotPatchMsg` from `ws://127.0.0.1:8089`).
+//! Cross-platform desktop preview window (`winit` + `softbuffer` / hardware GPU swapchains)
+//! with live hit-testing, 2-tier WebSocket hot reload (`HotPatchMsg` from `ws://127.0.0.1:8089`),
+//! and instant-boot Frame-0 `MmapSnapshot` replay + atomic save on exit.
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -14,8 +15,19 @@ use crossbeam_channel::{unbounded, Receiver};
 use nve_abi::{
     encode_events, ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId,
 };
+use nve_backend_skia::gpu::{
+    FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
+    GpuSwapchain,
+};
+use nve_backend_skia::raster::{draw_hud_banner, PixelBuffer};
+#[cfg(feature = "skia")]
+use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
+use nve_backend_skia::SkiaBackend;
 use nve_engine::loader::{HotAppInstance, LoaderError};
-use nve_engine::{BackendError, HotPatchMsg, RenderBackend, Viewport};
+use nve_engine::{
+    write_snapshot_atomic, BackendError, HotPatchMsg, MmapSnapshot, RenderBackend, SnapshotError,
+    SnapshotHeader, Viewport,
+};
 use softbuffer::{Context, Surface};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::Message;
@@ -25,21 +37,14 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
-use crate::gpu::{
-    FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
-    GpuSwapchain,
-};
-use crate::raster::{draw_hud_banner, PixelBuffer};
-#[cfg(feature = "skia")]
-use crate::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
-use crate::SkiaBackend;
-
 pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8089";
 
 #[derive(Debug)]
 pub enum DesktopHostError {
     Loader(LoaderError),
     Backend(BackendError),
+    Snapshot(SnapshotError),
+    Io(std::io::Error),
     EventLoop(String),
     Window(String),
     Surface(String),
@@ -50,6 +55,8 @@ impl fmt::Display for DesktopHostError {
         match self {
             Self::Loader(err) => write!(f, "failed to load NVE app cdylib: {err}"),
             Self::Backend(err) => write!(f, "render backend error: {err}"),
+            Self::Snapshot(err) => write!(f, "snapshot error: {err}"),
+            Self::Io(err) => write!(f, "I/O error: {err}"),
             Self::EventLoop(msg) => write!(f, "event loop error: {msg}"),
             Self::Window(msg) => write!(f, "window error: {msg}"),
             Self::Surface(msg) => write!(f, "softbuffer surface error: {msg}"),
@@ -71,32 +78,50 @@ impl From<BackendError> for DesktopHostError {
     }
 }
 
-/// Configuration for the live desktop preview window.
-#[derive(Debug, Clone)]
+impl From<SnapshotError> for DesktopHostError {
+    fn from(value: SnapshotError) -> Self {
+        Self::Snapshot(value)
+    }
+}
+
+impl From<std::io::Error> for DesktopHostError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+/// Configuration for the live desktop preview window and optional instant-boot snapshot.
+#[derive(Debug, Clone, PartialEq)]
 pub struct DesktopPreviewOptions {
     pub title: String,
     pub width: f32,
     pub height: f32,
+    pub scale_factor: f32,
     pub clear_color: ColorRgba,
     pub ws_url: Option<String>,
     pub surface_id: SurfaceId,
     pub show_hud: bool,
     pub preferred_backend: GpuBackendKind,
     pub vsync: bool,
+    pub snapshot_path: Option<PathBuf>,
+    pub schema_version: u32,
 }
 
 impl Default for DesktopPreviewOptions {
     fn default() -> Self {
         Self {
-            title: "Native View Engine — Desktop Preview".to_string(),
+            title: "Native View Engine — Skia Desktop Shell".to_string(),
             width: 420.0,
             height: 780.0,
+            scale_factor: 1.0,
             clear_color: ColorRgba::rgb(15, 23, 42),
             ws_url: Some(DEFAULT_WS_URL.to_string()),
             surface_id: 1,
             show_hud: true,
             preferred_backend: GpuBackendKind::platform_preferred(),
             vsync: true,
+            snapshot_path: None,
+            schema_version: 1,
         }
     }
 }
@@ -115,6 +140,11 @@ pub trait DesktopApp {
         new_dylib_path: &Path,
         surface_id: SurfaceId,
     ) -> Result<u64, DesktopHostError>;
+
+    /// Serializes the current app state for snapshot persistence or hot-swap preservation.
+    fn snapshot_state(&mut self) -> Vec<u8> {
+        Vec::new()
+    }
 }
 
 /// Owns a live [`HotAppInstance`] and preserves the last state snapshot across Tier-2 reloads
@@ -127,12 +157,20 @@ pub struct HotAppSlot {
 
 impl HotAppSlot {
     pub fn load(dylib_path: &Path, surface_id: SurfaceId) -> Result<Self, DesktopHostError> {
-        let instance = HotAppInstance::load(dylib_path, surface_id, 1, None)?;
+        Self::load_with_state(dylib_path, surface_id, None)
+    }
+
+    pub fn load_with_state(
+        dylib_path: &Path,
+        surface_id: SurfaceId,
+        prior_state: Option<&[u8]>,
+    ) -> Result<Self, DesktopHostError> {
+        let instance = HotAppInstance::load(dylib_path, surface_id, 1, prior_state)?;
         let generation = instance.generation();
         Ok(Self {
             instance: Some(instance),
             generation,
-            last_saved_state: Vec::new(),
+            last_saved_state: prior_state.map(|s| s.to_vec()).unwrap_or_default(),
         })
     }
 }
@@ -195,10 +233,80 @@ impl DesktopApp for HotAppSlot {
             Ok(self.generation)
         }
     }
+
+    fn snapshot_state(&mut self) -> Vec<u8> {
+        if let Some(inst) = self.instance.as_mut() {
+            let state = inst.snapshot_state();
+            if !state.is_empty() {
+                self.last_saved_state = state.clone();
+            }
+            state
+        } else {
+            self.last_saved_state.clone()
+        }
+    }
 }
 
-/// Window-independent controller driving rendering, hit-test -> event dispatch, and 2-tier hot
-/// reload for any [`DesktopApp`].
+/// Pre-warmed Frame-0 backend state decoded directly from a zero-copy [`MmapSnapshot`] prior to
+/// loading any app `cdylib`.
+pub struct PrewarmedSnapshot {
+    pub backend: SkiaBackend,
+    pub pixel_buffer: PixelBuffer,
+    pub frame0_bytes: Vec<u8>,
+    pub state_bytes: Vec<u8>,
+    pub restore_us: u64,
+}
+
+/// Opens an `NVE_SNAP` snapshot with schema validation, replays its zero-copy Frame-0
+/// `CommandBuffer` straight into a [`SkiaBackend`], and rasterizes Frame 0 before any app `cdylib`
+/// is loaded.
+pub fn replay_snapshot_into_backend(
+    path: &Path,
+    schema_version: u32,
+    surface_id: SurfaceId,
+    viewport: Viewport,
+    clear_color: ColorRgba,
+) -> Result<PrewarmedSnapshot, DesktopHostError> {
+    let t0 = Instant::now();
+    let snap = MmapSnapshot::open_with_schema(path, schema_version)?;
+    let frame0 = snap.frame0_command_buffer();
+    let mut backend = SkiaBackend::new();
+    backend.set_viewport(surface_id, viewport);
+    if !frame0.is_empty() {
+        backend.submit_frame(frame0)?;
+    }
+    let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
+    let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
+    let mut pixel_buffer = PixelBuffer::new(phys_w, phys_h);
+    backend.rasterize(&mut pixel_buffer, clear_color);
+    let restore_us = t0.elapsed().as_micros() as u64;
+
+    Ok(PrewarmedSnapshot {
+        backend,
+        pixel_buffer,
+        frame0_bytes: frame0.to_vec(),
+        state_bytes: snap.state_bytes().to_vec(),
+        restore_us,
+    })
+}
+
+/// Writes a [`PixelBuffer`] to disk as a binary `P6` PPM image.
+pub fn write_pixel_buffer_ppm(buf: &PixelBuffer, path: &Path) -> std::io::Result<()> {
+    let mut out = Vec::with_capacity((buf.width() * buf.height() * 3) as usize + 32);
+    out.extend_from_slice(format!("P6\n{} {}\n255\n", buf.width(), buf.height()).as_bytes());
+    for y in 0..buf.height() {
+        for x in 0..buf.width() {
+            let (r, g, b) = buf.get_rgb(x, y).unwrap_or((0, 0, 0));
+            out.push(r);
+            out.push(g);
+            out.push(b);
+        }
+    }
+    std::fs::write(path, out)
+}
+
+/// Window-independent controller driving rendering, hit-test -> event dispatch, 2-tier hot
+/// reload, and snapshot persistence for any [`DesktopApp`].
 pub struct DesktopSession<A: DesktopApp> {
     app: A,
     backend: SkiaBackend,
@@ -231,10 +339,33 @@ impl<A: DesktopApp> DesktopSession<A> {
         backend.set_viewport(surface_id, viewport);
         let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
         let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
+        Self::from_parts(
+            app,
+            backend,
+            PixelBuffer::new(phys_w, phys_h),
+            Vec::new(),
+            surface_id,
+            viewport,
+            clear_color,
+            show_hud,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        app: A,
+        backend: SkiaBackend,
+        pixel_buffer: PixelBuffer,
+        last_frame_bytes: Vec<u8>,
+        surface_id: SurfaceId,
+        viewport: Viewport,
+        clear_color: ColorRgba,
+        show_hud: bool,
+    ) -> Self {
         #[cfg(feature = "skia")]
         let gpu_surface = GpuSurface::new(GpuSurfaceConfig {
-            width: phys_w,
-            height: phys_h,
+            width: pixel_buffer.width(),
+            height: pixel_buffer.height(),
             scale_factor: viewport.scale_factor,
             ..Default::default()
         })
@@ -245,12 +376,12 @@ impl<A: DesktopApp> DesktopSession<A> {
             surface_id,
             next_frame_id: 1,
             viewport,
-            pixel_buffer: PixelBuffer::new(phys_w, phys_h),
+            pixel_buffer,
             clear_color,
             cursor_logical: (0.0, 0.0),
             status_banner: None,
             show_hud,
-            last_frame_bytes: Vec::new(),
+            last_frame_bytes,
             frame_counter: 0,
             last_telemetry: None,
             #[cfg(feature = "skia")]
@@ -270,6 +401,10 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn pixel_buffer(&self) -> &PixelBuffer {
         &self.pixel_buffer
+    }
+
+    pub fn last_frame_bytes(&self) -> &[u8] {
+        &self.last_frame_bytes
     }
 
     pub fn viewport(&self) -> Viewport {
@@ -302,6 +437,44 @@ impl<A: DesktopApp> DesktopSession<A> {
         } else {
             None
         }
+    }
+
+    /// Replays a freeze-dried Frame-0 `CommandBuffer` directly into the backend and rasterizes it.
+    pub fn replay_frame0_command_buffer(
+        &mut self,
+        frame0_bytes: &[u8],
+    ) -> Result<&PixelBuffer, DesktopHostError> {
+        if !frame0_bytes.is_empty() {
+            self.backend.submit_frame(frame0_bytes)?;
+            self.last_frame_bytes = frame0_bytes.to_vec();
+        }
+        self.rasterize_current();
+        Ok(&self.pixel_buffer)
+    }
+
+    /// Atomically persists the last rendered Frame-0 `CommandBuffer` and live app state into an
+    /// `NVE_SNAP` file on disk.
+    pub fn save_snapshot(
+        &mut self,
+        path: &Path,
+        schema_version: u32,
+    ) -> Result<SnapshotHeader, DesktopHostError> {
+        let state_bytes = self.app.snapshot_state();
+        let header = write_snapshot_atomic(
+            path,
+            schema_version,
+            0,
+            &self.last_frame_bytes,
+            &state_bytes,
+            &[],
+        )?;
+        Ok(header)
+    }
+
+    /// Writes the current rasterized [`PixelBuffer`] to a binary `P6` PPM file.
+    pub fn write_screenshot_ppm(&self, path: &Path) -> Result<(), DesktopHostError> {
+        write_pixel_buffer_ppm(&self.pixel_buffer, path)?;
+        Ok(())
     }
 
     /// Presents the current retained `DisplayList` directly through a hardware or offscreen
@@ -657,7 +830,8 @@ enum WindowPresenter {
 }
 
 /// Live `winit` desktop preview host supporting direct hardware GPU swapchains (`skia-metal`,
-/// `skia-vulkan`, `skia-d3d`) with automatic graceful fallback to `softbuffer`.
+/// `skia-vulkan`, `skia-d3d`) with automatic graceful fallback to `softbuffer`, plus Frame-0
+/// `MmapSnapshot` instant boot and atomic persistence on exit.
 pub struct DesktopWindowHost {
     options: DesktopPreviewOptions,
     session: DesktopSession<HotAppSlot>,
@@ -666,6 +840,7 @@ pub struct DesktopWindowHost {
     hot_reload: Option<HotReloadClient>,
     proxy: Option<EventLoopProxy<HostWakeEvent>>,
     last_telemetry: Option<FrameTelemetry>,
+    snapshot_saved: bool,
 }
 
 impl DesktopWindowHost {
@@ -673,19 +848,77 @@ impl DesktopWindowHost {
         dylib_path: PathBuf,
         options: DesktopPreviewOptions,
     ) -> Result<Self, DesktopHostError> {
-        let app = HotAppSlot::load(&dylib_path, options.surface_id)?;
+        let scale = if options.scale_factor.is_finite() && options.scale_factor > 0.0 {
+            options.scale_factor
+        } else {
+            1.0
+        };
         let initial_viewport = Viewport {
             width: options.width,
             height: options.height,
-            scale_factor: 1.0,
+            scale_factor: scale,
         };
-        let mut session = DesktopSession::new(
-            app,
-            options.surface_id,
-            initial_viewport,
-            options.clear_color,
-            options.show_hud,
-        );
+
+        // Instant-boot Frame-0 replay BEFORE dlopen of the app cdylib when a snapshot exists.
+        let prewarmed = if let Some(snap_path) = options.snapshot_path.as_deref() {
+            if snap_path.exists() {
+                match replay_snapshot_into_backend(
+                    snap_path,
+                    options.schema_version,
+                    options.surface_id,
+                    initial_viewport,
+                    options.clear_color,
+                ) {
+                    Ok(prewarmed) => {
+                        eprintln!(
+                            "[nve-skia-shell] Instant-boot Frame-0 mmap restore from '{}' in {} us",
+                            snap_path.display(),
+                            prewarmed.restore_us
+                        );
+                        Some(prewarmed)
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[nve-skia-shell] Warning: ignoring snapshot '{}' ({err}); cold-booting app",
+                            snap_path.display()
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut session = if let Some(prewarmed) = prewarmed {
+            let prior_state = if prewarmed.state_bytes.is_empty() {
+                None
+            } else {
+                Some(prewarmed.state_bytes.as_slice())
+            };
+            let app = HotAppSlot::load_with_state(&dylib_path, options.surface_id, prior_state)?;
+            DesktopSession::from_parts(
+                app,
+                prewarmed.backend,
+                prewarmed.pixel_buffer,
+                prewarmed.frame0_bytes,
+                options.surface_id,
+                initial_viewport,
+                options.clear_color,
+                options.show_hud,
+            )
+        } else {
+            let app = HotAppSlot::load(&dylib_path, options.surface_id)?;
+            DesktopSession::new(
+                app,
+                options.surface_id,
+                initial_viewport,
+                options.clear_color,
+                options.show_hud,
+            )
+        };
         session.render_and_rasterize()?;
 
         Ok(Self {
@@ -696,6 +929,7 @@ impl DesktopWindowHost {
             hot_reload: None,
             proxy: None,
             last_telemetry: None,
+            snapshot_saved: false,
         })
     }
 
@@ -721,6 +955,36 @@ impl DesktopWindowHost {
             .or_else(|| self.session.last_frame_telemetry())
     }
 
+    /// Atomically saves the current Frame-0 `CommandBuffer` and live app state if `--snapshot`
+    /// was configured. Safe to call multiple times (only persists once).
+    pub fn save_snapshot_if_configured(&mut self) {
+        if self.snapshot_saved {
+            return;
+        }
+        let Some(snap_path) = self.options.snapshot_path.clone() else {
+            return;
+        };
+        self.snapshot_saved = true;
+        match self
+            .session
+            .save_snapshot(&snap_path, self.options.schema_version)
+        {
+            Ok(_) => {
+                eprintln!(
+                    "[nve-skia-shell] Saved Frame-0 + state snapshot to '{}' (schema v{})",
+                    snap_path.display(),
+                    self.options.schema_version
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "[nve-skia-shell] Warning: failed to save snapshot to '{}': {err}",
+                    snap_path.display()
+                );
+            }
+        }
+    }
+
     /// Runs the native `winit` event loop until the user closes the window.
     pub fn run(mut self) -> Result<(), DesktopHostError> {
         let event_loop = EventLoop::<HostWakeEvent>::with_user_event()
@@ -736,9 +1000,11 @@ impl DesktopWindowHost {
             }));
         }
 
-        event_loop
+        let res = event_loop
             .run_app(&mut self)
-            .map_err(|e| DesktopHostError::EventLoop(e.to_string()))
+            .map_err(|e| DesktopHostError::EventLoop(e.to_string()));
+        self.save_snapshot_if_configured();
+        res
     }
 
     fn present_pixels(&mut self) {
@@ -763,7 +1029,7 @@ impl DesktopWindowHost {
                         }
                     }
                     Err(err) => {
-                        eprintln!("[nve-desktop] hardware swapchain present error: {err}");
+                        eprintln!("[nve-skia-shell] hardware swapchain present error: {err}");
                     }
                 }
             }
@@ -827,7 +1093,7 @@ impl DesktopWindowHost {
             match self.session.handle_hot_patch(msg) {
                 Ok(updated) => needs_redraw |= updated,
                 Err(err) => {
-                    eprintln!("[nve-desktop] {err}");
+                    eprintln!("[nve-skia-shell] {err}");
                     needs_redraw = true;
                 }
             }
@@ -838,6 +1104,12 @@ impl DesktopWindowHost {
                 window.request_redraw();
             }
         }
+    }
+}
+
+impl Drop for DesktopWindowHost {
+    fn drop(&mut self) {
+        self.save_snapshot_if_configured();
     }
 }
 
@@ -855,7 +1127,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(err) => {
-                eprintln!("[nve-desktop] failed to create window: {err}");
+                eprintln!("[nve-skia-shell] failed to create window: {err}");
                 event_loop.exit();
                 return;
             }
@@ -883,7 +1155,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                 vsync: self.options.vsync,
                 ..Default::default()
             };
-            match GpuSwapchain::attach_window(window.clone(), gpu_cfg) {
+            match GpuSwapchain::attach_window(window.as_ref(), gpu_cfg) {
                 Ok(sw) if sw.presents_directly() => Some(WindowPresenter::Hardware(sw)),
                 Ok(sw) => {
                     fallback_reason = sw.fallback_reason().map(str::to_owned);
@@ -891,7 +1163,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                 }
                 Err(err) => {
                     eprintln!(
-                        "[nve-desktop] hardware GPU swapchain unavailable ({err}); falling back to softbuffer"
+                        "[nve-skia-shell] hardware GPU swapchain unavailable ({err}); falling back to softbuffer"
                     );
                     fallback_reason = Some(err.to_string());
                     None
@@ -907,7 +1179,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                 let context = match Context::new(window.clone()) {
                     Ok(c) => c,
                     Err(err) => {
-                        eprintln!("[nve-desktop] failed to create softbuffer context: {err}");
+                        eprintln!("[nve-skia-shell] failed to create softbuffer context: {err}");
                         event_loop.exit();
                         return;
                     }
@@ -915,7 +1187,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                 let surface = match Surface::new(&context, window.clone()) {
                     Ok(s) => s,
                     Err(err) => {
-                        eprintln!("[nve-desktop] failed to create softbuffer surface: {err}");
+                        eprintln!("[nve-skia-shell] failed to create softbuffer surface: {err}");
                         event_loop.exit();
                         return;
                     }
@@ -929,7 +1201,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
         };
 
         if let Err(err) = self.session.resize(phys_w, phys_h, scale) {
-            eprintln!("[nve-desktop] initial resize/render failed: {err}");
+            eprintln!("[nve-skia-shell] initial resize/render failed: {err}");
         }
 
         self.window = Some(window.clone());
@@ -952,6 +1224,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
     ) {
         match event {
             WindowEvent::CloseRequested => {
+                self.save_snapshot_if_configured();
                 self.hot_reload.take();
                 self.presenter.take();
                 event_loop.exit();
@@ -967,11 +1240,11 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                     .map(|w| w.scale_factor() as f32)
                     .unwrap_or(self.session.viewport().scale_factor);
                 if let Err(err) = self.session.resize(new_size.width, new_size.height, scale) {
-                    eprintln!("[nve-desktop] resize error: {err}");
+                    eprintln!("[nve-skia-shell] resize error: {err}");
                 }
                 if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut() {
                     if let Err(err) = sw.resize(new_size.width, new_size.height, scale) {
-                        eprintln!("[nve-desktop] hardware swapchain resize error: {err}");
+                        eprintln!("[nve-skia-shell] hardware swapchain resize error: {err}");
                     }
                 }
                 if let Some(window) = &self.window {
@@ -996,11 +1269,11 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                     .session
                     .resize(size.width, size.height, scale_factor as f32)
                 {
-                    eprintln!("[nve-desktop] scale change error: {err}");
+                    eprintln!("[nve-skia-shell] scale change error: {err}");
                 }
                 if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut() {
                     if let Err(err) = sw.resize(size.width, size.height, scale_factor as f32) {
-                        eprintln!("[nve-desktop] hardware swapchain scale resize error: {err}");
+                        eprintln!("[nve-skia-shell] hardware swapchain scale resize error: {err}");
                     }
                 }
                 if let Some(window) = &self.window {
@@ -1025,7 +1298,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                         }
                     }
                     Ok(false) => {}
-                    Err(err) => eprintln!("[nve-desktop] click dispatch error: {err}"),
+                    Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1052,13 +1325,26 @@ pub fn run_desktop_preview(
     run_desktop_preview_with_options(dylib_path, options)
 }
 
-/// Opens a live cross-platform desktop preview window with custom window and HUD options.
+/// Opens a live cross-platform desktop preview window with custom window, snapshot, and HUD options.
 pub fn run_desktop_preview_with_options(
     dylib_path: PathBuf,
     options: DesktopPreviewOptions,
 ) -> Result<(), DesktopHostError> {
     let host = DesktopWindowHost::new(dylib_path, options)?;
     host.run()
+}
+
+/// Headlessly renders one frame of `dylib_path` (with optional Frame-0 `MmapSnapshot` replay
+/// before load and atomic snapshot save on exit) and writes the result as a `P6` PPM image.
+pub fn render_headless_screenshot(
+    dylib_path: PathBuf,
+    options: DesktopPreviewOptions,
+    screenshot_path: PathBuf,
+) -> Result<(), DesktopHostError> {
+    let mut host = DesktopWindowHost::new(dylib_path, options)?;
+    host.session().write_screenshot_ppm(&screenshot_path)?;
+    host.save_snapshot_if_configured();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1073,8 +1359,8 @@ mod tests {
     };
 
     /// Pure-Rust in-memory mock NVE app implementing `DesktopApp` to test the full
-    /// hit-test -> `encode_events` -> `dispatch_events` -> re-render -> pixel buffer and
-    /// 2-tier `HotPatchMsg` lifecycle without requiring a GUI display server.
+    /// hit-test -> `encode_events` -> `dispatch_events` -> re-render -> pixel buffer,
+    /// `MmapSnapshot` persistence, and 2-tier `HotPatchMsg` lifecycle without requiring a display.
     struct MockCounterApp {
         generation: u64,
         count: i32,
@@ -1203,6 +1489,10 @@ mod tests {
             self.generation += 1;
             self.button_color = ColorRgba::rgb(168, 85, 247);
             Ok(self.generation)
+        }
+
+        fn snapshot_state(&mut self) -> Vec<u8> {
+            format!("count={};label={}", self.count, self.label).into_bytes()
         }
     }
 
@@ -1460,6 +1750,73 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
+        let viewport = Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        };
+        let mut session = DesktopSession::new(
+            MockCounterApp::new(),
+            1,
+            viewport,
+            ColorRgba::BLACK,
+            false,
+        );
+        session.render_and_rasterize().unwrap();
+
+        // Click once so count == 1 and button turns green (#10b981).
+        let btn = session.backend().layout_of(4).unwrap();
+        let cx = btn.x + btn.width * 0.5;
+        let cy = btn.y + btn.height * 0.5;
+        assert!(session.handle_click_logical(cx, cy).unwrap());
+
+        let snap_path = std::env::temp_dir().join(format!(
+            "nve_skia_shell_test_{}.nvesnap",
+            std::process::id()
+        ));
+        let header = session.save_snapshot(&snap_path, 7).expect("atomic save");
+        assert_eq!(header.app_schema_version, 7);
+        assert!(header.frame0_len > 0);
+        assert!(header.state_len > 0);
+
+        // Schema mismatch is rejected cleanly.
+        let mismatch = replay_snapshot_into_backend(&snap_path, 8, 1, viewport, ColorRgba::BLACK);
+        assert!(matches!(
+            mismatch,
+            Err(DesktopHostError::Snapshot(
+                SnapshotError::SchemaVersionMismatch {
+                    expected: 8,
+                    actual: 7
+                }
+            ))
+        ));
+
+        // Matching schema pre-warms Frame 0 pixels & state before any dylib is loaded.
+        let prewarmed =
+            replay_snapshot_into_backend(&snap_path, 7, 1, viewport, ColorRgba::BLACK)
+                .expect("prewarm frame0");
+        assert_eq!(prewarmed.state_bytes, b"count=1;label=Counter");
+        assert_eq!(
+            prewarmed.pixel_buffer.get_rgb(cx as u32, cy as u32),
+            Some((16, 185, 129))
+        );
+
+        // PPM export produces a valid P6 header and exact byte size.
+        let ppm_path = std::env::temp_dir().join(format!(
+            "nve_skia_shell_test_{}.ppm",
+            std::process::id()
+        ));
+        session.write_screenshot_ppm(&ppm_path).expect("write ppm");
+        let ppm = std::fs::read(&ppm_path).expect("read ppm");
+        assert!(ppm.starts_with(b"P6\n300 200\n255\n"));
+        assert_eq!(ppm.len(), b"P6\n300 200\n255\n".len() + 300 * 200 * 3);
+
+        let _ = std::fs::remove_file(&snap_path);
+        let _ = std::fs::remove_file(&ppm_path);
+    }
+
+    #[test]
     fn hot_app_slot_reports_loader_error_for_missing_dylib() {
         let err = HotAppSlot::load(Path::new("/nonexistent/path/libmissing_nve.dylib"), 1)
             .err()
@@ -1513,18 +1870,7 @@ mod tests {
             let buf = session.pixel_buffer();
             assert_eq!(buf.width(), (w * 2.0) as u32);
             assert_eq!(buf.height(), (h * 2.0) as u32);
-
-            let mut out = Vec::with_capacity((buf.width() * buf.height() * 3) as usize + 32);
-            out.extend_from_slice(format!("P6\n{} {}\n255\n", buf.width(), buf.height()).as_bytes());
-            for y in 0..buf.height() {
-                for x in 0..buf.width() {
-                    let (r, g, b) = buf.get_rgb(x, y).unwrap_or((0, 0, 0));
-                    out.push(r);
-                    out.push(g);
-                    out.push(b);
-                }
-            }
-            std::fs::write(out_path, out).expect("write ppm");
+            write_pixel_buffer_ppm(buf, Path::new(out_path)).expect("write ppm");
         }
     }
 }

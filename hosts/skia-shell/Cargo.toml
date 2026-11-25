@@ -1,0 +1,35 @@
+[package]
+name = "nve-skia-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nve-skia-shell"
+path = "src/main.rs"
+
+[features]
+default = []
+# CPU-backed Skia canvas + raster surface
+skia = ["nve-backend-skia/skia"]
+# Apple Metal hardware GPU swapchain & offscreen context (macOS / iOS)
+skia-metal = ["skia", "nve-backend-skia/skia-metal"]
+# Cross-platform Vulkan hardware GPU swapchain & offscreen context (Linux / Android / Windows / MoltenVK)
+skia-vulkan = ["skia", "nve-backend-skia/skia-vulkan"]
+# Windows Direct3D 12 + DXGI hardware GPU swapchain & offscreen context
+skia-d3d = ["skia", "nve-backend-skia/skia-d3d"]
+# Real React Native Yoga C++20 layout engine integration (compiled when RN_REACT_COMMON_DIR is set)
+yoga = ["nve-backend-skia/yoga"]
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-engine = { workspace = true }
+nve-backend-skia = { workspace = true }
+winit = { workspace = true }
+softbuffer = { workspace = true }
+tungstenite = { workspace = true }
+crossbeam-channel = { workspace = true }
+serde_json = { workspace = true }

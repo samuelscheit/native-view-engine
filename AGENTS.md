@@ -11,7 +11,7 @@ Concise architecture invariants, engineering rules, and verified build/test comm
 - **Multi-backend & interop architecture**:
   - **Frontend**: `crates/nve-dioxus` — Dioxus 0.7 `WriteMutations` adapter emitting `CommandBuffer`s + Tier-1 RSX hot-patch.
   - **C++20 Fabric/Yoga/JSI bridge**: `cxx/nve-fabric-bridge` — zero-Hermes React Native Fabric/Yoga adapter with mock `jsi::Runtime` event recorder (`NVE_WITH_RN_YOGA`, `NVE_WITH_RN_JSI`, `NVE_WITH_RN_FABRIC`).
-  - **Desktop Skia/winit**: `crates/nve-backend-skia` (`--features desktop` for winit/softbuffer, `--features skia` for `skia-safe`).
+  - **Desktop Skia/winit**: `crates/nve-backend-skia` (pure rendering backend with optional `--features skia` / `skia-metal` / `skia-vulkan` / `skia-d3d`) + `hosts/skia-shell` (`nve-skia-shell` runnable `winit`/`softbuffer`/GPU window host).
   - **Web WASM DOM**: `crates/nve-backend-web` + `hosts/web-shell` — decodes the same `CommandBuffer` onto browser DOM + CSS Flexbox.
   - **Headless**: `crates/nve-backend-headless` — pure-Rust Taffy layout + mutation recorder for sub-second tests.
   - **Bi-directional 5-target codegen**: `crates/nve-codegen` — `import_rn` (`*NativeComponent.{ts,js}` / `Native*.{ts,js}`) and `export` from one `NveExportSpec` to React Native Fabric, Flutter `dart:ffi`, SwiftUI, Jetpack Compose, and Web Components.
@@ -70,6 +70,10 @@ swift test --package-path hosts/swiftui-kit
 
 # Flutter plugin tests
 (cd hosts/flutter-plugin && flutter test)
+
+# Skia desktop host tests & CLI launch
+cargo test -p nve-backend-skia -p nve-skia-shell
+cargo run -p nve-skia-shell -- target/debug/libnve_example_counter.dylib --no-ws
 
 # Web WASM host unit tests, wasm32 compile check, and full JS/WASM bundle
 cargo test --locked -p nve-backend-web -p nve-web-shell \

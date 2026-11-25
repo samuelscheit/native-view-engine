@@ -6,16 +6,13 @@ license.workspace = true
 
 [features]
 default = []
-# Cross-platform desktop preview window (winit + softbuffer rasterizer + WS hot-reload, zero Skia build needed)
-desktop = ["dep:winit", "dep:softbuffer", "dep:tungstenite", "dep:crossbeam-channel", "dep:serde_json"]
-# CPU-backed Skia canvas + raster surface (adds skia-safe on top of desktop)
-skia = ["desktop", "dep:skia-safe"]
+# CPU-backed Skia canvas + raster surface
+skia = ["dep:skia-safe"]
 # Apple Metal hardware GPU swapchain & offscreen context (macOS / iOS)
 skia-metal = [
     "skia",
     "skia-safe/ganesh",
     "skia-safe/metal",
-    "dep:raw-window-handle",
     "dep:objc2",
     "dep:objc2-core-foundation",
     "dep:objc2-metal",
@@ -28,14 +25,12 @@ skia-vulkan = [
     "skia",
     "skia-safe/ganesh",
     "skia-safe/vulkan",
-    "dep:raw-window-handle",
     "dep:ash",
 ]
 # Windows Direct3D 12 + DXGI hardware GPU swapchain & offscreen context
 skia-d3d = [
     "skia",
     "skia-safe/d3d",
-    "dep:raw-window-handle",
     "dep:windows",
 ]
 # Real React Native Yoga C++20 layout engine integration (compiled when RN_REACT_COMMON_DIR is set)
@@ -46,14 +41,9 @@ nve-abi = { workspace = true }
 nve-engine = { workspace = true }
 nve-backend-headless = { workspace = true }
 cosmic-text = { workspace = true }
+raw-window-handle = "0.6.2"
 nve-layout-yoga = { workspace = true, optional = true }
 skia-safe = { workspace = true, optional = true }
-winit = { workspace = true, optional = true }
-softbuffer = { workspace = true, optional = true }
-tungstenite = { workspace = true, optional = true }
-crossbeam-channel = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-raw-window-handle = { version = "0.6.2", optional = true }
 ash = { version = "0.38.0", optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
@@ -98,8 +88,3 @@ windows = { version = "0.62.0", optional = true, features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
 ] }
-
-[[example]]
-name = "preview"
-path = "examples/preview.rs"
-required-features = ["desktop"]

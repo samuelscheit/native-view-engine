@@ -48,6 +48,7 @@ jobs:
         run: |
           cargo build -p nve-example-counter
           cargo test --workspace
+          cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
           cargo check -p nve-web-shell --target wasm32-unknown-unknown
 
@@ -119,6 +120,7 @@ jobs:
         run: |
           cargo build -p nve-example-counter
           cargo test --workspace
+          cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 
       - name: Build and test C++20 Fabric bridge
@@ -185,6 +187,7 @@ jobs:
         run: |
           cargo build -p nve-example-counter
           cargo test --workspace
+          cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 
       - name: Build and test C++20 Fabric bridge

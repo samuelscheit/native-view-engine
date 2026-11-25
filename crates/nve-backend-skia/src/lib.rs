@@ -2,16 +2,16 @@
 //!
 //! Consumes the exact same `nve-abi` binary `CommandBuffer` as the React Native Fabric backend,
 //! computes Flexbox layout, compiles a culled retained `DisplayList`, rasterizes cleanly via a
-//! zero-dependency software rasterizer (and `--features desktop` `winit` + `softbuffer` live
-//! preview window with 2-tier WebSocket hot reload), and (with `--features skia`) paints directly
-//! onto a `skia_safe::Canvas`.
+//! zero-dependency software rasterizer, and (with `--features skia` / `skia-metal` / `skia-vulkan` /
+//! `skia-d3d`) paints directly onto a `skia_safe::Canvas` or hardware GPU swapchain.
+//!
+//! For the runnable desktop `winit` + `softbuffer` / GPU window host, see `hosts/skia-shell`
+//! (`nve-skia-shell`).
 
 pub mod font;
 pub mod gpu;
 pub mod raster;
 pub mod text;
-#[cfg(feature = "desktop")]
-pub mod window;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -46,12 +46,6 @@ pub use raster::{
     rasterize_display_list_with_text_engine, PixelBuffer,
 };
 pub use text::CosmicTextEngine;
-#[cfg(feature = "desktop")]
-pub use window::{
-    run_desktop_preview, run_desktop_preview_with_options, DesktopApp, DesktopHostError,
-    DesktopPreviewOptions, DesktopSession, DesktopWindowHost, HotAppSlot, HotReloadClient,
-    DEFAULT_WS_URL,
-};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintOp {
@@ -328,8 +322,6 @@ impl<L: LayoutEngine> RenderBackend for SkiaBackend<L> {
     fn name(&self) -> &'static str {
         if cfg!(feature = "skia") {
             "skia-gpu"
-        } else if cfg!(feature = "desktop") {
-            "skia-desktop-soft"
         } else {
             "skia-displaylist"
         }

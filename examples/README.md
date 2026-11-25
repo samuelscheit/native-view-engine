@@ -21,8 +21,8 @@ cargo test -p nve-studio-workspace
 # Launch on native Qt 6 host
 ./hosts/qt-shell/build/nve_qt_shell --dylib target/debug/libnve_studio_workspace.dylib --width 960 --height 640
 
-# Launch on Skia Desktop preview (with live hot-reload support)
-cargo run -p nve-backend-skia --features desktop --example preview -- target/debug/libnve_studio_workspace.dylib --no-ws
+# Launch on Skia Desktop shell (with live hot-reload support)
+cargo run -p nve-skia-shell -- target/debug/libnve_studio_workspace.dylib --no-ws
 ```
 
 ## Flagship Vision

@@ -1528,7 +1528,6 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "cosmic-text",
- "crossbeam-channel",
  "nve-abi",
  "nve-backend-headless",
  "nve-engine",
@@ -1540,12 +1539,8 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "objc2-ui-kit 0.3.2",
  "raw-window-handle",
- "serde_json",
  "skia-safe",
- "softbuffer",
- "tungstenite",
  "windows",
- "winit",
 ]
 
 [[package]]
@@ -1589,6 +1584,7 @@ dependencies = [
  "nve-dioxus",
  "nve-engine",
  "nve-interop",
+ "nve-skia-shell",
  "serde_json",
  "tungstenite",
 ]
@@ -1667,6 +1663,20 @@ dependencies = [
  "nve-backend-headless",
  "nve-engine",
  "nve-example-counter",
+]
+
+[[package]]
+name = "nve-skia-shell"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "nve-abi",
+ "nve-backend-skia",
+ "nve-engine",
+ "serde_json",
+ "softbuffer",
+ "tungstenite",
+ "winit",
 ]
 
 [[package]]
