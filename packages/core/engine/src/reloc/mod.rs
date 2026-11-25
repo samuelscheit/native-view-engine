@@ -19,6 +19,7 @@ pub mod format;
 pub mod scene;
 #[cfg(test)]
 mod tests;
+pub mod timeline;
 pub mod view;
 
 use std::fmt;
@@ -28,14 +29,24 @@ pub use crate::mmap_arena::ArenaPod as RelocPod;
 pub use format::{
     compute_reloc_checksum, RelocBuf, RelocBundleRoot, RelocHeader, RelocPtr, RelocSlice, RelocStr,
     RelocWriter, RELOC_BUF_ALIGN, RELOC_HEADER_SIZE, RELOC_KIND_BUNDLE, RELOC_KIND_GENERIC,
-    RELOC_KIND_SCENE, RELOC_KIND_WORKSPACE, RELOC_MAGIC, RELOC_VERSION,
+    RELOC_KIND_SCENE, RELOC_KIND_TIMELINE, RELOC_KIND_WORKSPACE, RELOC_MAGIC, RELOC_VERSION,
 };
 pub use scene::{
     encode_scene_reloc, RelocLayoutProps, RelocSceneNode, RelocSceneRoot, SceneRelocInput,
     SceneRelocNodeInput, SceneRelocView, SCENE_NODE_CLIP_CHILDREN, SCENE_NODE_HAS_EXPLICIT_STYLE,
     SCENE_NODE_HIDDEN, SCENE_NODE_INTERACTIVE,
 };
+pub use timeline::{
+    encode_timeline_archive, NveNodePatch, NveNodePatchField, NveNodePatchValue,
+    NveTimelineArchive, NveTimelineArchiveView, NveTimelineEntry, NveTimelineEntryInput,
+    NveTimelinePatchInput, NveTimelineRoot, NVE_NODE_PATCH_FLAG_STRING_SPAN,
+};
 pub use view::{encode_reloc_bundle, write_reloc_atomic, MmapReloc, RelocBundleView, RelocView};
+
+/// Self-documenting alias for a 64-byte-aligned zero-copy scene archive (`RelocBuf`).
+pub type NveSceneArchive = RelocBuf;
+/// Self-documenting alias for a borrowed zero-copy scene archive view (`SceneRelocView`).
+pub type NveSceneArchiveView<'a> = SceneRelocView<'a>;
 
 /// Validation tier for cold-loading an `NVERELOC` zero-copy buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

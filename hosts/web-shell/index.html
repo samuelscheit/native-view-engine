@@ -283,7 +283,7 @@
 			if (isPaired) {
 				document.title = "Paired Live View · Native View Engine Web WASM";
 				if (brandTitleEl) {
-					brandTitleEl.textContent = "Native View Engine · Live Paired Client (NVD1/WS)";
+					brandTitleEl.textContent = "Native View Engine · Live Paired Client (QUIC/WebTransport + WS)";
 				}
 			} else if (isKitchenSink) {
 				document.title = "Kitchen Sink · Native View Engine Web WASM";
@@ -292,26 +292,43 @@
 				}
 			}
 
+			function hexToUint8Array(hex) {
+				const clean = (hex || "").replace(/[^0-9a-fA-F]/g, "");
+				if (clean.length !== 64) return null;
+				const out = new Uint8Array(32);
+				for (let i = 0; i < 32; i++) {
+					out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+				}
+				return out;
+			}
+
 			function parsePairTarget(rawPair, explicitToken) {
+				const pageParams = new URLSearchParams(window.location.search);
+				const explicitCertHash = (pageParams.get("cert_hash") || "").trim();
+				const explicitWtUrl = (pageParams.get("wt") || "").trim();
 				if (/^nve:\/\/pair/i.test(rawPair)) {
 					const parsed = new URL(rawPair.replace(/^nve:\/\//i, "http://"));
 					const host = (parsed.searchParams.get("host") || window.location.hostname || "127.0.0.1").trim();
-					const wsPort = (parsed.searchParams.get("ws") || "").trim();
+					const wsPort = (parsed.searchParams.get("wss") || parsed.searchParams.get("ws") || "").trim();
+					const quicPort = (parsed.searchParams.get("quic") || parsed.searchParams.get("udp") || "").trim();
 					const uriToken = (parsed.searchParams.get("token") || "").trim();
-					if (!wsPort) {
-						throw new Error("nve://pair URI is missing the ws=<port> parameter.");
+					const certHash = (parsed.searchParams.get("cert_hash") || explicitCertHash).trim();
+					if (!wsPort && !quicPort) {
+						throw new Error("nve://pair URI is missing quic=<port> or wss=<port> parameter.");
 					}
 					const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
 					const hostPart = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 					return {
-						wsUrl: `${proto}${hostPart}:${wsPort}/ws/nvd`,
+						wsUrl: wsPort ? `${proto}${hostPart}:${wsPort}/nve-wire` : "",
+						wtUrl: quicPort ? `https://${hostPart}:${quicPort}/nve-wire` : explicitWtUrl,
+						certHash,
 						token: explicitToken || uriToken,
 					};
 				}
 				const wsUrl = /^wss?:\/\//i.test(rawPair)
 					? rawPair
 					: `${window.location.protocol === "https:" ? "wss://" : "ws://"}${rawPair}`;
-				return { wsUrl, token: explicitToken };
+				return { wsUrl, wtUrl: explicitWtUrl, certHash: explicitCertHash, token: explicitToken };
 			}
 
 			function setPairConnectionAttrs(state, connected, extra = {}) {
@@ -331,17 +348,43 @@
 				}
 			}
 
+			async function tryWebTransportConnect(host, wtUrl, certHashHex) {
+				if (typeof window.WebTransport !== "function" || !wtUrl) return null;
+				const hashBytes = hexToUint8Array(certHashHex);
+				const opts = hashBytes
+					? { serverCertificateHashes: [{ algorithm: "sha-256", value: hashBytes }] }
+					: {};
+				const transport = new window.WebTransport(wtUrl, opts);
+				await Promise.race([
+					transport.ready,
+					new Promise((_, reject) => setTimeout(() => reject(new Error("WebTransport timeout")), 400)),
+				]);
+				const bi = await transport.createBidirectionalStream();
+				const writer = bi.writable.getWriter();
+				const reader = bi.readable.getReader();
+				await writer.write(host.build_pair_hello());
+				return { transport, writer, reader };
+			}
+
 			function bootPairedClient(wasmMod, rawPairUrl, explicitToken) {
-				const { wsUrl, token } = parsePairTarget(rawPairUrl, explicitToken);
+				const { wsUrl, wtUrl, certHash, token } = parsePairTarget(rawPairUrl, explicitToken);
 				if (!token) {
 					throw new Error("Missing ?token=<pairing_token> query parameter for ?pair= live pairing mode.");
 				}
-				setPairConnectionAttrs("connecting", false, { url: wsUrl, sessionId: 0, frames: 0 });
+				const targetLabel = wtUrl || wsUrl;
+				setPairConnectionAttrs("connecting", false, { url: targetLabel, sessionId: 0, frames: 0 });
 				if (statusEl) {
 					statusEl.textContent = "Pair: connecting…";
 					statusEl.dataset.state = "connecting";
 				}
 				const host = wasmMod.NveWebHost.create_paired("app", token);
+				window.__nvePairHost = host;
+				if (wtUrl && certHash && typeof window.WebTransport === "function" && !wsUrl) {
+					tryWebTransportConnect(host, wtUrl, certHash).catch((err) => {
+						console.warn("[NVE Pair] WebTransport connect failed:", err);
+					});
+					return host;
+				}
 				const ws = new WebSocket(wsUrl);
 				ws.binaryType = "arraybuffer";
 				host.attach_pair_socket(ws);

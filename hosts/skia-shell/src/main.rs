@@ -59,11 +59,13 @@ Options:
 
 fn infer_transport_from_addr(addr: &str) -> Option<PairTransport> {
     let lower = addr.trim().to_ascii_lowercase();
-    if lower.starts_with("udp://") {
-        Some(PairTransport::Udp)
-    } else if lower.starts_with("tcp://") {
-        Some(PairTransport::Tcp)
-    } else if lower.starts_with("ws://") || lower.starts_with("wss://") {
+    if lower.starts_with("quic://") || lower.starts_with("udp://") {
+        Some(PairTransport::Quic)
+    } else if lower.starts_with("https://") || lower.starts_with("wt://") {
+        Some(PairTransport::WebTransport)
+    } else if lower.starts_with("wss://") {
+        Some(PairTransport::Wss)
+    } else if lower.starts_with("ws://") || lower.starts_with("tcp://") {
         Some(PairTransport::Ws)
     } else {
         None
@@ -219,7 +221,7 @@ where
             .ok_or_else(|| "--pair-token is required when using --pair-connect".to_string())?;
         let transport = pair_transport
             .or_else(|| infer_transport_from_addr(&addr))
-            .unwrap_or(PairTransport::Ws);
+            .unwrap_or(PairTransport::Auto);
         if !explicit_ws {
             options.ws_url = None;
         }
@@ -343,7 +345,7 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "127.0.0.1:8091",
                 "nve-deadbeef-12345678",
-                PairTransport::Udp,
+                PairTransport::Quic,
             ))
         );
         assert_eq!(cfg.options.ws_url, None);
@@ -351,7 +353,7 @@ mod tests {
         assert_eq!(cfg.options.width, 393.0);
         assert_eq!(cfg.options.height, 852.0);
 
-        // Default transport is WS when omitted on bare host:port, and inferred from tcp:// scheme.
+        // Default transport is Auto (Happy-Eyeballs) when omitted on bare host:port.
         let ws_default = parse_args(s(&[
             "--pair-connect",
             "127.0.0.1:8092",
@@ -365,24 +367,24 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "127.0.0.1:8092",
                 "tok",
-                PairTransport::Ws,
+                PairTransport::Auto,
             ))
         );
 
-        let tcp_inferred = parse_args(s(&[
+        let quic_inferred = parse_args(s(&[
             "--pair-connect",
-            "tcp://127.0.0.1:8092",
+            "quic://127.0.0.1:8091",
             "--pair-token",
             "tok",
         ]))
         .unwrap()
         .unwrap();
         assert_eq!(
-            tcp_inferred.target,
+            quic_inferred.target,
             LaunchTarget::Pair(PairConnectConfig::new(
-                "tcp://127.0.0.1:8092",
+                "quic://127.0.0.1:8091",
                 "tok",
-                PairTransport::Tcp,
+                PairTransport::Quic,
             ))
         );
     }
@@ -399,7 +401,7 @@ mod tests {
             "--pair-token",
             "tok",
             "--pair-transport",
-            "quic"
+            "bogus-proto"
         ]))
         .is_err());
         assert!(parse_args(s(&["libapp.dylib", "--schema", "abc"])).is_err());

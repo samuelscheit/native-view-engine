@@ -7,7 +7,6 @@ license.workspace = true
 [features]
 default = [
     "crdt",
-    "sync",
     "native-view",
     "traits",
     "window",
@@ -18,7 +17,6 @@ default = [
     "reconcile",
 ]
 crdt = []
-sync = []
 native-view = []
 traits = []
 window = []
@@ -41,10 +39,6 @@ libloading = { workspace = true }
 [[test]]
 name = "crdt_property_tests"
 required-features = ["crdt"]
-
-[[test]]
-name = "sync_transport_tests"
-required-features = ["sync"]
 
 [[test]]
 name = "traits_and_native_view_tests"

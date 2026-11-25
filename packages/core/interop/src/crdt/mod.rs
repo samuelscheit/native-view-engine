@@ -1,4 +1,4 @@
-//! Zero-dependency, zero-JSON binary CRDT primitives and `NVC1` delta wire protocol.
+//! Zero-dependency, zero-JSON binary CRDT primitives and `NveCrdtDelta` (`XXH64`) wire protocol.
 
 pub mod hlc;
 pub mod lww;
@@ -13,6 +13,7 @@ pub use lww::{GCounter, LwwRegister, PnCounter};
 pub use orset::{OrSet, OrSetDelta};
 pub use rga::{RgaDelta, RgaList, RgaNode};
 pub use wire::{
-    CRDT_WIRE_MAGIC, CRDT_WIRE_MIN_LEN, CRDT_WIRE_VERSION, CrdtDeltaPacket, CrdtRecord, CrdtValue,
-    CrdtWireError, MAX_FIELD_BYTES, MAX_RECORDS, MAX_VV_ENTRIES, MAX_WIRE_BYTES, fnv1a_64,
+    CrdtRecord, CrdtValue, CrdtWireError, MAX_FIELD_BYTES, MAX_RECORDS, MAX_VV_ENTRIES,
+    MAX_WIRE_BYTES, NVE_CRDT_DELTA_MAGIC, NVE_CRDT_DELTA_MIN_LEN, NVE_CRDT_DELTA_VERSION,
+    NVE_CRDT_XXH64_SEED, NveCrdtDelta, crdt_xxh64,
 };

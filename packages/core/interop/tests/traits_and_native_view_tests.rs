@@ -23,7 +23,6 @@ use nve_interop::traits::{
     ReducedMotion, ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides,
     TraitStore, UiDensity, VerticalSizeClass, BUILTIN_TRAIT_COUNT,
 };
-use nve_interop::TRANSPORT_MAGIC;
 
 struct BrandAccent;
 impl TraitKey for BrandAccent {
@@ -51,8 +50,6 @@ impl TraitKey for MaxColumns {
 
 #[test]
 fn builtin_traits_o1_access_locale_rtl_and_size_class_thresholds() {
-    assert_eq!(TRANSPORT_MAGIC, *b"NT");
-
     // Exact breakpoint boundaries for SizeClass
     assert_eq!(SizeClass::from_width(-10.0), SizeClass::Compact);
     assert_eq!(SizeClass::from_width(0.0), SizeClass::Compact);

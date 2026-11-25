@@ -20,6 +20,7 @@ nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-codegen = { workspace = true }
 nve-interop = { workspace = true }
+nve-wire = { workspace = true }
 nve-backend-headless = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-backend-web = { workspace = true }

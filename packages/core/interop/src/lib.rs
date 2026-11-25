@@ -22,10 +22,6 @@ pub mod plugin_host;
 #[cfg(feature = "reconcile")]
 pub mod reconcile;
 pub mod surface;
-#[cfg(feature = "sync")]
-pub mod sync_delta;
-#[cfg(feature = "sync")]
-pub mod sync_transport;
 #[cfg(feature = "traits")]
 pub mod traits;
 #[cfg(feature = "window")]
@@ -76,25 +72,6 @@ pub use surface::{
 pub use window::{
     ManagedWindow, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
     WindowLifecycleEvent, WindowLifecycleState, WindowManager, WindowRect, WindowState,
-};
-#[cfg(feature = "sync")]
-pub use sync_delta::{
-    DEFAULT_SYNC_WINDOW, DELTA_HEADER_SIZE, DeltaPacketHeader, DeltaPacketRef, FLAG_RETRANSMIT,
-    MAX_DECODED_FRAME_BYTES, PacketKind, ReceiveOutcome, SYNC_DELTA_MAGIC, SYNC_DELTA_VERSION,
-    SyncDeltaError, SyncDeltaSession, SyncMetrics, decode_command_op_delta, decode_xor_rle_delta,
-    decode_xor_rle_delta_into, encode_command_op_delta, encode_packet, encode_xor_rle_delta,
-    encode_xor_rle_delta_into, fnv1a_64, fnv1a_64_pair, write_packet_into,
-};
-#[cfg(feature = "sync")]
-pub use sync_transport::{
-    DEFAULT_MAX_WIRE_FRAME_BYTES, DEFAULT_SCHEMA_VERSION, FRAG_SUBHEADER_SIZE,
-    MAX_ALLOWED_WIRE_FRAME_BYTES, MAX_INPUT_EVENT_BYTES, MAX_UDP_DATAGRAM_BYTES,
-    MAX_UDP_FRAG_CHUNK, MAX_UDP_SINGLE_PAYLOAD, PairingConfig, PairingMetrics, RejectReason,
-    StreamFraming, SyncTransportError, TRANSPORT_HEADER_SIZE, TRANSPORT_MAGIC,
-    TRANSPORT_PROTOCOL_VERSION, TcpDeltaClient, TcpDeltaServer, TransportError, TransportMsgKind,
-    UdpDeltaClient, UdpDeltaServer, WsFrame, WsOpcode, compute_ws_accept_key,
-    decode_ws_frame_slice, derive_session_id, derive_token_proof, encode_ws_frame,
-    packetize_udp_datagrams,
 };
 #[cfg(feature = "native-view")]
 pub use native_view::{

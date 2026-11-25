@@ -30,8 +30,13 @@ nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-interop = { workspace = true }
+nve-wire-core = { workspace = true }
 nve-example-kitchen-sink = { workspace = true, optional = true }
 nve-studio-workspace = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+nve-wire = { workspace = true }
+tungstenite = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }

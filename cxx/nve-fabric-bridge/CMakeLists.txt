@@ -32,9 +32,7 @@ add_library(nve_fabric_bridge STATIC
   src/scene_publisher.cpp
   src/fabric_c_api.cpp
   src/nve_rn_component.cpp
-  src/pair_wire.cpp
-  src/pair_delta.cpp
-  src/pair_ws_frag.cpp
+  src/pair_wire_v2.cpp
   src/pair_client.cpp
 )
 
@@ -50,9 +48,7 @@ if(MSVC)
 else()
   target_compile_options(nve_fabric_bridge PRIVATE -Wall -Wextra)
   set_source_files_properties(
-    src/pair_wire.cpp
-    src/pair_delta.cpp
-    src/pair_ws_frag.cpp
+    src/pair_wire_v2.cpp
     src/pair_client.cpp
     PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror"
   )

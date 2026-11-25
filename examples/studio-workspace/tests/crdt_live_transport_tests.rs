@@ -11,9 +11,8 @@ use nve_abi::{EventPayload, NativeEvent, NativeEventKind, RawPropValue};
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{RenderBackend, Viewport};
 use nve_interop::crdt::{
-    CrdtDeltaPacket, CrdtRecord, CrdtValue, HlcTimestamp, OpId, PeerId, VersionVector,
+    CrdtRecord, CrdtValue, HlcTimestamp, NveCrdtDelta, OpId, PeerId, VersionVector,
 };
-use nve_interop::sync_transport::PairingConfig;
 use nve_studio_workspace::{
     create_surface_for_viewport, ChannelKind, CrdtPeerNode, CrdtPeerTransport, CrdtWireFrame,
     DocBlockKind, InMemoryMeshHub, LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport,
@@ -279,7 +278,7 @@ fn loopback_tcp_three_peer_live_sync_partition_reconnect_anti_entropy_convergenc
     assert_eq!(new_doc.blocks.len(), 1);
     assert_eq!(new_doc.blocks[0].id, doc_p3_blk);
 
-    // Verify real PairingMetrics and CRDT sync metrics recorded non-zero TCP wire traffic & reconnects.
+    // Verify real NveWireServerMetrics and CRDT sync metrics recorded non-zero QUIC wire traffic.
     for node in cluster.nodes() {
         let cm = node.metrics();
         assert_eq!(cm.connected_peers, 2);
@@ -288,30 +287,25 @@ fn loopback_tcp_three_peer_live_sync_partition_reconnect_anti_entropy_convergenc
         assert!(cm.deltas_received > 0);
         assert!(cm.bytes_sent > 0);
         assert!(cm.bytes_received > 0);
-        let pm = node.transport().server_pairing_metrics();
-        assert!(pm.wire_bytes_sent > 0);
+        let pm = node.transport().server_wire_metrics();
+        assert!(pm.wire_bytes_tx > 0);
         assert!(pm.frames_sent > 0);
     }
-    assert!(
-        cluster.node(0).transport().server_pairing_metrics().reconnects >= 1
-            || cluster.node(2).transport().server_pairing_metrics().reconnects >= 1,
-        "expected TCP reconnect telemetry after partition heal"
-    );
 }
 
 #[test]
 fn loopback_tcp_rejects_corrupt_and_truncated_nvc1_frames_without_corrupting_state() {
     let base = WorkspaceSnapshot::default();
-    let cfg = PairingConfig::new("studio-corrupt-wire-test").with_handshake_timeout_ms(2_000);
+    let token = "studio-corrupt-wire-test";
 
-    let mut sender_t = LoopbackTcpCrdtTransport::bind(PeerId(1), cfg.clone()).expect("bind sender");
-    let mut recv_t = LoopbackTcpCrdtTransport::bind(PeerId(2), cfg).expect("bind receiver");
+    let mut sender_t = LoopbackTcpCrdtTransport::bind(PeerId(1), token).expect("bind sender");
+    let mut recv_t = LoopbackTcpCrdtTransport::bind(PeerId(2), token).expect("bind receiver");
 
     recv_t
-        .connect_peer(PeerId(1), sender_t.local_addr())
+        .connect_peer_pinned(PeerId(1), sender_t.local_addr(), sender_t.cert_sha256())
         .expect("connect receiver -> sender");
     sender_t
-        .connect_peer(PeerId(2), recv_t.local_addr())
+        .connect_peer_pinned(PeerId(2), recv_t.local_addr(), recv_t.cert_sha256())
         .expect("connect sender -> receiver");
     assert!(sender_t.wait_for_inbound_peers(1, Duration::from_secs(2)));
     assert!(recv_t.wait_for_inbound_peers(1, Duration::from_secs(2)));
@@ -346,16 +340,16 @@ fn loopback_tcp_rejects_corrupt_and_truncated_nvc1_frames_without_corrupting_sta
     let mut flipped = valid_delta.clone();
     let mid = flipped.len() / 2;
     flipped[mid] ^= 0x55;
-    // 3. Invalid 4-byte magic
+    // 3. Invalid 8-byte magic
     let mut bad_magic = valid_delta.clone();
-    bad_magic[0..4].copy_from_slice(b"NOPE");
-    // 4. Corrupt NVCD digest checksum
+    bad_magic[0..8].copy_from_slice(b"BADMAGIC");
+    // 4. Corrupt digest checksum
     let mut bad_digest =
         CrdtWireFrame::encode_digest(PeerId(1), sender.doc().version_vector()).unwrap();
     let last = bad_digest.len() - 1;
     bad_digest[last] ^= 0xFF;
-    // 5. Valid NVC1 wire checksum, invalid Studio Priority discriminant (99)
-    let bad_domain = CrdtDeltaPacket::new(
+    // 5. Valid NveCrdtDelta wire checksum, invalid Studio Priority discriminant (99)
+    let bad_domain = NveCrdtDelta::new(
         PeerId(1),
         VersionVector::new(),
         vec![

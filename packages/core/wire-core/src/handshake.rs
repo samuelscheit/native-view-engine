@@ -1,0 +1,233 @@
+//! Bearer-token TLS 1.3 handshake messages (`Hello`, `HelloAck`, `Reject`) and out-of-order
+//! `AsyncSlot` chunk payloads for `NveWireFrame` v2.
+
+use crate::frame::NveWireError;
+
+/// Default wire schema version negotiated during `Hello` / `HelloAck`.
+pub const DEFAULT_WIRE_SCHEMA_VERSION: u16 = 2;
+
+/// Capability flag: peer supports `NveSceneArchive` (`SceneKeyframe`) frames.
+pub const NVE_WIRE_CAP_SCENE_ARCHIVE: u32 = 1 << 0;
+/// Capability flag: peer supports compact `NodePatchDelta` frames.
+pub const NVE_WIRE_CAP_NODE_PATCHES: u32 = 1 << 1;
+/// Capability flag: peer supports RFC 9221 unreliable datagrams.
+pub const NVE_WIRE_CAP_DATAGRAMS: u32 = 1 << 2;
+/// Capability flag: peer supports out-of-order `SlotChunk` async/GenUI streaming.
+pub const NVE_WIRE_CAP_SLOT_CHUNKS: u32 = 1 << 3;
+
+const MAX_TOKEN_BYTES: usize = 512;
+const MAX_CLIENT_NAME_BYTES: usize = 128;
+
+/// Constant-time byte-slice equality check (prevents timing leaks on Bearer tokens).
+#[inline]
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let len_diff = (a.len() ^ b.len()) as u64;
+    let min_len = a.len().min(b.len());
+    let mut diff: u8 = 0;
+    for i in 0..min_len {
+        diff |= a[i] ^ b[i];
+    }
+    len_diff == 0 && diff == 0
+}
+
+/// Handshake rejection reason carried in `NveWireKind::Reject` payloads.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NveWireRejectReason {
+    Unauthorized = 1,
+    SchemaVersionMismatch = 2,
+    UnsupportedVersion = 3,
+    ServerBusy = 4,
+    FrameTooLarge = 5,
+}
+
+impl NveWireRejectReason {
+    #[inline]
+    pub const fn from_u8(raw: u8) -> Result<Self, NveWireError> {
+        match raw {
+            1 => Ok(Self::Unauthorized),
+            2 => Ok(Self::SchemaVersionMismatch),
+            3 => Ok(Self::UnsupportedVersion),
+            4 => Ok(Self::ServerBusy),
+            5 => Ok(Self::FrameTooLarge),
+            _ => Err(NveWireError::InvalidPayload("unknown reject reason")),
+        }
+    }
+
+    pub fn encode(self, detail: &str) -> Vec<u8> {
+        let detail_bytes = detail.as_bytes();
+        let clipped_len = detail_bytes.len().min(256);
+        let mut out = Vec::with_capacity(4 + clipped_len);
+        out.push(self as u8);
+        out.push(0);
+        out.extend_from_slice(&(clipped_len as u16).to_le_bytes());
+        out.extend_from_slice(&detail_bytes[..clipped_len]);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<(Self, String), NveWireError> {
+        if bytes.len() < 4 {
+            return Err(NveWireError::Truncated {
+                expected: 4,
+                actual: bytes.len(),
+            });
+        }
+        let reason = Self::from_u8(bytes[0])?;
+        let detail_len = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        if bytes.len() != 4 + detail_len {
+            return Err(NveWireError::InvalidPayload("reject detail length mismatch"));
+        }
+        let detail = std::str::from_utf8(&bytes[4..])
+            .map_err(|_| NveWireError::InvalidUtf8)?
+            .to_owned();
+        Ok((reason, detail))
+    }
+}
+
+/// Client `Hello` payload carrying the real Bearer token over TLS 1.3 (no FNV-1a derivation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NveWireHello {
+    pub schema_version: u16,
+    pub capabilities: u32,
+    pub bearer_token: String,
+    pub client_name: String,
+}
+
+impl NveWireHello {
+    pub fn new(bearer_token: impl Into<String>, client_name: impl Into<String>) -> Self {
+        Self {
+            schema_version: DEFAULT_WIRE_SCHEMA_VERSION,
+            capabilities: NVE_WIRE_CAP_SCENE_ARCHIVE
+                | NVE_WIRE_CAP_NODE_PATCHES
+                | NVE_WIRE_CAP_DATAGRAMS
+                | NVE_WIRE_CAP_SLOT_CHUNKS,
+            bearer_token: bearer_token.into(),
+            client_name: client_name.into(),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, NveWireError> {
+        let token = self.bearer_token.as_bytes();
+        let name = self.client_name.as_bytes();
+        if token.len() > MAX_TOKEN_BYTES {
+            return Err(NveWireError::InvalidPayload("bearer token exceeds 512 bytes"));
+        }
+        if name.len() > MAX_CLIENT_NAME_BYTES {
+            return Err(NveWireError::InvalidPayload("client name exceeds 128 bytes"));
+        }
+        let mut out = Vec::with_capacity(10 + token.len() + name.len());
+        out.extend_from_slice(&self.schema_version.to_le_bytes());
+        out.extend_from_slice(&self.capabilities.to_le_bytes());
+        out.extend_from_slice(&(token.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(token);
+        out.extend_from_slice(name);
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, NveWireError> {
+        if bytes.len() < 10 {
+            return Err(NveWireError::Truncated {
+                expected: 10,
+                actual: bytes.len(),
+            });
+        }
+        let schema_version = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let capabilities = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
+        let token_len = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
+        let name_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+        if token_len > MAX_TOKEN_BYTES || name_len > MAX_CLIENT_NAME_BYTES {
+            return Err(NveWireError::InvalidPayload("hello string exceeds limit"));
+        }
+        if bytes.len() != 10 + token_len + name_len {
+            return Err(NveWireError::InvalidPayload("hello payload length mismatch"));
+        }
+        let bearer_token = std::str::from_utf8(&bytes[10..10 + token_len])
+            .map_err(|_| NveWireError::InvalidUtf8)?
+            .to_owned();
+        let client_name = std::str::from_utf8(&bytes[10 + token_len..])
+            .map_err(|_| NveWireError::InvalidUtf8)?
+            .to_owned();
+        Ok(Self {
+            schema_version,
+            capabilities,
+            bearer_token,
+            client_name,
+        })
+    }
+}
+
+/// Server `HelloAck` payload confirming session ID and negotiated capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NveWireHelloAck {
+    pub session_id: u32,
+    pub schema_version: u16,
+    pub server_capabilities: u32,
+}
+
+impl NveWireHelloAck {
+    pub const ENCODED_LEN: usize = 12;
+
+    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0u8; Self::ENCODED_LEN];
+        out[0..4].copy_from_slice(&self.session_id.to_le_bytes());
+        out[4..6].copy_from_slice(&self.schema_version.to_le_bytes());
+        out[6..8].copy_from_slice(&0u16.to_le_bytes());
+        out[8..12].copy_from_slice(&self.server_capabilities.to_le_bytes());
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, NveWireError> {
+        if bytes.len() != Self::ENCODED_LEN {
+            return Err(NveWireError::Truncated {
+                expected: Self::ENCODED_LEN,
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self {
+            session_id: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            schema_version: u16::from_le_bytes([bytes[4], bytes[5]]),
+            server_capabilities: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+        })
+    }
+}
+
+/// Out-of-order async / GenUI slot chunk payload carried in `NveWireKind::SlotChunk`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NveWireSlotChunk<'a> {
+    pub slot_id: u32,
+    pub chunk_index: u32,
+    pub total_chunks: u32,
+    pub data: &'a [u8],
+}
+
+impl<'a> NveWireSlotChunk<'a> {
+    pub const HEADER_LEN: usize = 12;
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::HEADER_LEN + self.data.len());
+        out.extend_from_slice(&self.slot_id.to_le_bytes());
+        out.extend_from_slice(&self.chunk_index.to_le_bytes());
+        out.extend_from_slice(&self.total_chunks.to_le_bytes());
+        out.extend_from_slice(self.data);
+        out
+    }
+
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, NveWireError> {
+        if bytes.len() < Self::HEADER_LEN {
+            return Err(NveWireError::Truncated {
+                expected: Self::HEADER_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let slot_id = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let chunk_index = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let total_chunks = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        Ok(Self {
+            slot_id,
+            chunk_index,
+            total_chunks,
+            data: &bytes[Self::HEADER_LEN..],
+        })
+    }
+}

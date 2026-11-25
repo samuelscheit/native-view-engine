@@ -10,6 +10,8 @@ members = [
     "packages/core/codegen",
     "packages/core/interop",
     "packages/core/host-services",
+    "packages/core/wire-core",
+    "packages/core/wire",
     "packages/backends/headless",
     "packages/backends/skia",
     "packages/backends/web",
@@ -29,7 +31,6 @@ members = [
     "packages/modules/linking",
     "packages/modules/location",
     "packages/modules/notifications",
-    "packages/modules/pair",
     "packages/modules/secure-store",
     "packages/modules/sensors",
     "packages/modules/share",
@@ -59,6 +60,8 @@ nve-dioxus = { path = "packages/core/dioxus" }
 nve-codegen = { path = "packages/core/codegen" }
 nve-interop = { path = "packages/core/interop" }
 nve-host-services = { path = "packages/core/host-services" }
+nve-wire-core = { path = "packages/core/wire-core" }
+nve-wire = { path = "packages/core/wire" }
 nve-ui = { path = "packages/framework/ui" }
 nve-router = { path = "packages/framework/router" }
 nve-i18n = { path = "packages/framework/i18n" }
@@ -90,6 +93,19 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 rustc-hash = "2.1.1"
 tungstenite = "0.30.0"
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring", "bloom"] }
+web-transport-quinn = "0.14.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "logging", "tls12"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }
+futures-util = "0.3"
+subtle = "2.6.1"
+bytes = "1"
+url = "2"
+base64 = "0.22"
+getrandom = "0.4.3"
 crossbeam-channel = "0.5.17"
 skia-safe = "0.157.0"
 cosmic-text = "0.19.0"

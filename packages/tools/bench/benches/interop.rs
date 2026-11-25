@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use nve_interop::crdt::{
-    CrdtDeltaPacket, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
+    NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
     RgaList, VersionVector,
 };
 use nve_interop::{
@@ -213,7 +213,7 @@ fn bench_intrinsic_layout_negotiation(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_crdt_bench_packet(record_count: usize) -> CrdtDeltaPacket {
+fn build_crdt_bench_packet(record_count: usize) -> NveCrdtDelta {
     let peer = PeerId(1);
     let mut clock = HlcClock::with_initial(peer, 1_700_000_000_000);
     let mut vv = VersionVector::new();
@@ -260,7 +260,7 @@ fn build_crdt_bench_packet(record_count: usize) -> CrdtDeltaPacket {
         }
     }
 
-    CrdtDeltaPacket::new(peer, vv, records)
+    NveCrdtDelta::new(peer, vv, records)
 }
 
 fn bench_crdt_delta_encode(c: &mut Criterion) {
@@ -291,7 +291,7 @@ fn bench_crdt_delta_merge(c: &mut Criterion) {
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("records", count), &count, |b, _| {
             b.iter(|| {
-                let decoded = CrdtDeltaPacket::decode(black_box(&wire_bytes)).unwrap();
+                let decoded = NveCrdtDelta::decode(black_box(&wire_bytes)).unwrap();
                 let mut set = OrSet::new();
                 let mut reg = LwwRegister::default();
                 let mut counter = PnCounter::new();

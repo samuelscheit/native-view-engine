@@ -1,0 +1,10 @@
+[package]
+name = "nve-wire-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sans-I/O NveWireFrame v2 protocol, compact NodePatchDelta codec, and URI/session state machine (wasm32-clean)"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-engine = { workspace = true }
