@@ -19,8 +19,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (Web TV D-Pad Remaining)**
   - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad), Phase 2 (standalone `packages/modules/tv` + real `tvOS`/`watchOS`/`visionOS`/`iOS` SDK builds + static `NveInterfaceResolver`), and Phase 3 CLI (`nve build --target tvos/visionos/watchos` + `.xcframework` recipes) are landed; remaining work is Web TV D-Pad key handling in `nve-backend-web`.
 
-- [ ] **Adopt Measured Allocator & Persistence Architecture (`FrameArena` + `MmapOffsetArena` / Hardware-Hashed `NVERELOC`)**
-  - Benchmark experiment (`bf6f52c`) proved `FrameArena` (`3.55×` at 50k nodes), pre-validated `NVERELOC` (`1.18×` faster than owned `Vec` in RAM), and `MmapOffsetArena` (`2.23 ns` / `39.6 µs` `msync` incremental edits, `41.8 µs` open) and identified serial FNV-1a as the full-verify bottleneck; promote `FrameArena` into `nve-engine`/`nve-dioxus`, replace serial blob FNV-1a with hardware CRC32C, and standardize local state persistence on `MmapOffsetArena` (or `NVERELOC` + WAL).
+- [ ] **Collapse 4 Persistence Formats → 2 (`NVERELOC` + `MmapOffsetArena`), Native Instant-Boot & Hot-Path `FrameArena`**
+  - `XXH64`, `FrameArena`, and crash-atomic double-buffered `MmapOffsetArena` are now production primitives in `nve-engine` (`023d77a`); remaining work is promoting `NVERELOC` into `nve-engine` + `cxx/nve-fabric-bridge`, deleting legacy `NVE_SNAP` & `NVE_WAL`, adding generic `InstantBootApp` + `nve prerender` (`frame0.nvereloc` cold boot + `MmapOffsetArena` per-user state restore), and adopting `FrameArena` on hot `nve-dioxus`/`nve-engine` per-frame allocation paths.
 
 ---
 
@@ -32,8 +32,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Animation & Rich Graphics (`transform`, Gradients, Interruptible Springs, Style Transitions, Skia SVG)**
   - Add typed `transform` (`translate`/`scale`/`rotate`), linear/radial gradients, interruptible velocity-preserving spring physics (`ReducedMotion`-aware), style transitions, and cached vector SVG rendering in `SkiaBackend`.
 
-- [ ] **Text Input, IME, BiDi, Autofill/OTP, Soft Keyboard Insets & UI `ErrorBoundary`**
-  - Cross-platform `autocomplete`/`textContentType` autofill/OTP hints, unified IME `CompositionStart/Update/End` + caret screen-rect candidate-popup feedback, BiDi run/caret mapping & grapheme-safe selection in Skia, cross-platform `KeyboardInsets` trait, and subtree UI `ErrorBoundary` with fallback + recovery.
+- [ ] **Text Input, IME, BiDi & Mobile Host Autofill/Keyboard Wiring**
+  - Subtree `ErrorBoundary`, `AutofillHint`/`InputMode` + Web autofill sync, and `KeyboardInsets` + Web `visualViewport` + `KeyboardAvoidingView` are landed (`38b351c`); remaining work is unified IME `CompositionStart/Update/End` + caret screen-rect candidate-popup feedback, BiDi run/caret mapping & grapheme-safe selection in Skia, and native Apple/Android host wiring for `AutofillHint`/`KeyboardInsets`.
 
 - [ ] **Desktop OS Polish, `DatePicker`, Live Layout Inspector & Native AccessKit Parity**
   - OS drag-and-drop (internal + file drop), native menu bar / context menus / system tray, locale-aware `DatePicker`/`DateRangePicker` (built on `nve-i18n`'s `CalendarDate`/`first_day_of_week`), live visual layout/recomposition overlay inspector, and full native AccessKit/UIA/AT-SPI accessibility tree sync.
