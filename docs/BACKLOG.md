@@ -35,8 +35,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Text Input, IME, BiDi, Autofill/OTP, Soft Keyboard Insets & UI `ErrorBoundary`**
   - Cross-platform `autocomplete`/`textContentType` autofill/OTP hints, unified IME `CompositionStart/Update/End` + caret screen-rect candidate-popup feedback, BiDi run/caret mapping & grapheme-safe selection in Skia, cross-platform `KeyboardInsets` trait, and subtree UI `ErrorBoundary` with fallback + recovery.
 
-- [ ] **Desktop OS Polish, `nve-i18n`, `DatePicker`, Live Layout Inspector & Native AccessKit Parity**
-  - OS drag-and-drop (internal + file drop), native menu bar / context menus / system tray, `nve-i18n` (CLDR plurals, ICU MessageFormat, locale formatting, pseudo-l10n), locale-aware `DatePicker`/`DateRangePicker`, live visual layout/recomposition overlay inspector, and full native AccessKit/UIA/AT-SPI accessibility tree sync.
+- [ ] **Desktop OS Polish, `DatePicker`, Live Layout Inspector & Native AccessKit Parity**
+  - OS drag-and-drop (internal + file drop), native menu bar / context menus / system tray, locale-aware `DatePicker`/`DateRangePicker` (built on `nve-i18n`'s `CalendarDate`/`first_day_of_week`), live visual layout/recomposition overlay inspector, and full native AccessKit/UIA/AT-SPI accessibility tree sync.
 
 ---
 

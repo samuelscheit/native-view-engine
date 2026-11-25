@@ -106,7 +106,7 @@ Capabilities teams hit in months 1–3 of building real consumer or B2B apps.
 | Capability | Status | NVE Evidence / Tracking | Key Edge Cases |
 | :--- | :---: | :--- | :--- |
 | **Full RTL Mirroring & Logical Layout Properties** | **Missing** | `Locale` / `TextDirection` traits exist, but layout lacks `padding-inline-start`/`margin-inline`, RTL flex mirroring, and selective icon mirroring. Tracked in [BACKLOG.md](./BACKLOG.md#p1--ui--engine-maturity-from-ui-maturity-audit). | Flip directional chevrons/back arrows; never flip checkmarks, clocks, search, `×`, or logos. |
-| **CLDR Pluralization, Formatting & Pseudo-Localization** | **Missing** | No `nve-i18n` crate yet. Tracked in [BACKLOG.md](./BACKLOG.md#p1--ui--engine-maturity-from-ui-maturity-audit). | 6 Arabic plural categories, ICU MessageFormat, currency/number/date/relative-time, CI pseudo-l10n expansion checks. |
+| **CLDR Pluralization, Formatting & Pseudo-Localization** | **Done** | Shipped platform-first `packages/framework/i18n` (`nve-i18n`: `WebIntlBackend` `Intl.*` on `wasm32` + opt-outable `BuiltinI18nBackend` CLDR v45+, ICU MessageFormat, `PseudoLocalizer`, `IconMirrorPolicy`) ([CHANGELOG.md](./CHANGELOG.md)). | 6 Arabic/Welsh plural categories, ICU MessageFormat, currency/number/date/relative-time, CI pseudo-l10n expansion checks. |
 | **Design Token Architecture & Adaptive Theming** | **Done** | Typed `UiTheme` / `UiPalette` / `SpacingScale` / `RadiiScale` / `TypographyScale`, `UiDensity`, `ThemeProvider`, and scoped `TraitOverrides` shipped ([CHANGELOG.md](./CHANGELOG.md)). | Instant theme switching without state loss; dark subtree inside light app. |
 
 ### 5. Developer Experience (DX), Testing & Observability
