@@ -364,14 +364,13 @@ struct HostEdgeApp {
     for (const auto &ev : decoded) {
       if (ev.kind == nve::EventKind::TextChange && ev.node_id == 5) {
         self->last_typed = ev.text;
-        const std::string json = "{\"typed\":\"" + ev.text + "\"}";
-        self->outbound.push_custom(
-            self->surface_id,
-            5,
-            ev.timestamp_us,
-            "onTextTyped",
-            reinterpret_cast<const uint8_t *>(json.data()),
-            json.size());
+        const NveMapEntry entry{
+            nve::make_str_slice("typed"),
+            nve::make_str_value(nve::make_str_slice(ev.text)),
+        };
+        const NveValue payload = nve::make_map_value(&entry, 1);
+        self->outbound.push_custom_value(
+            self->surface_id, 5, ev.timestamp_us, "onTextTyped", payload);
         return 0;
       }
     }
@@ -380,10 +379,31 @@ struct HostEdgeApp {
 
   static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
     auto *self = static_cast<HostEdgeApp *>(h);
-    std::string json(reinterpret_cast<const char *>(props.ptr), props.len);
-    if (json.find("\"stage\":1") != std::string::npos) {
-      self->stage = 1;
-      return 1;
+    if (const auto view = nve::BinValueView::parse(props)) {
+      if (const auto stage = view->map_get("stage"); stage && stage->as_i64() == 1) {
+        self->stage = 1;
+        return 1;
+      }
+    } else if (props.ptr && props.len > 0) {
+      std::string json(reinterpret_cast<const char *>(props.ptr), props.len);
+      if (json.find("\"stage\":1") != std::string::npos) {
+        self->stage = 1;
+        return 1;
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+    auto *self = static_cast<HostEdgeApp *>(h);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (nve::str_slice_view(entries[i].key) == "stage") {
+        if ((entries[i].value.tag == NVE_VAL_I64 && entries[i].value.data.i64_val == 1) ||
+            (entries[i].value.tag == NVE_VAL_F64 && entries[i].value.data.f64_val == 1.0)) {
+          self->stage = 1;
+          return 1;
+        }
+      }
     }
     return 0;
   }
@@ -396,8 +416,8 @@ struct HostEdgeApp {
   }
 
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
-    static const NveComponentApi kComp{&set_props, &drain_emitted_events};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveComponentApi kComp{&set_props, &drain_emitted_events, &set_props_direct};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
     return nullptr;

@@ -56,7 +56,7 @@ impl nve_engine::TextMeasurer for BitmapFontTextMeasurer {
             Some(mw) => {
                 for line in text.split('\n') {
                     let raw_w = line.chars().count() as f32 * metrics.advance_x;
-                    if raw_w > mw {
+                    if raw_w > mw + 1e-3 {
                         let wrapped = (raw_w / mw).ceil().max(1.0);
                         max_line_w = max_line_w.max(mw);
                         total_lines += wrapped;

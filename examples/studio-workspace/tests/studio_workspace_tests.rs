@@ -255,7 +255,7 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     assert!(h.ascii().contains("Accent -> Violet"));
     assert!(h.html().contains("rgba(167,139,250,1.000)"));
 
-    // 2. Corner Radius -> Pill (18px) and Sharp (6px)
+    // 2. Corner Radius -> Pill (18px) and Sharp (0px)
     h.press("radius-pill");
     assert!(h.ascii().contains("Radius -> Pill (18)"));
     assert!(h.html().contains("border-radius:18px;"));
@@ -266,7 +266,7 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
         "expected 'Radius -> Sharp (0)' in tree:\n{}",
         h.ascii()
     );
-    assert!(h.html().contains("border-radius:6px;"));
+    assert!(h.html().contains("border-radius:0px;"));
 
     // 3. Density -> Compact
     h.press("density-compact");

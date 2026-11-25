@@ -166,10 +166,12 @@ NVE_API const void* nve_get_interface(uint32_t interface_id) {
       fixture_destroy,
       fixture_render,
       fixture_dispatch_events,
+      NULL,
   };
   static const NveComponentApi kComponent = {
       fixture_set_props,
       fixture_drain_emitted_events,
+      NULL,
   };
   static const NveDevApi kDev = {
       fixture_apply_hot_patch,

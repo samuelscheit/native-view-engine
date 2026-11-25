@@ -50,6 +50,7 @@ class BuiltinWinDemoApp {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
+        .dispatch_events_direct = nullptr,
     };
     if (interface_id == NVE_IFACE_SURFACE) {
       return &kSurface;

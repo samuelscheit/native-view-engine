@@ -295,10 +295,12 @@ struct MockQtRustComponent {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
+        .dispatch_events_direct = nullptr,
     };
     static const NveComponentApi kComponent{
         .set_props = &set_props,
         .drain_emitted_events = &drain_emitted_events,
+        .set_props_direct = nullptr,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = &apply_hot_patch,

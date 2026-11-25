@@ -44,6 +44,7 @@ class BuiltinGtkDemoApp {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
+        .dispatch_events_direct = nullptr,
     };
     return (interface_id == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
   }

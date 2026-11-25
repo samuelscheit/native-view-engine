@@ -267,10 +267,12 @@ struct MockGtkRustComponent {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
+        .dispatch_events_direct = nullptr,
     };
     static const NveComponentApi kComponent{
         .set_props = &set_props,
         .drain_emitted_events = &drain_emitted_events,
+        .set_props_direct = nullptr,
     };
     switch (interface_id) {
       case NVE_IFACE_SURFACE:
@@ -409,8 +411,11 @@ void test_attached_widgets_pango_and_swaps() {
   NVE_CHECK(gtk_widget_get_parent(scroll_child) != nullptr);
   NVE_CHECK(GTK_IS_FIXED(gtk_widget_get_parent(scroll_child)));
 
-  double lx = 0.0, ly = 0.0;
-  gtk_fixed_get_child_position(GTK_FIXED(container), label_widget, &lx, &ly);
+  GskTransform* label_transform =
+      gtk_fixed_get_child_transform(GTK_FIXED(container), label_widget);
+  NVE_CHECK(label_transform != nullptr);
+  float lx = 0.0f, ly = 0.0f;
+  gsk_transform_to_translate(label_transform, &lx, &ly);
   NVE_CHECK(approx_eq(lx, 20.0));
   NVE_CHECK(approx_eq(ly, 20.0));
 
