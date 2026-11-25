@@ -20,6 +20,7 @@ add_library(nve_gtk_shell_lib STATIC
   NveGtkMedia.cpp
   NveGtkStyleA11y.cpp
   NveGtkReconciler.cpp
+  NveGtkNativeViews.cpp
   NveGtkWindowManager.cpp
 )
 

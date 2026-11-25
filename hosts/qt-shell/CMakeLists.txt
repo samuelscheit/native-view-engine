@@ -50,6 +50,8 @@ add_library(nve_qt_shell_lib STATIC
   NveQtCustomWidgets.cpp
   NveQtTextInputA11y.cpp
   NveQtWidgetReconciler.cpp
+  NveQtNativeViews.hpp
+  NveQtNativeViews.cpp
   NveQtWindowManager.hpp
   NveQtWindowManager.cpp
 )
