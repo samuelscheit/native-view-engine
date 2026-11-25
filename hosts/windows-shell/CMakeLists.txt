@@ -16,6 +16,7 @@ endif()
 
 set(NVE_WIN_SHELL_SOURCES
   NveRnwComponentView.cpp
+  NveWinWindowManager.cpp
 )
 if(WIN32)
   list(APPEND NVE_WIN_SHELL_SOURCES

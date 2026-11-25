@@ -1632,6 +1632,8 @@ void test_paired_thin_client_widgets_and_quick() {
 
 } // namespace
 
+void nve_test_qt_window_manager();
+
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
 
@@ -1643,6 +1645,7 @@ int main(int argc, char* argv[]) {
   test_image_scroll_and_incremental_reconciliation();
   test_draw_list_canvas_widget_and_corrupt_survival();
   test_paired_thin_client_widgets_and_quick();
+  nve_test_qt_window_manager();
 
   std::cout << "nve_qt_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6" : "Standalone+Qt6") << ")\n";

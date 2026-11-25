@@ -175,6 +175,43 @@ void NveWinHostWindow::disconnect_paired() noexcept {
   host_.disconnect_paired();
 }
 
+void NveWinHostWindow::set_title(std::string_view title) {
+  options_.title.assign(title.data(), title.size());
+  if (hwnd_ != nullptr) {
+    const std::wstring wtitle = DirectWriteTextMeasurer::utf8_to_wide(options_.title);
+    ::SetWindowTextW(hwnd_, wtitle.c_str());
+  }
+}
+
+void NveWinHostWindow::set_bounds(int x, int y, int width, int height) {
+  if (width > 0) options_.width = width;
+  if (height > 0) options_.height = height;
+  if (hwnd_ != nullptr && width > 0 && height > 0) {
+    ::SetWindowPos(hwnd_, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+}
+
+void NveWinHostWindow::focus() {
+  if (hwnd_ != nullptr) {
+    ::SetForegroundWindow(hwnd_);
+    ::SetFocus(hwnd_);
+  }
+}
+
+void NveWinHostWindow::close() {
+  if (hwnd_ != nullptr && ::IsWindow(hwnd_)) {
+    ::DestroyWindow(hwnd_);
+  }
+}
+
+void NveWinHostWindow::set_on_close_request(std::function<bool(uint32_t)> callback) {
+  on_close_request_ = std::move(callback);
+}
+
+void NveWinHostWindow::set_on_destroy(std::function<void(uint32_t)> callback) {
+  on_destroy_ = std::move(callback);
+}
+
 bool NveWinHostWindow::save_screenshot_bmp(
     std::string_view out_bmp_path,
     std::string* out_error) const {
@@ -361,15 +398,27 @@ LRESULT NveWinHostWindow::handle_message(UINT msg, WPARAM wparam, LPARAM lparam)
         ::InvalidateRect(hwnd_, nullptr, FALSE);
       }
       return 0;
-    case WM_DESTROY:
+    case WM_CLOSE:
+      if (on_close_request_ && !on_close_request_(options_.surface_id)) {
+        return 0;
+      }
+      ::DestroyWindow(hwnd_);
+      return 0;
+    case WM_DESTROY: {
       wake_hwnd_.store(nullptr, std::memory_order_release);
       host_.disconnect_paired();
       discard_device_resources();
       hwnd_ = nullptr;
+      auto destroy_cb = on_destroy_;
+      const uint32_t sid = options_.surface_id;
+      if (destroy_cb) {
+        destroy_cb(sid);
+      }
       if (options_.quit_on_destroy) {
         ::PostQuitMessage(0);
       }
       return 0;
+    }
     default:
       return ::DefWindowProcW(hwnd_, msg, wparam, lparam);
   }

@@ -15,6 +15,7 @@ pub mod plugin_host;
 pub mod surface;
 pub mod sync_delta;
 pub mod sync_transport;
+pub mod window;
 
 pub use channel::{
     CHANNEL_ID_AUTH, CHANNEL_ID_LOCALE, CHANNEL_ID_NAVIGATION, CHANNEL_ID_THEME, ChannelId,
@@ -41,8 +42,14 @@ pub use plugin_host::{
 };
 pub use surface::{
     ColorScheme, EnvironmentOverrides, FrameworkKind, LifecycleState, SafeAreaInsets,
-    SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent, SurfaceOrchestrator, SurfaceRecord,
-    TeardownRecord, ThemeContext,
+    SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent, SurfaceOrchestrator, SurfacePresentation,
+    SurfaceRecord, TeardownRecord, ThemeContext,
+};
+pub use window::{
+    ManagedWindow, NVW1_HEADER_SIZE, NVW1_MAGIC, NVW1_VERSION, WindowCodecError, WindowCommand,
+    WindowDescriptor, WindowError, WindowFlags, WindowHandleId, WindowLifecycleEvent,
+    WindowLifecycleState, WindowManager, WindowRect, WindowState, decode_window_commands,
+    decode_window_events, encode_window_commands, encode_window_events,
 };
 pub use sync_delta::{
     DEFAULT_SYNC_WINDOW, DELTA_HEADER_SIZE, DeltaPacketHeader, DeltaPacketRef, FLAG_RETRANSMIT,
@@ -73,6 +80,7 @@ pub struct InteropRuntime {
     pub layout: LayoutNegotiator,
     pub gestures: GestureArbitrator,
     pub channels: NveChannelBus,
+    pub windows: WindowManager,
 }
 
 impl InteropRuntime {
@@ -82,6 +90,7 @@ impl InteropRuntime {
             layout: LayoutNegotiator::new(),
             gestures: GestureArbitrator::new(),
             channels: NveChannelBus::new(),
+            windows: WindowManager::new(),
         }
     }
 
@@ -129,6 +138,9 @@ impl InteropRuntime {
             self.gestures.unregister_surface(rec.surface_id);
             self.layout.invalidate_surface(rec.surface_id);
             self.channels.unsubscribe_surface(rec.surface_id);
+            if let Some(handle) = self.windows.handle_for_surface(rec.surface_id) {
+                let _ = self.windows.close_window(handle);
+            }
         }
         Ok(torn_down)
     }

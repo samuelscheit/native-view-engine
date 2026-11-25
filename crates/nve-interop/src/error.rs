@@ -31,6 +31,13 @@ pub enum InteropError {
     SyncDelta(String),
     SyncTransport(String),
     Plugin(String),
+    Window(String),
+}
+
+impl From<crate::window::WindowError> for InteropError {
+    fn from(value: crate::window::WindowError) -> Self {
+        Self::Window(value.to_string())
+    }
 }
 
 impl fmt::Display for InteropError {
@@ -60,6 +67,7 @@ impl fmt::Display for InteropError {
             Self::SyncDelta(msg) => write!(f, "sync delta protocol error: {msg}"),
             Self::SyncTransport(msg) => write!(f, "sync transport error: {msg}"),
             Self::Plugin(msg) => write!(f, "plugin host error: {msg}"),
+            Self::Window(msg) => write!(f, "window lifecycle error: {msg}"),
         }
     }
 }

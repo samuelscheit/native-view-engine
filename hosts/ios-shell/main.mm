@@ -2,7 +2,16 @@
 
 #import "RCTNveComponentView.h"
 
+#include <atomic>
+#include <cstdint>
+
 namespace {
+
+std::atomic<uint32_t> gNextIosSurfaceId{1u};
+
+uint32_t NveAllocateIosSurfaceId(void) {
+  return gNextIosSurfaceId.fetch_add(1u, std::memory_order_relaxed);
+}
 
 // Dark slate background (#0f172a) matching NVE app shells.
 UIColor *NveDarkSlateColor(void) {
@@ -20,7 +29,7 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
   return [[NSBundle mainBundle] pathForResource:@"libnve_app" ofType:@"dylib"];
 }
 
-NSString * _Nullable NveResolveSnapshotPath(void) {
+NSString * _Nullable NveResolveSnapshotPath(uint32_t surfaceId) {
   NSDictionary<NSString *, NSString *> *env = NSProcessInfo.processInfo.environment;
   NSString *disabled = env[@"NVE_SNAPSHOT_DISABLE"];
   if ([disabled isEqualToString:@"1"] || [disabled.lowercaseString isEqualToString:@"true"]) {
@@ -28,7 +37,10 @@ NSString * _Nullable NveResolveSnapshotPath(void) {
   }
   NSString *envPath = env[@"NVE_SNAPSHOT_PATH"];
   if (envPath.length > 0) {
-    return envPath;
+    if (surfaceId <= 1u) {
+      return envPath;
+    }
+    return [NSString stringWithFormat:@"%@.surface%u", envPath, surfaceId];
   }
   NSArray<NSString *> *caches =
       NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
@@ -36,7 +48,10 @@ NSString * _Nullable NveResolveSnapshotPath(void) {
   if (cacheDir.length == 0) {
     return nil;
   }
-  return [cacheDir stringByAppendingPathComponent:@"nve_frame0.nvesnap"];
+  NSString *filename = surfaceId <= 1u
+                           ? @"nve_frame0.nvesnap"
+                           : [NSString stringWithFormat:@"nve_frame0_s%u.nvesnap", surfaceId];
+  return [cacheDir stringByAppendingPathComponent:filename];
 }
 
 uint32_t NveResolveSnapshotSchemaVersion(void) {
@@ -122,6 +137,7 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 }  // namespace
 
 @interface NveIosRootViewController : UIViewController
+@property (nonatomic, assign) uint32_t surfaceId;
 @property (nonatomic, strong) RCTNveComponentView *componentView;
 @property (nonatomic, strong, nullable) UILabel *errorLabel;
 @property (nonatomic, copy, nullable) NSString *snapshotPath;
@@ -130,6 +146,7 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 @property (nonatomic, copy, nullable) NSString *pairTransport;
 @property (nonatomic, assign) uint32_t snapshotSchemaVersion;
 @property (nonatomic, assign) BOOL didAttemptLoad;
+- (instancetype)initWithSurfaceId:(uint32_t)surfaceId;
 - (void)applyPairURL:(NSURL *)url;
 - (void)disconnectPairedIfNeeded;
 - (void)saveSnapshotIfPossible;
@@ -137,14 +154,25 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 
 @implementation NveIosRootViewController
 
+- (instancetype)initWithSurfaceId:(uint32_t)surfaceId {
+  self = [super initWithNibName:nil bundle:nil];
+  if (self) {
+    _surfaceId = surfaceId > 0u ? surfaceId : NveAllocateIosSurfaceId();
+  }
+  return self;
+}
+
 - (UIStatusBarStyle)preferredStatusBarStyle {
   return UIStatusBarStyleLightContent;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
+  if (self.surfaceId == 0u) {
+    self.surfaceId = NveAllocateIosSurfaceId();
+  }
   self.view.backgroundColor = NveDarkSlateColor();
-  self.snapshotPath = NveResolveSnapshotPath();
+  self.snapshotPath = NveResolveSnapshotPath(self.surfaceId);
   self.snapshotSchemaVersion = NveResolveSnapshotSchemaVersion();
   if (self.pairEndpoint.length == 0) {
     const NveIosPairConfig launchPair = NveResolveLaunchPairConfig();
@@ -204,7 +232,7 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   if (![self.componentView connectPairedEndpoint:self.pairEndpoint
                                            token:(self.pairToken ?: @"")
                                        transport:self.pairTransport
-                                       surfaceId:1
+                                       surfaceId:self.surfaceId
                                            error:&err]) {
     NSString *detail = err.localizedDescription ?: @"unknown error";
     NSString *msg =
@@ -250,7 +278,7 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   }
 
   NSError *err = nil;
-  if (![self.componentView loadNveDylibAtPath:dylibPath surfaceId:1 error:&err]) {
+  if (![self.componentView loadNveDylibAtPath:dylibPath surfaceId:self.surfaceId error:&err]) {
     NSString *detail = err.localizedDescription ?: @"unknown error";
     NSString *msg =
         [NSString stringWithFormat:@"NveIosShell: Failed to load NVE dylib at %@: %@",
@@ -309,8 +337,20 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 
 @end
 
+@class NveIosSceneDelegate;
+
+@interface NveIosAppDelegate : UIResponder <UIApplicationDelegate>
+@property (nonatomic, readonly) NSUInteger activeSceneCount;
+- (uint32_t)registerSceneDelegate:(NveIosSceneDelegate *)sceneDelegate
+                       forSession:(UISceneSession *)session;
+- (void)unregisterSceneForSurfaceId:(uint32_t)surfaceId session:(UISceneSession *)session;
+- (nullable NveIosSceneDelegate *)sceneDelegateForSurfaceId:(uint32_t)surfaceId;
+- (NSArray<NSNumber *> *)activeSurfaceIds;
+@end
+
 @interface NveIosSceneDelegate : UIResponder <UIWindowSceneDelegate>
-@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong, nullable) UIWindow *window;
+@property (nonatomic, assign, readonly) uint32_t surfaceId;
 @end
 
 @implementation NveIosSceneDelegate
@@ -318,21 +358,41 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 - (void)scene:(UIScene *)scene
     willConnectToSession:(UISceneSession *)session
                  options:(UISceneConnectionOptions *)connectionOptions {
-  (void)session;
   if (![scene isKindOfClass:[UIWindowScene class]]) {
     return;
+  }
+
+  id<UIApplicationDelegate> appDelegate = UIApplication.sharedApplication.delegate;
+  if ([appDelegate isKindOfClass:[NveIosAppDelegate class]]) {
+    _surfaceId = [(NveIosAppDelegate *)appDelegate registerSceneDelegate:self forSession:session];
+  } else {
+    _surfaceId = NveAllocateIosSurfaceId();
   }
 
   UIWindowScene *windowScene = (UIWindowScene *)scene;
   UIWindow *window = [[UIWindow alloc] initWithWindowScene:windowScene];
   window.backgroundColor = NveDarkSlateColor();
-  NveIosRootViewController *rootVC = [[NveIosRootViewController alloc] init];
+  NveIosRootViewController *rootVC = [[NveIosRootViewController alloc] initWithSurfaceId:_surfaceId];
   for (UIOpenURLContext *ctx in connectionOptions.URLContexts) {
     [rootVC applyPairURL:ctx.URL];
   }
   window.rootViewController = rootVC;
   self.window = window;
   [window makeKeyAndVisible];
+}
+
+- (void)sceneDidDisconnect:(UIScene *)scene {
+  UIViewController *root = self.window.rootViewController;
+  if ([root isKindOfClass:[NveIosRootViewController class]]) {
+    NveIosRootViewController *rootVC = (NveIosRootViewController *)root;
+    [rootVC saveSnapshotIfPossible];
+    [rootVC disconnectPairedIfNeeded];
+  }
+  id<UIApplicationDelegate> appDelegate = UIApplication.sharedApplication.delegate;
+  if ([appDelegate isKindOfClass:[NveIosAppDelegate class]] && _surfaceId != 0u) {
+    [(NveIosAppDelegate *)appDelegate unregisterSceneForSurfaceId:_surfaceId session:scene.session];
+  }
+  self.window = nil;
 }
 
 - (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts {
@@ -357,16 +417,72 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 
 @end
 
-@interface NveIosAppDelegate : UIResponder <UIApplicationDelegate>
-@end
+@implementation NveIosAppDelegate {
+  NSMutableDictionary<NSNumber *, NveIosSceneDelegate *> *_activeScenes;
+  NSMutableDictionary<NSString *, NSNumber *> *_sessionSurfaceIds;
+}
 
-@implementation NveIosAppDelegate
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _activeScenes = [NSMutableDictionary dictionary];
+    _sessionSurfaceIds = [NSMutableDictionary dictionary];
+  }
+  return self;
+}
+
+- (NSUInteger)activeSceneCount {
+  return _activeScenes.count;
+}
+
+- (uint32_t)registerSceneDelegate:(NveIosSceneDelegate *)sceneDelegate
+                       forSession:(UISceneSession *)session {
+  NSString *persistentId = session.persistentIdentifier;
+  NSNumber *existing = persistentId.length > 0 ? _sessionSurfaceIds[persistentId] : nil;
+  const uint32_t surfaceId =
+      existing != nil ? existing.unsignedIntValue : NveAllocateIosSurfaceId();
+  if (persistentId.length > 0) {
+    _sessionSurfaceIds[persistentId] = @(surfaceId);
+  }
+  _activeScenes[@(surfaceId)] = sceneDelegate;
+  return surfaceId;
+}
+
+- (void)unregisterSceneForSurfaceId:(uint32_t)surfaceId session:(UISceneSession *)session {
+  [_activeScenes removeObjectForKey:@(surfaceId)];
+  if (session.persistentIdentifier.length > 0) {
+    [_sessionSurfaceIds removeObjectForKey:session.persistentIdentifier];
+  }
+}
+
+- (nullable NveIosSceneDelegate *)sceneDelegateForSurfaceId:(uint32_t)surfaceId {
+  return _activeScenes[@(surfaceId)];
+}
+
+- (NSArray<NSNumber *> *)activeSurfaceIds {
+  return [_activeScenes.allKeys sortedArrayUsingSelector:@selector(compare:)];
+}
 
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
   (void)application;
   (void)launchOptions;
   return YES;
+}
+
+- (void)application:(UIApplication *)application
+    didDiscardSceneSessions:(NSSet<UISceneSession *> *)sceneSessions {
+  (void)application;
+  for (UISceneSession *session in sceneSessions) {
+    NSString *persistentId = session.persistentIdentifier;
+    if (persistentId.length > 0) {
+      NSNumber *sid = _sessionSurfaceIds[persistentId];
+      if (sid != nil) {
+        [_activeScenes removeObjectForKey:sid];
+        [_sessionSurfaceIds removeObjectForKey:persistentId];
+      }
+    }
+  }
 }
 
 - (void)applicationWillTerminate:(UIApplication *)application {

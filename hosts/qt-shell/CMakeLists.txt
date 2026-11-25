@@ -50,6 +50,8 @@ add_library(nve_qt_shell_lib STATIC
   NveQtCustomWidgets.cpp
   NveQtTextInputA11y.cpp
   NveQtWidgetReconciler.cpp
+  NveQtWindowManager.hpp
+  NveQtWindowManager.cpp
 )
 
 target_include_directories(nve_qt_shell_lib
@@ -102,7 +104,10 @@ target_link_libraries(nve_qt_shell PRIVATE nve_qt_shell_lib)
 
 enable_testing()
 
-add_executable(nve_qt_shell_test tests/qt_shell_test.cpp)
+add_executable(nve_qt_shell_test
+  tests/qt_shell_test.cpp
+  tests/qt_window_manager_test.cpp
+)
 if(MSVC)
   target_compile_options(nve_qt_shell_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
 else()

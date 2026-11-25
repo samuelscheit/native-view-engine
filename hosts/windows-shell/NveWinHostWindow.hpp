@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -115,6 +116,14 @@ class NveWinHostWindow {
   /// Render the current visual tree to a `.bmp` file via the shared Direct2D/DirectWrite painter.
   bool save_screenshot_bmp(std::string_view out_bmp_path, std::string* out_error = nullptr) const;
 
+  void set_title(std::string_view title);
+  void set_bounds(int x, int y, int width, int height);
+  void focus();
+  void close();
+  void set_on_close_request(std::function<bool(uint32_t)> callback);
+  void set_on_destroy(std::function<void(uint32_t)> callback);
+  uint32_t surface_id() const noexcept { return options_.surface_id; }
+
   HWND hwnd() const noexcept { return hwnd_; }
   float dpi_scale() const noexcept;
   NveRnwComponentHost& host() noexcept { return host_; }
@@ -139,6 +148,8 @@ class NveWinHostWindow {
   ID2D1Factory* d2d_factory_{nullptr};
   ID2D1HwndRenderTarget* render_target_{nullptr};
   NveRnwComponentHost host_{};
+  std::function<bool(uint32_t)> on_close_request_;
+  std::function<void(uint32_t)> on_destroy_;
 };
 
 #endif // defined(_WIN32)

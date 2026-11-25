@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::InteropError;
 use crate::handoff::{IslandSpec, RenderHandoff};
 use crate::layout::IntrinsicSize;
+pub use crate::window::SurfacePresentation;
 
 /// UI framework hosting or rendered within an orchestrated surface.
 #[repr(u8)]
@@ -195,6 +196,7 @@ pub struct SurfaceDescriptor {
     pub environment: Option<SurfaceEnvironment>,
     pub overrides: EnvironmentOverrides,
     pub initial_size: IntrinsicSize,
+    pub presentation: SurfacePresentation,
 }
 
 impl SurfaceDescriptor {
@@ -209,6 +211,7 @@ impl SurfaceDescriptor {
             environment: None,
             overrides: EnvironmentOverrides::default(),
             initial_size: IntrinsicSize::ZERO,
+            presentation: SurfacePresentation::Embedded,
         }
     }
 
@@ -246,6 +249,11 @@ impl SurfaceDescriptor {
         self.initial_size = size;
         self
     }
+
+    pub fn with_presentation(mut self, presentation: SurfacePresentation) -> Self {
+        self.presentation = presentation;
+        self
+    }
 }
 
 /// Metadata stored for every registered surface in the hierarchy.
@@ -262,6 +270,8 @@ pub struct SurfaceRecord {
     pub handoff: RenderHandoff,
     pub island: Option<IslandSpec>,
     pub viewport_size: IntrinsicSize,
+    #[serde(default)]
+    pub presentation: SurfacePresentation,
 }
 
 /// Record describing one surface torn down during cascading destruction (bottom-up order).
@@ -391,6 +401,7 @@ impl SurfaceOrchestrator {
             handoff: desc.handoff,
             island: desc.island,
             viewport_size: desc.initial_size,
+            presentation: desc.presentation,
         };
 
         if let Some(parent_id) = desc.parent {

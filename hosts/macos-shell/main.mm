@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "NveAppleComponentHost.h"
+#import "NveMacWindowManager.h"
 #import "RCTNveMacComponentView.h"
 
 #include "nve_rn_component.hpp"
@@ -201,7 +202,7 @@ class BuiltinMacDemoApp {
 
 } // namespace
 
-@interface NveMacAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface NveMacAppDelegate : NSObject <NSApplicationDelegate>
 @property (nonatomic, copy, nullable) NSString *dylibPath;
 @property (nonatomic, copy, nullable) NSString *pairConnect;
 @property (nonatomic, copy, nullable) NSString *pairToken;
@@ -209,18 +210,20 @@ class BuiltinMacDemoApp {
 @property (nonatomic, copy, nullable) NSString *snapshotPath;
 @property (nonatomic, assign) uint32_t schemaVersion;
 @property (nonatomic, assign) BOOL snapshotSaved;
-@property (nonatomic, strong) NSWindow *window;
-@property (nonatomic, strong) RCTNveMacComponentView *rootView;
+@property (nonatomic, strong) NveMacWindowManager *windowManager;
+@property (nonatomic, assign) uint32_t primarySurfaceId;
 @end
 
 @implementation NveMacAppDelegate
 
 - (void)_persistSnapshotIfConfigured {
-  if (self.snapshotSaved || self.snapshotPath.length == 0 || self.rootView == nil) {
+  RCTNveMacComponentView *rootView =
+      [self.windowManager componentViewForSurfaceId:self.primarySurfaceId];
+  if (self.snapshotSaved || self.snapshotPath.length == 0 || rootView == nil) {
     return;
   }
   self.snapshotSaved = YES;
-  if ([self.rootView saveSnapshotAtPath:self.snapshotPath schemaVersion:self.schemaVersion]) {
+  if ([rootView saveSnapshotAtPath:self.snapshotPath schemaVersion:self.schemaVersion]) {
     std::fprintf(
         stderr,
         "[nve-macos-shell] Saved Frame-0 + state snapshot to %s (schema v%u)\n",
@@ -236,28 +239,38 @@ class BuiltinMacDemoApp {
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   (void)notification;
+  self.windowManager = [[NveMacWindowManager alloc] init];
+  self.primarySurfaceId = 1u;
+
+  __weak NveMacAppDelegate *weakSelf = self;
+  self.windowManager.shouldCloseWindow = ^BOOL(uint32_t surfaceId) {
+    NveMacAppDelegate *strongSelf = weakSelf;
+    if (strongSelf != nil && surfaceId == strongSelf.primarySurfaceId) {
+      [strongSelf _persistSnapshotIfConfigured];
+    }
+    return YES;
+  };
+  self.windowManager.onAllWindowsClosed = ^{
+    [NSApp terminate:nil];
+  };
+
   const NSRect frame = NSMakeRect(0, 0, 640, 420);
-  NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                            NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
-  self.window = [[NSWindow alloc] initWithContentRect:frame
-                                            styleMask:style
-                                              backing:NSBackingStoreBuffered
-                                                defer:NO];
-  self.window.title = @"NVE macOS Host Shell";
-  self.window.delegate = self;
-
-  self.rootView = [[RCTNveMacComponentView alloc] initWithFrame:frame];
-  self.rootView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-
-  self.window.contentView = self.rootView;
-  [self.window center];
+  RCTNveMacComponentView *rootView =
+      [self.windowManager openWindowWithSurfaceId:self.primarySurfaceId
+                                            title:@"NVE macOS Host Shell"
+                                            frame:frame
+                                          present:NO];
+  NSWindow *window = [self.windowManager windowForSurfaceId:self.primarySurfaceId];
+  if (rootView == nil || window == nil) {
+    return;
+  }
 
   if (self.snapshotPath.length > 0 &&
       [[NSFileManager defaultManager] fileExistsAtPath:self.snapshotPath]) {
     uint64_t restoreUs = 0;
-    if ([self.rootView replayFrame0SnapshotAtPath:self.snapshotPath
-                            expectedSchemaVersion:self.schemaVersion
-                                    restoreTimeUs:&restoreUs]) {
+    if ([rootView replayFrame0SnapshotAtPath:self.snapshotPath
+                       expectedSchemaVersion:self.schemaVersion
+                               restoreTimeUs:&restoreUs]) {
       std::fprintf(
           stderr,
           "[nve-macos-shell] Instant-boot Frame-0 mmap restore from %s in %llu us\n",
@@ -266,49 +279,45 @@ class BuiltinMacDemoApp {
     }
   }
 
-  [self.window makeKeyAndOrderFront:nil];
+  [window center];
+  [window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 
   if (self.pairConnect.length > 0) {
-    NveAppleComponentHost *host = [NveAppleComponentHost hostForRootView:self.rootView];
+    NveAppleComponentHost *host = [NveAppleComponentHost hostForRootView:rootView];
     NSError *err = nil;
     if (!host || ![host connectPairedEndpoint:self.pairConnect
                                         token:(self.pairToken ?: @"")
                                     transport:self.pairTransport
-                                    surfaceId:1
+                                    surfaceId:self.primarySurfaceId
                                         error:&err]) {
       NSLog(@"Failed to connect paired client to %@: %@",
             self.pairConnect,
             err.localizedDescription ?: @"unknown error");
     } else {
-      self.window.title =
-          [NSString stringWithFormat:@"NVE macOS Host Shell (Paired: %@)", self.pairConnect];
+      [self.windowManager
+          setTitle:[NSString stringWithFormat:@"NVE macOS Host Shell (Paired: %@)", self.pairConnect]
+      forSurfaceId:self.primarySurfaceId];
     }
   } else if (self.dylibPath.length > 0) {
     NSError *err = nil;
-    if (![self.rootView loadNveDylibAtPath:self.dylibPath surfaceId:1 error:&err]) {
+    if (![rootView loadNveDylibAtPath:self.dylibPath surfaceId:self.primarySurfaceId error:&err]) {
       NSLog(@"Failed to load NVE dylib %@: %@", self.dylibPath, err.localizedDescription);
     }
   } else {
-    [self.rootView attachNveInterface:&BuiltinMacDemoApp::get_interface surfaceId:1];
+    [rootView attachNveInterface:&BuiltinMacDemoApp::get_interface surfaceId:self.primarySurfaceId];
   }
-}
-
-- (void)windowWillClose:(NSNotification *)notification {
-  (void)notification;
-  [self _persistSnapshotIfConfigured];
-  [[NveAppleComponentHost hostForRootView:self.rootView] disconnectPaired];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   (void)notification;
   [self _persistSnapshotIfConfigured];
-  [[NveAppleComponentHost hostForRootView:self.rootView] disconnectPaired];
+  [self.windowManager closeAllWindows];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
   (void)sender;
-  return YES;
+  return self.windowManager.windowCount == 0u;
 }
 
 @end

@@ -2,13 +2,19 @@
 //! zero-copy `NveSceneView` linear-memory exports, and 2-tier WebSocket hot-reload
 //! (`HotPatchMsg::TemplatePatch` + `DylibReload` + `DevStatus`).
 
+pub mod multi_window;
 pub mod pairing;
 pub mod session;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_api;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_pair;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_popup;
 
+pub use multi_window::{
+    PopupWindowError, PopupWindowSpec, WebMultiWindowHost, DEFAULT_WINDOW_SYNC_CHANNEL,
+};
 pub use pairing::{
     encode_nvt1_envelope, PairClientMachine, PairClientState, PairInboundOutcome, PairedWebSession,
 };
@@ -18,7 +24,13 @@ pub use session::{
 };
 #[cfg(target_arch = "wasm32")]
 pub use wasm_api::{
-    nve_web_scene_view_ptr, start_counter_app, start_studio_workspace_app, WebAppController,
+    active_shell_count, active_surface_ids, nve_web_scene_view_ptr,
+    nve_web_scene_view_ptr_for_surface, start_counter_app, start_counter_app_on_surface,
+    start_studio_workspace_app, start_studio_workspace_app_on_surface, WebAppController,
 };
 #[cfg(target_arch = "wasm32")]
 pub use wasm_pair::NveWebHost;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_popup::{
+    broadcast_window_commands, close_popup_window, open_popup_window, WebPopupController,
+};

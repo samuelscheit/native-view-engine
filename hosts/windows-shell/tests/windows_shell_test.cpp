@@ -18,6 +18,7 @@
 
 #include "NveRnwComponentView.hpp"
 #include "NveWinHostWindow.hpp"
+#include "NveWinWindowManager.hpp"
 #include "NveWinTextMeasurer.hpp"
 #include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
@@ -1595,6 +1596,70 @@ void test_paired_thin_client_loopback_roundtrip() {
 #endif
 }
 
+void test_multi_window_manager_lifecycle_modal_veto_and_cascade() {
+  nve::win::NveWinWindowManager mgr;
+  bool allow_primary = false;
+  std::vector<uint32_t> closed_order;
+  int all_closed_calls = 0;
+
+  mgr.set_should_close_callback([&](uint32_t sid) { return sid == 1u ? allow_primary : true; });
+  mgr.set_on_window_closed_callback([&](uint32_t sid) { closed_order.push_back(sid); });
+  mgr.set_on_all_windows_closed_callback([&]() { ++all_closed_calls; });
+
+  auto* h1 = mgr.open_headless_window(
+      {.surface_id = 1u, .title = "Primary", .width = 640, .height = 420});
+  auto* h2 = mgr.open_headless_window(
+      {.surface_id = 2u, .title = "Inspector", .width = 360, .height = 300});
+  NVE_CHECK(h1 != nullptr && h2 != nullptr && h1 != h2);
+  NVE_CHECK(mgr.window_count() == 2u);
+  NVE_CHECK(mgr.focused_surface_id() == 2u);
+  NVE_CHECK(mgr.open_headless_window({.surface_id = 1u, .title = "Dup"}) == nullptr);
+
+  NVE_CHECK(mgr.set_title(1u, "Primary — Renamed"));
+  NVE_CHECK(mgr.spec_for_surface(1u)->title == "Primary — Renamed");
+  NVE_CHECK(mgr.set_bounds(1u, 40, 50, 800, 500));
+  NVE_CHECK(mgr.spec_for_surface(1u)->width == 800 && mgr.spec_for_surface(1u)->height == 500);
+
+  auto* h3 = mgr.open_headless_window({
+      .surface_id = 3u,
+      .title = "Modal Dialog",
+      .width = 320,
+      .height = 180,
+      .parent_surface_id = 1u,
+      .modal = true,
+      .cascade_close = true,
+  });
+  auto* h4 = mgr.open_headless_window({
+      .surface_id = 4u,
+      .title = "Popover",
+      .width = 200,
+      .height = 120,
+      .parent_surface_id = 3u,
+      .cascade_close = true,
+  });
+  NVE_CHECK(h3 != nullptr && h4 != nullptr);
+  NVE_CHECK(mgr.active_modal_blocker(1u) == 3u);
+  NVE_CHECK(!mgr.focus_window(1u));
+  NVE_CHECK(mgr.focus_window(2u));
+  NVE_CHECK(mgr.focused_surface_id() == 2u);
+
+  // Vetoed close on primary keeps all 4 windows open and does not post quit.
+  NVE_CHECK(!mgr.request_close(1u));
+  NVE_CHECK(mgr.window_count() == 4u && !mgr.quit_posted());
+
+  // Allowed close on primary cascades 4 -> 3 -> 1, keeping independent window 2 open.
+  allow_primary = true;
+  NVE_CHECK(mgr.request_close(1u));
+  NVE_CHECK(mgr.window_count() == 1u);
+  NVE_CHECK(!mgr.quit_posted() && all_closed_calls == 0);
+  NVE_CHECK((closed_order == std::vector<uint32_t>{4u, 3u, 1u}));
+
+  // Closing the final window posts quit once.
+  NVE_CHECK(mgr.request_close(2u));
+  NVE_CHECK(mgr.window_count() == 0u);
+  NVE_CHECK(mgr.quit_posted() && all_closed_calls == 1);
+}
+
 } // namespace
 
 int main() {
@@ -1606,6 +1671,7 @@ int main() {
   test_image_scroll_and_incremental_scene_view();
   test_draw_list_visual_tree_extraction_and_corrupt_survival();
   test_paired_thin_client_loopback_roundtrip();
+  test_multi_window_manager_lifecycle_modal_veto_and_cascade();
 
   std::cout << "nve_windows_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI" : "Standalone") << "+"

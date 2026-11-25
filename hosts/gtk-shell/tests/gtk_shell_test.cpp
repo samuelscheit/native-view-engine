@@ -1668,6 +1668,8 @@ void test_paired_thin_client_gtk_host() {
 
 } // namespace
 
+void nve_test_gtk_window_manager();
+
 int main() {
   if (!gtk_init_check()) {
     std::cout << "nve_gtk_shell_test skipped: GTK4 display unavailable "
@@ -1683,6 +1685,7 @@ int main() {
   test_image_picture_scroll_and_incremental_reconcile();
   test_cairo_draw_list_sparkline_and_drawing_area();
   test_paired_thin_client_gtk_host();
+  nve_test_gtk_window_manager();
 
   std::cout << "nve_gtk_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+GTK4" : "Standalone+GTK4")

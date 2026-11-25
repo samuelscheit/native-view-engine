@@ -21,6 +21,7 @@ add_library(nve_macos_shell_lib STATIC
   "${NVE_APPLE_COMMON_DIR}/NveAppleSceneReconciler.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost.mm"
   NveMacFabricHost.mm
+  NveMacWindowManager.mm
   RCTNveMacComponentView.mm
 )
 
@@ -77,3 +78,9 @@ add_dependencies(nve_macos_shell_test
   nve_test_dylib_create_fail
 )
 add_test(NAME macos_shell_test COMMAND nve_macos_shell_test)
+
+add_executable(nve_macos_window_manager_test tests/window_manager_test.mm)
+target_compile_options(nve_macos_window_manager_test PRIVATE -fobjc-arc -Wall -Wextra -Werror)
+target_include_directories(nve_macos_window_manager_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/src")
+target_link_libraries(nve_macos_window_manager_test PRIVATE nve_macos_shell_lib)
+add_test(NAME macos_window_manager_test COMMAND nve_macos_window_manager_test)

@@ -1,61 +1,50 @@
-//! Live `winit` desktop preview window host with hardware GPU swapchains (`skia-metal`,
-//! `skia-vulkan`, `skia-d3d`), `softbuffer` fallback, IME cursor positioning, and snapshot save.
+//! Live `winit` multi-window desktop host with per-window GPU/softbuffer presenters,
+//! independent [`DesktopSession`]s, strict `WindowId` event routing, `WindowManager` close veto &
+//! cascading child cleanup, IME positioning, hot reload, and Frame-0 snapshot persistence.
 
-use std::num::NonZeroU32;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 
-use nve_backend_skia::gpu::{
-    FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
-    GpuSwapchain,
+use nve_abi::SurfaceId;
+use nve_backend_skia::gpu::{FrameTelemetry, GpuBackendKind};
+use nve_engine::Viewport;
+use nve_interop::{
+    SurfacePresentation, WindowDescriptor, WindowFlags, WindowHandleId, WindowManager,
 };
-use nve_engine::{RenderBackend, Viewport};
-use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use super::hot_reload_client::HotReloadClient;
+use super::multi_window::{
+    apply_window_state, build_window_attributes, create_presenter, CloseVetoHandler, HostWakeEvent,
+    SecondaryAppFactory, SurfaceWindow,
+};
 use super::pair_client::{PairConnectConfig, PairedRemoteApp};
 use super::session::DesktopSession;
 use super::{
     replay_snapshot_into_backend, DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot,
 };
 
-#[derive(Debug, Clone, Copy)]
-enum HostWakeEvent {
-    HotReload,
-    RemoteFrame,
-}
-
-enum WindowPresenter {
-    /// Direct hardware GPU swapchain (`CAMetalLayer` / `VkSwapchainKHR` / `IDXGISwapChain3`).
-    Hardware(GpuSwapchain),
-    /// Software `softbuffer` presenter (zero-C++ default, or automatic fallback when a hardware
-    /// GPU device/swapchain cannot be initialized).
-    Softbuffer {
-        _context: Context<Arc<Window>>,
-        surface: Surface<Arc<Window>, Arc<Window>>,
-        fallback_reason: Option<String>,
-    },
-}
-
-/// Live `winit` desktop preview host supporting direct hardware GPU swapchains (`skia-metal`,
-/// `skia-vulkan`, `skia-d3d`) with automatic graceful fallback to `softbuffer`, plus Frame-0
-/// `MmapSnapshot` instant boot, atomic persistence on exit, and thin-client `NVD1` pairing.
+/// Live multi-window `winit` desktop host supporting direct hardware GPU swapchains (`skia-metal`,
+/// `skia-vulkan`, `skia-d3d`) with `softbuffer` fallback, Frame-0 `MmapSnapshot` instant boot,
+/// `WindowManager` lifecycle/modal/veto rules, and thin-client `NVD1` pairing.
 pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
-    options: DesktopPreviewOptions,
-    session: DesktopSession<A>,
-    window: Option<Arc<Window>>,
-    presenter: Option<WindowPresenter>,
+    pub(crate) options: DesktopPreviewOptions,
+    primary_session: Option<DesktopSession<A>>,
+    primary_window_id: Option<WindowId>,
+    primary_handle: Option<WindowHandleId>,
+    pub(crate) windows: HashMap<WindowId, SurfaceWindow<A>>,
+    pub(crate) surface_to_window: BTreeMap<SurfaceId, WindowId>,
+    pub(crate) window_manager: WindowManager,
+    exit_on_primary_close: bool,
+    pub(crate) close_veto_handler: Option<CloseVetoHandler>,
+    pub(crate) secondary_app_factory: Option<SecondaryAppFactory<A>>,
     hot_reload: Option<HotReloadClient>,
-    proxy: Option<EventLoopProxy<HostWakeEvent>>,
-    last_telemetry: Option<FrameTelemetry>,
-    modifiers: ModifiersState,
+    pub(crate) proxy: Option<EventLoopProxy<HostWakeEvent>>,
     snapshot_saved: bool,
 }
 
@@ -75,9 +64,11 @@ impl DesktopWindowHost<HotAppSlot> {
             scale_factor: scale,
         };
 
-        // Instant-boot Frame-0 replay BEFORE dlopen of the app cdylib when a snapshot exists.
-        let prewarmed = if let Some(snap_path) = options.snapshot_path.as_deref() {
-            if snap_path.exists() {
+        let prewarmed = options
+            .snapshot_path
+            .as_deref()
+            .filter(|p| p.exists())
+            .and_then(|snap_path| {
                 match replay_snapshot_into_backend(
                     snap_path,
                     options.schema_version,
@@ -101,19 +92,11 @@ impl DesktopWindowHost<HotAppSlot> {
                         None
                     }
                 }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+            });
 
         let mut session = if let Some(prewarmed) = prewarmed {
-            let prior_state = if prewarmed.state_bytes.is_empty() {
-                None
-            } else {
-                Some(prewarmed.state_bytes.as_slice())
-            };
+            let prior_state = (!prewarmed.state_bytes.is_empty())
+                .then_some(prewarmed.state_bytes.as_slice());
             let app = HotAppSlot::load_with_state(&dylib_path, options.surface_id, prior_state)?;
             DesktopSession::from_parts(
                 app,
@@ -138,24 +121,17 @@ impl DesktopWindowHost<HotAppSlot> {
         let _ = session.notify_viewport_resize();
         session.render_and_rasterize()?;
 
-        Ok(Self {
-            options,
-            session,
-            window: None,
-            presenter: None,
-            hot_reload: None,
-            proxy: None,
-            last_telemetry: None,
-            modifiers: ModifiersState::empty(),
-            snapshot_saved: false,
-        })
+        let factory_dylib = dylib_path;
+        let factory: SecondaryAppFactory<HotAppSlot> =
+            Box::new(move |surface_id, _desc| HotAppSlot::load(&factory_dylib, surface_id));
+
+        let mut host = Self::from_primary_session(options, session);
+        host.secondary_app_factory = Some(factory);
+        Ok(host)
     }
 }
 
 impl DesktopWindowHost<PairedRemoteApp> {
-    /// Connects to a remote `nve pair` server over `NVT1`/`NVD1` (UDP, TCP, or WebSocket) with no
-    /// local `cdylib`, sends the initial viewport `Layout` event, waits for Frame 1, and
-    /// rasterizes it into the session pixel buffer.
     pub fn new_paired(
         pair_config: PairConnectConfig,
         options: DesktopPreviewOptions,
@@ -170,7 +146,6 @@ impl DesktopWindowHost<PairedRemoteApp> {
             height: options.height,
             scale_factor: scale,
         };
-
         let initial_timeout = pair_config.initial_frame_timeout;
         let app = PairedRemoteApp::connect(pair_config)?;
         let mut session = DesktopSession::new(
@@ -186,46 +161,115 @@ impl DesktopWindowHost<PairedRemoteApp> {
             session.set_status_banner(Some(banner));
         }
         session.render_and_rasterize()?;
-
-        Ok(Self {
-            options,
-            session,
-            window: None,
-            presenter: None,
-            hot_reload: None,
-            proxy: None,
-            last_telemetry: None,
-            modifiers: ModifiersState::empty(),
-            snapshot_saved: false,
-        })
+        Ok(Self::from_primary_session(options, session))
     }
 }
 
 impl<A: DesktopApp> DesktopWindowHost<A> {
-    pub fn session(&self) -> &DesktopSession<A> {
-        &self.session
-    }
-
-    pub fn session_mut(&mut self) -> &mut DesktopSession<A> {
-        &mut self.session
-    }
-
-    pub fn active_backend(&self) -> GpuBackendKind {
-        match &self.presenter {
-            Some(WindowPresenter::Hardware(sw)) => sw.kind(),
-            Some(WindowPresenter::Softbuffer { .. }) => self.session.active_backend(),
-            None => self.session.active_backend(),
+    pub(crate) fn from_primary_session(
+        options: DesktopPreviewOptions,
+        session: DesktopSession<A>,
+    ) -> Self {
+        Self {
+            options,
+            primary_session: Some(session),
+            primary_window_id: None,
+            primary_handle: None,
+            windows: HashMap::new(),
+            surface_to_window: BTreeMap::new(),
+            window_manager: WindowManager::new(),
+            exit_on_primary_close: true,
+            close_veto_handler: None,
+            secondary_app_factory: None,
+            hot_reload: None,
+            proxy: None,
+            snapshot_saved: false,
         }
     }
 
-    pub fn last_frame_telemetry(&self) -> Option<&FrameTelemetry> {
-        self.last_telemetry
+    pub fn session(&self) -> &DesktopSession<A> {
+        if let Some(wid) = self.primary_window_id
+            && let Some(win) = self.windows.get(&wid)
+        {
+            return &win.session;
+        }
+        self.primary_session
             .as_ref()
-            .or_else(|| self.session.last_frame_telemetry())
+            .or_else(|| self.windows.values().next().map(|w| &w.session))
+            .expect("DesktopWindowHost has no active session")
     }
 
-    /// Atomically saves the current Frame-0 `CommandBuffer` and live app state if `--snapshot`
-    /// was configured. Safe to call multiple times (only persists once).
+    pub fn session_mut(&mut self) -> &mut DesktopSession<A> {
+        if let Some(wid) = self.primary_window_id
+            && self.windows.contains_key(&wid)
+        {
+            return &mut self.windows.get_mut(&wid).unwrap().session;
+        }
+        if let Some(primary) = self.primary_session.as_mut() {
+            return primary;
+        }
+        &mut self
+            .windows
+            .values_mut()
+            .next()
+            .expect("DesktopWindowHost has no active session")
+            .session
+    }
+
+    pub fn session_for_surface(&self, surface_id: SurfaceId) -> Option<&DesktopSession<A>> {
+        if let Some(wid) = self.surface_to_window.get(&surface_id)
+            && let Some(win) = self.windows.get(wid)
+        {
+            return Some(&win.session);
+        }
+        (surface_id == self.options.surface_id)
+            .then_some(self.primary_session.as_ref())
+            .flatten()
+    }
+
+    pub fn window_manager(&self) -> &WindowManager { &self.window_manager }
+    pub fn window_manager_mut(&mut self) -> &mut WindowManager { &mut self.window_manager }
+    pub fn window_count(&self) -> usize { self.windows.len() }
+    pub fn set_exit_on_primary_close(&mut self, exit: bool) { self.exit_on_primary_close = exit; }
+    pub fn event_loop_proxy(&self) -> Option<EventLoopProxy<HostWakeEvent>> { self.proxy.clone() }
+
+    pub fn set_close_veto_handler<F>(&mut self, handler: F)
+    where
+        F: FnMut(WindowHandleId, SurfaceId) -> bool + 'static,
+    {
+        self.close_veto_handler = Some(Box::new(handler));
+    }
+
+    pub fn set_secondary_app_factory<F>(&mut self, factory: F)
+    where
+        F: FnMut(SurfaceId, &WindowDescriptor) -> Result<A, DesktopHostError> + 'static,
+    {
+        self.secondary_app_factory = Some(Box::new(factory));
+    }
+
+    pub fn active_backend(&self) -> GpuBackendKind {
+        if let Some(wid) = self.primary_window_id
+            && let Some(win) = self.windows.get(&wid)
+        {
+            return win.active_backend();
+        }
+        self.primary_session
+            .as_ref()
+            .map(DesktopSession::active_backend)
+            .unwrap_or(GpuBackendKind::Softbuffer)
+    }
+
+    pub fn last_frame_telemetry(&self) -> Option<&FrameTelemetry> {
+        if let Some(wid) = self.primary_window_id
+            && let Some(win) = self.windows.get(&wid)
+        {
+            return win.last_frame_telemetry();
+        }
+        self.primary_session
+            .as_ref()
+            .and_then(DesktopSession::last_frame_telemetry)
+    }
+
     pub fn save_snapshot_if_configured(&mut self) {
         if self.snapshot_saved {
             return;
@@ -233,28 +277,30 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         let Some(snap_path) = self.options.snapshot_path.clone() else {
             return;
         };
-        self.snapshot_saved = true;
-        match self
-            .session
-            .save_snapshot(&snap_path, self.options.schema_version)
+        let schema_version = self.options.schema_version;
+        let saved = if let Some(wid) = self.primary_window_id
+            && let Some(win) = self.windows.get_mut(&wid)
         {
-            Ok(_) => {
-                eprintln!(
-                    "[nve-skia-shell] Saved Frame-0 + state snapshot to '{}' (schema v{})",
-                    snap_path.display(),
-                    self.options.schema_version
-                );
-            }
-            Err(err) => {
-                eprintln!(
-                    "[nve-skia-shell] Warning: failed to save snapshot to '{}': {err}",
-                    snap_path.display()
-                );
-            }
+            Some(win.session.save_snapshot(&snap_path, schema_version))
+        } else {
+            self.primary_session
+                .as_mut()
+                .map(|s| s.save_snapshot(&snap_path, schema_version))
+        };
+        let Some(res) = saved else { return };
+        self.snapshot_saved = true;
+        match res {
+            Ok(_) => eprintln!(
+                "[nve-skia-shell] Saved Frame-0 + state snapshot to '{}' (schema v{schema_version})",
+                snap_path.display()
+            ),
+            Err(err) => eprintln!(
+                "[nve-skia-shell] Warning: failed to save snapshot to '{}': {err}",
+                snap_path.display()
+            ),
         }
     }
 
-    /// Runs the native `winit` event loop until the user closes the window.
     pub fn run(mut self) -> Result<(), DesktopHostError> {
         let event_loop = EventLoop::<HostWakeEvent>::with_user_event()
             .build()
@@ -269,12 +315,12 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             }));
         }
 
-        let remote_wake_proxy = proxy;
-        self.session
-            .app_mut()
-            .install_wake_callback(Arc::new(move || {
-                let _ = remote_wake_proxy.send_event(HostWakeEvent::RemoteFrame);
+        if let Some(primary) = self.primary_session.as_mut() {
+            let remote_proxy = proxy;
+            primary.app_mut().install_wake_callback(Arc::new(move || {
+                let _ = remote_proxy.send_event(HostWakeEvent::RemoteFrame);
             }));
+        }
 
         let res = event_loop
             .run_app(&mut self)
@@ -283,98 +329,116 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         res
     }
 
-    fn sync_ime_state(&self) {
-        let Some(window) = &self.window else {
-            return;
-        };
-        let focused = self
-            .session
-            .focused_node()
-            .filter(|&id| self.session.backend().is_text_input(id));
-        window.set_ime_allowed(focused.is_some());
-        if let Some(node_id) = focused
-            && let Some(rect) = self.session.backend().layout_of(node_id)
-        {
-            window.set_ime_cursor_area(
-                LogicalPosition::new(rect.x as f64, rect.y as f64),
-                LogicalSize::new(rect.width as f64, rect.height as f64),
-            );
-        }
+    pub(crate) fn window_id_for_handle(&self, handle: WindowHandleId) -> Option<WindowId> {
+        self.window_manager
+            .get(handle)
+            .and_then(|w| self.surface_to_window.get(&w.surface_id).copied())
+            .or_else(|| {
+                self.windows
+                    .iter()
+                    .find_map(|(&wid, w)| (w.handle_id == handle).then_some(wid))
+            })
     }
 
-    fn present_pixels(&mut self) {
-        let Some(presenter) = self.presenter.as_mut() else {
-            return;
-        };
-        match presenter {
-            WindowPresenter::Hardware(swapchain) => {
-                let res = self.session.present_to_swapchain(swapchain);
-                match res {
-                    Ok(telemetry) => {
-                        self.last_telemetry = Some(telemetry);
-                    }
-                    Err(GpuSurfaceError::SwapchainOutOfDate(_)) => {
-                        let pw = self.session.pixel_buffer().width();
-                        let ph = self.session.pixel_buffer().height();
-                        let scale = self.session.viewport().scale_factor;
-                        if swapchain.resize(pw, ph, scale).is_ok()
-                            && let Ok(telemetry) = self.session.present_to_swapchain(swapchain)
-                        {
-                            self.last_telemetry = Some(telemetry);
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!("[nve-skia-shell] hardware swapchain present error: {err}");
-                    }
-                }
+    pub(crate) fn spawn_os_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        surface_id: SurfaceId,
+        presentation: SurfacePresentation,
+        mut session: DesktopSession<A>,
+    ) -> Result<WindowId, DesktopHostError> {
+        let desc = presentation
+            .descriptor()
+            .ok_or_else(|| DesktopHostError::Window("cannot spawn Embedded presentation".into()))?
+            .clone();
+        let is_primary = presentation.is_primary();
+        let handle_id = self
+            .window_manager
+            .open_window(surface_id, presentation)
+            .map_err(|e| DesktopHostError::Window(e.to_string()))?;
+
+        let window = match event_loop.create_window(build_window_attributes(&desc)) {
+            Ok(w) => Arc::new(w),
+            Err(err) => {
+                let _ = self.window_manager.close_window(handle_id);
+                return Err(DesktopHostError::Window(err.to_string()));
             }
-            WindowPresenter::Softbuffer {
-                surface,
-                fallback_reason,
-                ..
-            } => {
-                let buf = self.session.pixel_buffer();
-                let (Some(w), Some(h)) =
-                    (NonZeroU32::new(buf.width()), NonZeroU32::new(buf.height()))
-                else {
-                    return;
-                };
-                if surface.resize(w, h).is_err() {
-                    return;
-                }
-                let t_present = Instant::now();
-                if let Ok(mut frame) = surface.buffer_mut() {
-                    let src = buf.pixels();
-                    let len = frame.len().min(src.len());
-                    frame[..len].copy_from_slice(&src[..len]);
-                    let _ = frame.present();
-                    let present_us = t_present.elapsed().as_micros() as u64;
-                    if let Some(mut tel) = self.session.last_frame_telemetry().cloned() {
-                        tel.present_us = present_us;
-                        tel.total_us = tel.total_us.saturating_add(present_us);
-                        if tel.fallback_reason.is_none() {
-                            tel.fallback_reason = fallback_reason.clone();
-                        }
-                        self.last_telemetry = Some(tel);
-                    }
-                }
+        };
+        let presenter = match create_presenter(&window, self.options.preferred_backend, self.options.vsync) {
+            Ok(p) => p,
+            Err(err) => {
+                let _ = self.window_manager.close_window(handle_id);
+                return Err(err);
             }
+        };
+
+        let size = window.inner_size();
+        let scale = window.scale_factor() as f32;
+        if let Err(err) = session.resize(size.width.max(1), size.height.max(1), scale) {
+            eprintln!("[nve-skia-shell] initial resize/render failed for surface {surface_id}: {err}");
+        }
+        apply_window_state(&window, desc.state);
+
+        let window_id = window.id();
+        let mut sw = SurfaceWindow {
+            window: window.clone(),
+            presenter,
+            session,
+            surface_id,
+            handle_id,
+            base_title: desc.title,
+            modifiers: ModifiersState::empty(),
+            ime_allowed: false,
+            last_telemetry: None,
+        };
+        sw.sync_title();
+        sw.sync_ime_state();
+        self.surface_to_window.insert(surface_id, window_id);
+        self.windows.insert(window_id, sw);
+        if is_primary || self.primary_window_id.is_none() {
+            self.primary_window_id = Some(window_id);
+            self.primary_handle = Some(handle_id);
+        }
+        window.request_redraw();
+        Ok(window_id)
+    }
+
+    pub(crate) fn finalize_closed_handles(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        closed: &[WindowHandleId],
+    ) {
+        if closed.is_empty() {
+            return;
+        }
+        let primary_closed = self.primary_handle.is_some_and(|p| closed.contains(&p));
+        if primary_closed {
+            self.save_snapshot_if_configured();
+        }
+        let wids: Vec<(WindowId, SurfaceId)> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| closed.contains(&w.handle_id))
+            .map(|(&wid, w)| (wid, w.surface_id))
+            .collect();
+        for (wid, sid) in wids {
+            self.windows.remove(&wid);
+            self.surface_to_window.remove(&sid);
+        }
+        if primary_closed {
+            self.primary_window_id = None;
+            self.primary_handle = None;
+        }
+        if self.windows.is_empty() || (primary_closed && self.exit_on_primary_close) {
+            self.save_snapshot_if_configured();
+            self.hot_reload.take();
+            self.windows.clear();
+            self.surface_to_window.clear();
+            event_loop.exit();
         }
     }
 
-    fn sync_window_title(&self) {
-        if let Some(window) = &self.window {
-            let gen_num = self.session.app().generation();
-            let backend_label = self.active_backend().as_str();
-            let title = match self.session.status_banner() {
-                Some(banner) => format!("{} [{backend_label}] — {banner}", self.options.title),
-                None => format!("{} [{backend_label}] — gen #{gen_num}", self.options.title),
-            };
-            window.set_title(&title);
-        }
-    }
-
-    fn process_pending_hot_patches(&mut self) {
+    pub(crate) fn process_pending_hot_patches(&mut self) {
         let msgs = self
             .hot_reload
             .as_ref()
@@ -383,39 +447,39 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         if msgs.is_empty() {
             return;
         }
-        let mut needs_redraw = false;
-        for msg in msgs {
-            match self.session.handle_hot_patch(msg) {
-                Ok(updated) => needs_redraw |= updated,
-                Err(err) => {
-                    eprintln!("[nve-skia-shell] {err}");
-                    needs_redraw = true;
+        for sw in self.windows.values_mut() {
+            let mut needs_redraw = false;
+            for msg in &msgs {
+                match sw.session.handle_hot_patch(msg.clone()) {
+                    Ok(updated) => needs_redraw |= updated,
+                    Err(err) => {
+                        eprintln!("[nve-skia-shell] {err}");
+                        needs_redraw = true;
+                    }
                 }
             }
-        }
-        self.sync_window_title();
-        self.sync_ime_state();
-        if needs_redraw
-            && let Some(window) = &self.window
-        {
-            window.request_redraw();
+            sw.sync_title();
+            sw.sync_ime_state();
+            if needs_redraw {
+                sw.window.request_redraw();
+            }
         }
     }
 
-    fn process_pending_remote_frames(&mut self) {
-        if !self.session.app().has_pending_remote_frame() {
-            return;
-        }
-        if let Some(banner) = self.session.app().remote_status_banner() {
-            self.session.set_status_banner(Some(banner));
-        }
-        if let Err(err) = self.session.render_and_rasterize() {
-            eprintln!("[nve-skia-shell] paired remote frame error: {err}");
-        }
-        self.sync_window_title();
-        self.sync_ime_state();
-        if let Some(window) = &self.window {
-            window.request_redraw();
+    pub(crate) fn process_pending_remote_frames(&mut self) {
+        for sw in self.windows.values_mut() {
+            if !sw.session.app().has_pending_remote_frame() {
+                continue;
+            }
+            if let Some(banner) = sw.session.app().remote_status_banner() {
+                sw.session.set_status_banner(Some(banner));
+            }
+            if let Err(err) = sw.session.render_and_rasterize() {
+                eprintln!("[nve-skia-shell] paired remote frame error: {err}");
+            }
+            sw.sync_title();
+            sw.sync_ime_state();
+            sw.window.request_redraw();
         }
     }
 }
@@ -428,264 +492,47 @@ impl<A: DesktopApp> Drop for DesktopWindowHost<A> {
 
 impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if !self.windows.is_empty() {
             return;
         }
-        let attrs = Window::default_attributes()
-            .with_title(self.options.title.clone())
-            .with_inner_size(LogicalSize::new(
-                self.options.width as f64,
-                self.options.height as f64,
-            ));
-        let window = match event_loop.create_window(attrs) {
-            Ok(w) => Arc::new(w),
-            Err(err) => {
-                eprintln!("[nve-skia-shell] failed to create window: {err}");
-                event_loop.exit();
-                return;
-            }
+        let Some(session) = self.primary_session.take() else {
+            return;
         };
-
-        let size = window.inner_size();
-        let scale = window.scale_factor() as f32;
-        let phys_w = size.width.max(1);
-        let phys_h = size.height.max(1);
-
-        let mut fallback_reason = None;
-        let presenter = if self.options.preferred_backend.is_hardware()
-            && GpuBackendKind::selection_priority(self.options.preferred_backend, true)
-                .iter()
-                .any(|k| k.is_hardware() && k.is_compiled())
-        {
-            let gpu_cfg = GpuSurfaceConfig {
-                width: phys_w,
-                height: phys_h,
-                scale_factor: scale,
-                preferred_backend: self.options.preferred_backend,
-                allow_cpu_fallback: false,
-                vsync: self.options.vsync,
-                ..Default::default()
-            };
-            match GpuSwapchain::attach_window(window.as_ref(), gpu_cfg) {
-                Ok(sw) if sw.presents_directly() => Some(WindowPresenter::Hardware(sw)),
-                Ok(sw) => {
-                    fallback_reason = sw.fallback_reason().map(str::to_owned);
-                    None
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[nve-skia-shell] hardware GPU swapchain unavailable ({err}); falling back to softbuffer"
-                    );
-                    fallback_reason = Some(err.to_string());
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let presenter = match presenter {
-            Some(hw) => hw,
-            None => {
-                let context = match Context::new(window.clone()) {
-                    Ok(c) => c,
-                    Err(err) => {
-                        eprintln!("[nve-skia-shell] failed to create softbuffer context: {err}");
-                        event_loop.exit();
-                        return;
-                    }
-                };
-                let surface = match Surface::new(&context, window.clone()) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        eprintln!("[nve-skia-shell] failed to create softbuffer surface: {err}");
-                        event_loop.exit();
-                        return;
-                    }
-                };
-                WindowPresenter::Softbuffer {
-                    _context: context,
-                    surface,
-                    fallback_reason,
-                }
-            }
-        };
-
-        if let Err(err) = self.session.resize(phys_w, phys_h, scale) {
-            eprintln!("[nve-skia-shell] initial resize/render failed: {err}");
+        let mut flags = WindowFlags::standard();
+        if self.exit_on_primary_close {
+            flags.set(WindowFlags::EXIT_ON_CLOSE, true);
         }
-
-        self.window = Some(window.clone());
-        self.presenter = Some(presenter);
-        self.sync_window_title();
-        self.sync_ime_state();
-        window.request_redraw();
+        let desc = WindowDescriptor::new(
+            self.options.title.clone(),
+            self.options.width,
+            self.options.height,
+        )
+        .with_flags(flags);
+        if let Err(err) = self.spawn_os_window(
+            event_loop,
+            self.options.surface_id,
+            SurfacePresentation::PrimaryWindow(desc),
+            session,
+        ) {
+            eprintln!("[nve-skia-shell] failed to create primary window: {err}");
+            event_loop.exit();
+        }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: HostWakeEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HostWakeEvent) {
         match event {
             HostWakeEvent::HotReload => self.process_pending_hot_patches(),
             HostWakeEvent::RemoteFrame => self.process_pending_remote_frames(),
+            HostWakeEvent::WindowCommand(cmd) => self.apply_window_command(event_loop, cmd),
         }
     }
 
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
-        match event {
-            WindowEvent::CloseRequested => {
-                self.save_snapshot_if_configured();
-                self.hot_reload.take();
-                self.presenter.take();
-                event_loop.exit();
-            }
-            WindowEvent::Resized(new_size) => {
-                if new_size.width == 0 || new_size.height == 0 {
-                    return;
-                }
-                let scale = self
-                    .window
-                    .as_ref()
-                    .map(|w| w.scale_factor() as f32)
-                    .unwrap_or(self.session.viewport().scale_factor);
-                if let Err(err) = self.session.resize(new_size.width, new_size.height, scale) {
-                    eprintln!("[nve-skia-shell] resize error: {err}");
-                }
-                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut()
-                    && let Err(err) = sw.resize(new_size.width, new_size.height, scale)
-                {
-                    eprintln!("[nve-skia-shell] hardware swapchain resize error: {err}");
-                }
-                self.sync_ime_state();
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                let size = self
-                    .window
-                    .as_ref()
-                    .map(|w| w.inner_size())
-                    .unwrap_or_else(|| {
-                        winit::dpi::PhysicalSize::new(
-                            self.session.pixel_buffer().width(),
-                            self.session.pixel_buffer().height(),
-                        )
-                    });
-                if size.width == 0 || size.height == 0 {
-                    return;
-                }
-                if let Err(err) = self
-                    .session
-                    .resize(size.width, size.height, scale_factor as f32)
-                {
-                    eprintln!("[nve-skia-shell] scale change error: {err}");
-                }
-                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut()
-                    && let Err(err) = sw.resize(size.width, size.height, scale_factor as f32)
-                {
-                    eprintln!("[nve-skia-shell] hardware swapchain scale resize error: {err}");
-                }
-                self.sync_ime_state();
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                let scale = self.session.viewport().scale_factor.max(0.001);
-                let lx = position.x as f32 / scale;
-                let ly = position.y as f32 / scale;
-                match self.session.handle_pointer_move_logical(lx, ly) {
-                    Ok(true) => {
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(err) => eprintln!("[nve-skia-shell] pointer move error: {err}"),
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let (x, y) = self.session.cursor_logical();
-                match self.session.handle_click_logical(x, y) {
-                    Ok(true) => {
-                        self.sync_ime_state();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.session.handle_pointer_up_logical();
-            }
-            WindowEvent::ModifiersChanged(new_mods) => {
-                self.modifiers = new_mods.state();
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let scale = self.session.viewport().scale_factor.max(0.001);
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(lx, ly) => (-lx * 40.0, -ly * 40.0),
-                    MouseScrollDelta::PixelDelta(pos) => {
-                        (-(pos.x as f32) / scale, -(pos.y as f32) / scale)
-                    }
-                };
-                let (x, y) = self.session.cursor_logical();
-                match self.session.handle_scroll_logical(x, y, dx, dy) {
-                    Ok(true) => {
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(err) => eprintln!("[nve-skia-shell] scroll dispatch error: {err}"),
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                match self.session.handle_keyboard_input(
-                    &event.logical_key,
-                    event.text.as_deref(),
-                    self.modifiers,
-                ) {
-                    Ok(true) => {
-                        self.sync_ime_state();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(err) => eprintln!("[nve-skia-shell] keyboard dispatch error: {err}"),
-                }
-            }
-            WindowEvent::Ime(ime) => match self.session.handle_ime(&ime) {
-                Ok(true) => {
-                    self.sync_ime_state();
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
-                }
-                Ok(false) => {}
-                Err(err) => eprintln!("[nve-skia-shell] IME dispatch error: {err}"),
-            },
-            WindowEvent::RedrawRequested => {
-                self.process_pending_hot_patches();
-                self.process_pending_remote_frames();
-                self.present_pixels();
-            }
-            _ => {}
-        }
+        self.dispatch_window_event(event_loop, window_id, event);
     }
 }
