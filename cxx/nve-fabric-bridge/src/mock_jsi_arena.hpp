@@ -66,13 +66,6 @@ struct JsiArenaNode {
 
 static_assert(std::is_trivially_destructible_v<JsiArenaNode>);
 
-/// Arena-allocated `PointerValue` whose `invalidate()` is a no-op (reclaimed on `reset_frame()`).
-struct JsiArenaPointerValue final : public facebook::jsi::Runtime::PointerValue {
-  JsiArenaNode* node{nullptr};
-  explicit JsiArenaPointerValue(JsiArenaNode* n) noexcept : node(n) {}
-  void invalidate() noexcept override {}
-};
-
 inline JsiArenaNode* alloc_jsi_object_node(BumpArena& target_arena, bool is_global) {
   JsiArenaNode* n = target_arena.make<JsiArenaNode>();
   n->kind = JsiNodeKind::Object;
@@ -83,7 +76,7 @@ inline JsiArenaNode* alloc_jsi_object_node(BumpArena& target_arena, bool is_glob
   return n;
 }
 
-inline JsiArenaPointerValue* alloc_jsi_string_pv(
+inline JsiArenaNode* alloc_jsi_string_node(
     BumpArena& target_arena,
     const char* str,
     size_t length) {
@@ -96,7 +89,7 @@ inline JsiArenaPointerValue* alloc_jsi_string_pv(
   } else {
     n->str_val = NveStrSlice{nullptr, 0};
   }
-  return target_arena.emplace<JsiArenaPointerValue>(n);
+  return n;
 }
 
 inline void ensure_jsi_child_nodes(JsiArenaNode* n, BumpArena& target_arena) {

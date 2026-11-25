@@ -379,6 +379,7 @@ pub(crate) fn render_command_palette(
         Dialog {
             open: palette.open,
             test_id: Some("command-palette".into()),
+            accessibility_label: Some("Command Palette".into()),
             focusable_ids: focusable_ids,
             close_on_escape: true,
             close_on_backdrop: true,
@@ -410,6 +411,7 @@ pub(crate) fn render_command_palette(
                 placeholder: Some("Jump to view, task, accent, layout, snapshot...".into()),
                 value: palette.query.clone(),
                 accessibility_label: Some("Command palette filter".into()),
+                accessibility_role: Some("searchbox".into()),
                 on_change: move |q: String| {
                     mutate_state(&s_input, version, |st| st.set_palette_query(q));
                 },

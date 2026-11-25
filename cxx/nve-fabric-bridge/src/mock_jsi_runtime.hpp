@@ -35,7 +35,14 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   using DirectEventSink = std::function<uint32_t(NveEventBatch)>;
   using NodeKind = detail::JsiNodeKind;
   using ArenaNode = detail::JsiArenaNode;
-  using ArenaPointerValue = detail::JsiArenaPointerValue;
+
+  /// Arena-allocated `PointerValue` whose `invalidate()` is a no-op (reclaimed on `reset_frame()`).
+  /// Must be nested inside `MockJsiRecorderRuntime` because `Runtime::PointerValue` is protected.
+  struct ArenaPointerValue final : public PointerValue {
+    ArenaNode* node{nullptr};
+    explicit ArenaPointerValue(ArenaNode* n) noexcept : node(n) {}
+    void invalidate() noexcept override {}
+  };
 
   static constexpr uint32_t kNoSideSlot = detail::kJsiNoSideSlot;
   static constexpr uint32_t kInitialObjectCap = detail::kJsiInitialObjectCap;
@@ -166,12 +173,12 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   PointerValue* clonePropNameID(const PointerValue* pv) override { return clone_pv(pv); }
 
   facebook::jsi::PropNameID createPropNameIDFromAscii(const char* str, size_t length) override {
-    return make<facebook::jsi::PropNameID>(detail::alloc_jsi_string_pv(arena_, str, length));
+    return make<facebook::jsi::PropNameID>(alloc_string_pv(str, length));
   }
 
   facebook::jsi::PropNameID createPropNameIDFromUtf8(const uint8_t* utf8, size_t length) override {
     return make<facebook::jsi::PropNameID>(
-        detail::alloc_jsi_string_pv(arena_, reinterpret_cast<const char*>(utf8), length));
+        alloc_string_pv(reinterpret_cast<const char*>(utf8), length));
   }
 
   facebook::jsi::PropNameID createPropNameIDFromString(const facebook::jsi::String& str) override {
@@ -182,7 +189,7 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   facebook::jsi::PropNameID createPropNameIDFromSymbol(const facebook::jsi::Symbol& sym) override {
     ArenaNode* n = extract_node(sym);
     const std::string_view sv = str_slice_view(n ? n->str_val : NveStrSlice{nullptr, 0});
-    return make<facebook::jsi::PropNameID>(detail::alloc_jsi_string_pv(arena_, sv.data(), sv.size()));
+    return make<facebook::jsi::PropNameID>(alloc_string_pv(sv.data(), sv.size()));
   }
 
   std::string utf8(const facebook::jsi::PropNameID& id) override {
@@ -247,12 +254,12 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   }
 
   facebook::jsi::String createStringFromAscii(const char* str, size_t length) override {
-    return make<facebook::jsi::String>(detail::alloc_jsi_string_pv(arena_, str, length));
+    return make<facebook::jsi::String>(alloc_string_pv(str, length));
   }
 
   facebook::jsi::String createStringFromUtf8(const uint8_t* utf8, size_t length) override {
     return make<facebook::jsi::String>(
-        detail::alloc_jsi_string_pv(arena_, reinterpret_cast<const char*>(utf8), length));
+        alloc_string_pv(reinterpret_cast<const char*>(utf8), length));
   }
 
   std::string utf8(const facebook::jsi::String& str) override {
@@ -567,6 +574,10 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   void setExternalMemoryPressure(const facebook::jsi::Object&, size_t) override {}
 
  private:
+  ArenaPointerValue* alloc_string_pv(const char* str, size_t length) {
+    return arena_.emplace<ArenaPointerValue>(detail::alloc_jsi_string_node(arena_, str, length));
+  }
+
   static PointerValue* clone_pv(const PointerValue* pv) noexcept {
     return const_cast<PointerValue*>(pv);
   }

@@ -26,6 +26,7 @@ pub fn Input(
     #[props(default)] id: Option<String>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] accessibility_label: Option<String>,
+    #[props(default)] accessibility_role: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
     let (theme, colors) = use_theme_rgba();
@@ -114,6 +115,7 @@ pub fn Input(
 
     let tab_index = if disabled { -1 } else { 0 };
     let a11y_label = accessibility_label.or_else(|| label.clone());
+    let a11y_role = accessibility_role.unwrap_or_else(|| "textbox".to_string());
 
     rsx! {
         view {
@@ -135,7 +137,7 @@ pub fn Input(
                 read_only: read_only,
                 disabled: disabled,
                 tab_index: tab_index,
-                accessibility_role: "textbox",
+                accessibility_role: "{a11y_role}",
                 accessibility_label: a11y_label,
                 aria_labelledby: label_id,
                 aria_describedby: described_by.clone(),

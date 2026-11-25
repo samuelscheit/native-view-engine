@@ -28,6 +28,7 @@ pub fn Dialog(
     #[props(default)] on_close: Option<EventHandler<()>>,
     #[props(default)] on_focus_change: Option<EventHandler<Option<String>>>,
     #[props(default)] test_id: Option<String>,
+    #[props(default)] accessibility_label: Option<String>,
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
@@ -164,6 +165,7 @@ pub fn Dialog(
             view {
                 test_id: "{base_id}",
                 accessibility_role: "dialog",
+                accessibility_label: accessibility_label,
                 aria_modal: "true",
                 aria_labelledby: title_id.clone(),
                 aria_describedby: desc_id.clone(),
