@@ -74,7 +74,8 @@ use nve_abi::{
 pub fn resolve_tag(tag: &str) -> (ComponentKind, Option<&str>) {
     match tag {
         "root" => (ComponentKind::Root, None),
-        "view" | "div" | "section" | "main" | "header" | "footer" => (ComponentKind::View, None),
+        "view" | "div" | "section" | "main" | "header" | "footer" | "dialog" | "details"
+        | "summary" | "form" => (ComponentKind::View, None),
         "text" | "span" | "p" | "h1" | "h2" | "h3" | "label" => (ComponentKind::Text, None),
         "scrollview" | "scroll" => (ComponentKind::ScrollView, None),
         "image" | "img" => (ComponentKind::Image, None),

@@ -71,7 +71,9 @@ impl NveMutationWriter {
                 self.apply_str_attr(node_id, name, &s);
             }
             AttributeValue::Bool(b) => {
-                let prop_name = canonical_a11y_attr_key(name).unwrap_or(name);
+                let prop_name = canonical_a11y_attr_key(name)
+                    .or_else(|| canonical_input_attr_key(name))
+                    .unwrap_or(name);
                 self.builder
                     .set_raw_prop(node_id, prop_name, &RawPropValue::Bool(*b));
             }
@@ -504,13 +506,22 @@ pub(crate) fn canonical_a11y_attr_key(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Canonicalizes cross-platform text-input hint attribute keys into their canonical HTML/wire
-/// names (`autocomplete`, `inputmode`) with zero binary ABI changes.
+/// Canonicalizes cross-platform text-input & native HTML5 semantic attribute keys into their
+/// canonical HTML/wire names (`autocomplete`, `inputmode`, `closedby`, `commandfor`,
+/// `popovertarget`, `popovertargetaction`, `novalidate`, `type`) with zero binary ABI changes.
 #[inline]
 pub(crate) fn canonical_input_attr_key(name: &str) -> Option<&'static str> {
     match name {
         "autocomplete" | "autoComplete" | "auto_complete" => Some("autocomplete"),
         "inputmode" | "inputMode" | "input_mode" => Some("inputmode"),
+        "closedby" | "closedBy" | "closed_by" => Some("closedby"),
+        "commandfor" | "commandFor" | "command_for" => Some("commandfor"),
+        "popovertarget" | "popoverTarget" | "popover_target" => Some("popovertarget"),
+        "popovertargetaction" | "popoverTargetAction" | "popover_target_action" => {
+            Some("popovertargetaction")
+        }
+        "novalidate" | "noValidate" | "no_validate" => Some("novalidate"),
+        "button_type" | "input_type" => Some("type"),
         _ => None,
     }
 }

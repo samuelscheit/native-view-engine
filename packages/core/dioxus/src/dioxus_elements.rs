@@ -70,6 +70,9 @@ macro_rules! define_attrs {
 macro_rules! define_a11y_attrs {
     () => {
         define_attrs! {
+            id => "id",
+            slot => "slot",
+            popover => "popover",
             test_id => "testID",
             accessibility_label => "accessibilityLabel",
             accessibility_role => "accessibilityRole",
@@ -149,8 +152,50 @@ pub mod elements {
     define_element!(text, "text");
     define_element!(span, "span");
     define_element!(p, "p");
-    define_element!(pressable, "pressable");
-    define_element!(button, "button");
+    define_element!(pressable, "pressable", {
+        command => "command",
+        commandfor => "commandfor",
+        popovertarget => "popovertarget",
+        popovertargetaction => "popovertargetaction",
+        r#type => "type",
+        button_type => "type",
+        name => "name",
+        value => "value",
+        form => "form",
+        formaction => "formaction",
+        formmethod => "formmethod",
+    });
+    define_element!(button, "button", {
+        command => "command",
+        commandfor => "commandfor",
+        popovertarget => "popovertarget",
+        popovertargetaction => "popovertargetaction",
+        r#type => "type",
+        button_type => "type",
+        name => "name",
+        value => "value",
+        form => "form",
+        formaction => "formaction",
+        formmethod => "formmethod",
+    });
+    define_element!(dialog, "dialog", {
+        open => "open",
+        closedby => "closedby",
+    });
+    define_element!(details, "details", {
+        open => "open",
+        name => "name",
+    });
+    define_element!(summary, "summary");
+    define_element!(form, "form", {
+        method => "method",
+        action => "action",
+        target => "target",
+        novalidate => "novalidate",
+        enctype => "enctype",
+        name => "name",
+        autocomplete => "autocomplete",
+    });
     define_element!(scrollview, "scrollview");
     define_element!(image, "image", {
         src => "src",
@@ -158,21 +203,37 @@ pub mod elements {
         resize_mode => "resizeMode",
     });
     define_element!(textinput, "textinput", {
+        name => "name",
+        r#type => "type",
+        input_type => "type",
         placeholder => "placeholder",
         value => "value",
         multiline => "multiline",
         secure_text_entry => "secureTextEntry",
         read_only => "readOnly",
+        required => "required",
+        minlength => "minlength",
+        maxlength => "maxlength",
+        pattern => "pattern",
+        form => "form",
         autocomplete => "autocomplete",
         input_mode => "inputmode",
         inputmode => "inputmode",
     });
     define_element!(input, "input", {
+        name => "name",
+        r#type => "type",
+        input_type => "type",
         placeholder => "placeholder",
         value => "value",
         multiline => "multiline",
         secure_text_entry => "secureTextEntry",
         read_only => "readOnly",
+        required => "required",
+        minlength => "minlength",
+        maxlength => "maxlength",
+        pattern => "pattern",
+        form => "form",
         autocomplete => "autocomplete",
         input_mode => "inputmode",
         inputmode => "inputmode",

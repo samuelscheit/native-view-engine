@@ -12,6 +12,7 @@ mod events;
 pub mod hot_patch;
 pub mod native_view;
 pub mod signal_archive;
+pub mod stream_slot;
 mod surface;
 #[cfg(test)]
 mod tests;
@@ -71,6 +72,10 @@ pub use signal_archive::{
     SignalTableSnapshot, SignalValue, SignalValueTag, NVE_SIGNAL_ARCHIVE_MAGIC,
     NVE_SIGNAL_ARCHIVE_VERSION, NVE_SIGNAL_DELTA_MAGIC,
 };
+pub use stream_slot::{
+    NveStreamSlot, NveStreamSlotProps, StreamSlotRole, SuspenseSlot, SuspenseSlotProps,
+    NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_NAME_PREFIX, NVE_STREAM_SLOT_ROLE_ATTR,
+};
 pub use surface::DioxusSurface;
 pub use traits::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
@@ -121,6 +126,9 @@ pub mod prelude {
     pub use crate::error_boundary::{
         throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
         ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
+    };
+    pub use crate::stream_slot::{
+        NveStreamSlot, NveStreamSlotProps, StreamSlotRole, SuspenseSlot, SuspenseSlotProps,
     };
     pub use crate::traits::{
         effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,

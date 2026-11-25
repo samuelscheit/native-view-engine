@@ -382,6 +382,19 @@ impl WebBackend {
         if container.has_attribute("data-nve-id") {
             register_el(container.clone());
         }
+        // Adopt `[data-nve-id]` nodes inside an open Declarative Shadow DOM root (Stage-1 streaming).
+        if let Some(shadow) = container.shadow_root()
+            && let Ok(list) = shadow.query_selector_all("[data-nve-id]")
+        {
+            let len = list.length();
+            for i in 0..len {
+                if let Some(node) = list.item(i)
+                    && let Ok(el) = node.dyn_into::<web_sys::Element>()
+                {
+                    register_el(el);
+                }
+            }
+        }
         if let Ok(list) = container.query_selector_all("[data-nve-id]") {
             let len = list.length();
             for i in 0..len {

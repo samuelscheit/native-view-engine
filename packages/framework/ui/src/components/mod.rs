@@ -10,8 +10,10 @@ pub mod date_picker_grid;
 pub mod date_picker_input;
 pub mod date_picker_range_state;
 pub mod date_picker_state;
+pub mod disclosure;
 pub mod dropdown;
 pub mod error_boundary;
+pub mod form_view;
 pub mod forms;
 pub mod keyboard_avoiding;
 pub mod layout;
@@ -19,6 +21,7 @@ pub mod overlays;
 pub mod split_pane;
 pub mod tabs;
 pub mod toast;
+pub mod tooltip;
 #[cfg(feature = "virtual-list")]
 pub mod virtual_list;
 
@@ -36,10 +39,14 @@ pub use date_picker::{
     DateRangePickerState, DateSegment, DateSegmentInput, DateSegmentOrder, DisabledDatePredicate,
     HourCycle, RangeEndpoint, SegmentKeyOutcome, TimeOfDay,
 };
+pub use disclosure::{Accordion, AccordionItem, Disclosure, DisclosureSpring};
 pub use dropdown::{DropdownMenu, MenuItem};
 pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryReset,
     ErrorContext, ErrorFallback, UiError, UiErrorReport,
+};
+pub use form_view::{
+    use_form_context, Form, FormField, FormMethod, FormSubmitButton, FormSubmitPayload,
 };
 pub use forms::{Checkbox, Input, Switch};
 pub use keyboard_avoiding::{

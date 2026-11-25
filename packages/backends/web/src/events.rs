@@ -173,6 +173,8 @@ where
 pub(crate) struct RootEventDelegator {
     container: web_sys::Element,
     click: Closure<dyn FnMut(web_sys::MouseEvent)>,
+    submit: Closure<dyn FnMut(web_sys::Event)>,
+    close: Closure<dyn FnMut(web_sys::Event)>,
     input: Closure<dyn FnMut(web_sys::Event)>,
     change: Closure<dyn FnMut(web_sys::Event)>,
     keydown: Closure<dyn FnMut(web_sys::KeyboardEvent)>,
@@ -189,6 +191,8 @@ impl Drop for RootEventDelegator {
     fn drop(&mut self) {
         let c = &self.container;
         let _ = c.remove_event_listener_with_callback("click", self.click.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback("submit", self.submit.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback_and_bool("close", self.close.as_ref().unchecked_ref(), true);
         let _ = c.remove_event_listener_with_callback("input", self.input.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("change", self.change.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("keydown", self.keydown.as_ref().unchecked_ref());
@@ -225,6 +229,10 @@ impl WebBackend {
             let on_event = Rc::clone(&self.on_event);
             let surface_id = Rc::clone(&self.surface_id);
             Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |ev: web_sys::MouseEvent| {
+                // `<dialog closedby="any">` backdrop-hit fallback when native `closedBy` is absent.
+                if crate::semantic_attrs::try_dialog_backdrop_fallback(&ev) {
+                    return;
+                }
                 let found = {
                     let map = meta.borrow();
                     find_delegated_ancestor(&root, ev.target(), &map, |m| {
@@ -384,38 +392,7 @@ impl WebBackend {
             )
         };
 
-        // 4. focusin (bubbled replacement for non-bubbling focus).
-        let focusin = {
-            let root = container.clone();
-            let meta = Rc::clone(&self.node_event_meta);
-            let events = Rc::clone(&self.events);
-            let on_event = Rc::clone(&self.on_event);
-            let surface_id = Rc::clone(&self.surface_id);
-            Closure::<dyn FnMut(web_sys::FocusEvent)>::new(move |ev: web_sys::FocusEvent| {
-                let found = {
-                    let map = meta.borrow();
-                    find_delegated_ancestor(&root, ev.target(), &map, |m| {
-                        m.kind == ComponentKind::TextInput || (m.mask & EventMask::FOCUS) != 0
-                    })
-                };
-                if let Some((node_id, _)) = found {
-                    emit_event(
-                        &events,
-                        &on_event,
-                        NativeEvent {
-                            surface_id: surface_id.get(),
-                            node_id,
-                            timestamp_us: now_us(),
-                            kind: NativeEventKind::Focus,
-                            payload: EventPayload::Empty,
-                        },
-                    );
-                }
-            })
-        };
-
-        // 5. focusout (bubbled replacement for non-bubbling blur; ends any active composition).
-        let focusout = {
+        let make_focus_listener = |kind: NativeEventKind, mask_bit: u64| {
             let root = container.clone();
             let meta = Rc::clone(&self.node_event_meta);
             let ime = Rc::clone(&self.ime_guards);
@@ -426,16 +403,18 @@ impl WebBackend {
                 let found = {
                     let map = meta.borrow();
                     find_delegated_ancestor(&root, ev.target(), &map, |m| {
-                        m.kind == ComponentKind::TextInput || (m.mask & EventMask::BLUR) != 0
+                        m.kind == ComponentKind::TextInput || (m.mask & mask_bit) != 0
                     })
                 };
                 if let Some((node_id, _)) = found {
                     let ts = now_us();
-                    let comp_end = ime.borrow().get(&node_id).and_then(|g| {
-                        web_composition_cancel_on_blur(g, surface_id.get(), node_id, ts)
-                    });
-                    if let Some(end_ev) = comp_end {
-                        emit_event(&events, &on_event, end_ev);
+                    if kind == NativeEventKind::Blur {
+                        let comp_end = ime.borrow().get(&node_id).and_then(|g| {
+                            web_composition_cancel_on_blur(g, surface_id.get(), node_id, ts)
+                        });
+                        if let Some(end_ev) = comp_end {
+                            emit_event(&events, &on_event, end_ev);
+                        }
                     }
                     emit_event(
                         &events,
@@ -444,13 +423,15 @@ impl WebBackend {
                             surface_id: surface_id.get(),
                             node_id,
                             timestamp_us: ts,
-                            kind: NativeEventKind::Blur,
+                            kind,
                             payload: EventPayload::Empty,
                         },
                     );
                 }
             })
         };
+        let focusin = make_focus_listener(NativeEventKind::Focus, EventMask::FOCUS);
+        let focusout = make_focus_listener(NativeEventKind::Blur, EventMask::BLUR);
 
         // 6. scroll (CAPTURE phase because scroll does not bubble).
         let scroll = {
@@ -556,7 +537,43 @@ impl WebBackend {
             })
         };
 
+        let make_custom_listener = |event_name: &'static str, prevent_default: bool| {
+            let root = container.clone();
+            let meta = Rc::clone(&self.node_event_meta);
+            let events = Rc::clone(&self.events);
+            let on_event = Rc::clone(&self.on_event);
+            let surface_id = Rc::clone(&self.surface_id);
+            Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+                let found = {
+                    let map = meta.borrow();
+                    find_delegated_ancestor(&root, ev.target(), &map, |m| {
+                        (m.mask & EventMask::CUSTOM) != 0
+                    })
+                };
+                if let Some((node_id, _)) = found {
+                    if prevent_default {
+                        ev.prevent_default();
+                    }
+                    emit_event(
+                        &events,
+                        &on_event,
+                        NativeEvent {
+                            surface_id: surface_id.get(),
+                            node_id,
+                            timestamp_us: now_us(),
+                            kind: NativeEventKind::Custom,
+                            payload: EventPayload::Custom { name: event_name.into(), data: Vec::new() },
+                        },
+                    );
+                }
+            })
+        };
+        let submit = make_custom_listener("submit", true);
+        let close = make_custom_listener("close", false);
+
         let _ = container.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("submit", submit.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback_and_bool("close", close.as_ref().unchecked_ref(), true);
         let _ = container.add_event_listener_with_callback("input", input.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback("change", change.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
@@ -570,6 +587,8 @@ impl WebBackend {
         self.root_delegator = Some(RootEventDelegator {
             container,
             click,
+            submit,
+            close,
             input,
             change,
             keydown,

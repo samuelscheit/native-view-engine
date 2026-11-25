@@ -21,7 +21,11 @@ impl NveMutationWriter {
                     self.alloc_deferred_native_node()
                 } else {
                     let (kind, custom) = resolve_tag(tag);
-                    self.alloc_node(kind, custom)
+                    let id = self.alloc_node(kind, custom);
+                    if matches!(*tag, "dialog" | "details" | "summary" | "form") {
+                        self.builder.set_raw_prop_str(id, "semanticTag", tag);
+                    }
+                    id
                 };
                 for attr in *attrs {
                     if let TemplateAttribute::Static { name, value, .. } = attr {

@@ -13,8 +13,12 @@ use crate::theme::use_theme_rgba;
 #[component]
 pub fn Input(
     #[props(default)] value: String,
+    #[props(default)] name: Option<String>,
+    #[props(default)] input_type: Option<String>,
+    #[props(default)] required: bool,
     #[props(default)] on_change: Option<EventHandler<String>>,
     #[props(default)] on_submit: Option<EventHandler<String>>,
+    #[props(default)] on_blur: Option<EventHandler<()>>,
     #[props(default)] label: Option<String>,
     #[props(default)] placeholder: Option<String>,
     #[props(default)] helper_text: Option<String>,
@@ -131,7 +135,11 @@ pub fn Input(
                 }
             }
             textinput {
+                id: id,
                 test_id: test_id,
+                name: name,
+                input_type: input_type,
+                required: required,
                 value: "{value}",
                 placeholder: placeholder,
                 multiline: multiline,
@@ -145,9 +153,15 @@ pub fn Input(
                 accessibility_label: a11y_label,
                 aria_labelledby: label_id,
                 aria_describedby: described_by.clone(),
+                aria_invalid: if has_error { Some("true") } else { None },
                 nve_style: input_style,
                 onfocus: move |_| focused.set(true),
-                onblur: move |_| focused.set(false),
+                onblur: move |_| {
+                    focused.set(false);
+                    if let Some(handler) = on_blur {
+                        handler.call(());
+                    }
+                },
                 onchange: move |ev: TextEvent| {
                     if !disabled && !read_only && let Some(handler) = on_change {
                         handler.call(ev.data().value.clone());
