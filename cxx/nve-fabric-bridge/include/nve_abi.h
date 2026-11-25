@@ -7,6 +7,20 @@
 extern "C" {
 #endif
 
+#ifndef NVE_API
+#if defined(NVE_BUILD_SHARED_LIB)
+#if defined(_WIN32)
+#define NVE_API __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define NVE_API __attribute__((visibility("default")))
+#else
+#define NVE_API
+#endif
+#else
+#define NVE_API
+#endif
+#endif
+
 #define NVE_ABI_MAGIC 0x3145564Eu /* "NVE1" little-endian */
 #define NVE_ABI_VERSION 1u
 #define NVE_ROOT_NODE_ID 1u
@@ -113,7 +127,7 @@ typedef struct NveDevApi {
 
 /* Single exported symbol per NVE module (`nve_get_interface`). */
 typedef const void* (*NveGetInterfaceFn)(uint32_t interface_id);
-const void* nve_get_interface(uint32_t interface_id);
+NVE_API const void* nve_get_interface(uint32_t interface_id);
 
 /* Host-side resolved cache of modular interface pointers (not an ABI struct). */
 typedef struct NveModule {

@@ -3,7 +3,7 @@
 /build
 /cxx/build
 /cxx/build-fabric
-hosts/macos-shell/build/
+hosts/*/build/
 hosts/swiftui-kit/.build/
 hosts/flutter-plugin/.dart_tool/
 hosts/flutter-plugin/pubspec.lock
@@ -27,8 +27,6 @@ hosts/flutter-plugin/pubspec.lock
 
 # Mobile shells
 hosts/ios-shell/Pods/
-hosts/ios-shell/build/
 hosts/ios-shell/*.xcworkspace
 hosts/android-shell/.gradle/
-hosts/android-shell/build/
 hosts/android-shell/local.properties

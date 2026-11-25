@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use libloading::{Library, Symbol};
+use libloading::Library;
 use nve_abi::{
     NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveGestureDisposition,
     NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
@@ -29,7 +29,7 @@ impl std::fmt::Display for LoaderError {
 impl std::error::Error for LoaderError {}
 
 pub struct HotAppInstance {
-    _lib: Library,
+    _lib: Option<Library>,
     surface: NveSurfaceApi,
     layout: Option<NveLayoutApi>,
     component: Option<NveComponentApi>,
@@ -66,16 +66,28 @@ impl HotAppInstance {
 
         // SAFETY: We resolve the single `nve_get_interface` entry point and copy the small
         // static const function-pointer tables out while `_lib` keeps the image pinned.
-        let lib = unsafe { Library::new(&loaded_copy) }.map_err(LoaderError::Load)?;
-        let get_iface: NveGetInterfaceFn = unsafe {
-            let sym: Symbol<'_, NveGetInterfaceFn> = lib
-                .get(b"nve_get_interface")
-                .map_err(LoaderError::Load)?;
-            *sym
+        let lib = match unsafe { Library::new(&loaded_copy) } {
+            Ok(lib) => lib,
+            Err(err) => {
+                let _ = std::fs::remove_file(&loaded_copy);
+                return Err(LoaderError::Load(err));
+            }
+        };
+        let get_iface: NveGetInterfaceFn = match unsafe {
+            lib.get::<NveGetInterfaceFn>(b"nve_get_interface")
+        } {
+            Ok(sym) => *sym,
+            Err(err) => {
+                drop(lib);
+                let _ = std::fs::remove_file(&loaded_copy);
+                return Err(LoaderError::Load(err));
+            }
         };
 
         let surface_ptr = unsafe { get_iface(NVE_IFACE_SURFACE) as *const NveSurfaceApi };
         if surface_ptr.is_null() {
+            drop(lib);
+            let _ = std::fs::remove_file(&loaded_copy);
             return Err(LoaderError::MissingSurfaceInterface);
         }
         let surface = unsafe { *surface_ptr };
@@ -101,7 +113,7 @@ impl HotAppInstance {
         }
 
         Ok(Self {
-            _lib: lib,
+            _lib: Some(lib),
             surface,
             layout,
             component,
@@ -114,6 +126,10 @@ impl HotAppInstance {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn loaded_copy_path(&self) -> &Path {
+        &self.loaded_copy
     }
 
     pub fn render(&mut self, frame_id: u64) -> Vec<u8> {
@@ -200,6 +216,9 @@ impl Drop for HotAppInstance {
             unsafe { (self.surface.destroy)(self.handle) };
             self.handle = std::ptr::null_mut();
         }
+        // Unload the dynamic library before removing the temporary copy so Windows
+        // releases the OS file lock prior to deletion.
+        drop(self._lib.take());
         let _ = std::fs::remove_file(&self.loaded_copy);
     }
 }

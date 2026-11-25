@@ -599,6 +599,8 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     let dylib_path = compile_test_cdylib(dir.path(), "full_hotswap_app", cdylib_src);
 
     let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
+    let gen1_copy = inst.loaded_copy_path().to_path_buf();
+    assert!(gen1_copy.exists(), "gen 1 temp copy must exist while loaded");
     assert_eq!(inst.generation(), 1);
     assert_eq!(inst.render(1), b"frame=1;counter=0");
 
@@ -622,16 +624,34 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert_eq!(inst.render(2), b"frame=2;counter=16");
     assert_eq!(inst.snapshot_state(), 16u32.to_le_bytes());
 
-    // Hot-swap gen 1 -> gen 2 -> gen 3 preserving state across reloads.
+    // Hot-swap gen 1 -> gen 2 -> gen 3 preserving state across reloads and cleaning up old copies.
     let mut inst2 = inst.reload(&dylib_path, 1).expect("reload gen 2");
+    assert!(
+        !gen1_copy.exists(),
+        "gen 1 temp copy must be deleted on drop after unloading library"
+    );
+    let gen2_copy = inst2.loaded_copy_path().to_path_buf();
+    assert!(gen2_copy.exists(), "gen 2 temp copy must exist while loaded");
     assert_eq!(inst2.generation(), 2);
     assert_eq!(inst2.render(3), b"frame=3;counter=16");
     assert!(inst2.dispatch_events(b"tap2"));
     assert_eq!(inst2.render(4), b"frame=4;counter=17");
 
     let mut inst3 = inst2.reload(&dylib_path, 1).expect("reload gen 3");
+    assert!(
+        !gen2_copy.exists(),
+        "gen 2 temp copy must be deleted on drop after unloading library"
+    );
+    let gen3_copy = inst3.loaded_copy_path().to_path_buf();
+    assert!(gen3_copy.exists(), "gen 3 temp copy must exist while loaded");
     assert_eq!(inst3.generation(), 3);
     assert_eq!(inst3.render(5), b"frame=5;counter=17");
+
+    drop(inst3);
+    assert!(
+        !gen3_copy.exists(),
+        "gen 3 temp copy must be deleted when HotAppInstance is dropped"
+    );
 }
 
 // ============================================================================

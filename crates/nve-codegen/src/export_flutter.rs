@@ -90,16 +90,20 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
         "      return {name}NativeBindings(ffi.DynamicLibrary.open(libraryPath));"
     );
     let _ = writeln!(out, "    }}");
-    let _ = writeln!(out, "    if (Platform.isIOS || Platform.isMacOS) {{");
+    let _ = writeln!(out, "    if (Platform.isIOS) {{");
     let _ = writeln!(
         out,
         "      return {name}NativeBindings(ffi.DynamicLibrary.process());"
     );
     let _ = writeln!(out, "    }}");
+    let lib_name = to_snake_case(name);
     let _ = writeln!(
         out,
-        "    return {name}NativeBindings(ffi.DynamicLibrary.open('lib{}.so'));",
-        to_snake_case(name)
+        "    final libName = Platform.isWindows ? '{lib_name}.dll' : Platform.isMacOS ? 'lib{lib_name}.dylib' : 'lib{lib_name}.so';"
+    );
+    let _ = writeln!(
+        out,
+        "    return {name}NativeBindings(ffi.DynamicLibrary.open(libName));"
     );
     let _ = writeln!(out, "  }}");
     let _ = writeln!(out, "}}");

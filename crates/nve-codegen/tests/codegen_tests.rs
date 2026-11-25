@@ -581,6 +581,11 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(dart_s.contains("NveSurfaceController"));
     assert!(dart_s.contains("NveEventKind.custom"));
     assert!(dart_s.contains("NveCounterCardCountChangeEvent.fromJson"));
+    assert!(dart_s.contains("if (Platform.isIOS)"));
+    assert!(!dart_s.contains("Platform.isIOS || Platform.isMacOS"));
+    assert!(dart_s.contains(
+        "Platform.isWindows ? 'nve_counter_card.dll' : Platform.isMacOS ? 'libnve_counter_card.dylib' : 'libnve_counter_card.so'"
+    ));
     assert_balanced_delimiters("nve_counter_card.dart", dart_s);
 
     let fl_fabric = export_flutter(&fabric_spec).expect("export_flutter fabric");

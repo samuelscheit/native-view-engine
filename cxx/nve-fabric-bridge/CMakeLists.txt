@@ -34,6 +34,16 @@ target_include_directories(nve_fabric_bridge
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+if(MSVC)
+  target_compile_options(nve_fabric_bridge PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
+else()
+  target_compile_options(nve_fabric_bridge PRIVATE -Wall -Wextra)
+endif()
+
+if(UNIX AND NOT APPLE)
+  target_link_libraries(nve_fabric_bridge PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
 set(NVE_HAS_RN_YOGA OFF)
 set(NVE_HAS_RN_JSI OFF)
 
@@ -76,13 +86,46 @@ if(NVE_WITH_RN_FABRIC)
 endif()
 
 enable_testing()
+
+add_library(nve_bridge_fixture_valid SHARED tests/session_fixture.c)
+target_compile_definitions(nve_bridge_fixture_valid PRIVATE NVE_BUILD_SHARED_LIB=1)
+target_include_directories(nve_bridge_fixture_valid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_library(nve_bridge_fixture_no_entry SHARED tests/session_fixture.c)
+target_compile_definitions(nve_bridge_fixture_no_entry PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_NO_ENTRY=1)
+target_include_directories(nve_bridge_fixture_no_entry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_library(nve_bridge_fixture_no_surface SHARED tests/session_fixture.c)
+target_compile_definitions(nve_bridge_fixture_no_surface PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_NO_SURFACE=1)
+target_include_directories(nve_bridge_fixture_no_surface PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 add_executable(nve_fabric_bridge_test tests/bridge_test.cpp)
 target_include_directories(nve_fabric_bridge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(nve_fabric_bridge_test PRIVATE
+  NVE_BRIDGE_FIXTURE_VALID="$<TARGET_FILE:nve_bridge_fixture_valid>"
+  NVE_BRIDGE_FIXTURE_NO_ENTRY="$<TARGET_FILE:nve_bridge_fixture_no_entry>"
+  NVE_BRIDGE_FIXTURE_NO_SURFACE="$<TARGET_FILE:nve_bridge_fixture_no_surface>"
+)
+if(MSVC)
+  target_compile_options(nve_fabric_bridge_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
+else()
+  target_compile_options(nve_fabric_bridge_test PRIVATE -Wall -Wextra -Werror)
+endif()
 target_link_libraries(nve_fabric_bridge_test PRIVATE nve_fabric_bridge)
+add_dependencies(nve_fabric_bridge_test
+  nve_bridge_fixture_valid
+  nve_bridge_fixture_no_entry
+  nve_bridge_fixture_no_surface
+)
 add_test(NAME bridge_abi_test COMMAND nve_fabric_bridge_test)
 
 if(NVE_BUILD_BENCHMARKS)
   add_executable(nve_fabric_bridge_bench bench/bridge_bench.cpp)
   target_include_directories(nve_fabric_bridge_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  if(MSVC)
+    target_compile_options(nve_fabric_bridge_bench PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
+  else()
+    target_compile_options(nve_fabric_bridge_bench PRIVATE -Wall -Wextra)
+  endif()
   target_link_libraries(nve_fabric_bridge_bench PRIVATE nve_fabric_bridge)
 endif()
