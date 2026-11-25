@@ -11,6 +11,7 @@
 //!    crossing non-shared boundaries (WASM, IPC, replay logs).
 
 use std::marker::PhantomData;
+#[cfg(target_pointer_width = "64")]
 use std::mem::{align_of, offset_of, size_of};
 
 use crate::{DecodeError, NativeEventKind, NveBufferSlice};

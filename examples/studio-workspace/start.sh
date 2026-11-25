@@ -11,6 +11,7 @@ cd "$ROOT_DIR"
 
 APP_PKG="nve-studio-workspace"
 APP_LIB="nve_studio_workspace"
+WEB_APP="studio"
 START_WEB=1
 WEB_PORT="${NVE_WEB_PORT:-8080}"
 
@@ -19,10 +20,12 @@ for arg in "$@"; do
     --counter)
       APP_PKG="nve-example-counter"
       APP_LIB="nve_example_counter"
+      WEB_APP="counter"
       ;;
     --studio)
       APP_PKG="nve-studio-workspace"
       APP_LIB="nve_studio_workspace"
+      WEB_APP="studio"
       ;;
     --no-web)
       START_WEB=0
@@ -113,7 +116,7 @@ if [[ "$START_WEB" -eq 1 ]]; then
     echo "==> Building hosts/web-shell WASM bundle..."
     "$ROOT_DIR/hosts/web-shell/build.sh"
   fi
-  launch "Web WASM (http://127.0.0.1:${WEB_PORT})" \
+  launch "Web WASM (http://127.0.0.1:${WEB_PORT}/?app=${WEB_APP})" \
     python3 -m http.server "$WEB_PORT" --bind 127.0.0.1 --directory "$ROOT_DIR/hosts/web-shell"
 fi
 

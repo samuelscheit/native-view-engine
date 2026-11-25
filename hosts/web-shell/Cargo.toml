@@ -5,14 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# Native tests link `rlib`; `hosts/web-shell/build.sh` passes `--crate-type cdylib`
+# for `wasm32-unknown-unknown` so workspace tests never link a redundant native cdylib.
+crate-type = ["rlib"]
 
 [dependencies]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-backend-web = { workspace = true }
-nve-example-counter = { workspace = true }
+nve-example-counter = { path = "../../examples/counter", default-features = false }
 nve-studio-workspace = { path = "../../examples/studio-workspace", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

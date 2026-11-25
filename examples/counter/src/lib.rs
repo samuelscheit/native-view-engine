@@ -182,4 +182,5 @@ impl NveApp for CounterModule {
     }
 }
 
+#[cfg(all(feature = "cdylib-export", not(target_arch = "wasm32")))]
 nve_engine::export_nve_app!(CounterModule);

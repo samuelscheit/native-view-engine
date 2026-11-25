@@ -6,8 +6,12 @@ license.workspace = true
 
 [lib]
 name = "nve_example_counter"
-# rlib for direct headless/CLI embedding + cdylib for Tier-2 hot-swap reloading!
+# rlib for direct headless/CLI/WASM embedding + cdylib for Tier-2 hot-swap reloading!
 crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["cdylib-export"]
+cdylib-export = []
 
 [dependencies]
 nve-abi = { workspace = true }

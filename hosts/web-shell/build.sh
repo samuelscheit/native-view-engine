@@ -53,8 +53,10 @@ fi
 echo "==> Building nve-web-shell (${PROFILE}, wasm32-unknown-unknown)"
 (
   cd "${REPO_ROOT}"
-  CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --locked \
+  CARGO_TARGET_DIR="${TARGET_DIR}" cargo rustc --locked \
     -p nve-web-shell \
+    --lib \
+    --crate-type cdylib \
     --target wasm32-unknown-unknown \
     ${CARGO_PROFILE_FLAG}
 )
