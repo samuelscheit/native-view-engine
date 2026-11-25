@@ -19,7 +19,7 @@ use wasm_bindgen::JsCast;
 use crate::pairing::PairedWebSession;
 use crate::session::DEFAULT_SURFACE_ID;
 use crate::wasm_api::{
-    browser_viewport, install_panic_hook, install_resize_listener, nve_extract_binary_message,
+    browser_viewport, install_resize_listener, nve_extract_binary_message,
     set_hud_status, WindowResizeListener,
 };
 
@@ -268,7 +268,6 @@ impl NveWebHost {
         token: &str,
         ws_url: Option<&str>,
     ) -> Result<NveWebHost, JsValue> {
-        install_panic_hook();
         if token.trim().is_empty() {
             return Err(JsValue::from_str("pairing token cannot be empty"));
         }

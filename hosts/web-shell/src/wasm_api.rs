@@ -406,14 +406,13 @@ fn connect_hot_reload(
     })
 }
 
-pub(crate) fn install_panic_hook() {
-    use std::sync::Once;
-    static HOOK: Once = Once::new();
-    HOOK.call_once(|| {
-        std::panic::set_hook(Box::new(|info| {
-            web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web Panic] {info}")));
-        }));
-    });
+/// Runs once when the module is instantiated, in every bundle (studio, counter, dev): a Rust
+/// panic prints its message and `file:line` to the console before the `panic = "abort"` trap.
+#[wasm_bindgen(start)]
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web Panic] {info}")));
+    }));
 }
 
 #[cfg_attr(not(feature = "multi-window"), allow(unused_variables))]
@@ -447,7 +446,6 @@ pub(crate) fn start_surface_app_inner<F>(
 where
     F: FnOnce(SurfaceId, WebBackend, Viewport) -> WebAppSession,
 {
-    install_panic_hook();
     if surface_id == 0 {
         return Err(JsValue::from_str("surface_id must be non-zero"));
     }

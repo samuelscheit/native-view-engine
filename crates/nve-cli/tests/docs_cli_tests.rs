@@ -186,16 +186,26 @@ fn docs_build_skip_wasm_emits_all_30_semantic_html_pages_sitemap_and_nvs1() {
 
 #[test]
 fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
-    // 1. Unified layout (`index.html` + `pkg/nve_web_shell.js`)
+    // 1. Unified `build.sh` layout: `index.html` + `pkg/<bundle>/manifest.json` naming the entry
+    //    files in a content-hashed `pkg/<bundle>/<hash>/` directory. The dev bundle is not shipped.
     let unified_src = temp_test_dir("ws-unified-src");
-    fs::create_dir_all(unified_src.join("pkg")).unwrap();
     fs::write(
         unified_src.join("index.html"),
         "<html><head></head><body><header class=\"topbar\"></header><main id=\"app\"></main></body></html>",
     )
     .unwrap();
-    fs::write(unified_src.join("pkg/nve_web_shell.js"), "export default function(){}").unwrap();
-    fs::write(unified_src.join("pkg/nve_web_shell_bg.wasm"), b"\0asm").unwrap();
+    for (bundle, hash) in [("studio", "0123456789abcdef"), ("counter", "fedcba9876543210"), ("dev", "00112233aabbccdd")] {
+        let dir = unified_src.join("pkg").join(bundle).join(hash);
+        fs::create_dir_all(dir.join("snippets/nve-web-shell-1/")).unwrap();
+        fs::write(dir.join("nve_web_shell.js"), "export default function(){}").unwrap();
+        fs::write(dir.join("nve_web_shell_bg.wasm"), b"\0asm").unwrap();
+        fs::write(dir.join("snippets/nve-web-shell-1/inline0.js"), "export const x = 1;").unwrap();
+        fs::write(
+            unified_src.join("pkg").join(bundle).join("manifest.json"),
+            format!("{{\"js\":\"{hash}/nve_web_shell.js\",\"wasm\":\"{hash}/nve_web_shell_bg.wasm\"}}"),
+        )
+        .unwrap();
+    }
 
     let out_unified = temp_test_dir("ws-unified-out");
     let status = Command::new(nve_bin())
@@ -214,10 +224,41 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
         .status()
         .expect("run docs build with unified web-shell");
     assert!(status.success());
-    assert!(out_unified.join("examples/_runtime/pkg/nve_web_shell_bg.wasm").is_file());
+    let runtime_pkg = out_unified.join("examples/_runtime/pkg");
+    for file in [
+        "studio/manifest.json",
+        "studio/0123456789abcdef/nve_web_shell_bg.wasm",
+        "studio/0123456789abcdef/snippets/nve-web-shell-1/inline0.js",
+        "counter/manifest.json",
+        "counter/fedcba9876543210/nve_web_shell.js",
+    ] {
+        assert!(runtime_pkg.join(file).is_file(), "{file} copied");
+    }
+    assert!(
+        !runtime_pkg.join("dev").exists(),
+        "dev-only bundle should be excluded from production static docs output"
+    );
     let studio_unified = fs::read_to_string(out_unified.join("examples/studio/index.html")).unwrap();
     assert!(studio_unified.contains("../_runtime/index.html?app=studio&ws=off&embed=1"));
     assert!(studio_unified.contains("data-bundle-mode=\"unified\""));
+
+    // A `pkg/` without the app's manifest is not a bundle for that app.
+    let no_manifest_src = temp_test_dir("ws-no-manifest-src");
+    fs::create_dir_all(no_manifest_src.join("pkg/studio/0123456789abcdef")).unwrap();
+    fs::write(no_manifest_src.join("index.html"), "<html></html>").unwrap();
+    fs::write(no_manifest_src.join("pkg/studio/0123456789abcdef/nve_web_shell_bg.wasm"), b"\0asm").unwrap();
+    let out_no_manifest = temp_test_dir("ws-no-manifest-out");
+    let status_nm = Command::new(nve_bin())
+        .current_dir(repo_root())
+        .args(["docs", "build", "--content", "docs/content", "--skip-wasm", "--web-shell-dist"])
+        .arg(&no_manifest_src)
+        .arg("--out")
+        .arg(&out_no_manifest)
+        .status()
+        .expect("run docs build without manifests");
+    assert!(status_nm.success());
+    let studio_fallback = fs::read_to_string(out_no_manifest.join("examples/studio/index.html")).unwrap();
+    assert!(!studio_fallback.contains("data-bundle-mode=\"unified\""), "{studio_fallback}");
 
     // 2. Future per-app layout (`<dist>/studio/` + `<dist>/counter/` + shared `nve_dom.js`)
     let per_app_src = temp_test_dir("ws-perapp-src");
@@ -261,50 +302,12 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
     assert!(studio_per.contains("./app/index.html?ws=off&embed=1"));
     assert!(studio_per.contains("data-bundle-mode=\"per-app\""));
 
-    // 3. Stage-2 split `pkg/{studio,counter,dev}` layout (produced by `hosts/web-shell/build.sh`):
-    let split_pkg_src = temp_test_dir("ws-split-pkg-src");
-    fs::create_dir_all(split_pkg_src.join("pkg/studio")).unwrap();
-    fs::create_dir_all(split_pkg_src.join("pkg/counter")).unwrap();
-    fs::create_dir_all(split_pkg_src.join("pkg/dev")).unwrap();
-    fs::write(
-        split_pkg_src.join("index.html"),
-        "<html><head></head><body>split-pkg runtime</body></html>",
-    )
-    .unwrap();
-    fs::write(split_pkg_src.join("pkg/studio/nve_web_shell.js"), "export default 1;").unwrap();
-    fs::write(split_pkg_src.join("pkg/counter/nve_web_shell.js"), "export default 2;").unwrap();
-    fs::write(split_pkg_src.join("pkg/dev/nve_web_shell.js"), "export default 3;").unwrap();
-
-    let out_split = temp_test_dir("ws-split-pkg-out");
-    let status3 = Command::new(nve_bin())
-        .current_dir(repo_root())
-        .args([
-            "docs",
-            "build",
-            "--content",
-            "docs/content",
-            "--skip-wasm",
-            "--web-shell-dist",
-        ])
-        .arg(&split_pkg_src)
-        .arg("--out")
-        .arg(&out_split)
-        .status()
-        .expect("run docs build with split pkg web-shell");
-    assert!(status3.success());
-    assert!(out_split.join("examples/_runtime/pkg/studio/nve_web_shell.js").is_file());
-    assert!(out_split.join("examples/_runtime/pkg/counter/nve_web_shell.js").is_file());
-    assert!(
-        !out_split.join("examples/_runtime/pkg/dev").exists(),
-        "dev-only bundle should be excluded from production static docs output"
-    );
-
     let _ = fs::remove_dir_all(&unified_src);
     let _ = fs::remove_dir_all(&out_unified);
     let _ = fs::remove_dir_all(&per_app_src);
     let _ = fs::remove_dir_all(&out_per_app);
-    let _ = fs::remove_dir_all(&split_pkg_src);
-    let _ = fs::remove_dir_all(&out_split);
+    let _ = fs::remove_dir_all(&no_manifest_src);
+    let _ = fs::remove_dir_all(&out_no_manifest);
 }
 
 fn count_html_files(dir: &Path) -> usize {

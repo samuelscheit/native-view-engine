@@ -15,7 +15,7 @@ use wasm_bindgen::JsCast;
 
 use crate::multi_window::{PopupWindowError, PopupWindowSpec, DEFAULT_WINDOW_SYNC_CHANNEL};
 use crate::wasm_api::{
-    install_panic_hook, nve_extract_binary_message, primary_surface_id_if_mounted,
+    nve_extract_binary_message, primary_surface_id_if_mounted,
     remove_active_shell,
 };
 
@@ -202,7 +202,6 @@ pub fn open_popup_window(
     width: u32,
     height: u32,
 ) -> Result<WebPopupController, JsValue> {
-    install_panic_hook();
     let spec = PopupWindowSpec::new(surface_id, title, width, height)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 

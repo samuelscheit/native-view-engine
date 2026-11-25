@@ -415,11 +415,16 @@
 
 			async function boot() {
 				try {
-					const bust = Date.now();
-					const wasmMod = await import(`./pkg/${bundle}/nve_web_shell.js?v=${bust}`);
-					await wasmMod.default(
-						new URL(`./pkg/${bundle}/nve_web_shell_bg.wasm?v=${bust}`, window.location.href)
-					);
+					// build.sh publishes each bundle under a content-hashed directory (immutable) and names
+					// its entry files in manifest.json, which is always revalidated. The wasm download starts
+					// in parallel with the JS glue import and is compiled while streaming.
+					const pkgUrl = new URL(`./pkg/${bundle}/`, window.location.href);
+					const manifestRes = await fetch(new URL("manifest.json", pkgUrl), { cache: "no-cache" });
+					if (!manifestRes.ok) throw new Error(`pkg/${bundle}/manifest.json: HTTP ${manifestRes.status}`);
+					const manifest = await manifestRes.json();
+					const wasmResponse = fetch(new URL(manifest.wasm, pkgUrl));
+					const wasmMod = await import(new URL(manifest.js, pkgUrl).href);
+					await wasmMod.default({ module_or_path: wasmResponse });
 					window.__nveWasmMod = wasmMod;
 
 					if (isPaired) {

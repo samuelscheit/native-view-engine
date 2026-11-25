@@ -478,7 +478,12 @@ mod tests {
             assert_eq!(r(target, Some("h:8088")), None, "{target}");
         }
         // Only the shell page redirects; assets are served as-is.
-        for target in ["/pkg/dev/nve_web_shell.js", "/pkg/dev/nve_web_shell_bg.wasm?v=1", "/e2e/run_e2e.mjs"] {
+        for target in [
+            "/pkg/dev/manifest.json",
+            "/pkg/dev/0123456789abcdef/nve_web_shell.js",
+            "/pkg/dev/0123456789abcdef/nve_web_shell_bg.wasm",
+            "/e2e/run_e2e.mjs",
+        ] {
             assert_eq!(r(target, Some("h:8088")), None, "{target}");
         }
         // A key that merely contains a mode name does not count.

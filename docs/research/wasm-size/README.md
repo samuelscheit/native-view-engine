@@ -30,7 +30,9 @@ ship, not from how it is compiled:
 1. **Everything is linked into every bundle:** both demo apps, hot reload (serde_json), pairing,
    popups/multi-window, the scene-table mirror and the Wizer preinit cache. That is 52 KB for studio
    and 133 KB for the counter.
-2. **std panic/fmt/backtrace machinery:** about 23 KB is removed by `-Cpanic=immediate-abort`, plus
+2. **std panic/fmt/backtrace machinery:** about 23 KB is removed by `-Cpanic=immediate-abort`
+   (shipped in stage 1, then reverted by decision so that production panics keep their message and
+   location, see [toolchain.md](toolchain.md#decision-panic-messages-in-production-over-23-kb)), plus
    12 KB of `rustc-demangle` that `anyhow`'s `std` feature pulls in through dioxus-core.
 3. **A string round trip for every style value:** RSX `"width: 12px"` is parsed with `f32::from_str`
    and re-formatted with Grisu/Dragon4 into CSS. That is about 30 KB raw, or 12.7 KB br.
@@ -54,7 +56,7 @@ available in Rust.
 | wasm-bindgen + web-sys | 120 imports, a closure per listener, 64 KB glue | none in production: 0 imports and 5 raw exports, plus a 3.5 KB br `nve_dom.js` (*m*, byte-identical DOM) |
 | dioxus-core / -signals | VDOM, `anyhow` std, SipHash sets | short term: patch (`anyhow` without std, `FxHashSet`, subsecond's wasm deps opt-in). Long term: replace it with a compiled fine-grained runtime |
 | serde_json | hot-reload fallback, island/channel payloads | removed from wasm; binary NVP1 only, which the zero-JSON invariant already requires |
-| std | panic/fmt/backtrace | keep std, rebuilt with `-Zbuild-std` and immediate-abort; `no_std` gains < 1 KB after that |
+| std | panic/fmt/backtrace | keep std, rebuilt with `-Zbuild-std` (`optimize_for_size`); immediate-abort was reverted, so panic messages and locations ship (~23 KB) |
 | dlmalloc | 7 KB | talc (−2.5 KB), later a per-frame arena |
 | HashMap / BTreeMap | 23 KB hashbrown + ~37 KB of BTree instantiations (studio) | dense `NodeId` slabs plus one shared sorted `VecMap` |
 | Wizer | ran on nothing (it fails on bindgen output); +62 KB if it works | removed; frame 0 comes from SSR HTML (2.9 KB br for studio) |
@@ -136,6 +138,22 @@ JSON is stage 4.
 
 The snip step is gone. dioxus-core's `anyhow` lost `std` in the fork
 `samuelscheit/dioxus@nve/v0.7.10-wasm-size`, which is the root fix, so nothing has to be trapped.
+
+Panic messages and caching (branch `t3/web-host-fixes`, on `main` `851eb4b`): release bundles keep
+panic messages and `file:line` again. `-Cpanic=immediate-abort -Zfmt-debug=shallow
+-Zlocation-detail=none` are dropped; the pinned nightly stays for `-Zbuild-std` with
+`optimize_for_size`. A start-time hook logs `[NVE Web Panic] ...` in every bundle, and the e2e proves
+it with a real panic in the release dev bundle. Every bundle is also published content-hashed
+(`pkg/<bundle>/<hash>/` + `manifest.json`, see `hosts/web-shell/README.md` "Caching").
+
+| Bundle (brotli q11, bytes) | wasm raw | wasm gzip | wasm br | JS br | **total br** | with the 3 flags | budget |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `pkg/studio` | 1,027,257 | 376,696 | 299,020 | 7,697 | **306,717** | 285,929 (+20,788) | 316,416 |
+| `pkg/counter` | 363,641 | 147,144 | 123,263 | 7,617 | **130,880** | 114,514 (+16,366) | 135,168 |
+| `pkg/dev` | 1,152,451 | 421,842 | 333,431 | 9,280 | **342,711** | 319,827 (+22,884) | 353,280 |
+
+The rest of the growth over the stage-2 rows above comes from `main` itself (camera adapters, nve-ui,
+TV/spatial focus) between `17be096` and `851eb4b`.
 
 The upstream bugs and quirks found by all tracks are consolidated in
 [docs/UPSTREAM.md](../../UPSTREAM.md) under *Dioxus*, *WebAssembly size toolchain* and *Browsers*.

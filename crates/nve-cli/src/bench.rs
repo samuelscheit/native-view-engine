@@ -239,10 +239,9 @@ pub(crate) fn collect_artifact_sizes(
 
     // `hosts/web-shell/build.sh` bundles: one production bundle per app + the dev bundle.
     for bundle in ["studio", "counter", "dev"] {
-        push_if_exists(
-            format!("nve-web-shell WASM (pkg/{bundle})"),
-            workspace_root.join(format!("hosts/web-shell/pkg/{bundle}/nve_web_shell_bg.wasm")),
-        );
+        if let Some(wasm) = web_shell_bundle_wasm(&workspace_root.join("hosts/web-shell/pkg").join(bundle)) {
+            push_if_exists(format!("nve-web-shell WASM (pkg/{bundle})"), wasm);
+        }
     }
     push_if_exists(
         "nve-web-shell WASM (wasm-release)".to_owned(),
@@ -250,6 +249,13 @@ pub(crate) fn collect_artifact_sizes(
     );
 
     results
+}
+
+/// The wasm file a `build.sh` bundle's `manifest.json` names (inside `pkg/<bundle>/<hash>/`).
+fn web_shell_bundle_wasm(bundle_dir: &Path) -> Option<PathBuf> {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle_dir.join("manifest.json")).ok()?).ok()?;
+    Some(bundle_dir.join(manifest.get("wasm")?.as_str()?))
 }
 
 pub(crate) fn build_initial_feed_cmd(rows: usize) -> Vec<u8> {
@@ -517,7 +523,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let release_dir = root.join("target/release");
-        let wasm_dir = root.join("hosts/web-shell/pkg/studio");
+        let bundle_dir = root.join("hosts/web-shell/pkg/studio");
+        let wasm_dir = bundle_dir.join("0123456789abcdef");
         std::fs::create_dir_all(&release_dir).unwrap();
         std::fs::create_dir_all(&wasm_dir).unwrap();
 
@@ -527,6 +534,14 @@ mod tests {
         std::fs::write(&fake_exe, vec![0u8; 4096]).unwrap();
         std::fs::write(&fake_dylib, vec![1u8; 8192]).unwrap();
         std::fs::write(&fake_wasm, vec![2u8; 2048]).unwrap();
+        std::fs::write(
+            bundle_dir.join("manifest.json"),
+            r#"{"js":"0123456789abcdef/nve_web_shell.js","wasm":"0123456789abcdef/nve_web_shell_bg.wasm"}"#,
+        )
+        .unwrap();
+        // A bundle without a manifest is not reported.
+        std::fs::create_dir_all(root.join("hosts/web-shell/pkg/counter")).unwrap();
+        std::fs::write(root.join("hosts/web-shell/pkg/counter/nve_web_shell_bg.wasm"), vec![3u8; 1024]).unwrap();
 
         let found = collect_artifact_sizes(&root, Some(&fake_exe));
         let _ = std::fs::remove_dir_all(&root);
