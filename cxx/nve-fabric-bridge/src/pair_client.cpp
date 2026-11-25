@@ -469,7 +469,7 @@ struct PairClient::Impl {
             raw_msg = std::span<const uint8_t>(udp_buf.data(), static_cast<size_t>(n));
           } else if (n < 0) {
             const int err = last_socket_error();
-            if (!is_would_block(err) && !is_interrupted(err)) break;
+            if (!is_would_block(err) && !is_interrupted(err) && !is_udp_conn_reset(err)) break;
           }
         }
       } else {
