@@ -74,6 +74,10 @@ NveGtkHost::NveGtkHost(NveSurfaceConfig config)
 }
 
 NveGtkHost::~NveGtkHost() {
+  if (alive_) {
+    alive_->store(false, std::memory_order_release);
+  }
+  session_.disconnect_paired();
   detach_window_resize();
 
   if (viewport_widget_ != nullptr && tick_callback_id_ != 0u) {
@@ -226,6 +230,76 @@ bool NveGtkHost::reload_dylib(
   return true;
 }
 
+bool NveGtkHost::connect_paired_endpoint(
+    std::string_view endpoint,
+    std::string_view token,
+    std::string_view transport,
+    std::string* out_error,
+    uint32_t surface_id) {
+  PairClientConfig cfg{};
+  if (!parse_pair_endpoint(endpoint, transport, cfg, out_error)) {
+    return false;
+  }
+  cfg.pairing_token.assign(token.data(), token.size());
+  return connect_paired(cfg, out_error, surface_id);
+}
+
+bool NveGtkHost::connect_paired(
+    const PairClientConfig& config,
+    std::string* out_error,
+    uint32_t surface_id) {
+  NveSurfaceConfig next_cfg = config_;
+  if (surface_id != 0u) {
+    next_cfg.surface_id = surface_id;
+  }
+
+  struct GtkPairWakePayload {
+    NveGtkHost* host{nullptr};
+    std::shared_ptr<std::atomic<bool>> alive;
+  };
+  std::shared_ptr<std::atomic<bool>> alive_ref = alive_;
+  auto wake_cb = [this, alive_ref]() {
+    if (!alive_ref || !alive_ref->load(std::memory_order_acquire)) {
+      return;
+    }
+    auto* payload = new GtkPairWakePayload{this, alive_ref};
+    g_main_context_invoke(
+        nullptr,
+        [](gpointer data) -> gboolean {
+          std::unique_ptr<GtkPairWakePayload> p(static_cast<GtkPairWakePayload*>(data));
+          if (p->alive && p->alive->load(std::memory_order_acquire) && p->host != nullptr) {
+            (void)p->host->poll_paired_frames();
+          }
+          return G_SOURCE_REMOVE;
+        },
+        payload);
+  };
+
+  if (!session_.connect_paired(config, next_cfg, std::move(wake_cb), out_error)) {
+    return false;
+  }
+  config_ = next_cfg;
+  reconciler_.clear(adapter_);
+  raw_props_initialized_ = false;
+  sync_views(/*check_raw_props=*/true);
+  return true;
+}
+
+void NveGtkHost::disconnect_paired() noexcept {
+  session_.disconnect_paired();
+}
+
+size_t NveGtkHost::poll_paired_frames() {
+  if (!session_.is_paired()) {
+    return 0u;
+  }
+  const size_t applied = session_.poll_paired_frames(nullptr);
+  if (applied > 0u) {
+    sync_views(/*check_raw_props=*/false);
+  }
+  return applied;
+}
+
 bool NveGtkHost::replay_snapshot(
     std::string_view path,
     uint32_t expected_schema_version,
@@ -283,11 +357,11 @@ int32_t NveGtkHost::render_frame(NveFrameStats* out_stats) {
 }
 
 uint32_t NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0u;
   }
   const uint32_t dirty = session_.dispatch_press(node_id, x, y, /*auto_render=*/true);
-  if (dirty != 0u) {
+  if (dirty != 0u && !session_.is_paired()) {
     sync_views(/*check_raw_props=*/false);
   }
   (void)session_.drain_events();
@@ -309,12 +383,12 @@ NveDirectEvent NveGtkHost::make_base_event(
 }
 
 uint32_t NveGtkHost::dispatch_single_direct_event(const NveDirectEvent& ev) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0u;
   }
   const uint32_t dirty =
       session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
-  if (dirty != 0u) {
+  if (dirty != 0u && !session_.is_paired()) {
     sync_views(/*check_raw_props=*/false);
   }
   (void)session_.drain_events();

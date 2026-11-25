@@ -206,6 +206,9 @@ class BuiltinGtkDemoApp {
 
 struct AppLaunchState {
   std::string dylib_path;
+  std::string pair_connect;
+  std::string pair_token;
+  std::string pair_transport;
   std::string snapshot_path;
   uint32_t schema_version{1u};
   bool snapshot_saved{false};
@@ -274,7 +277,18 @@ void on_app_activate(GtkApplication* app, gpointer user_data) {
 
   gtk_window_present(GTK_WINDOW(window));
 
-  if (!state->dylib_path.empty()) {
+  if (!state->pair_connect.empty()) {
+    std::string err_msg;
+    if (!state->host->connect_paired_endpoint(
+            state->pair_connect, state->pair_token, state->pair_transport, &err_msg, 1u)) {
+      std::cerr << "Failed to connect paired client to '" << state->pair_connect
+                << "': " << err_msg << "\n";
+      (void)state->host->attach_interface(&BuiltinGtkDemoApp::get_interface, 1u);
+    } else {
+      const std::string title = "NVE GTK4 Host Shell (Paired: " + state->pair_connect + ")";
+      gtk_window_set_title(GTK_WINDOW(window), title.c_str());
+    }
+  } else if (!state->dylib_path.empty()) {
     int err_code = 0;
     std::string err_msg;
     if (!state->host->load_dylib(state->dylib_path, &err_code, &err_msg)) {
@@ -289,7 +303,10 @@ void on_app_activate(GtkApplication* app, gpointer user_data) {
 
 void print_usage(const char* argv0) {
   std::cout << "Usage: " << argv0
-            << " [--dylib <path/to/libapp.so>] [--snapshot <path/to/frame0.nvesnap>]"
+            << " [--dylib <path/to/libapp.so>]"
+               " [--pair-connect <host:port|url>] [--pair-token <token>]"
+               " [--pair-transport <udp|tcp|ws>]"
+               " [--snapshot <path/to/frame0.nvesnap>]"
                " [--schema <ver>] [--width W] [--height H]\n";
 }
 
@@ -304,6 +321,12 @@ int main(int argc, char* argv[]) {
     }
     if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
       state.dylib_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--pair-connect") == 0 && i + 1 < argc) {
+      state.pair_connect = argv[++i];
+    } else if (std::strcmp(argv[i], "--pair-token") == 0 && i + 1 < argc) {
+      state.pair_token = argv[++i];
+    } else if (std::strcmp(argv[i], "--pair-transport") == 0 && i + 1 < argc) {
+      state.pair_transport = argv[++i];
     } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
       state.snapshot_path = argv[++i];
     } else if (std::strcmp(argv[i], "--schema") == 0 && i + 1 < argc) {

@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "NveAppleComponentHost.h"
 #import "RCTNveMacComponentView.h"
 
 #include "nve_rn_component.hpp"
@@ -202,6 +203,9 @@ class BuiltinMacDemoApp {
 
 @interface NveMacAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (nonatomic, copy, nullable) NSString *dylibPath;
+@property (nonatomic, copy, nullable) NSString *pairConnect;
+@property (nonatomic, copy, nullable) NSString *pairToken;
+@property (nonatomic, copy, nullable) NSString *pairTransport;
 @property (nonatomic, copy, nullable) NSString *snapshotPath;
 @property (nonatomic, assign) uint32_t schemaVersion;
 @property (nonatomic, assign) BOOL snapshotSaved;
@@ -265,7 +269,22 @@ class BuiltinMacDemoApp {
   [self.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 
-  if (self.dylibPath.length > 0) {
+  if (self.pairConnect.length > 0) {
+    NveAppleComponentHost *host = [NveAppleComponentHost hostForRootView:self.rootView];
+    NSError *err = nil;
+    if (!host || ![host connectPairedEndpoint:self.pairConnect
+                                        token:(self.pairToken ?: @"")
+                                    transport:self.pairTransport
+                                    surfaceId:1
+                                        error:&err]) {
+      NSLog(@"Failed to connect paired client to %@: %@",
+            self.pairConnect,
+            err.localizedDescription ?: @"unknown error");
+    } else {
+      self.window.title =
+          [NSString stringWithFormat:@"NVE macOS Host Shell (Paired: %@)", self.pairConnect];
+    }
+  } else if (self.dylibPath.length > 0) {
     NSError *err = nil;
     if (![self.rootView loadNveDylibAtPath:self.dylibPath surfaceId:1 error:&err]) {
       NSLog(@"Failed to load NVE dylib %@: %@", self.dylibPath, err.localizedDescription);
@@ -278,11 +297,13 @@ class BuiltinMacDemoApp {
 - (void)windowWillClose:(NSNotification *)notification {
   (void)notification;
   [self _persistSnapshotIfConfigured];
+  [[NveAppleComponentHost hostForRootView:self.rootView] disconnectPaired];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   (void)notification;
   [self _persistSnapshotIfConfigured];
+  [[NveAppleComponentHost hostForRootView:self.rootView] disconnectPaired];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
@@ -295,11 +316,20 @@ class BuiltinMacDemoApp {
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     NSString *dylibPath = nil;
+    NSString *pairConnect = nil;
+    NSString *pairToken = nil;
+    NSString *pairTransport = nil;
     NSString *snapshotPath = nil;
     uint32_t schemaVersion = 1u;
     for (int i = 1; i + 1 < argc; ++i) {
       if (std::strcmp(argv[i], "--dylib") == 0) {
         dylibPath = [NSString stringWithUTF8String:argv[++i]];
+      } else if (std::strcmp(argv[i], "--pair-connect") == 0) {
+        pairConnect = [NSString stringWithUTF8String:argv[++i]];
+      } else if (std::strcmp(argv[i], "--pair-token") == 0) {
+        pairToken = [NSString stringWithUTF8String:argv[++i]];
+      } else if (std::strcmp(argv[i], "--pair-transport") == 0) {
+        pairTransport = [NSString stringWithUTF8String:argv[++i]];
       } else if (std::strcmp(argv[i], "--snapshot") == 0) {
         snapshotPath = [NSString stringWithUTF8String:argv[++i]];
       } else if (std::strcmp(argv[i], "--schema") == 0) {
@@ -313,6 +343,9 @@ int main(int argc, const char *argv[]) {
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
     NveMacAppDelegate *delegate = [[NveMacAppDelegate alloc] init];
     delegate.dylibPath = dylibPath;
+    delegate.pairConnect = pairConnect;
+    delegate.pairToken = pairToken;
+    delegate.pairTransport = pairTransport;
     delegate.snapshotPath = snapshotPath;
     delegate.schemaVersion = schemaVersion;
     app.delegate = delegate;

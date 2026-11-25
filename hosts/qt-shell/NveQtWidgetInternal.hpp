@@ -153,6 +153,11 @@ class NveQtWidget::Impl {
   void refreshRawPropsFromView(const NveSceneView& view);
   void syncViews(bool check_raw_props = false);
   void clearViews();
+  bool connectPairedConfig(
+      const nve::PairClientConfig& config,
+      uint32_t surface_id,
+      QString* out_error_message);
+  size_t pollPairedFramesImpl();
 
   const NodeSemantics* findSemantics(uint32_t node_id) const noexcept;
   ImageResizeMode findResizeMode(uint32_t node_id) const noexcept;

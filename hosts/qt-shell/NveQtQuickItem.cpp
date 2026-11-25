@@ -6,7 +6,9 @@
 #include <QAccessible>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
+#include <QMetaObject>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QQmlEngine>
 #include <QQuickWindow>
 #include <QWheelEvent>
@@ -201,9 +203,11 @@ class NveQtQuickItem::Impl {
   }
 
   uint32_t dispatchBatch(NveEventBatch batch) {
-    if (!session_.is_valid() || batch.ptr == nullptr || batch.len == 0u) return 0u;
+    if ((!session_.is_valid() && !session_.is_paired()) || batch.ptr == nullptr || batch.len == 0u) {
+      return 0u;
+    }
     const uint32_t dirty = session_.dispatch_direct_events(batch, /*auto_render=*/true);
-    if (dirty != 0u) syncScene(/*check_raw_props=*/false);
+    if (dirty != 0u && !session_.is_paired()) syncScene(/*check_raw_props=*/false);
     (void)session_.drain_events();
     return dirty;
   }
@@ -332,6 +336,79 @@ bool NveQtQuickItem::hotReload(const QString& path, int* outErrorCode, QString* 
   impl_->finishSessionTransition(impl_->surface_id_, false, &path, true);
   return true;
 }
+
+bool NveQtQuickItem::connectPaired(
+    const QString& endpoint,
+    const QString& token,
+    const QString& transport,
+    uint32_t surfaceId,
+    QString* outErrorMessage) {
+  const QByteArray ep_utf8 = endpoint.toUtf8();
+  const QByteArray tok_utf8 = token.toUtf8();
+  const QByteArray tr_utf8 = transport.toUtf8();
+  nve::PairClientConfig cfg{};
+  std::string parse_err;
+  if (!nve::parse_pair_endpoint(
+          std::string_view(ep_utf8.constData(), static_cast<size_t>(ep_utf8.size())),
+          std::string_view(tr_utf8.constData(), static_cast<size_t>(tr_utf8.size())),
+          cfg,
+          &parse_err)) {
+    if (outErrorMessage != nullptr) {
+      *outErrorMessage = QString::fromStdString(parse_err);
+    }
+    return false;
+  }
+  cfg.pairing_token.assign(tok_utf8.constData(), static_cast<size_t>(tok_utf8.size()));
+  return connectPaired(cfg, surfaceId, outErrorMessage);
+}
+
+bool NveQtQuickItem::connectPaired(
+    const nve::PairClientConfig& config,
+    uint32_t surfaceId,
+    QString* outErrorMessage) {
+  const bool was_loaded = isAppLoaded();
+  QPointer<NveQtQuickItem> weak_self(this);
+  auto wake_cb = [weak_self]() {
+    if (!weak_self) return;
+    QMetaObject::invokeMethod(
+        weak_self.data(),
+        [weak_self]() {
+          if (weak_self) {
+            (void)weak_self->pollPairedFrames();
+          }
+        },
+        Qt::QueuedConnection);
+  };
+  std::string err_msg;
+  const bool ok = impl_->session_.connect_paired(
+      config, impl_->currentSurfaceConfig(surfaceId), std::move(wake_cb), &err_msg);
+  if (outErrorMessage != nullptr) {
+    *outErrorMessage = QString::fromStdString(err_msg);
+  }
+  if (!ok) return false;
+  impl_->finishSessionTransition(surfaceId, !was_loaded, nullptr, false);
+  return true;
+}
+
+void NveQtQuickItem::disconnectPaired() {
+  const bool was_loaded = isAppLoaded();
+  impl_->session_.disconnect_paired();
+  if (was_loaded && !isAppLoaded()) {
+    Q_EMIT appLoadedChanged();
+  }
+}
+
+size_t NveQtQuickItem::pollPairedFrames() {
+  if (!impl_->session_.is_paired()) return 0u;
+  const size_t applied = impl_->session_.poll_paired_frames(nullptr);
+  if (applied > 0u) {
+    impl_->syncScene(false);
+  }
+  return applied;
+}
+
+bool NveQtQuickItem::isPaired() const noexcept { return impl_->session_.is_paired(); }
+bool NveQtQuickItem::isPairedConnected() const noexcept { return impl_->session_.is_paired_connected(); }
 
 bool NveQtQuickItem::replaySnapshot(
     const QString& snapshotPath, uint32_t expectedSchemaVersion, uint32_t surfaceId, uint64_t* outRestoreUs) {
@@ -536,7 +613,9 @@ void NveQtQuickItem::setSurfaceId(uint32_t id) {
 }
 
 uint32_t NveQtQuickItem::nodeCount() const { return impl_->session_.node_count(); }
-bool NveQtQuickItem::isAppLoaded() const noexcept { return impl_->session_.is_valid(); }
+bool NveQtQuickItem::isAppLoaded() const noexcept {
+  return impl_->session_.is_valid() || impl_->session_.is_paired();
+}
 uint64_t NveQtQuickItem::sceneGeneration() const noexcept { return impl_->scene_generation_; }
 void NveQtQuickItem::setOnNveEvent(nve::EventCallback cb) { impl_->session_.set_event_callback(std::move(cb)); }
 void NveQtQuickItem::setTextMeasurer(nve::TextMeasurerCallback measurer) {

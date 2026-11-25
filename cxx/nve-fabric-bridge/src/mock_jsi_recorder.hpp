@@ -3,6 +3,8 @@
 #include "nve_abi.h"
 #include "nve_value.hpp"
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -11,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -42,36 +45,36 @@ class EventRingWriter {
   uint32_t count() const noexcept { return count_; }
 
   void push_empty(uint32_t surface_id, uint32_t node_id, uint64_t ts_us, uint8_t kind) {
-    ensure_header();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(kind);
-    buf_.push_back(0); /* EventPayload::Empty */
+    if (count_ == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
+    write_event_header(surface_id, node_id, ts_us, kind, 0u /* EventPayload::Empty */);
     ++count_;
   }
 
   void push_press(uint32_t surface_id, uint32_t node_id, uint64_t ts_us, float x, float y) {
-    ensure_header();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(1); /* NativeEventKind::Press */
-    buf_.push_back(1); /* EventPayload::Point */
-    write_f32(x);
-    write_f32(y);
+    if (count_ == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
+    write_event_header(
+        surface_id, node_id, ts_us, 1u /* NativeEventKind::Press */, 1u /* EventPayload::Point */);
+    write_le<float>(x);
+    write_le<float>(y);
     ++count_;
   }
 
   void push_long_press(uint32_t surface_id, uint32_t node_id, uint64_t ts_us, float x, float y) {
-    ensure_header();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(2); /* NativeEventKind::LongPress */
-    buf_.push_back(1); /* EventPayload::Point */
-    write_f32(x);
-    write_f32(y);
+    if (count_ == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
+    write_event_header(
+        surface_id,
+        node_id,
+        ts_us,
+        2u /* NativeEventKind::LongPress */,
+        1u /* EventPayload::Point */);
+    write_le<float>(x);
+    write_le<float>(y);
     ++count_;
   }
 
@@ -83,31 +86,39 @@ class EventRingWriter {
       float y,
       float content_width,
       float content_height) {
-    ensure_header();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(3); /* NativeEventKind::Scroll */
-    buf_.push_back(2); /* EventPayload::Scroll */
-    write_f32(x);
-    write_f32(y);
-    write_f32(content_width);
-    write_f32(content_height);
+    if (count_ == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
+    write_event_header(
+        surface_id,
+        node_id,
+        ts_us,
+        3u /* NativeEventKind::Scroll */,
+        2u /* EventPayload::Scroll */);
+    write_le<float>(x);
+    write_le<float>(y);
+    write_le<float>(content_width);
+    write_le<float>(content_height);
     ++count_;
   }
 
-  void push_text_change(
+  bool push_text_change(
       uint32_t surface_id,
       uint32_t node_id,
       uint64_t ts_us,
       std::string_view text) {
-    ensure_header();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(4); /* NativeEventKind::TextChange */
-    buf_.push_back(3); /* EventPayload::Text */
-    write_u32(static_cast<uint32_t>(text.size()));
+    if (count_ == std::numeric_limits<uint32_t>::max() ||
+        text.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
+        (!text.empty() && text.data() == nullptr)) {
+      return false;
+    }
+    write_event_header(
+        surface_id,
+        node_id,
+        ts_us,
+        4u /* NativeEventKind::TextChange */,
+        3u /* EventPayload::Text */);
+    write_le<uint32_t>(static_cast<uint32_t>(text.size()));
     if (!text.empty()) {
       buf_.insert(
           buf_.end(),
@@ -115,6 +126,7 @@ class EventRingWriter {
           reinterpret_cast<const uint8_t*>(text.data()) + text.size());
     }
     ++count_;
+    return true;
   }
 
   void push_layout(
@@ -125,45 +137,39 @@ class EventRingWriter {
       float y,
       float width,
       float height) {
-    ensure_header();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(7); /* NativeEventKind::Layout */
-    buf_.push_back(4); /* EventPayload::Layout */
-    write_f32(x);
-    write_f32(y);
-    write_f32(width);
-    write_f32(height);
+    if (count_ == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
+    write_event_header(
+        surface_id,
+        node_id,
+        ts_us,
+        7u /* NativeEventKind::Layout */,
+        4u /* EventPayload::Layout */);
+    write_le<float>(x);
+    write_le<float>(y);
+    write_le<float>(width);
+    write_le<float>(height);
     ++count_;
   }
 
-  void push_custom(
+  bool push_custom(
       uint32_t surface_id,
       uint32_t node_id,
       uint64_t ts_us,
       std::string_view name,
       const uint8_t* data,
       size_t len) {
-    ensure_header();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(8); /* NativeEventKind::Custom */
-    buf_.push_back(5); /* EventPayload::Custom */
-    const uint16_t nlen = static_cast<uint16_t>(name.size());
-    write_u16(nlen);
-    if (nlen > 0) {
-      buf_.insert(
-          buf_.end(),
-          reinterpret_cast<const uint8_t*>(name.data()),
-          reinterpret_cast<const uint8_t*>(name.data()) + nlen);
+    if ((data == nullptr && len > 0u) ||
+        len > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+      return false;
     }
-    write_u32(static_cast<uint32_t>(len));
-    if (len > 0 && data != nullptr) {
-      buf_.insert(buf_.end(), data, data + len);
-    }
-    ++count_;
+    return write_custom_event(surface_id, node_id, ts_us, name, [&](std::vector<uint8_t>& buf) {
+      if (len > 0u) {
+        buf.insert(buf.end(), data, data + len);
+      }
+      return true;
+    });
   }
 
   /// Encodes `value` directly into this `EventRingWriter`'s preallocated byte buffer using compact
@@ -174,61 +180,38 @@ class EventRingWriter {
       uint64_t ts_us,
       std::string_view name,
       const NveValue& value) {
-    ensure_header();
-    const size_t rollback = buf_.size();
-    write_u32(surface_id);
-    write_u32(node_id);
-    write_u64(ts_us);
-    buf_.push_back(8); /* NativeEventKind::Custom */
-    buf_.push_back(5); /* EventPayload::Custom */
-    const uint16_t nlen = static_cast<uint16_t>(name.size());
-    write_u16(nlen);
-    if (nlen > 0) {
-      buf_.insert(
-          buf_.end(),
-          reinterpret_cast<const uint8_t*>(name.data()),
-          reinterpret_cast<const uint8_t*>(name.data()) + nlen);
-    }
-    const size_t len_offset = buf_.size();
-    write_u32(0u);
-    const size_t payload_start = buf_.size();
-    if (!encode_bin_value(buf_, value)) {
-      buf_.resize(rollback);
-      return false;
-    }
-    const uint32_t payload_len = static_cast<uint32_t>(buf_.size() - payload_start);
-    std::memcpy(buf_.data() + len_offset, &payload_len, sizeof(uint32_t));
-    ++count_;
-    return true;
+    return write_custom_event(surface_id, node_id, ts_us, name, [&](std::vector<uint8_t>& buf) {
+      return encode_bin_value(buf, value);
+    });
   }
 
   /// Encode a single `NveDirectEvent` into this binary `EventRingWriter` (fallback path).
-  void push_direct_event(const NveDirectEvent& ev) {
+  /// Rejects unknown `payload_tag` values cleanly instead of silently mapping to Custom.
+  bool push_direct_event(const NveDirectEvent& ev) {
     switch (ev.payload_tag) {
-      case 0:
+      case 0u:
         push_empty(ev.surface_id, ev.node_id, ev.timestamp_us, ev.kind);
-        break;
-      case 1:
-        if (ev.kind == 2) {
+        return true;
+      case 1u:
+        if (ev.kind == 2u) {
           push_long_press(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y);
         } else {
           push_press(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y);
         }
-        break;
-      case 2:
+        return true;
+      case 2u:
         push_scroll(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y, ev.width, ev.height);
-        break;
-      case 3:
-        push_text_change(ev.surface_id, ev.node_id, ev.timestamp_us, str_slice_view(ev.text));
-        break;
-      case 4:
+        return true;
+      case 3u:
+        return push_text_change(ev.surface_id, ev.node_id, ev.timestamp_us, str_slice_view(ev.text));
+      case 4u:
         push_layout(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y, ev.width, ev.height);
-        break;
-      case 5:
-      default:
-        (void)push_custom_value(
+        return true;
+      case 5u:
+        return push_custom_value(
             ev.surface_id, ev.node_id, ev.timestamp_us, str_slice_view(ev.name), ev.value);
-        break;
+      default:
+        return false;
     }
   }
 
@@ -240,25 +223,89 @@ class EventRingWriter {
 
  private:
   void ensure_header() {
-    if (buf_.size() < 4) {
-      buf_.resize(4, 0);
+    if (buf_.size() < 4u) {
+      buf_.resize(4u, 0u);
     }
   }
-  void write_u16(uint16_t v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    buf_.insert(buf_.end(), p, p + 2);
+
+  template <typename T>
+  void write_le(T v) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    if constexpr (std::is_same_v<T, float>) {
+      write_le<uint32_t>(std::bit_cast<uint32_t>(v));
+    } else if constexpr (std::is_integral_v<T>) {
+      using U = std::make_unsigned_t<T>;
+      const U u = static_cast<U>(v);
+      for (size_t i = 0u; i < sizeof(U); ++i) {
+        buf_.push_back(static_cast<uint8_t>((u >> (i * 8u)) & 0xFFu));
+      }
+    } else {
+      const auto* p = reinterpret_cast<const uint8_t*>(&v);
+      buf_.insert(buf_.end(), p, p + sizeof(T));
+    }
   }
-  void write_u32(uint32_t v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    buf_.insert(buf_.end(), p, p + 4);
+
+  void write_event_header(
+      uint32_t surface_id,
+      uint32_t node_id,
+      uint64_t ts_us,
+      uint8_t kind,
+      uint8_t payload_tag) {
+    ensure_header();
+    write_le<uint32_t>(surface_id);
+    write_le<uint32_t>(node_id);
+    write_le<uint64_t>(ts_us);
+    buf_.push_back(kind);
+    buf_.push_back(payload_tag);
   }
-  void write_u64(uint64_t v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    buf_.insert(buf_.end(), p, p + 8);
-  }
-  void write_f32(float v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    buf_.insert(buf_.end(), p, p + 4);
+
+  template <typename PayloadWriter>
+  bool write_custom_event(
+      uint32_t surface_id,
+      uint32_t node_id,
+      uint64_t ts_us,
+      std::string_view name,
+      PayloadWriter&& write_payload) {
+    if (count_ == std::numeric_limits<uint32_t>::max() ||
+        name.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max()) ||
+        (!name.empty() && name.data() == nullptr)) {
+      return false;
+    }
+    ensure_header();
+    const size_t rollback = buf_.size();
+    write_event_header(
+        surface_id,
+        node_id,
+        ts_us,
+        8u /* NativeEventKind::Custom */,
+        5u /* EventPayload::Custom */);
+    const uint16_t nlen = static_cast<uint16_t>(name.size());
+    write_le<uint16_t>(nlen);
+    if (nlen > 0u) {
+      buf_.insert(
+          buf_.end(),
+          reinterpret_cast<const uint8_t*>(name.data()),
+          reinterpret_cast<const uint8_t*>(name.data()) + nlen);
+    }
+    const size_t len_offset = buf_.size();
+    write_le<uint32_t>(0u);
+    const size_t payload_start = buf_.size();
+    if (!write_payload(buf_)) {
+      buf_.resize(rollback);
+      return false;
+    }
+    const size_t payload_bytes = buf_.size() - payload_start;
+    if (payload_bytes > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+      buf_.resize(rollback);
+      return false;
+    }
+    const uint32_t payload_len = static_cast<uint32_t>(payload_bytes);
+    buf_[len_offset] = static_cast<uint8_t>(payload_len & 0xFFu);
+    buf_[len_offset + 1u] = static_cast<uint8_t>((payload_len >> 8u) & 0xFFu);
+    buf_[len_offset + 2u] = static_cast<uint8_t>((payload_len >> 16u) & 0xFFu);
+    buf_[len_offset + 3u] = static_cast<uint8_t>((payload_len >> 24u) & 0xFFu);
+    ++count_;
+    return true;
   }
 
   uint32_t count_{0};
@@ -731,13 +778,15 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   }
 
   facebook::jsi::Array createArray(size_t length) override {
+    constexpr size_t kMaxArrayLen = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+    const uint32_t bounded_len = static_cast<uint32_t>(std::min(length, kMaxArrayLen));
     ArenaNode* n = arena_.make<ArenaNode>();
     n->kind = NodeKind::Array;
-    n->len = static_cast<uint32_t>(length);
-    n->cap = static_cast<uint32_t>(length);
-    if (length > 0) {
-      n->array_elems = arena_.alloc_array<NveValue>(length);
-      for (size_t i = 0; i < length; ++i) {
+    n->len = bounded_len;
+    n->cap = bounded_len;
+    if (bounded_len > 0u) {
+      n->array_elems = arena_.alloc_array<NveValue>(bounded_len);
+      for (uint32_t i = 0u; i < bounded_len; ++i) {
         n->array_elems[i] = make_null_value();
       }
     } else {
@@ -795,10 +844,15 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
       const facebook::jsi::Value& value) override {
     ArenaNode* n = extract_node(arr);
     if (!n || n->kind != NodeKind::Array) return;
+    constexpr size_t kMaxIndex = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) - 1u;
+    if (i > kMaxIndex) return;
 
     if (i >= n->cap) {
+      constexpr size_t kMaxCap = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+      const size_t doubled = (n->cap == 0u) ? size_t{4u} : (static_cast<size_t>(n->cap) * 2u);
+      const size_t required = i + 1u;
       const uint32_t new_cap =
-          static_cast<uint32_t>(std::max<size_t>(n->cap == 0 ? 4u : n->cap * 2u, i + 1u));
+          static_cast<uint32_t>(std::min(kMaxCap, std::max(doubled, required)));
       auto* new_elems = arena_.alloc_array<NveValue>(new_cap);
       if (n->len > 0 && n->array_elems != nullptr) {
         std::memcpy(new_elems, n->array_elems, sizeof(NveValue) * n->len);
@@ -966,8 +1020,14 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
       return;
     }
 
+    if (obj->len == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
     if (obj->len >= obj->cap) {
-      const uint32_t new_cap = obj->cap == 0 ? kInitialObjectCap : obj->cap * 2u;
+      constexpr size_t kMaxCap = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+      const size_t grown =
+          (obj->cap == 0u) ? static_cast<size_t>(kInitialObjectCap) : (static_cast<size_t>(obj->cap) * 2u);
+      const uint32_t new_cap = static_cast<uint32_t>(std::min(kMaxCap, grown));
       auto* new_entries = target_arena.alloc_array<NveMapEntry>(new_cap);
       if (obj->len > 0 && obj->map_entries != nullptr) {
         std::memcpy(new_entries, obj->map_entries, sizeof(NveMapEntry) * obj->len);

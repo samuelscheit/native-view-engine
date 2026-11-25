@@ -92,6 +92,24 @@ class NveQtQuickItem : public QQuickItem {
     return hotReload(path, outErrorCode, outErrorMessage);
   }
 
+  /// Connect in paired thin-client mode (zero local cdylib required). Incoming `NVD1` frames wake
+  /// the Qt GUI thread via `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`; UI input events
+  /// stream upstream as `TransportMsgKind::InputEvents = 11`.
+  Q_INVOKABLE bool connectPaired(
+      const QString& endpoint,
+      const QString& token,
+      const QString& transport = QString(),
+      uint32_t surfaceId = 1,
+      QString* outErrorMessage = nullptr);
+  bool connectPaired(
+      const nve::PairClientConfig& config,
+      uint32_t surfaceId = 1,
+      QString* outErrorMessage = nullptr);
+  Q_INVOKABLE void disconnectPaired();
+  size_t pollPairedFrames();
+  bool isPaired() const noexcept;
+  bool isPairedConnected() const noexcept;
+
   /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
   Q_INVOKABLE bool replaySnapshot(
       const QString& snapshotPath,

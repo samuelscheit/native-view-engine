@@ -155,6 +155,7 @@ HEADER_DEPS=(
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.h"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_draw_list.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_host_runtime.hpp"
+  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_pair_client.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_rn_component.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_value.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_decoder.hpp"
@@ -208,7 +209,8 @@ for src in \
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/flexbox_solver.cpp" \
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/scene_publisher.cpp" \
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/fabric_c_api.cpp" \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/nve_rn_component.cpp"
+  "$REPO_ROOT/cxx/nve-fabric-bridge/src/nve_rn_component.cpp" \
+  "$REPO_ROOT/cxx/nve-fabric-bridge/src/pair_client.cpp"
 do
   compile_unit "$src" cpp
 done

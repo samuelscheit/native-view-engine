@@ -1,17 +1,30 @@
 #import <AppKit/AppKit.h>
 #import "NveAppleCanvasView.h"
+#import "NveAppleComponentHost.h"
 #import "NveAppleImageCache.h"
 #import "NveMacFabricHost.h"
 #import "RCTNveMacComponentView.h"
 
-#include "nve_rn_component.hpp"
+#include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
+#include "nve_pair_client.hpp"
+#include "nve_rn_component.hpp"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define NVE_CHECK(expr)                                                                         \
@@ -1924,6 +1937,174 @@ int main() {
 
       CGContextRelease(bitmapCtx);
       CGColorSpaceRelease(colorSpace);
+    }
+
+    // 12. Paired thin-client mode on RCTNveMacComponentView (zero local dylib, live TCP NVT1/NVD1
+    //     Keyframe + CommandOpDelta + dispatch_async main-queue wake + upstream InputEvents = 11).
+    {
+      auto build_frame = [](uint64_t fid, const std::string &title) {
+        nve::CommandBufferEncoder enc(1u, fid);
+        enc.create_node(2u, NVE_COMP_VIEW);
+        enc.create_node(3u, NVE_COMP_TEXT);
+        enc.create_node(4u, NVE_COMP_PRESSABLE);
+        enc.set_children(NVE_ROOT_NODE_ID, {2u});
+        enc.set_children(2u, {3u, 4u});
+        nve::LayoutProps box{};
+        box.width = {1u, 300.0f};
+        box.height = {1u, 180.0f};
+        enc.set_layout(2u, box);
+        nve::LayoutProps btn{};
+        btn.width = {1u, 140.0f};
+        btn.height = {1u, 40.0f};
+        enc.set_layout(4u, btn);
+        enc.set_text(3u, title);
+        enc.set_event_mask(4u, nve::apple::kEventMaskPress);
+        enc.commit(true);
+        const NveBufferSlice s = enc.finish();
+        return std::vector<uint8_t>(s.ptr, s.ptr + s.len);
+      };
+
+      const std::string token = "mac-pair-token";
+      const auto f1 = build_frame(1u, "Mac Paired V1");
+      const auto f2 = build_frame(2u, "Mac Paired V2");
+
+      int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+      assert(lfd >= 0);
+      int one = 1;
+      (void)::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+      sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      addr.sin_port = 0;
+      assert(::bind(lfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0);
+      socklen_t alen = sizeof(addr);
+      assert(::getsockname(lfd, reinterpret_cast<sockaddr *>(&addr), &alen) == 0);
+      const uint16_t port = ntohs(addr.sin_port);
+      assert(::listen(lfd, 2) == 0);
+
+      auto read_exact = [](int fd, uint8_t *buf, size_t len) -> bool {
+        size_t off = 0u;
+        const auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (off < len) {
+          if (std::chrono::steady_clock::now() >= dl) return false;
+          pollfd pfd{fd, POLLIN, 0};
+          if (::poll(&pfd, 1u, 25) <= 0) continue;
+          const ssize_t n = ::recv(fd, buf + off, len - off, 0);
+          if (n <= 0) return false;
+          off += static_cast<size_t>(n);
+        }
+        return true;
+      };
+      auto read_msg = [&](int fd, std::vector<uint8_t> &out) -> bool {
+        uint8_t hdr[4]{};
+        if (!read_exact(fd, hdr, 4u)) return false;
+        const uint32_t len = static_cast<uint32_t>(hdr[0]) | (static_cast<uint32_t>(hdr[1]) << 8u) |
+                             (static_cast<uint32_t>(hdr[2]) << 16u) |
+                             (static_cast<uint32_t>(hdr[3]) << 24u);
+        out.resize(len);
+        return read_exact(fd, out.data(), len);
+      };
+      auto write_msg = [](int fd, std::span<const uint8_t> p) -> bool {
+        uint8_t hdr[4]{
+            static_cast<uint8_t>(p.size() & 0xFFu),
+            static_cast<uint8_t>((p.size() >> 8u) & 0xFFu),
+            static_cast<uint8_t>((p.size() >> 16u) & 0xFFu),
+            static_cast<uint8_t>((p.size() >> 24u) & 0xFFu),
+        };
+        return ::send(fd, hdr, 4u, 0) == 4 &&
+               ::send(fd, p.data(), p.size(), 0) == static_cast<ssize_t>(p.size());
+      };
+
+      std::atomic<bool> saw_press{false};
+      std::thread srv([&]() {
+        int cfd = ::accept(lfd, nullptr, nullptr);
+        assert(cfd >= 0);
+        std::vector<uint8_t> msg;
+        assert(read_msg(cfd, msg));
+        nve::TransportEnvelopeView env{};
+        assert(nve::pair_wire::parse_envelope(msg, env) &&
+               env.kind == nve::TransportMsgKind::Hello);
+        nve::HelloPayload hp{};
+        assert(nve::pair_wire::decode_hello_payload(env.payload, hp));
+        const uint64_t sn = 0xAABBCCDDEEFF0011ULL;
+        const uint32_t sid = nve::pair_wire::derive_session_id(token, 1u, hp.client_nonce, sn);
+        nve::HelloAckPayload ack{};
+        ack.schema_version = 1u;
+        ack.server_max_window = 64u;
+        ack.server_nonce = sn;
+        const auto ack_b = nve::pair_wire::encode_hello_ack_payload(ack);
+        assert(write_msg(
+            cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::HelloAck, sid, ack_b)));
+
+        const auto kf1 = nve::pair_wire::encode_nvd_packet(
+            nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, f1);
+        assert(write_msg(
+            cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, kf1)));
+
+        const auto d2 = nve::pair_wire::encode_command_op_delta(f1, f2);
+        assert(d2.has_value());
+        const auto p2 = nve::pair_wire::encode_nvd_packet(
+            nve::DeltaPacketKind::CommandOpDelta, 0u, 2u, 1u, 0u, *d2);
+        assert(write_msg(
+            cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, p2)));
+
+        while (read_msg(cfd, msg)) {
+          nve::TransportEnvelopeView in{};
+          if (nve::pair_wire::parse_envelope(msg, in) && in.session_id == sid &&
+              in.kind == nve::TransportMsgKind::InputEvents) {
+            std::vector<nve::DecodedEvent> dec;
+            if (nve::decode_event_ring(
+                    NveBufferSlice{in.payload.data(), in.payload.size()}, dec) &&
+                dec.size() == 1u && dec[0].kind == nve::EventKind::Press && dec[0].node_id == 4u) {
+              saw_press.store(true);
+              break;
+            }
+          }
+        }
+        ::close(cfd);
+        ::close(lfd);
+      });
+
+      RCTNveMacComponentView *pairedView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 320, 200)];
+      NveAppleComponentHost *pairHost = [NveAppleComponentHost hostForRootView:pairedView];
+      assert(pairHost != nil);
+
+      NSString *ep = [NSString stringWithFormat:@"127.0.0.1:%u", port];
+      NSError *pairErr = nil;
+      assert([pairHost connectPairedEndpoint:ep
+                                       token:@"mac-pair-token"
+                                   transport:@"tcp"
+                                   surfaceId:1u
+                                       error:&pairErr]);
+      assert(pairHost.isPaired == YES && pairHost.isPairedConnected == YES);
+
+      const auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (std::chrono::steady_clock::now() < dl) {
+        [[NSRunLoop mainRunLoop]
+            runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        (void)[pairHost pollPairedFrames];
+        NSView *lbl = [pairedView nativeViewForNodeId:3u];
+        if ([lbl isKindOfClass:[NSTextField class]] &&
+            [((NSTextField *)lbl).stringValue isEqualToString:@"Mac Paired V2"]) {
+          break;
+        }
+      }
+
+      NSView *lblView = [pairedView nativeViewForNodeId:3u];
+      assert(lblView != nil && [lblView isKindOfClass:[NSTextField class]]);
+      assert([((NSTextField *)lblView).stringValue isEqualToString:@"Mac Paired V2"]);
+
+      [pairedView simulatePressOnNodeId:4u atPoint:NSMakePoint(12.0, 14.0)];
+      const auto evDl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (!saw_press.load() && std::chrono::steady_clock::now() < evDl) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      assert(saw_press.load());
+
+      [pairHost disconnectPaired];
+      assert(pairHost.isPaired == NO);
+      srv.join();
     }
 
     std::cout << "nve_macos_shell_test passed ("

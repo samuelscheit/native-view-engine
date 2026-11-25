@@ -1,6 +1,19 @@
 #include "NveQtWidget.hpp"
-
+#include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
+#include "nve_pair_client.hpp"
+#ifdef NVE_QT_HAS_QUICK
+#include "NveQtQuickItem.hpp"
+#endif
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <thread>
 
 #include <QAccessible>
 #include <QApplication>
@@ -1408,6 +1421,215 @@ void test_draw_list_canvas_widget_and_corrupt_survival() {
   NVE_CHECK(!corrupt_grab.isNull() && corrupt_grab.width() == 200 && corrupt_grab.height() == 80);
 }
 
+void test_paired_thin_client_widgets_and_quick() {
+  auto build_frame = [](uint64_t fid, const std::string& label_text) {
+    nve::CommandBufferEncoder enc(1u, fid);
+    enc.create_node(2u, NVE_COMP_VIEW);
+    enc.create_node(3u, NVE_COMP_TEXT);
+    enc.create_node(4u, NVE_COMP_PRESSABLE);
+    enc.set_children(NVE_ROOT_NODE_ID, {2u});
+    enc.set_children(2u, {3u, 4u});
+    nve::LayoutProps box{};
+    box.width = {1u, 300.0f};
+    box.height = {1u, 180.0f};
+    enc.set_layout(2u, box);
+    nve::LayoutProps btn{};
+    btn.width = {1u, 140.0f};
+    btn.height = {1u, 40.0f};
+    enc.set_layout(4u, btn);
+    enc.set_text(3u, label_text);
+    enc.set_event_mask(4u, nve::kEventMaskPress);
+    enc.commit(true);
+    const NveBufferSlice s = enc.finish();
+    return std::vector<uint8_t>(s.ptr, s.ptr + s.len);
+  };
+
+  auto run_server_once = [&](const std::string& token,
+                             const std::vector<uint8_t>& f1,
+                             const std::vector<uint8_t>& f2,
+                             std::atomic<bool>& saw_press,
+                             uint16_t& out_port) -> std::thread {
+    int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    NVE_CHECK(lfd >= 0);
+    int one = 1;
+    (void)::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    NVE_CHECK(::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    socklen_t alen = sizeof(addr);
+    NVE_CHECK(::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
+    out_port = ntohs(addr.sin_port);
+    NVE_CHECK(::listen(lfd, 2) == 0);
+
+    return std::thread([lfd, token, f1, f2, &saw_press]() {
+      auto read_exact = [](int fd, uint8_t* buf, size_t len) -> bool {
+        size_t off = 0u;
+        const auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (off < len) {
+          if (std::chrono::steady_clock::now() >= dl) return false;
+          pollfd pfd{fd, POLLIN, 0};
+          if (::poll(&pfd, 1u, 25) <= 0) continue;
+          const ssize_t n = ::recv(fd, buf + off, len - off, 0);
+          if (n <= 0) return false;
+          off += static_cast<size_t>(n);
+        }
+        return true;
+      };
+      auto read_msg = [&](int fd, std::vector<uint8_t>& out) -> bool {
+        uint8_t hdr[4]{};
+        if (!read_exact(fd, hdr, 4u)) return false;
+        const uint32_t len = static_cast<uint32_t>(hdr[0]) | (static_cast<uint32_t>(hdr[1]) << 8u) |
+                             (static_cast<uint32_t>(hdr[2]) << 16u) |
+                             (static_cast<uint32_t>(hdr[3]) << 24u);
+        out.resize(len);
+        return read_exact(fd, out.data(), len);
+      };
+      auto write_msg = [](int fd, std::span<const uint8_t> p) -> bool {
+        uint8_t hdr[4]{
+            static_cast<uint8_t>(p.size() & 0xFFu),
+            static_cast<uint8_t>((p.size() >> 8u) & 0xFFu),
+            static_cast<uint8_t>((p.size() >> 16u) & 0xFFu),
+            static_cast<uint8_t>((p.size() >> 24u) & 0xFFu),
+        };
+        return ::send(fd, hdr, 4u, 0) == 4 &&
+               ::send(fd, p.data(), p.size(), 0) == static_cast<ssize_t>(p.size());
+      };
+
+      int cfd = ::accept(lfd, nullptr, nullptr);
+      NVE_CHECK(cfd >= 0);
+      std::vector<uint8_t> msg;
+      NVE_CHECK(read_msg(cfd, msg));
+      nve::TransportEnvelopeView env{};
+      NVE_CHECK(nve::pair_wire::parse_envelope(msg, env) &&
+                env.kind == nve::TransportMsgKind::Hello);
+      nve::HelloPayload hp{};
+      NVE_CHECK(nve::pair_wire::decode_hello_payload(env.payload, hp));
+      const uint64_t sn = 0x1020304050607080ULL;
+      const uint32_t sid = nve::pair_wire::derive_session_id(token, 1u, hp.client_nonce, sn);
+      nve::HelloAckPayload ack{};
+      ack.schema_version = 1u;
+      ack.server_max_window = 64u;
+      ack.server_nonce = sn;
+      const auto ack_b = nve::pair_wire::encode_hello_ack_payload(ack);
+      NVE_CHECK(write_msg(
+          cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::HelloAck, sid, ack_b)));
+
+      const auto kf1 = nve::pair_wire::encode_nvd_packet(
+          nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, f1);
+      NVE_CHECK(write_msg(
+          cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, kf1)));
+
+      const auto d2 = nve::pair_wire::encode_command_op_delta(f1, f2);
+      NVE_CHECK(d2.has_value());
+      const auto p2 = nve::pair_wire::encode_nvd_packet(
+          nve::DeltaPacketKind::CommandOpDelta, 0u, 2u, 1u, 0u, *d2);
+      NVE_CHECK(write_msg(
+          cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, p2)));
+
+      while (read_msg(cfd, msg)) {
+        nve::TransportEnvelopeView in{};
+        if (nve::pair_wire::parse_envelope(msg, in) && in.session_id == sid &&
+            in.kind == nve::TransportMsgKind::InputEvents) {
+          std::vector<nve::DecodedEvent> dec;
+          if (nve::decode_event_ring(NveBufferSlice{in.payload.data(), in.payload.size()}, dec) &&
+              dec.size() == 1u && dec[0].kind == nve::EventKind::Press && dec[0].node_id == 4u) {
+            saw_press.store(true);
+            break;
+          }
+        }
+      }
+      ::close(cfd);
+      ::close(lfd);
+    });
+  };
+
+  // 1. NveQtWidget paired thin-client roundtrip (zero dylib, QMetaObject::invokeMethod wake).
+  {
+    const auto f1 = build_frame(1u, "Qt Paired V1");
+    const auto f2 = build_frame(2u, "Qt Paired V2");
+    std::atomic<bool> saw_press{false};
+    uint16_t port = 0u;
+    std::thread srv = run_server_once("qt-pair-token", f1, f2, saw_press, port);
+
+    nve::qt::NveQtWidget widget;
+    widget.resize(320, 200);
+    QString err;
+    NVE_CHECK(widget.connectPaired(
+        QStringLiteral("127.0.0.1:%1").arg(port),
+        QStringLiteral("qt-pair-token"),
+        QStringLiteral("tcp"),
+        1u,
+        &err));
+    NVE_CHECK(widget.isPaired() && widget.isPairedConnected() && widget.isAppLoaded());
+
+    const auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < dl) {
+      QCoreApplication::processEvents();
+      auto* lbl = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3u));
+      if (lbl != nullptr && lbl->text() == QStringLiteral("Qt Paired V2")) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    auto* lbl = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3u));
+    NVE_CHECK(lbl != nullptr && lbl->text() == QStringLiteral("Qt Paired V2"));
+
+    NVE_CHECK(widget.simulatePressOnNodeId(4u, 9.0f, 11.0f) == 1u);
+    const auto ev_dl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!saw_press.load() && std::chrono::steady_clock::now() < ev_dl) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    NVE_CHECK(saw_press.load());
+    widget.disconnectPaired();
+    NVE_CHECK(!widget.isPaired());
+    srv.join();
+  }
+
+#ifdef NVE_QT_HAS_QUICK
+  // 2. NveQtQuickItem paired thin-client roundtrip.
+  {
+    const auto f1 = build_frame(1u, "Quick Paired V1");
+    const auto f2 = build_frame(2u, "Quick Paired V2");
+    std::atomic<bool> saw_press{false};
+    uint16_t port = 0u;
+    std::thread srv = run_server_once("quick-pair-token", f1, f2, saw_press, port);
+
+    nve::qt::NveQtQuickItem item;
+    item.setSize(QSizeF(320.0, 200.0));
+    QString err;
+    NVE_CHECK(item.connectPaired(
+        QStringLiteral("tcp://127.0.0.1:%1").arg(port),
+        QStringLiteral("quick-pair-token"),
+        QString(),
+        1u,
+        &err));
+    NVE_CHECK(item.isPaired() && item.isPairedConnected() && item.isAppLoaded());
+
+    const auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < dl) {
+      QCoreApplication::processEvents();
+      if (item.sceneNodeText(3u) == "Quick Paired V2") {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    NVE_CHECK(item.sceneNodeText(3u) == "Quick Paired V2");
+
+    NVE_CHECK(item.dispatchPress(4u, 7.0f, 8.0f) == 1u);
+    const auto ev_dl = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!saw_press.load() && std::chrono::steady_clock::now() < ev_dl) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    NVE_CHECK(saw_press.load());
+    item.disconnectPaired();
+    NVE_CHECK(!item.isPaired());
+    srv.join();
+  }
+#endif
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -1420,6 +1642,7 @@ int main(int argc, char* argv[]) {
   test_accessibility_and_ime_text_input();
   test_image_scroll_and_incremental_reconciliation();
   test_draw_list_canvas_widget_and_corrupt_survival();
+  test_paired_thin_client_widgets_and_quick();
 
   std::cout << "nve_qt_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6" : "Standalone+Qt6") << ")\n";

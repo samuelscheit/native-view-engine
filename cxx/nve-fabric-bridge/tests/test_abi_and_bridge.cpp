@@ -436,6 +436,87 @@ void test_all_opcodes_and_custom_components() {
 
     nve_fabric_host_destroy(canvas_host);
   }
+
+  // 1c. EventRingWriter hardening checks (null+nonzero len, narrowing guards, unknown payload_tag).
+  {
+    nve::EventRingWriter ring;
+    ring.clear();
+
+    // nullptr with nonzero length MUST be rejected without corrupting framing or count!
+    assert(!ring.push_custom(1u, 10u, 100u, "badNull", nullptr, 32u));
+    assert(ring.count() == 0u);
+    assert(ring.finalize().size() == 4u);
+
+    // nullptr with zero length is valid and roundtrips cleanly with empty payload.
+    assert(ring.push_custom(1u, 10u, 101u, "emptyOk", nullptr, 0u));
+    assert(ring.count() == 1u);
+
+    // Name exceeding uint16_t max MUST be rejected cleanly without mutating ring.
+    const std::string oversized_name(70000u, 'x');
+    const uint8_t one_byte = 0x42u;
+    assert(!ring.push_custom(1u, 10u, 102u, oversized_name, &one_byte, 1u));
+    assert(!ring.push_custom_value(1u, 10u, 103u, oversized_name, nve::make_bool_value(true)));
+    assert(ring.count() == 1u);
+
+    // Unknown payload_tag in push_direct_event MUST be rejected (not silently mapped to Custom).
+    for (uint8_t bad_tag : {uint8_t{6u}, uint8_t{42u}, uint8_t{255u}}) {
+      NveDirectEvent bad_ev{};
+      bad_ev.surface_id = 1u;
+      bad_ev.node_id = 10u;
+      bad_ev.timestamp_us = 104u;
+      bad_ev.kind = static_cast<uint8_t>(nve::EventKind::Custom);
+      bad_ev.payload_tag = bad_tag;
+      bad_ev.name = nve::make_str_slice("shouldReject");
+      bad_ev.value = nve::make_i64_value(7);
+      assert(!ring.push_direct_event(bad_ev));
+    }
+    assert(ring.count() == 1u);
+
+    // Valid direct events across tags 0..5 roundtrip accurately via templated write_le<T>.
+    NveDirectEvent ev_press{};
+    ev_press.surface_id = 1u;
+    ev_press.node_id = 11u;
+    ev_press.timestamp_us = 200u;
+    ev_press.kind = static_cast<uint8_t>(nve::EventKind::Press);
+    ev_press.payload_tag = 1u;
+    ev_press.x = 12.5f;
+    ev_press.y = 34.25f;
+    assert(ring.push_direct_event(ev_press));
+
+    NveDirectEvent ev_text{};
+    ev_text.surface_id = 1u;
+    ev_text.node_id = 12u;
+    ev_text.timestamp_us = 201u;
+    ev_text.kind = static_cast<uint8_t>(nve::EventKind::TextChange);
+    ev_text.payload_tag = 3u;
+    ev_text.text = nve::make_str_slice("hello-hardened");
+    assert(ring.push_direct_event(ev_text));
+
+    NveDirectEvent ev_custom{};
+    ev_custom.surface_id = 1u;
+    ev_custom.node_id = 13u;
+    ev_custom.timestamp_us = 202u;
+    ev_custom.kind = static_cast<uint8_t>(nve::EventKind::Custom);
+    ev_custom.payload_tag = 5u;
+    ev_custom.name = nve::make_str_slice("onMetric");
+    ev_custom.value = nve::make_i64_value(9001);
+    assert(ring.push_direct_event(ev_custom));
+
+    assert(ring.count() == 4u);
+    const auto& bytes = ring.finalize();
+    std::vector<nve::DecodedEvent> decoded;
+    assert(nve::decode_event_ring(NveBufferSlice{bytes.data(), bytes.size()}, decoded));
+    assert(decoded.size() == 4u);
+    assert(decoded[0].kind == nve::EventKind::Custom && decoded[0].name == "emptyOk" &&
+           decoded[0].payload_bytes.empty());
+    assert(decoded[1].kind == nve::EventKind::Press && decoded[1].node_id == 11u &&
+           approx_eq(decoded[1].x, 12.5f, 1e-4f) && approx_eq(decoded[1].y, 34.25f, 1e-4f));
+    assert(decoded[2].kind == nve::EventKind::TextChange && decoded[2].text == "hello-hardened");
+    assert(decoded[3].kind == nve::EventKind::Custom && decoded[3].name == "onMetric");
+    const auto v3 = nve::BinValueView::parse(
+        decoded[3].payload_bytes.data(), decoded[3].payload_bytes.size());
+    assert(v3.has_value() && v3->as_i64() == 9001);
+  }
 }
 
 // 2. Test corrupt buffer error codes thoroughly.

@@ -6,6 +6,7 @@
 #include <cairo.h>
 #include <gtk/gtk.h>
 
+#include <atomic>
 #include <cstdint>
 #include <list>
 #include <memory>
@@ -151,6 +152,24 @@ class NveGtkHost {
       int* out_err_code = nullptr,
       std::string* out_err_msg = nullptr);
 
+  /// Connect in paired thin-client mode (zero local cdylib required). Incoming `NVD1` frames wake
+  /// the GLib main loop via `g_main_context_invoke`; UI input events stream upstream as
+  /// `TransportMsgKind::InputEvents = 11`.
+  bool connect_paired_endpoint(
+      std::string_view endpoint,
+      std::string_view token,
+      std::string_view transport = {},
+      std::string* out_error = nullptr,
+      uint32_t surface_id = 0);
+  bool connect_paired(
+      const PairClientConfig& config,
+      std::string* out_error = nullptr,
+      uint32_t surface_id = 0);
+  void disconnect_paired() noexcept;
+  size_t poll_paired_frames();
+  bool is_paired() const noexcept { return session_.is_paired(); }
+  bool is_paired_connected() const noexcept { return session_.is_paired_connected(); }
+
   /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
   bool replay_snapshot(
       std::string_view path,
@@ -218,7 +237,7 @@ class NveGtkHost {
   uint32_t node_count() const noexcept;
   uint32_t surface_id() const noexcept { return config_.surface_id; }
   uint32_t host_instance_id() const noexcept { return host_instance_id_; }
-  bool is_loaded() const noexcept { return session_.is_valid(); }
+  bool is_loaded() const noexcept { return session_.is_valid() || session_.is_paired(); }
 
   /// Total incremental widget update passes applied via `IncrementalSceneReconciler`.
   uint64_t reconcile_update_count() const noexcept { return reconcile_update_count_; }
@@ -402,6 +421,7 @@ class NveGtkHost {
   uint64_t reconcile_update_count_{0};
 
   WindowBinding window_binding_{};
+  std::shared_ptr<std::atomic<bool>> alive_{std::make_shared<std::atomic<bool>>(true)};
 };
 
 } // namespace nve

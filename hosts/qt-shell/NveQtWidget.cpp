@@ -1,6 +1,8 @@
 #include "NveQtWidgetInternal.hpp"
 
+#include <QMetaObject>
 #include <QPainter>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -24,6 +26,7 @@ NveQtWidget::Impl::Impl(NveQtWidget* owner) : owner_(owner), adapter_{this} {
 
 NveQtWidget::Impl::~Impl() {
   destroying_ = true;
+  session_.disconnect_paired();
   reconciler_.clear(adapter_);
   node_semantics_.clear();
   node_resize_modes_.clear();
@@ -76,12 +79,12 @@ NveDirectEvent NveQtWidget::Impl::makeBaseEvent(
 }
 
 uint32_t NveQtWidget::Impl::dispatchSingleDirectEvent(const NveDirectEvent& ev) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0;
   }
   const uint32_t dirty =
       session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
-  if (dirty != 0) {
+  if (dirty != 0 && !session_.is_paired()) {
     syncViews(/*check_raw_props=*/false);
   }
   (void)session_.drain_events();
@@ -89,15 +92,59 @@ uint32_t NveQtWidget::Impl::dispatchSingleDirectEvent(const NveDirectEvent& ev) 
 }
 
 uint32_t NveQtWidget::Impl::dispatchPress(uint32_t node_id, float x, float y) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0;
   }
   const uint32_t dirty = session_.dispatch_press(node_id, x, y, /*auto_render=*/true);
-  if (dirty != 0) {
+  if (dirty != 0 && !session_.is_paired()) {
     syncViews(/*check_raw_props=*/false);
   }
   (void)session_.drain_events();
   return dirty;
+}
+
+bool NveQtWidget::Impl::connectPairedConfig(
+    const nve::PairClientConfig& config,
+    uint32_t surface_id,
+    QString* out_error_message) {
+  QPointer<NveQtWidget> weak_owner(owner_);
+  auto wake_cb = [weak_owner]() {
+    if (!weak_owner) {
+      return;
+    }
+    QMetaObject::invokeMethod(
+        weak_owner.data(),
+        [weak_owner]() {
+          if (weak_owner) {
+            (void)weak_owner->pollPairedFrames();
+          }
+        },
+        Qt::QueuedConnection);
+  };
+  std::string err_msg;
+  const bool ok =
+      session_.connect_paired(config, currentSurfaceConfig(surface_id), std::move(wake_cb), &err_msg);
+  if (out_error_message != nullptr) {
+    *out_error_message = QString::fromStdString(err_msg);
+  }
+  if (!ok) {
+    return false;
+  }
+  surface_id_ = surface_id;
+  clearViews();
+  syncViews(/*check_raw_props=*/true);
+  return true;
+}
+
+size_t NveQtWidget::Impl::pollPairedFramesImpl() {
+  if (destroying_ || !session_.is_paired()) {
+    return 0u;
+  }
+  const size_t applied = session_.poll_paired_frames(nullptr);
+  if (applied > 0u) {
+    syncViews(/*check_raw_props=*/false);
+  }
+  return applied;
 }
 
 uint32_t NveQtWidget::Impl::dispatchScroll(
@@ -218,6 +265,54 @@ bool NveQtWidget::reloadDylib(
   impl_->syncViews(/*check_raw_props=*/true);
   (void)impl_->session_.drain_events();
   return true;
+}
+
+bool NveQtWidget::connectPaired(
+    const QString& endpoint,
+    const QString& token,
+    const QString& transport,
+    uint32_t surfaceId,
+    QString* outErrorMessage) {
+  const QByteArray ep_utf8 = endpoint.toUtf8();
+  const QByteArray tok_utf8 = token.toUtf8();
+  const QByteArray tr_utf8 = transport.toUtf8();
+  nve::PairClientConfig cfg{};
+  std::string parse_err;
+  if (!nve::parse_pair_endpoint(
+          std::string_view(ep_utf8.constData(), static_cast<size_t>(ep_utf8.size())),
+          std::string_view(tr_utf8.constData(), static_cast<size_t>(tr_utf8.size())),
+          cfg,
+          &parse_err)) {
+    if (outErrorMessage != nullptr) {
+      *outErrorMessage = QString::fromStdString(parse_err);
+    }
+    return false;
+  }
+  cfg.pairing_token.assign(tok_utf8.constData(), static_cast<size_t>(tok_utf8.size()));
+  return connectPaired(cfg, surfaceId, outErrorMessage);
+}
+
+bool NveQtWidget::connectPaired(
+    const nve::PairClientConfig& config,
+    uint32_t surfaceId,
+    QString* outErrorMessage) {
+  return impl_->connectPairedConfig(config, surfaceId, outErrorMessage);
+}
+
+void NveQtWidget::disconnectPaired() {
+  impl_->session_.disconnect_paired();
+}
+
+size_t NveQtWidget::pollPairedFrames() {
+  return impl_->pollPairedFramesImpl();
+}
+
+bool NveQtWidget::isPaired() const noexcept {
+  return impl_->session_.is_paired();
+}
+
+bool NveQtWidget::isPairedConnected() const noexcept {
+  return impl_->session_.is_paired_connected();
 }
 
 bool NveQtWidget::replayFrame0Snapshot(
@@ -367,7 +462,7 @@ uint32_t NveQtWidget::surfaceId() const noexcept {
 }
 
 bool NveQtWidget::isAppLoaded() const noexcept {
-  return impl_->session_.is_valid();
+  return impl_->session_.is_valid() || impl_->session_.is_paired();
 }
 
 void NveQtWidget::setOnNveEvent(nve::EventCallback callback) {

@@ -29,6 +29,7 @@ add_library(nve_fabric_bridge STATIC
   src/scene_publisher.cpp
   src/fabric_c_api.cpp
   src/nve_rn_component.cpp
+  src/pair_client.cpp
 )
 
 target_include_directories(nve_fabric_bridge
@@ -42,8 +43,11 @@ if(MSVC)
   target_compile_options(nve_fabric_bridge PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
 else()
   target_compile_options(nve_fabric_bridge PRIVATE -Wall -Wextra)
+  set_source_files_properties(src/pair_client.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
 endif()
 
+find_package(Threads REQUIRED)
+target_link_libraries(nve_fabric_bridge PUBLIC Threads::Threads)
 if(UNIX AND NOT APPLE)
   target_link_libraries(nve_fabric_bridge PUBLIC ${CMAKE_DL_LIBS})
 endif()
@@ -132,6 +136,18 @@ add_dependencies(nve_fabric_bridge_test
   nve_bridge_fixture_no_surface
 )
 add_test(NAME bridge_abi_test COMMAND nve_fabric_bridge_test)
+
+add_executable(nve_pair_client_test
+  tests/test_pair_client.cpp
+)
+target_include_directories(nve_pair_client_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(MSVC)
+  target_compile_options(nve_pair_client_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
+else()
+  target_compile_options(nve_pair_client_test PRIVATE -Wall -Wextra -Werror)
+endif()
+target_link_libraries(nve_pair_client_test PRIVATE nve_fabric_bridge)
+add_test(NAME pair_client_test COMMAND nve_pair_client_test)
 
 if(NVE_BUILD_BENCHMARKS)
   add_executable(nve_fabric_bridge_bench bench/bridge_bench.cpp)

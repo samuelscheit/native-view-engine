@@ -1,6 +1,7 @@
 #pragma once
 
 #import "NveAppleSceneReconciler.h"
+#include "nve_pair_client.hpp"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -20,12 +21,33 @@ NS_ASSUME_NONNULL_BEGIN
                     errorDomain:(NSString *)errorDomain NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
+/// Look up the `NveAppleComponentHost` associated with a platform root view
+/// (`RCTNveMacComponentView` / `RCTNveComponentView`).
++ (nullable NveAppleComponentHost *)hostForRootView:(NvePlatformView *)rootView;
+
 - (BOOL)attachInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId;
 - (BOOL)loadDylibAtPath:(NSString *)dylibPath
               surfaceId:(uint32_t)surfaceId
                   error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)reloadDylibAtPath:(NSString *)dylibPath
                     error:(NSError * _Nullable * _Nullable)error;
+
+/// Connect in paired thin-client mode (zero local dylib required). Incoming `NVD1` frames feed
+/// directly into `FabricHost` and reconcile on the main queue via `dispatch_async`; UI events
+/// stream upstream as `TransportMsgKind::InputEvents = 11`.
+- (BOOL)connectPairedEndpoint:(NSString *)endpoint
+                        token:(NSString *)token
+                    transport:(nullable NSString *)transport
+                    surfaceId:(uint32_t)surfaceId
+                        error:(NSError * _Nullable * _Nullable)error;
+- (BOOL)connectPairedConfig:(const nve::PairClientConfig &)config
+                  surfaceId:(uint32_t)surfaceId
+                      error:(NSError * _Nullable * _Nullable)error;
+- (void)disconnectPaired;
+- (NSUInteger)pollPairedFrames;
+
+@property (nonatomic, readonly) BOOL isPaired;
+@property (nonatomic, readonly) BOOL isPairedConnected;
 
 /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` snapshot file before any dylib loads.
 /// Mounts native views immediately and caches the snapshot state for seamless `restore_state`

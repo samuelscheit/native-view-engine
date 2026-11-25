@@ -236,6 +236,9 @@ class BuiltinQtDemoApp {
 int runQuickShell(
     QApplication& app,
     const QString& dylib_path,
+    const QString& pair_connect,
+    const QString& pair_token,
+    const QString& pair_transport,
     const QString& snapshot_path,
     uint32_t schema_version,
     int width,
@@ -272,7 +275,15 @@ int runQuickShell(
 
   view.show();
 
-  if (!dylib_path.isEmpty()) {
+  if (!pair_connect.isEmpty()) {
+    QString err_msg;
+    if (!surface->connectPaired(pair_connect, pair_token, pair_transport, 1u, &err_msg)) {
+      std::cerr << "Failed to connect paired client to '" << pair_connect.toStdString()
+                << "': " << err_msg.toStdString() << "\n";
+      return 1;
+    }
+    view.setTitle(QStringLiteral("NVE Qt Quick GPU Host Shell (Paired: %1)").arg(pair_connect));
+  } else if (!dylib_path.isEmpty()) {
     int err_code = 0;
     QString err_msg;
     if (!surface->loadDylib(dylib_path, 1, &err_code, &err_msg)) {
@@ -314,6 +325,9 @@ int main(int argc, char* argv[]) {
 
   bool use_quick = false;
   QString dylib_path;
+  QString pair_connect;
+  QString pair_token;
+  QString pair_transport;
   QString snapshot_path;
   uint32_t schema_version = 1u;
   int width = 640;
@@ -323,6 +337,12 @@ int main(int argc, char* argv[]) {
       use_quick = true;
     } else if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
       dylib_path = QString::fromUtf8(argv[++i]);
+    } else if (std::strcmp(argv[i], "--pair-connect") == 0 && i + 1 < argc) {
+      pair_connect = QString::fromUtf8(argv[++i]);
+    } else if (std::strcmp(argv[i], "--pair-token") == 0 && i + 1 < argc) {
+      pair_token = QString::fromUtf8(argv[++i]);
+    } else if (std::strcmp(argv[i], "--pair-transport") == 0 && i + 1 < argc) {
+      pair_transport = QString::fromUtf8(argv[++i]);
     } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
       snapshot_path = QString::fromUtf8(argv[++i]);
     } else if (std::strcmp(argv[i], "--schema") == 0 && i + 1 < argc) {
@@ -341,7 +361,9 @@ int main(int argc, char* argv[]) {
 
   if (use_quick) {
 #ifdef NVE_QT_HAS_QUICK
-    return runQuickShell(app, dylib_path, snapshot_path, schema_version, width, height);
+    return runQuickShell(
+        app, dylib_path, pair_connect, pair_token, pair_transport, snapshot_path, schema_version,
+        width, height);
 #else
     std::cerr << "[nve-qt-shell] Error: --quick requested, but this binary was built without Qt6::Quick.\n";
     return 1;
@@ -362,7 +384,15 @@ int main(int argc, char* argv[]) {
 
   window.show();
 
-  if (!dylib_path.isEmpty()) {
+  if (!pair_connect.isEmpty()) {
+    QString err_msg;
+    if (!window.connectPaired(pair_connect, pair_token, pair_transport, 1u, &err_msg)) {
+      std::cerr << "Failed to connect paired client to '" << pair_connect.toStdString()
+                << "': " << err_msg.toStdString() << "\n";
+      return 1;
+    }
+    window.setWindowTitle(QStringLiteral("NVE Qt 6 Host Shell (Paired: %1)").arg(pair_connect));
+  } else if (!dylib_path.isEmpty()) {
     int err_code = 0;
     QString err_msg;
     if (!window.loadDylib(dylib_path, 1, &err_code, &err_msg)) {
