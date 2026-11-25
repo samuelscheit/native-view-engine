@@ -1,13 +1,10 @@
 #import "NveAppleComponentHost.h"
 
-<<<<<<< HEAD
 #import <CoreFoundation/CoreFoundation.h>
 
 #include "nve_value.hpp"
 
-=======
 #include <algorithm>
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
 #include <cmath>
 #include <memory>
 #include <unordered_map>

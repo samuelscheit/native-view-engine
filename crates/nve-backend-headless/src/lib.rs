@@ -6,23 +6,13 @@
 
 pub mod taffy_engine;
 
-<<<<<<< HEAD
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{
-    Command, CommandDecoder, ComponentKind, LayoutProps, NativeEvent, NodeId, RawPropValue,
-    StyleProps, SurfaceId, ROOT_NODE_ID,
-=======
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
-
-use nve_abi::{
-    ColorRgba, Command, CommandDecoder, ComponentKind, Dimension, FlexAlign, FlexDirection,
-    FlexJustify, LayoutProps, NativeEvent, NodeId, RawPropValue, StyleProps, SurfaceId,
-    ROOT_NODE_ID,
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
+    ColorRgba, Command, CommandDecoder, ComponentKind, Dimension, LayoutProps, NativeEvent, NodeId,
+    RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
 };
 use nve_engine::{
     BackendApplyStats, BackendError, HeuristicTextMeasurer, LayoutEngine, LayoutRect,
@@ -325,14 +315,9 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                 kind,
                 custom_name,
                 text: None,
-<<<<<<< HEAD
                 layout: default_layout,
                 style: default_style,
-=======
-                layout: LayoutProps::default(),
-                style: StyleProps::default(),
                 has_explicit_style: false,
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
                 raw_props: HashMap::new(),
                 event_mask: 0,
                 parent: None,
@@ -340,86 +325,6 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                 computed_rect: LayoutRect::default(),
             },
         );
-    }
-
-<<<<<<< HEAD
-    fn run_layout_and_diff(&mut self, mutations: &mut Vec<HeadlessMutation>) -> (u64, u64) {
-        let t_layout = Instant::now();
-        self.layout.compute_layout(ROOT_NODE_ID, self.viewport);
-=======
-    fn available_wrap_width(&self, id: NodeId) -> f32 {
-        let mut cur = self.nodes.get(&id).and_then(|n| n.parent);
-        let mut hops = 0usize;
-        while let Some(pid) = cur {
-            if hops > MAX_TREE_DEPTH {
-                break;
-            }
-            hops += 1;
-            let Some(pnode) = self.nodes.get(&pid) else {
-                break;
-            };
-            let pad_h = (pnode.layout.padding.left + pnode.layout.padding.right).max(0.0);
-            match pnode.layout.width {
-                Dimension::Points(w) if w > 0.0 => return (w - pad_h).max(1.0),
-                Dimension::Percent(pct) if pct > 0.0 => {
-                    return (self.viewport.width * (pct / 100.0) - pad_h).max(1.0);
-                }
-                _ => cur = pnode.parent,
-            }
-        }
-        self.viewport.width.max(1.0)
-    }
-
-    fn sync_taffy_style(&mut self, id: NodeId) {
-        let Some(node) = self.nodes.get(&id) else {
-            return;
-        };
-        let Some(&tid) = self.taffy_ids.get(&id) else {
-            return;
-        };
-        let mut style = to_taffy_style(&node.layout);
-        if id == ROOT_NODE_ID {
-            style.size = tf::Size {
-                width: tf::Dimension::length(self.viewport.width),
-                height: tf::Dimension::length(self.viewport.height),
-            };
-        } else if node.kind == ComponentKind::Text && node.children.is_empty() {
-            // Deterministic intrinsic text sizing with multi-line wrapping estimate.
-            if let Some(text) = &node.text {
-                let font_size = if node.style.font_size > 0.0 {
-                    node.style.font_size
-                } else {
-                    16.0
-                };
-                let char_w = font_size * 0.58;
-                let line_h = font_size * 1.35;
-                let unwrapped_w = if text.is_empty() {
-                    0.0
-                } else {
-                    (text.chars().count() as f32 * char_w).max(1.0)
-                };
-                let max_w = match node.layout.width {
-                    Dimension::Points(w) if w > 0.0 => w,
-                    Dimension::Percent(p) if p > 0.0 => (self.viewport.width * (p / 100.0)).max(1.0),
-                    _ => self.available_wrap_width(id),
-                };
-                let eff_w = unwrapped_w.min(max_w);
-                if matches!(node.layout.width, Dimension::Auto) {
-                    style.size.width = tf::Dimension::length(eff_w);
-                }
-                if matches!(node.layout.height, Dimension::Auto) {
-                    let lines = if eff_w > 0.0 && unwrapped_w > eff_w {
-                        (unwrapped_w / eff_w).ceil()
-                    } else if text.is_empty() {
-                        0.0
-                    } else {
-                        1.0
-                    };
-                    style.size.height = tf::Dimension::length(lines * line_h);
-                }
-            }
-        }
-        let _ = self.taffy.set_style(tid, style);
     }
 
     fn propagate_text_styles(&mut self) {
@@ -436,7 +341,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             font_size: 16.0,
             has_inherited: false,
         }];
-        let mut resync_ids = Vec::new();
+        let mut resync_styles: Vec<(NodeId, StyleProps)> = Vec::new();
 
         while let Some(frame) = stack.pop() {
             if !visited.insert(frame.id) {
@@ -466,7 +371,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                     {
                         node.style.text_color = target_color;
                         node.style.font_size = target_font;
-                        resync_ids.push(frame.id);
+                        resync_styles.push((frame.id, node.style));
                     }
                 }
                 next_color = node.style.text_color;
@@ -485,42 +390,20 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             }
         }
 
-        for id in resync_ids {
-            self.sync_taffy_style(id);
+        for (id, style) in resync_styles {
+            self.layout.set_style(id, &style);
         }
     }
 
     fn run_layout_and_diff(&mut self, mutations: &mut Vec<HeadlessMutation>) -> (u64, u64) {
         let t_layout = Instant::now();
         self.propagate_text_styles();
-        // Re-sync leaf text nodes in case ancestor widths or viewport changed.
-        let leaf_text_ids: Vec<NodeId> = self
-            .nodes
-            .values()
-            .filter(|n| n.kind == ComponentKind::Text && n.children.is_empty() && n.text.is_some())
-            .map(|n| n.id)
-            .collect();
-        for tid in leaf_text_ids {
-            self.sync_taffy_style(tid);
-        }
-        self.sync_taffy_style(ROOT_NODE_ID);
-        if let Some(&root_tid) = self.taffy_ids.get(&ROOT_NODE_ID) {
-            let avail = tf::Size {
-                width: tf::AvailableSpace::Definite(self.viewport.width),
-                height: tf::AvailableSpace::Definite(self.viewport.height),
-            };
-            let _ = self.taffy.compute_layout(root_tid, avail);
-        }
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
+        self.layout.compute_layout(ROOT_NODE_ID, self.viewport);
         let layout_us = t_layout.elapsed().as_micros() as u64;
 
         let t_diff = Instant::now();
         let mut new_rects = HashMap::with_capacity(self.nodes.len());
-<<<<<<< HEAD
-        self.collect_rects(ROOT_NODE_ID, &mut new_rects);
-=======
-        self.collect_rects(ROOT_NODE_ID, 0.0, 0.0, 0, &mut new_rects);
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
+        self.collect_rects(ROOT_NODE_ID, 0, &mut new_rects);
         for (&id, &rect) in &new_rects {
             if let Some(node) = self.nodes.get_mut(&id) {
                 node.computed_rect = rect;
@@ -534,33 +417,17 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         (layout_us, diff_us)
     }
 
-<<<<<<< HEAD
-    fn collect_rects(&self, id: NodeId, out: &mut HashMap<NodeId, LayoutRect>) {
-        let Some(rect) = self.layout.layout_of(id) else {
-=======
-    fn collect_rects(
-        &self,
-        id: NodeId,
-        origin_x: f32,
-        origin_y: f32,
-        depth: usize,
-        out: &mut HashMap<NodeId, LayoutRect>,
-    ) {
+    fn collect_rects(&self, id: NodeId, depth: usize, out: &mut HashMap<NodeId, LayoutRect>) {
         if depth > MAX_TREE_DEPTH {
             return;
         }
-        let Some(&tid) = self.taffy_ids.get(&id) else {
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
+        let Some(rect) = self.layout.layout_of(id) else {
             return;
         };
         out.insert(id, rect);
         if let Some(node) = self.nodes.get(&id) {
             for &child in &node.children {
-<<<<<<< HEAD
-                self.collect_rects(child, out);
-=======
-                self.collect_rects(child, rect.x, rect.y, depth + 1, out);
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
+                self.collect_rects(child, depth + 1, out);
             }
         }
     }
@@ -597,17 +464,15 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                     mutations.push(HeadlessMutation::Create(node_id, kind));
                 }
                 Command::RemoveNode { node_id } => {
-<<<<<<< HEAD
-                    self.nodes.remove(&node_id);
-                    self.layout.remove_node(node_id);
-=======
                     if node_id == ROOT_NODE_ID {
                         return Err(BackendError::InvalidNode(node_id));
                     }
+                    let mut parent_to_resync: Option<(NodeId, Vec<NodeId>)> = None;
                     if let Some(removed) = self.nodes.remove(&node_id) {
                         if let Some(pid) = removed.parent {
                             if let Some(pnode) = self.nodes.get_mut(&pid) {
                                 pnode.children.retain(|&c| c != node_id);
+                                parent_to_resync = Some((pid, pnode.children.clone()));
                             }
                         }
                         for cid in removed.children {
@@ -618,10 +483,10 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                             }
                         }
                     }
-                    if let Some(tid) = self.taffy_ids.remove(&node_id) {
-                        let _ = self.taffy.remove(tid);
+                    if let Some((pid, updated_children)) = parent_to_resync {
+                        self.layout.set_children(pid, &updated_children);
                     }
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
+                    self.layout.remove_node(node_id);
                     self.prev_rects.remove(&node_id);
                     mutations.push(HeadlessMutation::Remove(node_id));
                 }
@@ -687,29 +552,12 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                         parent.children = children.clone();
                     }
                     for prev_pid in prev_parents_to_resync {
-                        if let (Some(&ptid), Some(pnode)) =
-                            (self.taffy_ids.get(&prev_pid), self.nodes.get(&prev_pid))
-                        {
-                            let ctids: Vec<tf::NodeId> = pnode
-                                .children
-                                .iter()
-                                .filter_map(|c| self.taffy_ids.get(c).copied())
-                                .collect();
-                            let _ = self.taffy.set_children(ptid, &ctids);
+                        if let Some(pnode) = self.nodes.get(&prev_pid) {
+                            let updated = pnode.children.clone();
+                            self.layout.set_children(prev_pid, &updated);
                         }
                     }
-<<<<<<< HEAD
                     self.layout.set_children(parent_id, &children);
-=======
-                    if let Some(&parent_tid) = self.taffy_ids.get(&parent_id) {
-                        let child_tids: Vec<tf::NodeId> = children
-                            .iter()
-                            .filter_map(|cid| self.taffy_ids.get(cid).copied())
-                            .collect();
-                        let _ = self.taffy.set_children(parent_tid, &child_tids);
-                    }
-                    self.sync_taffy_style(parent_id);
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
                 }
                 Command::SetText { node_id, text } => {
                     if let Some(node) = self.nodes.get_mut(&node_id) {
@@ -985,7 +833,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn supports_monomorphized_custom_layout_engine_and_live_swap() {
         let frame = build_sample_frame();
         let viewport = Viewport {
@@ -1052,7 +899,54 @@ mod tests {
 
     #[test]
     fn custom_text_measurer_propagates_into_taffy_and_survives_swap() {
-=======
+        let mut backend = HeadlessBackend::new();
+        backend.set_viewport(
+            1,
+            Viewport {
+                width: 300.0,
+                height: 400.0,
+                scale_factor: 1.0,
+            },
+        );
+        // Custom measurer returning fixed 123x45 for any non-empty text.
+        backend.set_text_measurer(Arc::new(|text: &str, _fs: f32, _mw: Option<f32>| {
+            if text.is_empty() {
+                (0.0, 0.0)
+            } else {
+                (123.0, 45.0)
+            }
+        }));
+
+        let mut b = CommandBufferBuilder::new(1, 1);
+        b.create_node(2, ComponentKind::View, None);
+        b.set_layout(
+            2,
+            &LayoutProps {
+                width: Dimension::Points(260.0),
+                flex_direction: FlexDirection::Column,
+                align_items: FlexAlign::FlexStart,
+                ..Default::default()
+            },
+        );
+        b.create_node(3, ComponentKind::Text, None);
+        b.set_text(3, "Measured");
+        b.set_children(2, &[3]);
+        b.set_children(ROOT_NODE_ID, &[2]);
+        b.commit(true);
+
+        backend.submit_frame(b.finish()).unwrap();
+        let rect = backend.layout_of(3).unwrap();
+        assert_eq!(rect.width, 123.0);
+        assert_eq!(rect.height, 45.0);
+
+        // Swapping engines preserves the custom TextMeasurer!
+        let swapped = backend.swap_layout_engine(BandStackLayout::new(40.0));
+        let swapped_text_rect = swapped.layout_of(3).unwrap();
+        assert_eq!(swapped_text_rect.width, 123.0);
+        assert_eq!(swapped_text_rect.height, 45.0);
+    }
+
+    #[test]
     fn rejects_cycles_duplicates_and_non_finite_scalars() {
         let mut backend = HeadlessBackend::new();
 
@@ -1095,66 +989,26 @@ mod tests {
 
     #[test]
     fn inherits_text_styles_and_wraps_multiline_text() {
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
         let mut backend = HeadlessBackend::new();
         backend.set_viewport(
             1,
             Viewport {
-<<<<<<< HEAD
-                width: 300.0,
-                height: 400.0,
-                scale_factor: 1.0,
-            },
-        );
-        // Custom measurer returning fixed 123x45 for any non-empty text.
-        backend.set_text_measurer(Arc::new(|text: &str, _fs: f32, _mw: Option<f32>| {
-            if text.is_empty() {
-                (0.0, 0.0)
-            } else {
-                (123.0, 45.0)
-            }
-        }));
-=======
                 width: 400.0,
                 height: 600.0,
                 scale_factor: 2.0,
             },
         );
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
 
         let mut b = CommandBufferBuilder::new(1, 1);
         b.create_node(2, ComponentKind::View, None);
         b.set_layout(
             2,
             &LayoutProps {
-<<<<<<< HEAD
-                width: Dimension::Points(260.0),
-                flex_direction: FlexDirection::Column,
-                align_items: FlexAlign::FlexStart,
-=======
                 width: Dimension::Points(100.0),
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
                 ..Default::default()
             },
         );
         b.create_node(3, ComponentKind::Text, None);
-<<<<<<< HEAD
-        b.set_text(3, "Measured");
-        b.set_children(2, &[3]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-
-        backend.submit_frame(b.finish()).unwrap();
-        let rect = backend.layout_of(3).unwrap();
-        assert_eq!(rect.width, 123.0);
-        assert_eq!(rect.height, 45.0);
-
-        // Swapping engines preserves the custom TextMeasurer!
-        let swapped = backend.swap_layout_engine(BandStackLayout::new(40.0));
-        let swapped_text_rect = swapped.layout_of(3).unwrap();
-        assert_eq!(swapped_text_rect.width, 123.0);
-        assert_eq!(swapped_text_rect.height, 45.0);
-=======
         b.set_style(
             3,
             &StyleProps {
@@ -1177,6 +1031,5 @@ mod tests {
         // Wrapped in a 100pt box at 20pt font -> multiple lines (height > 2 * 27pt)
         assert!(leaf.computed_rect.width <= 100.5);
         assert!(leaf.computed_rect.height > 54.0);
->>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
     }
 }
