@@ -72,6 +72,7 @@ pub(super) fn rust_c_abi_pod_type(ty: &HybridType) -> String {
         HybridType::F64 => "f64".to_string(),
         HybridType::Enum(_) => "u32".to_string(),
         HybridType::Struct(name) => name.clone(),
+        HybridType::FixedArray { elem, len } => format!("[{}; {len}]", rust_c_abi_pod_type(elem)),
         _ => unreachable!("non-POD type passed to rust_c_abi_pod_type"),
     }
 }

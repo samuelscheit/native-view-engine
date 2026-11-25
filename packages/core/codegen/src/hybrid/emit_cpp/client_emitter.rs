@@ -33,6 +33,13 @@ pub(super) fn emit_cpp_struct(out: &mut String, s: &HybridStructSpec, spec: &Hyb
                 HybridType::Struct(_) => {
                     writeln!(out, "    raw.{cname} = {fname}.to_abi();").unwrap();
                 }
+                HybridType::FixedArray { .. } => {
+                    writeln!(
+                        out,
+                        "    std::memcpy(raw.{cname}, {fname}.data(), sizeof(raw.{cname}));"
+                    )
+                    .unwrap();
+                }
                 _ => {
                     writeln!(out, "    raw.{cname} = {fname};").unwrap();
                 }
@@ -53,6 +60,13 @@ pub(super) fn emit_cpp_struct(out: &mut String, s: &HybridStructSpec, spec: &Hyb
                 }
                 HybridType::Struct(st) => {
                     writeln!(out, "    out.{fname} = {st}::from_abi(raw.{cname});").unwrap();
+                }
+                HybridType::FixedArray { .. } => {
+                    writeln!(
+                        out,
+                        "    std::memcpy(out.{fname}.data(), raw.{cname}, sizeof(raw.{cname}));"
+                    )
+                    .unwrap();
                 }
                 _ => {
                     writeln!(out, "    out.{fname} = raw.{cname};").unwrap();

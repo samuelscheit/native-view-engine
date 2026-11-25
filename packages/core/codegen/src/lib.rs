@@ -31,6 +31,7 @@ pub mod ir;
 pub mod lexer;
 pub mod naming;
 pub mod parser;
+pub mod reloc;
 pub mod wire_codecs;
 
 use std::path::Path;
@@ -65,6 +66,12 @@ pub use ir::{
     TurboModuleMethod, TurboModuleSpec,
 };
 pub use parser::{parse_rn_spec, parse_rn_spec_file};
+pub use reloc::{
+    generate_reloc_all, generate_reloc_cpp, generate_reloc_rust, FieldLayout, RelocEnum,
+    RelocEnumRepr, RelocEnumVariant, RelocField, RelocSchema, RelocStruct, RelocType,
+    StructLayout, RELOC_HEADER_ALIGN, RELOC_HEADER_SIZE, RELOC_MAX_VERIFY_DEPTH,
+    RELOC_SLICE_ALIGN, RELOC_SLICE_SIZE,
+};
 pub use wire_codecs::{
     fnv1a64, fnv1a64_pair, fnv1a64_update, generate_all_wire_codec_files,
     generate_cpp_wire_codecs, generate_dart_wire_codecs, generate_java_wire_codecs,

@@ -73,6 +73,52 @@ pub(super) fn c_pod_type(ty: &HybridType) -> String {
     }
 }
 
+pub(super) fn c_abi_field_decl(ty: &HybridType, fname: &str) -> String {
+    match ty {
+        HybridType::FixedArray { elem, len } => format!("{} {fname}[{len}]", c_pod_type(elem)),
+        HybridType::ConstPtr(inner) => match inner.as_ref() {
+            HybridType::Void => format!("const void* {fname}"),
+            HybridType::Struct(name) => format!("const struct NveHybrid{name}* {fname}"),
+            other => format!("const {}* {fname}", c_pod_type(other)),
+        },
+        HybridType::MutPtr(inner) => match inner.as_ref() {
+            HybridType::Void => format!("void* {fname}"),
+            HybridType::Struct(name) => format!("struct NveHybrid{name}* {fname}"),
+            other => format!("{}* {fname}", c_pod_type(other)),
+        },
+        other => format!("{} {fname}", c_pod_type(other)),
+    }
+}
+
+pub(super) fn is_c_abi_struct(s: &HybridStructSpec, spec: &HybridFileSpec) -> bool {
+    if s.is_union || s.fields.is_empty() {
+        return false;
+    }
+    s.fields.iter().all(|f| match &f.ty {
+        HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
+            matches!(inner.as_ref(), HybridType::Void) || inner.is_pod(spec)
+        }
+        other => other.is_pod(spec),
+    })
+}
+
+pub(super) fn c_fn_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    match ty {
+        HybridType::Void => "void".to_string(),
+        HybridType::ConstPtr(inner) => match inner.as_ref() {
+            HybridType::Void => "const void*".to_string(),
+            HybridType::Struct(name) => format!("const NveHybrid{name}*"),
+            other => format!("const {}*", c_pod_type(other)),
+        },
+        HybridType::MutPtr(inner) => match inner.as_ref() {
+            HybridType::Void => "void*".to_string(),
+            HybridType::Struct(name) => format!("NveHybrid{name}*"),
+            other => format!("{}*", c_pod_type(other)),
+        },
+        other => c_param_type(other, spec),
+    }
+}
+
 pub(super) fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool
