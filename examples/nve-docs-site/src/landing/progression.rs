@@ -80,11 +80,11 @@ pub fn DevAndBenchProgression() -> Element {
     let state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     drop(snap);
 
-    let cols = if is_mobile { 1 } else { 4 };
-    let milestone_rows: Vec<&[WaveMilestone]> = WAVE_MILESTONES.chunks(cols).collect();
+    let milestone_rows: Vec<&[WaveMilestone]> = WAVE_MILESTONES.chunks(4).collect();
+    let mobile_col = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
 
     rsx! {
         view {
@@ -129,6 +129,7 @@ pub fn DevAndBenchProgression() -> Element {
                 for (ridx, row) in milestone_rows.into_iter().enumerate() {
                     view {
                         key: "wave-row-{ridx}",
+                        nve_style: mobile_col.clone(),
                         style: "width: 100%; flex-direction: row; gap: 12px;",
                         for m in row {
                             view {

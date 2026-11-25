@@ -64,7 +64,6 @@ pub fn ExamplesGalleryPage() -> Element {
     let state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     let config = snap.config.clone();
     let playgrounds = snap.playgrounds.clone();
     drop(snap);
@@ -72,9 +71,16 @@ pub fn ExamplesGalleryPage() -> Element {
     let mut active_pg_id = use_signal(|| "ui-playground");
     let selected_id = active_pg_id();
 
-    let outer_pad_h = if is_mobile { "16px" } else { "32px" };
-    let row_dir = if is_mobile { "column" } else { "row" };
-    let h1_size = if is_mobile { "30px" } else { "40px" };
+    let outer_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new().padding_xy(16.0, 40.0),
+    );
+    let mobile_col = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+    let h1_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new().font_size(30.0),
+    );
 
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
     let counter_href = resolve_example_app_href(&config.base_path, "/examples/counter");
@@ -92,7 +98,8 @@ pub fn ExamplesGalleryPage() -> Element {
             style: "width: 100%; flex-direction: column; align-items: center; background-color: {theme.canvas}; color: {theme.text};",
 
             view {
-                style: "width: 100%; max-width: 1180px; flex-direction: column; padding-horizontal: {outer_pad_h}; padding-vertical: 40px; gap: 44px;",
+                nve_style: outer_resp,
+                style: "width: 100%; max-width: 1180px; flex-direction: column; padding-horizontal: 32px; padding-vertical: 40px; gap: 44px;",
 
                 // Gallery Header
                 view {
@@ -108,7 +115,8 @@ pub fn ExamplesGalleryPage() -> Element {
                         accessibility_role: "heading",
                         "aria-level": "1",
                         text {
-                            style: "font-size: {h1_size}; font-weight: 800; color: {theme.text};",
+                            nve_style: h1_resp,
+                            style: "font-size: 40px; font-weight: 800; color: {theme.text};",
                             "Interactive Examples & Live Playgrounds"
                         }
                     }
@@ -132,7 +140,8 @@ pub fn ExamplesGalleryPage() -> Element {
                     }
 
                     view {
-                        style: "width: 100%; flex-direction: {row_dir}; gap: 18px;",
+                        nve_style: mobile_col,
+                        style: "width: 100%; flex-direction: row; gap: 18px;",
 
                         // Studio App Card
                         view {

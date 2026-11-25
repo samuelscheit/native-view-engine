@@ -37,9 +37,12 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
     let base_path = snap.config.base_path.clone();
     drop(snap);
 
+    let desktop_show_on = (!mobile_overlay).then(|| ShowOn(MediaQuery::min_width(960)));
+
     let panel = rsx! {
         view {
             test_id: if mobile_overlay { "docs-sidebar-drawer" } else { "docs-sidebar-desktop" },
+            nve_show_on: desktop_show_on,
             accessibility_role: "navigation",
             accessibility_label: "Documentation sidebar",
             style: "width: 260px; height: 100%; flex-shrink: 0; flex-direction: column; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
@@ -117,6 +120,7 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
         rsx! {
             view {
                 test_id: "docs-sidebar-overlay",
+                nve_show_on: ShowOn(MediaQuery::max_width(959)),
                 style: "width: 100%; height: 100%; flex-direction: row; z-index: 400; background-color: rgba(0, 0, 0, 0.55);",
                 {panel}
                 pressable {

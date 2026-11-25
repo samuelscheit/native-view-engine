@@ -75,11 +75,16 @@ pub fn BenchmarkProgressionDashboard() -> Element {
     let view_toggle_label = if is_table { "Chart view" } else { "Table view" };
     let line_canvas_w: f32 = if is_mobile { 260.0 } else { 446.0 };
     let line_canvas_h: f32 = 148.0;
-    let cols_per_row = if is_mobile { 1 } else { 2 };
     let series_rows: Vec<Vec<&ProgressionSeries>> = filtered_series
-        .chunks(cols_per_row)
+        .chunks(2)
         .map(|c| c.to_vec())
         .collect();
+    let mobile_col = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+    let bar_canvas_resp = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().width_px(270.0));
+    let line_canvas_resp = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().width_px(260.0));
 
     rsx! {
         view {
@@ -220,6 +225,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             }
                             canvas {
                                 test_id: "bench-latest-canvas",
+                                nve_style: bar_canvas_resp.clone(),
                                 accessibility_label: "Latest verified NVE benchmark latency bar chart",
                                 draw_list: "{bar_draw_list}",
                                 style: "width: {bar_canvas_w}px; max-width: 100%; flex-grow: 1; height: {bar_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",
@@ -272,6 +278,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                 for (ridx, row) in series_rows.into_iter().enumerate() {
                     view {
                         key: "prog-row-{ridx}",
+                        nve_style: mobile_col.clone(),
                         style: "width: 100%; flex-direction: row; gap: 16px;",
                         for series in row {
                             {
@@ -333,6 +340,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                             }
                                             canvas {
                                                 test_id: "bench-canvas-{series.id}",
+                                                nve_style: line_canvas_resp.clone(),
                                                 accessibility_label: "{series.title} progression chart",
                                                 draw_list: "{draw_list}",
                                                 style: "width: {line_canvas_w}px; max-width: 100%; flex-grow: 1; height: {line_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",

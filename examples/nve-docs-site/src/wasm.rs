@@ -46,6 +46,10 @@ impl DocsWebSession {
         self.backend
             .submit_frame(&bytes)
             .map_err(|e| format!("WebBackend submit_frame failed: {e}"))?;
+        self.backend.sync_responsive_from(
+            self.surface.iter_show_on(),
+            self.surface.iter_responsive_rules(),
+        );
         Ok(())
     }
 
@@ -232,6 +236,19 @@ impl DocsWebController {
     }
 
     #[wasm_bindgen(getter)]
+    pub fn replayed_events(&self) -> usize {
+        self.session.borrow().hydration_report.replayed_events
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn reconciled_dirty_controls(&self) -> usize {
+        self.session
+            .borrow()
+            .hydration_report
+            .reconciled_dirty_controls
+    }
+
+    #[wasm_bindgen(getter)]
     pub fn current_route(&self) -> String {
         self.session.borrow().last_route.clone()
     }
@@ -359,13 +376,6 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         .ok_or_else(|| JsValue::from_str(&format!("container '#{container_id}' not found")))?;
 
     let actual_vp = measure_browser_viewport(&window, &container);
-    // SSR HTML is emitted at desktop default; hydrate Frame 0 with desktop breakpoint so
-    // node adoption is 100% lossless (0 mismatches), then adapt immediately on mobile/tablet.
-    let initial_vp = if actual_vp.mode_label() == "desktop" {
-        actual_vp
-    } else {
-        DocsViewport::desktop_default()
-    };
 
     let history_backend = BrowserHistoryBackend::new()
         .map_err(|e| JsValue::from_str(&format!("BrowserHistoryBackend failed: {e}")))?;
@@ -378,8 +388,8 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
     backend.set_viewport(
         DOCS_SURFACE_ID,
         Viewport {
-            width: initial_vp.width,
-            height: initial_vp.height,
+            width: actual_vp.width,
+            height: actual_vp.height,
             scale_factor: device_pixel_ratio(),
         },
     );
@@ -389,7 +399,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         embedded_compiled_site(),
         initial_route.as_str(),
         base_path,
-        initial_vp,
+        actual_vp,
         true,
     );
 
@@ -399,7 +409,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         backend,
         history,
         frame_id: 0,
-        viewport: initial_vp,
+        viewport: actual_vp,
         dark_mode: true,
         last_route: initial_route.as_str().to_string(),
         hydration_report: HydrationReport::default(),
@@ -418,7 +428,8 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
             }
         });
 
-    // Execute Frame 0 zero-flicker hydration.
+    // Execute Frame 0 zero-CLS, zero-rebuild hydration directly at `actual_vp`, then immediately
+    // pump any pre-hydration events drained atomically from `window.__nveReplayDrain()`.
     {
         let mut guard = session.borrow_mut();
         guard
@@ -426,14 +437,9 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
             .map_err(|e| JsValue::from_str(&e))?;
         guard.hydration_report = guard.backend.hydration_report().clone();
         guard.sync_browser_chrome(false);
-
-        // If browser is currently tablet/mobile, switch responsively right after lossless Frame 0 adoption.
-        if actual_vp.mode_label() != initial_vp.mode_label() {
-            let route = guard.last_route.clone();
-            guard
-                .rebuild_for_route_and_viewport(&route, actual_vp)
-                .map_err(|e| JsValue::from_str(&e))?;
-        }
+        guard
+            .pump_events()
+            .map_err(|e| JsValue::from_str(&e))?;
     }
 
     // Intercept same-origin internal `<a href>` clicks so Dioxus navigates via pushState without full reload.
@@ -507,7 +513,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         });
     }
 
-    // Register responsive viewport resize handler.
+    // Register responsive viewport resize handler (CSS `@media` adapts layout with zero rebuilds).
     let session_resize = Rc::clone(&session);
     let container_resize = container.clone();
     let resize_listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
@@ -515,13 +521,16 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
             && let Ok(mut s) = session_resize.try_borrow_mut()
         {
             let next_vp = measure_browser_viewport(&win, &container_resize);
-            if next_vp.mode_label() != s.viewport.mode_label() {
-                let route = s.last_route.clone();
-                if let Err(err) = s.rebuild_for_route_and_viewport(&route, next_vp) {
-                    web_sys::console::error_1(&JsValue::from_str(&format!(
-                        "[nve-docs-site resize] {err}"
-                    )));
-                }
+            if next_vp != s.viewport {
+                s.viewport = next_vp;
+                s.backend.set_viewport(
+                    DOCS_SURFACE_ID,
+                    Viewport {
+                        width: next_vp.width,
+                        height: next_vp.height,
+                        scale_factor: device_pixel_ratio(),
+                    },
+                );
             }
         }
     });

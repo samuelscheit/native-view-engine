@@ -596,9 +596,9 @@ async function run() {
     cdp.close();
 
     // -----------------------------------------------------------------------
-    // 3. MOBILE RESPONSIVE CHECK (390x844) ON LANDING + DRAWER -> DOCS
+    // 3. MOBILE RESPONSIVE CHECK (390x844) ON LANDING + WAVE C2B ZERO-CLS / REPLAY / SPA ON BENCHMARKS
     // -----------------------------------------------------------------------
-    console.log("==> [3/5] Verifying mobile 390×844 Landing layout & drawer navigation...");
+    console.log("==> [3/5] Verifying mobile 390×844 Landing, zero-flicker /docs/reference/benchmarks, CLS===0, throttled-WASM replay & SPA nav...");
     const { cdp: mobCdp } = await createPageCdp(chrome.debugPort);
     await mobCdp.setViewport(390, 844, true, 2);
     await mobCdp.navigate(`${origin}/`);
@@ -607,13 +607,16 @@ async function run() {
       10000,
       "mobile landing hydration & responsive switch"
     );
-    const mobInfo = await mobCdp.eval(`({
-      hasMenuToggle: !!document.querySelector('[testid="docs-mobile-menu-toggle"]'),
-      hasLanding: !!document.querySelector('[testid="landing-page"]'),
-      mismatches: window.__NVE_DOCS__.mismatches,
-      overflowX: document.documentElement.scrollWidth - window.innerWidth,
-    })`);
-    assert(mobInfo.hasMenuToggle, "Mobile missing hamburger Menu toggle");
+    const mobInfo = await mobCdp.eval(`(() => {
+      const toggle = document.querySelector('[testid="docs-mobile-menu-toggle"]');
+      return {
+        hasMenuToggle: !!toggle && getComputedStyle(toggle).display !== "none",
+        hasLanding: !!document.querySelector('[testid="landing-page"]'),
+        mismatches: window.__NVE_DOCS__.mismatches,
+        overflowX: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    })()`);
+    assert(mobInfo.hasMenuToggle, "Mobile missing visible hamburger Menu toggle");
     assert(mobInfo.hasLanding, "Mobile missing landing page");
     assert(mobInfo.mismatches === 0, `Mobile hydration mismatches: ${mobInfo.mismatches}`);
     assert(mobInfo.overflowX <= 2, `Mobile horizontal overflow: ${mobInfo.overflowX}px`);
@@ -625,6 +628,193 @@ async function run() {
     assert(mobCdp.pageErrors.length === 0, `Mobile page errors: ${mobCdp.pageErrors.join(" | ")}`);
     mobCdp.close();
     console.log("    ✓ Mobile 390×844 Landing + drawer verified (landing-mobile.png captured)");
+
+    // 3b. Mobile (390×844) /docs/reference/benchmarks with JS DISABLED
+    const { cdp: mobNoJs } = await createPageCdp(chrome.debugPort);
+    await mobNoJs.setViewport(390, 844, true, 2);
+    await mobNoJs.send("Emulation.setScriptExecutionDisabled", { value: true });
+    await mobNoJs.navigate(`${origin}/docs/reference/benchmarks/`);
+    const noJsBench = await mobNoJs.eval(`(() => {
+      const sidebar = document.querySelector('[testid="docs-sidebar-desktop"]');
+      const toc = document.querySelector('[testid="docs-toc"]');
+      const toggle = document.querySelector('[testid="docs-mobile-menu-toggle"]');
+      return {
+        sidebarDisplay: sidebar ? getComputedStyle(sidebar).display : "missing",
+        sidebarWidth: sidebar ? sidebar.getBoundingClientRect().width : -1,
+        tocDisplay: toc ? getComputedStyle(toc).display : "missing",
+        tocWidth: toc ? toc.getBoundingClientRect().width : -1,
+        toggleDisplay: toggle ? getComputedStyle(toggle).display : "missing",
+        toggleWidth: toggle ? toggle.getBoundingClientRect().width : -1,
+        scrollWidth: document.documentElement.scrollWidth,
+        hydrated: !!window.__NVE_DOCS__,
+      };
+    })()`);
+    assert(noJsBench.sidebarDisplay === "none" && noJsBench.sidebarWidth === 0, `Mobile JS-off sidebar must be hidden: ${JSON.stringify(noJsBench)}`);
+    assert(noJsBench.tocDisplay === "none" && noJsBench.tocWidth === 0, `Mobile JS-off TOC must be hidden: ${JSON.stringify(noJsBench)}`);
+    assert(noJsBench.toggleDisplay !== "none" && noJsBench.toggleWidth > 0, `Mobile JS-off menu toggle must be visible: ${JSON.stringify(noJsBench)}`);
+    assert(noJsBench.scrollWidth <= 390, `Mobile JS-off scrollWidth ${noJsBench.scrollWidth} > 390`);
+    assert(!noJsBench.hydrated, "Mobile JS-off must not hydrate");
+    await mobNoJs.capturePng(path.join(shotsDir, "mobile-benchmarks-nojs.png"));
+    mobNoJs.close();
+    console.log(
+      `    ✓ Mobile JS-off /docs/reference/benchmarks: sidebar=none(0px), toc=none(0px), menuToggle=${Math.round(noJsBench.toggleWidth)}px, scrollWidth=${noJsBench.scrollWidth}px`
+    );
+
+    // 3c. Mobile (390×844) /docs/reference/benchmarks live hydration + CLS === 0
+    const { cdp: mobHyd } = await createPageCdp(chrome.debugPort);
+    await mobHyd.setViewport(390, 844, true, 2);
+    await mobHyd.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `
+        window.__NVE_CLS__ = 0;
+        window.__NVE_HYDRATED_DETAIL__ = null;
+        try {
+          new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              if (!entry.hadRecentInput) window.__NVE_CLS__ += entry.value;
+            }
+          }).observe({ type: "layout-shift", buffered: true });
+        } catch (_) {}
+        window.addEventListener("nve:docs-hydrated", (ev) => {
+          window.__NVE_HYDRATED_DETAIL__ = ev.detail;
+        });
+      `,
+    });
+    await mobHyd.navigate(`${origin}/docs/reference/benchmarks/`);
+    await mobHyd.waitFor(`!!window.__NVE_HYDRATED_DETAIL__ || !!window.__NVE_DOCS_ERROR__`, 12000, "mobile benchmarks hydration");
+    await mobHyd.eval(`new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+    const mobHydInfo = await mobHyd.eval(`(() => {
+      if (window.__NVE_DOCS_ERROR__) return { error: window.__NVE_DOCS_ERROR__ };
+      const c = window.__NVE_DOCS__;
+      return {
+        cls: window.__NVE_CLS__,
+        detail: window.__NVE_HYDRATED_DETAIL__,
+        adopted: c.adopted_nodes,
+        mismatches: c.mismatches,
+        replaced: c.replaced_nodes,
+        replayed: c.replayed_events,
+        reconciled: c.reconciled_dirty_controls,
+        scrollWidth: document.documentElement.scrollWidth,
+      };
+    })()`);
+    assert(!mobHydInfo.error, `Mobile benchmarks hydration error: ${mobHydInfo.error}`);
+    assert(mobHydInfo.cls < 0.001, `Mobile benchmarks CLS too high: ${mobHydInfo.cls}`);
+    assert(mobHydInfo.mismatches === 0, `Mobile benchmarks mismatches=${mobHydInfo.mismatches}`);
+    assert(mobHydInfo.replaced === 0, `Mobile benchmarks replaced=${mobHydInfo.replaced}`);
+    assert(mobHydInfo.adopted > 50, `Mobile benchmarks adopted=${mobHydInfo.adopted}`);
+    assert(mobHydInfo.scrollWidth <= 390, `Mobile hydrated scrollWidth=${mobHydInfo.scrollWidth}`);
+    assert(
+      typeof mobHydInfo.detail?.replayed_events === "number" &&
+      typeof mobHydInfo.detail?.reconciled_dirty_controls === "number",
+      `nve:docs-hydrated missing replay telemetry: ${JSON.stringify(mobHydInfo.detail)}`
+    );
+    await mobHyd.capturePng(path.join(shotsDir, "mobile-benchmarks-hydrated.png"));
+    assert(mobHyd.consoleErrors.length === 0, `Mobile benchmarks console errors: ${mobHyd.consoleErrors.join(" | ")}`);
+    assert(mobHyd.pageErrors.length === 0, `Mobile benchmarks page errors: ${mobHyd.pageErrors.join(" | ")}`);
+    mobHyd.close();
+    console.log(
+      `    ✓ Mobile hydrated /docs/reference/benchmarks: CLS=${mobHydInfo.cls.toFixed(6)}, adopted=${mobHydInfo.adopted}, mismatches=0, scrollWidth=${mobHydInfo.scrollWidth}px`
+    );
+
+    // 3d. Throttled-WASM Pre-Hydration Event Replay (Menu click + Cmd+K shortcut)
+    async function runThrottledReplayScenario(actionExpr, assertReadyExpr, shotName, label) {
+      const { cdp: rCdp } = await createPageCdp(chrome.debugPort);
+      await rCdp.setViewport(390, 844, true, 2);
+      const heldRequests = [];
+      let releaseResolver = null;
+      const wasmHeld = new Promise((resolve) => { releaseResolver = resolve; });
+      rCdp.ws.addEventListener("message", (ev) => {
+        const msg = JSON.parse(typeof ev.data === "string" ? ev.data : ev.data.toString());
+        if (msg.method === "Fetch.requestPaused") {
+          heldRequests.push(msg.params.requestId);
+          if (releaseResolver) {
+            releaseResolver();
+            releaseResolver = null;
+          }
+        }
+      });
+      await rCdp.send("Fetch.enable", {
+        patterns: [{ urlPattern: "*nve_docs_site.js*", requestStage: "Request" }],
+      });
+      await rCdp.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `
+          window.__NVE_HYDRATED_DETAIL__ = null;
+          window.addEventListener("nve:docs-hydrated", (ev) => {
+            window.__NVE_HYDRATED_DETAIL__ = ev.detail;
+          });
+        `,
+      });
+      await rCdp.send("Page.navigate", { url: `${origin}/docs/reference/benchmarks/` });
+      await Promise.race([
+        wasmHeld,
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`Timed out intercepting nve_docs_site.js for ${label}`)), 8000)),
+      ]);
+      await rCdp.waitFor(
+        `typeof window.__nveReplayDrain === "function" && !!document.querySelector('[testid="docs-mobile-menu-toggle"]')`,
+        8000,
+        `${label} SSR DOM & replay script ready`
+      );
+      const preHydrated = await rCdp.eval(`!!window.__NVE_DOCS__`);
+      assert(!preHydrated, `${label}: WASM must still be gated before pre-hydration interaction`);
+      await rCdp.eval(actionExpr);
+      for (const requestId of heldRequests) {
+        await rCdp.send("Fetch.continueRequest", { requestId });
+      }
+      await rCdp.send("Fetch.disable");
+      await rCdp.waitFor(`!!window.__NVE_HYDRATED_DETAIL__`, 12000, `${label} hydration after WASM release`);
+      await rCdp.waitFor(assertReadyExpr, 5000, `${label} replayed UI effect`);
+      const replayInfo = await rCdp.eval(`({
+        replayed: window.__NVE_DOCS__.replayed_events,
+        detailReplayed: window.__NVE_HYDRATED_DETAIL__?.replayed_events,
+        mismatches: window.__NVE_DOCS__.mismatches,
+      })`);
+      assert(replayInfo.replayed >= 1, `${label}: expected replayed_events >= 1, got ${replayInfo.replayed}`);
+      assert(replayInfo.detailReplayed === replayInfo.replayed, `${label}: CustomEvent replayed_events mismatch`);
+      assert(replayInfo.mismatches === 0, `${label}: mismatches=${replayInfo.mismatches}`);
+      if (shotName) {
+        await rCdp.capturePng(path.join(shotsDir, shotName));
+      }
+      assert(rCdp.consoleErrors.length === 0, `${label} console errors: ${rCdp.consoleErrors.join(" | ")}`);
+      assert(rCdp.pageErrors.length === 0, `${label} page errors: ${rCdp.pageErrors.join(" | ")}`);
+      rCdp.close();
+      return replayInfo;
+    }
+
+    const menuReplay = await runThrottledReplayScenario(
+      `document.querySelector('[testid="docs-mobile-menu-toggle"]').click()`,
+      `!!document.querySelector('[testid="docs-sidebar-drawer"]')`,
+      "mobile-drawer-replayed.png",
+      "throttled-WASM mobile Menu tap replay"
+    );
+    console.log(`    ✓ Pre-hydration Menu tap replayed upon WASM load (replayed_events=${menuReplay.replayed}, mobile-drawer-replayed.png captured)`);
+
+    const cmdKReplay = await runThrottledReplayScenario(
+      `window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`,
+      `!!document.querySelector('[testid="docs-search-dialog"]')`,
+      null,
+      "throttled-WASM Meta+K replay"
+    );
+    console.log(`    ✓ Pre-hydration Meta+K replayed upon WASM load (replayed_events=${cmdKReplay.replayed})`);
+
+    // 3e. Desktop (1440×900) /docs/reference/benchmarks screenshot + Post-hydration <a href> SPA Navigation
+    const { cdp: deskBench } = await createPageCdp(chrome.debugPort);
+    await deskBench.setViewport(1440, 900, false, 1);
+    await deskBench.navigate(`${origin}/docs/reference/benchmarks/`);
+    await deskBench.waitFor(`!!window.__NVE_DOCS__`, 12000, "desktop benchmarks hydration");
+    await deskBench.capturePng(path.join(shotsDir, "desktop-benchmarks.png"));
+    await deskBench.eval(`window.__nveSpaMarker = 42;`);
+    const beforePath = await deskBench.eval(`location.pathname`);
+    await deskBench.eval(`document.querySelector('[testid="docs-nav-getting-started-quickstart"]').click()`);
+    await deskBench.waitFor(
+      `location.pathname !== ${JSON.stringify(beforePath)} && location.pathname.includes("/getting-started/quickstart")`,
+      5000,
+      "post-hydration <a href> SPA navigation"
+    );
+    const spaMarkerAfter = await deskBench.eval(`window.__nveSpaMarker`);
+    assert(spaMarkerAfter === 42, `Post-hydration SPA click caused full page reload! marker=${spaMarkerAfter}`);
+    assert(deskBench.consoleErrors.length === 0, `Desktop benchmarks console errors: ${deskBench.consoleErrors.join(" | ")}`);
+    assert(deskBench.pageErrors.length === 0, `Desktop benchmarks page errors: ${deskBench.pageErrors.join(" | ")}`);
+    deskBench.close();
+    console.log("    ✓ Desktop /docs/reference/benchmarks captured + post-hydration <a href> SPA nav preserved window.__nveSpaMarker === 42");
 
     // -----------------------------------------------------------------------
     // 4. LIVE LAZY-LOADED WASM EXAMPLE APPS (/examples/studio/ & /examples/counter/)

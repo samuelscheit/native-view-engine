@@ -1,5 +1,6 @@
 //! Split 2-column Hero section with Live Interactive NVE Preview Card (`RSX Code` | `Live UI` | `Binary IR`).
 
+use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 use nve_mdx::highlight_code;
@@ -31,7 +32,6 @@ pub fn LandingHero() -> Element {
     let mut state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     let config = snap.config.clone();
     let cli_copied = snap.is_code_copied("landing-cli");
     drop(snap);
@@ -40,10 +40,25 @@ pub fn LandingHero() -> Element {
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
     let examples_href = config.resolve_href("/examples");
 
-    let layout_dir = if is_mobile { "column" } else { "row" };
-    let hero_pad_v = if is_mobile { "28px" } else { "56px" };
-    let h1_size = if is_mobile { "32px" } else { "44px" };
-    let sub_size = if is_mobile { "15px" } else { "17px" };
+    let hero_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new().flex_col().padding_xy(0.0, 28.0),
+    );
+    let h1_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new().font_size(32.0),
+    );
+    let sub_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new().font_size(15.0),
+    );
+    let cta_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new()
+            .width_pct(100.0)
+            .flex_col()
+            .align_items(FlexAlign::Stretch),
+    );
     let copy_label = if cli_copied { "Copied ✓" } else { "Copy" };
     let copy_fg = if cli_copied { theme.success } else { theme.muted };
     let copy_border = if cli_copied { theme.success } else { theme.border };
@@ -51,7 +66,8 @@ pub fn LandingHero() -> Element {
     rsx! {
         view {
             test_id: "landing-hero",
-            style: "width: 100%; max-width: 1180px; flex-direction: {layout_dir}; align-items: center; justify-content: space-between; gap: 36px; padding-vertical: {hero_pad_v};",
+            nve_style: hero_resp,
+            style: "width: 100%; max-width: 1180px; flex-direction: row; align-items: center; justify-content: space-between; gap: 36px; padding-vertical: 56px;",
 
             // Left column: Status pill, bold H1, concise subtitle, CTAs, copyable CLI bar
             view {
@@ -85,7 +101,8 @@ pub fn LandingHero() -> Element {
                     "aria-level": "1",
                     style: "width: 100%; flex-direction: column; gap: 4px;",
                     text {
-                        style: "font-size: {h1_size}; font-weight: 800; color: {theme.text};",
+                        nve_style: h1_resp,
+                        style: "font-size: 44px; font-weight: 800; color: {theme.text};",
                         "Native-speed UI in Rust. One binary ABI, 10 hosts."
                     }
                 }
@@ -93,18 +110,16 @@ pub fn LandingHero() -> Element {
                 // Concise subtitle
                 text {
                     test_id: "landing-hero-subtitle",
-                    style: "font-size: {sub_size}; color: {theme.muted}; line-height: 1.55;",
+                    nve_style: sub_resp,
+                    style: "font-size: 17px; color: {theme.muted}; line-height: 1.55;",
                     "Write declarative UI once with Rust rsx! and fine-grained signals. Every frame crosses the host boundary as one flat binary CommandBuffer and 64-byte cache-line NveSceneView — zero JS VM, zero JSON bridge, sub-second hot reload."
                 }
 
                 // Primary + Secondary CTAs (row on desktop, stacked on mobile for zero overflow)
                 view {
                     test_id: "landing-cta-row",
-                    style: if is_mobile {
-                        "width: 100%; flex-direction: column; align-items: stretch; gap: 10px; padding-top: 4px;"
-                    } else {
-                        "flex-direction: row; align-items: center; flex-wrap: wrap; gap: 10px; padding-top: 4px;"
-                    },
+                    nve_style: cta_resp,
+                    style: "flex-direction: row; align-items: center; flex-wrap: wrap; gap: 10px; padding-top: 4px;",
 
                     pressable {
                         test_id: "landing-cta-docs",
@@ -194,7 +209,6 @@ fn HeroInteractiveCard() -> Element {
     let state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     drop(snap);
 
     let mut active_tab = use_signal(|| "live");
@@ -207,7 +221,30 @@ fn HeroInteractiveCard() -> Element {
     let seq_val = frame_seq();
     let host_label = target_host();
 
-    let card_width = if is_mobile { "100%" } else { "540px" };
+    let card_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new().width_pct(100.0),
+    );
+    let card_header_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new()
+            .flex_col()
+            .align_items(FlexAlign::FlexStart)
+            .gap(10.0),
+    );
+    let tablist_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new()
+            .width_pct(100.0)
+            .justify_content(FlexJustify::SpaceBetween),
+    );
+    let host_row_resp = TypedStyle::new().at(
+        MediaQuery::max_width(959),
+        ResponsiveStylePatch::new()
+            .flex_col()
+            .align_items(FlexAlign::FlexStart)
+            .gap(6.0),
+    );
     let highlighted_rsx = highlight_code(Some("rust"), HERO_RSX_SAMPLE, &[]);
 
     let payload_text = format!("Count: {count_val} · {host_label}");
@@ -226,15 +263,13 @@ fn HeroInteractiveCard() -> Element {
     rsx! {
         view {
             test_id: "landing-hero-preview",
-            style: "width: {card_width}; max-width: 100%; align-self: flex-start; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border}; overflow: hidden;",
+            nve_style: card_resp,
+            style: "width: 540px; max-width: 100%; align-self: flex-start; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border}; overflow: hidden;",
 
             // Card chrome header: window dots + switchable mode tabs (stacked on mobile)
             view {
-                style: if is_mobile {
-                    "width: 100%; flex-direction: column; align-items: flex-start; gap: 10px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};"
-                } else {
-                    "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 8px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};"
-                },
+                nve_style: card_header_resp,
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 8px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
 
                 view {
                     style: "flex-direction: row; align-items: center; gap: 6px;",
@@ -250,11 +285,8 @@ fn HeroInteractiveCard() -> Element {
                 // Tablist
                 view {
                     accessibility_role: "tablist",
-                    style: if is_mobile {
-                        "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};"
-                    } else {
-                        "flex-direction: row; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};"
-                    },
+                    nve_style: tablist_resp,
+                    style: "flex-direction: row; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};",
                     for (id, label, tid) in tabs {
                         {
                             let selected = tab == id;
@@ -372,11 +404,8 @@ fn HeroInteractiveCard() -> Element {
 
                         // Host target selector pills
                         view {
-                            style: if is_mobile {
-                                "width: 100%; flex-direction: column; align-items: flex-start; gap: 6px;"
-                            } else {
-                                "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;"
-                            },
+                            nve_style: host_row_resp,
+                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
                             text {
                                 style: "font-size: 11px; font-weight: 700; color: {theme.muted};",
                                 "RENDER TARGET"
