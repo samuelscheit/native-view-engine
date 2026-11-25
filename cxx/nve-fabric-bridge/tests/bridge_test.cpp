@@ -1660,7 +1660,7 @@ void test_seeded_fuzz_corpus() {
     CommandBufferEncoder deep_enc(1, 1);
     uint32_t prev = NVE_ROOT_NODE_ID;
     for (uint32_t id = 2; id <= 1001; ++id) {
-      deep_enc.create_node(id, (id == 1001) ? NVE_COMP_TEXT : NVE_COMP_VIEW);
+      deep_enc.create_node(id, static_cast<uint16_t>((id == 1001) ? NVE_COMP_TEXT : NVE_COMP_VIEW));
       deep_enc.set_children(prev, {id});
       prev = id;
     }

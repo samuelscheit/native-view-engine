@@ -440,9 +440,9 @@ struct BenchComponent {
   }
 
   static uint8_t hit_test(NveAppHandle, float x, float y, uint8_t) {
-    return (x >= 0.0f && x <= 240.0f && y >= 0.0f && y <= 48.0f)
-               ? NVE_GESTURE_CLAIM
-               : NVE_GESTURE_PASS_THROUGH;
+    return static_cast<uint8_t>((x >= 0.0f && x <= 240.0f && y >= 0.0f && y <= 48.0f)
+                                    ? NVE_GESTURE_CLAIM
+                                    : NVE_GESTURE_PASS_THROUGH);
   }
 
   static uint32_t set_props(NveAppHandle, NveBufferSlice) { return 1; }

@@ -365,7 +365,7 @@ bool NveWinHostWindow::create(HINSTANCE instance, const WinHostWindowOptions& op
   wc.style = CS_HREDRAW | CS_VREDRAW;
   wc.lpfnWndProc = &NveWinHostWindow::static_wnd_proc;
   wc.hInstance = instance;
-  wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+  wc.hCursor = ::LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
   wc.lpszClassName = kWindowClassName;
   ::RegisterClassExW(&wc);
 
