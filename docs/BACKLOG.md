@@ -1,6 +1,17 @@
 # Backlog
 
-Prioritized roadmap for `native-view-engine`, ordered from remaining platform verification to the flagship showcase.
+Prioritized roadmap for `native-view-engine`, ordered from upcoming ergonomics & platform capabilities to the flagship showcase.
+
+## P1 — Multi-Window, UI Component Kit & Native SDK (`expo-*` Equivalents)
+
+- [ ] **Multi-Window Lifecycle Primitives (`crates/nve-abi`, `crates/nve-interop`, desktop/mobile/web hosts)**
+  - Promote logical `SurfaceOrchestrator` surfaces into real multi-OS-window presentation (`PrimaryWindow`, `SecondaryWindow`, `Sheet`/`Popover`, `open_window`/`close_window`/`focus`/`set_title`) mapped 1:1 to `SurfaceId`s across `winit`/Skia, AppKit, Win32, Qt 6, GTK4, iPadOS scenes, and Web.
+
+- [ ] **Tier-1 `nve-sdk` — Zero-Overhead Native Platform Capabilities (`NVE_IFACE_HOST_SERVICES` / binary C ABI)**
+  - First-party, zero-JSON native modules avoiding JS-bridge overhead: Clipboard, File Picker & Standard Paths, Secure Store (Keychain / DPAPI / Secret Service / Android Keystore / Web Crypto), Deep Linking & URL Open, live System Theme & Locale (`NveChannelBus` wired end-to-end), Notifications, and Haptics.
+
+- [ ] **`nve-ui` & `nve-router` — Reusable Accessible Component Kit & Type-Safe Router**
+  - Accessible, themeable Dioxus component library (`Button`, `Input`, `Checkbox`, `Switch`, `Tabs`, `Dialog`, `Popover`, `DropdownMenu`, `Toast`, `Card`, `Badge`, `VirtualList`) with keyboard/ARIA parity plus a type-safe stack/tab/deep-link router (`nve-router`) integrated with the `navigation` channel.
 
 ## P2 — Core Engine & Platform Completeness
 
