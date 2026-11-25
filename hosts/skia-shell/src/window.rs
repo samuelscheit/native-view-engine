@@ -3,6 +3,7 @@
 //! hot reload (`HotPatchMsg` from `ws://127.0.0.1:8089`), and instant-boot Frame-0
 //! `MmapSnapshot` replay + atomic save on exit.
 
+pub mod clipboard;
 pub mod hot_reload_client;
 pub mod input;
 pub mod pair_client;
@@ -29,6 +30,7 @@ use nve_backend_skia::SkiaBackend;
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{BackendError, MmapSnapshot, RenderBackend, SnapshotError, Viewport};
 
+pub use clipboard::{default_clipboard, ClipboardProvider, InMemoryClipboard};
 pub use hot_reload_client::HotReloadClient;
 pub use input::format_keydown_shorthand;
 pub use pair_client::{PairConnectConfig, PairTransport, PairedRemoteApp, DEFAULT_PAIR_WS_PATH};

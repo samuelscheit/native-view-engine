@@ -20,6 +20,7 @@ use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use nve_backend_skia::SkiaBackend;
 use nve_engine::{write_snapshot_atomic, HotPatchMsg, RenderBackend, SnapshotHeader, Viewport};
 
+use super::clipboard::{default_clipboard, ClipboardProvider};
 use super::hot_reload_client::resolve_dylib_path;
 use super::{
     write_pixel_buffer_ppm, write_pixel_buffer_screenshot, DesktopApp, DesktopHostError,
@@ -44,6 +45,11 @@ pub struct DesktopSession<A: DesktopApp> {
     pixel_buffer: PixelBuffer,
     clear_color: ColorRgba,
     pub(super) cursor_logical: (f32, f32),
+    pub(super) dragging_text_node: Option<NodeId>,
+    pub(super) last_click_time: Option<Instant>,
+    pub(super) last_click_pos: (f32, f32),
+    pub(super) last_click_node: Option<NodeId>,
+    pub(super) clipboard: Box<dyn ClipboardProvider>,
     status_banner: Option<String>,
     show_hud: bool,
     last_frame_bytes: Vec<u8>,
@@ -107,6 +113,11 @@ impl<A: DesktopApp> DesktopSession<A> {
             pixel_buffer,
             clear_color,
             cursor_logical: (0.0, 0.0),
+            dragging_text_node: None,
+            last_click_time: None,
+            last_click_pos: (0.0, 0.0),
+            last_click_node: None,
+            clipboard: default_clipboard(),
             status_banner: None,
             show_hud,
             last_frame_bytes,
@@ -153,6 +164,19 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn focused_node(&self) -> Option<NodeId> {
         self.backend.focused_node()
+    }
+
+    pub fn with_clipboard(mut self, clipboard: Box<dyn ClipboardProvider>) -> Self {
+        self.clipboard = clipboard;
+        self
+    }
+
+    pub fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardProvider>) {
+        self.clipboard = clipboard;
+    }
+
+    pub fn clipboard_mut(&mut self) -> &mut dyn ClipboardProvider {
+        self.clipboard.as_mut()
     }
 
     pub fn active_backend(&self) -> GpuBackendKind {

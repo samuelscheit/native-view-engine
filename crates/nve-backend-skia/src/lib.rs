@@ -16,13 +16,19 @@ pub mod image_cache;
 pub mod raster;
 mod scroll;
 pub mod text;
+mod text_cache;
+mod text_input;
 
 #[cfg(test)]
 mod media_tests;
 #[cfg(test)]
+mod polish_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod text_input_tests;
+#[cfg(test)]
+mod text_tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,7 +42,11 @@ use nve_engine::{
     Viewport,
 };
 
-use display_list::{clamp_char_boundary, emit_node_into, raw_text_input_value};
+use display_list::{emit_node_into, InheritedTextStyle};
+use text_input::{
+    clamp_char_boundary, compute_text_input_inner_rect, compute_text_input_scroll_x,
+    cursor_byte_index_at_local_x, is_secure_node, raw_text_input_value,
+};
 
 pub use font::{bitmap_font_metrics, BitmapFontMetrics, BitmapFontTextMeasurer};
 pub use gpu::d3d12::D3D12SwapchainConfig;
@@ -61,19 +71,21 @@ pub use image_cache::{
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{
-    draw_hud_banner, rasterize_display_list, rasterize_display_list_bitmap,
-    rasterize_display_list_with_text_engine, PixelBuffer,
+    draw_hud_banner, parse_box_shadow, rasterize_display_list, rasterize_display_list_bitmap,
+    rasterize_display_list_with_text_engine, BoxShadow, PixelBuffer,
 };
-pub use text::CosmicTextEngine;
+pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
 
 pub(crate) const MAX_HIT_TEST_DEPTH: usize = 256;
 
 /// Accent stroke color painted around the focused `TextInput`.
 pub const FOCUS_RING_COLOR: ColorRgba = ColorRgba::rgb(56, 189, 248);
-/// Translucent fill painted behind selected text when `select_all` is active.
+/// Translucent fill painted behind selected text ranges in a focused `TextInput`.
 pub const FOCUS_SELECTION_COLOR: ColorRgba = ColorRgba::rgba(56, 189, 248, 88);
 /// Accent underline painted beneath active IME composition (`Preedit`) text.
 pub const IME_PREEDIT_UNDERLINE_COLOR: ColorRgba = ColorRgba::rgb(56, 189, 248);
+/// Subtle translucent fill painted for `ScrollView` overlay scrollbar thumbs.
+pub const SCROLLBAR_THUMB_COLOR: ColorRgba = ColorRgba::rgba(148, 163, 184, 150);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintOp {
@@ -84,6 +96,15 @@ pub enum PaintOp {
         radius: f32,
     },
     PopClip,
+    DrawShadow {
+        rect: LayoutRect,
+        radius: f32,
+        offset_x: f32,
+        offset_y: f32,
+        blur_radius: f32,
+        spread_radius: f32,
+        color: ColorRgba,
+    },
     FillRoundedRect {
         rect: LayoutRect,
         radius: f32,
@@ -99,6 +120,8 @@ pub enum PaintOp {
         rect: LayoutRect,
         text: String,
         font_size: f32,
+        font_weight: u16,
+        text_align: TextAlign,
         color: ColorRgba,
     },
     DrawImage {
@@ -119,23 +142,38 @@ pub struct DisplayList {
     pub ops: Vec<PaintOp>,
 }
 
-/// Active focus, caret, selection, and IME composition state tracked by [`SkiaBackend`].
+/// Active focus, caret, range selection, and IME composition state tracked by [`SkiaBackend`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextFocusState {
     pub focused_node: Option<NodeId>,
-    /// Caret position as a UTF-8 byte offset within the focused `TextInput`'s committed value
+    /// Caret (active end) UTF-8 byte offset within the focused `TextInput`'s committed value
     /// (always clamped to a valid UTF-8 char boundary).
     pub caret_byte_index: usize,
-    /// When `true` (e.g. after `Cmd+A` / `Ctrl+A`), the entire committed value is selected.
-    pub select_all: bool,
+    /// Selection anchor UTF-8 byte offset (`selection_anchor != caret_byte_index` indicates an
+    /// active range selection).
+    pub selection_anchor: usize,
     /// Active IME preedit (composition) string inserted visually at `caret_byte_index`.
     pub ime_preedit: Option<String>,
     /// Optional byte range `(start, end)` of cursor/selection inside `ime_preedit`.
     pub ime_preedit_cursor: Option<(usize, usize)>,
-    /// Local value override for uncontrolled `TextInput`s (or when an edit was not echoed via a
-    /// `value` prop update); cleared automatically whenever `submit_frame` supplies a `value` prop
-    /// or focus moves.
+    /// Local value override for uncontrolled `TextInput`s; cleared automatically whenever
+    /// `submit_frame` supplies a `value` prop or focus moves.
     pub(crate) uncontrolled_value: Option<String>,
+}
+
+impl TextFocusState {
+    /// Returns the ordered `(start, end)` UTF-8 byte range when a non-empty selection is active.
+    #[inline]
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        if self.selection_anchor != self.caret_byte_index {
+            Some((
+                self.selection_anchor.min(self.caret_byte_index),
+                self.selection_anchor.max(self.caret_byte_index),
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 pub struct SkiaBackend<L: LayoutEngine = TaffyLayoutEngine> {
@@ -170,13 +208,10 @@ impl SkiaBackend<YogaLayoutEngine> {
 }
 
 impl<L: LayoutEngine> SkiaBackend<L> {
-    /// Creates a [`SkiaBackend`] using any concrete or boxed [`LayoutEngine`], defaulting to
-    /// the shared native [`CosmicTextEngine`] for both layout measurement and rasterization.
     pub fn with_layout(layout: L) -> Self {
         Self::with_layout_and_text_engine(layout, CosmicTextEngine::shared())
     }
 
-    /// Creates a [`SkiaBackend`] with an explicit [`LayoutEngine`] and [`CosmicTextEngine`].
     pub fn with_layout_and_text_engine(layout: L, text_engine: Arc<CosmicTextEngine>) -> Self {
         let mut layout_tree = HeadlessBackend::with_layout(layout).with_mutation_tracking(false);
         layout_tree.set_text_measurer(Arc::clone(&text_engine) as Arc<dyn TextMeasurer>);
@@ -204,13 +239,10 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         self.layout_tree.layout_engine_mut()
     }
 
-    /// Replaces the active [`TextMeasurer`] used for intrinsic text layout.
     pub fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
         self.layout_tree.set_text_measurer(measurer);
     }
 
-    /// Hot-swaps the active [`LayoutEngine`] to `next`, replaying the retained tree and
-    /// rebuilding the retained [`DisplayList`] against the new layout rectangles.
     pub fn swap_layout_engine<NewL: LayoutEngine>(self, next: NewL) -> SkiaBackend<NewL> {
         let layout_tree = self.layout_tree.swap_layout_engine(next);
         let mut swapped = SkiaBackend {
@@ -237,25 +269,86 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         &self.display_list
     }
 
-    /// Returns the currently focused node ID, if any.
     pub fn focused_node(&self) -> Option<NodeId> {
         self.focus.focused_node
     }
 
-    /// Returns a read-only view of the active focus, caret, selection, and IME state.
     pub fn focus_state(&self) -> &TextFocusState {
         &self.focus
     }
 
-    /// Returns `true` if `node_id` exists in the retained tree and is a `ComponentKind::TextInput`.
     pub fn is_text_input(&self, node_id: NodeId) -> bool {
         self.layout_tree
             .node(node_id)
             .is_some_and(|n| n.kind == ComponentKind::TextInput)
     }
 
-    /// Returns the current editable string value for a `TextInput` node (not its placeholder),
-    /// or `None` if `node_id` does not exist or is not a `TextInput`.
+    pub fn is_secure_text_input(&self, node_id: NodeId) -> bool {
+        self.layout_tree
+            .node(node_id)
+            .is_some_and(|n| n.kind == ComponentKind::TextInput && is_secure_node(n))
+    }
+
+    /// Computes the visual (scroll-shifted) layout rectangle of `node_id` in logical viewport coordinates.
+    pub fn visual_rect_of(&self, node_id: NodeId) -> Option<LayoutRect> {
+        let node = self.layout_tree.node(node_id)?;
+        let mut rect = node.computed_rect;
+        let mut ancestor = node.parent;
+        let mut depth = 0usize;
+        while let Some(pid) = ancestor {
+            if depth > MAX_HIT_TEST_DEPTH {
+                break;
+            }
+            depth += 1;
+            let Some(pnode) = self.layout_tree.node(pid) else {
+                break;
+            };
+            let (sx, sy) = self.visual_scroll_shift(pnode);
+            rect.x -= sx;
+            rect.y -= sy;
+            ancestor = pnode.parent;
+        }
+        Some(rect)
+    }
+
+    /// Hit-tests a logical viewport X coordinate against a `TextInput` node and returns the
+    /// closest UTF-8 byte boundary inside its current committed value.
+    pub fn cursor_index_at_x(&self, node_id: NodeId, logical_x: f32) -> Option<usize> {
+        let node = self.layout_tree.node(node_id)?;
+        if node.kind != ComponentKind::TextInput {
+            return None;
+        }
+        let committed = self.text_input_value(node_id)?;
+        let visual_rect = self.visual_rect_of(node_id)?;
+        let font_size = if node.style.font_size > 0.0 {
+            node.style.font_size
+        } else {
+            13.0
+        };
+        let text_rect = compute_text_input_inner_rect(node, visual_rect, font_size);
+        let is_secure = is_secure_node(node);
+        let scroll_x = if self.focus.focused_node == Some(node_id) {
+            compute_text_input_scroll_x(
+                self.text_engine.as_ref(),
+                &committed,
+                self.focus.caret_byte_index,
+                font_size,
+                is_secure,
+                text_rect.width,
+            )
+        } else {
+            0.0
+        };
+        let local_x = logical_x - text_rect.x + scroll_x;
+        Some(cursor_byte_index_at_local_x(
+            self.text_engine.as_ref(),
+            &committed,
+            font_size,
+            is_secure,
+            local_x,
+        ))
+    }
+
     pub fn text_input_value(&self, node_id: NodeId) -> Option<String> {
         let node = self.layout_tree.node(node_id)?;
         if node.kind != ComponentKind::TextInput {
@@ -269,34 +362,47 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         Some(raw_text_input_value(node).to_owned())
     }
 
-    /// Sets or clears the focused node, initializing the caret to the end of its value when
-    /// focusing a new `TextInput`, clearing stale selection/IME preedit state, and rebuilding
-    /// the retained [`DisplayList`] when visual focus state changes.
-    ///
-    /// Returns `true` if the focused node changed.
     pub fn set_focused_node(&mut self, node_id: Option<NodeId>) -> bool {
         let resolved = node_id.filter(|&id| self.layout_tree.node(id).is_some());
         if self.focus.focused_node == resolved {
             return false;
         }
         self.focus.focused_node = resolved;
-        self.focus.select_all = false;
         self.focus.ime_preedit = None;
         self.focus.ime_preedit_cursor = None;
         self.focus.uncontrolled_value = None;
-        self.focus.caret_byte_index = resolved
+        let end = resolved
             .and_then(|id| self.text_input_value(id))
             .map_or(0, |v| v.len());
+        self.focus.caret_byte_index = end;
+        self.focus.selection_anchor = end;
         self.rebuild_display_list();
         true
     }
 
-    /// Current caret UTF-8 byte offset inside the focused `TextInput`'s committed value.
     pub fn caret_byte_index(&self) -> usize {
         self.focus.caret_byte_index
     }
 
-    /// Current caret Unicode scalar (`char`) index inside the focused `TextInput`'s committed value.
+    pub fn selection_anchor_byte_index(&self) -> usize {
+        self.focus.selection_anchor
+    }
+
+    /// Returns the ordered `(start, end)` UTF-8 byte range when a non-empty selection is active.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.focus.selection_range()
+    }
+
+    /// Returns the currently selected substring of the focused `TextInput`, if any.
+    pub fn selected_text(&self) -> Option<String> {
+        let id = self.focus.focused_node?;
+        let (s, e) = self.focus.selection_range()?;
+        let val = self.text_input_value(id)?;
+        let cs = clamp_char_boundary(&val, s);
+        let ce = clamp_char_boundary(&val, e);
+        (cs < ce).then(|| val[cs..ce].to_owned())
+    }
+
     pub fn caret_char_index(&self) -> usize {
         let Some(id) = self.focus.focused_node else {
             return 0;
@@ -308,50 +414,53 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         val[..clamped].chars().count()
     }
 
-    /// Sets the caret UTF-8 byte offset (clamped to a valid char boundary), clears `select_all`,
-    /// and rebuilds the display list when changed.
+    /// Moves the caret to `byte_index` (clamped to a valid char boundary), collapsing any active
+    /// selection (`selection_anchor = caret_byte_index`).
     pub fn set_caret_byte_index(&mut self, byte_index: usize) {
-        let clamped = self
+        self.set_selection_range(byte_index, byte_index);
+    }
+
+    /// Sets the selection anchor and active caret byte indices (both clamped to valid UTF-8 char
+    /// boundaries) and rebuilds the display list when changed.
+    pub fn set_selection_range(&mut self, anchor: usize, caret: usize) {
+        let (clamped_anchor, clamped_caret) = self
             .focus
             .focused_node
             .and_then(|id| self.text_input_value(id))
-            .map_or(0, |v| clamp_char_boundary(&v, byte_index));
-        let changed = self.focus.caret_byte_index != clamped || self.focus.select_all;
-        self.focus.caret_byte_index = clamped;
-        self.focus.select_all = false;
+            .map_or((0, 0), |v| {
+                (
+                    clamp_char_boundary(&v, anchor),
+                    clamp_char_boundary(&v, caret),
+                )
+            });
+        let changed = self.focus.selection_anchor != clamped_anchor
+            || self.focus.caret_byte_index != clamped_caret;
+        self.focus.selection_anchor = clamped_anchor;
+        self.focus.caret_byte_index = clamped_caret;
         if changed {
             self.rebuild_display_list();
         }
     }
 
-    /// Returns whether the focused `TextInput` currently has all text selected (`Cmd/Ctrl+A`).
-    pub fn select_all(&self) -> bool {
-        self.focus.select_all
+    /// Selects the entire committed value of the focused `TextInput` (`0..val.len()`).
+    pub fn select_all_text(&mut self) {
+        let Some(id) = self.focus.focused_node else {
+            return;
+        };
+        let len = self.text_input_value(id).map_or(0, |v| v.len());
+        self.set_selection_range(0, len);
     }
 
-    /// Sets or clears selection-all state on the focused `TextInput`, rebuilding the display list
-    /// when changed.
-    pub fn set_select_all(&mut self, select_all: bool) {
-        let effective = select_all && self.focus.focused_node.is_some();
-        if effective
-            && let Some(id) = self.focus.focused_node
-            && let Some(val) = self.text_input_value(id)
-        {
-            self.focus.caret_byte_index = val.len();
-        }
-        if self.focus.select_all != effective {
-            self.focus.select_all = effective;
-            self.rebuild_display_list();
-        }
+    /// Collapses any active selection to the current caret position.
+    pub fn clear_selection(&mut self) {
+        let caret = self.focus.caret_byte_index;
+        self.set_selection_range(caret, caret);
     }
 
-    /// Returns the active IME preedit (composition) string, if any.
     pub fn ime_preedit(&self) -> Option<&str> {
         self.focus.ime_preedit.as_deref()
     }
 
-    /// Updates or clears the active IME preedit string and optional byte cursor range, rebuilding
-    /// the retained display list when changed.
     pub fn set_ime_preedit(
         &mut self,
         preedit: Option<String>,
@@ -374,22 +483,19 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         }
     }
 
-    /// Updates the local fallback text value for the focused `TextInput` (used when an
-    /// uncontrolled input or non-rerendering app edits text) and sets the caret byte index.
     pub fn set_focused_text_override(&mut self, value: Option<String>, caret_byte_index: usize) {
         let Some(id) = self.focus.focused_node else {
             return;
         };
         let clamped = match &value {
             Some(v) => clamp_char_boundary(v, caret_byte_index),
-            None => self
-                .layout_tree
-                .node(id)
-                .map_or(0, |n| clamp_char_boundary(raw_text_input_value(n), caret_byte_index)),
+            None => self.layout_tree.node(id).map_or(0, |n| {
+                clamp_char_boundary(raw_text_input_value(n), caret_byte_index)
+            }),
         };
         self.focus.uncontrolled_value = value;
         self.focus.caret_byte_index = clamped;
-        self.focus.select_all = false;
+        self.focus.selection_anchor = clamped;
         self.rebuild_display_list();
     }
 
@@ -403,27 +509,26 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         };
         if node.kind == ComponentKind::TextInput {
             if node.raw_props.contains_key("value") {
-                // Controlled TextInput: the app's submitted `value` prop is authoritative.
                 self.focus.uncontrolled_value = None;
             }
-            let current_val = self.focus.uncontrolled_value.as_deref().unwrap_or_else(|| {
-                raw_text_input_value(node)
-            });
+            let current_val = self
+                .focus
+                .uncontrolled_value
+                .as_deref()
+                .unwrap_or_else(|| raw_text_input_value(node));
             self.focus.caret_byte_index =
                 clamp_char_boundary(current_val, self.focus.caret_byte_index);
-            if current_val.is_empty() {
-                self.focus.select_all = false;
-            }
+            self.focus.selection_anchor =
+                clamp_char_boundary(current_val, self.focus.selection_anchor);
         } else {
             self.focus.caret_byte_index = 0;
-            self.focus.select_all = false;
+            self.focus.selection_anchor = 0;
             self.focus.ime_preedit = None;
             self.focus.ime_preedit_cursor = None;
             self.focus.uncontrolled_value = None;
         }
     }
 
-    /// Rasterizes the retained `DisplayList` into `buffer` using the current viewport scale factor.
     pub fn rasterize(&self, buffer: &mut PixelBuffer, clear_color: ColorRgba) {
         rasterize_display_list_with_text_engine(
             &self.display_list,
@@ -434,7 +539,6 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         );
     }
 
-    /// Rasterizes the retained `DisplayList` into `buffer` at an explicit pixel scale factor.
     pub fn rasterize_at_scale(
         &self,
         buffer: &mut PixelBuffer,
@@ -466,6 +570,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             self.text_engine.as_ref(),
             viewport_rect,
             (0.0, 0.0),
+            InheritedTextStyle::default(),
             &mut self.sort_scratch,
             &mut self.display_list.ops,
             ROOT_NODE_ID,

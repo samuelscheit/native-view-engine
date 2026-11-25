@@ -1,18 +1,24 @@
-//! Retained `DisplayList` compilation, culling, `TextInput` focus/caret/IME painting, and
-//! zero-allocation z-index sorting for [`crate::SkiaBackend`].
+//! Retained `DisplayList` compilation, culling, `box-shadow` emission, `ScrollView` overlay
+//! scrollbars, inherited text weight/alignment propagation, and zero-allocation z-index sorting
+//! for [`crate::SkiaBackend`].
 
 use std::collections::HashMap;
 
-use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue};
+use nve_abi::{ComponentKind, NodeId, RawPropValue};
 use nve_backend_headless::{HeadlessBackend, HeadlessNode};
 use nve_components::canvas_ir::{CanvasOp, DrawListDecoder, ImageResizeMode};
 use nve_engine::{LayoutEngine, LayoutRect};
 
 use crate::image_cache::ImageCache;
-use crate::text::CosmicTextEngine;
-use crate::{
-    PaintOp, TextFocusState, FOCUS_RING_COLOR, FOCUS_SELECTION_COLOR, IME_PREEDIT_UNDERLINE_COLOR,
-};
+use crate::raster::parse_box_shadow;
+use crate::scroll::compute_scroll_content_size;
+use crate::text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
+use crate::text_input::emit_text_input_ops;
+use crate::{PaintOp, TextFocusState, SCROLLBAR_THUMB_COLOR};
+
+const SCROLLBAR_THICKNESS: f32 = 6.0;
+const SCROLLBAR_MARGIN: f32 = 3.0;
+const SCROLLBAR_MIN_THUMB: f32 = 20.0;
 
 #[inline]
 pub(crate) fn offset_rect(rect: LayoutRect, offset: (f32, f32)) -> LayoutRect {
@@ -77,6 +83,30 @@ pub(crate) fn parse_px_raw_prop(val: Option<&RawPropValue>) -> Option<f32> {
     }
 }
 
+pub(crate) fn extract_font_weight(node: &HeadlessNode) -> Option<u16> {
+    let raw = node
+        .raw_props
+        .get("font-weight")
+        .or_else(|| node.raw_props.get("fontWeight"))?;
+    match raw {
+        RawPropValue::I64(n) => Some((*n).clamp(100, 900) as u16),
+        RawPropValue::F64(n) if n.is_finite() => Some((n.round() as i64).clamp(100, 900) as u16),
+        RawPropValue::String(s) => parse_font_weight(s),
+        _ => None,
+    }
+}
+
+pub(crate) fn extract_text_align(node: &HeadlessNode) -> Option<TextAlign> {
+    let raw = node
+        .raw_props
+        .get("text-align")
+        .or_else(|| node.raw_props.get("textAlign"))?;
+    match raw {
+        RawPropValue::String(s) => TextAlign::parse(s),
+        _ => None,
+    }
+}
+
 pub(crate) fn should_clip_children(node: &HeadlessNode) -> bool {
     if node.kind == ComponentKind::ScrollView {
         return true;
@@ -91,25 +121,6 @@ pub(crate) fn should_clip_children(node: &HeadlessNode) -> bool {
         return true;
     }
     false
-}
-
-/// Clamps `byte_index` to the nearest valid UTF-8 character boundary at or before `byte_index`.
-#[inline]
-pub(crate) fn clamp_char_boundary(text: &str, byte_index: usize) -> usize {
-    let mut idx = byte_index.min(text.len());
-    while idx > 0 && !text.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
-
-/// Returns the committed text value stored in a `TextInput` node's props or text payload.
-#[inline]
-pub(crate) fn raw_text_input_value(node: &HeadlessNode) -> &str {
-    match node.raw_props.get("value") {
-        Some(RawPropValue::String(s)) => s.as_str(),
-        _ => node.text.as_deref().unwrap_or(""),
-    }
 }
 
 fn extract_image_src(node: &HeadlessNode) -> Option<String> {
@@ -146,273 +157,113 @@ fn extract_canvas_ops(node: &HeadlessNode) -> Vec<CanvasOp> {
     DrawListDecoder::decode_raw_prop(raw).unwrap_or_default()
 }
 
-/// Measures single-line prefix advance width for caret placement, preserving trailing spaces.
-fn measure_caret_advance(text_engine: &CosmicTextEngine, prefix: &str, font_size: f32) -> f32 {
-    if prefix.is_empty() {
-        return 0.0;
-    }
-    let trimmed = prefix.trim_end_matches(' ');
-    let trailing_spaces = prefix.len() - trimmed.len();
-    let base_w = if trimmed.is_empty() {
-        0.0
-    } else {
-        text_engine.measure_text(trimmed, font_size, None).0
-    };
-    if trailing_spaces == 0 {
-        return base_w;
-    }
-    // Cosmic-text trims trailing whitespace from `run.line_w`; derive exact space advance via
-    // `"a a" - "aa"` so typing spaces visibly advances the caret cleanly.
-    let space_w = (text_engine.measure_text("a a", font_size, None).0
-        - text_engine.measure_text("aa", font_size, None).0)
-        .max(font_size * 0.28);
-    base_w + (trailing_spaces as f32) * space_w
-}
-
-fn compute_text_input_inner_rect(node: &HeadlessNode, rect: LayoutRect, font_size: f32) -> LayoutRect {
-    let pad_l = node.layout.padding.left.max(0.0);
-    let pad_r = node.layout.padding.right.max(0.0);
-    let mut pad_t = node.layout.padding.top.max(0.0);
-    let pad_b = node.layout.padding.bottom.max(0.0);
-    if pad_t == 0.0 && pad_b == 0.0 && rect.height > font_size * 1.4 {
-        pad_t = ((rect.height - font_size * 1.35) * 0.5).max(0.0);
-    }
-    LayoutRect {
-        x: rect.x + pad_l,
-        y: rect.y + pad_t,
-        width: (rect.width - pad_l - pad_r).max(1.0),
-        height: (rect.height - pad_t - pad_b).max(1.0),
-    }
-}
-
-fn emit_text_input_ops(
+fn emit_box_shadows(
     node: &HeadlessNode,
     rect: LayoutRect,
-    focus: &TextFocusState,
-    text_engine: &CosmicTextEngine,
+    clip_bounds: LayoutRect,
     ops: &mut Vec<PaintOp>,
 ) {
-    let font_size = if node.style.font_size > 0.0 {
-        node.style.font_size
-    } else {
-        13.0
+    let Some(RawPropValue::String(raw_shadow)) = node
+        .raw_props
+        .get("box-shadow")
+        .or_else(|| node.raw_props.get("boxShadow"))
+    else {
+        return;
     };
-    let is_focused = focus.focused_node == Some(node.id);
-    let committed = if is_focused {
-        focus
-            .uncontrolled_value
-            .as_deref()
-            .unwrap_or_else(|| raw_text_input_value(node))
-    } else {
-        raw_text_input_value(node)
-    };
-    let placeholder = match node.raw_props.get("placeholder") {
-        Some(RawPropValue::String(s)) if !s.is_empty() => Some(s.as_str()),
-        _ => None,
-    };
-    let is_secure = matches!(
-        node.raw_props.get("secureTextEntry"),
-        Some(RawPropValue::Bool(true))
-    );
-    let preedit = if is_focused {
-        focus.ime_preedit.as_deref().filter(|s| !s.is_empty())
-    } else {
-        None
-    };
-
-    let text_color = if node.style.text_color.a > 0 {
-        node.style.text_color
-    } else {
-        ColorRgba::rgb(241, 245, 249)
-    };
-    let text_rect = compute_text_input_inner_rect(node, rect, font_size);
-
-    if !is_focused {
-        let display_text = if !committed.is_empty() {
-            let rendered = if is_secure {
-                "•".repeat(committed.chars().count())
-            } else {
-                committed.to_owned()
-            };
-            Some((rendered, text_color))
-        } else {
-            placeholder.map(|ph| {
-                let base = if node.style.text_color.a > 0 {
-                    node.style.text_color
-                } else {
-                    ColorRgba::rgb(148, 163, 184)
-                };
-                let color = ColorRgba::rgba(
-                    base.r,
-                    base.g,
-                    base.b,
-                    ((base.a as f32) * 0.55).round().clamp(96.0, 170.0) as u8,
-                );
-                (ph.to_owned(), color)
-            })
+    let radius = node.style.border_radius.max(0.0);
+    for sh in parse_box_shadow(raw_shadow) {
+        let shadow_bounds = LayoutRect {
+            x: rect.x + sh.offset_x - sh.spread_radius,
+            y: rect.y + sh.offset_y - sh.spread_radius,
+            width: rect.width + sh.spread_radius * 2.0,
+            height: rect.height + sh.spread_radius * 2.0,
         };
-        if let Some((text, color)) = display_text {
-            ops.push(PaintOp::DrawText {
-                rect: text_rect,
-                text,
-                font_size,
-                color,
+        if intersects_clip(clip_bounds, shadow_bounds, sh.blur_radius * 1.5 + 1.0) {
+            ops.push(PaintOp::DrawShadow {
+                rect,
+                radius,
+                offset_x: sh.offset_x,
+                offset_y: sh.offset_y,
+                blur_radius: sh.blur_radius,
+                spread_radius: sh.spread_radius,
+                color: sh.color,
             });
         }
+    }
+}
+
+fn emit_scrollview_scrollbars<L: LayoutEngine>(
+    layout_tree: &HeadlessBackend<L>,
+    scroll_offsets: &HashMap<NodeId, (f32, f32)>,
+    id: NodeId,
+    rect: LayoutRect,
+    ops: &mut Vec<PaintOp>,
+) {
+    let Some((cw, ch)) = compute_scroll_content_size(layout_tree, id) else {
+        return;
+    };
+    let has_v = ch > rect.height + 0.5;
+    let has_h = cw > rect.width + 0.5;
+    if !has_v && !has_h {
         return;
     }
-
-    // Focused TextInput: build composed visual string, caret prefix, and optional IME underline.
-    let caret_byte = clamp_char_boundary(committed, focus.caret_byte_index);
-    let (rendered_value, caret_prefix, preedit_span) = if is_secure {
-        let before_chars = committed[..caret_byte].chars().count();
-        let after_chars = committed[caret_byte..].chars().count();
-        if let Some(pe) = preedit {
-            let pe_chars = pe.chars().count();
-            let pe_cursor_chars = focus
-                .ime_preedit_cursor
-                .map(|(_, end)| pe[..clamp_char_boundary(pe, end)].chars().count())
-                .unwrap_or(pe_chars);
-            let total = "•".repeat(before_chars + pe_chars + after_chars);
-            let prefix = "•".repeat(before_chars + pe_cursor_chars);
-            let pe_start_str = "•".repeat(before_chars);
-            let pe_str = "•".repeat(pe_chars);
-            (total, prefix, Some((pe_start_str, pe_str)))
-        } else {
-            let total = "•".repeat(before_chars + after_chars);
-            let prefix = "•".repeat(before_chars);
-            (total, prefix, None)
-        }
-    } else if let Some(pe) = preedit {
-        let before = &committed[..caret_byte];
-        let after = &committed[caret_byte..];
-        let pe_cursor_end = focus
-            .ime_preedit_cursor
-            .map(|(_, end)| clamp_char_boundary(pe, end))
-            .unwrap_or(pe.len());
-        let mut total = String::with_capacity(committed.len() + pe.len());
-        total.push_str(before);
-        total.push_str(pe);
-        total.push_str(after);
-        let mut prefix = String::with_capacity(before.len() + pe_cursor_end);
-        prefix.push_str(before);
-        prefix.push_str(&pe[..pe_cursor_end]);
-        (total, prefix, Some((before.to_owned(), pe.to_owned())))
+    let (sx, sy) = scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
+    let corner_gap = if has_v && has_h {
+        SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
     } else {
-        (
-            committed.to_owned(),
-            committed[..caret_byte].to_owned(),
-            None,
-        )
+        0.0
     };
 
-    let caret_w = 2.0f32;
-    let caret_h = (font_size * 1.25).clamp(8.0, (rect.height - 4.0).max(4.0));
-    let line_h = (font_size * 1.35).min(text_rect.height);
-    let caret_y = text_rect.y + ((line_h - caret_h) * 0.5).max(0.0);
-    let caret_advance = measure_caret_advance(text_engine, &caret_prefix, font_size);
-    let scroll_x = (caret_advance - (text_rect.width - caret_w).max(0.0)).max(0.0);
-
-    ops.push(PaintOp::PushClip {
-        rect,
-        radius: node.style.border_radius.max(0.0),
-    });
-
-    // Selection-all highlight behind text.
-    if focus.select_all && !rendered_value.is_empty() {
-        let sel_w = measure_caret_advance(text_engine, &rendered_value, font_size)
-            .min(text_rect.width)
-            .max(2.0);
+    if has_v
+        && rect.height > SCROLLBAR_MARGIN * 2.0 + corner_gap + 4.0
+        && rect.width > SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN * 2.0
+    {
+        let track_h = (rect.height - SCROLLBAR_MARGIN * 2.0 - corner_gap).max(1.0);
+        let thumb_h = ((rect.height / ch) * track_h).clamp(SCROLLBAR_MIN_THUMB.min(track_h), track_h);
+        let max_sy = (ch - rect.height).max(1.0);
+        let ratio_y = (sy / max_sy).clamp(0.0, 1.0);
+        let thumb_y = rect.y + SCROLLBAR_MARGIN + ratio_y * (track_h - thumb_h);
+        let thumb_x = rect.x + rect.width - SCROLLBAR_THICKNESS - SCROLLBAR_MARGIN;
         ops.push(PaintOp::FillRoundedRect {
             rect: LayoutRect {
-                x: text_rect.x - scroll_x,
-                y: caret_y,
-                width: sel_w,
-                height: caret_h,
+                x: thumb_x,
+                y: thumb_y,
+                width: SCROLLBAR_THICKNESS,
+                height: thumb_h,
             },
-            radius: 2.0,
-            color: FOCUS_SELECTION_COLOR,
+            radius: SCROLLBAR_THICKNESS * 0.5,
+            color: SCROLLBAR_THUMB_COLOR,
         });
     }
 
-    let draw_text_rect = LayoutRect {
-        x: text_rect.x - scroll_x,
-        y: text_rect.y,
-        width: text_rect.width + scroll_x,
-        height: text_rect.height,
-    };
-
-    if !rendered_value.is_empty() {
-        ops.push(PaintOp::DrawText {
-            rect: draw_text_rect,
-            text: rendered_value,
-            font_size,
-            color: text_color,
-        });
-    } else if let Some(ph) = placeholder {
-        let base = if node.style.text_color.a > 0 {
-            node.style.text_color
-        } else {
-            ColorRgba::rgb(148, 163, 184)
-        };
-        let ph_color = ColorRgba::rgba(
-            base.r,
-            base.g,
-            base.b,
-            ((base.a as f32) * 0.55).round().clamp(96.0, 170.0) as u8,
-        );
-        ops.push(PaintOp::DrawText {
-            rect: text_rect,
-            text: ph.to_owned(),
-            font_size,
-            color: ph_color,
-        });
-    }
-
-    // Subtle underline beneath active IME preedit span.
-    if let Some((before_str, pe_str)) = preedit_span {
-        let pe_x = text_rect.x - scroll_x + measure_caret_advance(text_engine, &before_str, font_size);
-        let pe_w = measure_caret_advance(text_engine, &pe_str, font_size).max(4.0);
+    if has_h
+        && rect.width > SCROLLBAR_MARGIN * 2.0 + corner_gap + 4.0
+        && rect.height > SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN * 2.0
+    {
+        let track_w = (rect.width - SCROLLBAR_MARGIN * 2.0 - corner_gap).max(1.0);
+        let thumb_w = ((rect.width / cw) * track_w).clamp(SCROLLBAR_MIN_THUMB.min(track_w), track_w);
+        let max_sx = (cw - rect.width).max(1.0);
+        let ratio_x = (sx / max_sx).clamp(0.0, 1.0);
+        let thumb_x = rect.x + SCROLLBAR_MARGIN + ratio_x * (track_w - thumb_w);
+        let thumb_y = rect.y + rect.height - SCROLLBAR_THICKNESS - SCROLLBAR_MARGIN;
         ops.push(PaintOp::FillRoundedRect {
             rect: LayoutRect {
-                x: pe_x,
-                y: caret_y + caret_h,
-                width: pe_w,
-                height: 1.5,
+                x: thumb_x,
+                y: thumb_y,
+                width: thumb_w,
+                height: SCROLLBAR_THICKNESS,
             },
-            radius: 0.0,
-            color: IME_PREEDIT_UNDERLINE_COLOR,
+            radius: SCROLLBAR_THICKNESS * 0.5,
+            color: SCROLLBAR_THUMB_COLOR,
         });
     }
+}
 
-    // Crisp vertical cursor caret (works identically in software rasterizer & Skia GPU).
-    let caret_x = (text_rect.x + caret_advance - scroll_x)
-        .clamp(text_rect.x, (text_rect.x + text_rect.width - caret_w).max(text_rect.x));
-    let caret_color = if text_color == node.style.background {
-        FOCUS_RING_COLOR
-    } else {
-        text_color
-    };
-    ops.push(PaintOp::FillRoundedRect {
-        rect: LayoutRect {
-            x: caret_x,
-            y: caret_y,
-            width: caret_w,
-            height: caret_h,
-        },
-        radius: 0.0,
-        color: caret_color,
-    });
-
-    ops.push(PaintOp::PopClip);
-
-    // Crisp focus ring painted on top of default border.
-    ops.push(PaintOp::StrokeRoundedRect {
-        rect,
-        radius: node.style.border_radius.max(0.0),
-        width: 2.0,
-        color: FOCUS_RING_COLOR,
-    });
+/// Inherited text formatting propagated from parent `ComponentKind::Text` containers to leaves.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct InheritedTextStyle {
+    pub(crate) font_weight: Option<u16>,
+    pub(crate) text_align: Option<TextAlign>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -423,6 +274,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
     text_engine: &CosmicTextEngine,
     clip_bounds: LayoutRect,
     offset: (f32, f32),
+    inherited_text: InheritedTextStyle,
     sort_scratch: &mut Vec<NodeId>,
     ops: &mut Vec<PaintOp>,
     id: NodeId,
@@ -433,7 +285,6 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
 
     let opacity = node.style.opacity.clamp(0.0, 1.0);
     if opacity <= 0.001 {
-        // Fully transparent subtree produces no visible pixels — cull completely.
         return;
     }
 
@@ -445,6 +296,9 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
 
     let rect = offset_rect(node.computed_rect, offset);
     let in_clip = intersects_clip(clip_bounds, rect, 0.0);
+
+    // Emit outer box-shadows before background fill so shadows render behind the box.
+    emit_box_shadows(node, rect, clip_bounds, ops);
 
     if node.style.background.a > 0 && in_clip {
         ops.push(PaintOp::FillRoundedRect {
@@ -464,6 +318,14 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
             color: node.style.border_color,
         });
     }
+
+    let own_weight = extract_font_weight(node);
+    let own_align = extract_text_align(node);
+    let effective_weight = own_weight
+        .or(inherited_text.font_weight)
+        .unwrap_or(DEFAULT_FONT_WEIGHT);
+    let effective_align = own_align.or(inherited_text.text_align).unwrap_or_default();
+
     if in_clip {
         if node.kind == ComponentKind::Image
             && let Some(src) = extract_image_src(node)
@@ -486,6 +348,8 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                 rect,
                 text: text.to_owned(),
                 font_size: node.style.font_size,
+                font_weight: effective_weight,
+                text_align: effective_align,
                 color: node.style.text_color,
             });
         }
@@ -499,7 +363,15 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         }
     }
 
-    // Paint children (optionally clipped for ScrollView / overflow:hidden, and scroll-translated).
+    let child_inherited = if node.kind == ComponentKind::Text {
+        InheritedTextStyle {
+            font_weight: own_weight.or(inherited_text.font_weight),
+            text_align: own_align.or(inherited_text.text_align),
+        }
+    } else {
+        InheritedTextStyle::default()
+    };
+
     let children = &node.children;
     if !children.is_empty() {
         let clips = should_clip_children(node);
@@ -537,7 +409,6 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                     .iter()
                     .any(|&cid| layout_tree.node(cid).is_some_and(|c| c.style.z_index != 0));
             if has_z_order {
-                // Reuse the backend's scratch Vec as a stack frame to avoid per-node heap clones.
                 let start = sort_scratch.len();
                 sort_scratch.extend_from_slice(children);
                 sort_scratch[start..]
@@ -552,6 +423,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                         text_engine,
                         child_clip,
                         child_offset,
+                        child_inherited,
                         sort_scratch,
                         ops,
                         child,
@@ -567,6 +439,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                         text_engine,
                         child_clip,
                         child_offset,
+                        child_inherited,
                         sort_scratch,
                         ops,
                         child,
@@ -574,9 +447,12 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                 }
             }
 
+            if node.kind == ComponentKind::ScrollView && in_clip {
+                emit_scrollview_scrollbars(layout_tree, scroll_offsets, id, rect, ops);
+            }
+
             if clips {
                 if ops.len() == clip_op_idx + 1 {
-                    // Elide redundant PushClip/PopClip around non-drawing subtrees.
                     ops.pop();
                 } else {
                     ops.push(PaintOp::PopClip);
@@ -587,7 +463,6 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
 
     if pushed_opacity {
         if ops.len() == opacity_op_idx + 1 {
-            // Elide redundant SaveOpacity/Restore around non-drawing subtrees.
             ops.pop();
         } else {
             ops.push(PaintOp::Restore);

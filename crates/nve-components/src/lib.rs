@@ -30,9 +30,65 @@ pub fn resolve_tag(tag: &str) -> (ComponentKind, Option<&str>) {
     }
 }
 
+/// Returns the canonical kebab-case raw prop key for inline CSS declarations that are
+/// forwarded via `raw_props` rather than stored in the binary ABI `LayoutProps`/`StyleProps`.
+#[inline]
+pub fn canonical_raw_style_key(key: &str) -> Option<&'static str> {
+    match key {
+        "font-weight" | "fontWeight" => Some("font-weight"),
+        "text-align" | "textAlign" => Some("text-align"),
+        "box-shadow" | "boxShadow" => Some("box-shadow"),
+        "overflow" => Some("overflow"),
+        _ => None,
+    }
+}
+
 /// Parses inline/shorthand CSS-like or RN-like attribute key/value pairs directly into typed
 /// `LayoutProps` and `StyleProps` — avoiding `folly::dynamic` string parsing in C++.
 pub fn apply_typed_attr(
+    layout: &mut LayoutProps,
+    style: &mut StyleProps,
+    key: &str,
+    value: &str,
+) -> bool {
+    apply_typed_attr_with_raw(layout, style, key, value, |_, _| {})
+}
+
+/// Parses inline/shorthand CSS-like or RN-like attributes into typed `LayoutProps` and
+/// `StyleProps`, invoking `on_raw(canonical_key, value)` for recognized non-ABI inline `style`
+/// declarations (`font-weight`, `text-align`, `box-shadow`, `overflow`) so callers can forward
+/// them via `raw_props` with zero ABI breakage.
+pub fn apply_typed_attr_with_raw<F>(
+    layout: &mut LayoutProps,
+    style: &mut StyleProps,
+    key: &str,
+    value: &str,
+    mut on_raw: F,
+) -> bool
+where
+    F: FnMut(&str, &str),
+{
+    if key == "style" {
+        for decl in value.split(';') {
+            if let Some((raw_k, raw_v)) = decl.split_once(':') {
+                let k = raw_k.trim();
+                let v = raw_v.trim();
+                if k.is_empty() || v.is_empty() {
+                    continue;
+                }
+                if !apply_typed_attr_single(layout, style, k, v)
+                    && let Some(canonical) = canonical_raw_style_key(k)
+                {
+                    on_raw(canonical, v);
+                }
+            }
+        }
+        return true;
+    }
+    apply_typed_attr_single(layout, style, key, value)
+}
+
+fn apply_typed_attr_single(
     layout: &mut LayoutProps,
     style: &mut StyleProps,
     key: &str,
@@ -149,13 +205,6 @@ pub fn apply_typed_attr(
                 style.z_index = v;
             }
         }
-        "style" => {
-            for decl in value.split(';') {
-                if let Some((k, v)) = decl.split_once(':') {
-                    apply_typed_attr(layout, style, k.trim(), v.trim());
-                }
-            }
-        }
         _ => return false,
     }
     true
@@ -234,5 +283,50 @@ mod tests {
         assert_eq!(s.background, ColorRgba::rgb(15, 23, 42));
         assert_eq!(s.text_color, ColorRgba::WHITE);
         assert_eq!(s.border_radius, 8.0);
+    }
+
+    #[test]
+    fn forwards_non_abi_inline_style_declarations_as_raw_props() {
+        let mut l = LayoutProps::default();
+        let mut s = StyleProps::default();
+        let mut forwarded: Vec<(String, String)> = Vec::new();
+        assert!(apply_typed_attr_with_raw(
+            &mut l,
+            &mut s,
+            "style",
+            "font-size: 18px; font-weight: 700; text-align: center; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); overflow: hidden; unknown-prop: 42;",
+            |k, v| forwarded.push((k.to_owned(), v.to_owned())),
+        ));
+        assert_eq!(s.font_size, 18.0);
+        assert_eq!(
+            forwarded,
+            vec![
+                ("font-weight".to_string(), "700".to_string()),
+                ("text-align".to_string(), "center".to_string()),
+                (
+                    "box-shadow".to_string(),
+                    "0 4px 12px rgba(0, 0, 0, 0.35)".to_string()
+                ),
+                ("overflow".to_string(), "hidden".to_string()),
+            ]
+        );
+
+        // CamelCase variants inside inline style normalize to canonical kebab-case keys.
+        let mut camel_forwarded: Vec<(String, String)> = Vec::new();
+        assert!(apply_typed_attr_with_raw(
+            &mut l,
+            &mut s,
+            "style",
+            "fontWeight: semibold; textAlign: right; boxShadow: 2px 3px 6px #00000080;",
+            |k, v| camel_forwarded.push((k.to_owned(), v.to_owned())),
+        ));
+        assert_eq!(
+            camel_forwarded,
+            vec![
+                ("font-weight".to_string(), "semibold".to_string()),
+                ("text-align".to_string(), "right".to_string()),
+                ("box-shadow".to_string(), "2px 3px 6px #00000080".to_string()),
+            ]
+        );
     }
 }

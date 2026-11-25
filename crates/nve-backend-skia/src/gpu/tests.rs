@@ -67,6 +67,8 @@ fn sample_parity_display_list() -> DisplayList {
                 },
                 text: "NVE GPU".to_string(),
                 font_size: 20.0,
+                font_weight: 400,
+                text_align: crate::TextAlign::Left,
                 color: ColorRgba::rgb(56, 189, 248),
             },
         ],

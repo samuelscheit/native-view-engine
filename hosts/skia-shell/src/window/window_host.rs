@@ -596,8 +596,17 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = self.session.viewport().scale_factor.max(0.001);
-                self.session
-                    .set_cursor_logical(position.x as f32 / scale, position.y as f32 / scale);
+                let lx = position.x as f32 / scale;
+                let ly = position.y as f32 / scale;
+                match self.session.handle_pointer_move_logical(lx, ly) {
+                    Ok(true) => {
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => eprintln!("[nve-skia-shell] pointer move error: {err}"),
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -615,6 +624,13 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
                     Ok(false) => {}
                     Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
                 }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.session.handle_pointer_up_logical();
             }
             WindowEvent::ModifiersChanged(new_mods) => {
                 self.modifiers = new_mods.state();

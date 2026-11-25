@@ -9,7 +9,10 @@ use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, EventMask, FrameId, LayoutProps, NodeId,
     RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
 };
-use nve_components::{apply_typed_attr, resolve_tag, DrawListDecoder, DRAW_LIST_ATTR_PREFIX};
+use nve_components::{
+    apply_typed_attr_with_raw, canonical_raw_style_key, resolve_tag, DrawListDecoder,
+    DRAW_LIST_ATTR_PREFIX,
+};
 
 use crate::hot_patch;
 
@@ -21,6 +24,8 @@ pub(crate) struct NodeRecord {
     pub(crate) layout: LayoutProps,
     pub(crate) style: StyleProps,
     pub(crate) has_explicit_style: bool,
+    pub(crate) font_weight: Option<String>,
+    pub(crate) text_align: Option<String>,
     pub(crate) event_mask: u64,
     pub(crate) dioxus_id: Option<ElementId>,
     pub(crate) test_id: Option<String>,
@@ -36,12 +41,23 @@ impl Default for NodeRecord {
             layout: LayoutProps::default(),
             style: StyleProps::default(),
             has_explicit_style: false,
+            font_weight: None,
+            text_align: None,
             event_mask: 0,
             dioxus_id: None,
             test_id: None,
             text: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct TextStyleWalkEntry {
+    node_id: NodeId,
+    color: ColorRgba,
+    font_size: f32,
+    font_weight: Option<String>,
+    text_align: Option<String>,
 }
 
 /// Bridges `dioxus_core::WriteMutations` into a single batched `nve_abi::CommandBuffer`.
@@ -54,10 +70,11 @@ pub struct NveMutationWriter {
     stack: Vec<NodeId>,
     /// Persistent scratch buffers reused across frames (cleared + sorted/deduped in place).
     style_sources: Vec<NodeId>,
-    style_walk_stack: Vec<(NodeId, ColorRgba, f32)>,
+    style_walk_stack: Vec<TextStyleWalkEntry>,
     dirty_children: Vec<NodeId>,
     dirty_layout: Vec<NodeId>,
     dirty_style: Vec<NodeId>,
+    dirty_text_props: Vec<NodeId>,
     dirty_events: Vec<NodeId>,
     pub(crate) patch_ids: Vec<NodeId>,
     pub(crate) patch_leaf_text_ids: Vec<NodeId>,
@@ -89,6 +106,7 @@ impl NveMutationWriter {
             dirty_children: Vec::with_capacity(16),
             dirty_layout: Vec::with_capacity(16),
             dirty_style: Vec::with_capacity(16),
+            dirty_text_props: Vec::new(),
             dirty_events: Vec::new(),
             patch_ids: Vec::new(),
             patch_leaf_text_ids: Vec::new(),
@@ -104,16 +122,22 @@ impl NveMutationWriter {
         self.dirty_children.clear();
         self.dirty_layout.clear();
         self.dirty_style.clear();
+        self.dirty_text_props.clear();
         self.dirty_events.clear();
     }
 
     pub fn finish_frame(&mut self, sync_mount: bool) -> &[u8] {
-        // Propagate inherited text_color and font_size from styled Text parents to unstyled child
-        // Text leaves (Dioxus rsx! emits `text { style: "...", "leaf" }` as parent Text -> child Text).
-        if !self.dirty_children.is_empty() || !self.dirty_style.is_empty() {
+        // Propagate inherited text_color, font_size, font_weight, and text_align from styled Text
+        // parents to unstyled child Text leaves (Dioxus rsx! emits `text { style: "...", "leaf" }`
+        // as parent Text -> child Text).
+        if !self.dirty_children.is_empty()
+            || !self.dirty_style.is_empty()
+            || !self.dirty_text_props.is_empty()
+        {
             self.style_sources.clear();
             self.style_sources.extend_from_slice(&self.dirty_children);
             self.style_sources.extend_from_slice(&self.dirty_style);
+            self.style_sources.extend_from_slice(&self.dirty_text_props);
             self.style_sources.sort_unstable();
             self.style_sources.dedup();
             for i in 0..self.style_sources.len() {
@@ -121,6 +145,7 @@ impl NveMutationWriter {
                 self.propagate_text_style_down(pid);
             }
             self.style_sources.clear();
+            self.dirty_text_props.clear();
         }
 
         // Coalesce all structural/style/layout mutations into one deterministic batch per frame
@@ -220,27 +245,57 @@ impl NveMutationWriter {
         }
         let root_color = root.style.text_color;
         let root_font_size = root.style.font_size;
+        let root_font_weight = root.font_weight.clone();
+        let root_text_align = root.text_align.clone();
         for &cid in &root.children {
-            self.style_walk_stack.push((cid, root_color, root_font_size));
+            self.style_walk_stack.push(TextStyleWalkEntry {
+                node_id: cid,
+                color: root_color,
+                font_size: root_font_size,
+                font_weight: root_font_weight.clone(),
+                text_align: root_text_align.clone(),
+            });
         }
 
-        while let Some((cid, parent_color, parent_font_size)) = self.style_walk_stack.pop() {
+        while let Some(entry) = self.style_walk_stack.pop() {
+            let cid = entry.node_id;
             if let Some(child) = self.nodes.get_mut(&cid)
                 && child.kind == ComponentKind::Text
-                && !child.has_explicit_style
             {
-                if child.style.text_color != parent_color
-                    || (child.style.font_size - parent_font_size).abs() > f32::EPSILON
+                if !child.has_explicit_style
+                    && (child.style.text_color != entry.color
+                        || (child.style.font_size - entry.font_size).abs() > f32::EPSILON)
                 {
-                    child.style.text_color = parent_color;
-                    child.style.font_size = parent_font_size;
+                    child.style.text_color = entry.color;
+                    child.style.font_size = entry.font_size;
                     self.dirty_style.push(cid);
+                }
+                if child.font_weight.is_none()
+                    && let Some(ref w) = entry.font_weight
+                {
+                    child.font_weight = Some(w.clone());
+                    self.builder
+                        .set_raw_prop(cid, "font-weight", &RawPropValue::String(w.clone()));
+                }
+                if child.text_align.is_none()
+                    && let Some(ref a) = entry.text_align
+                {
+                    child.text_align = Some(a.clone());
+                    self.builder
+                        .set_raw_prop(cid, "text-align", &RawPropValue::String(a.clone()));
                 }
                 let next_color = child.style.text_color;
                 let next_font_size = child.style.font_size;
+                let next_weight = child.font_weight.clone();
+                let next_align = child.text_align.clone();
                 for &grandchild in &child.children {
-                    self.style_walk_stack
-                        .push((grandchild, next_color, next_font_size));
+                    self.style_walk_stack.push(TextStyleWalkEntry {
+                        node_id: grandchild,
+                        color: next_color,
+                        font_size: next_font_size,
+                        font_weight: next_weight.clone(),
+                        text_align: next_align.clone(),
+                    });
                 }
             }
         }
@@ -318,7 +373,29 @@ impl NveMutationWriter {
         if let Some(rec) = self.nodes.get_mut(&node_id) {
             let prev_layout = rec.layout;
             let prev_style = rec.style;
-            if apply_typed_attr(&mut rec.layout, &mut rec.style, name, value) {
+            let mut text_prop_changed = false;
+            let builder = &mut self.builder;
+            let handled = apply_typed_attr_with_raw(
+                &mut rec.layout,
+                &mut rec.style,
+                name,
+                value,
+                |raw_k, raw_v| {
+                    match raw_k {
+                        "font-weight" if rec.font_weight.as_deref() != Some(raw_v) => {
+                            rec.font_weight = Some(raw_v.to_owned());
+                            text_prop_changed = true;
+                        }
+                        "text-align" if rec.text_align.as_deref() != Some(raw_v) => {
+                            rec.text_align = Some(raw_v.to_owned());
+                            text_prop_changed = true;
+                        }
+                        _ => {}
+                    }
+                    builder.set_raw_prop(node_id, raw_k, &RawPropValue::String(raw_v.to_owned()));
+                },
+            );
+            if handled {
                 if rec.layout != prev_layout {
                     self.dirty_layout.push(node_id);
                 }
@@ -326,7 +403,23 @@ impl NveMutationWriter {
                     rec.has_explicit_style = true;
                     self.dirty_style.push(node_id);
                 }
+                if text_prop_changed {
+                    self.dirty_text_props.push(node_id);
+                }
                 return;
+            }
+            if let Some(canonical) = canonical_raw_style_key(name) {
+                match canonical {
+                    "font-weight" => {
+                        rec.font_weight = Some(value.to_owned());
+                        self.dirty_text_props.push(node_id);
+                    }
+                    "text-align" => {
+                        rec.text_align = Some(value.to_owned());
+                        self.dirty_text_props.push(node_id);
+                    }
+                    _ => {}
+                }
             }
         }
         // Decode `nve-draw1;b64,...` attributes directly into binary `RawPropValue::Bytes`
@@ -338,8 +431,9 @@ impl NveMutationWriter {
                 .set_raw_prop(node_id, name, &RawPropValue::Bytes(raw_draw_bytes));
             return;
         }
+        let prop_name = canonical_raw_style_key(name).unwrap_or(name);
         self.builder
-            .set_raw_prop(node_id, name, &RawPropValue::String(value.to_owned()));
+            .set_raw_prop(node_id, prop_name, &RawPropValue::String(value.to_owned()));
     }
 
     fn detach_from_parent(&mut self, node_id: NodeId) {
@@ -614,5 +708,63 @@ fn event_name_to_mask(name: &str) -> u64 {
         "blur" | "onblur" => EventMask::BLUR,
         "layout" | "onlayout" => EventMask::LAYOUT,
         _ => EventMask::CUSTOM,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nve_abi::{Command, CommandDecoder};
+
+    #[test]
+    fn inline_style_forwards_font_weight_text_align_box_shadow_and_inherits_text_props() {
+        let mut writer = NveMutationWriter::new(1);
+        writer.begin_frame(1, 1);
+
+        let card_id = writer.alloc_node(ComponentKind::View, None);
+        writer.apply_str_attr(
+            card_id,
+            "style",
+            "background-color: #1e293b; border-radius: 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);",
+        );
+
+        let parent_text = writer.alloc_node(ComponentKind::Text, None);
+        writer.apply_str_attr(
+            parent_text,
+            "style",
+            "font-size: 18px; font-weight: 700; text-align: center; color: #ffffff;",
+        );
+        let leaf_text = writer.alloc_node(ComponentKind::Text, None);
+        writer.record_text(leaf_text, "Title");
+        writer.builder.set_text(leaf_text, "Title");
+
+        writer.nodes.get_mut(&parent_text).unwrap().children.push(leaf_text);
+        writer.nodes.get_mut(&leaf_text).unwrap().parent = Some(parent_text);
+        writer.dirty_children.push(parent_text);
+
+        let bytes = writer.finish_frame(true);
+        let (_, cmds) = CommandDecoder::new(bytes)
+            .expect("valid header")
+            .decode_all()
+            .expect("valid command buffer");
+
+        let has_raw = |nid: NodeId, k: &str, expected: &str| {
+            cmds.iter().any(|c| {
+                matches!(
+                    c,
+                    Command::SetRawProp {
+                        node_id,
+                        key,
+                        value: RawPropValue::String(v)
+                    } if *node_id == nid && key == k && v == expected
+                )
+            })
+        };
+
+        assert!(has_raw(card_id, "box-shadow", "0 4px 12px rgba(0, 0, 0, 0.35)"));
+        assert!(has_raw(parent_text, "font-weight", "700"));
+        assert!(has_raw(parent_text, "text-align", "center"));
+        assert!(has_raw(leaf_text, "font-weight", "700"));
+        assert!(has_raw(leaf_text, "text-align", "center"));
     }
 }

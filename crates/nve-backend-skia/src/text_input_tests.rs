@@ -218,11 +218,48 @@ fn focused_text_input_paints_focus_ring_caret_selection_ime_and_secure_bullet_of
     assert!(caret_start_x < caret_end_x);
     assert!((caret_start_x - (r2.x + 12.0)).abs() < 0.1);
 
-    skia.set_select_all(true);
+    skia.select_all_text();
+    assert_eq!(skia.selection_range(), Some((0, 5)));
+    assert_eq!(skia.selected_text().as_deref(), Some("hello"));
     assert!(skia.display_list().ops.iter().any(|op| matches!(
         op,
         PaintOp::FillRoundedRect { color, .. } if *color == FOCUS_SELECTION_COLOR
     )));
+
+    // Sub-range selection renders a highlight strictly narrower than full-text selection.
+    let full_sel_w = skia
+        .display_list()
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PaintOp::FillRoundedRect { rect, color, .. } if *color == FOCUS_SELECTION_COLOR => {
+                Some(rect.width)
+            }
+            _ => None,
+        })
+        .expect("full selection highlight");
+    skia.set_selection_range(1, 4);
+    assert_eq!(skia.selection_range(), Some((1, 4)));
+    assert_eq!(skia.selected_text().as_deref(), Some("ell"));
+    let partial_sel_rect = skia
+        .display_list()
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PaintOp::FillRoundedRect { rect, color, .. } if *color == FOCUS_SELECTION_COLOR => {
+                Some(*rect)
+            }
+            _ => None,
+        })
+        .expect("partial selection highlight");
+    assert!(partial_sel_rect.x > r2.x + 12.0);
+    assert!(partial_sel_rect.width < full_sel_w);
+
+    // cursor_index_at_x maps left edge -> 0, far right -> len, and midpoints monotonically.
+    assert_eq!(skia.cursor_index_at_x(2, r2.x), Some(0));
+    assert_eq!(skia.cursor_index_at_x(2, r2.x + 250.0), Some(5));
+    let mid_idx = skia.cursor_index_at_x(2, partial_sel_rect.x).unwrap();
+    assert!((1..=2).contains(&mid_idx));
 
     skia.set_caret_byte_index(2);
     skia.set_ime_preedit(Some("日本".to_string()), Some((0, "日本".len())));

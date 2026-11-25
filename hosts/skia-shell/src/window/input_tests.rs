@@ -10,7 +10,8 @@ use nve_engine::{RenderBackend, Viewport};
 use winit::event::Ime;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use super::input::format_keydown_shorthand;
+use super::clipboard::InMemoryClipboard;
+use super::input::{format_keydown_shorthand, word_bounds_at};
 use super::{DesktopApp, DesktopHostError, DesktopSession};
 
 struct MockTextInputApp {
@@ -233,7 +234,8 @@ fn new_text_session(has_custom_listener: bool) -> DesktopSession<MockTextInputAp
         viewport,
         ColorRgba::BLACK,
         false,
-    );
+    )
+    .with_clipboard(Box::new(InMemoryClipboard::new()));
     session.render_and_rasterize().unwrap();
     session
 }
@@ -385,11 +387,11 @@ fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_sub
     assert!(session
         .handle_keyboard_input(&Key::Character("a".into()), None, cmd)
         .unwrap());
-    assert!(session.backend().select_all());
+    assert_eq!(session.backend().selection_range(), Some((0, "afe 🚀!".len())));
     assert!(session
         .handle_keyboard_input(&Key::Character("done".into()), Some("done"), none)
         .unwrap());
-    assert!(!session.backend().select_all());
+    assert_eq!(session.backend().selection_range(), None);
     assert_eq!(session.app().title_value, "done");
 
     // Enter emits Custom { name: "submit", data: "done" } on the focused TextInput node.
@@ -619,4 +621,127 @@ fn desktop_session_forwards_wheel_scroll_and_zero_json_keydown_events() {
     let payloads: Vec<&str> = session.app().keydown_payloads.iter().map(|(_, s)| s.as_str()).collect();
     assert_eq!(payloads, vec!["Cmd+k", "ArrowDown", "ArrowUp", "Ctrl+Shift+Enter", "Escape"]);
     assert!(payloads.iter().all(|p| !p.starts_with('{')));
+}
+
+#[test]
+fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
+    assert_eq!(word_bounds_at("hello world_42!", 1), (0, 5));
+    assert_eq!(word_bounds_at("hello world_42!", 8), (6, 14));
+    assert_eq!(word_bounds_at("hello world_42!", 15), (14, 15));
+
+    let mut session = new_text_session(false);
+    let r10 = session.backend().layout_of(10).unwrap();
+    let mid_y = r10.y + r10.height * 0.5;
+    let none = ModifiersState::empty();
+    let shift = ModifiersState::SHIFT;
+    let cmd = ModifiersState::SUPER;
+
+    // Focus input 10 and type "hello world".
+    session.handle_click_logical(r10.x + 12.0, mid_y).unwrap();
+    session.handle_pointer_up_logical();
+    session
+        .handle_keyboard_input(&Key::Character("hello world".into()), Some("hello world"), none)
+        .unwrap();
+    assert_eq!(session.app().title_value, "hello world");
+
+    // Shift+Left x5 selects "world"; Cmd+C copies it without altering text.
+    for _ in 0..5 {
+        assert!(session
+            .handle_keyboard_input(&Key::Named(NamedKey::ArrowLeft), None, shift)
+            .unwrap());
+    }
+    assert_eq!(session.backend().selected_text().as_deref(), Some("world"));
+    assert!(session
+        .handle_keyboard_input(&Key::Character("c".into()), None, cmd)
+        .unwrap());
+    assert_eq!(
+        session.clipboard_mut().get_text().as_deref(),
+        Some("world")
+    );
+    assert_eq!(session.app().title_value, "hello world");
+
+    // Move Home, Shift+Right x5 selects "hello", Cmd+X cuts it -> " world".
+    session
+        .handle_keyboard_input(&Key::Named(NamedKey::Home), None, none)
+        .unwrap();
+    assert_eq!(session.backend().selection_range(), None);
+    for _ in 0..5 {
+        session
+            .handle_keyboard_input(&Key::Named(NamedKey::ArrowRight), None, shift)
+            .unwrap();
+    }
+    assert_eq!(session.backend().selected_text().as_deref(), Some("hello"));
+    assert!(session
+        .handle_keyboard_input(&Key::Character("x".into()), None, cmd)
+        .unwrap());
+    assert_eq!(session.app().title_value, " world");
+    assert_eq!(
+        session.clipboard_mut().get_text().as_deref(),
+        Some("hello")
+    );
+
+    // Move End, space, Cmd+V pastes "hello" -> " world hello".
+    session
+        .handle_keyboard_input(&Key::Named(NamedKey::End), None, none)
+        .unwrap();
+    session
+        .handle_keyboard_input(&Key::Named(NamedKey::Space), Some(" "), none)
+        .unwrap();
+    assert!(session
+        .handle_keyboard_input(&Key::Character("v".into()), None, cmd)
+        .unwrap());
+    assert_eq!(session.app().title_value, " world hello");
+
+    // Shift+Home selects everything to start; ArrowRight collapses to right edge.
+    session
+        .handle_keyboard_input(&Key::Named(NamedKey::Home), None, shift)
+        .unwrap();
+    assert_eq!(session.backend().selection_range(), Some((0, " world hello".len())));
+    session
+        .handle_keyboard_input(&Key::Named(NamedKey::ArrowRight), None, none)
+        .unwrap();
+    assert_eq!(session.backend().selection_range(), None);
+    assert_eq!(session.backend().caret_byte_index(), " world hello".len());
+
+    // Mouse press near start + drag to far right forms a non-empty range selection.
+    session.handle_click_logical(r10.x + 10.0, mid_y).unwrap();
+    assert_eq!(session.backend().caret_byte_index(), 0);
+    assert!(session.handle_pointer_move_logical(r10.x + 220.0, mid_y).unwrap());
+    let drag_range = session
+        .backend()
+        .selection_range()
+        .expect("drag should create non-empty range selection");
+    assert_eq!(drag_range.0, 0);
+    assert_eq!(drag_range.1, " world hello".len());
+    session.handle_pointer_up_logical();
+
+    // Subsequent pointer move after mouse up does NOT change selection.
+    assert!(!session.handle_pointer_move_logical(r10.x + 12.0, mid_y).unwrap());
+    assert_eq!(session.backend().selection_range(), Some(drag_range));
+
+    // Double-click over "world" selects the whole word "world".
+    let word_x = r10.x + 28.0;
+    session.handle_click_logical(word_x, mid_y).unwrap();
+    session.handle_pointer_up_logical();
+    session.handle_click_logical(word_x, mid_y).unwrap();
+    session.handle_pointer_up_logical();
+    assert_eq!(session.backend().selected_text().as_deref(), Some("world"));
+
+    // Secure input (node 11) must refuse Cmd+C so password plaintext never leaks to clipboard.
+    let r11 = session.backend().layout_of(11).unwrap();
+    session
+        .handle_click_logical(r11.x + 15.0, r11.y + 15.0)
+        .unwrap();
+    session.handle_pointer_up_logical();
+    session
+        .handle_keyboard_input(&Key::Character("a".into()), None, cmd)
+        .unwrap();
+    assert!(!session
+        .handle_keyboard_input(&Key::Character("c".into()), None, cmd)
+        .unwrap());
+    assert_eq!(
+        session.clipboard_mut().get_text().as_deref(),
+        Some("hello"),
+        "clipboard must remain unchanged when copying from secureTextEntry"
+    );
 }

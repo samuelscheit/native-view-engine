@@ -5,9 +5,10 @@ use std::time::Instant;
 use nve_abi::ColorRgba;
 use nve_components::canvas_ir::CanvasOp;
 use skia_safe::{
-    canvas::SrcRectConstraint, images, AlphaType, Canvas, ClipOp, Color, ColorType, Data,
-    FilterMode, Font, FontMgr, FontStyle, ImageInfo, MipmapMode, Paint, PaintCap, PaintJoin,
-    PaintStyle, PathBuilder, RRect, Rect, SamplingOptions, Surface, Typeface,
+    canvas::SrcRectConstraint, font_style::{Slant, Weight as SkiaWeight, Width as SkiaWidth},
+    images, AlphaType, BlurStyle, Canvas, ClipOp, Color, ColorType, Data, FilterMode, Font,
+    FontMgr, FontStyle, ImageInfo, MaskFilter, MipmapMode, Paint, PaintCap, PaintJoin, PaintStyle,
+    PathBuilder, RRect, Rect, SamplingOptions, Surface, Typeface,
 };
 
 use super::{
@@ -16,7 +17,7 @@ use super::{
 };
 use crate::image_cache::{compute_image_placement, ImageCache};
 use crate::raster::PixelBuffer;
-use crate::text::LINE_HEIGHT_MULTIPLIER;
+use crate::text::{TextAlign, LINE_HEIGHT_MULTIPLIER};
 use crate::{DisplayList, PaintOp};
 
 const PREFERRED_SANS_FAMILIES: &[&str] = &[
@@ -73,13 +74,30 @@ impl SkiaCanvasRenderer {
     }
 
     fn make_font(&self, font_size: f32) -> Font {
+        self.make_font_with_weight(font_size, 400)
+    }
+
+    fn make_font_with_weight(&self, font_size: f32, font_weight: u16) -> Font {
         let size = if font_size.is_finite() && font_size > 0.0 {
             font_size
         } else {
             16.0
         };
-        let mut font = match &self.default_typeface {
-            Some(tf) => Font::from_typeface(tf.clone(), size),
+        let typeface = if font_weight != 400 && font_weight != 0 {
+            let style = FontStyle::new(
+                SkiaWeight::from(font_weight.clamp(100, 900) as i32),
+                SkiaWidth::NORMAL,
+                Slant::Upright,
+            );
+            PREFERRED_SANS_FAMILIES
+                .iter()
+                .find_map(|family| self.font_mgr.match_family_style(*family, style))
+                .or_else(|| self.default_typeface.clone())
+        } else {
+            self.default_typeface.clone()
+        };
+        let mut font = match typeface {
+            Some(tf) => Font::from_typeface(tf, size),
             None => Font::default().with_size(size).unwrap_or_default(),
         };
         font.set_subpixel(true);
@@ -149,6 +167,44 @@ impl SkiaCanvasRenderer {
                         save_depth -= 1;
                     }
                 }
+                PaintOp::DrawShadow {
+                    rect,
+                    radius,
+                    offset_x,
+                    offset_y,
+                    blur_radius,
+                    spread_radius,
+                    color,
+                } => {
+                    let sw = rect.width + *spread_radius * 2.0;
+                    let sh = rect.height + *spread_radius * 2.0;
+                    if sw <= 0.0 || sh <= 0.0 || color.a == 0 {
+                        continue;
+                    }
+                    let mut shadow_paint = Paint::default();
+                    shadow_paint.set_anti_alias(true);
+                    shadow_paint.set_style(PaintStyle::Fill);
+                    shadow_paint.set_color(to_skia_color(*color));
+                    if *blur_radius > 0.5 {
+                        let sigma = (*blur_radius * 0.5).max(0.5);
+                        if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
+                            shadow_paint.set_mask_filter(filter);
+                        }
+                    }
+                    let sr = Rect::from_xywh(
+                        rect.x + *offset_x - *spread_radius,
+                        rect.y + *offset_y - *spread_radius,
+                        sw,
+                        sh,
+                    );
+                    let base_r = if *radius > 0.01 {
+                        (*radius + *spread_radius).max(0.0)
+                    } else {
+                        0.0
+                    };
+                    let clamped_r = base_r.min(sw * 0.5).min(sh * 0.5);
+                    canvas.draw_rrect(RRect::new_rect_xy(sr, clamped_r, clamped_r), &shadow_paint);
+                }
                 PaintOp::FillRoundedRect {
                     rect,
                     radius,
@@ -183,13 +239,15 @@ impl SkiaCanvasRenderer {
                     rect,
                     text,
                     font_size,
+                    font_weight,
+                    text_align,
                     color,
                 } => {
                     if text.is_empty() || rect.width <= 0.0 || rect.height <= 0.0 {
                         continue;
                     }
                     text_paint.set_color(to_skia_color(*color));
-                    let font = self.make_font(*font_size);
+                    let font = self.make_font_with_weight(*font_size, *font_weight);
                     let (_, metrics) = font.metrics();
                     let ascent = -metrics.ascent;
                     let descent = metrics.descent;
@@ -202,7 +260,18 @@ impl SkiaCanvasRenderer {
                     canvas.clip_rect(clip, ClipOp::Intersect, true);
                     for (line_idx, line) in text.split('\n').enumerate() {
                         let y = rect.y + (line_idx as f32) * line_height + baseline_offset;
-                        canvas.draw_str(line, (rect.x, y), &font, &text_paint);
+                        let align_x = match text_align {
+                            TextAlign::Left => 0.0,
+                            TextAlign::Center => {
+                                let (line_w, _) = font.measure_str(line, None);
+                                ((rect.width - line_w) * 0.5).max(0.0)
+                            }
+                            TextAlign::Right => {
+                                let (line_w, _) = font.measure_str(line, None);
+                                (rect.width - line_w).max(0.0)
+                            }
+                        };
+                        canvas.draw_str(line, (rect.x + align_x, y), &font, &text_paint);
                     }
                     canvas.restore();
                 }
