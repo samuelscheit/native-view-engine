@@ -2,7 +2,11 @@
 //! with trailing FNV-1a64 integrity checksum for Tier-2 hot-swaps, `MmapSnapshot`, and `.nvewal`.
 
 use nve_engine::fnv1a_64;
+use nve_router::Routable;
+use nve_sdk::system_env::{LocaleSnapshot, ThemeSnapshot, THEME_WIRE_LEN};
 
+use crate::routes::{StudioRoute, StudioRouter};
+use crate::sdk::StudioSystemEnv;
 use crate::ui_palette::CommandPaletteState;
 
 use super::codec_io::{
@@ -328,6 +332,39 @@ impl WorkspaceState {
         w.push_bool(self.sync_telemetry.crdt_partitioned);
         w.push_u32(self.sync_telemetry.crdt_pending_remote_ops);
 
+        let route_entries = self.router.history_routes();
+        w.push_u32(route_entries.len() as u32);
+        for route in &route_entries {
+            w.push_str(&route.to_path());
+        }
+        w.push_u32(self.router.cursor() as u32);
+
+        match self.focused_task_id {
+            Some(tid) => {
+                w.push_u8(1);
+                w.push_u32(tid);
+            }
+            None => w.push_u8(0),
+        }
+
+        let theme_nvt2 = self.system_env.theme.encode_nvt2();
+        w.buf.extend_from_slice(&theme_nvt2);
+        let locale_nvl1 = self
+            .system_env
+            .locale
+            .encode_nvl1()
+            .unwrap_or_else(|_| LocaleSnapshot::default().encode_nvl1().unwrap_or_default());
+        w.push_u32(locale_nvl1.len() as u32);
+        w.buf.extend_from_slice(&locale_nvl1);
+
+        match &self.last_clipboard_notice {
+            Some(notice) => {
+                w.push_u8(1);
+                w.push_str(notice);
+            }
+            None => w.push_u8(0),
+        }
+
         let checksum = fnv1a_64(&w.buf);
         w.push_u64(checksum);
         w.buf
@@ -388,6 +425,34 @@ impl WorkspaceState {
             crdt_pending_remote_ops: r.read_u32()?,
         };
 
+        let route_count = r.read_count()?;
+        let mut route_entries = Vec::with_capacity(route_count.min(64));
+        for _ in 0..route_count {
+            let path = r.read_str()?;
+            route_entries.push(StudioRoute::parse_uri(&path)?);
+        }
+        let route_cursor = r.read_u32()? as usize;
+        let router = StudioRouter::from_history(route_entries, route_cursor);
+
+        let focused_task_id = match r.read_u8()? {
+            0 => None,
+            1 => Some(r.read_u32()?),
+            _ => return None,
+        };
+
+        let theme_bytes = r.take(THEME_WIRE_LEN)?;
+        let theme = ThemeSnapshot::decode_nvt2(theme_bytes).ok()?;
+        let locale_len = r.read_count()?;
+        let locale_bytes = r.take(locale_len)?;
+        let locale = LocaleSnapshot::decode_nvl1(locale_bytes).ok()?;
+        let system_env = StudioSystemEnv { theme, locale };
+
+        let last_clipboard_notice = match r.read_u8()? {
+            0 => None,
+            1 => Some(r.read_str()?),
+            _ => return None,
+        };
+
         r.finish()?;
 
         if history.is_empty() {
@@ -397,6 +462,8 @@ impl WorkspaceState {
             cursor = history.len() - 1;
         }
 
+        let trait_store = Self::rebuild_trait_box(&current, &system_env);
+
         Some(Self {
             current,
             history,
@@ -404,6 +471,11 @@ impl WorkspaceState {
             frame_count,
             palette,
             sync_telemetry,
+            router,
+            focused_task_id,
+            system_env,
+            last_clipboard_notice,
+            trait_store,
         })
     }
 }

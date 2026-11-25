@@ -46,6 +46,7 @@ impl WorkspaceState {
         }
         self.cursor = 0;
         self.current = self.history[0].clone();
+        self.sync_derived_after_scrub();
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
@@ -55,6 +56,7 @@ impl WorkspaceState {
         }
         self.cursor -= 1;
         self.current = self.history[self.cursor].clone();
+        self.sync_derived_after_scrub();
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
@@ -64,6 +66,7 @@ impl WorkspaceState {
         }
         self.cursor += 1;
         self.current = self.history[self.cursor].clone();
+        self.sync_derived_after_scrub();
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
@@ -74,6 +77,7 @@ impl WorkspaceState {
         }
         self.cursor = last;
         self.current = self.history[last].clone();
+        self.sync_derived_after_scrub();
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
@@ -87,6 +91,7 @@ impl WorkspaceState {
         }
         self.cursor = target;
         self.current = self.history[target].clone();
+        self.sync_derived_after_scrub();
         self.frame_count = self.frame_count.saturating_add(1);
     }
 

@@ -13,6 +13,7 @@ use nve_ui::{
     TabsRoot,
 };
 
+use crate::sdk::StudioHostServices;
 use crate::state::{DocBlockKind, WorkspaceSnapshot, WorkspaceState};
 use crate::theme::{
     badge_min_w, card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CARD_BG,
@@ -48,8 +49,10 @@ fn block_font_size(kind: DocBlockKind) -> u32 {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_docs_view(
     store: &Arc<Mutex<WorkspaceState>>,
+    host_services: &Arc<StudioHostServices>,
     version: Signal<u64>,
     current: &WorkspaceSnapshot,
+    clipboard_notice: Option<&str>,
     accent_hex: &'static str,
     accent_tint: &'static str,
     xray: bool,
@@ -70,10 +73,14 @@ pub(crate) fn render_docs_view(
         .map(|d| d.checklist_progress())
         .unwrap_or((0, 0));
     let block_count = active_doc.map(|d| d.blocks.len()).unwrap_or(0);
-    let meta_summary = format!(
+    let base_meta = format!(
         "{block_count} blocks | {done_checks}/{total_checks} checks | updated {}",
         active_doc.map(|d| d.updated_at.as_str()).unwrap_or("-")
     );
+    let meta_summary = match clipboard_notice {
+        Some(notice) => format!("{base_meta} | {notice}"),
+        None => base_meta,
+    };
     let md_preview_text = if current.doc_markdown_preview_open {
         active_doc.map(|d| d.to_markdown()).unwrap_or_default()
     } else {
@@ -95,6 +102,8 @@ pub(crate) fn render_docs_view(
     let s_sel_tab = Arc::clone(store);
     let s_new_doc = Arc::clone(store);
     let s_export_md = Arc::clone(store);
+    let s_copy_md = Arc::clone(store);
+    let hs_copy_md = Arc::clone(host_services);
     let s_new_kind = Arc::clone(store);
     let s_new_input = Arc::clone(store);
     let s_new_submit = Arc::clone(store);
@@ -115,6 +124,11 @@ pub(crate) fn render_docs_view(
     let md_btn_style = format!(
         "min-width: {}px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {md_bg}; border-radius: {}px; border-width: {md_bw}px; border-color: {md_bc};",
         badge_min_w(md_btn_lbl),
+        m.pill_radius
+    );
+    let copy_md_btn_style = format!(
+        "min-width: {}px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
+        badge_min_w("Copy MD"),
         m.pill_radius
     );
     let md_card_style = format!(
@@ -210,6 +224,17 @@ pub(crate) fn render_docs_view(
                         style: Some(md_btn_style),
                         on_press: move |_| mutate_state(&s_export_md, version, |st| st.toggle_doc_markdown_preview()),
                         "{md_btn_lbl}"
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Sm,
+                        test_id: Some("doc-copy-md".into()),
+                        accessibility_label: Some("Copy active document Markdown to clipboard".into()),
+                        style: Some(copy_md_btn_style),
+                        on_press: move |_| mutate_state(&s_copy_md, version, |st| {
+                            let _ = st.copy_active_doc_markdown(&hs_copy_md);
+                        }),
+                        "Copy MD"
                     }
                 }
             }
