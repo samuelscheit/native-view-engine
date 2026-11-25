@@ -1,41 +1,14 @@
 #pragma once
 
-#import "NveAppleSupport.h"
-
-#include <string_view>
+#import "NveAppleSceneReconciler.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Thin UIKit/AppKit view adapter protocol consumed by `NveAppleComponentHost`.
-@protocol NveAppleComponentViewAdapter <NSObject>
-
-- (NvePlatformView *)nveHostRootView;
-- (NveSurfaceConfig)nveSurfaceConfigForSurfaceId:(uint32_t)surfaceId;
-- (void)nveEmitEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload;
-- (NvePlatformView *)nveCreateNativeViewForNode:(const NveRenderNode &)node
-                                      semantics:(const nve::apple::NodeSemantics &)semantics;
-- (void)nveApplyRootBackgroundRgba:(uint32_t)rgba;
-- (void)nveUpdateNativeView:(NvePlatformView *)view
-                    forNode:(const NveRenderNode &)node
-                       text:(std::string_view)text
-                  semantics:(const nve::apple::NodeSemantics &)semantics
-                interactive:(BOOL)interactive;
-
-@optional
-/// Optional hook invoked right before a managed native view is removed and released.
-- (void)nveWillDestroyNativeView:(NvePlatformView *)view forNodeId:(uint32_t)nodeId;
-/// Optional container override (e.g. AppKit `NSScrollView.documentView`) for mounting children.
-- (NvePlatformView *)nveChildContainerForParentView:(NvePlatformView *)parentView;
-/// Optional scroll content-size hook invoked after laying out `NVE_NODE_KIND_SCROLL_VIEW` children.
-- (void)nveUpdateScrollView:(NvePlatformView *)scrollView contentSize:(CGSize)contentSize;
-
-@end
-
-/// Shared Apple (iOS & macOS) component-view lifecycle controller and incremental `O(changed)`
-/// `NveSceneView` reconciler.
+/// Shared Apple (iOS & macOS) component-view lifecycle controller.
 ///
-/// Owns `nve::NveRnComponentBridge`, the optional `dlopen` handle, and the mounted native view
-/// table while delegating UIKit/AppKit view creation, styling, and gesture wiring to its adapter.
+/// Owns `nve::NveRnComponentBridge`, the optional `dlopen` handle, and snapshot replay while
+/// delegating incremental `O(changed)` `NveSceneView` reconciliation to `NveAppleSceneReconciler`
+/// and UIKit/AppKit view creation/styling/gestures to its adapter.
 @interface NveAppleComponentHost : NSObject
 
 @property (nonatomic, readonly) uint32_t surfaceId;

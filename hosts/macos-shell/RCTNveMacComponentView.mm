@@ -1,4 +1,5 @@
 #import "RCTNveMacComponentView.h"
+#import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
 #import "NveAppleImageCache.h"
 
@@ -282,6 +283,11 @@
                                                  object:scroll.contentView];
       return scroll;
     }
+    case NVE_NODE_KIND_SKIA_CANVAS: {
+      NveAppleCanvasView *canvas = [[NveAppleCanvasView alloc] initWithFrame:NSZeroRect];
+      canvas.wantsLayer = YES;
+      return canvas;
+    }
     default: {
       NveFlippedContainerView *container =
           [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
@@ -343,6 +349,11 @@
     if (node.font_size > 0.0f) {
       field.font = [NSFont systemFontOfSize:static_cast<CGFloat>(node.font_size)];
     }
+  } else if ([view isKindOfClass:[NveAppleCanvasView class]]) {
+    NveAppleCanvasView *canvasView = (NveAppleCanvasView *)view;
+    const std::span<const uint8_t> drawBytes(
+        reinterpret_cast<const uint8_t *>(text.data()), text.size());
+    [canvasView updateDrawListBytes:drawBytes];
   }
 
   if (interactive) {

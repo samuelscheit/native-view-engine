@@ -17,6 +17,10 @@ inline std::string_view effective_node_text(const ShadowNodeEntry& entry) noexce
   if (entry.kind == NVE_COMP_IMAGE && !entry.image_src.empty()) {
     return std::string_view(entry.image_src);
   }
+  if (entry.kind == NVE_COMP_SKIA_CANVAS && !entry.draw_list.empty()) {
+    return std::string_view(
+        reinterpret_cast<const char*>(entry.draw_list.data()), entry.draw_list.size());
+  }
   return std::string_view(entry.text);
 }
 

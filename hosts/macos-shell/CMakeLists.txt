@@ -14,9 +14,11 @@ endif()
 set(NVE_APPLE_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../apple-common")
 
 add_library(nve_macos_shell_lib STATIC
+  "${NVE_APPLE_COMMON_DIR}/NveAppleCanvasView.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleImageCache.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleSupport.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleFabricHost.mm"
+  "${NVE_APPLE_COMMON_DIR}/NveAppleSceneReconciler.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost.mm"
   NveMacFabricHost.mm
   RCTNveMacComponentView.mm

@@ -100,6 +100,7 @@ struct ShadowNodeEntry {
   std::string custom_name;
   std::string text;
   std::string image_src;
+  std::vector<uint8_t> draw_list;
   std::vector<uint32_t> children;
   std::unique_ptr<RawPropMap> raw_props;
 };

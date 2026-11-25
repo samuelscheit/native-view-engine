@@ -1,4 +1,5 @@
 #import "RCTNveComponentView.h"
+#import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
 #import "NveAppleImageCache.h"
 
@@ -204,6 +205,10 @@
         view = field;
         break;
       }
+      case NVE_NODE_KIND_SKIA_CANVAS: {
+        view = [[NveAppleCanvasView alloc] initWithFrame:CGRectZero];
+        break;
+      }
       default:
         view = [[UIView alloc] initWithFrame:CGRectZero];
         break;
@@ -264,6 +269,11 @@
     if (node.font_size > 0.0f) {
       field.font = [UIFont systemFontOfSize:static_cast<CGFloat>(node.font_size)];
     }
+  } else if ([view isKindOfClass:[NveAppleCanvasView class]]) {
+    NveAppleCanvasView *canvasView = (NveAppleCanvasView *)view;
+    const std::span<const uint8_t> drawBytes(
+        reinterpret_cast<const uint8_t *>(text.data()), text.size());
+    [canvasView updateDrawListBytes:drawBytes];
   }
 
   view.userInteractionEnabled =

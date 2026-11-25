@@ -1,4 +1,5 @@
 #include "fabric_internal.hpp"
+#include "nve_draw_list.hpp"
 
 #include <cstdlib>
 
@@ -66,6 +67,10 @@ Dimension parse_flex_basis_prop(const RawPropValue& val) noexcept {
 bool is_image_src_prop_key(std::string_view key) noexcept {
   return key == "src" || key == "source" || key == "uri" || key == "image_src" ||
          key == "imageSrc";
+}
+
+bool is_draw_list_prop_key(std::string_view key) noexcept {
+  return key == "drawList" || key == "draw_list";
 }
 
 } // namespace
@@ -540,6 +545,33 @@ int32_t FabricHost::submit_frame(NveBufferSlice slice, NveFrameStats* out_stats)
             entry->image_src.clear();
           }
           if (entry->kind == NVE_COMP_IMAGE) {
+            mark_node_scene_dirty(*entry, kSceneDirtyText);
+          }
+        } else if (is_draw_list_prop_key(key)) {
+          bool changed = false;
+          if (const auto* bytes = std::get_if<std::vector<uint8_t>>(&prop_val)) {
+            if (entry->draw_list != *bytes) {
+              entry->draw_list = *bytes;
+              changed = true;
+            }
+          } else if (const auto* s = std::get_if<std::string>(&prop_val)) {
+            std::vector<uint8_t> decoded;
+            if (decode_draw_list_attr_bytes(*s, decoded) == DrawListError::Ok) {
+              if (entry->draw_list != decoded) {
+                entry->draw_list = std::move(decoded);
+                changed = true;
+              }
+            } else if (!entry->draw_list.empty()) {
+              entry->draw_list.clear();
+              changed = true;
+            }
+          } else if (std::holds_alternative<std::nullptr_t>(prop_val)) {
+            if (!entry->draw_list.empty()) {
+              entry->draw_list.clear();
+              changed = true;
+            }
+          }
+          if (entry->kind == NVE_COMP_SKIA_CANVAS && changed) {
             mark_node_scene_dirty(*entry, kSceneDirtyText);
           }
         }

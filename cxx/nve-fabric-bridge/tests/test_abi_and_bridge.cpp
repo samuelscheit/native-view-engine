@@ -1,4 +1,10 @@
 #include "test_common.hpp"
+#include "nve_draw_list.hpp"
+#include "nve_host_runtime.hpp"
+
+#include <array>
+#include <cstring>
+#include <limits>
 
 namespace nve_test {
 
@@ -100,6 +106,336 @@ void test_all_opcodes_and_custom_components() {
   assert(snaps.size() == 4);
 
   nve_fabric_host_destroy(host);
+
+  // 1b. Shared zero-alloc NVE_DRAW1 binary decoder + FabricHost -> NveSceneView text_slab roundtrip.
+  {
+    nve::DrawListEncoder draw_enc;
+    const std::array<nve::DrawPoint, 4> poly_pts = {
+        nve::DrawPoint{12.0f, 50.0f},
+        nve::DrawPoint{60.0f, 32.0f},
+        nve::DrawPoint{120.0f, 42.0f},
+        nve::DrawPoint{188.0f, 18.0f},
+    };
+    draw_enc.clear(nve::DrawColorRgba::rgba(11, 17, 32, 255))
+        .clip_rect(4.0f, 4.0f, 200.0f, 80.0f)
+        .fill_rect(8.0f, 12.0f, 40.0f, 24.0f, nve::DrawColorRgba::rgb(30, 41, 59))
+        .fill_rounded_rect(10.0f, 10.0f, 180.0f, 60.0f, 12.0f, nve::DrawColorRgba::rgb(15, 23, 42))
+        .stroke_line(12.0f, 40.0f, 188.0f, 40.0f, 1.5f, nve::DrawColorRgba::rgba(148, 163, 184, 128))
+        .stroke_polyline(poly_pts, 2.5f, nve::DrawColorRgba::rgb(56, 189, 248))
+        .fill_circle(188.0f, 18.0f, 4.0f, nve::DrawColorRgba::rgb(34, 197, 94))
+        .restore_clip();
+    assert(draw_enc.op_count() == 8u);
+    const std::vector<uint8_t> valid_bytes = draw_enc.finish();
+    // Exact byte-for-byte wire length matching Rust `canvas_ir.rs`:
+    // 15 (hdr) + 5 (Clear) + 17 (ClipRect) + 21 (FillRect) + 25 (FillRoundedRect)
+    // + 25 (StrokeLine) + 45 (StrokePolyline: 1+4+4+4+4*8) + 17 (FillCircle) + 1 (RestoreClip) = 171
+    assert(valid_bytes.size() == 171u);
+    assert(std::memcmp(valid_bytes.data(), "NVE_DRAW1", 9u) == 0);
+
+    // Decode from an intentionally unaligned offset (+1 byte) to verify unaligned-safe memcpy reads.
+    std::vector<uint8_t> unaligned(valid_bytes.size() + 1u, 0xCCu);
+    std::memcpy(unaligned.data() + 1u, valid_bytes.data(), valid_bytes.size());
+    const std::span<const uint8_t> unaligned_span(unaligned.data() + 1u, valid_bytes.size());
+
+    nve::DrawListHeader hdr{};
+    assert(nve::decode_draw_list_header(unaligned_span, hdr) == nve::DrawListError::Ok);
+    assert(hdr.version == nve::kDrawListVersion);
+    assert(hdr.op_count == 8u);
+
+    struct RecordingVisitor {
+      std::vector<uint8_t> order;
+      nve::DrawClearOp clear_op{};
+      nve::DrawClipRectOp clip_op{};
+      nve::DrawFillRectOp fill_rect_op{};
+      nve::DrawFillRoundedRectOp rounded_op{};
+      nve::DrawStrokeLineOp line_op{};
+      float poly_width{0.0f};
+      nve::DrawColorRgba poly_color{};
+      std::vector<nve::DrawPoint> poly_points;
+      nve::DrawFillCircleOp circle_op{};
+
+      void on_clear(const nve::DrawClearOp& op) {
+        order.push_back(1u);
+        clear_op = op;
+      }
+      void on_fill_rect(const nve::DrawFillRectOp& op) {
+        order.push_back(2u);
+        fill_rect_op = op;
+      }
+      void on_fill_rounded_rect(const nve::DrawFillRoundedRectOp& op) {
+        order.push_back(3u);
+        rounded_op = op;
+      }
+      void on_fill_circle(const nve::DrawFillCircleOp& op) {
+        order.push_back(4u);
+        circle_op = op;
+      }
+      void on_stroke_line(const nve::DrawStrokeLineOp& op) {
+        order.push_back(5u);
+        line_op = op;
+      }
+      void on_stroke_polyline(const nve::DrawStrokePolylineOp& op) {
+        order.push_back(6u);
+        poly_width = op.width;
+        poly_color = op.color;
+        poly_points.clear();
+        for (const nve::DrawPoint pt : op.points) {
+          poly_points.push_back(pt);
+        }
+        assert(op.points.size() == poly_points.size());
+        for (size_t i = 0u; i < poly_points.size(); ++i) {
+          assert(op.points[i] == poly_points[i]);
+        }
+      }
+      void on_clip_rect(const nve::DrawClipRectOp& op) {
+        order.push_back(7u);
+        clip_op = op;
+      }
+      void on_restore_clip(const nve::DrawRestoreClipOp&) { order.push_back(8u); }
+    };
+
+    RecordingVisitor rec{};
+    const auto dec = nve::decode_draw_list(unaligned_span, rec);
+    assert(dec.ok());
+    assert(dec.ops_decoded == 8u);
+    assert(dec.bytes_consumed == valid_bytes.size());
+    assert((rec.order == std::vector<uint8_t>{1u, 7u, 2u, 3u, 5u, 6u, 4u, 8u}));
+    assert(rec.clear_op.color == nve::DrawColorRgba::rgba(11, 17, 32, 255));
+    assert(approx_eq(rec.clip_op.x, 4.0f) && approx_eq(rec.clip_op.w, 200.0f));
+    assert(approx_eq(rec.fill_rect_op.x, 8.0f) && approx_eq(rec.fill_rect_op.h, 24.0f));
+    assert(rec.fill_rect_op.color == nve::DrawColorRgba::rgb(30, 41, 59));
+    assert(approx_eq(rec.rounded_op.radius, 12.0f));
+    assert(approx_eq(rec.line_op.width, 1.5f));
+    assert(rec.line_op.color == nve::DrawColorRgba::rgba(148, 163, 184, 128));
+    assert(approx_eq(rec.poly_width, 2.5f));
+    assert(rec.poly_color == nve::DrawColorRgba::rgb(56, 189, 248));
+    assert(rec.poly_points.size() == 4u);
+    assert(approx_eq(rec.poly_points[0].x, 12.0f) && approx_eq(rec.poly_points[0].y, 50.0f));
+    assert(approx_eq(rec.poly_points[3].x, 188.0f) && approx_eq(rec.poly_points[3].y, 18.0f));
+    assert(approx_eq(rec.circle_op.cx, 188.0f) && approx_eq(rec.circle_op.radius, 4.0f));
+    assert(rec.circle_op.color == nve::DrawColorRgba::rgb(34, 197, 94));
+
+    // Base64 attr string roundtrip (`nve-draw1;b64,...` and bare base64).
+    const std::string attr_b64 = nve::encode_draw_list_attr_base64(valid_bytes);
+    assert(attr_b64.rfind("nve-draw1;b64,", 0) == 0);
+    std::vector<uint8_t> decoded_b64;
+    assert(nve::decode_draw_list_attr_bytes(attr_b64, decoded_b64) == nve::DrawListError::Ok);
+    assert(decoded_b64 == valid_bytes);
+    const std::string_view bare_b64 =
+        std::string_view(attr_b64).substr(nve::kDrawListAttrPrefix.size());
+    assert(nve::decode_draw_list_attr_bytes(bare_b64, decoded_b64) == nve::DrawListError::Ok);
+    assert(decoded_b64 == valid_bytes);
+    assert(nve::decode_draw_list_attr_bytes("nve-draw1;b64,!!!", decoded_b64) ==
+           nve::DrawListError::InvalidBase64);
+    assert(nve::decode_draw_list_attr_bytes("nve-draw1;b64,AAAA", decoded_b64) ==
+           nve::DrawListError::Truncated);
+
+    // Every single truncation offset must fail with `Truncated`.
+    for (size_t cut = 0u; cut < valid_bytes.size(); ++cut) {
+      const auto r = nve::validate_draw_list(std::span<const uint8_t>(valid_bytes.data(), cut));
+      assert(r.error == nve::DrawListError::Truncated);
+    }
+
+    // Trailing byte rejected.
+    {
+      std::vector<uint8_t> trailing = valid_bytes;
+      trailing.push_back(0xAAu);
+      assert(nve::validate_draw_list(trailing).error == nve::DrawListError::TrailingBytes);
+    }
+
+    // Bad magic & unsupported version rejected.
+    {
+      std::vector<uint8_t> bad_magic = valid_bytes;
+      bad_magic[0] = 'X';
+      assert(nve::validate_draw_list(bad_magic).error == nve::DrawListError::BadMagic);
+
+      std::vector<uint8_t> bad_ver = valid_bytes;
+      bad_ver[9] = 99u;
+      bad_ver[10] = 0u;
+      assert(nve::validate_draw_list(bad_ver).error == nve::DrawListError::UnsupportedVersion);
+    }
+
+    // Oversized op_count (> kMaxDrawOps) and lying op_count rejected without allocating.
+    {
+      std::vector<uint8_t> huge_ops(valid_bytes.begin(), valid_bytes.begin() + 15);
+      const uint32_t over = static_cast<uint32_t>(nve::kMaxDrawOps + 1u);
+      std::memcpy(huge_ops.data() + 11u, &over, sizeof(uint32_t));
+      assert(nve::validate_draw_list(huge_ops).error == nve::DrawListError::OpCountExceedsLimit);
+
+      const uint32_t lying = static_cast<uint32_t>(nve::kMaxDrawOps);
+      std::memcpy(huge_ops.data() + 11u, &lying, sizeof(uint32_t));
+      assert(nve::validate_draw_list(huge_ops).error == nve::DrawListError::Truncated);
+    }
+
+    // Oversized polyline vertex count rejected without allocating.
+    {
+      std::vector<uint8_t> huge_poly(valid_bytes.begin(), valid_bytes.begin() + 15);
+      const uint32_t one = 1u;
+      std::memcpy(huge_poly.data() + 11u, &one, sizeof(uint32_t));
+      huge_poly.push_back(static_cast<uint8_t>(nve::DrawOpcode::StrokePolyline));
+      const float w = 2.0f;
+      const uint32_t c = 0xFFFFFFFFu;
+      const uint32_t pts = static_cast<uint32_t>(nve::kMaxPolylinePoints + 1u);
+      const uint8_t* pw = reinterpret_cast<const uint8_t*>(&w);
+      const uint8_t* pc = reinterpret_cast<const uint8_t*>(&c);
+      const uint8_t* pp = reinterpret_cast<const uint8_t*>(&pts);
+      huge_poly.insert(huge_poly.end(), pw, pw + 4u);
+      huge_poly.insert(huge_poly.end(), pc, pc + 4u);
+      huge_poly.insert(huge_poly.end(), pp, pp + 4u);
+      assert(nve::validate_draw_list(huge_poly).error ==
+             nve::DrawListError::PolylinePointCountExceedsLimit);
+    }
+
+    // Unknown opcode rejected.
+    {
+      std::vector<uint8_t> bad_op(valid_bytes.begin(), valid_bytes.begin() + 15);
+      const uint32_t one = 1u;
+      std::memcpy(bad_op.data() + 11u, &one, sizeof(uint32_t));
+      bad_op.push_back(0xFEu);
+      assert(nve::validate_draw_list(bad_op).error == nve::DrawListError::UnknownOpcode);
+    }
+
+    // Non-finite float (NaN, +Inf, -Inf) rejected in scalar op AND inside StrokePolyline vertex.
+    const std::array<float, 3> bad_floats = {
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+    };
+    for (float bf : bad_floats) {
+      nve::DrawListEncoder circle_enc;
+      circle_enc.fill_circle(10.0f, 10.0f, 5.0f, nve::DrawColorRgba::rgb(255, 255, 255));
+      std::vector<uint8_t> buf = circle_enc.finish();
+      std::memcpy(buf.data() + 16u, &bf, sizeof(float));
+      assert(nve::validate_draw_list(buf).error == nve::DrawListError::NonFiniteFloat);
+
+      nve::DrawListEncoder poly_enc;
+      const std::array<nve::DrawPoint, 2> pts = {
+          nve::DrawPoint{1.0f, 2.0f},
+          nve::DrawPoint{3.0f, 4.0f},
+      };
+      poly_enc.stroke_polyline(pts, 2.0f, nve::DrawColorRgba::rgb(255, 255, 255));
+      std::vector<uint8_t> pbuf = poly_enc.finish();
+      // Header(15) + tag(1) + width(4) + color(4) + count(4) + p0(8) = offset 36 (p1.x)
+      std::memcpy(pbuf.data() + 36u, &bf, sizeof(float));
+      assert(nve::validate_draw_list(pbuf).error == nve::DrawListError::NonFiniteFloat);
+    }
+
+    // Deterministic xorshift64 fuzzing across 1,000 mutated buffers (zero crashes / UB).
+    uint64_t rng = 0x5EEDCAFEBABE1234ULL;
+    auto next_u64 = [&]() -> uint64_t {
+      rng ^= rng << 13u;
+      rng ^= rng >> 7u;
+      rng ^= rng << 17u;
+      return rng;
+    };
+    for (size_t iter = 0u; iter < 1000u; ++iter) {
+      std::vector<uint8_t> m = valid_bytes;
+      const size_t flips = static_cast<size_t>(next_u64() % 4u + 1u);
+      for (size_t f = 0u; f < flips; ++f) {
+        m[static_cast<size_t>(next_u64() % m.size())] ^=
+            static_cast<uint8_t>(next_u64() & 0xFFu);
+      }
+      m.resize(static_cast<size_t>(next_u64() % (m.size() + 1u)));
+      (void)nve::validate_draw_list(m);
+    }
+
+    // FabricHost -> NveSceneView text_slab roundtrip for NVE_COMP_SKIA_CANVAS (zero ABI break).
+    NveSurfaceConfig scfg{
+        .surface_id = 77u, .width = 320.0f, .height = 160.0f, .scale_factor = 2.0f};
+    NveFabricHostHandle canvas_host = nve_fabric_host_create(scfg);
+    assert(canvas_host != nullptr);
+
+    nve::DrawListEncoder spark_enc;
+    const std::array<float, 6> samples = {12.0f, 28.0f, 19.0f, 45.0f, 36.0f, 62.0f};
+    spark_enc.sparkline(
+        samples,
+        240.0f,
+        80.0f,
+        nve::DrawColorRgba::rgb(56, 189, 248),
+        nve::DrawColorRgba::rgb(15, 23, 42));
+    const std::vector<uint8_t> spark_bytes = spark_enc.finish();
+
+    // Frame 1: raw binary `drawList` via RawPropValue::Bytes.
+    CommandBufferEncoder f1(77u, 1u);
+    f1.create_node(2u, NVE_COMP_SKIA_CANVAS);
+    nve::LayoutProps cl{};
+    cl.width = {1u, 240.0f};
+    cl.height = {1u, 80.0f};
+    f1.set_layout(2u, cl);
+    f1.set_raw_prop_bytes(2u, "drawList", spark_bytes);
+    f1.set_children(NVE_ROOT_NODE_ID, {2u});
+    f1.commit(true);
+    assert(nve_fabric_host_submit_frame(canvas_host, f1.finish(), nullptr) == 0);
+
+    const NveSceneView sv1 = nve::fabric_host_scene_view(canvas_host);
+    assert(sv1.schema_hash == NVE_SCENE_SCHEMA_HASH);
+    const NveRenderNode* canvas_node1 = nullptr;
+    for (uint32_t i = 0u; i < sv1.node_count; ++i) {
+      if (sv1.nodes[i].node_id == 2u) {
+        canvas_node1 = &sv1.nodes[i];
+        break;
+      }
+    }
+    assert(canvas_node1 != nullptr);
+    assert(canvas_node1->kind == NVE_NODE_KIND_SKIA_CANVAS);
+    const std::string_view slab_sv1 = nve::scene_node_text(sv1, *canvas_node1);
+    assert(slab_sv1.size() == spark_bytes.size());
+    assert(std::memcmp(slab_sv1.data(), spark_bytes.data(), spark_bytes.size()) == 0);
+    assert(nve::validate_draw_list(
+               std::span<const uint8_t>(
+                   reinterpret_cast<const uint8_t*>(slab_sv1.data()), slab_sv1.size()))
+               .ok());
+
+    // Frame 2: identical `drawList` bytes must NOT dirty the scene node.
+    CommandBufferEncoder f2(77u, 2u);
+    f2.set_raw_prop_bytes(2u, "drawList", spark_bytes);
+    f2.commit(true);
+    assert(nve_fabric_host_submit_frame(canvas_host, f2.finish(), nullptr) == 0);
+    const NveSceneView sv2 = nve::fabric_host_scene_view(canvas_host);
+    assert(sv2.dirty_count == 0u);
+
+    // Frame 3: update via `draw_list` snake_case key with `nve-draw1;b64,` base64 string fallback.
+    CommandBufferEncoder f3(77u, 3u);
+    f3.set_raw_prop_string(2u, "draw_list", attr_b64);
+    f3.commit(true);
+    assert(nve_fabric_host_submit_frame(canvas_host, f3.finish(), nullptr) == 0);
+    const NveSceneView sv3 = nve::fabric_host_scene_view(canvas_host);
+    assert(sv3.dirty_count == 1u);
+    const NveRenderNode& dirty_node3 = sv3.nodes[sv3.dirty_indices[0]];
+    assert(dirty_node3.node_id == 2u);
+    const std::string_view slab_sv3 = nve::scene_node_text(sv3, dirty_node3);
+    assert(slab_sv3.size() == valid_bytes.size());
+    assert(std::memcmp(slab_sv3.data(), valid_bytes.data(), valid_bytes.size()) == 0);
+
+    // Verify Frame-0 serialization preserves `draw_list` across replay into a fresh host.
+    const std::vector<uint8_t> frame0_buf = nve::fabric_host_serialize_frame0(canvas_host, 3u);
+    NveFabricHostHandle replay_host = nve_fabric_host_create(scfg);
+    assert(nve_fabric_host_submit_frame(
+               replay_host, NveBufferSlice{frame0_buf.data(), frame0_buf.size()}, nullptr) == 0);
+    const NveSceneView rsv = nve::fabric_host_scene_view(replay_host);
+    bool found_replayed_canvas = false;
+    for (uint32_t i = 0u; i < rsv.node_count; ++i) {
+      if (rsv.nodes[i].node_id == 2u) {
+        const std::string_view rslab = nve::scene_node_text(rsv, rsv.nodes[i]);
+        assert(rslab.size() == valid_bytes.size());
+        assert(std::memcmp(rslab.data(), valid_bytes.data(), valid_bytes.size()) == 0);
+        found_replayed_canvas = true;
+      }
+    }
+    assert(found_replayed_canvas);
+    nve_fabric_host_destroy(replay_host);
+
+    // Frame 4: clear `drawList` via null -> text_slab span becomes empty and marks node dirty.
+    CommandBufferEncoder f4(77u, 4u);
+    f4.set_raw_prop_null(2u, "drawList");
+    f4.commit(true);
+    assert(nve_fabric_host_submit_frame(canvas_host, f4.finish(), nullptr) == 0);
+    const NveSceneView sv4 = nve::fabric_host_scene_view(canvas_host);
+    assert(sv4.dirty_count == 1u);
+    assert(sv4.nodes[sv4.dirty_indices[0]].text_len == 0u);
+
+    nve_fabric_host_destroy(canvas_host);
+  }
 }
 
 // 2. Test corrupt buffer error codes thoroughly.

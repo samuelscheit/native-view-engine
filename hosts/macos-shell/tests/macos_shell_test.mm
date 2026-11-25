@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "NveAppleCanvasView.h"
 #import "NveAppleImageCache.h"
 #import "NveMacFabricHost.h"
 #import "RCTNveMacComponentView.h"
@@ -821,6 +822,142 @@ struct ImageScrollIncrementalApp {
   }
 };
 
+struct CanvasSparklineApp {
+  uint32_t surface_id{1};
+  int stage{0};
+  std::vector<uint8_t> draw_bytes;
+  std::string draw_b64;
+  std::vector<uint8_t> cmd_buf;
+  static inline CanvasSparklineApp *last_instance = nullptr;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto *self = new CanvasSparklineApp();
+    self->surface_id = sid;
+    // Studio-style rising telemetry sparkline: bg=(15,23,42), stroke=(56,189,248)
+    nve::DrawListEncoder enc;
+    const std::array<float, 6> samples = {10.0f, 18.0f, 25.0f, 42.0f, 68.0f, 95.0f};
+    enc.sparkline(
+        samples,
+        240.0f,
+        80.0f,
+        nve::DrawColorRgba::rgb(56, 189, 248),
+        nve::DrawColorRgba::rgb(15, 23, 42));
+    self->draw_bytes = enc.finish();
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto *self = static_cast<CanvasSparklineApp *>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+  template <typename T>
+  void push(T v) {
+    const auto *p = reinterpret_cast<const uint8_t *>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto *self = static_cast<CanvasSparklineApp *>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0u;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1); self->push<float>(w);
+      self->push<uint8_t>(1); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0); self->push<float>(0.0f); }
+      self->push<uint8_t>(0); self->push<uint8_t>(0); self->push<uint8_t>(0);
+      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_bytes = [&](uint32_t id, std::string_view k, const std::vector<uint8_t> &b) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(5);
+      self->push<uint32_t>(static_cast<uint32_t>(b.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), b.begin(), b.end());
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+
+    if (frame_id == 1u) {
+      create_node(2u, NVE_COMP_SKIA_CANVAS);
+      set_box(2u, 240.0f, 80.0f);
+      set_raw_bytes(2u, "drawList", self->draw_bytes);
+      set_children(NVE_ROOT_NODE_ID, {2u});
+    } else if (self->stage == 1) {
+      set_raw_bytes(2u, "drawList", self->draw_bytes);
+    } else if (self->stage == 2) {
+      set_raw_str(2u, "draw_list", self->draw_b64);
+    }
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events(NveAppHandle, NveBufferSlice) { return 0u; }
+  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+    auto *self = static_cast<CanvasSparklineApp *>(h);
+    for (uint32_t i = 0u; i < count; ++i) {
+      const auto k = nve::str_slice_view(entries[i].key);
+      if (k == "stage" && entries[i].value.tag == NVE_VAL_I64) {
+        self->stage = static_cast<int>(entries[i].value.data.i64_val);
+      } else if (k == "b64" && entries[i].value.tag == NVE_VAL_STR) {
+        self->draw_b64 = std::string(nve::str_slice_view(entries[i].value.data.str_val));
+      } else if (k == "bytes" && entries[i].value.tag == NVE_VAL_BYTES) {
+        const auto b = entries[i].value.data.bytes_val;
+        self->draw_bytes.assign(b.ptr, b.ptr + b.len);
+      }
+    }
+    return 1u;
+  }
+  static NveBufferSlice drain_emitted_events(NveAppHandle) { return {nullptr, 0u}; }
+  static const void *get_interface(uint32_t interface_id) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveComponentApi kComp{nullptr, &drain_emitted_events, &set_props_direct};
+    if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
+    if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
 } // namespace
 
 @interface TestMacComponentDelegate : NSObject <RCTNveMacComponentViewDelegate>
@@ -1634,6 +1771,159 @@ int main() {
       assert([sceneView nativeViewForNodeId:6] == nil);
       assert(removableView.superview == nil);
       assert([sceneView nativeViewForNodeId:5] == tickLabel);
+    }
+
+    // 11. Shared Apple CoreGraphics `NveAppleCanvasView` + `NVE_DRAW1` sparkline offscreen
+    //     CGBitmapContext pixel verification + caching + corrupt-buffer survival!
+    {
+      RCTNveMacComponentView *canvasHostView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 260, 100)];
+      assert([canvasHostView attachNveInterface:&CanvasSparklineApp::get_interface surfaceId:88]);
+      assert(CanvasSparklineApp::last_instance != nullptr);
+
+      NSView *rawCanvas = [canvasHostView nativeViewForNodeId:2u];
+      assert(rawCanvas != nil && [rawCanvas isKindOfClass:[NveAppleCanvasView class]]);
+      NveAppleCanvasView *canvasView = (NveAppleCanvasView *)rawCanvas;
+      assert(canvasView.isFlipped == YES);
+      assert(approx_eq(canvasView.frame.size.width, 240.0, 0.5));
+      assert(approx_eq(canvasView.frame.size.height, 80.0, 0.5));
+
+      const std::span<const uint8_t> cachedBytes = [canvasView drawListBytes];
+      assert(cachedBytes.size() == CanvasSparklineApp::last_instance->draw_bytes.size());
+      assert(canvasView.redrawRequestCount == 1u);
+
+      // Identical payload must NOT trigger a redundant setNeedsDisplay.
+      assert([canvasView updateDrawListBytes:cachedBytes] == NO);
+      assert(canvasView.redrawRequestCount == 1u);
+
+      // Render NveAppleCanvasView into a real 240x80 offscreen CGBitmapContext via drawRect:.
+      constexpr size_t kW = 240u;
+      constexpr size_t kH = 80u;
+      std::vector<uint8_t> rgba(kW * kH * 4u, 0u);
+      CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+      assert(colorSpace != nullptr);
+      CGContextRef bitmapCtx = CGBitmapContextCreate(
+          rgba.data(),
+          kW,
+          kH,
+          8u,
+          kW * 4u,
+          colorSpace,
+          static_cast<uint32_t>(kCGImageAlphaPremultipliedLast) |
+              static_cast<uint32_t>(kCGBitmapByteOrder32Big));
+      assert(bitmapCtx != nullptr);
+
+      auto pixel_at = [&](size_t x, size_t y) -> std::array<uint8_t, 4> {
+        const size_t idx = (y * kW + x) * 4u;
+        return {rgba[idx], rgba[idx + 1u], rgba[idx + 2u], rgba[idx + 3u]};
+      };
+
+      // Apply AppKit flipped top-left coordinate transform matching NSView.isFlipped == YES.
+      CGContextSaveGState(bitmapCtx);
+      CGContextTranslateCTM(bitmapCtx, 0.0, static_cast<CGFloat>(kH));
+      CGContextScaleCTM(bitmapCtx, 1.0, -1.0);
+      NSGraphicsContext *nsCtx = [NSGraphicsContext graphicsContextWithCGContext:bitmapCtx flipped:YES];
+      [NSGraphicsContext saveGraphicsState];
+      [NSGraphicsContext setCurrentContext:nsCtx];
+      [canvasView drawRect:canvasView.bounds];
+      [NSGraphicsContext restoreGraphicsState];
+      CGContextRestoreGState(bitmapCtx);
+
+      // Verify painted card background (15, 23, 42, 255) in untouched interior region.
+      const auto bgPx = pixel_at(20u, 22u);
+      assert(bgPx[0] == 15u && bgPx[1] == 23u && bgPx[2] == 42u && bgPx[3] == 255u);
+
+      // Verify exact non-background sparkline stroke & terminal dot pixels (56, 189, 248).
+      // Rising sparkline [10..95] has terminal point at (pad_x + plot_w, pad_y) = (~230, ~11)
+      // in top-left coordinates (proving flipped orientation!).
+      size_t cyanStrokePixels = 0u;
+      size_t nonBgPixels = 0u;
+      for (size_t y = 0u; y < kH; ++y) {
+        for (size_t x = 0u; x < kW; ++x) {
+          const auto px = pixel_at(x, y);
+          if (px[3] > 0u && !(px[0] == 15u && px[1] == 23u && px[2] == 42u)) {
+            ++nonBgPixels;
+          }
+          if (px[2] > 200u && px[1] > 140u && px[0] < 100u && px[3] == 255u) {
+            ++cyanStrokePixels;
+          }
+        }
+      }
+      assert(nonBgPixels > 100u);
+      assert(cyanStrokePixels > 80u);
+
+      // Terminal dot at top-right (230, 11) must be exact stroke cyan (56, 189, 248, 255),
+      // while bottom-right (230, 68) is NOT the terminal dot!
+      const auto topDotPx = pixel_at(230u, 11u);
+      assert(topDotPx[0] == 56u && topDotPx[1] == 189u && topDotPx[2] == 248u && topDotPx[3] == 255u);
+
+      // Verify ClipRect + RestoreClip semantics via direct base64 string update through RCTNveMacComponentView!
+      nve::DrawListEncoder clipEnc;
+      clipEnc.clear(nve::DrawColorRgba::rgb(10, 10, 10))
+          .clip_rect(0.0f, 0.0f, 40.0f, 40.0f)
+          .fill_rect(0.0f, 0.0f, 120.0f, 80.0f, nve::DrawColorRgba::rgb(250, 20, 20))
+          .restore_clip()
+          .fill_rect(100.0f, 10.0f, 20.0f, 20.0f, nve::DrawColorRgba::rgb(20, 240, 40));
+      const std::string clipB64 = clipEnc.to_attr_string();
+      NSString *clipB64Ns = [NSString stringWithUTF8String:clipB64.c_str()];
+      NSDictionary<NSString *, id> *clipProps = @{@"stage" : @2, @"b64" : clipB64Ns};
+      assert([canvasHostView applyPropsDictionary:clipProps]);
+      assert(canvasHostView.nveLastReconciledDirtyCount == 1u);
+      assert(canvasView.redrawRequestCount == 2u);
+
+      std::fill(rgba.begin(), rgba.end(), 0u);
+      CGContextSaveGState(bitmapCtx);
+      CGContextTranslateCTM(bitmapCtx, 0.0, static_cast<CGFloat>(kH));
+      CGContextScaleCTM(bitmapCtx, 1.0, -1.0);
+      const auto clipRes = [canvasView renderIntoContext:bitmapCtx bounds:canvasView.bounds];
+      CGContextRestoreGState(bitmapCtx);
+      assert(clipRes.ok() && clipRes.ops_decoded == 5u);
+      // Inside clip (20, 20) -> red (250, 20, 20)
+      const auto insideClip = pixel_at(20u, 20u);
+      assert(insideClip[0] == 250u && insideClip[1] == 20u && insideClip[2] == 20u);
+      // Clipped out region (60, 20) -> remains clear background (10, 10, 10)
+      const auto outsideClip = pixel_at(60u, 20u);
+      assert(outsideClip[0] == 10u && outsideClip[1] == 10u && outsideClip[2] == 10u);
+      // After RestoreClip (110, 20) -> green (20, 240, 40)
+      const auto afterRestore = pixel_at(110u, 20u);
+      assert(afterRestore[0] == 20u && afterRestore[1] == 240u && afterRestore[2] == 40u);
+
+      // Corrupt-buffer survival: truncated, bad magic, NaN float, and unbalanced ClipRect.
+      const std::vector<uint8_t> corruptTrunc = {'N', 'V', 'E', '_', 'D', 'R', 'A', 'W', '1', 1, 0};
+      NSData *corruptData = [NSData dataWithBytes:corruptTrunc.data() length:corruptTrunc.size()];
+      NSDictionary<NSString *, id> *corruptProps = @{@"stage" : @1, @"bytes" : corruptData};
+      assert([canvasHostView applyPropsDictionary:corruptProps]);
+      assert(canvasView.redrawRequestCount == 3u);
+      CGContextSaveGState(bitmapCtx);
+      CGContextTranslateCTM(bitmapCtx, 0.0, static_cast<CGFloat>(kH));
+      CGContextScaleCTM(bitmapCtx, 1.0, -1.0);
+      const auto corruptRes = [canvasView renderIntoContext:bitmapCtx bounds:canvasView.bounds];
+      CGContextRestoreGState(bitmapCtx);
+      assert(!corruptRes.ok() && corruptRes.error == nve::DrawListError::Truncated);
+
+      // Unbalanced ClipRect (never closed) + extra RestoreClip must not corrupt CGContext GState!
+      nve::DrawListEncoder unbalEnc;
+      unbalEnc.restore_clip()
+          .clip_rect(0.0f, 0.0f, 20.0f, 20.0f)
+          .fill_rect(2.0f, 2.0f, 10.0f, 10.0f, nve::DrawColorRgba::rgb(255, 255, 0));
+      const std::vector<uint8_t> unbalBytes = unbalEnc.finish();
+      CGContextSaveGState(bitmapCtx);
+      CGContextTranslateCTM(bitmapCtx, 0.0, static_cast<CGFloat>(kH));
+      CGContextScaleCTM(bitmapCtx, 1.0, -1.0);
+      const auto unbalRes =
+          nve::apple::render_draw_list_to_cg_context(bitmapCtx, canvasView.bounds, unbalBytes);
+      assert(unbalRes.ok());
+      // Prove GState was fully restored: painting at (180, 50) (outside the unclosed 20x20 clip!) succeeds.
+      nve::DrawListEncoder recoveryEnc;
+      recoveryEnc.fill_rect(170.0f, 40.0f, 20.0f, 20.0f, nve::DrawColorRgba::rgb(200, 100, 250));
+      const std::vector<uint8_t> recBytes = recoveryEnc.finish();
+      assert(nve::apple::render_draw_list_to_cg_context(bitmapCtx, canvasView.bounds, recBytes).ok());
+      CGContextRestoreGState(bitmapCtx);
+      const auto recPx = pixel_at(180u, 50u);
+      assert(recPx[0] == 200u && recPx[1] == 100u && recPx[2] == 250u && recPx[3] == 255u);
+
+      CGContextRelease(bitmapCtx);
+      CGColorSpaceRelease(colorSpace);
     }
 
     std::cout << "nve_macos_shell_test passed ("
