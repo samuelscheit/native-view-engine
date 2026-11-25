@@ -25,8 +25,17 @@ hosts/flutter-plugin/pubspec.lock
 *.perfetto.json
 *.trace.json
 
-# Mobile shells
+# Mobile & desktop shells
 hosts/ios-shell/Pods/
 hosts/ios-shell/*.xcworkspace
 hosts/android-shell/.gradle/
+hosts/android-shell/build-host/
 hosts/android-shell/local.properties
+hosts/compose-kit/.gradle/
+hosts/compose-kit/build/
+
+# JVM / OpenJ9 crash dumps
+core.*.dmp
+javacore.*.txt
+Snap.*.trc
+hs_err_pid*.log
