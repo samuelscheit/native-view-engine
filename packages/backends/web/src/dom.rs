@@ -347,6 +347,30 @@ impl WebBackend {
         {
             container.set_text_content(Some(text));
         }
+        // Sync native top-layer `<dialog>` / `[popover]` state once children are connected.
+        for &cid in new_children {
+            self.sync_connected_overlay_state(cid);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn sync_connected_overlay_state(&self, node_id: NodeId) {
+        let (Some(mirror), Some(dom_el)) = (self.nodes.get(&node_id), self.dom_nodes.get(&node_id)) else {
+            return;
+        };
+        if mirror.tag == "dialog" {
+            let is_open = mirror.raw_props.get("open").is_some_and(is_truthy_raw_prop);
+            let is_modal = mirror
+                .raw_props
+                .get("ariaModal")
+                .or_else(|| mirror.raw_props.get("aria-modal"))
+                .is_some_and(is_truthy_raw_prop);
+            crate::semantic_attrs::sync_dialog_open_state(dom_el, is_open, is_modal);
+        } else if mirror.raw_props.contains_key("popover")
+            && let Some(open_val) = mirror.raw_props.get("data-nve-open")
+        {
+            crate::semantic_attrs::nve_sync_popover_state(dom_el, is_truthy_raw_prop(open_val));
+        }
     }
 
     /// Writes or removes `data-nve-draw-ops` from [`crate::MirrorElement::draw_ops_attr`].
@@ -382,19 +406,38 @@ impl WebBackend {
 
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn sync_dom_raw_prop(&mut self, node_id: NodeId, key: &str, value: &RawPropValue) {
-        // Styles, draw lists, native view props and reserved keys are never HTML attributes
-        // (this also runs for every stored prop when a semantic retag rebuilds the element).
-        if raw_prop_route(key) != RawPropRoute::Attribute {
+        // Styles, draw lists, native view props, tag-only metadata, and reserved keys are never HTML attributes.
+        if raw_prop_route(key) != RawPropRoute::Attribute
+            || crate::semantic_attrs::is_tag_only_raw_prop(key)
+        {
             return;
         }
         let Some(dom_el) = self.dom_nodes.get(&node_id) else {
             return;
         };
-        let kind = self
+        let (kind, tag, is_modal, has_popover) = self
             .nodes
             .get(&node_id)
-            .map(|n| n.kind)
-            .unwrap_or(ComponentKind::View);
+            .map(|n| {
+                (
+                    n.kind,
+                    n.tag,
+                    n.raw_props
+                        .get("ariaModal")
+                        .or_else(|| n.raw_props.get("aria-modal"))
+                        .is_some_and(is_truthy_raw_prop),
+                    n.raw_props.contains_key("popover"),
+                )
+            })
+            .unwrap_or((ComponentKind::View, "div", false, false));
+
+        if tag == "dialog" && key == "open" {
+            crate::semantic_attrs::sync_dialog_open_state(dom_el, is_truthy_raw_prop(value), is_modal);
+            return;
+        }
+        if has_popover && key == "data-nve-open" {
+            crate::semantic_attrs::nve_sync_popover_state(dom_el, is_truthy_raw_prop(value));
+        }
 
         if let Some(mapped) = map_a11y_or_input_attr(kind, key, value) {
             match mapped {
@@ -414,16 +457,20 @@ impl WebBackend {
             return;
         }
 
+        let attr_key = crate::semantic_attrs::canonical_html_attr_name(key).unwrap_or(key);
         let is_image = kind == ComponentKind::Image;
         match value {
             RawPropValue::Null => {
-                remove_attr_if_present(dom_el, key);
+                remove_attr_if_present(dom_el, attr_key);
                 if is_image && key == "uri" {
                     remove_attr_if_present(dom_el, "src");
                 }
             }
-            RawPropValue::Bool(true) => set_attr_if_changed(dom_el, key, ""),
-            RawPropValue::Bool(false) => remove_attr_if_present(dom_el, key),
+            RawPropValue::Bool(true) => {
+                let val = if attr_key == "popover" { "auto" } else { "" };
+                set_attr_if_changed(dom_el, attr_key, val);
+            }
+            RawPropValue::Bool(false) => remove_attr_if_present(dom_el, attr_key),
             RawPropValue::String(s) => {
                 if key == "value" {
                     #[cfg(feature = "hydrate")]
@@ -448,17 +495,17 @@ impl WebBackend {
                 if is_image && key == "uri" {
                     set_attr_if_changed(dom_el, "src", s);
                 }
-                set_attr_if_changed(dom_el, key, s);
+                set_attr_if_changed(dom_el, attr_key, s);
             }
             RawPropValue::I64(n) => {
                 self.attr_scratch.clear();
                 nve_abi::num::write_i64(&mut self.attr_scratch, *n);
-                set_attr_if_changed(dom_el, key, &self.attr_scratch);
+                set_attr_if_changed(dom_el, attr_key, &self.attr_scratch);
             }
             RawPropValue::F64(n) => {
                 self.attr_scratch.clear();
                 nve_abi::num::write_f64(&mut self.attr_scratch, *n);
-                set_attr_if_changed(dom_el, key, &self.attr_scratch);
+                set_attr_if_changed(dom_el, attr_key, &self.attr_scratch);
             }
             RawPropValue::Bytes(_) => {}
         }

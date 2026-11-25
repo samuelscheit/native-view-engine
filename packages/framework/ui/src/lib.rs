@@ -4,6 +4,8 @@
 pub mod components;
 pub mod focus;
 pub mod form;
+pub mod form_controller;
+pub mod form_draft;
 pub mod history;
 pub mod positioning;
 #[cfg(feature = "spatial-focus")]
@@ -18,18 +20,20 @@ pub use components::{
 pub use components::{
     add_days, add_months_clamped, add_years_clamped, civil_from_days, days_from_civil,
     days_in_month, default_combobox_filter, effective_bottom_inset, end_of_week, start_of_week,
-    throw_error, throw_ui_error, ui_error, use_effective_bottom_inset, use_keyboard_insets,
-    use_toast, Badge, BadgeVariant, BottomSheet, BottomSheetState, Button, ButtonSize,
-    ButtonVariant, CalendarCell, CalendarMonthGrid, CapturedError, Card, CardVariant, Checkbox,
-    Col, Combobox, ComboboxAction, ComboboxOption, ComboboxState, DateConstraints, DatePicker,
-    DatePickerAction, DatePickerState, DateRange, DateRangeAction, DateRangePicker,
-    DateRangePickerState, DateSegment, DateSegmentInput, DateSegmentOrder, Dialog,
-    DisabledDatePredicate, DragHandoff, DropdownMenu, ErrorBoundary, ErrorBoundaryReset,
-    ErrorContext, ErrorFallback, HourCycle, IconButton, Input, KeyboardAvoidingView,
-    KeyboardInsets, MenuItem, Modal, Popover, RangeEndpoint, Row, SegmentKeyOutcome, Separator,
-    SheetDetent, SheetSnapOutcome, SplitBound, SplitPane, SplitPaneState, Stack, Switch, TabList,
-    TabPanel, TabTrigger, TabsRoot, TimeOfDay, ToastController, ToastItem, ToastLive, ToastOptions,
-    ToastProvider, ToastQueue, ToastVariant, ToastViewport, Tooltip, UiError, UiErrorReport,
+    throw_error, throw_ui_error, ui_error, use_effective_bottom_inset, use_form_context,
+    use_keyboard_insets, use_toast, Accordion, AccordionItem, Badge, BadgeVariant, BottomSheet,
+    BottomSheetState, Button, ButtonSize, ButtonVariant, CalendarCell, CalendarMonthGrid,
+    CapturedError, Card, CardVariant, Checkbox, Col, Combobox, ComboboxAction, ComboboxOption,
+    ComboboxState, DateConstraints, DatePicker, DatePickerAction, DatePickerState, DateRange,
+    DateRangeAction, DateRangePicker, DateRangePickerState, DateSegment, DateSegmentInput,
+    DateSegmentOrder, Dialog, DisabledDatePredicate, Disclosure, DisclosureSpring, DragHandoff,
+    DropdownMenu, ErrorBoundary, ErrorBoundaryReset, ErrorContext, ErrorFallback, Form, FormField,
+    FormMethod, FormSubmitButton, FormSubmitPayload, HourCycle, IconButton, Input,
+    KeyboardAvoidingView, KeyboardInsets, MenuItem, Modal, Popover, RangeEndpoint, Row,
+    SegmentKeyOutcome, Separator, SheetDetent, SheetSnapOutcome, SplitBound, SplitPane,
+    SplitPaneState, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot, TimeOfDay,
+    ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue, ToastVariant,
+    ToastViewport, Tooltip, UiError, UiErrorReport,
 };
 pub use nve_dioxus::{AutofillHint, InputMode};
 pub use focus::{
@@ -37,6 +41,14 @@ pub use focus::{
     FocusTrap, FocusTrapAction, FocusableEntry, Orientation, RovingFocus,
 };
 pub use form::{FieldHandle, FieldState, FormState, ValidationToken};
+#[cfg(target_arch = "wasm32")]
+pub use form_draft::BrowserLocalStorageFormDraftStorage;
+pub use form_draft::{
+    decode_form_draft, encode_form_draft, FormController, FormDraftError, FormDraftStorage,
+    FormDraftStore, MemoryFormDraftStorage, NativeMmapFormDraftStorage,
+    StringKeyValueDraftBackend, StringKeyValueFormDraftStorage, DEFAULT_MAX_FORM_DRAFT_BYTES,
+    FORM_DRAFT_KEY_PREFIX, FORM_DRAFT_MAGIC, FORM_DRAFT_SCHEMA_VERSION,
+};
 pub use history::UndoRedoStack;
 pub use positioning::{
     compute_overlay_position, point_in_safe_polygon, Alignment, ComputedPosition, Placement, Point,
@@ -67,19 +79,20 @@ pub mod prelude {
     pub use crate::components::{
         add_days, add_months_clamped, add_years_clamped, civil_from_days, days_from_civil,
         days_in_month, default_combobox_filter, effective_bottom_inset, end_of_week, start_of_week,
-        throw_error, throw_ui_error, ui_error, use_effective_bottom_inset, use_keyboard_insets,
-        use_toast, Badge, BadgeVariant, BottomSheet, BottomSheetState, Button, ButtonSize,
-        ButtonVariant, CalendarCell, CalendarMonthGrid, CapturedError, Card, CardVariant, Checkbox,
-        Col, Combobox, ComboboxAction, ComboboxOption, ComboboxState, DateConstraints, DatePicker,
-        DatePickerAction, DatePickerState, DateRange, DateRangeAction, DateRangePicker,
-        DateRangePickerState, DateSegment, DateSegmentInput, DateSegmentOrder, Dialog,
-        DisabledDatePredicate, DragHandoff, DropdownMenu, ErrorBoundary as UiErrorBoundary,
-        ErrorBoundaryReset, ErrorContext, ErrorFallback, HourCycle, IconButton, Input,
-        KeyboardAvoidingView, KeyboardInsets, MenuItem, Modal, Popover, RangeEndpoint, Row,
-        SegmentKeyOutcome, Separator, SheetDetent, SheetSnapOutcome, SplitBound, SplitPane,
-        SplitPaneState, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot, TimeOfDay,
-        ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue, ToastVariant,
-        ToastViewport, Tooltip, UiError, UiErrorReport,
+        throw_error, throw_ui_error, ui_error, use_effective_bottom_inset, use_form_context,
+        use_keyboard_insets, use_toast, Accordion, AccordionItem, Badge, BadgeVariant, BottomSheet,
+        BottomSheetState, Button, ButtonSize, ButtonVariant, CalendarCell, CalendarMonthGrid,
+        CapturedError, Card, CardVariant, Checkbox, Col, Combobox, ComboboxAction, ComboboxOption,
+        ComboboxState, DateConstraints, DatePicker, DatePickerAction, DatePickerState, DateRange,
+        DateRangeAction, DateRangePicker, DateRangePickerState, DateSegment, DateSegmentInput,
+        DateSegmentOrder, Dialog, DisabledDatePredicate, Disclosure, DisclosureSpring, DragHandoff,
+        DropdownMenu, ErrorBoundary as UiErrorBoundary, ErrorBoundaryReset, ErrorContext,
+        ErrorFallback, Form, FormField, FormMethod, FormSubmitButton, FormSubmitPayload, HourCycle,
+        IconButton, Input, KeyboardAvoidingView, KeyboardInsets, MenuItem, Modal, Popover,
+        RangeEndpoint, Row, SegmentKeyOutcome, Separator, SheetDetent, SheetSnapOutcome,
+        SplitBound, SplitPane, SplitPaneState, Stack, Switch, TabList, TabPanel, TabTrigger,
+        TabsRoot, TimeOfDay, ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider,
+        ToastQueue, ToastVariant, ToastViewport, Tooltip, UiError, UiErrorReport,
     };
     pub use nve_dioxus::{AutofillHint, InputMode};
     pub use crate::focus::{
@@ -87,6 +100,13 @@ pub mod prelude {
         FocusableEntry, Orientation, RovingFocus,
     };
     pub use crate::form::{FieldHandle, FieldState, FormState, ValidationToken};
+    #[cfg(target_arch = "wasm32")]
+    pub use crate::form_draft::BrowserLocalStorageFormDraftStorage;
+    pub use crate::form_draft::{
+        decode_form_draft, encode_form_draft, FormController, FormDraftError, FormDraftStorage,
+        FormDraftStore, MemoryFormDraftStorage, NativeMmapFormDraftStorage,
+        StringKeyValueDraftBackend, StringKeyValueFormDraftStorage,
+    };
     pub use crate::history::UndoRedoStack;
     pub use crate::positioning::{
         compute_overlay_position, point_in_safe_polygon, Alignment, ComputedPosition, Placement,

@@ -82,6 +82,8 @@ pub fn DropdownMenu(
     items: Vec<MenuItem>,
     #[props(default)] on_open_change: Option<EventHandler<bool>>,
     #[props(default)] on_select: Option<EventHandler<String>>,
+    #[props(default = "auto".to_owned())] popover_mode: String,
+    #[props(default)] keep_mounted: bool,
     #[props(default)] anchor_rect: Option<Rect>,
     #[props(default)] overlay_size: Option<Size>,
     #[props(default)] viewport: Option<Viewport>,
@@ -290,6 +292,11 @@ pub fn DropdownMenu(
             style: style,
             pressable {
                 test_id: "{trigger_id}",
+                button_type: "button",
+                popovertarget: "{menu_id}",
+                popovertargetaction: "toggle",
+                command: "toggle-popover",
+                commandfor: "{menu_id}",
                 accessibility_role: "button",
                 aria_expanded: "{aria_expanded}",
                 aria_controls: "{menu_id}",
@@ -319,9 +326,12 @@ pub fn DropdownMenu(
                     "{trigger_label}"
                 }
             }
-            if open {
+            if open || keep_mounted {
                 view {
+                    id: "{menu_id}",
                     test_id: "{menu_id}",
+                    popover: "{popover_mode}",
+                    "data-nve-open": "{aria_expanded}",
                     accessibility_role: "menu",
                     tab_index: -1,
                     "data-placement": pos_placement,

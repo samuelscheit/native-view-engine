@@ -35,12 +35,17 @@ mod media_css;
 pub mod native_view;
 mod raw_style;
 mod reconcile;
+mod semantic_attrs;
 #[cfg(feature = "ssr")]
 mod snapshot;
 #[cfg(feature = "ssr")]
 mod ssg;
 #[cfg(feature = "ssr")]
 mod ssr;
+#[cfg(feature = "ssr")]
+pub mod streaming;
+#[cfg(feature = "ssr")]
+mod streaming_live;
 mod state_css;
 mod style_hash;
 mod stylesheet;
@@ -60,6 +65,8 @@ mod native_view_tests;
 mod snapshot_tests;
 #[cfg(test)]
 mod ssr_hydrate_tests;
+#[cfg(all(test, feature = "ssr"))]
+mod streaming_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -125,6 +132,9 @@ pub use raw_style::{
     is_image_fit_prop, is_raw_style_prop, is_safe_css_value, raw_prop_to_object_fit, RawStyleProps,
 };
 pub use reconcile::{plan_keyed_child_ops, ChildDiffOp};
+pub use semantic_attrs::{
+    canonical_html_attr_name, is_tag_only_raw_prop, should_close_dialog_on_backdrop_click,
+};
 #[cfg(all(feature = "ssr", target_arch = "wasm32"))]
 pub use snapshot::BrowserLocalStorage;
 #[cfg(feature = "ssr")]
@@ -143,6 +153,15 @@ pub use ssg::{
 };
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
+#[cfg(feature = "ssr")]
+pub use streaming::{
+    decode_form_urlencoded, decode_form_urlencoded_map, encode_http_chunk,
+    sanitize_stream_slot_id, scoped_slot_hiding_css, slot_placeholder_html, stream_slot_name,
+    streaming_http_headers, FormActionResponse, LiveUpdateChunk, StreamingDocumentOptions,
+    StreamingError, StreamingMode, StreamingSsrSession, ZeroJsLiveConfig, ZeroJsLiveSession,
+    DEFAULT_MAX_LIVE_UPDATES, HTTP_CHUNK_TERMINATOR, NVE_LIVE_SINK_IFRAME_HTML,
+    NVE_LIVE_SINK_IFRAME_NAME, NVE_STREAM_KEEPALIVE_COMMENT, NVE_STREAM_SLOT_PREFIX,
+};
 pub use style_hash::{
     format_structural_class, hash_structural_style, is_inheriting_leaf_text,
     is_volatile_dimension, is_volatile_opacity, VOLATILE_DIMENSION_LIMIT,

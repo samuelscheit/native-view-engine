@@ -12,11 +12,15 @@ spatial-focus = []
 [dependencies]
 nve-abi = { workspace = true }
 nve-dioxus = { workspace = true }
+nve-engine = { workspace = true }
 nve-i18n = { workspace = true }
 nve-interop = { path = "../../core/interop", default-features = false }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }
 dioxus-signals = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { workspace = true, features = ["Storage"] }
 
 [dev-dependencies]
 nve-backend-headless = { workspace = true }

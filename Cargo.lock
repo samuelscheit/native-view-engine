@@ -2016,8 +2016,10 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-web",
  "nve-dioxus",
+ "nve-engine",
  "nve-i18n",
  "nve-interop",
+ "web-sys",
 ]
 
 [[package]]

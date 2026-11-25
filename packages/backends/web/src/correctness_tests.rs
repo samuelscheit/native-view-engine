@@ -73,7 +73,7 @@ fn raw_css_values_cannot_inject_rules_or_close_the_ssr_style_element() {
     let doc = web.render_ssr_document(&crate::SsrDocumentOptions::default());
     let mirror = web.render_html();
     for out in [&doc, &mirror] {
-        for needle in ["<script", "display:none", "url(", "/*", "!important", "\\", "\"inherit\""] {
+        for needle in ["<script", ".nve{display:none", "url(", "/*", "!important", "\\", "\"inherit\""] {
             assert!(!out.contains(needle), "{needle} leaked into {out}");
         }
         assert!(out.contains("box-shadow:0 1px 2px rgba(0, 0, 0, .25), inset 0 0 0 1px #fff;"), "{out}");

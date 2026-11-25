@@ -5,12 +5,12 @@ use crate::layout_ext_css::{write_compact_layout_ext_into, write_compact_transfo
 use crate::raw_style::RawStyleProps;
 use crate::style_hash::{is_volatile_dimension, is_volatile_opacity};
 
-use nve_abi::hash::HashMap;
 use nve_abi::num::{write_f32, write_i64, write_u64};
 use nve_abi::{
     ColorRgba, ComponentKind, Dimension, EdgeInsets, EventMask, FlexAlign, FlexDirection,
     FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
 };
+use nve_abi::hash::HashMap;
 use nve_components::canvas_ir::CanvasOp;
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::layout_ext::LayoutExt;
@@ -18,103 +18,25 @@ use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
 use nve_components::transform::Transform2D;
 
+pub use crate::semantic_attrs::{
+    component_to_html_tag, is_semantic_tag_prop, resolve_semantic_tag, SemanticTag,
+};
+
 /// Static `.nve` base reset stylesheet emitted once on mount or SSR.
 ///
 /// Uses `font-family:inherit` (never `font:inherit`) on buttons/inputs so inherited `font-size`
-/// is never clobbered by the CSS `font` shorthand reset.
+/// is never clobbered by the CSS `font` shorthand reset, and preserves UA `display:none` on
+/// closed `<dialog>` and `[popover]` overlays so native top-layer elements never paint inline.
 pub const NVE_BASE_RESET_CSS: &str = concat!(
     ".nve{display:flex;box-sizing:border-box;flex-direction:column;justify-content:flex-start;align-items:stretch;flex:0 1 auto;margin:0;padding:0;border:0 solid transparent;color:#000;font-size:16px}",
     ".nve-s{overflow:auto}",
     ".nve-b{cursor:pointer;appearance:none;background:transparent;font-family:inherit}",
     ".nve-i{font-family:inherit;outline:none}",
     ".nve-p{cursor:pointer}",
-    ".nve-tl{color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}"
+    ".nve-tl{color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}",
+    ".nve:is(dialog:not([open]),[popover]:not(:popover-open)){display:none}",
+    "dialog.nve::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}"
 );
-
-/// Resolved semantic HTML5 tag metadata for a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SemanticTag {
-    pub tag: &'static str,
-    pub wrap_code: bool,
-}
-
-pub fn component_to_html_tag(kind: ComponentKind) -> &'static str {
-    match kind {
-        ComponentKind::Root | ComponentKind::View | ComponentKind::ScrollView => "div",
-        ComponentKind::Text => "span",
-        ComponentKind::Image => "img",
-        ComponentKind::TextInput => "input",
-        ComponentKind::Pressable => "button",
-        ComponentKind::SkiaCanvas => "canvas",
-        ComponentKind::Custom => "div",
-    }
-}
-
-/// Returns `true` if `key` can affect semantic HTML5 tag resolution.
-#[inline]
-pub fn is_semantic_tag_prop(key: &str) -> bool {
-    matches!(
-        key,
-        "accessibilityRole" | "accessibility_role" | "ariaLevel" | "aria-level" | "aria_level" | "href"
-    )
-}
-
-fn parse_aria_level(raw_props: &HashMap<String, RawPropValue>) -> u8 {
-    let val = raw_props
-        .get("ariaLevel")
-        .or_else(|| raw_props.get("aria-level"))
-        .or_else(|| raw_props.get("aria_level"));
-    let level = match val {
-        Some(RawPropValue::I64(n)) => *n,
-        Some(RawPropValue::F64(n)) if n.is_finite() => *n as i64,
-        Some(RawPropValue::String(s)) => s.trim().parse::<i64>().unwrap_or(2),
-        _ => 2,
-    };
-    level.clamp(1, 6) as u8
-}
-
-/// Resolves semantic HTML5 tags from `accessibilityRole`, `ariaLevel`, and `href`.
-pub fn resolve_semantic_tag(
-    kind: ComponentKind,
-    raw_props: &HashMap<String, RawPropValue>,
-) -> SemanticTag {
-    if let Some(RawPropValue::String(role)) = raw_props
-        .get("accessibilityRole")
-        .or_else(|| raw_props.get("accessibility_role"))
-    {
-        match role.trim().to_ascii_lowercase().as_str() {
-            "heading" => {
-                let tag = match parse_aria_level(raw_props) {
-                    1 => "h1",
-                    2 => "h2",
-                    3 => "h3",
-                    4 => "h4",
-                    5 => "h5",
-                    _ => "h6",
-                };
-                return SemanticTag { tag, wrap_code: false };
-            }
-            "navigation" => return SemanticTag { tag: "nav", wrap_code: false },
-            "main" => return SemanticTag { tag: "main", wrap_code: false },
-            "article" => return SemanticTag { tag: "article", wrap_code: false },
-            "complementary" => return SemanticTag { tag: "aside", wrap_code: false },
-            "banner" => return SemanticTag { tag: "header", wrap_code: false },
-            "contentinfo" => return SemanticTag { tag: "footer", wrap_code: false },
-            "link" => {
-                if matches!(raw_props.get("href"), Some(RawPropValue::String(h)) if !h.trim().is_empty()) {
-                    return SemanticTag { tag: "a", wrap_code: false };
-                }
-            }
-            "code" => return SemanticTag { tag: "code", wrap_code: false },
-            "codeblock" => return SemanticTag { tag: "pre", wrap_code: true },
-            _ => {}
-        }
-    }
-    SemanticTag {
-        tag: component_to_html_tag(kind),
-        wrap_code: false,
-    }
-}
 
 /// Canonicalizes an `f32` to deterministic IEEE-754 bits (folding `-0.0` and non-finite to `0`).
 #[inline]

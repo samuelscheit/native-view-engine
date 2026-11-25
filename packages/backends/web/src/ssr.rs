@@ -279,6 +279,8 @@ impl WebBackend {
             out.push_str(" readonly");
         }
 
+        crate::semantic_attrs::write_semantic_html_attrs(el.kind, tag, &el.raw_props, out);
+
         out.push('>');
         if is_void_html_tag(tag) { return None; }
 

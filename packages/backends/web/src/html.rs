@@ -157,6 +157,8 @@ impl WebBackend {
             out.push_str(" readonly");
         }
 
+        crate::semantic_attrs::write_semantic_html_attrs(el.kind, tag, &el.raw_props, out);
+
         let mut css = String::with_capacity(384);
         el.combined_css_into(&mut css);
         #[cfg(any(
