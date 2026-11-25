@@ -11,8 +11,9 @@ use nve_abi::{
     decode_events, decode_keydown_bytes, encode_events, encode_keydown_bytes, DecodedKeyDown,
     EventMask, EventPayload, NativeEvent, NativeEventKind, KEYDOWN_WIRE_MAGIC,
 };
-use nve_codegen::hybrid::{fnv1a_64, FNV1A_64_OFFSET_BASIS};
-use nve_codegen::wire_codecs as wc;
+use nve_codegen::schema::hybrid::{fnv1a_64, FNV1A_64_OFFSET_BASIS};
+use nve_codegen::schema::wire as wc;
+use nve_codegen::targets::generate_all_wire_codec_files;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
@@ -227,9 +228,9 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
 #[test]
 fn wire_codec_generated_files_match_checked_in_artifacts_and_naming_invariants() {
     let root = repo_root();
-    let files = wc::generate_all_wire_codec_files();
+    let files = generate_all_wire_codec_files();
     assert_eq!(files.len(), 5);
-    assert_eq!(files, wc::generate_all_wire_codec_files());
+    assert_eq!(files, generate_all_wire_codec_files());
 
     for file in &files {
         let fname = Path::new(&file.relative_path).file_name().and_then(|n| n.to_str()).unwrap();

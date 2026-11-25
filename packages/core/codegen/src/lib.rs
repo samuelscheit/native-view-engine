@@ -1,82 +1,62 @@
 //! Bi-directional & multi-target Native View Engine (NVE) code generator.
 //!
+//! Organized as a compiler pipeline:
+//! - [`schema`]: Intermediate representations, layout computation, validation, and colocated
+//!   `#[derive(NveAbi)]` descriptor bridges (`export`, `hybrid`, `reloc`, `wire`).
+//! - [`frontend`]: Input specification lexers and parsers (`rn_spec`, `hybrid_rust`).
+//! - [`targets`]: Output-language code emitters (`c_cpp`, `rust`, `swift`, `kotlin_java`, `dart`,
+//!   `typescript`) plus unified multi-target dispatchers.
+//!
 //! Zero external dependencies beyond `std`, `serde`, and `serde_json`.
-//!
-//! # Direction 1 — `import_rn` (React Native -> NVE)
-//! Parses React Native Fabric `*NativeComponent.{ts,js}` and TurboModule `Native*.{ts,js}`
-//! specifications (both TypeScript and Flow syntax) and emits:
-//! - A zero-JS typed Rust `nve-dioxus` component module writing `nve_abi::RawPropValue` directly
-//! - A thin C++20 Fabric prop/event adapter compatible with `cxx/nve-fabric-bridge`
-//!
-//! # Direction 2 — Multi-target Export (Single `NveExportSpec` -> Every Host Platform)
-//! Takes a single [`NveExportSpec`] (Rust struct or JSON) and exports drop-in native bindings for:
-//! - **React Native Fabric** (`export_rn`): `<Name>NativeComponent.ts`, `<Name>NveBridge.hpp/.cpp`,
-//!   `<Name>ComponentView.mm` (`RCTNveComponentView`), `<Name>ViewManager.kt` (`NveNativeBridge`)
-//! - **Flutter** (`export_flutter`): typed Dart `StatefulWidget` + `dart:ffi` binding wrapping
-//!   `package:nve_flutter/nve_flutter.dart` (`NveTextureHostWidget` / `NvePlatformViewWidget`)
-//! - **SwiftUI** (`export_swiftui`): typed SwiftUI `View` wrapping `NveSwiftUI.NveSurfaceRepresentable`
-//! - **Jetpack Compose** (`export_compose`): typed Kotlin `@Composable` wrapping `dev.nve.compose.NveSurface`
-//! - **Web Components** (`export_web_component`): typed Custom Element `<nve-...>` `.js` + `.d.ts`
-//!   wrapping `wasm-bindgen`
 
 pub mod error;
-pub mod export_compose;
-pub mod export_flutter;
-pub mod export_rn;
-pub mod export_swiftui;
-pub mod export_web;
-pub mod hybrid;
-pub mod import_rn;
-pub mod ir;
-pub mod lexer;
+pub mod frontend;
 pub mod naming;
-pub mod parser;
-pub mod reloc;
-pub mod wire_codecs;
+pub mod schema;
+pub mod targets;
 
 use std::path::Path;
 
 pub use error::CodegenError;
-pub use export_compose::generate_export_compose;
-pub use export_flutter::generate_export_flutter;
-pub use export_rn::generate_export_rn;
-pub use export_swiftui::generate_export_swiftui;
-pub use export_web::generate_export_web_component;
-pub use hybrid::{
-    compute_hybrid_interface_id, compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec,
-    from_abi_descriptor, generate_all_abi_files, generate_all_core_abi_files,
-    generate_all_scene_abi_files, generate_c_core_abi_h, generate_c_scene_abi_h,
-    generate_dart_core_abi, generate_dart_scene_abi, generate_hybrid_all, generate_hybrid_cpp,
-    generate_hybrid_dart, generate_hybrid_kotlin, generate_hybrid_rust, generate_hybrid_swift,
-    generate_hybrid_target, generate_hybrid_ts, generate_java_core_abi, generate_java_scene_buffer,
-    generate_ts_core_abi, generate_ts_scene_view, parse_hybrid_rust_spec,
-    parse_hybrid_rust_spec_file, scene_abi_spec, HybridAliasSpec, HybridConstSpec,
-    HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec,
-    HybridFileSpec, HybridGenerateOutput, HybridMethodSpec, HybridModuleSpec, HybridParamSpec,
-    HybridPropSpec, HybridStructSpec, HybridTarget, HybridType, HybridViewSpec,
-    NVE_CORE_ABI_SCHEMA_HASH, NVE_HYBRID_ABI_VERSION, NVE_HYBRID_INTERFACE_ID_BASE,
-    NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
+pub use frontend::{
+    parse_hybrid_rust_spec, parse_hybrid_rust_spec_file, parse_rn_spec, parse_rn_spec_file,
 };
-pub use import_rn::generate_import_rn;
-pub use ir::{
+pub use schema::export::{
     CommandSpec, ComponentOptions, DefaultValue, EventBubbling, EventSpec, ExportBackend,
     ExportComposeOutput, ExportFlutterOutput, ExportRnOutput, ExportSwiftUiOutput, ExportTarget,
     ExportWebComponentOutput, GeneratedFile, ImportRnOutput, MultiTargetExportOutput,
     NveExportSpec, ObjectField, ParamSpec, ParsedRnSpec, PropSpec, PropType, RnComponentSpec,
     TurboModuleMethod, TurboModuleSpec,
 };
-pub use parser::{parse_rn_spec, parse_rn_spec_file};
-pub use reloc::{
-    generate_reloc_all, generate_reloc_cpp, generate_reloc_rust, FieldLayout, RelocEnum,
-    RelocEnumRepr, RelocEnumVariant, RelocField, RelocSchema, RelocStruct, RelocType,
-    StructLayout, RELOC_HEADER_ALIGN, RELOC_HEADER_SIZE, RELOC_MAX_VERIFY_DEPTH,
+pub use schema::hybrid::{
+    compute_hybrid_interface_id, compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec,
+    from_abi_descriptor, scene_abi_spec, HybridAliasSpec, HybridConstSpec, HybridDefaultValue,
+    HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec, HybridFileSpec,
+    HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec, HybridStructSpec,
+    HybridTarget, HybridType, HybridViewSpec, NVE_CORE_ABI_SCHEMA_HASH, NVE_HYBRID_ABI_VERSION,
+    NVE_HYBRID_INTERFACE_ID_BASE, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
+    NVE_SCENE_SCHEMA_HASH,
+};
+pub use schema::reloc::{
+    FieldLayout, RelocEnum, RelocEnumRepr, RelocEnumVariant, RelocField, RelocSchema, RelocStruct,
+    RelocType, StructLayout, RELOC_HEADER_ALIGN, RELOC_HEADER_SIZE, RELOC_MAX_VERIFY_DEPTH,
     RELOC_SLICE_ALIGN, RELOC_SLICE_SIZE,
 };
-pub use wire_codecs::{
-    fnv1a64, fnv1a64_pair, fnv1a64_update, generate_all_wire_codec_files,
-    generate_cpp_wire_codecs, generate_dart_wire_codecs, generate_java_wire_codecs,
-    generate_swift_wire_codecs, generate_ts_wire_codecs, wire_codecs_schema_hash,
-    NVE_WIRE_CODECS_SCHEMA_HASH,
+pub use schema::wire::{
+    fnv1a64, fnv1a64_pair, fnv1a64_update, wire_codecs_schema_hash, NVE_WIRE_CODECS_SCHEMA_HASH,
+};
+pub use targets::{
+    generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
+    generate_all_wire_codec_files, generate_c_core_abi_h, generate_c_scene_abi_h,
+    generate_cpp_wire_codecs, generate_dart_core_abi, generate_dart_scene_abi,
+    generate_dart_wire_codecs, generate_export_compose, generate_export_flutter,
+    generate_export_rn, generate_export_swiftui, generate_export_web_component,
+    generate_hybrid_all, generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin,
+    generate_hybrid_rust, generate_hybrid_swift, generate_hybrid_target, generate_hybrid_ts,
+    generate_import_rn, generate_java_core_abi, generate_java_scene_buffer,
+    generate_java_wire_codecs, generate_reloc_all, generate_reloc_cpp, generate_reloc_rust,
+    generate_swift_wire_codecs, generate_ts_core_abi, generate_ts_scene_view,
+    generate_ts_wire_codecs, HybridGenerateOutput,
 };
 
 // ===========================================================================

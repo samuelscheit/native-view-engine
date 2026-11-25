@@ -2,20 +2,28 @@
 
 Zero-JSON, compile-time-verified multi-target code generator for `native-view-engine` (NVE).
 
-## Architecture & Submodules (`src/`)
+## Compiler Architecture (`src/`)
 
-| Module | Purpose |
+`packages/core/codegen/src/` is structured as a three-stage compiler pipeline: **Schemas (`schema/`)** + **Frontends (`frontend/`)** -> **Target Emitters (`targets/<lang>/`)**, backed by shared crate-root utilities (`lib.rs`, `error.rs`, `naming.rs`).
+
+| Layer / Module | Purpose |
 | :--- | :--- |
-| `reloc/` | Zero-copy aligned `RelocSlice<T>` / `RelocStr` & 3-tier `VerifyMode::{Full, HeaderOnly, Unchecked}` code generator (`ir.rs`, `validate.rs`, `emit_rust.rs`, `rust_runtime.rs`, `emit_cpp.rs`, `cpp_runtime.rs`). Emits standalone Rust 2024 modules and C++20 headers with 32-byte `RelocHeader`, deterministic FNV-1a64 `schema_hash`, zero-padding POD `as_bytes()`, and compile-time `size_of`/`offset_of` checks. |
-| `hybrid/` | Nitro-inspired typed Hybrid FFI generator (`ir/`, `parser/`, `core_abi/`, `emit_{rust,cpp,swift,kotlin,dart,ts}/`). Emits direct static `extern "C"` functions, `#[repr(C)]` POD structs/enums, and optional dynamic `dlopen`/`cdylib` vtables across C11/C++20/Swift/Kotlin/Dart/TypeScript/Rust, plus NVE's checked-in Core ABI (`nve_abi.generated.*`) and 64-byte Scene ABI (`nve_scene_abi.generated.*`). |
-| `wire_codecs/` | Single-source emitter (`spec.rs`, `emit_{cpp,dart,java,swift,ts}.rs`) for shared binary wire helpers (`FNV-1a64`, `EventRing`, `NK1` keydown, `NVE_DRAW1`) across C++20, Dart, Java, Swift, and TypeScript. |
-| `import_rn/` | Parses React Native Fabric `*NativeComponent.{ts,js}` and TurboModule `Native*.{ts,js}` specs (via `lexer.rs` + `parser/`) and emits zero-JS `nve-dioxus` Rust components + C++20 Fabric adapters. |
-| `export_rn/` | Exports an `NveExportSpec` to a drop-in React Native Fabric NativeComponent package (TS, C++20, Obj-C++, Kotlin, Windows). |
-| `export_flutter.rs` | Exports an `NveExportSpec` to a typed Flutter `StatefulWidget` + `dart:ffi` binding. |
-| `export_swiftui.rs` | Exports an `NveExportSpec` to a typed SwiftUI `View` wrapping `NveSwiftUI`. |
-| `export_compose.rs` | Exports an `NveExportSpec` to a typed Jetpack Compose `@Composable` wrapping `NveSurface`. |
-| `export_web.rs` | Exports an `NveExportSpec` to a typed Web Custom Element `<nve-...>` `.js` + `.d.ts`. |
-| `ir.rs`, `naming.rs`, `error.rs` | Shared export IR (`GeneratedFile`, `NveExportSpec`), cross-language identifier/casing helpers, and structured `CodegenError`. |
+| `lib.rs`, `error.rs`, `naming.rs` | Crate root public re-exports (`nve_codegen::*`), unified `import_rn_*` / `export_*` entrypoints, structured `CodegenError`, and cross-language identifier/casing helpers. |
+| `schema/` | All IRs, `#[repr(C)]` layout computation, semantic validation, deterministic FNV-1a64 schema hashing, and colocated `AbiFileDescriptor` bridges: |
+| `schema/export.rs` | Shared export & RN IR (`GeneratedFile`, `NveExportSpec`, `ParsedRnSpec`, `RnComponentSpec`, `TurboModuleSpec`, `ExportTarget`, output bundles). |
+| `schema/hybrid/` | Hybrid FFI IR (`mod.rs`, `file_spec.rs`, `validate.rs`), colocated `#[derive(NveAbi)]` descriptor bridge (`schema_bridge.rs`), and Core/Scene ABI specs & hashes (`core_abi.rs`). |
+| `schema/reloc/` | Zero-copy aligned `RelocSlice<T>` / `RelocStr` IR, layout calculation, and cycle/alignment validation (`mod.rs`, `ir.rs`, `validate.rs`). |
+| `schema/wire.rs` | Single-source binary wire specification (`FNV-1a64`, `EventRing`, `NK1` keydown, `NVE_DRAW1` opcodes & schema hash). |
+| `frontend/` | All input specification lexers and recursive-descent parsers: |
+| `frontend/rn_spec/` | React Native Fabric `*NativeComponent.{ts,js}` & TurboModule `Native*.{ts,js}` lexer and parser (`mod.rs`, `lexer.rs`, `syntax.rs`, `calls.rs`, `lowering.rs`). |
+| `frontend/hybrid_rust/` | Pure-Rust declarative Hybrid FFI `.rs` lexer and parser (`mod.rs`, `lexer.rs`, `items.rs`, `traits.rs`). |
+| `targets/` | One cohesive directory per output language, plus unified multi-target dispatchers in `targets/mod.rs` (`generate_all_abi_files`, `generate_all_wire_codec_files`, `generate_hybrid_target`/`generate_hybrid_all`, `generate_reloc_all`, `generate_import_rn`, `generate_export_rn`): |
+| `targets/c_cpp/` | C11 / C++20 / ObjC++ emitters: Core & Scene ABI (`core_abi.rs`), wire codecs (`wire.rs`), Reloc slabs (`reloc.rs`, `reloc_runtime.rs`), RN import adapter (`import_rn.rs`), RN Fabric C++/iOS/Windows exports (`export_rn_cpp.rs`, `export_rn_ios.rs`, `export_rn_windows.rs`), and Hybrid FFI (`hybrid/`). |
+| `targets/rust/` | Rust emitters: Reloc slabs (`reloc.rs`, `reloc_runtime.rs`), RN import `nve-dioxus` bindings (`import_rn/`), and Hybrid FFI types/vtables/codecs (`hybrid/`). |
+| `targets/swift/` | Swift emitters: wire codecs (`wire.rs`), SwiftUI `View` export (`swiftui.rs`), and Hybrid FFI C-interop (`hybrid/`). |
+| `targets/kotlin_java/` | Kotlin & Java emitters: Java Core & Scene ABI (`java_core_abi.rs`), Java wire codecs (`java_wire.rs`), Jetpack Compose export (`compose.rs`), Android RN Fabric `ViewManager` export (`export_rn_android.rs`), and Kotlin/JNI Hybrid FFI (`kotlin_hybrid/`). |
+| `targets/dart/` | Dart / Flutter emitters: `dart:ffi` Core & Scene ABI (`core_abi.rs`), wire codecs (`wire.rs`), Flutter `StatefulWidget` export (`flutter.rs`), and Hybrid FFI (`hybrid/`). |
+| `targets/typescript/` | TypeScript / Web emitters: Core & Scene ABI (`core_abi.rs`), wire codecs (`wire.rs`), Web Custom Element export (`web_component.rs`), RN Fabric TS spec export (`export_rn_ts.rs`), and Hybrid FFI WASM client (`hybrid/`). |
 
 ## Generated-File Naming Invariant
 

@@ -1252,7 +1252,7 @@ fn export_and_import_neutralize_string_interpolation_and_comment_breakout() {
 
 #[test]
 fn fuzz_rn_lexer_and_parser_never_panic_on_adversarial_and_truncated_inputs() {
-    use nve_codegen::lexer::tokenize;
+    use nve_codegen::frontend::rn_spec::lexer::tokenize;
 
     // 1. Every UTF-8 prefix truncation of the embedded Switch spec
     for (byte_idx, _) in EMBEDDED_SWITCH_SPEC.char_indices() {
