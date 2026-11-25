@@ -18,7 +18,7 @@ env:
 
 jobs:
   linux:
-    name: Linux (Rust + WASM + C++/ASan + Qt6 + GTK4 + Android JNI)
+    name: Linux (Rust + Skia + WASM E2E + Python + C++/ASan + Qt6 Quick + GTK4 + Android JNI)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,6 +28,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+
+      - name: Setup Node.js (for Web WASM CDP E2E)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -41,16 +46,60 @@ jobs:
             pkg-config \
             libgtk-4-dev \
             qt6-base-dev \
+            qt6-declarative-dev \
             xvfb \
             default-jdk
 
-      - name: Build and test Rust workspace + WASM check
+      - name: Build and test Rust workspace + Skia shell + WASM check
         run: |
-          cargo build -p nve-example-counter
+          cargo build -p nve-example-counter -p nve-studio-workspace
           cargo test --workspace
+          cargo test -p nve-backend-skia -p nve-skia-shell
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
           cargo check -p nve-web-shell --target wasm32-unknown-unknown
+          if cargo run -q -p nve-cli -- codegen abi --help >/dev/null 2>&1; then
+            cargo run -p nve-cli -- codegen abi --check
+          fi
+
+      - name: Run Python benchmark-regression unit tests
+        run: python3 -B -m unittest discover -s scripts/tests -v
+
+      - name: Build Web WASM bundle and run headless Chrome CDP E2E
+        run: |
+          CHROME_PATH=""
+          for candidate in \
+            "${NVE_CHROME_BIN:-}" \
+            "${CHROME_BIN:-}" \
+            /usr/bin/google-chrome \
+            /usr/bin/google-chrome-stable \
+            /usr/bin/chromium \
+            /usr/bin/chromium-browser; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              CHROME_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "$CHROME_PATH" ]; then
+            for cmd in google-chrome google-chrome-stable chromium chromium-browser; do
+              if command -v "$cmd" >/dev/null 2>&1; then
+                CHROME_PATH="$(command -v "$cmd")"
+                break
+              fi
+            done
+          fi
+          if [ -z "$CHROME_PATH" ]; then
+            echo "Chrome/Chromium not present on runner; skipping Web WASM E2E."
+            exit 0
+          fi
+
+          LOCKED_VER="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/, "", $3); print $3; exit}' Cargo.lock)"
+          CLI_VER="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)"
+          if [ -n "$LOCKED_VER" ] && [ "$CLI_VER" != "$LOCKED_VER" ]; then
+            cargo install --locked wasm-bindgen-cli --version "$LOCKED_VER"
+          fi
+          ./hosts/web-shell/build.sh --dev
+          NVE_CHROME_BIN="$CHROME_PATH" node hosts/web-shell/e2e/run_e2e.mjs --no-screenshot
 
       - name: Build and test C++20 Fabric bridge (Release + bench)
         run: |
@@ -75,20 +124,28 @@ jobs:
             UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             ctest --test-dir build/fabric-asan --output-on-failure
 
-      - name: Build and test Qt 6 host shell (offscreen)
+      - name: Build and test Qt 6 host shell (Widgets + Quick Scene Graph offscreen)
         run: |
           cmake -S hosts/qt-shell -B build/qt-shell -G Ninja
           cmake --build build/qt-shell
+          test -x ./build/qt-shell/nve_qt_quick_test
           QT_QPA_PLATFORM=offscreen ctest --test-dir build/qt-shell --output-on-failure
           QT_QPA_PLATFORM=offscreen \
             NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.so" \
+            NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
             ./build/qt-shell/nve_qt_shell_test
+          QT_QPA_PLATFORM=offscreen \
+            QT_QUICK_BACKEND=software \
+            NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.so" \
+            NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
+            ./build/qt-shell/nve_qt_quick_test
 
       - name: Build and test GTK4 host shell (Xvfb)
         run: |
           cmake -S hosts/gtk-shell -B build/gtk-shell -G Ninja
           cmake --build build/gtk-shell
           NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.so" \
+            NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
             xvfb-run -a ctest --test-dir build/gtk-shell --output-on-failure
 
       - name: Build and test Android JNI host bridge
@@ -98,8 +155,36 @@ jobs:
           cmake --build build/android-shell
           ctest --test-dir build/android-shell --output-on-failure
 
+  android-compose:
+    name: Android Compose Kit (Gradle Unit Tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ensure Android SDK platform 35 is available
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          if [ ! -d "$SDK_ROOT/platforms/android-35" ] && [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          fi
+
+      - name: Run Android Compose Kit unit tests
+        run: ./hosts/compose-kit/run-tests.sh testDebugUnitTest --console=plain
+
   macos:
-    name: macOS (Rust + C++ + AppKit + iOS SDK + SwiftUI + Flutter)
+    name: macOS (Rust + Skia + C++ + AppKit + iOS SDK + SwiftUI + Flutter)
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -116,10 +201,11 @@ jobs:
           command -v cmake >/dev/null 2>&1 || brew install cmake
           command -v ninja >/dev/null 2>&1 || brew install ninja
 
-      - name: Build and test Rust workspace
+      - name: Build and test Rust workspace + Skia shell
         run: |
-          cargo build -p nve-example-counter
+          cargo build -p nve-example-counter -p nve-studio-workspace
           cargo test --workspace
+          cargo test -p nve-backend-skia -p nve-skia-shell
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 
@@ -138,6 +224,7 @@ jobs:
           cmake --build build/macos-shell
           ctest --test-dir build/macos-shell --output-on-failure
           NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.dylib" \
+            NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.dylib" \
             ./build/macos-shell/nve_macos_shell_test
 
       - name: iOS Simulator SDK Objective-C++ syntax check
@@ -167,7 +254,7 @@ jobs:
           flutter test
 
   windows:
-    name: Windows (Rust MSVC + C++ Fabric + Windows Host)
+    name: Windows (Rust MSVC + Skia + C++ Fabric + Windows Host)
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -182,11 +269,12 @@ jobs:
       - name: Setup MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Build and test Rust workspace
+      - name: Build and test Rust workspace + Skia shell
         shell: pwsh
         run: |
-          cargo build -p nve-example-counter
+          cargo build -p nve-example-counter -p nve-studio-workspace
           cargo test --workspace
+          cargo test -p nve-backend-skia -p nve-skia-shell
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 
@@ -206,4 +294,5 @@ jobs:
           cmake -S hosts/windows-shell -B build/windows-shell -G Ninja
           cmake --build build/windows-shell
           $env:NVE_TEST_COUNTER_DYLIB = (Resolve-Path target\debug\nve_example_counter.dll).Path
+          $env:NVE_TEST_STUDIO_DYLIB = (Resolve-Path target\debug\nve_studio_workspace.dll).Path
           ctest --test-dir build/windows-shell --output-on-failure
