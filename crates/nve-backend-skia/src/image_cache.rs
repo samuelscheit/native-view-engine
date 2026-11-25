@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 use nve_abi::ColorRgba;
 use nve_components::canvas_ir::ImageResizeMode;
 use nve_engine::LayoutRect;
@@ -674,6 +676,56 @@ fn crc32_ieee(chunk_type: &[u8], data: &[u8]) -> u32 {
         crc = CRC32_TABLE[idx] ^ (crc >> 8);
     }
     !crc
+}
+
+/// Encodes a tight 24-bit RGB buffer (`width * height * 3` bytes) into a standard RFC 2083 PNG.
+pub fn encode_rgb_png(width: u32, height: u32, rgb: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(3))
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "PNG dimensions overflow")
+        })?;
+    if width == 0 || height == 0 || rgb.len() != expected {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "invalid RGB buffer length {} for {}x{} PNG",
+                rgb.len(),
+                width,
+                height
+            ),
+        ));
+    }
+    let stride = (width as usize) * 3;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    for y in 0..height as usize {
+        encoder.write_all(&[0u8])?;
+        encoder.write_all(&rgb[y * stride..(y + 1) * stride])?;
+    }
+    let idat = encoder.finish()?;
+
+    let mut out = Vec::with_capacity(PNG_SIGNATURE.len() + 57 + idat.len());
+    out.extend_from_slice(&PNG_SIGNATURE);
+
+    let push_chunk = |dst: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]| {
+        dst.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        dst.extend_from_slice(tag);
+        dst.extend_from_slice(payload);
+        let crc = crc32_ieee(tag, payload);
+        dst.extend_from_slice(&crc.to_be_bytes());
+    };
+
+    let mut ihdr = [0u8; 13];
+    ihdr[0..4].copy_from_slice(&width.to_be_bytes());
+    ihdr[4..8].copy_from_slice(&height.to_be_bytes());
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 2; // truecolor RGB
+    push_chunk(&mut out, b"IHDR", &ihdr);
+    push_chunk(&mut out, b"IDAT", &idat);
+    push_chunk(&mut out, b"IEND", &[]);
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -9,7 +9,8 @@ pub mod window;
 
 pub use window::{
     render_headless_screenshot, replay_snapshot_into_backend, run_desktop_preview,
-    run_desktop_preview_with_options, write_pixel_buffer_ppm, DesktopApp, DesktopHostError,
+    run_desktop_preview_with_options, write_pixel_buffer_png, write_pixel_buffer_ppm,
+    write_pixel_buffer_screenshot, DesktopApp, DesktopHostError,
     DesktopPreviewOptions, DesktopSession, DesktopWindowHost, HotAppSlot, HotReloadClient,
     PrewarmedSnapshot, DEFAULT_WS_URL,
 };

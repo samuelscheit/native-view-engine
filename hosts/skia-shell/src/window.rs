@@ -14,7 +14,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam_channel::{unbounded, Receiver};
 use nve_abi::{
     encode_events, ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId,
+    ROOT_NODE_ID,
 };
+use nve_backend_skia::encode_rgb_png;
 use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
     GpuSwapchain,
@@ -300,6 +302,34 @@ pub fn write_pixel_buffer_ppm(buf: &PixelBuffer, path: &Path) -> std::io::Result
     std::fs::write(path, out)
 }
 
+/// Writes a [`PixelBuffer`] to disk as a standard RGB PNG image.
+pub fn write_pixel_buffer_png(buf: &PixelBuffer, path: &Path) -> std::io::Result<()> {
+    let mut rgb = Vec::with_capacity((buf.width() * buf.height() * 3) as usize);
+    for y in 0..buf.height() {
+        for x in 0..buf.width() {
+            let (r, g, b) = buf.get_rgb(x, y).unwrap_or((0, 0, 0));
+            rgb.push(r);
+            rgb.push(g);
+            rgb.push(b);
+        }
+    }
+    let png = encode_rgb_png(buf.width(), buf.height(), &rgb)?;
+    std::fs::write(path, png)
+}
+
+/// Writes a [`PixelBuffer`] as PNG when `path` has a `.png` extension, or binary `P6` PPM otherwise.
+pub fn write_pixel_buffer_screenshot(buf: &PixelBuffer, path: &Path) -> std::io::Result<()> {
+    let is_png = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
+    if is_png {
+        write_pixel_buffer_png(buf, path)
+    } else {
+        write_pixel_buffer_ppm(buf, path)
+    }
+}
+
 /// Window-independent controller driving rendering, hit-test -> event dispatch, 2-tier hot
 /// reload, and snapshot persistence for any [`DesktopApp`].
 pub struct DesktopSession<A: DesktopApp> {
@@ -472,6 +502,35 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(())
     }
 
+    /// Writes the current rasterized [`PixelBuffer`] as PNG (for `.png` paths) or `P6` PPM.
+    pub fn write_screenshot(&self, path: &Path) -> Result<(), DesktopHostError> {
+        write_pixel_buffer_screenshot(&self.pixel_buffer, path)?;
+        Ok(())
+    }
+
+    /// Dispatches the current logical viewport dimensions to the mounted app as a `Resize` event
+    /// so responsive layouts (e.g. mobile portrait vs. desktop) react immediately.
+    pub fn notify_viewport_resize(&mut self) -> bool {
+        let timestamp_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+        let event = NativeEvent {
+            surface_id: self.surface_id,
+            node_id: ROOT_NODE_ID,
+            timestamp_us,
+            kind: NativeEventKind::Layout,
+            payload: EventPayload::Layout {
+                x: 0.0,
+                y: 0.0,
+                width: self.viewport.width,
+                height: self.viewport.height,
+            },
+        };
+        let encoded = encode_events(&[event]);
+        self.app.dispatch_events(&encoded)
+    }
+
     /// Presents the current retained `DisplayList` directly through a hardware or offscreen
     /// [`GpuSwapchain`] without touching the CPU software `PixelBuffer`.
     pub fn present_to_swapchain(
@@ -523,14 +582,17 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.backend.set_viewport(self.surface_id, self.viewport);
         self.pixel_buffer.resize(pw, ph);
 
-        // Re-submit last command buffer if we have one (recomputes Flexbox for new viewport),
-        // otherwise pull a fresh frame from the app.
-        if !self.last_frame_bytes.is_empty() {
+        // Notify the app of the new logical viewport so responsive layouts can re-render.
+        let app_handled_resize = self.notify_viewport_resize();
+
+        // Pull a fresh frame if the app reacted to the resize or we have no cached frame yet;
+        // otherwise re-submit the cached command buffer to recompute Flexbox for the new viewport.
+        if app_handled_resize || self.last_frame_bytes.is_empty() {
+            self.render_and_rasterize()?;
+        } else {
             let bytes = self.last_frame_bytes.clone();
             self.backend.submit_frame(&bytes)?;
             self.rasterize_current();
-        } else {
-            self.render_and_rasterize()?;
         }
         Ok(())
     }
@@ -1012,6 +1074,7 @@ impl DesktopWindowHost {
                 options.show_hud,
             )
         };
+        let _ = session.notify_viewport_resize();
         session.render_and_rasterize()?;
 
         Ok(Self {
@@ -1485,7 +1548,7 @@ pub fn render_headless_screenshot(
     screenshot_path: PathBuf,
 ) -> Result<(), DesktopHostError> {
     let mut host = DesktopWindowHost::new(dylib_path, options)?;
-    host.session().write_screenshot_ppm(&screenshot_path)?;
+    host.session().write_screenshot(&screenshot_path)?;
     host.save_snapshot_if_configured();
     Ok(())
 }
@@ -1842,6 +1905,19 @@ mod tests {
         let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
         let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
         assert_eq!(session.pixel_buffer().get_rgb(px, py), Some((37, 99, 235)));
+
+        // Screenshot writer emits real PNG for `.png` paths and P6 PPM otherwise.
+        let tmp_dir = std::env::temp_dir();
+        let png_path = tmp_dir.join(format!("nve_skia_test_{}.png", std::process::id()));
+        let ppm_path = tmp_dir.join(format!("nve_skia_test_{}.ppm", std::process::id()));
+        session.write_screenshot(&png_path).unwrap();
+        session.write_screenshot(&ppm_path).unwrap();
+        let png_bytes = std::fs::read(&png_path).unwrap();
+        let ppm_bytes = std::fs::read(&ppm_path).unwrap();
+        let _ = std::fs::remove_file(&png_path);
+        let _ = std::fs::remove_file(&ppm_path);
+        assert!(png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(ppm_bytes.starts_with(b"P6\n"));
     }
 
     #[test]

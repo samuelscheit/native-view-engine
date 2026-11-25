@@ -34,7 +34,7 @@ Options:
   --no-ws                   Disable WebSocket hot-reload client
   --snapshot <path.nvesnap> Replay Frame-0 MmapSnapshot before dylib load & atomically save on exit
   --schema <ver>            Expected snapshot app schema version (default: 1)
-  --screenshot <out.ppm>    Render headlessly to a P6 PPM file and exit (no window opened)
+  --screenshot <out.png|ppm> Render headlessly to a PNG or P6 PPM file and exit (no window opened)
   --width <px>              Logical window/viewport width (default: 420)
   --height <px>             Logical window/viewport height (default: 780)
   --scale <factor>          HiDPI scale factor for headless rendering (default: 1.0)

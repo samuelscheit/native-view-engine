@@ -45,8 +45,8 @@ pub use gpu::{
 #[cfg(feature = "skia")]
 pub use gpu::{CpuSkiaSurface, GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 pub use image_cache::{
-    compute_image_placement, decode_image_uri, decode_png, DecodedImage, ImageCache,
-    ImageDecodeError, ImageDrawPlacement,
+    compute_image_placement, decode_image_uri, decode_png, encode_rgb_png, DecodedImage,
+    ImageCache, ImageDecodeError, ImageDrawPlacement,
 };
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
@@ -790,7 +790,74 @@ fn emit_node_into<L: LayoutEngine>(
                 });
             }
         }
-        if let Some(text) = node.text.as_deref() {
+        if node.kind == ComponentKind::TextInput {
+            let font_size = if node.style.font_size > 0.0 {
+                node.style.font_size
+            } else {
+                13.0
+            };
+            let raw_val = match node.raw_props.get("value") {
+                Some(RawPropValue::String(s)) if !s.is_empty() => Some(s.as_str()),
+                _ => node.text.as_deref().filter(|s| !s.is_empty()),
+            };
+            let placeholder = match node.raw_props.get("placeholder") {
+                Some(RawPropValue::String(s)) if !s.is_empty() => Some(s.as_str()),
+                _ => None,
+            };
+            let is_secure = matches!(
+                node.raw_props.get("secureTextEntry"),
+                Some(RawPropValue::Bool(true))
+            );
+            let display_text = if let Some(val) = raw_val {
+                let rendered = if is_secure {
+                    "•".repeat(val.chars().count())
+                } else {
+                    val.to_owned()
+                };
+                let color = if node.style.text_color.a > 0 {
+                    node.style.text_color
+                } else {
+                    ColorRgba::rgb(241, 245, 249)
+                };
+                Some((rendered, color))
+            } else {
+                placeholder.map(|ph| {
+                    let base = if node.style.text_color.a > 0 {
+                        node.style.text_color
+                    } else {
+                        ColorRgba::rgb(148, 163, 184)
+                    };
+                    let color = ColorRgba::rgba(
+                        base.r,
+                        base.g,
+                        base.b,
+                        ((base.a as f32) * 0.55).round().clamp(96.0, 170.0) as u8,
+                    );
+                    (ph.to_owned(), color)
+                })
+            };
+            if let Some((text, color)) = display_text {
+                let pad_l = node.layout.padding.left.max(0.0);
+                let pad_r = node.layout.padding.right.max(0.0);
+                let mut pad_t = node.layout.padding.top.max(0.0);
+                let pad_b = node.layout.padding.bottom.max(0.0);
+                if pad_t == 0.0 && pad_b == 0.0 && rect.height > font_size * 1.4 {
+                    pad_t = ((rect.height - font_size * 1.35) * 0.5).max(0.0);
+                }
+                let text_rect = LayoutRect {
+                    x: rect.x + pad_l,
+                    y: rect.y + pad_t,
+                    width: (rect.width - pad_l - pad_r).max(1.0),
+                    height: (rect.height - pad_t - pad_b).max(1.0),
+                };
+                ops.push(PaintOp::DrawText {
+                    rect: text_rect,
+                    text,
+                    font_size,
+                    color,
+                });
+            }
+        } else if let Some(text) = node.text.as_deref() {
             if !text.is_empty() && node.style.font_size > 0.0 && node.style.text_color.a > 0 {
                 ops.push(PaintOp::DrawText {
                     rect,
@@ -1897,5 +1964,90 @@ mod tests {
         // Over-scrolling clamps cleanly to content_height - viewport_height (100px), and negative clamps to 0.
         assert_eq!(skia.apply_scroll_delta(2, 0.0, 500.0), (0.0, 100.0));
         assert_eq!(skia.apply_scroll_delta(2, 0.0, -999.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn text_input_emits_placeholder_value_and_secure_mask_and_png_roundtrips() {
+        let mut skia = SkiaBackend::new();
+        skia.set_viewport(
+            1,
+            Viewport {
+                width: 320.0,
+                height: 200.0,
+                scale_factor: 1.0,
+            },
+        );
+        let mut b = CommandBufferBuilder::new(1, 1);
+        for (id, ph, val, secure) in [
+            (2u32, Some("Filter issues..."), None, false),
+            (3u32, Some("Unused placeholder"), Some("hello"), false),
+            (4u32, Some("Password"), Some("s3cr3t"), true),
+        ] {
+            b.create_node(id, ComponentKind::TextInput, None);
+            b.set_layout(
+                id,
+                &LayoutProps {
+                    width: Dimension::Points(260.0),
+                    height: Dimension::Points(34.0),
+                    padding: EdgeInsets::symmetric(0.0, 12.0),
+                    ..Default::default()
+                },
+            );
+            b.set_style(
+                id,
+                &StyleProps {
+                    background: ColorRgba::rgb(15, 23, 42),
+                    text_color: ColorRgba::rgb(241, 245, 249),
+                    font_size: 13.0,
+                    ..Default::default()
+                },
+            );
+            if let Some(p) = ph {
+                b.set_raw_prop(id, "placeholder", &RawPropValue::String(p.into()));
+            }
+            if let Some(v) = val {
+                b.set_raw_prop(id, "value", &RawPropValue::String(v.into()));
+            }
+            if secure {
+                b.set_raw_prop(id, "secureTextEntry", &RawPropValue::Bool(true));
+            }
+        }
+        b.set_children(ROOT_NODE_ID, &[2, 3, 4]);
+        b.commit(true);
+        skia.submit_frame(b.finish()).unwrap();
+
+        let drawn: Vec<(&str, ColorRgba, f32)> = skia
+            .display_list()
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                PaintOp::DrawText {
+                    rect, text, color, ..
+                } => Some((text.as_str(), *color, rect.x)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawn.len(), 3);
+        assert_eq!(drawn[0].0, "Filter issues...");
+        assert!(drawn[0].1.a < 200, "placeholder should be muted alpha");
+        assert!(drawn[0].2 >= 12.0, "text should respect left padding");
+        assert_eq!(drawn[1].0, "hello");
+        assert_eq!(drawn[1].1.a, 255);
+        assert_eq!(drawn[2].0, "••••••");
+
+        let mut buf = PixelBuffer::new(320, 200);
+        skia.rasterize(&mut buf, ColorRgba::BLACK);
+        let mut rgb = Vec::with_capacity(320 * 200 * 3);
+        for y in 0..200 {
+            for x in 0..320 {
+                let (r, g, b) = buf.get_rgb(x, y).unwrap();
+                rgb.extend_from_slice(&[r, g, b]);
+            }
+        }
+        let png = encode_rgb_png(320, 200, &rgb).expect("encode PNG");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let decoded = decode_png(&png).expect("decode roundtripped PNG");
+        assert_eq!((decoded.width, decoded.height), (320, 200));
+        assert_eq!(&decoded.rgba[0..4], &[rgb[0], rgb[1], rgb[2], 255]);
     }
 }
