@@ -1341,15 +1341,11 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     // 2. Real dynamic cdylib plugin loading + isolated surface ID + transactional hot-swap via NvePluginHost.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
-    let dylib_ext = if cfg!(target_os = "macos") {
-        "dylib"
-    } else if cfg!(target_os = "windows") {
-        "dll"
-    } else {
-        "so"
-    };
-    let dylib_path =
-        workspace_root.join(format!("target/debug/libnve_studio_workspace.{dylib_ext}"));
+    let dylib_path = workspace_root.join(format!(
+        "target/debug/{}nve_studio_workspace.{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_EXTENSION
+    ));
     if !dylib_path.exists() {
         let status = std::process::Command::new("cargo")
             .args(["build", "-p", "nve-studio-workspace"])

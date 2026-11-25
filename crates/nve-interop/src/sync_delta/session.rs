@@ -266,10 +266,7 @@ impl SyncDeltaSession {
                 return false;
             }
             let diff = entry.seq - cum_ack;
-            if (1..=64).contains(&diff) && (sack_bitmap & (1u64 << (diff - 1))) != 0 {
-                return false;
-            }
-            true
+            !((1..=64).contains(&diff) && (sack_bitmap & (1u64 << (diff - 1))) != 0)
         });
         Ok(before - self.sent_window.len())
     }

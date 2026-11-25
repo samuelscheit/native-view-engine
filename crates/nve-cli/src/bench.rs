@@ -68,6 +68,7 @@ unsafe extern "C" {
 
 /// Normalizes `rusage.ru_maxrss` to bytes: Apple platforms (macOS/iOS) report bytes directly,
 /// whereas Linux and other BSDs report kibibytes (KiB).
+#[cfg(any(unix, test))]
 #[inline]
 pub(crate) fn normalize_maxrss_to_bytes(raw_maxrss: i64, is_apple_os: bool) -> u64 {
     if raw_maxrss <= 0 {
