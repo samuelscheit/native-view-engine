@@ -104,6 +104,20 @@ fn write_attr(name: &str, val: &str, out: &mut String) {
 
 #[cfg(target_arch = "wasm32")]
 #[inline]
+pub(crate) fn create_dom_element_for_tag(
+    doc: &web_sys::Document,
+    tag: &str,
+) -> Option<web_sys::Element> {
+    if tag == "svg" {
+        doc.create_element_ns(Some("http://www.w3.org/2000/svg"), "svg")
+            .ok()
+    } else {
+        doc.create_element(tag).ok()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
 fn set_attr_if_changed(el: &web_sys::Element, name: &str, value: &str) {
     if el.get_attribute(name).as_deref() != Some(value) {
         let _ = el.set_attribute(name, value);
@@ -133,6 +147,13 @@ impl WebBackend {
         let _ = write!(out, "{id}");
         out.push('"');
 
+        #[cfg(any(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+            feature = "camera",
+        ))]
         if el.kind == ComponentKind::Custom
             && let Some(nv) = self.native_views.get(&id)
         {
@@ -189,6 +210,13 @@ impl WebBackend {
 
         out.push_str(" style=\"");
         el.combined_css_into(out);
+        #[cfg(any(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+            feature = "camera",
+        ))]
         if let Some(nv) = self.native_views.get(&id) { out.push_str(&nv.extra_css); }
         out.push_str("\">");
         if matches!(tag, "img" | "input" | "br" | "hr" | "meta" | "link") { return; }
@@ -258,12 +286,36 @@ impl WebBackend {
                 .get(&node_id)
                 .and_then(|pid| self.nodes.get(pid));
             let allow_new = self.stylesheet.can_insert_new();
+            #[cfg(any(
+                feature = "nv-blur",
+                feature = "nv-webview",
+                feature = "nv-video",
+                feature = "nv-web-element",
+                feature = "camera",
+            ))]
             let mut resolved = resolve_node_style(node, parent, allow_new, |cls| {
+                self.stylesheet.contains_rule(cls)
+            });
+            #[cfg(not(any(
+                feature = "nv-blur",
+                feature = "nv-webview",
+                feature = "nv-video",
+                feature = "nv-web-element",
+                feature = "camera",
+            )))]
+            let resolved = resolve_node_style(node, parent, allow_new, |cls| {
                 self.stylesheet.contains_rule(cls)
             });
             if let Some((cls, decls)) = resolved.structural_rule {
                 let _ = self.stylesheet.ensure_rule(cls, decls);
             }
+            #[cfg(any(
+                feature = "nv-blur",
+                feature = "nv-webview",
+                feature = "nv-video",
+                feature = "nv-web-element",
+                feature = "camera",
+            ))]
             if let Some(nv) = self.native_views.get(&node_id) && !nv.extra_css.is_empty() {
                 resolved.inline_style.push_str(&nv.extra_css);
             }
@@ -486,7 +538,7 @@ impl WebBackend {
         let Some(old_el) = self.dom_nodes.get(&node_id).cloned() else { return; };
         if old_el.tag_name().eq_ignore_ascii_case(&new_tag) { return; }
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return; };
-        let Some(new_el) = crate::native_view::create_dom_element_for_tag(&doc, &new_tag) else { return; };
+        let Some(new_el) = create_dom_element_for_tag(&doc, &new_tag) else { return; };
         self.attr_scratch.clear();
         let _ = write!(&mut self.attr_scratch, "{node_id}");
         let _ = new_el.set_attribute("data-nve-id", &self.attr_scratch);
@@ -517,6 +569,13 @@ impl WebBackend {
                 self.sync_dom_raw_prop(node_id, k, v);
             }
         }
+        #[cfg(any(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+            feature = "camera",
+        ))]
         if let (Some(dom_el), Some(nv)) = (self.dom_nodes.get(&node_id), self.native_views.get_mut(&node_id)) {
             crate::native_view::sync_native_view_dom_attrs(dom_el, nv);
         }
@@ -578,6 +637,13 @@ impl WebBackend {
             .collect();
         for nid in dead_ids {
             self.nodes.remove(&nid);
+            #[cfg(any(
+                feature = "nv-blur",
+                feature = "nv-webview",
+                feature = "nv-video",
+                feature = "nv-web-element",
+                feature = "camera",
+            ))]
             self.native_views.remove(&nid);
             self.parent_of.remove(&nid);
             self.remove_node_event_meta(nid);

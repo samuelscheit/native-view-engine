@@ -1,31 +1,51 @@
 //! Deterministic in-memory mock state and binary dispatch for Tier-2/3 capabilities
 //! inside [`crate::MemoryHostServices`].
 
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(any(
+    feature = "fonts",
+    feature = "audio",
+    feature = "camera",
+    feature = "location",
+    feature = "sensors",
+))]
+use std::collections::BTreeMap;
+#[cfg(feature = "sensors")]
+use std::collections::BTreeSet;
 
+#[cfg(feature = "audio")]
 use crate::audio::{
     self, AudioClipMeta, AudioHandle, AudioPlaybackState, AudioRecordConfig, AudioSource,
     SERVICE_AUDIO,
 };
+#[cfg(feature = "camera")]
 use crate::camera::{
     self, CameraDevice, CameraFacing, CameraPreviewConfig, CameraSessionId, CapturedMedia,
     MediaFormat, SERVICE_CAMERA,
 };
 use crate::error::SdkError;
+#[cfg(feature = "fonts")]
 use crate::fonts::{self, FontRegistry, SERVICE_FONTS};
+#[cfg(feature = "location")]
+use crate::location::{
+    self, GeoFix, LocationWatchConfig, LocationWatchId, SERVICE_LOCATION,
+};
+#[cfg(feature = "storage")]
 use crate::native::storage::KvStoreManager;
+#[cfg(feature = "storage")]
 use crate::native::tier2::dispatch_storage_kv;
+#[cfg(any(feature = "camera", feature = "location"))]
 use crate::provider::PermissionStatus;
-use crate::sensors::{
-    self, GeoFix, LocationWatchConfig, LocationWatchId, SensorKind, SensorSubscriptionId,
-    SERVICE_LOCATION, SERVICE_SENSORS,
-};
-use crate::share_web::{
-    self, InAppBrowserOptions, ShareResult, WebAuthResult, SERVICE_SHARE, SERVICE_WEB_AUTH,
-};
+#[cfg(feature = "sensors")]
+use crate::sensors::{self, SensorKind, SensorSubscriptionId, SERVICE_SENSORS};
+#[cfg(feature = "share")]
+use crate::share_web::{self, ShareResult, SERVICE_SHARE};
+#[cfg(feature = "web-auth")]
+use crate::share_web::{self as web_auth_mod, InAppBrowserOptions, WebAuthResult, SERVICE_WEB_AUTH};
+#[cfg(feature = "storage")]
 use crate::storage::SERVICE_STORAGE;
 
 /// Snapshot of a loaded mock audio track inside [`crate::MemoryHostServices`].
+#[cfg(feature = "audio")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MockAudioTrack {
     pub handle: AudioHandle,
@@ -37,6 +57,7 @@ pub struct MockAudioTrack {
 }
 
 /// Recorded share-sheet invocation for test assertions.
+#[cfg(feature = "share")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedShare {
     Text {
@@ -51,6 +72,7 @@ pub enum RecordedShare {
 }
 
 /// Recorded in-app browser launch for test assertions.
+#[cfg(feature = "web-auth")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedBrowserLaunch {
     pub url: String,
@@ -58,50 +80,87 @@ pub struct RecordedBrowserLaunch {
 }
 
 pub(crate) struct MemoryTier2State {
+    #[cfg(feature = "storage")]
     pub kv: KvStoreManager,
+    #[cfg(feature = "fonts")]
     pub fonts: FontRegistry,
+    #[cfg(feature = "fonts")]
     pub mock_font_files: BTreeMap<String, Vec<u8>>,
+    #[cfg(feature = "audio")]
     next_audio_id: u64,
+    #[cfg(feature = "audio")]
     pub audio_tracks: BTreeMap<AudioHandle, MockAudioTrack>,
+    #[cfg(feature = "audio")]
     pub active_recording: Option<AudioRecordConfig>,
+    #[cfg(feature = "audio")]
     pub recording_clip_meta: Option<AudioClipMeta>,
+    #[cfg(feature = "camera")]
     pub camera_permission: PermissionStatus,
+    #[cfg(feature = "camera")]
     pub camera_devices: Vec<CameraDevice>,
+    #[cfg(feature = "camera")]
     pub captured_media: CapturedMedia,
+    #[cfg(feature = "camera")]
     next_camera_session_id: u64,
+    #[cfg(feature = "camera")]
     pub camera_previews: BTreeMap<CameraSessionId, CameraPreviewConfig>,
+    #[cfg(feature = "location")]
     pub location_permission: PermissionStatus,
+    #[cfg(feature = "location")]
     pub current_fix: GeoFix,
+    #[cfg(feature = "location")]
     next_location_watch_id: u64,
+    #[cfg(feature = "location")]
     pub location_watches: BTreeMap<LocationWatchId, LocationWatchConfig>,
+    #[cfg(feature = "sensors")]
     pub available_sensors: BTreeSet<SensorKind>,
+    #[cfg(feature = "sensors")]
     next_sensor_sub_id: u64,
+    #[cfg(feature = "sensors")]
     pub sensor_subscriptions: BTreeMap<SensorSubscriptionId, (SensorKind, u16)>,
+    #[cfg(feature = "share")]
     pub share_result: ShareResult,
+    #[cfg(feature = "share")]
     pub recorded_shares: Vec<RecordedShare>,
+    #[cfg(feature = "web-auth")]
     pub opened_browsers: Vec<RecordedBrowserLaunch>,
+    #[cfg(feature = "web-auth")]
     pub web_auth_result: Option<WebAuthResult>,
+    #[cfg(feature = "web-auth")]
     pub web_auth_requests: Vec<(String, String)>,
 }
 
 impl MemoryTier2State {
     pub fn new() -> Self {
-        let mut available_sensors = BTreeSet::new();
-        available_sensors.insert(SensorKind::Accelerometer);
-        available_sensors.insert(SensorKind::Gyroscope);
-        available_sensors.insert(SensorKind::Magnetometer);
-        available_sensors.insert(SensorKind::Barometer);
-        available_sensors.insert(SensorKind::AmbientLight);
+        #[cfg(feature = "sensors")]
+        let available_sensors = {
+            let mut s = BTreeSet::new();
+            s.insert(SensorKind::Accelerometer);
+            s.insert(SensorKind::Gyroscope);
+            s.insert(SensorKind::Magnetometer);
+            s.insert(SensorKind::Barometer);
+            s.insert(SensorKind::AmbientLight);
+            s
+        };
 
         Self {
+            #[cfg(feature = "storage")]
             kv: KvStoreManager::in_memory(),
+            #[cfg(feature = "fonts")]
             fonts: FontRegistry::new(),
+            #[cfg(feature = "fonts")]
             mock_font_files: BTreeMap::new(),
+            #[cfg(feature = "audio")]
             next_audio_id: 1,
+            #[cfg(feature = "audio")]
             audio_tracks: BTreeMap::new(),
+            #[cfg(feature = "audio")]
             active_recording: None,
+            #[cfg(feature = "audio")]
             recording_clip_meta: None,
+            #[cfg(feature = "camera")]
             camera_permission: PermissionStatus::Authorized,
+            #[cfg(feature = "camera")]
             camera_devices: vec![
                 CameraDevice {
                     id: "cam-back-0".into(),
@@ -120,6 +179,7 @@ impl MemoryTier2State {
                     max_height: 1080,
                 },
             ],
+            #[cfg(feature = "camera")]
             captured_media: CapturedMedia {
                 format: MediaFormat::Jpeg,
                 width: 1280,
@@ -128,9 +188,13 @@ impl MemoryTier2State {
                 file_path: Some("/mem/tmp/capture.jpg".into()),
                 timestamp_ms: 1_700_000_000_000,
             },
+            #[cfg(feature = "camera")]
             next_camera_session_id: 1,
+            #[cfg(feature = "camera")]
             camera_previews: BTreeMap::new(),
+            #[cfg(feature = "location")]
             location_permission: PermissionStatus::Authorized,
+            #[cfg(feature = "location")]
             current_fix: GeoFix {
                 latitude: 37.7749,
                 longitude: -122.4194,
@@ -140,16 +204,48 @@ impl MemoryTier2State {
                 heading_deg: Some(90.0),
                 timestamp_ms: 1_700_000_000_000,
             },
+            #[cfg(feature = "location")]
             next_location_watch_id: 1,
+            #[cfg(feature = "location")]
             location_watches: BTreeMap::new(),
+            #[cfg(feature = "sensors")]
             available_sensors,
+            #[cfg(feature = "sensors")]
             next_sensor_sub_id: 1,
+            #[cfg(feature = "sensors")]
             sensor_subscriptions: BTreeMap::new(),
+            #[cfg(feature = "share")]
             share_result: ShareResult::Completed,
+            #[cfg(feature = "share")]
             recorded_shares: Vec::new(),
+            #[cfg(feature = "web-auth")]
             opened_browsers: Vec::new(),
+            #[cfg(feature = "web-auth")]
             web_auth_result: None,
+            #[cfg(feature = "web-auth")]
             web_auth_requests: Vec::new(),
+        }
+    }
+
+    pub const fn handles_service(service_id: u32) -> bool {
+        match service_id {
+            #[cfg(feature = "storage")]
+            SERVICE_STORAGE => true,
+            #[cfg(feature = "fonts")]
+            SERVICE_FONTS => true,
+            #[cfg(feature = "audio")]
+            SERVICE_AUDIO => true,
+            #[cfg(feature = "camera")]
+            SERVICE_CAMERA => true,
+            #[cfg(feature = "location")]
+            SERVICE_LOCATION => true,
+            #[cfg(feature = "sensors")]
+            SERVICE_SENSORS => true,
+            #[cfg(feature = "share")]
+            SERVICE_SHARE => true,
+            #[cfg(feature = "web-auth")]
+            SERVICE_WEB_AUTH => true,
+            _ => false,
         }
     }
 
@@ -160,18 +256,27 @@ impl MemoryTier2State {
         request: &[u8],
     ) -> Result<Vec<u8>, SdkError> {
         match service_id {
+            #[cfg(feature = "storage")]
             SERVICE_STORAGE => dispatch_storage_kv(&mut self.kv, method_id, request),
+            #[cfg(feature = "fonts")]
             SERVICE_FONTS => self.dispatch_fonts(method_id, request),
+            #[cfg(feature = "audio")]
             SERVICE_AUDIO => self.dispatch_audio(method_id, request),
+            #[cfg(feature = "camera")]
             SERVICE_CAMERA => self.dispatch_camera(method_id, request),
+            #[cfg(feature = "location")]
             SERVICE_LOCATION => self.dispatch_location(method_id, request),
+            #[cfg(feature = "sensors")]
             SERVICE_SENSORS => self.dispatch_sensors(method_id, request),
+            #[cfg(feature = "share")]
             SERVICE_SHARE => self.dispatch_share(method_id, request),
+            #[cfg(feature = "web-auth")]
             SERVICE_WEB_AUTH => self.dispatch_web_auth(method_id, request),
             _ => Err(SdkError::Unsupported),
         }
     }
 
+    #[cfg(feature = "fonts")]
     fn dispatch_fonts(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
             fonts::METHOD_REGISTER_BYTES => {
@@ -207,6 +312,7 @@ impl MemoryTier2State {
         }
     }
 
+    #[cfg(feature = "audio")]
     fn dispatch_audio(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
             audio::METHOD_LOAD_SOURCE => {
@@ -292,6 +398,7 @@ impl MemoryTier2State {
         }
     }
 
+    #[cfg(feature = "camera")]
     fn dispatch_camera(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
             camera::METHOD_LIST_DEVICES => camera::encode_devices_response(&self.camera_devices),
@@ -348,21 +455,22 @@ impl MemoryTier2State {
         }
     }
 
+    #[cfg(feature = "location")]
     fn dispatch_location(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
-            sensors::METHOD_LOC_REQUEST_PERMISSION => Ok(self.location_permission.encode()),
-            sensors::METHOD_LOC_CURRENT_POSITION => {
-                let _acc = sensors::decode_accuracy_request(request)?;
+            location::METHOD_LOC_REQUEST_PERMISSION => Ok(self.location_permission.encode()),
+            location::METHOD_LOC_CURRENT_POSITION => {
+                let _acc = location::decode_accuracy_request(request)?;
                 if matches!(
                     self.location_permission,
                     PermissionStatus::Denied | PermissionStatus::Restricted
                 ) {
                     return Err(SdkError::PermissionDenied);
                 }
-                sensors::encode_geo_fix(&self.current_fix)
+                location::encode_geo_fix(&self.current_fix)
             }
-            sensors::METHOD_LOC_WATCH_POSITION => {
-                let cfg = sensors::decode_watch_config(request)?;
+            location::METHOD_LOC_WATCH_POSITION => {
+                let cfg = location::decode_watch_config(request)?;
                 if matches!(
                     self.location_permission,
                     PermissionStatus::Denied | PermissionStatus::Restricted
@@ -372,10 +480,10 @@ impl MemoryTier2State {
                 let id = LocationWatchId(self.next_location_watch_id);
                 self.next_location_watch_id = self.next_location_watch_id.saturating_add(1);
                 self.location_watches.insert(id, cfg);
-                sensors::encode_watch_id(id)
+                location::encode_watch_id(id)
             }
-            sensors::METHOD_LOC_STOP_WATCH => {
-                let id = sensors::decode_watch_id(request)?;
+            location::METHOD_LOC_STOP_WATCH => {
+                let id = location::decode_watch_id(request)?;
                 self.location_watches
                     .remove(&id)
                     .ok_or(SdkError::NotFound)?;
@@ -385,6 +493,7 @@ impl MemoryTier2State {
         }
     }
 
+    #[cfg(feature = "sensors")]
     fn dispatch_sensors(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
             sensors::METHOD_SENSOR_IS_AVAILABLE => {
@@ -414,6 +523,7 @@ impl MemoryTier2State {
         }
     }
 
+    #[cfg(feature = "share")]
     fn dispatch_share(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
             share_web::METHOD_SHARE_TEXT => {
@@ -436,16 +546,17 @@ impl MemoryTier2State {
         }
     }
 
+    #[cfg(feature = "web-auth")]
     fn dispatch_web_auth(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
-            share_web::METHOD_OPEN_IN_APP_BROWSER => {
-                let (url, options) = share_web::decode_open_browser_request(request)?;
+            web_auth_mod::METHOD_OPEN_IN_APP_BROWSER => {
+                let (url, options) = web_auth_mod::decode_open_browser_request(request)?;
                 self.opened_browsers
                     .push(RecordedBrowserLaunch { url, options });
                 Ok(Vec::new())
             }
-            share_web::METHOD_AUTHENTICATE => {
-                let (auth_url, callback_scheme) = share_web::decode_authenticate_request(request)?;
+            web_auth_mod::METHOD_AUTHENTICATE => {
+                let (auth_url, callback_scheme) = web_auth_mod::decode_authenticate_request(request)?;
                 self.web_auth_requests
                     .push((auth_url, callback_scheme.clone()));
                 let result = self.web_auth_result.clone().unwrap_or_else(|| {
@@ -453,7 +564,7 @@ impl MemoryTier2State {
                         "{callback_scheme}://callback?code=mock_auth_code"
                     ))
                 });
-                share_web::encode_web_auth_result(&result)
+                web_auth_mod::encode_web_auth_result(&result)
             }
             _ => Err(SdkError::Unsupported),
         }
@@ -461,6 +572,7 @@ impl MemoryTier2State {
 }
 
 impl crate::MemoryHostServices {
+    #[cfg(feature = "fonts")]
     pub fn add_mock_font_file(&self, path: impl Into<String>, bytes: Vec<u8>) {
         self.state
             .lock()
@@ -470,6 +582,7 @@ impl crate::MemoryHostServices {
             .insert(path.into(), bytes);
     }
 
+    #[cfg(feature = "audio")]
     pub fn audio_track(&self, handle: AudioHandle) -> Option<MockAudioTrack> {
         self.state
             .lock()
@@ -480,22 +593,27 @@ impl crate::MemoryHostServices {
             .cloned()
     }
 
+    #[cfg(feature = "audio")]
     pub fn set_recording_clip_meta(&self, meta: AudioClipMeta) {
         self.state.lock().unwrap().tier2.recording_clip_meta = Some(meta);
     }
 
+    #[cfg(feature = "camera")]
     pub fn set_camera_permission(&self, status: PermissionStatus) {
         self.state.lock().unwrap().tier2.camera_permission = status;
     }
 
+    #[cfg(feature = "camera")]
     pub fn set_camera_devices(&self, devices: Vec<CameraDevice>) {
         self.state.lock().unwrap().tier2.camera_devices = devices;
     }
 
+    #[cfg(feature = "camera")]
     pub fn set_captured_media(&self, media: CapturedMedia) {
         self.state.lock().unwrap().tier2.captured_media = media;
     }
 
+    #[cfg(feature = "camera")]
     pub fn active_camera_previews(&self) -> Vec<CameraSessionId> {
         self.state
             .lock()
@@ -507,14 +625,17 @@ impl crate::MemoryHostServices {
             .collect()
     }
 
+    #[cfg(feature = "location")]
     pub fn set_location_permission(&self, status: PermissionStatus) {
         self.state.lock().unwrap().tier2.location_permission = status;
     }
 
+    #[cfg(feature = "location")]
     pub fn set_current_fix(&self, fix: GeoFix) {
         self.state.lock().unwrap().tier2.current_fix = fix;
     }
 
+    #[cfg(feature = "location")]
     pub fn active_location_watches(&self) -> Vec<LocationWatchId> {
         self.state
             .lock()
@@ -526,6 +647,7 @@ impl crate::MemoryHostServices {
             .collect()
     }
 
+    #[cfg(feature = "sensors")]
     pub fn set_sensor_available(&self, kind: SensorKind, available: bool) {
         let mut st = self.state.lock().unwrap();
         if available {
@@ -535,6 +657,7 @@ impl crate::MemoryHostServices {
         }
     }
 
+    #[cfg(feature = "sensors")]
     pub fn active_sensor_subscriptions(&self) -> Vec<(SensorSubscriptionId, SensorKind, u16)> {
         self.state
             .lock()
@@ -546,22 +669,27 @@ impl crate::MemoryHostServices {
             .collect()
     }
 
+    #[cfg(feature = "share")]
     pub fn set_share_result(&self, result: ShareResult) {
         self.state.lock().unwrap().tier2.share_result = result;
     }
 
+    #[cfg(feature = "share")]
     pub fn recorded_shares(&self) -> Vec<RecordedShare> {
         self.state.lock().unwrap().tier2.recorded_shares.clone()
     }
 
+    #[cfg(feature = "web-auth")]
     pub fn opened_browsers(&self) -> Vec<RecordedBrowserLaunch> {
         self.state.lock().unwrap().tier2.opened_browsers.clone()
     }
 
+    #[cfg(feature = "web-auth")]
     pub fn set_web_auth_result(&self, result: Option<WebAuthResult>) {
         self.state.lock().unwrap().tier2.web_auth_result = result;
     }
 
+    #[cfg(feature = "web-auth")]
     pub fn web_auth_requests(&self) -> Vec<(String, String)> {
         self.state.lock().unwrap().tier2.web_auth_requests.clone()
     }

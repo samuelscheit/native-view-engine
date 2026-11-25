@@ -123,8 +123,26 @@ impl WebBackend {
         if let Some((cls, decls)) = resolved.structural_rule {
             rules.entry(cls).or_insert(decls);
         }
-        let native_view = (el.kind == ComponentKind::Custom).then(|| self.native_views.get(&id)).flatten();
-        if let Some(nv) = native_view && !nv.extra_css.is_empty() {
+        #[cfg(any(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+            feature = "camera",
+        ))]
+        let native_view = (el.kind == ComponentKind::Custom)
+            .then(|| self.native_views.get(&id))
+            .flatten();
+        #[cfg(any(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+            feature = "camera",
+        ))]
+        if let Some(nv) = native_view
+            && !nv.extra_css.is_empty()
+        {
             resolved.inline_style.push_str(&nv.extra_css);
         }
 
@@ -143,6 +161,13 @@ impl WebBackend {
         if !resolved.inline_style.is_empty() {
             write_attr("style", &resolved.inline_style, out);
         }
+        #[cfg(any(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+            feature = "camera",
+        ))]
         if let Some(nv) = native_view {
             crate::native_view::write_native_view_html_attrs(nv, out);
         }

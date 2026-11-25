@@ -1,12 +1,14 @@
 //! First-Class Native Platform Primitive Escape Hatches (`NativeViewSpec`, zero-JSON binary
 //! prop/command codecs, `NativeViewHandle`, and wildcard-aware `NativeViewRegistry`).
 
+#[cfg(feature = "camera")]
 mod camera;
 mod codec;
 mod handle;
 mod specs;
 mod wire;
 
+#[cfg(feature = "camera")]
 pub use camera::{
     CameraFrameDescriptor, CameraPixelFormat, CameraPreview, CameraPreviewCommand,
     CameraPreviewFacing, CameraPreviewProps, StabilizationMode, TorchMode,

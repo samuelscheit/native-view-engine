@@ -1,7 +1,17 @@
-//! Shared deterministic fixtures for `nve-bench` Criterion benchmarks.
+//! Shared deterministic fixtures for `nve-bench` Criterion benchmarks and WASM bundle
+//! size reporting.
 //!
-//! Keeps command buffers, event batches, Dioxus surfaces, and modular FFI modules DRY
-//! across every benchmark group.
+//! Keeps command buffers, event batches, Dioxus surfaces, modular FFI modules, and
+//! `hosts/web-shell/pkg` size metrics DRY across every benchmark group.
+
+pub mod wasm_bundle_size;
+
+pub use wasm_bundle_size::{
+    default_brotli_budget, measure_bundle_dir, measure_web_shell_bundles,
+    measure_workspace_web_shell_bundles, AssetSizeBreakdown, BudgetStatus, WasmBundleMetrics,
+    WasmBundleReport, DEFAULT_BROTLI_BUDGET_COUNTER, DEFAULT_BROTLI_BUDGET_DEV,
+    DEFAULT_BROTLI_BUDGET_STUDIO, DEFAULT_WEB_SHELL_BUNDLES,
+};
 
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,

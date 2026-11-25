@@ -10,7 +10,7 @@ use crate::error::InteropError;
 pub type ChannelId = u32;
 
 /// Unique identifier for an active subscription on [`NveChannelBus`].
-pub type SubscriptionId = u64;
+pub use crate::error::SubscriptionId;
 
 /// Built-in well-known cross-framework topics and stable numeric channel IDs.
 pub const TOPIC_THEME: &str = "theme";

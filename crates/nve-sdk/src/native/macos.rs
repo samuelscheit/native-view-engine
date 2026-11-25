@@ -1,25 +1,67 @@
 //! macOS native OS backend using direct Objective-C runtime, AppKit, Foundation,
 //! and Security.framework FFI with zero third-party crates.
 
-use std::ffi::{c_char, c_void, CStr};
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
+use std::ffi::{c_char, c_void};
+#[cfg(any(
+    feature = "clipboard",
+    feature = "system-env",
+    feature = "notifications",
+))]
+use std::ffi::CStr;
+#[cfg(feature = "filesystem")]
 use std::path::PathBuf;
 
 use crate::error::SdkError;
+#[cfg(feature = "filesystem")]
 use crate::filesystem::{FilePickerOptions, SaveFileOptions, StandardPathKind};
+#[cfg(feature = "haptics")]
 use crate::haptics::{ImpactStyle, NotificationHaptic};
+#[cfg(feature = "notifications")]
 use crate::notifications::{NotificationPermission, NotificationRequest};
+#[cfg(feature = "system-env")]
 use crate::system_env::{ColorScheme, ContrastLevel, LocaleSnapshot, ThemeSnapshot};
 
+#[cfg(feature = "system-env")]
 use super::parse_locale_tag;
 
+#[cfg(feature = "secure-store")]
 #[path = "macos_keychain.rs"]
 mod keychain;
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 type Id = *mut c_void;
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 type Sel = *mut c_void;
 
+#[cfg(any(feature = "clipboard", feature = "linking", feature = "system-env"))]
 const NS_UTF8_STRING_ENCODING: usize = 4;
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 #[link(name = "objc")]
 unsafe extern "C" {
     fn objc_getClass(name: *const c_char) -> Id;
@@ -29,14 +71,35 @@ unsafe extern "C" {
     fn objc_autoreleasePoolPop(pool: *mut c_void);
 }
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 #[link(name = "Foundation", kind = "framework")]
 unsafe extern "C" {}
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "haptics",
+))]
 #[link(name = "AppKit", kind = "framework")]
 unsafe extern "C" {
+    #[cfg(feature = "system-env")]
     static NSApp: Id;
 }
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 fn with_autorelease_pool<T>(f: impl FnOnce() -> T) -> T {
     let pool = unsafe { objc_autoreleasePoolPush() };
     let result = f();
@@ -44,52 +107,79 @@ fn with_autorelease_pool<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 unsafe fn cls(name: &[u8]) -> Id {
     debug_assert_eq!(name.last(), Some(&0));
     unsafe { objc_getClass(name.as_ptr().cast()) }
 }
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 unsafe fn sel(name: &[u8]) -> Sel {
     debug_assert_eq!(name.last(), Some(&0));
     unsafe { sel_registerName(name.as_ptr().cast()) }
 }
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "linking",
+    feature = "system-env",
+    feature = "notifications",
+    feature = "haptics",
+))]
 unsafe fn msg_id0(obj: Id, s: Sel) -> Id {
     let f: unsafe extern "C" fn(Id, Sel) -> Id =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { f(obj, s) }
 }
 
+#[cfg(any(feature = "clipboard", feature = "linking", feature = "system-env"))]
 unsafe fn msg_id1(obj: Id, s: Sel, a1: Id) -> Id {
     let f: unsafe extern "C" fn(Id, Sel, Id) -> Id =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { f(obj, s, a1) }
 }
 
+#[cfg(feature = "linking")]
 unsafe fn msg_bool1(obj: Id, s: Sel, a1: Id) -> bool {
     let f: unsafe extern "C" fn(Id, Sel, Id) -> i8 =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { f(obj, s, a1) != 0 }
 }
 
+#[cfg(feature = "clipboard")]
 unsafe fn msg_bool2(obj: Id, s: Sel, a1: Id, a2: Id) -> bool {
     let f: unsafe extern "C" fn(Id, Sel, Id, Id) -> i8 =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { f(obj, s, a1, a2) != 0 }
 }
 
+#[cfg(feature = "clipboard")]
 unsafe fn msg_isize0(obj: Id, s: Sel) -> isize {
     let f: unsafe extern "C" fn(Id, Sel) -> isize =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { f(obj, s) }
 }
 
+#[cfg(feature = "haptics")]
 unsafe fn msg_void_isize2(obj: Id, s: Sel, a1: isize, a2: usize) {
     let f: unsafe extern "C" fn(Id, Sel, isize, usize) =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { f(obj, s, a1, a2) }
 }
 
+#[cfg(any(feature = "clipboard", feature = "linking", feature = "system-env"))]
 unsafe fn nsstring_from_str(s: &str) -> Id {
     let ns_string = unsafe { cls(b"NSString\0") };
     if ns_string.is_null() {
@@ -116,6 +206,11 @@ unsafe fn nsstring_from_str(s: &str) -> Id {
     unsafe { msg_id0(obj, sel(b"autorelease\0")) }
 }
 
+#[cfg(any(
+    feature = "clipboard",
+    feature = "system-env",
+    feature = "notifications",
+))]
 unsafe fn nsstring_to_string(obj: Id) -> Option<String> {
     if obj.is_null() {
         return None;
@@ -132,6 +227,7 @@ unsafe fn nsstring_to_string(obj: Id) -> Option<String> {
 
 // Clipboard (`NSPasteboard`)
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_read_text() -> Result<Option<String>, SdkError> {
     with_autorelease_pool(|| unsafe {
         let pb_cls = cls(b"NSPasteboard\0");
@@ -148,6 +244,7 @@ pub fn clipboard_read_text() -> Result<Option<String>, SdkError> {
     })
 }
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_write_text(text: &str) -> Result<(), SdkError> {
     with_autorelease_pool(|| unsafe {
         let pb_cls = cls(b"NSPasteboard\0");
@@ -169,10 +266,12 @@ pub fn clipboard_write_text(text: &str) -> Result<(), SdkError> {
     })
 }
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_has_text() -> Result<bool, SdkError> {
     Ok(clipboard_read_text()?.is_some_and(|s| !s.is_empty()))
 }
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_clear() -> Result<(), SdkError> {
     with_autorelease_pool(|| unsafe {
         let pb_cls = cls(b"NSPasteboard\0");
@@ -190,6 +289,7 @@ pub fn clipboard_clear() -> Result<(), SdkError> {
 
 // Standard Paths & File Picker
 
+#[cfg(feature = "filesystem")]
 pub fn standard_path(kind: StandardPathKind) -> Result<String, SdkError> {
     if kind == StandardPathKind::Temp {
         return Ok(std::env::temp_dir().to_string_lossy().into_owned());
@@ -208,30 +308,36 @@ pub fn standard_path(kind: StandardPathKind) -> Result<String, SdkError> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[cfg(feature = "filesystem")]
 pub fn pick_files(_opts: &FilePickerOptions) -> Result<Vec<String>, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "filesystem")]
 pub fn save_file(_opts: &SaveFileOptions) -> Result<Option<String>, SdkError> {
     Err(SdkError::Unsupported)
 }
 
 // Secure Store (`Security.framework` Keychain)
 
+#[cfg(feature = "secure-store")]
 pub fn secure_store_get(service: &str, account: &str) -> Result<Option<Vec<u8>>, SdkError> {
     keychain::get(service, account)
 }
 
+#[cfg(feature = "secure-store")]
 pub fn secure_store_set(service: &str, account: &str, secret: &[u8]) -> Result<(), SdkError> {
     keychain::set(service, account, secret)
 }
 
+#[cfg(feature = "secure-store")]
 pub fn secure_store_delete(service: &str, account: &str) -> Result<bool, SdkError> {
     keychain::delete(service, account)
 }
 
 // Linking (`NSWorkspace`)
 
+#[cfg(feature = "linking")]
 pub fn linking_open_url(url: &str) -> Result<(), SdkError> {
     with_autorelease_pool(|| unsafe {
         let ns_url_cls = cls(b"NSURL\0");
@@ -256,6 +362,7 @@ pub fn linking_open_url(url: &str) -> Result<(), SdkError> {
     })
 }
 
+#[cfg(feature = "linking")]
 pub fn linking_can_open_url(url: &str) -> Result<bool, SdkError> {
     with_autorelease_pool(|| unsafe {
         let ns_url_cls = cls(b"NSURL\0");
@@ -279,6 +386,7 @@ pub fn linking_can_open_url(url: &str) -> Result<bool, SdkError> {
 
 // System Env (`NSApp.effectiveAppearance` / `NSUserDefaults` / `NSLocale`)
 
+#[cfg(feature = "system-env")]
 pub fn system_env_get_theme() -> Result<ThemeSnapshot, SdkError> {
     with_autorelease_pool(|| unsafe {
         let mut color_scheme = ColorScheme::Light;
@@ -351,6 +459,7 @@ pub fn system_env_get_theme() -> Result<ThemeSnapshot, SdkError> {
     })
 }
 
+#[cfg(feature = "system-env")]
 pub fn system_env_get_locale() -> Result<LocaleSnapshot, SdkError> {
     with_autorelease_pool(|| unsafe {
         let mut raw_tag = String::new();
@@ -386,6 +495,7 @@ pub fn system_env_get_locale() -> Result<LocaleSnapshot, SdkError> {
 
 // Notifications (Safe Bundle-ID Guard for `UNUserNotificationCenter`)
 
+#[cfg(feature = "notifications")]
 fn has_valid_app_bundle_identifier() -> bool {
     with_autorelease_pool(|| unsafe {
         let bundle_cls = cls(b"NSBundle\0");
@@ -401,6 +511,7 @@ fn has_valid_app_bundle_identifier() -> bool {
     })
 }
 
+#[cfg(feature = "notifications")]
 pub fn notifications_request_permission() -> Result<NotificationPermission, SdkError> {
     // Guard BEFORE touching `UNUserNotificationCenter.currentNotificationCenter`, which throws
     // an uncaught `NSInternalInconsistencyException` in unbundled CLI/test processes.
@@ -410,6 +521,7 @@ pub fn notifications_request_permission() -> Result<NotificationPermission, SdkE
     Ok(NotificationPermission::NotDetermined)
 }
 
+#[cfg(feature = "notifications")]
 pub fn notifications_show(_req: &NotificationRequest) -> Result<(), SdkError> {
     if !has_valid_app_bundle_identifier() {
         return Err(SdkError::Unsupported);
@@ -417,6 +529,7 @@ pub fn notifications_show(_req: &NotificationRequest) -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "notifications")]
 pub fn notifications_cancel(_id: &str) -> Result<(), SdkError> {
     if !has_valid_app_bundle_identifier() {
         return Err(SdkError::Unsupported);
@@ -426,6 +539,7 @@ pub fn notifications_cancel(_id: &str) -> Result<(), SdkError> {
 
 // Haptics (`NSHapticFeedbackManager`)
 
+#[cfg(feature = "haptics")]
 fn perform_ns_haptic(pattern: isize) -> Result<(), SdkError> {
     with_autorelease_pool(|| unsafe {
         let mgr_cls = cls(b"NSHapticFeedbackManager\0");
@@ -446,6 +560,7 @@ fn perform_ns_haptic(pattern: isize) -> Result<(), SdkError> {
     })
 }
 
+#[cfg(feature = "haptics")]
 pub fn haptics_impact(style: ImpactStyle) -> Result<(), SdkError> {
     let pattern = match style {
         ImpactStyle::Light | ImpactStyle::Soft => 1,
@@ -454,10 +569,12 @@ pub fn haptics_impact(style: ImpactStyle) -> Result<(), SdkError> {
     perform_ns_haptic(pattern)
 }
 
+#[cfg(feature = "haptics")]
 pub fn haptics_notification(_kind: NotificationHaptic) -> Result<(), SdkError> {
     perform_ns_haptic(0)
 }
 
+#[cfg(feature = "haptics")]
 pub fn haptics_selection() -> Result<(), SdkError> {
     perform_ns_haptic(1)
 }
