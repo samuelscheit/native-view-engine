@@ -16,10 +16,11 @@ namespace nve::qt {
 
 /// Embeddable Qt 6 (`QWidget`) host for any Native View Engine (`nve_get_interface`) app or component.
 ///
-/// Built directly on `nve::NativeHostSession` and `nve::RetainedViewReconciler` from
-/// `cxx/nve-fabric-bridge/include/nve_host_runtime.hpp`, mapping shadow nodes to retained native
-/// Qt widgets (`NveQtBoxWidget`, `QLabel`, `QScrollArea`, `QLineEdit`) with `QFontMetricsF` text
-/// measurement, interactive press routing, live resize relayout, and atomic state-preserving hot reload.
+/// Built directly on `nve::NativeHostSession` and `nve::IncrementalSceneReconciler` from
+/// `cxx/nve-fabric-bridge/include/nve_host_runtime.hpp`, mapping flat 64-byte `NveSceneView`
+/// nodes in O(changed) time to retained native Qt widgets (`NveQtBoxWidget`, `NveQtImageWidget`,
+/// `QLabel`, `QScrollArea`, `QLineEdit`) with `QFontMetricsF` text measurement, interactive press
+/// & scroll routing, live resize relayout, and atomic state-preserving hot reload.
 class NveQtWidget : public QWidget {
   Q_OBJECT
 
@@ -80,10 +81,19 @@ class NveQtWidget : public QWidget {
   uint32_t simulatePressOnNodeId(uint32_t nodeId, float x = 0.0f, float y = 0.0f);
   uint32_t simulatePressOnNodeId(uint32_t nodeId, const QPointF& point);
 
-  /// Dispatch a UTF-8 `TextChange`, Return-key `onSubmit`, or `Focus`/`Blur` event for `nodeId`.
+  /// Dispatch a UTF-8 `TextChange`, Return-key `onSubmit`, `Focus`/`Blur`, or `Scroll` event for `nodeId`.
   uint32_t dispatchTextChangeOnNodeId(uint32_t nodeId, std::string_view text);
   uint32_t dispatchSubmitOnNodeId(uint32_t nodeId, std::string_view text);
   uint32_t dispatchFocusOnNodeId(uint32_t nodeId, bool focused);
+  uint32_t dispatchScrollOnNodeId(
+      uint32_t nodeId,
+      float offsetX,
+      float offsetY,
+      float contentWidth,
+      float contentHeight);
+
+  /// Total incremental widget update passes applied via `IncrementalSceneReconciler`.
+  uint64_t reconcileUpdateCount() const noexcept;
 
   /// Query extracted per-node accessibility & TextInput metadata for `nodeId`.
   std::optional<NodeSemantics> accessibilityInfoForNodeId(uint32_t nodeId) const;

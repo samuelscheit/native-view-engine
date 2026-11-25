@@ -2,6 +2,7 @@
 #include "NveWinHostWindow.hpp"
 #include "NveWinTextMeasurer.hpp"
 #include "mock_jsi_recorder.hpp"
+#include "nve_scene_builder.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -361,6 +362,7 @@ void test_directwrite_text_measurer() {
 
 void test_visual_tree_reconciler_and_hit_testing() {
   nve::win::NveWinVisualTree tree;
+  nve::SceneTableBuilder builder;
 
   nve::RenderedNodeSnapshot root{};
   root.node_id = NVE_ROOT_NODE_ID;
@@ -398,7 +400,8 @@ void test_visual_tree_reconciler_and_hit_testing() {
   btn_hidden.z_index = 10;
   btn_hidden.opacity = 0.0f;
 
-  tree.sync({root, btn_top, btn_label, btn_under, btn_hidden});
+  builder.sync(1u, {root, btn_top, btn_label, btn_under, btn_hidden});
+  NVE_CHECK(tree.sync(builder.view()));
   NVE_CHECK(tree.size() == 4);
   NVE_CHECK(tree.created_count() == 4);
   NVE_CHECK(tree.destroyed_count() == 0);
@@ -426,17 +429,18 @@ void test_visual_tree_reconciler_and_hit_testing() {
   NVE_CHECK(approx_eq(abs_label->x, 30.0f));
   NVE_CHECK(approx_eq(abs_label->y, 30.0f));
 
-  // Re-sync without tag/membership change reuses views (created_count unchanged).
+  // Incremental O(changed) sync: mutating ONLY node 11 updates ONLY 1 visual node!
   const uint64_t created_before = tree.created_count();
   const uint64_t updated_before = tree.updated_count();
   btn_label.text = "TopUpdated";
-  tree.sync({root, btn_top, btn_label, btn_under, btn_hidden});
+  builder.sync(2u, {root, btn_top, btn_label, btn_under, btn_hidden});
+  NVE_CHECK(tree.sync(builder.view()));
   NVE_CHECK(tree.created_count() == created_before);
-  NVE_CHECK(tree.updated_count() == updated_before + 4);
+  NVE_CHECK(tree.updated_count() == updated_before + 1);
   NVE_CHECK(tree.find(11)->text == "TopUpdated");
 
   // Transition node 11 from leaf NVE_COMP_TEXT to wrapper NVE_COMP_TEXT (children = {12}).
-  // RetainedViewReconciler must detect view_tag_for_snapshot change and recreate node 11!
+  // IncrementalSceneReconciler must detect view_tag_for_render_node change and recreate node 11!
   nve::RenderedNodeSnapshot nested_leaf{};
   nested_leaf.node_id = 12;
   nested_leaf.kind = NVE_COMP_TEXT;
@@ -446,10 +450,11 @@ void test_visual_tree_reconciler_and_hit_testing() {
   btn_label.children = {12};
 
   const uint64_t destroyed_before = tree.destroyed_count();
-  tree.sync({root, btn_top, btn_label, nested_leaf, btn_under, btn_hidden});
+  builder.sync(3u, {root, btn_top, btn_label, nested_leaf, btn_under, btn_hidden});
+  NVE_CHECK(tree.sync(builder.view()));
   NVE_CHECK(tree.size() == 5);
-  NVE_CHECK(tree.destroyed_count() == destroyed_before + 1); // node 11 recreated
-  NVE_CHECK(tree.created_count() == created_before + 2);     // node 11 + node 12
+  NVE_CHECK(tree.destroyed_count() == destroyed_before + 1);
+  NVE_CHECK(tree.created_count() == created_before + 2);
   NVE_CHECK(!tree.find(11)->is_text_leaf);
   NVE_CHECK((tree.find(11)->view_tag & 0x10000u) != 0u);
   NVE_CHECK(tree.find(12)->is_text_leaf);
@@ -849,6 +854,244 @@ void test_frame0_mmap_snapshot_roundtrip() {
   }
 }
 
+struct MockWinImageScrollComponent {
+  static inline MockWinImageScrollComponent* last_instance = nullptr;
+  uint32_t surface_id{1};
+  std::string image_src{"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2dIAAAAASUVORK5CYII="};
+  std::string resize_mode{"cover"};
+  int counter{0};
+  int scroll_events{0};
+  uint32_t last_scroll_node{0};
+  float last_scroll_x{0.0f};
+  float last_scroll_y{0.0f};
+  float last_scroll_content_h{0.0f};
+  std::vector<uint8_t> cmd_buf;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockWinImageScrollComponent();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockWinImageScrollComponent*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  template <typename T>
+  void push(T v) {
+    const auto* p = reinterpret_cast<const uint8_t*>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockWinImageScrollComponent*>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0u;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0u);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0u);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0u);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_text = [&](uint32_t id, const std::string& s) {
+      self->push<uint8_t>(NVE_OP_SET_TEXT);
+      self->push<uint32_t>(id);
+      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1u); self->push<float>(w);
+      self->push<uint8_t>(1u); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
+      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
+      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4u);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+
+    create_node(2u, NVE_COMP_VIEW);
+    create_node(3u, NVE_COMP_IMAGE);
+    create_node(4u, NVE_COMP_SCROLL_VIEW);
+    create_node(5u, NVE_COMP_PRESSABLE);
+    create_node(6u, NVE_COMP_TEXT);
+    create_node(7u, NVE_COMP_TEXT);
+
+    set_children(NVE_ROOT_NODE_ID, {2u});
+    set_children(2u, {3u, 4u, 6u, 7u});
+    set_children(4u, {5u});
+
+    set_box(2u, 320.0f, 260.0f);
+    set_box(3u, 64.0f, 64.0f);
+    set_raw_str(3u, "src", self->image_src);
+    set_raw_str(3u, "resizeMode", self->resize_mode);
+
+    // ScrollView 4: 160x60 containing tall pressable 5 (160x220)
+    set_box(4u, 160.0f, 60.0f);
+    set_box(5u, 160.0f, 220.0f);
+
+    set_box(6u, 140.0f, 24.0f);
+    set_text(6u, "WinCount:" + std::to_string(self->counter));
+
+    set_box(7u, 140.0f, 24.0f);
+    set_text(7u, "UnchangedSibling");
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1u);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<MockWinImageScrollComponent*>(h);
+    if (batch.ptr == nullptr) return 0u;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
+        ++self->scroll_events;
+        self->last_scroll_node = ev.node_id;
+        self->last_scroll_x = ev.x;
+        self->last_scroll_y = ev.y;
+        self->last_scroll_content_h = ev.height;
+      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 5u) {
+        ++self->counter;
+        return 1u;
+      }
+    }
+    return 0u;
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto* self = static_cast<MockWinImageScrollComponent*>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0u;
+    for (const auto& ev : decoded) {
+      if (ev.kind == nve::EventKind::Press && ev.node_id == 5u) {
+        ++self->counter;
+        return 1u;
+      }
+    }
+    return 0u;
+  }
+
+  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
+    auto* self = static_cast<MockWinImageScrollComponent*>(h);
+    const std::string json(reinterpret_cast<const char*>(props.ptr), props.len);
+    if (json.find("\"contain\"") != std::string::npos) self->resize_mode = "contain";
+    if (json.find("\"stretch\"") != std::string::npos) self->resize_mode = "stretch";
+    if (json.find("\"center\"") != std::string::npos) self->resize_mode = "center";
+    if (json.find("\"file\"") != std::string::npos) self->image_src = "file:///tmp/avatar.png";
+    return 1u;
+  }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
+    static const NveComponentApi kComp{&set_props, nullptr, nullptr};
+    if (iface == NVE_IFACE_SURFACE) return &kSurface;
+    if (iface == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
+void test_image_scroll_and_incremental_scene_view() {
+  nve::win::NveRnwComponentHost host;
+  const NveSurfaceConfig cfg{.surface_id = 17u, .width = 320.0f, .height = 260.0f, .scale_factor = 1.0f};
+  NVE_CHECK(host.attach_interface(&MockWinImageScrollComponent::get_interface, cfg));
+  NVE_CHECK(MockWinImageScrollComponent::last_instance != nullptr);
+  auto* mock = MockWinImageScrollComponent::last_instance;
+
+  // 1. Verify portable Image visual-tree `image_src` and `resize_mode` tracking!
+  const auto* img = host.visual_tree().find(3u);
+  NVE_CHECK(img != nullptr);
+  NVE_CHECK(img->kind == NVE_NODE_KIND_IMAGE);
+  NVE_CHECK(img->image_src.find("data:image/png;base64,") == 0u);
+  NVE_CHECK(img->resize_mode == nve::win::ImageResizeMode::Cover);
+
+  NVE_CHECK(host.update_props_json(R"({"resizeMode":"contain"})"));
+  NVE_CHECK(host.visual_tree().find(3u)->resize_mode == nve::win::ImageResizeMode::Contain);
+  NVE_CHECK(host.update_props_json(R"({"resizeMode":"stretch"})"));
+  NVE_CHECK(host.visual_tree().find(3u)->resize_mode == nve::win::ImageResizeMode::Stretch);
+  NVE_CHECK(host.update_props_json(R"({"resizeMode":"center","src":"file"})"));
+  NVE_CHECK(host.visual_tree().find(3u)->resize_mode == nve::win::ImageResizeMode::Center);
+  NVE_CHECK(host.visual_tree().find(3u)->image_src == "file:///tmp/avatar.png");
+
+  // 2. Verify ScrollView bounds, clamping, wheel scroll offset, and zero-copy EventKind::Scroll!
+  const auto* scroll = host.visual_tree().find(4u);
+  NVE_CHECK(scroll != nullptr && scroll->kind == NVE_NODE_KIND_SCROLL_VIEW);
+  NVE_CHECK(scroll->clip_bounds);
+  NVE_CHECK(scroll->content_height >= 220.0f);
+
+  const auto scroll_rect = host.visual_tree().absolute_rect(4u);
+  NVE_CHECK(scroll_rect.has_value());
+  const float sx = scroll_rect->x + 20.0f;
+  const float sy = scroll_rect->y + 20.0f;
+  NVE_CHECK(host.visual_tree().hit_test_scrollable(sx, sy) == std::optional<uint32_t>{4u});
+
+  const auto child5_before = host.visual_tree().absolute_rect(5u);
+  NVE_CHECK(child5_before.has_value());
+
+  (void)host.dispatch_wheel_at(sx, sy, 0.0f, 45.0f);
+  NVE_CHECK(mock->scroll_events == 1);
+  NVE_CHECK(mock->last_scroll_node == 4u);
+  NVE_CHECK(approx_eq(mock->last_scroll_y, 45.0f, 0.5f));
+  NVE_CHECK(mock->last_scroll_content_h >= 220.0f);
+
+  const auto off = host.visual_tree().scroll_offset(4u);
+  NVE_CHECK(off.has_value() && approx_eq(off->second, 45.0f, 0.5f));
+
+  const auto child5_after = host.visual_tree().absolute_rect(5u);
+  NVE_CHECK(child5_after.has_value());
+  NVE_CHECK(approx_eq(child5_after->y, child5_before->y - 45.0f, 0.5f));
+
+  // Overscroll clamps at max_y = 220 - 60 = 160
+  (void)host.dispatch_wheel_at(sx, sy, 0.0f, 500.0f);
+  NVE_CHECK(mock->scroll_events == 2);
+  NVE_CHECK(approx_eq(host.visual_tree().scroll_offset(4u)->second, 160.0f, 0.5f));
+  NVE_CHECK(approx_eq(mock->last_scroll_y, 160.0f, 0.5f));
+
+  // Direct dispatch_scroll delivers exact payload
+  (void)host.dispatch_scroll(4u, 12.0f, 34.0f, 160.0f, 220.0f);
+  NVE_CHECK(mock->scroll_events == 3);
+  NVE_CHECK(approx_eq(mock->last_scroll_x, 12.0f, 0.5f));
+  NVE_CHECK(approx_eq(mock->last_scroll_y, 34.0f, 0.5f));
+
+  // 3. Verify O(changed) NveSceneView reconciliation on single-node press mutation!
+  const uint64_t updates_before = host.visual_tree().updated_count();
+  NVE_CHECK(host.dispatch_press(5u, 10.0f, 10.0f) == 1u);
+  NVE_CHECK(host.visual_tree().find(6u)->text == "WinCount:1");
+  NVE_CHECK(host.visual_tree().updated_count() - updates_before == 1u);
+}
+
 } // namespace
 
 int main() {
@@ -857,6 +1100,7 @@ int main() {
   test_rnw_component_host_and_dylib_lifecycle();
   test_live_counter_dylib_if_configured();
   test_frame0_mmap_snapshot_roundtrip();
+  test_image_scroll_and_incremental_scene_view();
 
   std::cout << "nve_windows_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI" : "Standalone") << "+"

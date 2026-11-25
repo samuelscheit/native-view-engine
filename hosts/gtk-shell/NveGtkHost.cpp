@@ -137,18 +137,18 @@ bool parse_a11y_role(std::string_view raw, GtkA11yRole& out) {
   return false;
 }
 
-GtkA11yRole infer_default_role(const RenderedNodeSnapshot& snap) noexcept {
-  if (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & kEventMaskPress) != 0u) {
+GtkA11yRole infer_default_role(const NveRenderNode& node) noexcept {
+  if (node.kind == NVE_NODE_KIND_PRESSABLE || (node.flags & NVE_NODE_INTERACTIVE) != 0u) {
     return GtkA11yRole::Button;
   }
-  switch (snap.kind) {
-    case NVE_COMP_TEXT:
+  switch (node.kind) {
+    case NVE_NODE_KIND_TEXT:
       return GtkA11yRole::Text;
-    case NVE_COMP_TEXT_INPUT:
+    case NVE_NODE_KIND_TEXT_INPUT:
       return GtkA11yRole::TextBox;
-    case NVE_COMP_SCROLL_VIEW:
+    case NVE_NODE_KIND_SCROLL_VIEW:
       return GtkA11yRole::ScrollArea;
-    case NVE_COMP_IMAGE:
+    case NVE_NODE_KIND_IMAGE:
       return GtkA11yRole::Image;
     default:
       return GtkA11yRole::Group;
@@ -185,172 +185,97 @@ GtkAccessibleRole to_gtk_accessible_role(GtkA11yRole role) noexcept {
   return GTK_ACCESSIBLE_ROLE_GROUP;
 }
 
-void decode_raw_props_from_command_buffer(
-    const uint8_t* data,
-    size_t len,
-    std::unordered_map<uint32_t, RawPropMap>& out) {
-  if (data == nullptr || len < 24u) {
-    return;
-  }
-  size_t pos = 0;
-  auto read_pod = [&](auto& v) -> bool {
-    if (sizeof(v) > len - pos) return false;
-    std::memcpy(&v, data + pos, sizeof(v));
-    pos += sizeof(v);
-    return true;
-  };
-  auto skip = [&](size_t n) -> bool {
-    if (n > len - pos) return false;
-    pos += n;
-    return true;
-  };
-
-  uint32_t magic = 0;
-  uint16_t version = 0;
-  uint16_t flags = 0;
-  uint32_t surface_id = 0;
-  uint64_t frame_id = 0;
-  uint32_t op_count = 0;
-  if (!read_pod(magic) || !read_pod(version) || !read_pod(flags) || !read_pod(surface_id) ||
-      !read_pod(frame_id) || !read_pod(op_count)) {
-    return;
-  }
-  if (magic != NVE_ABI_MAGIC || version != NVE_ABI_VERSION) {
-    return;
-  }
-
-  for (uint32_t i = 0; i < op_count; ++i) {
-    uint8_t op = 0;
-    if (!read_pod(op)) return;
-    switch (static_cast<NveOpcode>(op)) {
-      case NVE_OP_CREATE_NODE: {
-        uint16_t name_len = 0;
-        if (!skip(6u) || !read_pod(name_len) || !skip(name_len)) return;
-        break;
-      }
-      case NVE_OP_REMOVE_NODE:
-        if (!skip(4u)) return;
-        break;
-      case NVE_OP_SET_CHILDREN: {
-        uint32_t count = 0;
-        if (!skip(4u) || !read_pod(count)) return;
-        if (static_cast<size_t>(count) > (len - pos) / sizeof(uint32_t)) return;
-        pos += static_cast<size_t>(count) * sizeof(uint32_t);
-        break;
-      }
-      case NVE_OP_SET_TEXT: {
-        uint32_t tlen = 0;
-        if (!skip(4u) || !read_pod(tlen) || !skip(tlen)) return;
-        break;
-      }
-      case NVE_OP_SET_LAYOUT:
-        if (!skip(81u)) return;
-        break;
-      case NVE_OP_SET_STYLE:
-        if (!skip(36u)) return;
-        break;
-      case NVE_OP_SET_RAW_PROP: {
-        uint32_t node_id = 0;
-        uint16_t key_len = 0;
-        if (!read_pod(node_id) || !read_pod(key_len) || key_len > len - pos) return;
-        std::string key(reinterpret_cast<const char*>(data + pos), key_len);
-        pos += key_len;
-        uint8_t tag = 0;
-        if (!read_pod(tag)) return;
-        RawPropValue val{nullptr};
-        switch (tag) {
-          case 0:
-            val = nullptr;
-            break;
-          case 1: {
-            uint8_t b = 0;
-            if (!read_pod(b)) return;
-            val = (b != 0);
-            break;
-          }
-          case 2: {
-            int64_t v = 0;
-            if (!read_pod(v)) return;
-            val = v;
-            break;
-          }
-          case 3: {
-            double v = 0.0;
-            if (!read_pod(v)) return;
-            val = v;
-            break;
-          }
-          case 4: {
-            uint32_t vlen = 0;
-            if (!read_pod(vlen) || vlen > len - pos) return;
-            val = std::string(reinterpret_cast<const char*>(data + pos), vlen);
-            pos += vlen;
-            break;
-          }
-          case 5: {
-            uint32_t vlen = 0;
-            if (!read_pod(vlen) || vlen > len - pos) return;
-            val = std::vector<uint8_t>(data + pos, data + pos + vlen);
-            pos += vlen;
-            break;
-          }
-          default:
-            return;
-        }
-        out[node_id][std::move(key)] = std::move(val);
-        break;
-      }
-      case NVE_OP_SET_EVENT_MASK:
-        if (!skip(12u)) return;
-        break;
-      case NVE_OP_DISPATCH_COMMAND: {
-        uint16_t nlen = 0;
-        uint32_t plen = 0;
-        if (!skip(4u) || !read_pod(nlen) || !skip(nlen) || !read_pod(plen) || !skip(plen)) return;
-        break;
-      }
-      case NVE_OP_COMMIT:
-        if (!skip(1u)) return;
-        break;
-      default:
-        return;
-    }
-  }
-}
-
-template <typename Snap>
-std::unordered_map<uint32_t, RawPropMap> extract_raw_props_impl(
-    NveFabricHostHandle host,
-    const std::vector<Snap>& snapshots) {
+std::unordered_map<uint32_t, RawPropMap> extract_raw_props_by_node(
+    const std::vector<RenderedNodeSnapshot>& snapshots) {
   std::unordered_map<uint32_t, RawPropMap> result;
-  if constexpr (requires(const Snap& s) { s.raw_props; }) {
-    for (const auto& snap : snapshots) {
-      if (!snap.raw_props.empty()) {
-        result.emplace(snap.node_id, snap.raw_props);
-      }
+  for (const auto& snap : snapshots) {
+    if (!snap.raw_props.empty()) {
+      result.emplace(snap.node_id, snap.raw_props);
     }
-  } else {
-    (void)snapshots;
-    if (host == nullptr) {
-      return result;
-    }
-    const std::vector<uint8_t> frame0 = fabric_host_serialize_frame0(host, 1u);
-    decode_raw_props_from_command_buffer(frame0.data(), frame0.size(), result);
   }
   return result;
 }
 
-std::unordered_map<uint32_t, RawPropMap> extract_raw_props_by_node(
-    NveFabricHostHandle host,
-    const std::vector<RenderedNodeSnapshot>& snapshots) {
-  return extract_raw_props_impl(host, snapshots);
+std::string extract_image_resize_mode(const RawPropMap* raw_props) {
+  if (raw_props == nullptr) {
+    return "cover";
+  }
+  std::string mode;
+  if (read_raw_string(*raw_props, "resizeMode", mode) ||
+      read_raw_string(*raw_props, "resize_mode", mode)) {
+    return ascii_lower(mode);
+  }
+  return "cover";
+}
+
+#if GTK_CHECK_VERSION(4, 8, 0)
+GtkContentFit parse_gtk_content_fit(std::string_view mode) noexcept {
+  if (mode == "contain") {
+    return GTK_CONTENT_FIT_CONTAIN;
+  }
+  if (mode == "stretch" || mode == "fill") {
+    return GTK_CONTENT_FIT_FILL;
+  }
+  if (mode == "center") {
+    return GTK_CONTENT_FIT_SCALE_DOWN;
+  }
+  return GTK_CONTENT_FIT_COVER;
+}
+#endif
+
+GdkTexture* decode_uri_to_gdk_texture(std::string_view uri) {
+  if (uri.empty()) {
+    return nullptr;
+  }
+
+  GError* err = nullptr;
+  GdkTexture* tex = nullptr;
+
+  if (uri.size() > 11u && ascii_lower(uri.substr(0, 11)) == "data:image/") {
+    const size_t marker = uri.find(";base64,");
+    if (marker == std::string_view::npos) {
+      return nullptr;
+    }
+    const std::string b64(uri.substr(marker + 8u));
+    if (b64.empty()) {
+      return nullptr;
+    }
+    gsize decoded_len = 0;
+    guchar* decoded = g_base64_decode(b64.c_str(), &decoded_len);
+    if (decoded == nullptr || decoded_len == 0) {
+      g_free(decoded);
+      return nullptr;
+    }
+    GBytes* bytes = g_bytes_new_take(decoded, decoded_len);
+    tex = gdk_texture_new_from_bytes(bytes, &err);
+    g_bytes_unref(bytes);
+  } else if (uri.size() > 7u && ascii_lower(uri.substr(0, 7)) == "file://") {
+    const std::string uri_str(uri);
+    gchar* filename = g_filename_from_uri(uri_str.c_str(), nullptr, &err);
+    if (err != nullptr) {
+      g_clear_error(&err);
+    }
+    if (filename != nullptr) {
+      tex = gdk_texture_new_from_filename(filename, &err);
+      g_free(filename);
+    } else {
+      const std::string fallback_path(uri.substr(7u));
+      tex = gdk_texture_new_from_filename(fallback_path.c_str(), &err);
+    }
+  }
+
+  if (err != nullptr) {
+    g_clear_error(&err);
+  }
+  return tex;
 }
 
 GtkNodeSemantics extract_node_semantics(
-    const RenderedNodeSnapshot& snap,
+    const NveRenderNode& node,
+    std::string_view text,
     const RawPropMap* raw_props) {
   GtkNodeSemantics sem{};
-  sem.role = infer_default_role(snap);
+  sem.role = infer_default_role(node);
 
   if (raw_props != nullptr) {
     std::string role_str;
@@ -387,9 +312,8 @@ GtkNodeSemantics extract_node_semantics(
     (void)read_raw_bool(*raw_props, "multiline", sem.multiline);
   }
 
-  if (!sem.has_explicit_label && snap.kind == NVE_COMP_TEXT && snap.children.empty() &&
-      !snap.text.empty()) {
-    sem.label = snap.text;
+  if (!sem.has_explicit_label && (node.flags & NVE_NODE_LEAF_TEXT) != 0u && !text.empty()) {
+    sem.label.assign(text.data(), text.size());
   }
 
   sem.gtk_role = to_gtk_accessible_role(sem.role);
@@ -403,7 +327,6 @@ std::string format_css_float(double value) {
   char buf[G_ASCII_DTOSTR_BUF_SIZE];
   g_ascii_formatd(buf, sizeof(buf), "%.4f", value);
   std::string out(buf);
-  // Trim trailing fractional zeroes for compact deterministic CSS output.
   if (out.find('.') != std::string::npos) {
     while (!out.empty() && out.back() == '0') {
       out.pop_back();
@@ -426,41 +349,41 @@ std::string format_css_rgba(uint32_t rgba) {
          format_css_float(static_cast<double>(c.a)) + ")";
 }
 
-bool is_leaf_text_snapshot(const RenderedNodeSnapshot& snap) noexcept {
-  return snap.kind == NVE_COMP_TEXT && snap.children.empty();
+bool is_leaf_text_node(const NveRenderNode& node) noexcept {
+  return (node.flags & NVE_NODE_LEAF_TEXT) != 0u;
 }
 
 std::string build_node_css_rule(
     const std::string& selector_class,
-    const RenderedNodeSnapshot& snap) {
+    const NveRenderNode& node) {
   std::string decls;
   decls.reserve(192);
 
-  if (snap.background_rgba != 0u) {
-    decls += "  background-color: " + format_css_rgba(snap.background_rgba) + ";\n";
-  } else if (is_leaf_text_snapshot(snap)) {
+  if (node.bg_rgba != 0u) {
+    decls += "  background-color: " + format_css_rgba(node.bg_rgba) + ";\n";
+  } else if (is_leaf_text_node(node)) {
     decls += "  background-color: transparent;\n";
   }
 
-  if (std::isfinite(snap.border_radius) && snap.border_radius > 0.0f) {
-    decls += "  border-radius: " + format_css_float(static_cast<double>(snap.border_radius)) +
+  if (std::isfinite(node.border_radius) && node.border_radius > 0.0f) {
+    decls += "  border-radius: " + format_css_float(static_cast<double>(node.border_radius)) +
              "px;\n";
   }
 
-  if (std::isfinite(snap.border_width) && snap.border_width > 0.0f &&
-      snap.border_color_rgba != 0u) {
-    decls += "  border: " + format_css_float(static_cast<double>(snap.border_width)) +
-             "px solid " + format_css_rgba(snap.border_color_rgba) + ";\n";
-  } else if (snap.kind != NVE_COMP_TEXT_INPUT) {
+  if (std::isfinite(node.border_width) && node.border_width > 0.0f &&
+      node.border_rgba != 0u) {
+    decls += "  border: " + format_css_float(static_cast<double>(node.border_width)) +
+             "px solid " + format_css_rgba(node.border_rgba) + ";\n";
+  } else if (node.kind != NVE_NODE_KIND_TEXT_INPUT) {
     decls += "  border: 0px none transparent;\n";
   }
 
-  if (snap.text_color_rgba != 0u) {
-    decls += "  color: " + format_css_rgba(snap.text_color_rgba) + ";\n";
+  if (node.text_rgba != 0u) {
+    decls += "  color: " + format_css_rgba(node.text_rgba) + ";\n";
   }
 
-  if (std::isfinite(snap.font_size) && snap.font_size > 0.0f) {
-    decls += "  font-size: " + format_css_float(static_cast<double>(snap.font_size)) + "px;\n";
+  if (std::isfinite(node.font_size) && node.font_size > 0.0f) {
+    decls += "  font-size: " + format_css_float(static_cast<double>(node.font_size)) + "px;\n";
   }
 
   decls += "  min-width: 0px;\n  min-height: 0px;\n";
@@ -505,6 +428,71 @@ void detach_from_parent(GtkWidget* widget) {
 
 } // namespace
 
+// -----------------------------------------------------------------------------
+// GtkTextureLruCache
+// -----------------------------------------------------------------------------
+
+GtkTextureLruCache::GtkTextureLruCache(size_t max_entries)
+    : max_entries_(std::max<size_t>(1u, max_entries)) {}
+
+GtkTextureLruCache::~GtkTextureLruCache() {
+  clear();
+}
+
+GdkTexture* GtkTextureLruCache::get(std::string_view uri) {
+  if (uri.empty()) {
+    return nullptr;
+  }
+  const std::string key(uri);
+  auto it = entries_.find(key);
+  if (it != entries_.end()) {
+    lru_.splice(lru_.begin(), lru_, it->second.lru_it);
+    it->second.lru_it = lru_.begin();
+    ++hits_;
+    return it->second.texture;
+  }
+
+  ++misses_;
+  GdkTexture* decoded = decode_uri_to_gdk_texture(uri);
+  if (decoded == nullptr) {
+    return nullptr;
+  }
+
+  while (entries_.size() >= max_entries_ && !lru_.empty()) {
+    const std::string& victim = lru_.back();
+    auto vit = entries_.find(victim);
+    if (vit != entries_.end()) {
+      if (vit->second.texture != nullptr) {
+        g_object_unref(vit->second.texture);
+      }
+      entries_.erase(vit);
+    }
+    lru_.pop_back();
+  }
+
+  lru_.push_front(key);
+  Entry entry{};
+  entry.texture = decoded;
+  entry.lru_it = lru_.begin();
+  entries_.emplace(key, std::move(entry));
+  return decoded;
+}
+
+void GtkTextureLruCache::clear() {
+  for (auto& [_, entry] : entries_) {
+    if (entry.texture != nullptr) {
+      g_object_unref(entry.texture);
+      entry.texture = nullptr;
+    }
+  }
+  entries_.clear();
+  lru_.clear();
+}
+
+// -----------------------------------------------------------------------------
+// NveGtkHost
+// -----------------------------------------------------------------------------
+
 NveGtkHost::NveGtkHost(NveSurfaceConfig config)
     : host_instance_id_(g_next_gtk_host_id.fetch_add(1u, std::memory_order_relaxed)),
       config_(config) {
@@ -529,8 +517,6 @@ NveGtkHost::NveGtkHost(NveSurfaceConfig config)
   const std::string root_cls = scoped_root_class();
   gtk_widget_add_css_class(root_widget_, root_cls.c_str());
 
-  // Decouple GtkFixed's child minimum-size requisition from the hosting GtkWindow so the
-  // window can always shrink smaller as well as grow larger without showing scrollbars.
   viewport_widget_ = gtk_scrolled_window_new();
   g_object_ref_sink(viewport_widget_);
   gtk_scrolled_window_set_policy(
@@ -570,13 +556,18 @@ NveGtkHost::~NveGtkHost() {
     tick_callback_id_ = 0u;
   }
 
+  syncing_views_ = true;
   reconciler_.clear(adapter_);
   click_bindings_.clear();
+  scroll_bindings_.clear();
   entry_bindings_.clear();
   scroll_contents_.clear();
   node_layouts_.clear();
   node_semantics_.clear();
+  node_image_srcs_.clear();
+  node_image_resize_modes_.clear();
   node_css_.clear();
+  texture_cache_.clear();
   session_.reset();
 
   if (display_ != nullptr && css_provider_ != nullptr) {
@@ -670,7 +661,8 @@ bool NveGtkHost::attach_interface(NveGetInterfaceFn get_interface, uint32_t surf
   }
   config_ = next_cfg;
   reconciler_.clear(adapter_);
-  sync_views();
+  raw_props_initialized_ = false;
+  sync_views(/*check_raw_props=*/true);
   (void)session_.drain_events();
   return true;
 }
@@ -689,7 +681,8 @@ bool NveGtkHost::load_dylib(
   }
   config_ = next_cfg;
   reconciler_.clear(adapter_);
-  sync_views();
+  raw_props_initialized_ = false;
+  sync_views(/*check_raw_props=*/true);
   (void)session_.drain_events();
   return true;
 }
@@ -701,7 +694,8 @@ bool NveGtkHost::reload_dylib(
   if (!session_.reload_dylib(path, out_err_code, out_err_msg)) {
     return false;
   }
-  sync_views();
+  raw_props_initialized_ = false;
+  sync_views(/*check_raw_props=*/true);
   (void)session_.drain_events();
   return true;
 }
@@ -716,7 +710,8 @@ bool NveGtkHost::replay_snapshot(
     return false;
   }
   reconciler_.clear(adapter_);
-  sync_views();
+  raw_props_initialized_ = false;
+  sync_views(/*check_raw_props=*/true);
   return true;
 }
 
@@ -734,7 +729,7 @@ bool NveGtkHost::apply_props_json(std::string_view props_json) {
   }
   const bool dirty = session_.update_props_json(props_json, /*auto_render=*/true);
   if (dirty) {
-    sync_views();
+    sync_views(/*check_raw_props=*/true);
   }
   (void)session_.drain_events();
   return dirty;
@@ -746,7 +741,7 @@ bool NveGtkHost::apply_hot_patch_json(std::string_view patch_json) {
   }
   const bool dirty = session_.bridge()->apply_hot_patch_json(patch_json, /*auto_render=*/true);
   if (dirty) {
-    sync_views();
+    sync_views(/*check_raw_props=*/true);
   }
   (void)session_.drain_events();
   return dirty;
@@ -755,7 +750,7 @@ bool NveGtkHost::apply_hot_patch_json(std::string_view patch_json) {
 int32_t NveGtkHost::render_frame(NveFrameStats* out_stats) {
   const int32_t rc = session_.render(out_stats);
   if (rc == 0) {
-    sync_views();
+    sync_views(/*check_raw_props=*/false);
   }
   (void)session_.drain_events();
   return rc;
@@ -767,7 +762,7 @@ uint32_t NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
   }
   const uint32_t dirty = session_.dispatch_press(node_id, x, y, /*auto_render=*/true);
   if (dirty != 0u) {
-    sync_views();
+    sync_views(/*check_raw_props=*/false);
   }
   (void)session_.drain_events();
   return dirty;
@@ -794,7 +789,7 @@ uint32_t NveGtkHost::dispatch_single_direct_event(const NveDirectEvent& ev) {
   const uint32_t dirty =
       session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
   if (dirty != 0u) {
-    sync_views();
+    sync_views(/*check_raw_props=*/false);
   }
   (void)session_.drain_events();
   return dirty;
@@ -819,6 +814,20 @@ uint32_t NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {
   return dispatch_single_direct_event(ev);
 }
 
+uint32_t NveGtkHost::dispatch_scroll(
+    uint32_t node_id,
+    float offset_x,
+    float offset_y,
+    float content_width,
+    float content_height) {
+  NveDirectEvent ev = make_base_event(node_id, EventKind::Scroll, 2u);
+  ev.x = offset_x;
+  ev.y = offset_y;
+  ev.width = content_width;
+  ev.height = content_height;
+  return dispatch_single_direct_event(ev);
+}
+
 std::optional<GtkNodeSemantics> NveGtkHost::accessibility_info_for_node_id(uint32_t node_id) const {
   if (const GtkNodeSemantics* sem = find_semantics(node_id)) {
     return *sem;
@@ -837,7 +846,7 @@ void NveGtkHost::set_surface_size(float width, float height, float scale_factor)
   }
   session_.set_surface_size(config_.width, config_.height, config_.scale_factor);
   if (session_.active_fabric_host() != nullptr) {
-    sync_views();
+    sync_views(/*check_raw_props=*/false);
   }
 }
 
@@ -914,22 +923,115 @@ void NveGtkHost::set_event_callback(EventCallback callback) {
   session_.set_event_callback(std::move(callback));
 }
 
-void NveGtkHost::sync_views() {
+void NveGtkHost::apply_picture_fit(GtkWidget* picture, const std::string& resize_mode) {
+  if (picture == nullptr || !GTK_IS_PICTURE(picture)) {
+    return;
+  }
+#if GTK_CHECK_VERSION(4, 8, 0)
+  gtk_picture_set_content_fit(GTK_PICTURE(picture), parse_gtk_content_fit(resize_mode));
+#else
+  (void)resize_mode;
+#endif
+}
+
+void NveGtkHost::refresh_raw_props_from_view(const NveSceneView& view) {
+  const auto snapshots = session_.snapshot_nodes();
+  const auto raw_props = extract_raw_props_by_node(snapshots);
+
+  std::unordered_map<uint32_t, GtkNodeSemantics> next_semantics;
+  next_semantics.reserve(view.node_count);
+  std::unordered_map<uint32_t, std::string> next_resize_modes;
+
+  for (uint32_t i = 0u; i < view.node_count; ++i) {
+    const NveRenderNode& node = view.nodes[i];
+    const auto rp_it = raw_props.find(node.node_id);
+    const RawPropMap* rp = (rp_it != raw_props.end()) ? &rp_it->second : nullptr;
+    const std::string_view text = scene_node_text(view, node);
+    GtkNodeSemantics sem = extract_node_semantics(node, text, rp);
+
+    const auto prev_sem_it = node_semantics_.find(node.node_id);
+    const bool sem_changed = (prev_sem_it == node_semantics_.end() || prev_sem_it->second != sem);
+    next_semantics.emplace(node.node_id, sem);
+
+    std::string mode;
+    bool mode_changed = false;
+    if (node.kind == NVE_NODE_KIND_IMAGE) {
+      mode = extract_image_resize_mode(rp);
+      const auto prev_mode_it = node_image_resize_modes_.find(node.node_id);
+      mode_changed =
+          (prev_mode_it == node_image_resize_modes_.end() || prev_mode_it->second != mode);
+      next_resize_modes.emplace(node.node_id, mode);
+    }
+
+    if (sem_changed || mode_changed) {
+      if (node.node_id == NVE_ROOT_NODE_ID) {
+        apply_accessibility_to_widget(root_widget_, sem);
+      } else if (GtkWidget** slot = reconciler_.find(node.node_id);
+                 slot != nullptr && *slot != nullptr) {
+        GtkWidget* w = *slot;
+        if (sem_changed) {
+          apply_accessibility_to_widget(w, sem);
+          if (GTK_IS_ENTRY(w)) {
+            gtk_entry_set_placeholder_text(
+                GTK_ENTRY(w), sem.placeholder.empty() ? nullptr : sem.placeholder.c_str());
+            gtk_entry_set_visibility(GTK_ENTRY(w), sem.secure_text_entry ? FALSE : TRUE);
+          }
+          const bool interactive =
+              !sem.disabled && !is_leaf_text_node(node) &&
+              (node.kind == NVE_NODE_KIND_PRESSABLE || (node.flags & NVE_NODE_INTERACTIVE) != 0u);
+          ensure_click_gesture(node.node_id, w, interactive);
+        }
+        if (mode_changed && GTK_IS_PICTURE(w)) {
+          apply_picture_fit(w, mode);
+        }
+      }
+    }
+  }
+
+  node_semantics_ = std::move(next_semantics);
+  node_image_resize_modes_ = std::move(next_resize_modes);
+}
+
+void NveGtkHost::sync_views(bool check_raw_props) {
   NveFabricHostHandle host = session_.active_fabric_host();
   if (host == nullptr) {
     return;
   }
-  const std::vector<RenderedNodeSnapshot> snapshots = session_.snapshot_nodes();
-  const auto raw_props = extract_raw_props_by_node(host, snapshots);
-  node_semantics_.clear();
-  node_semantics_.reserve(snapshots.size());
-  for (const auto& snap : snapshots) {
-    const auto it = raw_props.find(snap.node_id);
-    const RawPropMap* rp = (it != raw_props.end()) ? &it->second : nullptr;
-    node_semantics_.emplace(snap.node_id, extract_node_semantics(snap, rp));
+
+  const NveSceneView view = session_.scene_view();
+  if (view.schema_hash != NVE_SCENE_SCHEMA_HASH) {
+    return;
   }
-  reconciler_.sync(snapshots, adapter_);
+
+  for (uint32_t i = 0u; i < view.removed_count; ++i) {
+    const uint32_t rid = view.removed_ids[i];
+    node_semantics_.erase(rid);
+    node_image_srcs_.erase(rid);
+    node_image_resize_modes_.erase(rid);
+  }
+
+  bool need_raw_props = check_raw_props || !raw_props_initialized_;
+  if (!need_raw_props && view.nodes != nullptr) {
+    for (uint32_t i = 0u; i < view.dirty_count; ++i) {
+      const uint32_t idx = view.dirty_indices[i];
+      if (idx < view.node_count) {
+        const uint8_t k = view.nodes[idx].kind;
+        if (k == NVE_NODE_KIND_IMAGE || k == NVE_NODE_KIND_TEXT_INPUT) {
+          need_raw_props = true;
+          break;
+        }
+      }
+    }
+  }
+
+  syncing_views_ = true;
+  if (need_raw_props) {
+    refresh_raw_props_from_view(view);
+    raw_props_initialized_ = true;
+  }
+  (void)reconciler_.sync(view, adapter_);
   flush_css_if_dirty();
+  syncing_views_ = false;
 }
 
 const GtkNodeSemantics* NveGtkHost::find_semantics(uint32_t node_id) const noexcept {
@@ -968,6 +1070,60 @@ void NveGtkHost::apply_accessibility_to_widget(GtkWidget* widget, const GtkNodeS
   if (!sem.test_id.empty()) {
     gtk_widget_set_name(widget, sem.test_id.c_str());
   }
+}
+
+NveGtkHost::ScrollBinding* NveGtkHost::ensure_scroll_binding(uint32_t node_id, GtkWidget* widget) {
+  if (widget == nullptr || !GTK_IS_SCROLLED_WINDOW(widget)) {
+    return nullptr;
+  }
+  const auto it = scroll_bindings_.find(node_id);
+  if (it != scroll_bindings_.end() && it->second != nullptr && it->second->scrolled == widget) {
+    return it->second.get();
+  }
+  remove_scroll_binding(node_id);
+
+  auto binding = std::make_unique<ScrollBinding>();
+  binding->host = this;
+  binding->node_id = node_id;
+  binding->scrolled = widget;
+  binding->hadj = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(widget));
+  binding->vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
+  if (binding->hadj != nullptr) {
+    binding->h_handler = g_signal_connect(
+        binding->hadj,
+        "value-changed",
+        gtk_detail::to_gcallback(&NveGtkHost::on_scroll_value_changed),
+        binding.get());
+  }
+  if (binding->vadj != nullptr) {
+    binding->v_handler = g_signal_connect(
+        binding->vadj,
+        "value-changed",
+        gtk_detail::to_gcallback(&NveGtkHost::on_scroll_value_changed),
+        binding.get());
+  }
+
+  ScrollBinding* raw = binding.get();
+  scroll_bindings_[node_id] = std::move(binding);
+  return raw;
+}
+
+void NveGtkHost::remove_scroll_binding(uint32_t node_id) {
+  const auto it = scroll_bindings_.find(node_id);
+  if (it == scroll_bindings_.end()) {
+    return;
+  }
+  if (it->second != nullptr) {
+    if (it->second->hadj != nullptr && it->second->h_handler != 0u &&
+        g_signal_handler_is_connected(it->second->hadj, it->second->h_handler)) {
+      g_signal_handler_disconnect(it->second->hadj, it->second->h_handler);
+    }
+    if (it->second->vadj != nullptr && it->second->v_handler != 0u &&
+        g_signal_handler_is_connected(it->second->vadj, it->second->v_handler)) {
+      g_signal_handler_disconnect(it->second->vadj, it->second->v_handler);
+    }
+  }
+  scroll_bindings_.erase(it);
 }
 
 NveGtkHost::EntryBinding* NveGtkHost::ensure_entry_binding(uint32_t node_id, GtkWidget* widget) {
@@ -1120,29 +1276,34 @@ void NveGtkHost::remove_click_gesture(uint32_t node_id, GtkWidget* widget) {
   click_bindings_.erase(it);
 }
 
-void NveGtkHost::GtkViewAdapter::update_root(const RenderedNodeSnapshot& snap) {
-  host->node_layouts_[NVE_ROOT_NODE_ID] = snap.layout;
+void NveGtkHost::GtkViewAdapter::update_root(
+    const NveSceneView& /*view*/,
+    const NveRenderNode& node) {
+  host->node_layouts_[NVE_ROOT_NODE_ID] = LayoutRect{node.x, node.y, node.width, node.height};
   std::string next_root_css;
-  if (snap.background_rgba != 0u) {
+  if (node.bg_rgba != 0u) {
     next_root_css = "." + host->scoped_root_class() + " {\n  background-color: " +
-                    format_css_rgba(snap.background_rgba) + ";\n}\n";
+                    format_css_rgba(node.bg_rgba) + ";\n}\n";
   }
   if (host->root_css_ != next_root_css) {
     host->root_css_ = std::move(next_root_css);
     host->css_dirty_ = true;
   }
-  if (const GtkNodeSemantics* sem = host->find_semantics(snap.node_id)) {
+  if (const GtkNodeSemantics* sem = host->find_semantics(node.node_id)) {
     host->apply_accessibility_to_widget(host->root_widget_, *sem);
   }
 }
 
-GtkWidget* NveGtkHost::GtkViewAdapter::create_view(const RenderedNodeSnapshot& snap) {
-  const GtkNodeSemantics default_sem = extract_node_semantics(snap, nullptr);
+GtkWidget* NveGtkHost::GtkViewAdapter::create_view(
+    const NveSceneView& view,
+    const NveRenderNode& node) {
+  const std::string_view text = scene_node_text(view, node);
+  const GtkNodeSemantics default_sem = extract_node_semantics(node, text, nullptr);
   const GtkNodeSemantics& sem =
-      host->find_semantics(snap.node_id) ? *host->find_semantics(snap.node_id) : default_sem;
+      host->find_semantics(node.node_id) ? *host->find_semantics(node.node_id) : default_sem;
 
   GtkWidget* widget = nullptr;
-  if (is_leaf_text_snapshot(snap)) {
+  if (is_leaf_text_node(node)) {
     widget = GTK_WIDGET(g_object_new(
         GTK_TYPE_LABEL, "label", "", "accessible-role", sem.gtk_role, nullptr));
     gtk_label_set_wrap(GTK_LABEL(widget), TRUE);
@@ -1150,103 +1311,131 @@ GtkWidget* NveGtkHost::GtkViewAdapter::create_view(const RenderedNodeSnapshot& s
     gtk_label_set_xalign(GTK_LABEL(widget), 0.0f);
     gtk_label_set_yalign(GTK_LABEL(widget), 0.0f);
     gtk_widget_set_can_target(widget, FALSE);
-  } else if (snap.kind == NVE_COMP_SCROLL_VIEW) {
+  } else if (node.kind == NVE_NODE_KIND_IMAGE) {
+    widget = GTK_WIDGET(g_object_new(
+        GTK_TYPE_PICTURE, "accessible-role", sem.gtk_role, nullptr));
+    gtk_picture_set_can_shrink(GTK_PICTURE(widget), TRUE);
+  } else if (node.kind == NVE_NODE_KIND_SCROLL_VIEW) {
     widget = GTK_WIDGET(
         g_object_new(GTK_TYPE_SCROLLED_WINDOW, "accessible-role", sem.gtk_role, nullptr));
     GtkWidget* inner_fixed = gtk_fixed_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(widget), inner_fixed);
     host->scroll_contents_[widget] = inner_fixed;
-  } else if (snap.kind == NVE_COMP_TEXT_INPUT) {
+    (void)host->ensure_scroll_binding(node.node_id, widget);
+  } else if (node.kind == NVE_NODE_KIND_TEXT_INPUT) {
     widget = GTK_WIDGET(g_object_new(GTK_TYPE_ENTRY, "accessible-role", sem.gtk_role, nullptr));
   } else {
-    // NVE_COMP_VIEW, NVE_COMP_PRESSABLE, wrapper NVE_COMP_TEXT, and container kinds
     widget = GTK_WIDGET(g_object_new(GTK_TYPE_FIXED, "accessible-role", sem.gtk_role, nullptr));
   }
 
   g_object_ref_sink(widget);
-  const std::string generic_cls = "nve-node-" + std::to_string(snap.node_id);
-  const std::string scoped_cls = host->scoped_node_class(snap.node_id);
+  const std::string generic_cls = "nve-node-" + std::to_string(node.node_id);
+  const std::string scoped_cls = host->scoped_node_class(node.node_id);
   gtk_widget_add_css_class(widget, generic_cls.c_str());
   gtk_widget_add_css_class(widget, scoped_cls.c_str());
   return widget;
 }
 
 void NveGtkHost::GtkViewAdapter::update_view(
-    GtkWidget*& view,
-    const RenderedNodeSnapshot& snap) {
-  if (view == nullptr) {
+    const NveSceneView& view,
+    GtkWidget*& widget,
+    const NveRenderNode& node) {
+  if (widget == nullptr) {
     return;
   }
+  ++host->reconcile_update_count_;
 
-  const GtkNodeSemantics default_sem = extract_node_semantics(snap, nullptr);
+  const std::string_view text = scene_node_text(view, node);
+  const GtkNodeSemantics default_sem = extract_node_semantics(node, text, nullptr);
   const GtkNodeSemantics& sem =
-      host->find_semantics(snap.node_id) ? *host->find_semantics(snap.node_id) : default_sem;
+      host->find_semantics(node.node_id) ? *host->find_semantics(node.node_id) : default_sem;
 
-  host->node_layouts_[snap.node_id] = snap.layout;
+  host->node_layouts_[node.node_id] = LayoutRect{node.x, node.y, node.width, node.height};
 
-  const int req_w = (std::isfinite(snap.layout.width) && snap.layout.width > 0.0f)
-                        ? static_cast<int>(std::lround(snap.layout.width))
+  const int req_w = (std::isfinite(node.width) && node.width > 0.0f)
+                        ? static_cast<int>(std::lround(node.width))
                         : -1;
-  const int req_h = (std::isfinite(snap.layout.height) && snap.layout.height > 0.0f)
-                        ? static_cast<int>(std::lround(snap.layout.height))
+  const int req_h = (std::isfinite(node.height) && node.height > 0.0f)
+                        ? static_cast<int>(std::lround(node.height))
                         : -1;
-  gtk_widget_set_size_request(view, req_w, req_h);
+  gtk_widget_set_size_request(widget, req_w, req_h);
 
-  const double clamped_opacity =
-      std::isfinite(snap.opacity) ? std::clamp(static_cast<double>(snap.opacity), 0.0, 1.0) : 1.0;
-  gtk_widget_set_opacity(view, clamped_opacity);
+  const double clamped_opacity = static_cast<double>(node.opacity_u8) / 255.0;
+  gtk_widget_set_opacity(widget, clamped_opacity);
 
-  if (GTK_IS_LABEL(view)) {
-    const char* current = gtk_label_get_text(GTK_LABEL(view));
-    if (current == nullptr || snap.text != current) {
-      gtk_label_set_text(GTK_LABEL(view), snap.text.c_str());
+  if (GTK_IS_LABEL(widget)) {
+    const char* current = gtk_label_get_text(GTK_LABEL(widget));
+    if (current == nullptr || text != std::string_view(current)) {
+      const std::string owned(text);
+      gtk_label_set_text(GTK_LABEL(widget), owned.c_str());
     }
-    gtk_widget_set_can_target(view, FALSE);
-  } else if (GTK_IS_ENTRY(view)) {
-    EntryBinding* binding = host->ensure_entry_binding(snap.node_id, view);
+    gtk_widget_set_can_target(widget, FALSE);
+  } else if (GTK_IS_PICTURE(widget)) {
+    const auto mode_it = host->node_image_resize_modes_.find(node.node_id);
+    const std::string mode = (mode_it != host->node_image_resize_modes_.end())
+                                 ? mode_it->second
+                                 : std::string("cover");
+    host->apply_picture_fit(widget, mode);
+
+    const bool clip = std::isfinite(node.border_radius) && node.border_radius > 0.0f;
+    gtk_widget_set_overflow(widget, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
+
+    const auto src_it = host->node_image_srcs_.find(node.node_id);
+    if (src_it == host->node_image_srcs_.end() || src_it->second != text) {
+      host->node_image_srcs_[node.node_id] = std::string(text);
+      GdkTexture* tex = host->texture_cache_.get(text);
+      gtk_picture_set_paintable(
+          GTK_PICTURE(widget), tex != nullptr ? GDK_PAINTABLE(tex) : nullptr);
+    }
+  } else if (GTK_IS_ENTRY(widget)) {
+    EntryBinding* binding = host->ensure_entry_binding(node.node_id, widget);
     gtk_entry_set_placeholder_text(
-        GTK_ENTRY(view), sem.placeholder.empty() ? nullptr : sem.placeholder.c_str());
-    gtk_entry_set_visibility(GTK_ENTRY(view), sem.secure_text_entry ? FALSE : TRUE);
+        GTK_ENTRY(widget), sem.placeholder.empty() ? nullptr : sem.placeholder.c_str());
+    gtk_entry_set_visibility(GTK_ENTRY(widget), sem.secure_text_entry ? FALSE : TRUE);
 
     if (binding != nullptr && !binding->user_editing) {
-      const char* current = gtk_editable_get_text(GTK_EDITABLE(view));
+      const char* current = gtk_editable_get_text(GTK_EDITABLE(widget));
       const std::string_view current_sv =
           (current != nullptr) ? std::string_view(current) : std::string_view{};
       if (!binding->has_synced_snapshot ||
-          (snap.text != binding->last_snapshot_text && snap.text != current_sv)) {
+          (text != binding->last_snapshot_text && text != current_sv)) {
         binding->updating_programmatically = true;
-        gtk_editable_set_text(GTK_EDITABLE(view), snap.text.c_str());
-        binding->last_dispatched_text = snap.text;
+        const std::string owned(text);
+        gtk_editable_set_text(GTK_EDITABLE(widget), owned.c_str());
+        binding->last_dispatched_text = owned;
         binding->updating_programmatically = false;
       }
-      binding->last_snapshot_text = snap.text;
+      binding->last_snapshot_text.assign(text.data(), text.size());
       binding->has_synced_snapshot = true;
     }
-  } else if (GTK_IS_FIXED(view)) {
-    const bool clip = std::isfinite(snap.border_radius) && snap.border_radius > 0.0f;
-    gtk_widget_set_overflow(view, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
-  } else if (GTK_IS_SCROLLED_WINDOW(view)) {
-    const bool clip = std::isfinite(snap.border_radius) && snap.border_radius > 0.0f;
-    gtk_widget_set_overflow(view, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
+  } else if (GTK_IS_FIXED(widget)) {
+    const bool clip = std::isfinite(node.border_radius) && node.border_radius > 0.0f;
+    gtk_widget_set_overflow(widget, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
+  } else if (GTK_IS_SCROLLED_WINDOW(widget)) {
+    (void)host->ensure_scroll_binding(node.node_id, widget);
+    const bool clip = std::isfinite(node.border_radius) && node.border_radius > 0.0f;
+    gtk_widget_set_overflow(widget, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
   }
 
-  host->apply_accessibility_to_widget(view, sem);
+  host->apply_accessibility_to_widget(widget, sem);
 
-  // Leaf labels explicitly opt out of pointer targeting so presses hit parent pressables.
   const bool interactive =
-      !sem.disabled && !is_leaf_text_snapshot(snap) &&
-      (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & kEventMaskPress) != 0u);
-  host->ensure_click_gesture(snap.node_id, view, interactive);
+      !sem.disabled && !is_leaf_text_node(node) &&
+      (node.kind == NVE_NODE_KIND_PRESSABLE || (node.flags & NVE_NODE_INTERACTIVE) != 0u);
+  host->ensure_click_gesture(node.node_id, widget, interactive);
 
   host->set_node_css(
-      snap.node_id, build_node_css_rule(host->scoped_node_class(snap.node_id), snap));
+      node.node_id, build_node_css_rule(host->scoped_node_class(node.node_id), node));
 }
 
 void NveGtkHost::GtkViewAdapter::destroy_view(uint32_t node_id, GtkWidget*& view) {
   host->remove_click_gesture(node_id, view);
+  host->remove_scroll_binding(node_id);
   host->remove_entry_binding(node_id, view);
   host->node_layouts_.erase(node_id);
   host->node_semantics_.erase(node_id);
+  host->node_image_srcs_.erase(node_id);
+  host->node_image_resize_modes_.erase(node_id);
   host->erase_node_css(node_id);
 
   if (view == nullptr) {
@@ -1344,9 +1533,42 @@ void NveGtkHost::sync_children_impl(
 
   if (is_scroll_container) {
     const LayoutRect parent_rect = layout_for_node(parent_id);
-    const int cw = static_cast<int>(std::lround(std::max(content_max_w, parent_rect.width)));
-    const int ch = static_cast<int>(std::lround(std::max(content_max_h, parent_rect.height)));
+    const float eff_w = std::max(content_max_w, parent_rect.width);
+    const float eff_h = std::max(content_max_h, parent_rect.height);
+    const int cw = static_cast<int>(std::lround(eff_w));
+    const int ch = static_cast<int>(std::lround(eff_h));
     gtk_widget_set_size_request(container, cw > 0 ? cw : -1, ch > 0 ? ch : -1);
+
+    const auto sbit = scroll_bindings_.find(parent_id);
+    if (sbit != scroll_bindings_.end() && sbit->second != nullptr) {
+      ScrollBinding& sb = *sbit->second;
+      sb.content_width = eff_w;
+      sb.content_height = eff_h;
+      const double view_w = std::max<double>(0.0, static_cast<double>(parent_rect.width));
+      const double view_h = std::max<double>(0.0, static_cast<double>(parent_rect.height));
+      if (sb.hadj != nullptr) {
+        const double cur_x = gtk_adjustment_get_value(sb.hadj);
+        gtk_adjustment_configure(
+            sb.hadj,
+            std::clamp(cur_x, 0.0, std::max(0.0, static_cast<double>(eff_w) - view_w)),
+            0.0,
+            std::max(static_cast<double>(eff_w), view_w),
+            20.0,
+            view_w,
+            view_w);
+      }
+      if (sb.vadj != nullptr) {
+        const double cur_y = gtk_adjustment_get_value(sb.vadj);
+        gtk_adjustment_configure(
+            sb.vadj,
+            std::clamp(cur_y, 0.0, std::max(0.0, static_cast<double>(eff_h) - view_h)),
+            0.0,
+            std::max(static_cast<double>(eff_h), view_h),
+            20.0,
+            view_h,
+            view_h);
+      }
+    }
   }
 }
 
@@ -1367,6 +1589,27 @@ void NveGtkHost::on_gesture_released(
   (void)host->simulate_press(node_id, static_cast<float>(x), static_cast<float>(y));
 }
 
+void NveGtkHost::on_scroll_value_changed(GtkAdjustment* adjustment, gpointer user_data) {
+  (void)adjustment;
+  auto* binding = static_cast<ScrollBinding*>(user_data);
+  if (binding == nullptr || binding->host == nullptr || binding->host->syncing_views_) {
+    return;
+  }
+  NveGtkHost* host = binding->host;
+  const uint32_t node_id = binding->node_id;
+  const float ox =
+      (binding->hadj != nullptr) ? static_cast<float>(gtk_adjustment_get_value(binding->hadj)) : 0.0f;
+  const float oy =
+      (binding->vadj != nullptr) ? static_cast<float>(gtk_adjustment_get_value(binding->vadj)) : 0.0f;
+  const float cw = std::max(
+      binding->content_width,
+      (binding->hadj != nullptr) ? static_cast<float>(gtk_adjustment_get_upper(binding->hadj)) : 0.0f);
+  const float ch = std::max(
+      binding->content_height,
+      (binding->vadj != nullptr) ? static_cast<float>(gtk_adjustment_get_upper(binding->vadj)) : 0.0f);
+  (void)host->dispatch_scroll(node_id, ox, oy, cw, ch);
+}
+
 void NveGtkHost::on_entry_changed(GtkEditable* editable, gpointer user_data) {
   auto* binding = static_cast<EntryBinding*>(user_data);
   if (binding == nullptr || binding->host == nullptr || binding->updating_programmatically) {
@@ -1382,7 +1625,6 @@ void NveGtkHost::on_entry_changed(GtkEditable* editable, gpointer user_data) {
   const uint32_t node_id = binding->node_id;
   binding->user_editing = true;
   (void)host->dispatch_text_change(node_id, current);
-  // Look up binding again in case the re-render destroyed the entry widget.
   const auto it = host->entry_bindings_.find(node_id);
   if (it != host->entry_bindings_.end() && it->second != nullptr) {
     it->second->user_editing = false;

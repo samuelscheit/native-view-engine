@@ -3,26 +3,34 @@
 #include "nve_host_runtime.hpp"
 
 #include <QAccessible>
+#include <QByteArray>
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QGuiApplication>
+#include <QImage>
+#include <QPixmap>
 #include <QRectF>
+#include <QSizeF>
 #include <QString>
+#include <QUrl>
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <list>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace nve::qt {
 
-/// Canonical cross-platform accessibility roles inferred from `RenderedNodeSnapshot` and raw props.
+/// Canonical cross-platform accessibility roles inferred from `NveRenderNode` and `raw_props`.
 enum class A11yRole : uint8_t {
   None = 0,
   Group,
@@ -38,7 +46,15 @@ enum class A11yRole : uint8_t {
   Link,
 };
 
-/// Normalized accessibility & TextInput metadata extracted from `raw_props` + node kind/event_mask.
+/// Image content-fit mode matching React Native's `ImageResizeMode`.
+enum class ImageResizeMode : uint8_t {
+  Cover = 0,
+  Contain,
+  Stretch,
+  Center,
+};
+
+/// Normalized accessibility & TextInput metadata extracted from `raw_props` + `NveRenderNode`.
 struct NodeSemantics {
   A11yRole role{A11yRole::Group};
   QAccessible::Role accessibleRole{QAccessible::Grouping};
@@ -53,6 +69,9 @@ struct NodeSemantics {
   QString placeholder;
   bool secureTextEntry{false};
   bool multiline{false};
+
+  bool operator==(const NodeSemantics& other) const noexcept = default;
+  bool operator!=(const NodeSemantics& other) const noexcept = default;
 };
 
 inline QAccessible::Role toQAccessibleRole(A11yRole role) noexcept {
@@ -213,192 +232,135 @@ inline bool parseA11yRole(std::string_view raw, A11yRole& out) {
   return false;
 }
 
-inline A11yRole inferDefaultRole(const nve::RenderedNodeSnapshot& snap) noexcept {
-  if (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & nve::kEventMaskPress) != 0u) {
+inline A11yRole inferDefaultRole(const NveRenderNode& node) noexcept {
+  if (node.kind == NVE_NODE_KIND_PRESSABLE || (node.flags & NVE_NODE_INTERACTIVE) != 0u) {
     return A11yRole::Button;
   }
-  switch (snap.kind) {
-    case NVE_COMP_TEXT:
+  switch (node.kind) {
+    case NVE_NODE_KIND_TEXT:
       return A11yRole::Text;
-    case NVE_COMP_TEXT_INPUT:
+    case NVE_NODE_KIND_TEXT_INPUT:
       return A11yRole::TextBox;
-    case NVE_COMP_SCROLL_VIEW:
+    case NVE_NODE_KIND_SCROLL_VIEW:
       return A11yRole::ScrollArea;
-    case NVE_COMP_IMAGE:
+    case NVE_NODE_KIND_IMAGE:
       return A11yRole::Image;
     default:
       return A11yRole::Group;
   }
 }
 
-inline void decodeRawPropsFromCommandBuffer(
-    const uint8_t* data,
-    size_t len,
-    std::unordered_map<uint32_t, nve::RawPropMap>& out) {
-  if (data == nullptr || len < 24u) {
-    return;
-  }
-  size_t pos = 0;
-  auto read_pod = [&](auto& v) -> bool {
-    if (sizeof(v) > len - pos) return false;
-    std::memcpy(&v, data + pos, sizeof(v));
-    pos += sizeof(v);
-    return true;
-  };
-  auto skip = [&](size_t n) -> bool {
-    if (n > len - pos) return false;
-    pos += n;
-    return true;
-  };
+} // namespace detail
 
-  uint32_t magic = 0;
-  uint16_t version = 0;
-  uint16_t flags = 0;
-  uint32_t surface_id = 0;
-  uint64_t frame_id = 0;
-  uint32_t op_count = 0;
-  if (!read_pod(magic) || !read_pod(version) || !read_pod(flags) || !read_pod(surface_id) ||
-      !read_pod(frame_id) || !read_pod(op_count)) {
-    return;
-  }
-  if (magic != NVE_ABI_MAGIC || version != NVE_ABI_VERSION) {
-    return;
-  }
-
-  for (uint32_t i = 0; i < op_count; ++i) {
-    uint8_t op = 0;
-    if (!read_pod(op)) return;
-    switch (static_cast<NveOpcode>(op)) {
-      case NVE_OP_CREATE_NODE: {
-        uint16_t name_len = 0;
-        if (!skip(6u) || !read_pod(name_len) || !skip(name_len)) return;
-        break;
-      }
-      case NVE_OP_REMOVE_NODE:
-        if (!skip(4u)) return;
-        break;
-      case NVE_OP_SET_CHILDREN: {
-        uint32_t count = 0;
-        if (!skip(4u) || !read_pod(count)) return;
-        if (static_cast<size_t>(count) > (len - pos) / sizeof(uint32_t)) return;
-        pos += static_cast<size_t>(count) * sizeof(uint32_t);
-        break;
-      }
-      case NVE_OP_SET_TEXT: {
-        uint32_t tlen = 0;
-        if (!skip(4u) || !read_pod(tlen) || !skip(tlen)) return;
-        break;
-      }
-      case NVE_OP_SET_LAYOUT:
-        if (!skip(81u)) return;
-        break;
-      case NVE_OP_SET_STYLE:
-        if (!skip(36u)) return;
-        break;
-      case NVE_OP_SET_RAW_PROP: {
-        uint32_t node_id = 0;
-        uint16_t key_len = 0;
-        if (!read_pod(node_id) || !read_pod(key_len) || key_len > len - pos) return;
-        std::string key(reinterpret_cast<const char*>(data + pos), key_len);
-        pos += key_len;
-        uint8_t tag = 0;
-        if (!read_pod(tag)) return;
-        nve::RawPropValue val{nullptr};
-        switch (tag) {
-          case 0:
-            val = nullptr;
-            break;
-          case 1: {
-            uint8_t b = 0;
-            if (!read_pod(b)) return;
-            val = (b != 0);
-            break;
-          }
-          case 2: {
-            int64_t v = 0;
-            if (!read_pod(v)) return;
-            val = v;
-            break;
-          }
-          case 3: {
-            double v = 0.0;
-            if (!read_pod(v)) return;
-            val = v;
-            break;
-          }
-          case 4: {
-            uint32_t vlen = 0;
-            if (!read_pod(vlen) || vlen > len - pos) return;
-            val = std::string(reinterpret_cast<const char*>(data + pos), vlen);
-            pos += vlen;
-            break;
-          }
-          case 5: {
-            uint32_t vlen = 0;
-            if (!read_pod(vlen) || vlen > len - pos) return;
-            val = std::vector<uint8_t>(data + pos, data + pos + vlen);
-            pos += vlen;
-            break;
-          }
-          default:
-            return;
-        }
-        out[node_id][std::move(key)] = std::move(val);
-        break;
-      }
-      case NVE_OP_SET_EVENT_MASK:
-        if (!skip(12u)) return;
-        break;
-      case NVE_OP_DISPATCH_COMMAND: {
-        uint16_t nlen = 0;
-        uint32_t plen = 0;
-        if (!skip(4u) || !read_pod(nlen) || !skip(nlen) || !read_pod(plen) || !skip(plen)) return;
-        break;
-      }
-      case NVE_OP_COMMIT:
-        if (!skip(1u)) return;
-        break;
-      default:
-        return;
-    }
-  }
-}
-
-template <typename Snap>
-inline std::unordered_map<uint32_t, nve::RawPropMap> extractRawPropsImpl(
-    NveFabricHostHandle host,
-    const std::vector<Snap>& snapshots) {
+/// Read `RenderedNodeSnapshot::raw_props` directly without any command-buffer decode fallback.
+inline std::unordered_map<uint32_t, nve::RawPropMap> extractRawPropsByNode(
+    const std::vector<nve::RenderedNodeSnapshot>& snapshots) {
   std::unordered_map<uint32_t, nve::RawPropMap> result;
-  if constexpr (requires(const Snap& s) { s.raw_props; }) {
-    for (const auto& snap : snapshots) {
-      if (!snap.raw_props.empty()) {
-        result.emplace(snap.node_id, snap.raw_props);
-      }
+  for (const auto& snap : snapshots) {
+    if (!snap.raw_props.empty()) {
+      result.emplace(snap.node_id, snap.raw_props);
     }
-  } else {
-    (void)snapshots;
-    if (host == nullptr) {
-      return result;
-    }
-    const std::vector<uint8_t> frame0 = nve::fabric_host_serialize_frame0(host, 1u);
-    decodeRawPropsFromCommandBuffer(frame0.data(), frame0.size(), result);
   }
   return result;
 }
 
-} // namespace detail
-
-inline std::unordered_map<uint32_t, nve::RawPropMap> extractRawPropsByNode(
-    NveFabricHostHandle host,
-    const std::vector<nve::RenderedNodeSnapshot>& snapshots) {
-  return detail::extractRawPropsImpl(host, snapshots);
+/// Parse `ImageResizeMode` from a UTF-8 string (`"cover"`, `"contain"`, `"stretch"`, `"center"`).
+inline ImageResizeMode parseImageResizeMode(std::string_view raw) {
+  const std::string lower = detail::asciiLower(raw);
+  if (lower == "contain") {
+    return ImageResizeMode::Contain;
+  }
+  if (lower == "stretch" || lower == "fill") {
+    return ImageResizeMode::Stretch;
+  }
+  if (lower == "center") {
+    return ImageResizeMode::Center;
+  }
+  return ImageResizeMode::Cover;
 }
 
+inline ImageResizeMode extractImageResizeMode(const nve::RawPropMap* raw_props) {
+  if (raw_props == nullptr) {
+    return ImageResizeMode::Cover;
+  }
+  std::string mode_str;
+  if (detail::readRawString(*raw_props, "resizeMode", mode_str) ||
+      detail::readRawString(*raw_props, "resize_mode", mode_str)) {
+    return parseImageResizeMode(mode_str);
+  }
+  return ImageResizeMode::Cover;
+}
+
+/// Compute target destination rectangle and image-pixel source crop rectangle for all 4 resize modes.
+inline bool computeImageDrawRects(
+    ImageResizeMode mode,
+    const QRectF& dstBounds,
+    const QSizeF& imgSize,
+    QRectF& outDstRect,
+    QRectF& outSrcRect) noexcept {
+  const qreal dw = dstBounds.width();
+  const qreal dh = dstBounds.height();
+  const qreal iw = imgSize.width();
+  const qreal ih = imgSize.height();
+  if (dw <= 0.0 || dh <= 0.0 || iw <= 0.0 || ih <= 0.0) {
+    return false;
+  }
+
+  switch (mode) {
+    case ImageResizeMode::Stretch:
+      outDstRect = dstBounds;
+      outSrcRect = QRectF(0.0, 0.0, iw, ih);
+      return true;
+    case ImageResizeMode::Contain: {
+      const qreal scale = std::min(dw / iw, dh / ih);
+      const qreal tw = iw * scale;
+      const qreal th = ih * scale;
+      outDstRect = QRectF(
+          dstBounds.x() + (dw - tw) * 0.5,
+          dstBounds.y() + (dh - th) * 0.5,
+          tw,
+          th);
+      outSrcRect = QRectF(0.0, 0.0, iw, ih);
+      return true;
+    }
+    case ImageResizeMode::Center: {
+      const qreal drawW = std::min(dw, iw);
+      const qreal drawH = std::min(dh, ih);
+      outDstRect = QRectF(
+          dstBounds.x() + (dw - drawW) * 0.5,
+          dstBounds.y() + (dh - drawH) * 0.5,
+          drawW,
+          drawH);
+      outSrcRect = QRectF(
+          (iw - drawW) * 0.5,
+          (ih - drawH) * 0.5,
+          drawW,
+          drawH);
+      return true;
+    }
+    case ImageResizeMode::Cover:
+    default: {
+      const qreal scale = std::max(dw / iw, dh / ih);
+      const qreal cropW = std::min(iw, dw / scale);
+      const qreal cropH = std::min(ih, dh / scale);
+      outDstRect = dstBounds;
+      outSrcRect = QRectF(
+          (iw - cropW) * 0.5,
+          (ih - cropH) * 0.5,
+          cropW,
+          cropH);
+      return true;
+    }
+  }
+}
+
+/// Extract accessibility & TextInput metadata directly from `NveRenderNode` + optional `raw_props`.
 inline NodeSemantics extractNodeSemantics(
-    const nve::RenderedNodeSnapshot& snap,
+    const NveRenderNode& node,
+    std::string_view text,
     const nve::RawPropMap* raw_props) {
   NodeSemantics sem{};
-  sem.role = detail::inferDefaultRole(snap);
+  sem.role = detail::inferDefaultRole(node);
 
   if (raw_props != nullptr) {
     std::string role_str;
@@ -448,14 +410,172 @@ inline NodeSemantics extractNodeSemantics(
     (void)detail::readRawBool(*raw_props, "multiline", sem.multiline);
   }
 
-  if (!sem.hasExplicitLabel && snap.kind == NVE_COMP_TEXT && snap.children.empty() &&
-      !snap.text.empty()) {
-    sem.label = detail::qstringFromUtf8(snap.text);
+  if (!sem.hasExplicitLabel && (node.flags & NVE_NODE_LEAF_TEXT) != 0u && !text.empty()) {
+    sem.label = detail::qstringFromUtf8(text);
   }
 
   sem.accessibleRole = toQAccessibleRole(sem.role);
   return sem;
 }
+
+/// Shared bounded-LRU `QImage` / `QPixmap` decoder & cache supporting `data:image/...;base64,...`
+/// and `file://...` URIs across both `NveQtWidget` and `NveQtQuickItem`.
+class NveQtImageCache {
+ public:
+  explicit NveQtImageCache(size_t max_entries = 64u)
+      : max_entries_(std::max<size_t>(1u, max_entries)) {}
+
+  static NveQtImageCache& shared() {
+    static NveQtImageCache instance(64u);
+    return instance;
+  }
+
+  /// Decode `uri` directly into a premultiplied RGBA `QImage` without caching.
+  static QImage decodeUri(std::string_view uri) {
+    if (uri.empty()) {
+      return {};
+    }
+
+    QImage img;
+    if (uri.size() > 11u && detail::asciiLower(uri.substr(0, 11)) == "data:image/") {
+      const size_t marker = uri.find(";base64,");
+      if (marker == std::string_view::npos) {
+        return {};
+      }
+      const std::string_view b64 = uri.substr(marker + 8u);
+      if (b64.empty()) {
+        return {};
+      }
+      const QByteArray raw = QByteArray::fromBase64(
+          QByteArray::fromRawData(b64.data(), static_cast<qsizetype>(b64.size())));
+      if (raw.isEmpty() || !img.loadFromData(raw)) {
+        return {};
+      }
+    } else if (uri.size() > 7u && detail::asciiLower(uri.substr(0, 7)) == "file://") {
+      const QString quri = detail::qstringFromUtf8(uri);
+      QString local_path = QUrl(quri).toLocalFile();
+      if (local_path.isEmpty()) {
+        local_path = detail::qstringFromUtf8(uri.substr(7u));
+      }
+      if (local_path.isEmpty() || !img.load(local_path)) {
+        return {};
+      }
+    } else {
+      return {};
+    }
+
+    if (img.format() != QImage::Format_RGBA8888_Premultiplied) {
+      img = img.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+    }
+    return img;
+  }
+
+  /// Return a cached premultiplied `QImage` (decoding & inserting into the LRU on miss).
+  QImage getImage(std::string_view uri) {
+    if (uri.empty()) {
+      return {};
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string key(uri);
+    auto it = entries_.find(key);
+    if (it != entries_.end()) {
+      touchLocked(it->second);
+      ++hits_;
+      return it->second.image;
+    }
+
+    ++misses_;
+    QImage decoded = decodeUri(uri);
+    if (decoded.isNull()) {
+      return {};
+    }
+    Entry& inserted = insertLocked(key, std::move(decoded));
+    return inserted.image;
+  }
+
+  /// Return a cached `QPixmap` (materialized lazily from the cached `QImage` on the GUI thread).
+  QPixmap getPixmap(std::string_view uri) {
+    if (uri.empty()) {
+      return {};
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string key(uri);
+    auto it = entries_.find(key);
+    if (it != entries_.end()) {
+      touchLocked(it->second);
+      ++hits_;
+      if (it->second.pixmap.isNull() && !it->second.image.isNull()) {
+        it->second.pixmap = QPixmap::fromImage(it->second.image);
+      }
+      return it->second.pixmap;
+    }
+
+    ++misses_;
+    QImage decoded = decodeUri(uri);
+    if (decoded.isNull()) {
+      return {};
+    }
+    Entry& inserted = insertLocked(key, std::move(decoded));
+    inserted.pixmap = QPixmap::fromImage(inserted.image);
+    return inserted.pixmap;
+  }
+
+  size_t size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return entries_.size();
+  }
+
+  size_t capacity() const noexcept { return max_entries_; }
+
+  uint64_t hits() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return hits_;
+  }
+
+  uint64_t misses() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return misses_;
+  }
+
+  void clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lru_.clear();
+    entries_.clear();
+  }
+
+ private:
+  struct Entry {
+    QImage image;
+    QPixmap pixmap;
+    std::list<std::string>::iterator lru_it;
+  };
+
+  void touchLocked(Entry& entry) {
+    lru_.splice(lru_.begin(), lru_, entry.lru_it);
+    entry.lru_it = lru_.begin();
+  }
+
+  Entry& insertLocked(const std::string& key, QImage img) {
+    while (entries_.size() >= max_entries_ && !lru_.empty()) {
+      const std::string& victim = lru_.back();
+      entries_.erase(victim);
+      lru_.pop_back();
+    }
+    lru_.push_front(key);
+    Entry entry{};
+    entry.image = std::move(img);
+    entry.lru_it = lru_.begin();
+    auto [it, _] = entries_.emplace(key, std::move(entry));
+    return it->second;
+  }
+
+  size_t max_entries_{64u};
+  mutable std::mutex mutex_;
+  std::list<std::string> lru_;
+  std::unordered_map<std::string, Entry> entries_;
+  uint64_t hits_{0};
+  uint64_t misses_{0};
+};
 
 inline QColor qcolorFromRgba(uint32_t rgba) noexcept {
   const auto c = nve::unpack_rgba(rgba);

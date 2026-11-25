@@ -976,6 +976,291 @@ void test_accessibility_and_ime_text_input() {
   NVE_CHECK(gtk_entry_get_visibility(GTK_ENTRY(entry)) == FALSE);
 }
 
+std::string make_8x8_png_data_uri(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+  std::vector<uint8_t> rgba(8u * 8u * 4u);
+  for (size_t i = 0; i < rgba.size(); i += 4u) {
+    rgba[i + 0u] = r;
+    rgba[i + 1u] = g;
+    rgba[i + 2u] = b;
+    rgba[i + 3u] = a;
+  }
+  GBytes* raw = g_bytes_new(rgba.data(), rgba.size());
+  GdkTexture* tex = gdk_memory_texture_new(8, 8, GDK_MEMORY_R8G8B8A8, raw, 8 * 4);
+  g_bytes_unref(raw);
+  NVE_CHECK(tex != nullptr);
+  GBytes* png = gdk_texture_save_to_png_bytes(tex);
+  g_object_unref(tex);
+  NVE_CHECK(png != nullptr);
+  gsize png_len = 0;
+  const auto* png_data = static_cast<const guchar*>(g_bytes_get_data(png, &png_len));
+  gchar* b64 = g_base64_encode(png_data, png_len);
+  std::string out = "data:image/png;base64," + std::string(b64);
+  g_free(b64);
+  g_bytes_unref(png);
+  return out;
+}
+
+struct MockGtkImageScrollComponent {
+  static inline MockGtkImageScrollComponent* last_instance = nullptr;
+  uint32_t surface_id{1u};
+  std::string data_uri;
+  std::string file_uri;
+  std::string resize_mode{"cover"};
+  int counter{0};
+  int scroll_events{0};
+  uint32_t last_scroll_node{0};
+  float last_scroll_x{0.0f};
+  float last_scroll_y{0.0f};
+  float last_scroll_content_h{0.0f};
+  std::vector<uint8_t> cmd_buf;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockGtkImageScrollComponent();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  template <typename T>
+  void push(T v) {
+    const auto* p = reinterpret_cast<const uint8_t*>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0u;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0u);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0u);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0u);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_text = [&](uint32_t id, const std::string& s) {
+      self->push<uint8_t>(NVE_OP_SET_TEXT);
+      self->push<uint32_t>(id);
+      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1u); self->push<float>(w);
+      self->push<uint8_t>(1u); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
+      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
+      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4u);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+
+    create_node(2u, NVE_COMP_VIEW);
+    create_node(3u, NVE_COMP_IMAGE);
+    create_node(4u, NVE_COMP_IMAGE);
+    create_node(5u, NVE_COMP_SCROLL_VIEW);
+    create_node(6u, NVE_COMP_VIEW);
+    create_node(7u, NVE_COMP_TEXT);
+    create_node(8u, NVE_COMP_TEXT);
+
+    set_children(NVE_ROOT_NODE_ID, {2u});
+    set_children(2u, {3u, 4u, 5u, 7u, 8u});
+    set_children(5u, {6u});
+
+    set_box(2u, 360.0f, 300.0f);
+    set_box(3u, 64.0f, 64.0f);
+    set_raw_str(3u, "src", self->data_uri);
+    set_raw_str(3u, "resizeMode", self->resize_mode);
+
+    set_box(4u, 48.0f, 48.0f);
+    set_raw_str(4u, "src", self->file_uri);
+    set_raw_str(4u, "resizeMode", "contain");
+
+    set_box(5u, 160.0f, 60.0f);
+    set_box(6u, 220.0f, 240.0f);
+
+    set_box(7u, 120.0f, 24.0f);
+    set_text(7u, "Step:" + std::to_string(self->counter));
+
+    set_box(8u, 120.0f, 24.0f);
+    set_text(8u, "StaticLabel");
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1u);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
+    if (batch.ptr == nullptr) return 0u;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
+        ++self->scroll_events;
+        self->last_scroll_node = ev.node_id;
+        self->last_scroll_x = ev.x;
+        self->last_scroll_y = ev.y;
+        self->last_scroll_content_h = ev.height;
+      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 7u) {
+        ++self->counter;
+        return 1u;
+      }
+    }
+    return 0u;
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0u;
+    for (const auto& ev : decoded) {
+      if (ev.kind == nve::EventKind::Press && ev.node_id == 7u) {
+        ++self->counter;
+        return 1u;
+      }
+    }
+    return 0u;
+  }
+
+  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
+    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
+    const std::string json(reinterpret_cast<const char*>(props.ptr), props.len);
+    if (json.find("\"contain\"") != std::string::npos) self->resize_mode = "contain";
+    if (json.find("\"stretch\"") != std::string::npos) self->resize_mode = "stretch";
+    if (json.find("\"center\"") != std::string::npos) self->resize_mode = "center";
+    if (json.find("\"cover\"") != std::string::npos) self->resize_mode = "cover";
+    return 1u;
+  }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
+    static const NveComponentApi kComp{&set_props, nullptr, nullptr};
+    if (iface == NVE_IFACE_SURFACE) return &kSurface;
+    if (iface == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
+void test_image_picture_scroll_and_incremental_reconcile() {
+  const std::string data_uri = make_8x8_png_data_uri(220, 40, 60, 255);
+  const std::filesystem::path tmp_png =
+      std::filesystem::temp_directory_path() / "nve_gtk_img_8x8.png";
+  {
+    std::vector<uint8_t> rgba(8u * 8u * 4u, 200u);
+    GBytes* raw = g_bytes_new(rgba.data(), rgba.size());
+    GdkTexture* tex = gdk_memory_texture_new(8, 8, GDK_MEMORY_R8G8B8A8, raw, 8 * 4);
+    g_bytes_unref(raw);
+    NVE_CHECK(tex != nullptr);
+    NVE_CHECK(gdk_texture_save_to_png(tex, tmp_png.c_str()) == TRUE);
+    g_object_unref(tex);
+  }
+  gchar* uri_c = g_filename_to_uri(tmp_png.c_str(), nullptr, nullptr);
+  NVE_CHECK(uri_c != nullptr);
+  const std::string file_uri(uri_c);
+  g_free(uri_c);
+
+  NveSurfaceConfig cfg{.surface_id = 15u, .width = 360.0f, .height = 300.0f, .scale_factor = 1.0f};
+  nve::NveGtkHost host(cfg);
+  NVE_CHECK(host.attach_interface(&MockGtkImageScrollComponent::get_interface, 15u));
+  NVE_CHECK(MockGtkImageScrollComponent::last_instance != nullptr);
+  auto* mock = MockGtkImageScrollComponent::last_instance;
+  mock->data_uri = data_uri;
+  mock->file_uri = file_uri;
+  NVE_CHECK(host.render_frame() == 0);
+
+  GtkWidget* pic3 = host.widget_for_node_id(3u);
+  GtkWidget* pic4 = host.widget_for_node_id(4u);
+  GtkWidget* scroll5 = host.widget_for_node_id(5u);
+  GtkWidget* lbl7 = host.widget_for_node_id(7u);
+  NVE_CHECK(pic3 != nullptr && GTK_IS_PICTURE(pic3));
+  NVE_CHECK(pic4 != nullptr && GTK_IS_PICTURE(pic4));
+  NVE_CHECK(scroll5 != nullptr && GTK_IS_SCROLLED_WINDOW(scroll5));
+  NVE_CHECK(lbl7 != nullptr && GTK_IS_LABEL(lbl7));
+
+  // Verify GdkTexture decoded cleanly to 8x8 for both data:image/png;base64 and file://!
+  GdkPaintable* p3 = gtk_picture_get_paintable(GTK_PICTURE(pic3));
+  GdkPaintable* p4 = gtk_picture_get_paintable(GTK_PICTURE(pic4));
+  NVE_CHECK(p3 != nullptr && GDK_IS_TEXTURE(p3));
+  NVE_CHECK(p4 != nullptr && GDK_IS_TEXTURE(p4));
+  NVE_CHECK(gdk_texture_get_width(GDK_TEXTURE(p3)) == 8);
+  NVE_CHECK(gdk_texture_get_height(GDK_TEXTURE(p3)) == 8);
+  NVE_CHECK(gdk_texture_get_width(GDK_TEXTURE(p4)) == 8);
+  NVE_CHECK(gdk_texture_get_height(GDK_TEXTURE(p4)) == 8);
+  NVE_CHECK(host.texture_cache().size() == 2u);
+
+  // Verify GtkContentFit mapping across all 4 resizeModes!
+#if GTK_CHECK_VERSION(4, 8, 0)
+  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_COVER);
+  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic4)) == GTK_CONTENT_FIT_CONTAIN);
+
+  NVE_CHECK(host.apply_props_json(R"({"resizeMode":"contain"})"));
+  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_CONTAIN);
+
+  NVE_CHECK(host.apply_props_json(R"({"resizeMode":"stretch"})"));
+  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_FILL);
+
+  NVE_CHECK(host.apply_props_json(R"({"resizeMode":"center"})"));
+  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_SCALE_DOWN);
+#endif
+
+  // Verify GtkScrolledWindow vadjustment & hadjustment value-changed -> zero-copy EventKind::Scroll!
+  GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll5));
+  GtkAdjustment* hadj = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(scroll5));
+  NVE_CHECK(vadj != nullptr && hadj != nullptr);
+  gtk_adjustment_set_value(vadj, 42.0);
+  NVE_CHECK(mock->scroll_events >= 1);
+  NVE_CHECK(mock->last_scroll_node == 5u);
+  NVE_CHECK(approx_eq(mock->last_scroll_y, 42.0, 1.0));
+  NVE_CHECK(mock->last_scroll_content_h >= 240.0f);
+
+  const int events_before_h = mock->scroll_events;
+  gtk_adjustment_set_value(hadj, 15.0);
+  NVE_CHECK(mock->scroll_events > events_before_h);
+  NVE_CHECK(approx_eq(mock->last_scroll_x, 15.0, 1.0));
+
+  // Verify O(changed) IncrementalSceneReconciler updates ONLY node 7 on single-label mutation!
+  const uint64_t updates_before = host.reconcile_update_count();
+  NVE_CHECK(host.simulate_press(7u, 4.0f, 4.0f) == 1u);
+  NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(lbl7))) == "Step:1");
+  NVE_CHECK(host.reconcile_update_count() - updates_before == 1u);
+
+  std::error_code ec;
+  std::filesystem::remove(tmp_png, ec);
+}
+
 } // namespace
 
 int main() {
@@ -990,6 +1275,7 @@ int main() {
   test_snapshot_replay_state_restore_and_atomic_save();
   test_live_counter_dylib_if_present();
   test_accessibility_and_ime_text_input();
+  test_image_picture_scroll_and_incremental_reconcile();
 
   std::cout << "nve_gtk_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+GTK4" : "Standalone+GTK4")

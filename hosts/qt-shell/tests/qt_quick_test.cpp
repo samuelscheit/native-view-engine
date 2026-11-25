@@ -4,6 +4,7 @@
 
 #include <QAccessible>
 #include <QApplication>
+#include <QBuffer>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -658,7 +659,7 @@ void test_dylib_errors_and_hot_reload() {
   NVE_CHECK(item.isAppLoaded());
   NVE_CHECK(item.surfaceId() == 5u);
   NVE_CHECK(item.nodeCount() == 3u);
-  NVE_CHECK(nve::SceneTableBuilder::verify_view_schema(item.sceneView()));
+  NVE_CHECK(item.sceneView().schema_hash == NVE_SCENE_SCHEMA_HASH);
   NVE_CHECK(item.sceneNodeText(3) == "Fixture:0");
 
   // Dispatch direct press twice (fixture falls back to EventRing seamlessly) -> Fixture:2
@@ -706,7 +707,7 @@ void test_scene_hit_test_direct_events_and_scene_graph_caching() {
   NVE_CHECK(item->attachInterface(&MockQuickComponent::get_interface, 3u));
   NVE_CHECK(MockQuickComponent::last_instance != nullptr);
   auto* mock = MockQuickComponent::last_instance;
-  NVE_CHECK(nve::SceneTableBuilder::verify_view_schema(item->sceneView()));
+  NVE_CHECK(item->sceneView().schema_hash == NVE_SCENE_SCHEMA_HASH);
   NVE_CHECK(item->sceneView().node_count == 16u);
   if (nve::fabric_host_has_yoga_layout()) {
     NVE_CHECK(measure_calls.load() > 0);
@@ -849,7 +850,15 @@ void test_scene_hit_test_direct_events_and_scene_graph_caching() {
   NVE_CHECK(stats2.textCacheHits == 0u);
 
   // Sync 3: Press button 5 so ONLY counter text node 4 changes ("Clicks: 2" -> "Clicks: 3").
-  // All 6 other text nodes MUST hit the GPU texture cache without re-rasterizing!
+  // All 6 other text nodes MUST hit the GPU texture cache without re-rasterizing, AND unchanged
+  // sibling QSGNode* pointers MUST survive without recreation!
+  const QSGNode* header3_sg_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3);
+  const QSGNode* button5_sg_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 5);
+  const QSGNode* badge7_sg_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 7);
+  const QSGNode* scroll9_sg_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 9);
+  NVE_CHECK(header3_sg_before != nullptr && button5_sg_before != nullptr);
+  NVE_CHECK(badge7_sg_before != nullptr && scroll9_sg_before != nullptr);
+
   item->dispatchPress(5, 10.0f, 10.0f);
   NVE_CHECK(item->sceneNodeText(4) == "Clicks: 3");
   QSGNode* sg_after_press = item->syncSceneGraphNode(sg_root.get());
@@ -858,6 +867,12 @@ void test_scene_hit_test_direct_events_and_scene_graph_caching() {
   NVE_CHECK(stats3.textRasterizations == 8u); // ONLY node 4 re-rasterized!
   NVE_CHECK(stats3.textCacheHits == 6u);      // 6 unchanged text nodes hit cache!
   NVE_CHECK(stats3.cachedTextTextures == 7u);
+  NVE_CHECK(stats3.dirtyNodesUpdated == 1u);
+  NVE_CHECK(stats3.retainedNodesReused >= 14u);
+  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3) == header3_sg_before);
+  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 5) == button5_sg_before);
+  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 7) == badge7_sg_before);
+  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 9) == scroll9_sg_before);
 
   // Sync 4: Remove extra text node 16 via zero-copy applyPropsDirect -> texture cache evicts 16!
   const NveMapEntry entries[1] = {
@@ -1001,9 +1016,10 @@ void test_live_counter_and_studio_dylibs() {
     NVE_CHECK(err_code == 0 && err_msg.isEmpty());
 
     auto find_node_by_text = [&](std::string_view needle) -> uint32_t {
-      for (const auto& node : item->sceneBuilder().nodes()) {
-        if (item->sceneBuilder().text_for(node) == needle) {
-          return node.node_id;
+      const NveSceneView view = item->sceneView();
+      for (uint32_t i = 0u; i < view.node_count; ++i) {
+        if (nve::scene_node_text(view, view.nodes[i]) == needle) {
+          return view.nodes[i].node_id;
         }
       }
       return 0u;
@@ -1053,8 +1069,9 @@ void test_live_counter_and_studio_dylibs() {
               << restore_us << " us\n";
 
     auto cold_has_text = [&](std::string_view needle) {
-      for (const auto& node : cold_counter.sceneBuilder().nodes()) {
-        if (cold_counter.sceneBuilder().text_for(node) == needle) {
+      const NveSceneView view = cold_counter.sceneView();
+      for (uint32_t i = 0u; i < view.node_count; ++i) {
+        if (nve::scene_node_text(view, view.nodes[i]) == needle) {
           return true;
         }
       }
@@ -1081,8 +1098,9 @@ void test_live_counter_and_studio_dylibs() {
     NVE_CHECK(studio->applyPropsJson(R"({"accent":"violet","view":"metrics"})"));
 
     auto has_substr = [](const nve::NveQtQuickItem& it, std::string_view needle) {
-      for (const auto& node : it.sceneBuilder().nodes()) {
-        if (it.sceneBuilder().text_for(node).find(needle) != std::string_view::npos) {
+      const NveSceneView view = it.sceneView();
+      for (uint32_t i = 0u; i < view.node_count; ++i) {
+        if (nve::scene_node_text(view, view.nodes[i]).find(needle) != std::string_view::npos) {
           return true;
         }
       }
@@ -1273,6 +1291,144 @@ void test_accessibility_and_ime_input_method() {
   NVE_CHECK(mock->last_submit == "漢字 café");
 }
 
+struct MockQuickImageComponent {
+  static inline MockQuickImageComponent* last_instance = nullptr;
+  uint32_t surface_id{1};
+  std::string data_uri;
+  std::string file_uri;
+  int ticks{0};
+  BinaryCmdHelper cmd;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockQuickImageComponent();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockQuickImageComponent*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockQuickImageComponent*>(h);
+    self->cmd.begin(self->surface_id, frame_id);
+
+    self->cmd.create_node(2, NVE_COMP_VIEW);
+    self->cmd.create_node(3, NVE_COMP_IMAGE);
+    self->cmd.create_node(4, NVE_COMP_IMAGE);
+    self->cmd.create_node(5, NVE_COMP_TEXT);
+
+    self->cmd.set_children(NVE_ROOT_NODE_ID, {2});
+    self->cmd.set_children(2, {3, 4, 5});
+
+    self->cmd.set_layout(2, 0, 1, 240.0f, 1, 200.0f, 0.0f, 10.0f, 8.0f);
+    self->cmd.set_style(2, 0xFF0F172Au, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    self->cmd.set_layout(3, 0, 1, 64.0f, 1, 64.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_style(3, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 6.0f, 1.0f, 14.0f);
+    self->cmd.set_raw_prop_string(3, "src", self->data_uri);
+    self->cmd.set_raw_prop_string(3, "resizeMode", "cover");
+
+    self->cmd.set_layout(4, 0, 1, 48.0f, 1, 48.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_style(4, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+    self->cmd.set_raw_prop_string(4, "src", self->file_uri);
+    self->cmd.set_raw_prop_string(4, "resizeMode", "contain");
+
+    self->cmd.set_layout(5, 0, 1, 140.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(5, "Tick:" + std::to_string(self->ticks));
+    self->cmd.set_style(5, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    return self->cmd.finish();
+  }
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<MockQuickImageComponent*>(h);
+    if (batch.ptr != nullptr && batch.len > 0u) {
+      ++self->ticks;
+      return 1;
+    }
+    return 0;
+  }
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, nullptr, &dispatch_events_direct};
+    return (iface == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
+  }
+};
+
+void test_quick_image_rendering_and_retained_sg_survival() {
+  QImage green_img(8, 8, QImage::Format_RGBA8888);
+  green_img.fill(QColor(24, 210, 96, 255));
+  QByteArray png_bytes;
+  QBuffer png_buf(&png_bytes);
+  png_buf.open(QIODevice::WriteOnly);
+  NVE_CHECK(green_img.save(&png_buf, "PNG"));
+  const QByteArray b64 = png_bytes.toBase64();
+  const std::string data_uri =
+      "data:image/png;base64," + std::string(b64.constData(), static_cast<size_t>(b64.size()));
+
+  const QString tmp_png = QDir::temp().filePath(
+      QStringLiteral("nve_qt_quick_img_%1.png").arg(QCoreApplication::applicationPid()));
+  {
+    QImage amber_img(8, 8, QImage::Format_RGBA8888);
+    amber_img.fill(QColor(245, 170, 20, 255));
+    NVE_CHECK(amber_img.save(tmp_png, "PNG"));
+  }
+  const QByteArray file_url_utf8 = QUrl::fromLocalFile(tmp_png).toString().toUtf8();
+  const std::string file_uri(file_url_utf8.constData(), static_cast<size_t>(file_url_utf8.size()));
+
+  QQuickWindow win;
+  win.resize(240, 200);
+  auto* item = new nve::NveQtQuickItem(win.contentItem());
+  item->setSize(QSizeF(240, 200));
+
+  NVE_CHECK(item->attachInterface(&MockQuickImageComponent::get_interface, 29u));
+  NVE_CHECK(MockQuickImageComponent::last_instance != nullptr);
+  MockQuickImageComponent::last_instance->data_uri = data_uri;
+  MockQuickImageComponent::last_instance->file_uri = file_uri;
+  NVE_CHECK(item->renderFrame() == 0);
+
+  win.show();
+  QCoreApplication::processEvents();
+  const QImage grabbed = win.grabWindow();
+  NVE_CHECK(!grabbed.isNull() && grabbed.width() > 0 && grabbed.height() > 0);
+  // Confirm green pixels from image node 3 rendered into the QuickWindow frame!
+  bool saw_green_pixel = false;
+  for (int y = 0; y < grabbed.height() && !saw_green_pixel; y += 2) {
+    for (int x = 0; x < grabbed.width(); x += 2) {
+      const QColor c = grabbed.pixelColor(x, y);
+      if (c.green() > 180 && c.red() < 60 && c.blue() < 130) {
+        saw_green_pixel = true;
+        break;
+      }
+    }
+  }
+  NVE_CHECK(saw_green_pixel);
+
+  std::unique_ptr<QSGNode> sg_root(item->syncSceneGraphNode(nullptr));
+  NVE_CHECK(sg_root != nullptr);
+  const nve::SceneGraphStats s1 = item->sceneGraphStats();
+  NVE_CHECK(s1.imageTextureNodes == 2u);
+  NVE_CHECK(s1.cachedImageTextures == 2u);
+  NVE_CHECK(s1.textTextureNodes == 1u);
+
+  // Record retained QSGNode* pointers for both image nodes before mutating sibling text node 5!
+  const QSGNode* img3_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3);
+  const QSGNode* img4_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 4);
+  NVE_CHECK(img3_before != nullptr && img4_before != nullptr);
+
+  item->dispatchPress(5, 2.0f, 2.0f);
+  NVE_CHECK(item->sceneNodeText(5) == "Tick:1");
+  QSGNode* sg_after = item->syncSceneGraphNode(sg_root.get());
+  NVE_CHECK(sg_after == sg_root.get());
+  const nve::SceneGraphStats s2 = item->sceneGraphStats();
+  NVE_CHECK(s2.dirtyNodesUpdated == 1u);
+  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3) == img3_before);
+  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 4) == img4_before);
+
+  sg_root.reset();
+  QFile::remove(tmp_png);
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -1287,6 +1443,7 @@ int main(int argc, char* argv[]) {
   test_z_index_hit_test_and_paint_order();
   test_live_counter_and_studio_dylibs();
   test_accessibility_and_ime_input_method();
+  test_quick_image_rendering_and_retained_sg_survival();
 
   std::cout << "nve_qt_quick_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6Quick" : "Standalone+Qt6Quick")

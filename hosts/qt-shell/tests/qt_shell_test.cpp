@@ -4,11 +4,13 @@
 
 #include <QAccessible>
 #include <QApplication>
+#include <QBuffer>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFont>
+#include <QImage>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QLabel>
@@ -17,6 +19,8 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QUrl>
 
 #include <atomic>
 #include <cmath>
@@ -92,7 +96,8 @@ class BinaryCmdHelper {
       float h,
       float grow,
       float pad,
-      float gap) {
+      float gap,
+      float shrink = 1.0f) {
     push<uint8_t>(NVE_OP_SET_LAYOUT);
     push<uint32_t>(id);
     push_dim(wtag, w);
@@ -105,7 +110,7 @@ class BinaryCmdHelper {
     push<uint8_t>(0); // FlexStart
     push<uint8_t>(1); // Align FlexStart so auto-sized children invoke text measurement
     push<float>(grow);
-    push<float>(1.0f);
+    push<float>(shrink);
     push<float>(gap);
     push_insets(pad, pad, pad, pad);
     push_insets(0.0f, 0.0f, 0.0f, 0.0f);
@@ -976,6 +981,219 @@ void test_accessibility_and_ime_text_input() {
   NVE_CHECK(mock->press_calls == 0);
 }
 
+std::string make_png_data_uri(int width, int height, const QColor& color) {
+  QImage img(width, height, QImage::Format_RGBA8888);
+  img.fill(color);
+  QByteArray png_bytes;
+  QBuffer buffer(&png_bytes);
+  buffer.open(QIODevice::WriteOnly);
+  NVE_CHECK(img.save(&buffer, "PNG"));
+  const QByteArray b64 = png_bytes.toBase64();
+  return "data:image/png;base64," + std::string(b64.constData(), static_cast<size_t>(b64.size()));
+}
+
+struct MockQtImageScrollApp {
+  static inline MockQtImageScrollApp* last_instance = nullptr;
+  uint32_t surface_id{1};
+  std::string data_uri;
+  std::string file_uri;
+  std::string resize_mode{"cover"};
+  int counter{0};
+  int scroll_events{0};
+  uint32_t last_scroll_node{0};
+  float last_scroll_y{0.0f};
+  float last_scroll_content_h{0.0f};
+  BinaryCmdHelper cmd;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockQtImageScrollApp();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockQtImageScrollApp*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockQtImageScrollApp*>(h);
+    self->cmd.begin(self->surface_id, frame_id);
+
+    self->cmd.create_node(2, NVE_COMP_VIEW);
+    self->cmd.create_node(3, NVE_COMP_IMAGE);
+    self->cmd.create_node(4, NVE_COMP_IMAGE);
+    self->cmd.create_node(5, NVE_COMP_SCROLL_VIEW);
+    self->cmd.create_node(6, NVE_COMP_VIEW);
+    self->cmd.create_node(7, NVE_COMP_TEXT);
+    self->cmd.create_node(8, NVE_COMP_TEXT);
+
+    self->cmd.set_children(NVE_ROOT_NODE_ID, {2});
+    self->cmd.set_children(2, {3, 4, 5, 7, 8});
+    self->cmd.set_children(5, {6});
+
+    self->cmd.set_layout(2, 0, 1, 320.0f, 1, 260.0f, 0.0f, 8.0f, 6.0f);
+    self->cmd.set_style(2, 0xFF101010u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    self->cmd.set_layout(3, 0, 1, 48.0f, 1, 48.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_style(3, 0x00000000u, 0xFFFFFFFFu, 0xFFFFFFFFu, 1.0f, 8.0f, 1.0f, 14.0f);
+    self->cmd.set_raw_prop_string(3, "src", self->data_uri);
+    self->cmd.set_raw_prop_string(3, "resizeMode", self->resize_mode);
+
+    self->cmd.set_layout(4, 0, 1, 32.0f, 1, 32.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_style(4, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 4.0f, 1.0f, 14.0f);
+    self->cmd.set_raw_prop_string(4, "src", self->file_uri);
+    self->cmd.set_raw_prop_string(4, "resizeMode", "contain");
+
+    self->cmd.set_layout(5, 0, 1, 140.0f, 1, 60.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_style(5, 0xFF1E293Bu, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+    self->cmd.set_layout(6, 0, 1, 140.0f, 1, 240.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_style(6, 0xFF334155u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    self->cmd.set_layout(7, 0, 1, 120.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(7, "Counter:" + std::to_string(self->counter));
+    self->cmd.set_style(7, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    self->cmd.set_layout(8, 0, 1, 120.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(8, "StaticSibling");
+    self->cmd.set_style(8, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
+
+    return self->cmd.finish();
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<MockQtImageScrollApp*>(h);
+    if (batch.ptr == nullptr) return 0;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
+        ++self->scroll_events;
+        self->last_scroll_node = ev.node_id;
+        self->last_scroll_y = ev.y;
+        self->last_scroll_content_h = ev.height;
+      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 7) {
+        ++self->counter;
+        return 1;
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto* self = static_cast<MockQtImageScrollApp*>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0;
+    for (const auto& ev : decoded) {
+      if (ev.kind == nve::EventKind::Press && ev.node_id == 7) {
+        ++self->counter;
+        return 1;
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
+    auto* self = static_cast<MockQtImageScrollApp*>(h);
+    const std::string json(reinterpret_cast<const char*>(props.ptr), props.len);
+    if (json.find("\"contain\"") != std::string::npos) self->resize_mode = "contain";
+    if (json.find("\"stretch\"") != std::string::npos) self->resize_mode = "stretch";
+    if (json.find("\"center\"") != std::string::npos) self->resize_mode = "center";
+    if (json.find("\"bump\":true") != std::string::npos) ++self->counter;
+    return 1;
+  }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
+    static const NveComponentApi kComp{&set_props, nullptr, nullptr};
+    if (iface == NVE_IFACE_SURFACE) return &kSurface;
+    if (iface == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
+void test_image_scroll_and_incremental_reconciliation() {
+  const std::string red_uri = make_png_data_uri(8, 8, QColor(235, 30, 45, 255));
+  const QString tmp_png = QDir::temp().filePath(
+      QStringLiteral("nve_qt_img_test_%1.png").arg(QCoreApplication::applicationPid()));
+  {
+    QImage blue(8, 8, QImage::Format_RGBA8888);
+    blue.fill(QColor(25, 110, 240, 255));
+    NVE_CHECK(blue.save(tmp_png, "PNG"));
+  }
+  const QByteArray file_url_utf8 = QUrl::fromLocalFile(tmp_png).toString().toUtf8();
+  const std::string file_uri(file_url_utf8.constData(), static_cast<size_t>(file_url_utf8.size()));
+
+  // Verify bounded LRU NveQtImageCache decoding & hit tracking directly.
+  nve::qt::NveQtImageCache cache(2u);
+  const QImage img1 = cache.getImage(red_uri);
+  NVE_CHECK(!img1.isNull() && img1.width() == 8 && img1.height() == 8);
+  NVE_CHECK(cache.misses() == 1u && cache.hits() == 0u);
+  const QImage img1_hit = cache.getImage(red_uri);
+  NVE_CHECK(!img1_hit.isNull() && cache.hits() == 1u);
+  const QImage img2 = cache.getImage(file_uri);
+  NVE_CHECK(!img2.isNull() && img2.width() == 8 && img2.height() == 8);
+  NVE_CHECK(cache.size() == 2u);
+
+  nve::qt::NveQtWidget widget;
+  widget.resize(320, 260);
+  NVE_CHECK(widget.attachInterface(&MockQtImageScrollApp::get_interface, 31));
+  NVE_CHECK(MockQtImageScrollApp::last_instance != nullptr);
+  auto* mock = MockQtImageScrollApp::last_instance;
+  mock->data_uri = red_uri;
+  mock->file_uri = file_uri;
+  NVE_CHECK(widget.renderFrame() == 0);
+
+  QWidget* img3 = widget.nativeWidgetForNodeId(3);
+  QWidget* img4 = widget.nativeWidgetForNodeId(4);
+  auto* scroll5 = qobject_cast<QScrollArea*>(widget.nativeWidgetForNodeId(5));
+  auto* counter7 = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(7));
+  auto* static8 = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(8));
+  NVE_CHECK(img3 != nullptr && img4 != nullptr && scroll5 != nullptr);
+  NVE_CHECK(counter7 != nullptr && static8 != nullptr);
+  NVE_CHECK(img3->property("nveImageDecoded").toBool());
+  NVE_CHECK(img3->property("nveImageSize").toSize() == QSize(8, 8));
+  NVE_CHECK(img4->property("nveImageDecoded").toBool());
+  NVE_CHECK(img4->property("nveImageSize").toSize() == QSize(8, 8));
+  NVE_CHECK(img3->property("nveImageResizeMode").toInt() == static_cast<int>(nve::qt::ImageResizeMode::Cover));
+
+  // Grab rendered image widget and confirm red pixels actually painted!
+  widget.show();
+  QCoreApplication::processEvents();
+  const QImage rendered = img3->grab().toImage();
+  NVE_CHECK(!rendered.isNull() && rendered.width() == 48 && rendered.height() == 48);
+  const QColor center_px = rendered.pixelColor(24, 24);
+  NVE_CHECK(center_px.red() > 200 && center_px.green() < 60 && center_px.blue() < 70);
+
+  // Switch through contain, stretch, center resize modes via raw_props!
+  NVE_CHECK(widget.applyPropsJson(R"({"resizeMode":"contain"})"));
+  NVE_CHECK(img3->property("nveImageResizeMode").toInt() == static_cast<int>(nve::qt::ImageResizeMode::Contain));
+  NVE_CHECK(widget.applyPropsJson(R"({"resizeMode":"stretch"})"));
+  NVE_CHECK(img3->property("nveImageResizeMode").toInt() == static_cast<int>(nve::qt::ImageResizeMode::Stretch));
+  NVE_CHECK(widget.applyPropsJson(R"({"resizeMode":"center"})"));
+  NVE_CHECK(img3->property("nveImageResizeMode").toInt() == static_cast<int>(nve::qt::ImageResizeMode::Center));
+
+  // Verify QScrollArea vertical QScrollBar::valueChanged dispatches zero-copy EventKind::Scroll!
+  NVE_CHECK(scroll5->widget() != nullptr && scroll5->widget()->height() >= 200);
+  NVE_CHECK(scroll5->verticalScrollBar() != nullptr);
+  scroll5->verticalScrollBar()->setValue(45);
+  QCoreApplication::processEvents();
+  NVE_CHECK(mock->scroll_events >= 1);
+  NVE_CHECK(mock->last_scroll_node == 5u);
+  NVE_CHECK(approx_eq(mock->last_scroll_y, 45.0, 2.0));
+  NVE_CHECK(mock->last_scroll_content_h >= 200.0f);
+
+  // Verify O(changed) IncrementalSceneReconciler updates ONLY node 7 (not all 7 nodes)!
+  const uint64_t updates_before = widget.reconcileUpdateCount();
+  widget.simulatePressOnNodeId(7, 4.0f, 4.0f);
+  NVE_CHECK(counter7->text() == QStringLiteral("Counter:1"));
+  const uint64_t updates_delta = widget.reconcileUpdateCount() - updates_before;
+  NVE_CHECK(updates_delta == 1u);
+
+  QFile::remove(tmp_png);
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -986,6 +1204,7 @@ int main(int argc, char* argv[]) {
   test_real_counter_dylib();
   test_frame0_mmap_snapshot_roundtrip();
   test_accessibility_and_ime_text_input();
+  test_image_scroll_and_incremental_reconciliation();
 
   std::cout << "nve_qt_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6" : "Standalone+Qt6") << ")\n";

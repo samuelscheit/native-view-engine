@@ -44,6 +44,8 @@ if(WIN32)
     PUBLIC
       d2d1
       dwrite
+      windowscodecs
+      ole32
       user32
       gdi32
   )

@@ -100,6 +100,7 @@ class NveWinHostWindow {
   void on_paint();
   void on_resize(UINT width_px, UINT height_px);
   void on_left_button_up(int x_px, int y_px);
+  void on_mouse_wheel(int screen_x, int screen_y, short wheel_delta, bool horizontal);
 
   WinHostWindowOptions options_{};
   HWND hwnd_{nullptr};

@@ -16,14 +16,17 @@
 #include <QPainterPath>
 #include <QPalette>
 #include <QPen>
+#include <QPixmap>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <functional>
 #include <mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -36,6 +39,10 @@ namespace {
 constexpr const char* kNodeIdProperty = "nveNodeId";
 constexpr const char* kA11yRoleProperty = "nveAccessibleRole";
 constexpr const char* kA11yValueProperty = "nveAccessibleValue";
+constexpr const char* kImageSrcProperty = "nveImageSrc";
+constexpr const char* kImageDecodedProperty = "nveImageDecoded";
+constexpr const char* kImageSizeProperty = "nveImageSize";
+constexpr const char* kImageResizeModeProperty = "nveImageResizeMode";
 
 class NveQtAccessibleWidget final : public QAccessibleWidget {
  public:
@@ -168,9 +175,6 @@ class NveQtLineEdit final : public QLineEdit {
     });
   }
 
-  bool isComposingIme() const noexcept { return composing_ime_; }
-  const QString& preeditText() const noexcept { return preedit_text_; }
-
   void applySemantics(const NodeSemantics& sem) {
     if (placeholderText() != sem.placeholder) {
       setPlaceholderText(sem.placeholder);
@@ -181,19 +185,19 @@ class NveQtLineEdit final : public QLineEdit {
     }
   }
 
-  void applySnapshotText(const QString& next_text) {
+  void applySceneText(const QString& next_text) {
     // Never clobber live IME composition mid-preedit.
     if (composing_ime_) {
       return;
     }
-    if (!has_synced_snapshot_ || (next_text != last_snapshot_text_ && next_text != text())) {
+    if (!has_synced_scene_ || (next_text != last_scene_text_ && next_text != text())) {
       updating_programmatically_ = true;
       setText(next_text);
       last_dispatched_text_ = next_text;
       updating_programmatically_ = false;
     }
-    last_snapshot_text_ = next_text;
-    has_synced_snapshot_ = true;
+    last_scene_text_ = next_text;
+    has_synced_scene_ = true;
   }
 
  protected:
@@ -205,7 +209,6 @@ class NveQtLineEdit final : public QLineEdit {
     const QString preedit = event->preeditString();
     const QString commit = event->commitString();
     const bool has_commit = !commit.isEmpty() || event->replacementLength() > 0;
-    preedit_text_ = preedit;
     composing_ime_ = !preedit.isEmpty();
 
     QLineEdit::inputMethodEvent(event);
@@ -252,20 +255,15 @@ class NveQtLineEdit final : public QLineEdit {
   TextChangeHandler on_text_change_;
   SubmitHandler on_submit_;
   FocusHandler on_focus_;
-  QString preedit_text_;
   QString last_dispatched_text_;
-  QString last_snapshot_text_;
-  bool has_synced_snapshot_{false};
+  QString last_scene_text_;
+  bool has_synced_scene_{false};
   bool composing_ime_{false};
   bool updating_programmatically_{false};
 };
 
-inline QColor qcolor_from_rgba(uint32_t rgba) noexcept {
-  return qcolorFromRgba(rgba);
-}
-
-inline QFont make_nve_font(float font_size) {
-  return makeNveFont(font_size);
+inline float opacityFromU8(uint8_t opacity_u8) noexcept {
+  return static_cast<float>(opacity_u8) / 255.0f;
 }
 
 void apply_widget_opacity(QWidget* widget, float opacity) {
@@ -284,9 +282,8 @@ void apply_widget_opacity(QWidget* widget, float opacity) {
   existing->setOpacity(static_cast<qreal>(clamped));
 }
 
-/// Lightweight custom-painted container widget for `NVE_COMP_VIEW`, `NVE_COMP_PRESSABLE`, and
-/// wrapper `NVE_COMP_TEXT` nodes. Avoids QSS cascade issues and renders antialiased rounded rects
-/// and crisp borders via `QPainter`.
+/// Lightweight custom-painted container widget for `NVE_NODE_KIND_VIEW`,
+/// `NVE_NODE_KIND_PRESSABLE`, and wrapper `NVE_NODE_KIND_TEXT` nodes.
 class NveQtBoxWidget final : public QWidget {
  public:
   using PressHandler = std::function<void(uint32_t, float, float)>;
@@ -298,12 +295,12 @@ class NveQtBoxWidget final : public QWidget {
     setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(node_id));
   }
 
-  void applyStyle(const nve::RenderedNodeSnapshot& snap, bool interactive) {
-    const QColor next_bg = qcolor_from_rgba(snap.background_rgba);
-    const QColor next_border = qcolor_from_rgba(snap.border_color_rgba);
-    const float next_bw = std::max(0.0f, snap.border_width);
-    const float next_br = std::max(0.0f, snap.border_radius);
-    const float next_opacity = std::clamp(snap.opacity, 0.0f, 1.0f);
+  void applyStyle(const NveRenderNode& node, bool interactive) {
+    const QColor next_bg = qcolorFromRgba(node.bg_rgba);
+    const QColor next_border = qcolorFromRgba(node.border_rgba);
+    const float next_bw = std::max(0.0f, node.border_width);
+    const float next_br = std::max(0.0f, node.border_radius);
+    const float next_opacity = opacityFromU8(node.opacity_u8);
 
     const bool visual_changed = (bg_color_ != next_bg) || (border_color_ != next_border) ||
                                 (border_width_ != next_bw) || (border_radius_ != next_br) ||
@@ -315,6 +312,14 @@ class NveQtBoxWidget final : public QWidget {
     border_radius_ = next_br;
     opacity_ = next_opacity;
 
+    setInteractive(interactive);
+
+    if (visual_changed) {
+      update();
+    }
+  }
+
+  void setInteractive(bool interactive) {
     if (interactive_ != interactive) {
       interactive_ = interactive;
       if (interactive_) {
@@ -323,14 +328,7 @@ class NveQtBoxWidget final : public QWidget {
         unsetCursor();
       }
     }
-
-    if (visual_changed) {
-      update();
-    }
   }
-
-  uint32_t nodeId() const noexcept { return node_id_; }
-  bool isInteractive() const noexcept { return interactive_; }
 
  protected:
   void paintEvent(QPaintEvent* /*event*/) override {
@@ -390,7 +388,6 @@ class NveQtBoxWidget final : public QWidget {
       const QPointF pos = event->position();
       event->accept();
       if (was_pressed && rect().contains(pos.toPoint()) && on_press_) {
-        // Copy callback and ID before invoking because the press may trigger view teardown.
         auto cb = on_press_;
         const uint32_t id = node_id_;
         cb(id, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
@@ -412,6 +409,183 @@ class NveQtBoxWidget final : public QWidget {
   bool pressed_{false};
 };
 
+/// Native `QWidget` for `NVE_NODE_KIND_IMAGE` rendering cached `QPixmap`s from `NveQtImageCache`
+/// with all 4 React Native `resizeMode`s (`cover`, `contain`, `stretch`, `center`) and rounded clip.
+class NveQtImageWidget final : public QWidget {
+ public:
+  using PressHandler = std::function<void(uint32_t, float, float)>;
+
+  explicit NveQtImageWidget(uint32_t node_id, PressHandler on_press, QWidget* parent = nullptr)
+      : QWidget(parent), node_id_(node_id), on_press_(std::move(on_press)) {
+    setAutoFillBackground(false);
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(node_id));
+    setProperty(kImageDecodedProperty, false);
+    setProperty(kImageResizeModeProperty, static_cast<int>(ImageResizeMode::Cover));
+  }
+
+  void applyNode(
+      const NveRenderNode& node,
+      std::string_view src,
+      ImageResizeMode resize_mode,
+      bool interactive) {
+    const QColor next_bg = qcolorFromRgba(node.bg_rgba);
+    const QColor next_border = qcolorFromRgba(node.border_rgba);
+    const float next_bw = std::max(0.0f, node.border_width);
+    const float next_br = std::max(0.0f, node.border_radius);
+    const float next_opacity = opacityFromU8(node.opacity_u8);
+
+    bool changed = (bg_color_ != next_bg) || (border_color_ != next_border) ||
+                   (border_width_ != next_bw) || (border_radius_ != next_br) ||
+                   (opacity_ != next_opacity) || (resize_mode_ != resize_mode);
+
+    bg_color_ = next_bg;
+    border_color_ = next_border;
+    border_width_ = next_bw;
+    border_radius_ = next_br;
+    opacity_ = next_opacity;
+    resize_mode_ = resize_mode;
+    setProperty(kImageResizeModeProperty, static_cast<int>(resize_mode_));
+
+    if (image_src_ != src) {
+      image_src_.assign(src.data(), src.size());
+      pixmap_ = NveQtImageCache::shared().getPixmap(image_src_);
+      setProperty(kImageSrcProperty, detail::qstringFromUtf8(image_src_));
+      setProperty(kImageDecodedProperty, !pixmap_.isNull());
+      setProperty(kImageSizeProperty, pixmap_.size());
+      changed = true;
+    }
+
+    setInteractive(interactive);
+    if (changed) {
+      update();
+    }
+  }
+
+  void setResizeMode(ImageResizeMode resize_mode) {
+    if (resize_mode_ != resize_mode) {
+      resize_mode_ = resize_mode;
+      setProperty(kImageResizeModeProperty, static_cast<int>(resize_mode_));
+      update();
+    }
+  }
+
+  void setInteractive(bool interactive) {
+    if (interactive_ != interactive) {
+      interactive_ = interactive;
+      if (interactive_) {
+        setCursor(Qt::PointingHandCursor);
+      } else {
+        unsetCursor();
+      }
+    }
+  }
+
+ protected:
+  void paintEvent(QPaintEvent* /*event*/) override {
+    const QRectF bounds(rect());
+    if (bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+      return;
+    }
+
+    const bool has_bg = bg_color_.alpha() > 0;
+    const bool has_img = !pixmap_.isNull();
+    const bool has_border = (border_width_ > 0.0f) && (border_color_.alpha() > 0);
+    if (!has_bg && !has_img && !has_border) {
+      return;
+    }
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    if (opacity_ < 0.999f) {
+      painter.setOpacity(static_cast<qreal>(opacity_));
+    }
+
+    const qreal max_r = std::min(bounds.width(), bounds.height()) * 0.5;
+    const qreal radius = std::clamp(static_cast<qreal>(border_radius_), 0.0, max_r);
+
+    painter.save();
+    if (radius > 0.0) {
+      QPainterPath clip_path;
+      clip_path.addRoundedRect(bounds, radius, radius);
+      painter.setClipPath(clip_path);
+    } else {
+      painter.setClipRect(bounds);
+    }
+
+    if (has_bg) {
+      painter.fillRect(bounds, bg_color_);
+    }
+
+    if (has_img) {
+      QRectF dst_rect;
+      QRectF src_rect;
+      if (computeImageDrawRects(
+              resize_mode_,
+              bounds,
+              QSizeF(pixmap_.width(), pixmap_.height()),
+              dst_rect,
+              src_rect)) {
+        painter.drawPixmap(dst_rect, pixmap_, src_rect);
+      }
+    }
+    painter.restore();
+
+    if (has_border) {
+      const qreal half_pen = static_cast<qreal>(border_width_) * 0.5;
+      const QRectF stroke_rect = bounds.adjusted(half_pen, half_pen, -half_pen, -half_pen);
+      if (stroke_rect.width() > 0.0 && stroke_rect.height() > 0.0) {
+        const qreal stroke_r = std::max<qreal>(0.0, radius - half_pen);
+        QPen pen(border_color_, static_cast<qreal>(border_width_));
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(stroke_rect, stroke_r, stroke_r);
+      }
+    }
+  }
+
+  void mousePressEvent(QMouseEvent* event) override {
+    if (interactive_ && event->button() == Qt::LeftButton) {
+      pressed_ = true;
+      event->accept();
+      return;
+    }
+    event->ignore();
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (interactive_ && event->button() == Qt::LeftButton) {
+      const bool was_pressed = pressed_;
+      pressed_ = false;
+      const QPointF pos = event->position();
+      event->accept();
+      if (was_pressed && rect().contains(pos.toPoint()) && on_press_) {
+        auto cb = on_press_;
+        const uint32_t id = node_id_;
+        cb(id, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
+      }
+      return;
+    }
+    event->ignore();
+  }
+
+ private:
+  uint32_t node_id_{0};
+  PressHandler on_press_;
+  QColor bg_color_{0, 0, 0, 0};
+  QColor border_color_{0, 0, 0, 0};
+  float border_width_{0.0f};
+  float border_radius_{0.0f};
+  float opacity_{1.0f};
+  bool interactive_{false};
+  bool pressed_{false};
+  std::string image_src_;
+  ImageResizeMode resize_mode_{ImageResizeMode::Cover};
+  QPixmap pixmap_;
+};
+
 } // namespace
 
 class NveQtWidget::Impl {
@@ -425,6 +599,8 @@ class NveQtWidget::Impl {
     destroying_ = true;
     reconciler_.clear(adapter_);
     node_semantics_.clear();
+    node_resize_modes_.clear();
+    node_interactive_.clear();
     session_.reset();
   }
 
@@ -438,28 +614,123 @@ class NveQtWidget::Impl {
     return cfg;
   }
 
-  void syncViews() {
+  void refreshRawPropsFromView(const NveSceneView& view) {
+    const auto snapshots = session_.snapshot_nodes();
+    const auto raw_props = extractRawPropsByNode(snapshots);
+
+    std::unordered_map<uint32_t, NodeSemantics> next_semantics;
+    next_semantics.reserve(view.node_count);
+    std::unordered_map<uint32_t, ImageResizeMode> next_resize_modes;
+
+    for (uint32_t i = 0u; i < view.node_count; ++i) {
+      const NveRenderNode& node = view.nodes[i];
+      const auto rp_it = raw_props.find(node.node_id);
+      const nve::RawPropMap* rp = (rp_it != raw_props.end()) ? &rp_it->second : nullptr;
+      const std::string_view text = nve::scene_node_text(view, node);
+      NodeSemantics sem = extractNodeSemantics(node, text, rp);
+
+      const auto prev_sem_it = node_semantics_.find(node.node_id);
+      const bool sem_changed = (prev_sem_it == node_semantics_.end() || prev_sem_it->second != sem);
+      next_semantics.emplace(node.node_id, sem);
+
+      ImageResizeMode mode = ImageResizeMode::Cover;
+      bool mode_changed = false;
+      if (node.kind == NVE_NODE_KIND_IMAGE) {
+        mode = extractImageResizeMode(rp);
+        const auto prev_mode_it = node_resize_modes_.find(node.node_id);
+        mode_changed = (prev_mode_it == node_resize_modes_.end() || prev_mode_it->second != mode);
+        next_resize_modes.emplace(node.node_id, mode);
+      }
+
+      // Apply raw-prop-only deltas directly to already-mounted widgets (e.g., disabled,
+      // secureTextEntry, placeholder, resizeMode) even if NveSceneView did not mark layout/style dirty.
+      if (sem_changed || mode_changed) {
+        if (node.node_id == NVE_ROOT_NODE_ID) {
+          applyWidgetAccessibility(owner_, sem);
+        } else if (QWidget** slot = reconciler_.find(node.node_id); slot != nullptr && *slot != nullptr) {
+          QWidget* w = *slot;
+          if (sem_changed) {
+            applyWidgetAccessibility(w, sem);
+            const bool base_interactive =
+                (node.kind == NVE_NODE_KIND_PRESSABLE) || ((node.flags & NVE_NODE_INTERACTIVE) != 0u);
+            const bool eff_interactive = !sem.disabled && base_interactive;
+            if (auto* box = dynamic_cast<NveQtBoxWidget*>(w)) {
+              box->setInteractive(eff_interactive);
+            } else if (auto* img = dynamic_cast<NveQtImageWidget*>(w)) {
+              img->setInteractive(eff_interactive);
+            } else if (auto* edit = dynamic_cast<NveQtLineEdit*>(w)) {
+              edit->applySemantics(sem);
+            } else if (auto* scroll = qobject_cast<QScrollArea*>(w)) {
+              if (auto* inner = dynamic_cast<NveQtBoxWidget*>(scroll->widget())) {
+                inner->setInteractive(eff_interactive);
+              }
+            }
+          }
+          if (mode_changed) {
+            if (auto* img = dynamic_cast<NveQtImageWidget*>(w)) {
+              img->setResizeMode(mode);
+            }
+          }
+        }
+      }
+    }
+
+    node_semantics_ = std::move(next_semantics);
+    node_resize_modes_ = std::move(next_resize_modes);
+  }
+
+  void syncViews(bool check_raw_props = false) {
     NveFabricHostHandle host = session_.active_fabric_host();
     if (host == nullptr) {
       return;
     }
-    const auto snapshots = session_.snapshot_nodes();
-    const auto raw_props = extractRawPropsByNode(host, snapshots);
-    node_semantics_.clear();
-    node_semantics_.reserve(snapshots.size());
-    for (const auto& snap : snapshots) {
-      const auto it = raw_props.find(snap.node_id);
-      const nve::RawPropMap* rp = (it != raw_props.end()) ? &it->second : nullptr;
-      node_semantics_.emplace(snap.node_id, extractNodeSemantics(snap, rp));
+
+    const NveSceneView view = session_.scene_view();
+    if (view.schema_hash != NVE_SCENE_SCHEMA_HASH) {
+      return;
     }
-    reconciler_.sync(snapshots, adapter_);
+
+    // Prune removed metadata first.
+    for (uint32_t i = 0u; i < view.removed_count; ++i) {
+      const uint32_t rid = view.removed_ids[i];
+      node_semantics_.erase(rid);
+      node_resize_modes_.erase(rid);
+      node_interactive_.erase(rid);
+    }
+
+    bool need_raw_props = check_raw_props || !raw_props_initialized_;
+    if (!need_raw_props && view.nodes != nullptr) {
+      for (uint32_t i = 0u; i < view.dirty_count; ++i) {
+        const uint32_t idx = view.dirty_indices[i];
+        if (idx < view.node_count) {
+          const uint8_t k = view.nodes[idx].kind;
+          if (k == NVE_NODE_KIND_IMAGE || k == NVE_NODE_KIND_TEXT_INPUT) {
+            need_raw_props = true;
+            break;
+          }
+        }
+      }
+    }
+
+    in_sync_views_ = true;
+    if (need_raw_props) {
+      refreshRawPropsFromView(view);
+      raw_props_initialized_ = true;
+    }
+    (void)reconciler_.sync(view, adapter_);
+    in_sync_views_ = false;
     owner_->update();
   }
 
   void clearViews() {
+    in_sync_views_ = true;
     reconciler_.clear(adapter_);
     node_semantics_.clear();
+    node_resize_modes_.clear();
+    node_interactive_.clear();
+    raw_props_initialized_ = false;
     root_bg_color_ = QColor(0, 0, 0, 0);
+    in_sync_views_ = false;
     owner_->update();
   }
 
@@ -468,8 +739,29 @@ class NveQtWidget::Impl {
     return (it != node_semantics_.end()) ? &it->second : nullptr;
   }
 
+  ImageResizeMode findResizeMode(uint32_t node_id) const noexcept {
+    const auto it = node_resize_modes_.find(node_id);
+    return (it != node_resize_modes_.end()) ? it->second : ImageResizeMode::Cover;
+  }
+
   void handlePressFromWidget(uint32_t node_id, float x, float y) {
     (void)dispatchPress(node_id, x, y);
+  }
+
+  void handleScrollFromWidget(uint32_t node_id, QScrollArea* scroll) {
+    if (in_sync_views_ || destroying_ || scroll == nullptr) {
+      return;
+    }
+    const QScrollBar* hbar = scroll->horizontalScrollBar();
+    const QScrollBar* vbar = scroll->verticalScrollBar();
+    const float ox = (hbar != nullptr) ? static_cast<float>(hbar->value()) : 0.0f;
+    const float oy = (vbar != nullptr) ? static_cast<float>(vbar->value()) : 0.0f;
+    const QWidget* inner = scroll->widget();
+    const float cw = static_cast<float>(
+        (inner != nullptr) ? std::max(inner->width(), scroll->width()) : scroll->width());
+    const float ch = static_cast<float>(
+        (inner != nullptr) ? std::max(inner->height(), scroll->height()) : scroll->height());
+    (void)dispatchScroll(node_id, ox, oy, cw, ch);
   }
 
   NveDirectEvent makeBaseEvent(uint32_t node_id, nve::EventKind kind, uint8_t payload_tag) const {
@@ -490,7 +782,7 @@ class NveQtWidget::Impl {
     const uint32_t dirty =
         session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
     if (dirty != 0) {
-      syncViews();
+      syncViews(/*check_raw_props=*/false);
     }
     (void)session_.drain_events();
     return dirty;
@@ -502,10 +794,24 @@ class NveQtWidget::Impl {
     }
     const uint32_t dirty = session_.dispatch_press(node_id, x, y, /*auto_render=*/true);
     if (dirty != 0) {
-      syncViews();
+      syncViews(/*check_raw_props=*/false);
     }
     (void)session_.drain_events();
     return dirty;
+  }
+
+  uint32_t dispatchScroll(
+      uint32_t node_id,
+      float offset_x,
+      float offset_y,
+      float content_width,
+      float content_height) {
+    NveDirectEvent ev = makeBaseEvent(node_id, nve::EventKind::Scroll, 2u);
+    ev.x = offset_x;
+    ev.y = offset_y;
+    ev.width = content_width;
+    ev.height = content_height;
+    return dispatchSingleDirectEvent(ev);
   }
 
   uint32_t dispatchTextChange(uint32_t node_id, std::string_view text) {
@@ -531,31 +837,32 @@ class NveQtWidget::Impl {
   struct QtViewAdapter {
     Impl* self{nullptr};
 
-    void update_root(const nve::RenderedNodeSnapshot& snap) {
-      const QColor next_bg = qcolor_from_rgba(snap.background_rgba);
+    void update_root(const NveSceneView& /*view*/, const NveRenderNode& node) {
+      const QColor next_bg = qcolorFromRgba(node.bg_rgba);
       if (self->root_bg_color_ != next_bg) {
         self->root_bg_color_ = next_bg;
         self->owner_->update();
       }
-      if (const NodeSemantics* sem = self->findSemantics(snap.node_id)) {
+      if (const NodeSemantics* sem = self->findSemantics(node.node_id)) {
         applyWidgetAccessibility(self->owner_, *sem);
       }
     }
 
-    QWidget* create_view(const nve::RenderedNodeSnapshot& snap) {
-      const bool is_wrapper_text = (snap.kind == NVE_COMP_TEXT && !snap.children.empty());
+    QWidget* create_view(const NveSceneView& /*view*/, const NveRenderNode& node) {
+      const bool is_leaf_text = (node.flags & NVE_NODE_LEAF_TEXT) != 0u;
+      const bool is_wrapper_text = (node.kind == NVE_NODE_KIND_TEXT && !is_leaf_text);
       QWidget* widget = nullptr;
 
       if (is_wrapper_text) {
         widget = new NveQtBoxWidget(
-            snap.node_id,
+            node.node_id,
             [owner_impl = self](uint32_t nid, float x, float y) {
               owner_impl->handlePressFromWidget(nid, x, y);
             },
             self->owner_);
       } else {
-        switch (snap.kind) {
-          case NVE_COMP_TEXT: {
+        switch (node.kind) {
+          case NVE_NODE_KIND_TEXT: {
             auto* label = new QLabel(self->owner_);
             label->setWordWrap(true);
             label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -565,11 +872,20 @@ class NveQtWidget::Impl {
             label->setTextFormat(Qt::PlainText);
             label->setAutoFillBackground(false);
             label->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-            label->setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(snap.node_id));
+            label->setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(node.node_id));
             widget = label;
             break;
           }
-          case NVE_COMP_SCROLL_VIEW: {
+          case NVE_NODE_KIND_IMAGE: {
+            widget = new NveQtImageWidget(
+                node.node_id,
+                [owner_impl = self](uint32_t nid, float x, float y) {
+                  owner_impl->handlePressFromWidget(nid, x, y);
+                },
+                self->owner_);
+            break;
+          }
+          case NVE_NODE_KIND_SCROLL_VIEW: {
             auto* scroll = new QScrollArea(self->owner_);
             scroll->setFrameShape(QFrame::NoFrame);
             scroll->setWidgetResizable(false);
@@ -578,19 +894,31 @@ class NveQtWidget::Impl {
               scroll->viewport()->setAutoFillBackground(false);
             }
             auto* inner = new NveQtBoxWidget(
-                snap.node_id,
+                node.node_id,
                 [owner_impl = self](uint32_t nid, float x, float y) {
                   owner_impl->handlePressFromWidget(nid, x, y);
                 },
                 scroll);
             scroll->setWidget(inner);
-            scroll->setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(snap.node_id));
+            scroll->setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(node.node_id));
+
+            const uint32_t scroll_node_id = node.node_id;
+            if (QScrollBar* vbar = scroll->verticalScrollBar()) {
+              QObject::connect(vbar, &QScrollBar::valueChanged, scroll, [owner_impl = self, scroll_node_id, scroll](int) {
+                owner_impl->handleScrollFromWidget(scroll_node_id, scroll);
+              });
+            }
+            if (QScrollBar* hbar = scroll->horizontalScrollBar()) {
+              QObject::connect(hbar, &QScrollBar::valueChanged, scroll, [owner_impl = self, scroll_node_id, scroll](int) {
+                owner_impl->handleScrollFromWidget(scroll_node_id, scroll);
+              });
+            }
             widget = scroll;
             break;
           }
-          case NVE_COMP_TEXT_INPUT: {
+          case NVE_NODE_KIND_TEXT_INPUT: {
             auto* edit = new NveQtLineEdit(
-                snap.node_id,
+                node.node_id,
                 [owner_impl = self](uint32_t nid, std::string_view text) {
                   (void)owner_impl->dispatchTextChange(nid, text);
                 },
@@ -606,7 +934,7 @@ class NveQtWidget::Impl {
           }
           default: {
             widget = new NveQtBoxWidget(
-                snap.node_id,
+                node.node_id,
                 [owner_impl = self](uint32_t nid, float x, float y) {
                   owner_impl->handlePressFromWidget(nid, x, y);
                 },
@@ -619,88 +947,95 @@ class NveQtWidget::Impl {
       return widget;
     }
 
-    void update_view(QWidget*& view, const nve::RenderedNodeSnapshot& snap) {
-      if (view == nullptr) {
+    void update_view(const NveSceneView& view, QWidget*& widget, const NveRenderNode& node) {
+      if (widget == nullptr) {
         return;
       }
+      ++self->reconcile_update_count_;
 
-      const NodeSemantics default_sem = extractNodeSemantics(snap, nullptr);
+      const std::string_view text = nve::scene_node_text(view, node);
+      const NodeSemantics default_sem = extractNodeSemantics(node, text, nullptr);
       const NodeSemantics& sem =
-          self->findSemantics(snap.node_id) ? *self->findSemantics(snap.node_id) : default_sem;
+          self->findSemantics(node.node_id) ? *self->findSemantics(node.node_id) : default_sem;
 
-      const int x = static_cast<int>(std::lround(snap.layout.x));
-      const int y = static_cast<int>(std::lround(snap.layout.y));
-      const int w = std::max(0, static_cast<int>(std::lround(snap.layout.width)));
-      const int h = std::max(0, static_cast<int>(std::lround(snap.layout.height)));
-      view->setGeometry(x, y, w, h);
+      const int x = static_cast<int>(std::lround(node.x));
+      const int y = static_cast<int>(std::lround(node.y));
+      const int w = std::max(0, static_cast<int>(std::lround(node.width)));
+      const int h = std::max(0, static_cast<int>(std::lround(node.height)));
+      widget->setGeometry(x, y, w, h);
 
       const bool interactive =
           !sem.disabled &&
-          (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & nve::kEventMaskPress) != 0);
+          (node.kind == NVE_NODE_KIND_PRESSABLE || (node.flags & NVE_NODE_INTERACTIVE) != 0u);
+      self->node_interactive_[node.node_id] = interactive;
 
-      if (auto* box = dynamic_cast<NveQtBoxWidget*>(view)) {
-        box->applyStyle(snap, interactive);
-      } else if (auto* label = qobject_cast<QLabel*>(view)) {
-        const QString qtext =
-            QString::fromUtf8(snap.text.data(), static_cast<qsizetype>(snap.text.size()));
+      const float opacity = opacityFromU8(node.opacity_u8);
+
+      if (auto* box = dynamic_cast<NveQtBoxWidget*>(widget)) {
+        box->applyStyle(node, interactive);
+      } else if (auto* img = dynamic_cast<NveQtImageWidget*>(widget)) {
+        img->applyNode(node, text, self->findResizeMode(node.node_id), interactive);
+      } else if (auto* label = qobject_cast<QLabel*>(widget)) {
+        const QString qtext = detail::qstringFromUtf8(text);
         if (label->text() != qtext) {
           label->setText(qtext);
         }
-        const QFont font = make_nve_font(snap.font_size);
-        if (label->font().pixelSize() != font.pixelSize() || label->font().family() != font.family()) {
+        const QFont font = makeNveFont(node.font_size);
+        if (label->font().pixelSize() != font.pixelSize() ||
+            label->font().family() != font.family()) {
           label->setFont(font);
         }
 
         QPalette pal = label->palette();
-        const QColor fg = qcolor_from_rgba(snap.text_color_rgba);
+        const QColor fg = qcolorFromRgba(node.text_rgba);
         pal.setColor(QPalette::WindowText, fg);
         pal.setColor(QPalette::Text, fg);
-        if (snap.background_rgba != 0) {
-          pal.setColor(QPalette::Window, qcolor_from_rgba(snap.background_rgba));
+        if (node.bg_rgba != 0u) {
+          pal.setColor(QPalette::Window, qcolorFromRgba(node.bg_rgba));
           label->setAutoFillBackground(true);
         } else {
           pal.setColor(QPalette::Window, Qt::transparent);
           label->setAutoFillBackground(false);
         }
         label->setPalette(pal);
-        apply_widget_opacity(label, snap.opacity);
-      } else if (auto* edit = dynamic_cast<NveQtLineEdit*>(view)) {
-        const QString qtext =
-            QString::fromUtf8(snap.text.data(), static_cast<qsizetype>(snap.text.size()));
+        apply_widget_opacity(label, opacity);
+      } else if (auto* edit = dynamic_cast<NveQtLineEdit*>(widget)) {
+        const QString qtext = detail::qstringFromUtf8(text);
         edit->applySemantics(sem);
-        edit->applySnapshotText(qtext);
-        edit->setFont(make_nve_font(snap.font_size));
+        edit->applySceneText(qtext);
+        edit->setFont(makeNveFont(node.font_size));
         QPalette pal = edit->palette();
-        if (snap.text_color_rgba != 0) {
-          pal.setColor(QPalette::Text, qcolor_from_rgba(snap.text_color_rgba));
+        if (node.text_rgba != 0u) {
+          pal.setColor(QPalette::Text, qcolorFromRgba(node.text_rgba));
         }
-        if (snap.background_rgba != 0) {
-          pal.setColor(QPalette::Base, qcolor_from_rgba(snap.background_rgba));
+        if (node.bg_rgba != 0u) {
+          pal.setColor(QPalette::Base, qcolorFromRgba(node.bg_rgba));
         }
         edit->setPalette(pal);
-        apply_widget_opacity(edit, snap.opacity);
-      } else if (auto* scroll = qobject_cast<QScrollArea*>(view)) {
+        apply_widget_opacity(edit, opacity);
+      } else if (auto* scroll = qobject_cast<QScrollArea*>(widget)) {
         if (auto* inner = dynamic_cast<NveQtBoxWidget*>(scroll->widget())) {
-          inner->applyStyle(snap, interactive);
+          inner->applyStyle(node, interactive);
           if (inner->width() < w || inner->height() < h) {
             inner->resize(std::max(inner->width(), w), std::max(inner->height(), h));
           }
         }
-        apply_widget_opacity(scroll, snap.opacity);
+        apply_widget_opacity(scroll, opacity);
       }
 
-      applyWidgetAccessibility(view, sem);
+      applyWidgetAccessibility(widget, sem);
     }
 
-    void destroy_view(uint32_t /*node_id*/, QWidget*& view) {
+    void destroy_view(uint32_t node_id, QWidget*& view) {
+      self->node_semantics_.erase(node_id);
+      self->node_resize_modes_.erase(node_id);
+      self->node_interactive_.erase(node_id);
       if (view == nullptr) {
         return;
       }
-      // Detach any NVE-managed child widgets first so destroying a parent QWidget never
-      // implicitly frees children that are either still live (reparented in Pass 3) or
-      // scheduled for destruction later in the same Pass 1 / clear() loop.
       QWidget* child_host = view;
-      if (auto* scroll = qobject_cast<QScrollArea*>(view); scroll != nullptr && scroll->widget() != nullptr) {
+      if (auto* scroll = qobject_cast<QScrollArea*>(view);
+          scroll != nullptr && scroll->widget() != nullptr) {
         child_host = scroll->widget();
       }
       const QObjectList direct_children = child_host->children();
@@ -726,7 +1061,7 @@ class NveQtWidget::Impl {
     void sync_children(
         uint32_t parent_id,
         QWidget** parent_view,
-        const std::vector<uint32_t>& child_ids,
+        std::span<const uint32_t> child_ids,
         LookupFn&& lookup_fn) {
       QWidget* container = (parent_id == NVE_ROOT_NODE_ID)
                                ? static_cast<QWidget*>(self->owner_)
@@ -777,10 +1112,15 @@ class NveQtWidget::Impl {
   NveQtWidget* owner_{nullptr};
   nve::NativeHostSession session_;
   QtViewAdapter adapter_;
-  nve::RetainedViewReconciler<QWidget*, QtViewAdapter> reconciler_;
+  nve::IncrementalSceneReconciler<QWidget*, QtViewAdapter> reconciler_;
   std::unordered_map<uint32_t, NodeSemantics> node_semantics_;
+  std::unordered_map<uint32_t, ImageResizeMode> node_resize_modes_;
+  std::unordered_map<uint32_t, bool> node_interactive_;
   QColor root_bg_color_{0, 0, 0, 0};
   uint32_t surface_id_{1};
+  uint64_t reconcile_update_count_{0};
+  bool raw_props_initialized_{false};
+  bool in_sync_views_{false};
   bool destroying_{false};
 };
 
@@ -801,7 +1141,7 @@ bool NveQtWidget::attachInterface(NveGetInterfaceFn getInterface, uint32_t surfa
   }
   impl_->surface_id_ = surfaceId;
   impl_->clearViews();
-  impl_->syncViews();
+  impl_->syncViews(/*check_raw_props=*/true);
   (void)impl_->session_.drain_events();
   return true;
 }
@@ -831,7 +1171,7 @@ bool NveQtWidget::loadDylib(
   }
   impl_->surface_id_ = surfaceId;
   impl_->clearViews();
-  impl_->syncViews();
+  impl_->syncViews(/*check_raw_props=*/true);
   (void)impl_->session_.drain_events();
   return true;
 }
@@ -861,7 +1201,7 @@ bool NveQtWidget::reloadDylib(
     return false;
   }
   impl_->clearViews();
-  impl_->syncViews();
+  impl_->syncViews(/*check_raw_props=*/true);
   (void)impl_->session_.drain_events();
   return true;
 }
@@ -885,7 +1225,7 @@ bool NveQtWidget::replayFrame0Snapshot(
   }
   impl_->surface_id_ = surfaceId;
   impl_->clearViews();
-  impl_->syncViews();
+  impl_->syncViews(/*check_raw_props=*/true);
   const auto t1 = Clock::now();
   if (outRestoreUs != nullptr) {
     *outRestoreUs = static_cast<uint64_t>(
@@ -906,7 +1246,7 @@ bool NveQtWidget::applyPropsJson(std::string_view propsJson) {
   }
   const bool dirty = impl_->session_.update_props_json(propsJson, /*auto_render=*/true);
   if (dirty) {
-    impl_->syncViews();
+    impl_->syncViews(/*check_raw_props=*/true);
   }
   (void)impl_->session_.drain_events();
   return dirty;
@@ -916,9 +1256,10 @@ bool NveQtWidget::applyHotPatchJson(std::string_view patchJson) {
   if (!impl_->session_.is_valid() || impl_->session_.bridge() == nullptr) {
     return false;
   }
-  const bool dirty = impl_->session_.bridge()->apply_hot_patch_json(patchJson, /*auto_render=*/true);
+  const bool dirty =
+      impl_->session_.bridge()->apply_hot_patch_json(patchJson, /*auto_render=*/true);
   if (dirty) {
-    impl_->syncViews();
+    impl_->syncViews(/*check_raw_props=*/true);
   }
   (void)impl_->session_.drain_events();
   return dirty;
@@ -927,7 +1268,7 @@ bool NveQtWidget::applyHotPatchJson(std::string_view patchJson) {
 int32_t NveQtWidget::renderFrame() {
   const int32_t rc = impl_->session_.render(nullptr);
   if (rc == 0) {
-    impl_->syncViews();
+    impl_->syncViews(/*check_raw_props=*/false);
   }
   (void)impl_->session_.drain_events();
   return rc;
@@ -952,6 +1293,19 @@ uint32_t NveQtWidget::dispatchSubmitOnNodeId(uint32_t nodeId, std::string_view t
 
 uint32_t NveQtWidget::dispatchFocusOnNodeId(uint32_t nodeId, bool focused) {
   return impl_->dispatchFocus(nodeId, focused);
+}
+
+uint32_t NveQtWidget::dispatchScrollOnNodeId(
+    uint32_t nodeId,
+    float offsetX,
+    float offsetY,
+    float contentWidth,
+    float contentHeight) {
+  return impl_->dispatchScroll(nodeId, offsetX, offsetY, contentWidth, contentHeight);
+}
+
+uint64_t NveQtWidget::reconcileUpdateCount() const noexcept {
+  return impl_->reconcile_update_count_;
 }
 
 std::optional<NodeSemantics> NveQtWidget::accessibilityInfoForNodeId(uint32_t nodeId) const {
@@ -1011,7 +1365,7 @@ void NveQtWidget::setTextMeasurer(nve::TextMeasurerCallback measurer) {
   if (impl_->session_.active_fabric_host() != nullptr) {
     const NveSurfaceConfig cfg = impl_->currentSurfaceConfig(impl_->surface_id_);
     impl_->session_.set_surface_size(cfg.width, cfg.height, cfg.scale_factor);
-    impl_->syncViews();
+    impl_->syncViews(/*check_raw_props=*/false);
   }
 }
 
@@ -1046,7 +1400,7 @@ void NveQtWidget::resizeEvent(QResizeEvent* event) {
         static_cast<float>(sz.height()),
         static_cast<float>(dpr > 0.0 ? dpr : 1.0));
     if (impl_->session_.active_fabric_host() != nullptr) {
-      impl_->syncViews();
+      impl_->syncViews(/*check_raw_props=*/false);
     }
   }
 }

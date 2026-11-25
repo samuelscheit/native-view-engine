@@ -2,7 +2,6 @@
 
 #include "NveQtCommon.hpp"
 #include "nve_host_runtime.hpp"
-#include "nve_scene_builder.hpp"
 
 #include <QPointF>
 #include <QQuickItem>
@@ -28,18 +27,21 @@ struct SceneGraphStats {
   uint32_t clipNodes{0};
   uint32_t opacityNodes{0};
   uint32_t textTextureNodes{0};
+  uint32_t imageTextureNodes{0};
   uint64_t textRasterizations{0};
   uint64_t textCacheHits{0};
   uint32_t cachedTextTextures{0};
+  uint32_t cachedImageTextures{0};
+  uint64_t dirtyNodesUpdated{0};
+  uint64_t retainedNodesReused{0};
 };
 
 /// Hardware-accelerated Qt Quick (`QQuickItem` / Scene Graph `QSGNode`) host for any Native View
 /// Engine (`nve_get_interface`) app or component.
 ///
-/// Renders NVE's flat 64-byte `NveSceneView` directly onto Qt 6's RHI Scene Graph (Metal on macOS,
-/// Vulkan/OpenGL on Linux, D3D11/12 on Windows, Software for headless CI) with zero widget
-/// overhead, generation-tracked HiDPI text texture caching, hardware scissor/stencil clipping,
-/// hierarchical GPU opacity, and zero-copy `NveDirectEvent` input dispatch.
+/// Reads `NativeHostSession::scene_view()` directly without snapshot materialization or
+/// `SceneTableBuilder`, maintaining a truly retained incremental `QSGNode` tree keyed by
+/// `node_id` so unchanged sibling `QSGNode*` subtrees survive across dirty frames.
 class NveQtQuickItem : public QQuickItem {
   Q_OBJECT
   QML_ELEMENT
@@ -65,11 +67,6 @@ class NveQtQuickItem : public QQuickItem {
 
   /// Load an NVE dynamic library (`cdylib` / `.dylib` / `.so` / `.dll`), mount its surface,
   /// synchronize the flat `NveSceneView`, and schedule a Scene Graph update.
-  ///
-  /// On failure returns `false` and sets optional `outErrorCode`:
-  /// - `1`: empty path or OS library open failed
-  /// - `2`: missing `nve_get_interface` symbol
-  /// - `3`: missing `NVE_IFACE_SURFACE` or surface creation failed
   Q_INVOKABLE bool loadDylib(
       const QString& path,
       uint32_t surfaceId = 1,
@@ -92,8 +89,6 @@ class NveQtQuickItem : public QQuickItem {
   }
 
   /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
-  /// Immediately syncs the flat `NveSceneView` and caches snapshot state for seamless restoration
-  /// on the subsequent `loadDylib()` / `attachInterface()`.
   Q_INVOKABLE bool replaySnapshot(
       const QString& snapshotPath,
       uint32_t expectedSchemaVersion = 1,
@@ -126,8 +121,7 @@ class NveQtQuickItem : public QQuickItem {
   /// Render one frame from the loaded NVE app and synchronize the flat `NveSceneView`.
   Q_INVOKABLE int32_t renderFrame();
 
-  /// Dispatch zero-copy `NveDirectEvent`s into `NativeHostSession` (with automatic EventRing
-  /// fallback when the module does not expose `dispatch_events_direct`).
+  /// Dispatch zero-copy `NveDirectEvent`s into `NativeHostSession`.
   uint32_t dispatchDirectEvents(NveEventBatch batch);
   uint32_t dispatchPress(uint32_t nodeId, float x = 0.0f, float y = 0.0f);
   uint32_t dispatchPress(uint32_t nodeId, const QPointF& localPoint);
@@ -156,13 +150,11 @@ class NveQtQuickItem : public QQuickItem {
   /// Locate the deepest `NVE_NODE_KIND_SCROLL_VIEW` enclosing `itemPos`, or `0` if none.
   uint32_t hitTestScrollableNode(const QPointF& itemPos) const;
 
-  /// Compute a node's resolved bounding rectangle in item-local coordinates (incorporating
-  /// ancestor origins and ancestor scroll offsets).
+  /// Compute a node's resolved bounding rectangle in item-local coordinates.
   QRectF sceneNodeGlobalBounds(uint32_t nodeId) const;
 
-  /// Current flat `NveSceneView` synchronized from `NativeHostSession`.
+  /// Zero-copy flat `NveSceneView` directly from `NativeHostSession::scene_view()`.
   NveSceneView sceneView() const noexcept;
-  const nve::SceneTableBuilder& sceneBuilder() const noexcept;
   std::optional<NveRenderNode> sceneNode(uint32_t nodeId) const;
   std::string_view sceneNodeText(uint32_t nodeId) const;
 
@@ -176,9 +168,11 @@ class NveQtQuickItem : public QQuickItem {
   /// Most recent Scene Graph synchronization statistics.
   SceneGraphStats sceneGraphStats() const noexcept;
 
-  /// Build/update the Scene Graph node tree (invoked by `updatePaintNode`; exposed for
-  /// deterministic inspection tests alongside full `QQuickWindow` rendering).
+  /// Build/incrementally update the retained Scene Graph node tree.
   QSGNode* syncSceneGraphNode(QSGNode* oldNode);
+
+  /// Inspect the retained wrapper `QSGNode*` for `nodeId` inside `root` (for verification/tests).
+  static const QSGNode* retainedSGNodeForNodeId(const QSGNode* root, uint32_t nodeId) noexcept;
 
   QString dylibPath() const;
   void setDylibPath(const QString& path);

@@ -57,7 +57,7 @@ target_include_directories(nve_qt_shell_lib
 if(MSVC)
   target_compile_options(nve_qt_shell_lib PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
 else()
-  target_compile_options(nve_qt_shell_lib PRIVATE -Wall -Wextra)
+  target_compile_options(nve_qt_shell_lib PRIVATE -Wall -Wextra -Werror)
 endif()
 
 target_link_libraries(nve_qt_shell_lib
@@ -72,6 +72,10 @@ if(TARGET Qt6::Quick AND TARGET Qt6::Qml)
   message(STATUS "nve_qt_shell: Qt6::Quick found — enabling GPU Scene Graph NveQtQuickItem")
   target_sources(nve_qt_shell_lib
     PRIVATE
+      NveQtTextCache.hpp
+      NveQtTextCache.cpp
+      NveQtSGBuilder.hpp
+      NveQtSGBuilder.cpp
       NveQtQuickItem.hpp
       NveQtQuickItem.cpp
   )
