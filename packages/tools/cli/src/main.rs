@@ -6,10 +6,12 @@
 //! - `nve bench`   — runs 1,000-node initial + incremental multi-backend benchmarks and exports Perfetto/Chrome JSON traces.
 //! - `nve dev`     — starts the 2-tier hot-reload daemon (`--skia` desktop preview, `--pair` live `NVD1` device pairing).
 //! - `nve pair`    — streams live `NVD1` binary deltas over UDP + TCP/WS and ingests remote `InputEvents`.
+//! - `nve build`   — builds Apple Tier-3 staticlib targets (`tvos`, `visionos`, `watchos`) and `.xcframework` bundles.
 //! - `nve codegen` — bi-directional RN <-> NVE + Flutter/SwiftUI/Compose/Web component code generation.
 //! - `nve docs`    — validates, statically builds (SSR + WASM), and serves `nve-docs` documentation sites.
 
 mod bench;
+mod build;
 mod codegen;
 mod dev;
 mod docs;
@@ -22,6 +24,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::build::BuildOptions;
 use crate::codegen::CodegenAction;
 use crate::dev::DevOptions;
 use crate::docs::DocsAction;
@@ -122,6 +125,36 @@ pub(crate) enum Commands {
         #[arg(long, default_value_t = 60)]
         fps: u32,
     },
+    /// Build Apple Tier-3 staticlib targets (`tvos`, `tvos-sim`, `visionos`, `visionos-sim`, `watchos`, `watchos-sim`) and `.xcframework` bundles.
+    Build {
+        /// Target(s) to compile (repeatable or comma-separated): `tvos`, `tvos-sim`, `visionos`, `visionos-sim`, `watchos`, `watchos-sim`.
+        #[arg(long = "target", short = 't', required = true, value_delimiter = ',')]
+        targets: Vec<String>,
+        /// Workspace crate/package name to compile as a staticlib exporting `nve_get_interface`.
+        #[arg(long, short = 'p', default_value = "nve-studio-workspace")]
+        package: String,
+        /// Optional Rust library name override (defaults to `package` with `-` replaced by `_`).
+        #[arg(long)]
+        lib_name: Option<String>,
+        /// Build with the release profile (`--release`, `profile.release.panic="abort"`).
+        #[arg(long, default_value_t = false)]
+        release: bool,
+        /// Rustup toolchain for Tier-3 `-Z build-std=std,panic_abort` builds.
+        #[arg(long, default_value = "nightly")]
+        toolchain: String,
+        /// Bundle built `.a` slices + `nve_abi.generated.h` into an `.xcframework` (optional path; defaults to `target/xcframework/<lib>.xcframework`).
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+        xcframework: Option<PathBuf>,
+        /// Directory containing `nve_abi.generated.h` for `.xcframework` bundling.
+        #[arg(long)]
+        headers: Option<PathBuf>,
+        /// Override Cargo target directory (defaults to `$CARGO_TARGET_DIR` or `<repo>/target`).
+        #[arg(long)]
+        target_dir: Option<PathBuf>,
+        /// Print the deterministic Cargo + `xcodebuild` commands, env vars, and static linkage plan without executing.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
     /// Bi-directional React Native <-> NVE and multi-framework (Flutter, SwiftUI, Compose, Web) codegen.
     Codegen {
         #[command(subcommand)]
@@ -191,6 +224,27 @@ fn main() {
             width,
             height,
             fps,
+        }),
+        Commands::Build {
+            targets,
+            package,
+            lib_name,
+            release,
+            toolchain,
+            xcframework,
+            headers,
+            target_dir,
+            dry_run,
+        } => build::cmd_build(BuildOptions {
+            targets,
+            package,
+            lib_name,
+            release,
+            toolchain,
+            xcframework,
+            headers,
+            target_dir,
+            dry_run,
         }),
         Commands::Codegen { action } => codegen::cmd_codegen(action),
         Commands::Docs { action } => docs::cmd_docs(action),

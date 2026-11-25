@@ -9,6 +9,8 @@ use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{SurfaceRunner, Viewport};
 
+use crate::build::probe::{format_tier3_doctor_section, SystemProbe};
+
 pub(crate) fn probe_tool(cmd: &str, args: &[&str]) -> Option<String> {
     let out = ProcessCommand::new(cmd).args(args).output().ok()?;
     if !out.status.success() {
@@ -60,6 +62,8 @@ pub(crate) fn cmd_doctor() {
             targets.join(", ")
         );
     }
+
+    print!("{}", format_tier3_doctor_section("nightly", &SystemProbe));
 
     match std::env::var("RN_REACT_COMMON_DIR") {
         Ok(raw) if !raw.trim().is_empty() => {
