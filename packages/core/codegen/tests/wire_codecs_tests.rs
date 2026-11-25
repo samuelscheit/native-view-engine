@@ -299,7 +299,7 @@ int main() {{
     )
     .unwrap();
 
-    let compile = Command::new("clang++")
+    let compile = match Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wpedantic"])
         .arg("-I")
         .arg(&include_dir)
@@ -307,7 +307,15 @@ int main() {{
         .arg("-o")
         .arg(&out_bin)
         .output()
-        .expect("run clang++");
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("skipping C++20 wire codec test: clang++ not installed");
+            return;
+        }
+        Err(e) => panic!("run clang++: {e}"),
+    };
     assert!(compile.status.success(), "C++20 compile failed:\n{}", String::from_utf8_lossy(&compile.stderr));
     let run = Command::new(&out_bin).output().expect("run C++20 binary");
     assert!(run.status.success(), "C++20 run failed:\n{}", String::from_utf8_lossy(&run.stderr));
@@ -355,18 +363,26 @@ public final class WireCheckDriver {{
     }}
 }}
 "#,
-            event_bin.display()
+            event_bin.to_string_lossy().replace('\\', "/")
         ),
     )
     .unwrap();
 
-    let compile = Command::new("javac")
+    let compile = match Command::new("javac")
         .args(["--release", "11", "-Xlint:all", "-Werror", "-d"])
         .arg(&classes_dir)
         .arg(&java_src)
         .arg(&driver)
         .output()
-        .expect("run javac");
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("skipping Java 11 wire codec test: javac not installed");
+            return;
+        }
+        Err(e) => panic!("run javac: {e}"),
+    };
     assert!(compile.status.success(), "Java 11 compile failed:\n{}", String::from_utf8_lossy(&compile.stderr));
     let run = Command::new("java").arg("-cp").arg(&classes_dir).arg("WireCheckDriver").output().expect("run java");
     assert!(run.status.success(), "Java run failed:\n{}", String::from_utf8_lossy(&run.stderr));
@@ -407,19 +423,27 @@ precondition(dhdr.version == 1 && dhdr.opCount == 1)
 precondition(NveWireCodecs.DrawOpcode.fillRect.fixedPayloadBytes == 20)
 precondition(NveWireCodecs.DrawOpcode.strokePolyline.fixedPayloadBytes == nil)
 "#,
-            event_bin.display()
+            event_bin.to_string_lossy().replace('\\', "/")
         ),
     )
     .unwrap();
 
-    let compile = Command::new("swiftc")
+    let compile = match Command::new("swiftc")
         .arg("-warnings-as-errors")
         .arg(&swift_src)
         .arg(&main_swift)
         .arg("-o")
         .arg(&out_bin)
         .output()
-        .expect("run swiftc");
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("skipping Swift wire codec test: swiftc not installed");
+            return;
+        }
+        Err(e) => panic!("run swiftc: {e}"),
+    };
     assert!(compile.status.success(), "Swift compile failed:\n{}", String::from_utf8_lossy(&compile.stderr));
     let run = Command::new(&out_bin).output().expect("run Swift binary");
     assert!(run.status.success(), "Swift run failed:\n{}", String::from_utf8_lossy(&run.stderr));
@@ -465,12 +489,20 @@ void main() {{
   if (NveWireDrawOpcode.fixedPayloadBytes(NveWireDrawOpcode.strokePolyline) != null) throw StateError('poly');
 }}
 "#,
-            event_bin.display()
+            event_bin.to_string_lossy().replace('\\', "/")
         ),
     )
     .unwrap();
 
-    let analyze = Command::new("dart").args(["analyze", "--fatal-infos"]).arg(&dart_copy).output().expect("dart analyze");
+    let analyze = match Command::new("dart").args(["analyze", "--fatal-infos"]).arg(&dart_copy).output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("skipping Dart wire codec test: dart not installed");
+            return;
+        }
+        Err(e) => panic!("dart analyze: {e}"),
+    };
     assert!(analyze.status.success(), "dart analyze failed:\n{}{}", String::from_utf8_lossy(&analyze.stdout), String::from_utf8_lossy(&analyze.stderr));
     let run = Command::new("dart").arg("run").arg(&driver).output().expect("dart run");
     assert!(run.status.success(), "Dart run failed:\n{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
@@ -484,6 +516,16 @@ fn typescript_wire_codecs_execute_and_verify_against_rust_reference() {
     let event_bin = tmp.join("events.bin");
     let driver = tmp.join("driver.mts");
     let ts_src = repo_root().join("hosts/web-shell/nve_wire_codecs.generated.ts");
+
+    let ts_import_url = {
+        let s = ts_src.to_string_lossy().replace('\\', "/");
+        if s.starts_with('/') {
+            format!("file://{s}")
+        } else {
+            format!("file:///{s}")
+        }
+    };
+    let event_bin_js = event_bin.to_string_lossy().replace('\\', "/");
 
     std::fs::write(
         &driver,
@@ -516,13 +558,21 @@ if (dhdr.status !== 'ok' || dhdr.version !== 1 || dhdr.opCount !== 1) throw new 
 if (drawOpFixedPayloadBytes(NVE_DRAW_OP.FILL_RECT) !== 20) throw new Error('rect');
 if (drawOpFixedPayloadBytes(NVE_DRAW_OP.STROKE_POLYLINE) !== null) throw new Error('poly');
 "#,
-            ts_src.display(),
-            event_bin.display()
+            ts_import_url,
+            event_bin_js
         ),
     )
     .unwrap();
 
-    let run = Command::new("node").arg(&driver).output().expect("run node");
+    let run = match Command::new("node").arg(&driver).output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("skipping TS wire codec test: node not installed");
+            return;
+        }
+        Err(e) => panic!("run node: {e}"),
+    };
     assert!(run.status.success(), "TS run failed:\n{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
     assert_decoded_cross_language_event_ring(&std::fs::read(&event_bin).unwrap());
     let _ = std::fs::remove_dir_all(&tmp);

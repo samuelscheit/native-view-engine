@@ -70,9 +70,6 @@ nve-linking = { path = "packages/modules/linking" }
 nve-system-env = { path = "packages/modules/system-env" }
 nve-notifications = { path = "packages/modules/notifications" }
 nve-haptics = { path = "packages/modules/haptics" }
-nve-camera = { path = "packages/modules/camera" }
-nve-tv = { path = "packages/modules/tv" }
-nve-pair = { path = "packages/modules/pair" }
 nve-skia-shell = { path = "hosts/skia-shell" }
 nve-example-counter = { path = "examples/counter" }
 nve-studio-workspace = { path = "examples/studio-workspace", default-features = false }
