@@ -404,3 +404,82 @@ fn create_docs_surface_at_route_renders_target_page_for_ssr() {
             .contains("Native View Engine Docs")
     );
 }
+
+#[test]
+fn docs_prefix_and_custom_pages_coexist_cleanly() {
+    use nve_dioxus::prelude::*;
+    use nve_docs::{CustomPageRegistry, create_docs_surface_with_pages};
+
+    let cfg = build_config()
+        .with_base_path("/repo")
+        .with_docs_prefix("/docs");
+    assert_eq!(cfg.docs_route_for_content("/").as_str(), "/docs");
+    assert_eq!(
+        cfg.docs_route_for_content("/guides/quickstart").as_str(),
+        "/docs/guides/quickstart"
+    );
+    assert_eq!(
+        cfg.docs_route_for_content("/docs/guides/quickstart").as_str(),
+        "/docs/guides/quickstart"
+    );
+    assert_eq!(cfg.content_route_for("/docs").as_deref(), Some("/"));
+    assert_eq!(
+        cfg.content_route_for("/docs/guides/quickstart").as_deref(),
+        Some("/guides/quickstart")
+    );
+    assert_eq!(cfg.content_route_for("/"), None);
+    assert_eq!(cfg.content_route_for("/examples"), None);
+    assert_eq!(
+        cfg.resolve_docs_href("/guides/quickstart"),
+        "/repo/docs/guides/quickstart"
+    );
+
+    let mut custom = CustomPageRegistry::new();
+    custom.register("/", || {
+        rsx! {
+            view {
+                test_id: "custom-landing",
+                text { "Custom Landing Hero" }
+            }
+        }
+    });
+    let custom = Arc::new(custom);
+    let services: Arc<dyn nve_sdk::HostServiceProvider> = Arc::new(MemoryHostServices::new());
+
+    // Render custom landing at "/"
+    let mut landing_surface = create_docs_surface_with_pages(
+        10,
+        "/",
+        DocsViewport::desktop_default(),
+        cfg.clone(),
+        build_fixture_site(),
+        build_playgrounds(),
+        custom.clone(),
+        services.clone(),
+    );
+    let (_, _, landing_bytes) = landing_surface.render_frame(1);
+    let mut web = WebBackend::new();
+    web.submit_frame(&landing_bytes).expect("landing submit");
+    let landing_html = web.render_ssr().html;
+    assert!(landing_html.contains("Custom Landing Hero"));
+    assert!(!landing_html.contains("docs-sidebar-desktop"));
+
+    // Render prefixed docs page at "/docs/guides/quickstart"
+    let mut docs_surface = create_docs_surface_with_pages(
+        11,
+        "/docs/guides/quickstart",
+        DocsViewport::desktop_default(),
+        cfg,
+        build_fixture_site(),
+        build_playgrounds(),
+        custom,
+        services,
+    );
+    let (_, _, docs_bytes) = docs_surface.render_frame(1);
+    let mut web_docs = WebBackend::new();
+    web_docs.submit_frame(&docs_bytes).expect("docs submit");
+    let docs_html = web_docs.render_ssr().html;
+    assert!(docs_html.contains("Quickstart"));
+    assert!(docs_html.contains("docs-sidebar-desktop"));
+    assert!(docs_html.contains("href=\"/repo/docs/guides/components\""));
+}

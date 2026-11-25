@@ -29,8 +29,8 @@ const MIME_TYPES = {
 };
 
 function parseArgs(argv) {
-  let distDir = "/tmp/nve-docs-dist";
-  let shotsDir = "/tmp/nve-docs-shots";
+  let distDir = "/tmp/nve-site-dist";
+  let shotsDir = "/tmp/nve-landing-shots";
   let basePath = "";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -305,14 +305,51 @@ async function run() {
 
   try {
     // -----------------------------------------------------------------------
-    // 1. JS-DISABLED STATIC SSR VERIFICATION
+    // 1. JS-DISABLED STATIC SSR VERIFICATION (/, /examples/, /docs/, /docs/guides/ui-components/)
     // -----------------------------------------------------------------------
-    console.log("==> [1/4] Verifying JS-disabled static SSR on / and /guides/ui-components/...");
+    console.log("==> [1/5] Verifying JS-disabled static SSR on /, /examples/, /docs/, and /docs/guides/ui-components/...");
     const { cdp: ssrCdp } = await createPageCdp(chrome.debugPort);
     await ssrCdp.setViewport(1440, 900, false, 1);
     await ssrCdp.send("Emulation.setScriptExecutionDisabled", { value: true });
 
-    for (const route of ["/", "/guides/ui-components/"]) {
+    // 1a. Landing Page (/) & Examples Gallery (/examples/)
+    for (const [route, expectedH1] of [
+      ["/", "Native-speed UI in Rust"],
+      ["/examples/", "Interactive Examples"],
+    ]) {
+      const resp = await fetch(`${origin}${route}`);
+      assert(resp.status === 200, `Expected HTTP 200 for ${route}, got ${resp.status}`);
+      const rawHtml = await resp.text();
+      assert(!rawHtml.includes("nve_web_shell.js"), `SSR ${route} must NOT preload Studio WASM`);
+      await ssrCdp.navigate(`${origin}${route}`);
+      const info = await ssrCdp.eval(`(() => {
+        const main = document.querySelector("main");
+        const h1 = document.querySelector("h1");
+        const root = document.querySelector('[testid="docs-root"]');
+        const bg = root ? getComputedStyle(root).backgroundColor : getComputedStyle(document.body).backgroundColor;
+        const sidebar = document.querySelector('[testid="docs-sidebar-desktop"]');
+        return {
+          hasMain: !!main,
+          h1Text: h1 ? h1.textContent.trim() : "",
+          proseLen: document.body.innerText.trim().length,
+          bg,
+          hasSidebar: !!sidebar,
+          scrollOverflowX: document.documentElement.scrollWidth - window.innerWidth,
+          hydrated: !!window.__NVE_DOCS__,
+        };
+      })()`);
+      assert(info.hasMain, `SSR ${route}: missing <main>`);
+      assert(info.h1Text.includes(expectedH1), `SSR ${route}: expected H1 containing "${expectedH1}", got "${info.h1Text}"`);
+      assert(info.proseLen > 300, `SSR ${route}: body prose too short (${info.proseLen})`);
+      assert(info.bg === "rgb(9, 9, 11)", `SSR ${route}: expected #09090b bg, got ${info.bg}`);
+      assert(!info.hasSidebar, `SSR ${route}: full-bleed page should not render docs sidebar`);
+      assert(info.scrollOverflowX <= 2, `SSR ${route}: horizontal overflow (${info.scrollOverflowX}px)`);
+      assert(!info.hydrated, `SSR ${route}: JS should be disabled`);
+      console.log(`    ✓ SSR (JS off) ${route}: h1="${info.h1Text}", bg=${info.bg}, overflowX=${info.scrollOverflowX}px`);
+    }
+
+    // 1b. Docs Suite (/docs/ & /docs/guides/ui-components/)
+    for (const route of ["/docs/", "/docs/guides/ui-components/"]) {
       const resp = await fetch(`${origin}${route}`);
       assert(resp.status === 200, `Expected HTTP 200 for ${route}, got ${resp.status}`);
       await ssrCdp.navigate(`${origin}${route}`);
@@ -338,7 +375,6 @@ async function run() {
           sidebarW: sidebar ? sidebar.getBoundingClientRect().width : 0,
           mainW: main ? main.getBoundingClientRect().width : 0,
           tocW: toc ? toc.getBoundingClientRect().width : 0,
-          scrollOverflowX: document.documentElement.scrollWidth - window.innerWidth,
           hydrated: !!window.__NVE_DOCS__,
         };
       })()`);
@@ -361,13 +397,20 @@ async function run() {
     ssrCdp.close();
 
     // -----------------------------------------------------------------------
-    // 2. JS-ENABLED PROGRESSIVE HYDRATION + SPA + THEME + SEARCH + PLAYGROUNDS
+    // 2. JS-ENABLED HYDRATION ON LANDING (/), HERO TABS, THEME, ⌘K, DOCS & EXAMPLES GALLERY
     // -----------------------------------------------------------------------
-    console.log("==> [2/4] Verifying JS-enabled progressive hydration, DOM identity, theme, SPA routing, ⌘K search & playgrounds...");
+    console.log("==> [2/5] Verifying Landing hydration, hero interactive tabs, theme toggle, ⌘K search, /docs/** & /examples/...");
     const { cdp } = await createPageCdp(chrome.debugPort);
     await cdp.setViewport(1440, 900, false, 1);
 
-    // Capture the SSR DOM node identity BEFORE the async ES module hydrates #app
+    const requestedUrls = [];
+    cdp.ws.addEventListener("message", (ev) => {
+      const msg = JSON.parse(typeof ev.data === "string" ? ev.data : ev.data.toString());
+      if (msg.method === "Network.requestWillBeSent" && msg.params?.request?.url) {
+        requestedUrls.push(msg.params.request.url);
+      }
+    });
+
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
       source: `
         window.__SSR_CAPTURED_ROOT__ = null;
@@ -380,7 +423,7 @@ async function run() {
     });
 
     await cdp.navigate(`${origin}/`);
-    await cdp.waitFor(`!!window.__NVE_DOCS__ || !!window.__NVE_DOCS_ERROR__`, 12000, "WASM hydration");
+    await cdp.waitFor(`!!window.__NVE_DOCS__ || !!window.__NVE_DOCS_ERROR__`, 12000, "Landing WASM hydration");
 
     const hydrateInfo = await cdp.eval(`(() => {
       if (window.__NVE_DOCS_ERROR__) return { error: window.__NVE_DOCS_ERROR__ };
@@ -403,44 +446,105 @@ async function run() {
     assert(!hydrateInfo.error, `WASM hydration error: ${hydrateInfo.error}`);
     assert(hydrateInfo.hydrated === true, "expected hydrated=true");
     assert(hydrateInfo.adopted > 50, `expected adopted > 50, got ${hydrateInfo.adopted}`);
-    assert(hydrateInfo.mismatches === 0, `expected 0 hydration mismatches, got ${hydrateInfo.mismatches}`);
-    assert(hydrateInfo.replaced === 0, `expected 0 replaced nodes, got ${hydrateInfo.replaced}`);
-    assert(hydrateInfo.rootIdentityPreserved, "SSR root DOM node identity was NOT preserved!");
-    assert(hydrateInfo.h1IdentityPreserved, "SSR <h1> DOM node identity was NOT preserved!");
+    assert(hydrateInfo.mismatches === 0, `expected 0 hydration mismatches on /, got ${hydrateInfo.mismatches}`);
+    assert(hydrateInfo.replaced === 0, `expected 0 replaced nodes on /, got ${hydrateInfo.replaced}`);
+    assert(hydrateInfo.rootIdentityPreserved, "Landing SSR root DOM identity was NOT preserved!");
+    assert(hydrateInfo.h1IdentityPreserved, "Landing SSR <h1> DOM identity was NOT preserved!");
+    assert(
+      !requestedUrls.some((u) => u.includes("nve_web_shell")),
+      `Landing page must NEVER download Studio WASM bundle! Requests: ${requestedUrls.join(", ")}`
+    );
     console.log(
-      `    ✓ Hydrated in-place: adopted=${hydrateInfo.adopted}, mismatches=${hydrateInfo.mismatches}, seededRules=${hydrateInfo.seededRules}, domIdentityPreserved=true`
+      `    ✓ Landing hydrated in-place: adopted=${hydrateInfo.adopted}, mismatches=0, domIdentityPreserved=true, studioWasmLazy=true`
     );
 
-    // Screenshot 1: Desktop Dark (1440x900)
-    await cdp.capturePng(path.join(shotsDir, "docs-desktop-dark.png"));
+    // Screenshot 1: Landing Desktop Dark (1440x900)
+    await cdp.capturePng(path.join(shotsDir, "landing-desktop-dark.png"));
 
-    // Theme toggle Dark -> Light
+    // Interactive Hero Preview Card checks (Live UI increment -> RSX Code -> Binary IR -> Live UI)
+    await cdp.eval(`document.querySelector('[testid="hero-live-inc"]').click()`);
+    await cdp.waitFor(
+      `document.querySelector('[testid="hero-live-count"]')?.textContent?.includes("Count: 4")`,
+      4000,
+      "hero live counter increment"
+    );
+    await cdp.eval(`document.querySelector('[testid="hero-tab-code"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[testid="hero-panel-code"]')`, 4000, "hero RSX Code tab");
+    await cdp.eval(`document.querySelector('[testid="hero-tab-ir"]').click()`);
+    await cdp.waitFor(
+      `document.querySelector('[testid="hero-panel-ir"]')?.textContent?.includes("Count: 4")`,
+      4000,
+      "hero Binary IR live sync"
+    );
+    await cdp.eval(`document.querySelector('[testid="hero-tab-live"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[testid="hero-panel-live"]')`, 4000, "hero Live UI restore");
+    console.log("    ✓ Hero Preview Card tabs (Live UI -> RSX Code -> Binary IR) verified");
+
+    // Theme toggle Dark -> Light -> Screenshot 2 -> Dark
     await cdp.eval(`document.querySelector('[testid="docs-theme-toggle"]').click()`);
     await cdp.waitFor(`window.__NVE_DOCS__.dark_mode === false`, 4000, "light theme switch");
     const lightBg = await cdp.eval(`getComputedStyle(document.querySelector('[testid="docs-root"]')).backgroundColor`);
     assert(lightBg === "rgb(255, 255, 255)", `Expected light canvas rgb(255, 255, 255), got ${lightBg}`);
-    await cdp.capturePng(path.join(shotsDir, "docs-desktop-light.png"));
-    console.log(`    ✓ Theme toggle switched canvas to ${lightBg} (docs-desktop-light.png captured)`);
+    await cdp.capturePng(path.join(shotsDir, "landing-desktop-light.png"));
+    console.log(`    ✓ Landing light mode verified (landing-desktop-light.png captured)`);
 
-    // Toggle back to Dark
     await cdp.eval(`document.querySelector('[testid="docs-theme-toggle"]').click()`);
     await cdp.waitFor(`window.__NVE_DOCS__.dark_mode === true`, 4000, "dark theme restore");
 
-    // Client-side SPA sidebar navigation (no full reload)
-    await cdp.eval(`window.__SPA_ALIVE__ = "yes";`);
-    await cdp.eval(`document.querySelector('[testid="docs-nav-guides-ui-components"]').click()`);
-    await cdp.waitFor(`location.pathname.endsWith("/guides/ui-components")`, 5000, "SPA pushState to /guides/ui-components");
-    const spaCheck = await cdp.eval(`({
-      alive: window.__SPA_ALIVE__,
-      pathname: location.pathname,
-      h1: document.querySelector("h1")?.textContent?.trim(),
-      hasUiPg: !!document.querySelector('[testid="pg-ui-root"]'),
-    })`);
-    assert(spaCheck.alive === "yes", "Sidebar click triggered a full page reload instead of SPA pushState!");
-    assert(spaCheck.hasUiPg, "UI Playground failed to mount on /guides/ui-components");
-    console.log(`    ✓ SPA sidebar navigation via pushState -> ${spaCheck.pathname} (h1="${spaCheck.h1}")`);
+    // Development & Benchmark Progression Dashboard: scroll to controls + charts, capture screenshot, test Log scale + category pills + Table view
+    await cdp.eval(`document.querySelector('[testid="bench-controls-bar"]').scrollIntoView({ block: "start" })`);
+    await new Promise((r) => setTimeout(r, 200));
+    await cdp.waitFor(`!!document.querySelector('[testid="bench-latest-canvas"]')`, 4000, "benchmark NVE_DRAW1 canvas");
+    await cdp.capturePng(path.join(shotsDir, "landing-benchmarks.png"));
 
-    // Interactive UI Playground + VirtualList 100k checks
+    const yaxisBefore = await cdp.eval(`document.querySelector('[testid="bench-bar-yaxis"]')?.textContent || ""`);
+    await cdp.eval(`document.querySelector('[testid="bench-log-scale"]').click()`);
+    await cdp.waitFor(
+      `(document.querySelector('[testid="bench-bar-yaxis"]')?.textContent || "") !== ${JSON.stringify(yaxisBefore)}`,
+      4000,
+      "benchmark Log scale toggle"
+    );
+    await cdp.eval(`document.querySelector('[testid="bench-filter-web-wasm"]').click()`);
+    await cdp.waitFor(
+      `!!document.querySelector('[testid="bench-card-web-ssr-payload"]') && !document.querySelector('[testid="bench-card-cmdbuf-encode"]')`,
+      4000,
+      "benchmark Web & WASM category filter"
+    );
+    await cdp.eval(`document.querySelector('[testid="bench-filter-all"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[testid="bench-card-cmdbuf-encode"]')`, 4000, "benchmark All filter restore");
+    await cdp.eval(`document.querySelector('[testid="bench-table-toggle"]').click()`);
+    await cdp.waitFor(
+      `!!document.querySelector('[testid="bench-latest-table"]') && !document.querySelector('[testid="bench-latest-canvas"]')`,
+      4000,
+      "benchmark Table view toggle"
+    );
+    await cdp.eval(`document.querySelector('[testid="bench-table-toggle"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[testid="bench-latest-canvas"]')`, 4000, "benchmark Chart view restore");
+    console.log("    ✓ Development & Benchmark Progression dashboard (Log scale, category pills, Table view, landing-benchmarks.png) verified");
+
+    // SPA navigation from Landing -> Examples Gallery (/examples)
+    await cdp.eval(`window.__SPA_ALIVE__ = "yes";`);
+    await cdp.eval(`document.querySelector('[testid="docs-section-examples"]').click()`);
+    await cdp.waitFor(`location.pathname.endsWith("/examples")`, 5000, "SPA pushState to /examples");
+    assert((await cdp.eval(`window.__SPA_ALIVE__`)) === "yes", "Examples nav reloaded the page!");
+    await cdp.waitFor(`!!document.querySelector('[testid="examples-gallery-page"]')`, 4000, "examples gallery mount");
+    await cdp.capturePng(path.join(shotsDir, "examples-gallery.png"));
+    console.log("    ✓ SPA navigation to /examples verified (examples-gallery.png captured)");
+
+    // Switch live embedded playground on /examples
+    await cdp.eval(`document.querySelector('[testid="examples-pg-tab-crdt-simulator"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[testid="pg-crdt-convergence"]')`, 4000, "gallery CRDT tab");
+
+    // SPA navigation from Examples -> Docs (/docs) -> /docs/guides/ui-components
+    await cdp.eval(`document.querySelector('[testid="docs-section-docs"]').click()`);
+    await cdp.waitFor(`location.pathname.endsWith("/docs")`, 5000, "SPA pushState to /docs");
+    assert((await cdp.eval(`window.__SPA_ALIVE__`)) === "yes", "Docs nav reloaded the page!");
+    await cdp.eval(`document.querySelector('[testid="docs-nav-guides-ui-components"]').click()`);
+    await cdp.waitFor(
+      `location.pathname.endsWith("/docs/guides/ui-components") && !!document.querySelector('[testid="pg-ui-root"]')`,
+      5000,
+      "SPA sidebar nav to /docs/guides/ui-components"
+    );
     await cdp.eval(`document.querySelector('[testid="pg-ui-btn-primary"]').click()`);
     await cdp.waitFor(
       `document.querySelector('[testid="pg-ui-count-badge"]')?.textContent?.includes("Actions: 1")`,
@@ -453,13 +557,9 @@ async function run() {
       4000,
       "VirtualList jump to #75000"
     );
-    // Scroll playground into view cleanly for screenshot
-    await cdp.eval(`document.querySelector('[testid="docs-demo-ui-playground"]')?.scrollIntoView({ block: "start" })`);
-    await new Promise((r) => setTimeout(r, 150));
-    await cdp.capturePng(path.join(shotsDir, "docs-playground.png"));
-    console.log("    ✓ Live UI Playground + 100k VirtualList reacted cleanly (docs-playground.png captured)");
+    console.log("    ✓ Docs /docs/guides/ui-components + UI Playground + 100k VirtualList verified");
 
-    // ⌘K Search Modal + real NVS1 query + navigate to CRDT simulator
+    // ⌘K Search Modal + real NVS1 query -> /docs/guides/local-first-crdt
     await cdp.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`);
     await cdp.waitFor(`!!document.querySelector('[testid="docs-search-dialog"]')`, 4000, "⌘K search modal open");
     await cdp.eval(`(() => {
@@ -475,13 +575,12 @@ async function run() {
     );
     await cdp.eval(`document.querySelector('[testid="docs-search-hit-0"]').click()`);
     await cdp.waitFor(
-      `location.pathname.endsWith("/guides/local-first-crdt") && !document.querySelector('[testid="docs-search-dialog"]')`,
+      `location.pathname.endsWith("/docs/guides/local-first-crdt") && !document.querySelector('[testid="docs-search-dialog"]')`,
       5000,
-      "search hit navigation to /guides/local-first-crdt"
+      "search hit navigation to /docs/guides/local-first-crdt"
     );
     assert((await cdp.eval(`window.__SPA_ALIVE__`)) === "yes", "Search navigation reloaded the page!");
 
-    // Test CRDT simulator live convergence in browser
     await cdp.eval(`document.querySelector('[testid="pg-crdt-a-edit"]').click()`);
     await cdp.eval(`document.querySelector('[testid="pg-crdt-b-edit"]').click()`);
     await cdp.eval(`document.querySelector('[testid="pg-crdt-sync"]').click()`);
@@ -492,42 +591,108 @@ async function run() {
     );
     console.log("    ✓ ⌘K NVS1 search + CRDT binary NVC1 convergence passed with 0 reloads");
 
-    assert(cdp.consoleErrors.length === 0, `Console errors: ${cdp.consoleErrors.join(" | ")}`);
-    assert(cdp.pageErrors.length === 0, `Page errors: ${cdp.pageErrors.join(" | ")}`);
+    assert(cdp.consoleErrors.length === 0, `Desktop console errors: ${cdp.consoleErrors.join(" | ")}`);
+    assert(cdp.pageErrors.length === 0, `Desktop page errors: ${cdp.pageErrors.join(" | ")}`);
     cdp.close();
 
     // -----------------------------------------------------------------------
-    // 3. MOBILE RESPONSIVE CHECK (390x844) + SCREENSHOT
+    // 3. MOBILE RESPONSIVE CHECK (390x844) ON LANDING + DRAWER -> DOCS
     // -----------------------------------------------------------------------
-    console.log("==> [3/4] Verifying mobile 390×844 layout & slide-over drawer...");
+    console.log("==> [3/5] Verifying mobile 390×844 Landing layout & drawer navigation...");
     const { cdp: mobCdp } = await createPageCdp(chrome.debugPort);
     await mobCdp.setViewport(390, 844, true, 2);
     await mobCdp.navigate(`${origin}/`);
     await mobCdp.waitFor(
       `window.__NVE_DOCS__ && window.__NVE_DOCS__.viewport_mode === "mobile"`,
       10000,
-      "mobile hydration & responsive switch"
+      "mobile landing hydration & responsive switch"
     );
     const mobInfo = await mobCdp.eval(`({
       hasMenuToggle: !!document.querySelector('[testid="docs-mobile-menu-toggle"]'),
-      hasDesktopSidebar: !!document.querySelector('[testid="docs-sidebar-desktop"]'),
-      hasToc: !!document.querySelector('[testid="docs-toc"]'),
+      hasLanding: !!document.querySelector('[testid="landing-page"]'),
       mismatches: window.__NVE_DOCS__.mismatches,
+      overflowX: document.documentElement.scrollWidth - window.innerWidth,
     })`);
     assert(mobInfo.hasMenuToggle, "Mobile missing hamburger Menu toggle");
-    assert(!mobInfo.hasDesktopSidebar, "Mobile should hide desktop sidebar");
-    assert(!mobInfo.hasToc, "Mobile should hide right TOC");
+    assert(mobInfo.hasLanding, "Mobile missing landing page");
     assert(mobInfo.mismatches === 0, `Mobile hydration mismatches: ${mobInfo.mismatches}`);
-    await mobCdp.capturePng(path.join(shotsDir, "docs-mobile.png"));
+    assert(mobInfo.overflowX <= 2, `Mobile horizontal overflow: ${mobInfo.overflowX}px`);
+    await mobCdp.capturePng(path.join(shotsDir, "landing-mobile.png"));
 
     await mobCdp.eval(`document.querySelector('[testid="docs-mobile-menu-toggle"]').click()`);
     await mobCdp.waitFor(`!!document.querySelector('[testid="docs-sidebar-drawer"]')`, 4000, "mobile drawer open");
     assert(mobCdp.consoleErrors.length === 0, `Mobile console errors: ${mobCdp.consoleErrors.join(" | ")}`);
     assert(mobCdp.pageErrors.length === 0, `Mobile page errors: ${mobCdp.pageErrors.join(" | ")}`);
     mobCdp.close();
-    console.log("    ✓ Mobile 390×844 layout + drawer verified (docs-mobile.png captured)");
+    console.log("    ✓ Mobile 390×844 Landing + drawer verified (landing-mobile.png captured)");
 
-    console.log("==> [4/4] ALL HEADLESS CHROME SSR + HYDRATION + INTERACTION E2E CHECKS PASSED!");
+    // -----------------------------------------------------------------------
+    // 4. LIVE LAZY-LOADED WASM EXAMPLE APPS (/examples/studio/ & /examples/counter/)
+    // -----------------------------------------------------------------------
+    console.log("==> [4/5] Verifying lazy-loaded live WASM example apps (/examples/studio/ & /examples/counter/)...");
+    const { cdp: exCdp } = await createPageCdp(chrome.debugPort);
+    await exCdp.setViewport(1440, 900, false, 1);
+
+    await exCdp.navigate(`${origin}/examples/studio/`);
+    const studioMeta = await exCdp.eval(`({
+      hasBack: !!document.querySelector('[data-testid="portal-back-examples"]'),
+      hasDocs: !!document.querySelector('[data-testid="portal-docs-link"]'),
+      hasFrame: !!document.getElementById("nve-example-frame"),
+      mode: document.querySelector(".portal-shell")?.dataset?.bundleMode || "",
+    })`);
+    assert(studioMeta.hasBack && studioMeta.hasDocs, "Portal Bar missing navigation links on /examples/studio/");
+
+    if (studioMeta.hasFrame) {
+      await exCdp.waitFor(
+        `(() => {
+          const f = document.getElementById("nve-example-frame");
+          const txt = f?.contentDocument?.body?.innerText || "";
+          return txt.includes("AETHER");
+        })()`,
+        15000,
+        "Studio WASM AETHER render"
+      );
+      await new Promise((r) => setTimeout(r, 250));
+      await exCdp.capturePng(path.join(shotsDir, "example-studio-live.png"));
+      console.log(`    ✓ /examples/studio/ live WASM booted (mode=${studioMeta.mode}, rendered AETHER, example-studio-live.png captured)`);
+
+      // Switch to Counter via Portal Bar link and verify Count: 0 -> 1
+      await exCdp.navigate(`${origin}/examples/counter/`);
+      await exCdp.waitFor(
+        `(() => {
+          const f = document.getElementById("nve-example-frame");
+          const txt = f?.contentDocument?.body?.innerText || "";
+          return txt.includes("Count: 0");
+        })()`,
+        15000,
+        "Counter WASM Count: 0 render"
+      );
+      await exCdp.eval(`(() => {
+        const doc = document.getElementById("nve-example-frame").contentDocument;
+        const els = Array.from(doc.querySelectorAll("#app [data-nve-id]"));
+        const btn = els.find((el) => el.textContent && el.textContent.trim() === "Increment +");
+        if (!btn) throw new Error("Counter Increment + button not found");
+        btn.click();
+      })()`);
+      await exCdp.waitFor(
+        `(() => {
+          const f = document.getElementById("nve-example-frame");
+          const txt = f?.contentDocument?.body?.innerText || "";
+          return txt.includes("Count: 1");
+        })()`,
+        5000,
+        "Counter WASM increment Count: 0 -> 1"
+      );
+      console.log("    ✓ /examples/counter/ live WASM booted and incremented Count: 0 -> 1");
+    } else {
+      console.log(`    ! /examples/studio/ in fallback mode (${studioMeta.mode}) — skipping live WASM assertions`);
+    }
+
+    assert(exCdp.consoleErrors.length === 0, `Examples console errors: ${exCdp.consoleErrors.join(" | ")}`);
+    assert(exCdp.pageErrors.length === 0, `Examples page errors: ${exCdp.pageErrors.join(" | ")}`);
+    exCdp.close();
+
+    console.log("==> [5/5] ALL HEADLESS CHROME LANDING + DOCS + LIVE WASM EXAMPLES E2E CHECKS PASSED!");
   } finally {
     try { chrome.proc.kill("SIGTERM"); } catch {}
     try { fs.rmSync(chrome.userDataDir, { recursive: true, force: true }); } catch {}

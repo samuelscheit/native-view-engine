@@ -3,6 +3,7 @@
 pub(crate) mod build;
 pub(crate) mod check;
 pub(crate) mod dev;
+pub(crate) mod examples;
 
 use std::path::PathBuf;
 
@@ -36,6 +37,14 @@ pub(crate) enum DocsAction {
         /// Skip compiling the wasm32 progressive hydration bundle (emit static SSR HTML/CSS only).
         #[arg(long, default_value_t = false)]
         skip_wasm: bool,
+        /// Optional path to a prebuilt `hosts/web-shell` bundle directory (supports both unified
+        /// `index.html` + `pkg/` and per-app `studio/` + `counter/` layouts).
+        #[arg(long)]
+        web_shell_dist: Option<PathBuf>,
+        /// Automatically build `hosts/web-shell` via `./hosts/web-shell/build.sh` if no prebuilt
+        /// bundle is found at `--web-shell-dist`.
+        #[arg(long, default_value_t = false)]
+        with_examples: bool,
     },
     /// Build once, serve over HTTP, watch docs/content/, and incrementally rebuild on change.
     Dev {
@@ -60,12 +69,16 @@ pub(crate) fn cmd_docs(action: DocsAction) {
             base_path,
             site_url,
             skip_wasm,
+            web_shell_dist,
+            with_examples,
         } => build::run_build(&build::BuildOptions {
             content,
             out,
             base_path,
             site_url,
             skip_wasm,
+            web_shell_dist,
+            with_examples,
         })
         .map(|_| ()),
         DocsAction::Dev {

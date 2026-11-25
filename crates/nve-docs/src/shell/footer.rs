@@ -83,7 +83,7 @@ pub fn PageFooter() -> Element {
     let snap = state.read();
     let theme = snap.theme();
     let prev_next = snap.prev_next();
-    let base_path = snap.config.base_path.clone();
+    let config = snap.config.clone();
     let edit_url = snap
         .current_page()
         .and_then(|page| snap.config.edit_url_for(&page.source_path));
@@ -115,8 +115,8 @@ pub fn PageFooter() -> Element {
 
                     if let Some(prev) = prev_next.prev {
                         {
-                            let prev_route = DocsRoute::new(&prev.route);
-                            let prev_href = prev_route.href(&base_path);
+                            let prev_route = config.docs_route_for_content(&prev.route);
+                            let prev_href = config.resolve_href(prev_route.as_str());
                             rsx! {
                                 pressable {
                                     test_id: "docs-prev-link",
@@ -144,8 +144,8 @@ pub fn PageFooter() -> Element {
 
                     if let Some(next) = prev_next.next {
                         {
-                            let next_route = DocsRoute::new(&next.route);
-                            let next_href = next_route.href(&base_path);
+                            let next_route = config.docs_route_for_content(&next.route);
+                            let next_href = config.resolve_href(next_route.as_str());
                             rsx! {
                                 pressable {
                                     test_id: "docs-next-link",

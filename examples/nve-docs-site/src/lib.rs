@@ -5,6 +5,7 @@
 //! - Progressive `wasm32` browser hydration + SPA routing (`wasm::hydrate_docs_app`)
 //! - Native Desktop/Mobile hosts via `export_nve_app!` (`native_app::DocsSiteModule`)
 
+pub mod landing;
 pub mod native_app;
 pub mod playgrounds;
 pub mod site;
@@ -16,16 +17,18 @@ use std::sync::Arc;
 use nve_abi::SurfaceId;
 use nve_backend_web::{SsrOutput, WebBackend};
 use nve_dioxus::DioxusSurface;
-use nve_docs::{DocsViewport, PlaygroundRegistry, create_docs_surface_with_viewport};
+use nve_docs::{DocsViewport, PlaygroundRegistry, create_docs_surface_with_pages};
 use nve_engine::RenderBackend;
 use nve_mdx::CompiledSite;
 use nve_sdk::{HostServiceProvider, MemoryHostServices};
 
+pub use landing::nve_site_custom_pages;
 pub use native_app::DocsSiteModule;
 pub use playgrounds::{build_playground_registry, nve_docs_playground_registry};
 pub use site::{
-    EMBEDDED_DOCS_FILES, GITHUB_EDIT_BASE_URL, GITHUB_REPO_URL, embedded_compiled_site,
-    embedded_site_source, nve_docs_site_config, nve_docs_site_config_with_theme,
+    DOCS_ROUTE_PREFIX, EMBEDDED_DOCS_FILES, GITHUB_EDIT_BASE_URL, GITHUB_REPO_URL,
+    embedded_compiled_site, embedded_site_source, nve_docs_site_config,
+    nve_docs_site_config_with_theme,
 };
 
 /// Return the shared playground registry for CLI validation and site mounting.
@@ -71,14 +74,16 @@ pub fn create_nve_docs_surface_full(
 ) -> DioxusSurface {
     let config = nve_docs_site_config_with_theme(base_path, default_dark);
     let playgrounds = nve_docs_playground_registry();
+    let custom_pages = nve_site_custom_pages();
     let host_services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
-    create_docs_surface_with_viewport(
+    create_docs_surface_with_pages(
         surface_id,
         route,
         viewport,
         config,
         compiled_site,
         playgrounds,
+        custom_pages,
         host_services,
     )
 }

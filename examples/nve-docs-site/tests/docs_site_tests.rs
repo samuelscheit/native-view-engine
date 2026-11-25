@@ -135,35 +135,62 @@ fn all_30_embedded_routes_validate_and_render_semantic_ssr() {
         );
     }
 
+    let cfg = nve_docs_site::nve_docs_site_config("/native-view-engine");
+
+    // Verify Landing Page ("/") and Examples Gallery ("/examples") SSR
+    for custom_route in ["/", "/examples"] {
+        let ssr = render_nve_docs_ssr(
+            custom_route,
+            "/native-view-engine",
+            DocsViewport::desktop_default(),
+        );
+        assert!(!ssr.html.is_empty(), "SSR HTML empty for {custom_route}");
+        assert!(
+            ssr.html.contains("<main") && ssr.html.contains("<h1"),
+            "SSR HTML missing <main>/<h1> for {custom_route}"
+        );
+    }
+
     for page in &site.pages {
-        let ssr = render_nve_docs_ssr(&page.route, "/native-view-engine", DocsViewport::desktop_default());
+        let public_route = cfg.docs_route_for_content(&page.route);
+        let ssr = render_nve_docs_ssr(
+            public_route.as_str(),
+            "/native-view-engine",
+            DocsViewport::desktop_default(),
+        );
         assert!(
             !ssr.html.is_empty(),
             "SSR HTML empty for route {}",
-            page.route
+            public_route
         );
         assert!(
             ssr.html.contains("<nav") && ssr.html.contains("<main") && ssr.html.contains("<article"),
             "SSR HTML missing semantic landmarks for route {}",
-            page.route
+            public_route
         );
         assert!(
             ssr.html.contains("<h1"),
             "SSR HTML missing <h1> for route {}",
-            page.route
+            public_route
         );
         assert!(
             ssr.html.contains(&page.title) || !page.title.is_empty(),
             "SSR HTML missing title '{}' for route {}",
             page.title,
-            page.route
+            public_route
         );
     }
 }
 
 #[test]
 fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
-    for route in ["/", "/guides/ui-components", "/guides/local-first-crdt"] {
+    for route in [
+        "/",
+        "/examples",
+        "/docs",
+        "/docs/guides/ui-components",
+        "/docs/guides/local-first-crdt",
+    ] {
         let ssr = render_nve_docs_ssr(route, "", DocsViewport::desktop_default());
         let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
         let root_before = hydrated
@@ -199,8 +226,73 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
 }
 
 #[test]
+fn landing_hero_preview_tabs_and_examples_gallery_are_interactive() {
+    let mut h = InteractiveHarness::mount("/");
+    assert!(h.maybe_find("landing-page").is_some());
+    assert!(h.text_of("hero-live-count").contains("Count: 3"));
+
+    // Increment live counter inside the hero widget
+    h.press("hero-live-inc");
+    assert!(h.text_of("hero-live-count").contains("Count: 4"));
+
+    // Switch hero preview tabs: RSX Code & Binary IR
+    h.press("hero-tab-code");
+    assert!(h.maybe_find("hero-panel-code").is_some());
+    h.press("hero-tab-ir");
+    assert!(h.maybe_find("hero-panel-ir").is_some());
+    assert!(h.text_of("hero-panel-ir").contains("Count: 4"));
+
+    // Copy CLI command button reacts
+    h.press("landing-cli-copy");
+    assert!(h.text_of("landing-cli-copy").contains("Copied"));
+
+    // Verify Development & Benchmark Progression dashboard (NVE_DRAW1 canvases + Log scale + Table toggle + category filters)
+    assert!(h.maybe_find("dev-progression-timeline").is_some());
+    assert!(h.maybe_find("bench-latest-canvas").is_some());
+    assert!(
+        h.backend
+            .node(h.find("bench-latest-canvas"))
+            .expect("bar canvas")
+            .draw_op_count
+            >= 10
+    );
+    assert!(
+        h.backend
+            .node(h.find("bench-canvas-cmdbuf-encode"))
+            .expect("line canvas")
+            .draw_op_count
+            >= 8
+    );
+
+    // Toggle Log scale -> Linear and verify Y-axis updates
+    let yaxis_log = h.text_of("bench-bar-yaxis");
+    h.press("bench-log-scale");
+    let yaxis_linear = h.text_of("bench-bar-yaxis");
+    assert_ne!(yaxis_log, yaxis_linear, "Log scale switch should recompute Y-axis ticks");
+
+    // Filter to Web & WASM category -> shows Web progression cards and hides Rust-only card
+    h.press("bench-filter-web-wasm");
+    assert!(h.maybe_find("bench-card-web-ssr-payload").is_some());
+    assert!(h.maybe_find("bench-card-cmdbuf-encode").is_none());
+    h.press("bench-filter-all");
+    assert!(h.maybe_find("bench-card-cmdbuf-encode").is_some());
+
+    // Toggle Table view -> swaps NVE_DRAW1 bar chart to structured data table
+    h.press("bench-table-toggle");
+    assert!(h.maybe_find("bench-latest-table").is_some());
+    assert!(h.maybe_find("bench-latest-canvas").is_none());
+
+    // Navigate via CTA to Examples Gallery and switch playgrounds
+    let mut eg = InteractiveHarness::mount("/examples");
+    assert!(eg.maybe_find("examples-gallery-page").is_some());
+    assert!(eg.maybe_find("pg-ui-root").is_some());
+    eg.press("examples-pg-tab-crdt-simulator");
+    assert!(eg.maybe_find("pg-crdt-convergence").is_some());
+}
+
+#[test]
 fn playground_1_and_2_ui_and_virtual_list_100k_are_interactive() {
-    let mut h = InteractiveHarness::mount("/guides/ui-components");
+    let mut h = InteractiveHarness::mount("/docs/guides/ui-components");
 
     // 1. UI Playground interactions
     assert!(h.text_of("pg-ui-count-badge").contains("Actions: 0"));
@@ -241,7 +333,7 @@ fn playground_1_and_2_ui_and_virtual_list_100k_are_interactive() {
 
 #[test]
 fn playground_3_router_sandbox_handles_push_pop_modal_and_guard() {
-    let mut h = InteractiveHarness::mount("/guides/routing");
+    let mut h = InteractiveHarness::mount("/docs/guides/routing");
 
     assert_eq!(h.text_of("pg-router-path"), "/");
     assert!(h.text_of("pg-router-depth").contains("Depth: 1"));
@@ -272,7 +364,7 @@ fn playground_3_router_sandbox_handles_push_pop_modal_and_guard() {
 
 #[test]
 fn playground_4_canvas_draw1_emits_real_binary_draw_ops_and_updates() {
-    let mut h = InteractiveHarness::mount("/guides/canvas-draw1");
+    let mut h = InteractiveHarness::mount("/docs/guides/canvas-draw1");
 
     let canvas_id = h.find("pg-canvas-surface");
     let ops_initial = h.backend.node(canvas_id).expect("canvas node").draw_op_count;
@@ -299,7 +391,7 @@ fn playground_4_canvas_draw1_emits_real_binary_draw_ops_and_updates() {
 
 #[test]
 fn playground_5_crdt_simulator_diverges_offline_and_converges_via_nvc1() {
-    let mut h = InteractiveHarness::mount("/guides/local-first-crdt");
+    let mut h = InteractiveHarness::mount("/docs/guides/local-first-crdt");
 
     assert!(h.text_of("pg-crdt-convergence").contains("Converged"));
 

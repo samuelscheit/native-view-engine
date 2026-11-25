@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use dioxus_core::Element;
-use nve_mdx::{ComponentRegistry, ComponentSchema, PropSchema, PropType};
+use nve_mdx::{ComponentRegistry, ComponentSchema, PropSchema, PropType, normalize_route};
 
 /// Metadata describing an interactive live Dioxus playground embedded inside docs pages.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +145,63 @@ impl PlaygroundRegistry {
     }
 
     pub fn ids(&self) -> Vec<&str> {
+        self.entries.keys().map(String::as_str).collect()
+    }
+}
+
+/// Thread-safe Dioxus factory closure for rendering a full-bleed custom site route (such as `/`
+/// landing pages or `/examples` galleries) inside [`crate::DocsShell`].
+pub type CustomPageRenderer = Arc<dyn Fn() -> Element + Send + Sync>;
+
+/// Registry mapping normalized application routes (e.g. `"/"`, `"/examples"`) to custom full-bleed
+/// Dioxus page renderers that share the global navbar, theme toggle, and `⌘K` search modal.
+#[derive(Default, Clone)]
+pub struct CustomPageRegistry {
+    entries: BTreeMap<String, CustomPageRenderer>,
+}
+
+impl fmt::Debug for CustomPageRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CustomPageRegistry")
+            .field("routes", &self.entries.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl CustomPageRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a custom page renderer at `route` (normalized via `normalize_route`).
+    pub fn register<F>(&mut self, route: impl AsRef<str>, render: F) -> &mut Self
+    where
+        F: Fn() -> Element + Send + Sync + 'static,
+    {
+        self.entries
+            .insert(normalize_route(route.as_ref()), Arc::new(render));
+        self
+    }
+
+    /// Look up a custom page renderer by route.
+    pub fn get(&self, route: &str) -> Option<&CustomPageRenderer> {
+        self.entries.get(&normalize_route(route))
+    }
+
+    /// Returns `true` when a custom page renderer is registered for `route`.
+    pub fn contains(&self, route: &str) -> bool {
+        self.entries.contains_key(&normalize_route(route))
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn routes(&self) -> Vec<&str> {
         self.entries.keys().map(String::as_str).collect()
     }
 }

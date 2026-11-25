@@ -265,7 +265,7 @@ pub fn CardsGridView(items: Vec<CardItem>, scope_key: String) -> Element {
     let snap = state.read();
     let theme = snap.theme();
     let is_mobile = snap.viewport.is_mobile();
-    let base_path = snap.config.base_path.clone();
+    let config = snap.config.clone();
     drop(snap);
 
     let dir = if is_mobile { "column" } else { "row" };
@@ -276,10 +276,16 @@ pub fn CardsGridView(items: Vec<CardItem>, scope_key: String) -> Element {
             style: "width: 100%; flex-direction: {dir}; gap: 12px; flex-wrap: wrap;",
             for (idx, card) in items.into_iter().enumerate() {
                 {
-                    let target = card.href.as_deref().and_then(DocsRoute::parse_link_target);
-                    let resolved_href = card.href.as_deref().map(|h| match DocsRoute::parse_link_target(h) {
-                        Some((Some(r), Some(a))) => format!("{}#{a}", r.href(&base_path)),
-                        Some((Some(r), None)) => r.href(&base_path),
+                    let target = card.href.as_deref().and_then(|h| {
+                        DocsRoute::parse_link_target(h).map(|(r, a)| {
+                            (r.map(|rt| config.docs_route_for_content(rt.as_str())), a)
+                        })
+                    });
+                    let resolved_href = card.href.as_deref().map(|h| match &target {
+                        Some((Some(r), Some(a))) => {
+                            format!("{}#{a}", config.resolve_href(r.as_str()))
+                        }
+                        Some((Some(r), None)) => config.resolve_href(r.as_str()),
                         Some((None, Some(a))) => format!("#{a}"),
                         _ => h.to_string(),
                     });

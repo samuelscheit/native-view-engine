@@ -25,6 +25,8 @@ pub(crate) fn run_dev(content_dir: &Path, port: u16, skip_wasm: bool) -> Result<
         base_path: String::new(),
         site_url: format!("http://127.0.0.1:{port}"),
         skip_wasm,
+        web_shell_dist: None,
+        with_examples: false,
     };
 
     run_build(&initial_opts)?;
@@ -97,6 +99,8 @@ fn watch_and_rebuild(
             site_url: site_url.clone(),
             // Keep previously compiled WASM bundle in assets/ for instant incremental rebuilds.
             skip_wasm: true,
+            web_shell_dist: None,
+            with_examples: false,
         };
         if let Err(err) = run_build(&opts) {
             eprintln!("[docs dev] rebuild error: {err}");
