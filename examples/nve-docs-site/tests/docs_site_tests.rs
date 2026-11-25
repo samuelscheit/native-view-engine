@@ -188,40 +188,60 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
         "/",
         "/examples",
         "/docs",
+        "/docs/reference/benchmarks",
         "/docs/guides/ui-components",
         "/docs/guides/local-first-crdt",
     ] {
         let ssr = render_nve_docs_ssr(route, "", DocsViewport::desktop_default());
-        let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
-        let root_before = hydrated
-            .native_dom_instance_id(nve_abi::ROOT_NODE_ID)
-            .expect("root SSR DOM instance");
+        for client_vp in [
+            DocsViewport::desktop_default(),
+            DocsViewport::new(1024.0, 768.0),
+            DocsViewport::new(390.0, 844.0),
+        ] {
+            let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
+            let root_before = hydrated
+                .native_dom_instance_id(nve_abi::ROOT_NODE_ID)
+                .expect("root SSR DOM instance");
 
-        let mut surface = create_nve_docs_surface(route, "", DocsViewport::desktop_default());
-        let (_, _, frame_bytes) = surface.render_frame(1);
-        hydrated
-            .submit_frame(&frame_bytes)
-            .expect("hydrate submit_frame");
+            let mut surface = create_nve_docs_surface(route, "", client_vp);
+            let (_, _, frame_bytes) = surface.render_frame(1);
+            hydrated
+                .submit_frame(&frame_bytes)
+                .expect("hydrate submit_frame");
+            hydrated.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
 
-        let report = hydrated.hydration_report();
-        assert!(report.hydrated, "route {route} should report hydrated=true");
-        assert!(
-            report.adopted_nodes > 50,
-            "route {route} should adopt >50 SSR nodes, got {}",
-            report.adopted_nodes
-        );
-        assert_eq!(
-            report.mismatches.len(),
-            0,
-            "route {route} had hydration mismatches: {:?}",
-            report.mismatches
-        );
-        assert_eq!(report.replaced_nodes, 0);
-        assert_eq!(
-            hydrated.native_dom_instance_id(nve_abi::ROOT_NODE_ID),
-            Some(root_before),
-            "root DOM instance identity must be preserved across hydration"
-        );
+            let report = hydrated.hydration_report();
+            assert!(
+                report.hydrated,
+                "route {route} ({}) should report hydrated=true",
+                client_vp.mode_label()
+            );
+            assert!(
+                report.adopted_nodes > 50,
+                "route {route} ({}) should adopt >50 SSR nodes, got {}",
+                client_vp.mode_label(),
+                report.adopted_nodes
+            );
+            assert_eq!(
+                report.mismatches.len(),
+                0,
+                "route {route} ({}) had hydration mismatches: {:?}",
+                client_vp.mode_label(),
+                report.mismatches
+            );
+            assert_eq!(
+                report.replaced_nodes,
+                0,
+                "route {route} ({}) replaced SSR nodes",
+                client_vp.mode_label()
+            );
+            assert_eq!(
+                hydrated.native_dom_instance_id(nve_abi::ROOT_NODE_ID),
+                Some(root_before),
+                "root DOM instance identity must be preserved across hydration for {route} ({})",
+                client_vp.mode_label()
+            );
+        }
     }
 }
 

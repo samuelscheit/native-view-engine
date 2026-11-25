@@ -26,6 +26,7 @@ pub fn DocsToc() -> Element {
     rsx! {
         view {
             test_id: "docs-toc",
+            nve_show_on: ShowOn(MediaQuery::min_width(1200)),
             accessibility_role: "complementary",
             accessibility_label: "On this page",
             style: "width: 220px; height: 100%; flex-shrink: 0; flex-direction: column; padding: 20px; gap: 10px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};",

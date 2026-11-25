@@ -72,6 +72,7 @@ const DOCS_HEAD_CHROME: &str = concat!(
     "[testid=\"docs-inlines\"] a{text-decoration:underline;text-underline-offset:3px;}",
     "[testid=\"docs-code-tokens\"]{display:block!important;white-space:pre;line-height:1.55;}",
     "[testid=\"docs-code-tokens\"] span{display:inline!important;white-space:pre;}",
+    "[testid^=\"docs-table-\"]{overflow-x:auto;max-width:100%;}",
     "[testid=\"landing-cta-row\"] a,[testid=\"hero-tab-live\"],[testid=\"hero-tab-code\"],[testid=\"hero-tab-ir\"],[testid=\"landing-cli-copy\"],[testid^=\"examples-pg-tab-\"],[testid^=\"hero-host-\"]{white-space:nowrap!important;}",
     "[testid=\"bench-bar-legend\"],[testid=\"bento-host-pills\"],[testid=\"bench-controls-bar\"]{flex-wrap:wrap!important;}",
     "a,button,[role=\"button\"],[role=\"link\"],[role=\"tab\"]{cursor:pointer;}",
@@ -367,7 +368,7 @@ fn hydration_bootstrap_script(base_path: &str) -> String {
              await init();\n\
              const controller = hydrate_docs_app(\"app\", \"{escaped_base}\");\n\
              window.__NVE_DOCS__ = controller;\n\
-             window.dispatchEvent(new CustomEvent(\"nve:docs-hydrated\", {{ detail: {{ adopted: controller.adopted_nodes, mismatches: controller.mismatches }} }}));\n\
+             window.dispatchEvent(new CustomEvent(\"nve:docs-hydrated\", {{ detail: {{ adopted: controller.adopted_nodes, mismatches: controller.mismatches, replayed_events: controller.replayed_events, reconciled_dirty_controls: controller.reconciled_dirty_controls }} }}));\n\
            }} catch (err) {{\n\
              console.error(\"[nve-docs] WASM hydration failed:\", err);\n\
              window.__NVE_DOCS_ERROR__ = String(err);\n\

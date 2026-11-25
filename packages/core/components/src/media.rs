@@ -12,6 +12,10 @@ use nve_abi::{
     StyleProps,
 };
 
+pub use crate::client_hints::{
+    ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
+};
+
 /// Bitflag in [`MediaQuery::flags`] indicating [`MediaQuery::min_width_px`] is active.
 pub const MEDIA_FLAG_HAS_MIN_WIDTH: u8 = 1 << 0;
 

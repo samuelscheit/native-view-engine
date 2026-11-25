@@ -3,6 +3,7 @@
 //! draw-list IR (`NVE_DRAW1`).
 
 pub mod canvas_ir;
+pub mod client_hints;
 pub mod media;
 pub mod reconcile;
 
@@ -10,6 +11,9 @@ pub use canvas_ir::{
     CanvasOp, DrawListBuilder, DrawListDecoder, DrawListError, DrawListHeader, ImageResizeMode,
     DRAW_LIST_ATTR_PREFIX, MAX_DRAW_OPS, MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC,
     NVE_DRAW_VERSION,
+};
+pub use client_hints::{
+    ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
 pub use media::{
     FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,

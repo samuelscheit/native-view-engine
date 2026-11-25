@@ -24,11 +24,11 @@ pub fn BentoArchitectureGrid() -> Element {
     let state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     let config = snap.config.clone();
     drop(snap);
 
-    let row_dir = if is_mobile { "column" } else { "row" };
+    let mobile_col = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
     let bench_href = config.resolve_href("/docs/reference/benchmarks");
 
     rsx! {
@@ -71,7 +71,8 @@ pub fn BentoArchitectureGrid() -> Element {
 
             // Row 1: 3 metric cards (Modular C ABI | Binary IR & SceneView | 100k Fenwick VirtualList)
             view {
-                style: "width: 100%; flex-direction: {row_dir}; gap: 16px;",
+                nve_style: mobile_col.clone(),
+                style: "width: 100%; flex-direction: row; gap: 16px;",
 
                 BentoMetricCard {
                     test_id: "bento-abi",
@@ -103,7 +104,8 @@ pub fn BentoArchitectureGrid() -> Element {
 
             // Row 2: Wide 10-Host Matrix card + Live Pairing & Local-First CRDT card
             view {
-                style: "width: 100%; flex-direction: {row_dir}; gap: 16px;",
+                nve_style: mobile_col,
+                style: "width: 100%; flex-direction: row; gap: 16px;",
 
                 // 10 Host Targets Matrix
                 view {
@@ -235,11 +237,11 @@ pub fn LiveExamplesStrip() -> Element {
     let state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     let config = snap.config.clone();
     drop(snap);
 
-    let row_dir = if is_mobile { "column" } else { "row" };
+    let mobile_col = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
     let examples_href = config.resolve_href("/examples");
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
     let counter_href = resolve_example_app_href(&config.base_path, "/examples/counter");
@@ -289,7 +291,8 @@ pub fn LiveExamplesStrip() -> Element {
             }
 
             view {
-                style: "width: 100%; flex-direction: {row_dir}; gap: 16px;",
+                nve_style: mobile_col,
+                style: "width: 100%; flex-direction: row; gap: 16px;",
 
                 // Card 1: Aether Workspace + NVE Studio
                 view {

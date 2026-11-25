@@ -101,5 +101,6 @@ pub fn render_nve_docs_ssr(route: &str, base_path: &str, viewport: DocsViewport)
     backend
         .submit_frame(&frame_bytes)
         .expect("WebBackend submit_frame for docs SSR");
+    backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
     backend.render_ssr()
 }

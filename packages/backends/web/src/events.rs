@@ -54,6 +54,14 @@ where
         .find_map(|&(id, meta)| predicate(meta).then_some(id))
 }
 
+/// Returns `true` when an `<a href="...">` explicitly opts out of client-side SPA interception
+/// via `data-nve-hard-nav="true"` (used by standalone lazy-loaded WASM example apps).
+#[cfg(any(target_arch = "wasm32", test))]
+#[inline]
+pub fn is_hard_nav_anchor(hard_nav_attr: Option<&str>) -> bool {
+    hard_nav_attr.is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+}
+
 /// Returns `true` when a hydrated click on an `<a href="...">` inside an interactive
 /// `EventMask::PRESS` node should call `preventDefault()` and emit `NativeEventKind::Press` for
 /// zero-reload SPA navigation, or `false` to let the browser handle it natively (modifier clicks,
@@ -204,27 +212,12 @@ impl Drop for RootEventDelegator {
         let c = &self.container;
         let _ = c.remove_event_listener_with_callback("click", self.click.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("input", self.input.as_ref().unchecked_ref());
-        let _ =
-            c.remove_event_listener_with_callback("keydown", self.keydown.as_ref().unchecked_ref());
-        let _ =
-            c.remove_event_listener_with_callback("focusin", self.focusin.as_ref().unchecked_ref());
-        let _ = c.remove_event_listener_with_callback(
-            "focusout",
-            self.focusout.as_ref().unchecked_ref(),
-        );
-        let _ = c.remove_event_listener_with_callback_and_bool(
-            "scroll",
-            self.scroll.as_ref().unchecked_ref(),
-            true,
-        );
-        let _ = c.remove_event_listener_with_callback(
-            "compositionstart",
-            self.compositionstart.as_ref().unchecked_ref(),
-        );
-        let _ = c.remove_event_listener_with_callback(
-            "compositionend",
-            self.compositionend.as_ref().unchecked_ref(),
-        );
+        let _ = c.remove_event_listener_with_callback("keydown", self.keydown.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback("focusin", self.focusin.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback("focusout", self.focusout.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback_and_bool("scroll", self.scroll.as_ref().unchecked_ref(), true);
+        let _ = c.remove_event_listener_with_callback("compositionstart", self.compositionstart.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback("compositionend", self.compositionend.as_ref().unchecked_ref());
     }
 }
 
@@ -269,6 +262,9 @@ impl WebBackend {
                         .and_then(|t| t.closest("a[href]").ok().flatten())
                         .filter(|a| a.get_attribute("href").is_some_and(|h| !h.trim().is_empty()))
                     {
+                        if is_hard_nav_anchor(anchor.get_attribute("data-nve-hard-nav").as_deref()) {
+                            return;
+                        }
                         let target_attr = anchor.get_attribute("target");
                         if !should_intercept_anchor_click(
                             ev.button(),
@@ -556,29 +552,14 @@ impl WebBackend {
             })
         };
 
-        let _ =
-            container.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
-        let _ =
-            container.add_event_listener_with_callback("input", input.as_ref().unchecked_ref());
-        let _ =
-            container.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-        let _ =
-            container.add_event_listener_with_callback("focusin", focusin.as_ref().unchecked_ref());
-        let _ = container
-            .add_event_listener_with_callback("focusout", focusout.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback_and_bool(
-            "scroll",
-            scroll.as_ref().unchecked_ref(),
-            true,
-        );
-        let _ = container.add_event_listener_with_callback(
-            "compositionstart",
-            compositionstart.as_ref().unchecked_ref(),
-        );
-        let _ = container.add_event_listener_with_callback(
-            "compositionend",
-            compositionend.as_ref().unchecked_ref(),
-        );
+        let _ = container.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("input", input.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("focusin", focusin.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("focusout", focusout.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback_and_bool("scroll", scroll.as_ref().unchecked_ref(), true);
+        let _ = container.add_event_listener_with_callback("compositionstart", compositionstart.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("compositionend", compositionend.as_ref().unchecked_ref());
 
         self.root_delegator = Some(RootEventDelegator {
             container,
@@ -638,5 +619,20 @@ impl WebBackend {
         let _ =
             window.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
         self.window_keydown = Some(closure);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_hard_nav_anchor, should_intercept_anchor_click};
+
+    #[test]
+    fn hard_nav_anchor_attribute_bypasses_spa_interception() {
+        assert!(is_hard_nav_anchor(Some("true")));
+        assert!(is_hard_nav_anchor(Some(" TRUE ")));
+        assert!(!is_hard_nav_anchor(None));
+        assert!(!is_hard_nav_anchor(Some("")));
+        assert!(!is_hard_nav_anchor(Some("false")));
+        assert!(should_intercept_anchor_click(0, false, false, false, false, None, false));
     }
 }

@@ -12,6 +12,7 @@ pub use search_modal::SearchModal;
 pub use sidebar::{DocsSidebar, route_test_id_slug};
 pub use toc::DocsToc;
 
+use nve_abi::EdgeInsets;
 use nve_dioxus::prelude::*;
 use nve_ui::ThemeProvider;
 
@@ -26,8 +27,6 @@ pub fn DocsShell() -> Element {
     let theme = snap.theme();
     let ui_theme = theme.to_ui_theme();
     let viewport = snap.viewport;
-    let is_mobile = viewport.is_mobile();
-    let show_toc = viewport.show_toc();
     let mobile_drawer_open = snap.mobile_drawer_open;
     let viewport_mode = viewport.mode_label();
     let site_title = snap.config.site_title.clone();
@@ -42,8 +41,16 @@ pub fn DocsShell() -> Element {
     let color_scheme_attr = if theme.is_dark { "dark" } else { "light" };
     drop(snap);
 
-    let main_padding_h = if is_mobile { "16px" } else { "40px" };
-    let main_padding_v = if is_mobile { "20px" } else { "32px" };
+    let article_container_style = TypedStyle::new()
+        .width_pct(100.0)
+        .max_width_px(820.0)
+        .flex_col()
+        .padding_xy(40.0, 32.0)
+        .gap(20.0)
+        .at(
+            MediaQuery::max_width(959),
+            ResponsiveStylePatch::new().padding_insets(EdgeInsets::symmetric(20.0, 16.0)),
+        );
 
     rsx! {
         ThemeProvider {
@@ -91,9 +98,7 @@ pub fn DocsShell() -> Element {
                             {render_custom()}
                         }
                     } else {
-                        if !is_mobile {
-                            DocsSidebar { mobile_overlay: false }
-                        }
+                        DocsSidebar { mobile_overlay: false }
 
                         // Center content scroll column
                         scrollview {
@@ -102,7 +107,7 @@ pub fn DocsShell() -> Element {
                             style: "flex-grow: 1; flex-shrink: 1; height: 100%; flex-direction: column; background-color: {theme.canvas};",
                             view {
                                 test_id: "docs-article-container",
-                                style: "width: 100%; max-width: 820px; flex-direction: column; padding-horizontal: {main_padding_h}; padding-vertical: {main_padding_v}; gap: 20px;",
+                                nve_style: article_container_style,
 
                                 Breadcrumbs {}
 
@@ -123,14 +128,14 @@ pub fn DocsShell() -> Element {
                             }
                         }
 
-                        if show_toc && page_toc_enabled {
+                        if page_toc_enabled {
                             DocsToc {}
                         }
                     }
                 }
 
-                // Mobile slide-over drawer overlay (< 960pt)
-                if is_mobile && mobile_drawer_open {
+                // Mobile slide-over drawer overlay (< 960pt, hidden cleanly via CSS `@media` on desktop)
+                if mobile_drawer_open {
                     DocsSidebar { mobile_overlay: true }
                 }
 

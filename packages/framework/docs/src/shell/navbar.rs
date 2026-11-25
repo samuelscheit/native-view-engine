@@ -11,7 +11,6 @@ pub fn DocsNavbar() -> Element {
     let mut state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     let drawer_open = snap.mobile_drawer_open;
     let active_route = snap.active_route.as_str().to_string();
     let site_title = snap.config.site_title.clone();
@@ -61,21 +60,20 @@ pub fn DocsNavbar() -> Element {
             view {
                 style: "flex-direction: row; align-items: center; gap: 12px;",
 
-                if is_mobile {
-                    pressable {
-                        test_id: "docs-mobile-menu-toggle",
-                        accessibility_role: "button",
-                        accessibility_label: "Toggle navigation sidebar",
-                        aria_expanded: "{menu_expanded}",
-                        aria_controls: "docs-sidebar-drawer",
-                        style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface_subtle};",
-                        onpress: move |_| {
-                            state.write().toggle_mobile_drawer();
-                        },
-                        text {
-                            style: "font-size: 13px; font-weight: 600; color: {theme.text};",
-                            "{menu_label}"
-                        }
+                pressable {
+                    test_id: "docs-mobile-menu-toggle",
+                    nve_show_on: ShowOn(MediaQuery::max_width(959)),
+                    accessibility_role: "button",
+                    accessibility_label: "Toggle navigation sidebar",
+                    aria_expanded: "{menu_expanded}",
+                    aria_controls: "docs-sidebar-drawer",
+                    style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface_subtle};",
+                    onpress: move |_| {
+                        state.write().toggle_mobile_drawer();
+                    },
+                    text {
+                        style: "font-size: 13px; font-weight: 600; color: {theme.text};",
+                        "{menu_label}"
                     }
                 }
 
@@ -96,18 +94,19 @@ pub fn DocsNavbar() -> Element {
                             "{brand_mark}"
                         }
                     }
-                    if !is_mobile {
-                        text {
-                            style: "font-size: 15px; font-weight: 700; color: {theme.text};",
-                            "{site_title}"
-                        }
+                    text {
+                        test_id: "docs-brand-title",
+                        nve_show_on: ShowOn(MediaQuery::min_width(960)),
+                        style: "font-size: 15px; font-weight: 700; color: {theme.text};",
+                        "{site_title}"
                     }
                 }
 
                 // Desktop section tabs
-                if !is_mobile && !sections.is_empty() {
+                if !sections.is_empty() {
                     view {
                         test_id: "docs-section-tabs",
+                        nve_show_on: ShowOn(MediaQuery::min_width(960)),
                         accessibility_role: "navigation",
                         accessibility_label: "Documentation sections",
                         style: "flex-direction: row; align-items: center; gap: 4px; margin: 0px;",
@@ -162,16 +161,21 @@ pub fn DocsNavbar() -> Element {
                         state.write().open_search();
                     },
                     text {
+                        nve_show_on: ShowOn(MediaQuery::min_width(960)),
                         style: "font-size: 13px; color: {theme.muted};",
-                        if is_mobile { "Search" } else { "Search docs..." }
+                        "Search docs..."
                     }
-                    if !is_mobile {
-                        view {
-                            style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
-                            text {
-                                style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
-                                "⌘K"
-                            }
+                    text {
+                        nve_show_on: ShowOn(MediaQuery::max_width(959)),
+                        style: "font-size: 13px; color: {theme.muted};",
+                        "Search"
+                    }
+                    view {
+                        nve_show_on: ShowOn(MediaQuery::min_width(960)),
+                        style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                        text {
+                            style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
+                            "⌘K"
                         }
                     }
                 }
@@ -190,9 +194,10 @@ pub fn DocsNavbar() -> Element {
                     }
                 }
 
-                if !is_mobile && let Some(repo_url) = github_url {
+                if let Some(repo_url) = github_url {
                     pressable {
                         test_id: "docs-github-link",
+                        nve_show_on: ShowOn(MediaQuery::min_width(960)),
                         accessibility_role: "link",
                         accessibility_label: "GitHub repository",
                         "href": "{repo_url}",

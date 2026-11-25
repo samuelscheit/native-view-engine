@@ -10,6 +10,10 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
+use nve_components::client_hints::{
+    SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
+};
+
 /// Maps a request target (`/path?query`) and its `Host` header to a `302` location, or `None` to
 /// serve the file.
 pub(crate) type RedirectFn = dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync;
@@ -73,10 +77,7 @@ fn handle_connection(
     match file_path.and_then(|p| fs::read(&p).ok().map(|body| (p, body))) {
         Some((resolved, body)) => {
             let mime = mime_type_for(&resolved);
-            let header = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
+            let header = format_response_headers(status, mime, body.len());
             stream.write_all(header.as_bytes())?;
             stream.write_all(&body)
         }
@@ -118,6 +119,18 @@ pub(crate) fn resolve_static_file(root: &Path, req_path: &str) -> (&'static str,
     ("404 Not Found", None)
 }
 
+pub(crate) fn format_response_headers(status: &str, mime: &str, content_len: usize) -> String {
+    if mime.starts_with("text/html") {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {content_len}\r\nAccept-CH: {SSR_ACCEPT_CH_HEADER}\r\nCritical-CH: {SSR_CRITICAL_CH_HEADER}\r\nVary: {SSR_VARY_HEADER}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        )
+    } else {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {content_len}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        )
+    }
+}
+
 pub(crate) fn mime_type_for(path: &Path) -> &'static str {
     match path
         .extension()
@@ -133,5 +146,33 @@ pub(crate) fn mime_type_for(path: &Path) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_responses_emit_mdn_client_hints_headers() {
+        let headers = format_response_headers("200 OK", "text/html; charset=utf-8", 128);
+        assert!(headers.contains(&format!("Accept-CH: {SSR_ACCEPT_CH_HEADER}\r\n")));
+        assert!(headers.contains(&format!("Critical-CH: {SSR_CRITICAL_CH_HEADER}\r\n")));
+        assert!(headers.contains(&format!("Vary: {SSR_VARY_HEADER}\r\n")));
+        assert!(headers.contains("Content-Length: 128\r\n"));
+    }
+
+    #[test]
+    fn non_html_responses_omit_client_hints_headers() {
+        for mime in [
+            "application/javascript; charset=utf-8",
+            "application/wasm",
+            "text/css; charset=utf-8",
+        ] {
+            let headers = format_response_headers("200 OK", mime, 64);
+            assert!(!headers.contains("Accept-CH:"));
+            assert!(!headers.contains("Critical-CH:"));
+            assert!(!headers.contains("Vary:"));
+        }
     }
 }

@@ -128,10 +128,12 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
 
 #[test]
 fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
+    use nve_dioxus::prelude::MediaQuery;
+
     assert_eq!(MOBILE_BREAKPOINT_PT, 960.0);
     assert_eq!(TOC_BREAKPOINT_PT, 1200.0);
 
-    // Desktop 1280x800: navbar + desktop sidebar + article + TOC
+    // Desktop 1280x800: navbar + desktop sidebar + article + TOC + CSS-hidden mobile menu toggle
     let desktop = DocsHarness::mount("/", DocsViewport::new(1280.0, 800.0));
     let root = desktop.find("docs-root");
     assert_eq!(desktop.raw_str(root, "viewport-mode"), Some("desktop"));
@@ -139,19 +141,48 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
         desktop.raw_str(desktop.find("docs-navbar"), "accessibilityRole"),
         Some("banner")
     );
+    let desktop_sidebar = desktop.find("docs-sidebar-desktop");
     assert_eq!(
-        desktop.raw_str(desktop.find("docs-sidebar-desktop"), "accessibilityRole"),
+        desktop.raw_str(desktop_sidebar, "accessibilityRole"),
         Some("navigation")
+    );
+    assert_eq!(
+        desktop.surface.node_show_on(desktop_sidebar),
+        Some(MediaQuery::min_width(960))
     );
     assert_eq!(
         desktop.raw_str(desktop.find("docs-article"), "accessibilityRole"),
         Some("article")
     );
+    let desktop_toc = desktop.find("docs-toc");
     assert_eq!(
-        desktop.raw_str(desktop.find("docs-toc"), "accessibilityRole"),
+        desktop.raw_str(desktop_toc, "accessibilityRole"),
         Some("complementary")
     );
-    assert!(desktop.maybe_find("docs-mobile-menu-toggle").is_none());
+    assert_eq!(
+        desktop.surface.node_show_on(desktop_toc),
+        Some(MediaQuery::min_width(1200))
+    );
+    let desktop_menu_toggle = desktop.find("docs-mobile-menu-toggle");
+    assert_eq!(
+        desktop.surface.node_show_on(desktop_menu_toggle),
+        Some(MediaQuery::max_width(959))
+    );
+    assert_eq!(
+        desktop.surface.node_show_on(desktop.find("docs-section-tabs")),
+        Some(MediaQuery::min_width(960))
+    );
+    assert_eq!(
+        desktop.surface.node_show_on(desktop.find("docs-github-link")),
+        Some(MediaQuery::min_width(960))
+    );
+    assert!(
+        desktop
+            .surface
+            .node_responsive_rules(desktop.find("docs-article-container"))
+            .iter()
+            .any(|r| r.query == MediaQuery::max_width(959))
+    );
     assert!(desktop.maybe_find("docs-sidebar-drawer").is_none());
 
     let toc_link = desktop.find("docs-toc-architecture-overview");
@@ -168,28 +199,87 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
     );
     assert_eq!(desktop.raw_str(heading, "aria-level"), Some("2"));
 
-    // Tablet 1024x768: sidebar visible, TOC hidden (< 1200pt)
+    // Tablet 1024x768: identical DOM tree with declarative `@media` hiding TOC (< 1200pt)
     let tablet = DocsHarness::mount("/", DocsViewport::new(1024.0, 768.0));
     assert_eq!(
         tablet.raw_str(tablet.find("docs-root"), "viewport-mode"),
         Some("tablet")
     );
-    assert!(tablet.maybe_find("docs-sidebar-desktop").is_some());
-    assert!(tablet.maybe_find("docs-toc").is_none());
+    assert_eq!(
+        tablet.surface.node_show_on(tablet.find("docs-sidebar-desktop")),
+        Some(MediaQuery::min_width(960))
+    );
+    assert_eq!(
+        tablet.surface.node_show_on(tablet.find("docs-toc")),
+        Some(MediaQuery::min_width(1200))
+    );
 
-    // Mobile 390x844: sidebar & TOC collapsed, mobile drawer toggle opens overlay
+    // Mobile 390x844: identical initial DOM tree (0 hydration mismatches), sidebar & TOC hidden via
+    // CSS `@media` at T=0ms, mobile drawer toggle opens overlay with `max_width(959)`.
     let mut mobile = DocsHarness::mount("/", DocsViewport::new(390.0, 844.0));
     assert_eq!(
         mobile.raw_str(mobile.find("docs-root"), "viewport-mode"),
         Some("mobile")
     );
-    assert!(mobile.maybe_find("docs-sidebar-desktop").is_none());
-    assert!(mobile.maybe_find("docs-toc").is_none());
-    assert!(mobile.maybe_find("docs-mobile-menu-toggle").is_some());
+    assert_eq!(
+        mobile.surface.node_show_on(mobile.find("docs-sidebar-desktop")),
+        Some(MediaQuery::min_width(960))
+    );
+    assert_eq!(
+        mobile.surface.node_show_on(mobile.find("docs-toc")),
+        Some(MediaQuery::min_width(1200))
+    );
+    assert_eq!(
+        mobile.surface.node_show_on(mobile.find("docs-mobile-menu-toggle")),
+        Some(MediaQuery::max_width(959))
+    );
     assert!(mobile.maybe_find("docs-sidebar-drawer").is_none());
+
+    // Verify SSR emits exact zero-flicker `@media` hide rules & mobile article padding.
+    let ssr_services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
+    let mut ssr_surface = create_docs_surface_at_route(
+        99,
+        "/",
+        build_config(),
+        build_fixture_site(),
+        build_playgrounds(),
+        ssr_services,
+    );
+    let (_, _, frame_bytes) = ssr_surface.render_frame(1);
+    let mut ssr_web = WebBackend::new();
+    ssr_web.submit_frame(&frame_bytes).expect("ssr submit_frame");
+    ssr_web.sync_responsive_from(
+        ssr_surface.iter_show_on(),
+        ssr_surface.iter_responsive_rules(),
+    );
+    let ssr = ssr_web.render_ssr();
+    assert!(
+        ssr.style_css.contains("@media (max-width:959.98px){.nve-m-"),
+        "expected desktop-only @media hide rule in SSR CSS:\n{}",
+        ssr.style_css
+    );
+    assert!(
+        ssr.style_css.contains("@media (max-width:1199.98px){.nve-m-"),
+        "expected TOC-only @media hide rule in SSR CSS:\n{}",
+        ssr.style_css
+    );
+    assert!(
+        ssr.style_css.contains("@media (min-width:960px){.nve-m-"),
+        "expected mobile-only @media hide rule in SSR CSS:\n{}",
+        ssr.style_css
+    );
+    assert!(
+        ssr.style_css.contains("padding:20px 16px;"),
+        "expected mobile responsive article padding rule in SSR CSS:\n{}",
+        ssr.style_css
+    );
 
     mobile.press("docs-mobile-menu-toggle");
     assert!(mobile.maybe_find("docs-sidebar-drawer").is_some());
+    assert_eq!(
+        mobile.surface.node_show_on(mobile.find("docs-sidebar-overlay")),
+        Some(MediaQuery::max_width(959))
+    );
 
     // Navigating via mobile drawer link navigates and closes drawer
     mobile.press("docs-nav-guides-quickstart");

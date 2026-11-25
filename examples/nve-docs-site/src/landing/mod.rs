@@ -34,10 +34,10 @@ pub fn LandingPage() -> Element {
     let state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     drop(snap);
 
-    let outer_pad_h = if is_mobile { "16px" } else { "32px" };
+    let mobile_pad = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().padding_xy(16.0, 0.0));
 
     rsx! {
         view {
@@ -47,13 +47,15 @@ pub fn LandingPage() -> Element {
             // Subtle top ambient gradient layer for the Hero section
             view {
                 test_id: "landing-hero-glow",
-                style: "width: 100%; flex-direction: column; align-items: center; padding-horizontal: {outer_pad_h};",
+                nve_style: mobile_pad.clone(),
+                style: "width: 100%; flex-direction: column; align-items: center; padding-horizontal: 32px;",
                 hero::LandingHero {}
             }
 
             // Bento Architecture & Verified Benchmark Grid + Dev & Benchmark Progression + Live Showcase + Footer
             view {
-                style: "width: 100%; max-width: 1180px; flex-direction: column; padding-horizontal: {outer_pad_h}; gap: 56px; padding-bottom: 64px;",
+                nve_style: mobile_pad,
+                style: "width: 100%; max-width: 1180px; flex-direction: column; padding-horizontal: 32px; gap: 56px; padding-bottom: 64px;",
                 bento::BentoArchitectureGrid {}
                 progression::DevAndBenchProgression {}
                 bento::LiveExamplesStrip {}
@@ -98,11 +100,11 @@ pub(crate) fn SiteFooter() -> Element {
     let state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let is_mobile = snap.viewport.is_mobile();
     let config = snap.config.clone();
     drop(snap);
 
-    let cols_dir = if is_mobile { "column" } else { "row" };
+    let mobile_col = TypedStyle::new()
+        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
 
     type FooterLink = (&'static str, &'static str, bool);
     let columns: [(&'static str, &[FooterLink]); 4] = [
@@ -155,7 +157,8 @@ pub(crate) fn SiteFooter() -> Element {
             style: "width: 100%; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 16px; border-top-width: 1px; border-width: 1px; border-color: {theme.border}; border-radius: 14px; padding: 28px; background-color: {theme.surface};",
 
             view {
-                style: "width: 100%; flex-direction: {cols_dir}; justify-content: space-between; gap: 28px;",
+                nve_style: mobile_col.clone(),
+                style: "width: 100%; flex-direction: row; justify-content: space-between; gap: 28px;",
 
                 // Brand summary column
                 view {
@@ -182,7 +185,8 @@ pub(crate) fn SiteFooter() -> Element {
 
                 // 4 link columns
                 view {
-                    style: "flex-grow: 1; flex-direction: {cols_dir}; justify-content: space-between; gap: 20px; flex-wrap: wrap;",
+                    nve_style: mobile_col,
+                    style: "flex-grow: 1; flex-direction: row; justify-content: space-between; gap: 20px; flex-wrap: wrap;",
                     for (heading, links) in columns {
                         view {
                             key: "footer-col-{heading}",
