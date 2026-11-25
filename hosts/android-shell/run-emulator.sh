@@ -228,15 +228,25 @@ if [[ ! -f "$SHELL_SO" ]]; then
 fi
 
 # 3. Compile pure-Java NveMainActivity against android.jar and dex via d8.
+GENERATED_JAVA_DIR="$SCRIPT_DIR/android-app/src/dev/nve/android/generated"
+if [[ ! -f "$GENERATED_JAVA_DIR/NveCoreAbi.java" \
+   || ! -f "$GENERATED_JAVA_DIR/NveSceneBuffer.java" \
+   || ! -f "$GENERATED_JAVA_DIR/NveWireCodecs.java" ]]; then
+  echo "==> Generating NVE ABI + Wire Codec Java bindings (nve-cli codegen abi)..."
+  (cd "$REPO_ROOT" && cargo run --locked -p nve-cli -- codegen abi)
+fi
+
 CLASSES_DIR="$BUILD_DIR/classes"
 DEX_DIR="$BUILD_DIR/dex"
 rm -rf "$CLASSES_DIR" "$DEX_DIR"
 mkdir -p "$CLASSES_DIR" "$DEX_DIR"
 
-echo "==> [3/5] Compiling NveCoreAbi.java + NveSceneBuffer.java + NveCanvasView.java + NveMainActivity.java (javac --release 11) and dexing (d8)..."
+echo "==> [3/5] Compiling generated Java ABI/Wire + NvePairController + NveCanvasView + NveMainActivity (javac --release 11) and dexing (d8)..."
 javac --release 11 -Xlint:deprecation -cp "$ANDROID_JAR" -d "$CLASSES_DIR" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NveCoreAbi.java" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NveSceneBuffer.java" \
+  "$GENERATED_JAVA_DIR/NveCoreAbi.java" \
+  "$GENERATED_JAVA_DIR/NveSceneBuffer.java" \
+  "$GENERATED_JAVA_DIR/NveWireCodecs.java" \
+  "$SCRIPT_DIR/android-app/src/dev/nve/android/NvePairController.java" \
   "$SCRIPT_DIR/android-app/src/dev/nve/android/NveCanvasView.java" \
   "$SCRIPT_DIR/android-app/src/dev/nve/android/NveMainActivity.java"
 

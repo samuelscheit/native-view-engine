@@ -800,6 +800,7 @@ fn option2_draw_ops_and_host_services_compile_under_c11_cpp20_and_rust2024() {
     assert!(tool_available("rustc"), "rustc must be available");
 
     let dir = temp_test_dir("compile");
+    common::write_generated_c_abi_headers(&dir);
     let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
 
     let draw_spec = draw_ops_hybrid_spec();
@@ -841,7 +842,7 @@ uint64_t _check_hashes(void) {
     )
     .unwrap();
 
-    check_c11_syntax(&c_driver, &[&nve_inc, &dir], &dir);
+    check_c11_syntax(&c_driver, &[&dir, &nve_inc], &dir);
 
     // 2. Compile AND execute a C++20 binary exercising both Hybrid C++20 headers + DrawSlab Reloc header
     let cpp_driver = dir.join("check_cpp20.cpp");
@@ -952,7 +953,7 @@ int main() {
     )
     .unwrap();
 
-    compile_and_run_cpp20(&cpp_driver, "check_cpp20", &[&nve_inc, &dir], &dir);
+    compile_and_run_cpp20(&cpp_driver, "check_cpp20", &[&dir, &nve_inc], &dir);
 
     // 3. Also verify the companion NveDrawSlab Rust 2024 module compiles with `-D warnings`
     let rust_check = Command::new("rustc")

@@ -1,6 +1,8 @@
 //! Cross-language verification tests for single-source wire codecs (`EventRing`/`NVEV`,
 //! `NK1` keydown, `NVE_DRAW1` vector canvas, and canonical 64-bit FNV-1a).
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -225,6 +227,13 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
     }
 }
 
+fn generated_wire_file(suffix: &str) -> nve_codegen::GeneratedFile {
+    generate_all_wire_codec_files()
+        .into_iter()
+        .find(|f| f.relative_path.ends_with(suffix))
+        .unwrap_or_else(|| panic!("missing generated wire codec file ending with {suffix}"))
+}
+
 #[test]
 fn wire_codec_generated_files_match_checked_in_artifacts_and_naming_invariants() {
     let root = repo_root();
@@ -233,26 +242,17 @@ fn wire_codec_generated_files_match_checked_in_artifacts_and_naming_invariants()
     assert_eq!(files, generate_all_wire_codec_files());
 
     for file in &files {
-        let fname = Path::new(&file.relative_path).file_name().and_then(|n| n.to_str()).unwrap();
-        if file.relative_path.ends_with(".java") {
-            assert!(file.relative_path.contains("/generated/"));
-            assert!(file.content.contains("package dev.nve.android.generated;"));
-        } else {
-            assert!(fname.contains(".generated."), "missing .generated. in {}", file.relative_path);
-        }
         for forbidden in ["serde_json", "JSONObject", "JSON.stringify", "jsonEncode"] {
             assert!(!file.content.contains(forbidden));
         }
-        let on_disk = std::fs::read_to_string(root.join(&file.relative_path))
-            .unwrap_or_else(|e| panic!("missing {}: {e}", file.relative_path))
-            .replace("\r\n", "\n");
-        assert_eq!(on_disk, file.content, "wire codec drift in {}", file.relative_path);
     }
+    common::assert_generated_file_naming_and_optional_disk_parity(&files, &root, false);
 }
 
 #[test]
 fn cpp20_wire_codecs_compile_and_execute_against_rust_reference() {
     let tmp = temp_test_dir("cpp");
+    common::write_generated_c_abi_headers(&tmp);
     let include_dir = repo_root().join("cxx/nve-fabric-bridge/include");
     let out_bin = tmp.join("wire_check");
     let event_bin = tmp.join("events.bin");
@@ -303,6 +303,8 @@ int main() {{
     let compile = match Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wpedantic"])
         .arg("-I")
+        .arg(&tmp)
+        .arg("-I")
         .arg(&include_dir)
         .arg(&driver)
         .arg("-o")
@@ -331,8 +333,10 @@ fn java11_wire_codecs_compile_and_execute_against_rust_reference() {
     std::fs::create_dir_all(&classes_dir).unwrap();
     let event_bin = tmp.join("events.bin");
     let driver = tmp.join("WireCheckDriver.java");
-    let java_src = repo_root()
-        .join("hosts/android-shell/android-app/src/dev/nve/android/generated/NveWireCodecs.java");
+    let java_dir = tmp.join("dev/nve/android/generated");
+    std::fs::create_dir_all(&java_dir).unwrap();
+    let java_src = java_dir.join("NveWireCodecs.java");
+    std::fs::write(&java_src, generated_wire_file("NveWireCodecs.java").content).unwrap();
 
     std::fs::write(
         &driver,
@@ -397,7 +401,12 @@ fn swift_wire_codecs_compile_and_execute_against_rust_reference() {
     let out_bin = tmp.join("wire_check_swift");
     let event_bin = tmp.join("events.bin");
     let main_swift = tmp.join("main.swift");
-    let swift_src = repo_root().join("hosts/swiftui-kit/Sources/NveSwiftUI/NveWireCodecs.generated.swift");
+    let swift_src = tmp.join("NveWireCodecs.generated.swift");
+    std::fs::write(
+        &swift_src,
+        generated_wire_file("NveWireCodecs.generated.swift").content,
+    )
+    .unwrap();
 
     std::fs::write(
         &main_swift,
@@ -458,7 +467,11 @@ fn dart_wire_codecs_analyze_and_execute_against_rust_reference() {
     let event_bin = tmp.join("events.bin");
     let dart_copy = tmp.join("nve_wire_codecs.generated.dart");
     let driver = tmp.join("driver.dart");
-    std::fs::copy(repo_root().join("hosts/flutter-plugin/lib/src/nve_wire_codecs.generated.dart"), &dart_copy).unwrap();
+    std::fs::write(
+        &dart_copy,
+        generated_wire_file("nve_wire_codecs.generated.dart").content,
+    )
+    .unwrap();
 
     std::fs::write(
         &driver,
@@ -516,7 +529,12 @@ fn typescript_wire_codecs_execute_and_verify_against_rust_reference() {
     let tmp = temp_test_dir("ts");
     let event_bin = tmp.join("events.bin");
     let driver = tmp.join("driver.mts");
-    let ts_src = repo_root().join("hosts/web-shell/nve_wire_codecs.generated.ts");
+    let ts_src = tmp.join("nve_wire_codecs.generated.ts");
+    std::fs::write(
+        &ts_src,
+        generated_wire_file("nve_wire_codecs.generated.ts").content,
+    )
+    .unwrap();
 
     let ts_import_url = {
         let s = ts_src.to_string_lossy().replace('\\', "/");

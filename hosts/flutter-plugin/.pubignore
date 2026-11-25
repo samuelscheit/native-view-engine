@@ -1,0 +1,3 @@
+# Generated Dart FFI bindings are gitignored in the repository, but must be
+# included when publishing `nve_flutter` via `dart pub publish`.
+!lib/src/*.generated.dart

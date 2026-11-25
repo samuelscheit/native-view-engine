@@ -6,8 +6,116 @@
 
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Writes freshly generated C11/C++20 Core ABI, Scene ABI, and Wire Codec headers
+/// (`nve_abi.generated.h`, `nve_scene_abi.generated.h`, `nve_wire_codecs.generated.hpp`)
+/// directly into `dir` so compiler tests never depend on generated files existing in the repo.
+pub fn write_generated_c_abi_headers(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("create temp header dir");
+    for file in nve_codegen::generate_all_abi_files() {
+        if let Some(fname) = file
+            .relative_path
+            .strip_prefix("cxx/nve-fabric-bridge/include/")
+        {
+            std::fs::write(dir.join(fname), &file.content)
+                .unwrap_or_else(|e| panic!("write generated header {fname}: {e}"));
+        }
+    }
+}
+
+/// Materializes a self-contained offline `nve_flutter` Dart package under `temp_dir/nve_flutter_pkg`
+/// combining the hand-written pure-Dart runtime sources with freshly generated `*.generated.dart`
+/// bindings so `dart analyze` succeeds on a fresh checkout with zero generated files on disk.
+pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -> PathBuf {
+    let pkg_root = temp_dir.join("nve_flutter_pkg");
+    let dst_lib = pkg_root.join("lib");
+    let dst_src = dst_lib.join("src");
+    std::fs::create_dir_all(&dst_src).expect("create temp nve_flutter_pkg/lib/src");
+
+    let src_lib = workspace_root.join("hosts/flutter-plugin/lib");
+    std::fs::write(
+        pkg_root.join("pubspec.yaml"),
+        "name: nve_flutter\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
+    )
+    .expect("write temp nve_flutter pubspec.yaml");
+
+    for rel in [
+        "nve_hybrid_runtime.dart",
+        "src/direct_ffi.dart",
+        "src/event_codec.dart",
+        "src/nve_bin_codec.dart",
+        "src/nve_bin_value.dart",
+    ] {
+        std::fs::copy(src_lib.join(rel), dst_lib.join(rel))
+            .unwrap_or_else(|e| panic!("copy hosts/flutter-plugin/lib/{rel}: {e}"));
+    }
+
+    for file in nve_codegen::generate_all_abi_files() {
+        if let Some(rel) = file.relative_path.strip_prefix("hosts/flutter-plugin/lib/") {
+            let out_path = dst_lib.join(rel);
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).expect("create dart parent dir");
+            }
+            std::fs::write(&out_path, &file.content)
+                .unwrap_or_else(|e| panic!("write generated dart {rel}: {e}"));
+        }
+    }
+
+    pkg_root
+}
+
+/// Validates generated-file naming invariants (`.generated.` for non-Java, `generated/` package
+/// for Java) and checks byte-for-byte parity for any generated file currently materialized on disk.
+pub fn assert_generated_file_naming_and_optional_disk_parity(
+    files: &[nve_codegen::GeneratedFile],
+    repo_root: &Path,
+    update_mode: bool,
+) {
+    for file in files {
+        let fname = Path::new(&file.relative_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap();
+        if file.relative_path.ends_with(".java") {
+            assert!(
+                file.relative_path.contains("/generated/"),
+                "generated Java file must live inside a `generated/` package directory: {}",
+                file.relative_path
+            );
+            assert!(
+                file.content.contains("package dev.nve.android.generated;"),
+                "generated Java file must declare `package dev.nve.android.generated;`: {}",
+                file.relative_path
+            );
+        } else {
+            assert!(
+                fname.contains(".generated."),
+                "generated non-Java file must contain `.generated.` in filename: {}",
+                file.relative_path
+            );
+        }
+
+        let full_path = repo_root.join(&file.relative_path);
+        if update_mode {
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dirs");
+            }
+            std::fs::write(&full_path, &file.content).expect("write generated ABI file");
+        }
+        if full_path.is_file() {
+            let on_disk = std::fs::read_to_string(&full_path)
+                .unwrap_or_else(|e| panic!("read generated ABI file {}: {e}", full_path.display()))
+                .replace("\r\n", "\n");
+            assert_eq!(
+                on_disk, file.content,
+                "ABI schema drift detected in {}! Re-run `cargo run --locked -p nve-cli -- codegen abi` to regenerate.",
+                file.relative_path
+            );
+        }
+    }
+}
 
 pub fn tool_available(tool: &str) -> bool {
     Command::new(tool)

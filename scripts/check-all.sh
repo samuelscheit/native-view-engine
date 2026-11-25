@@ -390,6 +390,7 @@ suite_skia_gpu_check() {
 
 suite_abi_codegen_parity() {
   cd "$REPO_ROOT"
+  cargo run --locked -p nve-cli -- codegen abi
   cargo run --locked -p nve-cli -- codegen abi --check
 }
 
@@ -631,9 +632,9 @@ else
   skip_suite "Skia GPU feature check" "cargo not found"
 fi
 
-# 1b. ABI codegen parity
+# 1b. ABI codegen generate + parity check (required before host builds/tests)
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "ABI codegen parity" suite_abi_codegen_parity "cargo run --locked -p nve-cli -- codegen abi --check"
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (15/15)"
 else
   skip_suite "ABI codegen parity" "cargo not found"
 fi

@@ -45,6 +45,9 @@ jobs:
       - name: Test benchmark regression script
         run: python3 -m unittest discover -s scripts/tests -v
 
+      - name: Generate NVE ABI & Wire Codec bindings
+        run: cargo run --locked -p nve-cli -- codegen abi
+
       - name: Build C++20 Fabric bridge benchmark (Release)
         run: |
           cmake -S cxx/nve-fabric-bridge -B build/fabric-bench -G Ninja \

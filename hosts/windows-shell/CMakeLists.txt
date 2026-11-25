@@ -11,6 +11,9 @@ set(RNW_GENERATED_DIR "" CACHE PATH "Path to react-native-windows C++/WinRT gene
 set(NVE_RNW_EXTRA_INCLUDE_DIRS "" CACHE STRING "Optional extra include directories for react-native-windows / Windows App SDK")
 set(NVE_RNW_LIBS "" CACHE STRING "Optional libraries to link when NVE_WITH_RNW_FABRIC=ON")
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveCodegen.cmake")
+nve_ensure_abi_codegen()
+
 if(NOT TARGET nve_fabric_bridge)
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge" "${CMAKE_CURRENT_BINARY_DIR}/nve_fabric_bridge")
 endif()

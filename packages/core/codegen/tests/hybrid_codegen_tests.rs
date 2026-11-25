@@ -1,6 +1,8 @@
 //! Deep unit, validation, determinism, and real-compiler verification tests for NVE's
 //! Nitro-inspired Rust-first 6-target Hybrid FFI code generator.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -613,6 +615,7 @@ fn real_compiler_verifies_c11_and_cpp20_headers() {
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
     let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
     let dir = temp_test_dir("cpp");
+    common::write_generated_c_abi_headers(&dir);
     cpp_out.write_to_dir(&dir).unwrap();
 
     let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
@@ -643,6 +646,7 @@ int _check_c11(const NveHybridCryptoVTable* vt) {
             "c-header",
             "-fsyntax-only",
         ])
+        .arg(format!("-I{}", dir.display()))
         .arg(format!("-I{}", nve_inc.display()))
         .arg(&abi_h)
         .output()
@@ -656,8 +660,8 @@ int _check_c11(const NveHybridCryptoVTable* vt) {
 
     let c_tu_check = Command::new("clang")
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(format!("-I{}", dir.display()))
+        .arg(format!("-I{}", nve_inc.display()))
         .arg(&c_driver)
         .output()
         .expect("run clang on C11 driver");
@@ -690,8 +694,8 @@ void _check_instantiation(const NveHybridCryptoVTable* cvt, const NveHybridVideo
 
     let cpp_check = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(format!("-I{}", dir.display()))
+        .arg(format!("-I{}", nve_inc.display()))
         .arg(&cpp_driver)
         .output()
         .expect("run clang++ on generated C++20 header");
@@ -745,8 +749,8 @@ struct JNIEnv {
 
     let jni_check = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(format!("-I{}", dir.display()))
+        .arg(format!("-I{}", nve_inc.display()))
         .arg(dir.join("CryptoHybridJni.generated.cpp"))
         .output()
         .expect("run clang++ on generated JNI C++20 glue");
@@ -775,7 +779,7 @@ fn swift_direct_runtime_files() -> Vec<PathBuf> {
 }
 
 fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
-    let flutter_plugin_root = workspace_root().join("hosts/flutter-plugin");
+    let flutter_plugin_root = common::prepare_offline_nve_flutter_pkg(dir, &workspace_root());
     let canonical_plugin = std::fs::canonicalize(&flutter_plugin_root).unwrap_or(flutter_plugin_root);
     let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let to_file_uri = |p: &Path| {
@@ -838,6 +842,7 @@ fn real_compiler_verifies_swift_direct_c_interop() {
     }
 
     let dir = temp_test_dir("swift");
+    common::write_generated_c_abi_headers(&dir);
     cpp_out.write_to_dir(&dir).unwrap();
     swift_out.write_to_dir(&dir).unwrap();
 
@@ -851,9 +856,9 @@ fn real_compiler_verifies_swift_direct_c_interop() {
         .arg("-import-objc-header")
         .arg(&abi_h)
         .arg("-I")
-        .arg(&nve_inc)
+        .arg(&dir)
         .arg("-I")
-        .arg(&dir);
+        .arg(&nve_inc);
     for runtime_file in swift_direct_runtime_files() {
         swift_cmd.arg(runtime_file);
     }
@@ -1299,13 +1304,13 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
     );
 
     let dir = temp_test_dir("abi_offsetof_parity");
+    common::write_generated_c_abi_headers(&dir);
     let c_file = dir.join("check_offsets.c");
     std::fs::write(&c_file, &c_src).unwrap();
 
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
     let check = Command::new("clang")
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-        .arg(format!("-I{}", nve_inc.display()))
+        .arg(format!("-I{}", dir.display()))
         .arg(&c_file)
         .output()
         .expect("run clang to verify Rust offset_of! matches C offsetof in nve_abi.generated.h");
@@ -1553,12 +1558,13 @@ int main() {
     )
     .unwrap();
 
+    common::write_generated_c_abi_headers(&dir);
     let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
     let cpp_bin = dir.join("cpp_e2e_bin");
     let cpp_link = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(format!("-I{}", dir.display()))
+        .arg(format!("-I{}", nve_inc.display()))
         .arg(&cpp_main)
         .arg(&staticlib)
         .arg("-o")
@@ -1684,15 +1690,12 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
         nve_abi::NVE_SCENE_SCHEMA_HASH
     );
 
-    // Verify all 15 checked-in Core ABI + Scene ABI + Wire Codec files match byte-for-byte
+    // Verify all 15 Core ABI + Scene ABI + Wire Codec files are deterministic, obey naming
+    // invariants, and match any materialized files on disk byte-for-byte.
     let all = nve_codegen::generate_all_abi_files();
     assert_eq!(all.len(), 15);
-    for file in &all {
-        let on_disk = std::fs::read_to_string(root.join(&file.relative_path))
-            .unwrap_or_else(|e| panic!("missing {}: {e}", file.relative_path))
-            .replace("\r\n", "\n");
-        assert_eq!(on_disk, file.content, "drift in {}", file.relative_path);
-    }
+    assert_eq!(all, nve_codegen::generate_all_abi_files());
+    common::assert_generated_file_naming_and_optional_disk_parity(&all, &root, false);
 }
 
 #[test]
@@ -1757,6 +1760,7 @@ pub trait SafeBannerSpec {
 
     if tool_available("clang++") {
         let dir = temp_test_dir("adversarial_cpp");
+        common::write_generated_c_abi_headers(&dir);
         cpp_out.write_to_dir(&dir).unwrap();
         let driver = dir.join("check.cpp");
         std::fs::write(
@@ -1773,8 +1777,8 @@ void check() {
         .unwrap();
         let out = Command::new("clang++")
             .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-            .arg(format!("-I{}", nve_inc.display()))
             .arg(format!("-I{}", dir.display()))
+            .arg(format!("-I{}", nve_inc.display()))
             .arg(&driver)
             .output()
             .expect("clang++ adversarial hybrid cpp");
@@ -1788,6 +1792,7 @@ void check() {
 
     if tool_available("swiftc") {
         let dir = temp_test_dir("adversarial_swift");
+        common::write_generated_c_abi_headers(&dir);
         cpp_out.write_to_dir(&dir).unwrap();
         swift_out.write_to_dir(&dir).unwrap();
         let mut swift_cmd = Command::new("swiftc");
@@ -1796,9 +1801,9 @@ void check() {
             .arg("-import-objc-header")
             .arg(dir.join("SafeBannerHybridAbi.generated.h"))
             .arg("-I")
-            .arg(&nve_inc)
+            .arg(&dir)
             .arg("-I")
-            .arg(&dir);
+            .arg(&nve_inc);
         for runtime_file in swift_direct_runtime_files() {
             swift_cmd.arg(runtime_file);
         }

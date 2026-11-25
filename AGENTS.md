@@ -15,7 +15,7 @@ High-signal invariants, engineering practices, and workflow rules for agents wor
 ## Non-Negotiable Invariants
 
 - **Single binary IR & modular C ABI**: Every frame crosses the Rust/host boundary as one flat batched `CommandBuffer`, `EventRing`, or zero-decode `NveSceneView`. Expose modules solely via `nve_get_interface(1..=5)` (`NveApp` + `export_nve_app!`). Keep `packages/core/engine` framework-agnostic (zero dependency on `dioxus-core`).
-- **Generated-file naming**: Every generated non-Java file MUST include `.generated.` (`*.generated.{h,hpp,dart,ts,rs,swift,kt,cpp}`). Every generated Java file MUST live in a `generated/` package (`package dev.nve.android.generated;`). Keep `cargo run --locked -p nve-cli -- codegen abi --check` green (`15/15` Core + Scene + Wire artifacts); never add un-suffixed shim headers or symlinks.
+- **Generated-file naming & build-time generation**: Every generated non-Java file MUST include `.generated.` (`*.generated.{h,hpp,dart,ts,rs,swift,kt,cpp}`). Every generated Java file MUST live in a `generated/` package (`package dev.nve.android.generated;`). All generated ABI/Wire files (`*.generated.*`, `hosts/android-shell/android-app/src/dev/nve/android/generated/`) are **gitignored** and generated automatically during CMake/Gradle/Web builds or on demand via `cargo run --locked -p nve-cli -- codegen abi` (verified via `--check` for `15/15` Core + Scene + Wire parity); never commit generated bindings or add un-suffixed shim headers/symlinks.
 - **Keep build/trace artifacts out of git**: Never commit `*.trace.json`, `*.perfetto.json`, `cxx/build*`, `hosts/*/build`, `hosts/swiftui-kit/.build`, `hosts/flutter-plugin/.dart_tool`, screenshots, or compiled binaries.
 
 ## How We Work & Core Focus Areas
@@ -39,5 +39,5 @@ High-signal invariants, engineering practices, and workflow rules for agents wor
 ```bash
 ./scripts/check-all.sh --quick                                        # Fast local suite
 cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
-cargo run --locked -p nve-cli -- codegen abi --check                  # 15/15 ABI + Wire drift check
+cargo run --locked -p nve-cli -- codegen abi && cargo run --locked -p nve-cli -- codegen abi --check  # Generate + 15/15 parity check
 ```

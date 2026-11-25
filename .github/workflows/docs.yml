@@ -69,6 +69,11 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Generate NVE ABI & Wire Codec bindings
+        run: |
+          cargo run --locked -p nve-cli -- codegen abi
+          cargo run --locked -p nve-cli -- codegen abi --check
+
       - name: Build lazy-loaded WASM example apps (Studio & Counter)
         run: ./hosts/web-shell/build.sh studio counter
 

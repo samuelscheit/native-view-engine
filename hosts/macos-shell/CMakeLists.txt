@@ -10,6 +10,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(NVE_ENABLE_CAMERA "Enable packages/modules/camera" OFF)
 option(NVE_ENABLE_NATIVE_VIEWS "Enable packages/modules/native-views/apple" OFF)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveCodegen.cmake")
+nve_ensure_abi_codegen()
+
 if(NOT TARGET nve_fabric_bridge)
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge" "${CMAKE_CURRENT_BINARY_DIR}/nve_fabric_bridge")
 endif()
