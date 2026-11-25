@@ -28,6 +28,7 @@ nve-engine = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = [
     "CanvasRenderingContext2d",
+    "CompositionEvent",
     "CssStyleSheet",
     "DomRect",
     "FocusEvent",

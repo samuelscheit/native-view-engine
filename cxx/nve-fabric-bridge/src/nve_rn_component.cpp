@@ -19,6 +19,9 @@ const char* canonical_event_name(EventKind kind) noexcept {
     case EventKind::Blur: return "onBlur";
     case EventKind::Layout: return "onLayout";
     case EventKind::Custom: return "onCustom";
+    case EventKind::CompositionStart: return "onCompositionStart";
+    case EventKind::CompositionUpdate: return "onCompositionUpdate";
+    case EventKind::CompositionEnd: return "onCompositionEnd";
   }
   return "onUnknown";
 }
@@ -50,7 +53,7 @@ bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_even
       out_events.clear();
       return false;
     }
-    if (raw_kind < 1 || raw_kind > 8) {
+    if (raw_kind < 1 || raw_kind > 11) {
       out_events.clear();
       return false;
     }

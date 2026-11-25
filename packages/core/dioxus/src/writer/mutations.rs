@@ -255,6 +255,12 @@ fn event_name_to_mask(name: &str) -> u64 {
         "focus" | "onfocus" => EventMask::FOCUS,
         "blur" | "onblur" => EventMask::BLUR,
         "layout" | "onlayout" => EventMask::LAYOUT,
+        "compositionstart"
+        | "oncompositionstart"
+        | "compositionupdate"
+        | "oncompositionupdate"
+        | "compositionend"
+        | "oncompositionend" => EventMask::COMPOSITION,
         _ => EventMask::CUSTOM,
     }
 }

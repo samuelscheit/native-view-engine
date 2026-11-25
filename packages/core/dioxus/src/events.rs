@@ -9,7 +9,7 @@ use nve_abi::events::decode_keydown_bytes;
 use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NveEventBatchRef};
 
 use crate::elements::{
-    self, FocusEventData, KeyEventData, ScrollEventData, SubmitEventData,
+    self, CompositionEventData, FocusEventData, KeyEventData, ScrollEventData, SubmitEventData,
 };
 use crate::surface::DioxusSurface;
 use crate::CustomEventData;
@@ -97,6 +97,32 @@ impl DioxusSurface {
                     self.vdom
                         .runtime()
                         .handle_event("blur", Event::new(data, false), el_id);
+                    handled = true;
+                }
+                (
+                    kind @ (NativeEventKind::CompositionStart
+                    | NativeEventKind::CompositionUpdate
+                    | NativeEventKind::CompositionEnd),
+                    EventPayload::Text(text),
+                ) if self.writer.has_event_mask(ev.node_id, EventMask::COMPOSITION) => {
+                    let wire_name = composition_event_wire_name(kind);
+                    let data: Rc<dyn Any> = Rc::new(CompositionEventData { text: text.clone() });
+                    self.vdom
+                        .runtime()
+                        .handle_event(wire_name, Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (
+                    kind @ (NativeEventKind::CompositionStart
+                    | NativeEventKind::CompositionUpdate
+                    | NativeEventKind::CompositionEnd),
+                    EventPayload::Empty,
+                ) if self.writer.has_event_mask(ev.node_id, EventMask::COMPOSITION) => {
+                    let wire_name = composition_event_wire_name(kind);
+                    let data: Rc<dyn Any> = Rc::new(CompositionEventData::default());
+                    self.vdom
+                        .runtime()
+                        .handle_event(wire_name, Event::new(data, true), el_id);
                     handled = true;
                 }
                 (NativeEventKind::Custom, EventPayload::Custom { name, data })
@@ -202,6 +228,26 @@ impl DioxusSurface {
                         .handle_event("blur", Event::new(data, false), el_id);
                     handled = true;
                 }
+                (
+                    Some(
+                        kind @ (NativeEventKind::CompositionStart
+                        | NativeEventKind::CompositionUpdate
+                        | NativeEventKind::CompositionEnd),
+                    ),
+                    0 | 3,
+                ) if self.writer.has_event_mask(ev.node_id(), EventMask::COMPOSITION) => {
+                    let wire_name = composition_event_wire_name(kind);
+                    let text = if ev.payload_tag() == 3 {
+                        ev.text().to_owned()
+                    } else {
+                        String::new()
+                    };
+                    let data: Rc<dyn Any> = Rc::new(CompositionEventData { text });
+                    self.vdom
+                        .runtime()
+                        .handle_event(wire_name, Event::new(data, true), el_id);
+                    handled = true;
+                }
                 (Some(NativeEventKind::Custom), 5)
                     if self
                         .writer
@@ -228,6 +274,16 @@ impl DioxusSurface {
             }
         }
         handled
+    }
+}
+
+#[inline]
+fn composition_event_wire_name(kind: NativeEventKind) -> &'static str {
+    match kind {
+        NativeEventKind::CompositionStart => "compositionstart",
+        NativeEventKind::CompositionUpdate => "compositionupdate",
+        NativeEventKind::CompositionEnd => "compositionend",
+        _ => "compositionupdate",
     }
 }
 

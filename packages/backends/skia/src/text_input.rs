@@ -1,24 +1,18 @@
-//! `TextInput` display-list emission (placeholder, secure bullet masking, range selection
-//! highlight, vertical caret, IME preedit underline, focus ring) and logical-X cursor hit-testing.
+//! `TextInput` display-list emission (placeholder, secure bullet masking, BiDi-aware multi-run
+//! range selection highlights, vertical caret, IME preedit underline, focus ring), logical-X
+//! grapheme-safe hit-testing, and exact live caret/preedit screen-rect computation.
 
 use nve_abi::{ColorRgba, RawPropValue, StyleProps};
 use nve_backend_headless::HeadlessNode;
 use nve_engine::LayoutRect;
 
-use crate::text::{CosmicTextEngine, TextAlign};
+use crate::text::{CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
+use crate::text_grapheme::{clamp_grapheme_boundary, grapheme_boundaries, grapheme_count};
 use crate::{
     PaintOp, TextFocusState, FOCUS_RING_COLOR, FOCUS_SELECTION_COLOR, IME_PREEDIT_UNDERLINE_COLOR,
 };
 
-/// Clamps `byte_index` to the nearest valid UTF-8 character boundary at or before `byte_index`.
-#[inline]
-pub(crate) fn clamp_char_boundary(text: &str, byte_index: usize) -> usize {
-    let mut idx = byte_index.min(text.len());
-    while idx > 0 && !text.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
+const CARET_WIDTH: f32 = 2.0;
 
 /// Returns the committed text value stored in a `TextInput` node's props or text payload.
 #[inline]
@@ -38,29 +32,27 @@ pub(crate) fn is_secure_node(node: &HeadlessNode) -> bool {
     )
 }
 
-/// Measures single-line prefix advance width for caret/selection placement, preserving trailing spaces.
+/// Returns `true` if the `TextInput` node has `multiline = true`.
+#[inline]
+pub(crate) fn is_multiline_node(node: &HeadlessNode) -> bool {
+    matches!(node.raw_props.get("multiline"), Some(RawPropValue::Bool(true)))
+}
+
+/// Measures single-line caret X advance using shaped HarfBuzz + BiDi layout, preserving trailing
+/// spaces and grapheme cluster widths.
 pub(crate) fn measure_caret_advance(
     text_engine: &CosmicTextEngine,
-    prefix: &str,
+    text: &str,
+    byte_index: usize,
     font_size: f32,
+    font_weight: u16,
 ) -> f32 {
-    if prefix.is_empty() {
+    if text.is_empty() {
         return 0.0;
     }
-    let trimmed = prefix.trim_end_matches(' ');
-    let trailing_spaces = prefix.len() - trimmed.len();
-    let base_w = if trimmed.is_empty() {
-        0.0
-    } else {
-        text_engine.measure_text(trimmed, font_size, None).0
-    };
-    if trailing_spaces == 0 {
-        return base_w;
-    }
-    let space_w = (text_engine.measure_text("a a", font_size, None).0
-        - text_engine.measure_text("aa", font_size, None).0)
-        .max(font_size * 0.28);
-    base_w + (trailing_spaces as f32) * space_w
+    let idx = clamp_grapheme_boundary(text, byte_index);
+    let shaped = text_engine.shape_single_line(text, font_size, font_weight);
+    shaped.caret_x_at(text, idx)
 }
 
 /// Computes the inner content rect of a `TextInput` accounting for padding and vertical centering.
@@ -84,61 +76,36 @@ pub(crate) fn compute_text_input_inner_rect(
     }
 }
 
-/// Resolves the closest UTF-8 byte boundary inside `committed` for a horizontal offset `local_x`
-/// (relative to the start of the text content, already including any horizontal scroll offset).
+/// Resolves the closest UAX #29 grapheme byte boundary inside `committed` for a visual horizontal
+/// offset `local_x` (relative to the start of the text content, already including horizontal
+/// scroll offset). Supports BiDi LTR/RTL runs and ligatures cleanly.
 pub(crate) fn cursor_byte_index_at_local_x(
     text_engine: &CosmicTextEngine,
     committed: &str,
     font_size: f32,
+    font_weight: u16,
     is_secure: bool,
     local_x: f32,
 ) -> usize {
-    if committed.is_empty() || !local_x.is_finite() || local_x <= 0.0 {
+    if committed.is_empty() || !local_x.is_finite() {
         return 0;
     }
 
-    // Collect every valid UTF-8 char boundary in `committed` (including 0 and committed.len()).
-    let mut boundaries: Vec<usize> = committed.char_indices().map(|(i, _)| i).collect();
-    boundaries.push(committed.len());
-
-    let advance_at = |boundary_slot: usize| -> f32 {
-        let byte_idx = boundaries[boundary_slot];
-        if byte_idx == 0 {
-            return 0.0;
+    if is_secure {
+        let boundaries = grapheme_boundaries(committed);
+        let bullet_count = boundaries.len().saturating_sub(1);
+        if bullet_count == 0 {
+            return 0;
         }
-        if is_secure {
-            let bullets = "•".repeat(boundary_slot);
-            measure_caret_advance(text_engine, &bullets, font_size)
-        } else {
-            measure_caret_advance(text_engine, &committed[..byte_idx], font_size)
-        }
-    };
-
-    let last = boundaries.len() - 1;
-    let total_w = advance_at(last);
-    if local_x >= total_w {
-        return committed.len();
+        let bullets = "•".repeat(bullet_count);
+        let shaped = text_engine.shape_single_line(&bullets, font_size, font_weight);
+        let bullet_byte = shaped.hit_test_x(&bullets, local_x);
+        let slot = bullets[..bullet_byte].chars().count().min(bullet_count);
+        return boundaries[slot];
     }
 
-    // Binary search for the rightmost slot `lo` with `advance_at(lo) <= local_x`.
-    let mut lo = 0usize;
-    let mut hi = last;
-    while lo + 1 < hi {
-        let mid = lo + (hi - lo) / 2;
-        if advance_at(mid) <= local_x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-
-    let left_w = advance_at(lo);
-    let right_w = advance_at(hi);
-    if (local_x - left_w) <= (right_w - local_x) {
-        boundaries[lo]
-    } else {
-        boundaries[hi]
-    }
+    let shaped = text_engine.shape_single_line(committed, font_size, font_weight);
+    shaped.hit_test_x(committed, local_x)
 }
 
 /// Computes horizontal scroll offset for a focused `TextInput` so the caret stays visible.
@@ -147,17 +114,212 @@ pub(crate) fn compute_text_input_scroll_x(
     committed: &str,
     caret_byte: usize,
     font_size: f32,
+    font_weight: u16,
     is_secure: bool,
     inner_width: f32,
 ) -> f32 {
-    let caret_byte = clamp_char_boundary(committed, caret_byte);
+    let caret_byte = clamp_grapheme_boundary(committed, caret_byte);
     let caret_advance = if is_secure {
-        let prefix = "•".repeat(committed[..caret_byte].chars().count());
-        measure_caret_advance(text_engine, &prefix, font_size)
+        let bullets = "•".repeat(grapheme_count(committed));
+        let before_bullets = "•".repeat(grapheme_count(&committed[..caret_byte]));
+        measure_caret_advance(
+            text_engine,
+            &bullets,
+            before_bullets.len(),
+            font_size,
+            font_weight,
+        )
     } else {
-        measure_caret_advance(text_engine, &committed[..caret_byte], font_size)
+        measure_caret_advance(text_engine, committed, caret_byte, font_size, font_weight)
     };
-    (caret_advance - (inner_width - 2.0).max(0.0)).max(0.0)
+    (caret_advance - (inner_width - CARET_WIDTH).max(0.0)).max(0.0)
+}
+
+/// Computes visual selection highlight rectangles (potentially multiple disjoint rects for mixed
+/// BiDi selections crossing an LTR/RTL run boundary) in logical viewport coordinates.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn selection_rects_for_range(
+    text_engine: &CosmicTextEngine,
+    committed: &str,
+    range_start: usize,
+    range_end: usize,
+    font_size: f32,
+    font_weight: u16,
+    is_secure: bool,
+    text_rect: LayoutRect,
+    caret_y: f32,
+    caret_h: f32,
+    scroll_x: f32,
+) -> Vec<LayoutRect> {
+    let sel_s = clamp_grapheme_boundary(committed, range_start.min(range_end));
+    let sel_e = clamp_grapheme_boundary(committed, range_start.max(range_end));
+    if committed.is_empty() || sel_s >= sel_e {
+        return Vec::new();
+    }
+
+    let spans = if is_secure {
+        let total = "•".repeat(grapheme_count(committed));
+        let s_bytes = grapheme_count(&committed[..sel_s]) * "•".len();
+        let e_bytes = grapheme_count(&committed[..sel_e]) * "•".len();
+        text_engine
+            .shape_single_line(&total, font_size, font_weight)
+            .selection_spans_for_range(&total, s_bytes, e_bytes)
+    } else {
+        text_engine
+            .shape_single_line(committed, font_size, font_weight)
+            .selection_spans_for_range(committed, sel_s, sel_e)
+    };
+
+    spans
+        .into_iter()
+        .map(|(x_left, width)| LayoutRect {
+            x: text_rect.x + x_left - scroll_x,
+            y: caret_y,
+            width: width.max(2.0),
+            height: caret_h,
+        })
+        .collect()
+}
+
+/// Shared computed visual geometry for a focused `TextInput` (used by both display-list painting
+/// and live OS IME candidate-window cursor-area feedback).
+pub(crate) struct FocusedTextInputGeometry {
+    pub rendered_value: String,
+    pub text_rect: LayoutRect,
+    pub scroll_x: f32,
+    pub caret_x: f32,
+    pub caret_y: f32,
+    pub caret_h: f32,
+    pub preedit_underline: Option<(f32, f32)>,
+    pub ime_cursor_rect: LayoutRect,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_focused_text_input_geometry(
+    node: &HeadlessNode,
+    rect: LayoutRect,
+    font_size: f32,
+    font_weight: u16,
+    committed: &str,
+    focus: &TextFocusState,
+    text_engine: &CosmicTextEngine,
+) -> FocusedTextInputGeometry {
+    let is_secure = is_secure_node(node);
+    let preedit = focus.ime_preedit.as_deref().filter(|s| !s.is_empty());
+    let text_rect = compute_text_input_inner_rect(node, rect, font_size);
+    let caret_byte = clamp_grapheme_boundary(committed, focus.caret_byte_index);
+
+    let (rendered_value, caret_byte_in_rendered, preedit_byte_span) = if is_secure {
+        let before_g = grapheme_count(&committed[..caret_byte]);
+        let after_g = grapheme_count(&committed[caret_byte..]);
+        let bullet_len = "•".len();
+        if let Some(pe) = preedit {
+            let pe_g = grapheme_count(pe);
+            let pe_cursor_g = focus
+                .ime_preedit_cursor
+                .map(|(_, end)| grapheme_count(&pe[..clamp_grapheme_boundary(pe, end)]))
+                .unwrap_or(pe_g);
+            let total = "•".repeat(before_g + pe_g + after_g);
+            let pe_start = before_g * bullet_len;
+            let pe_end = (before_g + pe_g) * bullet_len;
+            let caret_pos = (before_g + pe_cursor_g) * bullet_len;
+            (total, caret_pos, Some((pe_start, pe_end)))
+        } else {
+            let total = "•".repeat(before_g + after_g);
+            (total, before_g * bullet_len, None)
+        }
+    } else if let Some(pe) = preedit {
+        let before = &committed[..caret_byte];
+        let after = &committed[caret_byte..];
+        let pe_cursor_end = focus
+            .ime_preedit_cursor
+            .map(|(_, end)| clamp_grapheme_boundary(pe, end))
+            .unwrap_or(pe.len());
+        let mut total = String::with_capacity(committed.len() + pe.len());
+        total.push_str(before);
+        total.push_str(pe);
+        total.push_str(after);
+        let pe_start = before.len();
+        let pe_end = pe_start + pe.len();
+        (total, pe_start + pe_cursor_end, Some((pe_start, pe_end)))
+    } else {
+        (committed.to_owned(), caret_byte, None)
+    };
+
+    let caret_h = (font_size * 1.25).clamp(8.0, (rect.height - 4.0).max(4.0));
+    let line_h = (font_size * 1.35).min(text_rect.height);
+    let caret_y = text_rect.y + ((line_h - caret_h) * 0.5).max(0.0);
+
+    let shaped = text_engine.shape_single_line(&rendered_value, font_size, font_weight);
+    let caret_advance = shaped.caret_x_at(&rendered_value, caret_byte_in_rendered);
+    let scroll_x = (caret_advance - (text_rect.width - CARET_WIDTH).max(0.0)).max(0.0);
+
+    let max_caret_x = (text_rect.x + text_rect.width - CARET_WIDTH).max(text_rect.x);
+    let caret_x = (text_rect.x + caret_advance - scroll_x).clamp(text_rect.x, max_caret_x);
+
+    let preedit_underline = preedit_byte_span.map(|(pe_start, pe_end)| {
+        let spans = shaped.selection_spans_for_range(&rendered_value, pe_start, pe_end);
+        if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
+            let x0 = text_rect.x - scroll_x + first.0;
+            let x1 = text_rect.x - scroll_x + last.0 + last.1;
+            (x0, (x1 - x0).max(4.0))
+        } else {
+            let pe_x = text_rect.x - scroll_x + shaped.caret_x_at(&rendered_value, pe_start);
+            (pe_x, 4.0)
+        }
+    });
+
+    let ime_cursor_rect = if let Some((pe_x, pe_w)) = preedit_underline {
+        let visible_left = pe_x.clamp(text_rect.x, max_caret_x);
+        let visible_right = (pe_x + pe_w).clamp(visible_left + CARET_WIDTH, text_rect.x + text_rect.width);
+        LayoutRect {
+            x: visible_left,
+            y: caret_y,
+            width: (visible_right - visible_left).max(CARET_WIDTH),
+            height: caret_h,
+        }
+    } else {
+        LayoutRect {
+            x: caret_x,
+            y: caret_y,
+            width: CARET_WIDTH,
+            height: caret_h,
+        }
+    };
+
+    FocusedTextInputGeometry {
+        rendered_value,
+        text_rect,
+        scroll_x,
+        caret_x,
+        caret_y,
+        caret_h,
+        preedit_underline,
+        ime_cursor_rect,
+    }
+}
+
+/// Computes the live logical IME cursor/preedit screen rectangle for `node`, accounting for
+/// `visual_rect` (scroll offsets), inner padding, horizontal text scroll, BiDi layout, and
+/// active IME preedit span.
+pub(crate) fn compute_ime_cursor_rect(
+    node: &HeadlessNode,
+    visual_rect: LayoutRect,
+    font_size: f32,
+    committed: &str,
+    focus: &TextFocusState,
+    text_engine: &CosmicTextEngine,
+) -> LayoutRect {
+    compute_focused_text_input_geometry(
+        node,
+        visual_rect,
+        font_size,
+        DEFAULT_FONT_WEIGHT,
+        committed,
+        focus,
+        text_engine,
+    )
+    .ime_cursor_rect
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -206,7 +368,7 @@ pub(crate) fn emit_text_input_ops(
     if !is_focused {
         let display_text = if !committed.is_empty() {
             let rendered = if is_secure {
-                "•".repeat(committed.chars().count())
+                "•".repeat(grapheme_count(committed))
             } else {
                 committed.to_owned()
             };
@@ -240,90 +402,41 @@ pub(crate) fn emit_text_input_ops(
         return;
     }
 
-    let caret_byte = clamp_char_boundary(committed, focus.caret_byte_index);
-    let (rendered_value, caret_prefix, preedit_span) = if is_secure {
-        let before_chars = committed[..caret_byte].chars().count();
-        let after_chars = committed[caret_byte..].chars().count();
-        if let Some(pe) = preedit {
-            let pe_chars = pe.chars().count();
-            let pe_cursor_chars = focus
-                .ime_preedit_cursor
-                .map(|(_, end)| pe[..clamp_char_boundary(pe, end)].chars().count())
-                .unwrap_or(pe_chars);
-            let total = "•".repeat(before_chars + pe_chars + after_chars);
-            let prefix = "•".repeat(before_chars + pe_cursor_chars);
-            let pe_start_str = "•".repeat(before_chars);
-            let pe_str = "•".repeat(pe_chars);
-            (total, prefix, Some((pe_start_str, pe_str)))
-        } else {
-            let total = "•".repeat(before_chars + after_chars);
-            let prefix = "•".repeat(before_chars);
-            (total, prefix, None)
-        }
-    } else if let Some(pe) = preedit {
-        let before = &committed[..caret_byte];
-        let after = &committed[caret_byte..];
-        let pe_cursor_end = focus
-            .ime_preedit_cursor
-            .map(|(_, end)| clamp_char_boundary(pe, end))
-            .unwrap_or(pe.len());
-        let mut total = String::with_capacity(committed.len() + pe.len());
-        total.push_str(before);
-        total.push_str(pe);
-        total.push_str(after);
-        let mut prefix = String::with_capacity(before.len() + pe_cursor_end);
-        prefix.push_str(before);
-        prefix.push_str(&pe[..pe_cursor_end]);
-        (total, prefix, Some((before.to_owned(), pe.to_owned())))
-    } else {
-        (
-            committed.to_owned(),
-            committed[..caret_byte].to_owned(),
-            None,
-        )
-    };
-
-    let caret_w = 2.0f32;
-    let caret_h = (font_size * 1.25).clamp(8.0, (rect.height - 4.0).max(4.0));
-    let line_h = (font_size * 1.35).min(text_rect.height);
-    let caret_y = text_rect.y + ((line_h - caret_h) * 0.5).max(0.0);
-    let caret_advance = measure_caret_advance(text_engine, &caret_prefix, font_size);
-    let scroll_x = (caret_advance - (text_rect.width - caret_w).max(0.0)).max(0.0);
+    let geom = compute_focused_text_input_geometry(
+        node,
+        rect,
+        font_size,
+        font_weight,
+        committed,
+        focus,
+        text_engine,
+    );
 
     ops.push(PaintOp::PushClip {
         rect,
         radius: style.border_radius.max(0.0),
     });
 
-    // Range selection highlight behind text.
+    // BiDi-aware range selection highlights (may emit multiple disjoint rects across LTR/RTL runs).
     if preedit.is_none()
         && !committed.is_empty()
         && let Some((raw_s, raw_e)) = focus.selection_range()
     {
-        let sel_s = clamp_char_boundary(committed, raw_s);
-        let sel_e = clamp_char_boundary(committed, raw_e);
-        if sel_s < sel_e {
-            let (x0_adv, x1_adv) = if is_secure {
-                let s_str = "•".repeat(committed[..sel_s].chars().count());
-                let e_str = "•".repeat(committed[..sel_e].chars().count());
-                (
-                    measure_caret_advance(text_engine, &s_str, font_size),
-                    measure_caret_advance(text_engine, &e_str, font_size),
-                )
-            } else {
-                (
-                    measure_caret_advance(text_engine, &committed[..sel_s], font_size),
-                    measure_caret_advance(text_engine, &committed[..sel_e], font_size),
-                )
-            };
-            let sel_w = (x1_adv - x0_adv).max(2.0);
+        for sel_rect in selection_rects_for_range(
+            text_engine,
+            committed,
+            raw_s,
+            raw_e,
+            font_size,
+            font_weight,
+            is_secure,
+            geom.text_rect,
+            geom.caret_y,
+            geom.caret_h,
+            geom.scroll_x,
+        ) {
             ops.push(PaintOp::FillRoundedRect {
-                rect: LayoutRect {
-                    x: text_rect.x + x0_adv - scroll_x,
-                    y: caret_y,
-                    width: sel_w,
-                    height: caret_h,
-                },
+                rect: sel_rect,
                 radius: 2.0,
                 color: FOCUS_SELECTION_COLOR,
             });
@@ -331,16 +444,16 @@ pub(crate) fn emit_text_input_ops(
     }
 
     let draw_text_rect = LayoutRect {
-        x: text_rect.x - scroll_x,
-        y: text_rect.y,
-        width: text_rect.width + scroll_x,
-        height: text_rect.height,
+        x: geom.text_rect.x - geom.scroll_x,
+        y: geom.text_rect.y,
+        width: geom.text_rect.width + geom.scroll_x,
+        height: geom.text_rect.height,
     };
 
-    if !rendered_value.is_empty() {
+    if !geom.rendered_value.is_empty() {
         ops.push(PaintOp::DrawText {
             rect: draw_text_rect,
-            text: rendered_value,
+            text: geom.rendered_value,
             font_size,
             font_weight,
             text_align: TextAlign::Left,
@@ -359,7 +472,7 @@ pub(crate) fn emit_text_input_ops(
             ((base.a as f32) * 0.55).round().clamp(96.0, 170.0) as u8,
         );
         ops.push(PaintOp::DrawText {
-            rect: text_rect,
+            rect: geom.text_rect,
             text: ph.to_owned(),
             font_size,
             font_weight,
@@ -368,14 +481,11 @@ pub(crate) fn emit_text_input_ops(
         });
     }
 
-    if let Some((before_str, pe_str)) = preedit_span {
-        let pe_x =
-            text_rect.x - scroll_x + measure_caret_advance(text_engine, &before_str, font_size);
-        let pe_w = measure_caret_advance(text_engine, &pe_str, font_size).max(4.0);
+    if let Some((pe_x, pe_w)) = geom.preedit_underline {
         ops.push(PaintOp::FillRoundedRect {
             rect: LayoutRect {
                 x: pe_x,
-                y: caret_y + caret_h,
+                y: geom.caret_y + geom.caret_h,
                 width: pe_w,
                 height: 1.5,
             },
@@ -384,10 +494,6 @@ pub(crate) fn emit_text_input_ops(
         });
     }
 
-    let caret_x = (text_rect.x + caret_advance - scroll_x).clamp(
-        text_rect.x,
-        (text_rect.x + text_rect.width - caret_w).max(text_rect.x),
-    );
     let caret_color = if text_color == style.background {
         FOCUS_RING_COLOR
     } else {
@@ -395,10 +501,10 @@ pub(crate) fn emit_text_input_ops(
     };
     ops.push(PaintOp::FillRoundedRect {
         rect: LayoutRect {
-            x: caret_x,
-            y: caret_y,
-            width: caret_w,
-            height: caret_h,
+            x: geom.caret_x,
+            y: geom.caret_y,
+            width: CARET_WIDTH,
+            height: geom.caret_h,
         },
         radius: 0.0,
         color: caret_color,

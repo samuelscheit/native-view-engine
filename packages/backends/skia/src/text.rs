@@ -120,10 +120,16 @@ impl CosmicTextEngine {
         }
     }
 
-    fn attrs_for_weight(weight: u16) -> Attrs<'static> {
+    pub(crate) fn attrs_for_weight(weight: u16) -> Attrs<'static> {
         Attrs::new()
             .family(Family::SansSerif)
             .weight(Weight(sanitize_font_weight(weight)))
+    }
+
+    pub(crate) fn lock_font_system(&self) -> std::sync::MutexGuard<'_, FontSystem> {
+        self.font_system
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Measures `text` at logical `font_size` under an optional `max_width` wrapping bound.

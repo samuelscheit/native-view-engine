@@ -16,14 +16,14 @@ use nve_backend_skia::gpu::{
     GpuSwapchain,
 };
 use nve_backend_skia::CursorKind;
-use nve_engine::{RenderBackend, Viewport};
+use nve_engine::{LayoutRect, Viewport};
 use nve_interop::{
     SurfacePresentation, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
     WindowManager, WindowRect, WindowState,
 };
 use nve_system_env::LocaleSnapshot;
 use softbuffer::{Context, Surface};
-use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::keyboard::ModifiersState;
 use winit::window::{
     Cursor, Fullscreen, Theme as WinitTheme, Window, WindowAttributes, WindowLevel,
@@ -66,6 +66,7 @@ pub struct SurfaceWindow<A: DesktopApp> {
     pub(crate) base_title: String,
     pub(crate) modifiers: ModifiersState,
     pub(crate) ime_allowed: bool,
+    pub(crate) last_ime_cursor_rect: Option<LayoutRect>,
     pub(crate) last_cursor: CursorKind,
     pub(crate) last_telemetry: Option<FrameTelemetry>,
 }
@@ -93,19 +94,20 @@ impl<A: DesktopApp> SurfaceWindow<A> {
     }
 
     pub(crate) fn sync_ime_state(&mut self) {
-        let focused = self
-            .session
-            .focused_node()
-            .filter(|&id| self.session.backend().is_text_input(id));
-        self.ime_allowed = focused.is_some();
-        self.window.set_ime_allowed(self.ime_allowed);
-        if let Some(node_id) = focused
-            && let Some(rect) = self.session.backend().layout_of(node_id)
-        {
-            self.window.set_ime_cursor_area(
-                LogicalPosition::new(rect.x as f64, rect.y as f64),
-                LogicalSize::new(rect.width as f64, rect.height as f64),
-            );
+        let next_area = self.session.ime_cursor_rect_physical();
+        let next_allowed = next_area.is_some();
+        if self.ime_allowed != next_allowed {
+            self.ime_allowed = next_allowed;
+            self.window.set_ime_allowed(next_allowed);
+        }
+        if self.last_ime_cursor_rect != next_area {
+            self.last_ime_cursor_rect = next_area;
+            if let Some(r) = next_area {
+                self.window.set_ime_cursor_area(
+                    PhysicalPosition::new(r.x as f64, r.y as f64),
+                    PhysicalSize::new(r.width as f64, r.height as f64),
+                );
+            }
         }
     }
 
@@ -297,6 +299,7 @@ pub struct HeadlessSurfaceWindow<A: DesktopApp> {
     pub handle_id: WindowHandleId,
     pub modifiers: ModifiersState,
     pub ime_allowed: bool,
+    pub ime_cursor_rect: Option<LayoutRect>,
 }
 
 impl<K: Eq + Hash + Copy, A: DesktopApp> Default for HeadlessMultiWindowHost<K, A> {
@@ -357,9 +360,8 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
             .app_mut()
             .bind_host_services(Some(Arc::clone(&self.host_services)));
         session.render_and_rasterize()?;
-        let ime_allowed = session
-            .focused_node()
-            .is_some_and(|id| session.backend().is_text_input(id));
+        let ime_cursor_rect = session.ime_cursor_rect_physical();
+        let ime_allowed = ime_cursor_rect.is_some();
         if is_primary || self.primary_handle.is_none() {
             self.primary_handle = Some(handle_id);
         }
@@ -372,6 +374,7 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
                 handle_id,
                 modifiers: ModifiersState::empty(),
                 ime_allowed,
+                ime_cursor_rect,
             },
         );
         let _ = self.flush_window_lifecycle_events();
@@ -386,10 +389,8 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
             return Ok(false);
         }
         let handled = win.session.handle_click_logical(x, y)?;
-        win.ime_allowed = win
-            .session
-            .focused_node()
-            .is_some_and(|id| win.session.backend().is_text_input(id));
+        win.ime_cursor_rect = win.session.ime_cursor_rect_physical();
+        win.ime_allowed = win.ime_cursor_rect.is_some();
         Ok(handled)
     }
 

@@ -435,6 +435,9 @@ pub(crate) fn build_native_event_from_c(ev: &NvePairInputEvent) -> Result<Native
         6 => NativeEventKind::Blur,
         7 => NativeEventKind::Layout,
         8 => NativeEventKind::Custom,
+        9 => NativeEventKind::CompositionStart,
+        10 => NativeEventKind::CompositionUpdate,
+        11 => NativeEventKind::CompositionEnd,
         _ => return Err(NVE_PAIR_ERR_INVALID_KIND),
     };
     let payload = match kind {
@@ -448,7 +451,10 @@ pub(crate) fn build_native_event_from_c(ev: &NvePairInputEvent) -> Result<Native
             content_width: ev.width,
             content_height: ev.height,
         },
-        NativeEventKind::TextChange => {
+        NativeEventKind::TextChange
+        | NativeEventKind::CompositionStart
+        | NativeEventKind::CompositionUpdate
+        | NativeEventKind::CompositionEnd => {
             let text = read_c_utf8(ev.text_ptr, ev.text_len)?;
             EventPayload::Text(text.to_owned())
         }

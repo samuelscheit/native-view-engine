@@ -46,12 +46,18 @@ pub struct SubmitEventData {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompositionEventData {
+    pub text: String,
+}
+
 pub type PressEvent = Event<PressEventData>;
 pub type TextEvent = Event<TextEventData>;
 pub type ScrollEvent = Event<ScrollEventData>;
 pub type FocusEvent = Event<FocusEventData>;
 pub type KeyEvent = Event<KeyEventData>;
 pub type SubmitEvent = Event<SubmitEventData>;
+pub type CompositionEvent = Event<CompositionEventData>;
 
 macro_rules! define_attrs {
     ($($ident:ident => $name:literal),* $(,)?) => {
@@ -213,6 +219,9 @@ pub mod events {
     define_event!(onblur, "onblur", FocusEvent);
     define_event!(onkeydown, "onkeydown", KeyEvent);
     define_event!(onsubmit, "onsubmit", SubmitEvent);
+    define_event!(oncompositionstart, "oncompositionstart", CompositionEvent);
+    define_event!(oncompositionupdate, "oncompositionupdate", CompositionEvent);
+    define_event!(oncompositionend, "oncompositionend", CompositionEvent);
 }
 
 pub mod GlobalAttributes {

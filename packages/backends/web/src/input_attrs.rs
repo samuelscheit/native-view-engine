@@ -7,6 +7,8 @@ use std::rc::Rc;
 
 use nve_abi::hash::HashMap;
 use nve_abi::{ComponentKind, NodeId, RawPropValue};
+#[cfg(any(target_arch = "wasm32", test))]
+use nve_abi::{EventPayload, NativeEvent, NativeEventKind, SurfaceId};
 
 use crate::html::write_attr;
 
@@ -236,6 +238,100 @@ impl InputSyncTracker {
     }
 }
 
+/// Pure Web IME composition lifecycle helper updating `guard` and producing unified
+/// `NativeEventKind::CompositionStart` / `CompositionUpdate` / `CompositionEnd` (+ `TextChange`)
+/// events shared by `wasm32` DOM listeners and native unit tests.
+#[cfg(any(target_arch = "wasm32", test))]
+pub fn web_composition_start(
+    guard: &ImeCompositionGuard,
+    surface_id: SurfaceId,
+    node_id: NodeId,
+    timestamp_us: u64,
+    data: String,
+) -> NativeEvent {
+    guard.on_composition_start();
+    NativeEvent {
+        surface_id,
+        node_id,
+        timestamp_us,
+        kind: NativeEventKind::CompositionStart,
+        payload: EventPayload::Text(data),
+    }
+}
+
+/// Updates composition state and builds a unified `NativeEventKind::CompositionUpdate` event.
+#[cfg(any(target_arch = "wasm32", test))]
+pub fn web_composition_update(
+    guard: &ImeCompositionGuard,
+    surface_id: SurfaceId,
+    node_id: NodeId,
+    timestamp_us: u64,
+    data: String,
+) -> NativeEvent {
+    guard.on_composition_start();
+    NativeEvent {
+        surface_id,
+        node_id,
+        timestamp_us,
+        kind: NativeEventKind::CompositionUpdate,
+        payload: EventPayload::Text(data),
+    }
+}
+
+/// Finalizes Web IME composition, clearing `guard`, synchronizing `input_sync`, and returning
+/// `[CompositionEnd(committed_piece), TextChange(full_input_value)]`.
+#[cfg(any(target_arch = "wasm32", test))]
+pub fn web_composition_end(
+    guard: &ImeCompositionGuard,
+    input_sync: &mut InputSyncTracker,
+    surface_id: SurfaceId,
+    node_id: NodeId,
+    timestamp_us: u64,
+    committed_piece: String,
+    dom_value: String,
+) -> [NativeEvent; 2] {
+    guard.on_composition_end();
+    let text = input_sync.on_composition_end(node_id, dom_value);
+    [
+        NativeEvent {
+            surface_id,
+            node_id,
+            timestamp_us,
+            kind: NativeEventKind::CompositionEnd,
+            payload: EventPayload::Text(committed_piece),
+        },
+        NativeEvent {
+            surface_id,
+            node_id,
+            timestamp_us,
+            kind: NativeEventKind::TextChange,
+            payload: EventPayload::Text(text),
+        },
+    ]
+}
+
+/// Cancels active Web IME composition on blur (`focusout`), returning a clean `CompositionEnd`
+/// event when composition was in progress.
+#[cfg(any(target_arch = "wasm32", test))]
+pub fn web_composition_cancel_on_blur(
+    guard: &ImeCompositionGuard,
+    surface_id: SurfaceId,
+    node_id: NodeId,
+    timestamp_us: u64,
+) -> Option<NativeEvent> {
+    if !guard.is_composing() {
+        return None;
+    }
+    guard.on_composition_end();
+    Some(NativeEvent {
+        surface_id,
+        node_id,
+        timestamp_us,
+        kind: NativeEventKind::CompositionEnd,
+        payload: EventPayload::Text(String::new()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +395,40 @@ mod tests {
         assert_eq!(tracker.on_change_event(9, "ni".into(), true), None);
         assert_eq!(tracker.on_composition_end(9, "你".into()), "你");
         assert_eq!(tracker.on_change_event(9, "你".into(), false), None);
+    }
+
+    #[test]
+    fn web_composition_helpers_emit_unified_events_and_preserve_guard() {
+        let guard = ImeCompositionGuard::new();
+        let mut sync = InputSyncTracker::new();
+
+        let start = web_composition_start(&guard, 1, 42, 100, "ni".into());
+        assert!(guard.is_composing());
+        assert!(guard.should_suppress_input());
+        assert!(guard.should_suppress_keydown(false, 13));
+        assert_eq!(start.kind, NativeEventKind::CompositionStart);
+        assert_eq!(start.payload, EventPayload::Text("ni".into()));
+
+        let update = web_composition_update(&guard, 1, 42, 200, "nihao".into());
+        assert!(guard.is_composing());
+        assert_eq!(update.kind, NativeEventKind::CompositionUpdate);
+        assert_eq!(update.payload, EventPayload::Text("nihao".into()));
+
+        let [end, change] =
+            web_composition_end(&guard, &mut sync, 1, 42, 300, "你好".into(), "hi 你好".into());
+        assert!(!guard.is_composing());
+        assert!(!guard.should_suppress_input());
+        assert_eq!(end.kind, NativeEventKind::CompositionEnd);
+        assert_eq!(end.payload, EventPayload::Text("你好".into()));
+        assert_eq!(change.kind, NativeEventKind::TextChange);
+        assert_eq!(change.payload, EventPayload::Text("hi 你好".into()));
+
+        // Blur mid-composition cancels cleanly and resets guard.
+        assert!(web_composition_cancel_on_blur(&guard, 1, 42, 400).is_none());
+        let _ = web_composition_start(&guard, 1, 42, 500, "ka".into());
+        let blur_end = web_composition_cancel_on_blur(&guard, 1, 42, 600).expect("cancel event");
+        assert!(!guard.is_composing());
+        assert_eq!(blur_end.kind, NativeEventKind::CompositionEnd);
+        assert_eq!(blur_end.payload, EventPayload::Text(String::new()));
     }
 }

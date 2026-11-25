@@ -20,7 +20,9 @@ pub mod raster;
 mod reloc_scene;
 mod scroll;
 pub mod text;
+pub mod text_bidi;
 mod text_cache;
+pub mod text_grapheme;
 mod text_input;
 
 #[cfg(test)]
@@ -31,6 +33,8 @@ mod motion_tests;
 mod polish_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_bidi_tests;
 #[cfg(test)]
 mod text_input_tests;
 #[cfg(test)]
@@ -91,6 +95,12 @@ pub use raster::{
     rasterize_display_list_with_text_engine, BoxShadow, PixelBuffer,
 };
 pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
+pub use text_bidi::{ShapedLineLayout, VisualGraphemeCluster};
+pub use text_grapheme::{
+    clamp_grapheme_boundary, grapheme_boundaries, grapheme_count, is_grapheme_boundary,
+    next_grapheme_boundary, normalize_line_endings, paragraph_bounds_at, prev_grapheme_boundary,
+    word_bounds_at,
+};
 
 pub(crate) const MAX_HIT_TEST_DEPTH: usize = 256;
 

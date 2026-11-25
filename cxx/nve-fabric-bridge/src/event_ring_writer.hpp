@@ -92,22 +92,18 @@ class EventRingWriter {
     ++count_;
   }
 
-  bool push_text_change(
+  bool push_text_event(
       uint32_t surface_id,
       uint32_t node_id,
       uint64_t ts_us,
+      uint8_t kind,
       std::string_view text) {
     if (count_ == std::numeric_limits<uint32_t>::max() ||
         text.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
         (!text.empty() && text.data() == nullptr)) {
       return false;
     }
-    write_event_header(
-        surface_id,
-        node_id,
-        ts_us,
-        4u /* NativeEventKind::TextChange */,
-        3u /* EventPayload::Text */);
+    write_event_header(surface_id, node_id, ts_us, kind, 3u /* EventPayload::Text */);
     write_le<uint32_t>(static_cast<uint32_t>(text.size()));
     if (!text.empty()) {
       buf_.insert(
@@ -117,6 +113,15 @@ class EventRingWriter {
     }
     ++count_;
     return true;
+  }
+
+  bool push_text_change(
+      uint32_t surface_id,
+      uint32_t node_id,
+      uint64_t ts_us,
+      std::string_view text) {
+    return push_text_event(
+        surface_id, node_id, ts_us, 4u /* NativeEventKind::TextChange */, text);
   }
 
   void push_layout(
@@ -193,7 +198,8 @@ class EventRingWriter {
         push_scroll(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y, ev.width, ev.height);
         return true;
       case 3u:
-        return push_text_change(ev.surface_id, ev.node_id, ev.timestamp_us, str_slice_view(ev.text));
+        return push_text_event(
+            ev.surface_id, ev.node_id, ev.timestamp_us, ev.kind, str_slice_view(ev.text));
       case 4u:
         push_layout(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y, ev.width, ev.height);
         return true;
