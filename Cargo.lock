@@ -1528,8 +1528,10 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "cosmic-text",
+ "flate2",
  "nve-abi",
  "nve-backend-headless",
+ "nve-components",
  "nve-engine",
  "nve-layout-yoga",
  "objc2 0.6.5",

@@ -3,15 +3,18 @@
 use std::time::Instant;
 
 use nve_abi::ColorRgba;
+use nve_components::canvas_ir::CanvasOp;
 use skia_safe::{
-    AlphaType, Canvas, ClipOp, Color, ColorType, Font, FontMgr, FontStyle, ImageInfo, Paint,
-    PaintStyle, RRect, Rect, Surface, Typeface,
+    canvas::SrcRectConstraint, images, AlphaType, Canvas, ClipOp, Color, ColorType, Data,
+    FilterMode, Font, FontMgr, FontStyle, ImageInfo, MipmapMode, Paint, PaintCap, PaintJoin,
+    PaintStyle, PathBuilder, RRect, Rect, SamplingOptions, Surface, Typeface,
 };
 
 use super::{
     sanitize_scale_factor, FrameLifecycleState, FrameTelemetry, GpuBackendKind, GpuFramePresenter,
     GpuSurfaceError, SwapchainExtent,
 };
+use crate::image_cache::{compute_image_placement, ImageCache};
 use crate::raster::PixelBuffer;
 use crate::text::LINE_HEIGHT_MULTIPLIER;
 use crate::{DisplayList, PaintOp};
@@ -109,13 +112,42 @@ impl SkiaCanvasRenderer {
         text_paint.set_anti_alias(true);
         text_paint.set_style(PaintStyle::Fill);
 
+        let mut image_paint = Paint::default();
+        image_paint.set_anti_alias(true);
+
+        let mut save_depth = 0usize;
+
         for op in &display_list.ops {
             match op {
                 PaintOp::SaveOpacity(alpha) => {
                     canvas.save_layer_alpha_f(None, alpha.clamp(0.0, 1.0));
+                    save_depth += 1;
                 }
                 PaintOp::Restore => {
-                    canvas.restore();
+                    if save_depth > 0 {
+                        canvas.restore();
+                        save_depth -= 1;
+                    }
+                }
+                PaintOp::PushClip { rect, radius } => {
+                    canvas.save();
+                    save_depth += 1;
+                    let r = Rect::from_xywh(rect.x, rect.y, rect.width.max(0.0), rect.height.max(0.0));
+                    let clamped_r = radius
+                        .max(0.0)
+                        .min(rect.width.max(0.0) * 0.5)
+                        .min(rect.height.max(0.0) * 0.5);
+                    if clamped_r > 0.01 {
+                        canvas.clip_rrect(RRect::new_rect_xy(r, clamped_r, clamped_r), ClipOp::Intersect, true);
+                    } else {
+                        canvas.clip_rect(r, ClipOp::Intersect, true);
+                    }
+                }
+                PaintOp::PopClip => {
+                    if save_depth > 0 {
+                        canvas.restore();
+                        save_depth -= 1;
+                    }
                 }
                 PaintOp::FillRoundedRect {
                     rect,
@@ -174,7 +206,200 @@ impl SkiaCanvasRenderer {
                     }
                     canvas.restore();
                 }
-                PaintOp::CustomSkiaCanvas { .. } => {}
+                PaintOp::DrawImage {
+                    rect,
+                    radius,
+                    src,
+                    resize_mode,
+                } => {
+                    if rect.width <= 0.0 || rect.height <= 0.0 {
+                        continue;
+                    }
+                    let Ok(decoded) = ImageCache::shared().get_or_decode(src) else {
+                        continue;
+                    };
+                    let Some(placement) =
+                        compute_image_placement(*rect, decoded.width, decoded.height, *resize_mode)
+                    else {
+                        continue;
+                    };
+                    let info = ImageInfo::new(
+                        (decoded.width as i32, decoded.height as i32),
+                        ColorType::RGBA8888,
+                        AlphaType::Unpremul,
+                        None,
+                    );
+                    let row_bytes = (decoded.width as usize) * 4;
+                    let data = Data::new_copy(&decoded.rgba);
+                    let Some(sk_img) = images::raster_from_data(&info, data, row_bytes) else {
+                        continue;
+                    };
+
+                    let outer = Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
+                    let clamped_r = radius
+                        .max(0.0)
+                        .min(rect.width * 0.5)
+                        .min(rect.height * 0.5);
+                    canvas.save();
+                    if clamped_r > 0.01 {
+                        canvas.clip_rrect(
+                            RRect::new_rect_xy(outer, clamped_r, clamped_r),
+                            ClipOp::Intersect,
+                            true,
+                        );
+                    } else {
+                        canvas.clip_rect(outer, ClipOp::Intersect, true);
+                    }
+
+                    let src_r = Rect::from_xywh(
+                        placement.src_x,
+                        placement.src_y,
+                        placement.src_w,
+                        placement.src_h,
+                    );
+                    let dst_r = Rect::from_xywh(
+                        placement.dst_x,
+                        placement.dst_y,
+                        placement.dst_w,
+                        placement.dst_h,
+                    );
+                    let filter = if (placement.dst_w - placement.src_w).abs() < 0.01
+                        && (placement.dst_h - placement.src_h).abs() < 0.01
+                    {
+                        FilterMode::Nearest
+                    } else {
+                        FilterMode::Linear
+                    };
+                    canvas.draw_image_rect_with_sampling_options(
+                        &sk_img,
+                        Some((&src_r, SrcRectConstraint::Strict)),
+                        dst_r,
+                        SamplingOptions::new(filter, MipmapMode::None),
+                        &image_paint,
+                    );
+                    canvas.restore();
+                }
+                PaintOp::CustomSkiaCanvas { rect, ops, .. } => {
+                    if rect.width <= 0.0 || rect.height <= 0.0 || ops.is_empty() {
+                        continue;
+                    }
+                    let outer_saved = canvas.save();
+                    let bounds = Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
+                    canvas.clip_rect(bounds, ClipOp::Intersect, true);
+                    canvas.translate((rect.x, rect.y));
+
+                    let mut vec_fill = Paint::default();
+                    vec_fill.set_anti_alias(true);
+                    vec_fill.set_style(PaintStyle::Fill);
+
+                    let mut vec_stroke = Paint::default();
+                    vec_stroke.set_anti_alias(true);
+                    vec_stroke.set_style(PaintStyle::Stroke);
+                    vec_stroke.set_stroke_cap(PaintCap::Round);
+                    vec_stroke.set_stroke_join(PaintJoin::Round);
+
+                    let mut local_clip_depth = 0usize;
+
+                    for cop in ops {
+                        match cop {
+                            CanvasOp::Clear { color } => {
+                                if color.a > 0 {
+                                    vec_fill.set_color(to_skia_color(*color));
+                                    canvas.draw_rect(
+                                        Rect::from_xywh(0.0, 0.0, rect.width, rect.height),
+                                        &vec_fill,
+                                    );
+                                }
+                            }
+                            CanvasOp::FillRect { x, y, w, h, color } => {
+                                if *w > 0.0 && *h > 0.0 && color.a > 0 {
+                                    vec_fill.set_color(to_skia_color(*color));
+                                    canvas.draw_rect(Rect::from_xywh(*x, *y, *w, *h), &vec_fill);
+                                }
+                            }
+                            CanvasOp::FillRoundedRect {
+                                x,
+                                y,
+                                w,
+                                h,
+                                radius,
+                                color,
+                            } => {
+                                if *w > 0.0 && *h > 0.0 && color.a > 0 {
+                                    vec_fill.set_color(to_skia_color(*color));
+                                    let r = Rect::from_xywh(*x, *y, *w, *h);
+                                    let cr = radius.max(0.0).min(*w * 0.5).min(*h * 0.5);
+                                    canvas.draw_rrect(RRect::new_rect_xy(r, cr, cr), &vec_fill);
+                                }
+                            }
+                            CanvasOp::FillCircle {
+                                cx,
+                                cy,
+                                radius,
+                                color,
+                            } => {
+                                if *radius > 0.0 && color.a > 0 {
+                                    vec_fill.set_color(to_skia_color(*color));
+                                    canvas.draw_circle((*cx, *cy), *radius, &vec_fill);
+                                }
+                            }
+                            CanvasOp::StrokeLine {
+                                x0,
+                                y0,
+                                x1,
+                                y1,
+                                width,
+                                color,
+                            } => {
+                                if *width > 0.0 && color.a > 0 {
+                                    vec_stroke.set_stroke_width(*width);
+                                    vec_stroke.set_color(to_skia_color(*color));
+                                    canvas.draw_line((*x0, *y0), (*x1, *y1), &vec_stroke);
+                                }
+                            }
+                            CanvasOp::StrokePolyline {
+                                points,
+                                width,
+                                color,
+                            } => {
+                                if *width > 0.0 && color.a > 0 && !points.is_empty() {
+                                    if points.len() == 1 {
+                                        vec_fill.set_color(to_skia_color(*color));
+                                        let (px, py) = points[0];
+                                        canvas.draw_circle((px, py), (*width * 0.5).max(0.5), &vec_fill);
+                                    } else {
+                                        let mut pb = PathBuilder::new();
+                                        pb.move_to(points[0]);
+                                        for &pt in &points[1..] {
+                                            pb.line_to(pt);
+                                        }
+                                        let path = pb.detach();
+                                        vec_stroke.set_stroke_width(*width);
+                                        vec_stroke.set_color(to_skia_color(*color));
+                                        canvas.draw_path(&path, &vec_stroke);
+                                    }
+                                }
+                            }
+                            CanvasOp::ClipRect { x, y, w, h } => {
+                                canvas.save();
+                                canvas.clip_rect(
+                                    Rect::from_xywh(*x, *y, w.max(0.0), h.max(0.0)),
+                                    ClipOp::Intersect,
+                                    true,
+                                );
+                                local_clip_depth += 1;
+                            }
+                            CanvasOp::RestoreClip => {
+                                if local_clip_depth > 0 {
+                                    canvas.restore();
+                                    local_clip_depth -= 1;
+                                }
+                            }
+                        }
+                    }
+
+                    canvas.restore_to_count(outer_saved);
+                }
             }
         }
 

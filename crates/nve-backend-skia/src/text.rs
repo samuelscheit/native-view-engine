@@ -459,6 +459,23 @@ impl CosmicTextEngine {
         color: ColorRgba,
         opacity: f32,
     ) {
+        self.rasterize_text_clipped(buf, rect, text, font_size, scale_factor, color, opacity, None);
+    }
+
+    /// Rasterizes `text` into `buf` inside logical `rect`, additionally clipped to an optional
+    /// physical-pixel bounding box `[min_x, min_y, max_x, max_y]`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rasterize_text_clipped(
+        &self,
+        buf: &mut PixelBuffer,
+        rect: LayoutRect,
+        text: &str,
+        font_size: f32,
+        scale_factor: f32,
+        color: ColorRgba,
+        opacity: f32,
+        phys_clip: Option<[i32; 4]>,
+    ) {
         if text.is_empty()
             || rect.width <= 0.0
             || rect.height <= 0.0
@@ -478,7 +495,7 @@ impl CosmicTextEngine {
                 width: rect.width * scale,
                 height: rect.height * scale,
             };
-            draw_bitmap_text(buf, scaled_rect, text, fs * scale, color, opacity);
+            draw_bitmap_text(buf, scaled_rect, text, fs * scale, color, opacity, phys_clip);
             return;
         }
 
@@ -488,7 +505,7 @@ impl CosmicTextEngine {
             return;
         }
 
-        // Compute physical pixel clip bounds from logical target rect.
+        // Compute physical pixel clip bounds from logical target rect intersected with active clip.
         let origin_x = (rect.x * scale).round() as i32;
         let origin_y = (rect.y * scale).round() as i32;
         let clip_x0 = (rect.x * scale).floor() as i32;
@@ -496,10 +513,24 @@ impl CosmicTextEngine {
         let clip_x1 = ((rect.x + rect.width) * scale).ceil() as i32;
         let clip_y1 = ((rect.y + rect.height) * scale).ceil() as i32;
 
-        let min_x = clip_x0.max(0);
-        let min_y = clip_y0.max(0);
-        let max_x = clip_x1.min(buf_w);
-        let max_y = clip_y1.min(buf_h);
+        let (cx0, cy0, cx1, cy1) = match phys_clip {
+            Some([px0, py0, px1, py1]) => (
+                clip_x0.max(px0).max(0),
+                clip_y0.max(py0).max(0),
+                clip_x1.min(px1).min(buf_w),
+                clip_y1.min(py1).min(buf_h),
+            ),
+            None => (
+                clip_x0.max(0),
+                clip_y0.max(0),
+                clip_x1.min(buf_w),
+                clip_y1.min(buf_h),
+            ),
+        };
+        let min_x = cx0;
+        let min_y = cy0;
+        let max_x = cx1;
+        let max_y = cy1;
         if min_x >= max_x || min_y >= max_y {
             return;
         }

@@ -608,3 +608,224 @@ fn real_hardware_metal_swapchain_offscreen_renders_with_cpu_parity_and_hidpi_res
     gpu_surface.copy_to_pixel_buffer(&mut surf_buf).unwrap();
     assert_parity_pixels("gpu-surface-metal@1x", &surf_buf, 1.0);
 }
+
+#[cfg(feature = "skia")]
+fn sample_image_canvas_clip_display_list() -> DisplayList {
+    use nve_components::canvas_ir::{CanvasOp, ImageResizeMode};
+
+    const AVATAR_MAYA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
+
+    let mut canvas_ops = CanvasOp::sparkline(
+        &[10.0, 40.0, 20.0, 75.0, 55.0, 95.0],
+        160.0,
+        60.0,
+        ColorRgba::rgb(56, 189, 248),
+        ColorRgba::rgb(17, 24, 39),
+    );
+    canvas_ops.push(CanvasOp::FillCircle {
+        cx: 30.0,
+        cy: 80.0,
+        radius: 10.0,
+        color: ColorRgba::rgb(16, 185, 129),
+    });
+    canvas_ops.push(CanvasOp::StrokeLine {
+        x0: 60.0,
+        y0: 80.0,
+        x1: 140.0,
+        y1: 80.0,
+        width: 4.0,
+        color: ColorRgba::rgb(239, 68, 68),
+    });
+    canvas_ops.push(CanvasOp::ClipRect {
+        x: 10.0,
+        y: 100.0,
+        w: 25.0,
+        h: 20.0,
+    });
+    canvas_ops.push(CanvasOp::FillRect {
+        x: 10.0,
+        y: 100.0,
+        w: 80.0,
+        h: 20.0,
+        color: ColorRgba::rgb(250, 204, 21),
+    });
+    canvas_ops.push(CanvasOp::RestoreClip);
+
+    DisplayList {
+        ops: vec![
+            // 1. Clipped container (10, 10, 80x60) containing an overflowing purple rect (10, 10, 80x140).
+            PaintOp::PushClip {
+                rect: LayoutRect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 80.0,
+                    height: 60.0,
+                },
+                radius: 0.0,
+            },
+            PaintOp::FillRoundedRect {
+                rect: LayoutRect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 80.0,
+                    height: 140.0,
+                },
+                radius: 0.0,
+                color: ColorRgba::rgb(168, 85, 247),
+            },
+            PaintOp::PopClip,
+            // 2. Real Studio Workspace PNG avatar at (10, 90, 64x64) with Cover + rounded clip.
+            PaintOp::DrawImage {
+                rect: LayoutRect {
+                    x: 10.0,
+                    y: 90.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                radius: 12.0,
+                src: AVATAR_MAYA.to_string(),
+                resize_mode: ImageResizeMode::Cover,
+            },
+            // 3. Real NVE_DRAW1 CustomSkiaCanvas at (110, 10, 160x130).
+            PaintOp::CustomSkiaCanvas {
+                node_id: 99,
+                rect: LayoutRect {
+                    x: 110.0,
+                    y: 10.0,
+                    width: 160.0,
+                    height: 130.0,
+                },
+                ops: canvas_ops,
+            },
+        ],
+    }
+}
+
+#[cfg(feature = "skia")]
+fn assert_image_canvas_clip_parity(label: &str, buf: &PixelBuffer) {
+    // 1. PushClip / PopClip: purple inside (50, 40), clipped to black below at (50, 80).
+    assert_eq!(
+        buf.get_rgb(50, 40),
+        Some((168, 85, 247)),
+        "{label}: clipped purple interior mismatch"
+    );
+    assert_eq!(
+        buf.get_rgb(50, 80),
+        Some((0, 0, 0)),
+        "{label}: PushClip leaked outside bottom edge"
+    );
+
+    // 2. DrawImage: real PNG avatar produced non-zero pixels inside (10..74, 90..154),
+    // and rounded corner at (10, 90) stays clipped to black.
+    let mut avatar_lit = 0usize;
+    for y in 90..154 {
+        for x in 10..74 {
+            if buf.get_rgb(x, y) != Some((0, 0, 0)) {
+                avatar_lit += 1;
+            }
+        }
+    }
+    assert!(
+        avatar_lit > 1000,
+        "{label}: expected rendered PNG avatar pixels, got only {avatar_lit}"
+    );
+    assert_eq!(
+        buf.get_rgb(10, 90),
+        Some((0, 0, 0)),
+        "{label}: DrawImage rounded corner not clipped"
+    );
+
+    // 3. CustomSkiaCanvas NVE_DRAW1:
+    // Sparkline background inside (110..270, 10..70)
+    assert_eq!(
+        buf.get_rgb(120, 20),
+        Some((17, 24, 39)),
+        "{label}: sparkline bg mismatch"
+    );
+    // Sparkline cyan curve pixels present
+    let mut cyan_hits = 0usize;
+    for y in 10..70 {
+        for x in 110..270 {
+            let (r, g, b) = buf.get_rgb(x, y).unwrap();
+            if r <= 80 && g >= 160 && b >= 220 {
+                cyan_hits += 1;
+            }
+        }
+    }
+    assert!(
+        cyan_hits >= 25,
+        "{label}: expected sparkline cyan stroke pixels, found {cyan_hits}"
+    );
+    // FillCircle green center at (110 + 30, 10 + 80) = (140, 90)
+    assert_eq!(
+        buf.get_rgb(140, 90),
+        Some((16, 185, 129)),
+        "{label}: NVE_DRAW1 FillCircle mismatch"
+    );
+    // StrokeLine red midpoint at (110 + 100, 10 + 80) = (210, 90)
+    assert_eq!(
+        buf.get_rgb(210, 90),
+        Some((239, 68, 68)),
+        "{label}: NVE_DRAW1 StrokeLine mismatch"
+    );
+    // ClipRect inside yellow at (110 + 20, 10 + 110) = (130, 120), clipped outside at (160, 120)
+    assert_eq!(
+        buf.get_rgb(130, 120),
+        Some((250, 204, 21)),
+        "{label}: NVE_DRAW1 clipped FillRect interior mismatch"
+    );
+    assert_eq!(
+        buf.get_rgb(160, 120),
+        Some((0, 0, 0)),
+        "{label}: NVE_DRAW1 ClipRect leaked past clip boundary"
+    );
+}
+
+#[cfg(feature = "skia")]
+#[test]
+fn image_canvas_and_clip_primitives_have_software_and_cpu_skia_parity() {
+    let list = sample_image_canvas_clip_display_list();
+    let renderer = SkiaCanvasRenderer::new();
+
+    // Software rasterizer
+    let mut soft = PixelBuffer::new(280, 170);
+    crate::raster::rasterize_display_list(&list, &mut soft, 1.0, ColorRgba::BLACK);
+    assert_image_canvas_clip_parity("software", &soft);
+
+    // CPU Skia
+    let mut cpu_skia = CpuSkiaSurface::new(280, 170).unwrap();
+    GpuSurfaceBackend::render_display_list(&mut cpu_skia, &renderer, &list, 1.0, ColorRgba::BLACK)
+        .unwrap();
+    let mut skia_buf = PixelBuffer::new(280, 170);
+    cpu_skia.copy_to_pixel_buffer(&mut skia_buf).unwrap();
+    assert_image_canvas_clip_parity("cpu-skia", &skia_buf);
+}
+
+#[cfg(all(feature = "skia-metal", target_os = "macos"))]
+#[test]
+fn hardware_metal_gpu_renders_real_draw_image_nve_draw1_and_clips_with_software_parity() {
+    let list = sample_image_canvas_clip_display_list();
+
+    // Software reference
+    let mut soft = PixelBuffer::new(280, 170);
+    crate::raster::rasterize_display_list(&list, &mut soft, 1.0, ColorRgba::BLACK);
+    assert_image_canvas_clip_parity("software-ref", &soft);
+
+    // Real hardware Metal GPU swapchain
+    let mut metal_sw = GpuSwapchain::new_offscreen(GpuSurfaceConfig {
+        width: 280,
+        height: 170,
+        scale_factor: 1.0,
+        preferred_backend: GpuBackendKind::Metal,
+        allow_cpu_fallback: false,
+        ..Default::default()
+    })
+    .expect("macOS hardware Metal swapchain should initialize");
+    assert_eq!(metal_sw.kind(), GpuBackendKind::Metal);
+    metal_sw
+        .execute_frame(&list, 1.0, ColorRgba::BLACK, None)
+        .expect("Metal frame should render");
+    let mut metal_buf = PixelBuffer::new(280, 170);
+    metal_sw.copy_to_pixel_buffer(&mut metal_buf).unwrap();
+    assert_image_canvas_clip_parity("metal-gpu", &metal_buf);
+}

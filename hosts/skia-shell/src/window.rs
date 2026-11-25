@@ -33,8 +33,9 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::Message;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8089";
@@ -629,6 +630,103 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(handled)
     }
 
+    /// Scrolls the `ScrollView` under logical `(x, y)` by `(delta_x, delta_y)` (positive `delta_y`
+    /// scrolls down), clamps to content bounds, dispatches `NativeEventKind::Scroll` into the app,
+    /// and re-renders / re-rasterizes when either the app handled the event or the scroll offset
+    /// changed.
+    pub fn handle_scroll_logical(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> Result<bool, DesktopHostError> {
+        self.cursor_logical = (x, y);
+        let Some(scroll_node_id) = self.backend.hit_test_scroll_view(x, y) else {
+            return Ok(false);
+        };
+        let prev = self.backend.scroll_offset(scroll_node_id);
+        let (new_x, new_y) = self
+            .backend
+            .apply_scroll_delta(scroll_node_id, delta_x, delta_y);
+        let offset_changed =
+            (prev.0 - new_x).abs() > 1e-4 || (prev.1 - new_y).abs() > 1e-4;
+        let (content_width, content_height) = self
+            .backend
+            .scroll_content_size(scroll_node_id)
+            .unwrap_or((self.viewport.width, self.viewport.height));
+
+        let timestamp_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+        let event = NativeEvent {
+            surface_id: self.surface_id,
+            node_id: scroll_node_id,
+            timestamp_us,
+            kind: NativeEventKind::Scroll,
+            payload: EventPayload::Scroll {
+                x: new_x,
+                y: new_y,
+                content_width,
+                content_height,
+            },
+        };
+        let encoded = encode_events(&[event]);
+        let handled = self.app.dispatch_events(&encoded);
+        if handled {
+            self.render_and_rasterize()?;
+        } else if offset_changed {
+            self.rasterize_current();
+        }
+        Ok(handled || offset_changed)
+    }
+
+    /// Dispatches a keyboard shortcut/navigation event (`Cmd+K`/`Ctrl+K`, `ArrowUp`, `ArrowDown`,
+    /// `Enter`, `Escape`) as `NativeEventKind::Custom { name: "keydown", .. }` into the app and
+    /// re-renders when handled.
+    pub fn handle_keydown(
+        &mut self,
+        key: &str,
+        meta: bool,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Result<bool, DesktopHostError> {
+        if key.is_empty() {
+            return Ok(false);
+        }
+        let payload_json = serde_json::json!({
+            "key": key,
+            "meta": meta,
+            "ctrl": ctrl,
+            "shift": shift,
+            "alt": alt,
+        })
+        .to_string();
+        let node_id = self.backend.find_custom_event_target();
+        let timestamp_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+        let event = NativeEvent {
+            surface_id: self.surface_id,
+            node_id,
+            timestamp_us,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "keydown".to_string(),
+                data: payload_json.into_bytes(),
+            },
+        };
+        let encoded = encode_events(&[event]);
+        let handled = self.app.dispatch_events(&encoded);
+        if handled {
+            self.render_and_rasterize()?;
+        }
+        Ok(handled)
+    }
+
     /// Processes a 2-tier hot-reload message from `nve dev` and returns `true` when the frame
     /// buffer was updated and should be presented.
     pub fn handle_hot_patch(&mut self, msg: HotPatchMsg) -> Result<bool, DesktopHostError> {
@@ -834,6 +932,7 @@ pub struct DesktopWindowHost {
     hot_reload: Option<HotReloadClient>,
     proxy: Option<EventLoopProxy<HostWakeEvent>>,
     last_telemetry: Option<FrameTelemetry>,
+    modifiers: ModifiersState,
     snapshot_saved: bool,
 }
 
@@ -923,6 +1022,7 @@ impl DesktopWindowHost {
             hot_reload: None,
             proxy: None,
             last_telemetry: None,
+            modifiers: ModifiersState::empty(),
             snapshot_saved: false,
         })
     }
@@ -1293,6 +1393,55 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
                     }
                     Ok(false) => {}
                     Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
+                }
+            }
+            WindowEvent::ModifiersChanged(new_mods) => {
+                self.modifiers = new_mods.state();
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scale = self.session.viewport().scale_factor.max(0.001);
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(lx, ly) => (-lx * 40.0, -ly * 40.0),
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        (-(pos.x as f32) / scale, -(pos.y as f32) / scale)
+                    }
+                };
+                let (x, y) = self.session.cursor_logical();
+                match self.session.handle_scroll_logical(x, y, dx, dy) {
+                    Ok(true) => {
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => eprintln!("[nve-skia-shell] scroll dispatch error: {err}"),
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let meta = self.modifiers.super_key();
+                let ctrl = self.modifiers.control_key();
+                let shift = self.modifiers.shift_key();
+                let alt = self.modifiers.alt_key();
+                let mapped_key: Option<&str> = match &event.logical_key {
+                    Key::Named(NamedKey::ArrowUp) => Some("ArrowUp"),
+                    Key::Named(NamedKey::ArrowDown) => Some("ArrowDown"),
+                    Key::Named(NamedKey::Enter) => Some("Enter"),
+                    Key::Named(NamedKey::Escape) => Some("Escape"),
+                    Key::Character(s) if s.eq_ignore_ascii_case("k") && (meta || ctrl) => {
+                        Some("k")
+                    }
+                    _ => None,
+                };
+                if let Some(key) = mapped_key {
+                    match self.session.handle_keydown(key, meta, ctrl, shift, alt) {
+                        Ok(true) => {
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(err) => eprintln!("[nve-skia-shell] keydown dispatch error: {err}"),
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1819,6 +1968,182 @@ mod tests {
             .err()
             .expect("expected loader error for nonexistent dylib");
         assert!(matches!(err, DesktopHostError::Loader(LoaderError::Io(_))));
+    }
+
+    struct MockScrollAndKeyApp {
+        scroll_events: Vec<(u32, f32, f32, f32, f32)>,
+        keydown_payloads: Vec<(u32, String)>,
+        palette_open: bool,
+    }
+
+    impl MockScrollAndKeyApp {
+        fn new() -> Self {
+            Self {
+                scroll_events: Vec::new(),
+                keydown_payloads: Vec::new(),
+                palette_open: false,
+            }
+        }
+    }
+
+    impl DesktopApp for MockScrollAndKeyApp {
+        fn generation(&self) -> u64 {
+            1
+        }
+
+        fn render(&mut self, frame_id: FrameId) -> Vec<u8> {
+            let mut b = CommandBufferBuilder::new(1, frame_id);
+            b.create_node(2, ComponentKind::ScrollView, None);
+            b.set_layout(
+                2,
+                &LayoutProps {
+                    width: Dimension::Points(200.0),
+                    height: Dimension::Points(100.0),
+                    flex_direction: FlexDirection::Column,
+                    ..Default::default()
+                },
+            );
+            b.set_event_mask(2, EventMask::SCROLL | EventMask::CUSTOM);
+
+            for (id, color) in [
+                (10u32, ColorRgba::rgb(239, 68, 68)),
+                (11u32, ColorRgba::rgb(16, 185, 129)),
+                (12u32, ColorRgba::rgb(37, 99, 235)),
+            ] {
+                b.create_node(id, ComponentKind::View, None);
+                b.set_layout(
+                    id,
+                    &LayoutProps {
+                        width: Dimension::Points(200.0),
+                        height: Dimension::Points(80.0),
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
+                );
+                b.set_style(
+                    id,
+                    &StyleProps {
+                        background: if self.palette_open {
+                            ColorRgba::rgb(250, 204, 21)
+                        } else {
+                            color
+                        },
+                        ..Default::default()
+                    },
+                );
+            }
+            b.set_children(2, &[10, 11, 12]);
+            b.set_children(ROOT_NODE_ID, &[2]);
+            b.commit(true);
+            b.into_bytes()
+        }
+
+        fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
+            let events = decode_events(encoded_events).expect("valid encoded events");
+            let mut handled = false;
+            for ev in events {
+                match (ev.kind, ev.payload) {
+                    (
+                        NativeEventKind::Scroll,
+                        EventPayload::Scroll {
+                            x,
+                            y,
+                            content_width,
+                            content_height,
+                        },
+                    ) => {
+                        self.scroll_events
+                            .push((ev.node_id, x, y, content_width, content_height));
+                        handled = true;
+                    }
+                    (
+                        NativeEventKind::Custom,
+                        EventPayload::Custom { name, data },
+                    ) if name == "keydown" => {
+                        let json = String::from_utf8(data).expect("utf8 keydown json");
+                        if json.contains("\"key\":\"k\"") {
+                            self.palette_open = !self.palette_open;
+                        } else if json.contains("\"key\":\"Escape\"") {
+                            self.palette_open = false;
+                        }
+                        self.keydown_payloads.push((ev.node_id, json));
+                        handled = true;
+                    }
+                    _ => {}
+                }
+            }
+            handled
+        }
+
+        fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
+            false
+        }
+
+        fn reload(
+            &mut self,
+            _new_dylib_path: &Path,
+            _surface_id: SurfaceId,
+        ) -> Result<u64, DesktopHostError> {
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn desktop_session_forwards_wheel_scroll_and_keydown_events() {
+        let viewport = Viewport {
+            width: 240.0,
+            height: 160.0,
+            scale_factor: 1.0,
+        };
+        let mut session = DesktopSession::new(
+            MockScrollAndKeyApp::new(),
+            1,
+            viewport,
+            ColorRgba::BLACK,
+            false,
+        );
+        session.render_and_rasterize().unwrap();
+
+        // Initially top of ScrollView shows red row (node 10); below y=100 is clipped black.
+        assert_eq!(session.pixel_buffer().get_rgb(50, 20), Some((239, 68, 68)));
+        assert_eq!(session.pixel_buffer().get_rgb(50, 120), Some((0, 0, 0)));
+
+        // Wheel scroll outside ScrollView returns false.
+        assert!(!session.handle_scroll_logical(220.0, 140.0, 0.0, 60.0).unwrap());
+
+        // Wheel scroll inside ScrollView clamps and dispatches Scroll event (total 240, viewport 100 -> max 140).
+        assert!(session.handle_scroll_logical(50.0, 50.0, 0.0, 100.0).unwrap());
+        assert_eq!(session.app().scroll_events.len(), 1);
+        let (node_id, sx, sy, cw, ch) = session.app().scroll_events[0];
+        assert_eq!(node_id, 2);
+        assert_eq!((sx, sy), (0.0, 100.0));
+        assert_eq!((cw, ch), (200.0, 240.0));
+        // Row 11 (green, y=80..160) shifted to -20..60 -> (50, 20) is now green!
+        assert_eq!(session.pixel_buffer().get_rgb(50, 20), Some((16, 185, 129)));
+        // Row 12 (blue, y=160..240) shifted to 60..140 -> (50, 80) is blue, (50, 120) still clipped black!
+        assert_eq!(session.pixel_buffer().get_rgb(50, 80), Some((37, 99, 235)));
+        assert_eq!(session.pixel_buffer().get_rgb(50, 120), Some((0, 0, 0)));
+
+        // Over-scrolling clamps cleanly to 140.
+        assert!(session.handle_scroll_logical(50.0, 50.0, 0.0, 500.0).unwrap());
+        assert_eq!(session.app().scroll_events[1].2, 140.0);
+
+        // KeyDown forwarding: Cmd+K, ArrowDown, ArrowUp, Enter, Escape.
+        assert!(session.handle_keydown("k", true, false, false, false).unwrap());
+        assert!(session.app().palette_open);
+        assert_eq!(session.pixel_buffer().get_rgb(50, 20), Some((250, 204, 21)));
+        assert!(session.handle_keydown("ArrowDown", false, false, false, false).unwrap());
+        assert!(session.handle_keydown("ArrowUp", false, false, false, false).unwrap());
+        assert!(session.handle_keydown("Enter", false, false, false, false).unwrap());
+        assert!(session.handle_keydown("Escape", false, false, false, false).unwrap());
+        assert!(!session.app().palette_open);
+        assert_eq!(session.app().keydown_payloads.len(), 5);
+        assert_eq!(session.app().keydown_payloads[0].0, 2);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&session.app().keydown_payloads[0].1).unwrap();
+        assert_eq!(parsed["key"], "k");
+        assert_eq!(parsed["meta"], true);
+        assert_eq!(parsed["ctrl"], false);
     }
 
     #[test]

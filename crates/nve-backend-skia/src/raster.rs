@@ -2,13 +2,17 @@
 //!
 //! Renders `FillRoundedRect`, `StrokeRoundedRect`, `DrawText` (using `CosmicTextEngine`
 //! native system font shaping & antialiased glyph rasterization, with automatic fallback to
-//! the embedded 5x7 bitmap font), and `SaveOpacity`/`Restore` into a `0x00RRGGBB`
-//! `PixelBuffer` directly compatible with `softbuffer`.
+//! the embedded 5x7 bitmap font), `DrawImage` (PNG/RGBA via `ImageCache` with all 4
+//! `ImageResizeMode`s), `PushClip`/`PopClip` (rect & rounded-rect clip stack),
+//! `CustomSkiaCanvas` (`NVE_DRAW1` vector draw lists), and `SaveOpacity`/`Restore` into a
+//! `0x00RRGGBB` `PixelBuffer` directly compatible with `softbuffer`.
 
 use nve_abi::ColorRgba;
+use nve_components::canvas_ir::{CanvasOp, ImageResizeMode};
 use nve_engine::{LayoutRect, TextMeasurer};
 
 use crate::font::{glyph_bitmap, GLYPH_HEIGHT, GLYPH_WIDTH};
+use crate::image_cache::{compute_image_placement, ImageCache};
 use crate::text::CosmicTextEngine;
 use crate::{DisplayList, PaintOp};
 
@@ -160,6 +164,117 @@ impl PixelBuffer {
     }
 }
 
+/// Active physical-pixel clip stack supporting nested rectangular and rounded-rect clips.
+#[derive(Debug, Clone)]
+struct ClipStack {
+    buf_w: i32,
+    buf_h: i32,
+    entries: Vec<ClipEntry>,
+    bounds: [i32; 4], // [x0, y0, x1, y1]
+    rounded_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClipEntry {
+    cx: f32,
+    cy: f32,
+    hx: f32,
+    hy: f32,
+    radius: f32,
+    bounds: [i32; 4],
+}
+
+impl ClipStack {
+    fn new(buf_w: u32, buf_h: u32) -> Self {
+        let w = buf_w as i32;
+        let h = buf_h as i32;
+        Self {
+            buf_w: w,
+            buf_h: h,
+            entries: Vec::with_capacity(8),
+            bounds: [0, 0, w, h],
+            rounded_count: 0,
+        }
+    }
+
+    fn push(&mut self, rect: LayoutRect, radius: f32) {
+        let x0 = (rect.x.floor() as i32).max(self.bounds[0]).clamp(0, self.buf_w);
+        let y0 = (rect.y.floor() as i32).max(self.bounds[1]).clamp(0, self.buf_h);
+        let x1 = ((rect.x + rect.width).ceil() as i32)
+            .min(self.bounds[2])
+            .clamp(0, self.buf_w);
+        let y1 = ((rect.y + rect.height).ceil() as i32)
+            .min(self.bounds[3])
+            .clamp(0, self.buf_h);
+        let hx = (rect.width * 0.5).max(0.0);
+        let hy = (rect.height * 0.5).max(0.0);
+        let r = radius.clamp(0.0, hx.min(hy));
+        if r > 0.01 {
+            self.rounded_count += 1;
+        }
+        let next_bounds = if x0 < x1 && y0 < y1 {
+            [x0, y0, x1, y1]
+        } else {
+            [0, 0, 0, 0]
+        };
+        self.entries.push(ClipEntry {
+            cx: rect.x + hx,
+            cy: rect.y + hy,
+            hx,
+            hy,
+            radius: r,
+            bounds: next_bounds,
+        });
+        self.bounds = next_bounds;
+    }
+
+    fn pop(&mut self) {
+        if let Some(popped) = self.entries.pop() {
+            if popped.radius > 0.01 {
+                self.rounded_count = self.rounded_count.saturating_sub(1);
+            }
+            self.bounds = self
+                .entries
+                .last()
+                .map_or([0, 0, self.buf_w, self.buf_h], |e| e.bounds);
+        }
+    }
+
+    #[inline]
+    fn bounds(&self) -> [i32; 4] {
+        self.bounds
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.bounds[0] >= self.bounds[2] || self.bounds[1] >= self.bounds[3]
+    }
+
+    #[inline]
+    fn has_rounded(&self) -> bool {
+        self.rounded_count > 0
+    }
+
+    #[inline]
+    fn rounded_coverage(&self, fx: f32, fy: f32) -> f32 {
+        if self.rounded_count == 0 {
+            return 1.0;
+        }
+        let mut cov = 1.0f32;
+        for entry in &self.entries {
+            if entry.radius > 0.01 {
+                let sdf = rounded_rect_sdf(fx, fy, entry.cx, entry.cy, entry.hx, entry.hy, entry.radius);
+                let c = (0.5 - sdf).clamp(0.0, 1.0);
+                if c <= 0.0 {
+                    return 0.0;
+                }
+                cov = cov.min(c);
+            }
+        }
+        cov
+    }
+}
+
 /// Signed distance to a rounded rectangle centered at `(cx, cy)` with half-size `(hx, hy)`
 /// and corner radius `r`. Negative inside, positive outside.
 #[inline]
@@ -175,20 +290,20 @@ fn rounded_rect_sdf(px: f32, py: f32, cx: f32, cy: f32, hx: f32, hy: f32, r: f32
 
 fn fill_rounded_rect(
     buf: &mut PixelBuffer,
+    clip: &ClipStack,
     rect: LayoutRect,
     radius: f32,
     color: ColorRgba,
     opacity: f32,
 ) {
-    if rect.width <= 0.0 || rect.height <= 0.0 || color.a == 0 || opacity <= 0.0 {
+    if rect.width <= 0.0 || rect.height <= 0.0 || color.a == 0 || opacity <= 0.0 || clip.is_empty() {
         return;
     }
-    let w = buf.width() as i32;
-    let h = buf.height() as i32;
-    let min_x = (rect.x.floor() as i32 - 1).clamp(0, w);
-    let max_x = ((rect.x + rect.width).ceil() as i32 + 1).clamp(0, w);
-    let min_y = (rect.y.floor() as i32 - 1).clamp(0, h);
-    let max_y = ((rect.y + rect.height).ceil() as i32 + 1).clamp(0, h);
+    let [cx0, cy0, cx1, cy1] = clip.bounds();
+    let min_x = (rect.x.floor() as i32 - 1).clamp(cx0, cx1);
+    let max_x = ((rect.x + rect.width).ceil() as i32 + 1).clamp(cx0, cx1);
+    let min_y = (rect.y.floor() as i32 - 1).clamp(cy0, cy1);
+    let max_y = ((rect.y + rect.height).ceil() as i32 + 1).clamp(cy0, cy1);
     if min_x >= max_x || min_y >= max_y {
         return;
     }
@@ -198,8 +313,9 @@ fn fill_rounded_rect(
     let cx = rect.x + hx;
     let cy = rect.y + hy;
     let r = radius.clamp(0.0, hx.min(hy));
+    let rounded_clip = clip.has_rounded();
 
-    // Inner safe bounds guaranteed to have coverage == 1.0 (avoiding SDF per pixel).
+    // Inner safe bounds guaranteed to have coverage == 1.0 (avoiding SDF per pixel when no rounded clip).
     let inner_x0 = ((rect.x + r).ceil() as i32 + 1).max(min_x);
     let inner_x1 = ((rect.x + rect.width - r).floor() as i32 - 1).min(max_x);
     let inner_y0 = ((rect.y + 1.0).ceil() as i32).max(min_y);
@@ -211,6 +327,22 @@ fn fill_rounded_rect(
 
     for py in min_y..max_y {
         let fy = py as f32 + 0.5;
+        if rounded_clip {
+            for px in min_x..max_x {
+                let fx = px as f32 + 0.5;
+                let clip_cov = clip.rounded_coverage(fx, fy);
+                if clip_cov <= 0.0 {
+                    continue;
+                }
+                let sdf = rounded_rect_sdf(fx, fy, cx, cy, hx, hy, r);
+                let cov = (0.5 - sdf).clamp(0.0, 1.0) * clip_cov;
+                if cov > 0.0 {
+                    buf.blend_pixel(px, py, color, cov * opacity);
+                }
+            }
+            continue;
+        }
+
         let (span_l, span_r) = if py >= full_band_y0 && py < full_band_y1 && edge_x0 < edge_x1 {
             (edge_x0, edge_x1)
         } else if py >= inner_y0 && py < inner_y1 && inner_x0 < inner_x1 {
@@ -244,6 +376,7 @@ fn fill_rounded_rect(
 
 fn stroke_rounded_rect(
     buf: &mut PixelBuffer,
+    clip: &ClipStack,
     rect: LayoutRect,
     radius: f32,
     stroke_width: f32,
@@ -255,17 +388,17 @@ fn stroke_rounded_rect(
         || stroke_width <= 0.0
         || color.a == 0
         || opacity <= 0.0
+        || clip.is_empty()
     {
         return;
     }
     let hw = (stroke_width * 0.5).max(0.5);
     let pad = hw.ceil() as i32 + 1;
-    let w = buf.width() as i32;
-    let h = buf.height() as i32;
-    let min_x = (rect.x.floor() as i32 - pad).clamp(0, w);
-    let max_x = ((rect.x + rect.width).ceil() as i32 + pad).clamp(0, w);
-    let min_y = (rect.y.floor() as i32 - pad).clamp(0, h);
-    let max_y = ((rect.y + rect.height).ceil() as i32 + pad).clamp(0, h);
+    let [cx0, cy0, cx1, cy1] = clip.bounds();
+    let min_x = (rect.x.floor() as i32 - pad).clamp(cx0, cx1);
+    let max_x = ((rect.x + rect.width).ceil() as i32 + pad).clamp(cx0, cx1);
+    let min_y = (rect.y.floor() as i32 - pad).clamp(cy0, cy1);
+    let max_y = ((rect.y + rect.height).ceil() as i32 + pad).clamp(cy0, cy1);
     if min_x >= max_x || min_y >= max_y {
         return;
     }
@@ -275,6 +408,7 @@ fn stroke_rounded_rect(
     let cx = rect.x + hx;
     let cy = rect.y + hy;
     let r = radius.clamp(0.0, hx.min(hy));
+    let rounded_clip = clip.has_rounded();
 
     // Hollow interior bounds that are guaranteed well inside `-hw - 1.0` so we skip them.
     let margin = hw + r + 1.5;
@@ -292,15 +426,358 @@ fn stroke_rounded_rect(
                 px = skip_x1;
                 continue;
             }
-            let sdf = rounded_rect_sdf(px as f32 + 0.5, fy, cx, cy, hx, hy, r);
-            let band_dist = sdf.abs() - hw;
-            let cov = (0.5 - band_dist).clamp(0.0, 1.0);
-            if cov > 0.0 {
-                buf.blend_pixel(px, py, color, cov * opacity);
+            let fx = px as f32 + 0.5;
+            let clip_cov = if rounded_clip {
+                clip.rounded_coverage(fx, fy)
+            } else {
+                1.0
+            };
+            if clip_cov > 0.0 {
+                let sdf = rounded_rect_sdf(fx, fy, cx, cy, hx, hy, r);
+                let band_dist = sdf.abs() - hw;
+                let cov = (0.5 - band_dist).clamp(0.0, 1.0) * clip_cov;
+                if cov > 0.0 {
+                    buf.blend_pixel(px, py, color, cov * opacity);
+                }
             }
             px += 1;
         }
     }
+}
+
+fn fill_circle(
+    buf: &mut PixelBuffer,
+    clip: &ClipStack,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: ColorRgba,
+    opacity: f32,
+) {
+    if radius <= 0.0 || color.a == 0 || opacity <= 0.0 || clip.is_empty() {
+        return;
+    }
+    let [cx0, cy0, cx1, cy1] = clip.bounds();
+    let min_x = ((cx - radius).floor() as i32 - 1).clamp(cx0, cx1);
+    let max_x = ((cx + radius).ceil() as i32 + 1).clamp(cx0, cx1);
+    let min_y = ((cy - radius).floor() as i32 - 1).clamp(cy0, cy1);
+    let max_y = ((cy + radius).ceil() as i32 + 1).clamp(cy0, cy1);
+    if min_x >= max_x || min_y >= max_y {
+        return;
+    }
+
+    let rounded_clip = clip.has_rounded();
+    for py in min_y..max_y {
+        let fy = py as f32 + 0.5;
+        let dy = fy - cy;
+        let dy2 = dy * dy;
+        for px in min_x..max_x {
+            let fx = px as f32 + 0.5;
+            let dx = fx - cx;
+            let dist = (dx * dx + dy2).sqrt() - radius;
+            let mut cov = (0.5 - dist).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            if rounded_clip {
+                cov *= clip.rounded_coverage(fx, fy);
+                if cov <= 0.0 {
+                    continue;
+                }
+            }
+            buf.blend_pixel(px, py, color, cov * opacity);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_line(
+    buf: &mut PixelBuffer,
+    clip: &ClipStack,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    width: f32,
+    color: ColorRgba,
+    opacity: f32,
+) {
+    if width <= 0.0 || color.a == 0 || opacity <= 0.0 || clip.is_empty() {
+        return;
+    }
+    let hw = (width * 0.5).max(0.5);
+    let pad = hw.ceil() as i32 + 1;
+    let [cx0, cy0, cx1, cy1] = clip.bounds();
+    let min_x = (x0.min(x1).floor() as i32 - pad).clamp(cx0, cx1);
+    let max_x = (x0.max(x1).ceil() as i32 + pad).clamp(cx0, cx1);
+    let min_y = (y0.min(y1).floor() as i32 - pad).clamp(cy0, cy1);
+    let max_y = (y0.max(y1).ceil() as i32 + pad).clamp(cy0, cy1);
+    if min_x >= max_x || min_y >= max_y {
+        return;
+    }
+
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len_sq = dx * dx + dy * dy;
+    let rounded_clip = clip.has_rounded();
+
+    for py in min_y..max_y {
+        let fy = py as f32 + 0.5;
+        let py0 = fy - y0;
+        for px in min_x..max_x {
+            let fx = px as f32 + 0.5;
+            let px0 = fx - x0;
+            let t = if len_sq <= 1e-6 {
+                0.0
+            } else {
+                ((px0 * dx + py0 * dy) / len_sq).clamp(0.0, 1.0)
+            };
+            let rx = px0 - t * dx;
+            let ry = py0 - t * dy;
+            let dist = (rx * rx + ry * ry).sqrt() - hw;
+            let mut cov = (0.5 - dist).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            if rounded_clip {
+                cov *= clip.rounded_coverage(fx, fy);
+                if cov <= 0.0 {
+                    continue;
+                }
+            }
+            buf.blend_pixel(px, py, color, cov * opacity);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_image(
+    buf: &mut PixelBuffer,
+    clip: &ClipStack,
+    rect: LayoutRect,
+    radius: f32,
+    src: &str,
+    resize_mode: ImageResizeMode,
+    scale: f32,
+    opacity: f32,
+) {
+    if rect.width <= 0.0 || rect.height <= 0.0 || opacity <= 0.0 || clip.is_empty() {
+        return;
+    }
+    let Ok(img) = ImageCache::shared().get_or_decode(src) else {
+        return;
+    };
+    let Some(placement) = compute_image_placement(rect, img.width, img.height, resize_mode) else {
+        return;
+    };
+
+    let outer = scale_rect(rect, scale);
+    let dst_x = placement.dst_x * scale;
+    let dst_y = placement.dst_y * scale;
+    let dst_w = placement.dst_w * scale;
+    let dst_h = placement.dst_h * scale;
+    if dst_w <= 0.0 || dst_h <= 0.0 {
+        return;
+    }
+
+    let [cx0, cy0, cx1, cy1] = clip.bounds();
+    let ox0 = (outer.x.floor() as i32).max(cx0);
+    let oy0 = (outer.y.floor() as i32).max(cy0);
+    let ox1 = ((outer.x + outer.width).ceil() as i32).min(cx1);
+    let oy1 = ((outer.y + outer.height).ceil() as i32).min(cy1);
+
+    let min_x = (dst_x.floor() as i32).clamp(ox0, ox1);
+    let max_x = ((dst_x + dst_w).ceil() as i32).clamp(ox0, ox1);
+    let min_y = (dst_y.floor() as i32).clamp(oy0, oy1);
+    let max_y = ((dst_y + dst_h).ceil() as i32).clamp(oy0, oy1);
+    if min_x >= max_x || min_y >= max_y {
+        return;
+    }
+
+    let hx = outer.width * 0.5;
+    let hy = outer.height * 0.5;
+    let ocx = outer.x + hx;
+    let ocy = outer.y + hy;
+    let r = (radius * scale).clamp(0.0, hx.min(hy));
+    let has_corner_radius = r > 0.01;
+    let rounded_clip = clip.has_rounded();
+
+    let inv_dst_w = placement.src_w / dst_w;
+    let inv_dst_h = placement.src_h / dst_h;
+    let use_nearest = (dst_w - placement.src_w).abs() < 0.01 && (dst_h - placement.src_h).abs() < 0.01;
+
+    for py in min_y..max_y {
+        let fy = py as f32 + 0.5;
+        let sv = placement.src_y + (fy - dst_y) * inv_dst_h;
+        for px in min_x..max_x {
+            let fx = px as f32 + 0.5;
+            let mut cov = opacity;
+            if has_corner_radius {
+                let sdf = rounded_rect_sdf(fx, fy, ocx, ocy, hx, hy, r);
+                cov *= (0.5 - sdf).clamp(0.0, 1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
+            }
+            if rounded_clip {
+                cov *= clip.rounded_coverage(fx, fy);
+                if cov <= 0.0 {
+                    continue;
+                }
+            }
+            let su = placement.src_x + (fx - dst_x) * inv_dst_w;
+            let sample = if use_nearest {
+                img.sample_nearest(su, sv)
+            } else {
+                img.sample_bilinear(su, sv)
+            };
+            if sample.a > 0 {
+                buf.blend_pixel(px, py, sample, cov);
+            }
+        }
+    }
+}
+
+fn execute_canvas_ops(
+    buf: &mut PixelBuffer,
+    clip: &mut ClipStack,
+    canvas_rect: LayoutRect,
+    ops: &[CanvasOp],
+    scale: f32,
+    opacity: f32,
+) {
+    if canvas_rect.width <= 0.0 || canvas_rect.height <= 0.0 || opacity <= 0.0 || ops.is_empty() {
+        return;
+    }
+    let scaled_canvas = scale_rect(canvas_rect, scale);
+    clip.push(scaled_canvas, 0.0);
+    let mut local_clip_depth = 0usize;
+
+    for op in ops {
+        match op {
+            CanvasOp::Clear { color } => {
+                if color.a > 0 {
+                    fill_rounded_rect(buf, clip, scaled_canvas, 0.0, *color, opacity);
+                }
+            }
+            CanvasOp::FillRect { x, y, w, h, color } => {
+                let r = LayoutRect {
+                    x: (canvas_rect.x + *x) * scale,
+                    y: (canvas_rect.y + *y) * scale,
+                    width: *w * scale,
+                    height: *h * scale,
+                };
+                fill_rounded_rect(buf, clip, r, 0.0, *color, opacity);
+            }
+            CanvasOp::FillRoundedRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            } => {
+                let r = LayoutRect {
+                    x: (canvas_rect.x + *x) * scale,
+                    y: (canvas_rect.y + *y) * scale,
+                    width: *w * scale,
+                    height: *h * scale,
+                };
+                fill_rounded_rect(buf, clip, r, *radius * scale, *color, opacity);
+            }
+            CanvasOp::FillCircle {
+                cx,
+                cy,
+                radius,
+                color,
+            } => {
+                fill_circle(
+                    buf,
+                    clip,
+                    (canvas_rect.x + *cx) * scale,
+                    (canvas_rect.y + *cy) * scale,
+                    *radius * scale,
+                    *color,
+                    opacity,
+                );
+            }
+            CanvasOp::StrokeLine {
+                x0,
+                y0,
+                x1,
+                y1,
+                width,
+                color,
+            } => {
+                stroke_line(
+                    buf,
+                    clip,
+                    (canvas_rect.x + *x0) * scale,
+                    (canvas_rect.y + *y0) * scale,
+                    (canvas_rect.x + *x1) * scale,
+                    (canvas_rect.y + *y1) * scale,
+                    *width * scale,
+                    *color,
+                    opacity,
+                );
+            }
+            CanvasOp::StrokePolyline {
+                points,
+                width,
+                color,
+            } => {
+                if points.len() == 1 {
+                    let (px, py) = points[0];
+                    fill_circle(
+                        buf,
+                        clip,
+                        (canvas_rect.x + px) * scale,
+                        (canvas_rect.y + py) * scale,
+                        (*width * 0.5 * scale).max(0.5),
+                        *color,
+                        opacity,
+                    );
+                } else {
+                    for seg in points.windows(2) {
+                        let (x0, y0) = seg[0];
+                        let (x1, y1) = seg[1];
+                        stroke_line(
+                            buf,
+                            clip,
+                            (canvas_rect.x + x0) * scale,
+                            (canvas_rect.y + y0) * scale,
+                            (canvas_rect.x + x1) * scale,
+                            (canvas_rect.y + y1) * scale,
+                            *width * scale,
+                            *color,
+                            opacity,
+                        );
+                    }
+                }
+            }
+            CanvasOp::ClipRect { x, y, w, h } => {
+                let r = LayoutRect {
+                    x: (canvas_rect.x + *x) * scale,
+                    y: (canvas_rect.y + *y) * scale,
+                    width: *w * scale,
+                    height: *h * scale,
+                };
+                clip.push(r, 0.0);
+                local_clip_depth += 1;
+            }
+            CanvasOp::RestoreClip => {
+                if local_clip_depth > 0 {
+                    clip.pop();
+                    local_clip_depth -= 1;
+                }
+            }
+        }
+    }
+
+    for _ in 0..local_clip_depth {
+        clip.pop();
+    }
+    clip.pop();
 }
 
 pub(crate) fn draw_bitmap_text(
@@ -310,6 +787,7 @@ pub(crate) fn draw_bitmap_text(
     font_size: f32,
     color: ColorRgba,
     opacity: f32,
+    phys_clip: Option<[i32; 4]>,
 ) {
     if text.is_empty() || font_size <= 0.0 || color.a == 0 || opacity <= 0.0 {
         return;
@@ -331,10 +809,16 @@ pub(crate) fn draw_bitmap_text(
 
     let buf_w = buf.width() as i32;
     let buf_h = buf.height() as i32;
-    let clip_x0 = (rect.x.floor() as i32).max(0);
-    let clip_y0 = (rect.y.floor() as i32).max(0);
-    let clip_x1 = ((rect.x + rect.width).ceil() as i32).min(buf_w);
-    let clip_y1 = ((rect.y + rect.height).ceil() as i32).min(buf_h);
+    let mut clip_x0 = (rect.x.floor() as i32).max(0);
+    let mut clip_y0 = (rect.y.floor() as i32).max(0);
+    let mut clip_x1 = ((rect.x + rect.width).ceil() as i32).min(buf_w);
+    let mut clip_y1 = ((rect.y + rect.height).ceil() as i32).min(buf_h);
+    if let Some([px0, py0, px1, py1]) = phys_clip {
+        clip_x0 = clip_x0.max(px0);
+        clip_y0 = clip_y0.max(py0);
+        clip_x1 = clip_x1.min(px1);
+        clip_y1 = clip_y1.min(py1);
+    }
     if clip_x0 >= clip_x1 || clip_y0 >= clip_y1 {
         return;
     }
@@ -452,6 +936,7 @@ fn rasterize_display_list_inner(
 
     let mut opacity_stack: Vec<f32> = Vec::with_capacity(8);
     opacity_stack.push(1.0);
+    let mut clip_stack = ClipStack::new(buffer.width(), buffer.height());
 
     for op in &display_list.ops {
         let cur_opacity = *opacity_stack.last().unwrap_or(&1.0);
@@ -464,6 +949,12 @@ fn rasterize_display_list_inner(
                     opacity_stack.pop();
                 }
             }
+            PaintOp::PushClip { rect, radius } => {
+                clip_stack.push(scale_rect(*rect, scale), radius * scale);
+            }
+            PaintOp::PopClip => {
+                clip_stack.pop();
+            }
             PaintOp::FillRoundedRect {
                 rect,
                 radius,
@@ -471,6 +962,7 @@ fn rasterize_display_list_inner(
             } => {
                 fill_rounded_rect(
                     buffer,
+                    &clip_stack,
                     scale_rect(*rect, scale),
                     radius * scale,
                     *color,
@@ -485,6 +977,7 @@ fn rasterize_display_list_inner(
             } => {
                 stroke_rounded_rect(
                     buffer,
+                    &clip_stack,
                     scale_rect(*rect, scale),
                     radius * scale,
                     width * scale,
@@ -498,8 +991,12 @@ fn rasterize_display_list_inner(
                 font_size,
                 color,
             } => {
+                if clip_stack.is_empty() {
+                    continue;
+                }
+                let phys_clip = Some(clip_stack.bounds());
                 if let Some(engine) = text_engine {
-                    engine.rasterize_text(
+                    engine.rasterize_text_clipped(
                         buffer,
                         *rect,
                         text,
@@ -507,6 +1004,7 @@ fn rasterize_display_list_inner(
                         scale,
                         *color,
                         cur_opacity,
+                        phys_clip,
                     );
                 } else {
                     draw_bitmap_text(
@@ -516,19 +1014,29 @@ fn rasterize_display_list_inner(
                         font_size * scale,
                         *color,
                         cur_opacity,
+                        phys_clip,
                     );
                 }
             }
-            PaintOp::CustomSkiaCanvas { rect, .. } => {
-                // Draw a subtle dashed-style border placeholder in software mode.
-                stroke_rounded_rect(
+            PaintOp::DrawImage {
+                rect,
+                radius,
+                src,
+                resize_mode,
+            } => {
+                draw_image(
                     buffer,
-                    scale_rect(*rect, scale),
-                    4.0 * scale,
-                    1.0 * scale,
-                    ColorRgba::rgba(148, 163, 184, 160),
+                    &clip_stack,
+                    *rect,
+                    *radius,
+                    src,
+                    *resize_mode,
+                    scale,
                     cur_opacity,
                 );
+            }
+            PaintOp::CustomSkiaCanvas { rect, ops, .. } => {
+                execute_canvas_ops(buffer, &mut clip_stack, *rect, ops, scale, cur_opacity);
             }
         }
     }
@@ -563,8 +1071,10 @@ pub fn draw_hud_banner(buffer: &mut PixelBuffer, scale_factor: f32, text: &str) 
         width: pill_w_logical * scale,
         height: pill_h_logical * scale,
     };
+    let clip = ClipStack::new(buffer.width(), buffer.height());
     fill_rounded_rect(
         buffer,
+        &clip,
         pill_rect,
         8.0 * scale,
         ColorRgba::rgba(15, 23, 42, 220),
@@ -572,6 +1082,7 @@ pub fn draw_hud_banner(buffer: &mut PixelBuffer, scale_factor: f32, text: &str) 
     );
     stroke_rounded_rect(
         buffer,
+        &clip,
         pill_rect,
         8.0 * scale,
         1.0 * scale,
