@@ -13,6 +13,21 @@ Prioritized roadmap for `native-view-engine`, ordered from upcoming ergonomics &
 - [ ] **`nve-ui` & `nve-router` — Reusable Accessible Component Kit & Type-Safe Router**
   - Accessible, themeable Dioxus component library (`Button`, `Input`, `Checkbox`, `Switch`, `Tabs`, `Dialog`, `Popover`, `DropdownMenu`, `Toast`, `Card`, `Badge`, `VirtualList`) with keyboard/ARIA parity plus a type-safe stack/tab/deep-link router (`nve-router`) integrated with the `navigation` channel.
 
+## P1 — Architectural DRY, Single-Source ABI Lock & Zero-Copy Hot Paths (Wave 14)
+
+- [ ] **Complete ABI Field-Offset Verification & Zero-Copy Engine/Codegen Hot Paths (`nve-abi`, `nve-engine`, `nve-codegen`)**
+  - Add compile-time `size_of`/`align_of`/`offset_of!` assertions for every `#[repr(C)]` vtable and struct in `crates/nve-abi/src/{ffi.rs,host.rs}` cross-checked against `nve_abi.h` `offsetof(...)`.
+  - Eliminate per-frame `.to_vec()` copies in `crates/nve-engine/src/loader.rs` (`render` and `drain_emitted_events`).
+  - Remove `serde_json`/`JSONObject` from generated RN props/commands/events (`import_rn.rs`, `export_rn.rs`), replace `[String: Any]` / `buildMap<String, Any?>` in `export_swiftui.rs` / `export_compose.rs` with typed direct-FFI encoders, prune unused `export_*_json` code, and modularize >1,100-line codegen files (`core_abi.rs`, `parser.rs`, `emit_*.rs`).
+
+- [ ] **Single-Source Cross-Language Wire Codecs & Remove Legacy Fallbacks (`nve-codegen`, `cxx`, `hosts/*`)**
+  - Make `*_direct` entry points required and delete legacy `set_props` / ring `dispatch_events` fallback paths (`NveSurfaceController.swift`, `nve_rn_component.cpp`, `macos-shell/main.mm`, `windows-shell/main.cpp`).
+  - Remove redundant `MethodChannel.invokeMethod` in Flutter `surface_widgets.dart` when direct FFI already ran, unify Kotlin/Java `NVE_MET1` readers (`NveSceneBuffer.kt`, `NveMainActivity.java`) and fix Kotlin per-update buffer copies, and generate shared `EventRing` / `NVE_DRAW1` codecs from specs.
+
+- [ ] **Apple Shell DRY Consolidation & Oversized C++ Splits (`hosts/apple-common`, `cxx`, `hosts/android-shell`)**
+  - Deduplicate `hosts/ios-shell/RCTNveComponentView.mm` & `hosts/macos-shell/RCTNveMacComponentView.mm` (plus shared `main.mm` CLI/pair plumbing) into `hosts/apple-common/`.
+  - Split `mock_jsi_recorder.hpp` (1,250L), `nve_host_runtime.hpp` (1,170L), and `NveAndroidSurfaceJni.cpp` (1,229L) below 650 lines.
+
 ## P2 — Core Engine & Platform Completeness
 
 - [x] **Direct3D 12 Skia GPU & Windows Native Host Compile/Runtime Verification (`crates/nve-backend-skia`, `hosts/windows-shell`)**
