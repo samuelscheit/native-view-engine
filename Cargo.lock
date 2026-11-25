@@ -1831,6 +1831,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-i18n"
+version = "0.1.0"
+dependencies = [
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "nve-interop"
 version = "0.1.0"
 dependencies = [
