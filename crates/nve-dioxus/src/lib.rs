@@ -32,37 +32,29 @@ use nve_abi::{
 use nve_components::{apply_typed_attr, resolve_tag};
 use nve_engine::HotPatchMsg;
 
-/// Payload for native `Scroll` events dispatched into Dioxus `onscroll` listeners.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct ScrollEventData {
-    pub x: f32,
-    pub y: f32,
-    pub content_width: f32,
-    pub content_height: f32,
-}
+pub use elements::{
+    FocusEvent, FocusEventData, KeyEvent, KeyEventData, ScrollEvent, ScrollEventData, SubmitEvent,
+    SubmitEventData,
+};
 
-/// Payload for native `Focus` events dispatched into Dioxus `onfocus` listeners.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct FocusEventData;
+/// Alias matching `elements::events::onblur` (`FocusEvent`) so blur listeners share one canonical payload type.
+pub type BlurEventData = FocusEventData;
+pub type BlurEvent = FocusEvent;
 
-/// Payload for native `Blur` events dispatched into Dioxus `onblur` listeners.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BlurEventData;
-
-/// Payload for native `Custom` events dispatched into Dioxus custom event listeners.
+/// Payload for generic native `Custom` events dispatched into Dioxus custom event listeners.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CustomEventData {
     pub name: String,
     pub data: Vec<u8>,
 }
 
-pub type ScrollEvent = Event<ScrollEventData>;
-pub type FocusEvent = Event<FocusEventData>;
-pub type BlurEvent = Event<BlurEventData>;
 pub type CustomEvent = Event<CustomEventData>;
 
 pub mod prelude {
-    pub use crate::elements::{self as dioxus_elements, events::*, PressEvent, TextEvent};
+    pub use crate::elements::{
+        self as dioxus_elements, events::*, KeyEvent, KeyEventData, PressEvent, SubmitEvent,
+        SubmitEventData, TextEvent,
+    };
     pub use crate::use_signal;
     pub use crate::{
         BlurEvent, BlurEventData, CustomEvent, CustomEventData, FocusEvent, FocusEventData,
@@ -842,7 +834,7 @@ impl DioxusSurface {
                 (NativeEventKind::Blur, EventPayload::Empty)
                     if self.writer.has_event_mask(ev.node_id, EventMask::BLUR) =>
                 {
-                    let data: Rc<dyn Any> = Rc::new(BlurEventData);
+                    let data: Rc<dyn Any> = Rc::new(FocusEventData);
                     self.vdom
                         .runtime()
                         .handle_event("blur", Event::new(data, false), el_id);
@@ -854,13 +846,10 @@ impl DioxusSurface {
                         .has_event_mask_in_chain(ev.node_id, EventMask::CUSTOM) =>
                 {
                     let wire_name = normalize_custom_event_name(name);
-                    let payload: Rc<dyn Any> = Rc::new(CustomEventData {
-                        name: name.clone(),
-                        data: data.clone(),
-                    });
+                    let payload = build_custom_event_payload(&wire_name, name, data);
                     self.vdom
                         .runtime()
-                        .handle_event(wire_name, Event::new(payload, true), el_id);
+                        .handle_event(&wire_name, Event::new(payload, true), el_id);
                     handled = true;
                 }
                 _ => {}
@@ -948,7 +937,7 @@ impl DioxusSurface {
                 (Some(NativeEventKind::Blur), 0)
                     if self.writer.has_event_mask(ev.node_id(), EventMask::BLUR) =>
                 {
-                    let data: Rc<dyn Any> = Rc::new(BlurEventData);
+                    let data: Rc<dyn Any> = Rc::new(FocusEventData);
                     self.vdom
                         .runtime()
                         .handle_event("blur", Event::new(data, false), el_id);
@@ -965,16 +954,15 @@ impl DioxusSurface {
                         b.to_vec()
                     } else if let Some(s) = ev.value().as_str() {
                         s.as_bytes().to_vec()
+                    } else if !ev.text().is_empty() {
+                        ev.text().as_bytes().to_vec()
                     } else {
                         Vec::new()
                     };
-                    let payload: Rc<dyn Any> = Rc::new(CustomEventData {
-                        name: name.to_owned(),
-                        data: raw_bytes,
-                    });
+                    let payload = build_custom_event_payload(&wire_name, name, &raw_bytes);
                     self.vdom
                         .runtime()
-                        .handle_event(wire_name, Event::new(payload, true), el_id);
+                        .handle_event(&wire_name, Event::new(payload, true), el_id);
                     handled = true;
                 }
                 _ => {}
@@ -994,12 +982,121 @@ impl DioxusSurface {
 }
 
 #[inline]
-fn normalize_custom_event_name(name: &str) -> &str {
-    let stripped = name.strip_prefix("on").unwrap_or(name);
+fn normalize_custom_event_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let stripped = lower.strip_prefix("on").unwrap_or(&lower);
     if stripped.is_empty() {
-        "custom"
+        "custom".to_owned()
     } else {
-        stripped
+        stripped.to_owned()
+    }
+}
+
+fn parse_key_event_data(raw: &[u8]) -> KeyEventData {
+    let text = String::from_utf8_lossy(raw);
+    let trimmed = text.trim();
+    let mut out = KeyEventData::default();
+    if trimmed.is_empty() {
+        return out;
+    }
+    if trimmed.starts_with('{') {
+        if let Some(key) = extract_json_string_field(trimmed, "key") {
+            out.key = key;
+        }
+        out.meta = extract_json_bool_field(trimmed, "meta")
+            .or_else(|| extract_json_bool_field(trimmed, "metaKey"))
+            .unwrap_or(false);
+        out.ctrl = extract_json_bool_field(trimmed, "ctrl")
+            .or_else(|| extract_json_bool_field(trimmed, "ctrlKey"))
+            .unwrap_or(false);
+        out.shift = extract_json_bool_field(trimmed, "shift")
+            .or_else(|| extract_json_bool_field(trimmed, "shiftKey"))
+            .unwrap_or(false);
+        out.alt = extract_json_bool_field(trimmed, "alt")
+            .or_else(|| extract_json_bool_field(trimmed, "altKey"))
+            .unwrap_or(false);
+        return out;
+    }
+    // Support modifier-prefixed notation (e.g. "cmd+k", "ctrl+shift+Enter") or bare key names.
+    if trimmed.contains('+') && trimmed != "+" {
+        let parts: Vec<&str> = trimmed
+            .split('+')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if let Some((&last, mods)) = parts.split_last() {
+            for &mod_tok in mods {
+                match mod_tok.to_ascii_lowercase().as_str() {
+                    "cmd" | "meta" | "super" => out.meta = true,
+                    "ctrl" | "control" => out.ctrl = true,
+                    "shift" => out.shift = true,
+                    "alt" | "opt" | "option" => out.alt = true,
+                    _ => {}
+                }
+            }
+            out.key = last.to_owned();
+        }
+    } else {
+        out.key = trimmed.to_owned();
+    }
+    out
+}
+
+fn find_json_field_value<'a>(json: &'a str, field: &str) -> Option<&'a str> {
+    let needle = format!("\"{field}\"");
+    let mut search = json;
+    while let Some(pos) = search.find(&needle) {
+        let after = search[pos + needle.len()..].trim_start();
+        if let Some(rest) = after.strip_prefix(':') {
+            return Some(rest.trim_start());
+        }
+        search = &search[pos + needle.len()..];
+    }
+    None
+}
+
+fn extract_json_bool_field(json: &str, field: &str) -> Option<bool> {
+    let rest = find_json_field_value(json, field)?;
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
+    let rest = find_json_field_value(json, field)?;
+    let mut chars = rest.strip_prefix('"')?.chars();
+    let mut out = String::new();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+fn build_custom_event_payload(wire_name: &str, raw_name: &str, data: &[u8]) -> Rc<dyn Any> {
+    match wire_name {
+        "submit" => Rc::new(SubmitEventData {
+            value: String::from_utf8_lossy(data).into_owned(),
+        }),
+        "keydown" => Rc::new(parse_key_event_data(data)),
+        _ => Rc::new(CustomEventData {
+            name: raw_name.to_owned(),
+            data: data.to_vec(),
+        }),
     }
 }
 
@@ -1063,12 +1160,22 @@ mod event_dispatch_tests {
             None,
             false,
         );
+        let on_submit = elements::events::onsubmit(move |ev: SubmitEvent| {
+            log.set(format!("submit:{}", ev.data().value));
+        });
+        let on_keydown = elements::events::onkeydown(move |ev: KeyEvent| {
+            let d = ev.data();
+            log.set(format!(
+                "keydown:{}:{}:{}:{}:{}",
+                d.key, d.meta, d.ctrl, d.shift, d.alt
+            ));
+        });
 
         let _ = VNode::empty();
         rsx! {
             view {
                 test_id: "event-target",
-                ..vec![on_scroll, on_focus, on_blur, on_longpress, on_custom],
+                ..vec![on_scroll, on_focus, on_blur, on_longpress, on_custom, on_submit, on_keydown],
                 text { "{log}" }
             }
         }
@@ -1274,5 +1381,74 @@ mod event_dispatch_tests {
         assert!(extract_target_and_text(&f11)
             .1
             .contains(&"custom:metrics:3".to_owned()));
+
+        // 7. Typed Submit & KeyDown (both EventRing & direct FFI; shorthand & JSON keydown)
+        assert!(surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 110,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "submit".into(),
+                data: b"ship v2".to_vec(),
+            },
+        }]));
+        let (_, _, f12) = surface.render_frame(12);
+        assert!(extract_target_and_text(&f12)
+            .1
+            .contains(&"submit:ship v2".to_owned()));
+
+        assert!(surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 120,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "keydown".into(),
+                data: br#"{"key":"k","meta":true,"ctrl":false,"shift":true,"alt":false}"#.to_vec(),
+            },
+        }]));
+        let (_, _, f13) = surface.render_frame(13);
+        assert!(extract_target_and_text(&f13)
+            .1
+            .contains(&"keydown:k:true:false:true:false".to_owned()));
+
+        let direct_submit = [NveDirectEvent::custom(
+            1,
+            target,
+            130,
+            "onsubmit",
+            NveValue::str(NveStrSlice::from_str("direct-msg")),
+        )];
+        let batch_submit = unsafe {
+            NveEventBatchRef::from_raw(NveEventBatch {
+                ptr: direct_submit.as_ptr(),
+                len: 1,
+            })
+        };
+        assert!(surface.dispatch_events_direct(batch_submit));
+        let (_, _, f14) = surface.render_frame(14);
+        assert!(extract_target_and_text(&f14)
+            .1
+            .contains(&"submit:direct-msg".to_owned()));
+
+        let direct_keydown = [NveDirectEvent::custom(
+            1,
+            target,
+            140,
+            "keydown",
+            NveValue::str(NveStrSlice::from_str("Ctrl+Alt+Enter")),
+        )];
+        let batch_keydown = unsafe {
+            NveEventBatchRef::from_raw(NveEventBatch {
+                ptr: direct_keydown.as_ptr(),
+                len: 1,
+            })
+        };
+        assert!(surface.dispatch_events_direct(batch_keydown));
+        let (_, _, f15) = surface.render_frame(15);
+        assert!(extract_target_and_text(&f15)
+            .1
+            .contains(&"keydown:Enter:false:true:false:true".to_owned()));
     }
 }

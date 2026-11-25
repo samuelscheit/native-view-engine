@@ -21,7 +21,7 @@ pub struct TextEventData {
     pub value: String,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ScrollEventData {
     pub x: f32,
     pub y: f32,
@@ -29,10 +29,10 @@ pub struct ScrollEventData {
     pub content_height: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FocusEventData;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyEventData {
     pub key: String,
     pub meta: bool,
@@ -41,7 +41,7 @@ pub struct KeyEventData {
     pub alt: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubmitEventData {
     pub value: String,
 }

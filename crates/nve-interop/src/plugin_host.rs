@@ -14,7 +14,10 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,6 +37,7 @@ pub type PluginId = u32;
 /// Default starting `SurfaceId` reserved for isolated plugin slots.
 pub const DEFAULT_PLUGIN_SURFACE_BASE: SurfaceId = 10_000;
 
+#[cfg(not(target_arch = "wasm32"))]
 static TEMP_COPY_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Probed ABI capability bitmap discovered via `nve_get_interface(uint32_t)`.
