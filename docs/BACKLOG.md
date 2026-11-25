@@ -16,9 +16,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Remaining Host `NativeViewRegistry` Mount Adapters (`hosts/windows-shell`, `hosts/qt-shell`, `hosts/gtk-shell`, `hosts/swiftui-kit`, `hosts/flutter-plugin`, `hosts/compose-kit`)**
   - Extend `nve_native_view.hpp` (`NVNP`/`NVNC`) adapters to Windows (`Mica` / `WebView2`), Android/Compose, Qt 6, GTK4, SwiftUI, and Flutter (Web `"web.<tag>"` + `BlurSurface`/`WebView`/`VideoPlayer`, C++20 `nve_native_view.hpp`, and Apple `NSVisualEffectView`/`UIVisualEffectView`/`WKWebView` already landed).
 
-- [ ] **Pluggable Camera Package (`CameraPreview` `<NativeView>` + VisionCamera v5 & Native Adapters)** *(in flight — Core + Android VisionCamera/CameraX)*
-  - Add typed `CameraPreview` `NativeViewSpec` (`"nve.camera.preview"`) paired with `SERVICE_CAMERA = 0x0023` (`crates/nve-sdk/src/camera.rs`) and zero-copy native frame-buffer hooks.
-  - Ship an optional **VisionCamera v5** adapter (`react-native-vision-camera` Nitro backend) for RN Fabric / Expo iOS + Android hosts, plus zero-RN native adapters for standalone hosts: shared `AVFoundation` (`hosts/apple-common` for macOS + standalone iOS), Android `CameraX` (`hosts/compose-kit`), Windows `MediaCapture` / Media Foundation, Linux PipeWire / V4L2, and Web `getUserMedia` → `<video>`.
+- [ ] **Pluggable Camera Package — Remaining Host Adapters (Apple `AVFoundation` + VisionCamera v5 iOS, Web `getUserMedia`, Windows `MediaCapture`, Linux PipeWire)** *(in flight — Apple + Web next)*
+  - Wire `"nve.camera.preview"` (`NVNP`/`NVNC`/`NVCF`) into `hosts/apple-common` (shared `AVFoundation` for macOS + standalone iOS + pluggable VisionCamera v5 iOS bridge), `crates/nve-backend-web` (`getUserMedia` → `<video>`), Windows `MediaCapture` / Media Foundation, and Linux PipeWire / V4L2 (`CameraPreview` spec + `NVCF` + Android VisionCamera v5 / CameraX already landed).
 
 ---
 

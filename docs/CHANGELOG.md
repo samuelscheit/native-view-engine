@@ -6,6 +6,9 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Wave 14 (Zero-Copy, DRY & Production Docs)
 
+- **Pluggable Camera Core (`CameraPreview` `<NativeView>` + `NVCF`) & Android VisionCamera v5 / CameraX Adapters** (`694d222`)
+  - Implemented typed zero-JSON `CameraPreview` (`"nve.camera.preview"`, `NVNP`/`NVNC`) and 40-byte `#[repr(C)]` `CameraFrameDescriptor` (`NVCF`, compile-time `size_of`/`offset_of!` locked) in `crates/nve-interop/src/native_view/camera.rs`.
+  - Added pure-Kotlin zero-JSON `NveCameraCodec.kt`, pluggable `NveCameraRegistry` (`NveCameraBackend.kt`), zero-reflection `NveVisionCameraAdapter.kt` (`react-native-vision-camera` v5 Nitro bridge with zero RN compile dependency in standalone builds), and standalone `NveCameraXAdapter.kt` in `hosts/compose-kit` (`59/59` `nve-interop` tests including 2,000-case fuzzing, `0` Clippy warnings, `wasm32` clean, `68/68` Debug+Release Gradle tests).
 - **Host-Side `NativeViewRegistry` Mount Adapters (Web, C++20 Fabric Bridge & Apple AppKit/UIKit)** (`37eae45`)
   - Implemented zero-JSON `NVNP`/`NVNC` binary decoders and mount adapters in `crates/nve-backend-web/src/native_view.rs` (`"web.<tag>"` safe HTML5/custom-element passthrough, `BlurSurface` `backdrop-filter`, sandboxed `WebView` `<iframe>`, and `VideoPlayer` `<video>` with `Play`/`Pause`/`SeekMs`/`SetVolume` commands across live DOM + SSR + zero-flicker hydration).
   - Added header-only zero-alloc `cxx/nve-fabric-bridge/include/nve_native_view.hpp` (`NvnpDecoder`, `NvncDecoder`, wildcard `NativeViewRegistry`, `bind_to_fabric_host`) and `hosts/apple-common/NveAppleNativeViews.{h,mm}` mounting real `NSVisualEffectView`/`UIVisualEffectView` + `WKWebView` (`22/22` Web tests, `0` Clippy warnings, `wasm32` clean, `3/3` C++ bridge CTest, `5/5` macOS CTest, iOS Simulator ObjC++ `-Werror` clean).
