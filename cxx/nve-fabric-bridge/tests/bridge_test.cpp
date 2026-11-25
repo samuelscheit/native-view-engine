@@ -545,6 +545,49 @@ void test_flexbox_layout() {
     // flex_shrink: two 80px children shrink equally to 50px each inside 100px row
     assert(approx_eq(r51.width, 50.0f) && approx_eq(r52.width, 50.0f));
 
+    // Post-flex wrapping text re-measure: a Row with a fixed 100px sibling + flex_shrink text container
+    // shrinks the text container from unconstrained width to 100px, causing multi-line wrap height!
+    CommandBufferEncoder ce3(2, 3);
+    ce3.create_node(60, NVE_COMP_VIEW); /* 200x200 Row, alignItems=FlexStart */
+    ce3.create_node(61, NVE_COMP_VIEW); /* fixed 100x40 */
+    ce3.create_node(62, NVE_COMP_TEXT); /* auto width/height, shrink=1, long text */
+    ce3.set_children(NVE_ROOT_NODE_ID, {60});
+    ce3.set_children(60, {61, 62});
+    ce3.set_text(62, "012345678901234567890123456789"); /* 30 chars @ 16pt -> ~268pt wide */
+
+    nve::LayoutProps wrap_row{};
+    wrap_row.width = {1, 200.0f};
+    wrap_row.height = {1, 200.0f};
+    wrap_row.flex_direction = 1; /* Row */
+    wrap_row.align_items = 1; /* FlexStart */
+    ce3.set_layout(60, wrap_row);
+    nve::LayoutProps fixed_sib{};
+    fixed_sib.width = {1, 100.0f};
+    fixed_sib.height = {1, 40.0f};
+    fixed_sib.flex_shrink = 0.0f;
+    ce3.set_layout(61, fixed_sib);
+    nve::LayoutProps shrink_txt{};
+    shrink_txt.flex_shrink = 1.0f;
+    ce3.set_layout(62, shrink_txt);
+    ce3.commit(true);
+    assert(nve_fabric_host_submit_frame(card_host, ce3.finish(), nullptr) == 0);
+
+    nve::LayoutRect r62{};
+    assert(nve::fabric_host_get_node_layout(card_host, 62, &r62));
+    assert(approx_eq(r62.width, 100.0f, 1.5f));
+    // Must wrap to >= 2 lines (~41.6pt+ at 16pt font), NOT single-line ~20.8pt!
+    assert(r62.height > 35.0f);
+
+    // Verify fabric_host_enqueue_text_change encodes a valid TextChange event in the ring.
+    nve::fabric_host_enqueue_text_change(card_host, 62, 12345, "hello typed");
+    const NveBufferSlice tc_slice = nve_fabric_host_drain_events(card_host);
+    std::vector<nve::DecodedEvent> tc_events;
+    assert(nve::decode_event_ring(tc_slice, tc_events));
+    assert(tc_events.size() == 1);
+    assert(tc_events[0].kind == nve::EventKind::TextChange);
+    assert(tc_events[0].node_id == 62);
+    assert(tc_events[0].text == "hello typed");
+
     nve_fabric_host_destroy(card_host);
   }
 

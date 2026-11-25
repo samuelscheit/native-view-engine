@@ -17,4 +17,6 @@ object NveNativeBridge {
     ): Long
 
     external fun nativeHotSwapApp(handlePtr: Long, soPath: String): Boolean
+
+    external fun nativeDestroyHost(handlePtr: Long)
 }

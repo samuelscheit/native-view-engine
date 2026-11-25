@@ -160,9 +160,14 @@
       case NVE_COMP_SCROLL_VIEW:
         view = [[UIScrollView alloc] initWithFrame:CGRectZero];
         break;
-      case NVE_COMP_TEXT_INPUT:
-        view = [[UITextField alloc] initWithFrame:CGRectZero];
+      case NVE_COMP_TEXT_INPUT: {
+        UITextField *field = [[UITextField alloc] initWithFrame:CGRectZero];
+        [field addTarget:self
+                      action:@selector(_handleTextFieldChanged:)
+            forControlEvents:UIControlEventEditingChanged];
+        view = field;
         break;
+      }
       default:
         view = [[UIView alloc] initWithFrame:CGRectZero];
         break;
@@ -180,21 +185,55 @@
 
   if ([view isKindOfClass:[UILabel class]]) {
     UILabel *label = (UILabel *)view;
-    label.text = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+    NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+    if (![label.text isEqualToString:nextText]) {
+      label.text = nextText;
+    }
     label.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
     if (snap.font_size > 0.0f) {
       label.font = [UIFont systemFontOfSize:static_cast<CGFloat>(snap.font_size)];
+    }
+  } else if ([view isKindOfClass:[UITextField class]]) {
+    UITextField *field = (UITextField *)view;
+    NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+    if (![(field.text ?: @"") isEqualToString:nextText]) {
+      field.text = nextText;
+    }
+    field.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
+    if (snap.font_size > 0.0f) {
+      field.font = [UIFont systemFontOfSize:static_cast<CGFloat>(snap.font_size)];
     }
   }
 
   view.userInteractionEnabled =
       (interactive || !snap.children.empty() || snap.kind == NVE_COMP_SCROLL_VIEW ||
        snap.kind == NVE_COMP_TEXT_INPUT);
-  if (interactive && view.gestureRecognizers.count == 0) {
-    UITapGestureRecognizer *tap =
-        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(_handleNodeTap:)];
-    [view addGestureRecognizer:tap];
+  if (interactive) {
+    if (view.gestureRecognizers.count == 0) {
+      UITapGestureRecognizer *tap =
+          [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(_handleNodeTap:)];
+      [view addGestureRecognizer:tap];
+    }
+  } else if (view.gestureRecognizers.count > 0) {
+    NSArray<UIGestureRecognizer *> *recognizers = [view.gestureRecognizers copy];
+    for (UIGestureRecognizer *gr in recognizers) {
+      if ([gr isKindOfClass:[UITapGestureRecognizer class]]) {
+        [view removeGestureRecognizer:gr];
+      }
+    }
   }
+}
+
+- (void)nveUpdateScrollView:(UIView *)scrollView contentSize:(CGSize)contentSize {
+  if ([scrollView isKindOfClass:[UIScrollView class]]) {
+    ((UIScrollView *)scrollView).contentSize = contentSize;
+  }
+}
+
+- (void)_handleTextFieldChanged:(UITextField *)field {
+  const uint32_t nodeId = static_cast<uint32_t>(field.tag);
+  if (nodeId == 0) return;
+  [_host dispatchTextChangeOnNodeId:nodeId text:field.text ?: @""];
 }
 
 - (void)_handleNodeTap:(UITapGestureRecognizer *)recognizer {

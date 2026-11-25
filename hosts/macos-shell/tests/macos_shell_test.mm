@@ -267,6 +267,143 @@ struct MockMacRustComponent {
   }
 };
 
+struct HostEdgeApp {
+  uint32_t surface_id{1};
+  int stage{0};
+  std::string last_typed;
+  std::vector<uint8_t> cmd_buf;
+  nve::EventRingWriter outbound;
+  std::vector<uint8_t> outbound_snap;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto *self = new HostEdgeApp();
+    self->surface_id = sid;
+    self->outbound.clear();
+    return self;
+  }
+  static void destroy(NveAppHandle h) { delete static_cast<HostEdgeApp *>(h); }
+
+  template <typename T>
+  void push(T v) {
+    const auto *p = reinterpret_cast<const uint8_t *>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto *self = static_cast<HostEdgeApp *>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1); self->push<float>(w);
+      self->push<uint8_t>(1); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0); self->push<float>(0.0f); }
+      self->push<uint8_t>(0); self->push<uint8_t>(0); self->push<uint8_t>(0);
+      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_mask = [&](uint32_t id, uint64_t mask) {
+      self->push<uint8_t>(NVE_OP_SET_EVENT_MASK);
+      self->push<uint32_t>(id);
+      self->push<uint64_t>(mask);
+      ++ops;
+    };
+
+    if (self->stage == 0) {
+      create_node(2, NVE_COMP_SCROLL_VIEW);
+      create_node(3, NVE_COMP_VIEW);
+      create_node(4, NVE_COMP_VIEW);
+      create_node(5, NVE_COMP_TEXT_INPUT);
+      set_box(2, 200.0f, 100.0f);
+      set_box(3, 180.0f, 150.0f);
+      set_box(4, 180.0f, 150.0f);
+      set_box(5, 180.0f, 32.0f);
+      set_mask(3, 1ULL << 0); /* interactive Press initially */
+      set_children(NVE_ROOT_NODE_ID, {2});
+      set_children(2, {3, 4, 5});
+    } else if (self->stage == 1) {
+      // Reorder children (4 before 3), drop 5 from children WITHOUT REMOVE_NODE, disable Press on 3.
+      set_mask(3, 0ULL);
+      set_children(2, {4, 3});
+    }
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto *self = static_cast<HostEdgeApp *>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0;
+    for (const auto &ev : decoded) {
+      if (ev.kind == nve::EventKind::TextChange && ev.node_id == 5) {
+        self->last_typed = ev.text;
+        const std::string json = "{\"typed\":\"" + ev.text + "\"}";
+        self->outbound.push_custom(
+            self->surface_id,
+            5,
+            ev.timestamp_us,
+            "onTextTyped",
+            reinterpret_cast<const uint8_t *>(json.data()),
+            json.size());
+        return 0;
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
+    auto *self = static_cast<HostEdgeApp *>(h);
+    std::string json(reinterpret_cast<const char *>(props.ptr), props.len);
+    if (json.find("\"stage\":1") != std::string::npos) {
+      self->stage = 1;
+      return 1;
+    }
+    return 0;
+  }
+
+  static NveBufferSlice drain_emitted_events(NveAppHandle h) {
+    auto *self = static_cast<HostEdgeApp *>(h);
+    self->outbound_snap = self->outbound.finalize();
+    self->outbound.clear();
+    return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
+  }
+
+  static const void *get_interface(uint32_t interface_id) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+    static const NveComponentApi kComp{&set_props, &drain_emitted_events};
+    if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
+    if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
 } // namespace
 
 @interface TestMacComponentDelegate : NSObject <RCTNveMacComponentViewDelegate>
@@ -602,6 +739,16 @@ int main() {
       assert(std::fabs(NSMidX(resetLblInBtn) - resetBtn.bounds.size.width * 0.5) <= 4.0);
       assert(std::fabs(NSMidY(resetLblInBtn) - resetBtn.bounds.size.height * 0.5) <= 4.0);
 
+      // Verify hit-testing a point directly over the "Increment +" label passes through the
+      // label to the interactive Pressable button (not swallowed by NSTextField).
+      // Note: AppKit `-[NSView hitTest:]` takes a point in the receiver's superview coordinates.
+      const NSPoint incCenterInSuper =
+          NSMakePoint(NSMidX(incBtn.frame), NSMidY(incBtn.frame));
+      NSView *hitView = [incBtn hitTest:incCenterInSuper];
+      assert(hitView != nil);
+      assert(![hitView isKindOfClass:[NSTextField class]]);
+      assert(hitView == incBtn || [hitView isDescendantOf:incBtn]);
+
       // Verify state preservation across live Rust dylib hot-reload
       assert([counterView applyPropsDictionary:@{@"initialCount" : @5}]);
       bool sawCount5 = false;
@@ -628,6 +775,50 @@ int main() {
         assert(png != nil && png.length > 0);
         [png writeToFile:[NSString stringWithUTF8String:shotPath] atomically:YES];
       }
+    }
+
+    // 7. Test Apple host view reconciliation edge cases:
+    //    subview reorder, detach without REMOVE_NODE, NSScrollView documentView sizing,
+    //    TextInput controlTextDidChange -> TextChange event, and gesture recognizer removal.
+    {
+      RCTNveMacComponentView *edgeView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 240, 140)];
+      __block NSString *typedOut = nil;
+      edgeView.onNveEvent = ^(NSString *name, NSDictionary<NSString *, id> *payload) {
+        if ([name isEqualToString:@"onTextTyped"]) {
+          typedOut = payload[@"typed"];
+        }
+      };
+      assert([edgeView attachNveInterface:&HostEdgeApp::get_interface surfaceId:21]);
+
+      NSScrollView *scroll = (NSScrollView *)[edgeView nativeViewForNodeId:2];
+      NSView *v3 = [edgeView nativeViewForNodeId:3];
+      NSView *v4 = [edgeView nativeViewForNodeId:4];
+      NSTextField *input5 = (NSTextField *)[edgeView nativeViewForNodeId:5];
+      assert([scroll isKindOfClass:[NSScrollView class]]);
+      assert(scroll.documentView != nil);
+      // ScrollView documentView must fit all 3 stacked children (150 + 150 + 32 = 332pt > 100pt viewport).
+      assert(scroll.documentView.frame.size.height >= 330.0);
+      assert(scroll.documentView.subviews.count == 3);
+      assert(scroll.documentView.subviews[0] == v3);
+      assert(scroll.documentView.subviews[1] == v4);
+      assert(scroll.documentView.subviews[2] == input5);
+      assert(v3.gestureRecognizers.count == 1);
+
+      // TextInput controlTextDidChange dispatches TextChange into the Rust app.
+      input5.stringValue = @"hello-nve";
+      [(id<NSTextFieldDelegate>)edgeView
+          controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification
+                                                             object:input5]];
+      assert([typedOut isEqualToString:@"hello-nve"]);
+
+      // Transition to stage 1: reorder {4, 3}, detach 5 without REMOVE_NODE, remove press mask on 3.
+      assert([edgeView applyPropsDictionary:@{@"stage" : @1}]);
+      assert(input5.superview == nil);
+      assert(scroll.documentView.subviews.count == 2);
+      assert(scroll.documentView.subviews[0] == v4);
+      assert(scroll.documentView.subviews[1] == v3);
+      assert(v3.gestureRecognizers.count == 0);
     }
 
     std::cout << "nve_macos_shell_test passed ("

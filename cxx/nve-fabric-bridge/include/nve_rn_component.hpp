@@ -120,6 +120,11 @@ void fabric_host_enqueue_press(
     uint64_t timestamp_us,
     float x,
     float y);
+void fabric_host_enqueue_text_change(
+    NveFabricHostHandle host,
+    uint32_t node_id,
+    uint64_t timestamp_us,
+    std::string_view text);
 void fabric_host_enqueue_custom_event(
     NveFabricHostHandle host,
     uint32_t node_id,

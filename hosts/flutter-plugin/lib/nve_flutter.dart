@@ -365,15 +365,24 @@ class NveEventRingCodec {
       Map<String, dynamic>? payloadJson;
       Uint8List rawPayload = Uint8List(0);
 
+      var truncated = false;
       switch (payloadTag) {
         case 0: // Empty
           break;
         case 1: // Point { x, y }
+          if (pos + 8 > bytes.length) {
+            truncated = true;
+            break;
+          }
           final x = bd.getFloat32(pos, Endian.little);
           final y = bd.getFloat32(pos + 4, Endian.little);
           pos += 8;
           payloadJson = <String, dynamic>{'x': x, 'y': y};
         case 2: // Scroll { x, y, content_width, content_height }
+          if (pos + 16 > bytes.length) {
+            truncated = true;
+            break;
+          }
           final x = bd.getFloat32(pos, Endian.little);
           final y = bd.getFloat32(pos + 4, Endian.little);
           final cw = bd.getFloat32(pos + 8, Endian.little);
@@ -386,12 +395,24 @@ class NveEventRingCodec {
             'contentHeight': ch,
           };
         case 3: // Text(String)
+          if (pos + 4 > bytes.length) {
+            truncated = true;
+            break;
+          }
           final len = bd.getUint32(pos, Endian.little);
           pos += 4;
-          rawPayload = Uint8List.sublistView(bytes, pos, pos + len);
+          if (len > bytes.length - pos) {
+            truncated = true;
+            break;
+          }
+          rawPayload = Uint8List.fromList(Uint8List.sublistView(bytes, pos, pos + len));
           pos += len;
-          payloadJson = <String, dynamic>{'text': utf8.decode(rawPayload)};
+          payloadJson = <String, dynamic>{'text': utf8.decode(rawPayload, allowMalformed: true)};
         case 4: // Layout { x, y, width, height }
+          if (pos + 16 > bytes.length) {
+            truncated = true;
+            break;
+          }
           final x = bd.getFloat32(pos, Endian.little);
           final y = bd.getFloat32(pos + 4, Endian.little);
           final w = bd.getFloat32(pos + 8, Endian.little);
@@ -404,16 +425,36 @@ class NveEventRingCodec {
             'height': h,
           };
         case 5: // Custom { name, data }
+          if (pos + 2 > bytes.length) {
+            truncated = true;
+            break;
+          }
           final nameLen = bd.getUint16(pos, Endian.little);
           pos += 2;
-          name = utf8.decode(Uint8List.sublistView(bytes, pos, pos + nameLen));
+          if (nameLen > bytes.length - pos) {
+            truncated = true;
+            break;
+          }
+          name = utf8.decode(Uint8List.sublistView(bytes, pos, pos + nameLen), allowMalformed: true);
           pos += nameLen;
+          if (pos + 4 > bytes.length) {
+            truncated = true;
+            break;
+          }
           final dataLen = bd.getUint32(pos, Endian.little);
           pos += 4;
+          if (dataLen > bytes.length - pos) {
+            truncated = true;
+            break;
+          }
           rawPayload = Uint8List.fromList(Uint8List.sublistView(bytes, pos, pos + dataLen));
           pos += dataLen;
           payloadJson = _tryDecodeJsonMap(rawPayload);
+        default:
+          truncated = true;
       }
+
+      if (truncated) break;
 
       events.add(
         NveEvent(

@@ -19,6 +19,8 @@ NS_ASSUME_NONNULL_BEGIN
 @optional
 /// Optional container override (e.g. AppKit `NSScrollView.documentView`) for mounting children.
 - (NvePlatformView *)nveChildContainerForParentView:(NvePlatformView *)parentView;
+/// Optional scroll content-size hook invoked after laying out `NVE_COMP_SCROLL_VIEW` children.
+- (void)nveUpdateScrollView:(NvePlatformView *)scrollView contentSize:(CGSize)contentSize;
 
 @end
 
@@ -47,6 +49,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)renderFrame;
 - (void)drainEmittedEvents;
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y;
+- (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text;
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor;
 - (BOOL)getRootLayoutSize:(CGSize *)outSize;

@@ -37,6 +37,29 @@ Java_dev_nve_host_NveNativeBridge_nativeCreateHost(
   return reinterpret_cast<jlong>(state);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_dev_nve_host_NveNativeBridge_nativeDestroyHost(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  auto* state = reinterpret_cast<AndroidHostState*>(handle_ptr);
+  if (!state) return;
+  if (state->app && state->module.surface && state->module.surface->destroy) {
+    state->module.surface->destroy(state->app);
+    state->app = nullptr;
+  }
+  state->module = NveModule{};
+  if (state->dylib) {
+    dlclose(state->dylib);
+    state->dylib = nullptr;
+  }
+  if (state->fabric_host) {
+    nve_fabric_host_destroy(state->fabric_host);
+    state->fabric_host = nullptr;
+  }
+  delete state;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
     JNIEnv* env,
@@ -44,7 +67,32 @@ Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
     jlong handle_ptr,
     jstring so_path) {
   auto* state = reinterpret_cast<AndroidHostState*>(handle_ptr);
-  if (!state) return JNI_FALSE;
+  if (!state || !so_path) return JNI_FALSE;
+
+  // Validate and open the replacement `.so` BEFORE tearing down the live app so a failed
+  // reload leaves the currently running app and its state intact.
+  const char* path = env->GetStringUTFChars(so_path, nullptr);
+  if (!path) return JNI_FALSE;
+  void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  env->ReleaseStringUTFChars(so_path, path);
+  if (!lib) return JNI_FALSE;
+
+  auto get_iface = reinterpret_cast<NveGetInterfaceFn>(dlsym(lib, "nve_get_interface"));
+  if (!get_iface) {
+    dlclose(lib);
+    return JNI_FALSE;
+  }
+  NveModule mod = nve_resolve_module(get_iface);
+  if (!mod.surface || !mod.surface->create || !mod.surface->render) {
+    dlclose(lib);
+    return JNI_FALSE;
+  }
+
+  NveAppHandle next_app = mod.surface->create(state->surface_id);
+  if (!next_app) {
+    dlclose(lib);
+    return JNI_FALSE;
+  }
 
   std::vector<uint8_t> saved;
   if (state->app && state->module.dev && state->module.dev->snapshot_state) {
@@ -60,24 +108,9 @@ Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
     state->dylib = nullptr;
   }
 
-  const char* path = env->GetStringUTFChars(so_path, nullptr);
-  void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-  env->ReleaseStringUTFChars(so_path, path);
-  if (!lib) return JNI_FALSE;
-
-  auto get_iface = reinterpret_cast<NveGetInterfaceFn>(dlsym(lib, "nve_get_interface"));
-  if (!get_iface) {
-    dlclose(lib);
-    return JNI_FALSE;
-  }
-  NveModule mod = nve_resolve_module(get_iface);
-  if (!mod.surface || !mod.surface->create) {
-    dlclose(lib);
-    return JNI_FALSE;
-  }
   state->dylib = lib;
   state->module = mod;
-  state->app = mod.surface->create(state->surface_id);
+  state->app = next_app;
   if (!saved.empty() && mod.dev && mod.dev->restore_state) {
     mod.dev->restore_state(state->app, NveBufferSlice{saved.data(), saved.size()});
   }

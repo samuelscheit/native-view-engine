@@ -128,43 +128,60 @@ public enum NveEventRingCodec {
                 var name: String?
                 var payload = Data()
 
+                var truncated = false
                 switch payloadTag {
                 case 0: // Empty
                     break
                 case 1: // Point
-                    if let x = readF32(), let y = readF32() {
-                        payload = (try? JSONSerialization.data(withJSONObject: ["x": x, "y": y])) ?? Data()
+                    guard let x = readF32(), let y = readF32() else {
+                        truncated = true
+                        break
                     }
+                    payload = (try? JSONSerialization.data(withJSONObject: ["x": x, "y": y])) ?? Data()
                 case 2: // Scroll
-                    if let x = readF32(), let y = readF32(), let cw = readF32(), let ch = readF32() {
-                        payload = (try? JSONSerialization.data(withJSONObject: [
-                            "x": x, "y": y, "contentWidth": cw, "contentHeight": ch,
-                        ])) ?? Data()
+                    guard let x = readF32(), let y = readF32(), let cw = readF32(), let ch = readF32() else {
+                        truncated = true
+                        break
                     }
+                    payload = (try? JSONSerialization.data(withJSONObject: [
+                        "x": x, "y": y, "contentWidth": cw, "contentHeight": ch,
+                    ])) ?? Data()
                 case 3: // Text
-                    if let len = readU32(), pos + Int(len) <= raw.count {
-                        let slice = Data(raw[pos..<(pos + Int(len))])
-                        pos += Int(len)
-                        let text = String(data: slice, encoding: .utf8) ?? ""
-                        payload = (try? JSONSerialization.data(withJSONObject: ["text": text])) ?? slice
+                    guard let len = readU32(), Int(len) <= raw.count - pos else {
+                        truncated = true
+                        break
                     }
+                    let slice = Data(raw[pos..<(pos + Int(len))])
+                    pos += Int(len)
+                    let text = String(data: slice, encoding: .utf8) ?? ""
+                    payload = (try? JSONSerialization.data(withJSONObject: ["text": text])) ?? slice
                 case 4: // Layout
-                    if let x = readF32(), let y = readF32(), let w = readF32(), let h = readF32() {
-                        payload = (try? JSONSerialization.data(withJSONObject: [
-                            "x": x, "y": y, "width": w, "height": h,
-                        ])) ?? Data()
+                    guard let x = readF32(), let y = readF32(), let w = readF32(), let h = readF32() else {
+                        truncated = true
+                        break
                     }
+                    payload = (try? JSONSerialization.data(withJSONObject: [
+                        "x": x, "y": y, "width": w, "height": h,
+                    ])) ?? Data()
                 case 5: // Custom
-                    if let nameLen = readU16(), pos + Int(nameLen) <= raw.count {
-                        let nameData = Data(raw[pos..<(pos + Int(nameLen))])
-                        pos += Int(nameLen)
-                        name = String(data: nameData, encoding: .utf8)
+                    guard let nameLen = readU16(), Int(nameLen) <= raw.count - pos else {
+                        truncated = true
+                        break
                     }
-                    if let dataLen = readU32(), pos + Int(dataLen) <= raw.count {
-                        payload = Data(raw[pos..<(pos + Int(dataLen))])
-                        pos += Int(dataLen)
+                    let nameData = Data(raw[pos..<(pos + Int(nameLen))])
+                    pos += Int(nameLen)
+                    name = String(data: nameData, encoding: .utf8)
+                    guard let dataLen = readU32(), Int(dataLen) <= raw.count - pos else {
+                        truncated = true
+                        break
                     }
+                    payload = Data(raw[pos..<(pos + Int(dataLen))])
+                    pos += Int(dataLen)
                 default:
+                    truncated = true
+                }
+
+                if truncated {
                     break
                 }
 

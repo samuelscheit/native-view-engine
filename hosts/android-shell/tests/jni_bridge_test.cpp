@@ -29,6 +29,11 @@ JNIEXPORT jboolean JNICALL Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
     jclass clazz,
     jlong handle_ptr,
     jstring so_path);
+
+JNIEXPORT void JNICALL Java_dev_nve_host_NveNativeBridge_nativeDestroyHost(
+    JNIEnv* env,
+    jclass clazz,
+    jlong handle_ptr);
 }
 
 namespace {
@@ -116,6 +121,23 @@ int main(int argc, char** argv) {
   NVE_CHECK(log->v1_destroy_count == 0);
   NVE_CHECK(log->v1_snapshot_count == 0);
 
+  // 6b. Failed hot-swaps while v1 is live MUST NOT tear down or snapshot v1 (atomic reload).
+  NVE_CHECK(
+      Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
+          &fake_env, nullptr, host, as_jstring(missing_str)) == JNI_FALSE);
+  NVE_CHECK(
+      Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
+          &fake_env, nullptr, host, as_jstring(no_sym_str)) == JNI_FALSE);
+  NVE_CHECK(
+      Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
+          &fake_env, nullptr, host, as_jstring(bad_iface_str)) == JNI_FALSE);
+  NVE_CHECK(
+      Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
+          &fake_env, nullptr, host, nullptr) == JNI_FALSE);
+  NVE_CHECK(g_active_utf_borrows == 0);
+  NVE_CHECK(log->v1_destroy_count == 0);
+  NVE_CHECK(log->v1_snapshot_count == 0);
+
   // 7. Hot-swap v1 -> v2 snapshots v1 state, destroys v1, creates v2, restores state, renders frame 2.
   FakeJString v2_str{v2_path};
   NVE_CHECK(
@@ -130,6 +152,12 @@ int main(int argc, char** argv) {
   NVE_CHECK(log->v2_restore_count == 1);
   NVE_CHECK(std::string(log->v2_restored_state, log->v2_restored_len) == "v1-counter=42");
   NVE_CHECK(log->v2_last_frame_id == 2);
+  NVE_CHECK(log->v2_destroy_count == 0);
+
+  // 8. nativeDestroyHost handles null safely and cleanly destroys live v2 app + fabric host.
+  Java_dev_nve_host_NveNativeBridge_nativeDestroyHost(&fake_env, nullptr, 0);
+  Java_dev_nve_host_NveNativeBridge_nativeDestroyHost(&fake_env, nullptr, host);
+  NVE_CHECK(log->v2_destroy_count == 1);
 
   std::cout << "nve_jni_bridge_test passed\n";
   return 0;

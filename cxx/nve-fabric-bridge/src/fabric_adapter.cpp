@@ -327,6 +327,11 @@ class FabricHost {
     event_ring_.push_press(config_.surface_id, node_id, ts_us, x, y);
   }
 
+  void enqueue_text_change(uint32_t node_id, uint64_t ts_us, std::string_view text) {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    event_ring_.push_text_change(config_.surface_id, node_id, ts_us, text);
+  }
+
   void enqueue_custom_event(
       uint32_t node_id,
       uint64_t ts_us,
@@ -850,13 +855,14 @@ class FabricHost {
     YGNodeCalculateLayout(root_yg, config_.width, config_.height, YGDirectionLTR);
 
     const uint64_t ts = now_us();
+    auto finite_or_zero = [](float v) noexcept -> float { return std::isfinite(v) ? v : 0.0f; };
     for (auto& [_, entry] : nodes_) {
       if (!entry.yg_node) continue;
       const LayoutRect next_rect{
-          .x = YGNodeLayoutGetLeft(entry.yg_node),
-          .y = YGNodeLayoutGetTop(entry.yg_node),
-          .width = YGNodeLayoutGetWidth(entry.yg_node),
-          .height = YGNodeLayoutGetHeight(entry.yg_node),
+          .x = finite_or_zero(YGNodeLayoutGetLeft(entry.yg_node)),
+          .y = finite_or_zero(YGNodeLayoutGetTop(entry.yg_node)),
+          .width = std::max(0.0f, finite_or_zero(YGNodeLayoutGetWidth(entry.yg_node))),
+          .height = std::max(0.0f, finite_or_zero(YGNodeLayoutGetHeight(entry.yg_node))),
       };
       const bool changed = !entry.has_computed_layout || rect_changed(entry.computed_layout, next_rect);
       entry.computed_layout = next_rect;
@@ -1145,6 +1151,7 @@ class FabricHost {
     float total_grow = 0.0f;
     std::vector<float> child_main(count, 0.0f);
     std::vector<float> child_cross(count, 0.0f);
+    std::vector<bool> child_cross_auto(count, false);
 
     for (size_t i = 0; i < count; ++i) {
       const auto& child = nodes_.at(live_children[i]);
@@ -1161,6 +1168,7 @@ class FabricHost {
       const float def_main = resolve_definite_dim(m_dim, main_avail);
       const float def_cross = resolve_definite_dim(c_dim, cross_avail);
       const bool cross_stretched = (def_cross < 0.0f && nl.align_items == 0);
+      child_cross_auto[i] = (def_cross < 0.0f && !cross_stretched);
 
       float resolved_main =
           (def_main >= 0.0f) ? clamp_axis_size(def_main, m_min, m_max, main_avail) : kUnconstrained;
@@ -1198,6 +1206,7 @@ class FabricHost {
       total_grow += std::max(0.0f, cl.flex_grow);
     }
 
+    const std::vector<float> pre_flex_main = child_main;
     const float free_main = main_avail - fixed_main - total_gap;
     if (free_main > 0.0f && total_grow > 0.0f) {
       for (size_t i = 0; i < count; ++i) {
@@ -1226,6 +1235,19 @@ class FabricHost {
             const float shrunk = std::max(0.0f, child_main[i] - overflow * (weight / total_scaled_shrink));
             child_main[i] = clamp_axis_size(shrunk, m_min, m_max, main_avail);
           }
+        }
+      }
+    }
+
+    // Re-measure Auto cross-height on Row children whose width changed after flex_grow/flex_shrink
+    // (so wrapped text inside a flex item gets its accurate post-flex height).
+    if (is_row) {
+      for (size_t i = 0; i < count; ++i) {
+        if (child_cross_auto[i] && std::fabs(child_main[i] - pre_flex_main[i]) > 1e-3f) {
+          const LayoutProps& cl = nodes_.at(live_children[i]).layout;
+          const NveIntrinsicSize remeasured = measure_intrinsic_size(
+              live_children[i], child_main[i], kUnconstrained, true, false, measure_gen, depth + 1);
+          child_cross[i] = clamp_axis_size(remeasured.height, cl.min_height, cl.max_height, cross_avail);
         }
       }
     }
@@ -1450,6 +1472,15 @@ void fabric_host_enqueue_press(
     float y) {
   if (!host) return;
   static_cast<FabricHost*>(host)->enqueue_press(node_id, timestamp_us, x, y);
+}
+
+void fabric_host_enqueue_text_change(
+    NveFabricHostHandle host,
+    uint32_t node_id,
+    uint64_t timestamp_us,
+    std::string_view text) {
+  if (!host) return;
+  static_cast<FabricHost*>(host)->enqueue_text_change(node_id, timestamp_us, text);
 }
 
 void fabric_host_enqueue_custom_event(

@@ -210,7 +210,7 @@ final class NveEventRingCodecTests: XCTestCase {
         appendEventHeader(
             surfaceId: 5, nodeId: 6, timestampUs: 77,
             kind: 250, // unknown kind -> falls back to .custom
-            payloadTag: 99, // unknown payload tag -> empty payload
+            payloadTag: 0, // valid empty payload
             to: &truncated
         )
         truncated.append(contentsOf: [1, 2, 3, 4, 5])
@@ -223,7 +223,18 @@ final class NveEventRingCodecTests: XCTestCase {
         XCTAssertEqual(decoded[0].kind, .custom)
         XCTAssertTrue(decoded[0].payload.isEmpty)
 
-        // Custom event whose claimed payload length exceeds remaining bytes
+        // Unknown payload tag stops cleanly without appending a corrupt event.
+        var unknownTag = Data()
+        appendLE(UInt32(1), to: &unknownTag)
+        appendEventHeader(
+            surfaceId: 5, nodeId: 6, timestampUs: 77,
+            kind: NveEventKind.custom.rawValue,
+            payloadTag: 99,
+            to: &unknownTag
+        )
+        XCTAssertTrue(NveEventRingCodec.decode(unknownTag).isEmpty)
+
+        // Custom event whose claimed payload length exceeds remaining bytes must NOT emit a partial event.
         var oversized = Data()
         appendLE(UInt32(1), to: &oversized)
         appendEventHeader(
@@ -235,9 +246,16 @@ final class NveEventRingCodecTests: XCTestCase {
         appendLE(UInt32(9999), to: &oversized)
         oversized.append(Data([1, 2]))
 
-        let decodedOversized = NveEventRingCodec.decode(oversized)
-        XCTAssertEqual(decodedOversized.count, 1)
-        XCTAssertEqual(decodedOversized[0].name, "ok")
-        XCTAssertTrue(decodedOversized[0].payload.isEmpty)
+        XCTAssertTrue(NveEventRingCodec.decode(oversized).isEmpty)
+
+        // Mid-payload truncation on Point (4 of 8 bytes) must NOT emit a partial event.
+        var partialPoint = Data()
+        appendLE(UInt32(1), to: &partialPoint)
+        appendEventHeader(
+            surfaceId: 1, nodeId: 2, timestampUs: 3,
+            kind: NveEventKind.press.rawValue, payloadTag: 1, to: &partialPoint
+        )
+        appendF32(12.5, to: &partialPoint)
+        XCTAssertTrue(NveEventRingCodec.decode(partialPoint).isEmpty)
     }
 }

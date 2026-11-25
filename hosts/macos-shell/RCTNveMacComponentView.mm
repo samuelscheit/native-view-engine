@@ -12,7 +12,18 @@
 }
 @end
 
-@interface RCTNveMacComponentView () <NveAppleComponentViewAdapter>
+/// Non-editable label that passes mouse hit-testing through to ancestor Pressable containers
+/// unless the label itself has interactive gesture recognizers attached.
+@interface NveLabelTextField : NSTextField
+@end
+
+@implementation NveLabelTextField
+- (NSView *)hitTest:(NSPoint)point {
+  return self.gestureRecognizers.count > 0 ? [super hitTest:point] : nil;
+}
+@end
+
+@interface RCTNveMacComponentView () <NveAppleComponentViewAdapter, NSTextFieldDelegate>
 @end
 
 @implementation RCTNveMacComponentView {
@@ -186,7 +197,7 @@
   }
   switch (snap.kind) {
     case NVE_COMP_TEXT: {
-      NSTextField *label = [[NSTextField alloc] initWithFrame:NSZeroRect];
+      NveLabelTextField *label = [[NveLabelTextField alloc] initWithFrame:NSZeroRect];
       label.editable = NO;
       label.selectable = NO;
       label.bordered = NO;
@@ -202,6 +213,7 @@
       NSTextField *input = [[NSTextField alloc] initWithFrame:NSZeroRect];
       input.editable = YES;
       input.bezeled = YES;
+      input.delegate = self;
       input.wantsLayer = YES;
       return input;
     }
@@ -235,17 +247,29 @@
 
   if ([view isKindOfClass:[NSTextField class]]) {
     NSTextField *field = (NSTextField *)view;
-    field.stringValue = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+    NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+    if (![field.stringValue isEqualToString:nextText]) {
+      field.stringValue = nextText;
+    }
     field.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
     if (snap.font_size > 0.0f) {
       field.font = [NSFont systemFontOfSize:static_cast<CGFloat>(snap.font_size)];
     }
   }
 
-  if (interactive && view.gestureRecognizers.count == 0) {
-    NSClickGestureRecognizer *click =
-        [[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(_handleNodeClick:)];
-    [view addGestureRecognizer:click];
+  if (interactive) {
+    if (view.gestureRecognizers.count == 0) {
+      NSClickGestureRecognizer *click =
+          [[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(_handleNodeClick:)];
+      [view addGestureRecognizer:click];
+    }
+  } else if (view.gestureRecognizers.count > 0) {
+    NSArray<NSGestureRecognizer *> *recognizers = [view.gestureRecognizers copy];
+    for (NSGestureRecognizer *gr in recognizers) {
+      if ([gr isKindOfClass:[NSClickGestureRecognizer class]] && gr.target == self) {
+        [view removeGestureRecognizer:gr];
+      }
+    }
   }
 }
 
@@ -257,6 +281,23 @@
     }
   }
   return parentView;
+}
+
+- (void)nveUpdateScrollView:(NSView *)scrollView contentSize:(CGSize)contentSize {
+  if ([scrollView isKindOfClass:[NSScrollView class]]) {
+    NSScrollView *scroll = (NSScrollView *)scrollView;
+    if (scroll.documentView != nil) {
+      scroll.documentView.frame = NSMakeRect(0.0, 0.0, contentSize.width, contentSize.height);
+    }
+  }
+}
+
+- (void)controlTextDidChange:(NSNotification *)obj {
+  if (![obj.object isKindOfClass:[NSTextField class]]) return;
+  NSTextField *field = (NSTextField *)obj.object;
+  const uint32_t nodeId = [_host nodeIdForNativeView:field];
+  if (nodeId == 0) return;
+  [_host dispatchTextChangeOnNodeId:nodeId text:field.stringValue ?: @""];
 }
 
 - (void)_handleNodeClick:(NSClickGestureRecognizer *)recognizer {

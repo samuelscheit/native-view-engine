@@ -324,6 +324,57 @@ void main() {
       expect(decoded, hasLength(1));
       expect(decoded[0].surfaceId, 4);
       expect(decoded[0].kind, NveEventKind.focus);
+
+      // Every prefix truncation of a rich multi-payload EventRing must return cleanly without throwing.
+      final full = _buildEventRing(<void Function(BytesBuilder)>[
+        (b) {
+          _writeEventHeader(b, surfaceId: 1, nodeId: 1, timestampUs: 1, kindCode: 1, payloadTag: 1);
+          b.add((ByteData(8)..setFloat32(0, 1.0, Endian.little)..setFloat32(4, 2.0, Endian.little))
+              .buffer
+              .asUint8List());
+        },
+        (b) {
+          _writeEventHeader(b, surfaceId: 1, nodeId: 2, timestampUs: 2, kindCode: 3, payloadTag: 2);
+          b.add(Uint8List(16));
+        },
+        (b) {
+          _writeEventHeader(b, surfaceId: 1, nodeId: 3, timestampUs: 3, kindCode: 4, payloadTag: 3);
+          final txt = utf8.encode('hello');
+          b.add((ByteData(4)..setUint32(0, txt.length, Endian.little)).buffer.asUint8List());
+          b.add(txt);
+        },
+        (b) {
+          _writeEventHeader(b, surfaceId: 1, nodeId: 4, timestampUs: 4, kindCode: 7, payloadTag: 4);
+          b.add(Uint8List(16));
+        },
+        (b) {
+          _writeEventHeader(b, surfaceId: 1, nodeId: 5, timestampUs: 5, kindCode: 8, payloadTag: 5);
+          final name = utf8.encode('ev');
+          final data = utf8.encode('{"a":1}');
+          b.add((ByteData(2)..setUint16(0, name.length, Endian.little)).buffer.asUint8List());
+          b.add(name);
+          b.add((ByteData(4)..setUint32(0, data.length, Endian.little)).buffer.asUint8List());
+          b.add(data);
+        },
+      ]);
+      for (var cut = 0; cut < full.length; cut++) {
+        final partial = NveEventRingCodec.decode(Uint8List.sublistView(full, 0, cut));
+        expect(partial.length, lessThan(5));
+      }
+
+      // Oversized length (0xFFFFFFFF) in Text and Custom payloads must never throw RangeError.
+      final oversizedText = BytesBuilder()
+        ..add((ByteData(4)..setUint32(0, 1, Endian.little)).buffer.asUint8List());
+      _writeEventHeader(
+        oversizedText,
+        surfaceId: 1,
+        nodeId: 9,
+        timestampUs: 10,
+        kindCode: NveEventKind.textChange.code,
+        payloadTag: 3,
+      );
+      oversizedText.add((ByteData(4)..setUint32(0, 0xFFFFFFFF, Endian.little)).buffer.asUint8List());
+      expect(NveEventRingCodec.decode(oversizedText.toBytes()), isEmpty);
     });
   });
 }

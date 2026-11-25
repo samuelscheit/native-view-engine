@@ -1,9 +1,13 @@
 #import "NveAppleComponentHost.h"
 
+<<<<<<< HEAD
 #import <CoreFoundation/CoreFoundation.h>
 
 #include "nve_value.hpp"
 
+=======
+#include <algorithm>
+>>>>>>> 74aec62 (fix(hosts,fabric-bridge,headless): harden subview reconciliation, scroll/input/hit-test, atomic Android reload, EventRing decoders, and headless tree guards)
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -235,10 +239,7 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   (void)_bridge->drain_emitted_events();
 }
 
-- (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
-  if (!_bridge) return;
-  nve::fabric_host_enqueue_press(
-      _bridge->fabric_host(), nodeId, nve::apple::current_timestamp_us(), x, y);
+- (void)_dispatchInboundEventsAndRender {
   const NveBufferSlice inbound = nve_fabric_host_drain_events(_bridge->fabric_host());
   const uint32_t dirty = _bridge->dispatch_native_events(inbound, /*auto_render=*/false);
   if (dirty != 0) {
@@ -246,6 +247,24 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   } else {
     [self drainEmittedEvents];
   }
+}
+
+- (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
+  if (!_bridge) return;
+  nve::fabric_host_enqueue_press(
+      _bridge->fabric_host(), nodeId, nve::apple::current_timestamp_us(), x, y);
+  [self _dispatchInboundEventsAndRender];
+}
+
+- (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text {
+  if (!_bridge) return;
+  NSData *utf8 = [(text ?: @"") dataUsingEncoding:NSUTF8StringEncoding];
+  const std::string_view sv =
+      utf8 ? std::string_view(reinterpret_cast<const char *>(utf8.bytes), utf8.length)
+           : std::string_view{};
+  nve::fabric_host_enqueue_text_change(
+      _bridge->fabric_host(), nodeId, nve::apple::current_timestamp_us(), sv);
+  [self _dispatchInboundEventsAndRender];
 }
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor {
@@ -340,39 +359,154 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
       _nodeViewTags[snap.node_id] = viewTag;
     }
 
-    view.frame = CGRectMake(snap.layout.x, snap.layout.y, snap.layout.width, snap.layout.height);
+    const CGFloat fx = std::isfinite(snap.layout.x) ? static_cast<CGFloat>(snap.layout.x) : 0.0;
+    const CGFloat fy = std::isfinite(snap.layout.y) ? static_cast<CGFloat>(snap.layout.y) : 0.0;
+    const CGFloat fw =
+        (std::isfinite(snap.layout.width) && snap.layout.width > 0.0f)
+            ? static_cast<CGFloat>(snap.layout.width)
+            : 0.0;
+    const CGFloat fh =
+        (std::isfinite(snap.layout.height) && snap.layout.height > 0.0f)
+            ? static_cast<CGFloat>(snap.layout.height)
+            : 0.0;
+    view.frame = CGRectMake(fx, fy, fw, fh);
     const BOOL interactive =
         (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & nve::apple::kEventMaskPress) != 0);
     [adapter nveUpdateNativeView:view forSnapshot:snap interactive:interactive];
     nve::apple::apply_common_layer_style(view.layer, snap);
   }
 
-  // Pass 3: Reconcile parent-child view hierarchy.
+  // Pass 3: Reconcile parent-child view hierarchy, exact child order, detached orphans, and ScrollView content sizes.
   const BOOL hasCustomContainer =
       [adapter respondsToSelector:@selector(nveChildContainerForParentView:)];
+  const BOOL hasScrollSizeHook =
+      [adapter respondsToSelector:@selector(nveUpdateScrollView:contentSize:)];
   NvePlatformView *rootView = [adapter nveHostRootView];
+
+  std::unordered_map<uint32_t, const nve::RenderedNodeSnapshot *> snapById;
+  snapById.reserve(snapshots.size());
+  std::unordered_set<const void *> managedViewPtrs;
+  managedViewPtrs.reserve(_nodeViews.size());
   for (const auto &snap : snapshots) {
-    NvePlatformView *parentView = (snap.node_id == NVE_ROOT_NODE_ID) ? rootView : nil;
-    if (!parentView) {
+    snapById.emplace(snap.node_id, &snap);
+  }
+  for (const auto &[_, v] : _nodeViews) {
+    managedViewPtrs.insert((__bridge const void *)v);
+  }
+
+  std::unordered_set<uint32_t> mountedChildIds;
+  mountedChildIds.reserve(_nodeViews.size());
+
+  for (const auto &snap : snapshots) {
+    NvePlatformView *rawParent = (snap.node_id == NVE_ROOT_NODE_ID) ? rootView : nil;
+    if (!rawParent) {
       const auto pit = _nodeViews.find(snap.node_id);
       if (pit != _nodeViews.end()) {
-        parentView = pit->second;
+        rawParent = pit->second;
       }
     }
+    if (!rawParent) continue;
+
+    NvePlatformView *parentView =
+        hasCustomContainer ? [adapter nveChildContainerForParentView:rawParent] : rawParent;
     if (!parentView) continue;
 
-    if (hasCustomContainer) {
-      parentView = [adapter nveChildContainerForParentView:parentView];
-      if (!parentView) continue;
-    }
+    std::vector<NvePlatformView *> desiredChildren;
+    desiredChildren.reserve(snap.children.size());
+    std::unordered_set<const void *> desiredPtrs;
+    desiredPtrs.reserve(snap.children.size());
+    CGFloat contentMaxX = 0.0;
+    CGFloat contentMaxY = 0.0;
 
     for (uint32_t childId : snap.children) {
       const auto cit = _nodeViews.find(childId);
       if (cit == _nodeViews.end()) continue;
       NvePlatformView *childView = cit->second;
-      if (childView.superview != parentView) {
-        [parentView addSubview:childView];
+      desiredChildren.push_back(childView);
+      desiredPtrs.insert((__bridge const void *)childView);
+      mountedChildIds.insert(childId);
+
+      const auto sit = snapById.find(childId);
+      if (sit != snapById.end()) {
+        const auto &cl = sit->second->layout;
+        contentMaxX = std::max(contentMaxX, static_cast<CGFloat>(cl.x + cl.width));
+        contentMaxY = std::max(contentMaxY, static_cast<CGFloat>(cl.y + cl.height));
       }
+    }
+
+    // Remove any managed subview that is no longer a child of this parent.
+    NSArray<NvePlatformView *> *existingSubviews = [parentView.subviews copy];
+    for (NvePlatformView *sub in existingSubviews) {
+      const void *ptr = (__bridge const void *)sub;
+      if (managedViewPtrs.find(ptr) != managedViewPtrs.end() &&
+          desiredPtrs.find(ptr) == desiredPtrs.end()) {
+        [sub removeFromSuperview];
+      }
+    }
+
+    // Check whether existing managed subview order already matches `desiredChildren`.
+    std::vector<const void *> currentManagedOrder;
+    currentManagedOrder.reserve(parentView.subviews.count);
+    for (NvePlatformView *sub in parentView.subviews) {
+      const void *ptr = (__bridge const void *)sub;
+      if (managedViewPtrs.find(ptr) != managedViewPtrs.end()) {
+        currentManagedOrder.push_back(ptr);
+      }
+    }
+    bool orderMatches = (currentManagedOrder.size() == desiredChildren.size());
+    if (orderMatches) {
+      for (size_t i = 0; i < desiredChildren.size(); ++i) {
+        if (currentManagedOrder[i] != (__bridge const void *)desiredChildren[i]) {
+          orderMatches = false;
+          break;
+        }
+      }
+    }
+
+    if (!orderMatches) {
+#if TARGET_OS_OSX
+      NvePlatformView *prevView = nil;
+      for (NvePlatformView *childView : desiredChildren) {
+        if (childView.superview != parentView) {
+          if (prevView != nil) {
+            [parentView addSubview:childView positioned:NSWindowAbove relativeTo:prevView];
+          } else {
+            [parentView addSubview:childView];
+          }
+        } else {
+          // Re-insert in exact order relative to previous managed sibling.
+          [childView removeFromSuperviewWithoutNeedingDisplay];
+          if (prevView != nil) {
+            [parentView addSubview:childView positioned:NSWindowAbove relativeTo:prevView];
+          } else {
+            [parentView addSubview:childView];
+          }
+        }
+        prevView = childView;
+      }
+#else
+      for (NvePlatformView *childView : desiredChildren) {
+        if (childView.superview != parentView) {
+          [parentView addSubview:childView];
+        } else {
+          [parentView bringSubviewToFront:childView];
+        }
+      }
+#endif
+    }
+
+    if (snap.kind == NVE_COMP_SCROLL_VIEW && hasScrollSizeHook) {
+      const CGSize contentSize = CGSizeMake(
+          std::max(static_cast<CGFloat>(snap.layout.width), contentMaxX),
+          std::max(static_cast<CGFloat>(snap.layout.height), contentMaxY));
+      [adapter nveUpdateScrollView:rawParent contentSize:contentSize];
+    }
+  }
+
+  // Detach any live views that are no longer referenced by any parent's children list.
+  for (const auto &[nid, view] : _nodeViews) {
+    if (mountedChildIds.find(nid) == mountedChildIds.end() && view.superview != nil) {
+      [view removeFromSuperview];
     }
   }
 }
