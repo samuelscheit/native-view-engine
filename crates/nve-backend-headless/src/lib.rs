@@ -4,21 +4,24 @@
 //! coordinate hit-testing, simulated native events, live layout-engine swapping, and an
 //! ASCII tree + rect inspector.
 
+pub mod slot_map;
 pub mod taffy_engine;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{
-    ColorRgba, Command, CommandDecoder, ComponentKind, Dimension, LayoutProps, NativeEvent, NodeId,
-    RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
+    ColorRgba, CommandDecoder, CommandRef, ComponentKind, Dimension, LayoutProps, NativeEvent,
+    NodeId, RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
 };
 use nve_engine::{
     BackendApplyStats, BackendError, HeuristicTextMeasurer, LayoutEngine, LayoutRect,
     RenderBackend, TextMeasurer, Viewport,
 };
 
+pub use slot_map::{NodeSlotMap, DENSE_SLOT_LIMIT};
+use slot_map::VisitStamps;
 pub use taffy_engine::{to_taffy_dim, to_taffy_lpa, to_taffy_style, TaffyLayoutEngine};
 
 const MAX_TREE_DEPTH: usize = 512;
@@ -58,7 +61,9 @@ fn validate_layout(l: &LayoutProps) -> Result<(), BackendError> {
     if ok {
         Ok(())
     } else {
-        Err(BackendError::Internal("invalid non-finite or out-of-range layout scalar".into()))
+        Err(BackendError::Internal(
+            "invalid non-finite or out-of-range layout scalar".into(),
+        ))
     }
 }
 
@@ -70,7 +75,9 @@ fn validate_style(s: &StyleProps) -> Result<(), BackendError> {
     if ok {
         Ok(())
     } else {
-        Err(BackendError::Internal("invalid non-finite or out-of-range style scalar".into()))
+        Err(BackendError::Internal(
+            "invalid non-finite or out-of-range style scalar".into(),
+        ))
     }
 }
 
@@ -79,7 +86,7 @@ pub struct HeadlessNode {
     pub id: NodeId,
     pub kind: ComponentKind,
     pub custom_name: Option<String>,
-    pub text: Option<String>,
+    pub text: Option<Arc<str>>,
     pub layout: LayoutProps,
     pub style: StyleProps,
     pub has_explicit_style: bool,
@@ -99,13 +106,31 @@ pub enum HeadlessMutation {
     UpdateStyle(NodeId),
 }
 
+struct TextStyleFrame {
+    id: NodeId,
+    color: ColorRgba,
+    font_size: f32,
+    has_inherited: bool,
+}
+
 pub struct HeadlessBackend<L: LayoutEngine = TaffyLayoutEngine> {
     surface_id: SurfaceId,
     viewport: Viewport,
-    nodes: HashMap<NodeId, HeadlessNode>,
+    nodes: NodeSlotMap<HeadlessNode>,
     layout: L,
     text_measurer: Arc<dyn TextMeasurer>,
-    prev_rects: HashMap<NodeId, LayoutRect>,
+    prev_rects: NodeSlotMap<(u64, LayoutRect)>,
+    rect_gen: u64,
+    track_mutations: bool,
+    text_style_dirty: bool,
+    has_nested_text: bool,
+    visit_stamps: VisitStamps,
+    scratch_children: Vec<NodeId>,
+    scratch_old_children: Vec<NodeId>,
+    scratch_prev_parents: Vec<NodeId>,
+    scratch_walk: Vec<(NodeId, usize)>,
+    scratch_text_stack: Vec<TextStyleFrame>,
+    scratch_resync_styles: Vec<(NodeId, StyleProps)>,
     last_mutations: Vec<HeadlessMutation>,
     pending_events: Vec<NativeEvent>,
     dispatched_commands: Vec<(NodeId, String, Vec<u8>)>,
@@ -131,16 +156,45 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         let mut this = Self {
             surface_id: 1,
             viewport: Viewport::default(),
-            nodes: HashMap::new(),
+            nodes: NodeSlotMap::new(),
             layout,
             text_measurer,
-            prev_rects: HashMap::new(),
+            prev_rects: NodeSlotMap::new(),
+            rect_gen: 0,
+            track_mutations: true,
+            text_style_dirty: false,
+            has_nested_text: false,
+            visit_stamps: VisitStamps::new(),
+            scratch_children: Vec::new(),
+            scratch_old_children: Vec::new(),
+            scratch_prev_parents: Vec::new(),
+            scratch_walk: Vec::new(),
+            scratch_text_stack: Vec::new(),
+            scratch_resync_styles: Vec::new(),
             last_mutations: Vec::new(),
             pending_events: Vec::new(),
             dispatched_commands: Vec::new(),
         };
         this.ensure_node(ROOT_NODE_ID, ComponentKind::Root, None);
         this
+    }
+
+    /// Configures whether per-frame [`HeadlessMutation`] recording and rect diffing are active.
+    ///
+    /// Defaults to `true` on [`HeadlessBackend::new()`] / [`HeadlessBackend::with_layout()`].
+    /// Rendering backends that consume the retained node tree directly (such as `SkiaBackend`)
+    /// disable mutation tracking to avoid unused per-frame diff allocations.
+    pub fn with_mutation_tracking(mut self, enabled: bool) -> Self {
+        self.track_mutations = enabled;
+        self
+    }
+
+    pub fn set_mutation_tracking(&mut self, enabled: bool) {
+        self.track_mutations = enabled;
+    }
+
+    pub fn mutation_tracking(&self) -> bool {
+        self.track_mutations
     }
 
     pub fn layout_engine(&self) -> &L {
@@ -172,7 +226,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             next.upsert_node(node.id, node.kind);
             next.set_layout(node.id, &node.layout);
             next.set_style(node.id, &node.style);
-            if let Some(text) = &node.text {
+            if let Some(text) = node.text.as_deref() {
                 next.set_text(node.id, text);
             }
         }
@@ -190,6 +244,17 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             layout: next,
             text_measurer: self.text_measurer,
             prev_rects: self.prev_rects,
+            rect_gen: self.rect_gen,
+            track_mutations: self.track_mutations,
+            text_style_dirty: self.text_style_dirty,
+            has_nested_text: self.has_nested_text,
+            visit_stamps: self.visit_stamps,
+            scratch_children: self.scratch_children,
+            scratch_old_children: self.scratch_old_children,
+            scratch_prev_parents: self.scratch_prev_parents,
+            scratch_walk: self.scratch_walk,
+            scratch_text_stack: self.scratch_text_stack,
+            scratch_resync_styles: self.scratch_resync_styles,
             last_mutations: self.last_mutations,
             pending_events: self.pending_events,
             dispatched_commands: self.dispatched_commands,
@@ -200,16 +265,16 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
 
     /// Re-runs the active layout engine against the retained tree and refreshes all `computed_rect`s.
     pub fn recompute_layout(&mut self) {
-        let mut scratch = Vec::new();
-        self.run_layout_and_diff(&mut scratch);
+        self.run_layout_and_diff(false);
     }
 
-    pub fn nodes(&self) -> &HashMap<NodeId, HeadlessNode> {
+    pub fn nodes(&self) -> &NodeSlotMap<HeadlessNode> {
         &self.nodes
     }
 
+    #[inline]
     pub fn node(&self, id: NodeId) -> Option<&HeadlessNode> {
-        self.nodes.get(&id)
+        self.nodes.get(id)
     }
 
     pub fn last_mutations(&self) -> &[HeadlessMutation] {
@@ -242,7 +307,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         if depth > MAX_TREE_DEPTH {
             return None;
         }
-        let node = self.nodes.get(&id)?;
+        let node = self.nodes.get(id)?;
         let r = node.computed_rect;
         let inside = x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
         if !inside && id != ROOT_NODE_ID {
@@ -271,7 +336,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         if depth > MAX_TREE_DEPTH {
             return;
         }
-        let Some(node) = self.nodes.get(&id) else {
+        let Some(node) = self.nodes.get(id) else {
             return;
         };
         let indent = "  ".repeat(depth);
@@ -284,7 +349,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             "{indent}{tag}#{id} [{:.1}, {:.1}, {:.1}x{:.1}]",
             r.x, r.y, r.width, r.height
         ));
-        if let Some(text) = &node.text {
+        if let Some(text) = node.text.as_deref() {
             out.push_str(&format!(" \"{text}\""));
         }
         if node.event_mask != 0 {
@@ -296,24 +361,41 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         }
     }
 
-    fn ensure_node(&mut self, id: NodeId, kind: ComponentKind, custom_name: Option<String>) {
-        if let Some(existing) = self.nodes.get_mut(&id) {
+    fn ensure_node(&mut self, id: NodeId, kind: ComponentKind, custom_name: Option<&str>) {
+        if let Some(existing) = self.nodes.get_mut(id) {
+            let kind_changed = existing.kind != kind;
             existing.kind = kind;
-            existing.custom_name = custom_name;
-            self.layout.upsert_node(id, kind);
+            match (&mut existing.custom_name, custom_name) {
+                (Some(slot), Some(name)) => {
+                    if slot.as_str() != name {
+                        slot.clear();
+                        slot.push_str(name);
+                    }
+                }
+                (slot, name) => *slot = name.map(ToOwned::to_owned),
+            }
+            if kind_changed {
+                if (kind == ComponentKind::Text && !existing.children.is_empty())
+                    || self.has_nested_text
+                {
+                    if kind == ComponentKind::Text && !existing.children.is_empty() {
+                        self.has_nested_text = true;
+                    }
+                    self.text_style_dirty = true;
+                }
+                self.layout.upsert_node(id, kind);
+            }
             return;
         }
         let default_layout = LayoutProps::default();
         let default_style = StyleProps::default();
         self.layout.upsert_node(id, kind);
-        self.layout.set_layout(id, &default_layout);
-        self.layout.set_style(id, &default_style);
         self.nodes.insert(
             id,
             HeadlessNode {
                 id,
                 kind,
-                custom_name,
+                custom_name: custom_name.map(ToOwned::to_owned),
                 text: None,
                 layout: default_layout,
                 style: default_style,
@@ -328,26 +410,27 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
     }
 
     fn propagate_text_styles(&mut self) {
-        struct Frame {
-            id: NodeId,
-            color: ColorRgba,
-            font_size: f32,
-            has_inherited: bool,
+        if !self.text_style_dirty {
+            return;
         }
-        let mut visited = HashSet::with_capacity(self.nodes.len());
-        let mut stack = vec![Frame {
+        self.text_style_dirty = false;
+
+        let visit_gen = self.visit_stamps.next_gen();
+        self.scratch_text_stack.clear();
+        self.scratch_text_stack.push(TextStyleFrame {
             id: ROOT_NODE_ID,
             color: ColorRgba::BLACK,
             font_size: 16.0,
             has_inherited: false,
-        }];
-        let mut resync_styles: Vec<(NodeId, StyleProps)> = Vec::new();
+        });
+        self.scratch_resync_styles.clear();
+        let mut found_text_with_children = false;
 
-        while let Some(frame) = stack.pop() {
-            if !visited.insert(frame.id) {
+        while let Some(frame) = self.scratch_text_stack.pop() {
+            if !self.visit_stamps.mark(frame.id, visit_gen) {
                 continue;
             }
-            let Some(node) = self.nodes.get_mut(&frame.id) else {
+            let Some(node) = self.nodes.get(frame.id) else {
                 continue;
             };
             let mut next_color = frame.color;
@@ -355,6 +438,9 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             let mut next_has = frame.has_inherited;
 
             if node.kind == ComponentKind::Text {
+                if !node.children.is_empty() {
+                    found_text_with_children = true;
+                }
                 if !node.has_explicit_style {
                     let target_color = if frame.has_inherited {
                         frame.color
@@ -369,19 +455,22 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                     if node.style.text_color != target_color
                         || (node.style.font_size - target_font).abs() > 1e-3
                     {
-                        node.style.text_color = target_color;
-                        node.style.font_size = target_font;
-                        resync_styles.push((frame.id, node.style));
+                        let mut updated = node.style;
+                        updated.text_color = target_color;
+                        updated.font_size = target_font;
+                        self.scratch_resync_styles.push((frame.id, updated));
                     }
+                    next_color = target_color;
+                    next_font_size = target_font;
+                } else {
+                    next_color = node.style.text_color;
+                    next_font_size = node.style.font_size;
                 }
-                next_color = node.style.text_color;
-                next_font_size = node.style.font_size;
                 next_has = true;
             }
 
-            let children = node.children.clone();
-            for cid in children.into_iter().rev() {
-                stack.push(Frame {
+            for &cid in node.children.iter().rev() {
+                self.scratch_text_stack.push(TextStyleFrame {
                     id: cid,
                     color: next_color,
                     font_size: next_font_size,
@@ -390,46 +479,68 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             }
         }
 
-        for (id, style) in resync_styles {
+        self.has_nested_text = found_text_with_children;
+
+        for &(id, style) in &self.scratch_resync_styles {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.style = style;
+            }
             self.layout.set_style(id, &style);
         }
     }
 
-    fn run_layout_and_diff(&mut self, mutations: &mut Vec<HeadlessMutation>) -> (u64, u64) {
+    fn run_layout_and_diff(&mut self, record_to_last_mutations: bool) -> (u64, u64) {
         let t_layout = Instant::now();
         self.propagate_text_styles();
         self.layout.compute_layout(ROOT_NODE_ID, self.viewport);
         let layout_us = t_layout.elapsed().as_micros() as u64;
 
         let t_diff = Instant::now();
-        let mut new_rects = HashMap::with_capacity(self.nodes.len());
-        self.collect_rects(ROOT_NODE_ID, 0, &mut new_rects);
-        for (&id, &rect) in &new_rects {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.computed_rect = rect;
+        let track = self.track_mutations;
+        let prev_gen = self.rect_gen;
+        let next_gen = if track {
+            let mut g = self.rect_gen.wrapping_add(1);
+            if g == 0 {
+                self.prev_rects.clear();
+                g = 1;
             }
-            if self.prev_rects.get(&id) != Some(&rect) {
-                mutations.push(HeadlessMutation::UpdateLayout(id, rect));
+            self.rect_gen = g;
+            g
+        } else {
+            0
+        };
+
+        self.scratch_walk.clear();
+        self.scratch_walk.push((ROOT_NODE_ID, 0));
+        while let Some((id, depth)) = self.scratch_walk.pop() {
+            if depth > MAX_TREE_DEPTH {
+                continue;
+            }
+            let Some(rect) = self.layout.layout_of(id) else {
+                continue;
+            };
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            node.computed_rect = rect;
+            if track {
+                let unchanged = self
+                    .prev_rects
+                    .insert(id, (next_gen, rect))
+                    .is_some_and(|(g, prev)| g == prev_gen && prev == rect);
+                if !unchanged && record_to_last_mutations {
+                    self.last_mutations
+                        .push(HeadlessMutation::UpdateLayout(id, rect));
+                }
+            }
+            if depth < MAX_TREE_DEPTH {
+                for &child in node.children.iter().rev() {
+                    self.scratch_walk.push((child, depth + 1));
+                }
             }
         }
-        self.prev_rects = new_rects;
         let diff_us = t_diff.elapsed().as_micros() as u64;
         (layout_us, diff_us)
-    }
-
-    fn collect_rects(&self, id: NodeId, depth: usize, out: &mut HashMap<NodeId, LayoutRect>) {
-        if depth > MAX_TREE_DEPTH {
-            return;
-        }
-        let Some(rect) = self.layout.layout_of(id) else {
-            return;
-        };
-        out.insert(id, rect);
-        if let Some(node) = self.nodes.get(&id) {
-            for &child in &node.children {
-                self.collect_rects(child, depth + 1, out);
-            }
-        }
     }
 }
 
@@ -449,186 +560,246 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
 
     fn submit_frame(&mut self, command_bytes: &[u8]) -> Result<BackendApplyStats, BackendError> {
         let t_decode = Instant::now();
-        let (header, commands) = CommandDecoder::new(command_bytes)?.decode_all()?;
-        let mut mutations = Vec::new();
+        self.last_mutations.clear();
+        let track_mutations = self.track_mutations;
         let mut committed = false;
 
-        for cmd in commands {
+        let decoder = CommandDecoder::new(command_bytes)?;
+        if track_mutations {
+            let est_ops = (decoder.header().op_count as usize).min(command_bytes.len() / 2);
+            self.last_mutations.reserve(est_ops);
+        }
+
+        let header = decoder.for_each(|cmd| {
             match cmd {
-                Command::CreateNode {
+                CommandRef::CreateNode {
                     node_id,
                     kind,
                     custom_name,
                 } => {
                     self.ensure_node(node_id, kind, custom_name);
-                    mutations.push(HeadlessMutation::Create(node_id, kind));
+                    if track_mutations {
+                        self.last_mutations
+                            .push(HeadlessMutation::Create(node_id, kind));
+                    }
                 }
-                Command::RemoveNode { node_id } => {
+                CommandRef::RemoveNode { node_id } => {
                     if node_id == ROOT_NODE_ID {
                         return Err(BackendError::InvalidNode(node_id));
                     }
-                    let mut parent_to_resync: Option<(NodeId, Vec<NodeId>)> = None;
-                    if let Some(removed) = self.nodes.remove(&node_id) {
+                    let mut parent_to_resync: Option<NodeId> = None;
+                    if let Some(removed) = self.nodes.remove(node_id) {
                         if let Some(pid) = removed.parent {
-                            if let Some(pnode) = self.nodes.get_mut(&pid) {
+                            if let Some(pnode) = self.nodes.get_mut(pid) {
                                 pnode.children.retain(|&c| c != node_id);
-                                parent_to_resync = Some((pid, pnode.children.clone()));
+                                parent_to_resync = Some(pid);
                             }
                         }
                         for cid in removed.children {
-                            if let Some(cnode) = self.nodes.get_mut(&cid) {
+                            if let Some(cnode) = self.nodes.get_mut(cid) {
                                 if cnode.parent == Some(node_id) {
                                     cnode.parent = None;
                                 }
                             }
                         }
+                        if self.has_nested_text {
+                            self.text_style_dirty = true;
+                        }
                     }
-                    if let Some((pid, updated_children)) = parent_to_resync {
-                        self.layout.set_children(pid, &updated_children);
+                    if let Some(pid) = parent_to_resync {
+                        if let Some(pnode) = self.nodes.get(pid) {
+                            self.layout.set_children(pid, &pnode.children);
+                        }
                     }
                     self.layout.remove_node(node_id);
-                    self.prev_rects.remove(&node_id);
-                    mutations.push(HeadlessMutation::Remove(node_id));
+                    self.prev_rects.remove(node_id);
+                    if track_mutations {
+                        self.last_mutations.push(HeadlessMutation::Remove(node_id));
+                    }
                 }
-                Command::SetChildren {
+                CommandRef::SetChildren {
                     parent_id,
                     children,
                 } => {
-                    if !self.nodes.contains_key(&parent_id) {
+                    let Some((parent_kind, parent_parent)) =
+                        self.nodes.get(parent_id).map(|n| (n.kind, n.parent))
+                    else {
                         return Err(BackendError::InvalidNode(parent_id));
-                    }
+                    };
                     // Reject self-parenting, root-as-child, cycles, and duplicate children.
-                    let mut ancestors = HashSet::new();
-                    let mut walk = Some(parent_id);
-                    for _ in 0..=self.nodes.len() {
-                        let Some(cur) = walk else { break };
-                        if !ancestors.insert(cur) {
-                            break;
+                    let anc_gen = if parent_parent.is_some() {
+                        let g = self.visit_stamps.next_gen();
+                        let mut walk = parent_parent;
+                        for _ in 0..=self.nodes.len() {
+                            let Some(cur) = walk else { break };
+                            if !self.visit_stamps.mark(cur, g) {
+                                break;
+                            }
+                            walk = self.nodes.get(cur).and_then(|n| n.parent);
                         }
-                        walk = self.nodes.get(&cur).and_then(|n| n.parent);
-                    }
-                    let mut seen_children = HashSet::with_capacity(children.len());
-                    for &cid in &children {
-                        if cid == parent_id || cid == ROOT_NODE_ID || ancestors.contains(&cid) {
+                        Some(g)
+                    } else {
+                        None
+                    };
+
+                    let check_dups = children.len() > 1;
+                    let child_gen = if check_dups {
+                        Some(self.visit_stamps.next_gen())
+                    } else {
+                        None
+                    };
+                    self.scratch_children.clear();
+                    self.scratch_children.reserve(children.len());
+                    for cid in children {
+                        if cid == parent_id
+                            || cid == ROOT_NODE_ID
+                            || anc_gen.is_some_and(|g| self.visit_stamps.has(cid, g))
+                        {
                             return Err(BackendError::Internal(format!(
                                 "cyclic or root child {cid} under parent {parent_id}"
                             )));
                         }
-                        if !seen_children.insert(cid) {
-                            return Err(BackendError::Internal(format!(
-                                "duplicate child {cid} under parent {parent_id}"
-                            )));
+                        if let Some(g) = child_gen {
+                            if !self.visit_stamps.mark(cid, g) {
+                                return Err(BackendError::Internal(format!(
+                                    "duplicate child {cid} under parent {parent_id}"
+                                )));
+                            }
                         }
+                        self.scratch_children.push(cid);
                     }
 
-                    let old_children = self
-                        .nodes
-                        .get(&parent_id)
-                        .map(|p| p.children.clone())
-                        .unwrap_or_default();
-                    for old_cid in old_children {
-                        if let Some(cnode) = self.nodes.get_mut(&old_cid) {
+                    self.scratch_old_children.clear();
+                    if let Some(parent) = self.nodes.get_mut(parent_id) {
+                        if !parent.children.is_empty() {
+                            self.scratch_old_children.extend_from_slice(&parent.children);
+                        }
+                    }
+                    for &old_cid in &self.scratch_old_children {
+                        if let Some(cnode) = self.nodes.get_mut(old_cid) {
                             if cnode.parent == Some(parent_id) {
                                 cnode.parent = None;
                             }
                         }
                     }
-                    let mut prev_parents_to_resync = Vec::new();
-                    for &cid in &children {
-                        let prev_parent = self.nodes.get(&cid).and_then(|n| n.parent);
-                        if let Some(prev_pid) = prev_parent {
-                            if prev_pid != parent_id {
-                                if let Some(prev_pnode) = self.nodes.get_mut(&prev_pid) {
-                                    prev_pnode.children.retain(|&c| c != cid);
+
+                    self.scratch_prev_parents.clear();
+                    for &cid in &self.scratch_children {
+                        if let Some(cnode) = self.nodes.get_mut(cid) {
+                            let prev_parent = cnode.parent;
+                            cnode.parent = Some(parent_id);
+                            if let Some(prev_pid) = prev_parent {
+                                if prev_pid != parent_id {
+                                    if let Some(prev_pnode) = self.nodes.get_mut(prev_pid) {
+                                        prev_pnode.children.retain(|&c| c != cid);
+                                    }
+                                    self.scratch_prev_parents.push(prev_pid);
                                 }
-                                prev_parents_to_resync.push(prev_pid);
                             }
                         }
-                        if let Some(cnode) = self.nodes.get_mut(&cid) {
-                            cnode.parent = Some(parent_id);
+                    }
+
+                    if let Some(parent) = self.nodes.get_mut(parent_id) {
+                        parent.children.clear();
+                        parent.children.extend_from_slice(&self.scratch_children);
+                    }
+
+                    for &prev_pid in &self.scratch_prev_parents {
+                        if let Some(pnode) = self.nodes.get(prev_pid) {
+                            self.layout.set_children(prev_pid, &pnode.children);
                         }
                     }
-                    if let Some(parent) = self.nodes.get_mut(&parent_id) {
-                        parent.children = children.clone();
-                    }
-                    for prev_pid in prev_parents_to_resync {
-                        if let Some(pnode) = self.nodes.get(&prev_pid) {
-                            let updated = pnode.children.clone();
-                            self.layout.set_children(prev_pid, &updated);
+                    self.layout.set_children(parent_id, &self.scratch_children);
+
+                    if (parent_kind == ComponentKind::Text && !self.scratch_children.is_empty())
+                        || self.has_nested_text
+                    {
+                        if parent_kind == ComponentKind::Text && !self.scratch_children.is_empty() {
+                            self.has_nested_text = true;
                         }
+                        self.text_style_dirty = true;
                     }
-                    self.layout.set_children(parent_id, &children);
                 }
-                Command::SetText { node_id, text } => {
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.text = Some(text.clone());
-                        mutations.push(HeadlessMutation::UpdateText(node_id, text.clone()));
-                    } else {
+                CommandRef::SetText { node_id, text } => {
+                    let Some(node) = self.nodes.get_mut(node_id) else {
                         return Err(BackendError::InvalidNode(node_id));
+                    };
+                    if node.text.as_deref() != Some(text) {
+                        node.text = Some(Arc::from(text));
                     }
-                    self.layout.set_text(node_id, &text);
+                    if track_mutations {
+                        self.last_mutations
+                            .push(HeadlessMutation::UpdateText(node_id, text.to_owned()));
+                    }
+                    self.layout.set_text(node_id, text);
                 }
-                Command::SetLayout { node_id, layout } => {
+                CommandRef::SetLayout { node_id, layout } => {
                     validate_layout(&layout)?;
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.layout = layout;
-                    } else {
+                    let Some(node) = self.nodes.get_mut(node_id) else {
                         return Err(BackendError::InvalidNode(node_id));
-                    }
+                    };
+                    node.layout = layout;
                     self.layout.set_layout(node_id, &layout);
                 }
-                Command::SetStyle { node_id, style } => {
+                CommandRef::SetStyle { node_id, style } => {
                     validate_style(&style)?;
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.style = style;
-                        node.has_explicit_style = true;
-                        mutations.push(HeadlessMutation::UpdateStyle(node_id));
-                    } else {
+                    let Some(node) = self.nodes.get_mut(node_id) else {
                         return Err(BackendError::InvalidNode(node_id));
+                    };
+                    node.style = style;
+                    node.has_explicit_style = true;
+                    if node.kind == ComponentKind::Text && self.has_nested_text {
+                        self.text_style_dirty = true;
+                    }
+                    if track_mutations {
+                        self.last_mutations
+                            .push(HeadlessMutation::UpdateStyle(node_id));
                     }
                     self.layout.set_style(node_id, &style);
                 }
-                Command::SetRawProp {
+                CommandRef::SetRawProp {
                     node_id,
                     key,
                     value,
                 } => {
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.raw_props.insert(key, value);
-                    } else {
+                    let Some(node) = self.nodes.get_mut(node_id) else {
                         return Err(BackendError::InvalidNode(node_id));
+                    };
+                    if let Some(existing) = node.raw_props.get_mut(key) {
+                        *existing = value.to_owned();
+                    } else {
+                        node.raw_props.insert(key.to_owned(), value.to_owned());
                     }
                 }
-                Command::SetEventMask { node_id, mask } => {
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.event_mask = mask;
-                    } else {
+                CommandRef::SetEventMask { node_id, mask } => {
+                    let Some(node) = self.nodes.get_mut(node_id) else {
                         return Err(BackendError::InvalidNode(node_id));
-                    }
+                    };
+                    node.event_mask = mask;
                 }
-                Command::DispatchCommand {
+                CommandRef::DispatchCommand {
                     node_id,
                     command_name,
                     payload,
                 } => {
                     self.dispatched_commands
-                        .push((node_id, command_name, payload));
+                        .push((node_id, command_name.to_owned(), payload.to_vec()));
                 }
-                Command::Commit { .. } => {
+                CommandRef::Commit { .. } => {
                     committed = true;
                 }
             }
-        }
+            Ok::<(), BackendError>(())
+        })?;
 
         let decode_us = t_decode.elapsed().as_micros() as u64;
         let (layout_us, diff_us) = if committed {
-            self.run_layout_and_diff(&mut mutations)
+            self.run_layout_and_diff(true)
         } else {
             (0, 0)
         };
 
-        let mutation_count = mutations.len() as u32;
-        self.last_mutations = mutations;
+        let mutation_count = self.last_mutations.len() as u32;
 
         Ok(BackendApplyStats {
             op_count: header.op_count,
@@ -644,392 +815,11 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
         std::mem::take(&mut self.pending_events)
     }
 
+    #[inline]
     fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {
-        self.nodes.get(&node_id).map(|n| n.computed_rect)
+        self.nodes.get(node_id).map(|n| n.computed_rect)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use nve_abi::{CommandBufferBuilder, Dimension, EdgeInsets, EventMask, FlexAlign, FlexDirection};
-    use nve_engine::DynLayoutEngine;
-
-    /// Minimal custom [`LayoutEngine`] stacking every child vertically in fixed-height bands.
-    struct BandStackLayout {
-        band_height: f32,
-        children: HashMap<NodeId, Vec<NodeId>>,
-        texts: HashMap<NodeId, String>,
-        font_sizes: HashMap<NodeId, f32>,
-        kinds: HashMap<NodeId, ComponentKind>,
-        rects: HashMap<NodeId, LayoutRect>,
-        measurer: Arc<dyn TextMeasurer>,
-    }
-
-    impl BandStackLayout {
-        fn new(band_height: f32) -> Self {
-            Self {
-                band_height,
-                children: HashMap::new(),
-                texts: HashMap::new(),
-                font_sizes: HashMap::new(),
-                kinds: HashMap::new(),
-                rects: HashMap::new(),
-                measurer: Arc::new(HeuristicTextMeasurer),
-            }
-        }
-
-        fn layout_rec(&mut self, id: NodeId, x: f32, y: f32, width: f32) -> f32 {
-            let is_text = self.kinds.get(&id) == Some(&ComponentKind::Text);
-            let (node_w, node_h) = if is_text {
-                let text = self.texts.get(&id).map(String::as_str).unwrap_or("");
-                let fs = self.font_sizes.get(&id).copied().unwrap_or(16.0);
-                self.measurer.measure(text, fs, Some(width))
-            } else {
-                (width, self.band_height)
-            };
-
-            let child_ids = self.children.get(&id).cloned().unwrap_or_default();
-            let mut cursor_y = y;
-            for child in child_ids {
-                cursor_y += self.layout_rec(child, x + 10.0, cursor_y, (width - 20.0).max(0.0));
-            }
-            let total_h = if cursor_y > y { cursor_y - y } else { node_h };
-            self.rects.insert(
-                id,
-                LayoutRect {
-                    x,
-                    y,
-                    width: node_w,
-                    height: total_h,
-                },
-            );
-            total_h
-        }
-    }
-
-    impl LayoutEngine for BandStackLayout {
-        fn name(&self) -> &'static str {
-            "band-stack"
-        }
-
-        fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
-            self.kinds.insert(id, kind);
-        }
-
-        fn remove_node(&mut self, id: NodeId) {
-            self.kinds.remove(&id);
-            self.children.remove(&id);
-            self.texts.remove(&id);
-            self.font_sizes.remove(&id);
-            self.rects.remove(&id);
-        }
-
-        fn set_layout(&mut self, _id: NodeId, _layout: &LayoutProps) {}
-
-        fn set_style(&mut self, id: NodeId, style: &StyleProps) {
-            self.font_sizes.insert(id, style.font_size);
-        }
-
-        fn set_text(&mut self, id: NodeId, text: &str) {
-            self.texts.insert(id, text.to_owned());
-        }
-
-        fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
-            self.children.insert(parent, children.to_vec());
-        }
-
-        fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
-            self.measurer = measurer;
-        }
-
-        fn compute_layout(&mut self, root: NodeId, viewport: Viewport) {
-            self.rects.clear();
-            let _ = self.layout_rec(root, 0.0, 0.0, viewport.width);
-            if let Some(r) = self.rects.get_mut(&root) {
-                r.width = viewport.width;
-                r.height = viewport.height;
-            }
-        }
-
-        fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
-            self.rects.get(&id).copied()
-        }
-
-        fn reset(&mut self) {
-            self.children.clear();
-            self.texts.clear();
-            self.font_sizes.clear();
-            self.kinds.clear();
-            self.rects.clear();
-        }
-    }
-
-    fn build_sample_frame() -> Vec<u8> {
-        let mut b = CommandBufferBuilder::new(1, 1);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Percent(100.0),
-                height: Dimension::Points(120.0),
-                flex_direction: FlexDirection::Row,
-                align_items: FlexAlign::FlexStart,
-                padding: EdgeInsets::all(16.0),
-                gap: 12.0,
-                ..Default::default()
-            },
-        );
-        b.create_node(3, ComponentKind::Pressable, None);
-        b.set_layout(
-            3,
-            &LayoutProps {
-                width: Dimension::Points(100.0),
-                height: Dimension::Points(44.0),
-                ..Default::default()
-            },
-        );
-        b.set_event_mask(3, EventMask::PRESS);
-        b.create_node(4, ComponentKind::Text, None);
-        b.set_text(4, "Tap me");
-        b.set_style(
-            4,
-            &StyleProps {
-                font_size: 20.0,
-                ..Default::default()
-            },
-        );
-        b.set_children(3, &[4]);
-        b.set_children(2, &[3]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        b.into_bytes()
-    }
-
-    #[test]
-    fn computes_flexbox_layout_and_hit_testing() {
-        let mut backend = HeadlessBackend::new();
-        backend.set_viewport(
-            1,
-            Viewport {
-                width: 400.0,
-                height: 800.0,
-                scale_factor: 2.0,
-            },
-        );
-
-        let stats = backend.submit_frame(&build_sample_frame()).unwrap();
-        assert!(stats.mutation_count >= 4);
-        assert_eq!(backend.name(), "headless-taffy");
-
-        let btn = backend.layout_of(3).unwrap();
-        assert_eq!(btn.x, 16.0);
-        assert_eq!(btn.y, 16.0);
-        assert_eq!(btn.width, 100.0);
-        assert_eq!(btn.height, 44.0);
-
-        assert_eq!(backend.hit_test(50.0, 30.0, true), Some(3));
-        assert_eq!(backend.hit_test(350.0, 30.0, true), None);
-    }
-
-    #[test]
-    fn supports_monomorphized_custom_layout_engine_and_live_swap() {
-        let frame = build_sample_frame();
-        let viewport = Viewport {
-            width: 400.0,
-            height: 800.0,
-            scale_factor: 1.0,
-        };
-
-        // Start with Taffy
-        let mut taffy_backend = HeadlessBackend::new();
-        taffy_backend.set_viewport(1, viewport);
-        taffy_backend.submit_frame(&frame).unwrap();
-        assert_eq!(taffy_backend.layout_of(3).unwrap().x, 16.0);
-        assert_eq!(taffy_backend.hit_test(50.0, 30.0, true), Some(3));
-
-        // Live-swap to compile-time generic BandStackLayout: tree, styles, text, and hit-testing survive.
-        let custom_backend: HeadlessBackend<BandStackLayout> =
-            taffy_backend.swap_layout_engine(BandStackLayout::new(60.0));
-        assert_eq!(custom_backend.name(), "headless-custom");
-        assert_eq!(custom_backend.layout_engine().name(), "band-stack");
-        assert_eq!(
-            custom_backend.node(4).and_then(|n| n.text.as_deref()),
-            Some("Tap me")
-        );
-        // BandStackLayout indents each nesting level by 10px: root(0) -> view2(10) -> btn3(20)
-        let btn_custom = custom_backend.layout_of(3).unwrap();
-        assert_eq!(btn_custom.x, 20.0);
-        assert_eq!(btn_custom.y, 0.0);
-        assert_eq!(custom_backend.hit_test(35.0, 10.0, true), Some(3));
-
-        // Swap back to Taffy and verify original Flexbox geometry is restored identically.
-        let restored: HeadlessBackend<TaffyLayoutEngine> =
-            custom_backend.swap_layout_engine(TaffyLayoutEngine::new());
-        let btn_restored = restored.layout_of(3).unwrap();
-        assert_eq!(btn_restored.x, 16.0);
-        assert_eq!(btn_restored.y, 16.0);
-        assert_eq!(btn_restored.width, 100.0);
-        assert_eq!(btn_restored.height, 44.0);
-        assert_eq!(restored.hit_test(50.0, 30.0, true), Some(3));
-    }
-
-    #[test]
-    fn supports_runtime_boxed_dyn_layout_engine() {
-        let frame = build_sample_frame();
-        let viewport = Viewport {
-            width: 400.0,
-            height: 800.0,
-            scale_factor: 1.0,
-        };
-
-        let boxed: DynLayoutEngine = Box::new(TaffyLayoutEngine::new());
-        let mut backend: HeadlessBackend<DynLayoutEngine> = HeadlessBackend::with_layout(boxed);
-        backend.set_viewport(1, viewport);
-        backend.submit_frame(&frame).unwrap();
-        assert_eq!(backend.layout_engine().name(), "taffy");
-        assert_eq!(backend.layout_of(3).unwrap().x, 16.0);
-
-        // Swap inside the same concrete type HeadlessBackend<DynLayoutEngine>!
-        let swapped: HeadlessBackend<DynLayoutEngine> =
-            backend.swap_layout_engine(Box::new(BandStackLayout::new(50.0)) as DynLayoutEngine);
-        assert_eq!(swapped.layout_engine().name(), "band-stack");
-        assert_eq!(swapped.layout_of(3).unwrap().x, 20.0);
-    }
-
-    #[test]
-    fn custom_text_measurer_propagates_into_taffy_and_survives_swap() {
-        let mut backend = HeadlessBackend::new();
-        backend.set_viewport(
-            1,
-            Viewport {
-                width: 300.0,
-                height: 400.0,
-                scale_factor: 1.0,
-            },
-        );
-        // Custom measurer returning fixed 123x45 for any non-empty text.
-        backend.set_text_measurer(Arc::new(|text: &str, _fs: f32, _mw: Option<f32>| {
-            if text.is_empty() {
-                (0.0, 0.0)
-            } else {
-                (123.0, 45.0)
-            }
-        }));
-
-        let mut b = CommandBufferBuilder::new(1, 1);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Points(260.0),
-                flex_direction: FlexDirection::Column,
-                align_items: FlexAlign::FlexStart,
-                ..Default::default()
-            },
-        );
-        b.create_node(3, ComponentKind::Text, None);
-        b.set_text(3, "Measured");
-        b.set_children(2, &[3]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-
-        backend.submit_frame(b.finish()).unwrap();
-        let rect = backend.layout_of(3).unwrap();
-        assert_eq!(rect.width, 123.0);
-        assert_eq!(rect.height, 45.0);
-
-        // Swapping engines preserves the custom TextMeasurer!
-        let swapped = backend.swap_layout_engine(BandStackLayout::new(40.0));
-        let swapped_text_rect = swapped.layout_of(3).unwrap();
-        assert_eq!(swapped_text_rect.width, 123.0);
-        assert_eq!(swapped_text_rect.height, 45.0);
-    }
-
-    #[test]
-    fn rejects_cycles_duplicates_and_non_finite_scalars() {
-        let mut backend = HeadlessBackend::new();
-
-        // Self-cycle
-        let mut b = CommandBufferBuilder::new(1, 1);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_children(2, &[2]);
-        assert!(backend.submit_frame(b.finish()).is_err());
-
-        // 2-node cycle
-        let mut b2 = CommandBufferBuilder::new(1, 2);
-        b2.create_node(3, ComponentKind::View, None);
-        b2.create_node(4, ComponentKind::View, None);
-        b2.set_children(3, &[4]);
-        b2.set_children(4, &[3]);
-        assert!(backend.submit_frame(b2.finish()).is_err());
-
-        // Root as child
-        let mut b3 = CommandBufferBuilder::new(1, 3);
-        b3.set_children(2, &[ROOT_NODE_ID]);
-        assert!(backend.submit_frame(b3.finish()).is_err());
-
-        // Duplicate child
-        let mut b4 = CommandBufferBuilder::new(1, 4);
-        b4.create_node(5, ComponentKind::View, None);
-        b4.set_children(2, &[5, 5]);
-        assert!(backend.submit_frame(b4.finish()).is_err());
-
-        // NaN layout scalar
-        let mut b5 = CommandBufferBuilder::new(1, 5);
-        b5.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Points(f32::NAN),
-                ..Default::default()
-            },
-        );
-        assert!(backend.submit_frame(b5.finish()).is_err());
-    }
-
-    #[test]
-    fn inherits_text_styles_and_wraps_multiline_text() {
-        let mut backend = HeadlessBackend::new();
-        backend.set_viewport(
-            1,
-            Viewport {
-                width: 400.0,
-                height: 600.0,
-                scale_factor: 2.0,
-            },
-        );
-
-        let mut b = CommandBufferBuilder::new(1, 1);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Points(100.0),
-                ..Default::default()
-            },
-        );
-        b.create_node(3, ComponentKind::Text, None);
-        b.set_style(
-            3,
-            &StyleProps {
-                text_color: ColorRgba::rgb(56, 189, 248),
-                font_size: 20.0,
-                ..Default::default()
-            },
-        );
-        b.create_node(4, ComponentKind::Text, None);
-        b.set_text(4, "This is a long line that must wrap across multiple lines");
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.set_children(2, &[3]);
-        b.set_children(3, &[4]);
-        b.commit(true);
-
-        backend.submit_frame(b.finish()).unwrap();
-        let leaf = backend.node(4).unwrap();
-        assert_eq!(leaf.style.text_color, ColorRgba::rgb(56, 189, 248));
-        assert!((leaf.style.font_size - 20.0).abs() < 1e-3);
-        // Wrapped in a 100pt box at 20pt font -> multiple lines (height > 2 * 27pt)
-        assert!(leaf.computed_rect.width <= 100.5);
-        assert!(leaf.computed_rect.height > 54.0);
-    }
-}
+mod tests;

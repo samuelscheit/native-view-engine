@@ -3,9 +3,10 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use nve_abi::{
     decode_events, encode_bin_value_to_vec, encode_events, BinValueView, CommandDecoder,
-    NveLayoutApi, NveMapEntry, NveSceneRef, NveSceneTable, NveSizeConstraints, NveSurfaceApi,
-    NveValue, SceneNodeInput, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE, NVE_NODE_INTERACTIVE,
-    NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT, NVE_NODE_KIND_TEXT, NVE_NODE_LEAF_TEXT,
+    CommandRef, DecodeError, NveLayoutApi, NveMapEntry, NveSceneRef, NveSceneTable,
+    NveSizeConstraints, NveSurfaceApi, NveValue, SceneNodeInput, NVE_IFACE_LAYOUT,
+    NVE_IFACE_SURFACE, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT,
+    NVE_NODE_KIND_TEXT, NVE_NODE_LEAF_TEXT,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
 
@@ -34,6 +35,63 @@ fn bench_command_buffer_codec(c: &mut Criterion) {
         });
     }
     decode_group.finish();
+
+    let mut stream_group = c.benchmark_group("abi/command_buffer_decode_streaming");
+    for &nodes in &[100usize, 1_000, 10_000] {
+        let encoded = build_node_tree_cmd(nodes, 1);
+        stream_group.throughput(Throughput::Bytes(encoded.len() as u64));
+        stream_group.bench_with_input(BenchmarkId::from_parameter(nodes), &encoded, |b, bytes| {
+            b.iter(|| {
+                let mut acc = 0u64;
+                let hdr = CommandDecoder::new(black_box(bytes))
+                    .unwrap()
+                    .for_each(|cmd| {
+                        match cmd {
+                            CommandRef::CreateNode { node_id, .. }
+                            | CommandRef::RemoveNode { node_id }
+                            | CommandRef::SetLayout { node_id, .. }
+                            | CommandRef::SetStyle { node_id, .. }
+                            | CommandRef::SetEventMask { node_id, .. } => {
+                                acc = acc.wrapping_add(node_id as u64);
+                            }
+                            CommandRef::SetChildren {
+                                parent_id,
+                                children,
+                            } => {
+                                acc = acc.wrapping_add(parent_id as u64);
+                                for cid in children {
+                                    acc = acc.wrapping_add(cid as u64);
+                                }
+                            }
+                            CommandRef::SetText { node_id, text } => {
+                                acc = acc.wrapping_add(node_id as u64 + text.len() as u64);
+                            }
+                            CommandRef::SetRawProp { node_id, key, .. } => {
+                                acc = acc.wrapping_add(node_id as u64 + key.len() as u64);
+                            }
+                            CommandRef::DispatchCommand {
+                                node_id,
+                                command_name,
+                                payload,
+                            } => {
+                                acc = acc.wrapping_add(
+                                    node_id as u64
+                                        + command_name.len() as u64
+                                        + payload.len() as u64,
+                                );
+                            }
+                            CommandRef::Commit { sync_mount } => {
+                                acc = acc.wrapping_add(u64::from(sync_mount));
+                            }
+                        }
+                        Ok::<(), DecodeError>(())
+                    })
+                    .unwrap();
+                black_box((hdr, acc))
+            });
+        });
+    }
+    stream_group.finish();
 }
 
 fn bench_event_ring_codec(c: &mut Criterion) {

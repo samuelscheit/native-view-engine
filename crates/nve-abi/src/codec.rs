@@ -22,6 +22,7 @@ pub enum Opcode {
 }
 
 impl Opcode {
+    #[inline(always)]
     fn from_u8(v: u8) -> Result<Self, DecodeError> {
         match v {
             1 => Ok(Self::CreateNode),
@@ -54,6 +55,7 @@ pub enum ComponentKind {
 }
 
 impl ComponentKind {
+    #[inline(always)]
     pub fn from_u16(v: u16) -> Result<Self, DecodeError> {
         match v {
             0 => Ok(Self::Root),
@@ -96,9 +98,10 @@ impl Dimension {
         }
     }
 
-    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
-        let tag = r.read_u8()?;
-        let val = r.read_f32()?;
+    #[inline(always)]
+    fn decode_from_bytes(b: &[u8]) -> Result<Self, DecodeError> {
+        let tag = b[0];
+        let val = f32::from_le_bytes([b[1], b[2], b[3], b[4]]);
         match tag {
             0 => Ok(Dimension::Auto),
             1 => Ok(Dimension::Points(val)),
@@ -119,6 +122,7 @@ pub enum FlexDirection {
 }
 
 impl FlexDirection {
+    #[inline(always)]
     fn from_u8(v: u8) -> Result<Self, DecodeError> {
         match v {
             0 => Ok(Self::Column),
@@ -143,6 +147,7 @@ pub enum FlexJustify {
 }
 
 impl FlexJustify {
+    #[inline(always)]
     fn from_u8(v: u8) -> Result<Self, DecodeError> {
         match v {
             0 => Ok(Self::FlexStart),
@@ -168,6 +173,7 @@ pub enum FlexAlign {
 }
 
 impl FlexAlign {
+    #[inline(always)]
     fn from_u8(v: u8) -> Result<Self, DecodeError> {
         match v {
             0 => Ok(Self::Stretch),
@@ -214,13 +220,14 @@ impl EdgeInsets {
         buf.extend_from_slice(&self.left.to_le_bytes());
     }
 
-    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self {
-            top: r.read_f32()?,
-            right: r.read_f32()?,
-            bottom: r.read_f32()?,
-            left: r.read_f32()?,
-        })
+    #[inline(always)]
+    fn decode_from_bytes(b: &[u8]) -> Self {
+        Self {
+            top: f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            right: f32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+            bottom: f32::from_le_bytes([b[8], b[9], b[10], b[11]]),
+            left: f32::from_le_bytes([b[12], b[13], b[14], b[15]]),
+        }
     }
 }
 
@@ -330,6 +337,215 @@ pub enum RawPropValue {
     F64(f64),
     String(String),
     Bytes(Vec<u8>),
+}
+
+/// Zero-copy borrowed view of a [`RawPropValue`] decoded directly from a wire buffer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RawPropValueRef<'a> {
+    Null,
+    Bool(bool),
+    I64(i64),
+    F64(f64),
+    String(&'a str),
+    Bytes(&'a [u8]),
+}
+
+impl<'a> RawPropValueRef<'a> {
+    #[inline]
+    pub fn to_owned(self) -> RawPropValue {
+        match self {
+            Self::Null => RawPropValue::Null,
+            Self::Bool(b) => RawPropValue::Bool(b),
+            Self::I64(v) => RawPropValue::I64(v),
+            Self::F64(v) => RawPropValue::F64(v),
+            Self::String(s) => RawPropValue::String(s.to_owned()),
+            Self::Bytes(b) => RawPropValue::Bytes(b.to_vec()),
+        }
+    }
+}
+
+/// Zero-allocation iterator over little-endian `NodeId` values in a `SetChildren` payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildIdIter<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> ChildIdIter<'a> {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.bytes.len() / 4
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<NodeId> {
+        let offset = index.checked_mul(4)?;
+        let chunk = self.bytes.get(offset..offset + 4)?;
+        Some(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    }
+
+    #[inline]
+    pub fn iter(&self) -> Self {
+        *self
+    }
+
+    #[inline]
+    pub fn to_vec(&self) -> Vec<NodeId> {
+        let mut out = Vec::with_capacity(self.len());
+        self.copy_into(&mut out);
+        out
+    }
+
+    #[inline]
+    pub fn copy_into(&self, dst: &mut Vec<NodeId>) {
+        dst.clear();
+        dst.reserve(self.len());
+        for chunk in self.bytes.chunks_exact(4) {
+            dst.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        }
+    }
+}
+
+impl<'a> Iterator for ChildIdIter<'a> {
+    type Item = NodeId;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.bytes.len() < 4 {
+            return None;
+        }
+        let (head, rest) = self.bytes.split_at(4);
+        self.bytes = rest;
+        Some(u32::from_le_bytes([head[0], head[1], head[2], head[3]]))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.bytes.len() / 4;
+        (n, Some(n))
+    }
+}
+
+impl<'a> DoubleEndedIterator for ChildIdIter<'a> {
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let len = self.bytes.len();
+        if len < 4 {
+            return None;
+        }
+        let (rest, tail) = self.bytes.split_at(len - 4);
+        self.bytes = rest;
+        Some(u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]))
+    }
+}
+
+impl<'a> ExactSizeIterator for ChildIdIter<'a> {}
+impl<'a> std::iter::FusedIterator for ChildIdIter<'a> {}
+
+/// Zero-copy borrowed command decoded directly from a `CommandBuffer` byte slice.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CommandRef<'a> {
+    CreateNode {
+        node_id: NodeId,
+        kind: ComponentKind,
+        custom_name: Option<&'a str>,
+    },
+    RemoveNode {
+        node_id: NodeId,
+    },
+    SetChildren {
+        parent_id: NodeId,
+        children: ChildIdIter<'a>,
+    },
+    SetText {
+        node_id: NodeId,
+        text: &'a str,
+    },
+    SetLayout {
+        node_id: NodeId,
+        layout: LayoutProps,
+    },
+    SetStyle {
+        node_id: NodeId,
+        style: StyleProps,
+    },
+    SetRawProp {
+        node_id: NodeId,
+        key: &'a str,
+        value: RawPropValueRef<'a>,
+    },
+    SetEventMask {
+        node_id: NodeId,
+        mask: u64,
+    },
+    DispatchCommand {
+        node_id: NodeId,
+        command_name: &'a str,
+        payload: &'a [u8],
+    },
+    Commit {
+        sync_mount: bool,
+    },
+}
+
+impl<'a> CommandRef<'a> {
+    #[inline]
+    pub fn to_owned(self) -> Command {
+        match self {
+            Self::CreateNode {
+                node_id,
+                kind,
+                custom_name,
+            } => Command::CreateNode {
+                node_id,
+                kind,
+                custom_name: custom_name.map(ToOwned::to_owned),
+            },
+            Self::RemoveNode { node_id } => Command::RemoveNode { node_id },
+            Self::SetChildren {
+                parent_id,
+                children,
+            } => Command::SetChildren {
+                parent_id,
+                children: children.to_vec(),
+            },
+            Self::SetText { node_id, text } => Command::SetText {
+                node_id,
+                text: text.to_owned(),
+            },
+            Self::SetLayout { node_id, layout } => Command::SetLayout { node_id, layout },
+            Self::SetStyle { node_id, style } => Command::SetStyle { node_id, style },
+            Self::SetRawProp {
+                node_id,
+                key,
+                value,
+            } => Command::SetRawProp {
+                node_id,
+                key: key.to_owned(),
+                value: value.to_owned(),
+            },
+            Self::SetEventMask { node_id, mask } => Command::SetEventMask { node_id, mask },
+            Self::DispatchCommand {
+                node_id,
+                command_name,
+                payload,
+            } => Command::DispatchCommand {
+                node_id,
+                command_name: command_name.to_owned(),
+                payload: payload.to_vec(),
+            },
+            Self::Commit { sync_mount } => Command::Commit { sync_mount },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -526,6 +742,19 @@ impl CommandBufferBuilder {
     }
 
     pub fn set_raw_prop(&mut self, node_id: NodeId, key: &str, value: &RawPropValue) {
+        let value_ref = match value {
+            RawPropValue::Null => RawPropValueRef::Null,
+            RawPropValue::Bool(b) => RawPropValueRef::Bool(*b),
+            RawPropValue::I64(v) => RawPropValueRef::I64(*v),
+            RawPropValue::F64(v) => RawPropValueRef::F64(*v),
+            RawPropValue::String(s) => RawPropValueRef::String(s.as_str()),
+            RawPropValue::Bytes(b) => RawPropValueRef::Bytes(b.as_slice()),
+        };
+        self.set_raw_prop_ref(node_id, key, value_ref);
+    }
+
+    /// Writes a borrowed raw property without requiring heap allocation for string or byte payloads.
+    pub fn set_raw_prop_ref(&mut self, node_id: NodeId, key: &str, value: RawPropValueRef<'_>) {
         self.buf.push(Opcode::SetRawProp as u8);
         self.buf.extend_from_slice(&node_id.to_le_bytes());
         let key_bytes = key.as_bytes();
@@ -533,32 +762,40 @@ impl CommandBufferBuilder {
         self.buf.extend_from_slice(&key_len.to_le_bytes());
         self.buf.extend_from_slice(key_bytes);
         match value {
-            RawPropValue::Null => self.buf.push(0),
-            RawPropValue::Bool(b) => {
+            RawPropValueRef::Null => self.buf.push(0),
+            RawPropValueRef::Bool(b) => {
                 self.buf.push(1);
-                self.buf.push(u8::from(*b));
+                self.buf.push(u8::from(b));
             }
-            RawPropValue::I64(v) => {
+            RawPropValueRef::I64(v) => {
                 self.buf.push(2);
                 self.buf.extend_from_slice(&v.to_le_bytes());
             }
-            RawPropValue::F64(v) => {
+            RawPropValueRef::F64(v) => {
                 self.buf.push(3);
                 self.buf.extend_from_slice(&v.to_le_bytes());
             }
-            RawPropValue::String(s) => {
+            RawPropValueRef::String(s) => {
                 self.buf.push(4);
                 let b = s.as_bytes();
-                self.buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+                let len = u32::try_from(b.len()).expect("raw prop string too long");
+                self.buf.extend_from_slice(&len.to_le_bytes());
                 self.buf.extend_from_slice(b);
             }
-            RawPropValue::Bytes(b) => {
+            RawPropValueRef::Bytes(b) => {
                 self.buf.push(5);
-                self.buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+                let len = u32::try_from(b.len()).expect("raw prop bytes too long");
+                self.buf.extend_from_slice(&len.to_le_bytes());
                 self.buf.extend_from_slice(b);
             }
         }
         self.op_count += 1;
+    }
+
+    /// Convenience helper to write a string raw property directly from `&str` with zero allocation.
+    #[inline]
+    pub fn set_raw_prop_str(&mut self, node_id: NodeId, key: &str, value: &str) {
+        self.set_raw_prop_ref(node_id, key, RawPropValueRef::String(value));
     }
 
     pub fn set_event_mask(&mut self, node_id: NodeId, mask: u64) {
@@ -599,71 +836,59 @@ impl CommandBufferBuilder {
 
 struct Reader<'a> {
     bytes: &'a [u8],
-    pos: usize,
 }
 
 impl<'a> Reader<'a> {
+    #[inline(always)]
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
+        Self { bytes }
     }
 
+    #[inline(always)]
     fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
+        self.bytes.len()
     }
 
+    #[inline(always)]
     fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
-        if self.remaining() < len {
+        if self.bytes.len() < len {
             return Err(DecodeError::Truncated);
         }
-        let slice = &self.bytes[self.pos..self.pos + len];
-        self.pos += len;
-        Ok(slice)
+        let (head, rest) = self.bytes.split_at(len);
+        self.bytes = rest;
+        Ok(head)
     }
 
+    #[inline(always)]
+    fn read_array<const N: usize>(&mut self) -> Result<&'a [u8; N], DecodeError> {
+        let slice = self.read_bytes(N)?;
+        Ok(slice.try_into().unwrap())
+    }
+
+    #[inline(always)]
     fn read_u8(&mut self) -> Result<u8, DecodeError> {
-        Ok(self.read_bytes(1)?[0])
+        Ok(self.read_array::<1>()?[0])
     }
 
-    fn read_u16(&mut self) -> Result<u16, DecodeError> {
-        let b: [u8; 2] = self.read_bytes(2)?.try_into().unwrap();
-        Ok(u16::from_le_bytes(b))
-    }
-
+    #[inline(always)]
     fn read_u32(&mut self) -> Result<u32, DecodeError> {
-        let b: [u8; 4] = self.read_bytes(4)?.try_into().unwrap();
-        Ok(u32::from_le_bytes(b))
+        Ok(u32::from_le_bytes(*self.read_array::<4>()?))
     }
 
-    fn read_i32(&mut self) -> Result<i32, DecodeError> {
-        let b: [u8; 4] = self.read_bytes(4)?.try_into().unwrap();
-        Ok(i32::from_le_bytes(b))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, DecodeError> {
-        let b: [u8; 8] = self.read_bytes(8)?.try_into().unwrap();
-        Ok(u64::from_le_bytes(b))
-    }
-
+    #[inline(always)]
     fn read_i64(&mut self) -> Result<i64, DecodeError> {
-        let b: [u8; 8] = self.read_bytes(8)?.try_into().unwrap();
-        Ok(i64::from_le_bytes(b))
+        Ok(i64::from_le_bytes(*self.read_array::<8>()?))
     }
 
-    fn read_f32(&mut self) -> Result<f32, DecodeError> {
-        let b: [u8; 4] = self.read_bytes(4)?.try_into().unwrap();
-        Ok(f32::from_le_bytes(b))
-    }
-
+    #[inline(always)]
     fn read_f64(&mut self) -> Result<f64, DecodeError> {
-        let b: [u8; 8] = self.read_bytes(8)?.try_into().unwrap();
-        Ok(f64::from_le_bytes(b))
+        Ok(f64::from_le_bytes(*self.read_array::<8>()?))
     }
 
-    fn read_str(&mut self, len: usize) -> Result<String, DecodeError> {
+    #[inline(always)]
+    fn read_str_ref(&mut self, len: usize) -> Result<&'a str, DecodeError> {
         let raw = self.read_bytes(len)?;
-        std::str::from_utf8(raw)
-            .map(ToOwned::to_owned)
-            .map_err(|_| DecodeError::InvalidUtf8)
+        std::str::from_utf8(raw).map_err(|_| DecodeError::InvalidUtf8)
     }
 }
 
@@ -674,23 +899,24 @@ pub struct CommandDecoder<'a> {
 }
 
 impl<'a> CommandDecoder<'a> {
+    #[inline]
     pub fn new(bytes: &'a [u8]) -> Result<Self, DecodeError> {
-        if bytes.len() < HEADER_SIZE {
-            return Err(DecodeError::Truncated);
-        }
         let mut reader = Reader::new(bytes);
-        let magic = reader.read_u32()?;
+        let hdr = reader.read_array::<HEADER_SIZE>()?;
+        let magic = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
         if magic != NVE_ABI_MAGIC {
             return Err(DecodeError::InvalidMagic(magic));
         }
-        let version = reader.read_u16()?;
+        let version = u16::from_le_bytes([hdr[4], hdr[5]]);
         if version != NVE_ABI_VERSION {
             return Err(DecodeError::UnsupportedVersion(version));
         }
-        let flags = reader.read_u16()?;
-        let surface_id = reader.read_u32()?;
-        let frame_id = reader.read_u64()?;
-        let op_count = reader.read_u32()?;
+        let flags = u16::from_le_bytes([hdr[6], hdr[7]]);
+        let surface_id = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+        let frame_id = u64::from_le_bytes([
+            hdr[12], hdr[13], hdr[14], hdr[15], hdr[16], hdr[17], hdr[18], hdr[19],
+        ]);
+        let op_count = u32::from_le_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]);
         Ok(Self {
             header: CommandBufferHeader {
                 magic,
@@ -705,149 +931,189 @@ impl<'a> CommandDecoder<'a> {
         })
     }
 
+    #[inline]
     pub fn header(&self) -> CommandBufferHeader {
         self.header
     }
 
-    pub fn decode_all(mut self) -> Result<(CommandBufferHeader, Vec<Command>), DecodeError> {
-        let initial_cap = (self.header.op_count as usize)
-            .min(self.reader.remaining())
-            .min(4096);
-        let mut cmds = Vec::with_capacity(initial_cap);
-        while let Some(cmd) = self.next_command()? {
-            cmds.push(cmd);
+    /// Streams every command in the buffer as a zero-copy [`CommandRef<'a>`], performing zero
+    /// heap allocations and rejecting trailing bytes at the end of the buffer.
+    #[inline]
+    pub fn for_each<E, F>(mut self, mut f: F) -> Result<CommandBufferHeader, E>
+    where
+        E: From<DecodeError>,
+        F: FnMut(CommandRef<'a>) -> Result<(), E>,
+    {
+        let remaining_ops = self.header.op_count - self.decoded;
+        for _ in 0..remaining_ops {
+            let cmd = self.decode_one_ref().map_err(E::from)?;
+            self.decoded += 1;
+            f(cmd)?;
         }
         if self.reader.remaining() != 0 {
-            return Err(DecodeError::TrailingBytes(self.reader.remaining()));
+            return Err(E::from(DecodeError::TrailingBytes(self.reader.remaining())));
         }
-        Ok((self.header, cmds))
+        Ok(self.header)
     }
 
+    pub fn decode_all(self) -> Result<(CommandBufferHeader, Vec<Command>), DecodeError> {
+        let initial_cap = (self.header.op_count as usize).min(self.reader.remaining() / 2);
+        let mut cmds = Vec::with_capacity(initial_cap);
+        let header = self.for_each(|cmd| {
+            cmds.push(cmd.to_owned());
+            Ok::<(), DecodeError>(())
+        })?;
+        Ok((header, cmds))
+    }
+
+    #[inline]
     pub fn next_command(&mut self) -> Result<Option<Command>, DecodeError> {
+        Ok(self.next_command_ref()?.map(CommandRef::to_owned))
+    }
+
+    /// Decodes the next command directly from the underlying wire slice without heap allocations.
+    #[inline]
+    pub fn next_command_ref(&mut self) -> Result<Option<CommandRef<'a>>, DecodeError> {
         if self.decoded >= self.header.op_count {
             return Ok(None);
         }
+        let cmd = self.decode_one_ref()?;
+        self.decoded += 1;
+        Ok(Some(cmd))
+    }
+
+    #[inline(always)]
+    fn decode_one_ref(&mut self) -> Result<CommandRef<'a>, DecodeError> {
         let op = Opcode::from_u8(self.reader.read_u8()?)?;
         let cmd = match op {
             Opcode::CreateNode => {
-                let node_id = self.reader.read_u32()?;
-                let kind = ComponentKind::from_u16(self.reader.read_u16()?)?;
-                let name_len = self.reader.read_u16()? as usize;
+                let b = self.reader.read_array::<8>()?;
+                let node_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                let kind = ComponentKind::from_u16(u16::from_le_bytes([b[4], b[5]]))?;
+                let name_len = u16::from_le_bytes([b[6], b[7]]) as usize;
                 let custom_name = if name_len == 0 {
                     None
                 } else {
-                    Some(self.reader.read_str(name_len)?)
+                    Some(self.reader.read_str_ref(name_len)?)
                 };
-                Command::CreateNode {
+                CommandRef::CreateNode {
                     node_id,
                     kind,
                     custom_name,
                 }
             }
-            Opcode::RemoveNode => Command::RemoveNode {
+            Opcode::RemoveNode => CommandRef::RemoveNode {
                 node_id: self.reader.read_u32()?,
             },
             Opcode::SetChildren => {
-                let parent_id = self.reader.read_u32()?;
-                let count = self.reader.read_u32()? as usize;
-                let mut children = Vec::with_capacity(count.min(4096));
-                for _ in 0..count {
-                    children.push(self.reader.read_u32()?);
-                }
-                Command::SetChildren {
+                let b = self.reader.read_array::<8>()?;
+                let parent_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                let count = u32::from_le_bytes([b[4], b[5], b[6], b[7]]) as usize;
+                let byte_len = count.checked_mul(4).ok_or(DecodeError::Truncated)?;
+                let bytes = self.reader.read_bytes(byte_len)?;
+                CommandRef::SetChildren {
                     parent_id,
-                    children,
+                    children: ChildIdIter { bytes },
                 }
             }
             Opcode::SetText => {
-                let node_id = self.reader.read_u32()?;
-                let len = self.reader.read_u32()? as usize;
-                let text = self.reader.read_str(len)?;
-                Command::SetText { node_id, text }
+                let b = self.reader.read_array::<8>()?;
+                let node_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                let len = u32::from_le_bytes([b[4], b[5], b[6], b[7]]) as usize;
+                let text = self.reader.read_str_ref(len)?;
+                CommandRef::SetText { node_id, text }
             }
             Opcode::SetLayout => {
-                let node_id = self.reader.read_u32()?;
+                let b = self.reader.read_array::<81>()?;
+                let node_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                 let layout = LayoutProps {
-                    width: Dimension::decode(&mut self.reader)?,
-                    height: Dimension::decode(&mut self.reader)?,
-                    min_width: Dimension::decode(&mut self.reader)?,
-                    min_height: Dimension::decode(&mut self.reader)?,
-                    max_width: Dimension::decode(&mut self.reader)?,
-                    max_height: Dimension::decode(&mut self.reader)?,
-                    flex_direction: FlexDirection::from_u8(self.reader.read_u8()?)?,
-                    justify_content: FlexJustify::from_u8(self.reader.read_u8()?)?,
-                    align_items: FlexAlign::from_u8(self.reader.read_u8()?)?,
-                    flex_grow: self.reader.read_f32()?,
-                    flex_shrink: self.reader.read_f32()?,
-                    gap: self.reader.read_f32()?,
-                    padding: EdgeInsets::decode(&mut self.reader)?,
-                    margin: EdgeInsets::decode(&mut self.reader)?,
+                    width: Dimension::decode_from_bytes(&b[4..9])?,
+                    height: Dimension::decode_from_bytes(&b[9..14])?,
+                    min_width: Dimension::decode_from_bytes(&b[14..19])?,
+                    min_height: Dimension::decode_from_bytes(&b[19..24])?,
+                    max_width: Dimension::decode_from_bytes(&b[24..29])?,
+                    max_height: Dimension::decode_from_bytes(&b[29..34])?,
+                    flex_direction: FlexDirection::from_u8(b[34])?,
+                    justify_content: FlexJustify::from_u8(b[35])?,
+                    align_items: FlexAlign::from_u8(b[36])?,
+                    flex_grow: f32::from_le_bytes([b[37], b[38], b[39], b[40]]),
+                    flex_shrink: f32::from_le_bytes([b[41], b[42], b[43], b[44]]),
+                    gap: f32::from_le_bytes([b[45], b[46], b[47], b[48]]),
+                    padding: EdgeInsets::decode_from_bytes(&b[49..65]),
+                    margin: EdgeInsets::decode_from_bytes(&b[65..81]),
                 };
-                Command::SetLayout { node_id, layout }
+                CommandRef::SetLayout { node_id, layout }
             }
             Opcode::SetStyle => {
-                let node_id = self.reader.read_u32()?;
+                let b = self.reader.read_array::<36>()?;
+                let node_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                 let style = StyleProps {
-                    background: ColorRgba::from_u32(self.reader.read_u32()?),
-                    text_color: ColorRgba::from_u32(self.reader.read_u32()?),
-                    border_color: ColorRgba::from_u32(self.reader.read_u32()?),
-                    border_width: self.reader.read_f32()?,
-                    border_radius: self.reader.read_f32()?,
-                    opacity: self.reader.read_f32()?,
-                    font_size: self.reader.read_f32()?,
-                    z_index: self.reader.read_i32()?,
+                    background: ColorRgba::from_u32(u32::from_le_bytes([b[4], b[5], b[6], b[7]])),
+                    text_color: ColorRgba::from_u32(u32::from_le_bytes([b[8], b[9], b[10], b[11]])),
+                    border_color: ColorRgba::from_u32(u32::from_le_bytes([
+                        b[12], b[13], b[14], b[15],
+                    ])),
+                    border_width: f32::from_le_bytes([b[16], b[17], b[18], b[19]]),
+                    border_radius: f32::from_le_bytes([b[20], b[21], b[22], b[23]]),
+                    opacity: f32::from_le_bytes([b[24], b[25], b[26], b[27]]),
+                    font_size: f32::from_le_bytes([b[28], b[29], b[30], b[31]]),
+                    z_index: i32::from_le_bytes([b[32], b[33], b[34], b[35]]),
                 };
-                Command::SetStyle { node_id, style }
+                CommandRef::SetStyle { node_id, style }
             }
             Opcode::SetRawProp => {
-                let node_id = self.reader.read_u32()?;
-                let key_len = self.reader.read_u16()? as usize;
-                let key = self.reader.read_str(key_len)?;
+                let b = self.reader.read_array::<6>()?;
+                let node_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                let key_len = u16::from_le_bytes([b[4], b[5]]) as usize;
+                let key = self.reader.read_str_ref(key_len)?;
                 let val_tag = self.reader.read_u8()?;
                 let value = match val_tag {
-                    0 => RawPropValue::Null,
-                    1 => RawPropValue::Bool(self.reader.read_u8()? != 0),
-                    2 => RawPropValue::I64(self.reader.read_i64()?),
-                    3 => RawPropValue::F64(self.reader.read_f64()?),
+                    0 => RawPropValueRef::Null,
+                    1 => RawPropValueRef::Bool(self.reader.read_u8()? != 0),
+                    2 => RawPropValueRef::I64(self.reader.read_i64()?),
+                    3 => RawPropValueRef::F64(self.reader.read_f64()?),
                     4 => {
                         let len = self.reader.read_u32()? as usize;
-                        RawPropValue::String(self.reader.read_str(len)?)
+                        RawPropValueRef::String(self.reader.read_str_ref(len)?)
                     }
                     5 => {
                         let len = self.reader.read_u32()? as usize;
-                        RawPropValue::Bytes(self.reader.read_bytes(len)?.to_vec())
+                        RawPropValueRef::Bytes(self.reader.read_bytes(len)?)
                     }
                     other => return Err(DecodeError::InvalidEnum("RawPropValue", other as u32)),
                 };
-                Command::SetRawProp {
+                CommandRef::SetRawProp {
                     node_id,
                     key,
                     value,
                 }
             }
             Opcode::SetEventMask => {
-                let node_id = self.reader.read_u32()?;
-                let mask = self.reader.read_u64()?;
-                Command::SetEventMask { node_id, mask }
+                let b = self.reader.read_array::<12>()?;
+                let node_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                let mask = u64::from_le_bytes([
+                    b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11],
+                ]);
+                CommandRef::SetEventMask { node_id, mask }
             }
             Opcode::DispatchCommand => {
-                let node_id = self.reader.read_u32()?;
-                let name_len = self.reader.read_u16()? as usize;
-                let command_name = self.reader.read_str(name_len)?;
+                let b = self.reader.read_array::<6>()?;
+                let node_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                let name_len = u16::from_le_bytes([b[4], b[5]]) as usize;
+                let command_name = self.reader.read_str_ref(name_len)?;
                 let payload_len = self.reader.read_u32()? as usize;
-                let payload = self.reader.read_bytes(payload_len)?.to_vec();
-                Command::DispatchCommand {
+                let payload = self.reader.read_bytes(payload_len)?;
+                CommandRef::DispatchCommand {
                     node_id,
                     command_name,
                     payload,
                 }
             }
-            Opcode::Commit => Command::Commit {
+            Opcode::Commit => CommandRef::Commit {
                 sync_mount: self.reader.read_u8()? != 0,
             },
         };
-        self.decoded += 1;
-        Ok(Some(cmd))
+        Ok(cmd)
     }
 }
 
@@ -932,5 +1198,155 @@ mod tests {
             CommandDecoder::new(&truncated).unwrap().decode_all().err(),
             Some(DecodeError::Truncated)
         );
+    }
+
+    #[test]
+    fn set_raw_prop_str_matches_owned_encoding() {
+        let mut b1 = CommandBufferBuilder::new(1, 1);
+        b1.set_raw_prop(7, "label", &RawPropValue::String("hello world".into()));
+        let mut b2 = CommandBufferBuilder::new(1, 1);
+        b2.set_raw_prop_str(7, "label", "hello world");
+        assert_eq!(b1.into_bytes(), b2.into_bytes());
+    }
+
+    #[test]
+    fn for_each_matches_decode_all_on_valid_truncated_and_corrupt_buffers() {
+        fn decode_via_for_each(
+            bytes: &[u8],
+        ) -> Result<(CommandBufferHeader, Vec<Command>), DecodeError> {
+            let mut out = Vec::new();
+            let hdr = CommandDecoder::new(bytes)?.for_each(|cmd| {
+                if let CommandRef::SetChildren { children, .. } = cmd {
+                    assert_eq!(children.len(), children.iter().count());
+                    assert_eq!(children.is_empty(), children.len() == 0);
+                    let rev: Vec<NodeId> = children.iter().rev().collect();
+                    let mut fwd = Vec::new();
+                    children.copy_into(&mut fwd);
+                    assert_eq!(fwd, children.to_vec());
+                    let mut rev_expected = fwd.clone();
+                    rev_expected.reverse();
+                    assert_eq!(rev, rev_expected);
+                    for (idx, &cid) in fwd.iter().enumerate() {
+                        assert_eq!(children.get(idx), Some(cid));
+                    }
+                    assert_eq!(children.get(fwd.len()), None);
+                }
+                out.push(cmd.to_owned());
+                Ok::<(), DecodeError>(())
+            })?;
+            Ok((hdr, out))
+        }
+
+        // Build a rich buffer covering every opcode and RawPropValue variant.
+        let mut b = CommandBufferBuilder::new(3, 99);
+        b.create_node(1, ComponentKind::Root, None);
+        b.create_node(2, ComponentKind::Custom, Some("MyView"));
+        b.set_children(1, &[2, 3, 4, 5]);
+        b.set_children(2, &[]);
+        b.set_text(3, "Streaming zero-copy 🚀");
+        b.set_layout(
+            2,
+            &LayoutProps {
+                width: Dimension::Points(120.5),
+                height: Dimension::Percent(50.0),
+                min_width: Dimension::Points(10.0),
+                max_height: Dimension::Percent(95.0),
+                flex_direction: FlexDirection::RowReverse,
+                justify_content: FlexJustify::SpaceEvenly,
+                align_items: FlexAlign::Baseline,
+                flex_grow: 2.0,
+                flex_shrink: 0.5,
+                gap: 8.0,
+                padding: EdgeInsets::symmetric(4.0, 12.0),
+                margin: EdgeInsets::all(6.0),
+                ..Default::default()
+            },
+        );
+        b.set_style(
+            2,
+            &StyleProps {
+                background: ColorRgba::rgba(1, 2, 3, 250),
+                text_color: ColorRgba::WHITE,
+                border_color: ColorRgba::rgb(9, 8, 7),
+                border_width: 1.5,
+                border_radius: 10.0,
+                opacity: 0.85,
+                font_size: 18.0,
+                z_index: -3,
+            },
+        );
+        b.set_raw_prop_str(2, "strKey", "zero-alloc");
+        b.set_raw_prop_ref(2, "bytesKey", RawPropValueRef::Bytes(&[0xDE, 0xAD, 0xBE, 0xEF]));
+        b.set_raw_prop(2, "nullKey", &RawPropValue::Null);
+        b.set_raw_prop(2, "boolKey", &RawPropValue::Bool(true));
+        b.set_raw_prop(2, "i64Key", &RawPropValue::I64(-123456789));
+        b.set_raw_prop(2, "f64Key", &RawPropValue::F64(3.25));
+        b.set_event_mask(2, 0x00FF_00AA_5511_2233);
+        b.dispatch_command(2, "focus", &[1, 2, 3]);
+        b.remove_node(5);
+        b.commit(false);
+        let full = b.into_bytes();
+
+        // 1. Exact equivalence on valid buffer.
+        assert_eq!(
+            decode_via_for_each(&full),
+            CommandDecoder::new(&full).and_then(CommandDecoder::decode_all)
+        );
+
+        // 2. Exact equivalence on every truncation prefix.
+        for len in 0..full.len() {
+            let slice = &full[..len];
+            let streamed = decode_via_for_each(slice);
+            let owned = CommandDecoder::new(slice).and_then(CommandDecoder::decode_all);
+            assert_eq!(streamed, owned, "mismatch at truncated len {len}");
+            assert!(streamed.is_err());
+        }
+
+        // 3. Trailing bytes rejected identically.
+        let mut trailing = full.clone();
+        trailing.extend_from_slice(&[0xAA, 0xBB]);
+        assert_eq!(
+            decode_via_for_each(&trailing),
+            Err(DecodeError::TrailingBytes(2))
+        );
+        assert_eq!(
+            decode_via_for_each(&trailing),
+            CommandDecoder::new(&trailing).and_then(CommandDecoder::decode_all)
+        );
+
+        // 4. Deterministic property/fuzz sweep over bit-flips, splices, and random noise.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next_u64 = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+
+        for _ in 0..300 {
+            let mut mutated = full.clone();
+            let flips = (next_u64() as usize % 5) + 1;
+            for _ in 0..flips {
+                let idx = next_u64() as usize % mutated.len();
+                mutated[idx] ^= 1u8 << (next_u64() as usize % 8);
+            }
+            if next_u64() & 1 == 0 {
+                let trunc = next_u64() as usize % (mutated.len() + 1);
+                mutated.truncate(trunc);
+            }
+            assert_eq!(
+                decode_via_for_each(&mutated),
+                CommandDecoder::new(&mutated).and_then(CommandDecoder::decode_all)
+            );
+        }
+
+        for _ in 0..100 {
+            let len = next_u64() as usize % 128;
+            let noise: Vec<u8> = (0..len).map(|_| next_u64() as u8).collect();
+            assert_eq!(
+                decode_via_for_each(&noise),
+                CommandDecoder::new(&noise).and_then(CommandDecoder::decode_all)
+            );
+        }
     }
 }

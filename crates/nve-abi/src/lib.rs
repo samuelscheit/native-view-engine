@@ -9,9 +9,10 @@ pub mod scene;
 pub mod value;
 
 pub use codec::{
-    ColorRgba, Command, CommandBufferBuilder, CommandBufferHeader, CommandDecoder, ComponentKind,
-    DecodeError, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
-    RawPropValue, StyleProps, NVE_ABI_MAGIC, NVE_ABI_VERSION,
+    ChildIdIter, ColorRgba, Command, CommandBufferBuilder, CommandBufferHeader, CommandDecoder,
+    CommandRef, ComponentKind, DecodeError, Dimension, EdgeInsets, FlexAlign, FlexDirection,
+    FlexJustify, LayoutProps, RawPropValue, RawPropValueRef, StyleProps, NVE_ABI_MAGIC,
+    NVE_ABI_VERSION,
 };
 pub use events::{
     decode_events, encode_events, EventMask, EventPayload, NativeEvent, NativeEventKind,

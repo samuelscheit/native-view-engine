@@ -115,7 +115,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
 
     /// Creates a [`SkiaBackend`] with an explicit [`LayoutEngine`] and [`CosmicTextEngine`].
     pub fn with_layout_and_text_engine(layout: L, text_engine: Arc<CosmicTextEngine>) -> Self {
-        let mut layout_tree = HeadlessBackend::with_layout(layout);
+        let mut layout_tree = HeadlessBackend::with_layout(layout).with_mutation_tracking(false);
         layout_tree.set_text_measurer(Arc::clone(&text_engine) as Arc<dyn TextMeasurer>);
         Self {
             layout_tree,
@@ -195,106 +195,14 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         );
     }
 
-    fn intersects_viewport(&self, rect: LayoutRect, outset: f32) -> bool {
-        if rect.width <= 0.0 || rect.height <= 0.0 {
-            return false;
-        }
-        let x0 = rect.x - outset;
-        let y0 = rect.y - outset;
-        let x1 = rect.x + rect.width + outset;
-        let y1 = rect.y + rect.height + outset;
-        x1 > 0.0 && y1 > 0.0 && x0 < self.viewport.width && y0 < self.viewport.height
-    }
-
     fn rebuild_display_list(&mut self) {
         self.display_list.ops.clear();
-        self.emit_node(ROOT_NODE_ID);
-    }
-
-    fn emit_node(&mut self, id: NodeId) {
-        let Some(node) = self.layout_tree.node(id).cloned() else {
-            return;
-        };
-
-        let opacity = node.style.opacity.clamp(0.0, 1.0);
-        if opacity <= 0.001 {
-            // Fully transparent subtree produces no visible pixels — cull completely.
-            return;
-        }
-
-        let pushed_opacity = opacity < 0.999;
-        let opacity_op_idx = self.display_list.ops.len();
-        if pushed_opacity {
-            self.display_list.ops.push(PaintOp::SaveOpacity(opacity));
-        }
-
-        if node.style.background.a > 0 && self.intersects_viewport(node.computed_rect, 0.0) {
-            self.display_list.ops.push(PaintOp::FillRoundedRect {
-                rect: node.computed_rect,
-                radius: node.style.border_radius.max(0.0),
-                color: node.style.background,
-            });
-        }
-        if node.style.border_width > 0.0
-            && node.style.border_color.a > 0
-            && self.intersects_viewport(node.computed_rect, node.style.border_width * 0.5)
-        {
-            self.display_list.ops.push(PaintOp::StrokeRoundedRect {
-                rect: node.computed_rect,
-                radius: node.style.border_radius.max(0.0),
-                width: node.style.border_width,
-                color: node.style.border_color,
-            });
-        }
-        if let Some(text) = node.text {
-            if !text.is_empty()
-                && node.style.font_size > 0.0
-                && node.style.text_color.a > 0
-                && self.intersects_viewport(node.computed_rect, 0.0)
-            {
-                self.display_list.ops.push(PaintOp::DrawText {
-                    rect: node.computed_rect,
-                    text,
-                    font_size: node.style.font_size,
-                    color: node.style.text_color,
-                });
-            }
-        }
-        if node.kind == ComponentKind::SkiaCanvas
-            && self.intersects_viewport(node.computed_rect, 0.0)
-        {
-            self.display_list.ops.push(PaintOp::CustomSkiaCanvas {
-                node_id: id,
-                rect: node.computed_rect,
-            });
-        }
-
-        // Paint children in z_index order when any child specifies a non-zero z_index.
-        let mut children = node.children;
-        let has_z_order = children.iter().any(|cid| {
-            self.layout_tree
-                .node(*cid)
-                .is_some_and(|c| c.style.z_index != 0)
-        });
-        if has_z_order {
-            children.sort_by_key(|cid| {
-                self.layout_tree
-                    .node(*cid)
-                    .map_or(0, |c| c.style.z_index)
-            });
-        }
-        for child in children {
-            self.emit_node(child);
-        }
-
-        if pushed_opacity {
-            if self.display_list.ops.len() == opacity_op_idx + 1 {
-                // Elide redundant SaveOpacity/Restore around non-drawing subtrees.
-                self.display_list.ops.pop();
-            } else {
-                self.display_list.ops.push(PaintOp::Restore);
-            }
-        }
+        emit_node_into(
+            &self.layout_tree,
+            self.viewport,
+            &mut self.display_list.ops,
+            ROOT_NODE_ID,
+        );
     }
 
     #[cfg(feature = "skia")]
@@ -315,6 +223,107 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             self.viewport.scale_factor,
             clear_color,
         )
+    }
+}
+
+#[inline]
+fn intersects_viewport(viewport: Viewport, rect: LayoutRect, outset: f32) -> bool {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return false;
+    }
+    let x0 = rect.x - outset;
+    let y0 = rect.y - outset;
+    let x1 = rect.x + rect.width + outset;
+    let y1 = rect.y + rect.height + outset;
+    x1 > 0.0 && y1 > 0.0 && x0 < viewport.width && y0 < viewport.height
+}
+
+fn emit_node_into<L: LayoutEngine>(
+    layout_tree: &HeadlessBackend<L>,
+    viewport: Viewport,
+    ops: &mut Vec<PaintOp>,
+    id: NodeId,
+) {
+    let Some(node) = layout_tree.node(id) else {
+        return;
+    };
+
+    let opacity = node.style.opacity.clamp(0.0, 1.0);
+    if opacity <= 0.001 {
+        // Fully transparent subtree produces no visible pixels — cull completely.
+        return;
+    }
+
+    let pushed_opacity = opacity < 0.999;
+    let opacity_op_idx = ops.len();
+    if pushed_opacity {
+        ops.push(PaintOp::SaveOpacity(opacity));
+    }
+
+    let rect = node.computed_rect;
+    let in_viewport = intersects_viewport(viewport, rect, 0.0);
+
+    if node.style.background.a > 0 && in_viewport {
+        ops.push(PaintOp::FillRoundedRect {
+            rect,
+            radius: node.style.border_radius.max(0.0),
+            color: node.style.background,
+        });
+    }
+    if node.style.border_width > 0.0
+        && node.style.border_color.a > 0
+        && intersects_viewport(viewport, rect, node.style.border_width * 0.5)
+    {
+        ops.push(PaintOp::StrokeRoundedRect {
+            rect,
+            radius: node.style.border_radius.max(0.0),
+            width: node.style.border_width,
+            color: node.style.border_color,
+        });
+    }
+    if in_viewport {
+        if let Some(text) = node.text.as_deref() {
+            if !text.is_empty() && node.style.font_size > 0.0 && node.style.text_color.a > 0 {
+                ops.push(PaintOp::DrawText {
+                    rect,
+                    text: text.to_owned(),
+                    font_size: node.style.font_size,
+                    color: node.style.text_color,
+                });
+            }
+        }
+        if node.kind == ComponentKind::SkiaCanvas {
+            ops.push(PaintOp::CustomSkiaCanvas { node_id: id, rect });
+        }
+    }
+
+    // Paint children in z_index order when multiple children exist and any specifies a non-zero z_index.
+    let children = &node.children;
+    if !children.is_empty() {
+        let has_z_order = children.len() > 1
+            && children
+                .iter()
+                .any(|&cid| layout_tree.node(cid).is_some_and(|c| c.style.z_index != 0));
+        if has_z_order {
+            let mut sorted = children.clone();
+            sorted.sort_by_key(|&cid| layout_tree.node(cid).map_or(0, |c| c.style.z_index));
+            for child in sorted {
+                emit_node_into(layout_tree, viewport, ops, child);
+            }
+        } else {
+            for &child in children {
+                emit_node_into(layout_tree, viewport, ops, child);
+            }
+        }
+    }
+
+    if pushed_opacity {
+        if ops.len() == opacity_op_idx + 1 {
+            // Elide redundant SaveOpacity/Restore around non-drawing subtrees.
+            ops.pop();
+        } else {
+            ops.push(PaintOp::Restore);
+        }
     }
 }
 

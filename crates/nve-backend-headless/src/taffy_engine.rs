@@ -1,6 +1,5 @@
 //! Pure-Rust Flexbox [`LayoutEngine`] backed by `taffy`.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use nve_abi::{
@@ -9,12 +8,24 @@ use nve_abi::{
 };
 use nve_engine::{HeuristicTextMeasurer, LayoutEngine, LayoutRect, TextMeasurer, Viewport};
 use taffy::prelude as tf;
+use taffy::TraversePartialTree;
+
+use crate::slot_map::NodeSlotMap;
 
 #[derive(Debug, Clone)]
 struct TaffyNodeContext {
+    nve_id: NodeId,
     kind: ComponentKind,
     text: Option<String>,
     font_size: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TaffySlot {
+    taffy_id: tf::NodeId,
+    layout: LayoutProps,
+    computed_rect: LayoutRect,
+    rect_gen: u64,
 }
 
 /// Pure-Rust `taffy` Flexbox implementation of [`LayoutEngine`].
@@ -23,10 +34,12 @@ struct TaffyNodeContext {
 /// so text nodes measure and wrap identically to native layout engines such as React Native Yoga.
 pub struct TaffyLayoutEngine {
     taffy: tf::TaffyTree<TaffyNodeContext>,
-    taffy_ids: HashMap<NodeId, tf::NodeId>,
-    layouts: HashMap<NodeId, LayoutProps>,
-    children: HashMap<NodeId, Vec<NodeId>>,
-    computed_rects: HashMap<NodeId, LayoutRect>,
+    slots: NodeSlotMap<TaffySlot>,
+    default_taffy_style: tf::Style,
+    layout_gen: u64,
+    last_root_viewport: Option<(NodeId, f32, f32)>,
+    scratch_tids: Vec<tf::NodeId>,
+    scratch_stack: Vec<(tf::NodeId, f32, f32)>,
     text_measurer: Arc<dyn TextMeasurer>,
 }
 
@@ -49,20 +62,23 @@ impl TaffyLayoutEngine {
     pub fn with_text_measurer(text_measurer: Arc<dyn TextMeasurer>) -> Self {
         Self {
             taffy: tf::TaffyTree::new(),
-            taffy_ids: HashMap::new(),
-            layouts: HashMap::new(),
-            children: HashMap::new(),
-            computed_rects: HashMap::new(),
+            slots: NodeSlotMap::new(),
+            default_taffy_style: to_taffy_style(&LayoutProps::default()),
+            layout_gen: 0,
+            last_root_viewport: None,
+            scratch_tids: Vec::new(),
+            scratch_stack: Vec::new(),
             text_measurer,
         }
     }
 
+    #[inline]
     fn sync_node_style(&mut self, id: NodeId, override_size: Option<(f32, f32)>) {
-        let Some(&tid) = self.taffy_ids.get(&id) else {
+        let Some(slot) = self.slots.get(id) else {
             return;
         };
-        let props = self.layouts.get(&id).copied().unwrap_or_default();
-        let mut style = to_taffy_style(&props);
+        let tid = slot.taffy_id;
+        let mut style = to_taffy_style(&slot.layout);
         if let Some((w, h)) = override_size {
             style.size = tf::Size {
                 width: tf::Dimension::length(w),
@@ -72,23 +88,39 @@ impl TaffyLayoutEngine {
         let _ = self.taffy.set_style(tid, style);
     }
 
-    fn collect_rects(&mut self, id: NodeId, origin_x: f32, origin_y: f32) {
-        let Some(&tid) = self.taffy_ids.get(&id) else {
-            return;
-        };
-        let Ok(layout) = self.taffy.layout(tid) else {
-            return;
-        };
-        let rect = LayoutRect {
-            x: origin_x + layout.location.x,
-            y: origin_y + layout.location.y,
-            width: layout.size.width,
-            height: layout.size.height,
-        };
-        self.computed_rects.insert(id, rect);
-        if let Some(child_ids) = self.children.get(&id).cloned() {
-            for child in child_ids {
-                self.collect_rects(child, rect.x, rect.y);
+    fn collect_rects(&mut self, root_tid: tf::NodeId) {
+        self.layout_gen = self.layout_gen.wrapping_add(1);
+        if self.layout_gen == 0 {
+            for slot in self.slots.values_mut() {
+                slot.rect_gen = 0;
+            }
+            self.layout_gen = 1;
+        }
+        let current_gen = self.layout_gen;
+
+        self.scratch_stack.clear();
+        self.scratch_stack.push((root_tid, 0.0, 0.0));
+        while let Some((tid, origin_x, origin_y)) = self.scratch_stack.pop() {
+            let Ok(layout) = self.taffy.layout(tid) else {
+                continue;
+            };
+            let Some(nve_id) = self.taffy.get_node_context(tid).map(|c| c.nve_id) else {
+                continue;
+            };
+            let rect = LayoutRect {
+                x: origin_x + layout.location.x,
+                y: origin_y + layout.location.y,
+                width: layout.size.width,
+                height: layout.size.height,
+            };
+            if let Some(slot) = self.slots.get_mut(nve_id) {
+                slot.computed_rect = rect;
+                slot.rect_gen = current_gen;
+            }
+            let count = self.taffy.child_count(tid);
+            for i in (0..count).rev() {
+                let child_tid = self.taffy.get_child_id(tid, i);
+                self.scratch_stack.push((child_tid, rect.x, rect.y));
             }
         }
     }
@@ -100,7 +132,8 @@ impl LayoutEngine for TaffyLayoutEngine {
     }
 
     fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
-        if let Some(&tid) = self.taffy_ids.get(&id) {
+        if let Some(slot) = self.slots.get(id) {
+            let tid = slot.taffy_id;
             if let Some(ctx) = self.taffy.get_node_context_mut(tid) {
                 if ctx.kind != kind {
                     ctx.kind = kind;
@@ -111,36 +144,55 @@ impl LayoutEngine for TaffyLayoutEngine {
         }
         let default_layout = LayoutProps::default();
         let ctx = TaffyNodeContext {
+            nve_id: id,
             kind,
             text: None,
             font_size: StyleProps::default().font_size,
         };
         let tid = self
             .taffy
-            .new_leaf_with_context(to_taffy_style(&default_layout), ctx)
+            .new_leaf_with_context(self.default_taffy_style.clone(), ctx)
             .expect("taffy leaf allocation");
-        self.taffy_ids.insert(id, tid);
-        self.layouts.insert(id, default_layout);
+        self.slots.insert(
+            id,
+            TaffySlot {
+                taffy_id: tid,
+                layout: default_layout,
+                computed_rect: LayoutRect::default(),
+                rect_gen: 0,
+            },
+        );
     }
 
     fn remove_node(&mut self, id: NodeId) {
-        if let Some(tid) = self.taffy_ids.remove(&id) {
-            let _ = self.taffy.remove(tid);
+        if let Some(slot) = self.slots.remove(id) {
+            let _ = self.taffy.remove(slot.taffy_id);
         }
-        self.layouts.remove(&id);
-        self.children.remove(&id);
-        self.computed_rects.remove(&id);
+        if self.last_root_viewport.is_some_and(|(rid, _, _)| rid == id) {
+            self.last_root_viewport = None;
+        }
     }
 
     fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
-        self.layouts.insert(id, *layout);
-        self.sync_node_style(id, None);
+        let Some(slot) = self.slots.get_mut(id) else {
+            return;
+        };
+        if slot.layout == *layout {
+            return;
+        }
+        slot.layout = *layout;
+        let tid = slot.taffy_id;
+        if self.last_root_viewport.is_some_and(|(rid, _, _)| rid == id) {
+            self.last_root_viewport = None;
+        }
+        let _ = self.taffy.set_style(tid, to_taffy_style(layout));
     }
 
     fn set_style(&mut self, id: NodeId, style: &StyleProps) {
-        let Some(&tid) = self.taffy_ids.get(&id) else {
+        let Some(slot) = self.slots.get(id) else {
             return;
         };
+        let tid = slot.taffy_id;
         let font_size = if style.font_size.is_finite() && style.font_size > 0.0 {
             style.font_size
         } else {
@@ -157,58 +209,75 @@ impl LayoutEngine for TaffyLayoutEngine {
     }
 
     fn set_text(&mut self, id: NodeId, text: &str) {
-        let Some(&tid) = self.taffy_ids.get(&id) else {
+        let Some(slot) = self.slots.get(id) else {
             return;
         };
+        let tid = slot.taffy_id;
         if let Some(ctx) = self.taffy.get_node_context_mut(tid) {
-            let changed = ctx.text.as_deref() != Some(text);
-            ctx.text = Some(text.to_owned());
-            if changed && ctx.kind == ComponentKind::Text {
-                let _ = self.taffy.mark_dirty(tid);
+            if ctx.text.as_deref() != Some(text) {
+                match &mut ctx.text {
+                    Some(existing) => {
+                        existing.clear();
+                        existing.push_str(text);
+                    }
+                    None => {
+                        ctx.text = Some(text.to_owned());
+                    }
+                }
+                if ctx.kind == ComponentKind::Text {
+                    let _ = self.taffy.mark_dirty(tid);
+                }
             }
         }
     }
 
     fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
-        self.children.insert(parent, children.to_vec());
-        if let Some(&parent_tid) = self.taffy_ids.get(&parent) {
-            let child_tids: Vec<tf::NodeId> = children
-                .iter()
-                .filter_map(|cid| self.taffy_ids.get(cid).copied())
-                .collect();
-            let _ = self.taffy.set_children(parent_tid, &child_tids);
+        let Some(parent_tid) = self.slots.get(parent).map(|s| s.taffy_id) else {
+            return;
+        };
+        self.scratch_tids.clear();
+        self.scratch_tids.reserve(children.len());
+        for &cid in children {
+            if let Some(child_slot) = self.slots.get(cid) {
+                self.scratch_tids.push(child_slot.taffy_id);
+            }
         }
+        let _ = self.taffy.set_children(parent_tid, &self.scratch_tids);
     }
 
     fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
         self.text_measurer = measurer;
-        let dirty_ids: Vec<tf::NodeId> = self
-            .taffy_ids
-            .values()
-            .copied()
-            .filter(|&tid| {
-                self.taffy
-                    .get_node_context(tid)
-                    .is_some_and(|ctx| ctx.kind == ComponentKind::Text)
-            })
-            .collect();
-        for tid in dirty_ids {
+        self.scratch_tids.clear();
+        for slot in self.slots.values() {
+            if self
+                .taffy
+                .get_node_context(slot.taffy_id)
+                .is_some_and(|ctx| ctx.kind == ComponentKind::Text)
+            {
+                self.scratch_tids.push(slot.taffy_id);
+            }
+        }
+        for &tid in &self.scratch_tids {
             let _ = self.taffy.mark_dirty(tid);
         }
     }
 
     fn compute_layout(&mut self, root: NodeId, viewport: Viewport) {
-        let Some(&root_tid) = self.taffy_ids.get(&root) else {
-            self.computed_rects.clear();
+        let Some(root_tid) = self.slots.get(root).map(|s| s.taffy_id) else {
+            self.layout_gen = self.layout_gen.wrapping_add(1);
             return;
         };
-        self.sync_node_style(root, Some((viewport.width, viewport.height)));
+        let desired_vp = (root, viewport.width, viewport.height);
+        if self.last_root_viewport != Some(desired_vp) {
+            self.sync_node_style(root, Some((viewport.width, viewport.height)));
+            self.last_root_viewport = Some(desired_vp);
+        }
 
         let avail = tf::Size {
             width: tf::AvailableSpace::Definite(viewport.width),
             height: tf::AvailableSpace::Definite(viewport.height),
         };
-        let measurer = Arc::clone(&self.text_measurer);
+        let measurer = &*self.text_measurer;
         let _ = self.taffy.compute_layout_with_measure(
             root_tid,
             avail,
@@ -256,20 +325,20 @@ impl LayoutEngine for TaffyLayoutEngine {
             },
         );
 
-        self.computed_rects.clear();
-        self.collect_rects(root, 0.0, 0.0);
+        self.collect_rects(root_tid);
     }
 
+    #[inline]
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
-        self.computed_rects.get(&id).copied()
+        let slot = self.slots.get(id)?;
+        (slot.rect_gen == self.layout_gen && self.layout_gen != 0).then_some(slot.computed_rect)
     }
 
     fn reset(&mut self) {
         self.taffy.clear();
-        self.taffy_ids.clear();
-        self.layouts.clear();
-        self.children.clear();
-        self.computed_rects.clear();
+        self.slots.clear();
+        self.layout_gen = 0;
+        self.last_root_viewport = None;
     }
 }
 
