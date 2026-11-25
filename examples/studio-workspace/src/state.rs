@@ -215,7 +215,7 @@ pub enum CornerRadiusMode {
 impl CornerRadiusMode {
     pub const fn px(self) -> u32 {
         match self {
-            Self::Sharp => 6,
+            Self::Sharp => 0,
             Self::Soft => 12,
             Self::Pill => 18,
         }

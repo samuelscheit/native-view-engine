@@ -679,7 +679,7 @@ pub fn StudioWorkspaceApp() -> Element {
                     // Corner Radius + Density Card
                     view {
                         style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; padding: 7px; background-color: {CARD_ALT_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                        text { style: "color: {TEXT_MUTED}; font-size: 10px;", "RADIUS (6 / 12 / 18)" }
+                        text { style: "color: {TEXT_MUTED}; font-size: 10px;", "RADIUS (0 / 12 / 18)" }
                         view {
                             style: "width: 100%; flex-direction: row; gap: 4px;",
                             for &(rmode, tid, short_lbl) in [

@@ -262,8 +262,8 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
 
     h.press("radius-sharp");
     assert!(
-        h.ascii().contains("Radius -> Sharp (6)"),
-        "expected 'Radius -> Sharp (6)' in tree:\n{}",
+        h.ascii().contains("Radius -> Sharp (0)"),
+        "expected 'Radius -> Sharp (0)' in tree:\n{}",
         h.ascii()
     );
     assert!(h.html().contains("border-radius:6px;"));
