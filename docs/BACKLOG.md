@@ -39,13 +39,6 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
 
 ---
 
-## P2 — Tier-2/3 `nve-sdk` Hardware & Storage Capabilities
-
-- [ ] **Expanded `nve-sdk` Native Modules (`crates/nve-sdk`)**
-  - First-party zero-JSON capabilities via `NVE_IFACE_HOST = 5`: SQLite / Embedded KV Store, Custom Font Loading, Camera, Audio Playback/Recording, Geolocation, Device Sensors, Native Share Sheet, and In-App WebBrowser (`ASWebAuthenticationSession` / Custom Tabs).
-
----
-
 ## Flagship / Vision (Remaining Work Only)
 
 - [ ] **NVE Studio (Meta Workbench)**
