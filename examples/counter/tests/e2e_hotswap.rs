@@ -73,8 +73,11 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
     let patched = app.apply_hot_patch(&HotPatchMsg::TemplatePatch {
         generation: 1,
         template_id: "counter".into(),
+        target_test_id: None,
+        node_path: vec![],
         attr_updates: vec![("opacity".into(), "0.8".into())],
         text_updates: vec![],
+        text_replacements: vec![],
     });
     assert!(patched);
 }

@@ -396,8 +396,11 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     let patch_json = HotPatchMsg::TemplatePatch {
         generation: 1,
         template_id: "studio".into(),
+        target_test_id: None,
+        node_path: vec![],
         attr_updates: vec![("opacity".into(), "0.95".into())],
         text_updates: vec![],
+        text_replacements: vec![],
     }
     .to_json();
     assert!(app.apply_hot_patch(&patch_json));

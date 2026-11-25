@@ -1557,8 +1557,11 @@ mod tests {
             .handle_hot_patch(HotPatchMsg::TemplatePatch {
                 generation: 2,
                 template_id: "counter".into(),
+                target_test_id: None,
+                node_path: vec![],
                 attr_updates: vec![("button_color".into(), "orange".into())],
                 text_updates: vec![(0, "Live".into())],
+                text_replacements: vec![],
             })
             .unwrap();
         assert!(updated);

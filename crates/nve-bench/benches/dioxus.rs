@@ -63,8 +63,11 @@ fn bench_dioxus(c: &mut Criterion) {
             let patch = HotPatchMsg::TemplatePatch {
                 generation,
                 template_id: "bench_counter".into(),
+                target_test_id: None,
+                node_path: vec![],
                 attr_updates: vec![("opacity".into(), opacity.into())],
                 text_updates: vec![(0, format!("Hot Patch Gen {generation}"))],
+                text_replacements: vec![],
             };
             let accepted = patch_surface.apply_hot_patch(&patch);
             debug_assert!(accepted);
