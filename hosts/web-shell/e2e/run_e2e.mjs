@@ -553,7 +553,7 @@ function launchPairServer(nveBin, dylibPath) {
     proc.stdout.on("data", (chunk) => {
       stdoutBuf += chunk.toString("utf8");
       const match = stdoutBuf.match(
-        /^NVE_PAIR_READY\s+ws=(\S+)\s+token=(\S+)\s+udp=(\S+)\s+tcp=(\S+)\s*$/m
+        /^NVE_PAIR_READY\s+ws=(\S+)\s+token=(\S+)\s+udp=(\S+)\s+tcp=(\S+)(?:\s+cert_hash=(\S+))?\s*$/m
       );
       if (match && !settled) {
         const [, wsUrl, token, udpAddr, tcpAddr] = match;

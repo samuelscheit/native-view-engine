@@ -1,5 +1,6 @@
-//! Deep end-to-end integration tests for live `NVT1`/`NVD1` pairing in `nve-skia-shell`
-//! (UDP, raw TCP, and RFC 6455 binary WebSocket) plus `NVP1` binary hot-reload frames.
+//! End-to-end integration tests for live `NveWireFrame` v2 pairing in `nve-skia-shell`
+//! (raw QUIC `nve-wire-2`, HTTP/3 WebTransport `h3`, TLS `wss://`, and loopback `ws://`)
+//! plus `NVP1` binary hot-reload frames.
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
@@ -15,7 +16,7 @@ use nve_abi::{
     ROOT_NODE_ID,
 };
 use nve_engine::{HotPatchMsg, Viewport};
-use nve_interop::{PairingConfig, TcpDeltaServer, UdpDeltaServer};
+use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig};
 use tungstenite::Message;
 
 use super::{
@@ -107,10 +108,7 @@ impl RemoteServerApp {
                 (NativeEventKind::Custom, EventPayload::Custom { name, data })
                     if name == "keydown" =>
                 {
-                    assert!(
-                        data.starts_with(&KEYDOWN_WIRE_MAGIC),
-                        "remote keydown must use NK1 binary payload"
-                    );
+                    assert!(data.starts_with(&KEYDOWN_WIRE_MAGIC));
                     if let Some(dk) = decode_keydown_bytes(&data)
                         && dk.meta
                         && dk.key == "k"
@@ -127,8 +125,9 @@ impl RemoteServerApp {
 }
 
 struct TestPairServer {
-    udp_addr: SocketAddr,
-    tcp_addr: SocketAddr,
+    quic_addr: SocketAddr,
+    wss_addr: SocketAddr,
+    cert_sha256: [u8; 32],
     token: String,
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
@@ -136,11 +135,15 @@ struct TestPairServer {
 
 impl TestPairServer {
     fn start(token: &str) -> Self {
-        let cfg = PairingConfig::new(token);
-        let udp = UdpDeltaServer::bind("127.0.0.1:0", cfg.clone()).expect("bind UDP server");
-        let tcp = TcpDeltaServer::bind("127.0.0.1:0", cfg).expect("bind TCP/WS server");
-        let udp_addr = udp.local_addr();
-        let tcp_addr = tcp.local_addr();
+        let server = NveWireServer::bind_sync(NveWireServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+            token,
+        ))
+        .expect("bind NveWireServer");
+        let quic_addr = server.quic_addr();
+        let wss_addr = server.wss_addr();
+        let cert_sha256 = server.cert_sha256();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::clone(&stop);
 
@@ -148,35 +151,30 @@ impl TestPairServer {
             let mut app = RemoteServerApp::new();
             let mut frame_id = 1u64;
             let initial = app.render(frame_id);
-            let _ = udp.send_frame(&initial);
-            let _ = tcp.send_frame(&initial);
+            let _ = server.broadcast_command_delta(frame_id as u32, &initial);
 
             while !stop_flag.load(Ordering::Relaxed) {
                 let mut mutated = false;
-                while let Some((_sid, ev_bytes)) = udp.try_recv_events() {
-                    mutated |= app.dispatch(&ev_bytes);
-                }
-                while let Some((_sid, ev_bytes)) = tcp.try_recv_events() {
-                    mutated |= app.dispatch(&ev_bytes);
+                while let Some(msg) = server.try_recv_inbound() {
+                    if msg.frame.kind == NveWireKind::EventBatch {
+                        mutated |= app.dispatch(&msg.frame.payload);
+                    }
                 }
                 if mutated {
                     frame_id += 1;
                     let next = app.render(frame_id);
-                    let _ = udp.send_frame(&next);
-                    let _ = tcp.send_frame(&next);
+                    let _ = server.broadcast_command_delta(frame_id as u32, &next);
                 } else {
                     thread::sleep(Duration::from_millis(2));
                 }
             }
-            let mut udp = udp;
-            let mut tcp = tcp;
-            udp.shutdown();
-            tcp.shutdown();
+            server.shutdown();
         });
 
         Self {
-            udp_addr,
-            tcp_addr,
+            quic_addr,
+            wss_addr,
+            cert_sha256,
             token: token.to_string(),
             stop,
             handle: Some(handle),
@@ -244,11 +242,14 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
         };
         ws.send(Message::Binary(binary_msg.to_bytes().into()))
             .unwrap();
-        // Legacy JSON text frames and corrupt binary frames are dropped, never parsed.
-        ws.send(Message::Text(r#"{"type":"dev_status","message":"x","latency_ms":0}"#.into()))
+        ws.send(Message::Text(
+            r#"{"type":"dev_status","message":"x","latency_ms":0}"#.into(),
+        ))
+        .unwrap();
+        ws.send(Message::Binary(b"NVP1\x03garbage".to_vec().into()))
             .unwrap();
-        ws.send(Message::Binary(b"NVP1\x03garbage".to_vec().into())).unwrap();
-        ws.send(Message::Binary(status_msg.to_bytes().into())).unwrap();
+        ws.send(Message::Binary(status_msg.to_bytes().into()))
+            .unwrap();
         let _ = ws.close(None);
     });
 
@@ -297,25 +298,27 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
 }
 
 #[test]
-fn paired_remote_app_e2e_udp_tcp_and_ws_rasterizes_and_mutates_pixels() {
-    // Exercise ALL three transports independently with fresh server state so Frame-1 blue -> green,
-    // NK1 Cmd+K palette toggle, EventLoop wake callback, and status banner are verified on each.
-    for transport in [PairTransport::Udp, PairTransport::Tcp, PairTransport::Ws] {
+fn paired_remote_app_e2e_quic_webtransport_wss_and_ws_rasterizes_and_mutates_pixels() {
+    for transport in [
+        PairTransport::Quic,
+        PairTransport::WebTransport,
+        PairTransport::Wss,
+        PairTransport::Ws,
+    ] {
         let server = TestPairServer::start("skia-pair-e2e-token");
         let addr = match transport {
-            PairTransport::Udp => server.udp_addr.to_string(),
-            PairTransport::Tcp => server.tcp_addr.to_string(),
-            PairTransport::Ws => format!("ws://{}/ws/nvd", server.tcp_addr),
+            PairTransport::Quic => format!("quic://{}", server.quic_addr),
+            PairTransport::WebTransport => format!("https://{}/nve-wire", server.quic_addr),
+            PairTransport::Wss => format!("wss://{}/nve-wire", server.wss_addr),
+            PairTransport::Ws | PairTransport::Auto => format!("ws://{}/nve-wire", server.wss_addr),
         };
         let wakes = Arc::new(AtomicUsize::new(0));
         let wakes_cb = Arc::clone(&wakes);
 
-        let mut app = PairedRemoteApp::connect(PairConnectConfig::new(
-            addr,
-            server.token.clone(),
-            transport,
-        ))
-        .unwrap_or_else(|e| panic!("connect {transport:?} failed: {e}"));
+        let cfg = PairConnectConfig::new(addr, server.token.clone(), transport)
+            .with_cert_sha256(server.cert_sha256);
+        let mut app = PairedRemoteApp::connect(cfg)
+            .unwrap_or_else(|e| panic!("connect {transport:?} failed: {e}"));
         app.install_wake_callback(Arc::new(move || {
             wakes_cb.fetch_add(1, Ordering::SeqCst);
         }));
@@ -327,63 +330,27 @@ fn paired_remote_app_e2e_udp_tcp_and_ws_rasterizes_and_mutates_pixels() {
             height: 200.0,
             scale_factor: 1.0,
         };
-        let mut session =
-            DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
+        let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
 
-        // Wait for initial Frame 1 over NVD1 and rasterize pixels.
         session
             .app_mut()
             .wait_for_frame(Duration::from_secs(2))
             .expect("initial paired frame");
         session.render_and_rasterize().expect("rasterize Frame 1");
 
-        // Button starts blue (37, 99, 235) at logical (60, 48) inside padding 20..180, 20..76.
-        assert_eq!(
-            session.pixel_buffer().get_rgb(60, 48),
-            Some((37, 99, 235)),
-            "{transport:?}: initial button pixel should be blue"
-        );
-        // Background starts dark slate (15, 23, 42) at (250, 150).
-        assert_eq!(
-            session.pixel_buffer().get_rgb(250, 150),
-            Some((15, 23, 42)),
-            "{transport:?}: initial background should be dark slate"
-        );
+        assert_eq!(session.pixel_buffer().get_rgb(60, 48), Some((37, 99, 235)));
+        assert_eq!(session.pixel_buffer().get_rgb(250, 150), Some((15, 23, 42)));
 
-        // 1. Remote click -> NVT1 InputEvents -> server mutates -> NVD1 delta -> client pixel green.
         assert!(session.handle_click_logical(60.0, 48.0).unwrap());
-        wait_until_pixel(
-            &mut session,
-            60,
-            48,
-            (16, 185, 129),
-            Duration::from_secs(2),
-        );
+        wait_until_pixel(&mut session, 60, 48, (16, 185, 129), Duration::from_secs(2));
 
-        // 2. Remote NK1 Cmd+K keydown -> server toggles palette -> client background gold (250, 204, 21).
         assert!(session.handle_keydown("k", true, false, false, false).unwrap());
-        wait_until_pixel(
-            &mut session,
-            250,
-            150,
-            (250, 204, 21),
-            Duration::from_secs(2),
-        );
+        wait_until_pixel(&mut session, 250, 150, (250, 204, 21), Duration::from_secs(2));
 
-        // Reset palette back.
         assert!(session.handle_keydown("k", true, false, false, false).unwrap());
-        wait_until_pixel(
-            &mut session,
-            250,
-            150,
-            (15, 23, 42),
-            Duration::from_secs(2),
-        );
+        wait_until_pixel(&mut session, 250, 150, (15, 23, 42), Duration::from_secs(2));
 
-        assert!(
-            wakes.load(Ordering::SeqCst) >= 2,
-            "{transport:?}: expected EventLoop wake callback on incoming frames"
-        );
+        assert!(wakes.load(Ordering::SeqCst) >= 2);
         assert!(session.app().remote_status_banner().unwrap().contains("LIVE"));
         session.app_mut().disconnect();
         assert!(!session.app().is_connected());
@@ -394,15 +361,13 @@ fn paired_remote_app_e2e_udp_tcp_and_ws_rasterizes_and_mutates_pixels() {
 fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
     let server = TestPairServer::start("skia-screenshot-token");
 
-    // Wrong token fails fast with DesktopHostError::Pairing.
     let bad = PairedRemoteApp::connect(PairConnectConfig::new(
-        server.tcp_addr.to_string(),
+        format!("ws://{}/nve-wire", server.wss_addr),
         "wrong-token",
         PairTransport::Ws,
     ));
     assert!(matches!(bad, Err(DesktopHostError::Pairing(_))));
 
-    // Valid --screenshot flow writes a valid PNG file and disconnects cleanly.
     let out_path = std::env::temp_dir().join(format!(
         "nve_skia_paired_shot_{}.png",
         std::process::id()
@@ -419,20 +384,18 @@ fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
     };
     render_paired_headless_screenshot(
         PairConnectConfig::new(
-            format!("ws://{}/ws/nvd", server.tcp_addr),
+            format!("wss://{}/nve-wire", server.wss_addr),
             server.token.clone(),
-            PairTransport::Ws,
-        ),
+            PairTransport::Wss,
+        )
+        .with_cert_sha256(server.cert_sha256),
         opts,
         out_path.clone(),
     )
     .expect("paired headless PNG screenshot");
 
     let png = std::fs::read(&out_path).expect("read paired PNG");
-    assert!(
-        png.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "expected valid PNG signature"
-    );
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert!(png.len() > 100);
     let _ = std::fs::remove_file(Path::new(&out_path));
 }

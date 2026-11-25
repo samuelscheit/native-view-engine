@@ -1,24 +1,27 @@
-//! Zero-JSON binary delta wire format `NVC1` with FNV-1a64 integrity verification.
+//! Zero-JSON binary CRDT delta wire format (`NveCrdtDelta`) with `XXH64` integrity verification.
 //!
-//! Layout (little-endian): `magic("NVC1")` | `version(u16=1)` | `sender(u64)` |
+//! Layout (little-endian): `magic("NVE_CRDT")` | `version(u16=2)` | `sender(u64)` |
 //! `vv_len(u32)` + `(peer:u64, seq:u64)*` | `record_count(u32)` + `(rec_len:u32, tag:u8, body)*` |
-//! `checksum(u64 FNV-1a64 over all preceding bytes)`.
+//! `checksum(u64 XXH64 over all preceding bytes)`.
 
 use std::fmt;
 
+use nve_engine::xxh64;
+
 use super::hlc::{HLC_ENCODED_LEN, HlcTimestamp, OP_ID_ENCODED_LEN, OpId, PeerId, VersionVector};
 
-pub const CRDT_WIRE_MAGIC: [u8; 4] = *b"NVC1";
-pub const CRDT_WIRE_VERSION: u16 = 1;
-/// Minimum valid frame size: magic(4) + ver(2) + sender(8) + vv_len(4) + rec_count(4) + cksum(8).
-pub const CRDT_WIRE_MIN_LEN: usize = 30;
+/// 8-byte self-documenting ASCII magic identifying `NveCrdtDelta` binary frames.
+pub const NVE_CRDT_DELTA_MAGIC: [u8; 8] = *b"NVE_CRDT";
+/// Current `NveCrdtDelta` wire format version (`2`, with `XXH64` checksum).
+pub const NVE_CRDT_DELTA_VERSION: u16 = 2;
+/// Domain-separated `XXH64` seed for `NveCrdtDelta` integrity checksums.
+pub const NVE_CRDT_XXH64_SEED: u64 = 0x4E56_455F_4352_4454; // "NVE_CRDT"
+/// Minimum valid frame size: magic(8) + ver(2) + sender(8) + vv_len(4) + rec_count(4) + cksum(8).
+pub const NVE_CRDT_DELTA_MIN_LEN: usize = 34;
 pub const MAX_WIRE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_VV_ENTRIES: usize = 65_536;
 pub const MAX_RECORDS: usize = 1_000_000;
 pub const MAX_FIELD_BYTES: usize = 4 * 1024 * 1024;
-
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 const TAG_LWW_SET: u8 = 1;
 const TAG_GCOUNTER_SET: u8 = 2;
@@ -37,24 +40,17 @@ const VAL_I64: u8 = 4;
 const VAL_UTF8: u8 = 5;
 const VAL_BYTES: u8 = 6;
 
-/// Computes the standard 64-bit FNV-1a checksum over `bytes`.
+/// Computes the canonical `XXH64` checksum over CRDT wire bytes.
 #[inline]
-pub const fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut hash = FNV1A_OFFSET_BASIS;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-        i += 1;
-    }
-    hash
+pub fn crdt_xxh64(bytes: &[u8]) -> u64 {
+    xxh64(bytes, NVE_CRDT_XXH64_SEED)
 }
 
-/// Typed decoding/encoding errors for `NVC1` binary CRDT frames.
+/// Typed decoding/encoding errors for `NveCrdtDelta` binary frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrdtWireError {
     Truncated { expected: usize, actual: usize },
-    InvalidMagic([u8; 4]),
+    InvalidMagic([u8; 8]),
     UnsupportedVersion(u16),
     ChecksumMismatch { expected: u64, actual: u64 },
     UnknownOpTag(u8),
@@ -69,21 +65,24 @@ impl fmt::Display for CrdtWireError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Truncated { expected, actual } => {
-                write!(f, "NVC1 truncated: need {expected}B, have {actual}B")
+                write!(f, "NveCrdtDelta truncated: need {expected}B, have {actual}B")
             }
-            Self::InvalidMagic(m) => write!(f, "NVC1 invalid magic: {m:02x?}"),
-            Self::UnsupportedVersion(v) => write!(f, "NVC1 unsupported version: {v}"),
+            Self::InvalidMagic(m) => write!(f, "NveCrdtDelta invalid magic: {m:02x?}"),
+            Self::UnsupportedVersion(v) => write!(f, "NveCrdtDelta unsupported version: {v}"),
             Self::ChecksumMismatch { expected, actual } => {
-                write!(f, "NVC1 checksum mismatch: expected {expected:#018x}, got {actual:#018x}")
+                write!(
+                    f,
+                    "NveCrdtDelta XXH64 checksum mismatch: expected {expected:#018x}, got {actual:#018x}"
+                )
             }
-            Self::UnknownOpTag(t) => write!(f, "NVC1 unknown op tag: {t}"),
-            Self::UnknownValueTag(t) => write!(f, "NVC1 unknown value tag: {t}"),
-            Self::InvalidUtf8 => write!(f, "NVC1 invalid UTF-8"),
+            Self::UnknownOpTag(t) => write!(f, "NveCrdtDelta unknown op tag: {t}"),
+            Self::UnknownValueTag(t) => write!(f, "NveCrdtDelta unknown value tag: {t}"),
+            Self::InvalidUtf8 => write!(f, "NveCrdtDelta invalid UTF-8"),
             Self::LimitExceeded { kind, count, max } => {
-                write!(f, "NVC1 limit exceeded ({kind}): {count} > {max}")
+                write!(f, "NveCrdtDelta limit exceeded ({kind}): {count} > {max}")
             }
-            Self::TrailingBytes(n) => write!(f, "NVC1 trailing bytes: {n}"),
-            Self::InvalidPayload(msg) => write!(f, "NVC1 invalid payload: {msg}"),
+            Self::TrailingBytes(n) => write!(f, "NveCrdtDelta trailing bytes: {n}"),
+            Self::InvalidPayload(msg) => write!(f, "NveCrdtDelta invalid payload: {msg}"),
         }
     }
 }
@@ -102,7 +101,7 @@ pub enum CrdtValue {
     Bytes(Vec<u8>),
 }
 
-/// Tagged CRDT delta operation record inside an `NVC1` packet.
+/// Tagged CRDT delta operation record inside an [`NveCrdtDelta`] packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrdtRecord {
     LwwSet {
@@ -158,15 +157,15 @@ pub enum CrdtRecord {
     },
 }
 
-/// Self-contained binary CRDT delta packet (`NVC1`).
+/// Self-contained binary CRDT delta packet (`NveCrdtDelta`, `XXH64`-verified).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CrdtDeltaPacket {
+pub struct NveCrdtDelta {
     pub sender: PeerId,
     pub version_vector: VersionVector,
     pub records: Vec<CrdtRecord>,
 }
 
-impl CrdtDeltaPacket {
+impl NveCrdtDelta {
     pub fn new(sender: PeerId, version_vector: VersionVector, records: Vec<CrdtRecord>) -> Self {
         Self {
             sender,
@@ -177,7 +176,7 @@ impl CrdtDeltaPacket {
 
     pub fn encode(&self) -> Result<Vec<u8>, CrdtWireError> {
         let mut out = Vec::with_capacity(
-            CRDT_WIRE_MIN_LEN + self.version_vector.len() * 16 + self.records.len() * 32,
+            NVE_CRDT_DELTA_MIN_LEN + self.version_vector.len() * 16 + self.records.len() * 32,
         );
         self.encode_into(&mut out)?;
         Ok(out)
@@ -188,8 +187,8 @@ impl CrdtDeltaPacket {
         check_limit("version_vector", self.version_vector.len(), MAX_VV_ENTRIES)?;
         check_limit("records", self.records.len(), MAX_RECORDS)?;
 
-        out.extend_from_slice(&CRDT_WIRE_MAGIC);
-        out.extend_from_slice(&CRDT_WIRE_VERSION.to_le_bytes());
+        out.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+        out.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
         out.extend_from_slice(&self.sender.to_le_bytes());
 
         out.extend_from_slice(&(self.version_vector.len() as u32).to_le_bytes());
@@ -210,37 +209,37 @@ impl CrdtDeltaPacket {
         }
 
         check_limit("wire_bytes", out.len() + 8, MAX_WIRE_BYTES)?;
-        let checksum = fnv1a_64(out);
+        let checksum = crdt_xxh64(out);
         out.extend_from_slice(&checksum.to_le_bytes());
         Ok(())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, CrdtWireError> {
         check_limit("wire_bytes", bytes.len(), MAX_WIRE_BYTES)?;
-        if bytes.len() < CRDT_WIRE_MIN_LEN {
+        if bytes.len() < NVE_CRDT_DELTA_MIN_LEN {
             return Err(CrdtWireError::Truncated {
-                expected: CRDT_WIRE_MIN_LEN,
+                expected: NVE_CRDT_DELTA_MIN_LEN,
                 actual: bytes.len(),
             });
         }
 
-        let magic: [u8; 4] = bytes[0..4].try_into().expect("checked min len");
-        if magic != CRDT_WIRE_MAGIC {
+        let magic: [u8; 8] = bytes[0..8].try_into().expect("checked min len");
+        if magic != NVE_CRDT_DELTA_MAGIC {
             return Err(CrdtWireError::InvalidMagic(magic));
         }
-        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version != CRDT_WIRE_VERSION {
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        if version != NVE_CRDT_DELTA_VERSION {
             return Err(CrdtWireError::UnsupportedVersion(version));
         }
 
         let payload_end = bytes.len() - 8;
         let expected = u64::from_le_bytes(bytes[payload_end..].try_into().expect("8B checksum"));
-        let actual = fnv1a_64(&bytes[..payload_end]);
+        let actual = crdt_xxh64(&bytes[..payload_end]);
         if actual != expected {
             return Err(CrdtWireError::ChecksumMismatch { expected, actual });
         }
 
-        let mut cur = Cursor::new(&bytes[6..payload_end]);
+        let mut cur = Cursor::new(&bytes[10..payload_end]);
         let sender = PeerId(cur.read_u64()?);
 
         let vv_len = cur.read_u32()? as usize;

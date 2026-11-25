@@ -1,8 +1,7 @@
-//! Live `NVT1`/`NVD1` thin-client pairing adapter (`PairedRemoteApp`) connecting `nve-skia-shell`
-//! directly to a remote `nve pair` host over UDP, raw framed TCP, or RFC 6455 binary WebSocket
-//! with zero local `cdylib` required.
+//! Live `NveWireFrame` v2 thin-client pairing adapter (`PairedRemoteApp`) connecting
+//! `nve-skia-shell` directly to a remote `nve pair` host over QUIC (`nve-wire-2`), HTTP/3
+//! WebTransport (`h3`), TLS WebSocket (`wss://`), or Happy-Eyeballs auto-fallback.
 
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,50 +10,73 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use nve_abi::{FrameId, SurfaceId};
-use nve_interop::{PairingConfig, PairingMetrics, TcpDeltaClient, UdpDeltaClient};
+use nve_wire::{
+    parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireKind, NveWireMetrics,
+    NveWireTransportKind, NveWireUri, DEFAULT_WIRE_WSS_PATH,
+};
 
 use super::{DesktopApp, DesktopHostError};
 
-/// Default WebSocket upgrade path served by `nve pair`.
-pub const DEFAULT_PAIR_WS_PATH: &str = "/ws/nvd";
+/// Default WebSocket / WebTransport path served by `nve pair`.
+pub const DEFAULT_PAIR_WS_PATH: &str = DEFAULT_WIRE_WSS_PATH;
 
 /// Transport protocol used by `--pair-connect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PairTransport {
-    /// Unreliable UDP with `NVT1` fragmentation + NACK/retransmit reliability.
-    Udp,
-    /// Raw 4-byte length-prefixed binary TCP stream.
-    Tcp,
-    /// RFC 6455 binary WebSocket frames carrying `NVT1`/`NVD1` packets.
+    /// Happy-Eyeballs: QUIC first, racing `wss://` after 250ms.
     #[default]
+    Auto,
+    /// Native raw QUIC (`nve-wire-2` ALPN).
+    Quic,
+    /// HTTP/3 WebTransport (`h3` ALPN).
+    WebTransport,
+    /// TLS WebSocket (`wss://`).
+    Wss,
+    /// Localhost plain WebSocket (`ws://`).
     Ws,
 }
 
 impl PairTransport {
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "udp" => Ok(Self::Udp),
-            "tcp" => Ok(Self::Tcp),
-            "ws" | "websocket" | "wss" => Ok(Self::Ws),
+            "" | "auto" => Ok(Self::Auto),
+            "quic" | "udp" => Ok(Self::Quic),
+            "wt" | "webtransport" | "h3" => Ok(Self::WebTransport),
+            "wss" | "tls" => Ok(Self::Wss),
+            "ws" | "tcp" | "websocket" => Ok(Self::Ws),
             other => Err(format!(
-                "invalid --pair-transport '{other}' (expected one of: udp, tcp, ws)"
+                "invalid --pair-transport '{other}' (expected one of: auto, quic, webtransport, wss, ws)"
             )),
         }
     }
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Udp => "udp",
-            Self::Tcp => "tcp",
+            Self::Auto => "auto",
+            Self::Quic => "quic",
+            Self::WebTransport => "webtransport",
+            Self::Wss => "wss",
             Self::Ws => "ws",
         }
     }
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Udp => "UDP",
-            Self::Tcp => "TCP",
+            Self::Auto => "AUTO",
+            Self::Quic => "QUIC",
+            Self::WebTransport => "WT/H3",
+            Self::Wss => "WSS",
             Self::Ws => "WS",
+        }
+    }
+
+    fn to_wire_kind(self) -> NveWireTransportKind {
+        match self {
+            Self::Auto => NveWireTransportKind::Auto,
+            Self::Quic => NveWireTransportKind::Quic,
+            Self::WebTransport => NveWireTransportKind::WebTransport,
+            Self::Wss => NveWireTransportKind::Wss,
+            Self::Ws => NveWireTransportKind::Ws,
         }
     }
 }
@@ -62,13 +84,15 @@ impl PairTransport {
 /// Connection parameters for live thin-client pairing mode (`--pair-connect`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairConnectConfig {
-    /// Target host:port or scheme URL (`127.0.0.1:8092`, `ws://127.0.0.1:8092/ws/nvd`, etc.).
+    /// Target `nve://pair?...` URI, `quic://`, `https://`, `wss://`, `ws://`, or `host:port`.
     pub addr: String,
-    /// Shared pairing token printed by `nve pair`.
+    /// Shared Bearer token printed by `nve pair`.
     pub token: String,
-    /// Wire transport protocol (`udp`, `tcp`, or `ws`).
+    /// Wire transport protocol (`auto`, `quic`, `webtransport`, `wss`, or `ws`).
     pub transport: PairTransport,
-    /// WebSocket upgrade path when using [`PairTransport::Ws`].
+    /// Optional pinned SHA-256 leaf certificate digest (auto-parsed from `nve://pair?...`).
+    pub cert_sha256: Option<[u8; 32]>,
+    /// WebSocket / WebTransport path.
     pub ws_path: String,
     /// Maximum time to wait for Frame 1 on initial connect / `--screenshot`.
     pub initial_frame_timeout: Duration,
@@ -84,125 +108,40 @@ impl PairConnectConfig {
             addr: addr.into(),
             token: token.into(),
             transport,
+            cert_sha256: None,
             ws_path: DEFAULT_PAIR_WS_PATH.to_string(),
             initial_frame_timeout: Duration::from_secs(5),
         }
     }
 
-    /// Parses optional URL scheme/path and resolves the remote [`SocketAddr`].
-    pub fn resolve_endpoint(&self) -> Result<(SocketAddr, String), DesktopHostError> {
-        let trimmed = self.addr.trim();
-        if trimmed.is_empty() {
-            return Err(DesktopHostError::Pairing(
-                "pair endpoint address cannot be empty".to_string(),
-            ));
-        }
+    pub fn with_cert_sha256(mut self, sha256: [u8; 32]) -> Self {
+        self.cert_sha256 = Some(sha256);
+        self
+    }
 
-        let without_scheme = if let Some(rest) = trimmed.strip_prefix("ws://") {
-            rest
-        } else if let Some(rest) = trimmed.strip_prefix("wss://") {
-            rest
-        } else if let Some(rest) = trimmed.strip_prefix("tcp://") {
-            rest
-        } else if let Some(rest) = trimmed.strip_prefix("udp://") {
-            rest
-        } else {
-            trimmed
-        };
-
-        let (host_port, path) = match without_scheme.find('/') {
-            Some(idx) => {
-                let hp = &without_scheme[..idx];
-                let p = &without_scheme[idx..];
-                (hp, p.to_string())
-            }
-            None => (without_scheme, self.ws_path.clone()),
-        };
-
-        let mut addrs = host_port.to_socket_addrs().map_err(|e| {
-            DesktopHostError::Pairing(format!("failed to resolve pair endpoint '{host_port}': {e}"))
+    pub fn resolve_uri(&self) -> Result<NveWireUri, DesktopHostError> {
+        let mut uri = parse_wire_uri(&self.addr).map_err(|e| {
+            DesktopHostError::Pairing(format!("invalid pair endpoint '{}': {e}", self.addr))
         })?;
-        let sock_addr = addrs.next().ok_or_else(|| {
-            DesktopHostError::Pairing(format!("no socket addresses resolved for '{host_port}'"))
-        })?;
-
-        let normalized_path = if path.is_empty() {
-            DEFAULT_PAIR_WS_PATH.to_string()
-        } else if path.starts_with('/') {
-            path
-        } else {
-            format!("/{path}")
-        };
-        Ok((sock_addr, normalized_path))
-    }
-}
-
-enum LiveDeltaClient {
-    Udp(UdpDeltaClient),
-    Tcp(TcpDeltaClient),
-}
-
-impl LiveDeltaClient {
-    fn session_id(&self) -> u32 {
-        match self {
-            Self::Udp(c) => c.session_id(),
-            Self::Tcp(c) => c.session_id(),
+        if self.transport != PairTransport::Auto {
+            uri.transport = self.transport.to_wire_kind();
         }
-    }
-
-    fn is_connected(&self) -> bool {
-        match self {
-            Self::Udp(c) => c.is_connected(),
-            Self::Tcp(c) => c.is_connected(),
+        if !self.token.trim().is_empty() {
+            uri.token = self.token.clone();
         }
-    }
-
-    fn recv_frame(
-        &self,
-        timeout: Duration,
-    ) -> Result<Option<(u32, Vec<u8>)>, nve_interop::TransportError> {
-        match self {
-            Self::Udp(c) => c.recv_frame(timeout),
-            Self::Tcp(c) => c.recv_frame(timeout),
+        if let Some(hash) = self.cert_sha256 {
+            uri.cert_sha256 = Some(hash);
         }
-    }
-
-    fn try_recv_frame(&self) -> Option<(u32, Vec<u8>)> {
-        match self {
-            Self::Udp(c) => c.try_recv_frame(),
-            Self::Tcp(c) => c.try_recv_frame(),
+        if uri.path.is_empty() {
+            uri.path = self.ws_path.clone();
         }
-    }
-
-    fn send_events(&self, encoded_event_ring: &[u8]) -> Result<(), nve_interop::TransportError> {
-        match self {
-            Self::Udp(c) => c.send_events(encoded_event_ring),
-            Self::Tcp(c) => c.send_events(encoded_event_ring),
-        }
-    }
-
-    fn metrics(&self) -> PairingMetrics {
-        match self {
-            Self::Udp(c) => c.metrics(),
-            Self::Tcp(c) => c.metrics(),
-        }
-    }
-
-    fn shutdown(&mut self) {
-        match self {
-            Self::Udp(c) => c.shutdown(),
-            Self::Tcp(c) => c.shutdown(),
-        }
+        Ok(uri)
     }
 }
 
 type WakeFn = Arc<dyn Fn() + Send + Sync>;
 
-/// Live thin-client [`DesktopApp`] backed by `UdpDeltaClient` or `TcpDeltaClient` (`Tcp`/`Ws`).
-///
-/// A dedicated background worker thread receives decoded `NVD1` `CommandBuffer` frames (waking
-/// the `winit` event loop immediately via the installed wake callback) and flushes local binary
-/// `EventRing` batches upstream over `TransportMsgKind::InputEvents = 11`.
+/// Live thin-client [`DesktopApp`] backed by `nve_wire::NveWireClient` (QUIC / WebTransport / WSS).
 pub struct PairedRemoteApp {
     transport: PairTransport,
     endpoint_label: String,
@@ -214,50 +153,36 @@ pub struct PairedRemoteApp {
     frames_received: Arc<AtomicU64>,
     last_seq: Arc<AtomicU64>,
     connected: Arc<AtomicBool>,
-    metrics: Arc<Mutex<PairingMetrics>>,
+    metrics: Arc<Mutex<NveWireMetrics>>,
     wake_cb: Arc<Mutex<Option<WakeFn>>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl PairedRemoteApp {
-    /// Connects to a remote `nve pair` server over the configured transport and spawns the live
-    /// frame-reader / event-sender background thread.
+    /// Connects to a remote `nve pair` server over QUIC/WebTransport/WSS and spawns the reader loop.
     pub fn connect(config: PairConnectConfig) -> Result<Self, DesktopHostError> {
-        if config.token.trim().is_empty() {
+        let uri = config.resolve_uri()?;
+        if uri.token.trim().is_empty() {
             return Err(DesktopHostError::Pairing(
                 "missing --pair-token for --pair-connect".to_string(),
             ));
         }
 
-        let (sock_addr, ws_path) = config.resolve_endpoint()?;
-        let pairing_cfg = PairingConfig::new(config.token.clone());
-        let client = match config.transport {
-            PairTransport::Udp => {
-                let c = UdpDeltaClient::connect(sock_addr, pairing_cfg).map_err(|e| {
-                    DesktopHostError::Pairing(format!("UDP pair connect to {sock_addr} failed: {e}"))
-                })?;
-                LiveDeltaClient::Udp(c)
-            }
-            PairTransport::Tcp => {
-                let c = TcpDeltaClient::connect(sock_addr, pairing_cfg).map_err(|e| {
-                    DesktopHostError::Pairing(format!("TCP pair connect to {sock_addr} failed: {e}"))
-                })?;
-                LiveDeltaClient::Tcp(c)
-            }
-            PairTransport::Ws => {
-                let c =
-                    TcpDeltaClient::connect_websocket(sock_addr, &ws_path, pairing_cfg).map_err(
-                        |e| {
-                            DesktopHostError::Pairing(format!(
-                                "WebSocket pair connect to ws://{sock_addr}{ws_path} failed: {e}"
-                            ))
-                        },
-                    )?;
-                LiveDeltaClient::Tcp(c)
-            }
-        };
+        let mut wire_cfg = NveWireClientConfig::new(uri.token.clone(), "nve-skia-shell");
+        wire_cfg.cert_sha256 = uri.cert_sha256;
 
+        let client = NveWireClient::connect_uri_sync(&uri, &wire_cfg).map_err(|e| {
+            DesktopHostError::Pairing(format!("wire pair connect to {} failed: {e}", config.addr))
+        })?;
+
+        let active_transport = match client.transport_kind() {
+            NveWireTransportKind::Auto => PairTransport::Auto,
+            NveWireTransportKind::Quic => PairTransport::Quic,
+            NveWireTransportKind::WebTransport => PairTransport::WebTransport,
+            NveWireTransportKind::Wss => PairTransport::Wss,
+            NveWireTransportKind::Ws => PairTransport::Ws,
+        };
         let session_id = client.session_id();
         let initial_metrics = client.metrics();
         let (frame_tx, frame_rx) = unbounded::<(u32, Vec<u8>)>();
@@ -277,18 +202,10 @@ impl PairedRemoteApp {
         let w_stop = Arc::clone(&stop);
 
         let worker = thread::Builder::new()
-            .name("nve-skia-pair-client".to_string())
+            .name("nve-skia-wire-client".to_string())
             .spawn(move || {
                 pair_worker_loop(
-                    client,
-                    frame_tx,
-                    event_rx,
-                    w_frames,
-                    w_seq,
-                    w_conn,
-                    w_metrics,
-                    w_wake,
-                    w_stop,
+                    client, frame_tx, event_rx, w_frames, w_seq, w_conn, w_metrics, w_wake, w_stop,
                 );
             })
             .map_err(|e| {
@@ -296,8 +213,8 @@ impl PairedRemoteApp {
             })?;
 
         Ok(Self {
-            transport: config.transport,
-            endpoint_label: sock_addr.to_string(),
+            transport: active_transport,
+            endpoint_label: config.addr,
             session_id,
             frame_rx,
             event_tx,
@@ -333,19 +250,17 @@ impl PairedRemoteApp {
         self.last_seq.load(Ordering::Relaxed) as u32
     }
 
-    pub fn metrics(&self) -> PairingMetrics {
-        self.metrics.lock().unwrap().clone()
+    pub fn metrics(&self) -> NveWireMetrics {
+        *self.metrics.lock().unwrap()
     }
 
-    /// Blocks up to `timeout` for the next decoded `CommandBuffer` frame from the server,
-    /// coalescing any newer already-buffered frames so callers always render the freshest state.
     pub fn wait_for_frame(
         &mut self,
         timeout: Duration,
     ) -> Result<(u32, Vec<u8>), DesktopHostError> {
         let first = self.frame_rx.recv_timeout(timeout).map_err(|e| {
             DesktopHostError::Pairing(format!(
-                "timed out waiting for paired NVD1 frame from {} ({e})",
+                "timed out waiting for paired wire frame from {} ({e})",
                 self.endpoint_label
             ))
         })?;
@@ -358,7 +273,6 @@ impl PairedRemoteApp {
         Ok(latest)
     }
 
-    /// Drains any newly arrived frames into `latest_frame` without blocking.
     fn drain_incoming_frames(&mut self) -> bool {
         let mut got_new = false;
         while let Ok((_seq, bytes)) = self.frame_rx.try_recv() {
@@ -371,7 +285,6 @@ impl PairedRemoteApp {
         got_new
     }
 
-    /// Explicitly shuts down the pairing client and joins its background thread.
     pub fn disconnect(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.worker.take() {
@@ -436,30 +349,25 @@ impl DesktopApp for PairedRemoteApp {
         } else {
             "DISCONNECTED"
         };
-        let rtt_part = m
-            .smoothed_rtt_us
-            .or(m.last_rtt_us)
-            .map(|us| format!(" · {:.1}ms", us as f64 / 1000.0))
-            .unwrap_or_default();
         Some(format!(
-            "Paired {} [{}] · seq #{} · {:.1} KB/s{rtt_part}",
+            "Paired {} [{}] · seq #{} · {} B rx",
             self.transport.label(),
             state,
             self.last_seq(),
-            m.rx_kbps()
+            m.wire_bytes_rx
         ))
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn pair_worker_loop(
-    mut client: LiveDeltaClient,
+    client: NveWireClient,
     frame_tx: Sender<(u32, Vec<u8>)>,
     event_rx: Receiver<Vec<u8>>,
     frames_received: Arc<AtomicU64>,
     last_seq: Arc<AtomicU64>,
     connected: Arc<AtomicBool>,
-    metrics: Arc<Mutex<PairingMetrics>>,
+    metrics: Arc<Mutex<NveWireMetrics>>,
     wake_cb: Arc<Mutex<Option<WakeFn>>>,
     stop: Arc<AtomicBool>,
 ) {
@@ -467,7 +375,6 @@ fn pair_worker_loop(
     let poll_timeout = Duration::from_millis(2);
 
     while !stop.load(Ordering::Relaxed) {
-        // 1. Flush all pending upstream InputEvents immediately.
         let mut flushed_event = false;
         while let Ok(encoded_ring) = event_rx.try_recv() {
             if client.send_events(&encoded_ring).is_ok() {
@@ -475,32 +382,34 @@ fn pair_worker_loop(
             }
         }
 
-        // 2. Receive incoming decoded NVD1 CommandBuffer frames.
         let mut received_any = false;
-        match client.recv_frame(poll_timeout) {
-            Ok(Some((seq, frame))) => {
+        if let Some(frame) = client.recv_frame_timeout(poll_timeout) {
+            if matches!(
+                frame.kind,
+                NveWireKind::CommandDelta | NveWireKind::SceneKeyframe
+            ) {
                 frames_received.fetch_add(1, Ordering::Relaxed);
-                last_seq.store(u64::from(seq), Ordering::Relaxed);
-                if frame_tx.send((seq, frame)).is_err() {
+                last_seq.store(u64::from(frame.sequence), Ordering::Relaxed);
+                if frame_tx.send((frame.sequence, frame.payload)).is_err() {
                     break;
                 }
                 received_any = true;
-                while let Some((seq2, frame2)) = client.try_recv_frame() {
+            }
+            while let Some(f2) = client.try_recv_frame() {
+                if matches!(f2.kind, NveWireKind::CommandDelta | NveWireKind::SceneKeyframe) {
                     frames_received.fetch_add(1, Ordering::Relaxed);
-                    last_seq.store(u64::from(seq2), Ordering::Relaxed);
-                    if frame_tx.send((seq2, frame2)).is_err() {
+                    last_seq.store(u64::from(f2.sequence), Ordering::Relaxed);
+                    if frame_tx.send((f2.sequence, f2.payload)).is_err() {
                         break;
                     }
+                    received_any = true;
                 }
             }
-            Ok(None) => {}
-            Err(_) => {
-                connected.store(false, Ordering::Relaxed);
-                break;
-            }
+        } else if !client.is_connected() {
+            connected.store(false, Ordering::Relaxed);
+            break;
         }
 
-        // 3. Refresh telemetry snapshot and wake the UI event loop when frames arrive.
         let now = Instant::now();
         if received_any
             || flushed_event
@@ -518,6 +427,6 @@ fn pair_worker_loop(
         }
     }
 
-    client.shutdown();
+    client.close();
     connected.store(false, Ordering::Relaxed);
 }

@@ -9,7 +9,6 @@ import 'event_codec.dart';
 import 'flex_layout.dart';
 import 'nve_core_abi.generated.dart';
 import 'nve_pair_client.dart';
-import 'nve_pair_protocol.dart';
 
 typedef NvePairedSurfaceFrameBuilder = Widget Function(
   BuildContext context,

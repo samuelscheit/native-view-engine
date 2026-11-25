@@ -1,6 +1,7 @@
 //! Integration tests for `nve pair`: ephemeral OS port binding (`--ws-port 0 --udp-port 0`),
-//! machine-parseable `NVE_PAIR_READY` stdout readiness output, and live RFC-6455 binary WebSocket
-//! `NVT1`/`NVD1` frame streaming + `InputEvents` round-trips against `nve-example-counter`.
+//! machine-parseable `NVE_PAIR_READY` stdout readiness output with 13-day ECDSA P-256 `cert_hash`,
+//! and live QUIC + WSS `NveWireFrame` v2 frame streaming + `EventBatch` round-trips against
+//! `nve-example-counter`.
 
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
@@ -12,7 +13,9 @@ use std::time::{Duration, Instant};
 use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId, ROOT_NODE_ID};
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{RenderBackend, Viewport};
-use nve_interop::{PairingConfig, TcpDeltaClient, TransportError};
+use nve_wire::{
+    parse_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportError,
+};
 
 struct ChildGuard(Child);
 
@@ -29,6 +32,7 @@ struct ReadyInfo {
     token: String,
     udp_addr: SocketAddr,
     tcp_addr: SocketAddr,
+    cert_hash_hex: String,
 }
 
 fn workspace_root() -> PathBuf {
@@ -46,7 +50,11 @@ fn target_dir(root: &Path) -> PathBuf {
     match std::env::var_os("CARGO_TARGET_DIR") {
         Some(val) => {
             let p = PathBuf::from(val);
-            if p.is_absolute() { p } else { root.join(p) }
+            if p.is_absolute() {
+                p
+            } else {
+                root.join(p)
+            }
         }
         None => root.join("target"),
     }
@@ -79,11 +87,7 @@ fn counter_cdylib_path() -> PathBuf {
                     "cargo build --locked -p nve-example-counter failed with {status}"
                 );
             }
-            assert!(
-                path.exists(),
-                "expected counter cdylib at {}",
-                path.display()
-            );
+            assert!(path.exists(), "expected counter cdylib at {}", path.display());
             path
         })
         .clone()
@@ -95,6 +99,7 @@ fn parse_ready_line(line: &str) -> Option<ReadyInfo> {
     let mut token = None;
     let mut udp_addr = None;
     let mut tcp_addr = None;
+    let mut cert_hash_hex = None;
     for part in rest.split_whitespace() {
         if let Some(v) = part.strip_prefix("ws=") {
             ws_url = Some(v.to_owned());
@@ -104,6 +109,8 @@ fn parse_ready_line(line: &str) -> Option<ReadyInfo> {
             udp_addr = v.parse::<SocketAddr>().ok();
         } else if let Some(v) = part.strip_prefix("tcp=") {
             tcp_addr = v.parse::<SocketAddr>().ok();
+        } else if let Some(v) = part.strip_prefix("cert_hash=") {
+            cert_hash_hex = Some(v.to_owned());
         }
     }
     Some(ReadyInfo {
@@ -111,6 +118,7 @@ fn parse_ready_line(line: &str) -> Option<ReadyInfo> {
         token: token?,
         udp_addr: udp_addr?,
         tcp_addr: tcp_addr?,
+        cert_hash_hex: cert_hash_hex?,
     })
 }
 
@@ -203,49 +211,36 @@ fn find_pressable_with_label(backend: &HeadlessBackend, label: &str) -> Option<N
 }
 
 #[test]
-fn nve_pair_ephemeral_ports_readiness_and_live_ws_roundtrip() {
+fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
     let (_child, stdout_lines, ready) = spawn_pair_and_wait_ready(&[]);
 
-    assert!(ready.udp_addr.port() > 0, "UDP port must be resolved non-zero");
-    assert!(ready.tcp_addr.port() > 0, "TCP/WS port must be resolved non-zero");
-    assert_eq!(
-        ready.ws_url,
-        format!("ws://127.0.0.1:{}", ready.tcp_addr.port())
-    );
-    assert!(
-        ready.token.starts_with("nve-"),
-        "expected auto-generated token, got {}",
-        ready.token
-    );
+    assert!(ready.udp_addr.port() > 0);
+    assert!(ready.tcp_addr.port() > 0);
+    assert_eq!(ready.ws_url, format!("ws://127.0.0.1:{}", ready.tcp_addr.port()));
+    assert!(ready.token.starts_with("nve_"));
+    let cert_hash = parse_cert_hash_hex(&ready.cert_hash_hex).expect("valid 64-hex SHA-256");
 
     let full_stdout = stdout_lines.join("\n");
     let expected_uri = format!(
-        "nve://pair?host=127.0.0.1&udp={}&ws={}&token={}",
+        "nve://pair?host=127.0.0.1&quic={}&wss={}&token={}",
         ready.udp_addr.port(),
         ready.tcp_addr.port(),
         ready.token
     );
-    let expected_browser_query = format!("?pair={}&token={}", ready.ws_url, ready.token);
     assert!(
         full_stdout.contains(&expected_uri),
         "stdout missing pairing URI {expected_uri}:\n{full_stdout}"
     );
-    assert!(
-        full_stdout.contains(&expected_browser_query),
-        "stdout missing browser query {expected_browser_query}:\n{full_stdout}"
-    );
 
-    // Connect using `/` (matching browser `new WebSocket("ws://127.0.0.1:<port>")`).
-    let cfg = PairingConfig::new(ready.token.clone());
-    let mut ws = TcpDeltaClient::connect_websocket(ready.tcp_addr, "/", cfg)
-        .expect("RFC-6455 binary WebSocket NVT1 handshake on /");
+    // Connect over real TLS WSS with SHA-256 cert pinning!
+    let cfg = NveWireClientConfig::new(ready.token.clone(), "cli-live-ws-test")
+        .with_cert_sha256(cert_hash);
+    let wss_uri = parse_wire_uri(&format!("wss://{}/nve-wire", ready.tcp_addr)).unwrap();
+    let ws = NveWireClient::connect_uri_sync(&wss_uri, &cfg)
+        .expect("TLS WSS NveWireFrame v2 handshake");
 
     let timeout = Duration::from_secs(3);
-    let f0 = ws
-        .recv_frame(timeout)
-        .expect("recv initial keyframe")
-        .expect("initial keyframe present")
-        .1;
+    let f0 = ws.recv_frame_timeout(timeout).expect("initial keyframe").payload;
 
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
@@ -266,7 +261,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_ws_roundtrip() {
     let reset_node =
         find_pressable_with_label(&headless, "Reset").expect("find Reset pressable node");
 
-    let send_press = |ws: &mut TcpDeltaClient, node_id: NodeId, ts: u64| {
+    let send_press = |client: &NveWireClient, node_id: NodeId, ts: u64| {
         let ev_ring = encode_events(&[NativeEvent {
             surface_id: 1,
             node_id,
@@ -274,80 +269,51 @@ fn nve_pair_ephemeral_ports_readiness_and_live_ws_roundtrip() {
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 40.0, y: 20.0 },
         }]);
-        ws.send_events(&ev_ring).expect("send NVT1 InputEvents");
+        client.send_events(&ev_ring).expect("send EventBatch");
     };
 
-    // Click Increment + twice -> Count: 1 -> Count: 2.
-    send_press(&mut ws, inc_node, 1_000);
-    let f1 = ws
-        .recv_frame(timeout)
-        .expect("recv frame 1")
-        .expect("frame 1 present")
-        .1;
-    headless.submit_frame(&f1).expect("submit frame 1");
-    assert!(
-        headless.render_ascii_tree().contains("Count: 1"),
-        "expected Count: 1 after 1st tap"
-    );
+    send_press(&ws, inc_node, 1_000);
+    let f1 = ws.recv_frame_timeout(timeout).expect("frame 1").payload;
+    headless.submit_frame(&f1).unwrap();
+    assert!(headless.render_ascii_tree().contains("Count: 1"));
 
-    send_press(&mut ws, inc_node, 2_000);
-    let f2 = ws
-        .recv_frame(timeout)
-        .expect("recv frame 2")
-        .expect("frame 2 present")
-        .1;
-    headless.submit_frame(&f2).expect("submit frame 2");
-    assert!(
-        headless.render_ascii_tree().contains("Count: 2"),
-        "expected Count: 2 after 2nd tap"
-    );
+    send_press(&ws, inc_node, 2_000);
+    let f2 = ws.recv_frame_timeout(timeout).expect("frame 2").payload;
+    headless.submit_frame(&f2).unwrap();
+    assert!(headless.render_ascii_tree().contains("Count: 2"));
 
-    // Click Reset -> Count: 0.
-    send_press(&mut ws, reset_node, 3_000);
-    let f3 = ws
-        .recv_frame(timeout)
-        .expect("recv frame 3")
-        .expect("frame 3 present")
-        .1;
-    headless.submit_frame(&f3).expect("submit frame 3");
-    assert!(
-        headless.render_ascii_tree().contains("Count: 0"),
-        "expected Count: 0 after Reset tap"
-    );
+    send_press(&ws, reset_node, 3_000);
+    let f3 = ws.recv_frame_timeout(timeout).expect("frame 3").payload;
+    headless.submit_frame(&f3).unwrap();
+    assert!(headless.render_ascii_tree().contains("Count: 0"));
 
-    ws.shutdown();
+    ws.close();
 }
 
 #[test]
-fn nve_pair_honors_explicit_token_and_rejects_invalid_ws_token() {
+fn nve_pair_honors_explicit_token_and_rejects_invalid_bearer_token() {
     let (_child, _lines, ready) = spawn_pair_and_wait_ready(&["--token", "explicit-e2e-secret"]);
 
     assert_eq!(ready.token, "explicit-e2e-secret");
-    assert!(ready.udp_addr.port() > 0);
-    assert!(ready.tcp_addr.port() > 0);
+    let cert_hash = parse_cert_hash_hex(&ready.cert_hash_hex).unwrap();
 
-    let wrong_cfg = PairingConfig::new("wrong-secret");
-    let err = TcpDeltaClient::connect_websocket(ready.tcp_addr, "/ws/nvd", wrong_cfg)
+    let wrong_cfg = NveWireClientConfig::new("wrong-secret", "intruder").with_cert_sha256(cert_hash);
+    let quic_uri = parse_wire_uri(&format!("quic://{}", ready.udp_addr)).unwrap();
+    let err = NveWireClient::connect_uri_sync(&quic_uri, &wrong_cfg)
         .err()
         .expect("invalid token must be rejected");
-    assert!(
-        matches!(
-            err,
-            TransportError::AuthenticationFailed | TransportError::HandshakeRejected(_)
-        ),
-        "expected AuthenticationFailed/HandshakeRejected error, got {err:?}"
-    );
+    assert!(matches!(err, NveWireTransportError::Auth(_)), "got {err:?}");
 
-    let ok_cfg = PairingConfig::new("explicit-e2e-secret");
-    let mut ws = TcpDeltaClient::connect_websocket(ready.tcp_addr, "/ws/nvd", ok_cfg)
-        .expect("valid explicit token connects on /ws/nvd");
-    let f0 = ws
-        .recv_frame(Duration::from_secs(3))
+    let ok_cfg = NveWireClientConfig::new("explicit-e2e-secret", "cli-quic")
+        .with_cert_sha256(cert_hash);
+    let quic = NveWireClient::connect_uri_sync(&quic_uri, &ok_cfg)
+        .expect("valid explicit token connects over QUIC nve-wire-2");
+    let f0 = quic
+        .recv_frame_timeout(Duration::from_secs(3))
         .expect("recv frame")
-        .expect("frame present")
-        .1;
+        .payload;
     let mut headless = HeadlessBackend::new();
     headless.submit_frame(&f0).expect("submit frame");
     assert!(headless.render_ascii_tree().contains("Count: 0"));
-    ws.shutdown();
+    quic.close();
 }

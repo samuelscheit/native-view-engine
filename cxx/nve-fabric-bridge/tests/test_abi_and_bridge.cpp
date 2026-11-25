@@ -29,14 +29,12 @@ static_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE, "NveRenderNode size
 static_assert(offsetof(NveSceneView, removed_ids) == 40u + 4u * sizeof(void*), "NveSceneView::removed_ids offset mismatch");
 static_assert(nve::kRelocHeaderSize == 64u, "NVERELOC header wire size mismatch");
 static_assert(offsetof(nve::RelocHeader, flags) == nve::kSnapshotFlagsOffset, "RelocHeader::flags offset mismatch");
-static_assert(sizeof(nve::HelloPayload) == nve::kHelloPayloadWireSize, "HelloPayload size mismatch");
-static_assert(offsetof(nve::HelloPayload, token_proof) == 16u, "HelloPayload::token_proof offset mismatch");
-static_assert(offsetof(nve::HelloAckPayload, resync_required) == 16u, "HelloAckPayload::resync_required offset mismatch");
-static_assert(offsetof(nve::DeltaPacketHeader, payload_len) == 16u, "DeltaPacketHeader::payload_len offset mismatch");
+static_assert(nve::kWireHeaderSize == 16u, "NveWireFrame v2 header wire size mismatch");
+static_assert(nve::kWireTrailerSize == 8u, "NveWireFrame v2 XXH64 trailer size mismatch");
 
 // 1. Test all 10 NveOpcode variants + custom component hooks + snapshot inspection.
 void test_all_opcodes_and_custom_components() {
-  // Verify NVERELOC and pair/NVD1 wire headers encode at their exact asserted offsets.
+  // Verify NVERELOC and NveWireFrame v2 headers encode and round-trip cleanly.
   {
     const uint8_t f0[4] = {0x4E, 0x56, 0x45, 0x31};
     const auto snap = nve::encode_snapshot(
@@ -53,37 +51,35 @@ void test_all_opcodes_and_custom_components() {
     assert(parsed.bundle_root().frame0.offset == nve::kRelocBundleMinSize);
     assert(parsed.bundle_root().frame0.len == sizeof(f0));
 
-    nve::HelloPayload hello{};
+    nve::WireHello hello{};
     hello.schema_version = 2u;
-    hello.max_window = 32u;
-    hello.client_last_seq = 9u;
-    hello.client_nonce = 0x1122334455667788ULL;
-    const auto hello_wire = nve::pair_wire::encode_hello_payload(hello);
-    assert(hello_wire.size() == nve::kHelloPayloadWireSize);
-    nve::HelloPayload decoded_hello{};
-    assert(nve::pair_wire::decode_hello_payload(hello_wire, decoded_hello));
-    assert(decoded_hello.client_nonce == hello.client_nonce);
+    hello.capabilities = 0x0Fu;
+    hello.bearer_token = "pair-secret";
+    hello.client_name = "abi-test";
+    const auto hello_wire = nve::wire_v2::encode_hello(hello);
+    nve::WireHello decoded_hello{};
+    assert(nve::wire_v2::decode_hello(hello_wire, decoded_hello));
+    assert(decoded_hello.bearer_token == hello.bearer_token);
+    assert(decoded_hello.client_name == hello.client_name);
 
-    nve::HelloAckPayload ack{};
+    nve::WireHelloAck ack{};
+    ack.session_id = 42u;
     ack.schema_version = 2u;
-    ack.server_max_window = 16u;
-    ack.server_seq = 5u;
-    ack.server_nonce = 0x8877665544332211ULL;
-    ack.resync_required = true;
-    const auto ack_wire = nve::pair_wire::encode_hello_ack_payload(ack);
-    assert(ack_wire.size() == nve::kHelloAckPayloadWireSize);
-    nve::HelloAckPayload decoded_ack{};
-    assert(nve::pair_wire::decode_hello_ack_payload(ack_wire, decoded_ack));
-    assert(decoded_ack.resync_required);
+    ack.server_capabilities = 0x07u;
+    const auto ack_wire = nve::wire_v2::encode_hello_ack(ack);
+    assert(ack_wire.size() == 12u);
+    nve::WireHelloAck decoded_ack{};
+    assert(nve::wire_v2::decode_hello_ack(ack_wire, decoded_ack));
+    assert(decoded_ack.session_id == 42u);
 
     const std::array<uint8_t, 3> delta_body = {1u, 2u, 3u};
-    const auto nvd_wire = nve::pair_wire::encode_nvd_packet(
-        nve::DeltaPacketKind::Keyframe, 0u, 10u, 0u, 0u, delta_body);
-    assert(nvd_wire.size() == nve::kDeltaHeaderSize + delta_body.size());
-    nve::DeltaPacketView nvd_view{};
-    assert(nve::pair_wire::parse_nvd_packet(nvd_wire, nvd_view));
-    assert(nvd_view.header.seq == 10u);
-    assert(nvd_view.header.payload_len == delta_body.size());
+    const auto frame_wire = nve::wire_v2::encode_frame(
+        nve::WireChannel::UiScene, nve::WireKind::SceneKeyframe, 10u, delta_body);
+    assert(frame_wire.size() == nve::kWireHeaderSize + delta_body.size() + nve::kWireTrailerSize);
+    nve::WireFrameView frame_view{};
+    assert(nve::wire_v2::decode_frame(frame_wire, frame_view));
+    assert(frame_view.header.sequence == 10u);
+    assert(frame_view.payload.size() == delta_body.size());
   }
   NveSurfaceConfig cfg{.surface_id = 7, .width = 400.0f, .height = 600.0f, .scale_factor = 2.0f};
   NveFabricHostHandle host = nve_fabric_host_create(cfg);

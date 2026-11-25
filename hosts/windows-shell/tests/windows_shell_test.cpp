@@ -1469,7 +1469,6 @@ void test_paired_thin_client_loopback_roundtrip() {
   NVE_CHECK(::WSAStartup(MAKEWORD(2, 2), &wsa_data) == 0);
 #endif
   const std::string token = "nve-win-pair-token";
-  const auto expected_proof = nve::pair_wire::derive_token_proof(token, 1u);
   const auto frame1 = build_win_pair_frame(1u, "Windows Paired Frame 1");
   const auto frame2 = build_win_pair_frame(2u, "Windows Paired Frame 2");
 
@@ -1496,51 +1495,72 @@ void test_paired_thin_client_loopback_roundtrip() {
   std::vector<uint8_t> rx_ev;
   std::mutex ev_mtx;
 
+  auto send_raw = [](WinTestSock fd, std::span<const uint8_t> bytes) -> bool {
+    size_t off = 0;
+    while (off < bytes.size()) {
+#if defined(_WIN32)
+      const int n = ::send(fd, reinterpret_cast<const char*>(bytes.data() + off),
+                           static_cast<int>(bytes.size() - off), 0);
+#else
+      const ssize_t n = ::send(fd, bytes.data() + off, bytes.size() - off, 0);
+#endif
+      if (n <= 0) return false;
+      off += static_cast<size_t>(n);
+    }
+    return true;
+  };
+  auto recv_raw = [](WinTestSock fd, uint8_t* out, size_t len) -> bool {
+    size_t off = 0;
+    while (off < len) {
+#if defined(_WIN32)
+      const int n = ::recv(fd, reinterpret_cast<char*>(out + off), static_cast<int>(len - off), 0);
+#else
+      const ssize_t n = ::recv(fd, out + off, len - off, 0);
+#endif
+      if (n <= 0) return false;
+      off += static_cast<size_t>(n);
+    }
+    return true;
+  };
+  auto read_v2 = [&](WinTestSock fd, std::vector<uint8_t>& buf, nve::WireFrameView& view) -> bool {
+    std::array<uint8_t, nve::kWireHeaderSize> h{};
+    if (!recv_raw(fd, h.data(), h.size())) return false;
+    nve::WireHeader hdr{};
+    if (!nve::wire_v2::decode_header(h, hdr)) return false;
+    buf.resize(hdr.total_wire_len());
+    std::memcpy(buf.data(), h.data(), h.size());
+    if (buf.size() > h.size() && !recv_raw(fd, buf.data() + h.size(), buf.size() - h.size())) {
+      return false;
+    }
+    return nve::wire_v2::decode_frame(buf, view);
+  };
+
   std::thread srv([&]() {
     WinTestSock cfd = ::accept(listen_fd, nullptr, nullptr);
     NVE_CHECK(win_test_sock_valid(cfd));
     std::vector<uint8_t> msg;
-    NVE_CHECK(win_pair_read_tcp(cfd, msg));
-    nve::TransportEnvelopeView env{};
-    NVE_CHECK(nve::pair_wire::parse_envelope(msg, env) &&
-              env.kind == nve::TransportMsgKind::Hello);
-    nve::HelloPayload hp{};
-    NVE_CHECK(nve::pair_wire::decode_hello_payload(env.payload, hp));
-    NVE_CHECK(nve::pair_wire::ct_eq_16(hp.token_proof, expected_proof));
+    nve::WireFrameView view{};
+    NVE_CHECK(read_v2(cfd, msg, view) && view.header.kind == nve::WireKind::Hello);
+    nve::WireHello hp{};
+    NVE_CHECK(nve::wire_v2::decode_hello(view.payload, hp));
+    NVE_CHECK(nve::wire_v2::constant_time_eq(hp.bearer_token, token));
 
-    const uint64_t sn = 0x13579BDF2468ACE0ULL;
-    const uint32_t sid = nve::pair_wire::derive_session_id(token, 1u, hp.client_nonce, sn);
-    nve::HelloAckPayload ack{};
-    ack.schema_version = 1u;
-    ack.server_max_window = 64u;
-    ack.server_nonce = sn;
-    ack.resync_required = true;
-    const auto ack_env = nve::pair_wire::encode_envelope(
-        nve::TransportMsgKind::HelloAck, sid, nve::pair_wire::encode_hello_ack_payload(ack));
-    NVE_CHECK(win_pair_write_tcp(cfd, ack_env));
+    const auto ack = nve::wire_v2::encode_hello_ack({42u, nve::kDefaultWireSchemaVersion, 0x0Fu});
+    NVE_CHECK(send_raw(
+        cfd, nve::wire_v2::encode_frame(nve::WireChannel::Control, nve::WireKind::HelloAck, 1u, ack)));
+    NVE_CHECK(send_raw(
+        cfd, nve::wire_v2::encode_frame(nve::WireChannel::UiScene, nve::WireKind::CommandDelta, 1u, frame1)));
+    NVE_CHECK(send_raw(
+        cfd, nve::wire_v2::encode_frame(nve::WireChannel::UiScene, nve::WireKind::CommandDelta, 2u, frame2)));
 
-    const auto kf1 = nve::pair_wire::encode_nvd_packet(
-        nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, frame1);
-    NVE_CHECK(win_pair_write_tcp(
-        cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, kf1)));
-
-    const auto delta2 = nve::pair_wire::encode_command_op_delta(frame1, frame2);
-    NVE_CHECK(delta2.has_value());
-    const auto pkt2 = nve::pair_wire::encode_nvd_packet(
-        nve::DeltaPacketKind::CommandOpDelta, 0u, 2u, 1u, 0u, *delta2);
-    NVE_CHECK(win_pair_write_tcp(
-        cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, pkt2)));
-
-    while (win_pair_read_tcp(cfd, msg, 3000)) {
-      nve::TransportEnvelopeView in{};
-      if (!nve::pair_wire::parse_envelope(msg, in) || in.session_id != sid) continue;
-      if (in.kind == nve::TransportMsgKind::InputEvents) {
+    while (read_v2(cfd, msg, view)) {
+      if (view.header.kind == nve::WireKind::EventBatch) {
         std::lock_guard<std::mutex> lock(ev_mtx);
-        rx_ev.assign(in.payload.begin(), in.payload.end());
+        rx_ev.assign(view.payload.begin(), view.payload.end());
         saw_input.store(true);
         break;
       }
-      if (in.kind == nve::TransportMsgKind::Bye) break;
+      if (view.header.kind == nve::WireKind::Bye) break;
     }
     win_test_close(cfd);
     win_test_close(listen_fd);

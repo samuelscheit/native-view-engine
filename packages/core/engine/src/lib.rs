@@ -34,14 +34,23 @@ pub use mmap_arena::{
 };
 pub use profiler::{FrameProfiler, FrameTiming};
 pub use reloc::{
-    compute_reloc_checksum, encode_reloc_bundle, encode_scene_reloc, write_reloc_atomic, MmapReloc,
-    RelocBuf, RelocBundleRoot, RelocBundleView, RelocError, RelocHeader, RelocLayoutProps,
-    RelocPod, RelocPtr, RelocSceneNode, RelocSceneRoot, RelocSlice, RelocStr, RelocView,
-    RelocWriter, SceneRelocInput, SceneRelocNodeInput, SceneRelocView, VerifyMode, RELOC_BUF_ALIGN,
-    RELOC_HEADER_SIZE, RELOC_KIND_BUNDLE, RELOC_KIND_GENERIC, RELOC_KIND_SCENE,
-    RELOC_KIND_WORKSPACE, RELOC_MAGIC, RELOC_VERSION, SCENE_NODE_CLIP_CHILDREN,
-    SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN, SCENE_NODE_INTERACTIVE,
+    compute_reloc_checksum, encode_reloc_bundle, encode_scene_reloc, encode_timeline_archive,
+    write_reloc_atomic, MmapReloc, NveNodePatch, NveNodePatchField, NveNodePatchValue,
+    NveSceneArchive, NveSceneArchiveView, NveTimelineArchive, NveTimelineArchiveView,
+    NveTimelineEntry, NveTimelineEntryInput, NveTimelinePatchInput, NveTimelineRoot, RelocBuf,
+    RelocBundleRoot, RelocBundleView, RelocError, RelocHeader, RelocLayoutProps, RelocPod,
+    RelocPtr, RelocSceneNode, RelocSceneRoot, RelocSlice, RelocStr, RelocView, RelocWriter,
+    SceneRelocInput, SceneRelocNodeInput, SceneRelocView, VerifyMode,
+    NVE_NODE_PATCH_FLAG_STRING_SPAN, RELOC_BUF_ALIGN, RELOC_HEADER_SIZE, RELOC_KIND_BUNDLE,
+    RELOC_KIND_GENERIC, RELOC_KIND_SCENE, RELOC_KIND_TIMELINE, RELOC_KIND_WORKSPACE, RELOC_MAGIC,
+    RELOC_VERSION, SCENE_NODE_CLIP_CHILDREN, SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN,
+    SCENE_NODE_INTERACTIVE,
 };
+
+/// Self-documenting alias for the memory-mapped zero-copy state arena (`MmapOffsetArena`).
+pub type NveStateArena = MmapOffsetArena;
+/// Self-documenting alias for an encoded signal/state snapshot archive (`RelocBuf`).
+pub type NveSignalSnapshot = RelocBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {

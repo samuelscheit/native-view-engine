@@ -1,0 +1,32 @@
+[package]
+name = "nve-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unified dual-ALPN QUIC / WebTransport + WSS Happy-Eyeballs wire transport and C ABI for NVE"
+
+[lib]
+name = "nve_wire"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-engine = { workspace = true }
+nve-wire-core = { workspace = true }
+quinn = { workspace = true }
+web-transport-quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+subtle = { workspace = true }
+bytes = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+[dev-dependencies]
+nve-components = { workspace = true }

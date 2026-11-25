@@ -1,10 +1,10 @@
 //! Algebraic property tests, HLC skew/monotonicity tests, RGA concurrency tests,
-//! and adversarial `NVC1` binary wire fuzz tests for `nve_interop::crdt`.
+//! and adversarial `NveCrdtDelta` (`XXH64`) binary wire fuzz tests for `nve_interop::crdt`.
 
 use nve_interop::crdt::{
-    CRDT_WIRE_MAGIC, CRDT_WIRE_VERSION, CrdtDeltaPacket, CrdtRecord, CrdtValue, CrdtWireError,
-    GCounter, HLC_ENCODED_LEN, HlcClock, HlcTimestamp, LwwRegister, MAX_WIRE_BYTES, OpId, OrSet,
-    PeerId, PnCounter, RgaList, VersionVector, fnv1a_64,
+    CrdtRecord, CrdtValue, CrdtWireError, GCounter, HLC_ENCODED_LEN, HlcClock, HlcTimestamp,
+    LwwRegister, MAX_WIRE_BYTES, NVE_CRDT_DELTA_MAGIC, NVE_CRDT_DELTA_VERSION, NveCrdtDelta, OpId,
+    OrSet, PeerId, PnCounter, RgaList, VersionVector, crdt_xxh64,
 };
 
 /// Deterministic xorshift64* PRNG (zero external crate dependencies).
@@ -38,7 +38,7 @@ impl Rng {
 }
 
 fn frame_with_valid_checksum(mut body_without_cksum: Vec<u8>) -> Vec<u8> {
-    let cksum = fnv1a_64(&body_without_cksum);
+    let cksum = crdt_xxh64(&body_without_cksum);
     body_without_cksum.extend_from_slice(&cksum.to_le_bytes());
     body_without_cksum
 }
@@ -398,11 +398,11 @@ fn rga_list_concurrent_same_anchor_out_of_order_cycles_and_laws() {
 }
 
 #[test]
-fn wire_nvc1_roundtrip_and_adversarial_fuzzing() {
+fn wire_crdt_delta_roundtrip_and_adversarial_fuzzing() {
     let mut vv = VersionVector::new();
     vv.set_max(PeerId(1), 17);
     vv.set_max(PeerId(2), 42);
-    let packet = CrdtDeltaPacket::new(
+    let packet = NveCrdtDelta::new(
         PeerId(1),
         vv,
         vec![
@@ -461,18 +461,18 @@ fn wire_nvc1_roundtrip_and_adversarial_fuzzing() {
     );
 
     let encoded = packet.encode().expect("encode valid packet");
-    assert_eq!(&encoded[0..4], &CRDT_WIRE_MAGIC);
+    assert_eq!(&encoded[0..8], &NVE_CRDT_DELTA_MAGIC);
     assert_eq!(
-        u16::from_le_bytes([encoded[4], encoded[5]]),
-        CRDT_WIRE_VERSION
+        u16::from_le_bytes([encoded[8], encoded[9]]),
+        NVE_CRDT_DELTA_VERSION
     );
-    let decoded = CrdtDeltaPacket::decode(&encoded).expect("decode valid packet");
+    let decoded = NveCrdtDelta::decode(&encoded).expect("decode valid packet");
     assert_eq!(decoded, packet);
 
     // 1. Every truncation length must return Err cleanly (zero panics).
     for len in 0..encoded.len() {
         assert!(
-            CrdtDeltaPacket::decode(&encoded[..len]).is_err(),
+            NveCrdtDelta::decode(&encoded[..len]).is_err(),
             "truncated len {len} must fail"
         );
     }
@@ -483,7 +483,7 @@ fn wire_nvc1_roundtrip_and_adversarial_fuzzing() {
             let mut mutated = encoded.clone();
             mutated[byte_idx] ^= 1 << bit;
             assert!(
-                CrdtDeltaPacket::decode(&mutated).is_err(),
+                NveCrdtDelta::decode(&mutated).is_err(),
                 "bit flip at byte {byte_idx} bit {bit} must be rejected"
             );
         }
@@ -493,74 +493,74 @@ fn wire_nvc1_roundtrip_and_adversarial_fuzzing() {
     let mut bad_magic = encoded.clone();
     bad_magic[0] = b'X';
     assert!(matches!(
-        CrdtDeltaPacket::decode(&bad_magic),
+        NveCrdtDelta::decode(&bad_magic),
         Err(CrdtWireError::InvalidMagic(_))
     ));
 
     let mut bad_ver = encoded.clone();
-    bad_ver[4..6].copy_from_slice(&99u16.to_le_bytes());
+    bad_ver[8..10].copy_from_slice(&99u16.to_le_bytes());
     assert!(matches!(
-        CrdtDeltaPacket::decode(&bad_ver),
+        NveCrdtDelta::decode(&bad_ver),
         Err(CrdtWireError::UnsupportedVersion(99))
     ));
 
     // 4. Valid-checksum adversarial payloads: bogus op tag, bogus lengths, invalid UTF-8, trailing bytes.
     // 4a. Huge vv_len with valid checksum.
     let mut huge_vv = Vec::new();
-    huge_vv.extend_from_slice(&CRDT_WIRE_MAGIC);
-    huge_vv.extend_from_slice(&CRDT_WIRE_VERSION.to_le_bytes());
+    huge_vv.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+    huge_vv.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
     huge_vv.extend_from_slice(&1u64.to_le_bytes()); // sender
     huge_vv.extend_from_slice(&u32::MAX.to_le_bytes()); // vv_len
     huge_vv.extend_from_slice(&0u32.to_le_bytes()); // record_count
     assert!(matches!(
-        CrdtDeltaPacket::decode(&frame_with_valid_checksum(huge_vv)),
+        NveCrdtDelta::decode(&frame_with_valid_checksum(huge_vv)),
         Err(CrdtWireError::LimitExceeded { .. })
     ));
 
     // 4b. Huge record_count with valid checksum.
     let mut huge_recs = Vec::new();
-    huge_recs.extend_from_slice(&CRDT_WIRE_MAGIC);
-    huge_recs.extend_from_slice(&CRDT_WIRE_VERSION.to_le_bytes());
+    huge_recs.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+    huge_recs.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
     huge_recs.extend_from_slice(&1u64.to_le_bytes());
     huge_recs.extend_from_slice(&0u32.to_le_bytes());
     huge_recs.extend_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(
-        CrdtDeltaPacket::decode(&frame_with_valid_checksum(huge_recs)),
+        NveCrdtDelta::decode(&frame_with_valid_checksum(huge_recs)),
         Err(CrdtWireError::LimitExceeded { .. })
     ));
 
     // 4c. Huge record_len with valid checksum.
     let mut huge_rec_len = Vec::new();
-    huge_rec_len.extend_from_slice(&CRDT_WIRE_MAGIC);
-    huge_rec_len.extend_from_slice(&CRDT_WIRE_VERSION.to_le_bytes());
+    huge_rec_len.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+    huge_rec_len.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
     huge_rec_len.extend_from_slice(&1u64.to_le_bytes());
     huge_rec_len.extend_from_slice(&0u32.to_le_bytes());
     huge_rec_len.extend_from_slice(&1u32.to_le_bytes()); // 1 record
     huge_rec_len.extend_from_slice(&0x0FFF_FFFFu32.to_le_bytes()); // huge record_len
     huge_rec_len.push(1);
     assert!(matches!(
-        CrdtDeltaPacket::decode(&frame_with_valid_checksum(huge_rec_len)),
+        NveCrdtDelta::decode(&frame_with_valid_checksum(huge_rec_len)),
         Err(CrdtWireError::LimitExceeded { .. })
     ));
 
     // 4d. Bogus op tag (0xEE) with valid checksum.
     let mut bogus_tag = Vec::new();
-    bogus_tag.extend_from_slice(&CRDT_WIRE_MAGIC);
-    bogus_tag.extend_from_slice(&CRDT_WIRE_VERSION.to_le_bytes());
+    bogus_tag.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+    bogus_tag.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
     bogus_tag.extend_from_slice(&1u64.to_le_bytes());
     bogus_tag.extend_from_slice(&0u32.to_le_bytes());
     bogus_tag.extend_from_slice(&1u32.to_le_bytes());
     bogus_tag.extend_from_slice(&1u32.to_le_bytes()); // record_len = 1
     bogus_tag.push(0xEE);
     assert!(matches!(
-        CrdtDeltaPacket::decode(&frame_with_valid_checksum(bogus_tag)),
+        NveCrdtDelta::decode(&frame_with_valid_checksum(bogus_tag)),
         Err(CrdtWireError::UnknownOpTag(0xEE))
     ));
 
     // 4e. Invalid UTF-8 string inside OrSetAddString with valid checksum.
     let mut bad_utf8 = Vec::new();
-    bad_utf8.extend_from_slice(&CRDT_WIRE_MAGIC);
-    bad_utf8.extend_from_slice(&CRDT_WIRE_VERSION.to_le_bytes());
+    bad_utf8.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+    bad_utf8.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
     bad_utf8.extend_from_slice(&1u64.to_le_bytes());
     bad_utf8.extend_from_slice(&0u32.to_le_bytes());
     bad_utf8.extend_from_slice(&1u32.to_le_bytes());
@@ -572,7 +572,7 @@ fn wire_nvc1_roundtrip_and_adversarial_fuzzing() {
     bad_utf8.extend_from_slice(&[0xFF, 0xFE]); // invalid UTF-8
     bad_utf8.extend_from_slice(&OpId::new(PeerId(1), 1).to_le_bytes());
     assert!(matches!(
-        CrdtDeltaPacket::decode(&frame_with_valid_checksum(bad_utf8)),
+        NveCrdtDelta::decode(&frame_with_valid_checksum(bad_utf8)),
         Err(CrdtWireError::InvalidUtf8)
     ));
 
@@ -580,14 +580,14 @@ fn wire_nvc1_roundtrip_and_adversarial_fuzzing() {
     let mut trailing = encoded[..encoded.len() - 8].to_vec();
     trailing.push(0xAA);
     assert!(matches!(
-        CrdtDeltaPacket::decode(&frame_with_valid_checksum(trailing)),
+        NveCrdtDelta::decode(&frame_with_valid_checksum(trailing)),
         Err(CrdtWireError::TrailingBytes(1))
     ));
 
     // 4g. Oversized frame exceeds MAX_WIRE_BYTES cleanly.
     let oversized = vec![0u8; MAX_WIRE_BYTES + 1];
     assert!(matches!(
-        CrdtDeltaPacket::decode(&oversized),
+        NveCrdtDelta::decode(&oversized),
         Err(CrdtWireError::LimitExceeded { kind: "wire_bytes", .. })
     ));
 
@@ -595,13 +595,13 @@ fn wire_nvc1_roundtrip_and_adversarial_fuzzing() {
     let mut rng = Rng::new(0xF002_BAAD_C0DE_7777);
     for _ in 0..512 {
         let body_len = rng.range(128);
-        let mut raw = Vec::with_capacity(6 + body_len + 8);
-        raw.extend_from_slice(&CRDT_WIRE_MAGIC);
-        raw.extend_from_slice(&CRDT_WIRE_VERSION.to_le_bytes());
+        let mut raw = Vec::with_capacity(10 + body_len + 8);
+        raw.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+        raw.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
         for _ in 0..body_len {
             raw.push((rng.next_u64() & 0xFF) as u8);
         }
         let frame = frame_with_valid_checksum(raw);
-        let _ = CrdtDeltaPacket::decode(&frame);
+        let _ = NveCrdtDelta::decode(&frame);
     }
 }

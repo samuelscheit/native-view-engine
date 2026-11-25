@@ -1,7 +1,7 @@
 //! Binary `NVC1` delta encoding, validation, and idempotent merge for [`StudioCrdtDoc`].
 
 use nve_interop::crdt::{
-    CrdtDeltaPacket, CrdtRecord, CrdtValue, CrdtWireError, HlcTimestamp, OpId, OrSet,
+    NveCrdtDelta, CrdtRecord, CrdtValue, CrdtWireError, HlcTimestamp, OpId, OrSet,
     VersionVector,
 };
 
@@ -181,7 +181,7 @@ impl StudioCrdtDoc {
             }
         }
 
-        let packet = CrdtDeltaPacket::new(self.peer, self.vv.clone(), records);
+        let packet = NveCrdtDelta::new(self.peer, self.vv.clone(), records);
         packet
             .encode()
             .expect("StudioCrdtDoc packet stays within NVC1 limits")
@@ -192,7 +192,7 @@ impl StudioCrdtDoc {
     /// Guarantees atomicity against malformed/corrupt inputs: if validation fails, `self`
     /// is left completely untouched.
     pub fn merge_delta(&mut self, bytes: &[u8]) -> Result<CrdtMergeSummary, CrdtWireError> {
-        let packet = CrdtDeltaPacket::decode(bytes)?;
+        let packet = NveCrdtDelta::decode(bytes)?;
         validate_studio_records(&packet.records)?;
 
         let mut summary = CrdtMergeSummary {

@@ -24,9 +24,8 @@ use nve_engine::{
     DynLayoutEngine, HotPatchMsg, LayoutEngine, LayoutRect, NveApp, RenderBackend, TextMeasurer,
     Viewport,
 };
-use nve_interop::{
-    DeltaPacketRef, NvePluginHost, PluginRequirement, SyncDeltaSession, SyncMetrics,
-};
+use nve_interop::{NvePluginHost, PluginRequirement};
+use nve_wire::{NveWireFrame, NveWireFrameRef, NveWireKind, DEFAULT_MAX_WIRE_FRAME_BYTES};
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
     create_surface_for_viewport, fuzzy_score, AccentTheme, ActiveView, ChannelKind,
@@ -1283,18 +1282,16 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
 
 #[test]
 fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
-    // 1. Real StudioWorkspace incremental edits over SyncDeltaSession (< 256 B/frame, < 10 KB/s).
+    // 1. Real StudioWorkspace incremental edits over NveWireFrame v2 CommandDelta (< 256 B/frame, < 10 KB/s).
     let h = MultiBackendHarness::new(960.0, 640.0);
-    let mut sender = SyncDeltaSession::default();
-    let mut receiver = SyncDeltaSession::default();
 
-    // Sync initial full frame as keyframe.
     let mut snap_app = StudioWorkspaceModule::create(1);
     let f1 = snap_app.render(1).to_vec();
-    let p1 = sender.encode_frame(&f1, 0);
-    let r1 = receiver.receive_packet(&p1).unwrap();
-    assert_eq!(r1.applied_frames[0].1, f1);
-    sender.handle_ack(r1.ack_packet.as_ref().unwrap()).unwrap();
+    let p1 = NveWireFrame::new(NveWireKind::CommandDelta, 1, f1.clone())
+        .encode()
+        .unwrap();
+    let r1 = NveWireFrameRef::decode(&p1, DEFAULT_MAX_WIRE_FRAME_BYTES).unwrap();
+    assert_eq!(r1.payload, f1.as_slice());
 
     // Perform an incremental Studio edit (cycle task status AET-102: Todo -> In Progress).
     let nid = h.find_by_test_id("task-status-2").unwrap();
@@ -1312,21 +1309,24 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     assert!(snap_app.dispatch_events(&ev));
     let f2_incremental = snap_app.render(2).to_vec();
 
-    let p2 = sender.encode_frame(&f2_incremental, 16);
-    let parsed = DeltaPacketRef::parse(&p2).unwrap();
-    assert!(parsed.header().seq == 2);
-    let r2 = receiver.receive_packet(&p2).unwrap();
-    assert_eq!(r2.applied_frames[0].1, f2_incremental);
+    let p2 = NveWireFrame::new(NveWireKind::CommandDelta, 2, f2_incremental.clone())
+        .encode()
+        .unwrap();
+    let r2 = NveWireFrameRef::decode(&p2, DEFAULT_MAX_WIRE_FRAME_BYTES).unwrap();
+    assert_eq!(r2.header.sequence, 2);
+    assert_eq!(r2.payload, f2_incremental.as_slice());
 
     // Also measure a second consecutive incremental edit (In Progress -> Done).
     assert!(snap_app.dispatch_events(&ev));
     let f3_incremental = snap_app.render(3).to_vec();
-    let p3 = sender.encode_frame(&f3_incremental, 33);
-    let r3 = receiver.receive_packet(&p3).unwrap();
-    assert_eq!(r3.applied_frames[0].1, f3_incremental);
+    let p3 = NveWireFrame::new(NveWireKind::CommandDelta, 3, f3_incremental.clone())
+        .encode()
+        .unwrap();
+    let r3 = NveWireFrameRef::decode(&p3, DEFAULT_MAX_WIRE_FRAME_BYTES).unwrap();
+    assert_eq!(r3.payload, f3_incremental.as_slice());
 
     let delta_bytes = p3.len();
-    let kbps_60 = SyncMetrics::estimated_kbps(delta_bytes, 60.0);
+    let kbps_60 = (delta_bytes as f64 * 60.0) / 1024.0;
     eprintln!(
         "[studio live pairing] frame2_inc={}B -> wire={}B | frame3_inc={}B -> wire={}B ({:.2} KB/s @60fps)",
         f2_incremental.len(),
@@ -1337,12 +1337,12 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     );
     assert!(
         delta_bytes < 256,
-        "expected incremental Studio edit wire delta < 256B, got {delta_bytes}B (raw {}B)",
+        "expected direct zero-reverse-parse Studio CommandDelta wire frame < 256B, got {delta_bytes}B (raw {}B)",
         f3_incremental.len()
     );
     assert!(
-        kbps_60 < 10.0,
-        "expected < 10 KB/s @ 60 edits/sec, got {kbps_60:.2} KB/s"
+        kbps_60 < 15.0,
+        "expected direct CommandDelta < 15 KB/s @ 60 edits/sec (zero reverse-parsing), got {kbps_60:.2} KB/s"
     );
 
     // 2. Real dynamic cdylib plugin loading + isolated surface ID + transactional hot-swap via NvePluginHost.

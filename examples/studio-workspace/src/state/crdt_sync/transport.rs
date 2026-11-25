@@ -15,10 +15,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use nve_interop::crdt::{
-    CRDT_WIRE_MAGIC, CrdtDeltaPacket, CrdtWireError, MAX_VV_ENTRIES, MAX_WIRE_BYTES, PeerId,
-    VersionVector, fnv1a_64,
+    CrdtWireError, MAX_VV_ENTRIES, MAX_WIRE_BYTES, NVE_CRDT_DELTA_MAGIC, NveCrdtDelta, PeerId,
+    VersionVector, crdt_xxh64,
 };
-use nve_interop::sync_transport::TransportError;
 
 use super::StudioCrdtDoc;
 
@@ -26,24 +25,24 @@ pub use super::mesh_transport::{InMemoryMeshHub, InMemoryMeshTransport, MeshFaul
 #[cfg(not(target_arch = "wasm32"))]
 pub use super::tcp_transport::{LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport};
 
-/// Binary magic identifying an anti-entropy vector-clock digest frame (`NVCD`).
-pub const CRDT_DIGEST_MAGIC: [u8; 4] = *b"NVCD";
+/// 8-byte binary magic identifying an anti-entropy vector-clock digest frame (`NVE_DGST`).
+pub const CRDT_DIGEST_MAGIC: [u8; 8] = *b"NVE_DGST";
 
-/// Current wire version for `NVCD` vector-clock digest frames.
-pub const CRDT_DIGEST_VERSION: u16 = 1;
+/// Current wire version for vector-clock digest frames (`2`, `XXH64`-verified).
+pub const CRDT_DIGEST_VERSION: u16 = 2;
 
-/// Minimum encoded byte size of an `NVCD` digest frame:
-/// `magic(4) + ver(2) + sender(8) + vv_len(4) + checksum(8)`.
-pub const CRDT_DIGEST_MIN_LEN: usize = 26;
+/// Minimum encoded byte size of a digest frame:
+/// `magic(8) + ver(2) + sender(8) + vv_len(4) + checksum(8)`.
+pub const CRDT_DIGEST_MIN_LEN: usize = 30;
 
 /// `NveChannelBus` binary topic mirrored by [`InMemoryMeshHub`].
-pub const TOPIC_CRDT_NVC1: &str = "crdt.nvc1";
+pub const TOPIC_CRDT_NVC1: &str = "crdt.delta";
 
 /// Typed error returned by binary CRDT peer transports.
 #[derive(Debug)]
 pub enum CrdtTransportError {
     Wire(CrdtWireError),
-    Transport(TransportError),
+    Transport(String),
     UnknownPeer(PeerId),
     Disconnected,
     Timeout,
@@ -54,7 +53,7 @@ impl fmt::Display for CrdtTransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wire(err) => write!(f, "CRDT wire error: {err}"),
-            Self::Transport(err) => write!(f, "sync transport error: {err}"),
+            Self::Transport(err) => write!(f, "wire transport error: {err}"),
             Self::UnknownPeer(p) => write!(f, "unknown CRDT peer: {}", p.0),
             Self::Disconnected => f.write_str("CRDT transport peer disconnected"),
             Self::Timeout => f.write_str("CRDT sync convergence timed out"),
@@ -71,9 +70,10 @@ impl From<CrdtWireError> for CrdtTransportError {
     }
 }
 
-impl From<TransportError> for CrdtTransportError {
-    fn from(value: TransportError) -> Self {
-        Self::Transport(value)
+#[cfg(not(target_arch = "wasm32"))]
+impl From<nve_wire::NveWireTransportError> for CrdtTransportError {
+    fn from(value: nve_wire::NveWireTransportError) -> Self {
+        Self::Transport(value.to_string())
     }
 }
 
@@ -135,12 +135,12 @@ impl CrdtWireFrame {
             out.extend_from_slice(&peer.to_le_bytes());
             out.extend_from_slice(&seq.to_le_bytes());
         }
-        let checksum = fnv1a_64(&out);
+        let checksum = crdt_xxh64(&out);
         out.extend_from_slice(&checksum.to_le_bytes());
         Ok(out)
     }
 
-    /// Decodes and checksum-verifies an `NVCD` vector-clock digest frame.
+    /// Decodes and `XXH64`-verifies a vector-clock digest frame.
     pub fn decode_digest(bytes: &[u8]) -> Result<(PeerId, VersionVector), CrdtWireError> {
         if bytes.len() > MAX_WIRE_BYTES {
             return Err(CrdtWireError::LimitExceeded {
@@ -155,23 +155,23 @@ impl CrdtWireFrame {
                 actual: bytes.len(),
             });
         }
-        let magic: [u8; 4] = bytes[0..4].try_into().expect("checked min len");
+        let magic: [u8; 8] = bytes[0..8].try_into().expect("checked min len");
         if magic != CRDT_DIGEST_MAGIC {
             return Err(CrdtWireError::InvalidMagic(magic));
         }
-        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
         if version != CRDT_DIGEST_VERSION {
             return Err(CrdtWireError::UnsupportedVersion(version));
         }
         let payload_end = bytes.len() - 8;
         let expected = u64::from_le_bytes(bytes[payload_end..].try_into().expect("8B checksum"));
-        let actual = fnv1a_64(&bytes[..payload_end]);
+        let actual = crdt_xxh64(&bytes[..payload_end]);
         if actual != expected {
             return Err(CrdtWireError::ChecksumMismatch { expected, actual });
         }
 
-        let sender = PeerId(u64::from_le_bytes(bytes[6..14].try_into().unwrap()));
-        let vv_len = u32::from_le_bytes(bytes[14..18].try_into().unwrap()) as usize;
+        let sender = PeerId(u64::from_le_bytes(bytes[10..18].try_into().unwrap()));
+        let vv_len = u32::from_le_bytes(bytes[18..22].try_into().unwrap()) as usize;
         if vv_len > MAX_VV_ENTRIES {
             return Err(CrdtWireError::LimitExceeded {
                 kind: "version_vector",
@@ -190,7 +190,7 @@ impl CrdtWireFrame {
             return Err(CrdtWireError::TrailingBytes(bytes.len() - expected_len));
         }
         let mut vv = VersionVector::new();
-        let mut off = 18usize;
+        let mut off = 22usize;
         for _ in 0..vv_len {
             let p = PeerId(u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()));
             let s = u64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap());
@@ -200,22 +200,22 @@ impl CrdtWireFrame {
         Ok((sender, vv))
     }
 
-    /// Classifies a raw binary wire frame as either an `NVCD` digest or a raw `NVC1` delta.
+    /// Classifies a raw binary wire frame as either a vector-clock digest or an `NveCrdtDelta`.
     pub fn parse(bytes: &[u8]) -> Result<Self, CrdtWireError> {
-        if bytes.len() < 4 {
+        if bytes.len() < 8 {
             return Err(CrdtWireError::Truncated {
-                expected: 4,
+                expected: 8,
                 actual: bytes.len(),
             });
         }
-        let magic: [u8; 4] = bytes[0..4].try_into().expect("checked 4B magic");
+        let magic: [u8; 8] = bytes[0..8].try_into().expect("checked 8B magic");
         if magic == CRDT_DIGEST_MAGIC {
             let (sender, version_vector) = Self::decode_digest(bytes)?;
             Ok(Self::VectorClockDigest {
                 sender,
                 version_vector,
             })
-        } else if magic == CRDT_WIRE_MAGIC {
+        } else if magic == NVE_CRDT_DELTA_MAGIC {
             Ok(Self::Delta(bytes.to_vec()))
         } else {
             Err(CrdtWireError::InvalidMagic(magic))
@@ -367,11 +367,11 @@ impl<T: CrdtPeerTransport> CrdtPeerNode<T> {
             let raw_len = raw_bytes.len() as u64;
 
             match CrdtWireFrame::parse(&raw_bytes) {
-                Ok(CrdtWireFrame::Delta(nvc1_bytes)) => {
-                    let pkt_vv = CrdtDeltaPacket::decode(&nvc1_bytes)
+                Ok(CrdtWireFrame::Delta(delta_bytes)) => {
+                    let pkt_vv = NveCrdtDelta::decode(&delta_bytes)
                         .ok()
                         .map(|p| (p.sender, p.version_vector));
-                    match self.doc.merge_delta(&nvc1_bytes) {
+                    match self.doc.merge_delta(&delta_bytes) {
                         Ok(summary) => {
                             report.deltas_merged += 1;
                             report.records_applied += summary.records_applied;

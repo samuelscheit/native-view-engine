@@ -2,8 +2,8 @@
 //! delivery tests, and corrupt `NVC1` rejection tests for [`StudioCrdtDoc`].
 
 use nve_interop::crdt::{
-    CRDT_WIRE_MAGIC, CRDT_WIRE_VERSION, CrdtDeltaPacket, CrdtRecord, CrdtValue, CrdtWireError,
-    HlcTimestamp, OpId, PeerId, VersionVector, fnv1a_64,
+    CrdtRecord, CrdtValue, CrdtWireError, HlcTimestamp, NVE_CRDT_DELTA_MAGIC,
+    NVE_CRDT_DELTA_VERSION, NveCrdtDelta, OpId, PeerId, VersionVector, crdt_xxh64,
 };
 use nve_studio_workspace::state::{
     ActiveView, BoardFilter, ChannelKind, DocBlockKind, Priority, StudioCrdtDoc, TaskStatus,
@@ -377,14 +377,14 @@ fn corrupt_nvc1_deltas_are_rejected_without_mutating_state() {
 
     // 3. Bad magic
     let mut bad_magic = valid_delta.clone();
-    bad_magic[0..4].copy_from_slice(b"NOPE");
+    bad_magic[0..8].copy_from_slice(b"BADMAGIC");
     assert!(matches!(
         p2.merge_delta(&bad_magic),
         Err(CrdtWireError::InvalidMagic(_))
     ));
 
-    // 4. Valid NVC1 wire checksum, but invalid Studio domain payload (Priority = 99) -> atomic rejection!
-    let bogus_domain = CrdtDeltaPacket::new(
+    // 4. Valid NveCrdtDelta wire checksum, but invalid Studio domain payload (Priority = 99) -> atomic rejection!
+    let bogus_domain = NveCrdtDelta::new(
         PeerId(1),
         VersionVector::new(),
         vec![
@@ -412,12 +412,12 @@ fn corrupt_nvc1_deltas_are_rejected_without_mutating_state() {
 
     // 5. Raw header with unsupported version + recomputed checksum.
     let mut bad_ver = Vec::new();
-    bad_ver.extend_from_slice(&CRDT_WIRE_MAGIC);
-    bad_ver.extend_from_slice(&(CRDT_WIRE_VERSION + 7).to_le_bytes());
+    bad_ver.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
+    bad_ver.extend_from_slice(&(NVE_CRDT_DELTA_VERSION + 7).to_le_bytes());
     bad_ver.extend_from_slice(&1u64.to_le_bytes());
     bad_ver.extend_from_slice(&0u32.to_le_bytes());
     bad_ver.extend_from_slice(&0u32.to_le_bytes());
-    let ck = fnv1a_64(&bad_ver);
+    let ck = crdt_xxh64(&bad_ver);
     bad_ver.extend_from_slice(&ck.to_le_bytes());
     assert!(matches!(
         p2.merge_delta(&bad_ver),

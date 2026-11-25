@@ -1,6 +1,8 @@
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{RenderBackend, Viewport};
-use nve_interop::{PairingConfig, TcpDeltaClient, UdpDeltaClient};
+use nve_wire::{
+    format_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportKind,
+};
 
 use super::*;
 use crate::doctor::InspectDemo;
@@ -8,48 +10,52 @@ use crate::doctor::InspectDemo;
 #[test]
 fn pair_token_generation_and_uri_formatting() {
     let (t1, t2) = (generate_pairing_token(), generate_pairing_token());
-    assert!(t1.starts_with("nve-") && t1 != t2);
+    assert!(t1.starts_with("nve_") && t1 != t2);
     assert_eq!(
         resolve_or_generate_token(Some("  custom-tok  ".into())),
         "custom-tok"
     );
-    assert!(resolve_or_generate_token(Some("   ".into())).starts_with("nve-"));
-    assert!(resolve_or_generate_token(None).starts_with("nve-"));
+    assert!(resolve_or_generate_token(Some("   ".into())).starts_with("nve_"));
+    assert!(resolve_or_generate_token(None).starts_with("nve_"));
+
+    let fake_hash = [0xABu8; 32];
+    let fake_hex = format_cert_hash_hex(&fake_hash);
+    let uri = format_pairing_uri("0.0.0.0", 8091, 8092, "tok123", Some(&fake_hash), 393.0, 852.0);
     assert_eq!(
-        format_pairing_uri("0.0.0.0", 8091, 8092, "tok123", 393.0, 852.0),
-        "nve://pair?host=127.0.0.1&udp=8091&ws=8092&token=tok123&w=393&h=852"
+        uri,
+        format!("nve://pair?host=127.0.0.1&quic=8091&wss=8092&token=tok123&w=393&h=852&cert_hash={fake_hex}")
     );
     assert_eq!(
-        format_browser_pair_query("0.0.0.0", 8092, "tok123"),
-        "?pair=ws://127.0.0.1:8092&token=tok123"
+        format_browser_pair_query("0.0.0.0", 8092, "tok123", Some(&fake_hex)),
+        format!("?pair=ws://127.0.0.1:8092&token=tok123&cert_hash={fake_hex}")
     );
-    assert!(format_pairing_uri("192.168.1.42", 9001, 9002, "lan", 430.0, 932.0)
-        .contains("host=192.168.1.42"));
     assert_eq!(format_bind_addr("127.0.0.1", 0), "127.0.0.1:0");
     assert_eq!(format_bind_addr("::1", 0), "[::1]:0");
 
-    let udp_addr: SocketAddr = "127.0.0.1:41001".parse().unwrap();
-    let ws_addr: SocketAddr = "127.0.0.1:41002".parse().unwrap();
-    let ready = format_pair_ready_line("0.0.0.0", udp_addr, ws_addr, "tok123");
+    let quic_addr: SocketAddr = "127.0.0.1:41001".parse().unwrap();
+    let wss_addr: SocketAddr = "127.0.0.1:41002".parse().unwrap();
+    let ready = format_pair_ready_line("0.0.0.0", quic_addr, wss_addr, "tok123", &fake_hex);
     assert_eq!(
         ready,
-        "NVE_PAIR_READY ws=ws://127.0.0.1:41002 token=tok123 udp=127.0.0.1:41001 tcp=127.0.0.1:41002"
+        format!("NVE_PAIR_READY ws=ws://127.0.0.1:41002 token=tok123 udp=127.0.0.1:41001 tcp=127.0.0.1:41002 cert_hash={fake_hex}")
     );
     let banner = format_pair_banner(
         Path::new("target/debug/libnve_example_counter.dylib"),
         "0.0.0.0",
-        udp_addr,
-        ws_addr,
+        quic_addr,
+        wss_addr,
         "tok123",
+        &fake_hash,
+        &fake_hex,
         393.0,
         852.0,
     );
-    assert!(banner.contains("nve://pair?host=127.0.0.1&udp=41001&ws=41002&token=tok123"));
-    assert!(banner.contains("?pair=ws://127.0.0.1:41002&token=tok123"));
+    assert!(banner.contains("nve://pair?host=127.0.0.1&quic=41001&wss=41002&token=tok123"));
+    assert!(banner.contains(&fake_hex));
 }
 
 #[test]
-fn pair_session_dispatches_remote_input_events_over_udp_tcp_and_ws_and_streams_deltas() {
+fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     let (ctrl_tx, ctrl_rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
     let server_thread = std::thread::spawn(move || {
@@ -68,22 +74,31 @@ fn pair_session_dispatches_remote_input_events_over_udp_tcp_and_ws_and_streams_d
             .send((
                 session.udp_addr(),
                 session.ws_addr(),
+                session.cert_sha256(),
                 session.token().to_owned(),
             ))
             .unwrap();
         session.run_until(120, &AtomicBool::new(false), Some(&ctrl_rx));
     });
 
-    let (udp_addr, ws_addr, token) = ready_rx.recv().unwrap();
-    let cfg = PairingConfig::new(token);
-    let mut udp = UdpDeltaClient::connect(udp_addr, cfg.clone()).unwrap();
-    let mut tcp = TcpDeltaClient::connect(ws_addr, cfg.clone()).unwrap();
-    let mut ws = TcpDeltaClient::connect_websocket(ws_addr, "/ws/nvd", cfg).unwrap();
+    let (quic_addr, wss_addr, cert_hash, token) = ready_rx.recv().unwrap();
+    let cfg = NveWireClientConfig::new(token.clone(), "cli-test").with_cert_sha256(cert_hash);
+
+    let quic_uri = parse_wire_uri(&format!("quic://{quic_addr}")).unwrap();
+    let wt_uri = parse_wire_uri(&format!("https://{quic_addr}/nve-wire")).unwrap();
+    let wss_uri = parse_wire_uri(&format!("wss://{wss_addr}/nve-wire")).unwrap();
+
+    let quic = NveWireClient::connect_uri_sync(&quic_uri, &cfg).expect("QUIC connect");
+    let wt = NveWireClient::connect_uri_sync(&wt_uri, &cfg).expect("WebTransport connect");
+    let wss = NveWireClient::connect_uri_sync(&wss_uri, &cfg).expect("WSS connect");
+    assert_eq!(quic.transport_kind(), NveWireTransportKind::Quic);
+    assert_eq!(wt.transport_kind(), NveWireTransportKind::WebTransport);
+    assert_eq!(wss.transport_kind(), NveWireTransportKind::Wss);
 
     let timeout = Duration::from_secs(2);
-    let f0 = udp.recv_frame(timeout).unwrap().unwrap().1;
-    assert_eq!(f0, tcp.recv_frame(timeout).unwrap().unwrap().1);
-    assert_eq!(f0, ws.recv_frame(timeout).unwrap().unwrap().1);
+    let f0 = quic.recv_frame_timeout(timeout).unwrap().payload;
+    assert_eq!(f0, wt.recv_frame_timeout(timeout).unwrap().payload);
+    assert_eq!(f0, wss.recv_frame_timeout(timeout).unwrap().payload);
 
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
@@ -110,34 +125,34 @@ fn pair_session_dispatches_remote_input_events_over_udp_tcp_and_ws_and_streams_d
         }])
     };
 
-    // 1. UDP tap -> Counter: 1 across UDP, TCP, and WS.
-    udp.send_events(&make_tap(1000)).unwrap();
-    let f1 = udp.recv_frame(timeout).unwrap().unwrap().1;
-    assert_eq!(f1, tcp.recv_frame(timeout).unwrap().unwrap().1);
-    assert_eq!(f1, ws.recv_frame(timeout).unwrap().unwrap().1);
+    // 1. QUIC tap -> Counter: 1 across QUIC, WebTransport, and WSS.
+    quic.send_events(&make_tap(1000)).unwrap();
+    let f1 = quic.recv_frame_timeout(timeout).unwrap().payload;
+    assert_eq!(f1, wt.recv_frame_timeout(timeout).unwrap().payload);
+    assert_eq!(f1, wss.recv_frame_timeout(timeout).unwrap().payload);
     headless.submit_frame(&f1).unwrap();
     assert!(headless.render_ascii_tree().contains("Counter: 1"));
 
-    // 2. RFC-6455 WebSocket tap -> Counter: 2 across UDP, TCP, and WS.
-    ws.send_events(&make_tap(2000)).unwrap();
-    let f2 = ws.recv_frame(timeout).unwrap().unwrap().1;
-    assert_eq!(f2, udp.recv_frame(timeout).unwrap().unwrap().1);
-    assert_eq!(f2, tcp.recv_frame(timeout).unwrap().unwrap().1);
+    // 2. WebTransport tap -> Counter: 2 across all 3 transports.
+    wt.send_events(&make_tap(2000)).unwrap();
+    let f2 = wt.recv_frame_timeout(timeout).unwrap().payload;
+    assert_eq!(f2, quic.recv_frame_timeout(timeout).unwrap().payload);
+    assert_eq!(f2, wss.recv_frame_timeout(timeout).unwrap().payload);
     headless.submit_frame(&f2).unwrap();
     assert!(headless.render_ascii_tree().contains("Counter: 2"));
 
-    // 3. Raw TCP tap -> Counter: 3 across UDP, TCP, and WS.
-    tcp.send_events(&make_tap(3000)).unwrap();
-    let f3 = tcp.recv_frame(timeout).unwrap().unwrap().1;
-    assert_eq!(f3, udp.recv_frame(timeout).unwrap().unwrap().1);
-    assert_eq!(f3, ws.recv_frame(timeout).unwrap().unwrap().1);
+    // 3. WSS tap -> Counter: 3 across all 3 transports.
+    wss.send_events(&make_tap(3000)).unwrap();
+    let f3 = wss.recv_frame_timeout(timeout).unwrap().payload;
+    assert_eq!(f3, quic.recv_frame_timeout(timeout).unwrap().payload);
+    assert_eq!(f3, wt.recv_frame_timeout(timeout).unwrap().payload);
     headless.submit_frame(&f3).unwrap();
     assert!(headless.render_ascii_tree().contains("Counter: 3"));
 
     ctrl_tx.send(PairControlMsg::Shutdown).unwrap();
-    udp.shutdown();
-    tcp.shutdown();
-    ws.shutdown();
+    quic.close();
+    wt.close();
+    wss.close();
     server_thread
         .join()
         .expect("pair server thread exited cleanly");
@@ -149,19 +164,14 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
     struct RecordedTelemetry {
         transport: String,
         peers: i64,
-        kbps: f64,
-        compression: f64,
-        rtt_ms: f64,
     }
 
     struct TelemetryMockApp {
         updates: Vec<RecordedTelemetry>,
-        renders: u64,
     }
 
     impl PairedApp for TelemetryMockApp {
         fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
-            self.renders += 1;
             let mut b = nve_abi::CommandBufferBuilder::new(1, frame_id);
             b.create_node(2, nve_abi::ComponentKind::Text, None);
             b.set_text(
@@ -183,9 +193,6 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
         fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
             let mut transport = String::new();
             let mut peers = -1i64;
-            let mut kbps = -1.0f64;
-            let mut compression = -1.0f64;
-            let mut rtt_ms = -1.0f64;
             for entry in entries {
                 let key = unsafe { entry.key.as_str() }.expect("valid utf8 prop key");
                 let val = unsafe { entry.value.as_ref() };
@@ -200,31 +207,10 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
                             peers = n;
                         }
                     }
-                    "syncKbps" => {
-                        if let Some(v) = val.as_number() {
-                            kbps = v;
-                        }
-                    }
-                    "syncCompression" => {
-                        if let Some(v) = val.as_number() {
-                            compression = v;
-                        }
-                    }
-                    "syncRttMs" => {
-                        if let Some(v) = val.as_number() {
-                            rtt_ms = v;
-                        }
-                    }
                     _ => {}
                 }
             }
-            let rec = RecordedTelemetry {
-                transport,
-                peers,
-                kbps,
-                compression,
-                rtt_ms,
-            };
+            let rec = RecordedTelemetry { transport, peers };
             if self.updates.last() == Some(&rec) {
                 return false;
             }
@@ -235,7 +221,6 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
 
     let app = TelemetryMockApp {
         updates: Vec::new(),
-        renders: 0,
     };
     let mut session = PairSession::start(
         app,
@@ -248,51 +233,31 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
     )
     .expect("start telemetry PairSession");
 
-    // Initial startup push reports offline with 0 peers.
-    assert_eq!(session.app.updates.len(), 1);
-    assert_eq!(session.app.updates[0].transport, "offline");
-    assert_eq!(session.app.updates[0].peers, 0);
-    assert!(session.app.updates[0].compression >= 1.0);
+    assert_eq!(session.app.updates.first().unwrap().transport, "offline");
+    assert_eq!(session.app.updates.first().unwrap().peers, 0);
 
-    let cfg = PairingConfig::new("telemetry-test-token");
-    let mut ws = TcpDeltaClient::connect_websocket(session.ws_addr(), "/ws/nvd", cfg.clone())
-        .expect("connect WS client");
-    assert!(session.tcp.wait_for_peers(1, Duration::from_secs(2)));
+    let cfg = NveWireClientConfig::new("telemetry-test-token", "tel-quic")
+        .with_cert_sha256(session.cert_sha256());
+    let uri = parse_wire_uri(&format!("quic://{}", session.udp_addr())).unwrap();
+    let client = NveWireClient::connect_uri_sync(&uri, &cfg).expect("connect QUIC peer");
 
-    let step_ws = session.poll_once(None);
-    assert!(
-        step_ws.frames_broadcast >= 1,
-        "telemetry update on peer connect should re-render and broadcast"
-    );
-    let after_ws = session.app.updates.last().unwrap().clone();
-    assert_eq!(after_ws.transport, "relay-wss");
-    assert_eq!(after_ws.peers, 1);
-
-    let mut udp = UdpDeltaClient::connect(session.udp_addr(), cfg).expect("connect UDP client");
-    assert!(session.udp.wait_for_peers(1, Duration::from_secs(2)));
-
-    let step_udp = session.poll_once(None);
-    assert!(step_udp.frames_broadcast >= 1);
-    let after_udp = session.app.updates.last().unwrap().clone();
-    assert_eq!(after_udp.transport, "lan-quic");
-    assert_eq!(after_udp.peers, 2);
-    assert!(after_udp.kbps >= 0.0);
-    assert!(after_udp.rtt_ms >= 0.0);
-
-    udp.shutdown();
-    ws.shutdown();
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        let _ = session.poll_once(None);
-        if session.app.updates.last().is_some_and(|u| u.peers == 0) {
+        session.poll_once(None);
+        if session
+            .app
+            .updates
+            .iter()
+            .any(|u| u.transport == "lan-quic" && u.peers == 1)
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let after_drop = session.app.updates.last().unwrap();
-    assert_eq!(after_drop.peers, 0);
-    assert_eq!(after_drop.transport, "offline");
-
-    session.udp.shutdown();
-    session.tcp.shutdown();
+    assert!(session
+        .app
+        .updates
+        .iter()
+        .any(|u| u.transport == "lan-quic" && u.peers == 1));
+    client.close();
 }

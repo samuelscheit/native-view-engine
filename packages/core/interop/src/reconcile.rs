@@ -1,7 +1,7 @@
-//! Reusable 3-way divergence reconciliation re-exports and CRDT/`NVC1` sync adapter.
+//! Reusable 3-way divergence reconciliation re-exports and `NveCrdtDelta` sync adapter.
 //!
 //! Bridges [`nve_components::reconcile::StateReconciler`] with `nve-interop`'s zero-JSON
-//! `NVC1` CRDT delta wire protocol so offline optimistic UI edits reconcile deterministically
+//! `NveCrdtDelta` (`XXH64`) wire protocol so offline optimistic UI edits reconcile deterministically
 //! against incoming peer state.
 
 pub use nve_components::reconcile::*;
@@ -15,8 +15,8 @@ mod crdt_adapter {
     };
 
     use crate::crdt::{
-        CrdtDeltaPacket, CrdtRecord, CrdtValue, CrdtWireError, HlcClock, HlcTimestamp, LwwRegister,
-        OpId, PeerId, VersionVector, fnv1a_64,
+        CrdtRecord, CrdtValue, CrdtWireError, HlcClock, HlcTimestamp, LwwRegister, NveCrdtDelta,
+        OpId, PeerId, VersionVector, crdt_xxh64,
     };
 
     const MAX_PACKED_PHYSICAL_MS: u64 = (1u64 << 48) - 1;
@@ -91,10 +91,10 @@ mod crdt_adapter {
             self.reconciler.dirty_count()
         }
 
-        /// Registers `key` so incoming `NVC1` `LwwSet` entity hashes resolve back to `key`.
+        /// Registers `key` so incoming `NveCrdtDelta` `LwwSet` entity hashes resolve back to `key`.
         pub fn register_key(&mut self, key: impl Into<String>) -> u64 {
             let key = key.into();
-            let entity_id = fnv1a_64(key.as_bytes());
+            let entity_id = crdt_xxh64(key.as_bytes());
             self.entity_to_key.entry(entity_id).or_insert(key);
             entity_id
         }
@@ -173,10 +173,10 @@ mod crdt_adapter {
             cleared
         }
 
-        /// Encodes all pending dirty optimistic mutations into an `NVC1` binary delta packet.
+        /// Encodes all pending dirty optimistic mutations into an [`NveCrdtDelta`] binary packet.
         ///
         /// Returns `Ok(None)` when there are no dirty keys.
-        pub fn export_nvc1_delta(&mut self) -> Result<Option<Vec<u8>>, CrdtWireError> {
+        pub fn export_crdt_delta(&mut self) -> Result<Option<Vec<u8>>, CrdtWireError> {
             let mut entries: Vec<(String, Vec<u8>)> = self
                 .reconciler
                 .dirty_entries()
@@ -189,7 +189,7 @@ mod crdt_adapter {
 
             let mut records = Vec::with_capacity(entries.len());
             for (key, value) in entries {
-                let entity_id = fnv1a_64(key.as_bytes());
+                let entity_id = crdt_xxh64(key.as_bytes());
                 let timestamp = self
                     .pending_timestamps
                     .get(&key)
@@ -209,19 +209,19 @@ mod crdt_adapter {
             }
 
             let packet =
-                CrdtDeltaPacket::new(self.peer_id, self.version_vector.clone(), records);
+                NveCrdtDelta::new(self.peer_id, self.version_vector.clone(), records);
             packet.encode().map(Some)
         }
 
-        /// Decodes and reconciles an incoming `NVC1` CRDT delta packet against local optimistic
+        /// Decodes and reconciles an incoming [`NveCrdtDelta`] packet against local optimistic
         /// state using `policy`.
-        pub fn apply_nvc1_packet(
+        pub fn apply_crdt_delta(
             &mut self,
             bytes: &[u8],
             now_ms: u64,
             policy: ConflictPolicy,
         ) -> Result<ReconcileBatch<String, Vec<u8>>, CrdtWireError> {
-            let packet = CrdtDeltaPacket::decode(bytes)?;
+            let packet = NveCrdtDelta::decode(bytes)?;
             let mut incoming: Vec<(String, Vec<u8>, Option<LogicalClock>)> = Vec::new();
             let mut incoming_ts: BTreeMap<String, HlcTimestamp> = BTreeMap::new();
 

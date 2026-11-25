@@ -8,7 +8,7 @@ import android.os.Looper;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Manages zero-cdylib paired thin-client streaming (`NVT1`/`NVD1` over UDP/TCP/WebSocket)
+ * Manages zero-cdylib paired thin-client streaming (`NveWireFrame` v2 over QUIC/WebTransport/WSS)
  * on Android, bridging background `PairClient` frame wakeups onto the main UI {@link Looper}.
  */
 public final class NvePairController {

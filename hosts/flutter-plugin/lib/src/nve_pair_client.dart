@@ -1,547 +1,490 @@
 import 'dart:async';
-import 'dart:io' show WebSocket;
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
 import 'event_codec.dart';
-import 'nve_pair_protocol.dart';
-
-class NveAppliedFrame {
-  const NveAppliedFrame({required this.seq, required this.frame, required this.kind});
-  final int seq;
-  final Uint8List frame;
-  final NveDeltaPacketKind kind;
-}
-
-class NveDeltaReceiveOutcome {
-  const NveDeltaReceiveOutcome({required this.appliedFrames, required this.ackPacket, required this.nackPackets, required this.gapDetected});
-  final List<NveAppliedFrame> appliedFrames;
-  final Uint8List? ackPacket;
-  final List<Uint8List> nackPackets;
-  final bool gapDetected;
-}
-
-class NveDeltaReceiver {
-  NveDeltaReceiver({int maxWindow = NvePairProtocol.defaultSyncWindow})
-      : _maxWindow = maxWindow.clamp(NvePairProtocol.minSyncWindow, NvePairProtocol.maxSyncWindow);
-  int _maxWindow, _lastAppliedSeq = 0;
-  Uint8List _lastAppliedFrame = Uint8List(0);
-  final Map<int, Uint8List> _reorder = <int, Uint8List>{};
-
-  int get maxWindow => _maxWindow;
-  int get lastAppliedSeq => _lastAppliedSeq;
-  Uint8List get lastAppliedFrame => _lastAppliedFrame;
-  int get reorderBufferCount => _reorder.length;
-
-  void reset({int? maxWindow}) {
-    if (maxWindow != null) _maxWindow = maxWindow.clamp(NvePairProtocol.minSyncWindow, NvePairProtocol.maxSyncWindow);
-    _lastAppliedSeq = 0; _lastAppliedFrame = Uint8List(0); _reorder.clear();
-  }
-
-  NveDeltaReceiveOutcome receivePacket(Uint8List packetBytes) {
-    final pkt = NveDeltaPacket.parse(packetBytes); final hdr = pkt.header;
-    if (hdr.kind == NveDeltaPacketKind.ack || hdr.kind == NveDeltaPacketKind.nack) {
-      return const NveDeltaReceiveOutcome(appliedFrames: <NveAppliedFrame>[], ackPacket: null, nackPackets: <Uint8List>[], gapDetected: false);
-    }
-    if (hdr.seq <= _lastAppliedSeq) {
-      return NveDeltaReceiveOutcome(appliedFrames: const <NveAppliedFrame>[], ackPacket: _buildAck(), nackPackets: const <Uint8List>[], gapDetected: false);
-    }
-    final applied = <NveAppliedFrame>[], nacks = <Uint8List>[]; var gap = false;
-    final expected = _lastAppliedSeq + 1;
-    if (hdr.kind == NveDeltaPacketKind.keyframe && hdr.seq >= expected) {
-      final f = Uint8List.fromList(pkt.payload); _lastAppliedSeq = hdr.seq; _lastAppliedFrame = f;
-      applied.add(NveAppliedFrame(seq: hdr.seq, frame: f, kind: NveDeltaPacketKind.keyframe));
-      _reorder.removeWhere((seq, _) => seq <= _lastAppliedSeq); _drainReorder(applied);
-    } else if (hdr.seq == expected) {
-      final f = _applySingle(pkt); _lastAppliedSeq = hdr.seq; _lastAppliedFrame = f;
-      applied.add(NveAppliedFrame(seq: hdr.seq, frame: f, kind: hdr.kind)); _drainReorder(applied);
-    } else {
-      gap = true;
-      if (_reorder.length < _maxWindow) _reorder[hdr.seq] = Uint8List.fromList(packetBytes);
-      final end = hdr.seq < expected + 8 ? hdr.seq : expected + 8;
-      for (var m = expected; m < end; m++) {
-        if (!_reorder.containsKey(m)) {
-          final p = Uint8List(4); ByteData.sublistView(p).setUint32(0, m & 0xFFFFFFFF, Endian.little);
-          nacks.add(NveDeltaPacket.encode(kind: NveDeltaPacketKind.nack, ackSeq: _lastAppliedSeq, payload: p));
-        }
-      }
-    }
-    return NveDeltaReceiveOutcome(appliedFrames: applied, ackPacket: _buildAck(), nackPackets: nacks, gapDetected: gap);
-  }
-
-  Uint8List _applySingle(NveDeltaPacket pkt) {
-    final hdr = pkt.header;
-    if (hdr.kind == NveDeltaPacketKind.keyframe) return Uint8List.fromList(pkt.payload);
-    if (hdr.kind == NveDeltaPacketKind.xorRleDelta || hdr.kind == NveDeltaPacketKind.commandOpDelta) {
-      if (hdr.baseSeq != _lastAppliedSeq) throw NvePairProtocolException(NvePairProtocolErrorCode.baseSequenceMismatch, 'expected $_lastAppliedSeq != ${hdr.baseSeq}');
-      return hdr.kind == NveDeltaPacketKind.xorRleDelta
-          ? NveDeltaCodec.decodeXorRleDelta(_lastAppliedFrame, pkt.payload)
-          : NveDeltaCodec.decodeCommandOpDelta(_lastAppliedFrame, pkt.payload);
-    }
-    throw const NvePairProtocolException(NvePairProtocolErrorCode.invalidDeltaKind, 'unexpected control');
-  }
-
-  void _drainReorder(List<NveAppliedFrame> applied) {
-    while (true) {
-      final raw = _reorder.remove(_lastAppliedSeq + 1);
-      if (raw == null) break;
-      final pkt = NveDeltaPacket.parse(raw); final f = _applySingle(pkt);
-      _lastAppliedSeq = pkt.header.seq; _lastAppliedFrame = f;
-      applied.add(NveAppliedFrame(seq: pkt.header.seq, frame: f, kind: pkt.header.kind));
-    }
-  }
-
-  Uint8List _buildAck() {
-    var sackLo = 0, sackHi = 0;
-    for (final seq in _reorder.keys) {
-      if (seq > _lastAppliedSeq) {
-        final d = seq - _lastAppliedSeq;
-        if (d >= 1 && d <= 32) { sackLo |= 1 << (d - 1); } else if (d >= 33 && d <= 64) { sackHi |= 1 << (d - 33); }
-      }
-    }
-    final p = Uint8List(8); NveU64(sackLo & 0xFFFFFFFF, sackHi & 0xFFFFFFFF).writeLE(ByteData.sublistView(p), 0);
-    return NveDeltaPacket.encode(kind: NveDeltaPacketKind.ack, ackSeq: _lastAppliedSeq, payload: p);
-  }
-}
-
-enum NvePairConnectionState { disconnected, connecting, paired, reconnecting, error }
-
-class NveSyncTelemetry {
-  const NveSyncTelemetry({
-    this.sessionId = 0,
-    this.framesReceived = 0,
-    this.keyframesReceived = 0,
-    this.deltasReceived = 0,
-    this.keyframeRequestsSent = 0,
-    this.eventsSent = 0,
-    this.wireBytesRx = 0,
-    this.rawBytesRx = 0,
-    this.wireBytesTx = 0,
-    this.lastRttUs,
-    this.smoothedRttUs,
-    this.minRttUs,
-    this.fps = 0.0,
-    this.bytesPerSecRx = 0.0,
-  });
-
-  final int sessionId, framesReceived, keyframesReceived, deltasReceived, keyframeRequestsSent;
-  final int eventsSent, wireBytesRx, rawBytesRx, wireBytesTx;
-  final int? lastRttUs, smoothedRttUs, minRttUs;
-  final double fps, bytesPerSecRx;
-
-  double get compressionRatio => wireBytesRx == 0 ? 1.0 : rawBytesRx / wireBytesRx;
-  double? get smoothedRttMs => smoothedRttUs != null ? smoothedRttUs! / 1000.0 : null;
-}
-
-abstract class NvePairSocket {
-  Stream<Uint8List> get binaryMessages;
-  Future<void> get done;
-  void send(Uint8List bytes);
-  Future<void> close();
-}
-
-typedef NvePairSocketConnector = Future<NvePairSocket> Function(Uri wsUri);
-
-/// Default zero-dependency `dart:io` `WebSocket` adapter.
-class NveIoWebSocketAdapter implements NvePairSocket {
-  NveIoWebSocketAdapter._(this._socket) : _controller = StreamController<Uint8List>.broadcast() {
-    _sub = _socket.listen(
-      (dynamic data) {
-        if (data is Uint8List) {
-          _controller.add(data);
-        } else if (data is List<int>) {
-          _controller.add(Uint8List.fromList(data));
-        }
-      },
-      onError: _controller.addError,
-      onDone: _controller.close,
-    );
-  }
-
-  static Future<NvePairSocket> connect(Uri wsUri) async =>
-      NveIoWebSocketAdapter._(await WebSocket.connect(wsUri.toString()));
-
-  final WebSocket _socket;
-  final StreamController<Uint8List> _controller;
-  late final StreamSubscription<dynamic> _sub;
-
-  @override
-  Stream<Uint8List> get binaryMessages => _controller.stream;
-  @override
-  Future<void> get done => _socket.done.then((_) {});
-  @override
-  void send(Uint8List bytes) {
-    if (_socket.readyState == WebSocket.open) _socket.add(bytes);
-  }
-
-  @override
-  Future<void> close() async {
-    await _sub.cancel();
-    await _socket.close();
-    if (!_controller.isClosed) await _controller.close();
-  }
-}
 
 typedef NvePairedFrameCallback = void Function(int seq, Uint8List frameBytes);
 
+enum NveWireChannel {
+  control(0),
+  uiScene(1),
+  asyncSlot(2),
+  inputEvents(3),
+  stateSync(4),
+  presence(5);
+
+  const NveWireChannel(this.code);
+  final int code;
+
+  static NveWireChannel? fromCode(int code) {
+    for (final v in values) {
+      if (v.code == code) return v;
+    }
+    return null;
+  }
+}
+
+enum NveWireKind {
+  hello(1),
+  helloAck(2),
+  reject(3),
+  sceneKeyframe(4),
+  commandDelta(5),
+  nodePatchDelta(6),
+  slotChunk(7),
+  eventBatch(8),
+  crdtDelta(9),
+  presence(10),
+  hotPatch(11),
+  ping(12),
+  pong(13),
+  keyframeRequest(14),
+  bye(15);
+
+  const NveWireKind(this.code);
+  final int code;
+
+  static NveWireKind? fromCode(int code) {
+    for (final v in values) {
+      if (v.code == code) return v;
+    }
+    return null;
+  }
+}
+
+class NvePairProtocolException implements Exception {
+  const NvePairProtocolException(this.message);
+  final String message;
+
+  @override
+  String toString() => 'NvePairProtocolException($message)';
+}
+
+class NveDecodedWireFrame {
+  const NveDecodedWireFrame({
+    required this.channel,
+    required this.kind,
+    required this.sequence,
+    required this.payload,
+  });
+
+  final NveWireChannel channel;
+  final NveWireKind kind;
+  final int sequence;
+  final Uint8List payload;
+}
+
+/// Thin `NveWireFrame` v2 codec (16-byte LE header + payload + optional 8-byte `XXH64` trailer).
+abstract final class NveWireCodec {
+  static const int magic0 = 0x4E; // 'N'
+  static const int magic1 = 0x57; // 'W'
+  static const int version = 2;
+  static const int headerSize = 16;
+  static const int trailerSize = 8;
+  static const int flagXxh64 = 1 << 0;
+  static const int defaultSchemaVersion = 2;
+  static const int maxFrameBytes = 16 * 1024 * 1024;
+  static final BigInt xxh64Seed = BigInt.parse('4E56455749524532', radix: 16);
+
+  static final BigInt _mask64 = (BigInt.one << 64) - BigInt.one;
+  static final BigInt _p1 = BigInt.parse('9E3779B185EBCA87', radix: 16);
+  static final BigInt _p2 = BigInt.parse('C2B2AE3D27D4EB4F', radix: 16);
+  static final BigInt _p3 = BigInt.parse('165667B19E3779F9', radix: 16);
+  static final BigInt _p4 = BigInt.parse('85EBCA77C2B2AE63', radix: 16);
+  static final BigInt _p5 = BigInt.parse('27D4EB2F165667C5', radix: 16);
+
+  static BigInt _u64(BigInt v) => v & _mask64;
+  static BigInt _rotl(BigInt x, int r) => _u64((x << r) | (x >> (64 - r)));
+  static BigInt _round(BigInt acc, BigInt input) =>
+      _u64(_rotl(_u64(acc + _u64(input * _p2)), 31) * _p1);
+  static BigInt _merge(BigInt acc, BigInt v) =>
+      _u64(_u64((acc ^ _round(BigInt.zero, v)) * _p1) + _p4);
+
+  static BigInt _readU64(Uint8List b, int off) {
+    var v = BigInt.zero;
+    for (var i = 0; i < 8; i++) {
+      v |= BigInt.from(b[off + i]) << (i * 8);
+    }
+    return v;
+  }
+
+  static BigInt xxh64(Uint8List bytes, {BigInt? seed}) {
+    final s = seed ?? xxh64Seed;
+    final n = bytes.length;
+    var idx = 0;
+    BigInt h;
+    if (n >= 32) {
+      var v1 = _u64(s + _p1 + _p2);
+      var v2 = _u64(s + _p2);
+      var v3 = _u64(s);
+      var v4 = _u64(s - _p1);
+      while (idx <= n - 32) {
+        v1 = _round(v1, _readU64(bytes, idx)); idx += 8;
+        v2 = _round(v2, _readU64(bytes, idx)); idx += 8;
+        v3 = _round(v3, _readU64(bytes, idx)); idx += 8;
+        v4 = _round(v4, _readU64(bytes, idx)); idx += 8;
+      }
+      h = _u64(_rotl(v1, 1) + _rotl(v2, 7) + _rotl(v3, 12) + _rotl(v4, 18));
+      h = _merge(h, v1);
+      h = _merge(h, v2);
+      h = _merge(h, v3);
+      h = _merge(h, v4);
+    } else {
+      h = _u64(s + _p5);
+    }
+    h = _u64(h + BigInt.from(n));
+    while (idx + 8 <= n) {
+      h ^= _round(BigInt.zero, _readU64(bytes, idx));
+      h = _u64(_u64(_rotl(h, 27) * _p1) + _p4);
+      idx += 8;
+    }
+    if (idx + 4 <= n) {
+      final u32 = bytes[idx] |
+          (bytes[idx + 1] << 8) |
+          (bytes[idx + 2] << 16) |
+          (bytes[idx + 3] << 24);
+      h ^= _u64(BigInt.from(u32) * _p1);
+      h = _u64(_u64(_rotl(h, 23) * _p2) + _p3);
+      idx += 4;
+    }
+    while (idx < n) {
+      h ^= _u64(BigInt.from(bytes[idx]) * _p5);
+      h = _u64(_rotl(h, 11) * _p1);
+      idx += 1;
+    }
+    h ^= h >> 33;
+    h = _u64(h * _p2);
+    h ^= h >> 29;
+    h = _u64(h * _p3);
+    h ^= h >> 32;
+    return _u64(h);
+  }
+
+  static Uint8List encodeFrame({
+    required NveWireChannel channel,
+    required NveWireKind kind,
+    required int sequence,
+    Uint8List? payload,
+    int flags = flagXxh64,
+  }) {
+    final body = payload ?? Uint8List(0);
+    final hasCk = (flags & flagXxh64) != 0;
+    final out = Uint8List(headerSize + body.length + (hasCk ? trailerSize : 0));
+    final bd = ByteData.sublistView(out);
+    out[0] = magic0;
+    out[1] = magic1;
+    out[2] = version;
+    out[3] = channel.code;
+    out[4] = kind.code;
+    out[5] = flags;
+    bd.setUint16(6, 0, Endian.little);
+    bd.setUint32(8, sequence, Endian.little);
+    bd.setUint32(12, body.length, Endian.little);
+    out.setRange(headerSize, headerSize + body.length, body);
+    if (hasCk) {
+      final bodyEnd = headerSize + body.length;
+      final ck = xxh64(Uint8List.sublistView(out, 0, bodyEnd));
+      for (var i = 0; i < 8; i++) {
+        out[bodyEnd + i] = ((ck >> (i * 8)) & BigInt.from(0xFF)).toInt();
+      }
+    }
+    return out;
+  }
+
+  static NveDecodedWireFrame decodeFrame(Uint8List bytes, {int maxBytes = maxFrameBytes}) {
+    if (bytes.length < headerSize) {
+      throw const NvePairProtocolException('truncated NveWireFrame header');
+    }
+    if (bytes[0] != magic0 || bytes[1] != magic1) {
+      throw const NvePairProtocolException('invalid NveWireFrame magic');
+    }
+    if (bytes[2] != version) {
+      throw NvePairProtocolException('unsupported NveWireFrame version ${bytes[2]}');
+    }
+    final ch = NveWireChannel.fromCode(bytes[3]);
+    final kind = NveWireKind.fromCode(bytes[4]);
+    if (ch == null || kind == null) {
+      throw const NvePairProtocolException('unknown NveWireFrame channel or kind');
+    }
+    final bd = ByteData.sublistView(bytes);
+    if (bd.getUint16(6, Endian.little) != 0) {
+      throw const NvePairProtocolException('non-zero reserved header');
+    }
+    final seq = bd.getUint32(8, Endian.little);
+    final len = bd.getUint32(12, Endian.little);
+    if (len > maxBytes) {
+      throw NvePairProtocolException('frame payload $len exceeds limit $maxBytes');
+    }
+    final hasCk = (bytes[5] & flagXxh64) != 0;
+    final total = headerSize + len + (hasCk ? trailerSize : 0);
+    if (bytes.length != total) {
+      throw const NvePairProtocolException('NveWireFrame length mismatch');
+    }
+    final bodyEnd = headerSize + len;
+    if (hasCk) {
+      final expected = _readU64(bytes, bodyEnd);
+      final actual = xxh64(Uint8List.sublistView(bytes, 0, bodyEnd));
+      if (actual != expected) {
+        throw const NvePairProtocolException('NveWireFrame XXH64 checksum mismatch');
+      }
+    }
+    return NveDecodedWireFrame(
+      channel: ch,
+      kind: kind,
+      sequence: seq,
+      payload: Uint8List.fromList(bytes.sublist(headerSize, bodyEnd)),
+    );
+  }
+
+  static Uint8List encodeHello(String bearerToken, {String clientName = 'nve-flutter'}) {
+    final tok = utf8.encode(bearerToken);
+    final name = utf8.encode(clientName);
+    final out = Uint8List(10 + tok.length + name.length);
+    final bd = ByteData.sublistView(out);
+    bd.setUint16(0, defaultSchemaVersion, Endian.little);
+    bd.setUint32(2, 0x0F, Endian.little);
+    bd.setUint16(6, tok.length, Endian.little);
+    bd.setUint16(8, name.length, Endian.little);
+    out.setRange(10, 10 + tok.length, tok);
+    out.setRange(10 + tok.length, 10 + tok.length + name.length, name);
+    return out;
+  }
+
+  static int decodeHelloAckSessionId(Uint8List payload) {
+    if (payload.length != 12) {
+      throw const NvePairProtocolException('invalid HelloAck length');
+    }
+    return ByteData.sublistView(payload).getUint32(0, Endian.little);
+  }
+}
+
+class NveParsedPairUri {
+  const NveParsedPairUri({
+    required this.webSocketUri,
+    required this.token,
+    this.certHashHex,
+  });
+
+  final Uri webSocketUri;
+  final String token;
+  final String? certHashHex;
+
+  static NveParsedPairUri parse(String raw, {String? fallbackToken}) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) {
+      throw const NvePairProtocolException('pairing URI cannot be empty');
+    }
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) {
+      throw const NvePairProtocolException('malformed pairing URI');
+    }
+    if (uri.scheme.toLowerCase() == 'nve') {
+      final host = uri.queryParameters['host'] ?? '127.0.0.1';
+      final port = uri.queryParameters['wss'] ??
+          uri.queryParameters['ws'] ??
+          uri.queryParameters['quic'] ??
+          uri.queryParameters['udp'] ??
+          '';
+      final tok = (uri.queryParameters['token']?.isNotEmpty == true)
+          ? uri.queryParameters['token']!
+          : (fallbackToken ?? '');
+      if (port.isEmpty || tok.isEmpty) {
+        throw const NvePairProtocolException('nve://pair URI requires port and token');
+      }
+      final scheme = uri.queryParameters.containsKey('wss') ? 'wss' : 'ws';
+      return NveParsedPairUri(
+        webSocketUri: Uri.parse('$scheme://$host:$port/nve-wire'),
+        token: tok,
+        certHashHex: uri.queryParameters['cert_hash'],
+      );
+    }
+    final tok = fallbackToken ?? uri.queryParameters['token'] ?? '';
+    if (tok.isEmpty) {
+      throw const NvePairProtocolException('pairing token is required');
+    }
+    return NveParsedPairUri(webSocketUri: uri, token: tok);
+  }
+}
+
+enum NvePairConnectionState {
+  disconnected,
+  connecting,
+  paired,
+  reconnecting,
+  error,
+}
+
+class NveSyncTelemetry {
+  int sessionId = 0;
+  int framesReceived = 0;
+  int keyframesReceived = 0;
+  int bytesReceived = 0;
+  int eventsSent = 0;
+  double? smoothedRttMs;
+  double fps = 0;
+  double bytesPerSecRx = 0;
+  double compressionRatio = 1.0;
+}
+
+/// Thin Flutter pairing client speaking `NveWireFrame` v2 over WebSocket (or `nve-wire` FFI).
 class NvePairClient extends ChangeNotifier {
-  NvePairClient({
-    NvePairSocketConnector? connector,
-    this.autoReconnect = true,
-    this.maxReconnectAttempts = 5,
-    this.heartbeatInterval = const Duration(seconds: 1),
-    int Function()? nowMicros,
-    this.onFrame,
-  })  : _connector = connector ?? NveIoWebSocketAdapter.connect,
-        _nowMicros = nowMicros ?? _defaultNowMicros;
-
-  static int _defaultNowMicros() => DateTime.now().microsecondsSinceEpoch;
-
-  final NvePairSocketConnector _connector;
-  final int Function() _nowMicros;
-  final bool autoReconnect;
-  final int maxReconnectAttempts;
-  final Duration heartbeatInterval;
-  NvePairedFrameCallback? onFrame;
-
   NvePairConnectionState _state = NvePairConnectionState.disconnected;
-  String? _errorMessage;
-  NvePairUri? _activeTarget;
-  int _sessionId = 0, _latestFrameSeq = 0, _nonceCounter = 1, _reconnectAttempt = 0;
+  String? _lastError;
+  final NveSyncTelemetry telemetry = NveSyncTelemetry();
   Uint8List? _latestFrame;
-
-  final NveDeltaReceiver _deltaReceiver = NveDeltaReceiver();
-  NvePairSocket? _socket;
-  StreamSubscription<Uint8List>? _socketSub;
-  Timer? _heartbeatTimer, _reconnectTimer;
-  NveU64? _pendingClientNonce;
-  bool _manualDisconnect = false, _disposed = false;
-
-  int _framesRx = 0, _keyframesRx = 0, _deltasRx = 0, _kfReqsTx = 0, _eventsTx = 0;
-  int _wireRx = 0, _rawRx = 0, _wireTx = 0;
-  int? _lastRttUs, _smoothedRttUs, _minRttUs;
-  double _fps = 0.0, _bytesPerSecRx = 0.0;
-  final List<(int, int)> _rxSamples = <(int, int)>[];
-  final List<int> _frameSamples = <int>[];
+  int _latestFrameSeq = 0;
+  int _nextSeq = 2;
+  WebSocket? _socket;
 
   NvePairConnectionState get state => _state;
-  String? get errorMessage => _errorMessage;
-  NvePairUri? get activeTarget => _activeTarget;
-  int get sessionId => _sessionId;
-  int get latestFrameSeq => _latestFrameSeq;
-  Uint8List? get latestFrame => _latestFrame;
   bool get isPaired => _state == NvePairConnectionState.paired;
+  Uint8List? get latestFrame => _latestFrame;
+  int get latestFrameSeq => _latestFrameSeq;
 
   String get stateLabel => switch (_state) {
         NvePairConnectionState.disconnected => 'Disconnected',
         NvePairConnectionState.connecting => 'Connecting…',
         NvePairConnectionState.paired =>
-          'Paired (0x${_sessionId.toRadixString(16).toUpperCase().padLeft(8, '0')})',
-        NvePairConnectionState.reconnecting => 'Reconnecting (#$_reconnectAttempt)…',
-        NvePairConnectionState.error => 'Error: ${_errorMessage ?? 'unknown'}',
+          'Paired (0x${telemetry.sessionId.toRadixString(16).toUpperCase().padLeft(8, '0')})',
+        NvePairConnectionState.reconnecting => 'Reconnecting…',
+        NvePairConnectionState.error => 'Error: ${_lastError ?? 'unknown'}',
       };
 
-  NveSyncTelemetry get telemetry => NveSyncTelemetry(
-        sessionId: _sessionId, framesReceived: _framesRx, keyframesReceived: _keyframesRx,
-        deltasReceived: _deltasRx, keyframeRequestsSent: _kfReqsTx, eventsSent: _eventsTx,
-        wireBytesRx: _wireRx, rawBytesRx: _rawRx, wireBytesTx: _wireTx,
-        lastRttUs: _lastRttUs, smoothedRttUs: _smoothedRttUs, minRttUs: _minRttUs,
-        fps: _fps, bytesPerSecRx: _bytesPerSecRx,
+  Future<void> connect(String uriString, {String? fallbackToken}) async {
+    await disconnect();
+    final parsed = NveParsedPairUri.parse(uriString, fallbackToken: fallbackToken);
+    _state = NvePairConnectionState.connecting;
+    notifyListeners();
+    try {
+      final ws = await WebSocket.connect(parsed.webSocketUri.toString());
+      _socket = ws;
+      ws.add(NveWireCodec.encodeFrame(
+        channel: NveWireChannel.control,
+        kind: NveWireKind.hello,
+        sequence: 1,
+        payload: NveWireCodec.encodeHello(parsed.token),
+      ));
+      ws.listen(
+        (dynamic msg) {
+          if (msg is List<int>) {
+            try {
+              final reply = handleInboundBinary(Uint8List.fromList(msg));
+              if (reply != null) _socket?.add(reply);
+            } on NvePairProtocolException catch (e) {
+              _lastError = e.message;
+              _state = NvePairConnectionState.error;
+              notifyListeners();
+            }
+          }
+        },
+        onDone: () {
+          if (_state != NvePairConnectionState.disconnected) {
+            _state = NvePairConnectionState.disconnected;
+            notifyListeners();
+          }
+        },
+        onError: (Object err) {
+          _lastError = err.toString();
+          _state = NvePairConnectionState.error;
+          notifyListeners();
+        },
       );
-
-  Future<void> connect(String uriString, {String? fallbackToken}) =>
-      connectTarget(NvePairUri.parse(uriString, fallbackToken: fallbackToken));
-
-  Future<void> connectTarget(NvePairUri target) async {
-    _cancelTimers();
-    await _closeSocket();
-    _manualDisconnect = false;
-    _reconnectAttempt = 0;
-    _activeTarget = target;
-    _errorMessage = null;
-    _sessionId = 0;
-    _latestFrameSeq = 0;
-    _latestFrame = null;
-    _deltaReceiver.reset();
-    _resetCounters();
-    await _openSocket(target, isReconnect: false);
+    } catch (e) {
+      _lastError = e.toString();
+      _state = NvePairConnectionState.error;
+      notifyListeners();
+      rethrow;
+    }
   }
 
   Future<void> disconnect() async {
-    _manualDisconnect = true;
-    _cancelTimers();
-    if (_state == NvePairConnectionState.paired && _sessionId != 0) {
-      _sendEnvelope(NvePairCodec.encodeBye(_sessionId));
+    if (_socket != null) {
+      if (isPaired) {
+        _socket!.add(NveWireCodec.encodeFrame(
+          channel: NveWireChannel.control,
+          kind: NveWireKind.bye,
+          sequence: _allocSeq(),
+        ));
+      }
+      await _socket!.close();
+      _socket = null;
     }
-    await _closeSocket();
-    _pendingClientNonce = null;
-    _sessionId = 0;
     _state = NvePairConnectionState.disconnected;
-    _errorMessage = null;
-    _notify();
+    notifyListeners();
   }
 
-  Uint8List? requestKeyframe({int reason = 1}) {
-    if (!isPaired) return null;
-    final pkt = NvePairCodec.encodeKeyframeRequest(_sessionId, _deltaReceiver.lastAppliedSeq, reason);
-    _kfReqsTx += 1;
-    _sendEnvelope(pkt);
-    _notify();
-    return pkt;
+  void requestKeyframe() {
+    if (!isPaired) return;
+    _socket?.add(NveWireCodec.encodeFrame(
+      channel: NveWireChannel.control,
+      kind: NveWireKind.keyframeRequest,
+      sequence: _allocSeq(),
+    ));
   }
 
-  Uint8List? sendPing() {
-    if (!isPaired) return null;
-    final pkt = NvePairCodec.encodePing(_sessionId, _nowMicros());
-    _sendEnvelope(pkt);
-    return pkt;
-  }
-
-  Uint8List? sendInputEvents(List<NveEvent> events) {
-    if (events.isEmpty) return null;
+  Uint8List sendInputEvents(List<NveEvent> events) {
     if (!isPaired) {
-      throw const NvePairProtocolException(NvePairProtocolErrorCode.malformedFrame, 'not paired');
+      throw const NvePairProtocolException('not paired');
     }
-    final pkt = NvePairCodec.encodeInputEvents(events, _sessionId);
-    _eventsTx += 1;
-    _sendEnvelope(pkt);
-    _notify();
-    return pkt;
-  }
-
-  Uint8List sendRawInputEvents(Uint8List eventRing) {
-    if (!isPaired) {
-      throw const NvePairProtocolException(NvePairProtocolErrorCode.malformedFrame, 'not paired');
-    }
-    final pkt = NvePairCodec.encodeRawInputEvents(eventRing, _sessionId);
-    _eventsTx += 1;
-    _sendEnvelope(pkt);
-    _notify();
-    return pkt;
-  }
-
-  Uint8List? beginHandshake() {
-    final target = _activeTarget;
-    if (target == null) return null;
-    final seq = _nonceCounter++;
-    final lastSeq = _deltaReceiver.lastAppliedSeq;
-    final clientNonce = NveU64(
-      ((seq * 0x9E3779B9) ^ lastSeq ^ 0x464C5554) & 0xFFFFFFFF,
-      ((_nowMicros() ^ (seq << 7)) ^ 0x54455201) & 0xFFFFFFFF,
+    final ring = NveEventRingCodec.encodeEvents(events);
+    final frame = NveWireCodec.encodeFrame(
+      channel: NveWireChannel.inputEvents,
+      kind: NveWireKind.eventBatch,
+      sequence: _allocSeq(),
+      payload: ring,
     );
-    _pendingClientNonce = clientNonce;
-    final hello = NveHelloPayload(
-      schemaVersion: target.schemaVersion,
-      maxWindow: NvePairProtocol.defaultSyncWindow,
-      clientLastSeq: lastSeq,
-      clientNonce: clientNonce,
-      tokenProof: NvePairCrypto.deriveTokenProof(target.token, schemaVersion: target.schemaVersion),
-    );
-    final env = NveTransportEnvelope.encode(kind: NveTransportMsgKind.hello, sessionId: 0, payload: hello.encode());
-    _sendEnvelope(env);
-    return env;
+    telemetry.eventsSent += 1;
+    _socket?.add(frame);
+    return frame;
   }
 
-  List<Uint8List> handleInboundBinary(Uint8List bytes) {
-    final now = _nowMicros();
-    _wireRx += bytes.length;
-    _rxSamples.add((now, bytes.length));
-    _pruneWindow(now);
-
-    final env = NveTransportEnvelope.parse(bytes);
-    final outbound = <Uint8List>[];
-
-    switch (env.kind) {
-      case NveTransportMsgKind.helloAck:
-        final target = _activeTarget, clientNonce = _pendingClientNonce;
-        if (target == null || clientNonce == null) {
-          throw const NvePairProtocolException(NvePairProtocolErrorCode.malformedFrame, 'unexpected HelloAck');
-        }
-        final ack = NveHelloAckPayload.decode(env.payload);
-        if (ack.schemaVersion != target.schemaVersion) {
-          _failWith('schema mismatch: expected ${target.schemaVersion}, got ${ack.schemaVersion}');
-        }
-        final expectedSid = NvePairCrypto.deriveSessionId(
-          pairingToken: target.token, schemaVersion: target.schemaVersion,
-          clientNonce: clientNonce, serverNonce: ack.serverNonce,
-        );
-        if (env.sessionId != expectedSid) _failWith('session_id verification failed');
-        _pendingClientNonce = null;
-        _reconnectAttempt = 0;
-        _deltaReceiver.reset(maxWindow: ack.serverMaxWindow);
-        _sessionId = env.sessionId;
+  Uint8List? handleInboundBinary(Uint8List bytes) {
+    final decoded = NveWireCodec.decodeFrame(bytes);
+    telemetry.bytesReceived += bytes.length;
+    switch (decoded.kind) {
+      case NveWireKind.helloAck:
+        telemetry.sessionId = NveWireCodec.decodeHelloAckSessionId(decoded.payload);
         _state = NvePairConnectionState.paired;
-        _errorMessage = null;
-        _startHeartbeat();
-
-      case NveTransportMsgKind.reject:
-        final reject = NveRejectPayload.decode(env.payload);
-        _pendingClientNonce = null;
-        _manualDisconnect = true;
-        _cancelTimers();
-        _failWith('pairing rejected: ${reject.reason.name} (schema v${reject.expectedSchema})');
-
-      case NveTransportMsgKind.deltaSingle:
-        final sid = _requirePairedSessionId(env.sessionId);
-        try {
-          final outcome = _deltaReceiver.receivePacket(env.payload);
-          for (final entry in outcome.appliedFrames) {
-            _framesRx += 1;
-            _rawRx += entry.frame.length;
-            if (entry.kind == NveDeltaPacketKind.keyframe) { _keyframesRx += 1; } else { _deltasRx += 1; }
-            _frameSamples.add(now);
-            _latestFrameSeq = entry.seq;
-            _latestFrame = entry.frame;
-            onFrame?.call(entry.seq, entry.frame);
-          }
-          if (outcome.ackPacket != null) {
-            outbound.add(NveTransportEnvelope.encode(kind: NveTransportMsgKind.deltaSingle, sessionId: sid, payload: outcome.ackPacket));
-          }
-          for (final nack in outcome.nackPackets) {
-            outbound.add(NveTransportEnvelope.encode(kind: NveTransportMsgKind.deltaSingle, sessionId: sid, payload: nack));
-          }
-          if (outcome.gapDetected) {
-            _kfReqsTx += 1;
-            outbound.add(NvePairCodec.encodeKeyframeRequest(sid, _deltaReceiver.lastAppliedSeq, 2));
-          }
-        } on NvePairProtocolException catch (err) {
-          if (err.code == NvePairProtocolErrorCode.baseSequenceMismatch) {
-            _kfReqsTx += 1;
-            outbound.add(NvePairCodec.encodeKeyframeRequest(sid, _deltaReceiver.lastAppliedSeq, 3));
-          } else {
-            rethrow;
-          }
+        notifyListeners();
+        return null;
+      case NveWireKind.reject:
+        _lastError = 'Pairing rejected';
+        _state = NvePairConnectionState.error;
+        notifyListeners();
+        throw const NvePairProtocolException('Pairing rejected');
+      case NveWireKind.sceneKeyframe:
+      case NveWireKind.commandDelta:
+        telemetry.framesReceived += 1;
+        if (decoded.kind == NveWireKind.sceneKeyframe) {
+          telemetry.keyframesReceived += 1;
         }
-
-      case NveTransportMsgKind.ping:
-        final sid = _requirePairedSessionId(env.sessionId);
-        NvePairCodec.decodeTimestampUs(env.payload);
-        outbound.add(NvePairCodec.encodePong(sid, env.payload));
-
-      case NveTransportMsgKind.pong:
-        _requirePairedSessionId(env.sessionId);
-        final sentUs = NvePairCodec.decodeTimestampUs(env.payload);
-        if (now >= sentUs) {
-          final rtt = now - sentUs;
-          _lastRttUs = rtt;
-          _minRttUs = _minRttUs == null ? rtt : (rtt < _minRttUs! ? rtt : _minRttUs);
-          _smoothedRttUs = _smoothedRttUs == null ? rtt : ((_smoothedRttUs! * 7 + rtt) ~/ 8);
-        }
-
-      case NveTransportMsgKind.bye:
-        _requirePairedSessionId(env.sessionId);
-        _manualDisconnect = true;
-        _cancelTimers();
-        unawaited(_closeSocket());
-        _sessionId = 0;
+        _latestFrame = decoded.payload;
+        _latestFrameSeq = decoded.sequence;
+        notifyListeners();
+        return null;
+      case NveWireKind.ping:
+        return NveWireCodec.encodeFrame(
+          channel: NveWireChannel.control,
+          kind: NveWireKind.pong,
+          sequence: _allocSeq(),
+          payload: decoded.payload,
+        );
+      case NveWireKind.bye:
         _state = NvePairConnectionState.disconnected;
-
+        notifyListeners();
+        return null;
       default:
-        throw NvePairProtocolException(NvePairProtocolErrorCode.malformedFrame, 'unsupported kind ${env.kind.name}');
-    }
-
-    for (final msg in outbound) { _sendEnvelope(msg); }
-    _refreshRates(now);
-    _notify();
-    return outbound;
-  }
-
-  Future<void> _openSocket(NvePairUri target, {required bool isReconnect}) async {
-    _state = isReconnect ? NvePairConnectionState.reconnecting : NvePairConnectionState.connecting;
-    _notify();
-    try {
-      final sock = await _connector(target.wsUri);
-      if (_disposed || _manualDisconnect) { await sock.close(); return; }
-      _socket = sock;
-      _socketSub = sock.binaryMessages.listen(
-        (Uint8List msg) { if (!_disposed) { try { handleInboundBinary(msg); } catch (_) {} } },
-        onError: (Object err) => _handleTransportClosed(err.toString()),
-        onDone: () => _handleTransportClosed(null),
-      );
-      beginHandshake();
-    } catch (err) {
-      _handleTransportClosed(err.toString());
+        return null;
     }
   }
 
-  void _handleTransportClosed(String? reason) {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = null;
-    if (_disposed || _manualDisconnect) return;
-    final target = _activeTarget;
-    if (!autoReconnect || target == null || _reconnectAttempt >= maxReconnectAttempts) {
-      _state = NvePairConnectionState.error;
-      _errorMessage = reason ?? 'connection closed';
-      _notify();
-      return;
-    }
-    _reconnectAttempt += 1;
-    _state = NvePairConnectionState.reconnecting;
-    _notify();
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(Duration(milliseconds: _reconnectAttempt.clamp(1, 5) * 400), () {
-      if (!_disposed && !_manualDisconnect) unawaited(_openSocket(target, isReconnect: true));
-    });
-  }
-
-  void _startHeartbeat() {
-    _heartbeatTimer?.cancel();
-    if (heartbeatInterval <= Duration.zero) return;
-    _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) {
-      if (_disposed || !isPaired) { _heartbeatTimer?.cancel(); return; }
-      sendPing();
-    });
-  }
-
-  void _cancelTimers() {
-    _heartbeatTimer?.cancel(); _heartbeatTimer = null;
-    _reconnectTimer?.cancel(); _reconnectTimer = null;
-  }
-
-  Future<void> _closeSocket() async {
-    await _socketSub?.cancel(); _socketSub = null;
-    final sock = _socket; _socket = null;
-    if (sock != null) { try { await sock.close(); } catch (_) {} }
-  }
-
-  Never _failWith(String message) {
-    _state = NvePairConnectionState.error; _errorMessage = message; _notify();
-    throw NvePairProtocolException(NvePairProtocolErrorCode.malformedFrame, message);
-  }
-
-  int _requirePairedSessionId(int incoming) {
-    if (!isPaired) throw const NvePairProtocolException(NvePairProtocolErrorCode.malformedFrame, 'not paired');
-    if (incoming != _sessionId) throw const NvePairProtocolException(NvePairProtocolErrorCode.malformedFrame, 'session_id mismatch');
-    return _sessionId;
-  }
-
-  void _sendEnvelope(Uint8List bytes) { _wireTx += bytes.length; _socket?.send(bytes); }
-
-  void _resetCounters() {
-    _framesRx = 0; _keyframesRx = 0; _deltasRx = 0; _kfReqsTx = 0; _eventsTx = 0;
-    _wireRx = 0; _rawRx = 0; _wireTx = 0; _lastRttUs = null; _smoothedRttUs = null; _minRttUs = null;
-    _fps = 0.0; _bytesPerSecRx = 0.0; _rxSamples.clear(); _frameSamples.clear();
-  }
-
-  void _pruneWindow(int nowUs) {
-    final cutoff = nowUs > 1000000 ? nowUs - 1000000 : 0;
-    _rxSamples.removeWhere((s) => s.$1 < cutoff);
-    _frameSamples.removeWhere((ts) => ts < cutoff);
-  }
-
-  void _refreshRates(int nowUs) {
-    _pruneWindow(nowUs);
-    var sum = 0;
-    for (final s in _rxSamples) { sum += s.$2; }
-    _bytesPerSecRx = sum.toDouble();
-    _fps = _frameSamples.length.toDouble();
-  }
-
-  void _notify() { if (!_disposed) notifyListeners(); }
-
-  @override
-  void dispose() {
-    _disposed = true; _manualDisconnect = true; _cancelTimers(); unawaited(_closeSocket());
-    super.dispose();
+  int _allocSeq() {
+    final s = _nextSeq;
+    _nextSeq = (_nextSeq + 1) & 0xFFFFFFFF;
+    if (_nextSeq == 0) _nextSeq = 1;
+    return s;
   }
 }

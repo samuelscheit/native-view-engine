@@ -1,15 +1,15 @@
 //! Interactive `"crdt-simulator"` demo exercising real `nve_interop::crdt` primitives
-//! (`LwwRegister`, `PnCounter`, `OrSet`, `HlcClock`, `CrdtDeltaPacket` `NVC1` binary wire format).
+//! (`LwwRegister`, `PnCounter`, `OrSet`, `HlcClock`, `NveCrdtDelta` `NVC1` binary wire format).
 
 use nve_dioxus::prelude::*;
 use nve_interop::crdt::{
-    CrdtDeltaPacket, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
+    NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
     VersionVector,
 };
 use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
 
 pub const CRDT_SIMULATOR_SOURCE: &str = r#"use nve_interop::crdt::{
-    CrdtDeltaPacket, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OrSet, PeerId, PnCounter,
+    NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OrSet, PeerId, PnCounter,
 };
 
 let mut peer_a = PeerReplica::new(PeerId(1));
@@ -19,7 +19,7 @@ peer_b.vote_delta(1);
 
 // Encode binary NVC1 delta with FNV-1a64 integrity checksum & merge deterministically:
 let packet_bytes = peer_a.encode_delta_packet();
-let decoded = CrdtDeltaPacket::decode(&packet_bytes)?;
+let decoded = NveCrdtDelta::decode(&packet_bytes)?;
 peer_b.apply_packet(&decoded);"#;
 
 const PEER_A: PeerId = PeerId(1);
@@ -105,12 +105,12 @@ impl PeerReplica {
 
     fn drain_nvc1_packet(&mut self) -> Vec<u8> {
         let records = std::mem::take(&mut self.pending_records);
-        let pkt = CrdtDeltaPacket::new(self.peer_id, self.vv.clone(), records);
+        let pkt = NveCrdtDelta::new(self.peer_id, self.vv.clone(), records);
         pkt.encode().unwrap_or_default()
     }
 
     fn apply_nvc1_bytes(&mut self, bytes: &[u8]) -> usize {
-        let Ok(pkt) = CrdtDeltaPacket::decode(bytes) else {
+        let Ok(pkt) = NveCrdtDelta::decode(bytes) else {
             return 0;
         };
         let applied = pkt.records.len();

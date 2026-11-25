@@ -150,12 +150,12 @@ impl NveWebHost {
         self.session.borrow_mut().take_outbound_message()
     }
 
-    /// Drains pending DOM events from `WebBackend` and encodes them into one binary `NVT1`
-    /// `InputEvents = 11` frame.
+    /// Drains pending DOM events from `WebBackend` and encodes them into one binary
+    /// `NveWireKind::EventBatch` frame.
     pub fn flush_dom_events(&self) -> Result<Option<Vec<u8>>, JsValue> {
         self.session
             .borrow_mut()
-            .drain_dom_events_as_nvt1()
+            .drain_dom_events_as_wire_frame()
             .map_err(|e| JsValue::from_str(&e))
     }
 
@@ -294,7 +294,7 @@ impl NveWebHost {
         let socket_slot: Rc<RefCell<Option<web_sys::WebSocket>>> = Rc::new(RefCell::new(None));
 
         // Wire live browser DOM interactions (click/input/scroll/focus/blur/keydown/submit)
-        // straight into binary NVT1 InputEvents = 11 frames over the active WebSocket.
+        // straight into binary NveWireFrame v2 EventBatch frames over the active transport.
         let session_for_events = Rc::clone(&session);
         let socket_for_events = Rc::clone(&socket_slot);
         session
@@ -304,7 +304,7 @@ impl NveWebHost {
                 let Ok(mut guard) = session_for_events.try_borrow_mut() else {
                     return;
                 };
-                match guard.drain_dom_events_as_nvt1() {
+                match guard.drain_dom_events_as_wire_frame() {
                     Ok(Some(pkt)) => {
                         if let Some(ws) = socket_for_events.borrow().as_ref() {
                             send_binary_if_open(ws, &pkt);

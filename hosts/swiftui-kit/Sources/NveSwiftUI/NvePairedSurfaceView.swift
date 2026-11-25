@@ -1,12 +1,12 @@
 import Foundation
 import SwiftUI
 
-/// Live zero-cdylib SwiftUI thin-client surface paired over `NVT1`/`NVD1` binary WebSockets.
+/// Live zero-cdylib SwiftUI thin-client surface paired over `NveWireFrame` v2 (QUIC/WebTransport/WSS).
 ///
 /// Renders a compact pairing control bar (URI/token inputs + Connect/Disconnect button),
 /// a live telemetry pill (RTT, FPS, RX throughput, compression), and either a caller-supplied
 /// paired frame view or a built-in interactive `CommandBuffer` display forwarding tap events
-/// back over `InputEvents = 11`.
+/// back over `EventBatch`.
 public struct NvePairedSurfaceView<Content: View>: View {
     @ObservedObject public var client: NvePairClient
     @State private var uriInput: String
@@ -112,10 +112,10 @@ public struct NvePairedSurfaceView<Content: View>: View {
             }
         } else {
             VStack(spacing: 6) {
-                Text(client.state.isPaired ? "Waiting for first NVD1 keyframe…" : "Not paired")
+                Text(client.state.isPaired ? "Waiting for first SceneKeyframe…" : "Not paired")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
-                Text("Zero-cdylib NVT1/NVD1 thin client")
+                Text("Zero-cdylib NveWireFrame v2 thin client")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }

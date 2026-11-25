@@ -34,6 +34,8 @@ pub const RELOC_KIND_SCENE: u32 = 1;
 pub const RELOC_KIND_BUNDLE: u32 = 2;
 /// `RelocHeader::content_kind` for relocatable workspace record tables.
 pub const RELOC_KIND_WORKSPACE: u32 = 3;
+/// `RelocHeader::content_kind` for [`super::NveTimelineArchiveView`] timed scene patch timelines.
+pub const RELOC_KIND_TIMELINE: u32 = 4;
 
 pub(crate) const CHECKSUM_OFFSET: usize = 24;
 pub(crate) const CHECKSUM_END: usize = 32;

@@ -1,6 +1,251 @@
 import Combine
 import Foundation
 
+/// `NveWireFrame` v2 logical channel identifiers matching `nve_wire_core::NveWireChannel`.
+public enum NveWireChannel: UInt8, Sendable {
+    case control = 0
+    case uiScene = 1
+    case asyncSlot = 2
+    case inputEvents = 3
+    case stateSync = 4
+    case presence = 5
+}
+
+/// `NveWireFrame` v2 frame kinds matching `nve_wire_core::NveWireKind`.
+public enum NveWireKind: UInt8, Sendable {
+    case hello = 1
+    case helloAck = 2
+    case reject = 3
+    case sceneKeyframe = 4
+    case commandDelta = 5
+    case nodePatchDelta = 6
+    case slotChunk = 7
+    case eventBatch = 8
+    case crdtDelta = 9
+    case presence = 10
+    case hotPatch = 11
+    case ping = 12
+    case pong = 13
+    case keyframeRequest = 14
+    case bye = 15
+}
+
+public enum NvePairProtocolError: Error, Equatable, Sendable {
+    case invalidUri(String)
+    case truncated
+    case invalidMagic
+    case unsupportedVersion(UInt8)
+    case invalidHeader
+    case frameTooLarge(Int)
+    case checksumMismatch
+    case rejected(String)
+    case notConnected
+}
+
+/// Thin `NveWireFrame` v2 codec (16-byte LE header + payload + optional 8-byte `XXH64` trailer).
+public enum NveWireCodec {
+    public static let magic: [UInt8] = [0x4E, 0x57] // "NW"
+    public static let version: UInt8 = 2
+    public static let headerSize = 16
+    public static let trailerSize = 8
+    public static let flagXxh64: UInt8 = 1 << 0
+    public static let xxh64Seed: UInt64 = 0x4E56_4557_4952_4532 // "NVEWIRE2"
+    public static let defaultSchemaVersion: UInt16 = 2
+    public static let maxFrameBytes = 16 * 1024 * 1024
+
+    public static func xxh64(_ data: Data, seed: UInt64 = xxh64Seed) -> UInt64 {
+        let p1: UInt64 = 0x9E37_79B1_85EB_CA87
+        let p2: UInt64 = 0xC2B2_AE3D_27D4_EB4F
+        let p3: UInt64 = 0x1656_67B1_9E37_79F9
+        let p4: UInt64 = 0x85EB_CA77_C2B2_AE63
+        let p5: UInt64 = 0x27D4_EB2F_1656_67C5
+        let bytes = [UInt8](data)
+        let n = bytes.count
+
+        @inline(__always) func rotl(_ x: UInt64, _ r: UInt64) -> UInt64 { (x << r) | (x >> (64 - r)) }
+        @inline(__always) func u64(_ i: Int) -> UInt64 {
+            var v: UInt64 = 0
+            for k in 0..<8 { v |= UInt64(bytes[i + k]) << UInt64(k * 8) }
+            return v
+        }
+        @inline(__always) func u32(_ i: Int) -> UInt64 {
+            UInt64(bytes[i]) | (UInt64(bytes[i + 1]) << 8) | (UInt64(bytes[i + 2]) << 16) | (UInt64(bytes[i + 3]) << 24)
+        }
+        @inline(__always) func round(_ acc: UInt64, _ input: UInt64) -> UInt64 {
+            rotl(acc &+ input &* p2, 31) &* p1
+        }
+        @inline(__always) func merge(_ acc: UInt64, _ v: UInt64) -> UInt64 {
+            (acc ^ round(0, v)) &* p1 &+ p4
+        }
+
+        var idx = 0
+        var h: UInt64
+        if n >= 32 {
+            var v1 = seed &+ p1 &+ p2
+            var v2 = seed &+ p2
+            var v3 = seed
+            var v4 = seed &- p1
+            while idx <= n - 32 {
+                v1 = round(v1, u64(idx)); idx += 8
+                v2 = round(v2, u64(idx)); idx += 8
+                v3 = round(v3, u64(idx)); idx += 8
+                v4 = round(v4, u64(idx)); idx += 8
+            }
+            h = rotl(v1, 1) &+ rotl(v2, 7) &+ rotl(v3, 12) &+ rotl(v4, 18)
+            h = merge(h, v1); h = merge(h, v2); h = merge(h, v3); h = merge(h, v4)
+        } else {
+            h = seed &+ p5
+        }
+        h &+= UInt64(n)
+        while idx + 8 <= n {
+            h ^= round(0, u64(idx))
+            h = rotl(h, 27) &* p1 &+ p4
+            idx += 8
+        }
+        if idx + 4 <= n {
+            h ^= u32(idx) &* p1
+            h = rotl(h, 23) &* p2 &+ p3
+            idx += 4
+        }
+        while idx < n {
+            h ^= UInt64(bytes[idx]) &* p5
+            h = rotl(h, 11) &* p1
+            idx += 1
+        }
+        h ^= h >> 33; h &*= p2
+        h ^= h >> 29; h &*= p3
+        h ^= h >> 32
+        return h
+    }
+
+    public static func encodeFrame(
+        channel: NveWireChannel,
+        kind: NveWireKind,
+        sequence: UInt32,
+        payload: Data = Data(),
+        flags: UInt8 = flagXxh64
+    ) -> Data {
+        let hasCk = (flags & flagXxh64) != 0
+        var out = Data(capacity: headerSize + payload.count + (hasCk ? trailerSize : 0))
+        out.append(contentsOf: magic)
+        out.append(version)
+        out.append(channel.rawValue)
+        out.append(kind.rawValue)
+        out.append(flags)
+        appendLE(&out, UInt16(0))
+        appendLE(&out, sequence)
+        appendLE(&out, UInt32(payload.count))
+        out.append(payload)
+        if hasCk {
+            let ck = xxh64(out)
+            appendLE(&out, ck)
+        }
+        return out
+    }
+
+    public static func decodeFrame(
+        _ data: Data,
+        maxBytes: Int = maxFrameBytes
+    ) throws -> (channel: NveWireChannel, kind: NveWireKind, sequence: UInt32, payload: Data) {
+        guard data.count >= headerSize else { throw NvePairProtocolError.truncated }
+        let b = [UInt8](data)
+        guard b[0] == magic[0], b[1] == magic[1] else { throw NvePairProtocolError.invalidMagic }
+        guard b[2] == version else { throw NvePairProtocolError.unsupportedVersion(b[2]) }
+        guard let ch = NveWireChannel(rawValue: b[3]), let kind = NveWireKind(rawValue: b[4]) else {
+            throw NvePairProtocolError.invalidHeader
+        }
+        let reserved = readU16(b, 6)
+        guard reserved == 0 else { throw NvePairProtocolError.invalidHeader }
+        let seq = readU32(b, 8)
+        let len = Int(readU32(b, 12))
+        guard len <= maxBytes else { throw NvePairProtocolError.frameTooLarge(len) }
+        let hasCk = (b[5] & flagXxh64) != 0
+        let expectedTotal = headerSize + len + (hasCk ? trailerSize : 0)
+        guard b.count == expectedTotal else { throw NvePairProtocolError.truncated }
+        let bodyEnd = headerSize + len
+        if hasCk {
+            let expectedCk = readU64(b, bodyEnd)
+            let actualCk = xxh64(Data(b[0..<bodyEnd]))
+            guard actualCk == expectedCk else { throw NvePairProtocolError.checksumMismatch }
+        }
+        return (ch, kind, seq, Data(b[headerSize..<bodyEnd]))
+    }
+
+    public static func encodeHello(bearerToken: String, clientName: String = "nve-swiftui") -> Data {
+        let tok = Data(bearerToken.utf8.prefix(512))
+        let name = Data(clientName.utf8.prefix(128))
+        var out = Data(capacity: 10 + tok.count + name.count)
+        appendLE(&out, defaultSchemaVersion)
+        appendLE(&out, UInt32(0x0F))
+        appendLE(&out, UInt16(tok.count))
+        appendLE(&out, UInt16(name.count))
+        out.append(tok)
+        out.append(name)
+        return out
+    }
+
+    public static func decodeHelloAck(_ data: Data) throws -> (sessionId: UInt32, schemaVersion: UInt16) {
+        guard data.count == 12 else { throw NvePairProtocolError.truncated }
+        let b = [UInt8](data)
+        return (readU32(b, 0), readU16(b, 4))
+    }
+
+    private static func appendLE<T: FixedWidthInteger>(_ data: inout Data, _ value: T) {
+        var le = value.littleEndian
+        withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
+    }
+    private static func readU16(_ b: [UInt8], _ o: Int) -> UInt16 {
+        UInt16(b[o]) | (UInt16(b[o + 1]) << 8)
+    }
+    private static func readU32(_ b: [UInt8], _ o: Int) -> UInt32 {
+        UInt32(b[o]) | (UInt32(b[o + 1]) << 8) | (UInt32(b[o + 2]) << 16) | (UInt32(b[o + 3]) << 24)
+    }
+    private static func readU64(_ b: [UInt8], _ o: Int) -> UInt64 {
+        UInt64(readU32(b, o)) | (UInt64(readU32(b, o + 4)) << 32)
+    }
+}
+
+public struct NveParsedPairUri: Equatable, Sendable {
+    public let webSocketURL: URL
+    public let token: String
+    public let certHashHex: String?
+
+    public static func parse(_ raw: String, fallbackToken: String? = nil) throws -> NveParsedPairUri {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw NvePairProtocolError.invalidUri("empty URI") }
+        if trimmed.lowercased().hasPrefix("nve://") {
+            guard let comps = URLComponents(string: trimmed) else {
+                throw NvePairProtocolError.invalidUri("malformed nve://pair URI")
+            }
+            let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).compactMap { item in
+                item.value.map { (item.name, $0) }
+            })
+            let host = q["host"] ?? "127.0.0.1"
+            let port = q["wss"] ?? q["ws"] ?? q["quic"] ?? q["udp"] ?? ""
+            let tok = (q["token"]?.isEmpty == false ? q["token"] : fallbackToken) ?? ""
+            guard !port.isEmpty, !tok.isEmpty else {
+                throw NvePairProtocolError.invalidUri("URI requires port and token")
+            }
+            let scheme = q["wss"] != nil ? "wss" : "ws"
+            guard let url = URL(string: "\(scheme)://\(host):\(port)/nve-wire") else {
+                throw NvePairProtocolError.invalidUri("invalid resolved WebSocket URL")
+            }
+            return NveParsedPairUri(webSocketURL: url, token: tok, certHashHex: q["cert_hash"])
+        }
+        guard let url = URL(string: trimmed), let tok = fallbackToken, !tok.isEmpty else {
+            throw NvePairProtocolError.invalidUri("direct URL requires non-empty token")
+        }
+        return NveParsedPairUri(webSocketURL: url, token: tok, certHashHex: nil)
+    }
+}
+
+public struct NveCommandBufferSummary: Equatable, Sendable {
+    public let surfaceId: UInt32
+    public let frameId: UInt64
+    public let opCount: UInt32
+    public let flags: UInt16
+}
+
 public enum NvePairConnectionState: Equatable, Sendable {
     case disconnected
     case connecting
@@ -28,367 +273,142 @@ public struct NveSyncTelemetry: Equatable, Sendable {
     public var sessionId: UInt32 = 0
     public var framesReceived: UInt64 = 0
     public var keyframesReceived: UInt64 = 0
-    public var deltasReceived: UInt64 = 0
-    public var keyframeRequestsSent: UInt64 = 0
+    public var bytesReceived: UInt64 = 0
     public var eventsSent: UInt64 = 0
-    public var wireBytesRx: UInt64 = 0
-    public var rawBytesRx: UInt64 = 0
-    public var wireBytesTx: UInt64 = 0
-    public var lastRttUs: UInt64?
-    public var smoothedRttUs: UInt64?
-    public var minRttUs: UInt64?
+    public var smoothedRttMs: Double?
     public var fps: Double = 0
     public var bytesPerSecRx: Double = 0
-
-    public init() {}
-    public var compressionRatio: Double { wireBytesRx == 0 ? 1.0 : Double(rawBytesRx) / Double(wireBytesRx) }
-    public var smoothedRttMs: Double? { smoothedRttUs.map { Double($0) / 1000.0 } }
+    public var compressionRatio: Double = 1.0
 }
 
-public protocol NvePairTransport: AnyObject {
-    func connect(
-        url: URL,
-        onOpen: @escaping @Sendable () -> Void,
-        onBinary: @escaping @Sendable (Data) -> Void,
-        onClose: @escaping @Sendable (Error?) -> Void
-    )
-    func send(_ data: Data)
-    func close()
-}
-
-/// Zero-dependency Apple Foundation `URLSessionWebSocketTask` transport.
-public final class NveURLSessionWebSocketTransport: NSObject, NvePairTransport, URLSessionWebSocketDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var session: URLSession?
-    private var task: URLSessionWebSocketTask?
-    private var onOpen: (@Sendable () -> Void)?
-    private var onBinary: (@Sendable (Data) -> Void)?
-    private var onClose: (@Sendable (Error?) -> Void)?
-    private var closed = false
-
-    public override init() { super.init() }
-
-    public func connect(
-        url: URL,
-        onOpen: @escaping @Sendable () -> Void,
-        onBinary: @escaping @Sendable (Data) -> Void,
-        onClose: @escaping @Sendable (Error?) -> Void
-    ) {
-        close()
-        let config = URLSessionConfiguration.default
-        config.waitsForConnectivity = false
-        let urlSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        let wsTask = urlSession.webSocketTask(with: url)
-        wsTask.maximumMessageSize = NvePairProtocol.maxWireFrameBytes
-        lock.lock()
-        closed = false; session = urlSession; task = wsTask
-        self.onOpen = onOpen; self.onBinary = onBinary; self.onClose = onClose
-        lock.unlock()
-        wsTask.resume()
-        receiveNext(on: wsTask)
-    }
-
-    public func send(_ data: Data) {
-        lock.lock(); let currentTask = task; lock.unlock()
-        currentTask?.send(.data(data)) { _ in }
-    }
-
-    public func close() {
-        lock.lock()
-        closed = true
-        let currentTask = task; let currentSession = session
-        task = nil; session = nil; onOpen = nil; onBinary = nil; onClose = nil
-        lock.unlock()
-        currentTask?.cancel(with: .normalClosure, reason: nil)
-        currentSession?.invalidateAndCancel()
-    }
-
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        lock.lock(); let cb = onOpen; lock.unlock(); cb?()
-    }
-
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        notifyClosed(nil)
-    }
-
-    private func receiveNext(on wsTask: URLSessionWebSocketTask) {
-        wsTask.receive { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case let .success(message):
-                if case let .data(bytes) = message {
-                    self.lock.lock(); let cb = self.onBinary; self.lock.unlock(); cb?(bytes)
-                }
-                self.receiveNext(on: wsTask)
-            case let .failure(err):
-                self.notifyClosed(err)
-            }
-        }
-    }
-
-    private func notifyClosed(_ error: Error?) {
-        lock.lock()
-        guard !closed else { lock.unlock(); return }
-        closed = true; let cb = onClose; onOpen = nil; onBinary = nil; onClose = nil
-        lock.unlock()
-        cb?(error)
-    }
-}
-
+/// Thin SwiftUI pairing client speaking `NveWireFrame` v2 over WebSocket (or `nve-wire` FFI).
 @MainActor
 public final class NvePairClient: ObservableObject {
     @Published public private(set) var state: NvePairConnectionState = .disconnected
     @Published public private(set) var telemetry = NveSyncTelemetry()
-    @Published public private(set) var latestFrameSeq: UInt32 = 0
     @Published public private(set) var latestFrame: Data?
+    @Published public private(set) var latestFrameSeq: UInt32 = 0
     @Published public private(set) var latestSummary: NveCommandBufferSummary?
-    @Published public private(set) var activeTarget: NvePairUri?
 
-    public var onFrame: ((UInt32, Data) -> Void)?
-    public var autoReconnect: Bool
-    public var maxReconnectAttempts: Int
-    public var heartbeatIntervalSeconds: TimeInterval
+    private var task: URLSessionWebSocketTask?
+    private var nextSeq: UInt32 = 2
+    private var token: String = ""
 
-    private let transportFactory: () -> NvePairTransport
-    private let nowMicros: () -> UInt64
-    private var transport: NvePairTransport?
-    private var deltaReceiver = NveDeltaReceiver()
-    private var pendingClientNonce: UInt64?
-    private var nonceCounter: UInt64 = 1
-    private var manualDisconnect = false
-    private var reconnectAttempt = 0
-    private var heartbeatTask: Task<Void, Never>?
-    private var reconnectTask: Task<Void, Never>?
-    private var rxByteSamples: [(tsUs: UInt64, bytes: Int)] = []
-    private var frameSamples: [UInt64] = []
-
-    public init(
-        transportFactory: @escaping () -> NvePairTransport = { NveURLSessionWebSocketTransport() },
-        autoReconnect: Bool = true,
-        maxReconnectAttempts: Int = 5,
-        heartbeatIntervalSeconds: TimeInterval = 1.0,
-        nowMicros: @escaping () -> UInt64 = { UInt64(DispatchTime.now().uptimeNanoseconds / 1_000) }
-    ) {
-        self.transportFactory = transportFactory; self.autoReconnect = autoReconnect
-        self.maxReconnectAttempts = maxReconnectAttempts; self.heartbeatIntervalSeconds = heartbeatIntervalSeconds
-        self.nowMicros = nowMicros
-    }
-
-    deinit { heartbeatTask?.cancel(); reconnectTask?.cancel(); transport?.close() }
-
-    public var sessionId: UInt32 {
-        if case let .paired(sid) = state { return sid }
-        return 0
-    }
+    public init() {}
 
     public func connect(uriString: String, fallbackToken: String? = nil) throws {
-        connect(target: try NvePairUri.parse(uriString, fallbackToken: fallbackToken))
-    }
-
-    public func connect(target: NvePairUri) {
-        cancelTimers(); transport?.close()
-        manualDisconnect = false; reconnectAttempt = 0; activeTarget = target
-        deltaReceiver.reset(); telemetry = NveSyncTelemetry()
-        latestFrameSeq = 0; latestFrame = nil; latestSummary = nil
-        rxByteSamples.removeAll(); frameSamples.removeAll()
-        openTransport(target: target, isReconnect: false)
+        disconnect()
+        let parsed = try NveParsedPairUri.parse(uriString, fallbackToken: fallbackToken)
+        self.token = parsed.token
+        self.state = .connecting
+        let ws = URLSession.shared.webSocketTask(with: parsed.webSocketURL)
+        self.task = ws
+        ws.resume()
+        let hello = NveWireCodec.encodeFrame(
+            channel: .control,
+            kind: .hello,
+            sequence: 1,
+            payload: NveWireCodec.encodeHello(bearerToken: parsed.token)
+        )
+        ws.send(.data(hello)) { [weak self] err in
+            if let err {
+                Task { @MainActor in self?.state = .error(err.localizedDescription) }
+            }
+        }
+        receiveNext()
     }
 
     public func disconnect() {
-        manualDisconnect = true; cancelTimers()
-        if case let .paired(sid) = state { sendEnvelope(NvePairCodec.encodeBye(sessionId: sid)) }
-        transport?.close(); transport = nil; pendingClientNonce = nil; state = .disconnected
+        if case .paired = state, let task {
+            let bye = NveWireCodec.encodeFrame(channel: .control, kind: .bye, sequence: allocSeq())
+            task.send(.data(bye)) { _ in }
+        }
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        state = .disconnected
+    }
+
+    public func requestKeyframe() {
+        guard state.isPaired, let task else { return }
+        let req = NveWireCodec.encodeFrame(channel: .control, kind: .keyframeRequest, sequence: allocSeq())
+        task.send(.data(req)) { _ in }
     }
 
     @discardableResult
-    public func requestKeyframe(reason: UInt8 = 1) -> Data? {
-        guard case let .paired(sid) = state else { return nil }
-        let pkt = NvePairCodec.encodeKeyframeRequest(sessionId: sid, lastSeq: deltaReceiver.lastAppliedSeq, reason: reason)
-        telemetry.keyframeRequestsSent &+= 1; sendEnvelope(pkt); return pkt
-    }
-
-    @discardableResult
-    public func sendPing() -> Data? {
-        guard case let .paired(sid) = state else { return nil }
-        let pkt = NvePairCodec.encodePing(sessionId: sid, timestampUs: nowMicros())
-        sendEnvelope(pkt); return pkt
-    }
-
-    @discardableResult
-    public func sendInputEvents(_ events: [NveEvent]) throws -> Data? {
-        guard !events.isEmpty else { return nil }
-        guard case let .paired(sid) = state else { throw NvePairProtocolError.malformedFrame("not paired") }
-        let pkt = try NvePairCodec.encodeInputEvents(events, sessionId: sid)
-        telemetry.eventsSent &+= 1; sendEnvelope(pkt); return pkt
-    }
-
-    @discardableResult
-    public func sendRawInputEvents(_ eventRing: Data) throws -> Data {
-        guard case let .paired(sid) = state else { throw NvePairProtocolError.malformedFrame("not paired") }
-        let pkt = try NvePairCodec.encodeRawInputEvents(eventRing, sessionId: sid)
-        telemetry.eventsSent &+= 1; sendEnvelope(pkt); return pkt
-    }
-
-    @discardableResult
-    public func beginHandshake() -> Data? {
-        guard let target = activeTarget else { return nil }
-        let seq = nonceCounter; nonceCounter = max(nonceCounter &+ 1, 1)
-        let lastSeq = deltaReceiver.lastAppliedSeq
-        let clientNonce = NvePairCrypto.mixNonce(seq ^ UInt64(lastSeq) ^ 0x5357_4946_5455_4901)
-        pendingClientNonce = clientNonce
-        let hello = NveHelloPayload(
-            schemaVersion: target.schemaVersion, maxWindow: UInt16(NvePairProtocol.defaultSyncWindow),
-            clientLastSeq: lastSeq, clientNonce: clientNonce,
-            tokenProof: NvePairCrypto.deriveTokenProof(pairingToken: target.token, schemaVersion: target.schemaVersion)
+    public func sendInputEvents(_ events: [NveEvent]) throws -> Data {
+        guard state.isPaired else { throw NvePairProtocolError.notConnected }
+        let ring = NveEventRingCodec.encode(events)
+        let frame = NveWireCodec.encodeFrame(
+            channel: .inputEvents,
+            kind: .eventBatch,
+            sequence: allocSeq(),
+            payload: ring
         )
-        let env = NveTransportEnvelope.encode(kind: .hello, sessionId: 0, payload: hello.encode())
-        sendEnvelope(env); return env
+        telemetry.eventsSent += 1
+        task?.send(.data(frame)) { _ in }
+        return frame
     }
 
+    /// Processes one inbound `NveWireFrame` v2 binary message (also callable directly in tests).
     @discardableResult
-    public func handleInboundBinary(_ bytes: Data) throws -> [Data] {
-        let now = nowMicros()
-        telemetry.wireBytesRx &+= UInt64(bytes.count)
-        rxByteSamples.append((now, bytes.count)); pruneWindow(nowUs: now)
-
-        let env = try NveTransportEnvelope.parse(bytes)
-        var outbound: [Data] = []
-
-        switch env.kind {
+    public func handleInboundBinary(_ data: Data) throws -> Data? {
+        let decoded = try NveWireCodec.decodeFrame(data)
+        telemetry.bytesReceived += UInt64(data.count)
+        switch decoded.kind {
         case .helloAck:
-            guard let target = activeTarget, let clientNonce = pendingClientNonce else {
-                throw NvePairProtocolError.malformedFrame("unexpected HelloAck")
-            }
-            let ack = try NveHelloAckPayload.decode(env.payload)
-            guard ack.schemaVersion == target.schemaVersion else {
-                let msg = "schema mismatch: expected \(target.schemaVersion), got \(ack.schemaVersion)"
-                state = .error(msg); throw NvePairProtocolError.malformedFrame(msg)
-            }
-            let expectedSid = NvePairCrypto.deriveSessionId(
-                pairingToken: target.token, schemaVersion: target.schemaVersion,
-                clientNonce: clientNonce, serverNonce: ack.serverNonce
-            )
-            guard env.sessionId == expectedSid else {
-                let msg = String(format: "session_id mismatch: expected 0x%08X, got 0x%08X", expectedSid, env.sessionId)
-                state = .error(msg); throw NvePairProtocolError.malformedFrame(msg)
-            }
-            pendingClientNonce = nil; reconnectAttempt = 0
-            deltaReceiver.reset(maxWindow: Int(ack.serverMaxWindow))
-            telemetry.sessionId = env.sessionId; state = .paired(sessionId: env.sessionId)
-            startHeartbeat()
-
+            let ack = try NveWireCodec.decodeHelloAck(decoded.payload)
+            telemetry.sessionId = ack.sessionId
+            state = .paired(sessionId: ack.sessionId)
+            return nil
         case .reject:
-            let reject = try NveRejectPayload.decode(env.payload)
-            let msg = "pairing rejected: \(reject.reason) (server schema v\(reject.expectedSchema))"
-            pendingClientNonce = nil; manualDisconnect = true; cancelTimers()
-            state = .error(msg); throw NvePairProtocolError.malformedFrame(msg)
-
-        case .deltaSingle:
-            let sid = try requirePairedSessionId(env.sessionId)
-            do {
-                let outcome = try deltaReceiver.receivePacket(env.payload)
-                for entry in outcome.appliedFrames {
-                    telemetry.framesReceived &+= 1; telemetry.rawBytesRx &+= UInt64(entry.frame.count)
-                    if entry.kind == .keyframe { telemetry.keyframesReceived &+= 1 } else { telemetry.deltasReceived &+= 1 }
-                    frameSamples.append(now)
-                    latestFrameSeq = entry.seq; latestFrame = entry.frame
-                    latestSummary = NveDeltaCodec.scanNveCommandSlices(entry.frame)?.0
-                    onFrame?(entry.seq, entry.frame)
-                }
-                if let ack = outcome.ackPacket { outbound.append(NveTransportEnvelope.encode(kind: .deltaSingle, sessionId: sid, payload: ack)) }
-                for nack in outcome.nackPackets { outbound.append(NveTransportEnvelope.encode(kind: .deltaSingle, sessionId: sid, payload: nack)) }
-                if outcome.gapDetected {
-                    telemetry.keyframeRequestsSent &+= 1
-                    outbound.append(NvePairCodec.encodeKeyframeRequest(sessionId: sid, lastSeq: deltaReceiver.lastAppliedSeq, reason: 2))
-                }
-            } catch NvePairProtocolError.baseSequenceMismatch {
-                telemetry.keyframeRequestsSent &+= 1
-                outbound.append(NvePairCodec.encodeKeyframeRequest(sessionId: sid, lastSeq: deltaReceiver.lastAppliedSeq, reason: 3))
-            }
-
+            state = .error("Pairing rejected")
+            throw NvePairProtocolError.rejected("Pairing rejected")
+        case .sceneKeyframe, .commandDelta:
+            telemetry.framesReceived += 1
+            if decoded.kind == .sceneKeyframe { telemetry.keyframesReceived += 1 }
+            latestFrame = decoded.payload
+            latestFrameSeq = decoded.sequence
+            return nil
         case .ping:
-            let sid = try requirePairedSessionId(env.sessionId)
-            outbound.append(NvePairCodec.encodePong(sessionId: sid, timestampUs: try NvePairCodec.decodeTimestampUs(env.payload)))
-
-        case .pong:
-            _ = try requirePairedSessionId(env.sessionId)
-            let sentUs = try NvePairCodec.decodeTimestampUs(env.payload)
-            if now >= sentUs {
-                let rtt = now - sentUs
-                telemetry.lastRttUs = rtt
-                telemetry.minRttUs = telemetry.minRttUs.map { min($0, rtt) } ?? rtt
-                telemetry.smoothedRttUs = telemetry.smoothedRttUs.map { ($0 * 7 + rtt) / 8 } ?? rtt
-            }
-
+            return NveWireCodec.encodeFrame(
+                channel: .control,
+                kind: .pong,
+                sequence: allocSeq(),
+                payload: decoded.payload
+            )
         case .bye:
-            _ = try requirePairedSessionId(env.sessionId)
-            manualDisconnect = true; cancelTimers(); transport?.close(); transport = nil; state = .disconnected
-
+            state = .disconnected
+            return nil
         default:
-            throw NvePairProtocolError.malformedFrame("unsupported inbound kind \(env.kind)")
-        }
-
-        for msg in outbound { sendEnvelope(msg) }
-        refreshRates(nowUs: now)
-        return outbound
-    }
-
-    private func openTransport(target: NvePairUri, isReconnect: Bool) {
-        state = isReconnect ? .reconnecting(attempt: reconnectAttempt) : .connecting
-        let next = transportFactory(); transport = next
-        next.connect(
-            url: target.wsUrl,
-            onOpen: { [weak self] in Task { @MainActor [weak self] in self?.beginHandshake() } },
-            onBinary: { [weak self] data in Task { @MainActor [weak self] in _ = try? self?.handleInboundBinary(data) } },
-            onClose: { [weak self] err in Task { @MainActor [weak self] in self?.handleTransportClosed(err) } }
-        )
-    }
-
-    private func handleTransportClosed(_ error: Error?) {
-        heartbeatTask?.cancel(); heartbeatTask = nil
-        if manualDisconnect { return }
-        guard autoReconnect, let target = activeTarget, reconnectAttempt < maxReconnectAttempts else {
-            state = .error(error?.localizedDescription ?? "connection closed"); return
-        }
-        reconnectAttempt += 1; let attempt = reconnectAttempt; state = .reconnecting(attempt: attempt)
-        reconnectTask?.cancel()
-        reconnectTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(min(attempt, 5)) * 400_000_000)
-            guard let self, !Task.isCancelled, !self.manualDisconnect else { return }
-            self.openTransport(target: target, isReconnect: true)
+            return nil
         }
     }
 
-    private func startHeartbeat() {
-        heartbeatTask?.cancel()
-        guard heartbeatIntervalSeconds > 0 else { return }
-        let ns = UInt64(max(heartbeatIntervalSeconds, 0.05) * 1_000_000_000)
-        heartbeatTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: ns)
-                guard let self, !Task.isCancelled, self.state.isPaired else { break }
-                self.sendPing()
+    private func allocSeq() -> UInt32 {
+        let s = nextSeq
+        nextSeq &+= 1
+        if nextSeq == 0 { nextSeq = 1 }
+        return s
+    }
+
+    private func receiveNext() {
+        task?.receive { [weak self] result in
+            Task { @MainActor in
+                guard let self else { return }
+                switch result {
+                case let .success(.data(bytes)):
+                    if let reply = try? self.handleInboundBinary(bytes) {
+                        self.task?.send(.data(reply)) { _ in }
+                    }
+                    self.receiveNext()
+                case .success:
+                    self.receiveNext()
+                case let .failure(err):
+                    if self.state != .disconnected {
+                        self.state = .error(err.localizedDescription)
+                    }
+                }
             }
         }
-    }
-
-    private func cancelTimers() { heartbeatTask?.cancel(); heartbeatTask = nil; reconnectTask?.cancel(); reconnectTask = nil }
-    private func sendEnvelope(_ data: Data) { telemetry.wireBytesTx &+= UInt64(data.count); transport?.send(data) }
-
-    private func requirePairedSessionId(_ incoming: UInt32) throws -> UInt32 {
-        guard case let .paired(expected) = state else { throw NvePairProtocolError.malformedFrame("not paired") }
-        guard incoming == expected else { throw NvePairProtocolError.malformedFrame("session_id mismatch") }
-        return expected
-    }
-
-    private func pruneWindow(nowUs: UInt64) {
-        let cutoff = nowUs > 1_000_000 ? nowUs - 1_000_000 : 0
-        rxByteSamples.removeAll { $0.tsUs < cutoff }; frameSamples.removeAll { $0 < cutoff }
-    }
-
-    private func refreshRates(nowUs: UInt64) {
-        pruneWindow(nowUs: nowUs)
-        telemetry.bytesPerSecRx = Double(rxByteSamples.reduce(0) { $0 + $1.bytes })
-        telemetry.fps = Double(frameSamples.count)
     }
 }

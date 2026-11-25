@@ -39,7 +39,7 @@ pub use multi_window::{
 };
 #[cfg(feature = "dev")]
 pub use pairing::{
-    encode_nvt1_envelope, PairClientMachine, PairClientState, PairInboundOutcome, PairedWebSession,
+    PairClientMachine, PairClientState, PairInboundOutcome, PairedWebSession,
 };
 #[cfg(feature = "scene-view")]
 pub use scene::SceneMirror;
