@@ -4,9 +4,8 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining platform ve
 
 ## P0 — Verification & Platform Coverage
 
-- [ ] **Live Windows verification on `samuel-pc`**
-  - Run full MSVC + Windows SDK + `react-native-windows` 0.88 build and CTest suite.
-  - Build and verify `nve_example_counter.dll` end-to-end against the live Windows host.
+- [ ] **Live Windows runtime verification on `samuel-pc`**
+  - MSVC + `react-native-windows` 0.88 build and `nve_fabric_bridge_bench.exe` are verified; run `nve_windows_shell.exe` + `nve_example_counter.dll` end-to-end once Windows Smart App Control allows unsigned test binaries or binaries are signed.
 
 ## P1 — Host & Runtime Hardening
 
@@ -26,12 +25,8 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining platform ve
 
 ## P2 — Core Engine & Platform Completeness
 
-- [ ] **GPU-accelerated Skia & native font shaping**
-  - Wire hardware-accelerated `skia-safe` backends (Metal, Direct3D, Vulkan) in `crates/nve-backend-skia`.
-  - Integrate native system font discovery and shaping (`cosmic-text` / platform shapers).
-
-- [ ] **Web WASM E2E suite**
-  - Add `wasm-bindgen-test` coverage and a headless browser E2E test suite for `hosts/web-shell`.
+- [ ] **Hardware GPU Skia swapchains (`crates/nve-backend-skia`)**
+  - Wire live Metal, Direct3D 12, and Vulkan GPU context/swapchain creation behind `--features skia` (building on the `cosmic-text` shaper and `SkiaCanvasRenderer` / `GpuSurface` scaffolding).
 
 - [ ] **Qt Quick GPU adapter**
   - Add a GPU-composited `QQuickItem` adapter alongside `QWidget` in `hosts/qt-shell`.
@@ -42,7 +37,7 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining platform ve
 - [ ] **Instant-Boot Frame-0 `CommandBuffer` + `mmap` Zero-Copy State Snapshot**
   - Integrate Dioxus signal table archiving into the relocatable state snapshot format (`crates/nve-engine/src/snapshot.rs`).
   - Add append-only WAL compaction for incremental state persistence between full snapshots.
-  - Wire native host Frame-0 early-paint hook to replay the mapped `CommandBuffer` before runtime cold-boot completes.
+  - Wire `--snapshot` replay/save into `hosts/gtk-shell` and mobile shells (macOS, Qt 6, and Windows shells are wired).
   - Add WASM `wizer` pre-initialization pipeline for instant web snapshot hydration.
 
 ## Flagship / Vision
