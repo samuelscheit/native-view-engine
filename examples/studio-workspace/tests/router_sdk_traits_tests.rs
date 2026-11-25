@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use nve_abi::{
     encode_bin_value_to_vec, encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId,
-    NveHostEventBatch, NveMapEntry, NvePropsRef, NveValue, RawPropValue, ROOT_NODE_ID,
-    SERVICE_SYSTEM_ENV,
+    NveMapEntry, NvePropsRef, NveValue, RawPropValue, ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
@@ -32,8 +31,8 @@ use nve_studio_workspace::{
     StudioRoute, StudioTraitPreviewChip, StudioWorkspaceModule, WorkspaceState,
 };
 use nve_system_env::{
-    ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, TextDirection,
-    ThemeSnapshot, EVENT_LOCALE_CHANGED, EVENT_THEME_CHANGED,
+    ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, SystemEnvEvent,
+    TextDirection, ThemeSnapshot,
 };
 
 struct StudioHarness {
@@ -601,7 +600,7 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
         Some(md.as_str())
     );
 
-    // Push a live binary `NVH1` host-event batch updating theme -> Dark and locale -> ar-EG (RTL).
+    // Deliver live typed theme (Dark) and locale (ar-EG RTL) updates directly with zero serialization.
     let dark_theme = ThemeSnapshot {
         color_scheme: SdkColorScheme::Dark,
         contrast: ContrastLevel::Standard,
@@ -619,19 +618,10 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
         uses_24h_clock: true,
         timezone: "Africa/Cairo".into(),
     };
-    let mut batch = NveHostEventBatch::new();
-    batch.push_host_event(
-        SERVICE_SYSTEM_ENV,
-        EVENT_THEME_CHANGED,
-        dark_theme.encode_nvt2().to_vec(),
-    );
-    batch.push_host_event(
-        SERVICE_SYSTEM_ENV,
-        EVENT_LOCALE_CHANGED,
-        ar_locale.encode_nvl1().unwrap(),
-    );
-    let encoded_batch = batch.encode();
-    assert!(module.dispatch_host_events(&encoded_batch));
+    assert!(module.dispatch_system_env_events(&[
+        SystemEnvEvent::ThemeChanged(dark_theme),
+        SystemEnvEvent::LocaleChanged(ar_locale),
+    ]));
 
     let updated = module.state_snapshot();
     assert_eq!(updated.color_scheme(), ColorScheme::Dark);

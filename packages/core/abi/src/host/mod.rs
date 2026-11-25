@@ -1,6 +1,5 @@
 //! Zero-JSON host-capability C ABI (`NVE_IFACE_HOST = 5`), reserved service IDs,
-//! `NveHostStatus`, `NveHostCallbacks`, `NveHostApi`, and (under `feature = "wire"`)
-//! the `NVH1` binary host-event batch codec.
+//! `NveHostStatus`, `NveHostCallbacks`, and `NveHostApi`.
 
 use std::ffi::c_void;
 use std::fmt;
@@ -9,16 +8,8 @@ use nve_abi_macros::NveAbi;
 
 use crate::ffi::{NveAppHandle, NveBufferSlice};
 
-#[cfg(feature = "wire")]
-mod batch;
 #[cfg(test)]
 mod tests;
-
-#[cfg(feature = "wire")]
-pub use batch::{
-    HostBatchError, NveHostEventBatch, NveHostEventRecord, NveHostEventRecordRef,
-    NVE_HOST_EVENT_MAGIC, NVE_HOST_EVENT_VERSION,
-};
 
 /// Modular interface ID for the optional host-capability & channel-bus interface (`const NveHostApi*`).
 pub const NVE_IFACE_HOST: u32 = 5;
@@ -37,8 +28,7 @@ pub const SERVICE_SYSTEM_ENV: u32 = 0x0014;
 pub const SERVICE_NOTIFICATIONS: u32 = 0x0015;
 pub const SERVICE_HAPTICS: u32 = 0x0016;
 
-/// Signed status codes returned by `NveHostCallbacks::invoke`, `channel_publish`, and `NVH1`
-/// async response records.
+/// Signed status codes returned by `NveHostCallbacks::invoke` and `channel_publish`.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
 #[nve_abi(c_prefix = "NVE_HOST_")]
@@ -158,25 +148,4 @@ pub struct NveHostApi {
         unsafe extern "C" fn(handle: NveAppHandle, callbacks: *const NveHostCallbacks),
     pub dispatch_host_events:
         unsafe extern "C" fn(handle: NveAppHandle, batch: NveBufferSlice) -> u32,
-}
-
-/// Wire tag for each record inside an `NVH1` host-event batch.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
-#[nve_abi(c_prefix = "NVE_HOST_EVENT_")]
-pub enum NveHostEventKind {
-    AsyncResponse = 1,
-    HostPushEvent = 2,
-    ChannelMessage = 3,
-}
-
-impl NveHostEventKind {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            1 => Some(Self::AsyncResponse),
-            2 => Some(Self::HostPushEvent),
-            3 => Some(Self::ChannelMessage),
-            _ => None,
-        }
-    }
 }

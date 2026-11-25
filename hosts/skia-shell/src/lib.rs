@@ -9,9 +9,8 @@ pub mod host_services;
 pub mod window;
 
 pub use host_services::{
-    encode_locale_channel_batch, encode_system_env_batch, encode_theme_channel_batch,
-    encode_window_lifecycle_batch, winit_theme_to_color_scheme, SkiaHostServices,
-    WindowCommandSink, EVENT_WINDOW_LIFECYCLE, METHOD_WINDOW_DISPATCH_BATCH,
+    winit_theme_to_color_scheme, SkiaHostEvent, SkiaHostServices, WindowCommandSink,
+    WindowServiceBackend,
 };
 pub use window::{
     render_headless_screenshot, render_paired_headless_screenshot, replay_snapshot_into_backend,

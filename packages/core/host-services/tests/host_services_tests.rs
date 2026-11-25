@@ -1,5 +1,6 @@
 //! Deep transport, C ABI `NVE_IFACE_HOST = 5`, `HostServiceRegistry`, fault-injection,
-//! `NveChannelBus` retained replay, and adversarial `NVH1` fuzz tests for `nve-host-services`.
+//! zero-serialization [`TypedEventBus`] / [`TypedAsyncTable`], and `NveChannelBus` tests
+//! for `nve-host-services`.
 
 use std::any::{Any, TypeId};
 use std::ffi::c_void;
@@ -7,16 +8,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    NveAppHandle, NveBufferSlice, NveHostApi, NveHostCallbacks, NveHostEventBatch, NveHostStatus,
+    NveAppHandle, NveBufferSlice, NveHostApi, NveHostCallbacks, NveHostStatus,
     NVE_CHANNEL_FLAG_RETAIN, NVE_IFACE_HOST,
 };
 use nve_host_services::{
     fnv1a64, pack_typed, resolve_typed, validate_url, BinReader, BinWriter, FfiHostServices,
-    HostCallbackBridge, HostEvent, HostServiceHandler, HostServiceProvider, HostServiceRegistry,
-    InvokeResult, MemoryHostServices, NativeHostServices, PermissionStatus, ServiceError,
+    HostCallbackBridge, HostServiceHandler, HostServiceProvider, HostServiceRegistry, InvokeResult,
+    MemoryHostServices, NativeHostServices, PermissionStatus, ServiceError, TypedEventBus,
     FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE,
 };
-use nve_interop::{NveChannelBus, CHANNEL_ID_THEME};
+use nve_interop::CHANNEL_ID_THEME;
 
 const TEST_SERVICE_ECHO: u32 = 0x1001;
 const TEST_METHOD_ECHO: u32 = 1;
@@ -38,6 +39,18 @@ impl HostServiceHandler for EchoHandler {
             _ => Err(ServiceError::Unsupported),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SampleThemeEvent {
+    dark: bool,
+    scale_x100: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SampleAlertEvent {
+    id: u32,
+    message: String,
 }
 
 #[test]
@@ -78,7 +91,76 @@ fn registry_and_native_host_services_compose_handlers_cleanly() {
 }
 
 #[test]
-fn memory_host_services_fault_injection_async_and_nvh1_dispatch() {
+fn typed_event_bus_zero_copy_fanout_retained_replay_and_selective_drain() {
+    let bus = TypedEventBus::new();
+
+    // Publish retained event before late subscriber joins.
+    let initial = SampleThemeEvent {
+        dark: true,
+        scale_x100: 200,
+    };
+    assert_eq!(bus.publish_retained(initial.clone()), 0);
+    assert_eq!(bus.retained::<SampleThemeEvent>().as_deref(), Some(&initial));
+
+    let seen_a = Arc::new(Mutex::new(Vec::<SampleThemeEvent>::new()));
+    let seen_b = Arc::new(Mutex::new(Vec::<SampleThemeEvent>::new()));
+    let sa = Arc::clone(&seen_a);
+    let sb = Arc::clone(&seen_b);
+
+    let sub_a = bus.subscribe::<SampleThemeEvent, _>(true, move |ev| {
+        sa.lock().unwrap().push(ev.clone());
+    });
+    let sub_b = bus.subscribe::<SampleThemeEvent, _>(false, move |ev| {
+        sb.lock().unwrap().push(ev.clone());
+    });
+    assert_eq!(bus.subscriber_count::<SampleThemeEvent>(), 2);
+    // Late subscriber with replay_retained=true received the retained snapshot immediately.
+    assert_eq!(*seen_a.lock().unwrap(), vec![initial.clone()]);
+    assert!(seen_b.lock().unwrap().is_empty());
+
+    // Publish a second theme update + an unrelated alert event.
+    let updated = SampleThemeEvent {
+        dark: false,
+        scale_x100: 150,
+    };
+    assert_eq!(bus.publish_retained(updated.clone()), 2);
+    assert_eq!(
+        bus.publish(SampleAlertEvent {
+            id: 42,
+            message: "build complete".into(),
+        }),
+        0
+    );
+    assert_eq!(
+        *seen_a.lock().unwrap(),
+        vec![initial.clone(), updated.clone()]
+    );
+    assert_eq!(*seen_b.lock().unwrap(), vec![updated.clone()]);
+
+    // Selective drain removes only SampleThemeEvent, leaving SampleAlertEvent intact.
+    let drained_themes = bus.drain_typed::<SampleThemeEvent>();
+    assert_eq!(drained_themes.len(), 2);
+    assert_eq!(*drained_themes[0], initial);
+    assert_eq!(*drained_themes[1], updated);
+    assert_eq!(bus.queued_len(), 1);
+
+    let drained_alerts = bus.drain_typed::<SampleAlertEvent>();
+    assert_eq!(drained_alerts.len(), 1);
+    assert_eq!(drained_alerts[0].id, 42);
+    assert_eq!(bus.queued_len(), 0);
+
+    // Unsubscribe stops further delivery cleanly.
+    assert!(bus.unsubscribe(sub_a));
+    assert!(!bus.unsubscribe(sub_a));
+    assert_eq!(bus.subscriber_count::<SampleThemeEvent>(), 1);
+    assert_eq!(bus.publish(initial), 1);
+    assert!(bus.unsubscribe(sub_b));
+    assert!(bus.clear_retained::<SampleThemeEvent>());
+    assert!(bus.retained::<SampleThemeEvent>().is_none());
+}
+
+#[test]
+fn memory_host_services_fault_injection_typed_async_and_typed_events() {
     let mem = MemoryHostServices::new().with_handler(EchoHandler {
         big_payload: vec![0xAB; 16],
     });
@@ -113,22 +195,49 @@ fn memory_host_services_fault_injection_async_and_nvh1_dispatch() {
     };
     assert_eq!(mem.take_async_response(request_id), None);
     mem.complete_async(request_id, NveHostStatus::Ok, b"done".to_vec());
-    assert_eq!(mem.take_async_response(request_id), Some(Ok(b"done".to_vec())));
+    assert_eq!(
+        mem.take_async_response(request_id),
+        Some(Ok(b"done".to_vec()))
+    );
     assert_eq!(mem.take_async_response(request_id), None);
 
-    // NVH1 batch dispatch forwards push events & retained channel messages.
-    let mut batch = NveHostEventBatch::new();
-    batch.push_host_event(TEST_SERVICE_ECHO, 7, b"push".to_vec());
-    batch.push_channel_message(CHANNEL_ID_THEME, NVE_CHANNEL_FLAG_RETAIN, b"NVT2test".to_vec());
-    assert_eq!(mem.dispatch_host_events(&batch.encode()).unwrap(), 2);
+    // Direct typed async request resolution (polling + callback, zero serialization).
+    let typed_req1 = mem.register_typed_async::<SampleAlertEvent, fn(_)>(None);
+    assert!(mem.take_typed_async::<SampleAlertEvent>(typed_req1).is_none());
+    mem.complete_typed_async(
+        typed_req1,
+        Ok(SampleAlertEvent {
+            id: 7,
+            message: "typed-ok".into(),
+        }),
+    );
+    let resolved = mem
+        .take_typed_async::<SampleAlertEvent>(typed_req1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.id, 7);
+    assert_eq!(resolved.message, "typed-ok");
 
-    let events = mem.poll_host_events();
-    assert_eq!(events.len(), 2);
-    assert!(matches!(events[0], HostEvent::Push(_)));
-    assert!(matches!(events[1], HostEvent::Channel(_)));
-    let bus = mem.channel_bus();
-    let guard = bus.lock().unwrap();
-    assert_eq!(guard.retained("theme").unwrap().as_bytes(), b"NVT2test");
+    let cb_slot = Arc::new(Mutex::new(None));
+    let cb_clone = Arc::clone(&cb_slot);
+    let typed_req2 = mem.register_typed_async::<SampleAlertEvent, _>(Some(move |res| {
+        *cb_clone.lock().unwrap() = Some(res);
+    }));
+    mem.complete_typed_async::<SampleAlertEvent>(typed_req2, Err(ServiceError::Cancelled));
+    assert_eq!(*cb_slot.lock().unwrap(), Some(Err(ServiceError::Cancelled)));
+
+    // Direct typed event emission & retained replay via `MemoryHostServices`.
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let rx = Arc::clone(&received);
+    mem.emit_typed_retained(SampleThemeEvent {
+        dark: true,
+        scale_x100: 200,
+    });
+    let _sub = mem.subscribe_typed::<SampleThemeEvent, _>(true, move |ev| {
+        rx.lock().unwrap().push(ev.clone());
+    });
+    assert_eq!(received.lock().unwrap().len(), 1);
+    assert_eq!(mem.drain_typed_events::<SampleThemeEvent>().len(), 1);
 }
 
 struct MockCAbiHost {
@@ -201,7 +310,7 @@ unsafe extern "C" fn mock_c_channel_publish(
 }
 
 #[test]
-fn ffi_host_services_fast_path_buffer_too_small_retry_and_async_nvh1_resolution() {
+fn ffi_host_services_fast_path_buffer_too_small_retry_and_typed_events() {
     let large_payload = vec![0x42u8; FFI_STACK_BUF_SIZE + 8192];
     let host = Box::new(MockCAbiHost {
         invoke_calls: AtomicUsize::new(0),
@@ -216,13 +325,14 @@ fn ffi_host_services_fast_path_buffer_too_small_retry_and_async_nvh1_resolution(
     };
 
     let ffi = FfiHostServices::with_callbacks(callbacks);
-    let bus = Arc::new(Mutex::new(NveChannelBus::new()));
-    ffi.attach_channel_bus(bus.clone());
 
     assert_eq!(ffi.invoke_sync(TEST_SERVICE_ECHO, 1, &[]).unwrap(), vec![1]);
     assert_eq!(host.invoke_calls.load(Ordering::SeqCst), 1);
 
-    assert_eq!(ffi.invoke_sync(TEST_SERVICE_ECHO, 2, &[]).unwrap(), large_payload);
+    assert_eq!(
+        ffi.invoke_sync(TEST_SERVICE_ECHO, 2, &[]).unwrap(),
+        large_payload
+    );
     assert_eq!(host.invoke_calls.load(Ordering::SeqCst), 3);
 
     assert!(matches!(
@@ -238,44 +348,33 @@ fn ffi_host_services_fast_path_buffer_too_small_retry_and_async_nvh1_resolution(
     assert_eq!(ffi.pending_request_count(), 1);
     assert_eq!(ffi.take_async_response(req1), None);
 
-    let cb_outcome = Arc::new(Mutex::new(None));
-    let cb_slot = cb_outcome.clone();
-    let req2 = ffi
-        .invoke_with_callback(TEST_SERVICE_ECHO, 3, &[], move |res| {
-            *cb_slot.lock().unwrap() = Some(res);
-        })
-        .unwrap()
-        .expect("second call should be pending");
-    assert_eq!(ffi.pending_request_count(), 2);
-
-    let mut batch = NveHostEventBatch::new();
-    batch.push_async_response(req1, NveHostStatus::Ok, b"async-ok".to_vec());
-    batch.push_async_response(req2, NveHostStatus::Cancelled, Vec::new());
-    batch.push_channel_message(CHANNEL_ID_THEME, NVE_CHANNEL_FLAG_RETAIN, b"NVT2payload".to_vec());
-    assert_eq!(ffi.dispatch_host_events(&batch.encode()).unwrap(), 3);
-    assert_eq!(ffi.pending_request_count(), 0);
-
-    assert_eq!(ffi.take_async_response(req1), Some(Ok(b"async-ok".to_vec())));
+    // Typed event bus on FfiHostServices delivers typed events without byte encoding.
+    ffi.typed_events().publish_retained(SampleThemeEvent {
+        dark: true,
+        scale_x100: 200,
+    });
     assert_eq!(
-        *cb_outcome.lock().unwrap(),
-        Some(Err(ServiceError::Cancelled))
-    );
-    assert_eq!(
-        bus.lock().unwrap().retained("theme").unwrap().as_bytes(),
-        b"NVT2payload"
+        ffi.typed_event_bus()
+            .unwrap()
+            .drain_typed::<SampleThemeEvent>()
+            .len(),
+        1
     );
 
     ffi.channel_publish(CHANNEL_ID_THEME, true, b"outbound")
         .unwrap();
     let published = host.published_channels.lock().unwrap();
-    assert_eq!(published.as_slice(), &[(CHANNEL_ID_THEME, true, b"outbound".to_vec())]);
+    assert_eq!(
+        published.as_slice(),
+        &[(CHANNEL_ID_THEME, true, b"outbound".to_vec())]
+    );
 }
 
 #[test]
 fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
     struct MiniHostApp {
         ffi: FfiHostServices,
-        dispatched: usize,
+        dispatched_bytes: usize,
     }
 
     unsafe extern "C" fn app_bind_host(handle: NveAppHandle, callbacks: *const NveHostCallbacks) {
@@ -294,13 +393,8 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
     ) -> u32 {
         let app = unsafe { &mut *(handle as *mut MiniHostApp) };
         let bytes = unsafe { batch.as_slice() };
-        match app.ffi.dispatch_host_events(bytes) {
-            Ok(n) => {
-                app.dispatched += n;
-                u32::from(n > 0)
-            }
-            Err(_) => 0,
-        }
+        app.dispatched_bytes += bytes.len();
+        u32::from(!bytes.is_empty())
     }
 
     static MINI_HOST_API: NveHostApi = NveHostApi {
@@ -319,7 +413,7 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
     let host_api = unsafe { *(mini_get_interface(NVE_IFACE_HOST) as *const NveHostApi) };
     let mut app = Box::new(MiniHostApp {
         ffi: FfiHostServices::new(),
-        dispatched: 0,
+        dispatched_bytes: 0,
     });
     let app_handle = (&mut *app as *mut MiniHostApp) as NveAppHandle;
 
@@ -344,19 +438,16 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
         big
     );
 
-    let mut batch = NveHostEventBatch::new();
-    batch.push_host_event(TEST_SERVICE_ECHO, 1, b"event-ok".to_vec());
-    let encoded = batch.encode();
+    let payload = [1u8, 2, 3, 4];
     let dirty = unsafe {
-        (host_api.dispatch_host_events)(app_handle, NveBufferSlice::from_slice(&encoded))
+        (host_api.dispatch_host_events)(app_handle, NveBufferSlice::from_slice(&payload))
     };
     assert_eq!(dirty, 1);
-    assert_eq!(app.dispatched, 1);
-    assert_eq!(app.ffi.poll_host_events().len(), 1);
+    assert_eq!(app.dispatched_bytes, 4);
 }
 
 #[test]
-fn binary_codec_primitives_permission_status_and_nvh1_fuzz() {
+fn binary_codec_primitives_and_permission_status() {
     let mut w = BinWriter::new();
     w.write_u8(7);
     w.write_bool(true);
@@ -384,7 +475,10 @@ fn binary_codec_primitives_permission_status_and_nvh1_fuzz() {
     assert_eq!(r.read_f64().unwrap(), -2.25);
     assert_eq!(r.read_opt_string().unwrap().as_deref(), Some("nve"));
     assert_eq!(r.read_opt_bytes().unwrap(), None);
-    assert_eq!(r.read_string_vec().unwrap(), vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(
+        r.read_string_vec().unwrap(),
+        vec!["a".to_string(), "b".to_string()]
+    );
     r.finish().unwrap();
 
     assert_eq!(fnv1a64(b"hello"), fnv1a64(b"hello"));
@@ -402,26 +496,6 @@ fn binary_codec_primitives_permission_status_and_nvh1_fuzz() {
         assert_eq!(PermissionStatus::decode(&status.encode()).unwrap(), status);
     }
     assert!(PermissionStatus::decode(&[99]).is_err());
-
-    let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
-    let mut next_u64 = || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        seed
-    };
-    for i in 0..512 {
-        let len = (next_u64() as usize) % 64;
-        let mut buf = vec![0u8; len];
-        for b in &mut buf {
-            *b = (next_u64() & 0xFF) as u8;
-        }
-        if len >= 4 && i % 2 == 0 {
-            buf[..4].copy_from_slice(b"NVH1");
-        }
-        let _ = NveHostEventBatch::decode(&buf);
-        let _ = PermissionStatus::decode(&buf);
-    }
 }
 
 trait DirectGreetBackend: Send + Sync {

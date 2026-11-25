@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use nve_abi::NveHostEventBatch;
 use nve_host_services::{
     FfiHostServices, HostCallbackBridge, HostEvent, HostServiceProvider, MemoryHostServices,
     NativeHostServices, PermissionStatus, ServiceError,
@@ -12,7 +11,7 @@ use nve_location::{
 };
 
 #[test]
-fn location_memory_watches_nvh1_push_native_safety_and_fuzz() {
+fn location_memory_watches_push_native_safety_and_fuzz() {
     let loc_mem = Arc::new(MemoryLocation::new());
     let mem = MemoryHostServices::new().with_handler_arc(loc_mem.clone());
     let bridge = HostCallbackBridge::new(mem);
@@ -72,13 +71,11 @@ fn location_memory_watches_nvh1_push_native_safety_and_fuzz() {
         watch_id: watch,
         fix: custom_fix,
     };
-    let mut batch = NveHostEventBatch::new();
-    batch.push_host_event(
+    ffi.push_host_event(
         SERVICE_LOCATION,
         EVENT_LOCATION_UPDATE,
         encode_location_update_event(&loc_ev).unwrap(),
     );
-    assert_eq!(ffi.dispatch_host_events(&batch.encode()).unwrap(), 1);
     let events = ffi.poll_host_events();
     let HostEvent::Push(p) = &events[0] else {
         panic!("expected push");

@@ -13,10 +13,9 @@ use std::process::Command as ProcessCommand;
 use nve_abi::{
     CommandBufferBuilder, DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice,
     NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch, NveEventBatchRef,
-    NveGestureDisposition, NveHostApi, NveHostCallbacks, NveHostEventBatch, NveHostStatus,
-    NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi,
-    NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT,
-    NVE_IFACE_SURFACE, SERVICE_LINKING,
+    NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi,
+    NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId,
+    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{
@@ -1044,9 +1043,9 @@ impl NveApp for HostCapableApp {
     }
 
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        if let Ok(decoded) = NveHostEventBatch::decode(batch) {
-            self.batches_seen += decoded.len() as u32;
-            !decoded.is_empty()
+        if batch.len() == 8 {
+            self.batches_seen += u32::from_le_bytes([batch[0], batch[1], batch[2], batch[3]]);
+            true
         } else {
             false
         }
@@ -1060,7 +1059,7 @@ unsafe extern "C" {
 }
 
 #[test]
-fn export_nve_app_host_interface_bind_unbind_and_nvh1_dispatch() {
+fn export_nve_app_host_interface_bind_unbind_and_dispatch() {
     let surface =
         unsafe { *(nve_engine_host_test_get_interface(NVE_IFACE_SURFACE) as *const NveSurfaceApi) };
     let host =
@@ -1077,17 +1076,15 @@ fn export_nve_app_host_interface_bind_unbind_and_nvh1_dispatch() {
     };
     unsafe { (host.bind_host)(handle, &cb) };
 
-    let mut batch = NveHostEventBatch::new();
-    batch.push_async_response(1, NveHostStatus::Ok, b"ok".to_vec());
-    batch.push_host_event(SERVICE_LINKING, 1, b"nve://home".to_vec());
-    let encoded = batch.encode();
+    let mut payload = [0u8; 8];
+    payload[..4].copy_from_slice(&2u32.to_le_bytes());
 
     assert_eq!(
-        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(&encoded)) },
+        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(&payload)) },
         1
     );
     assert_eq!(
-        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"corrupt")) },
+        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"bad")) },
         0
     );
     let rendered = unsafe { (surface.render)(handle, 1).as_slice().to_vec() };
@@ -1186,7 +1183,7 @@ fn loader_resolves_host_interface_and_rebinds_across_hotswap() {
         channel_publish: None,
     };
     assert!(inst.bind_host(Some(cb)));
-    assert!(inst.dispatch_host_events(b"NVH1payload"));
+    assert!(inst.dispatch_host_events(b"hostpayload"));
     assert_eq!(inst.render(1), format!("ctx={};ev=11", 0xBEEFusize).as_bytes());
 
     // Reloading automatically re-binds the saved NveHostCallbacks onto generation 2!

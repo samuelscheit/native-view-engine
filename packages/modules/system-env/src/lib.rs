@@ -1,6 +1,6 @@
-//! Live System Theme (`NVT2` fixed 16-byte `#[repr(C)]` layout) and Locale (`NVL1` binary wire)
-//! (`SERVICE_SYSTEM_ENV = 0x0014`), with direct zero-serialization in-process dispatch
-//! ([`SystemEnvBackend`]) and `NveChannelBus` bridge (`CHANNEL_ID_THEME = 1`, `CHANNEL_ID_LOCALE = 2`).
+//! Live System Theme ([`ThemeSnapshot`]) and Locale ([`LocaleSnapshot`]) capability
+//! (`SERVICE_SYSTEM_ENV = 0x0014`) with direct zero-serialization in-process dispatch
+//! ([`SystemEnvBackend`]) and direct typed event delivery ([`SystemEnvEvent`] / [`SystemEnvBridge`]).
 
 pub mod native;
 
@@ -9,14 +9,9 @@ use std::mem::{offset_of, size_of};
 use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_SYSTEM_ENV;
-use nve_abi::SurfaceId;
 use nve_host_services::{
-    pack_typed, resolve_typed, BinReader, BinWriter, HostEvent, HostServiceHandler,
-    HostServiceProvider, ServiceError,
-};
-use nve_interop::{
-    ChannelPayload, NveChannelBus, PayloadEncoding, SubscriptionId, CHANNEL_ID_LOCALE,
-    CHANNEL_ID_THEME,
+    pack_typed, resolve_typed, BinReader, BinWriter, HostServiceHandler, HostServiceProvider,
+    ServiceError, TypedEventBus, TypedEventSubscription,
 };
 
 pub use native::{parse_locale_tag, NativeSystemEnv};
@@ -27,45 +22,8 @@ pub const METHOD_GET_LOCALE: u32 = 2;
 pub const EVENT_THEME_CHANGED: u32 = 1;
 pub const EVENT_LOCALE_CHANGED: u32 = 2;
 
-/// Magic header for fixed 16-byte [`ThemeSnapshot`] binary wire records.
-pub const THEME_WIRE_MAGIC: [u8; 4] = *b"NVT2";
-
-/// Exact byte length of an encoded `NVT2` [`ThemeSnapshot`].
-pub const THEME_WIRE_LEN: usize = 16;
-
-/// Compile-time locked `#[repr(C)]` C-ABI layout for the fixed 16-byte `NVT2` theme record
-/// crossed over `NVE_IFACE_HOST = 5` and `CHANNEL_ID_THEME`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ThemeWireLayout {
-    pub magic: [u8; 4],
-    pub color_scheme: u8,
-    pub contrast: u8,
-    pub flags: u8,
-    pub reserved: u8,
-    pub accent_rgba: u32,
-    pub font_scale_x1000: u16,
-    pub scale_factor_x100: u16,
-}
-
-const _: () = {
-    assert!(size_of::<ThemeWireLayout>() == THEME_WIRE_LEN);
-    assert!(offset_of!(ThemeWireLayout, magic) == 0);
-    assert!(offset_of!(ThemeWireLayout, color_scheme) == 4);
-    assert!(offset_of!(ThemeWireLayout, contrast) == 5);
-    assert!(offset_of!(ThemeWireLayout, flags) == 6);
-    assert!(offset_of!(ThemeWireLayout, reserved) == 7);
-    assert!(offset_of!(ThemeWireLayout, accent_rgba) == 8);
-    assert!(offset_of!(ThemeWireLayout, font_scale_x1000) == 12);
-    assert!(offset_of!(ThemeWireLayout, scale_factor_x100) == 14);
-};
-
-/// Magic header for variable-length [`LocaleSnapshot`] binary wire records.
-pub const LOCALE_WIRE_MAGIC: [u8; 4] = *b"NVL1";
-pub const LOCALE_WIRE_VERSION: u8 = 1;
-
-const THEME_FLAG_REDUCED_MOTION: u8 = 1 << 0;
-const THEME_FLAG_REDUCED_TRANSPARENCY: u8 = 1 << 1;
+/// Exact C-ABI POD size in bytes of [`ThemeSnapshot`].
+pub const THEME_SNAPSHOT_REPR_C_LEN: usize = 12;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -105,7 +63,8 @@ impl ContrastLevel {
     }
 }
 
-/// Fixed 16-byte `NVT2` system theme & display accessibility snapshot.
+/// Direct `#[repr(C)]` system theme & display accessibility snapshot.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ThemeSnapshot {
     pub color_scheme: ColorScheme,
@@ -116,6 +75,17 @@ pub struct ThemeSnapshot {
     pub font_scale_x1000: u16,
     pub scale_factor_x100: u16,
 }
+
+const _: () = {
+    assert!(size_of::<ThemeSnapshot>() == THEME_SNAPSHOT_REPR_C_LEN);
+    assert!(offset_of!(ThemeSnapshot, color_scheme) == 0);
+    assert!(offset_of!(ThemeSnapshot, contrast) == 1);
+    assert!(offset_of!(ThemeSnapshot, reduced_motion) == 2);
+    assert!(offset_of!(ThemeSnapshot, reduced_transparency) == 3);
+    assert!(offset_of!(ThemeSnapshot, accent_rgba) == 4);
+    assert!(offset_of!(ThemeSnapshot, font_scale_x1000) == 8);
+    assert!(offset_of!(ThemeSnapshot, scale_factor_x100) == 10);
+};
 
 impl Default for ThemeSnapshot {
     fn default() -> Self {
@@ -140,27 +110,17 @@ impl ThemeSnapshot {
         f32::from(self.scale_factor_x100) / 100.0
     }
 
-    /// Encodes this snapshot into an exact 16-byte `NVT2` array (zero heap allocation).
-    pub const fn encode_nvt2(&self) -> [u8; THEME_WIRE_LEN] {
-        let mut flags = 0u8;
-        if self.reduced_motion {
-            flags |= THEME_FLAG_REDUCED_MOTION;
-        }
-        if self.reduced_transparency {
-            flags |= THEME_FLAG_REDUCED_TRANSPARENCY;
-        }
-        let accent = self.accent_rgba.to_le_bytes();
-        let font = self.font_scale_x1000.to_le_bytes();
-        let scale = self.scale_factor_x100.to_le_bytes();
+    /// Packs this `#[repr(C)]` POD snapshot directly into its 12-byte C-ABI representation
+    /// for cross-`cdylib` `NVE_IFACE_HOST = 5` boundaries.
+    pub const fn to_repr_c_bytes(&self) -> [u8; THEME_SNAPSHOT_REPR_C_LEN] {
+        let accent = self.accent_rgba.to_ne_bytes();
+        let font = self.font_scale_x1000.to_ne_bytes();
+        let scale = self.scale_factor_x100.to_ne_bytes();
         [
-            THEME_WIRE_MAGIC[0],
-            THEME_WIRE_MAGIC[1],
-            THEME_WIRE_MAGIC[2],
-            THEME_WIRE_MAGIC[3],
             self.color_scheme as u8,
             self.contrast as u8,
-            flags,
-            0,
+            self.reduced_motion as u8,
+            self.reduced_transparency as u8,
             accent[0],
             accent[1],
             accent[2],
@@ -172,31 +132,44 @@ impl ThemeSnapshot {
         ]
     }
 
-    /// Strictly decodes an exact 16-byte `NVT2` slice.
-    pub fn decode_nvt2(bytes: &[u8]) -> Result<Self, ServiceError> {
-        if bytes.len() != THEME_WIRE_LEN {
+    /// Reads a validated [`ThemeSnapshot`] from a 12-byte `#[repr(C)]` C-ABI slice.
+    pub fn from_repr_c_bytes(bytes: &[u8]) -> Result<Self, ServiceError> {
+        if bytes.len() != THEME_SNAPSHOT_REPR_C_LEN {
             return Err(ServiceError::Codec(format!(
-                "NVT2 payload must be exactly {THEME_WIRE_LEN} bytes, got {}",
+                "ThemeSnapshot C-ABI payload must be {THEME_SNAPSHOT_REPR_C_LEN} bytes, got {}",
                 bytes.len()
             )));
         }
-        if bytes[0..4] != THEME_WIRE_MAGIC {
-            return Err(ServiceError::Codec("invalid NVT2 magic".into()));
-        }
-        let color_scheme = ColorScheme::from_u8(bytes[4]).ok_or_else(|| {
-            ServiceError::Codec(format!("invalid NVT2 color_scheme {}", bytes[4]))
-        })?;
-        let contrast = ContrastLevel::from_u8(bytes[5])
-            .ok_or_else(|| ServiceError::Codec(format!("invalid NVT2 contrast {}", bytes[5])))?;
-        let flags = bytes[6];
-        let accent_rgba = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-        let font_scale_x1000 = u16::from_le_bytes([bytes[12], bytes[13]]);
-        let scale_factor_x100 = u16::from_le_bytes([bytes[14], bytes[15]]);
+        let color_scheme = ColorScheme::from_u8(bytes[0])
+            .ok_or_else(|| ServiceError::Codec(format!("invalid color_scheme {}", bytes[0])))?;
+        let contrast = ContrastLevel::from_u8(bytes[1])
+            .ok_or_else(|| ServiceError::Codec(format!("invalid contrast {}", bytes[1])))?;
+        let reduced_motion = match bytes[2] {
+            0 => false,
+            1 => true,
+            v => {
+                return Err(ServiceError::Codec(format!(
+                    "invalid reduced_motion bool {v}"
+                )))
+            }
+        };
+        let reduced_transparency = match bytes[3] {
+            0 => false,
+            1 => true,
+            v => {
+                return Err(ServiceError::Codec(format!(
+                    "invalid reduced_transparency bool {v}"
+                )))
+            }
+        };
+        let accent_rgba = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let font_scale_x1000 = u16::from_ne_bytes([bytes[8], bytes[9]]);
+        let scale_factor_x100 = u16::from_ne_bytes([bytes[10], bytes[11]]);
         Ok(Self {
             color_scheme,
             contrast,
-            reduced_motion: (flags & THEME_FLAG_REDUCED_MOTION) != 0,
-            reduced_transparency: (flags & THEME_FLAG_REDUCED_TRANSPARENCY) != 0,
+            reduced_motion,
+            reduced_transparency,
             accent_rgba,
             font_scale_x1000,
             scale_factor_x100,
@@ -222,7 +195,7 @@ impl TextDirection {
     }
 }
 
-/// System locale & regional formatting snapshot encoded with the binary `NVL1` codec.
+/// System locale & regional formatting snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LocaleSnapshot {
     pub tag: String,
@@ -232,6 +205,9 @@ pub struct LocaleSnapshot {
     pub uses_24h_clock: bool,
     pub timezone: String,
 }
+
+/// Ergonomic alias for [`LocaleSnapshot`].
+pub type LocaleInfo = LocaleSnapshot;
 
 impl Default for LocaleSnapshot {
     fn default() -> Self {
@@ -246,82 +222,73 @@ impl Default for LocaleSnapshot {
     }
 }
 
-impl LocaleSnapshot {
-    /// Encodes this snapshot in binary `NVL1` wire format.
-    pub fn encode_nvl1(&self) -> Result<Vec<u8>, ServiceError> {
-        let mut w = BinWriter::with_capacity(
-            24 + self.tag.len() + self.language.len() + self.region.len() + self.timezone.len(),
-        );
-        w.write_raw(&LOCALE_WIRE_MAGIC);
-        w.write_u8(LOCALE_WIRE_VERSION);
-        w.write_u8(self.text_direction as u8);
-        w.write_bool(self.uses_24h_clock);
-        w.write_u8(0);
-        w.write_str(&self.tag)?;
-        w.write_str(&self.language)?;
-        w.write_str(&self.region)?;
-        w.write_str(&self.timezone)?;
-        Ok(w.into_bytes())
-    }
+/// Direct typed system environment update event delivered with zero serialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemEnvEvent {
+    ThemeChanged(ThemeSnapshot),
+    LocaleChanged(LocaleSnapshot),
+}
 
-    /// Strictly decodes a binary `NVL1` byte slice.
-    pub fn decode_nvl1(bytes: &[u8]) -> Result<Self, ServiceError> {
-        let mut r = BinReader::new(bytes);
-        let magic = r.read_exact(4)?;
-        if magic != LOCALE_WIRE_MAGIC {
-            return Err(ServiceError::Codec("invalid NVL1 magic".into()));
-        }
-        let version = r.read_u8()?;
-        if version != LOCALE_WIRE_VERSION {
-            return Err(ServiceError::Codec(format!(
-                "unsupported NVL1 version {version}"
-            )));
-        }
-        let dir_raw = r.read_u8()?;
-        let text_direction = TextDirection::from_u8(dir_raw).ok_or_else(|| {
-            ServiceError::Codec(format!("invalid NVL1 text_direction {dir_raw}"))
-        })?;
-        let uses_24h_clock = r.read_bool()?;
-        let _reserved = r.read_u8()?;
-        let tag = r.read_string()?;
-        let language = r.read_string()?;
-        let region = r.read_string()?;
-        let timezone = r.read_string()?;
-        r.finish()?;
-        Ok(Self {
-            tag,
-            language,
-            region,
-            text_direction,
-            uses_24h_clock,
-            timezone,
-        })
-    }
+fn pack_locale_ffi(locale: &LocaleSnapshot) -> Result<Vec<u8>, ServiceError> {
+    let mut w = BinWriter::with_capacity(
+        18 + locale.tag.len()
+            + locale.language.len()
+            + locale.region.len()
+            + locale.timezone.len(),
+    );
+    w.write_u8(locale.text_direction as u8);
+    w.write_bool(locale.uses_24h_clock);
+    w.write_str(&locale.tag)?;
+    w.write_str(&locale.language)?;
+    w.write_str(&locale.region)?;
+    w.write_str(&locale.timezone)?;
+    Ok(w.into_bytes())
+}
+
+fn unpack_locale_ffi(bytes: &[u8]) -> Result<LocaleSnapshot, ServiceError> {
+    let mut r = BinReader::new(bytes);
+    let dir_raw = r.read_u8()?;
+    let text_direction = TextDirection::from_u8(dir_raw)
+        .ok_or_else(|| ServiceError::Codec(format!("invalid text_direction {dir_raw}")))?;
+    let uses_24h_clock = r.read_bool()?;
+    let tag = r.read_string()?;
+    let language = r.read_string()?;
+    let region = r.read_string()?;
+    let timezone = r.read_string()?;
+    r.finish()?;
+    Ok(LocaleSnapshot {
+        tag,
+        language,
+        region,
+        text_direction,
+        uses_24h_clock,
+        timezone,
+    })
 }
 
 /// Direct typed in-process backend for [`SERVICE_SYSTEM_ENV`].
 ///
-/// In-process Rust callers bypass `NVT2`/`NVL1` wire encoding completely via
-/// [`nve_host_services::resolve_typed`].
+/// In-process Rust callers invoke this trait directly via [`nve_host_services::resolve_typed`]
+/// with zero serialization and zero byte allocation.
 pub trait SystemEnvBackend: Send + Sync {
     fn get_theme(&self) -> Result<ThemeSnapshot, ServiceError>;
     fn get_locale(&self) -> Result<LocaleSnapshot, ServiceError>;
 }
 
-/// Bridges a [`SystemEnvBackend`] onto the cross-language `NVE_IFACE_HOST = 5` binary wire ABI.
-pub fn dispatch_system_env_wire<B: SystemEnvBackend + ?Sized>(
+/// Bridges a [`SystemEnvBackend`] across a cross-`cdylib` `NVE_IFACE_HOST = 5` C-ABI boundary.
+pub fn dispatch_system_env_ffi<B: SystemEnvBackend + ?Sized>(
     backend: &B,
     method_id: u32,
     _request: &[u8],
 ) -> Result<Vec<u8>, ServiceError> {
     match method_id {
-        METHOD_GET_THEME => Ok(backend.get_theme()?.encode_nvt2().to_vec()),
-        METHOD_GET_LOCALE => backend.get_locale()?.encode_nvl1(),
+        METHOD_GET_THEME => Ok(backend.get_theme()?.to_repr_c_bytes().to_vec()),
+        METHOD_GET_LOCALE => pack_locale_ffi(&backend.get_locale()?),
         _ => Err(ServiceError::Unsupported),
     }
 }
 
-/// Typed ergonomic client for querying system theme and locale snapshots.
+/// Typed ergonomic client for querying and subscribing to live system theme and locale updates.
 #[derive(Debug, Clone, Copy)]
 pub struct SystemEnvClient<'a, P: HostServiceProvider + ?Sized> {
     provider: &'a P,
@@ -343,7 +310,7 @@ impl<'a, P: HostServiceProvider + ?Sized> SystemEnvClient<'a, P> {
         let resp = self
             .provider
             .invoke_sync(SERVICE_SYSTEM_ENV, METHOD_GET_THEME, &[])?;
-        ThemeSnapshot::decode_nvt2(&resp)
+        ThemeSnapshot::from_repr_c_bytes(&resp)
     }
 
     pub fn get_locale(&self) -> Result<LocaleSnapshot, ServiceError> {
@@ -357,12 +324,60 @@ impl<'a, P: HostServiceProvider + ?Sized> SystemEnvClient<'a, P> {
         let resp = self
             .provider
             .invoke_sync(SERVICE_SYSTEM_ENV, METHOD_GET_LOCALE, &[])?;
-        LocaleSnapshot::decode_nvl1(&resp)
+        unpack_locale_ffi(&resp)
+    }
+
+    /// Subscribes directly to typed [`ThemeSnapshot`] updates on the provider's [`TypedEventBus`].
+    pub fn subscribe_theme<F>(
+        &self,
+        replay_retained: bool,
+        handler: F,
+    ) -> Result<TypedEventSubscription, ServiceError>
+    where
+        F: Fn(&ThemeSnapshot) + Send + Sync + 'static,
+    {
+        let bus = self
+            .provider
+            .typed_event_bus()
+            .ok_or(ServiceError::Unsupported)?;
+        Ok(SystemEnvBridge::subscribe_theme(
+            bus,
+            replay_retained,
+            handler,
+        ))
+    }
+
+    /// Subscribes directly to typed [`LocaleSnapshot`] updates on the provider's [`TypedEventBus`].
+    pub fn subscribe_locale<F>(
+        &self,
+        replay_retained: bool,
+        handler: F,
+    ) -> Result<TypedEventSubscription, ServiceError>
+    where
+        F: Fn(&LocaleSnapshot) + Send + Sync + 'static,
+    {
+        let bus = self
+            .provider
+            .typed_event_bus()
+            .ok_or(ServiceError::Unsupported)?;
+        Ok(SystemEnvBridge::subscribe_locale(
+            bus,
+            replay_retained,
+            handler,
+        ))
+    }
+
+    /// Drains queued [`SystemEnvEvent`]s directly from the provider's [`TypedEventBus`].
+    pub fn drain_events(&self) -> Vec<Arc<SystemEnvEvent>> {
+        self.provider
+            .typed_event_bus()
+            .map(|bus| bus.drain_typed::<SystemEnvEvent>())
+            .unwrap_or_default()
     }
 }
 
-/// Bridges live system theme (`NVT2`) and locale (`NVL1`) snapshots onto [`NveChannelBus`]
-/// using retained zero-JSON binary payloads on `CHANNEL_ID_THEME = 1` and `CHANNEL_ID_LOCALE = 2`.
+/// Zero-serialization bridge delivering live [`ThemeSnapshot`] and [`LocaleSnapshot`] updates
+/// over [`TypedEventBus`] with retained snapshot replay.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemEnvBridge;
 
@@ -371,135 +386,73 @@ impl SystemEnvBridge {
         Self
     }
 
-    pub fn publish_theme(
-        bus: &mut NveChannelBus,
-        theme: &ThemeSnapshot,
-    ) -> Result<usize, ServiceError> {
-        let bytes = theme.encode_nvt2();
-        bus.publish_by_id(
-            CHANNEL_ID_THEME,
-            None,
-            PayloadEncoding::Binary,
-            ChannelPayload::from_slice(&bytes),
-            true,
-        )
-        .map_err(|e| ServiceError::InternalError(e.to_string()))
+    /// Publishes a retained [`ThemeSnapshot`] and [`SystemEnvEvent::ThemeChanged`] directly onto
+    /// `bus` with zero byte encoding.
+    pub fn publish_theme(bus: &TypedEventBus, theme: ThemeSnapshot) -> usize {
+        let notified_snap = bus.publish_retained(theme);
+        let notified_ev = bus.publish(SystemEnvEvent::ThemeChanged(theme));
+        notified_snap + notified_ev
     }
 
-    pub fn publish_locale(
-        bus: &mut NveChannelBus,
-        locale: &LocaleSnapshot,
-    ) -> Result<usize, ServiceError> {
-        let bytes = locale.encode_nvl1()?;
-        bus.publish_by_id(
-            CHANNEL_ID_LOCALE,
-            None,
-            PayloadEncoding::Binary,
-            ChannelPayload::from_vec(bytes),
-            true,
-        )
-        .map_err(|e| ServiceError::InternalError(e.to_string()))
+    /// Publishes a retained [`LocaleSnapshot`] and [`SystemEnvEvent::LocaleChanged`] directly onto
+    /// `bus` with zero byte encoding.
+    pub fn publish_locale(bus: &TypedEventBus, locale: LocaleSnapshot) -> usize {
+        let notified_snap = bus.publish_retained(locale.clone());
+        let notified_ev = bus.publish(SystemEnvEvent::LocaleChanged(locale));
+        notified_snap + notified_ev
     }
 
+    /// Fetches the current theme and locale from `provider` and publishes both retained snapshots
+    /// onto `bus` with zero serialization.
     pub fn sync_from_provider<P: HostServiceProvider + ?Sized>(
         &self,
         provider: &P,
-        bus: &mut NveChannelBus,
+        bus: &TypedEventBus,
     ) -> Result<(ThemeSnapshot, LocaleSnapshot), ServiceError> {
         let client = SystemEnvClient::new(provider);
         let theme = client.get_theme()?;
         let locale = client.get_locale()?;
-        let theme_bytes = theme.encode_nvt2();
-        let locale_bytes = locale.encode_nvl1()?;
-        Self::publish_theme(bus, &theme)?;
-        Self::publish_locale(bus, &locale)?;
-        let _ = provider.channel_publish(CHANNEL_ID_THEME, true, &theme_bytes);
-        let _ = provider.channel_publish(CHANNEL_ID_LOCALE, true, &locale_bytes);
+        Self::publish_theme(bus, theme);
+        Self::publish_locale(bus, locale.clone());
         Ok((theme, locale))
     }
 
     pub fn subscribe_theme<F>(
-        bus: &mut NveChannelBus,
-        owner_surface: Option<SurfaceId>,
+        bus: &TypedEventBus,
         replay_retained: bool,
         handler: F,
-    ) -> Result<SubscriptionId, ServiceError>
+    ) -> TypedEventSubscription
     where
-        F: Fn(ThemeSnapshot) + Send + Sync + 'static,
+        F: Fn(&ThemeSnapshot) + Send + Sync + 'static,
     {
-        bus.subscribe_by_id(
-            CHANNEL_ID_THEME,
-            owner_surface,
-            replay_retained,
-            move |msg| {
-                if let Ok(theme) = ThemeSnapshot::decode_nvt2(msg.as_bytes()) {
-                    handler(theme);
-                }
-            },
-        )
-        .map_err(|e| ServiceError::InternalError(e.to_string()))
+        bus.subscribe::<ThemeSnapshot, F>(replay_retained, handler)
     }
 
     pub fn subscribe_locale<F>(
-        bus: &mut NveChannelBus,
-        owner_surface: Option<SurfaceId>,
+        bus: &TypedEventBus,
         replay_retained: bool,
         handler: F,
-    ) -> Result<SubscriptionId, ServiceError>
+    ) -> TypedEventSubscription
     where
-        F: Fn(LocaleSnapshot) + Send + Sync + 'static,
+        F: Fn(&LocaleSnapshot) + Send + Sync + 'static,
     {
-        bus.subscribe_by_id(
-            CHANNEL_ID_LOCALE,
-            owner_surface,
-            replay_retained,
-            move |msg| {
-                if let Ok(locale) = LocaleSnapshot::decode_nvl1(msg.as_bytes()) {
-                    handler(locale);
-                }
-            },
-        )
-        .map_err(|e| ServiceError::InternalError(e.to_string()))
+        bus.subscribe::<LocaleSnapshot, F>(replay_retained, handler)
     }
 
-    pub fn handle_host_event(
-        bus: &mut NveChannelBus,
-        event: &HostEvent,
-    ) -> Result<bool, ServiceError> {
-        match event {
-            HostEvent::Push(push) if push.service_id == SERVICE_SYSTEM_ENV => match push.event_id {
-                EVENT_THEME_CHANGED => {
-                    let theme = ThemeSnapshot::decode_nvt2(&push.payload)?;
-                    Self::publish_theme(bus, &theme)?;
-                    Ok(true)
-                }
-                EVENT_LOCALE_CHANGED => {
-                    let locale = LocaleSnapshot::decode_nvl1(&push.payload)?;
-                    Self::publish_locale(bus, &locale)?;
-                    Ok(true)
-                }
-                other => Err(ServiceError::Codec(format!(
-                    "unknown system_env event_id {other}"
-                ))),
-            },
-            HostEvent::Channel(ch) if ch.channel_id == CHANNEL_ID_THEME => {
-                let theme = ThemeSnapshot::decode_nvt2(&ch.payload)?;
-                Self::publish_theme(bus, &theme)?;
-                Ok(true)
-            }
-            HostEvent::Channel(ch) if ch.channel_id == CHANNEL_ID_LOCALE => {
-                let locale = LocaleSnapshot::decode_nvl1(&ch.payload)?;
-                Self::publish_locale(bus, &locale)?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
+    pub fn subscribe_events<F>(bus: &TypedEventBus, handler: F) -> TypedEventSubscription
+    where
+        F: Fn(&SystemEnvEvent) + Send + Sync + 'static,
+    {
+        bus.subscribe::<SystemEnvEvent, F>(false, handler)
     }
 }
+
+type EnvListener = Arc<dyn Fn(&SystemEnvEvent) + Send + Sync>;
 
 struct MemorySystemEnvState {
     theme: ThemeSnapshot,
     locale: LocaleSnapshot,
+    listeners: Vec<EnvListener>,
 }
 
 /// Deterministic in-memory [`HostServiceHandler`] for [`SERVICE_SYSTEM_ENV`].
@@ -519,22 +472,70 @@ impl MemorySystemEnv {
             state: Mutex::new(MemorySystemEnvState {
                 theme: ThemeSnapshot::default(),
                 locale: LocaleSnapshot::default(),
+                listeners: Vec::new(),
             }),
         }
     }
 
     pub fn with_initial(theme: ThemeSnapshot, locale: LocaleSnapshot) -> Self {
         Self {
-            state: Mutex::new(MemorySystemEnvState { theme, locale }),
+            state: Mutex::new(MemorySystemEnvState {
+                theme,
+                locale,
+                listeners: Vec::new(),
+            }),
         }
     }
 
+    /// Registers a direct typed callback invoked whenever [`Self::set_theme`] or
+    /// [`Self::set_locale`] updates the in-memory environment snapshot.
+    pub fn add_listener<F>(&self, listener: F)
+    where
+        F: Fn(&SystemEnvEvent) + Send + Sync + 'static,
+    {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .listeners
+            .push(Arc::new(listener));
+    }
+
     pub fn set_theme(&self, theme: ThemeSnapshot) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).theme = theme;
+        let listeners = {
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            st.theme = theme;
+            st.listeners.clone()
+        };
+        if !listeners.is_empty() {
+            let ev = SystemEnvEvent::ThemeChanged(theme);
+            for cb in listeners {
+                cb(&ev);
+            }
+        }
     }
 
     pub fn set_locale(&self, locale: LocaleSnapshot) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).locale = locale;
+        let listeners = {
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            st.locale = locale.clone();
+            st.listeners.clone()
+        };
+        if !listeners.is_empty() {
+            let ev = SystemEnvEvent::LocaleChanged(locale);
+            for cb in listeners {
+                cb(&ev);
+            }
+        }
+    }
+
+    pub fn set_theme_and_publish(&self, bus: &TypedEventBus, theme: ThemeSnapshot) -> usize {
+        self.set_theme(theme);
+        SystemEnvBridge::publish_theme(bus, theme)
+    }
+
+    pub fn set_locale_and_publish(&self, bus: &TypedEventBus, locale: LocaleSnapshot) -> usize {
+        self.set_locale(locale.clone());
+        SystemEnvBridge::publish_locale(bus, locale)
     }
 
     pub fn theme(&self) -> ThemeSnapshot {
@@ -566,7 +567,7 @@ impl HostServiceHandler for MemorySystemEnv {
     }
 
     fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_system_env_wire(self, method_id, request)
+        dispatch_system_env_ffi(self, method_id, request)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

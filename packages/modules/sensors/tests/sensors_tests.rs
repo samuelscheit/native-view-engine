@@ -1,23 +1,16 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use nve_abi::NveHostEventBatch;
-use nve_host_services::{
-    FfiHostServices, HostCallbackBridge, HostEvent, HostServiceProvider, MemoryHostServices,
-    NativeHostServices, ServiceError,
-};
+use nve_host_services::{MemoryHostServices, NativeHostServices, ServiceError};
 use nve_sensors::{
-    decode_sensor_batch_event_ref, decode_sensor_subscribe_request, encode_sensor_batch_event,
-    MemorySensors, NativeSensors, SensorClient, SensorKind, SensorSample, SensorSampleSlice,
-    SensorSubscriptionId, EVENT_SENSOR_BATCH, SENSOR_SAMPLE_WIRE_LEN, SERVICE_SENSORS,
+    decode_sensor_subscribe_request, emit_sensor_batch, MemorySensors, NativeSensors,
+    SensorBatchEvent, SensorClient, SensorKind, SensorSample, SensorSubscriptionId,
 };
 
 #[test]
-fn sensors_subscriptions_zero_copy_sample_batch_native_and_fuzz() {
+fn sensors_subscriptions_direct_typed_sample_batches_and_native_safety() {
     let sensors_mem = Arc::new(MemorySensors::new());
     let mem = MemoryHostServices::new().with_handler_arc(sensors_mem.clone());
-    let bridge = HostCallbackBridge::new(mem);
-    let ffi = FfiHostServices::with_callbacks(bridge.callbacks());
-    let client = SensorClient::new(&ffi);
+    let client = SensorClient::new(&mem);
 
     for kind in [
         SensorKind::Accelerometer,
@@ -46,8 +39,8 @@ fn sensors_subscriptions_zero_copy_sample_batch_native_and_fuzz() {
     client.unsubscribe(sub).unwrap();
     assert_eq!(client.unsubscribe(sub), Err(ServiceError::NotFound));
 
-    // Zero-copy 20-byte SensorSample validation & NVH1 batch push.
-    let samples = [
+    // Direct typed SensorSample & SensorBatchEvent delivery via TypedEventBus (zero serialization).
+    let samples = vec![
         SensorSample {
             x: 0.125,
             y: -9.81,
@@ -61,40 +54,34 @@ fn sensors_subscriptions_zero_copy_sample_batch_native_and_fuzz() {
             timestamp_ns: 9_333_333,
         },
     ];
-    let wire = samples[0].encode().unwrap();
-    assert_eq!(wire.len(), SENSOR_SAMPLE_WIRE_LEN);
-    assert_eq!(SensorSample::decode(&wire).unwrap(), samples[0]);
-    for len in 0..SENSOR_SAMPLE_WIRE_LEN {
-        assert!(SensorSample::decode(&wire[..len]).is_err());
+    assert!(samples[0].validate().is_ok());
+    assert!(SensorSample {
+        x: f32::INFINITY,
+        y: 0.0,
+        z: 0.0,
+        timestamp_ns: 1,
     }
-    let mut nan_wire = wire;
-    nan_wire[0..4].copy_from_slice(&f32::INFINITY.to_le_bytes());
-    assert!(SensorSample::decode(&nan_wire).is_err());
-    assert!(SensorSampleSlice::from_bytes(&wire[..19]).is_err());
+    .validate()
+    .is_err());
+    assert!(SensorBatchEvent::new(SensorSubscriptionId(0), SensorKind::Accelerometer, samples.clone()).is_err());
 
-    let batch_wire =
-        encode_sensor_batch_event(sub, SensorKind::Accelerometer, &samples).unwrap();
-    for len in 0..batch_wire.len() {
-        assert!(decode_sensor_batch_event_ref(&batch_wire[..len]).is_err());
-    }
-    let mut crafted = batch_wire.clone();
-    crafted[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(decode_sensor_batch_event_ref(&crafted).is_err());
-
-    let mut nvh1 = NveHostEventBatch::new();
-    nvh1.push_host_event(SERVICE_SENSORS, EVENT_SENSOR_BATCH, batch_wire);
-    assert_eq!(ffi.dispatch_host_events(&nvh1.encode()).unwrap(), 1);
-    let events = ffi.poll_host_events();
-    let HostEvent::Push(p) = &events[0] else {
-        panic!("expected push");
-    };
-    let decoded_ref = SensorClient::<FfiHostServices>::decode_push_event_ref(p)
-        .unwrap()
+    let seen = Arc::new(Mutex::new(Vec::<SensorBatchEvent>::new()));
+    let seen_clone = Arc::clone(&seen);
+    let _ev_sub = client
+        .subscribe_events(move |ev| {
+            seen_clone.lock().unwrap().push(ev.clone());
+        })
         .unwrap();
-    assert_eq!(decoded_ref.subscription_id, sub);
-    assert_eq!(decoded_ref.samples.len(), 2);
-    assert_eq!(decoded_ref.samples.get(0), Some(samples[0]));
-    assert_eq!(decoded_ref.samples.get(1), Some(samples[1]));
+
+    let batch = SensorBatchEvent::new(sub, SensorKind::Accelerometer, samples.clone()).unwrap();
+    assert_eq!(emit_sensor_batch(mem.typed_events(), batch.clone()).unwrap(), 1);
+
+    assert_eq!(*seen.lock().unwrap(), vec![batch.clone()]);
+    let drained = client.drain_events();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].subscription_id, sub);
+    assert_eq!(drained[0].kind, SensorKind::Accelerometer);
+    assert_eq!(drained[0].samples, samples);
 
     // Headless native safety
     let native = NativeHostServices::new().with_handler(NativeSensors::new());
@@ -117,8 +104,5 @@ fn sensors_subscriptions_zero_copy_sample_batch_native_and_fuzz() {
         let len = i % 64;
         let buf: Vec<u8> = (0..len).map(|_| next_u8()).collect();
         let _ = decode_sensor_subscribe_request(&buf);
-        let _ = decode_sensor_batch_event_ref(&buf);
-        let _ = SensorSample::decode(&buf);
-        let _ = SensorSampleSlice::from_bytes(&buf);
     }
 }

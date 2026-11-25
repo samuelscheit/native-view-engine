@@ -3,7 +3,7 @@
 
 use nve_engine::fnv1a_64;
 use nve_router::Routable;
-use nve_system_env::{LocaleSnapshot, ThemeSnapshot, THEME_WIRE_LEN};
+use nve_system_env::{ColorScheme, ContrastLevel, LocaleSnapshot, TextDirection, ThemeSnapshot};
 
 use crate::routes::{StudioRoute, StudioRouter};
 use crate::sdk::StudioSystemEnv;
@@ -347,15 +347,22 @@ impl WorkspaceState {
             None => w.push_u8(0),
         }
 
-        let theme_nvt2 = self.system_env.theme.encode_nvt2();
-        w.buf.extend_from_slice(&theme_nvt2);
-        let locale_nvl1 = self
-            .system_env
-            .locale
-            .encode_nvl1()
-            .unwrap_or_else(|_| LocaleSnapshot::default().encode_nvl1().unwrap_or_default());
-        w.push_u32(locale_nvl1.len() as u32);
-        w.buf.extend_from_slice(&locale_nvl1);
+        let t = &self.system_env.theme;
+        w.push_u8(t.color_scheme as u8);
+        w.push_u8(t.contrast as u8);
+        w.push_bool(t.reduced_motion);
+        w.push_bool(t.reduced_transparency);
+        w.push_u32(t.accent_rgba);
+        w.push_u16(t.font_scale_x1000);
+        w.push_u16(t.scale_factor_x100);
+
+        let l = &self.system_env.locale;
+        w.push_u8(l.text_direction as u8);
+        w.push_bool(l.uses_24h_clock);
+        w.push_str(&l.tag);
+        w.push_str(&l.language);
+        w.push_str(&l.region);
+        w.push_str(&l.timezone);
 
         match &self.last_clipboard_notice {
             Some(notice) => {
@@ -440,11 +447,23 @@ impl WorkspaceState {
             _ => return None,
         };
 
-        let theme_bytes = r.take(THEME_WIRE_LEN)?;
-        let theme = ThemeSnapshot::decode_nvt2(theme_bytes).ok()?;
-        let locale_len = r.read_count()?;
-        let locale_bytes = r.take(locale_len)?;
-        let locale = LocaleSnapshot::decode_nvl1(locale_bytes).ok()?;
+        let theme = ThemeSnapshot {
+            color_scheme: ColorScheme::from_u8(r.read_u8()?)?,
+            contrast: ContrastLevel::from_u8(r.read_u8()?)?,
+            reduced_motion: r.read_bool()?,
+            reduced_transparency: r.read_bool()?,
+            accent_rgba: r.read_u32()?,
+            font_scale_x1000: r.read_u16()?,
+            scale_factor_x100: r.read_u16()?,
+        };
+        let locale = LocaleSnapshot {
+            text_direction: TextDirection::from_u8(r.read_u8()?)?,
+            uses_24h_clock: r.read_bool()?,
+            tag: r.read_str()?,
+            language: r.read_str()?,
+            region: r.read_str()?,
+            timezone: r.read_str()?,
+        };
         let system_env = StudioSystemEnv { theme, locale };
 
         let last_clipboard_notice = match r.read_u8()? {

@@ -13,6 +13,8 @@ mod window_commands;
 pub mod window_host;
 
 #[cfg(test)]
+mod host_reload_tests;
+#[cfg(test)]
 mod host_services_tests;
 #[cfg(test)]
 mod input_tests;
@@ -36,7 +38,7 @@ use nve_backend_skia::SkiaBackend;
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{BackendError, MmapSnapshot, RenderBackend, SnapshotError, Viewport};
 
-use crate::host_services::SkiaHostServices;
+use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 pub use clipboard::{default_clipboard, ClipboardProvider, InMemoryClipboard};
 pub use hot_reload_client::HotReloadClient;
@@ -169,8 +171,9 @@ pub trait DesktopApp {
         false
     }
 
-    /// Dispatches a binary `NVH1` host-event batch via `NveHostApi::dispatch_host_events`.
-    fn dispatch_host_events(&mut self, _batch: &[u8]) -> bool {
+    /// Dispatches a direct typed [`SkiaHostEvent`] (theme, locale, or window lifecycle) with
+    /// zero in-process serialization.
+    fn dispatch_host_event(&mut self, _event: &SkiaHostEvent) -> bool {
         false
     }
 
@@ -276,12 +279,12 @@ impl DesktopApp for HotAppSlot {
             let outcome = inst.reload(new_dylib_path)?;
             self.generation = outcome.generation;
             // Re-bind explicitly (also covers gen 1 lacking NVE_IFACE_HOST while gen 2 exposes it)
-            // and push retained initial theme/locale snapshots onto the new generation.
+            // and push the direct #[repr(C)] ThemeSnapshot across the cdylib boundary.
             if let Some(svc) = self.host_services.as_ref()
                 && inst.bind_host(Some(svc.callbacks()))
             {
-                let init_batch = svc.encode_initial_env_batch();
-                let _ = inst.dispatch_host_events(&init_batch);
+                let theme_c = svc.current_theme().to_repr_c_bytes();
+                let _ = inst.dispatch_host_events(&theme_c);
             }
             Ok(self.generation)
         } else {
@@ -292,8 +295,8 @@ impl DesktopApp for HotAppSlot {
             if let Some(svc) = self.host_services.as_ref()
                 && loaded.bind_host(Some(svc.callbacks()))
             {
-                let init_batch = svc.encode_initial_env_batch();
-                let _ = loaded.dispatch_host_events(&init_batch);
+                let theme_c = svc.current_theme().to_repr_c_bytes();
+                let _ = loaded.dispatch_host_events(&theme_c);
             }
             self.generation = loaded.generation();
             self.instance = Some(loaded);
@@ -330,9 +333,9 @@ impl DesktopApp for HotAppSlot {
                 // Arc stays alive during the swap (zero dangling-pointer window).
                 self.host_services = Some(svc);
                 if bound && let Some(svc_ref) = self.host_services.as_ref() {
-                    let init_batch = svc_ref.encode_initial_env_batch();
+                    let theme_c = svc_ref.current_theme().to_repr_c_bytes();
                     if let Some(inst) = self.instance.as_mut() {
-                        let _ = inst.dispatch_host_events(&init_batch);
+                        let _ = inst.dispatch_host_events(&theme_c);
                     }
                 }
                 bound
@@ -348,10 +351,17 @@ impl DesktopApp for HotAppSlot {
         }
     }
 
-    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        match self.instance.as_mut() {
-            Some(inst) => inst.dispatch_host_events(batch),
-            None => false,
+    fn dispatch_host_event(&mut self, event: &SkiaHostEvent) -> bool {
+        let Some(inst) = self.instance.as_mut() else {
+            return false;
+        };
+        match event {
+            SkiaHostEvent::ThemeChanged(theme)
+            | SkiaHostEvent::SystemEnv { theme, .. } => {
+                let theme_c = theme.to_repr_c_bytes();
+                inst.dispatch_host_events(&theme_c)
+            }
+            SkiaHostEvent::LocaleChanged(_) | SkiaHostEvent::WindowLifecycle(_) => false,
         }
     }
 }

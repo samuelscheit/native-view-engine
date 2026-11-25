@@ -39,6 +39,7 @@ use nve_abi::{
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
+use nve_system_env::{SystemEnvEvent, ThemeSnapshot};
 
 pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use persist::{
@@ -213,6 +214,36 @@ impl StudioWorkspaceModule {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_else(|e| e.into_inner().clone())
+    }
+
+    /// Applies direct typed [`SystemEnvEvent`]s into the studio store with zero byte serialization.
+    pub fn dispatch_system_env_events(&mut self, events: &[SystemEnvEvent]) -> bool {
+        let report = self.host_services.dispatch_system_env_events(events);
+        self.apply_env_report(report)
+    }
+
+    fn apply_env_report(&mut self, report: HostEventSyncReport) -> bool {
+        if report.env_changed() {
+            let changed = self
+                .store
+                .lock()
+                .map(|mut guard| {
+                    let mut next = guard.system_env.clone();
+                    if let Some(theme) = report.updated_theme {
+                        next.theme = theme;
+                    }
+                    if let Some(locale) = report.updated_locale {
+                        next.locale = locale;
+                    }
+                    guard.apply_system_env(next)
+                })
+                .unwrap_or(false);
+            if changed {
+                self.reset_surface_with_current_store();
+                return true;
+            }
+        }
+        report.processed_events > 0
     }
 }
 
@@ -510,30 +541,11 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        let Ok(report) = self.host_services.dispatch_host_events(batch) else {
-            return false;
-        };
-        if report.env_changed() {
-            let changed = self
-                .store
-                .lock()
-                .map(|mut guard| {
-                    let mut next = guard.system_env.clone();
-                    if let Some(theme) = report.updated_theme {
-                        next.theme = theme;
-                    }
-                    if let Some(locale) = report.updated_locale {
-                        next.locale = locale;
-                    }
-                    guard.apply_system_env(next)
-                })
-                .unwrap_or(false);
-            if changed {
-                self.reset_surface_with_current_store();
-                return true;
-            }
+        if let Ok(theme) = ThemeSnapshot::from_repr_c_bytes(batch) {
+            return self.dispatch_system_env_events(&[SystemEnvEvent::ThemeChanged(theme)]);
         }
-        report.decoded_records > 0
+        let report = self.host_services.drain_system_env_events();
+        self.apply_env_report(report)
     }
 }
 

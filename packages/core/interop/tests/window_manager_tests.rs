@@ -1,9 +1,7 @@
 use nve_interop::{
-    FrameworkKind, InteropRuntime, NVW1_HEADER_SIZE, NVW1_MAGIC, SurfaceDescriptor,
-    SurfaceEnvironment, SurfacePresentation, WindowCodecError, WindowCommand, WindowDescriptor,
-    WindowError, WindowFlags, WindowLifecycleEvent, WindowLifecycleState, WindowManager,
-    WindowRect, WindowState, decode_window_commands, decode_window_events, encode_window_commands,
-    encode_window_events,
+    FrameworkKind, InteropRuntime, SurfaceDescriptor, SurfaceEnvironment, SurfacePresentation,
+    WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowLifecycleEvent,
+    WindowLifecycleState, WindowManager, WindowRect, WindowState,
 };
 
 #[test]
@@ -293,8 +291,8 @@ fn close_request_veto_allow_and_deny_flows() {
 }
 
 #[test]
-fn nvw1_binary_command_and_event_roundtrips_and_apply() {
-    let cmds = vec![
+fn direct_typed_window_commands_and_lifecycle_event_flows() {
+    let open_cmds = [
         WindowCommand::OpenWindow {
             surface_id: 1,
             presentation: SurfacePresentation::PrimaryWindow(
@@ -336,6 +334,13 @@ fn nvw1_binary_command_and_event_roundtrips_and_apply() {
                 descriptor: WindowDescriptor::new("Settings Sheet", 540.0, 400.0),
             },
         },
+    ];
+
+    let mut wm = WindowManager::new();
+    let handles = wm.apply_commands(&open_cmds).unwrap();
+    assert_eq!(handles, vec![Some(1), Some(2), Some(3), Some(4), Some(5)]);
+
+    let mutate_cmds = [
         WindowCommand::SetTitle { handle: 1, title: "Renamed".into() },
         WindowCommand::SetBounds { handle: 1, bounds: WindowRect::new(10.0, 20.0, 900.0, 600.0) },
         WindowCommand::SetSizeConstraints {
@@ -347,29 +352,22 @@ fn nvw1_binary_command_and_event_roundtrips_and_apply() {
         WindowCommand::FocusWindow { handle: 2 },
         WindowCommand::SetDecorations { handle: 1, decorated: false },
         WindowCommand::SetAlwaysOnTop { handle: 3, always_on_top: false },
+    ];
+    let mutate_res = wm.apply_commands(&mutate_cmds).unwrap();
+    assert!(mutate_res.iter().all(Option::is_none));
+    assert_eq!(wm.get(1).unwrap().descriptor.title, "Renamed");
+    assert_eq!(wm.get(1).unwrap().descriptor.state, WindowState::Fullscreen);
+    assert!(!wm.get(1).unwrap().descriptor.flags.contains(WindowFlags::DECORATED));
+    assert!(!wm.get(3).unwrap().descriptor.flags.contains(WindowFlags::ALWAYS_ON_TOP));
+    assert_eq!(wm.focused_window(), Some(2));
+
+    wm.request_close(5).unwrap();
+    wm.apply_commands(&[
         WindowCommand::RespondCloseRequest { handle: 5, allow: false },
         WindowCommand::CloseWindow { handle: 5 },
-    ];
-
-    let encoded = encode_window_commands(&cmds);
-    assert_eq!(&encoded[..4], &NVW1_MAGIC);
-    let decoded = decode_window_commands(&encoded).unwrap();
-    assert_eq!(decoded, cmds);
-
-    // Cross-kind decode must fail cleanly.
-    assert_eq!(decode_window_events(&encoded), Err(WindowCodecError::InvalidPayloadKind(1)));
-
-    // Execute subset via WindowManager and round-trip all 7 event variants.
-    let mut wm = WindowManager::new();
-    for cmd in &decoded[..5] {
-        wm.apply_command(cmd.clone()).unwrap();
-    }
-    wm.apply_command(decoded[5].clone()).unwrap();
-    wm.apply_command(decoded[6].clone()).unwrap();
-    wm.apply_command(decoded[8].clone()).unwrap();
-    wm.request_close(5).unwrap();
-    wm.apply_command(decoded[12].clone()).unwrap();
-    wm.apply_command(decoded[13].clone()).unwrap();
+    ])
+    .unwrap();
+    assert!(wm.get(5).is_none());
 
     let events = wm.drain_events();
     assert!(events.iter().any(|e| matches!(e, WindowLifecycleEvent::Opened { .. })));
@@ -379,123 +377,49 @@ fn nvw1_binary_command_and_event_roundtrips_and_apply() {
     assert!(events.iter().any(|e| matches!(e, WindowLifecycleEvent::Moved { .. })));
     assert!(events.iter().any(|e| matches!(e, WindowLifecycleEvent::Resized { .. })));
     assert!(events.iter().any(|e| matches!(e, WindowLifecycleEvent::StateChanged { .. })));
-
-    let ev_bytes = encode_window_events(&events);
-    assert_eq!(decode_window_events(&ev_bytes).unwrap(), events);
-    assert_eq!(decode_window_commands(&ev_bytes), Err(WindowCodecError::InvalidPayloadKind(2)));
 }
 
 #[test]
-fn nvw1_fuzz_truncated_corrupt_bad_magic_and_malformed_inputs_never_panic() {
-    let valid_cmds = encode_window_commands(&[
-        WindowCommand::OpenWindow {
-            surface_id: 1,
-            presentation: SurfacePresentation::PrimaryWindow(
-                WindowDescriptor::new("Hello", 640.0, 480.0).with_min_size(100.0, 100.0),
-            ),
-        },
-        WindowCommand::SetBounds { handle: 1, bounds: WindowRect::new(0.0, 0.0, 800.0, 600.0) },
-    ]);
-    let valid_events = encode_window_events(&[
-        WindowLifecycleEvent::Opened {
-            handle: 1,
-            surface_id: 1,
-            bounds: WindowRect::new(0.0, 0.0, 640.0, 480.0),
-            state: WindowState::Normal,
-        },
-        WindowLifecycleEvent::Resized { handle: 1, width: 800.0, height: 600.0, scale_factor: 2.0 },
-    ]);
+fn window_manager_validation_rejects_invalid_descriptors_bounds_and_constraints() {
+    let mut wm = WindowManager::new();
+    let h = wm
+        .open_window(1, SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Main", 640.0, 480.0)))
+        .unwrap();
 
-    // Every strict prefix of valid command & event buffers must fail with Truncated.
-    for cut in 0..valid_cmds.len() {
-        assert!(matches!(
-            decode_window_commands(&valid_cmds[..cut]),
-            Err(WindowCodecError::Truncated { .. })
-        ));
-    }
-    for cut in 0..valid_events.len() {
-        assert!(matches!(
-            decode_window_events(&valid_events[..cut]),
-            Err(WindowCodecError::Truncated { .. })
-        ));
-    }
-
-    // Trailing byte rejection.
-    let mut with_trailing = valid_cmds.clone();
-    with_trailing.push(0xAA);
-    assert_eq!(decode_window_commands(&with_trailing), Err(WindowCodecError::TrailingBytes(1)));
-
-    let mut ev_trailing = valid_events.clone();
-    ev_trailing.extend_from_slice(&[1, 2, 3]);
-    assert_eq!(decode_window_events(&ev_trailing), Err(WindowCodecError::TrailingBytes(3)));
-
-    // Bad magic & bad version.
-    let mut bad_magic = valid_cmds.clone();
-    bad_magic[0] = b'X';
-    assert_eq!(decode_window_commands(&bad_magic), Err(WindowCodecError::BadMagic(*b"XVW1")));
-
-    let mut bad_ver = valid_cmds.clone();
-    bad_ver[4] = 99;
-    assert_eq!(decode_window_commands(&bad_ver), Err(WindowCodecError::UnsupportedVersion(99)));
-
-    // Huge record count is rejected before allocation (anti-OOM).
-    let mut huge_count = vec![b'N', b'V', b'W', b'1', 1, 0, 1, 0, 0xFF, 0xFF, 0xFF, 0x7F];
+    // Non-finite or zero bounds rejected cleanly.
     assert!(matches!(
-        decode_window_commands(&huge_count),
-        Err(WindowCodecError::TooManyRecords(_))
+        wm.set_bounds(h, WindowRect::new(0.0, 0.0, f32::NAN, 400.0)),
+        Err(WindowError::InvalidDescriptor(_))
     ));
-    huge_count[6] = 2;
     assert!(matches!(
-        decode_window_events(&huge_count),
-        Err(WindowCodecError::TooManyRecords(_))
+        wm.set_bounds(h, WindowRect::new(0.0, 0.0, 0.0, 400.0)),
+        Err(WindowError::InvalidDescriptor(_))
+    ));
+    assert!(matches!(
+        wm.set_bounds_with_scale(h, WindowRect::new(0.0, 0.0, 800.0, 600.0), 0.0),
+        Err(WindowError::InvalidDescriptor(_))
     ));
 
-    // Unknown opcode, invalid bool, NaN float, invalid UTF-8.
-    let mut bad_op = vec![b'N', b'V', b'W', b'1', 1, 0, 1, 0, 1, 0, 0, 0, 99];
-    assert_eq!(decode_window_commands(&bad_op), Err(WindowCodecError::InvalidOpcode(99)));
-    bad_op[6] = 2;
-    assert_eq!(decode_window_events(&bad_op), Err(WindowCodecError::InvalidOpcode(99)));
+    // Invalid size constraints (min > max, negative min, non-positive max) rejected cleanly.
+    assert!(matches!(
+        wm.set_size_constraints(h, Some((500.0, 500.0)), Some((400.0, 400.0))),
+        Err(WindowError::InvalidDescriptor(_))
+    ));
+    assert!(matches!(
+        wm.set_size_constraints(h, Some((-1.0, 0.0)), None),
+        Err(WindowError::InvalidDescriptor(_))
+    ));
+    assert!(matches!(
+        wm.set_size_constraints(h, None, Some((0.0, 100.0))),
+        Err(WindowError::InvalidDescriptor(_))
+    ));
 
-    let bad_bool = vec![b'N', b'V', b'W', b'1', 1, 0, 1, 0, 1, 0, 0, 0, 8, 1, 0, 0, 0, 2];
-    assert_eq!(
-        decode_window_commands(&bad_bool),
-        Err(WindowCodecError::InvalidEnumValue { field: "decorated", value: 2 })
-    );
+    // Oversized title rejected cleanly.
+    assert!(matches!(
+        wm.set_title(h, "x".repeat(20_000)),
+        Err(WindowError::InvalidDescriptor(_))
+    ));
 
-    let mut nan_resize = encode_window_events(&[WindowLifecycleEvent::Resized {
-        handle: 1,
-        width: 100.0,
-        height: 100.0,
-        scale_factor: 1.0,
-    }]);
-    let nan_bytes = f32::NAN.to_le_bytes();
-    nan_resize[NVW1_HEADER_SIZE + 5..NVW1_HEADER_SIZE + 9].copy_from_slice(&nan_bytes);
-    assert_eq!(decode_window_events(&nan_resize), Err(WindowCodecError::NonFiniteFloat("width")));
-
-    let mut bad_utf8 = encode_window_commands(&[WindowCommand::SetTitle {
-        handle: 1,
-        title: "abcd".into(),
-    }]);
-    let n = bad_utf8.len();
-    bad_utf8[n - 2] = 0xFF;
-    bad_utf8[n - 1] = 0xFE;
-    assert_eq!(decode_window_commands(&bad_utf8), Err(WindowCodecError::InvalidUtf8));
-
-    // Deterministic pseudo-random fuzz sweep across 512 mutated buffers: zero panics.
-    let mut seed: u64 = 0xDEAD_BEEF_CAFE_BABE;
-    let mut next_u8 = || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (seed >> 32) as u8
-    };
-    for i in 0..512 {
-        let len = (i % 64) + 1;
-        let mut buf: Vec<u8> = (0..len).map(|_| next_u8()).collect();
-        if i % 3 == 0 && buf.len() >= 8 {
-            buf[..4].copy_from_slice(&NVW1_MAGIC);
-            buf[4..6].copy_from_slice(&1u16.to_le_bytes());
-            buf[6] = if i % 2 == 0 { 1 } else { 2 };
-        }
-        let _ = decode_window_commands(&buf);
-        let _ = decode_window_events(&buf);
-    }
+    // Unknown window handle fails cleanly.
+    assert_eq!(wm.close_window(999), Err(WindowError::WindowNotFound(999)));
 }

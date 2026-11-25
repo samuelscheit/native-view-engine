@@ -10,15 +10,15 @@
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 
-use nve_abi::{NveHostCallbacks, SERVICE_SYSTEM_ENV};
+use nve_abi::NveHostCallbacks;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_host_services::{
-    FfiHostServices, HostEvent, HostServiceProvider, InvokeResult, MemoryHostServices, ServiceError,
+    FfiHostServices, HostEvent, HostServiceProvider, InvokeResult, MemoryHostServices,
+    ServiceError, TypedEventBus,
 };
-use nve_interop::{CHANNEL_ID_LOCALE, CHANNEL_ID_THEME};
 use nve_system_env::{
-    ColorScheme as SdkColorScheme, LocaleSnapshot, MemorySystemEnv, SystemEnvClient, ThemeSnapshot,
-    EVENT_LOCALE_CHANGED, EVENT_THEME_CHANGED,
+    ColorScheme as SdkColorScheme, LocaleSnapshot, MemorySystemEnv, SystemEnvBridge,
+    SystemEnvClient, SystemEnvEvent, ThemeSnapshot,
 };
 
 /// Synchronized host system environment snapshot (theme + locale) sourced via [`SystemEnvClient`].
@@ -40,10 +40,10 @@ impl Default for StudioSystemEnv {
     }
 }
 
-/// Summary returned when draining an inbound `NVH1` host-event batch.
+/// Summary returned when applying or draining typed [`SystemEnvEvent`] updates.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostEventSyncReport {
-    pub decoded_records: usize,
+    pub processed_events: usize,
     pub updated_theme: Option<ThemeSnapshot>,
     pub updated_locale: Option<LocaleSnapshot>,
 }
@@ -140,7 +140,7 @@ impl StudioHostServices {
         self.clipboard().read_text()
     }
 
-    /// Queries the live system theme (`NVT2`) and locale (`NVL1`) via [`SystemEnvClient`].
+    /// Queries the live system theme and locale via [`SystemEnvClient`].
     pub fn fetch_system_env(&self) -> Result<StudioSystemEnv, ServiceError> {
         let client = self.system_env();
         let theme = client.get_theme()?;
@@ -148,45 +148,49 @@ impl StudioHostServices {
         Ok(StudioSystemEnv { theme, locale })
     }
 
-    /// Dispatches an inbound binary `NVH1` host-event batch over `FfiHostServices` and decodes any
-    /// pushed `NVT2` theme or `NVL1` locale change events.
-    pub fn dispatch_host_events(&self, batch: &[u8]) -> Result<HostEventSyncReport, ServiceError> {
-        let decoded_records = self.ffi.dispatch_host_events(batch)?;
+    /// Applies direct typed [`SystemEnvEvent`]s and publishes them onto the active
+    /// [`TypedEventBus`] with zero byte serialization.
+    pub fn dispatch_system_env_events(&self, events: &[SystemEnvEvent]) -> HostEventSyncReport {
         let mut report = HostEventSyncReport {
-            decoded_records,
+            processed_events: events.len(),
             ..HostEventSyncReport::default()
         };
-        for ev in self.ffi.poll_host_events() {
+        let bus = self.typed_event_bus();
+        for ev in events {
             match ev {
-                HostEvent::Push(push) if push.service_id == SERVICE_SYSTEM_ENV => {
-                    match push.event_id {
-                        EVENT_THEME_CHANGED => {
-                            if let Ok(theme) = ThemeSnapshot::decode_nvt2(&push.payload) {
-                                report.updated_theme = Some(theme);
-                            }
-                        }
-                        EVENT_LOCALE_CHANGED => {
-                            if let Ok(locale) = LocaleSnapshot::decode_nvl1(&push.payload) {
-                                report.updated_locale = Some(locale);
-                            }
-                        }
-                        _ => {}
+                SystemEnvEvent::ThemeChanged(theme) => {
+                    report.updated_theme = Some(*theme);
+                    if let Some(bus) = bus {
+                        SystemEnvBridge::publish_theme(bus, *theme);
                     }
                 }
-                HostEvent::Channel(ch) if ch.channel_id == CHANNEL_ID_THEME => {
-                    if let Ok(theme) = ThemeSnapshot::decode_nvt2(&ch.payload) {
-                        report.updated_theme = Some(theme);
+                SystemEnvEvent::LocaleChanged(locale) => {
+                    report.updated_locale = Some(locale.clone());
+                    if let Some(bus) = bus {
+                        SystemEnvBridge::publish_locale(bus, locale.clone());
                     }
                 }
-                HostEvent::Channel(ch) if ch.channel_id == CHANNEL_ID_LOCALE => {
-                    if let Ok(locale) = LocaleSnapshot::decode_nvl1(&ch.payload) {
-                        report.updated_locale = Some(locale);
-                    }
-                }
-                _ => {}
             }
         }
-        Ok(report)
+        report
+    }
+
+    /// Drains any queued typed [`SystemEnvEvent`]s from the active [`TypedEventBus`].
+    pub fn drain_system_env_events(&self) -> HostEventSyncReport {
+        let events = self.system_env().drain_events();
+        let mut report = HostEventSyncReport {
+            processed_events: events.len(),
+            ..HostEventSyncReport::default()
+        };
+        for ev in events {
+            match ev.as_ref() {
+                SystemEnvEvent::ThemeChanged(theme) => report.updated_theme = Some(*theme),
+                SystemEnvEvent::LocaleChanged(locale) => {
+                    report.updated_locale = Some(locale.clone())
+                }
+            }
+        }
+        report
     }
 }
 
@@ -222,6 +226,14 @@ impl HostServiceProvider for StudioHostServices {
             self.ffi.poll_host_events()
         } else {
             self.fallback.poll_host_events()
+        }
+    }
+
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        if self.ffi.is_bound() {
+            self.ffi.typed_event_bus()
+        } else {
+            self.fallback.typed_event_bus()
         }
     }
 

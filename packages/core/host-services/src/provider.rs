@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::codec::BinReader;
 use crate::error::ServiceError;
+use crate::events::TypedEventBus;
 
 /// Shared hardware/capability permission state used across Camera, Location, and Audio services.
 #[repr(u8)]
@@ -47,7 +48,7 @@ impl PermissionStatus {
 pub enum InvokeResult {
     /// Host completed synchronously and returned the binary response payload.
     Ready(Vec<u8>),
-    /// Host accepted the call asynchronously; completion arrives via `NVH1` under `request_id`.
+    /// Host accepted the call asynchronously; completion arrives under `request_id`.
     Pending { request_id: u64 },
 }
 
@@ -168,6 +169,11 @@ pub trait HostServiceProvider: Send + Sync {
     /// Drains queued inbound host push events and channel messages.
     fn poll_host_events(&self) -> Vec<HostEvent>;
 
+    /// Zero-serialization in-process typed event bus for direct Rust <-> Rust event delivery.
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        None
+    }
+
     /// Consumes a completed async response for `request_id` if one has arrived.
     fn take_async_response(&self, _request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
         None
@@ -206,6 +212,10 @@ impl<T: HostServiceProvider + ?Sized> HostServiceProvider for &T {
         (**self).poll_host_events()
     }
 
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        (**self).typed_event_bus()
+    }
+
     fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
         (**self).take_async_response(request_id)
     }
@@ -241,6 +251,10 @@ impl<T: HostServiceProvider + ?Sized> HostServiceProvider for Arc<T> {
 
     fn poll_host_events(&self) -> Vec<HostEvent> {
         (**self).poll_host_events()
+    }
+
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        (**self).typed_event_bus()
     }
 
     fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {

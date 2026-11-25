@@ -172,7 +172,7 @@ fn dart_core_ffi_annotation(ty: &HybridType) -> Option<&'static str> {
     }
 }
 
-/// Signed status codes shared by `NveHostCallbacks::invoke`, `channel_publish`, and `NVH1`.
+/// Signed status codes shared by `NveHostCallbacks::invoke` and `channel_publish`.
 const HOST_STATUS_VARIANTS: &[(&str, i32)] = &[
     ("Ok", 0),
     ("Pending", 1),

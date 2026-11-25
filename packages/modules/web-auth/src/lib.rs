@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use nve_host_services::{
     pack_typed, resolve_typed, validate_url, BinReader, BinWriter, HostServiceHandler,
-    HostServiceProvider, ServiceError,
+    HostServiceProvider, ServiceError, TypedEventBus, TypedEventSubscription,
 };
 
 /// Built-in service ID for in-app web browser & OAuth authentication sessions.
@@ -62,6 +62,18 @@ impl Default for InAppBrowserOptions {
 pub enum WebAuthResult {
     CallbackUri(String),
     Cancelled,
+}
+
+/// Direct typed async completion event delivered over [`TypedEventBus`] with zero serialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebAuthCompleted {
+    pub request_id: u64,
+    pub result: Result<WebAuthResult, ServiceError>,
+}
+
+/// Publishes a typed [`WebAuthCompleted`] event directly onto `bus` with zero serialization.
+pub fn emit_web_auth_completed(bus: &TypedEventBus, event: WebAuthCompleted) -> usize {
+    bus.publish(event)
 }
 
 /// Recorded in-app browser launch captured by [`MemoryWebAuth`] for test assertions.
@@ -295,6 +307,29 @@ impl<'a, P: HostServiceProvider + ?Sized> WebAuthClient<'a, P> {
             Err(ServiceError::Cancelled) => Ok(WebAuthResult::Cancelled),
             Err(err) => Err(err),
         }
+    }
+
+    /// Subscribes directly to typed [`WebAuthCompleted`] events on the provider's [`TypedEventBus`].
+    pub fn subscribe_completions<F>(
+        &self,
+        handler: F,
+    ) -> Result<TypedEventSubscription, ServiceError>
+    where
+        F: Fn(&WebAuthCompleted) + Send + Sync + 'static,
+    {
+        let bus = self
+            .provider
+            .typed_event_bus()
+            .ok_or(ServiceError::Unsupported)?;
+        Ok(bus.subscribe::<WebAuthCompleted, F>(false, handler))
+    }
+
+    /// Drains queued typed [`WebAuthCompleted`] events directly from the provider's [`TypedEventBus`].
+    pub fn drain_completions(&self) -> Vec<Arc<WebAuthCompleted>> {
+        self.provider
+            .typed_event_bus()
+            .map(|bus| bus.drain_typed::<WebAuthCompleted>())
+            .unwrap_or_default()
     }
 }
 

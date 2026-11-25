@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use nve_abi::{HostBatchError, NveHostStatus};
+use nve_abi::NveHostStatus;
 
 /// Error returned by host service calls and binary payload codecs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,12 +59,6 @@ impl ServiceError {
             Self::IoError(_) => NveHostStatus::IoError,
             Self::InternalError(_) => NveHostStatus::InternalError,
         }
-    }
-}
-
-impl From<HostBatchError> for ServiceError {
-    fn from(err: HostBatchError) -> Self {
-        Self::Codec(err.to_string())
     }
 }
 

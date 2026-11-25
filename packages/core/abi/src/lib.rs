@@ -1,6 +1,6 @@
 //! Zero-copy `#[repr(C)]` raw-memory ABI (`nve_get_interface`, `NveSceneView`, `NveValue`,
 //! `NvePropSlice`, `NveCommandSlice`, `NveEventBatch`), plus optional binary wire codecs
-//! (`CommandBuffer`, `EventRing`, `NveBinValue`, `NVH1`) gated behind `feature = "wire"`.
+//! (`CommandBuffer`, `EventRing`, `NveBinValue`) gated behind `feature = "wire"`.
 
 extern crate self as nve_abi;
 
@@ -37,16 +37,11 @@ pub use ffi::{
     NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST,
     NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
-#[cfg(feature = "wire")]
 pub use host::{
-    HostBatchError, NveHostEventBatch, NveHostEventRecord, NveHostEventRecordRef,
-    NVE_HOST_EVENT_MAGIC, NVE_HOST_EVENT_VERSION,
-};
-pub use host::{
-    NveHostApi, NveHostCallbacks, NveHostChannelPublishFn, NveHostEventKind, NveHostInvokeFn,
-    NveHostStatus, NVE_CHANNEL_FLAG_RETAIN, SERVICE_CHANNEL, SERVICE_CLIPBOARD,
-    SERVICE_FILESYSTEM, SERVICE_HAPTICS, SERVICE_LINKING, SERVICE_NOTIFICATIONS,
-    SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
+    NveHostApi, NveHostCallbacks, NveHostChannelPublishFn, NveHostInvokeFn, NveHostStatus,
+    NVE_CHANNEL_FLAG_RETAIN, SERVICE_CHANNEL, SERVICE_CLIPBOARD, SERVICE_FILESYSTEM,
+    SERVICE_HAPTICS, SERVICE_LINKING, SERVICE_NOTIFICATIONS, SERVICE_SECURE_STORE,
+    SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 pub use scene::{
     component_kind_to_scene_u8, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView,

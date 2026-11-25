@@ -6,9 +6,7 @@ use std::sync::Arc;
 use nve_abi::SERVICE_NOTIFICATIONS;
 use nve_host_services::{pack_typed, HostServiceHandler, ServiceError};
 
-use crate::{
-    dispatch_notifications_wire, NotificationPermission, NotificationRequest, NotificationsBackend,
-};
+use crate::{NotificationPermission, NotificationRequest, NotificationsBackend};
 
 /// Native OS [`HostServiceHandler`] for [`SERVICE_NOTIFICATIONS`].
 #[derive(Debug, Default, Clone, Copy)]
@@ -39,8 +37,8 @@ impl HostServiceHandler for NativeNotifications {
         SERVICE_NOTIFICATIONS
     }
 
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_notifications_wire(self, method_id, request)
+    fn handle(&self, _method_id: u32, _request: &[u8]) -> Result<Vec<u8>, ServiceError> {
+        Err(ServiceError::Unsupported)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

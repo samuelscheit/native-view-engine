@@ -1,24 +1,17 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use nve_abi::{NveHostEventBatch, NveHostStatus};
-use nve_host_services::{
-    FfiHostServices, HostCallbackBridge, HostServiceProvider, InvokeResult, MemoryHostServices,
-    NativeHostServices, ServiceError,
-};
+use nve_host_services::{MemoryHostServices, NativeHostServices, ServiceError};
 use nve_web_auth::{
     decode_authenticate_request, decode_open_browser_request, decode_web_auth_result,
-    encode_authenticate_request, encode_web_auth_result, BrowserPresentation, InAppBrowserOptions,
-    MemoryWebAuth, NativeWebAuth, RecordedBrowserLaunch, WebAuthClient, WebAuthResult,
-    METHOD_AUTHENTICATE, SERVICE_WEB_AUTH,
+    emit_web_auth_completed, BrowserPresentation, InAppBrowserOptions, MemoryWebAuth,
+    NativeWebAuth, RecordedBrowserLaunch, WebAuthClient, WebAuthCompleted, WebAuthResult,
 };
 
 #[test]
-fn web_auth_browser_oauth_async_nvh1_native_safety_and_fuzz() {
+fn web_auth_browser_oauth_typed_async_events_and_native_safety() {
     let auth_mem = Arc::new(MemoryWebAuth::new());
     let mem = MemoryHostServices::new().with_handler_arc(auth_mem.clone());
-    let bridge = HostCallbackBridge::new(mem);
-    let ffi = FfiHostServices::with_callbacks(bridge.callbacks());
-    let client = WebAuthClient::new(&ffi);
+    let client = WebAuthClient::new(&mem);
 
     let browser_opts = InAppBrowserOptions {
         presentation: BrowserPresentation::FullScreen,
@@ -58,32 +51,36 @@ fn web_auth_browser_oauth_async_nvh1_native_safety_and_fuzz() {
         WebAuthResult::Cancelled
     );
 
-    // Async Pending + NVH1 resolution
-    bridge
-        .provider()
-        .inject_async_pending(SERVICE_WEB_AUTH, METHOD_AUTHENTICATE);
-    let req = encode_authenticate_request("https://auth.nve.dev/oauth", "nveapp").unwrap();
-    let InvokeResult::Pending { request_id } = ffi
-        .invoke_raw(SERVICE_WEB_AUTH, METHOD_AUTHENTICATE, &req)
-        .unwrap()
-    else {
-        panic!("expected Pending");
-    };
-    let mut batch = NveHostEventBatch::new();
-    batch.push_async_response(
-        request_id,
-        NveHostStatus::Ok,
-        encode_web_auth_result(&WebAuthResult::CallbackUri(
-            "nveapp://cb?code=async_42".into(),
-        ))
-        .unwrap(),
-    );
-    assert_eq!(ffi.dispatch_host_events(&batch.encode()).unwrap(), 1);
-    let resolved = ffi.take_async_response(request_id).unwrap().unwrap();
+    // Direct typed async completion via TypedAsyncTable + TypedEventBus (zero serialization).
+    let req_id = mem.register_typed_async::<WebAuthResult, fn(_)>(None);
+    assert!(mem.take_typed_async::<WebAuthResult>(req_id).is_none());
+    let async_res = WebAuthResult::CallbackUri("nveapp://cb?code=async_42".into());
+    mem.complete_typed_async(req_id, Ok(async_res.clone()));
     assert_eq!(
-        decode_web_auth_result(&resolved).unwrap(),
-        WebAuthResult::CallbackUri("nveapp://cb?code=async_42".into())
+        mem.take_typed_async::<WebAuthResult>(req_id)
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        &async_res
     );
+
+    let seen = Arc::new(Mutex::new(Vec::<WebAuthCompleted>::new()));
+    let seen_clone = Arc::clone(&seen);
+    let _sub = client
+        .subscribe_completions(move |ev| {
+            seen_clone.lock().unwrap().push(ev.clone());
+        })
+        .unwrap();
+    let completed = WebAuthCompleted {
+        request_id: req_id,
+        result: Ok(async_res),
+    };
+    assert_eq!(
+        emit_web_auth_completed(mem.typed_events(), completed.clone()),
+        1
+    );
+    assert_eq!(*seen.lock().unwrap(), vec![completed.clone()]);
+    assert_eq!(client.drain_completions(), vec![Arc::new(completed)]);
 
     // Native safety
     let native = NativeHostServices::new().with_handler(NativeWebAuth::new());

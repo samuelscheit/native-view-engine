@@ -1,23 +1,17 @@
 //! Browser `wasm32` popup windows (`open_popup_window` / `close_popup_window`) and
-//! zero-JSON `NVW1` `BroadcastChannel` window synchronization.
+//! `BroadcastChannel` window coordination.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use nve_abi::SurfaceId;
-use nve_interop::{
-    decode_window_commands, encode_window_commands, SurfacePresentation, WindowCommand,
-    WindowDescriptor, WindowHandleId, WindowManager,
-};
+use nve_interop::{SurfacePresentation, WindowDescriptor, WindowHandleId, WindowManager};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::multi_window::{PopupWindowError, PopupWindowSpec, DEFAULT_WINDOW_SYNC_CHANNEL};
-use crate::wasm_api::{
-    nve_extract_binary_message, primary_surface_id_if_mounted,
-    remove_active_shell,
-};
+use crate::wasm_api::{primary_surface_id_if_mounted, remove_active_shell};
 
 #[wasm_bindgen(inline_js = "export function nve_slice_to_uint8array(bytes) {
   return bytes;
@@ -68,7 +62,11 @@ pub(crate) fn register_mounted_surface_window(
         let pres = if mgr.is_empty() {
             SurfacePresentation::PrimaryWindow(desc)
         } else {
-            SurfacePresentation::SecondaryWindow { parent: None, modal: false, descriptor: desc }
+            SurfacePresentation::SecondaryWindow {
+                parent: None,
+                modal: false,
+                descriptor: desc,
+            }
         };
         mgr.open_window(surface_id, pres).ok()
     })
@@ -86,23 +84,13 @@ fn ensure_sync_channel(channel_name: &str) -> Result<(), PopupWindowError> {
         let channel = web_sys::BroadcastChannel::new(channel_name)
             .map_err(|err| PopupWindowError::BroadcastChannelUnavailable(format!("{err:?}")))?;
         let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
-            move |ev: web_sys::MessageEvent| {
-                let bytes = nve_extract_binary_message(&ev.data());
-                if bytes.is_empty() {
-                    return;
-                }
-                if let Ok(cmds) = decode_window_commands(&bytes) {
-                    WINDOW_MANAGER.with(|wm| {
-                        let mut mgr = wm.borrow_mut();
-                        for cmd in cmds {
-                            let _ = mgr.apply_command(cmd);
-                        }
-                    });
-                }
-            },
+            move |_ev: web_sys::MessageEvent| {},
         );
         channel.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-        *slot.borrow_mut() = Some(WindowSyncChannel { channel, _on_message: on_message });
+        *slot.borrow_mut() = Some(WindowSyncChannel {
+            channel,
+            _on_message: on_message,
+        });
         Ok(())
     })
 }
@@ -119,20 +107,12 @@ fn post_sync_bytes(bytes: &[u8]) {
     });
 }
 
-/// Broadcasts a binary `NVW1` command buffer across sibling browser windows via `BroadcastChannel`.
+/// Broadcasts raw bytes across sibling browser windows via `BroadcastChannel`.
 #[wasm_bindgen]
-pub fn broadcast_window_commands(nvw1_bytes: &[u8]) -> Result<(), JsValue> {
-    let cmds = decode_window_commands(nvw1_bytes)
-        .map_err(|e| JsValue::from_str(&format!("invalid NVW1 command buffer: {e}")))?;
+pub fn broadcast_window_commands(payload: &[u8]) -> Result<(), JsValue> {
     ensure_sync_channel(DEFAULT_WINDOW_SYNC_CHANNEL)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    WINDOW_MANAGER.with(|wm| {
-        let mut mgr = wm.borrow_mut();
-        for cmd in cmds {
-            let _ = mgr.apply_command(cmd);
-        }
-    });
-    post_sync_bytes(nvw1_bytes);
+    post_sync_bytes(payload);
     Ok(())
 }
 
@@ -148,16 +128,24 @@ pub struct WebPopupController {
 #[wasm_bindgen]
 impl WebPopupController {
     #[wasm_bindgen(getter)]
-    pub fn surface_id(&self) -> SurfaceId { self.surface_id }
+    pub fn surface_id(&self) -> SurfaceId {
+        self.surface_id
+    }
 
     #[wasm_bindgen(getter)]
-    pub fn window_handle(&self) -> WindowHandleId { self.handle }
+    pub fn window_handle(&self) -> WindowHandleId {
+        self.handle
+    }
 
     #[wasm_bindgen(getter)]
-    pub fn mount_root_id(&self) -> String { self.mount_root_id.clone() }
+    pub fn mount_root_id(&self) -> String {
+        self.mount_root_id.clone()
+    }
 
     #[wasm_bindgen(getter)]
-    pub fn channel_name(&self) -> String { self.channel_name.clone() }
+    pub fn channel_name(&self) -> String {
+        self.channel_name.clone()
+    }
 
     pub fn focus(&self) -> bool {
         let ok = WINDOW_MANAGER.with(|wm| wm.borrow_mut().focus_window(self.handle).is_ok());
@@ -169,7 +157,6 @@ impl WebPopupController {
                 let _ = entry.window.focus();
             }
         });
-        post_sync_bytes(&encode_window_commands(&[WindowCommand::FocusWindow { handle: self.handle }]));
         true
     }
 
@@ -182,10 +169,6 @@ impl WebPopupController {
                 doc.set_title(title);
             }
         });
-        post_sync_bytes(&encode_window_commands(&[WindowCommand::SetTitle {
-            handle: self.handle,
-            title: title.to_owned(),
-        }]));
     }
 
     pub fn close(&self) {
@@ -194,7 +177,7 @@ impl WebPopupController {
 }
 
 /// Opens a secondary browser popup window for `surface_id` using `window.open(..., features)`
-/// and synchronizes lifecycle via `BroadcastChannel` (`NVW1`), returning a clear error if blocked.
+/// and registers its lifecycle in the browser `WindowManager`, returning a clear error if blocked.
 #[wasm_bindgen]
 pub fn open_popup_window(
     surface_id: SurfaceId,
@@ -208,12 +191,20 @@ pub fn open_popup_window(
     let host_window =
         web_sys::window().ok_or_else(|| JsValue::from_str("missing global window"))?;
     let popup = host_window
-        .open_with_url_and_target_and_features("", &spec.target_name(), &spec.format_window_features())
+        .open_with_url_and_target_and_features(
+            "",
+            &spec.target_name(),
+            &spec.format_window_features(),
+        )
         .ok()
         .flatten()
         .ok_or_else(|| {
             JsValue::from_str(
-                &PopupWindowError::PopupBlocked { surface_id, title: spec.title.clone() }.to_string(),
+                &PopupWindowError::PopupBlocked {
+                    surface_id,
+                    title: spec.title.clone(),
+                }
+                .to_string(),
             )
         })?;
 
@@ -231,20 +222,18 @@ pub fn open_popup_window(
 
     let presentation = spec.to_presentation(primary_surface_id_if_mounted());
     let handle = WINDOW_MANAGER
-        .with(|wm| wm.borrow_mut().open_window(surface_id, presentation.clone()))
+        .with(|wm| wm.borrow_mut().open_window(surface_id, presentation))
         .map_err(|e| {
             let _ = popup.close();
             JsValue::from_str(&PopupWindowError::WindowManager(e).to_string())
         })?;
 
     let _ = ensure_sync_channel(&spec.channel_name);
-    post_sync_bytes(&encode_window_commands(&[WindowCommand::OpenWindow {
-        surface_id,
-        presentation,
-    }]));
 
     POPUP_WINDOWS.with(|popups| {
-        popups.borrow_mut().insert(surface_id, ActivePopupWindow { handle, window: popup });
+        popups
+            .borrow_mut()
+            .insert(surface_id, ActivePopupWindow { handle, window: popup });
     });
 
     Ok(WebPopupController {
@@ -255,15 +244,12 @@ pub fn open_popup_window(
     })
 }
 
-/// Closes a previously opened popup window and broadcasts an `NVW1` `CloseWindow` frame.
+/// Closes a previously opened popup window and unregisters its handle.
 #[wasm_bindgen]
 pub fn close_popup_window(surface_id: SurfaceId) {
     if let Some(entry) = POPUP_WINDOWS.with(|popups| popups.borrow_mut().remove(&surface_id)) {
         let _ = entry.window.close();
         let _ = WINDOW_MANAGER.with(|wm| wm.borrow_mut().close_window(entry.handle));
-        post_sync_bytes(&encode_window_commands(&[WindowCommand::CloseWindow {
-            handle: entry.handle,
-        }]));
     }
     remove_active_shell(surface_id);
 }

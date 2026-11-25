@@ -6,15 +6,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use nve_abi::{
-    NveHostEventBatch, NveHostEventRecordRef, NveHostStatus, NVE_CHANNEL_FLAG_RETAIN,
-};
+use nve_abi::NveHostStatus;
 use nve_interop::{ChannelPayload, NveChannelBus, PayloadEncoding};
 
 use crate::error::ServiceError;
+use crate::events::{TypedAsyncTable, TypedEventBus, TypedEventSubscription, TypedHostEvent};
 use crate::provider::{
-    HostChannelEvent, HostEvent, HostPushEvent, HostServiceHandler, HostServiceProvider,
-    InvokeResult,
+    HostEvent, HostPushEvent, HostServiceHandler, HostServiceProvider, InvokeResult,
 };
 
 struct RegisteredService {
@@ -24,10 +22,11 @@ struct RegisteredService {
 
 /// Dynamic per-`service_id` dispatcher composing any set of opt-in [`HostServiceHandler`]
 /// modules with zero-serialization in-process typed dispatch, a shared [`NveChannelBus`],
-/// and an inbound [`HostEvent`] queue.
+/// a zero-serialization [`TypedEventBus`], and an inbound [`HostEvent`] queue.
 pub struct HostServiceRegistry {
     handlers: RwLock<BTreeMap<u32, RegisteredService>>,
     channel_bus: Arc<Mutex<NveChannelBus>>,
+    typed_events: Arc<TypedEventBus>,
     events: Mutex<VecDeque<HostEvent>>,
 }
 
@@ -46,6 +45,7 @@ impl HostServiceRegistry {
         Self {
             handlers: RwLock::new(BTreeMap::new()),
             channel_bus,
+            typed_events: Arc::new(TypedEventBus::new()),
             events: Mutex::new(VecDeque::new()),
         }
     }
@@ -108,6 +108,34 @@ impl HostServiceRegistry {
 
     pub fn channel_bus(&self) -> Arc<Mutex<NveChannelBus>> {
         Arc::clone(&self.channel_bus)
+    }
+
+    pub fn typed_events(&self) -> &Arc<TypedEventBus> {
+        &self.typed_events
+    }
+
+    pub fn emit_typed<E: Send + Sync + 'static>(&self, event: E) -> usize {
+        self.typed_events.publish(event)
+    }
+
+    pub fn emit_typed_retained<E: Send + Sync + 'static>(&self, event: E) -> usize {
+        self.typed_events.publish_retained(event)
+    }
+
+    pub fn subscribe_typed<E, F>(&self, replay_retained: bool, handler: F) -> TypedEventSubscription
+    where
+        E: Send + Sync + 'static,
+        F: Fn(&E) + Send + Sync + 'static,
+    {
+        self.typed_events.subscribe(replay_retained, handler)
+    }
+
+    pub fn drain_typed_events<E: Send + Sync + 'static>(&self) -> Vec<Arc<E>> {
+        self.typed_events.drain_typed::<E>()
+    }
+
+    pub fn poll_typed_events(&self) -> Vec<TypedHostEvent> {
+        self.typed_events.poll_all()
     }
 
     pub fn push_event(&self, event: HostEvent) {
@@ -204,6 +232,10 @@ impl HostServiceProvider for HostServiceRegistry {
             .drain(..)
             .collect()
     }
+
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        Some(&self.typed_events)
+    }
 }
 
 /// Composable native OS host service provider backed by [`HostServiceRegistry`].
@@ -261,6 +293,18 @@ impl NativeHostServices {
         self.registry.channel_bus()
     }
 
+    pub fn typed_events(&self) -> &Arc<TypedEventBus> {
+        self.registry.typed_events()
+    }
+
+    pub fn emit_typed<E: Send + Sync + 'static>(&self, event: E) -> usize {
+        self.registry.emit_typed(event)
+    }
+
+    pub fn emit_typed_retained<E: Send + Sync + 'static>(&self, event: E) -> usize {
+        self.registry.emit_typed_retained(event)
+    }
+
     pub fn push_event(&self, event: HostEvent) {
         self.registry.push_event(event);
     }
@@ -297,6 +341,10 @@ impl HostServiceProvider for NativeHostServices {
     fn poll_host_events(&self) -> Vec<HostEvent> {
         self.registry.poll_host_events()
     }
+
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        self.registry.typed_event_bus()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -309,11 +357,12 @@ enum InjectedFault {
 struct MemoryFaultState {
     faults: BTreeMap<(u32, u32), VecDeque<InjectedFault>>,
     pending_async: BTreeMap<u64, Option<Result<Vec<u8>, ServiceError>>>,
+    typed_async: TypedAsyncTable,
 }
 
 /// Deterministic in-memory mock [`HostServiceProvider`] composing any opt-in
-/// [`HostServiceHandler`]s with fault injection, async `NVH1` resolution, and
-/// `NveChannelBus` retained replay.
+/// [`HostServiceHandler`]s with fault injection, direct typed async resolution,
+/// zero-serialization [`TypedEventBus`], and `NveChannelBus` retained replay.
 pub struct MemoryHostServices {
     registry: HostServiceRegistry,
     next_request_id: AtomicU64,
@@ -371,6 +420,76 @@ impl MemoryHostServices {
         self.registry.channel_bus()
     }
 
+    pub fn typed_events(&self) -> &Arc<TypedEventBus> {
+        self.registry.typed_events()
+    }
+
+    pub fn emit_typed<E: Send + Sync + 'static>(&self, event: E) -> usize {
+        self.registry.emit_typed(event)
+    }
+
+    pub fn emit_typed_retained<E: Send + Sync + 'static>(&self, event: E) -> usize {
+        self.registry.emit_typed_retained(event)
+    }
+
+    pub fn subscribe_typed<E, F>(&self, replay_retained: bool, handler: F) -> TypedEventSubscription
+    where
+        E: Send + Sync + 'static,
+        F: Fn(&E) + Send + Sync + 'static,
+    {
+        self.registry.subscribe_typed(replay_retained, handler)
+    }
+
+    pub fn drain_typed_events<E: Send + Sync + 'static>(&self) -> Vec<Arc<E>> {
+        self.registry.drain_typed_events::<E>()
+    }
+
+    pub fn poll_typed_events(&self) -> Vec<TypedHostEvent> {
+        self.registry.poll_typed_events()
+    }
+
+    /// Allocates and registers a pending typed async request with an optional callback.
+    pub fn register_typed_async<R, F>(&self, on_complete: Option<F>) -> u64
+    where
+        R: Send + Sync + 'static,
+        F: FnOnce(Result<Arc<R>, ServiceError>) + Send + 'static,
+    {
+        let req_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let mut st = self.fault_state.lock().unwrap_or_else(|e| e.into_inner());
+        match on_complete {
+            Some(cb) => st.typed_async.register_callback::<R, F>(req_id, cb),
+            None => st.typed_async.register_pending(req_id),
+        }
+        req_id
+    }
+
+    /// Resolves a typed async request directly with zero byte serialization.
+    pub fn complete_typed_async<R: Send + Sync + 'static>(
+        &self,
+        request_id: u64,
+        result: Result<R, ServiceError>,
+    ) {
+        let thunk = {
+            let mut st = self.fault_state.lock().unwrap_or_else(|e| e.into_inner());
+            st.typed_async.complete(request_id, result)
+        };
+        if let Some(run) = thunk {
+            run();
+        }
+    }
+
+    /// Consumes a completed typed async response if present.
+    pub fn take_typed_async<R: Send + Sync + 'static>(
+        &self,
+        request_id: u64,
+    ) -> Option<Result<Arc<R>, ServiceError>> {
+        self.fault_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .typed_async
+            .take::<R>(request_id)
+    }
+
     /// Injects a one-shot [`NveHostStatus`] failure (e.g., `PermissionDenied`, `Cancelled`,
     /// `BufferTooSmall`, `Unsupported`) for the next invocation of `(service_id, method_id)`.
     pub fn inject_status(&self, service_id: u32, method_id: u32, status: NveHostStatus) {
@@ -394,7 +513,7 @@ impl MemoryHostServices {
             .push_back(InjectedFault::Pending);
     }
 
-    /// Enqueues an unsolicited host push event (e.g. `UrlReceived`, `NotificationTapped`).
+    /// Enqueues an unsolicited host push event (e.g. `UrlReceived`).
     pub fn push_host_event(&self, service_id: u32, event_id: u32, payload: Vec<u8>) {
         self.registry.push_host_event(service_id, event_id, payload);
     }
@@ -411,69 +530,6 @@ impl MemoryHostServices {
             .unwrap_or_else(|e| e.into_inner())
             .pending_async
             .insert(request_id, Some(outcome));
-    }
-
-    /// Decodes an `NVH1` batch into this mock's async request table, event queue, and `NveChannelBus`.
-    pub fn dispatch_host_events(&self, batch_bytes: &[u8]) -> Result<usize, ServiceError> {
-        let records = NveHostEventBatch::decode_refs(batch_bytes)?;
-        let count = records.len();
-        let mut bus_messages = Vec::new();
-        {
-            let mut st = self.fault_state.lock().unwrap_or_else(|e| e.into_inner());
-            for rec in records {
-                match rec {
-                    NveHostEventRecordRef::AsyncResponse {
-                        request_id,
-                        status,
-                        payload,
-                    } => {
-                        let outcome = if status.is_ok() {
-                            Ok(payload.to_vec())
-                        } else {
-                            Err(ServiceError::from_status(status))
-                        };
-                        st.pending_async.insert(request_id, Some(outcome));
-                    }
-                    NveHostEventRecordRef::HostPushEvent {
-                        service_id,
-                        event_id,
-                        payload,
-                    } => {
-                        self.registry
-                            .push_host_event(service_id, event_id, payload.to_vec());
-                    }
-                    NveHostEventRecordRef::ChannelMessage {
-                        channel_id,
-                        flags,
-                        payload,
-                    } => {
-                        let retain = (flags & NVE_CHANNEL_FLAG_RETAIN) != 0;
-                        let owned = payload.to_vec();
-                        bus_messages.push((channel_id, retain, owned.clone()));
-                        self.registry
-                            .push_event(HostEvent::Channel(HostChannelEvent {
-                                channel_id,
-                                retain,
-                                payload: owned,
-                            }));
-                    }
-                }
-            }
-        }
-        if !bus_messages.is_empty() {
-            let bus_arc = self.registry.channel_bus();
-            let mut bus = bus_arc.lock().unwrap_or_else(|e| e.into_inner());
-            for (channel_id, retain, payload) in bus_messages {
-                let _ = bus.publish_by_id(
-                    channel_id,
-                    None,
-                    PayloadEncoding::Binary,
-                    ChannelPayload::from_vec(payload),
-                    retain,
-                );
-            }
-        }
-        Ok(count)
     }
 }
 
@@ -542,6 +598,10 @@ impl HostServiceProvider for MemoryHostServices {
 
     fn poll_host_events(&self) -> Vec<HostEvent> {
         self.registry.poll_host_events()
+    }
+
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        self.registry.typed_event_bus()
     }
 
     fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {

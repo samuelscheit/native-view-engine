@@ -14,6 +14,7 @@ use super::multi_window::{apply_window_state, HostWakeEvent, WindowPresenter};
 use super::session::DesktopSession;
 use super::window_host::DesktopWindowHost;
 use super::DesktopApp;
+use crate::host_services::SkiaHostEvent;
 
 impl<A: DesktopApp> DesktopWindowHost<A> {
     pub(crate) fn apply_window_command(&mut self, event_loop: &ActiveEventLoop, cmd: WindowCommand) {
@@ -282,8 +283,8 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     scale,
                 );
                 let _ = self.flush_window_lifecycle_events();
-                if let Some((_snap, batch)) = self.host_services.update_scale_factor(scale) {
-                    let _ = self.broadcast_host_event_batch(&batch);
+                if let Some(snap) = self.host_services.update_scale_factor(scale) {
+                    let _ = self.broadcast_host_event(&SkiaHostEvent::ThemeChanged(snap));
                 }
             }
             WindowEvent::ThemeChanged(theme) => {
@@ -292,8 +293,8 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     .get(&window_id)
                     .map(|sw| sw.window.scale_factor() as f32)
                     .unwrap_or(self.options.scale_factor);
-                let (_snap, batch) = self.host_services.update_theme_from_winit(theme, scale);
-                let _ = self.broadcast_host_event_batch(&batch);
+                let snap = self.host_services.update_theme_from_winit(theme, scale);
+                let _ = self.broadcast_host_event(&SkiaHostEvent::ThemeChanged(snap));
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(sw) = self.windows.get_mut(&window_id) else { return };
