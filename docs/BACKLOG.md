@@ -9,9 +9,12 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Pluggable Camera Package — Thin SwiftUI/Flutter Wrappers & Live Emulator Camera Verification**
   - All primary camera adapters are landed (`CameraPreview` spec + `NVCF`, Android VisionCamera v5 + real Jetpack `CameraX` `PreviewView`, Apple `AVFoundation` + VisionCamera v5 iOS bridge, Web `getUserMedia` `<video>`, C++20 Windows `MediaCapture` + Linux PipeWire/V4L2); remaining follow-ups are thin SwiftUI & Flutter camera wrappers and live Android Emulator virtual-scene verification once Android SDK cmdline-tools are installed.
 
-- [ ] **Unified `packages/` Monorepo Layout & `nve-abi` Option 1A Zero-Copy Raw Memory Refactor (Wave B)** *(Wave B1 selective feature flags in flight)*
-  - Move `crates/*` into unified `packages/{core,backends,framework,tools}/` once Wave A3 & B1 merge (zero `crates/` vs `packages/` split).
-  - Slim `nve-abi` to codegen-driven pure `#[repr(C)]` zero-copy raw-memory / `mmap` slabs (`NveSceneView`, `NveEventBatch`, `NvePropSlice`, `NveCommandSlice`), deleting duplicate `value/bin_*`, unused `ffi_views`, and local in-process codecs; isolate transport/disk/WASM serialization in optional `packages/core/wire/`.
+- [ ] **Unified `packages/` Monorepo Layout (Wave B3)**
+  - Wave B1 (selective `default-features = false` feature flags) and Wave B2 (`nve-abi` Option 1A codegen-locked zero-copy `#[repr(C)]` `NvePropEntry`/`NvePropSlice`/`NveCommandSlice` + `feature = "wire"` isolation) are landed.
+  - Remaining: move `crates/*` into unified `packages/{core,backends,framework,tools}/` and fold `packages/modules/{camera,tv,pair}` into root `Cargo.toml` (zero `crates/` vs `packages/` split), and move `hosts/apple-common/NveAppleNativeViews.{h,mm}` into `packages/modules/native-views/apple/`.
+
+- [ ] **SSR Responsive `@media` Compilation & Pre-Hydration Event Capture/Replay**
+  - Compile declarative responsive layout/style overrides and `show_on: SizeClassMask` into CSS `@media` rules so mobile SSR pages render with `0.000` CLS and zero hydration flicker, paired with a tiny inline pre-hydration event capture/replay shim (pending design sign-off).
 
 - [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (`cargo nve build` Tier-3 Target Recipes & Web TV)**
   - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad) and Phase 2 (standalone `packages/modules/tv` + real `tvOS`, `watchOS`, `visionOS`, and `iOS` SDK builds + static `NveInterfaceResolver` in `hosts/swiftui-kit`) are landed; remaining work is adding `aarch64-apple-{tvos,visionos,watchos}` staticlib recipes in `nve-cli` and Web TV D-Pad key handling in `nve-backend-web`.
@@ -21,4 +24,4 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 ## Flagship / Vision (Remaining Work Only)
 
 - [ ] **Flagship Local-First Workspace & Messaging App (`examples/studio-workspace`)**
-  - All core modules (`nve-ui`, `nve-router`, `nve-sdk`, Environment `TraitKey`s, live `NVC1` CRDT peer transport, 100k Fenwick stream, Docs editor, Meta Workbench, `NWS1` v2 + `.nvewal`) are landed; next step is deploying Studio live at `/examples/studio/` on GitHub Pages and integrating `<NativeView<CameraPreview>>` / `BlurSurface` once host adapters land.
+  - Core modules (`nve-ui`, `nve-router`, `nve-sdk`, Environment `TraitKey`s, live `NVC1` CRDT peer transport, 100k Fenwick stream, Docs editor, Meta Workbench, `NWS1` v2 + `.nvewal`) and live `/examples/studio/` GitHub Pages deploy are landed; next step is integrating opt-in `<NativeView<CameraPreview>>` / `BlurSurface` in Studio.
