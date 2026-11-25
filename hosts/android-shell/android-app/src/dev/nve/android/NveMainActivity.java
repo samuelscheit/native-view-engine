@@ -45,6 +45,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -72,19 +73,6 @@ public final class NveMainActivity extends Activity {
     private static final int SLAB_BIT_REMOVED = 1 << 4;
     private static final int SLAB_BIT_METADATA = 1 << 5;
 
-    private static final int META_HEADER_SIZE = 32;
-    private static final int META_RECORD_HEADER_SIZE = 28;
-    private static final int META_FORMAT_VERSION = 1;
-    private static final int META_FLAG_DISABLED = 1 << 0;
-    private static final int META_FLAG_SECURE_TEXT_ENTRY = 1 << 1;
-    private static final int META_FLAG_MULTILINE = 1 << 2;
-    private static final int META_FLAG_HAS_DRAW_LIST = 1 << 3;
-    private static final int META_FLAG_DRAW_LIST_CORRUPT = 1 << 4;
-    private static final int META_FLAG_ACCESSIBILITY_HIDDEN = 1 << 5;
-    private static final int META_RESIZE_MODE_SHIFT = 8;
-    private static final int META_RESIZE_MODE_MASK = 0x3;
-    private static final byte[] META_MAGIC = {'N', 'V', 'E', '_', 'M', 'E', 'T', '1'};
-
     private static final int RESIZE_MODE_COVER = 0;
     private static final int RESIZE_MODE_CONTAIN = 1;
     private static final int RESIZE_MODE_STRETCH = 2;
@@ -107,6 +95,146 @@ public final class NveMainActivity extends Activity {
         int frameDrawOffset = -1;
         int frameDrawLen = 0;
         long frameDrawFrameId = -1L;
+    }
+
+    /**
+     * Structured `ByteOrder.LITTLE_ENDIAN` decoder for the batched `NVE_MET1` binary metadata slab
+     * matching `NveNodeMetadataCodec.kt` and `NveAndroidMetadataPacker.cpp` (zero manual bit-shifts,
+     * reusable bulk UTF-8 scratch buffer).
+     */
+    private static final class NveMetadataSlabDecoder {
+        static final int HEADER_SIZE = 32;
+        static final int RECORD_HEADER_SIZE = 28;
+        static final int FORMAT_VERSION = 1;
+
+        static final int OFFSET_VERSION = 8;
+        static final int OFFSET_RECORD_COUNT = 12;
+        static final int OFFSET_FRAME_ID = 16;
+        static final int OFFSET_TOTAL_BYTES = 24;
+
+        static final int REC_OFFSET_NODE_ID = 0;
+        static final int REC_OFFSET_FLAGS = 4;
+        static final int REC_OFFSET_LABEL_LEN = 8;
+        static final int REC_OFFSET_ROLE_LEN = 10;
+        static final int REC_OFFSET_HINT_LEN = 12;
+        static final int REC_OFFSET_STATE_LEN = 14;
+        static final int REC_OFFSET_PLACEHOLDER_LEN = 16;
+        static final int REC_OFFSET_TEST_ID_LEN = 18;
+        static final int REC_OFFSET_DRAW_LIST_LEN = 20;
+
+        static final int FLAG_DISABLED = 1 << 0;
+        static final int FLAG_SECURE_TEXT_ENTRY = 1 << 1;
+        static final int FLAG_MULTILINE = 1 << 2;
+        static final int FLAG_HAS_DRAW_LIST = 1 << 3;
+        static final int FLAG_DRAW_LIST_CORRUPT = 1 << 4;
+        static final int FLAG_ACCESSIBILITY_HIDDEN = 1 << 5;
+        static final int RESIZE_MODE_SHIFT = 8;
+        static final int RESIZE_MODE_MASK = 0x3;
+
+        private static final byte[] MAGIC = {'N', 'V', 'E', '_', 'M', 'E', 'T', '1'};
+        private byte[] utf8Scratch = new byte[128];
+
+        void decodeInto(
+                ByteBuffer buf,
+                int declaredBytes,
+                long expectedFrameId,
+                Map<Integer, NodeMetadata> target,
+                List<Integer> dirtyOut) {
+            if (buf == null || buf.limit() < HEADER_SIZE) {
+                return;
+            }
+            for (int i = 0; i < MAGIC.length; i++) {
+                if (buf.get(i) != MAGIC[i]) {
+                    return;
+                }
+            }
+            final ByteBuffer leBuf = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+            if ((leBuf.getShort(OFFSET_VERSION) & 0xFFFF) != FORMAT_VERSION) {
+                return;
+            }
+            final int recordCount = leBuf.getInt(OFFSET_RECORD_COUNT);
+            final long slabFrameId = leBuf.getLong(OFFSET_FRAME_ID);
+            final int totalBytes = leBuf.getInt(OFFSET_TOTAL_BYTES);
+            if (slabFrameId != expectedFrameId || recordCount <= 0) {
+                return;
+            }
+            final int bound = declaredBytes > 0 ? Math.min(declaredBytes, leBuf.limit()) : leBuf.limit();
+            if (totalBytes < HEADER_SIZE || totalBytes > bound) {
+                return;
+            }
+            if ((long) recordCount * RECORD_HEADER_SIZE > (long) (totalBytes - HEADER_SIZE)) {
+                return;
+            }
+
+            int pos = HEADER_SIZE;
+            for (int i = 0; i < recordCount; i++) {
+                if (totalBytes - pos < RECORD_HEADER_SIZE) {
+                    break;
+                }
+                final int nodeId = leBuf.getInt(pos + REC_OFFSET_NODE_ID);
+                final int flags = leBuf.getInt(pos + REC_OFFSET_FLAGS);
+                final int labelLen = leBuf.getShort(pos + REC_OFFSET_LABEL_LEN) & 0xFFFF;
+                final int roleLen = leBuf.getShort(pos + REC_OFFSET_ROLE_LEN) & 0xFFFF;
+                final int hintLen = leBuf.getShort(pos + REC_OFFSET_HINT_LEN) & 0xFFFF;
+                final int stateLen = leBuf.getShort(pos + REC_OFFSET_STATE_LEN) & 0xFFFF;
+                final int placeholderLen = leBuf.getShort(pos + REC_OFFSET_PLACEHOLDER_LEN) & 0xFFFF;
+                final int testIdLen = leBuf.getShort(pos + REC_OFFSET_TEST_ID_LEN) & 0xFFFF;
+                final int drawListLen = leBuf.getInt(pos + REC_OFFSET_DRAW_LIST_LEN);
+                pos += RECORD_HEADER_SIZE;
+
+                if (drawListLen < 0) {
+                    break;
+                }
+                final long payloadLen = (long) labelLen + roleLen + hintLen + stateLen
+                        + placeholderLen + testIdLen + drawListLen;
+                if (payloadLen > (long) (totalBytes - pos)) {
+                    break;
+                }
+
+                NodeMetadata meta = target.get(nodeId);
+                if (meta == null) {
+                    meta = new NodeMetadata();
+                    target.put(nodeId, meta);
+                }
+                meta.label = readUtf8(leBuf, pos, labelLen); pos += labelLen;
+                meta.role = readUtf8(leBuf, pos, roleLen); pos += roleLen;
+                meta.hint = readUtf8(leBuf, pos, hintLen); pos += hintLen;
+                meta.stateDesc = readUtf8(leBuf, pos, stateLen); pos += stateLen;
+                meta.placeholder = readUtf8(leBuf, pos, placeholderLen); pos += placeholderLen;
+                meta.testId = readUtf8(leBuf, pos, testIdLen); pos += testIdLen;
+
+                meta.disabled = (flags & FLAG_DISABLED) != 0;
+                meta.secureTextEntry = (flags & FLAG_SECURE_TEXT_ENTRY) != 0;
+                meta.multiline = (flags & FLAG_MULTILINE) != 0;
+                meta.drawListCorrupt = (flags & FLAG_DRAW_LIST_CORRUPT) != 0;
+                meta.accessibilityHidden = (flags & FLAG_ACCESSIBILITY_HIDDEN) != 0;
+                meta.resizeMode = (flags >>> RESIZE_MODE_SHIFT) & RESIZE_MODE_MASK;
+
+                if (drawListLen > 0 && (flags & FLAG_HAS_DRAW_LIST) != 0) {
+                    meta.frameDrawOffset = pos;
+                    meta.frameDrawLen = drawListLen;
+                    meta.frameDrawFrameId = expectedFrameId;
+                } else {
+                    meta.frameDrawOffset = -1;
+                    meta.frameDrawLen = 0;
+                    meta.frameDrawFrameId = expectedFrameId;
+                }
+                pos += drawListLen;
+                dirtyOut.add(nodeId);
+            }
+        }
+
+        private String readUtf8(ByteBuffer leBuf, int offset, int len) {
+            if (len <= 0) {
+                return "";
+            }
+            if (utf8Scratch.length < len) {
+                utf8Scratch = new byte[Math.max(len, utf8Scratch.length << 1)];
+            }
+            leBuf.position(offset);
+            leBuf.get(utf8Scratch, 0, len);
+            return new String(utf8Scratch, 0, len, StandardCharsets.UTF_8);
+        }
     }
 
     private static final NodeMetadata EMPTY_METADATA = new NodeMetadata();
@@ -183,7 +311,7 @@ public final class NveMainActivity extends Activity {
     private final NveSceneBuffer sceneBuffer = new NveSceneBuffer();
     private final long[] sceneMeta = new long[8];
     private final LruCache<String, Bitmap> imageCache = createImageCache();
-    private byte[] metaTextScratch = new byte[128];
+    private final NveMetadataSlabDecoder metadataDecoder = new NveMetadataSlabDecoder();
 
     private ByteBuffer cachedNodesBuf;
     private ByteBuffer cachedTextBuf;
@@ -500,7 +628,8 @@ public final class NveMainActivity extends Activity {
             lastParsedMetadataFrameId = -1L;
         }
         if (frameId != lastParsedMetadataFrameId) {
-            parseDirtyMetadataSlab(cachedMetadataBuf, (int) sceneMeta[7], frameId);
+            metadataDecoder.decodeInto(
+                    cachedMetadataBuf, (int) sceneMeta[7], frameId, nodeMetadataById, metadataDirtyNodeIds);
             lastParsedMetadataFrameId = frameId;
         }
 
@@ -597,108 +726,6 @@ public final class NveMainActivity extends Activity {
         }
 
         lastSceneFrameId = frameId;
-    }
-
-    /**
-     * Parses the single batched flat binary `NVE_MET1` buffer for this frame's dirty nodes
-     * (zero JSON, zero per-prop JNI calls).
-     */
-    private void parseDirtyMetadataSlab(ByteBuffer buf, int declaredBytes, long expectedFrameId) {
-        if (buf == null || buf.limit() < META_HEADER_SIZE) {
-            return;
-        }
-        for (int i = 0; i < META_MAGIC.length; i++) {
-            if (buf.get(i) != META_MAGIC[i]) {
-                return;
-            }
-        }
-        final int version = readU16Le(buf, 8);
-        if (version != META_FORMAT_VERSION) {
-            return;
-        }
-        final int recordCount = readI32Le(buf, 12);
-        final long slabFrameId = readI64Le(buf, 16);
-        final int totalBytes = readI32Le(buf, 24);
-        if (slabFrameId != expectedFrameId || recordCount <= 0) {
-            return;
-        }
-        final int bound = declaredBytes > 0 ? Math.min(declaredBytes, buf.limit()) : buf.limit();
-        if (totalBytes < META_HEADER_SIZE || totalBytes > bound) {
-            return;
-        }
-        if ((long) recordCount * META_RECORD_HEADER_SIZE > (long) (totalBytes - META_HEADER_SIZE)) {
-            return;
-        }
-
-        int pos = META_HEADER_SIZE;
-        for (int i = 0; i < recordCount; i++) {
-            if (totalBytes - pos < META_RECORD_HEADER_SIZE) {
-                break;
-            }
-            final int nodeId = readI32Le(buf, pos);
-            final int flags = readI32Le(buf, pos + 4);
-            final int labelLen = readU16Le(buf, pos + 8);
-            final int roleLen = readU16Le(buf, pos + 10);
-            final int hintLen = readU16Le(buf, pos + 12);
-            final int stateLen = readU16Le(buf, pos + 14);
-            final int placeholderLen = readU16Le(buf, pos + 16);
-            final int testIdLen = readU16Le(buf, pos + 18);
-            final int drawListLen = readI32Le(buf, pos + 20);
-            pos += META_RECORD_HEADER_SIZE;
-
-            if (drawListLen < 0) {
-                break;
-            }
-            final long payloadLen = (long) labelLen + roleLen + hintLen + stateLen
-                    + placeholderLen + testIdLen + drawListLen;
-            if (payloadLen > (long) (totalBytes - pos)) {
-                break;
-            }
-
-            NodeMetadata meta = nodeMetadataById.get(nodeId);
-            if (meta == null) {
-                meta = new NodeMetadata();
-                nodeMetadataById.put(nodeId, meta);
-            }
-            meta.label = readMetaUtf8(buf, pos, labelLen); pos += labelLen;
-            meta.role = readMetaUtf8(buf, pos, roleLen); pos += roleLen;
-            meta.hint = readMetaUtf8(buf, pos, hintLen); pos += hintLen;
-            meta.stateDesc = readMetaUtf8(buf, pos, stateLen); pos += stateLen;
-            meta.placeholder = readMetaUtf8(buf, pos, placeholderLen); pos += placeholderLen;
-            meta.testId = readMetaUtf8(buf, pos, testIdLen); pos += testIdLen;
-
-            meta.disabled = (flags & META_FLAG_DISABLED) != 0;
-            meta.secureTextEntry = (flags & META_FLAG_SECURE_TEXT_ENTRY) != 0;
-            meta.multiline = (flags & META_FLAG_MULTILINE) != 0;
-            meta.drawListCorrupt = (flags & META_FLAG_DRAW_LIST_CORRUPT) != 0;
-            meta.accessibilityHidden = (flags & META_FLAG_ACCESSIBILITY_HIDDEN) != 0;
-            meta.resizeMode = (flags >>> META_RESIZE_MODE_SHIFT) & META_RESIZE_MODE_MASK;
-
-            if (drawListLen > 0 && (flags & META_FLAG_HAS_DRAW_LIST) != 0) {
-                meta.frameDrawOffset = pos;
-                meta.frameDrawLen = drawListLen;
-                meta.frameDrawFrameId = expectedFrameId;
-            } else {
-                meta.frameDrawOffset = -1;
-                meta.frameDrawLen = 0;
-                meta.frameDrawFrameId = expectedFrameId;
-            }
-            pos += drawListLen;
-            metadataDirtyNodeIds.add(nodeId);
-        }
-    }
-
-    private String readMetaUtf8(ByteBuffer buf, int offset, int len) {
-        if (len <= 0) {
-            return "";
-        }
-        if (metaTextScratch.length < len) {
-            metaTextScratch = new byte[Math.max(len, metaTextScratch.length << 1)];
-        }
-        for (int i = 0; i < len; i++) {
-            metaTextScratch[i] = buf.get(offset + i);
-        }
-        return new String(metaTextScratch, 0, len, StandardCharsets.UTF_8);
     }
 
     private void upsertNodeAtIndex(int idx, long frameId) {
@@ -1303,23 +1330,6 @@ public final class NveMainActivity extends Activity {
             return 0;
         }
         return Math.round(dp * density);
-    }
-
-    private static int readU16Le(ByteBuffer buf, int pos) {
-        return (buf.get(pos) & 0xFF) | ((buf.get(pos + 1) & 0xFF) << 8);
-    }
-
-    private static int readI32Le(ByteBuffer buf, int pos) {
-        return (buf.get(pos) & 0xFF)
-                | ((buf.get(pos + 1) & 0xFF) << 8)
-                | ((buf.get(pos + 2) & 0xFF) << 16)
-                | ((buf.get(pos + 3) & 0xFF) << 24);
-    }
-
-    private static long readI64Le(ByteBuffer buf, int pos) {
-        long lo = readI32Le(buf, pos) & 0xFFFF_FFFFL;
-        long hi = readI32Le(buf, pos + 4) & 0xFFFF_FFFFL;
-        return lo | (hi << 32);
     }
 
     private static TextPaint measurePaint;

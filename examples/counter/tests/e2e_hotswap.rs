@@ -106,7 +106,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
 
     let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
     let frame1 = inst.render(1);
-    host.submit_frame(&frame1).unwrap();
+    host.submit_frame(frame1).unwrap();
     assert!(host.render_ascii_tree().contains("Count: 0"));
 
     // Tap Increment twice through the C ABI EventRing!
@@ -126,10 +126,10 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
 
     assert!(inst.dispatch_events(&press_bytes));
     let f2 = inst.render(2);
-    host.submit_frame(&f2).unwrap();
+    host.submit_frame(f2).unwrap();
     assert!(inst.dispatch_events(&press_bytes));
     let f3 = inst.render(3);
-    host.submit_frame(&f3).unwrap();
+    host.submit_frame(f3).unwrap();
     assert!(host.render_ascii_tree().contains("Count: 2"));
 
     // Live Tier-2 dylib hot-swap to generation 2: count == 2 MUST survive!
@@ -141,7 +141,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
     let mut host2 = HeadlessBackend::new();
     host2.set_viewport(1, Viewport::default());
     let f4 = inst.render(4);
-    host2.submit_frame(&f4).unwrap();
+    host2.submit_frame(f4).unwrap();
     assert!(
         host2.render_ascii_tree().contains("Count: 2"),
         "restored tree was:\n{}",

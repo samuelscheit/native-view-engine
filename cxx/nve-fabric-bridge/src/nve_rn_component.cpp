@@ -217,23 +217,10 @@ bool NveRnComponentBridge::update_props_direct(
     const NveMapEntry* entries,
     uint32_t count,
     bool auto_render) {
-  if (!is_valid() || !module_.component) {
+  if (!is_valid() || !module_.component || module_.component->set_props_direct == nullptr) {
     return false;
   }
-  uint32_t dirty = 0;
-  if (module_.component->set_props_direct != nullptr) {
-    dirty = module_.component->set_props_direct(app_handle_, entries, count);
-  } else if (module_.component->set_props != nullptr) {
-    fallback_props_buf_.clear();
-    const NveValue map_val = make_map_value(entries, count);
-    if (!encode_bin_value(fallback_props_buf_, map_val)) {
-      return false;
-    }
-    const NveBufferSlice slice{fallback_props_buf_.data(), fallback_props_buf_.size()};
-    dirty = module_.component->set_props(app_handle_, slice);
-  } else {
-    return false;
-  }
+  const uint32_t dirty = module_.component->set_props_direct(app_handle_, entries, count);
   if (dirty != 0 && auto_render) {
     render(nullptr);
   }
@@ -291,24 +278,10 @@ uint32_t NveRnComponentBridge::dispatch_native_events(NveBufferSlice events, boo
 }
 
 uint32_t NveRnComponentBridge::dispatch_direct_events(NveEventBatch batch, bool auto_render) {
-  if (!is_valid() || !module_.surface) {
+  if (!is_valid() || !module_.surface || module_.surface->dispatch_events_direct == nullptr) {
     return 0;
   }
-  uint32_t dirty = 0;
-  if (module_.surface->dispatch_events_direct != nullptr) {
-    dirty = module_.surface->dispatch_events_direct(app_handle_, batch);
-  } else if (module_.surface->dispatch_events != nullptr) {
-    EventRingWriter ring;
-    ring.clear();
-    if (batch.ptr != nullptr) {
-      for (uint32_t i = 0; i < batch.len; ++i) {
-        ring.push_direct_event(batch.ptr[i]);
-      }
-    }
-    const auto& bytes = ring.finalize();
-    dirty = module_.surface->dispatch_events(
-        app_handle_, NveBufferSlice{bytes.data(), bytes.size()});
-  }
+  const uint32_t dirty = module_.surface->dispatch_events_direct(app_handle_, batch);
   if (dirty != 0 && auto_render) {
     render(nullptr);
   }

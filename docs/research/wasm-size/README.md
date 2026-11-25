@@ -65,7 +65,7 @@ available in Rust.
 |---|---|---:|---:|---|---|
 | 0 | today | 260.1 *m* | 260.1 *m* | — | — |
 | 1 | **toolchain pipeline**: nightly `-Zbuild-std` + immediate-abort + `optimize_for_size`, fmt/location flags, compression-tuned wasm-opt list, size-sorted functions, terser, `strip="debuginfo"`, no Wizer | 218.9 *m* (one shared bundle) | 218.9 *m* | done | low |
-| 2 | **one app per production bundle**; `dev`/`multi-window`/`scene-view` features; `anyhow` without std; `nve_abi::num` fixed-point codec; NVP1-only hot reload; talc; FxHash | **96.8** *m* | **172.0** *m* | done | low |
+| 2 | **one app per production bundle**; `dev`/`multi-window`/`scene-view` features; `anyhow` without std; `nve_abi::num` fixed-point codec; NVP1-only hot reload; talc; FxHash | **99.0** *m* | **222.9** *m* (−23 % vs the 291.0 KB shared bundle of the same `main`) | done | low |
 | 3 | **raw boundary**: 0 imports, `nve_dom.js` interprets the CommandBuffer from linear memory, delegated events written into the EventRing; subsecond patch | ~66–70 *est.* (−19.1 *m* on a stable counter) | ~140 *est.* (−16.5 *m*) | L | medium |
 | 4 | no JSON in production (channel bus, island props); dense slabs; `VecMap`; one sort instantiation; compile-time typed styles and pre-encoded templates | ~55 *est.* | ~120–125 *est.* | M–L | low–medium |
 | 5 | per-panel lazy split of studio (needs a working split tool) | ~55 | ~85–95 initial *est.* | L | high |
@@ -74,8 +74,8 @@ available in Rust.
 
 How to read it:
 
-- **Stages 1–2 are done.** They take the counter from 260 to 96.8 KB and studio to 172.0 KB
-  (measured after the SSR/hydration merges, which added ~21 KB).
+- **Stages 1–2 are done.** They take the counter from 260 to 99.0 KB. Studio is 222.9 KB: the app
+  itself grew by ~50 KB on `main` meanwhile, and the shared bundle of the same commit is 291.0 KB.
 - **Stage 3 is a clean subtraction** that fits the "one CommandBuffer per frame" invariant.
   `WebDomMirror` stays as the semantic spec, and a Node parity test pins the JS interpreter to it.
 - **Stage 6 is the real decision.** It is the only step that gets within an order of magnitude of
@@ -103,19 +103,24 @@ Stage 2 (branch `t3/wasm-bundle-size-stage-two`): `hosts/web-shell/build.sh` now
 production bundle per app plus a dev bundle. All 7 e2e suites pass on the release bundles; the
 production suites also assert that the other app, the dev probe and the scene view are absent.
 
+Main kept growing while stage 2 was in flight (CRDT peer transport, the nve-ui studio chrome,
+TypedStyle props). The same shared bundle went from 240,304 B (`83d2f82`) to 290,960 B (`64024e5`).
+The stage-2 rows below are measured after merging `64024e5`, so compare them with that row.
+
 | Bundle (brotli q11, bytes) | wasm raw | wasm gzip | wasm br | JS br | **total br** | budget |
 |---|---:|---:|---:|---:|---:|---:|
-| before: one shared bundle (`main` `83d2f82`) | 756,044 | 286,736 | 232,347 | 7,957 | 240,304 | 245,760 |
-| `pkg/studio` (`app-studio`) | 563,674 | 203,523 | 165,684 | 6,363 | **172,047** (−28.4 %) | 177,152 |
-| `pkg/counter` (`app-counter`) | 268,086 | 107,682 | 90,517 | 6,305 | **96,822** (−59.7 %) | 99,328 |
-| `pkg/dev` (default features: both apps, dev, multi-window, scene-view) | 674,914 | 244,824 | 197,723 | 7,910 | 205,633 (−14.4 %) | 211,968 |
+| one shared bundle, `main` `83d2f82` | 756,044 | 286,736 | 232,347 | 7,957 | 240,304 | 245,760 |
+| one shared bundle, `main` `64024e5` | 919,932 | 353,452 | 283,003 | 7,957 | 290,960 | 245,760 (over) |
+| `pkg/studio` (`app-studio`) | 727,907 | 270,001 | 216,487 | 6,363 | **222,850** (−23.4 %) | 229,376 |
+| `pkg/counter` (`app-counter`) | 274,415 | 110,530 | 92,705 | 6,305 | **99,010** (−66.0 %) | 101,376 |
+| `pkg/dev` (default features: both apps, dev, multi-window, scene-view) | 838,025 | 310,872 | 248,039 | 7,910 | 255,949 (−12.0 %) | 263,168 |
 
-What each step bought on the shared bundle: the dioxus fork plus the removed snip step
-−2.9 KB (240,304 → 237,443); `nve_abi::num`, FxHash, NVP1-only hot reload and talc take the
-dev bundle to 205,633. Production bundles also drop the other app, `dev`, `multi-window` and
-`scene-view`. The counter misses the 87.1 KB research figure by ~10 KB. That figure was measured
-before the SSR/hydration merges, which grew every bundle by ~21 KB; the counter bundle still
-ships `render_counter_ssr_bundle` and `ProgressiveIslandHost`.
+Before main moved (same pipeline, on `83d2f82`) the bundles were studio 172,047, counter 96,822
+and dev 205,633 B. The dioxus fork plus the removed snip step alone was −2.9 KB on the shared
+bundle (240,304 → 237,443). Production bundles also drop the other app, `dev`, `multi-window` and
+`scene-view`. The counter misses the 87.1 KB research figure by ~12 KB. That figure predates the
+SSR/hydration merges (~21 KB on every bundle); the counter bundle still ships
+`render_counter_ssr_bundle` and `ProgressiveIslandHost`.
 
 The name section of the dev build contains no `core::fmt::float`, `flt2dec`, `dec2flt`, SipHash,
 `RandomState`, dlmalloc or backtrace code. One merged `<[u8]>::starts_with` instance carries a

@@ -19,65 +19,6 @@ NSError *make_dylib_error(NSString *domain, DylibErrorCode code, NSString *descr
                          userInfo:@{NSLocalizedDescriptionKey : description}];
 }
 
-id _Nonnull objc_object_from_bin_value(const nve::BinValueView &view, uint32_t depth) {
-  if (depth > NVE_BIN_VALUE_MAX_DEPTH) {
-    return [NSNull null];
-  }
-  switch (view.tag()) {
-    case NVE_VAL_NULL:
-      return [NSNull null];
-    case NVE_VAL_BOOL:
-      return [NSNumber numberWithBool:view.as_bool().value_or(false) ? YES : NO];
-    case NVE_VAL_I64:
-      return @(view.as_i64().value_or(0));
-    case NVE_VAL_F64:
-      return @(view.as_f64().value_or(0.0));
-    case NVE_VAL_STR: {
-      const std::string_view sv = view.as_str().value_or(std::string_view{});
-      NSString *s = [[NSString alloc] initWithBytes:sv.data()
-                                             length:sv.size()
-                                           encoding:NSUTF8StringEncoding];
-      return s ?: @"";
-    }
-    case NVE_VAL_BYTES: {
-      const NveBufferSlice b = view.as_bytes().value_or(NveBufferSlice{nullptr, 0});
-      return (b.ptr != nullptr && b.len > 0) ? [NSData dataWithBytes:b.ptr length:b.len]
-                                             : [NSData data];
-    }
-    case NVE_VAL_ARRAY: {
-      const size_t n = view.array_len().value_or(0);
-      NSMutableArray *arr = [NSMutableArray arrayWithCapacity:n];
-      (void)view.for_each_array([&](const nve::BinValueView &elem) {
-        [arr addObject:objc_object_from_bin_value(elem, depth + 1u)];
-      });
-      return [arr copy];
-    }
-    case NVE_VAL_MAP: {
-      const size_t n = view.map_len().value_or(0);
-      NSMutableDictionary<NSString *, id> *map = [NSMutableDictionary dictionaryWithCapacity:n];
-      (void)view.for_each_map([&](std::string_view k, const nve::BinValueView &val) {
-        NSString *key = [[NSString alloc] initWithBytes:k.data()
-                                                 length:k.size()
-                                               encoding:NSUTF8StringEncoding];
-        if (key != nil) {
-          map[key] = objc_object_from_bin_value(val, depth + 1u);
-        }
-      });
-      return [map copy];
-    }
-  }
-  return [NSNull null];
-}
-
-NSString * _Nullable nsstring_from_std_string(const std::string &s) {
-  if (s.empty()) {
-    return nil;
-  }
-  return [[NSString alloc] initWithBytes:s.data()
-                                  length:s.size()
-                                encoding:NSUTF8StringEncoding];
-}
-
 std::string ascii_lower(std::string_view sv) {
   std::string out;
   out.reserve(sv.size());
@@ -274,68 +215,6 @@ NvePlatformColor *color_from_rgba(uint32_t rgba) {
 #endif
 }
 
-NSDictionary<NSString *, id> *payload_dictionary_from_event(const nve::DecodedEvent &ev) {
-  NSMutableDictionary<NSString *, id> *dict = [NSMutableDictionary dictionary];
-  dict[@"surfaceId"] = @(ev.surface_id);
-  dict[@"nodeId"] = @(ev.node_id);
-  dict[@"timestampUs"] = @(ev.timestamp_us);
-
-  switch (ev.kind) {
-    case nve::EventKind::Press:
-    case nve::EventKind::LongPress:
-      dict[@"x"] = @(ev.x);
-      dict[@"y"] = @(ev.y);
-      break;
-    case nve::EventKind::Scroll:
-      dict[@"x"] = @(ev.x);
-      dict[@"y"] = @(ev.y);
-      dict[@"contentWidth"] = @(ev.width);
-      dict[@"contentHeight"] = @(ev.height);
-      break;
-    case nve::EventKind::TextChange:
-      dict[@"text"] = [NSString stringWithUTF8String:ev.text.c_str()] ?: @"";
-      break;
-    case nve::EventKind::Layout:
-      dict[@"x"] = @(ev.x);
-      dict[@"y"] = @(ev.y);
-      dict[@"width"] = @(ev.width);
-      dict[@"height"] = @(ev.height);
-      break;
-    case nve::EventKind::Custom: {
-      if (!ev.payload_bytes.empty()) {
-        const auto parsed =
-            nve::BinValueView::parse(ev.payload_bytes.data(), ev.payload_bytes.size());
-        if (parsed.has_value()) {
-          if (parsed->tag() == NVE_VAL_MAP) {
-            (void)parsed->for_each_map([&](std::string_view k, const nve::BinValueView &val) {
-              NSString *key = [[NSString alloc] initWithBytes:k.data()
-                                                       length:k.size()
-                                                     encoding:NSUTF8StringEncoding];
-              if (key != nil) {
-                dict[key] = objc_object_from_bin_value(val, 1u);
-              }
-            });
-          } else {
-            dict[@"value"] = objc_object_from_bin_value(*parsed, 0u);
-          }
-        } else {
-          NSString *raw = [[NSString alloc] initWithBytes:ev.payload_bytes.data()
-                                                   length:ev.payload_bytes.size()
-                                                 encoding:NSUTF8StringEncoding];
-          if (raw != nil) {
-            dict[@"raw"] = raw;
-          }
-        }
-      }
-      break;
-    }
-    case nve::EventKind::Focus:
-    case nve::EventKind::Blur:
-      break;
-  }
-  return [dict copy];
-}
-
 bool open_nve_dylib(
     NSString * _Nullable dylib_path,
     NSString * _Nonnull error_domain,
@@ -528,10 +407,10 @@ void apply_node_accessibility(
       (sem.role != A11yRole::Group || sem.has_explicit_label || !sem.hint.empty() ||
        !sem.test_id.empty() || sem.explicit_role);
 
-  NSString *labelStr = nsstring_from_std_string(sem.label);
-  NSString *hintStr = nsstring_from_std_string(sem.hint);
-  NSString *valueStr = sem.has_explicit_value ? nsstring_from_std_string(sem.value) : nil;
-  NSString *testIdStr = nsstring_from_std_string(sem.test_id);
+  NSString *labelStr = nsstring_or_nil_from_sv(sem.label);
+  NSString *hintStr = nsstring_or_nil_from_sv(sem.hint);
+  NSString *valueStr = sem.has_explicit_value ? nsstring_or_nil_from_sv(sem.value) : nil;
+  NSString *testIdStr = nsstring_or_nil_from_sv(sem.test_id);
 
 #if TARGET_OS_OSX
   view.accessibilityElement = isElement;
@@ -618,11 +497,8 @@ void apply_text_input_props(
     std::string_view text,
     const NodeSemantics &sem) {
   if (!view) return;
-  NSString *nextText =
-      [[NSString alloc] initWithBytes:text.data()
-                               length:text.size()
-                             encoding:NSUTF8StringEncoding] ?: @"";
-  NSString *placeholderStr = nsstring_from_std_string(sem.placeholder);
+  NSString *nextText = nsstring_from_sv(text);
+  NSString *placeholderStr = nsstring_or_nil_from_sv(sem.placeholder);
 
 #if TARGET_OS_OSX
   if (![view isKindOfClass:[NSTextField class]]) return;

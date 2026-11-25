@@ -174,7 +174,10 @@ class NveSurfaceController(
 
     private var nativeHandle: Long = 0L
     private var frameCounter: Long = 0L
-    private var lastPropsBin: ByteArray? = null
+    private val propsWriter = NveBinWriter(128)
+    private val commandWriter = NveBinWriter(128)
+    private var lastPropsBuf: ByteArray = ByteArray(0)
+    private var lastPropsLen: Int = -1
     private val pendingEvents = ArrayList<NveEvent>()
     private val frameMetaScratch = LongArray(NveSceneBuffer.META_FIELD_COUNT)
     internal var onEventCallback: ((NveEvent) -> Unit)? = null
@@ -209,8 +212,8 @@ class NveSurfaceController(
         if (vp.width > 0f || vp.height > 0f) {
             bridge.resizeSurface(handle, vp.width, vp.height, vp.scaleFactor)
         }
-        lastPropsBin?.let { propsBytes ->
-            bridge.setPropsBinary(handle, propsBytes)
+        if (lastPropsLen >= 0) {
+            bridge.setPropsBinary(handle, lastPropsBuf.copyOf(lastPropsLen))
         }
         return true
     }
@@ -256,14 +259,33 @@ class NveSurfaceController(
     }
 
     fun updateProps(props: Map<String, Any?>) {
-        updatePropsBinary(NveBinValue.encodeMap(props))
+        if (isDisposed) return
+        propsWriter.reset()
+        propsWriter.writeMap(props)
+        if (lastPropsLen == propsWriter.size && propsWriter.contentEquals(lastPropsBuf, lastPropsLen)) {
+            return
+        }
+        lastPropsBuf = propsWriter.copyInto(lastPropsBuf)
+        lastPropsLen = propsWriter.size
+        if (nativeHandle == 0L || !bridge.isAvailable) return
+        if (bridge.setPropsBinary(nativeHandle, propsWriter.toByteArray())) {
+            requestRender()
+        }
+        drainAndForwardEvents()
     }
 
     fun updatePropsBinary(propsBin: ByteArray) {
         if (isDisposed) return
-        val prev = lastPropsBin
-        if (prev != null && prev.contentEquals(propsBin)) return
-        lastPropsBin = propsBin.copyOf()
+        if (lastPropsLen == propsBin.size && regionEquals(lastPropsBuf, propsBin, propsBin.size)) {
+            return
+        }
+        if (lastPropsBuf.size < propsBin.size) {
+            lastPropsBuf = ByteArray(maxOf(propsBin.size, lastPropsBuf.size shl 1))
+        }
+        if (propsBin.isNotEmpty()) {
+            System.arraycopy(propsBin, 0, lastPropsBuf, 0, propsBin.size)
+        }
+        lastPropsLen = propsBin.size
         if (nativeHandle == 0L || !bridge.isAvailable) return
         if (bridge.setPropsBinary(nativeHandle, propsBin)) {
             requestRender()
@@ -272,7 +294,10 @@ class NveSurfaceController(
     }
 
     fun dispatchCommand(name: String, args: Map<String, Any?> = emptyMap()) {
-        dispatchCommandBinary(name, NveBinValue.encodeMap(args))
+        if (isDisposed || nativeHandle == 0L || !bridge.isAvailable) return
+        commandWriter.reset()
+        commandWriter.writeMap(args)
+        dispatchCommandBinary(name, commandWriter.toByteArray())
     }
 
     fun dispatchCommandBinary(name: String, argsBin: ByteArray) {
@@ -352,7 +377,9 @@ class NveSurfaceController(
         payload: NveBinValue = NveBinValue.Null,
         timestampUs: Long = 0L,
     ): Boolean {
-        enqueueEvent(NveEventRingCodec.custom(surfaceId, nodeId, name, payload.encode(), timestampUs))
+        commandWriter.reset()
+        commandWriter.writeValue(payload)
+        enqueueEvent(NveEventRingCodec.custom(surfaceId, nodeId, name, commandWriter.toByteArray(), timestampUs))
         return flushEvents()
     }
 
@@ -451,9 +478,18 @@ class NveSurfaceController(
         }
         nativeHandle = 0L
         pendingEvents.clear()
-        lastPropsBin = null
+        lastPropsLen = -1
+        lastPropsBuf = ByteArray(0)
         onEventCallback = null
         state.clearScene()
         state.lifecycleState = NveSurfaceLifecycleState.DISPOSED
+    }
+
+    private fun regionEquals(a: ByteArray, b: ByteArray, len: Int): Boolean {
+        if (a.size < len || b.size < len) return false
+        for (i in 0 until len) {
+            if (a[i] != b[i]) return false
+        }
+        return true
     }
 }

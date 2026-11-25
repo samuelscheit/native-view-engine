@@ -44,8 +44,27 @@ pub fn InlinesView(
     let text_color = color_override.unwrap_or_else(|| theme.text.to_string());
     let base_weight = if bold { "700" } else { "400" };
 
+    if inlines.len() == 1
+        && matches!(
+            inlines[0],
+            Inline::Text(_) | Inline::Strong(_) | Inline::Emphasis(_) | Inline::Strikethrough(_)
+        )
+    {
+        let single = inlines.into_iter().next().unwrap();
+        return rsx! {
+            InlineNodeView {
+                inline: single,
+                font_size: font_size,
+                base_weight: base_weight.to_string(),
+                text_color: text_color,
+                base_path: base_path,
+            }
+        };
+    }
+
     rsx! {
         view {
+            test_id: "docs-inlines",
             style: "flex-direction: row; align-items: center; gap: 2px; flex-wrap: wrap;",
             for (idx, inline) in inlines.into_iter().enumerate() {
                 InlineNodeView {
@@ -110,8 +129,9 @@ fn InlineNodeView(
             let code_size = font_size.saturating_sub(1).max(11);
             rsx! {
                 view {
+                    test_id: "docs-inline-code",
                     accessibility_role: "code",
-                    style: "padding-horizontal: 5px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-shrink: 0; padding-horizontal: 5px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                     text {
                         style: "font-size: {code_size}px; font-family: monospace; color: {theme.accent};",
                         "{code}"
@@ -146,7 +166,7 @@ fn InlineNodeView(
                     accessibility_role: "link",
                     accessibility_label: title.unwrap_or_else(|| display.clone()),
                     "href": "{href}",
-                    style: "padding-horizontal: 1px;",
+                    style: "flex-shrink: 0; padding-horizontal: 1px;",
                     onpress: move |_| {
                         if let Some((route, anchor)) = internal_target.clone() {
                             navigate_to_target(state, route, anchor);

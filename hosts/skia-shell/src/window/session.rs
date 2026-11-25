@@ -229,10 +229,15 @@ impl<A: DesktopApp> DesktopSession<A> {
             schema_version,
             0,
             &self.last_frame_bytes,
-            &state_bytes,
+            state_bytes,
             &[],
         )?;
         Ok(header)
+    }
+
+    /// Dispatches a binary `NVH1` host-event batch into the mounted app.
+    pub fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        self.app.dispatch_host_events(batch)
     }
 
     /// Writes the current rasterized [`PixelBuffer`] to a binary `P6` PPM file.
@@ -369,8 +374,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         if app_handled_resize || self.last_frame_bytes.is_empty() {
             self.render_and_rasterize()?;
         } else {
-            let bytes = self.last_frame_bytes.clone();
-            self.backend.submit_frame(&bytes)?;
+            self.backend.submit_frame(&self.last_frame_bytes)?;
             self.rasterize_current();
         }
         Ok(())
@@ -382,8 +386,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.next_frame_id += 1;
         let bytes = self.app.render(frame_id);
         if !bytes.is_empty() {
-            self.backend.submit_frame(&bytes)?;
-            self.last_frame_bytes = bytes;
+            self.backend.submit_frame(bytes)?;
+            self.last_frame_bytes.clear();
+            self.last_frame_bytes.extend_from_slice(bytes);
         }
         self.rasterize_current();
         Ok(&self.pixel_buffer)

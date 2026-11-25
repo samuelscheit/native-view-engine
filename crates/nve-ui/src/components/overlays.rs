@@ -3,14 +3,15 @@
 
 use dioxus_core::EventHandler;
 use dioxus_core_macro::Props;
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 pub use crate::components::dropdown::{DropdownMenu, MenuItem};
 use crate::focus::{
     current_focused_id, notify_focus_scope, FocusTrap, FocusTrapAction, FocusableEntry,
 };
-use crate::style_buf::{StyleBuf, SurfaceStyle, TextStyle};
-use crate::theme::use_theme;
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::theme::use_theme_rgba;
 
 /// Accessible modal dialog with `accessibilityRole="dialog"`, `ariaModal="true"`,
 /// [`FocusTrap`] (`Tab`/`Shift+Tab` wrap-around + focus restoration), `Escape` dismissal,
@@ -27,10 +28,11 @@ pub fn Dialog(
     #[props(default)] on_close: Option<EventHandler<()>>,
     #[props(default)] on_focus_change: Option<EventHandler<Option<String>>>,
     #[props(default)] test_id: Option<String>,
+    #[props(default)] accessibility_label: Option<String>,
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut trap = use_signal(|| {
         FocusTrap::from_ids(focusable_ids.iter().cloned()).with_close_on_escape(close_on_escape)
     });
@@ -84,72 +86,70 @@ pub fn Dialog(
     let title_id = title.as_ref().map(|_| format!("{base_id}-title"));
     let desc_id = description.as_ref().map(|_| format!("{base_id}-description"));
 
-    let mut backdrop_sb = StyleBuf::new();
-    backdrop_sb
+    let backdrop_style = TypedStyleBuilder::new()
         .width_pct(100.0)
         .height_pct(100.0)
-        .justify_content("center")
-        .align_items("center")
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
         .padding(theme.spacing.xl)
         .z_index(1000)
-        .surface(SurfaceStyle {
-            background: theme.backdrop_scrim(),
+        .surface(TypedSurfaceStyle {
+            background: theme.backdrop_scrim_rgba(),
             border_width: 0.0,
-            border_color: "transparent",
+            border_color: ColorRgba::TRANSPARENT,
             border_radius: 0.0,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    let backdrop_style = backdrop_sb.finish();
+        })
+        .finish();
 
-    let mut panel_sb = StyleBuf::new();
-    panel_sb
-        .flex_direction("column")
+    let panel_style = TypedStyleBuilder::new()
+        .flex_col()
         .min_width_px(320.0)
         .max_width_px(560.0)
         .padding(theme.spacing.xl)
         .gap(theme.spacing.md)
         .z_index(1001)
-        .surface(SurfaceStyle {
-            background: theme.palette.surface_elevated.as_ref(),
+        .surface(TypedSurfaceStyle {
+            background: colors.surface_elevated,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: theme.palette.border.as_ref(),
+            border_color: colors.border,
             border_radius: theme.radii.lg,
             opacity: 1.0,
             box_shadow: theme.elevation_shadow(),
-        });
-    if let Some(ref extra) = style {
-        panel_sb.raw(extra);
-    }
-    let panel_style = panel_sb.finish();
+        })
+        .finish();
 
-    let mut title_sb = StyleBuf::new();
-    title_sb.text_style(TextStyle {
-        color: theme.palette.text_primary.as_ref(),
-        font_size: theme.typography.lg,
-        font_weight: "700",
-        text_align: "left",
-        opacity: 1.0,
-    });
-    let title_style = title_sb.finish();
+    let title_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.lg,
+            font_weight: "700",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
 
-    let mut desc_sb = StyleBuf::new();
-    desc_sb.text_style(TextStyle {
-        color: theme.palette.text_secondary.as_ref(),
-        font_size: theme.typography.sm,
-        font_weight: "400",
-        text_align: "left",
-        opacity: 1.0,
-    });
-    let desc_style = desc_sb.finish();
+    let desc_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_secondary,
+            font_size: theme.typography.sm,
+            font_weight: "400",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
 
     let active_focus = trap.read().active().map(str::to_owned);
 
+    // The scrim is a plain `view` with a press listener (a `pressable` would nest the panel's
+    // buttons and text fields inside a `<button>`); the panel swallows presses so a click on its
+    // padding or a text field never bubbles to the scrim and dismisses the dialog.
     rsx! {
-        pressable {
+        view {
             test_id: "{backdrop_id}",
             accessibility_role: "presentation",
-            style: "{backdrop_style}",
+            nve_style: backdrop_style,
             onpress: move |_| {
                 if close_on_backdrop {
                     let restored = trap.write().deactivate();
@@ -168,12 +168,15 @@ pub fn Dialog(
             view {
                 test_id: "{base_id}",
                 accessibility_role: "dialog",
+                accessibility_label: accessibility_label,
                 aria_modal: "true",
                 aria_labelledby: title_id.clone(),
                 aria_describedby: desc_id.clone(),
                 aria_controls: active_focus,
                 tab_index: -1,
-                style: "{panel_style}",
+                nve_style: panel_style,
+                style: style,
+                onpress: move |ev: PressEvent| ev.stop_propagation(),
                 onkeydown: move |ev: KeyEvent| {
                     let data = ev.data();
                     let action = trap.write().handle_key(&data.key, data.shift);
@@ -202,14 +205,14 @@ pub fn Dialog(
                 if let Some(ref heading) = title {
                     text {
                         test_id: title_id.clone(),
-                        style: "{title_style}",
+                        nve_style: title_style,
                         "{heading}"
                     }
                 }
                 if let Some(ref desc) = description {
                     text {
                         test_id: desc_id.clone(),
-                        style: "{desc_style}",
+                        nve_style: desc_style,
                         "{desc}"
                     }
                 }
@@ -234,78 +237,75 @@ pub fn Popover(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut focused = use_signal(|| false);
 
     let base_id = test_id.as_deref().unwrap_or("nve-popover");
     let trigger_id = format!("{base_id}-trigger");
     let content_id = format!("{base_id}-content");
 
-    let mut wrap_sb = StyleBuf::new();
-    wrap_sb.flex_direction("column").gap(theme.spacing.xs);
-    if let Some(ref extra) = style {
-        wrap_sb.raw(extra);
-    }
-    let wrap_style = wrap_sb.finish();
+    let wrap_style = TypedStyleBuilder::new()
+        .flex_col()
+        .gap(theme.spacing.xs)
+        .finish();
 
-    let mut trigger_sb = StyleBuf::new();
-    trigger_sb
+    let trigger_style = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
-        .justify_content("center")
-        .align_items("center")
-        .surface(SurfaceStyle {
-            background: theme.palette.surface.as_ref(),
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
+        .surface(TypedSurfaceStyle {
+            background: colors.surface,
             border_width: if focused() { 2.0 } else { 1.0 },
             border_color: if focused() {
-                theme.palette.border_focus.as_ref()
+                colors.border_focus
             } else {
-                theme.palette.border.as_ref()
+                colors.border
             },
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    let trigger_style = trigger_sb.finish();
+        })
+        .finish();
 
-    let mut trigger_ts = StyleBuf::new();
-    trigger_ts.text_style(TextStyle {
-        color: theme.palette.text_primary.as_ref(),
-        font_size: theme.typography.md,
-        font_weight: "500",
-        text_align: "center",
-        opacity: 1.0,
-    });
-    let trigger_text_style = trigger_ts.finish();
+    let trigger_text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.md,
+            font_weight: "500",
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
-    let mut panel_sb = StyleBuf::new();
-    panel_sb
-        .flex_direction("column")
+    let panel_style = TypedStyleBuilder::new()
+        .flex_col()
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
         .z_index(900)
-        .surface(SurfaceStyle {
-            background: theme.palette.surface_elevated.as_ref(),
+        .surface(TypedSurfaceStyle {
+            background: colors.surface_elevated,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: theme.palette.border.as_ref(),
+            border_color: colors.border,
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: theme.elevation_shadow(),
-        });
-    let panel_style = panel_sb.finish();
+        })
+        .finish();
 
     let aria_expanded = if open { "true" } else { "false" };
 
     rsx! {
         view {
             test_id: "{base_id}",
-            style: "{wrap_style}",
+            nve_style: wrap_style,
+            style: style,
             pressable {
                 test_id: "{trigger_id}",
                 accessibility_role: "button",
                 aria_expanded: "{aria_expanded}",
                 aria_controls: "{content_id}",
                 tab_index: 0,
-                style: "{trigger_style}",
+                nve_style: trigger_style,
                 onfocus: move |_| focused.set(true),
                 onblur: move |_| focused.set(false),
                 onpress: move |_| {
@@ -325,7 +325,7 @@ pub fn Popover(
                     }
                 },
                 text {
-                    style: "{trigger_text_style}",
+                    nve_style: trigger_text_style,
                     "{trigger_label}"
                 }
             }
@@ -334,7 +334,7 @@ pub fn Popover(
                     test_id: "{content_id}",
                     accessibility_role: "dialog",
                     tab_index: -1,
-                    style: "{panel_style}",
+                    nve_style: panel_style,
                     onkeydown: move |ev: KeyEvent| {
                         let data = ev.data();
                         let key = data.key.as_str();
@@ -362,7 +362,7 @@ pub fn Tooltip(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut internal_open = use_signal(|| false);
     let is_open = match open {
         Some(v) => v,
@@ -373,40 +373,37 @@ pub fn Tooltip(
     let trigger_id = format!("{base_id}-trigger");
     let bubble_id = format!("{base_id}-bubble");
 
-    let mut wrap_sb = StyleBuf::new();
-    wrap_sb.flex_direction("column").gap(theme.spacing.xs);
-    if let Some(ref extra) = style {
-        wrap_sb.raw(extra);
-    }
-    let wrap_style = wrap_sb.finish();
+    let wrap_style = TypedStyleBuilder::new()
+        .flex_col()
+        .gap(theme.spacing.xs)
+        .finish();
 
-    let mut tip_sb = StyleBuf::new();
-    tip_sb
+    let tip_style = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
         .z_index(950)
-        .surface(SurfaceStyle {
-            background: theme.palette.text_primary.as_ref(),
+        .surface(TypedSurfaceStyle {
+            background: colors.text_primary,
             border_width: if theme.is_high_contrast() { 1.0 } else { 0.0 },
             border_color: if theme.is_high_contrast() {
-                theme.palette.border.as_ref()
+                colors.border
             } else {
-                "transparent"
+                ColorRgba::TRANSPARENT
             },
             border_radius: theme.radii.sm,
             opacity: 1.0,
             box_shadow: theme.elevation_shadow(),
-        });
-    let tip_style = tip_sb.finish();
+        })
+        .finish();
 
-    let mut tip_ts = StyleBuf::new();
-    tip_ts.text_style(TextStyle {
-        color: theme.palette.surface.as_ref(),
-        font_size: theme.typography.xs,
-        font_weight: "500",
-        text_align: "left",
-        opacity: 1.0,
-    });
-    let tip_text_style = tip_ts.finish();
+    let tip_text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.surface,
+            font_size: theme.typography.xs,
+            font_weight: "500",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
 
     let aria_expanded = if is_open { "true" } else { "false" };
     let described_by = if is_open {
@@ -418,7 +415,8 @@ pub fn Tooltip(
     rsx! {
         view {
             test_id: "{base_id}",
-            style: "{wrap_style}",
+            nve_style: wrap_style,
+            style: style,
             pressable {
                 test_id: "{trigger_id}",
                 tab_index: 0,
@@ -452,9 +450,9 @@ pub fn Tooltip(
                 view {
                     test_id: "{bubble_id}",
                     accessibility_role: "tooltip",
-                    style: "{tip_style}",
+                    nve_style: tip_style,
                     text {
-                        style: "{tip_text_style}",
+                        nve_style: tip_text_style,
                         "{content}"
                     }
                 }

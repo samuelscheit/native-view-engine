@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 
 use nve_abi::events::decode_keydown_bytes;
 use nve_dioxus::prelude::*;
+use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Dialog, Input, Separator};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{AccentTheme, ActiveView, LayoutEngineMode, WorkspaceState};
 use crate::theme::{
-    card_border, control_border, LayoutMetrics, BORDER_DEFAULT, CARD_ALT_BG, CARD_BG, CONTROL_BG,
-    PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    badge_min_w, control_border, LayoutMetrics, BORDER_DEFAULT, CARD_ALT_BG, CARD_BG, CONTROL_BG,
+    PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 use crate::ui::mutate_state;
 
@@ -347,7 +348,6 @@ pub(crate) fn render_command_palette(
     xray: bool,
     m: LayoutMetrics,
 ) -> Element {
-    let (card_bw, card_bc) = card_border(xray);
     let visible = &matches[..matches.len().min(MAX_VISIBLE_PALETTE_ITEMS)];
     let selected = if visible.is_empty() {
         0
@@ -356,17 +356,35 @@ pub(crate) fn render_command_palette(
     };
     let count_lbl = format!("{} matches", matches.len());
 
-    let s_close = Arc::clone(store);
+    let s_close_dialog = Arc::clone(store);
+    let s_close_btn = Arc::clone(store);
     let s_input = Arc::clone(store);
     let s_submit = Arc::clone(store);
-    let s_key = Arc::clone(store);
+
+    let mut focusable_ids = vec!["palette-input".to_string(), "palette-close".to_string()];
+    for idx in 0..visible.len() {
+        focusable_ids.push(format!("palette-item-{idx}"));
+    }
+
+    let dialog_style = format!(
+        "width: 100%; min-width: 0px; max-width: 100%; padding: 8px; gap: 6px; background-color: {PANEL_BG}; border-radius: {}px; border-width: 2px; border-color: {accent_hex};",
+        m.card_radius
+    );
+    let close_btn_style = format!(
+        "width: 42px; height: 20px; min-height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: {}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+        m.pill_radius
+    );
 
     rsx! {
-        view {
-            test_id: "command-palette",
-            accessibility_label: "Command Palette",
-            accessibility_role: "dialog",
-            style: "width: 100%; flex-shrink: 0; flex-direction: column; padding: 8px; gap: 6px; background-color: {PANEL_BG}; border-radius: {m.card_radius}px; border-width: 2px; border-color: {accent_hex};",
+        Dialog {
+            open: palette.open,
+            test_id: Some("command-palette".into()),
+            accessibility_label: Some("Command Palette".into()),
+            focusable_ids: focusable_ids,
+            close_on_escape: true,
+            close_on_backdrop: true,
+            style: Some(dialog_style),
+            on_close: move |_| mutate_state(&s_close_dialog, version, |st| st.close_palette()),
 
             // Header row
             view {
@@ -376,42 +394,35 @@ pub(crate) fn render_command_palette(
                     text { style: "color: {accent_hex}; font-size: 11px;", "CMD+K PALETTE" }
                     text { style: "color: {TEXT_MUTED}; font-size: 10px;", "{count_lbl}" }
                 }
-                pressable {
-                    test_id: "palette-close",
-                    accessibility_label: "Close command palette",
-                    style: "width: 40px; height: 20px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                    onpress: move |_| mutate_state(&s_close, version, |st| st.close_palette()),
-                    text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "Esc" }
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    size: ButtonSize::Sm,
+                    test_id: Some("palette-close".into()),
+                    accessibility_label: Some("Close command palette".into()),
+                    style: Some(close_btn_style),
+                    on_press: move |_| mutate_state(&s_close_btn, version, |st| st.close_palette()),
+                    "Esc"
                 }
             }
 
-            // Live Fuzzy Search TextInput
-            textinput {
-                test_id: "palette-input",
-                placeholder: "Jump to view, task, accent, layout, snapshot...",
-                value: "{palette.query}",
-                multiline: false,
-                accessibility_label: "Command palette filter",
-                accessibility_role: "searchbox",
-                style: "width: 100%; height: 28px; flex-shrink: 0; padding-horizontal: 8px; background-color: {CARD_ALT_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                onchange: move |ev| {
-                    let q = ev.data().value.clone();
+            // Live Fuzzy Search Input (`nve-ui` Input)
+            Input {
+                test_id: Some("palette-input".into()),
+                placeholder: Some("Jump to view, task, accent, layout, snapshot...".into()),
+                value: palette.query.clone(),
+                accessibility_label: Some("Command palette filter".into()),
+                accessibility_role: Some("searchbox".into()),
+                on_change: move |q: String| {
                     mutate_state(&s_input, version, |st| st.set_palette_query(q));
                 },
-                onsubmit: move |_| {
+                on_submit: move |_| {
                     mutate_state(&s_submit, version, |st| {
                         let _ = st.execute_palette_selected();
                     });
                 },
-                onkeydown: move |ev| {
-                    let data = ev.data();
-                    let k = data.key.clone();
-                    let mod_key = data.meta || data.ctrl;
-                    mutate_state(&s_key, version, |st| {
-                        let _ = dispatch_keydown(st, &k, mod_key);
-                    });
-                },
             }
+
+            Separator {}
 
             // Filtered Results
             if visible.is_empty() {
@@ -441,9 +452,13 @@ pub(crate) fn render_command_palette(
                                     }),
                                     view {
                                         style: "flex-direction: row; align-items: center; gap: 6px; flex: 1;",
-                                        view {
-                                            style: "height: 16px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 5px; background-color: {CONTROL_BG}; border-radius: 4px;",
-                                            text { style: "color: {accent_hex}; font-size: 9px;", "{item.category}" }
+                                        Badge {
+                                            label: item.category.to_string(),
+                                            variant: BadgeVariant::Neutral,
+                                            style: Some(format!(
+                                                "min-width: {}px; height: 16px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 3px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 0px; border-color: transparent;",
+                                                badge_min_w(item.category)
+                                            )),
                                         }
                                         text { style: "color: {fg}; font-size: 10px;", "{item.label}" }
                                     }

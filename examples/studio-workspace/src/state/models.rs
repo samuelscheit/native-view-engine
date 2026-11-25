@@ -372,6 +372,16 @@ pub struct SyncTelemetryState {
     pub compression_tenths: u16,
     /// Smoothed round-trip time in tenths of milliseconds (e.g. `14` => `"1.4ms"`).
     pub rtt_ms_tenths: u32,
+    /// Cumulative `NVC1` binary CRDT deltas transmitted by this peer.
+    pub crdt_deltas_sent: u64,
+    /// Cumulative `NVC1` binary CRDT deltas received and merged by this peer.
+    pub crdt_deltas_received: u64,
+    /// Total binary CRDT bytes (`NVC1` + `NVCD`) synced across peers.
+    pub crdt_bytes_synced: u64,
+    /// Whether the interactive CRDT mesh is currently partitioned.
+    pub crdt_partitioned: bool,
+    /// Pending remote peer edits queued while partitioned for catch-up on heal.
+    pub crdt_pending_remote_ops: u32,
 }
 
 impl Default for SyncTelemetryState {
@@ -382,6 +392,11 @@ impl Default for SyncTelemetryState {
             kbps_tenths: 38,
             compression_tenths: 64,
             rtt_ms_tenths: 14,
+            crdt_deltas_sent: 0,
+            crdt_deltas_received: 0,
+            crdt_bytes_synced: 0,
+            crdt_partitioned: false,
+            crdt_pending_remote_ops: 0,
         }
     }
 }

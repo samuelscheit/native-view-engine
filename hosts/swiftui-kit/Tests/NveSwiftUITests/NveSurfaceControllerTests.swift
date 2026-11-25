@@ -517,28 +517,25 @@ final class NveSurfaceControllerTests: XCTestCase {
         XCTAssertEqual(forwarded[1].name, "onCleanAck")
     }
 
-    func testFallbackToBinaryNveBinValueWhenDirectPointersAreNil() throws {
+    func testMissingDirectEntryPointsRejectWithoutLegacyFallback() {
         let (controller, state) = makeMountedController(
             surfaceId: 8,
             getInterface: mockFallbackOnlyInterface
         )
 
-        XCTAssertTrue(controller.setProps(["count": 42, "label": "bin"]))
+        XCTAssertFalse(controller.setProps(["count": 42, "label": "bin"]))
         XCTAssertTrue(state.setPropsDirectHistory.isEmpty)
-        XCTAssertEqual(state.setPropsHistory.count, 1)
-        try NveBinValueView.withParsed(state.setPropsHistory[0]) { view in
-            XCTAssertEqual(view.mapValue(forKey: "count")?.int64Value, 42)
-            XCTAssertEqual(view.mapValue(forKey: "label")?.stringValue, "bin")
-        }
+        XCTAssertTrue(state.setPropsHistory.isEmpty)
 
+        XCTAssertFalse(
+            controller.dispatchEvent(
+                NveEvent(surfaceId: 8, nodeId: 1, timestampUs: 100, kind: .press, payload: .point(x: 4, y: 8))
+            )
+        )
         controller.dispatchCommand(name: "reset", args: ["animated": true])
         XCTAssertTrue(state.dispatchedDirectEvents.isEmpty)
-        XCTAssertEqual(state.dispatchedEventBuffers.count, 1)
-        let decoded = try NveEventRingCodec.decodeStrict(state.dispatchedEventBuffers[0])
-        XCTAssertEqual(decoded.count, 1)
-        XCTAssertEqual(decoded[0].name, "reset")
-        let animated = try decoded[0].withBinValueView { $0.mapValue(forKey: "animated")?.boolValue }
-        XCTAssertEqual(animated, true)
+        XCTAssertTrue(state.dispatchedEventBuffers.isEmpty)
+        XCTAssertTrue(state.renderedFrameIds.isEmpty)
     }
 
     func testDispatchCommandDirectRenderFrameAndHotPatch() throws {
@@ -772,17 +769,13 @@ final class NveSurfaceControllerTests: XCTestCase {
         XCTAssertTrue(controller.setDirectProps(p2))
         XCTAssertEqual(state.setPropsDirectHistory.count, 4)
 
-        // Fallback vtable (set_props_direct == nil) still encodes NveDirectEncodable to binary NveBinValue.
-        let (fallbackCtrl, fallbackState) = makeMountedController(
+        // Vtable missing set_props_direct returns false without falling back to legacy set_props.
+        let (missingDirectCtrl, missingDirectState) = makeMountedController(
             surfaceId: 72,
             getInterface: mockFallbackOnlyInterface
         )
-        XCTAssertTrue(fallbackCtrl.setDirectProps(TypedProps(count: 55, label: "fallback")))
-        XCTAssertTrue(fallbackState.setPropsDirectHistory.isEmpty)
-        XCTAssertEqual(fallbackState.setPropsHistory.count, 1)
-        try NveBinValueView.withParsed(fallbackState.setPropsHistory[0]) { view in
-            XCTAssertEqual(view.mapValue(forKey: "count")?.int64Value, 55)
-            XCTAssertEqual(view.mapValue(forKey: "label")?.stringValue, "fallback")
-        }
+        XCTAssertFalse(missingDirectCtrl.setDirectProps(TypedProps(count: 55, label: "no-fallback")))
+        XCTAssertTrue(missingDirectState.setPropsDirectHistory.isEmpty)
+        XCTAssertTrue(missingDirectState.setPropsHistory.isEmpty)
     }
 }

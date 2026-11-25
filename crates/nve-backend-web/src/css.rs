@@ -94,6 +94,7 @@ pub struct RawStyleProps {
     pub text_align: Option<String>,
     pub box_shadow: Option<String>,
     pub overflow: Option<String>,
+    pub flex_wrap: Option<String>,
     pub object_fit: Option<&'static str>,
 }
 
@@ -153,6 +154,14 @@ impl RawStyleProps {
                 };
                 true
             }
+            "flex-wrap" | "flexWrap" | "flex_wrap" => {
+                self.flex_wrap = if matches!(value, RawPropValue::Null) {
+                    None
+                } else {
+                    raw_prop_trimmed_string(value)
+                };
+                true
+            }
             _ if is_image_fit_prop(key) => {
                 self.object_fit = if matches!(value, RawPropValue::Null) {
                     None
@@ -193,6 +202,13 @@ impl RawStyleProps {
             .filter(|v| !v.eq_ignore_ascii_case("visible"))
     }
 
+    #[inline]
+    pub fn effective_flex_wrap(&self) -> Option<&str> {
+        self.flex_wrap
+            .as_deref()
+            .filter(|v| !v.eq_ignore_ascii_case("nowrap"))
+    }
+
     /// Appends non-default raw style declarations into `out`.
     pub fn write_compact_into(&self, skip_typography: bool, out: &mut String) {
         if !skip_typography {
@@ -215,6 +231,11 @@ impl RawStyleProps {
         if let Some(ov) = self.effective_overflow() {
             out.push_str("overflow:");
             out.push_str(ov);
+            out.push(';');
+        }
+        if let Some(fw) = self.effective_flex_wrap() {
+            out.push_str("flex-wrap:");
+            out.push_str(fw);
             out.push(';');
         }
         if let Some(fit) = self.object_fit {

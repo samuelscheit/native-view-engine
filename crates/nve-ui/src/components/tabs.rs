@@ -9,11 +9,12 @@ use std::rc::Rc;
 
 use dioxus_core::{provide_context, try_consume_context, use_hook, EventHandler};
 use dioxus_core_macro::Props;
+use nve_abi::{ColorRgba, FlexAlign, FlexDirection, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
-use crate::style_buf::{StyleBuf, SurfaceStyle, TextStyle};
-use crate::theme::use_theme;
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::theme::use_theme_rgba;
 
 #[derive(Clone)]
 struct TabsContext {
@@ -96,22 +97,20 @@ pub fn TabsRoot(
         ctx.active.set(controlled.clone());
     }
 
-    let mut sb = StyleBuf::new();
-    sb.flex_direction(match orientation {
-        Orientation::Horizontal => "column",
-        Orientation::Vertical => "row",
-    })
-    .gap(8.0)
-    .width_pct(100.0);
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
-    let root_style = sb.finish();
+    let root_style = TypedStyleBuilder::new()
+        .flex_direction(match orientation {
+            Orientation::Horizontal => FlexDirection::Column,
+            Orientation::Vertical => FlexDirection::Row,
+        })
+        .gap(8.0)
+        .width_pct(100.0)
+        .finish();
 
     rsx! {
         view {
             test_id: test_id,
-            style: "{root_style}",
+            nve_style: root_style,
+            style: style,
             {children}
         }
     }
@@ -125,37 +124,35 @@ pub fn TabList(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let orientation = try_consume_context::<TabsContext>()
         .map(|c| c.orientation)
         .unwrap_or(Orientation::Horizontal);
 
-    let mut sb = StyleBuf::new();
-    sb.flex_direction(match orientation {
-        Orientation::Horizontal => "row",
-        Orientation::Vertical => "column",
-    })
-    .gap(theme.spacing.xs)
-    .padding(theme.spacing.xs)
-    .surface(SurfaceStyle {
-        background: theme.palette.surface_subtle.as_ref(),
-        border_width: 1.0,
-        border_color: theme.palette.border.as_ref(),
-        border_radius: theme.radii.md,
-        opacity: 1.0,
-        box_shadow: "none",
-    });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
-    let list_style = sb.finish();
+    let list_style = TypedStyleBuilder::new()
+        .flex_direction(match orientation {
+            Orientation::Horizontal => FlexDirection::Row,
+            Orientation::Vertical => FlexDirection::Column,
+        })
+        .gap(theme.spacing.xs)
+        .padding(theme.spacing.xs)
+        .surface(TypedSurfaceStyle {
+            background: colors.surface_subtle,
+            border_width: 1.0,
+            border_color: colors.border,
+            border_radius: theme.radii.md,
+            opacity: 1.0,
+            box_shadow: "none",
+        })
+        .finish();
 
     rsx! {
         view {
             test_id: test_id,
             accessibility_role: "tablist",
             accessibility_label: accessibility_label,
-            style: "{list_style}",
+            nve_style: list_style,
+            style: style,
             {children}
         }
     }
@@ -171,7 +168,7 @@ pub fn TabTrigger(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut focused = use_signal(|| false);
     let ctx = try_consume_context::<TabsContext>();
 
@@ -195,60 +192,52 @@ pub fn TabTrigger(
     let (bg, fg, bw, bc) = if focused() && !disabled {
         (
             if is_selected {
-                theme.palette.surface.as_ref()
+                colors.surface
             } else {
-                "transparent"
+                ColorRgba::TRANSPARENT
             },
             if is_selected {
-                theme.palette.accent.as_ref()
+                colors.accent
             } else {
-                theme.palette.text_primary.as_ref()
+                colors.text_primary
             },
             2.0,
-            theme.palette.border_focus.as_ref(),
+            colors.border_focus,
         )
     } else if is_selected {
-        (
-            theme.palette.surface.as_ref(),
-            theme.palette.accent.as_ref(),
-            1.0,
-            theme.palette.border.as_ref(),
-        )
+        (colors.surface, colors.accent, 1.0, colors.border)
     } else {
         (
-            "transparent",
-            theme.palette.text_secondary.as_ref(),
+            ColorRgba::TRANSPARENT,
+            colors.text_secondary,
             0.0,
-            "transparent",
+            ColorRgba::TRANSPARENT,
         )
     };
 
-    let mut sb = StyleBuf::new();
-    sb.padding_xy(theme.spacing.md, theme.spacing.sm)
-        .justify_content("center")
-        .align_items("center")
-        .surface(SurfaceStyle {
+    let trigger_style = TypedStyleBuilder::new()
+        .padding_xy(theme.spacing.md, theme.spacing.sm)
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
+        .surface(TypedSurfaceStyle {
             background: bg,
             border_width: bw,
             border_color: bc,
             border_radius: theme.radii.sm,
             opacity: if disabled { 0.45 } else { 1.0 },
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
-    let trigger_style = sb.finish();
+        })
+        .finish();
 
-    let mut ts = StyleBuf::new();
-    ts.text_style(TextStyle {
-        color: fg,
-        font_size: theme.typography.sm,
-        font_weight: if is_selected { "600" } else { "500" },
-        text_align: "center",
-        opacity: 1.0,
-    });
-    let text_style = ts.finish();
+    let text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: fg,
+            font_size: theme.typography.sm,
+            font_weight: if is_selected { "600" } else { "500" },
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
     let aria_selected = if is_selected { "true" } else { "false" };
     let tab_index = if is_selected && !disabled { 0 } else { -1 };
@@ -266,7 +255,8 @@ pub fn TabTrigger(
             aria_controls: "{controls_id}",
             disabled: disabled,
             tab_index: tab_index,
-            style: "{trigger_style}",
+            nve_style: trigger_style,
+            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -285,7 +275,7 @@ pub fn TabTrigger(
                 }
             },
             text {
-                style: "{text_style}",
+                nve_style: text_style,
                 {children}
             }
         }
@@ -300,7 +290,7 @@ pub fn TabPanel(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let ctx = try_consume_context::<TabsContext>();
     let is_active = ctx
         .as_ref()
@@ -320,22 +310,19 @@ pub fn TabPanel(
             .unwrap_or_else(|| format!("tabs-panel-{value}"))
     });
 
-    let mut sb = StyleBuf::new();
-    sb.flex_direction("column")
+    let panel_style = TypedStyleBuilder::new()
+        .flex_col()
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
-        .surface(SurfaceStyle {
-            background: theme.palette.surface.as_ref(),
+        .surface(TypedSurfaceStyle {
+            background: colors.surface,
             border_width: 1.0,
-            border_color: theme.palette.border.as_ref(),
+            border_color: colors.border,
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
-    let panel_style = sb.finish();
+        })
+        .finish();
 
     rsx! {
         view {
@@ -343,7 +330,8 @@ pub fn TabPanel(
             accessibility_role: "tabpanel",
             aria_labelledby: "{labelled_by}",
             tab_index: 0,
-            style: "{panel_style}",
+            nve_style: panel_style,
+            style: style,
             {children}
         }
     }

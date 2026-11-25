@@ -27,13 +27,13 @@
 
 mod codec;
 mod registry;
+mod signal_codec;
 #[cfg(test)]
 mod tests;
 
-pub use codec::{
-    BinValueSlot, SignalArchive, SignalCodec, SignalDelta, SignalDeltaOp, SignalTableSnapshot,
-};
+pub use codec::{SignalArchive, SignalDelta, SignalDeltaOp, SignalTableSnapshot};
 pub use registry::{HydrationReport, SignalRegistry};
+pub use signal_codec::{BinValueSlot, SignalCodec};
 
 use std::fmt;
 

@@ -1,15 +1,19 @@
-//! Messaging channel views (`# engineering` & `# design-sync`) with reaction buttons,
+//! Messaging channel views (`# engineering` & `# design-sync`) built on shared `nve-ui`
+//! components (`Card`, `Badge`, `Button`, `Input`, `Separator`) with reaction buttons,
 //! real `TextInput` composer, and quick-reply chips.
 
 use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
+use nve_ui::{
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Input, Separator,
+};
 
 use crate::assets::avatar_for_author;
 use crate::state::{ChannelKind, ChatMessage, WorkspaceState};
 use crate::theme::{
-    card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CARD_ALT_BG, CARD_BG,
-    PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, XRAY_ROW,
+    badge_min_w, card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CARD_BG,
+    PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY, XRAY_ROW,
 };
 use crate::ui::mutate_state;
 
@@ -32,6 +36,15 @@ pub(crate) fn render_channel_view(
     let s_chat_submit = Arc::clone(store);
     let s_chat_send = Arc::clone(store);
 
+    let composer_card_style = format!(
+        "width: 100%; flex-shrink: 0; padding: 8px; gap: 6px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+        m.button_radius
+    );
+    let send_btn_style = format!(
+        "width: 54px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; border-radius: {}px;",
+        m.button_radius
+    );
+
     rsx! {
         scrollview {
             style: "width: 100%; flex: 1; flex-direction: column; gap: {m.list_gap}px; border-width: {row_bw}px; border-color: {row_bc};",
@@ -42,16 +55,27 @@ pub(crate) fn render_channel_view(
                     let avatar_tid = format!("msg-avatar-{mid}");
                     let avatar_src = avatar_for_author(&msg.author);
                     let card_style = format!(
-                        "width: 100%; flex-shrink: 0; flex-direction: column; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+                        "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
                         m.card_pad, m.card_gap, m.card_radius
+                    );
+                    let author_badge_style = format!(
+                        "min-width: {}px; height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {}; border-radius: {}px; border-width: 0px; border-color: transparent;",
+                        badge_min_w(&msg.author), msg.badge_bg, m.pill_radius
                     );
                     let react_lbl = format!("+1  {}", msg.reactions);
                     let react_bc = if xray { XRAY_ROW } else { accent_hex };
+                    let react_btn_style = format!(
+                        "width: 60px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {react_bc};",
+                        m.pill_radius
+                    );
                     let s_react = Arc::clone(store);
                     rsx! {
-                        view {
+                        Card {
                             key: "msg-{mid}",
-                            style: "{card_style}",
+                            variant: CardVariant::Elevated,
+                            padding: Some(m.card_pad as f32),
+                            gap: Some(m.card_gap as f32),
+                            style: Some(card_style),
                             view {
                                 style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; border-width: {row_bw}px; border-color: {row_bc};",
                                 view {
@@ -64,26 +88,23 @@ pub(crate) fn render_channel_view(
                                         accessibility_label: "Author avatar {msg.author}",
                                         style: "width: 18px; height: 18px; flex-shrink: 0; border-radius: 9px; border-width: 1px; border-color: {BORDER_DEFAULT};",
                                     }
-                                    view {
-                                        style: "height: 20px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 7px; background-color: {msg.badge_bg}; border-radius: {m.pill_radius}px;",
-                                        text {
-                                            style: "color: {msg.badge_fg}; font-size: 10px;",
-                                            "{msg.author}"
-                                        }
+                                    Badge {
+                                        label: msg.author.clone(),
+                                        variant: BadgeVariant::Neutral,
+                                        style: Some(author_badge_style),
                                     }
                                     text {
                                         style: "color: {TEXT_MUTED}; font-size: 10px;",
                                         "{msg.timestamp}"
                                     }
                                 }
-                                pressable {
-                                    test_id: "{react_tid}",
-                                    style: "width: 58px; height: 24px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_tint}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {react_bc};",
-                                    onpress: move |_| mutate_state(&s_react, version, |st| st.react_message(ch, mid)),
-                                    text {
-                                        style: "color: {accent_hex}; font-size: 11px;",
-                                        "{react_lbl}"
-                                    }
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    size: ButtonSize::Sm,
+                                    test_id: Some(react_tid),
+                                    style: Some(react_btn_style),
+                                    on_press: move |_| mutate_state(&s_react, version, |st| st.react_message(ch, mid)),
+                                    "{react_lbl}"
                                 }
                             }
                             text {
@@ -96,37 +117,43 @@ pub(crate) fn render_channel_view(
             }
         }
 
-        // Live TextInput Chat Composer + Quick-Reply Chips
-        view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 9px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+        // Live TextInput Chat Composer + Quick-Reply Chips (`nve-ui` Card + Input + Button + Separator)
+        Card {
+            variant: CardVariant::Outlined,
+            padding: Some(8.0),
+            gap: Some(6.0),
+            style: Some(composer_card_style),
             view {
                 style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; align-items: center;",
-                textinput {
-                    test_id: "chat-composer-input",
-                    placeholder: "{composer_placeholder}",
-                    value: "{channel_draft}",
-                    multiline: false,
-                    accessibility_label: "Channel message input",
-                    style: "flex: 1; height: 28px; padding-horizontal: 8px; background-color: {CARD_ALT_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                    onchange: move |ev| {
-                        let txt = ev.data().value.clone();
-                        mutate_state(&s_chat_input, version, |st| st.set_channel_draft(ch, txt));
-                    },
-                    onsubmit: move |_| {
-                        mutate_state(&s_chat_submit, version, |st| {
-                            let _ = st.submit_channel_draft(ch);
-                        });
-                    },
+                view {
+                    style: "flex: 1;",
+                    Input {
+                        test_id: Some("chat-composer-input".into()),
+                        placeholder: Some(composer_placeholder),
+                        value: channel_draft.to_string(),
+                        accessibility_label: Some("Channel message input".into()),
+                        on_change: move |txt: String| {
+                            mutate_state(&s_chat_input, version, |st| st.set_channel_draft(ch, txt));
+                        },
+                        on_submit: move |_| {
+                            mutate_state(&s_chat_submit, version, |st| {
+                                let _ = st.submit_channel_draft(ch);
+                            });
+                        },
+                    }
                 }
-                pressable {
-                    test_id: "chat-composer-send",
-                    style: "width: 48px; height: 28px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_hex}; border-radius: {m.button_radius}px;",
-                    onpress: move |_| mutate_state(&s_chat_send, version, |st| {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    size: ButtonSize::Sm,
+                    test_id: Some("chat-composer-send".into()),
+                    style: Some(send_btn_style),
+                    on_press: move |_| mutate_state(&s_chat_send, version, |st| {
                         let _ = st.submit_channel_draft(ch);
                     }),
-                    text { style: "color: #0b1120; font-size: 10px;", "Send" }
+                    "Send"
                 }
             }
+            Separator {}
             text {
                 style: "color: {TEXT_MUTED}; font-size: 10px;",
                 "QUICK REPLY"
@@ -141,20 +168,19 @@ pub(crate) fn render_channel_view(
                     {
                         let (bw, bc) = control_border(xray, false, accent_hex);
                         let chip_style = format!(
-                            "flex: 1; height: 26px; justify-content: center; align-items: center; background-color: {CARD_BG}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
+                            "flex: 1; height: 26px; min-height: 26px; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {CARD_BG}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
                             m.button_radius
                         );
                         let s_rep = Arc::clone(store);
                         rsx! {
-                            pressable {
+                            Button {
                                 key: "{tid}",
-                                test_id: "{tid}",
-                                style: "{chip_style}",
-                                onpress: move |_| mutate_state(&s_rep, version, |st| st.send_quick_reply(ch, reply_body)),
-                                text {
-                                    style: "color: {TEXT_PRIMARY}; font-size: 10px;",
-                                    "{chip_label}"
-                                }
+                                variant: ButtonVariant::Secondary,
+                                size: ButtonSize::Sm,
+                                test_id: Some(tid.into()),
+                                style: Some(chip_style),
+                                on_press: move |_| mutate_state(&s_rep, version, |st| st.send_quick_reply(ch, reply_body)),
+                                "{chip_label}"
                             }
                         }
                     }

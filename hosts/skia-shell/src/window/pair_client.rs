@@ -392,13 +392,13 @@ impl DesktopApp for PairedRemoteApp {
         self.frames_received.load(Ordering::Relaxed).max(1)
     }
 
-    fn render(&mut self, _frame_id: FrameId) -> Vec<u8> {
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         self.drain_incoming_frames();
         if self.has_unconsumed_frame {
             self.has_unconsumed_frame = false;
-            self.latest_frame.clone()
+            &self.latest_frame
         } else {
-            Vec::new()
+            &[]
         }
     }
 

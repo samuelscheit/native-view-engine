@@ -14,6 +14,7 @@ mod surface;
 #[cfg(test)]
 mod tests;
 pub mod traits;
+pub mod typed_style;
 mod writer;
 
 pub use elements::{
@@ -44,6 +45,9 @@ pub use traits::{
     TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitResolver,
     TraitScope, TraitStore, TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
     ViewportChangeMask,
+};
+pub use typed_style::{
+    parse_flex_align, parse_flex_direction, parse_flex_justify, TypedStyle, NVE_TYPED_STYLE_ATTR,
 };
 pub use writer::NveMutationWriter;
 
@@ -82,6 +86,7 @@ pub mod prelude {
         TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitScope, TraitStore,
         TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
     };
+    pub use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
     pub use crate::use_signal;
     pub use crate::{
         BlurEvent, BlurEventData, CustomEvent, CustomEventData, FocusEvent, FocusEventData,

@@ -38,8 +38,14 @@ python3 -m http.server 8080 -d hosts/web-shell
 
 Open `http://127.0.0.1:8080` (studio) or `?app=counter` in any modern browser; each loads its own
 production bundle. `index.html` loads `pkg/dev` instead for `?dev` / `?ws=<url>` (hot reload) and
-`?pair=...` (thin client), or any bundle via `?bundle=<studio|counter|dev>`. For live hot reload run
-`cargo run -p nve-cli -- dev` in another terminal (serves `ws://127.0.0.1:8089`) and open `?dev`.
+`?pair=...` (thin client), or any bundle via `?bundle=<studio|counter|dev>`.
+
+For live hot reload just run `cargo run -p nve-cli -- dev` and open the printed
+`http://127.0.0.1:8088/` (`--web-port`). `nve dev` serves `hosts/web-shell` itself, rebuilds
+`pkg/dev` on save, and redirects a bare `/` or `/?app=counter` to the same URL plus
+`ws=ws://<host>:<--port>`, so the dev bundle connects to the daemon with no flags to remember
+(LAN clients get the host they used). Explicit `ws`, `dev`, `pair` or `bundle` parameters are
+never rewritten.
 
 Release bundles are checked against per-bundle brotli budgets (wasm + JS, override with
 `WASM_BROTLI_BUDGET_{STUDIO,COUNTER,DEV}`); `build.sh` fails when one is exceeded.

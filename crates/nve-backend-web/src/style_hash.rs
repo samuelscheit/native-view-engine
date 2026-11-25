@@ -188,6 +188,7 @@ pub fn hash_structural_style(
     h = fnv1a_opt_str(h, if leaf_text { None } else { raw.effective_text_align() });
     h = fnv1a_opt_str(h, raw.effective_box_shadow());
     h = fnv1a_opt_str(h, raw.effective_overflow());
+    h = fnv1a_opt_str(h, raw.effective_flex_wrap());
     h = fnv1a_opt_str(h, raw.object_fit);
     h
 }

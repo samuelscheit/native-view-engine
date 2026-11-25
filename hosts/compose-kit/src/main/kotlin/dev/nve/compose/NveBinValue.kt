@@ -1,6 +1,5 @@
 package dev.nve.compose
 
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.CharacterCodingException
@@ -78,9 +77,9 @@ sealed interface NveBinValue {
     data class Map(val entries: List<Pair<String, NveBinValue>>) : NveBinValue
 
     fun encode(): ByteArray {
-        val out = ByteArrayOutputStream(64)
-        encodeDepth(this, out, 0)
-        return out.toByteArray()
+        val writer = NveBinWriter(64)
+        writer.writeValue(this)
+        return writer.toByteArray()
     }
 
     companion object {
@@ -109,81 +108,10 @@ sealed interface NveBinValue {
         fun fromMap(map: kotlin.collections.Map<String, Any?>): Map =
             Map(map.entries.map { (k, v) -> k to fromAny(v) })
 
-        fun encodeMap(map: kotlin.collections.Map<String, Any?>): ByteArray =
-            fromMap(map).encode()
-
-        private fun encodeDepth(value: NveBinValue, out: ByteArrayOutputStream, depth: Int) {
-            when (value) {
-                Null -> out.write(NveBinValueTag.NULL.wireCode.toInt())
-                is Bool -> {
-                    out.write(NveBinValueTag.BOOL.wireCode.toInt())
-                    out.write(if (value.value) 1 else 0)
-                }
-                is I64 -> {
-                    out.write(NveBinValueTag.I64.wireCode.toInt())
-                    writeI64Le(out, value.value)
-                }
-                is F64 -> {
-                    out.write(NveBinValueTag.F64.wireCode.toInt())
-                    writeI64Le(out, value.value.toRawBits())
-                }
-                is Str -> {
-                    val utf8 = value.value.toByteArray(StandardCharsets.UTF_8)
-                    out.write(NveBinValueTag.STR.wireCode.toInt())
-                    writeI32Le(out, utf8.size)
-                    out.write(utf8)
-                }
-                is Bytes -> {
-                    out.write(NveBinValueTag.BYTES.wireCode.toInt())
-                    writeI32Le(out, value.value.size)
-                    out.write(value.value)
-                }
-                is Array -> {
-                    if (depth >= NVE_BIN_VALUE_MAX_DEPTH) throw NveBinValueException.MaxDepthExceeded()
-                    val body = ByteArrayOutputStream(32)
-                    writeI32Le(body, value.elements.size)
-                    for (elem in value.elements) {
-                        encodeDepth(elem, body, depth + 1)
-                    }
-                    val bodyBytes = body.toByteArray()
-                    out.write(NveBinValueTag.ARRAY.wireCode.toInt())
-                    writeI32Le(out, bodyBytes.size)
-                    out.write(bodyBytes)
-                }
-                is Map -> {
-                    if (depth >= NVE_BIN_VALUE_MAX_DEPTH) throw NveBinValueException.MaxDepthExceeded()
-                    val body = ByteArrayOutputStream(64)
-                    writeI32Le(body, value.entries.size)
-                    for ((k, v) in value.entries) {
-                        val keyBytes = k.toByteArray(StandardCharsets.UTF_8)
-                        writeI32Le(body, keyBytes.size)
-                        body.write(keyBytes)
-                        encodeDepth(v, body, depth + 1)
-                    }
-                    val bodyBytes = body.toByteArray()
-                    out.write(NveBinValueTag.MAP.wireCode.toInt())
-                    writeI32Le(out, bodyBytes.size)
-                    out.write(bodyBytes)
-                }
-            }
-        }
-
-        private fun writeI32Le(out: ByteArrayOutputStream, v: Int) {
-            out.write(v and 0xFF)
-            out.write((v ushr 8) and 0xFF)
-            out.write((v ushr 16) and 0xFF)
-            out.write((v ushr 24) and 0xFF)
-        }
-
-        private fun writeI64Le(out: ByteArrayOutputStream, v: Long) {
-            out.write((v and 0xFF).toInt())
-            out.write(((v ushr 8) and 0xFF).toInt())
-            out.write(((v ushr 16) and 0xFF).toInt())
-            out.write(((v ushr 24) and 0xFF).toInt())
-            out.write(((v ushr 32) and 0xFF).toInt())
-            out.write(((v ushr 40) and 0xFF).toInt())
-            out.write(((v ushr 48) and 0xFF).toInt())
-            out.write(((v ushr 56) and 0xFF).toInt())
+        fun encodeMap(map: kotlin.collections.Map<String, Any?>): ByteArray {
+            val writer = NveBinWriter(128)
+            writer.writeMap(map)
+            return writer.toByteArray()
         }
     }
 }

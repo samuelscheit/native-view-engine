@@ -516,7 +516,7 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
     let f1 = inst.render(1);
     assert!(!f1.is_empty());
-    host.submit_frame(&f1).unwrap();
+    host.submit_frame(f1).unwrap();
     assert!(host.render_ascii_tree().contains("AETHER"));
     assert!(host.render_ascii_tree().contains("AET-101"));
 
@@ -540,7 +540,7 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
         }]);
         assert!(inst.dispatch_events(&ev));
         let frame = inst.render(fid);
-        host.submit_frame(&frame).unwrap();
+        host.submit_frame(frame).unwrap();
     };
 
     // Mutate state before Tier-2 hot-swap: create task, switch accent to Violet, enable X-Ray.
@@ -559,7 +559,7 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     let mut host2 = HeadlessBackend::new();
     host2.set_viewport(1, vp);
     let f5 = inst.render(5);
-    host2.submit_frame(&f5).unwrap();
+    host2.submit_frame(f5).unwrap();
     let tree2 = host2.render_ascii_tree();
     assert!(tree2.contains("AET-105"), "lost new task after reload:\n{tree2}");
     assert!(

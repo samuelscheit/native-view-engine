@@ -7,13 +7,16 @@
 //! - `nve dev`     — starts the 2-tier hot-reload daemon (`--skia` desktop preview, `--pair` live `NVD1` device pairing).
 //! - `nve pair`    — streams live `NVD1` binary deltas over UDP + TCP/WS and ingests remote `InputEvents`.
 //! - `nve codegen` — bi-directional RN <-> NVE + Flutter/SwiftUI/Compose/Web component code generation.
+//! - `nve docs`    — validates, statically builds (SSR + WASM), and serves `nve-docs` documentation sites.
 
 mod bench;
 mod codegen;
 mod dev;
+mod docs;
 mod doctor;
 mod pair;
 mod rsx_diff;
+mod static_http;
 
 use std::path::PathBuf;
 
@@ -21,6 +24,7 @@ use clap::{Parser, Subcommand};
 
 use crate::codegen::CodegenAction;
 use crate::dev::DevOptions;
+use crate::docs::DocsAction;
 use crate::pair::PairOptions;
 
 #[derive(Parser)]
@@ -62,10 +66,13 @@ pub(crate) enum Commands {
         /// WebSocket port for Tier-1/Tier-2 hot-reload clients.
         #[arg(long, default_value_t = 8089)]
         port: u16,
-        /// Rebuild the Web WASM dev bundle (`hosts/web-shell/build.sh --dev dev`) on save;
-        /// open `hosts/web-shell/index.html?dev` to connect.
+        /// Rebuild the Web WASM dev bundle (`hosts/web-shell/build.sh --dev dev`) on save and
+        /// serve `hosts/web-shell` on `--web-port` (bare URLs open the dev bundle wired to `--port`).
         #[arg(long, default_value_t = false)]
         web: bool,
+        /// HTTP port serving `hosts/web-shell` while the Web WASM dev bundle is rebuilt.
+        #[arg(long, default_value_t = 8088)]
+        web_port: u16,
         /// Skip rebuilding the Web WASM dev bundle (`hosts/web-shell/build.sh --dev dev`) on save.
         #[arg(long, default_value_t = false)]
         no_web: bool,
@@ -120,6 +127,11 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: CodegenAction,
     },
+    /// Validate, statically build (SSR + WASM), and serve NVE documentation sites.
+    Docs {
+        #[command(subcommand)]
+        action: DocsAction,
+    },
 }
 
 fn main() {
@@ -138,6 +150,7 @@ fn main() {
             host,
             port,
             web,
+            web_port,
             no_web,
             skia,
             pair,
@@ -150,6 +163,7 @@ fn main() {
             host,
             port,
             web,
+            web_port,
             no_web,
             skia,
             pair,
@@ -179,6 +193,7 @@ fn main() {
             fps,
         }),
         Commands::Codegen { action } => codegen::cmd_codegen(action),
+        Commands::Docs { action } => docs::cmd_docs(action),
     }
 }
 
@@ -262,6 +277,7 @@ mod tests {
                 host,
                 port,
                 web,
+                web_port,
                 no_web,
                 skia,
                 pair,
@@ -274,6 +290,7 @@ mod tests {
                 assert_eq!(host, "0.0.0.0");
                 assert_eq!(port, 9001);
                 assert!(!web);
+                assert_eq!(web_port, 8088);
                 assert!(!no_web);
                 assert!(skia);
                 assert!(pair);
@@ -385,6 +402,54 @@ mod tests {
             }
             _ => panic!("expected Codegen Hybrid defaults"),
         }
+
+        match Cli::try_parse_from([
+            "nve",
+            "docs",
+            "build",
+            "--content",
+            "docs/content",
+            "--out",
+            "/tmp/docs-out",
+            "--base-path",
+            "/native-view-engine",
+            "--skip-wasm",
+        ])
+        .unwrap()
+        .command
+        {
+            Commands::Docs {
+                action:
+                    DocsAction::Build {
+                        content,
+                        out,
+                        base_path,
+                        skip_wasm,
+                        ..
+                    },
+            } => {
+                assert_eq!(content, PathBuf::from("docs/content"));
+                assert_eq!(out, PathBuf::from("/tmp/docs-out"));
+                assert_eq!(base_path, "/native-view-engine");
+                assert!(skip_wasm);
+            }
+            _ => panic!("expected Docs Build"),
+        }
+
+        assert!(matches!(
+            Cli::try_parse_from(["nve", "docs", "check"]).unwrap().command,
+            Commands::Docs {
+                action: DocsAction::Check { .. }
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["nve", "docs", "dev", "--port", "4173"])
+                .unwrap()
+                .command,
+            Commands::Docs {
+                action: DocsAction::Dev { port: 4173, .. }
+            }
+        ));
 
         // Invalid invocations must be rejected cleanly.
         assert!(Cli::try_parse_from(["nve"]).is_err());

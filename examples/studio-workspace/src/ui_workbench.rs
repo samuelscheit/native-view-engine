@@ -1,25 +1,39 @@
-//! Multi-Viewport Meta Workbench view (`ActiveView::Workbench`).
+//! Multi-Viewport Meta Workbench view (`ActiveView::Workbench`) built on shared `nve-ui`
+//! components (`Card`, `TabsRoot`, `TabList`, `TabTrigger`, `Button`, `Badge`).
 //!
 //! Renders a synchronized live Multi-Viewport preview grid (**Desktop `1280×800`**,
 //! **Tablet `820×1180`**, **Mobile `390×844`**) reflecting live `WorkspaceState` design tokens,
-//! layout engine, and issue/doc counts, alongside 9 live **Connected Host Surfaces** cards
-//! displaying real-time `SyncTelemetryState` throughput, compression, and RTT metrics.
+//! layout engine, and issue/doc counts, alongside 9 live **Connected Host Surfaces** cards.
 
 use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
+use nve_ui::{
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, TabList, TabTrigger,
+    TabsRoot,
+};
 
 use crate::state::{
     SyncTelemetryState, WorkbenchPreset, WorkspaceSnapshot, WorkspaceState, HOST_SURFACES,
 };
 use crate::theme::{
-    card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CANVAS_BG, CARD_ALT_BG,
-    CARD_BG, CONTROL_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    badge_min_w, card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CANVAS_BG,
+    CARD_ALT_BG, CARD_BG, CONTROL_BG, PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY,
+    TEXT_SECONDARY,
 };
 use crate::ui::mutate_state;
 
 fn format_tenths_ms(tenths: u32) -> String {
     format!("{}.{}ms", tenths / 10, tenths % 10)
+}
+
+fn parse_preset(val: &str) -> WorkbenchPreset {
+    match val {
+        "desktop" => WorkbenchPreset::Desktop,
+        "tablet" => WorkbenchPreset::Tablet,
+        "mobile" => WorkbenchPreset::Mobile,
+        _ => WorkbenchPreset::All,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,19 +75,31 @@ fn render_preview_frame(
         current.studio.radius.px(),
         engine_lbl
     );
+    let frame_card_style = format!(
+        "flex: 1; padding: {inner_pad}px; gap: 5px; background-color: {PANEL_BG}; border-radius: {preview_radius}px; border-width: {card_bw}px; border-color: {card_bc};"
+    );
+    let dims_badge_style = format!(
+        "min-width: {}px; height: 16px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 3px; padding-vertical: 0px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
+        badge_min_w(dims),
+        m.pill_radius
+    );
 
     rsx! {
-        view {
-            test_id: "{test_id}",
-            style: "flex: 1; flex-direction: column; padding: {inner_pad}px; gap: 5px; background-color: {PANEL_BG}; border-radius: {preview_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+        Card {
+            variant: CardVariant::Outlined,
+            test_id: Some(test_id.into()),
+            padding: Some(inner_pad as f32),
+            gap: Some(5.0),
+            style: Some(frame_card_style),
 
             if show_chrome {
                 view {
                     style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center;",
                     text { style: "color: {TEXT_PRIMARY}; font-size: 10px;", "{title}" }
-                    view {
-                        style: "height: 16px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 5px; background-color: {accent_tint}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {accent_hex};",
-                        text { style: "color: {accent_hex}; font-size: 9px;", "{dims}" }
+                    Badge {
+                        label: dims.to_string(),
+                        variant: BadgeVariant::Neutral,
+                        style: Some(dims_badge_style),
                     }
                 }
             }
@@ -81,14 +107,12 @@ fn render_preview_frame(
             // Synchronized Miniature Live Viewport Surface
             view {
                 style: "width: 100%; flex-shrink: 0; flex-direction: column; padding: 6px; gap: 5px; background-color: {CANVAS_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
-                // Mini Header
                 view {
                     style: "width: 100%; height: 18px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 5px; background-color: {PANEL_BG}; border-radius: 4px;",
                     text { style: "color: {accent_hex}; font-size: 9px;", "AETHER" }
                     text { style: "color: {TEXT_MUTED}; font-size: 8px;", "{layout_tag}" }
                 }
 
-                // Responsive Mini Body mirroring 3-col Desktop / 2-col Tablet / 1-col Mobile
                 view {
                     style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 4px;",
                     if columns >= 2 {
@@ -137,11 +161,6 @@ pub(crate) fn render_workbench_view(
 
     let (chr_bw, chr_bc) = control_border(xray, show_chrome, accent_hex);
     let chr_bg = if show_chrome { accent_tint } else { CONTROL_BG };
-    let chr_fg = if show_chrome {
-        accent_hex
-    } else {
-        TEXT_SECONDARY
-    };
 
     let live_tokens_summary = format!(
         "{} | {}px | {} | {} | {} issues | {} docs",
@@ -162,46 +181,88 @@ pub(crate) fn render_workbench_view(
         sync_telemetry.format_rtt()
     );
 
+    let s_preset = Arc::clone(store);
     let s_chrome = Arc::clone(store);
     let s_sync = Arc::clone(store);
     let viewport_grid_dir = if is_mobile { "column" } else { "row" };
     let host_chunk_size = if is_mobile { 1 } else { 3 };
 
+    let controls_card_style = format!(
+        "width: 100%; flex-shrink: 0; padding: 8px; gap: 5px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+        m.button_radius
+    );
+    let chrome_btn_style = format!(
+        "width: 56px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {chr_bg}; border-radius: {}px; border-width: {chr_bw}px; border-color: {chr_bc};",
+        m.pill_radius
+    );
+    let banner_card_style = format!(
+        "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; gap: 6px; padding: 7px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+        m.button_radius
+    );
+    let sync_btn_style = format!(
+        "min-width: {}px; height: 22px; min-height: 22px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
+        badge_min_w(sync_telemetry.transport.label()),
+        m.pill_radius
+    );
+
     rsx! {
-        // 1. Preset Toggles + Synchronized Live Token Strip
-        view {
-            test_id: "wb-controls",
-            style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; padding: 8px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+        // 1. Preset Tabs + Synchronized Live Token Strip (`nve-ui` Card + Tabs + Button)
+        Card {
+            variant: CardVariant::Outlined,
+            test_id: Some("wb-controls".into()),
+            padding: Some(8.0),
+            gap: Some(5.0),
+            style: Some(controls_card_style),
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 4px; border-width: {row_bw}px; border-color: {row_bc};",
-                for &(p, tid, lbl) in [
-                    (WorkbenchPreset::All, "wb-preset-all", "All (3)"),
-                    (WorkbenchPreset::Desktop, "wb-preset-desktop", "Desktop"),
-                    (WorkbenchPreset::Tablet, "wb-preset-tablet", "Tablet"),
-                    (WorkbenchPreset::Mobile, "wb-preset-mobile", "Mobile"),
-                ].iter() {
-                    {
-                        let is_sel = preset == p;
-                        let (bw, bc) = control_border(xray, is_sel, accent_hex);
-                        let bg = if is_sel { accent_tint } else { CONTROL_BG };
-                        let fg = if is_sel { accent_hex } else { TEXT_SECONDARY };
-                        let s_p = Arc::clone(store);
-                        rsx! {
-                            pressable {
-                                key: "{tid}",
-                                test_id: "{tid}",
-                                style: "flex: 1; height: 24px; justify-content: center; align-items: center; background-color: {bg}; border-radius: {m.pill_radius}px; border-width: {bw}px; border-color: {bc};",
-                                onpress: move |_| mutate_state(&s_p, version, |st| st.set_workbench_preset(p)),
-                                text { style: "color: {fg}; font-size: 9px;", "{lbl}" }
+                style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 4px; align-items: center; border-width: {row_bw}px; border-color: {row_bc};",
+                view {
+                    style: "flex: 1;",
+                    TabsRoot {
+                        value: Some(preset.as_str().to_string()),
+                        id_prefix: Some("wb-preset".into()),
+                        style: Some("width: 100%; gap: 0px;".into()),
+                        on_change: move |next: String| {
+                            let p = parse_preset(&next);
+                            mutate_state(&s_preset, version, |st| st.set_workbench_preset(p));
+                        },
+                        TabList {
+                            accessibility_label: Some("Workbench viewport preset".into()),
+                            style: Some("width: 100%; flex-direction: row; gap: 4px; padding: 0px; background-color: transparent; border-width: 0px; border-color: transparent; border-radius: 0px;".into()),
+                            for &(p, tid, lbl) in [
+                                (WorkbenchPreset::All, "wb-preset-all", "All (3)"),
+                                (WorkbenchPreset::Desktop, "wb-preset-desktop", "Desktop"),
+                                (WorkbenchPreset::Tablet, "wb-preset-tablet", "Tablet"),
+                                (WorkbenchPreset::Mobile, "wb-preset-mobile", "Mobile"),
+                            ].iter() {
+                                {
+                                    let is_sel = preset == p;
+                                    let (bw, bc) = control_border(xray, is_sel, accent_hex);
+                                    let bg = if is_sel { accent_tint } else { CONTROL_BG };
+                                    let trig_style = format!(
+                                        "flex: 1; height: 24px; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
+                                        m.pill_radius
+                                    );
+                                    rsx! {
+                                        TabTrigger {
+                                            key: "{tid}",
+                                            value: p.as_str().to_string(),
+                                            test_id: Some(tid.into()),
+                                            style: Some(trig_style),
+                                            "{lbl}"
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                pressable {
-                    test_id: "wb-toggle-chrome",
-                    style: "width: 52px; height: 24px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {chr_bg}; border-radius: {m.pill_radius}px; border-width: {chr_bw}px; border-color: {chr_bc};",
-                    onpress: move |_| mutate_state(&s_chrome, version, |st| st.toggle_workbench_chrome()),
-                    text { style: "color: {chr_fg}; font-size: 9px;", "Chrome" }
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    size: ButtonSize::Sm,
+                    test_id: Some("wb-toggle-chrome".into()),
+                    style: Some(chrome_btn_style),
+                    on_press: move |_| mutate_state(&s_chrome, version, |st| st.toggle_workbench_chrome()),
+                    "Chrome"
                 }
             }
             text {
@@ -215,7 +276,6 @@ pub(crate) fn render_workbench_view(
         scrollview {
             style: "width: 100%; flex: 1; flex-direction: column; gap: {m.list_gap}px; border-width: {row_bw}px; border-color: {row_bc};",
 
-            // Synchronized Multi-Viewport Live Preview Grid
             view {
                 test_id: "wb-viewport-grid",
                 "workbench-preset": "{preset.as_str()}",
@@ -232,19 +292,24 @@ pub(crate) fn render_workbench_view(
             }
 
             // Live Connected Host Surfaces Header + SyncTelemetry Banner
-            view {
-                test_id: "wb-telemetry-banner",
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; gap: 6px; padding: 7px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+            Card {
+                variant: CardVariant::Outlined,
+                test_id: Some("wb-telemetry-banner".into()),
+                padding: Some(7.0),
+                gap: Some(6.0),
+                style: Some(banner_card_style),
                 view {
                     style: "flex: 1; flex-direction: column; gap: 2px;",
                     text { style: "color: {TEXT_PRIMARY}; font-size: 10px;", "CONNECTED HOST SURFACES (9)" }
                     text { style: "color: {accent_hex}; font-size: 9px;", "{telemetry_summary}" }
                 }
-                pressable {
-                    test_id: "wb-sync-cycle",
-                    style: "height: 22px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 7px; background-color: {accent_tint}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {accent_hex};",
-                    onpress: move |_| mutate_state(&s_sync, version, |st| st.cycle_sync_transport()),
-                    text { style: "color: {accent_hex}; font-size: 9px;", "{sync_telemetry.transport.label()}" }
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    size: ButtonSize::Sm,
+                    test_id: Some("wb-sync-cycle".into()),
+                    style: Some(sync_btn_style),
+                    on_press: move |_| mutate_state(&s_sync, version, |st| st.cycle_sync_transport()),
+                    "{sync_telemetry.transport.label()}"
                 }
             }
 
@@ -274,6 +339,10 @@ pub(crate) fn render_workbench_view(
                                     sync_telemetry.format_compression(),
                                     format_tenths_ms(rtt_tenths)
                                 );
+                                let live_badge_style = format!(
+                                    "min-width: 34px; height: 15px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: 4px; border-width: 0px; border-color: transparent;",
+                                    spec.badge_bg
+                                );
                                 let s_host = Arc::clone(store);
                                 rsx! {
                                     pressable {
@@ -284,9 +353,10 @@ pub(crate) fn render_workbench_view(
                                         view {
                                             style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
                                             text { style: "color: {TEXT_PRIMARY}; font-size: 10px;", "{spec.name}" }
-                                            view {
-                                                style: "height: 15px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 4px; background-color: {spec.badge_bg}; border-radius: 4px;",
-                                                text { style: "color: {spec.badge_fg}; font-size: 8px;", "LIVE" }
+                                            Badge {
+                                                label: "LIVE".to_string(),
+                                                variant: BadgeVariant::Neutral,
+                                                style: Some(live_badge_style),
                                             }
                                         }
                                         text { style: "color: {TEXT_MUTED}; font-size: 9px;", "{spec.pipeline}" }

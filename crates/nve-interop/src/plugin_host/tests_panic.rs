@@ -337,7 +337,8 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     assert!(host.get_mut(flaky_id).unwrap().drain_emitted_events().is_empty());
 
     set_host_panic_mode(HostPanicMode::PanicHotPatch);
-    assert!(!host.get_mut(flaky_id).unwrap().apply_hot_patch("{}"));
+    let patch = nve_engine::HotPatchMsg::DevStatus { message: "x".into(), latency_ms: 0 }.to_bytes();
+    assert!(!host.get_mut(flaky_id).unwrap().apply_hot_patch(&patch));
 
     set_host_panic_mode(HostPanicMode::PanicSnapshot);
     assert!(host.get_mut(flaky_id).unwrap().snapshot_state().is_empty());

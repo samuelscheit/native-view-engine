@@ -28,10 +28,12 @@ use super::session::DesktopSession;
 use super::{
     replay_snapshot_into_backend, DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot,
 };
+use crate::host_services::{encode_window_lifecycle_batch, SkiaHostServices};
 
 /// Live multi-window `winit` desktop host supporting direct hardware GPU swapchains (`skia-metal`,
 /// `skia-vulkan`, `skia-d3d`) with `softbuffer` fallback, Frame-0 `MmapSnapshot` instant boot,
-/// `WindowManager` lifecycle/modal/veto rules, and thin-client `NVD1` pairing.
+/// `WindowManager` lifecycle/modal/veto rules, `NVE_IFACE_HOST = 5` host services, and thin-client
+/// `NVD1` pairing.
 pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) options: DesktopPreviewOptions,
     primary_session: Option<DesktopSession<A>>,
@@ -40,6 +42,7 @@ pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) windows: HashMap<WindowId, SurfaceWindow<A>>,
     pub(crate) surface_to_window: BTreeMap<SurfaceId, WindowId>,
     pub(crate) window_manager: WindowManager,
+    pub(crate) host_services: Arc<SkiaHostServices>,
     exit_on_primary_close: bool,
     pub(crate) close_veto_handler: Option<CloseVetoHandler>,
     pub(crate) secondary_app_factory: Option<SecondaryAppFactory<A>>,
@@ -94,10 +97,12 @@ impl DesktopWindowHost<HotAppSlot> {
                 }
             });
 
+        let host_services = SkiaHostServices::new();
         let mut session = if let Some(prewarmed) = prewarmed {
             let prior_state = (!prewarmed.state_bytes.is_empty())
                 .then_some(prewarmed.state_bytes.as_slice());
-            let app = HotAppSlot::load_with_state(&dylib_path, options.surface_id, prior_state)?;
+            let mut app = HotAppSlot::load_with_state(&dylib_path, options.surface_id, prior_state)?;
+            let _ = app.bind_host_services(Some(Arc::clone(&host_services)));
             DesktopSession::from_parts(
                 app,
                 prewarmed.backend,
@@ -109,7 +114,8 @@ impl DesktopWindowHost<HotAppSlot> {
                 options.show_hud,
             )
         } else {
-            let app = HotAppSlot::load(&dylib_path, options.surface_id)?;
+            let mut app = HotAppSlot::load(&dylib_path, options.surface_id)?;
+            let _ = app.bind_host_services(Some(Arc::clone(&host_services)));
             DesktopSession::new(
                 app,
                 options.surface_id,
@@ -122,10 +128,14 @@ impl DesktopWindowHost<HotAppSlot> {
         session.render_and_rasterize()?;
 
         let factory_dylib = dylib_path;
-        let factory: SecondaryAppFactory<HotAppSlot> =
-            Box::new(move |surface_id, _desc| HotAppSlot::load(&factory_dylib, surface_id));
+        let factory_host = Arc::clone(&host_services);
+        let factory: SecondaryAppFactory<HotAppSlot> = Box::new(move |surface_id, _desc| {
+            let mut app = HotAppSlot::load(&factory_dylib, surface_id)?;
+            let _ = app.bind_host_services(Some(Arc::clone(&factory_host)));
+            Ok(app)
+        });
 
-        let mut host = Self::from_primary_session(options, session);
+        let mut host = Self::from_primary_session_with_host_services(options, session, host_services);
         host.secondary_app_factory = Some(factory);
         Ok(host)
     }
@@ -168,7 +178,19 @@ impl DesktopWindowHost<PairedRemoteApp> {
 impl<A: DesktopApp> DesktopWindowHost<A> {
     pub(crate) fn from_primary_session(
         options: DesktopPreviewOptions,
+        mut session: DesktopSession<A>,
+    ) -> Self {
+        let host_services = SkiaHostServices::new();
+        let _ = session
+            .app_mut()
+            .bind_host_services(Some(Arc::clone(&host_services)));
+        Self::from_primary_session_with_host_services(options, session, host_services)
+    }
+
+    pub(crate) fn from_primary_session_with_host_services(
+        options: DesktopPreviewOptions,
         session: DesktopSession<A>,
+        host_services: Arc<SkiaHostServices>,
     ) -> Self {
         Self {
             options,
@@ -178,6 +200,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             windows: HashMap::new(),
             surface_to_window: BTreeMap::new(),
             window_manager: WindowManager::new(),
+            host_services,
             exit_on_primary_close: true,
             close_veto_handler: None,
             secondary_app_factory: None,
@@ -185,6 +208,10 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             proxy: None,
             snapshot_saved: false,
         }
+    }
+
+    pub fn host_services(&self) -> &Arc<SkiaHostServices> {
+        &self.host_services
     }
 
     pub fn session(&self) -> &DesktopSession<A> {
@@ -307,6 +334,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             .map_err(|e| DesktopHostError::EventLoop(e.to_string()))?;
         let proxy = event_loop.create_proxy();
         self.proxy = Some(proxy.clone());
+        self.host_services.attach_event_loop_proxy(proxy.clone());
 
         if let Some(ws_url) = self.options.ws_url.clone() {
             let wake_proxy = proxy.clone();
@@ -379,6 +407,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         }
         apply_window_state(&window, desc.state);
 
+        let initial_theme_batch = window
+            .theme()
+            .map(|t| self.host_services.update_theme_from_winit(t, scale).1);
         let window_id = window.id();
         let mut sw = SurfaceWindow {
             window: window.clone(),
@@ -391,6 +422,11 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             ime_allowed: false,
             last_telemetry: None,
         };
+        if let Some(batch) = initial_theme_batch
+            && sw.session.dispatch_host_events(&batch)
+        {
+            let _ = sw.session.render_and_rasterize();
+        }
         sw.sync_title();
         sw.sync_ime_state();
         self.surface_to_window.insert(surface_id, window_id);
@@ -399,8 +435,39 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             self.primary_window_id = Some(window_id);
             self.primary_handle = Some(handle_id);
         }
+        let _ = self.flush_window_lifecycle_events();
         window.request_redraw();
         Ok(window_id)
+    }
+
+    pub(crate) fn broadcast_host_event_batch(&mut self, batch: &[u8]) -> bool {
+        let mut any_handled = false;
+        for sw in self.windows.values_mut() {
+            if sw.session.dispatch_host_events(batch) {
+                any_handled = true;
+                if let Err(err) = sw.session.render_and_rasterize() {
+                    eprintln!("[nve-skia-shell] host event render error: {err}");
+                }
+                sw.sync_ime_state();
+                sw.window.request_redraw();
+            }
+        }
+        if let Some(primary) = self.primary_session.as_mut()
+            && primary.dispatch_host_events(batch)
+        {
+            any_handled = true;
+            let _ = primary.render_and_rasterize();
+        }
+        any_handled
+    }
+
+    pub(crate) fn flush_window_lifecycle_events(&mut self) -> bool {
+        let events = self.window_manager.drain_events();
+        if events.is_empty() {
+            return false;
+        }
+        let batch = encode_window_lifecycle_batch(&events);
+        self.broadcast_host_event_batch(&batch)
     }
 
     pub(crate) fn finalize_closed_handles(

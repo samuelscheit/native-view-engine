@@ -688,7 +688,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
 
     assert!(inst.set_props(&5u32.to_le_bytes()));
     assert!(inst.dispatch_events(b"tap"));
-    assert_eq!(inst.drain_emitted_events(), vec![0xEE, 6]);
+    assert_eq!(inst.drain_emitted_events(), &[0xEE, 6]);
     let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }.to_bytes();
     assert!(inst.apply_hot_patch(&patch));
     assert_eq!(inst.render(2), b"frame=2;counter=16");
@@ -1187,10 +1187,178 @@ fn loader_resolves_host_interface_and_rebinds_across_hotswap() {
     };
     assert!(inst.bind_host(Some(cb)));
     assert!(inst.dispatch_host_events(b"NVH1payload"));
-    assert_eq!(inst.render(1), format!("ctx={};ev=11", 0xBEEFusize).into_bytes());
+    assert_eq!(inst.render(1), format!("ctx={};ev=11", 0xBEEFusize).as_bytes());
 
     // Reloading automatically re-binds the saved NveHostCallbacks onto generation 2!
     let outcome = inst.reload(&dylib).expect("reload gen 2");
     assert_eq!(outcome.generation, 2);
-    assert_eq!(inst.render(2), format!("ctx={};ev=0", 0xBEEFusize).into_bytes());
+    assert_eq!(inst.render(2), format!("ctx={};ev=0", 0xBEEFusize).as_bytes());
+}
+
+#[test]
+fn loader_zero_copy_borrows_dylib_buffers_directly_and_handles_null_or_empty_slices() {
+    let dir = TempDirGuard::new("loader-zerocopy-ptr");
+    let cdylib_src = r#"
+        use std::ffi::c_void;
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
+
+        #[repr(C)]
+        pub struct NveSurfaceApi {
+            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
+            pub destroy: unsafe extern "C" fn(*mut c_void),
+            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
+            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
+        }
+
+        #[repr(C)]
+        pub struct NveComponentApi {
+            pub set_props: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub drain_emitted_events: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
+            pub set_props_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
+        }
+
+        #[repr(C)]
+        pub struct NveDevApi {
+            pub apply_hot_patch: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub snapshot_state: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
+            pub restore_state: unsafe extern "C" fn(*mut c_void, NveBufferSlice),
+        }
+
+        struct ZeroCopyApp {
+            frame_buf: Box<[u8; 16]>,
+            emitted_buf: Box<[u8; 16]>,
+            state_buf: Box<[u8; 16]>,
+            mode: u64,
+        }
+
+        unsafe extern "C" fn create(_: u32) -> *mut c_void {
+            let mut app = Box::new(ZeroCopyApp {
+                frame_buf: Box::new([0u8; 16]),
+                emitted_buf: Box::new([0u8; 16]),
+                state_buf: Box::new([0u8; 16]),
+                mode: 0,
+            });
+            // Stamp each buffer's own raw address into its first 8 bytes so the caller can prove
+            // `HotAppInstance` borrows directly from the dylib's internal allocation (zero copy).
+            let f_addr = app.frame_buf.as_ptr() as usize;
+            app.frame_buf[0..8].copy_from_slice(&(f_addr as u64).to_le_bytes());
+            let e_addr = app.emitted_buf.as_ptr() as usize;
+            app.emitted_buf[0..8].copy_from_slice(&(e_addr as u64).to_le_bytes());
+            let s_addr = app.state_buf.as_ptr() as usize;
+            app.state_buf[0..8].copy_from_slice(&(s_addr as u64).to_le_bytes());
+            Box::into_raw(app) as *mut c_void
+        }
+
+        unsafe extern "C" fn destroy(h: *mut c_void) {
+            if !h.is_null() { unsafe { drop(Box::from_raw(h as *mut ZeroCopyApp)); } }
+        }
+
+        unsafe extern "C" fn render(h: *mut c_void, frame_id: u64) -> NveBufferSlice {
+            let app = unsafe { &mut *(h as *mut ZeroCopyApp) };
+            app.mode = frame_id;
+            match frame_id {
+                // Edge case: null ptr with len == 0
+                0 => NveBufferSlice { ptr: std::ptr::null(), len: 0 },
+                // Edge case: null ptr with non-zero len (must safely degrade to empty slice)
+                99 => NveBufferSlice { ptr: std::ptr::null(), len: 128 },
+                // Edge case: non-null ptr with len == 0
+                100 => NveBufferSlice { ptr: app.frame_buf.as_ptr(), len: 0 },
+                // Normal zero-copy borrow of fixed internal buffer
+                _ => {
+                    app.frame_buf[8..16].copy_from_slice(&frame_id.to_le_bytes());
+                    NveBufferSlice { ptr: app.frame_buf.as_ptr(), len: 16 }
+                }
+            }
+        }
+
+        unsafe extern "C" fn dispatch_events(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
+        unsafe extern "C" fn set_props(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
+
+        unsafe extern "C" fn drain_emitted_events(h: *mut c_void) -> NveBufferSlice {
+            let app = unsafe { &mut *(h as *mut ZeroCopyApp) };
+            match app.mode {
+                0 => NveBufferSlice { ptr: std::ptr::null(), len: 0 },
+                99 => NveBufferSlice { ptr: std::ptr::null(), len: 64 },
+                100 => NveBufferSlice { ptr: app.emitted_buf.as_ptr(), len: 0 },
+                _ => NveBufferSlice { ptr: app.emitted_buf.as_ptr(), len: 16 },
+            }
+        }
+
+        unsafe extern "C" fn apply_hot_patch(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
+
+        unsafe extern "C" fn snapshot_state(h: *mut c_void) -> NveBufferSlice {
+            let app = unsafe { &mut *(h as *mut ZeroCopyApp) };
+            match app.mode {
+                0 => NveBufferSlice { ptr: std::ptr::null(), len: 0 },
+                99 => NveBufferSlice { ptr: std::ptr::null(), len: 32 },
+                100 => NveBufferSlice { ptr: app.state_buf.as_ptr(), len: 0 },
+                _ => NveBufferSlice { ptr: app.state_buf.as_ptr(), len: 16 },
+            }
+        }
+
+        unsafe extern "C" fn restore_state(_: *mut c_void, _: NveBufferSlice) {}
+
+        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
+            create, destroy, render, dispatch_events, dispatch_events_direct: None,
+        };
+        static COMPONENT_API: NveComponentApi = NveComponentApi {
+            set_props, drain_emitted_events, set_props_direct: None,
+        };
+        static DEV_API: NveDevApi = NveDevApi {
+            apply_hot_patch, snapshot_state, restore_state,
+        };
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
+            match id {
+                1 => &SURFACE_API as *const NveSurfaceApi as *const c_void,
+                3 => &COMPONENT_API as *const NveComponentApi as *const c_void,
+                4 => &DEV_API as *const NveDevApi as *const c_void,
+                _ => std::ptr::null(),
+            }
+        }
+    "#;
+
+    let dylib = compile_test_cdylib(dir.path(), "zerocopy_ptr_app", cdylib_src);
+    let mut inst = HotAppInstance::load(&dylib, 1, 1, None).expect("load zerocopy dylib");
+
+    // 1. Direct pointer-identity proof for render(), drain_emitted_events(), and snapshot_state().
+    let frame = inst.render(7);
+    assert_eq!(frame.len(), 16);
+    let expected_frame_ptr = u64::from_le_bytes(frame[0..8].try_into().unwrap()) as usize;
+    assert_eq!(
+        frame.as_ptr() as usize,
+        expected_frame_ptr,
+        "HotAppInstance::render must return a zero-copy borrow of the dylib's frame buffer"
+    );
+    assert_eq!(u64::from_le_bytes(frame[8..16].try_into().unwrap()), 7);
+
+    let emitted = inst.drain_emitted_events();
+    assert_eq!(emitted.len(), 16);
+    let expected_emitted_ptr = u64::from_le_bytes(emitted[0..8].try_into().unwrap()) as usize;
+    assert_eq!(
+        emitted.as_ptr() as usize,
+        expected_emitted_ptr,
+        "HotAppInstance::drain_emitted_events must return a zero-copy borrow of the dylib's event buffer"
+    );
+
+    let state = inst.snapshot_state();
+    assert_eq!(state.len(), 16);
+    let expected_state_ptr = u64::from_le_bytes(state[0..8].try_into().unwrap()) as usize;
+    assert_eq!(
+        state.as_ptr() as usize,
+        expected_state_ptr,
+        "HotAppInstance::snapshot_state must return a zero-copy borrow of the dylib's snapshot buffer"
+    );
+
+    // 2. Empty / null / corrupt-len-with-null slices safely yield `&[]` without UB.
+    for edge_frame in [0u64, 99, 100] {
+        assert!(inst.render(edge_frame).is_empty());
+        assert!(inst.drain_emitted_events().is_empty());
+        assert!(inst.snapshot_state().is_empty());
+    }
 }

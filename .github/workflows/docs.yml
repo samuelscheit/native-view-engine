@@ -1,0 +1,103 @@
+name: Docs Site & GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/content/**"
+      - "crates/nve-mdx/**"
+      - "crates/nve-docs/**"
+      - "crates/nve-backend-web/**"
+      - "crates/nve-router/**"
+      - "crates/nve-cli/src/docs/**"
+      - "examples/nve-docs-site/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/content/**"
+      - "crates/nve-mdx/**"
+      - "crates/nve-docs/**"
+      - "crates/nve-backend-web/**"
+      - "crates/nve-router/**"
+      - "crates/nve-cli/src/docs/**"
+      - "examples/nve-docs-site/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "nve-docs-pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-verify:
+    name: Check, Build & Chrome E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen-cli matching Cargo.lock
+        run: |
+          WBG_VER=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/, "", $3); print $3; exit}' Cargo.lock)
+          echo "Installing wasm-bindgen-cli ${WBG_VER}"
+          cargo install --locked wasm-bindgen-cli --version "${WBG_VER}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run docs unit, integration & CLI tests
+        run: |
+          cargo test --locked -p nve-mdx -p nve-docs -p nve-docs-site -p nve-cli
+          cargo clippy --locked -p nve-docs -p nve-docs-site -p nve-cli --all-targets -- -D warnings
+
+      - name: Validate docs content (links, anchors, _meta.toml, LiveDemo IDs)
+        run: cargo run --locked -p nve-cli -- docs check
+
+      - name: Build static SSR + WASM docs site for GitHub Pages
+        run: |
+          cargo run --locked -p nve-cli -- docs build \
+            --content docs/content \
+            --out dist/docs \
+            --base-path /native-view-engine \
+            --site-url https://samuelscheit.github.io/native-view-engine
+
+      - name: Run headless Chrome SSR + Progressive Hydration E2E
+        run: |
+          node examples/nve-docs-site/e2e/run_docs_e2e.mjs dist/docs --base-path /native-view-engine --shots-dir /tmp/nve-docs-shots
+
+      - name: Configure GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/docs
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-verify
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

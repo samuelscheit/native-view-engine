@@ -765,6 +765,21 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                     let Some(node) = self.nodes.get_mut(node_id) else {
                         return Err(BackendError::InvalidNode(node_id));
                     };
+                    if matches!(key, "flex-wrap" | "flexWrap" | "font-weight" | "fontWeight") {
+                        match value {
+                            nve_abi::RawPropValueRef::String(s) => {
+                                self.layout.set_raw_layout_prop(node_id, key, s);
+                            }
+                            nve_abi::RawPropValueRef::I64(n) => {
+                                let s = n.to_string();
+                                self.layout.set_raw_layout_prop(node_id, key, &s);
+                            }
+                            nve_abi::RawPropValueRef::Null => {
+                                self.layout.set_raw_layout_prop(node_id, key, "");
+                            }
+                            _ => {}
+                        }
+                    }
                     if let Some(existing) = node.raw_props.get_mut(key) {
                         *existing = value.to_owned();
                     } else {

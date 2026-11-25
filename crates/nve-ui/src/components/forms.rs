@@ -2,10 +2,11 @@
 
 use dioxus_core::EventHandler;
 use dioxus_core_macro::Props;
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{StyleBuf, SurfaceStyle, TextStyle};
-use crate::theme::use_theme;
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::theme::use_theme_rgba;
 
 /// Accessible text input with optional label, helper/error text (`aria-describedby`),
 /// `secure`, `multiline`, `read_only`, `disabled`, and explicit focus/error ring styling.
@@ -25,9 +26,10 @@ pub fn Input(
     #[props(default)] id: Option<String>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] accessibility_label: Option<String>,
+    #[props(default)] accessibility_role: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut focused = use_signal(|| false);
 
     let base_id = id
@@ -45,37 +47,32 @@ pub fn Input(
 
     let has_error = error.is_some();
     let (border_width, border_color) = if has_error {
-        (2.0, theme.palette.danger.as_ref())
+        (2.0, colors.danger)
     } else if focused() && !disabled {
-        (2.0, theme.palette.border_focus.as_ref())
+        (2.0, colors.border_focus)
     } else {
         (
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            theme.palette.border.as_ref(),
+            colors.border,
         )
     };
     let field_bg = if disabled || read_only {
-        theme.palette.surface_subtle.as_ref()
+        colors.surface_subtle
     } else {
-        theme.palette.surface.as_ref()
+        colors.surface
     };
 
-    let mut wrapper_sb = StyleBuf::new();
-    wrapper_sb
-        .flex_direction("column")
+    let wrapper_style = TypedStyleBuilder::new()
+        .flex_col()
         .gap(theme.spacing.xs)
-        .width_pct(100.0);
-    if let Some(ref extra) = style {
-        wrapper_sb.raw(extra);
-    }
-    let wrapper_style = wrapper_sb.finish();
+        .width_pct(100.0)
+        .finish();
 
-    let mut input_sb = StyleBuf::new();
-    input_sb
+    let input_style = TypedStyleBuilder::new()
         .width_pct(100.0)
         .min_height_px(if multiline { 88.0 } else { 38.0 })
         .padding_xy(theme.spacing.md, theme.spacing.sm)
-        .surface(SurfaceStyle {
+        .surface(TypedSurfaceStyle {
             background: field_bg,
             border_width,
             border_color,
@@ -83,49 +80,51 @@ pub fn Input(
             opacity: if disabled { 0.55 } else { 1.0 },
             box_shadow: "none",
         })
-        .text_style(TextStyle {
-            color: theme.palette.text_primary.as_ref(),
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
             font_size: theme.typography.md,
             font_weight: "400",
             text_align: "left",
             opacity: if disabled { 0.55 } else { 1.0 },
-        });
-    let input_style = input_sb.finish();
+        })
+        .finish();
 
-    let mut label_sb = StyleBuf::new();
-    label_sb.text_style(TextStyle {
-        color: theme.palette.text_primary.as_ref(),
-        font_size: theme.typography.sm,
-        font_weight: "600",
-        text_align: "left",
-        opacity: if disabled { 0.6 } else { 1.0 },
-    });
-    let label_style = label_sb.finish();
+    let label_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.sm,
+            font_weight: "600",
+            text_align: "left",
+            opacity: if disabled { 0.6 } else { 1.0 },
+        })
+        .finish();
 
-    let mut desc_sb = StyleBuf::new();
-    desc_sb.text_style(TextStyle {
-        color: if has_error {
-            theme.palette.danger.as_ref()
-        } else {
-            theme.palette.text_muted.as_ref()
-        },
-        font_size: theme.typography.xs,
-        font_weight: if has_error { "500" } else { "400" },
-        text_align: "left",
-        opacity: 1.0,
-    });
-    let desc_style = desc_sb.finish();
+    let desc_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: if has_error {
+                colors.danger
+            } else {
+                colors.text_muted
+            },
+            font_size: theme.typography.xs,
+            font_weight: if has_error { "500" } else { "400" },
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
 
     let tab_index = if disabled { -1 } else { 0 };
     let a11y_label = accessibility_label.or_else(|| label.clone());
+    let a11y_role = accessibility_role.unwrap_or_else(|| "textbox".to_string());
 
     rsx! {
         view {
-            style: "{wrapper_style}",
+            nve_style: wrapper_style,
+            style: style,
             if let Some(ref lbl) = label {
                 text {
                     test_id: label_id.clone(),
-                    style: "{label_style}",
+                    nve_style: label_style,
                     "{lbl}"
                 }
             }
@@ -138,11 +137,11 @@ pub fn Input(
                 read_only: read_only,
                 disabled: disabled,
                 tab_index: tab_index,
-                accessibility_role: "textbox",
+                accessibility_role: "{a11y_role}",
                 accessibility_label: a11y_label,
                 aria_labelledby: label_id,
                 aria_describedby: described_by.clone(),
-                style: "{input_style}",
+                nve_style: input_style,
                 onfocus: move |_| focused.set(true),
                 onblur: move |_| focused.set(false),
                 onchange: move |ev: TextEvent| {
@@ -161,13 +160,13 @@ pub fn Input(
                     test_id: described_by.clone(),
                     accessibility_role: "alert",
                     aria_live: "assertive",
-                    style: "{desc_style}",
+                    nve_style: desc_style,
                     "{err_msg}"
                 }
             } else if let Some(ref help_msg) = helper_text {
                 text {
                     test_id: described_by.clone(),
-                    style: "{desc_style}",
+                    nve_style: desc_style,
                     "{help_msg}"
                 }
             }
@@ -187,7 +186,7 @@ pub fn Checkbox(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut focused = use_signal(|| false);
 
     let aria_checked = if indeterminate {
@@ -199,83 +198,74 @@ pub fn Checkbox(
     };
     let active_fill = checked || indeterminate;
 
-    let mut row_sb = StyleBuf::new();
-    row_sb
-        .flex_direction("row")
-        .align_items("center")
+    let row_style = TypedStyleBuilder::new()
+        .flex_row()
+        .align_items(FlexAlign::Center)
         .gap(theme.spacing.sm)
-        .surface(SurfaceStyle {
-            background: "transparent",
+        .surface(TypedSurfaceStyle {
+            background: ColorRgba::TRANSPARENT,
             border_width: 0.0,
-            border_color: "transparent",
+            border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radii.sm,
             opacity: if disabled { 0.5 } else { 1.0 },
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        row_sb.raw(extra);
-    }
-    let row_style = row_sb.finish();
+        })
+        .finish();
 
     let (box_bg, box_bw, box_bc) = if focused() && !disabled {
         (
             if active_fill {
-                theme.palette.accent.as_ref()
+                colors.accent
             } else {
-                theme.palette.surface.as_ref()
+                colors.surface
             },
             2.0,
-            theme.palette.border_focus.as_ref(),
+            colors.border_focus,
         )
     } else if active_fill {
-        (
-            theme.palette.accent.as_ref(),
-            1.0,
-            theme.palette.accent.as_ref(),
-        )
+        (colors.accent, 1.0, colors.accent)
     } else {
         (
-            theme.palette.surface.as_ref(),
+            colors.surface,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            theme.palette.border.as_ref(),
+            colors.border,
         )
     };
 
-    let mut box_sb = StyleBuf::new();
-    box_sb
+    let box_style = TypedStyleBuilder::new()
         .width_px(20.0)
         .height_px(20.0)
-        .justify_content("center")
-        .align_items("center")
-        .surface(SurfaceStyle {
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
+        .surface(TypedSurfaceStyle {
             background: box_bg,
             border_width: box_bw,
             border_color: box_bc,
             border_radius: theme.radii.sm,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    let box_style = box_sb.finish();
+        })
+        .finish();
 
-    let mut mark_sb = StyleBuf::new();
-    mark_sb.text_style(TextStyle {
-        color: theme.palette.accent_fg.as_ref(),
-        font_size: theme.typography.sm,
-        font_weight: "700",
-        text_align: "center",
-        opacity: 1.0,
-    });
-    let mark_style = mark_sb.finish();
+    let mark_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.accent_fg,
+            font_size: theme.typography.sm,
+            font_weight: "700",
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
-    let mut lbl_sb = StyleBuf::new();
-    lbl_sb.text_style(TextStyle {
-        color: theme.palette.text_primary.as_ref(),
-        font_size: theme.typography.md,
-        font_weight: "400",
-        text_align: "left",
-        opacity: 1.0,
-    });
-    let lbl_style = lbl_sb.finish();
+    let lbl_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.md,
+            font_weight: "400",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
 
     let glyph = if indeterminate {
         "-"
@@ -295,7 +285,8 @@ pub fn Checkbox(
             aria_checked: "{aria_checked}",
             disabled: disabled,
             tab_index: tab_index,
-            style: "{row_style}",
+            nve_style: row_style,
+            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -311,15 +302,15 @@ pub fn Checkbox(
                 }
             },
             view {
-                style: "{box_style}",
+                nve_style: box_style,
                 text {
-                    style: "{mark_style}",
+                    nve_style: mark_style,
                     "{glyph}"
                 }
             }
             if let Some(ref lbl) = label {
                 text {
-                    style: "{lbl_style}",
+                    nve_style: lbl_style,
                     "{lbl}"
                 }
             }
@@ -338,98 +329,84 @@ pub fn Switch(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut focused = use_signal(|| false);
 
     let aria_checked = if checked { "true" } else { "false" };
 
-    let mut row_sb = StyleBuf::new();
-    row_sb
-        .flex_direction("row")
-        .align_items("center")
+    let row_style = TypedStyleBuilder::new()
+        .flex_row()
+        .align_items(FlexAlign::Center)
         .gap(theme.spacing.sm)
-        .surface(SurfaceStyle {
-            background: "transparent",
+        .surface(TypedSurfaceStyle {
+            background: ColorRgba::TRANSPARENT,
             border_width: 0.0,
-            border_color: "transparent",
+            border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radii.sm,
             opacity: if disabled { 0.5 } else { 1.0 },
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        row_sb.raw(extra);
-    }
-    let row_style = row_sb.finish();
+        })
+        .finish();
 
     let (track_bg, track_bw, track_bc) = if focused() && !disabled {
         (
-            if checked {
-                theme.palette.accent.as_ref()
-            } else {
-                theme.palette.border.as_ref()
-            },
+            if checked { colors.accent } else { colors.border },
             2.0,
-            theme.palette.border_focus.as_ref(),
+            colors.border_focus,
         )
     } else if checked {
-        (
-            theme.palette.accent.as_ref(),
-            1.0,
-            theme.palette.accent.as_ref(),
-        )
+        (colors.accent, 1.0, colors.accent)
     } else {
-        (
-            theme.palette.border.as_ref(),
-            1.0,
-            theme.palette.border.as_ref(),
-        )
+        (colors.border, 1.0, colors.border)
     };
 
-    let mut track_sb = StyleBuf::new();
-    track_sb
+    let track_style = TypedStyleBuilder::new()
         .width_px(44.0)
         .height_px(24.0)
         .padding(3.0)
-        .flex_direction("row")
-        .align_items("center")
-        .justify_content(if checked { "flex-end" } else { "flex-start" })
-        .surface(SurfaceStyle {
+        .flex_row()
+        .align_items(FlexAlign::Center)
+        .justify_content(if checked {
+            FlexJustify::FlexEnd
+        } else {
+            FlexJustify::FlexStart
+        })
+        .surface(TypedSurfaceStyle {
             background: track_bg,
             border_width: track_bw,
             border_color: track_bc,
             border_radius: theme.radii.full,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    let track_style = track_sb.finish();
+        })
+        .finish();
 
-    let mut thumb_sb = StyleBuf::new();
-    thumb_sb
+    let thumb_style = TypedStyleBuilder::new()
         .width_px(18.0)
         .height_px(18.0)
-        .surface(SurfaceStyle {
+        .surface(TypedSurfaceStyle {
             background: if checked {
-                theme.palette.accent_fg.as_ref()
+                colors.accent_fg
             } else {
-                theme.palette.surface.as_ref()
+                colors.surface
             },
             border_width: 0.0,
-            border_color: "transparent",
+            border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radii.full,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    let thumb_style = thumb_sb.finish();
+        })
+        .finish();
 
-    let mut lbl_sb = StyleBuf::new();
-    lbl_sb.text_style(TextStyle {
-        color: theme.palette.text_primary.as_ref(),
-        font_size: theme.typography.md,
-        font_weight: "400",
-        text_align: "left",
-        opacity: 1.0,
-    });
-    let lbl_style = lbl_sb.finish();
+    let lbl_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.md,
+            font_weight: "400",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
 
     let tab_index = if disabled { -1 } else { 0 };
     let a11y_label = accessibility_label.or_else(|| label.clone());
@@ -442,7 +419,8 @@ pub fn Switch(
             aria_checked: "{aria_checked}",
             disabled: disabled,
             tab_index: tab_index,
-            style: "{row_style}",
+            nve_style: row_style,
+            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -460,14 +438,14 @@ pub fn Switch(
                 }
             },
             view {
-                style: "{track_style}",
+                nve_style: track_style,
                 view {
-                    style: "{thumb_style}",
+                    nve_style: thumb_style,
                 }
             }
             if let Some(ref lbl) = label {
                 text {
-                    style: "{lbl_style}",
+                    nve_style: lbl_style,
                     "{lbl}"
                 }
             }

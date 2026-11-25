@@ -3,7 +3,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{unbounded, Sender};
@@ -12,6 +12,7 @@ use nve_engine::HotPatchMsg;
 
 use crate::pair::{self, PairControlMsg};
 use crate::rsx_diff;
+use crate::static_http;
 
 pub(crate) struct DevOptions {
     pub package: String,
@@ -19,6 +20,7 @@ pub(crate) struct DevOptions {
     pub host: String,
     pub port: u16,
     pub web: bool,
+    pub web_port: u16,
     pub no_web: bool,
     pub skia: bool,
     pub pair: bool,
@@ -74,6 +76,35 @@ pub(crate) fn ws_bind_addr(host: &str, port: u16) -> String {
     format!("{host}:{port}")
 }
 
+/// `nve dev` serves `hosts/web-shell`. A bare `/` or `/index.html` (no `ws`, `dev`, `pair` or
+/// `bundle` parameter) redirects to itself plus `ws=ws://<request host>:<ws_port>`, which makes
+/// `index.html` load the dev bundle connected to this daemon: the dev loop needs no URL flags,
+/// and production bundles stay free of hot-reload code.
+pub(crate) fn web_dev_redirect(target: &str, host: Option<&str>, ws_port: u16) -> Option<String> {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if path != "/" && path != "/index.html" {
+        return None;
+    }
+    let selects_mode = query.split('&').any(|kv| {
+        let key = kv.split_once('=').map_or(kv, |(k, _)| k);
+        matches!(key, "ws" | "dev" | "pair" | "bundle")
+    });
+    if selects_mode {
+        return None;
+    }
+    let hostname = host.map(host_without_port).filter(|h| !h.is_empty()).unwrap_or("127.0.0.1");
+    let sep = if query.is_empty() { "" } else { "&" };
+    Some(format!("{path}?{query}{sep}ws=ws://{hostname}:{ws_port}"))
+}
+
+/// `example.com:8088` -> `example.com`, `[::1]:8088` -> `[::1]`, `host` -> `host`.
+fn host_without_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        return host.find(']').map_or(host, |end| &host[..=end]);
+    }
+    host.rsplit_once(':').map_or(host, |(h, _)| h)
+}
+
 pub(crate) fn should_trigger_rebuild(kind: &notify::EventKind) -> bool {
     matches!(kind, notify::EventKind::Any) || kind.is_modify() || kind.is_create()
 }
@@ -109,8 +140,22 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     println!("  package: {}", opts.package);
     println!("  watch:   {}", watch_dir.display());
     println!("  ws:      ws://{bind_addr} (local: {client_ws_url})");
+    let web_lock = Arc::new(RwLock::new(()));
     if rebuild_web {
-        println!("  web:     auto-rebuilding hosts/web-shell WASM (--dev) on save (pass --no-web to skip)");
+        let web_bind = ws_bind_addr(&opts.host, opts.web_port);
+        let listener = TcpListener::bind(&web_bind)
+            .unwrap_or_else(|e| panic!("bind web-shell HTTP {web_bind}: {e}"));
+        let ws_port = opts.port;
+        let redirect: static_http::Redirect =
+            Arc::new(move |target, host| web_dev_redirect(target, host, ws_port));
+        let lock = Arc::clone(&web_lock);
+        std::thread::spawn(move || {
+            static_http::serve(listener, PathBuf::from("hosts/web-shell"), lock, Some(redirect));
+        });
+        println!(
+            "  web:     http://127.0.0.1:{}/ (dev bundle, rebuilt on save; pass --no-web to skip)",
+            opts.web_port
+        );
     }
     if opts.skia {
         println!("  preview: live desktop window enabled (--skia)");
@@ -159,13 +204,16 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
         let dylib_for_build = dylib_path.clone();
         let clients = Arc::clone(&clients);
         let pair_tx_slot = Arc::clone(&pair_tx_slot);
+        let web_lock = Arc::clone(&web_lock);
         move |generation: u64| -> bool {
             let t0 = Instant::now();
             let status = ProcessCommand::new("cargo")
                 .args(["build", "-p", &package])
                 .status();
             let web_ok = if rebuild_web && status.as_ref().is_ok_and(|s| s.success()) {
-                // Only the dev bundle carries the NVP1 hot-reload client.
+                // Only the dev bundle carries the NVP1 hot-reload client. The write lock keeps the
+                // HTTP server from serving a half-written `pkg/dev`.
+                let _serving_paused = web_lock.write();
                 ProcessCommand::new("./hosts/web-shell/build.sh")
                     .args(["--dev", "dev"])
                     .status()
@@ -409,5 +457,31 @@ mod tests {
         assert!(!should_trigger_rebuild(&notify::EventKind::Remove(
             RemoveKind::File
         )));
+    }
+
+    #[test]
+    fn web_dev_redirect_wires_bare_urls_to_the_daemon_socket_and_respects_explicit_modes() {
+        let r = |target, host| web_dev_redirect(target, host, 8089);
+        assert_eq!(r("/", Some("127.0.0.1:8088")).as_deref(), Some("/?ws=ws://127.0.0.1:8089"));
+        assert_eq!(
+            r("/index.html?app=counter", Some("192.168.1.20:8088")).as_deref(),
+            Some("/index.html?app=counter&ws=ws://192.168.1.20:8089"),
+            "LAN clients get the host they used; other params survive"
+        );
+        assert_eq!(r("/", Some("[::1]:8088")).as_deref(), Some("/?ws=ws://[::1]:8089"));
+        assert_eq!(r("/", Some("devbox")).as_deref(), Some("/?ws=ws://devbox:8089"));
+        assert_eq!(r("/", None).as_deref(), Some("/?ws=ws://127.0.0.1:8089"));
+        assert_eq!(r("/", Some("")).as_deref(), Some("/?ws=ws://127.0.0.1:8089"));
+        assert_eq!(web_dev_redirect("/?app=studio", None, 9001).as_deref(), Some("/?app=studio&ws=ws://127.0.0.1:9001"));
+        // Explicit modes are never overridden (incl. `ws=off` and a bare `dev` key).
+        for target in ["/?ws=off", "/?dev", "/?dev=1", "/?pair=ws://x&token=t", "/?bundle=studio", "/?app=counter&ws=ws://h:1"] {
+            assert_eq!(r(target, Some("h:8088")), None, "{target}");
+        }
+        // Only the shell page redirects; assets are served as-is.
+        for target in ["/pkg/dev/nve_web_shell.js", "/pkg/dev/nve_web_shell_bg.wasm?v=1", "/e2e/run_e2e.mjs"] {
+            assert_eq!(r(target, Some("h:8088")), None, "{target}");
+        }
+        // A key that merely contains a mode name does not count.
+        assert_eq!(r("/?wsx=1", None).as_deref(), Some("/?wsx=1&ws=ws://127.0.0.1:8089"));
     }
 }

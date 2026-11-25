@@ -14,8 +14,6 @@ use nve_dioxus::elements::backend::RenderBackend;
 use nve_dioxus::prelude::*;
 use nve_interop::{ColorScheme, ThemeContext};
 use nve_ui::prelude::*;
-// `nve_dioxus::prelude` re-exports nve-interop's environment `Orientation`/`UiDensity` traits
-// types; the components under test take nve-ui's own enums.
 use nve_ui::{Orientation, UiDensity};
 
 #[component]
@@ -426,6 +424,10 @@ fn tabs_overlays_dropdown_and_toasts_end_to_end() {
     assert_eq!(h.text_of("overlay-log"), "open-dialog|none");
 
     h.press("open-dialog");
+    // A press inside the panel (e.g. on its text field or padding) must not reach the backdrop.
+    h.press("confirm-dlg");
+    assert!(h.maybe_find("confirm-dlg").is_some(), "panel press dismissed the dialog");
+    assert!(h.maybe_find("confirm-dlg-backdrop").is_some());
     h.press("confirm-dlg-backdrop");
     assert!(h.maybe_find("confirm-dlg").is_none());
 
