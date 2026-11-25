@@ -13,6 +13,7 @@ use skia_safe::{
 pub(crate) use super::cpu_surface::read_surface_to_pixel_buffer;
 pub use super::cpu_surface::{CpuSkiaSurface, GpuSurfaceBackend};
 use super::sanitize_scale_factor;
+use super::skia_graphics::{draw_cached_svg, draw_rounded_rect_gradient, SkiaSvgPictureCache};
 use crate::image_cache::{compute_image_placement, ImageCache};
 use crate::text::{TextAlign, LINE_HEIGHT_MULTIPLIER};
 use crate::{DisplayList, PaintOp};
@@ -41,6 +42,7 @@ pub(crate) fn to_skia_color(c: ColorRgba) -> Color {
 pub struct SkiaCanvasRenderer {
     font_mgr: FontMgr,
     default_typeface: Option<Typeface>,
+    svg_pictures: SkiaSvgPictureCache,
 }
 
 impl Default for SkiaCanvasRenderer {
@@ -59,6 +61,7 @@ impl SkiaCanvasRenderer {
         Self {
             font_mgr,
             default_typeface,
+            svg_pictures: SkiaSvgPictureCache::default(),
         }
     }
 
@@ -68,6 +71,11 @@ impl SkiaCanvasRenderer {
 
     pub fn default_typeface(&self) -> Option<&Typeface> {
         self.default_typeface.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn svg_picture_cache_stats(&self) -> (u64, u64, usize) {
+        self.svg_pictures.stats()
     }
 
     fn make_font(&self, font_size: f32) -> Font {
@@ -228,6 +236,13 @@ impl SkiaCanvasRenderer {
                     let clamped_r = radius.max(0.0).min(rect.width * 0.5).min(rect.height * 0.5);
                     canvas.draw_rrect(RRect::new_rect_xy(r, clamped_r, clamped_r), &fill_paint);
                 }
+                PaintOp::FillRoundedRectGradient {
+                    rect,
+                    radius,
+                    gradient,
+                } => {
+                    draw_rounded_rect_gradient(canvas, *rect, *radius, gradient);
+                }
                 PaintOp::StrokeRoundedRect {
                     rect,
                     radius,
@@ -360,6 +375,13 @@ impl SkiaCanvasRenderer {
                         &image_paint,
                     );
                     canvas.restore();
+                }
+                PaintOp::DrawSvg {
+                    rect,
+                    picture,
+                    tint,
+                } => {
+                    draw_cached_svg(&self.svg_pictures, canvas, *rect, picture, *tint);
                 }
                 PaintOp::CustomSkiaCanvas { rect, ops, .. } => {
                     if rect.width <= 0.0 || rect.height <= 0.0 || ops.is_empty() {

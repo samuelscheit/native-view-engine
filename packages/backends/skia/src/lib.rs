@@ -86,13 +86,22 @@ pub use nve_components::layout_ext::{
     PositionInsets, PositionMode,
 };
 pub use nve_components::motion::{EasingCurve, MotionPreference, TransitionProperty, TransitionSpec};
+pub use nve_components::paint::{
+    lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
+    LinearGradient, RadialGradient,
+};
 pub use nve_components::style_patch::{Display, StylePatch};
+pub use nve_components::svg::{
+    compute_svg_content_hash, parse_svg_path_data, FillRule, SvgPicture, VectorPathCmd, VectorShape,
+};
 pub use nve_components::transform::Transform2D;
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{
-    draw_hud_banner, parse_box_shadow, rasterize_display_list, rasterize_display_list_bitmap,
-    rasterize_display_list_with_text_engine, BoxShadow, PixelBuffer,
+    draw_hud_banner, draw_svg_to_buffer, parse_box_shadow, rasterize_display_list,
+    rasterize_display_list_bitmap, rasterize_display_list_with_text_engine, rasterize_svg_picture,
+    BoxShadow, CachedSvgBitmap, PixelBuffer, SvgCache, SvgCacheKey, SvgCacheStats,
+    DEFAULT_SVG_CACHE_MAX_BYTES, DEFAULT_SVG_CACHE_MAX_ENTRIES,
 };
 pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
 pub use text_bidi::{ShapedLineLayout, VisualGraphemeCluster};
@@ -140,6 +149,11 @@ pub enum PaintOp {
         radius: f32,
         color: ColorRgba,
     },
+    FillRoundedRectGradient {
+        rect: LayoutRect,
+        radius: f32,
+        gradient: BackgroundFill,
+    },
     StrokeRoundedRect {
         rect: LayoutRect,
         radius: f32,
@@ -159,6 +173,11 @@ pub enum PaintOp {
         radius: f32,
         src: String,
         resize_mode: ImageResizeMode,
+    },
+    DrawSvg {
+        rect: LayoutRect,
+        picture: SvgPicture,
+        tint: Option<ColorRgba>,
     },
     CustomSkiaCanvas {
         node_id: NodeId,
@@ -288,6 +307,44 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         entries: impl IntoIterator<Item = (NodeId, &'a DrawList)>,
     ) {
         if self.layout_tree.sync_draw_lists_from(entries) {
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Directly attaches or clears a zero-serialization [`BackgroundFill`] on `node_id` and
+    /// rebuilds the display list if changed.
+    pub fn set_node_background_fill(&mut self, node_id: NodeId, fill: Option<BackgroundFill>) {
+        if self.layout_tree.set_node_background_fill(node_id, fill) {
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Bulk-synchronizes zero-serialization [`BackgroundFill`]s from any producer
+    /// (e.g. `DioxusSurface::iter_background_fills`), rebuilding the display list only when changed.
+    pub fn sync_background_fills_from<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (NodeId, &'a BackgroundFill)>,
+    ) {
+        if self.layout_tree.sync_background_fills_from(entries) {
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Directly attaches or clears a zero-serialization [`SvgPicture`] on `node_id` and
+    /// rebuilds the display list if changed.
+    pub fn set_node_svg(&mut self, node_id: NodeId, svg: Option<SvgPicture>) {
+        if self.layout_tree.set_node_svg(node_id, svg) {
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Bulk-synchronizes zero-serialization [`SvgPicture`]s from any producer
+    /// (e.g. `DioxusSurface::iter_svg_pictures`), rebuilding the display list only when changed.
+    pub fn sync_svgs_from<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (NodeId, &'a SvgPicture)>,
+    ) {
+        if self.layout_tree.sync_svgs_from(entries) {
             self.rebuild_display_list();
         }
     }

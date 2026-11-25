@@ -14,6 +14,7 @@ pub mod native_view;
 pub mod signal_archive;
 pub mod stream_slot;
 mod surface;
+pub mod svg;
 #[cfg(test)]
 mod tests;
 pub mod traits;
@@ -62,7 +63,14 @@ pub use nve_components::motion::{
     EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
     TimedTransition, TransitionProperty, TransitionSpec,
 };
+pub use nve_components::paint::{
+    lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
+    LinearGradient, RadialGradient,
+};
 pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
+pub use nve_components::svg::{
+    compute_svg_content_hash, parse_svg_path_data, FillRule, SvgPicture, VectorPathCmd, VectorShape,
+};
 pub use nve_components::transform::{
     affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
 };
@@ -77,6 +85,7 @@ pub use stream_slot::{
     NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_NAME_PREFIX, NVE_STREAM_SLOT_ROLE_ATTR,
 };
 pub use surface::DioxusSurface;
+pub use svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
 pub use traits::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
     use_provide_existing_trait_store, use_provide_trait_store, use_trait, use_trait_store,
@@ -140,6 +149,7 @@ pub mod prelude {
         TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
     };
     pub use nve_components::input_hints::{AutofillHint, InputMode};
+    pub use crate::svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
     pub use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
     pub use crate::use_signal;
     pub use crate::{
@@ -162,7 +172,9 @@ pub mod prelude {
         EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
         TimedTransition, TransitionProperty, TransitionSpec,
     };
+    pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
     pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
+    pub use nve_components::svg::{FillRule, SvgPicture, VectorPathCmd, VectorShape};
     pub use nve_components::transform::Transform2D;
     pub use dioxus_core;
     pub use dioxus_core::{Element, VirtualDom};

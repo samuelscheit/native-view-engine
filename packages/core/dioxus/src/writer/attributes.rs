@@ -7,7 +7,7 @@ use dioxus_core::{AttributeValue, ElementId};
 use nve_abi::{CommandBufferBuilder, LayoutProps, NodeId, RawPropValue, RawPropValueRef, StyleProps};
 use nve_components::{
     apply_typed_attr_with_raw, canonical_raw_style_key, AutofillHint, DrawList, DrawListDecoder,
-    InputMode, MediaQuery, DRAW_LIST_ATTR_PREFIX,
+    InputMode, MediaQuery, SvgPicture, DRAW_LIST_ATTR_PREFIX,
 };
 use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
 
@@ -15,6 +15,7 @@ use crate::hot_patch;
 use crate::native_view::{
     NativeHandleAttr, NativeTypedPropsAttr, NATIVE_VIEW_HANDLE_ATTR, NATIVE_VIEW_KIND_ATTR,
 };
+use crate::svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
 use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
 const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
@@ -101,6 +102,12 @@ impl NveMutationWriter {
                         return;
                     }
                 }
+                if name == NVE_SVG_PICTURE_ATTR || name == "picture" {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        rec.svg_picture = None;
+                    }
+                    return;
+                }
                 if hot_patch::is_test_id_attr_name(name) {
                     self.clear_test_id(node_id);
                 }
@@ -181,6 +188,21 @@ impl NveMutationWriter {
                             rec.native_handle_binder = Some(binder.clone());
                         }
                     }
+                } else if let Some(svg) = any
+                    .as_any()
+                    .downcast_ref::<SvgPicture>()
+                    .or_else(|| any.as_any().downcast_ref::<SvgPictureAttr>().map(|a| &a.0))
+                {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        if rec
+                            .svg_picture
+                            .as_ref()
+                            .is_some_and(|prev| prev.ptr_eq(svg) || prev == svg)
+                        {
+                            return;
+                        }
+                        rec.svg_picture = Some(svg.clone());
+                    }
                 } else if let Some(hint) = any.as_any().downcast_ref::<AutofillHint>() {
                     self.builder
                         .set_raw_prop_str(node_id, "autocomplete", hint.as_html_autocomplete());
@@ -214,6 +236,7 @@ impl NveMutationWriter {
             .filter(|ext| !ext.is_default())
             .map(|ext| Box::new(ext.clone()));
         rec.transform = typed.transform;
+        rec.background_fill = typed.background_fill.clone();
         rec.typed_style = Some(typed);
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
@@ -234,6 +257,7 @@ impl NveMutationWriter {
         rec.transitions.clear();
         rec.layout_ext = None;
         rec.transform = None;
+        rec.background_fill = None;
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
 

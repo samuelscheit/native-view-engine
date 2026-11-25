@@ -33,6 +33,7 @@ mod media_css;
     feature = "camera",
 ))]
 pub mod native_view;
+mod paint_svg;
 mod raw_style;
 mod reconcile;
 mod semantic_attrs;
@@ -100,6 +101,7 @@ pub use media_css::{
     compile_node_media_rules, format_media_class, write_responsive_patch_decls,
     write_style_patch_decls, CompiledMediaRule,
 };
+pub use paint_svg::write_compact_background_fill_into;
 pub use state_css::{
     compile_node_state_rules, compile_node_state_rules_with_hover_guard, format_cursor_rule,
     format_state_class, CompiledStateRule,

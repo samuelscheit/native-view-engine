@@ -6,6 +6,7 @@
 //! inline `style: "..."` user overrides.
 
 mod layout_ext;
+mod paint;
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -19,6 +20,7 @@ use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
 use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
+use nve_components::paint::BackgroundFill;
 use nve_components::style_patch::StylePatch;
 use nve_components::transform::Transform2D;
 
@@ -66,6 +68,7 @@ pub struct TypedStyle {
     pub object_fit: Option<Cow<'static, str>>,
     pub layout_ext: Option<Box<LayoutExt>>,
     pub transform: Option<Transform2D>,
+    pub background_fill: Option<BackgroundFill>,
     pub show_on: Option<MediaQuery>,
     pub responsive: Vec<ResponsiveRule>,
     pub cursor: Option<CursorKind>,
@@ -97,6 +100,7 @@ impl TypedStyle {
             object_fit: None,
             layout_ext: None,
             transform: None,
+            background_fill: None,
             show_on: None,
             responsive: Vec::new(),
             cursor: None,

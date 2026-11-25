@@ -16,6 +16,8 @@ use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
+use nve_components::paint::BackgroundFill;
+use nve_components::svg::SvgPicture;
 use nve_components::transform::Transform2D;
 
 pub use crate::semantic_attrs::{
@@ -35,7 +37,8 @@ pub const NVE_BASE_RESET_CSS: &str = concat!(
     ".nve-p{cursor:pointer}",
     ".nve-tl{color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}",
     ".nve:is(dialog:not([open]),[popover]:not(:popover-open)){display:none}",
-    "dialog.nve::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}"
+    "dialog.nve::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}",
+    "[dir=\"rtl\"] [data-nve-mirror=\"directional\"],[dir=\"rtl\"][data-nve-mirror=\"directional\"]{transform:scaleX(-1)}"
 );
 
 /// Canonicalizes an `f32` to deterministic IEEE-754 bits (folding `-0.0` and non-finite to `0`).
@@ -298,6 +301,7 @@ pub struct MirrorElement {
     pub layout: LayoutProps,
     pub layout_ext: Option<Box<LayoutExt>>,
     pub style: StyleProps,
+    pub background_fill: Option<BackgroundFill>,
     pub transform: Option<Transform2D>,
     pub raw_style: RawStyleProps,
     pub patch_css: String,
@@ -312,6 +316,7 @@ pub struct MirrorElement {
     pub raw_props: HashMap<String, RawPropValue>,
     pub draw_ops: DrawList,
     pub draw_op_count: usize,
+    pub svg: Option<SvgPicture>,
     pub show_on: Option<MediaQuery>,
     pub responsive_rules: Vec<ResponsiveRule>,
     pub cursor: Option<CursorKind>,
@@ -335,6 +340,7 @@ impl MirrorElement {
             layout: LayoutProps::default(),
             layout_ext: None,
             style: StyleProps::default(),
+            background_fill: None,
             transform: None,
             raw_style: RawStyleProps::default(),
             patch_css: String::new(),
@@ -349,6 +355,7 @@ impl MirrorElement {
             raw_props: HashMap::default(),
             draw_ops: DrawList::empty(),
             draw_op_count: 0,
+            svg: None,
             show_on: None,
             responsive_rules: Vec::new(),
             cursor: None,
@@ -384,6 +391,7 @@ impl MirrorElement {
         layout_to_css_into(&self.layout, out);
         write_compact_layout_ext_into(self.layout_ext.as_deref(), out);
         style_to_css_into(&self.style, out);
+        crate::paint_svg::write_compact_background_fill_into(self.background_fill.as_ref(), out);
         write_compact_transform_into(self.transform, out);
         write_compact_cursor_into(self.cursor, out);
         TransitionSpec::write_css_list_into(&self.transitions, out);

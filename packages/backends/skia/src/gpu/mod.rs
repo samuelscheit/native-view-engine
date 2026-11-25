@@ -21,6 +21,8 @@ pub mod d3d12;
 pub mod metal;
 pub mod select;
 #[cfg(feature = "skia")]
+mod skia_graphics;
+#[cfg(feature = "skia")]
 pub mod skia_renderer;
 pub mod vulkan;
 

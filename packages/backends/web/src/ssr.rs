@@ -280,13 +280,17 @@ impl WebBackend {
         }
 
         crate::semantic_attrs::write_semantic_html_attrs(el.kind, tag, &el.raw_props, out);
+        crate::paint_svg::write_svg_open_attrs_html(el, out);
 
         out.push('>');
         if is_void_html_tag(tag) { return None; }
 
         if sem.wrap_code { out.push_str("<code>"); }
-        // Text shows only while the node has no element children, as in the live DOM.
-        if let Some(t) = el.text.as_deref().filter(|_| el.children.is_empty()) { push_text_escaped(t, out); }
+        if el.svg.is_some() && el.children.is_empty() {
+            crate::paint_svg::write_svg_inner_html(el, out);
+        } else if let Some(t) = el.text.as_deref().filter(|_| el.children.is_empty()) {
+            push_text_escaped(t, out);
+        }
         Some((tag, sem.wrap_code))
     }
 

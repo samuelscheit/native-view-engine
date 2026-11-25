@@ -22,6 +22,8 @@ use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
 use nve_components::native_view::TypedNativeViewProps;
+use nve_components::paint::BackgroundFill;
+use nve_components::svg::SvgPicture;
 use nve_components::transform::Transform2D;
 use nve_interop::native_view::NativeViewHandleBinder;
 
@@ -62,6 +64,8 @@ pub(crate) struct NodeRecord {
     pub(crate) transitions: Vec<TransitionSpec>,
     pub(crate) layout_ext: Option<Box<LayoutExt>>,
     pub(crate) transform: Option<Transform2D>,
+    pub(crate) background_fill: Option<BackgroundFill>,
+    pub(crate) svg_picture: Option<SvgPicture>,
 }
 
 impl Default for NodeRecord {
@@ -99,6 +103,8 @@ impl Default for NodeRecord {
             transitions: Vec::new(),
             layout_ext: None,
             transform: None,
+            background_fill: None,
+            svg_picture: None,
         }
     }
 }
@@ -345,6 +351,38 @@ impl NveMutationWriter {
         self.nodes
             .iter()
             .filter_map(|(&id, rec)| rec.native_props.as_ref().map(|p| (id, p)))
+    }
+
+    /// Returns the direct zero-serialization [`BackgroundFill`] stored on `node_id`.
+    #[inline]
+    pub fn node_background_fill(&self, node_id: NodeId) -> Option<&BackgroundFill> {
+        self.nodes
+            .get(&node_id)
+            .and_then(|r| r.background_fill.as_ref())
+    }
+
+    /// Iterates over all active nodes with a direct typed [`BackgroundFill`].
+    #[inline]
+    pub fn iter_background_fills(&self) -> impl Iterator<Item = (NodeId, &BackgroundFill)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(&id, rec)| rec.background_fill.as_ref().map(|fill| (id, fill)))
+    }
+
+    /// Returns the direct zero-serialization [`SvgPicture`] stored on `node_id`.
+    #[inline]
+    pub fn node_svg_picture(&self, node_id: NodeId) -> Option<&SvgPicture> {
+        self.nodes
+            .get(&node_id)
+            .and_then(|r| r.svg_picture.as_ref())
+    }
+
+    /// Iterates over all active nodes with a direct typed [`SvgPicture`].
+    #[inline]
+    pub fn iter_svg_pictures(&self) -> impl Iterator<Item = (NodeId, &SvgPicture)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(&id, rec)| rec.svg_picture.as_ref().map(|svg| (id, svg)))
     }
 
     pub(crate) fn has_event_mask(&self, node_id: NodeId, bit: u64) -> bool {

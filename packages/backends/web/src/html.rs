@@ -175,12 +175,14 @@ impl WebBackend {
         if let Some(dir) = crate::layout_ext_css::node_dir_attr(el.layout_ext.as_deref()) {
             write_attr("dir", dir, out);
         }
+        crate::paint_svg::write_svg_open_attrs_html(el, out);
         out.push('>');
         if is_void_html_tag(tag) {
             return None;
         }
-        // Text shows only while the node has no element children, as in the live DOM.
-        if let Some(t) = el.text.as_deref().filter(|_| el.children.is_empty()) {
+        if el.svg.is_some() && el.children.is_empty() {
+            crate::paint_svg::write_svg_inner_html(el, out);
+        } else if let Some(t) = el.text.as_deref().filter(|_| el.children.is_empty()) {
             push_text_escaped(t, out);
         }
         Some(tag)

@@ -36,7 +36,9 @@ pub use nve_components::layout_ext::{
     GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
     PositionInsets, PositionMode,
 };
+pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 pub use nve_components::style_patch::{Display, StylePatch};
+pub use nve_components::svg::{FillRule, SvgPicture, VectorPathCmd, VectorShape};
 pub use nve_components::transform::Transform2D;
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
 pub use slot_map::{NodeSlotMap, DENSE_SLOT_LIMIT};
@@ -58,9 +60,11 @@ pub struct HeadlessNode {
     pub layout_ext: Option<Box<LayoutExt>>,
     pub transform: Option<Transform2D>,
     pub style: StyleProps,
+    pub background_fill: Option<BackgroundFill>,
     pub has_explicit_style: bool,
     pub raw_props: HashMap<String, RawPropValue>,
     pub draw_list: Option<DrawList>,
+    pub svg: Option<SvgPicture>,
     pub native_view_props: Option<TypedNativeViewProps>,
     pub event_mask: u64,
     pub cursor: Option<CursorKind>,
@@ -372,9 +376,11 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                 layout_ext: None,
                 transform: None,
                 style: StyleProps::default(),
+                background_fill: None,
                 has_explicit_style: false,
                 raw_props: HashMap::new(),
                 draw_list: None,
+                svg: None,
                 native_view_props: None,
                 event_mask: 0,
                 cursor: None,
