@@ -15,12 +15,6 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining host harden
 - [ ] **Hardware GPU Skia swapchains (`crates/nve-backend-skia`)**
   - Wire live Metal, Direct3D 12, and Vulkan GPU context/swapchain creation behind `--features skia` (building on the `cosmic-text` shaper and `SkiaCanvasRenderer` / `GpuSurface` scaffolding).
 
-- [ ] **Instant-Boot Frame-0 `CommandBuffer` + `mmap` Zero-Copy State Snapshot**
-  - Integrate Dioxus signal table archiving into the relocatable state snapshot format (`crates/nve-engine/src/snapshot.rs`).
-  - Add append-only WAL compaction for incremental state persistence between full snapshots.
-  - Wire `--snapshot` replay/save into `hosts/gtk-shell` and mobile shells (macOS, Qt 6, and Windows shells are wired).
-  - Add WASM `wizer` pre-initialization pipeline for instant web snapshot hydration.
-
 ## Flagship / Vision
 
 - [ ] **NVE Studio (Meta Workbench)**
