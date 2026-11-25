@@ -19,6 +19,7 @@
 //! - **Web Components** (`export_web_component`): typed Custom Element `<nve-...>` `.js` + `.d.ts`
 //!   wrapping `wasm-bindgen`
 
+pub mod abi_schema;
 pub mod error;
 pub mod export_compose;
 pub mod export_flutter;
@@ -33,6 +34,11 @@ pub mod parser;
 
 use std::path::Path;
 
+pub use abi_schema::{
+    generate_all_scene_abi_files, generate_c_scene_abi_h, generate_dart_scene_abi,
+    generate_java_scene_buffer, generate_ts_scene_view, SceneFieldDesc, SceneFieldType,
+    NVE_RENDER_NODE_FIELDS, NVE_SCENE_SCHEMA_HASH, NVE_SCENE_VIEW_FIELDS,
+};
 pub use error::CodegenError;
 pub use export_compose::generate_export_compose;
 pub use export_flutter::generate_export_flutter;

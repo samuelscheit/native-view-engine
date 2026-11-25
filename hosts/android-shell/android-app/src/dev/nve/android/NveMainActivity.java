@@ -25,31 +25,22 @@ import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
-
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
  * Standalone zero-Gradle Android Activity hosting any compiled NVE Rust app (`libnve_app.so`)
- * directly on native Android Views via `NveAndroidSurfaceJni.cpp`.
+ * directly on native Android Views via zero-copy `DirectByteBuffer` `NveSceneBuffer` slabs
+ * (zero JSON, `O(changed)` incremental reconciliation via `dirty_indices`).
  */
 public final class NveMainActivity extends Activity {
     private static final String TAG = "NveMainActivity";
-
     private static final int ROOT_NODE_ID = 1;
-    private static final int COMP_VIEW = 1;
-    private static final int COMP_TEXT = 2;
-    private static final int COMP_SCROLL_VIEW = 3;
-    private static final int COMP_TEXT_INPUT = 5;
-    private static final int COMP_PRESSABLE = 6;
 
     static {
         System.loadLibrary("nve_android_shell");
@@ -84,11 +75,25 @@ public final class NveMainActivity extends Activity {
             int nodeId,
             String text);
 
-    private static native String nativeRenderAndSnapshotJson(long handle);
+    private static native int nativeRenderFrame(long handle, long[] outMeta);
+
+    private static native ByteBuffer nativeGetNodesBuffer(long handle);
+
+    private static native ByteBuffer nativeGetTextSlabBuffer(long handle);
+
+    private static native ByteBuffer nativeGetChildrenSlabBuffer(long handle);
+
+    private static native ByteBuffer nativeGetDirtyIndicesBuffer(long handle);
+
+    private static native ByteBuffer nativeGetRemovedIdsBuffer(long handle);
 
     private final Map<Integer, View> nodeViews = new HashMap<>();
     private final Map<Integer, Integer> nodeTags = new HashMap<>();
     private final Map<Integer, FrameLayout> scrollInnerContainers = new HashMap<>();
+    private final Map<Integer, Integer> nodeIndexById = new HashMap<>();
+    private final Set<Integer> scrollViewNodeIds = new HashSet<>();
+    private final NveSceneBuffer sceneBuffer = new NveSceneBuffer();
+    private final long[] sceneMeta = new long[7];
 
     private RootSurfaceLayout rootContainer;
     private long surfaceHandle = 0L;
@@ -162,6 +167,8 @@ public final class NveMainActivity extends Activity {
         nodeViews.clear();
         nodeTags.clear();
         scrollInnerContainers.clear();
+        nodeIndexById.clear();
+        scrollViewNodeIds.clear();
         super.onDestroy();
     }
 
@@ -197,68 +204,65 @@ public final class NveMainActivity extends Activity {
         if (!appLoaded || surfaceHandle == 0L || rootContainer == null) {
             return;
         }
-        String snapshotJson = nativeRenderAndSnapshotJson(surfaceHandle);
-        if (snapshotJson == null || snapshotJson.isEmpty()) {
+        int renderedCount = nativeRenderFrame(surfaceHandle, sceneMeta);
+        if (renderedCount < 0) {
             return;
         }
 
-        final JSONArray nodes;
-        try {
-            nodes = new JSONArray(snapshotJson);
-        } catch (JSONException e) {
-            Log.e(TAG, "Failed to parse NVE snapshot JSON", e);
+        sceneBuffer.attach(
+                sceneMeta[0],
+                sceneMeta[1],
+                (int) sceneMeta[2],
+                (int) sceneMeta[3],
+                (int) sceneMeta[4],
+                (int) sceneMeta[5],
+                (int) sceneMeta[6],
+                nativeGetNodesBuffer(surfaceHandle),
+                nativeGetTextSlabBuffer(surfaceHandle),
+                nativeGetChildrenSlabBuffer(surfaceHandle),
+                nativeGetDirtyIndicesBuffer(surfaceHandle),
+                nativeGetRemovedIdsBuffer(surfaceHandle));
+
+        final int dirtyCount = sceneBuffer.dirtyCount();
+        final int removedCount = sceneBuffer.removedCount();
+        if (dirtyCount == 0 && removedCount == 0) {
             return;
         }
 
-        final int count = nodes.length();
-        final Set<Integer> liveIds = new HashSet<>(count * 2);
-        final Map<Integer, JSONObject> snapById = new HashMap<>(count * 2);
+        // Pass 1: O(removed) — prune removed node IDs directly from `removed_ids`.
+        for (int r = 0; r < removedCount; r++) {
+            int removedId = sceneBuffer.removedId(r);
+            View oldView = nodeViews.remove(removedId);
+            if (oldView != null) {
+                detachFromParent(oldView);
+            }
+            nodeTags.remove(removedId);
+            scrollInnerContainers.remove(removedId);
+            scrollViewNodeIds.remove(removedId);
+            nodeIndexById.remove(removedId);
+        }
 
-        for (int i = 0; i < count; i++) {
-            JSONObject snap = nodes.optJSONObject(i);
-            if (snap == null) {
+        // Pass 2: O(dirty) — update root and create/reuse/style only changed native Views.
+        final int nodeCount = sceneBuffer.nodeCount();
+        for (int d = 0; d < dirtyCount; d++) {
+            final int idx = sceneBuffer.dirtyIndex(d);
+            if (idx < 0 || idx >= nodeCount) {
                 continue;
             }
-            int id = snap.optInt("id", 0);
+            final int id = sceneBuffer.nodeId(idx);
             if (id <= 0) {
                 continue;
             }
-            liveIds.add(id);
-            snapById.put(id, snap);
-        }
+            nodeIndexById.put(id, idx);
 
-        // Pass 1: Prune removed node IDs.
-        Iterator<Map.Entry<Integer, View>> pruneIt = nodeViews.entrySet().iterator();
-        while (pruneIt.hasNext()) {
-            Map.Entry<Integer, View> entry = pruneIt.next();
-            int id = entry.getKey();
-            if (!liveIds.contains(id)) {
-                detachFromParent(entry.getValue());
-                nodeTags.remove(id);
-                scrollInnerContainers.remove(id);
-                pruneIt.remove();
-            }
-        }
-
-        // Pass 2: Update root and create/reuse/style retained native Android Views.
-        for (int i = 0; i < count; i++) {
-            JSONObject snap = nodes.optJSONObject(i);
-            if (snap == null) {
-                continue;
-            }
-            final int id = snap.optInt("id", 0);
-            if (id <= 0) {
-                continue;
-            }
             if (id == ROOT_NODE_ID) {
-                applyRootStyle(snap);
+                applyRootStyle(sceneBuffer, idx);
                 continue;
             }
 
-            final int kind = snap.optInt("kind", COMP_VIEW);
-            final JSONArray children = snap.optJSONArray("ch");
-            final boolean hasChildren = children != null && children.length() > 0;
-            final int tag = (kind == COMP_TEXT && hasChildren) ? (kind | 0x10000) : kind;
+            final int kind = sceneBuffer.kind(idx);
+            final boolean hasChildren = sceneBuffer.childCount(idx) > 0;
+            final int tag = (kind == NveSceneBuffer.KIND_TEXT && hasChildren) ? (kind | 0x10000) : kind;
 
             View view = nodeViews.get(id);
             Integer existingTag = nodeTags.get(id);
@@ -266,32 +270,33 @@ public final class NveMainActivity extends Activity {
                 if (view != null) {
                     detachFromParent(view);
                     scrollInnerContainers.remove(id);
+                    scrollViewNodeIds.remove(id);
                 }
                 view = createViewForNode(id, kind, hasChildren);
                 nodeViews.put(id, view);
                 nodeTags.put(id, tag);
+                if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
+                    scrollViewNodeIds.add(id);
+                }
             }
 
-            updateView(view, id, kind, hasChildren, snap);
+            updateView(view, id, kind, hasChildren, sceneBuffer, idx);
         }
 
-        // Pass 3: Reconcile parent-child hierarchy in exact child order + scroll content bounds.
+        // Pass 3: O(dirty) — reconcile parent-child hierarchy for dirty containers + scroll bounds.
         final Set<View> managedViews = new HashSet<>(nodeViews.values());
-        final Set<Integer> mountedChildIds = new HashSet<>(nodeViews.size() * 2);
-
-        for (int i = 0; i < count; i++) {
-            JSONObject snap = nodes.optJSONObject(i);
-            if (snap == null) {
+        for (int d = 0; d < dirtyCount; d++) {
+            final int idx = sceneBuffer.dirtyIndex(d);
+            if (idx < 0 || idx >= nodeCount) {
                 continue;
             }
-            final int id = snap.optInt("id", 0);
-            final int kind = snap.optInt("kind", COMP_VIEW);
-            final JSONArray childIds = snap.optJSONArray("ch");
+            final int id = sceneBuffer.nodeId(idx);
+            final int kind = sceneBuffer.kind(idx);
 
             final ViewGroup parentGroup;
             if (id == ROOT_NODE_ID) {
                 parentGroup = rootContainer;
-            } else if (kind == COMP_SCROLL_VIEW) {
+            } else if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
                 parentGroup = scrollInnerContainers.get(id);
             } else {
                 View candidate = nodeViews.get(id);
@@ -301,57 +306,59 @@ public final class NveMainActivity extends Activity {
                 continue;
             }
 
-            final int childCount = childIds != null ? childIds.length() : 0;
+            final int childCount = sceneBuffer.childCount(idx);
             final List<View> desiredChildren = new ArrayList<>(childCount);
             final Set<View> desiredSet = new HashSet<>(childCount * 2);
-            float contentMaxX = 0.0f;
-            float contentMaxY = 0.0f;
-
             for (int c = 0; c < childCount; c++) {
-                int childId = childIds.optInt(c, 0);
+                int childId = sceneBuffer.childId(idx, c);
                 View childView = nodeViews.get(childId);
                 if (childView == null) {
                     continue;
                 }
                 desiredChildren.add(childView);
                 desiredSet.add(childView);
-                mountedChildIds.add(childId);
-
-                JSONObject childSnap = snapById.get(childId);
-                if (childSnap != null) {
-                    float cx = (float) childSnap.optDouble("x", 0.0);
-                    float cy = (float) childSnap.optDouble("y", 0.0);
-                    float cw = (float) childSnap.optDouble("w", 0.0);
-                    float ch = (float) childSnap.optDouble("h", 0.0);
-                    contentMaxX = Math.max(contentMaxX, cx + cw);
-                    contentMaxY = Math.max(contentMaxY, cy + ch);
-                }
             }
 
             reconcileChildren(parentGroup, desiredChildren, desiredSet, managedViews);
-
-            if (kind == COMP_SCROLL_VIEW) {
-                float viewW = (float) snap.optDouble("w", 0.0);
-                float viewH = (float) snap.optDouble("h", 0.0);
-                int innerW = dpToPx(Math.max(viewW, contentMaxX));
-                int innerH = dpToPx(Math.max(viewH, contentMaxY));
-                ViewGroup.LayoutParams existingLp = parentGroup.getLayoutParams();
-                if (existingLp == null || existingLp.width != innerW || existingLp.height != innerH) {
-                    parentGroup.setLayoutParams(new FrameLayout.LayoutParams(innerW, innerH));
-                }
-            }
         }
 
-        // Detach any live views that are no longer referenced by any parent's children list.
-        for (Map.Entry<Integer, View> entry : nodeViews.entrySet()) {
-            if (!mountedChildIds.contains(entry.getKey())) {
-                detachFromParent(entry.getValue());
+        // Refresh ScrollView content container bounds whenever any node changed.
+        for (int scrollId : scrollViewNodeIds) {
+            Integer scrollIdxObj = nodeIndexById.get(scrollId);
+            FrameLayout inner = scrollInnerContainers.get(scrollId);
+            if (scrollIdxObj == null || inner == null) {
+                continue;
+            }
+            int scrollIdx = scrollIdxObj.intValue();
+            if (scrollIdx < 0 || scrollIdx >= nodeCount) {
+                continue;
+            }
+            float contentMaxX = sceneBuffer.width(scrollIdx);
+            float contentMaxY = sceneBuffer.height(scrollIdx);
+            int childCount = sceneBuffer.childCount(scrollIdx);
+            for (int c = 0; c < childCount; c++) {
+                int childId = sceneBuffer.childId(scrollIdx, c);
+                Integer childIdxObj = nodeIndexById.get(childId);
+                if (childIdxObj == null) {
+                    continue;
+                }
+                int childIdx = childIdxObj.intValue();
+                if (childIdx >= 0 && childIdx < nodeCount) {
+                    contentMaxX = Math.max(contentMaxX, sceneBuffer.x(childIdx) + sceneBuffer.width(childIdx));
+                    contentMaxY = Math.max(contentMaxY, sceneBuffer.y(childIdx) + sceneBuffer.height(childIdx));
+                }
+            }
+            int innerW = dpToPx(contentMaxX);
+            int innerH = dpToPx(contentMaxY);
+            ViewGroup.LayoutParams existingLp = inner.getLayoutParams();
+            if (existingLp == null || existingLp.width != innerW || existingLp.height != innerH) {
+                inner.setLayoutParams(new FrameLayout.LayoutParams(innerW, innerH));
             }
         }
     }
 
-    private void applyRootStyle(JSONObject snap) {
-        int bgRgba = (int) snap.optLong("bg", 0L);
+    private void applyRootStyle(NveSceneBuffer scene, int idx) {
+        int bgRgba = scene.bgRgba(idx);
         if ((bgRgba >>> 24) != 0) {
             int argb = rgbaToArgb(bgRgba);
             rootContainer.setBackgroundColor(argb);
@@ -363,7 +370,7 @@ public final class NveMainActivity extends Activity {
     }
 
     private View createViewForNode(final int nodeId, int kind, boolean hasChildren) {
-        if (kind == COMP_SCROLL_VIEW) {
+        if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
             ScrollView scrollView = new ScrollView(this);
             scrollView.setFillViewport(false);
             FrameLayout inner = new FrameLayout(this);
@@ -375,7 +382,7 @@ public final class NveMainActivity extends Activity {
             return scrollView;
         }
 
-        if (kind == COMP_TEXT_INPUT) {
+        if (kind == NveSceneBuffer.KIND_TEXT_INPUT) {
             EditText editText = new EditText(this);
             editText.setSingleLine(true);
             editText.setIncludeFontPadding(false);
@@ -404,7 +411,7 @@ public final class NveMainActivity extends Activity {
             return editText;
         }
 
-        if (kind == COMP_TEXT && !hasChildren) {
+        if (kind == NveSceneBuffer.KIND_TEXT && !hasChildren) {
             TextView tv = new TextView(this);
             tv.setIncludeFontPadding(false);
             tv.setPadding(0, 0, 0, 0);
@@ -422,11 +429,12 @@ public final class NveMainActivity extends Activity {
             final int nodeId,
             int kind,
             boolean hasChildren,
-            JSONObject snap) {
-        final float xDp = (float) snap.optDouble("x", 0.0);
-        final float yDp = (float) snap.optDouble("y", 0.0);
-        final float wDp = Math.max(0.0f, (float) snap.optDouble("w", 0.0));
-        final float hDp = Math.max(0.0f, (float) snap.optDouble("h", 0.0));
+            NveSceneBuffer scene,
+            int idx) {
+        final float xDp = scene.x(idx);
+        final float yDp = scene.y(idx);
+        final float wDp = Math.max(0.0f, scene.width(idx));
+        final float hDp = Math.max(0.0f, scene.height(idx));
 
         final int leftPx = dpToPx(xDp);
         final int topPx = dpToPx(yDp);
@@ -439,15 +447,14 @@ public final class NveMainActivity extends Activity {
         lp.gravity = Gravity.TOP | Gravity.START;
         view.setLayoutParams(lp);
 
-        final int bgRgba = (int) snap.optLong("bg", 0L);
-        final int fgRgba = (int) snap.optLong("fg", 0L);
-        final int bcRgba = (int) snap.optLong("bc", 0L);
-        final float bwDp = Math.max(0.0f, (float) snap.optDouble("bw", 0.0));
-        final float brDp = Math.max(0.0f, (float) snap.optDouble("br", 0.0));
-        final float opacity = (float) snap.optDouble("op", 1.0);
-        final float fontSizeDp = (float) snap.optDouble("fs", 16.0);
-        final int zIndex = snap.optInt("z", 0);
-        final long eventMask = snap.optLong("em", 0L);
+        final int bgRgba = scene.bgRgba(idx);
+        final int fgRgba = scene.textRgba(idx);
+        final int bcRgba = scene.borderRgba(idx);
+        final float bwDp = Math.max(0.0f, scene.borderWidth(idx));
+        final float brDp = Math.max(0.0f, scene.borderRadius(idx));
+        final float opacity = scene.opacity(idx);
+        final float fontSizeDp = scene.fontSize(idx);
+        final int zIndex = scene.zIndex(idx);
 
         view.setAlpha(Math.max(0.0f, Math.min(1.0f, opacity)));
         view.setTranslationZ(zIndex != 0 ? zIndex * density : 0.0f);
@@ -471,9 +478,9 @@ public final class NveMainActivity extends Activity {
             view.setClipToOutline(false);
         }
 
-        if (kind == COMP_TEXT_INPUT && view instanceof EditText) {
+        if (kind == NveSceneBuffer.KIND_TEXT_INPUT && view instanceof EditText) {
             EditText editText = (EditText) view;
-            String text = snap.optString("text", "");
+            String text = scene.readText(idx);
             CharSequence current = editText.getText();
             if (current == null || !text.equals(current.toString())) {
                 suppressTextWatcher = true;
@@ -486,9 +493,9 @@ public final class NveMainActivity extends Activity {
             }
             editText.setTextColor(fgRgba != 0 ? rgbaToArgb(fgRgba) : Color.WHITE);
             editText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, fontSizeDp > 0.0f ? fontSizeDp : 16.0f);
-        } else if (kind == COMP_TEXT && !hasChildren && view instanceof TextView) {
+        } else if (kind == NveSceneBuffer.KIND_TEXT && !hasChildren && view instanceof TextView) {
             TextView tv = (TextView) view;
-            String text = snap.optString("text", "");
+            String text = scene.readText(idx);
             if (!text.equals(tv.getText().toString())) {
                 tv.setText(text);
             }
@@ -496,7 +503,7 @@ public final class NveMainActivity extends Activity {
             tv.setTextSize(TypedValue.COMPLEX_UNIT_DIP, fontSizeDp > 0.0f ? fontSizeDp : 16.0f);
         }
 
-        final boolean interactive = (kind == COMP_PRESSABLE || eventMask != 0L);
+        final boolean interactive = scene.isInteractive(idx);
         if (interactive) {
             view.setClickable(true);
             view.setOnClickListener(new View.OnClickListener() {
@@ -509,7 +516,7 @@ public final class NveMainActivity extends Activity {
                     syncViews();
                 }
             });
-        } else if (kind != COMP_TEXT_INPUT && kind != COMP_SCROLL_VIEW) {
+        } else if (kind != NveSceneBuffer.KIND_TEXT_INPUT && kind != NveSceneBuffer.KIND_SCROLL_VIEW) {
             view.setOnClickListener(null);
             view.setClickable(false);
         }
@@ -520,7 +527,6 @@ public final class NveMainActivity extends Activity {
             List<View> desiredChildren,
             Set<View> desiredSet,
             Set<View> managedViews) {
-        // Remove managed children that no longer belong to this parent.
         for (int i = parent.getChildCount() - 1; i >= 0; i--) {
             View child = parent.getChildAt(i);
             if (managedViews.contains(child) && !desiredSet.contains(child)) {
@@ -528,7 +534,6 @@ public final class NveMainActivity extends Activity {
             }
         }
 
-        // Check whether existing managed child order already matches `desiredChildren`.
         List<View> currentManaged = new ArrayList<>(parent.getChildCount());
         for (int i = 0; i < parent.getChildCount(); i++) {
             View child = parent.getChildAt(i);

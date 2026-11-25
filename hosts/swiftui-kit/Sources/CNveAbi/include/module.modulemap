@@ -1,4 +1,5 @@
 module CNveAbi [system] {
     header "nve_abi.h"
+    header "nve_scene_abi.h"
     export *
 }

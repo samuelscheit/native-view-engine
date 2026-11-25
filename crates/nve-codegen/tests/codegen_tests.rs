@@ -2,10 +2,10 @@ use std::path::Path;
 
 use nve_codegen::{
     export_all_targets, export_compose, export_flutter, export_rn_json, export_rn_spec,
-    export_swiftui, export_target, export_web_component, import_rn_file, import_rn_source,
-    parse_rn_spec, parse_rn_spec_file, CommandSpec, DefaultValue, EventBubbling, EventSpec,
-    ExportBackend, ExportTarget, NveExportSpec, ObjectField, ParamSpec, ParsedRnSpec, PropSpec,
-    PropType,
+    export_swiftui, export_target, export_web_component, generate_all_scene_abi_files,
+    import_rn_file, import_rn_source, parse_rn_spec, parse_rn_spec_file, CommandSpec, DefaultValue,
+    EventBubbling, EventSpec, ExportBackend, ExportTarget, NveExportSpec, ObjectField, ParamSpec,
+    ParsedRnSpec, PropSpec, PropType, NVE_SCENE_SCHEMA_HASH,
 };
 
 const RN_LIBRARIES_DIR: &str =
@@ -507,6 +507,11 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
         out.android_view_manager_kt.relative_path,
         "NveCounterCardViewManager.kt"
     );
+    assert_eq!(
+        out.windows_component_view_hpp.relative_path,
+        "NveCounterCardRnwComponentView.hpp"
+    );
+    assert_eq!(out.files().len(), 6);
 
     // 1. TypeScript spec assertions
     let ts = &out.native_component_ts.content;
@@ -551,6 +556,16 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(kt.contains("getExportedCustomDirectEventTypeConstants"));
     assert!(kt.contains("getExportedCustomBubblingEventTypeConstants"));
     assert_balanced_delimiters("NveCounterCardViewManager.kt", kt);
+
+    // 4b. Windows RNW Fabric C++20 header assertions (targeting `NveRnwComponentView.hpp`)
+    let rnw = &out.windows_component_view_hpp.content;
+    assert!(rnw.contains("#include \"NveRnwComponentView.hpp\""));
+    assert!(rnw.contains("class NveCounterCardRnwComponentView"));
+    assert!(rnw.contains("nve::win::NveRnwComponentHost"));
+    assert!(rnw.contains("register_nve_counter_card_rnw_component"));
+    assert!(rnw.contains("nve::win::register_nve_rnw_component"));
+    assert!(rnw.contains("L\"NveCounterCard\""));
+    assert_balanced_delimiters("NveCounterCardRnwComponentView.hpp", rnw);
 
     // 5. Full bi-directional round-trip: parse our own generated TS right back via `import_rn`!
     let roundtrip = import_rn_source(ts).expect("round-trip parse generated NativeComponent.ts");
@@ -651,7 +666,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     let all = export_all_targets(&fabric_spec, ExportTarget::ALL).expect("export all targets");
     assert_eq!(all.len(), 5);
     let total_files: usize = all.iter().map(|o| o.files.len()).sum();
-    assert_eq!(total_files, 10); // 5 RN + 1 Flutter + 1 SwiftUI + 1 Compose + 2 Web
+    assert_eq!(total_files, 11); // 6 RN (incl. RNW) + 1 Flutter + 1 SwiftUI + 1 Compose + 2 Web
 
     let single = export_target(&fabric_spec, ExportTarget::from_name("swiftui").unwrap()).unwrap();
     assert_eq!(single.files.len(), 1);
@@ -832,5 +847,65 @@ fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
         String::from_utf8_lossy(&status_export.stderr)
     );
 
+    // 3. Check RNW Fabric C++20 header compiles cleanly against real `hosts/windows-shell/NveRnwComponentView.hpp`
+    let windows_include_dir = manifest_dir.join("../../hosts/windows-shell");
+    if windows_include_dir.join("NveRnwComponentView.hpp").exists() {
+        let rnw_harness = tmp.join("check_rnw.cpp");
+        std::fs::write(
+            &rnw_harness,
+            format!(
+                "#include \"{}\"\nvoid instantiate_rnw() {{\n  nve::exported::NveCounterCardRnwComponentView view;\n  (void)view;\n}}\n",
+                exported.windows_component_view_hpp.relative_path
+            ),
+        )
+        .unwrap();
+        let status_rnw = std::process::Command::new("clang++")
+            .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+            .arg("-I")
+            .arg(&include_dir)
+            .arg("-I")
+            .arg(&windows_include_dir)
+            .arg("-I")
+            .arg(&tmp)
+            .arg(&rnw_harness)
+            .output()
+            .expect("run clang++ on export_rn RNW component view");
+        assert!(
+            status_rnw.status.success(),
+            "export_rn RNW C++20 component view failed to compile:\n{}",
+            String::from_utf8_lossy(&status_rnw.stderr)
+        );
+    }
+
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn scene_abi_generated_files_match_checked_in_artifacts_byte_for_byte() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let generated = generate_all_scene_abi_files();
+    assert_eq!(generated.len(), 5);
+    assert_ne!(NVE_SCENE_SCHEMA_HASH, 0);
+
+    let update_mode = std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
+    for file in &generated {
+        let full_path = repo_root.join(&file.relative_path);
+        if update_mode {
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dirs");
+            }
+            std::fs::write(&full_path, &file.content).expect("write generated scene ABI file");
+        }
+        let on_disk = std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
+            panic!(
+                "missing generated scene ABI file {}: {e}",
+                full_path.display()
+            )
+        });
+        assert_eq!(
+            on_disk, file.content,
+            "Scene ABI schema drift detected in {}! Re-run with NVE_UPDATE_SCENE_ABI=1 to regenerate.",
+            file.relative_path
+        );
+    }
 }

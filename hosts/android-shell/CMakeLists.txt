@@ -45,5 +45,17 @@ if(NOT ANDROID)
         $<TARGET_FILE:nve_mock_app_bad_iface>
         $<TARGET_FILE:nve_jni_test_recorder>
     )
+
+    add_library(nve_mock_scene_app SHARED tests/mock_scene_app.cpp)
+    target_link_libraries(nve_mock_scene_app PRIVATE nve_fabric_bridge)
+
+    add_executable(nve_android_scene_test tests/android_scene_jni_test.cpp)
+    target_include_directories(nve_android_scene_test PRIVATE ${JNI_INCLUDE_DIRS})
+    target_link_libraries(nve_android_scene_test PRIVATE nve_android_shell nve_fabric_bridge)
+    add_test(
+      NAME android_scene_jni_test
+      COMMAND nve_android_scene_test
+        $<TARGET_FILE:nve_mock_scene_app>
+    )
   endif()
 endif()

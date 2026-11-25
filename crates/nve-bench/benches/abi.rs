@@ -3,8 +3,9 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use nve_abi::{
     decode_events, encode_bin_value_to_vec, encode_events, BinValueView, CommandDecoder,
-    NveLayoutApi, NveMapEntry, NveSizeConstraints, NveSurfaceApi, NveValue, NVE_IFACE_LAYOUT,
-    NVE_IFACE_SURFACE,
+    NveLayoutApi, NveMapEntry, NveSceneRef, NveSceneTable, NveSizeConstraints, NveSurfaceApi,
+    NveValue, SceneNodeInput, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE, NVE_NODE_INTERACTIVE,
+    NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT, NVE_NODE_KIND_TEXT, NVE_NODE_LEAF_TEXT,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
 
@@ -153,11 +154,120 @@ fn bench_zero_copy_value_read(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_scene_view_read(c: &mut Criterion) {
+    let mut group = c.benchmark_group("abi/scene");
+
+    let mut table = NveSceneTable::with_capacity(1000);
+    table.begin_frame(1);
+    let children_root: Vec<u32> = (2..=1000u32).collect();
+    for id in 1..=1000u32 {
+        let label = if id == 1 {
+            ""
+        } else if id % 2 == 0 {
+            "Metric Card Value"
+        } else {
+            "Button Action"
+        };
+        let children: &[u32] = if id == 1 { &children_root } else { &[] };
+        table
+            .upsert_node(SceneNodeInput {
+                node_id: id,
+                kind: if id == 1 {
+                    NVE_NODE_KIND_ROOT
+                } else if id % 4 == 0 {
+                    NVE_NODE_KIND_PRESSABLE
+                } else {
+                    NVE_NODE_KIND_TEXT
+                },
+                flags: if id % 4 == 0 {
+                    NVE_NODE_INTERACTIVE
+                } else {
+                    NVE_NODE_LEAF_TEXT
+                },
+                opacity_u8: 255,
+                x: (id % 10) as f32 * 40.0,
+                y: (id / 10) as f32 * 24.0,
+                width: 120.0,
+                height: 36.0,
+                bg_rgba: 0xFF1E_293B,
+                text_rgba: 0xFFF8_FAFC,
+                border_rgba: 0xFF33_4155,
+                border_radius: 8.0,
+                border_width: 1.0,
+                font_size: 14.0,
+                z_index: 0,
+                text: label,
+                children,
+            })
+            .unwrap();
+    }
+
+    // Mutate only 3 nodes out of 1000 for the incremental frame benchmark.
+    table.begin_frame(2);
+    for &id in &[17u32, 333, 987] {
+        table
+            .upsert_node(SceneNodeInput {
+                node_id: id,
+                kind: NVE_NODE_KIND_TEXT,
+                flags: NVE_NODE_LEAF_TEXT,
+                opacity_u8: 240,
+                x: 12.0,
+                y: 24.0,
+                width: 140.0,
+                height: 36.0,
+                bg_rgba: 0xFF0F_172A,
+                text_rgba: 0xFFFF_FFFF,
+                border_rgba: 0xFF38_BDF8,
+                border_radius: 10.0,
+                border_width: 1.5,
+                font_size: 15.0,
+                z_index: 2,
+                text: "Counter: 42",
+                children: &[],
+            })
+            .unwrap();
+    }
+    let view = table.as_view();
+    assert_eq!(view.node_count, 1000);
+    assert_eq!(view.dirty_count, 3);
+
+    group.throughput(Throughput::Elements(3));
+    group.bench_function("scene_view_read_dirty_3_of_1000", |b| {
+        b.iter(|| {
+            let scene = unsafe { NveSceneRef::from_raw(black_box(view)) }.unwrap();
+            let mut acc_x = 0.0f32;
+            let mut acc_text = 0usize;
+            for (_, node) in scene.dirty_nodes() {
+                acc_x += node.x + node.width + node.opacity_f32();
+                acc_text += scene.node_text(node).unwrap().len();
+            }
+            black_box((acc_x, acc_text))
+        });
+    });
+
+    group.throughput(Throughput::Elements(1000));
+    group.bench_function("scene_view_read_all_1000", |b| {
+        b.iter(|| {
+            let scene = unsafe { NveSceneRef::from_raw(black_box(view)) }.unwrap();
+            let mut acc_x = 0.0f32;
+            let mut acc_text = 0usize;
+            for node in scene.nodes() {
+                acc_x += node.x + node.width + node.opacity_f32();
+                acc_text += scene.node_text(node).unwrap().len();
+            }
+            black_box((acc_x, acc_text))
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     abi_benches,
     bench_command_buffer_codec,
     bench_event_ring_codec,
     bench_ffi_interface_overhead,
-    bench_zero_copy_value_read
+    bench_zero_copy_value_read,
+    bench_scene_view_read
 );
 criterion_main!(abi_benches);

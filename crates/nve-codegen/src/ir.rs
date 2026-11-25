@@ -378,16 +378,18 @@ pub struct ExportRnOutput {
     pub cpp_bridge_cpp: GeneratedFile,
     pub ios_component_view_mm: GeneratedFile,
     pub android_view_manager_kt: GeneratedFile,
+    pub windows_component_view_hpp: GeneratedFile,
 }
 
 impl ExportRnOutput {
-    pub fn files(&self) -> [&GeneratedFile; 5] {
+    pub fn files(&self) -> [&GeneratedFile; 6] {
         [
             &self.native_component_ts,
             &self.cpp_bridge_hpp,
             &self.cpp_bridge_cpp,
             &self.ios_component_view_mm,
             &self.android_view_manager_kt,
+            &self.windows_component_view_hpp,
         ]
     }
 

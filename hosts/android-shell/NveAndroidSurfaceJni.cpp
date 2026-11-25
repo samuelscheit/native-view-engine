@@ -1,25 +1,40 @@
 #include <jni.h>
 
 #include "nve_host_runtime.hpp"
+#include "nve_scene_builder.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace {
 
 struct AndroidSurfaceState {
   nve::NativeHostSession session;
+  nve::SceneTableBuilder scene_builder;
   NveSurfaceConfig config{};
+  uint64_t scene_frame_seq{0};
   std::string last_error;
   JavaVM* jvm{nullptr};
   jclass activity_class{nullptr};
   jmethodID measure_text_method{nullptr};
 };
+
+// Non-null sentinel passed to `NewDirectByteBuffer` with capacity 0 when a slab is empty,
+// avoiding NULL address edge cases across JVMs / ART.
+uint8_t g_empty_slab_sentinel = 0;
+
+jobject make_direct_buffer(JNIEnv* env, const void* ptr, size_t byte_len) {
+  if (env == nullptr) {
+    return nullptr;
+  }
+  if (ptr == nullptr || byte_len == 0u) {
+    return env->NewDirectByteBuffer(&g_empty_slab_sentinel, 0);
+  }
+  return env->NewDirectByteBuffer(const_cast<void*>(ptr), static_cast<jlong>(byte_len));
+}
 
 std::u16string utf8_to_utf16(std::string_view input) {
   std::u16string out;
@@ -82,164 +97,6 @@ float sanitize_positive(float value, float fallback) noexcept {
 
 float sanitize_finite(float value) noexcept {
   return std::isfinite(value) ? value : 0.0f;
-}
-
-void append_hex4(std::string& out, uint16_t code_unit) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  out.push_back('\\');
-  out.push_back('u');
-  out.push_back(kHex[(code_unit >> 12) & 0xFu]);
-  out.push_back(kHex[(code_unit >> 8) & 0xFu]);
-  out.push_back(kHex[(code_unit >> 4) & 0xFu]);
-  out.push_back(kHex[code_unit & 0xFu]);
-}
-
-/// Append a JSON-escaped ASCII string so JNI `NewStringUTF` always receives valid Modified UTF-8
-/// even when the source UTF-8 contains supplementary plane code points (e.g. emoji > U+FFFF).
-void append_json_string(std::string& out, std::string_view input) {
-  out.push_back('"');
-  size_t i = 0;
-  const size_t n = input.size();
-  while (i < n) {
-    const unsigned char c = static_cast<unsigned char>(input[i]);
-    if (c == '"') {
-      out.append("\\\"");
-      ++i;
-    } else if (c == '\\') {
-      out.append("\\\\");
-      ++i;
-    } else if (c == '\b') {
-      out.append("\\b");
-      ++i;
-    } else if (c == '\f') {
-      out.append("\\f");
-      ++i;
-    } else if (c == '\n') {
-      out.append("\\n");
-      ++i;
-    } else if (c == '\r') {
-      out.append("\\r");
-      ++i;
-    } else if (c == '\t') {
-      out.append("\\t");
-      ++i;
-    } else if (c < 0x20u) {
-      append_hex4(out, static_cast<uint16_t>(c));
-      ++i;
-    } else if (c < 0x80u) {
-      out.push_back(static_cast<char>(c));
-      ++i;
-    } else {
-      // Decode UTF-8 scalar value and emit \uXXXX (or UTF-16 surrogate pair for > U+FFFF).
-      uint32_t cp = 0xFFFDu;
-      size_t adv = 1;
-      if ((c & 0xE0u) == 0xC0u && i + 1 < n) {
-        const unsigned char c1 = static_cast<unsigned char>(input[i + 1]);
-        if ((c1 & 0xC0u) == 0x80u) {
-          cp = ((static_cast<uint32_t>(c & 0x1Fu) << 6) | static_cast<uint32_t>(c1 & 0x3Fu));
-          adv = 2;
-        }
-      } else if ((c & 0xF0u) == 0xE0u && i + 2 < n) {
-        const unsigned char c1 = static_cast<unsigned char>(input[i + 1]);
-        const unsigned char c2 = static_cast<unsigned char>(input[i + 2]);
-        if ((c1 & 0xC0u) == 0x80u && (c2 & 0xC0u) == 0x80u) {
-          cp = ((static_cast<uint32_t>(c & 0x0Fu) << 12) |
-                (static_cast<uint32_t>(c1 & 0x3Fu) << 6) |
-                static_cast<uint32_t>(c2 & 0x3Fu));
-          adv = 3;
-        }
-      } else if ((c & 0xF8u) == 0xF0u && i + 3 < n) {
-        const unsigned char c1 = static_cast<unsigned char>(input[i + 1]);
-        const unsigned char c2 = static_cast<unsigned char>(input[i + 2]);
-        const unsigned char c3 = static_cast<unsigned char>(input[i + 3]);
-        if ((c1 & 0xC0u) == 0x80u && (c2 & 0xC0u) == 0x80u && (c3 & 0xC0u) == 0x80u) {
-          cp = ((static_cast<uint32_t>(c & 0x07u) << 18) |
-                (static_cast<uint32_t>(c1 & 0x3Fu) << 12) |
-                (static_cast<uint32_t>(c2 & 0x3Fu) << 6) |
-                static_cast<uint32_t>(c3 & 0x3Fu));
-          adv = 4;
-        }
-      }
-      if (cp <= 0xFFFFu) {
-        append_hex4(out, static_cast<uint16_t>(cp));
-      } else if (cp <= 0x10FFFFu) {
-        const uint32_t u = cp - 0x10000u;
-        const uint16_t high = static_cast<uint16_t>(0xD800u + (u >> 10));
-        const uint16_t low = static_cast<uint16_t>(0xDC00u + (u & 0x3FFu));
-        append_hex4(out, high);
-        append_hex4(out, low);
-      } else {
-        append_hex4(out, 0xFFFDu);
-      }
-      i += adv;
-    }
-  }
-  out.push_back('"');
-}
-
-void append_float(std::string& out, float value) {
-  char buf[32];
-  const float safe = sanitize_finite(value);
-  const int len = std::snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(safe));
-  if (len > 0) {
-    out.append(buf, static_cast<size_t>(len));
-  } else {
-    out.push_back('0');
-  }
-}
-
-std::string serialize_snapshots_json(const std::vector<nve::RenderedNodeSnapshot>& snapshots) {
-  std::string out;
-  out.reserve(snapshots.size() * 192u + 8u);
-  out.push_back('[');
-  for (size_t i = 0; i < snapshots.size(); ++i) {
-    const auto& snap = snapshots[i];
-    if (i > 0) {
-      out.push_back(',');
-    }
-    out.append("{\"id\":");
-    out.append(std::to_string(snap.node_id));
-    out.append(",\"kind\":");
-    out.append(std::to_string(snap.kind));
-    out.append(",\"text\":");
-    append_json_string(out, snap.text);
-    out.append(",\"x\":");
-    append_float(out, snap.layout.x);
-    out.append(",\"y\":");
-    append_float(out, snap.layout.y);
-    out.append(",\"w\":");
-    append_float(out, std::max(0.0f, sanitize_finite(snap.layout.width)));
-    out.append(",\"h\":");
-    append_float(out, std::max(0.0f, sanitize_finite(snap.layout.height)));
-    out.append(",\"bg\":");
-    out.append(std::to_string(snap.background_rgba));
-    out.append(",\"fg\":");
-    out.append(std::to_string(snap.text_color_rgba));
-    out.append(",\"bc\":");
-    out.append(std::to_string(snap.border_color_rgba));
-    out.append(",\"bw\":");
-    append_float(out, std::max(0.0f, sanitize_finite(snap.border_width)));
-    out.append(",\"br\":");
-    append_float(out, std::max(0.0f, sanitize_finite(snap.border_radius)));
-    out.append(",\"op\":");
-    append_float(out, std::clamp(sanitize_finite(snap.opacity), 0.0f, 1.0f));
-    out.append(",\"fs\":");
-    append_float(out, sanitize_positive(snap.font_size, 16.0f));
-    out.append(",\"z\":");
-    out.append(std::to_string(snap.z_index));
-    out.append(",\"em\":");
-    out.append(std::to_string(snap.event_mask));
-    out.append(",\"ch\":[");
-    for (size_t c = 0; c < snap.children.size(); ++c) {
-      if (c > 0) {
-        out.push_back(',');
-      }
-      out.append(std::to_string(snap.children[c]));
-    }
-    out.append("]}");
-  }
-  out.push_back(']');
-  return out;
 }
 
 } // namespace
@@ -325,6 +182,7 @@ Java_dev_nve_android_NveMainActivity_nativeDestroySurface(
   if (!state) {
     return;
   }
+  state->scene_builder.clear();
   state->session.reset();
   if (state->activity_class != nullptr && env != nullptr) {
     env->DeleteGlobalRef(state->activity_class);
@@ -456,19 +314,109 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchTextChange(
   return static_cast<jint>(dirty);
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_dev_nve_android_NveMainActivity_nativeRenderAndSnapshotJson(
+/// Renders/snapshots the active surface directly into `SceneTableBuilder`'s zero-copy 64-byte
+/// `NveRenderNode` slabs and writes `[schema_hash, frame_id, node_count, dirty_count,
+/// removed_count, text_slab_len, children_slab_len]` into `out_meta`.
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
     JNIEnv* env,
     jclass /*clazz*/,
-    jlong handle_ptr) {
+    jlong handle_ptr,
+    jlongArray out_meta) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
   if (!state || !state->session.is_valid()) {
-    return env->NewStringUTF("[]");
+    return -1;
   }
   if (state->session.bridge()->frame_count() == 0) {
     (void)state->session.render(nullptr);
   }
   const auto snapshots = state->session.snapshot_nodes();
-  const std::string json = serialize_snapshots_json(snapshots);
-  return env->NewStringUTF(json.c_str());
+  state->scene_builder.sync(++state->scene_frame_seq, snapshots);
+  const NveSceneView view = state->scene_builder.view();
+  if (!nve::SceneTableBuilder::verify_view_schema(view)) {
+    state->last_error = "NveSceneView schema hash verification failed";
+    return -2;
+  }
+  if (env != nullptr && out_meta != nullptr && env->GetArrayLength(out_meta) >= 7) {
+    const jlong meta[7] = {
+        static_cast<jlong>(view.schema_hash),
+        static_cast<jlong>(view.frame_id),
+        static_cast<jlong>(view.node_count),
+        static_cast<jlong>(view.dirty_count),
+        static_cast<jlong>(view.removed_count),
+        static_cast<jlong>(view.text_slab_len),
+        static_cast<jlong>(view.children_slab_len),
+    };
+    env->SetLongArrayRegion(out_meta, 0, 7, meta);
+  }
+  return static_cast<jint>(view.node_count);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetNodesBuffer(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state) {
+    return make_direct_buffer(env, nullptr, 0);
+  }
+  const NveSceneView view = state->scene_builder.view();
+  return make_direct_buffer(
+      env, view.nodes, static_cast<size_t>(view.node_count) * sizeof(NveRenderNode));
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetTextSlabBuffer(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state) {
+    return make_direct_buffer(env, nullptr, 0);
+  }
+  const NveSceneView view = state->scene_builder.view();
+  return make_direct_buffer(env, view.text_slab, static_cast<size_t>(view.text_slab_len));
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetChildrenSlabBuffer(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state) {
+    return make_direct_buffer(env, nullptr, 0);
+  }
+  const NveSceneView view = state->scene_builder.view();
+  return make_direct_buffer(
+      env, view.children_slab, static_cast<size_t>(view.children_slab_len) * sizeof(uint32_t));
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetDirtyIndicesBuffer(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state) {
+    return make_direct_buffer(env, nullptr, 0);
+  }
+  const NveSceneView view = state->scene_builder.view();
+  return make_direct_buffer(
+      env, view.dirty_indices, static_cast<size_t>(view.dirty_count) * sizeof(uint32_t));
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetRemovedIdsBuffer(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state) {
+    return make_direct_buffer(env, nullptr, 0);
+  }
+  const NveSceneView view = state->scene_builder.view();
+  return make_direct_buffer(
+      env, view.removed_ids, static_cast<size_t>(view.removed_count) * sizeof(uint32_t));
 }
