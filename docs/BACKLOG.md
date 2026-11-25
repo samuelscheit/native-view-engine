@@ -29,8 +29,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Layout & RTL Parity (`flex-basis`, CSS Grid, `position: sticky`, `aspect-ratio`, RTL Logical Props)**
   - Expose Taffy's CSS Grid (`display: grid`, `grid-template-columns`, `minmax`, spanning), `flex-basis`, `aspect-ratio`, `position: sticky`, and RTL logical layout mirroring (`padding-inline-start`, selective icon mirroring) cleanly alongside Wave C1's `nve-abi` schema update.
 
-- [ ] **Animation & Rich Graphics (`transform`, Gradients, Interruptible Springs, Style Transitions, Skia SVG)**
-  - Add typed `transform` (`translate`/`scale`/`rotate`), linear/radial gradients, interruptible velocity-preserving spring physics (`ReducedMotion`-aware), style transitions, and cached vector SVG rendering in `SkiaBackend`.
+- [ ] **Rich Graphics (`transform`, Skia Gradients & Cached Skia SVG)**
+  - Closed-form interruptible springs (`SpringSpec`), `TransitionSpec`, Web native CSS `transition:` + `prefers-reduced-motion`, and Skia `MotionDriver` are landed (`e6a44f1`); remaining work is typed 2D `transform` (`translate`/`scale`/`rotate`), linear/radial gradients, and cached vector SVG rendering in `SkiaBackend`.
 
 - [ ] **Text Input, IME, BiDi & Mobile Host Autofill/Keyboard Wiring**
   - Subtree `ErrorBoundary`, `AutofillHint`/`InputMode` + Web autofill sync, and `KeyboardInsets` + Web `visualViewport` + `KeyboardAvoidingView` are landed (`38b351c`); remaining work is unified IME `CompositionStart/Update/End` + caret screen-rect candidate-popup feedback, BiDi run/caret mapping & grapheme-safe selection in Skia, and native Apple/Android host wiring for `AutofillHint`/`KeyboardInsets`.
