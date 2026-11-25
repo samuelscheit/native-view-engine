@@ -23,6 +23,7 @@ add_library(nve_macos_shell_lib STATIC
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost+Session.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentViewBase.mm"
+  "${NVE_APPLE_COMMON_DIR}/NveAppleNativeViews.mm"
   NveMacFabricHost.mm
   NveMacWindowManager.mm
   RCTNveMacComponentView.mm
@@ -40,6 +41,7 @@ target_link_libraries(nve_macos_shell_lib
     nve_fabric_bridge
     "-framework Cocoa"
     "-framework QuartzCore"
+    "-framework WebKit"
 )
 
 add_executable(nve_macos_shell main.mm)

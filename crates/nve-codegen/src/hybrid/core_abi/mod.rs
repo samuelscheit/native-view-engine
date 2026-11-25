@@ -368,9 +368,10 @@ pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
     ]
 }
 
-/// Generates ALL 10 checked-in Core + Scene ABI artifacts from the unified `hybrid` pipeline.
+/// Generates ALL 15 checked-in Core ABI (5) + Scene ABI (5) + Wire Codecs (5) artifacts.
 pub fn generate_all_abi_files() -> Vec<GeneratedFile> {
     let mut files = generate_all_core_abi_files();
     files.extend(generate_all_scene_abi_files());
+    files.extend(crate::wire_codecs::generate_all_wire_codec_files());
     files
 }

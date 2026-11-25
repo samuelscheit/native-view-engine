@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
+use nve_dioxus::traits::TraitScope;
 use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Separator};
 
 use crate::state::{
@@ -18,6 +19,7 @@ use crate::theme::{
     badge_min_w, card_border, control_border, panel_border, row_border, LayoutMetrics, CARD_ALT_BG,
     CONTROL_BG, PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY,
 };
+use crate::traits::{studio_compact_override, StudioTraitPreviewChip};
 use crate::ui::mutate_state;
 
 #[allow(clippy::too_many_arguments)]
@@ -168,6 +170,19 @@ pub(crate) fn render_studio_panel(
                     label: "LIVE SELF-EDIT".to_string(),
                     variant: BadgeVariant::Neutral,
                     style: Some(live_badge_style),
+                }
+            }
+
+            // Live Environment TraitKey Readout (inherits root TraitProvider; compact preview uses TraitScope)
+            StudioTraitPreviewChip {
+                test_id: Some("studio-trait-live".into()),
+            }
+            if !is_mobile {
+                TraitScope {
+                    overrides: studio_compact_override(true),
+                    StudioTraitPreviewChip {
+                        test_id: Some("studio-trait-scoped".into()),
+                    }
                 }
             }
 

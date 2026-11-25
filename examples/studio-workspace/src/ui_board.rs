@@ -11,6 +11,7 @@ use nve_ui::{
 };
 
 use crate::assets::avatar_for_author;
+use crate::routes::StudioRoute;
 use crate::state::{BoardFilter, Priority, TaskItem, WorkspaceSnapshot, WorkspaceState};
 use crate::theme::{
     card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CARD_BG, CONTROL_BG,
@@ -48,6 +49,7 @@ pub(crate) fn render_board_view(
     version: Signal<u64>,
     current: &WorkspaceSnapshot,
     filtered_tasks: &[TaskItem],
+    focused_task_id: Option<u32>,
     total_tasks: usize,
     active_tasks: usize,
     done_tasks: usize,
@@ -190,11 +192,15 @@ pub(crate) fn render_board_view(
             for task in filtered_tasks.iter() {
                 {
                     let tid = task.id;
+                    let is_focused = focused_task_id == Some(tid);
                     let status_tid = format!("task-status-{tid}");
+                    let open_tid = format!("task-open-{tid}");
                     let avatar_tid = format!("task-avatar-{tid}");
                     let avatar_src = avatar_for_author(&task.assignee);
+                    let task_bc = if is_focused { accent_hex } else { card_bc };
+                    let task_bw = if is_focused { 2 } else { card_bw };
                     let card_style = format!(
-                        "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+                        "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {task_bw}px; border-color: {task_bc};",
                         m.card_pad, m.card_gap, m.card_radius
                     );
                     let p_bg = task.priority.badge_bg();
@@ -213,6 +219,7 @@ pub(crate) fn render_board_view(
                     );
                     let meta_line = format!("{} | {}", task.assignee, task.tag);
                     let s_cyc = Arc::clone(store);
+                    let s_open = Arc::clone(store);
                     rsx! {
                         Card {
                             key: "task-{tid}",
@@ -223,8 +230,12 @@ pub(crate) fn render_board_view(
                             // Top row: Key + Priority Badge | Clickable Status Button
                             view {
                                 style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; border-width: {row_bw}px; border-color: {row_bc};",
-                                view {
+                                pressable {
+                                    test_id: "{open_tid}",
                                     style: "flex-direction: row; align-items: center; gap: 6px;",
+                                    onpress: move |_| mutate_state(&s_open, version, |st| {
+                                        let _ = st.navigate_to(StudioRoute::Task { id: tid });
+                                    }),
                                     Badge {
                                         label: p_lbl.to_string(),
                                         variant: priority_badge_variant(task.priority),

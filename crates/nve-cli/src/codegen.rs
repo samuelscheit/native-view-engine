@@ -7,12 +7,21 @@ use nve_codegen::{ExportTarget, HybridTarget};
 
 #[derive(Subcommand)]
 pub(crate) enum CodegenAction {
-    /// Regenerate (or check for drift in) all 10 Core + Scene ABI artifacts from the unified `hybrid` generator.
+    /// Regenerate (or check for drift in) all 15 Core ABI, Scene ABI, and Wire Codec artifacts.
     Abi {
-        /// Verify checked-in ABI artifacts match generated output byte-for-byte without writing files.
+        /// Verify checked-in artifacts match generated output byte-for-byte without writing files.
         #[arg(long, default_value_t = false)]
         check: bool,
-        /// Workspace root directory where relative ABI artifact paths are resolved.
+        /// Workspace root directory where relative artifact paths are resolved.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Regenerate (or check for drift in) the 5 cross-language wire codec files only.
+    Wire {
+        /// Verify checked-in wire codec artifacts match generated output byte-for-byte without writing files.
+        #[arg(long, default_value_t = false)]
+        check: bool,
+        /// Workspace root directory where relative artifact paths are resolved.
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
@@ -85,12 +94,16 @@ pub(crate) fn parse_hybrid_targets(target: &str) -> Result<Vec<HybridTarget>, St
     Ok(out)
 }
 
-pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let files = nve_codegen::generate_all_abi_files();
+fn write_or_check_generated(
+    files: &[nve_codegen::GeneratedFile],
+    out_root: &Path,
+    check: bool,
+    regen_hint: &str,
+) -> Result<Vec<PathBuf>, String> {
     let mut drifted = Vec::new();
     let mut touched = Vec::with_capacity(files.len());
 
-    for file in &files {
+    for file in files {
         let full_path = out_root.join(&file.relative_path);
         if check {
             match std::fs::read_to_string(&full_path) {
@@ -113,12 +126,22 @@ pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBu
 
     if !drifted.is_empty() {
         return Err(format!(
-            "ABI drift detected in {} file(s):\n  - {}\nRun `cargo nve codegen abi` to regenerate.",
+            "ABI drift detected in {} file(s):\n  - {}\nRun `{regen_hint}` to regenerate.",
             drifted.len(),
             drifted.join("\n  - ")
         ));
     }
     Ok(touched)
+}
+
+pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
+    let files = nve_codegen::generate_all_abi_files();
+    write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
+}
+
+pub(crate) fn run_codegen_wire(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
+    let files = nve_codegen::generate_all_wire_codec_files();
+    write_or_check_generated(&files, out_root, check, "cargo nve codegen wire")
 }
 
 pub(crate) fn run_codegen_hybrid(
@@ -149,11 +172,33 @@ pub(crate) fn cmd_codegen(action: CodegenAction) {
             Ok(paths) => {
                 let verb = if check { "Verified" } else { "Generated" };
                 println!(
-                    "{verb} {} Core + Scene ABI file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}){}",
+                    "{verb} {} Core + Scene ABI + Wire Codec file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}, wire_hash=0x{:016X}){}",
                     paths.len(),
                     out.display(),
                     nve_codegen::core_abi_schema_hash(),
                     nve_codegen::NVE_SCENE_SCHEMA_HASH,
+                    nve_codegen::NVE_WIRE_CODECS_SCHEMA_HASH,
+                    if check { "." } else { ":" }
+                );
+                if !check {
+                    for path in paths {
+                        println!("  - {}", path.display());
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        },
+        CodegenAction::Wire { check, out } => match run_codegen_wire(&out, check) {
+            Ok(paths) => {
+                let verb = if check { "Verified" } else { "Generated" };
+                println!(
+                    "{verb} {} Wire Codec file(s) in {} (wire_hash=0x{:016X}){}",
+                    paths.len(),
+                    out.display(),
+                    nve_codegen::NVE_WIRE_CODECS_SCHEMA_HASH,
                     if check { "." } else { ":" }
                 );
                 if !check {
@@ -264,14 +309,25 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         assert!(run_codegen_abi(&tmp, true).is_err());
-        let written = run_codegen_abi(&tmp, false).expect("write all 10 ABI files");
-        assert_eq!(written.len(), 10);
+        assert!(run_codegen_wire(&tmp, true).is_err());
+        let wire_written = run_codegen_wire(&tmp, false).expect("write 5 wire codec files");
+        assert_eq!(wire_written.len(), 5);
+        assert!(run_codegen_wire(&tmp, true).is_ok());
+        assert!(run_codegen_abi(&tmp, true).is_err());
+
+        let written = run_codegen_abi(&tmp, false).expect("write all 15 ABI + wire files");
+        assert_eq!(written.len(), 15);
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("hosts/web-shell/nve_core_abi.generated.ts");
         std::fs::write(&target_file, "// drifted\n").unwrap();
         let drift_err = run_codegen_abi(&tmp, true).unwrap_err();
         assert!(drift_err.contains("hosts/web-shell/nve_core_abi.generated.ts"));
+
+        let wire_file = tmp.join("hosts/web-shell/nve_wire_codecs.generated.ts");
+        std::fs::write(&wire_file, "// drifted wire\n").unwrap();
+        let wire_drift_err = run_codegen_wire(&tmp, true).unwrap_err();
+        assert!(wire_drift_err.contains("hosts/web-shell/nve_wire_codecs.generated.ts"));
 
         let spec_file = tmp.join("greeter.nve.rs");
         std::fs::write(

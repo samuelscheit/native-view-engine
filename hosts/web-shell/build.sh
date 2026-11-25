@@ -51,9 +51,9 @@ bundle_features() {
 # Brotli (wasm + JS) budgets, ~3% above the sizes measured in docs/research/wasm-size/README.md.
 bundle_budget() {
   case "$1" in
-    studio) echo "${WASM_BROTLI_BUDGET_STUDIO:-229376}" ;;
-    counter) echo "${WASM_BROTLI_BUDGET_COUNTER:-101376}" ;;
-    dev) echo "${WASM_BROTLI_BUDGET_DEV:-263168}" ;;
+    studio) echo "${WASM_BROTLI_BUDGET_STUDIO:-285696}" ;;
+    counter) echo "${WASM_BROTLI_BUDGET_COUNTER:-108544}" ;;
+    dev) echo "${WASM_BROTLI_BUDGET_DEV:-318464}" ;;
   esac
 }
 

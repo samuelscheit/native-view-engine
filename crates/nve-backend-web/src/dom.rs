@@ -126,11 +126,18 @@ impl WebBackend {
         let Some(el) = self.nodes.get(&id) else {
             return;
         };
+        let tag = self.effective_html_tag(id, el);
         out.push('<');
-        out.push_str(el.tag);
+        out.push_str(tag);
         out.push_str(" data-nve-id=\"");
         let _ = write!(out, "{id}");
         out.push('"');
+
+        if el.kind == ComponentKind::Custom
+            && let Some(nv) = self.native_views.get(&id)
+        {
+            crate::native_view::write_native_view_html_attrs(nv, out);
+        }
 
         if el.kind == ComponentKind::Image {
             if let Some(RawPropValue::String(src)) = el
@@ -149,28 +156,13 @@ impl WebBackend {
             out.push('"');
         }
 
-        if let Some(RawPropValue::String(label)) = el
-            .raw_props
-            .get("accessibilityLabel")
-            .or_else(|| el.raw_props.get("accessibility_label"))
-            && !label.is_empty()
-        {
+        if let Some(RawPropValue::String(label)) = el.raw_props.get("accessibilityLabel").or_else(|| el.raw_props.get("accessibility_label")) && !label.is_empty() {
             write_attr("aria-label", label, out);
         }
-        if let Some(RawPropValue::String(role)) = el
-            .raw_props
-            .get("accessibilityRole")
-            .or_else(|| el.raw_props.get("accessibility_role"))
-            && !role.is_empty()
-        {
+        if let Some(RawPropValue::String(role)) = el.raw_props.get("accessibilityRole").or_else(|| el.raw_props.get("accessibility_role")) && !role.is_empty() {
             write_attr("role", role, out);
         }
-        if let Some(RawPropValue::String(hint)) = el
-            .raw_props
-            .get("accessibilityHint")
-            .or_else(|| el.raw_props.get("accessibility_hint"))
-            && !hint.is_empty()
-        {
+        if let Some(RawPropValue::String(hint)) = el.raw_props.get("accessibilityHint").or_else(|| el.raw_props.get("accessibility_hint")) && !hint.is_empty() {
             write_attr("aria-description", hint, out);
         }
         if el.raw_props.get("disabled").is_some_and(is_truthy_raw_prop) {
@@ -197,15 +189,13 @@ impl WebBackend {
 
         out.push_str(" style=\"");
         el.combined_css_into(out);
+        if let Some(nv) = self.native_views.get(&id) { out.push_str(&nv.extra_css); }
         out.push_str("\">");
-        if let Some(t) = &el.text {
-            out.push_str(t);
-        }
-        for &child in &el.children {
-            self.fmt_html_into(child, out);
-        }
+        if matches!(tag, "img" | "input" | "br" | "hr" | "meta" | "link") { return; }
+        if let Some(t) = &el.text { out.push_str(t); }
+        for &child in &el.children { self.fmt_html_into(child, out); }
         out.push_str("</");
-        out.push_str(el.tag);
+        out.push_str(tag);
         out.push('>');
     }
 
@@ -268,11 +258,14 @@ impl WebBackend {
                 .get(&node_id)
                 .and_then(|pid| self.nodes.get(pid));
             let allow_new = self.stylesheet.can_insert_new();
-            let resolved = resolve_node_style(node, parent, allow_new, |cls| {
+            let mut resolved = resolve_node_style(node, parent, allow_new, |cls| {
                 self.stylesheet.contains_rule(cls)
             });
             if let Some((cls, decls)) = resolved.structural_rule {
                 let _ = self.stylesheet.ensure_rule(cls, decls);
+            }
+            if let Some(nv) = self.native_views.get(&node_id) && !nv.extra_css.is_empty() {
+                resolved.inline_style.push_str(&nv.extra_css);
             }
             updates.push((node_id, resolved.class_name, resolved.inline_style));
         }
@@ -488,22 +481,12 @@ impl WebBackend {
     /// (e.g. `<span>` -> `<h1>`, `<div>` -> `<nav>`, `<button>` -> `<a href="...">`).
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn upgrade_dom_element_tag(&mut self, node_id: NodeId) {
-        let Some((new_tag, wrap_code)) = self.nodes.get(&node_id).map(|n| (n.tag, n.wrap_code))
-        else {
-            return;
-        };
-        let Some(old_el) = self.dom_nodes.get(&node_id).cloned() else {
-            return;
-        };
-        if old_el.tag_name().eq_ignore_ascii_case(new_tag) {
-            return;
-        }
-        let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-            return;
-        };
-        let Ok(new_el) = doc.create_element(new_tag) else {
-            return;
-        };
+        let Some((new_tag, wrap_code)) = self.nodes.get(&node_id)
+            .map(|n| (self.effective_html_tag(node_id, n).to_owned(), n.wrap_code)) else { return; };
+        let Some(old_el) = self.dom_nodes.get(&node_id).cloned() else { return; };
+        if old_el.tag_name().eq_ignore_ascii_case(&new_tag) { return; }
+        let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return; };
+        let Some(new_el) = crate::native_view::create_dom_element_for_tag(&doc, &new_tag) else { return; };
         self.attr_scratch.clear();
         let _ = write!(&mut self.attr_scratch, "{node_id}");
         let _ = new_el.set_attribute("data-nve-id", &self.attr_scratch);
@@ -533,6 +516,9 @@ impl WebBackend {
             for (k, v) in &props {
                 self.sync_dom_raw_prop(node_id, k, v);
             }
+        }
+        if let (Some(dom_el), Some(nv)) = (self.dom_nodes.get(&node_id), self.native_views.get_mut(&node_id)) {
+            crate::native_view::sync_native_view_dom_attrs(dom_el, nv);
         }
         if let Some(text) = self.nodes.get(&node_id).and_then(|n| n.text.clone()) {
             self.apply_text_mutation(node_id, &text);
@@ -592,6 +578,7 @@ impl WebBackend {
             .collect();
         for nid in dead_ids {
             self.nodes.remove(&nid);
+            self.native_views.remove(&nid);
             self.parent_of.remove(&nid);
             self.remove_node_event_meta(nid);
             #[cfg(target_arch = "wasm32")]

@@ -1653,9 +1653,9 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
         nve_abi::NVE_SCENE_SCHEMA_HASH
     );
 
-    // Verify all 10 checked-in ABI files match byte-for-byte
+    // Verify all 15 checked-in Core ABI + Scene ABI + Wire Codec files match byte-for-byte
     let all = nve_codegen::generate_all_abi_files();
-    assert_eq!(all.len(), 10);
+    assert_eq!(all.len(), 15);
     for file in &all {
         let on_disk = std::fs::read_to_string(root.join(&file.relative_path))
             .unwrap_or_else(|e| panic!("missing {}: {e}", file.relative_path))

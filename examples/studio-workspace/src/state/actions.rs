@@ -1,13 +1,16 @@
 //! State transition actions for navigation, Issue Board, chat channels, 100k Stream,
 //! NVE Studio controls, Live Sync telemetry, `Cmd+K` Command Palette, and `<Island>` sandbox.
 
+use nve_interop::traits::SizeClass;
+
+use crate::routes::StudioRoute;
 use crate::ui_islands::{format_disposition, format_lifecycle, GestureSimMode, IslandSandboxRuntime};
 use crate::ui_palette::{execute_palette_action, filter_palette_items};
 
 use super::models::{
     AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
     LayoutEngineMode, Priority, SyncTelemetryState, TaskItem, TaskStatus, MAX_STRESS_ROWS,
-    MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
+    MAX_TELEMETRY_SAMPLES,
 };
 use super::WorkspaceState;
 
@@ -21,11 +24,11 @@ const NEW_TASK_TEMPLATES: &[(&str, &str, &str, Priority)] = &[
 
 impl WorkspaceState {
     pub fn is_mobile_portrait(&self) -> bool {
-        (self.current.viewport_width as f32) < MOBILE_BREAKPOINT_PT
+        self.size_class() == SizeClass::Compact
     }
 
-    /// Updates viewport dimensions without creating a spurious time-travel snapshot.
-    /// Returns `true` if layout-relevant dimensions changed.
+    /// Updates viewport dimensions via [`TraitStore::update_viewport`] without creating a spurious
+    /// time-travel snapshot. Returns `true` if dimensions changed.
     pub fn set_viewport_size(&mut self, width: f32, height: f32) -> bool {
         let w = if width.is_finite() && width > 0.0 {
             width.round() as u32
@@ -40,32 +43,22 @@ impl WorkspaceState {
         if self.current.viewport_width == w && self.current.viewport_height == h {
             return false;
         }
-        let was_mobile = self.is_mobile_portrait();
-        self.current.viewport_width = w;
-        self.current.viewport_height = h;
-        // Keep the 100k Stream viewport height proportional to available center height so
-        // the rendered visible + overscan window stays strictly inside the viewport bounds.
-        self.current.stream.viewport_height = h.saturating_sub(280).max(180);
-        if was_mobile && !self.is_mobile_portrait() {
-            self.current.mobile_nav_open = false;
-            self.current.mobile_studio_open = false;
-        }
-        // Keep initial snapshot in sync when resized before first user action.
-        if self.history.len() == 1 && self.cursor == 0 {
-            self.history[0].viewport_width = w;
-            self.history[0].viewport_height = h;
-            self.history[0].stream.viewport_height = self.current.stream.viewport_height;
-        }
+        let _ = self.update_viewport_with_mask(w as f32, h as f32);
         true
     }
 
     pub fn select_view(&mut self, view: ActiveView) {
+        let target_route = StudioRoute::from_view(view);
         if self.current.active_view == view {
+            self.router.sync_to_view(view);
+            self.focused_task_id = None;
             if self.current.mobile_nav_open {
                 self.current.mobile_nav_open = false;
             }
             return;
         }
+        self.router.push(target_route);
+        self.focused_task_id = None;
         let label = format!("View -> {}", view.title());
         self.commit_action(label, |s| {
             s.active_view = view;
@@ -279,6 +272,7 @@ impl WorkspaceState {
         }
         let label = format!("Accent -> {}", accent.label());
         self.commit_action(label, |s| s.studio.accent = accent);
+        self.refresh_traits();
     }
 
     pub fn set_radius(&mut self, radius: CornerRadiusMode) {
@@ -295,6 +289,7 @@ impl WorkspaceState {
         }
         let label = format!("Density -> {}", density.label());
         self.commit_action(label, |s| s.studio.density = density);
+        self.refresh_traits();
     }
 
     pub fn toggle_xray(&mut self) {

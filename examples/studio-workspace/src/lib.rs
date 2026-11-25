@@ -9,11 +9,16 @@
 
 pub mod assets;
 pub mod persist;
+mod props;
+pub mod routes;
+pub mod sdk;
 pub mod state;
 pub mod theme;
+pub mod traits;
 pub mod ui;
 mod ui_board;
 mod ui_channels;
+mod ui_chrome;
 pub mod ui_docs;
 pub mod ui_islands;
 mod ui_islands_view;
@@ -29,8 +34,8 @@ use std::sync::{Arc, Mutex};
 
 use nve_abi::{
     decode_events, encode_events, BinValueView, EventPayload, FrameId, NativeEvent,
-    NativeEventKind, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
-    SurfaceId, ROOT_NODE_ID,
+    NativeEventKind, NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize, NvePropsRef,
+    NveSizeConstraints, SurfaceId, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -41,6 +46,11 @@ pub use persist::{
     DEFAULT_WAL_COMPACT_MAX_BYTES, DEFAULT_WAL_COMPACT_MAX_RECORDS, SNAPSHOT_FILE_NAME,
     STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION, WAL_FILE_NAME,
 };
+pub use routes::{
+    StudioRoute, StudioRouter, STUDIO_DEEP_LINK_HOST, STUDIO_DEEP_LINK_SCHEME,
+    STUDIO_UNIVERSAL_LINK_HOST,
+};
+pub use sdk::{HostEventSyncReport, StudioHostServices, StudioSystemEnv};
 pub use state::{
     default_seed_docs, version_vector_has_unseen_ops, AccentTheme, ActiveView, BoardFilter,
     ChannelKind, ChatMessage, CornerRadiusMode, CrdtMergeSummary, CrdtPeerNode, CrdtPeerTransport,
@@ -54,6 +64,12 @@ pub use state::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use state::{LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport};
+pub use traits::{
+    apply_studio_traits, build_studio_trait_store, resolve_studio_layout,
+    sdk_color_scheme_to_trait, sdk_locale_to_trait, studio_accent_override,
+    studio_compact_override, studio_density_to_trait, ResolvedStudioLayout, StudioAccentTrait,
+    StudioCompactModeTrait, StudioTraitBox, StudioTraitPreviewChip,
+};
 pub use ui::StudioWorkspaceApp;
 pub use ui_islands::{
     GestureSimMode, IslandCardState, IslandHostKind, IslandSandboxRuntime, IslandsSnapshot,
@@ -68,6 +84,8 @@ pub use virtual_list::{
     FenwickHeightTree, StreamVirtualEngine, VirtualListIndex, VirtualRowMeta, VirtualWindow,
     DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT,
 };
+
+use props::{apply_prop_updates, PropUpdates};
 
 /// Creates a standalone `DioxusSurface` initialized with default `WorkspaceState`.
 pub fn create_surface(surface_id: SurfaceId) -> DioxusSurface {
@@ -91,131 +109,29 @@ pub fn create_surface_with_store(
     surface_id: SurfaceId,
     store: Arc<Mutex<WorkspaceState>>,
 ) -> DioxusSurface {
+    create_surface_with_services(surface_id, store, Arc::new(StudioHostServices::new()))
+}
+
+/// Creates a `DioxusSurface` bound to both a caller-supplied `WorkspaceState` store and
+/// [`StudioHostServices`] (`nve-sdk` Clipboard + SystemEnv provider).
+pub fn create_surface_with_services(
+    surface_id: SurfaceId,
+    store: Arc<Mutex<WorkspaceState>>,
+    host_services: Arc<StudioHostServices>,
+) -> DioxusSurface {
     ui::set_pending_store(store);
+    ui::set_pending_host_services(host_services);
     let mut surface = DioxusSurface::new(surface_id, StudioWorkspaceApp);
-    // Do not force render yet; caller invokes `render_frame(1)` which consumes `PENDING_STORE`.
+    // Do not force render yet; caller invokes `render_frame(1)` which consumes pending slots.
     let _ = &mut surface;
     surface
-}
-
-fn parse_accent(s: &str) -> Option<AccentTheme> {
-    match s.to_ascii_lowercase().as_str() {
-        "cyan" => Some(AccentTheme::Cyan),
-        "violet" => Some(AccentTheme::Violet),
-        "green" => Some(AccentTheme::Green),
-        "amber" => Some(AccentTheme::Amber),
-        _ => None,
-    }
-}
-
-fn parse_layout_engine(s: &str) -> Option<LayoutEngineMode> {
-    match s.to_ascii_lowercase().as_str() {
-        "taffy" => Some(LayoutEngineMode::Taffy),
-        "yoga" => Some(LayoutEngineMode::Yoga),
-        _ => None,
-    }
-}
-
-fn parse_active_view(s: &str) -> Option<ActiveView> {
-    match s.to_ascii_lowercase().as_str() {
-        "board" => Some(ActiveView::Board),
-        "engineering" => Some(ActiveView::ChannelEngineering),
-        "design" => Some(ActiveView::ChannelDesign),
-        "docs" | "doc" => Some(ActiveView::Docs),
-        "workbench" | "wb" | "preview" => Some(ActiveView::Workbench),
-        "stream" | "stream100k" | "100k" => Some(ActiveView::Stream100k),
-        "islands" | "island" => Some(ActiveView::Islands),
-        "metrics" => Some(ActiveView::Metrics),
-        _ => None,
-    }
-}
-
-#[derive(Default)]
-struct PropUpdates<'a> {
-    studio_open: Option<bool>,
-    accent: Option<&'a str>,
-    layout_engine: Option<&'a str>,
-    view: Option<&'a str>,
-    viewport_width: Option<f64>,
-    viewport_height: Option<f64>,
-    stream_scroll_y: Option<u64>,
-    sync_transport: Option<&'a str>,
-    sync_peers: Option<u16>,
-    sync_kbps: Option<f64>,
-    sync_compression: Option<f64>,
-    sync_rtt_ms: Option<f64>,
-}
-
-fn apply_prop_updates(guard: &mut WorkspaceState, upd: PropUpdates<'_>) -> bool {
-    let mut changed = false;
-    if let Some(open) = upd.studio_open
-        && guard.current.studio.panel_open != open
-    {
-        guard.toggle_studio_panel();
-        changed = true;
-    }
-    if let Some(accent) = upd.accent.and_then(parse_accent) {
-        guard.set_accent(accent);
-        changed = true;
-    }
-    if let Some(mode) = upd.layout_engine.and_then(parse_layout_engine) {
-        guard.set_layout_engine(mode);
-        changed = true;
-    }
-    if let Some(v) = upd.view.and_then(parse_active_view) {
-        guard.select_view(v);
-        changed = true;
-    }
-    if upd.viewport_width.is_some() || upd.viewport_height.is_some() {
-        let next_w = upd
-            .viewport_width
-            .map(|v| v as f32)
-            .unwrap_or(guard.current.viewport_width as f32);
-        let next_h = upd
-            .viewport_height
-            .map(|v| v as f32)
-            .unwrap_or(guard.current.viewport_height as f32);
-        if guard.set_viewport_size(next_w, next_h) {
-            changed = true;
-        }
-    }
-    if let Some(scroll_y) = upd.stream_scroll_y {
-        guard.set_stream_scroll_offset(scroll_y.min(u32::MAX as u64) as u32);
-        changed = true;
-    }
-    if upd.sync_transport.is_some()
-        || upd.sync_peers.is_some()
-        || upd.sync_kbps.is_some()
-        || upd.sync_compression.is_some()
-        || upd.sync_rtt_ms.is_some()
-    {
-        let mut tel = guard.sync_telemetry.clone();
-        if let Some(mode) = upd.sync_transport.and_then(SyncTransportMode::parse) {
-            tel.transport = mode;
-        }
-        if let Some(peers) = upd.sync_peers {
-            tel.connected_peers = peers;
-        }
-        if let Some(kbps) = upd.sync_kbps.filter(|v| v.is_finite() && *v >= 0.0) {
-            tel.kbps_tenths = (kbps * 10.0).round() as u32;
-        }
-        if let Some(ratio) = upd.sync_compression.filter(|v| v.is_finite() && *v >= 0.0) {
-            tel.compression_tenths = ((ratio * 10.0).round() as u32).min(u16::MAX as u32) as u16;
-        }
-        if let Some(rtt) = upd.sync_rtt_ms.filter(|v| v.is_finite() && *v >= 0.0) {
-            tel.rtt_ms_tenths = (rtt * 10.0).round() as u32;
-        }
-        if guard.update_sync_telemetry(tel) {
-            changed = true;
-        }
-    }
-    changed
 }
 
 /// Safe `NveApp` wrapper exported via `nve_get_interface` for native shells & Tier-2 hot-swap.
 pub struct StudioWorkspaceModule {
     surface_id: SurfaceId,
     store: Arc<Mutex<WorkspaceState>>,
+    host_services: Arc<StudioHostServices>,
     surface: DioxusSurface,
     mounted: bool,
     last_reported_layout_engine: LayoutEngineMode,
@@ -247,6 +163,7 @@ impl StudioWorkspaceModule {
         Ok(Self {
             surface_id,
             store: Arc::new(Mutex::new(initial)),
+            host_services: Arc::new(StudioHostServices::new()),
             surface: create_surface(surface_id),
             mounted: false,
             last_reported_layout_engine: layout_engine,
@@ -255,6 +172,11 @@ impl StudioWorkspaceModule {
             persist_store: Some(persist),
             last_persisted_frame_count: initial_frame_count,
         })
+    }
+
+    /// Returns the dual-mode `nve-sdk` host service handle (`FfiHostServices` + `MemoryHostServices`).
+    pub fn host_services(&self) -> &Arc<StudioHostServices> {
+        &self.host_services
     }
 
     pub fn persist_store(&self) -> Option<&WorkspaceStore> {
@@ -307,6 +229,7 @@ impl NveApp for StudioWorkspaceModule {
         Self {
             surface_id,
             store,
+            host_services: Arc::new(StudioHostServices::new()),
             surface: create_surface(surface_id),
             mounted: false,
             last_reported_layout_engine: layout_engine,
@@ -320,9 +243,11 @@ impl NveApp for StudioWorkspaceModule {
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
         if !self.mounted {
             ui::set_pending_store(Arc::clone(&self.store));
+            ui::set_pending_host_services(Arc::clone(&self.host_services));
             self.mounted = true;
             let slice = self.surface.render_frame_slice(frame_id);
             ui::clear_pending_store();
+            ui::clear_pending_host_services();
             slice
         } else {
             self.surface.render_frame_slice(frame_id)
@@ -339,10 +264,14 @@ impl NveApp for StudioWorkspaceModule {
                 (NativeEventKind::Layout, EventPayload::Layout { width, height, .. })
                     if ev.node_id == ROOT_NODE_ID && *width > 0.0 =>
                 {
-                    if let Ok(mut guard) = self.store.lock()
-                        && guard.set_viewport_size(*width, *height)
-                    {
-                        handled_host_event = true;
+                    if let Ok(mut guard) = self.store.lock() {
+                        let prev_stream_h = guard.current.stream.viewport_height;
+                        let mask = guard.update_viewport_with_mask(*width, *height);
+                        let stream_h_changed = guard.current.active_view == ActiveView::Stream100k
+                            && guard.current.stream.viewport_height != prev_stream_h;
+                        if mask.any_breakpoint_changed() || stream_h_changed {
+                            handled_host_event = true;
+                        }
                     }
                 }
                 (NativeEventKind::Scroll, EventPayload::Scroll { y, .. }) => {
@@ -452,6 +381,7 @@ impl NveApp for StudioWorkspaceModule {
             accent: props.get("accent").and_then(|v| v.as_str()),
             layout_engine: props.get("layoutEngine").and_then(|v| v.as_str()),
             view: props.get("view").and_then(|v| v.as_str()),
+            route: props.get("route").and_then(|v| v.as_str()),
             viewport_width: props.get("viewportWidth").and_then(|v| v.as_number()),
             viewport_height: props.get("viewportHeight").and_then(|v| v.as_number()),
             stream_scroll_y: props
@@ -490,6 +420,7 @@ impl NveApp for StudioWorkspaceModule {
                 accent: view.get("accent").and_then(|v| v.as_str()),
                 layout_engine: view.get("layoutEngine").and_then(|v| v.as_str()),
                 view: view.get("view").and_then(|v| v.as_str()),
+                route: view.get("route").and_then(|v| v.as_str()),
                 viewport_width: view
                     .get("viewportWidth")
                     .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
@@ -537,6 +468,7 @@ impl NveApp for StudioWorkspaceModule {
             accent: val.get("accent").and_then(|v| v.as_str()),
             layout_engine: val.get("layoutEngine").and_then(|v| v.as_str()),
             view: val.get("view").and_then(|v| v.as_str()),
+            route: val.get("route").and_then(|v| v.as_str()),
             viewport_width: val.get("viewportWidth").and_then(|v| v.as_f64()),
             viewport_height: val.get("viewportHeight").and_then(|v| v.as_f64()),
             stream_scroll_y: val.get("streamScrollY").and_then(|v| v.as_u64()),
@@ -606,6 +538,45 @@ impl NveApp for StudioWorkspaceModule {
             }
             self.reset_surface_with_current_store();
         }
+    }
+
+    fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+        self.host_services.bind_host(callbacks);
+        let synced = self
+            .store
+            .lock()
+            .map(|mut guard| guard.sync_system_env(&self.host_services))
+            .unwrap_or(false);
+        if synced {
+            self.reset_surface_with_current_store();
+        }
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        let Ok(report) = self.host_services.dispatch_host_events(batch) else {
+            return false;
+        };
+        if report.env_changed() {
+            let changed = self
+                .store
+                .lock()
+                .map(|mut guard| {
+                    let mut next = guard.system_env.clone();
+                    if let Some(theme) = report.updated_theme {
+                        next.theme = theme;
+                    }
+                    if let Some(locale) = report.updated_locale {
+                        next.locale = locale;
+                    }
+                    guard.apply_system_env(next)
+                })
+                .unwrap_or(false);
+            if changed {
+                self.reset_surface_with_current_store();
+                return true;
+            }
+        }
+        report.decoded_records > 0
     }
 }
 
