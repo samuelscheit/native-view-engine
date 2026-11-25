@@ -16,11 +16,9 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
   - Replace `NVE_DRAW1` with a codegen-locked `#[repr(C)]` `NveDrawOp` slab (`&[NveDrawOp]`), delete the 3× duplicated `NVNP`/`NVNC` codecs in favor of direct `NvePropSlice`/`NveValue`, unify `NVCF` to one `#[repr(C)]` struct, and replace `NVT2`/`NVL1`/`NVW1`/`NVN1`/`NVDS`/`NVE_MET1` in-process codecs with direct typed / `#[repr(C)]` structs.
   - Extend `packages/core/codegen` to generate zero-copy aligned `#[repr(C)]` + `RelocSlice` views (`view_from_aligned_bytes` / `as_bytes`) for legitimate disk/network formats in `packages/core/wire` instead of hand-written Rust encode/decode code.
 
-- [ ] **Unify `packages/framework/sdk` into Standalone `packages/modules/<name>/` (Option A)** *(in flight)*
-  - Delete monolithic `packages/framework/sdk/`, extract tiny `packages/core/host-services/`, move every capability into uniform `packages/modules/<name>/`, and merge duplicate `camera` into `packages/modules/camera/`.
-
-- [ ] **SSR Responsive `@media` Compilation, Reusable 3-Way Reconciler & Pre-Hydration Event Replay** *(Phase 1 in flight)*
-  - Zero-serialization `MediaQuery`/`ResponsiveStylePatch` (`#[repr(C)]`) + generic 3-way `StateReconciler` + Web `@media` SSR emission + ~800 B pre-hydration event capture/replay (`<a href>` native before hydration, SPA after) + zero-CLS mobile `DocsShell`.
+- [ ] **SSR Responsive `@media` Compilation, MDN `Sec-CH-*` Client Hints & Pre-Hydration Event Replay (Wave C2B)**
+  - Phase 1 (`6794c6e` zero-serialization 3-way `StateReconciler` + 8-byte `#[repr(C)]` `MediaQuery`) and Wave C2A (`20cd66e` `packages/backends/web` `@media` emission, 987 B `<script data-nve-replay>`, `<a href>` SPA interception, `StateReconciler` dirty-control hydration) are landed.
+  - Remaining: migrate `DocsShell`/`DocsNavbar` onto `nve_show_on` + `TypedStyle::at(...)`, add MDN `Sec-CH-*` Client Hints (`MediaEnv::from_client_hints` + `Accept-CH`/`Critical-CH`/`Vary`), remove mobile rebuild flicker in `examples/nve-docs-site/src/wasm.rs`, and verify `0.000` CLS + throttled-WASM replay via mobile Chrome E2E & visual QA.
 
 - [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (`cargo nve build` Tier-3 Target Recipes & Web TV)**
   - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad) and Phase 2 (standalone `packages/modules/tv` + real `tvOS`, `watchOS`, `visionOS`, and `iOS` SDK builds + static `NveInterfaceResolver` in `hosts/swiftui-kit`) are landed; remaining work is adding `aarch64-apple-{tvos,visionos,watchos}` staticlib recipes in `nve-cli` and Web TV D-Pad key handling in `nve-backend-web`.

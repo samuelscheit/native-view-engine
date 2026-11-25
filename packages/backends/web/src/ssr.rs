@@ -97,6 +97,7 @@ impl WebBackend {
         let sem = resolve_semantic_tag(el.kind, &el.raw_props);
         let tag = if el.kind == ComponentKind::Custom { self.effective_html_tag(id, el) } else { sem.tag };
         let allow_new = rules.len() + media_rules.len() < MAX_DYNAMIC_RULES;
+        #[allow(unused_mut)]
         let mut resolved = resolve_node_style(el, parent, allow_new, |cls| rules.contains_key(cls));
         if let Some((cls, decls)) = resolved.structural_rule {
             rules.entry(cls).or_insert(decls);
