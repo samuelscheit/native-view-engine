@@ -1,0 +1,82 @@
+---
+title: "Live Pairing (NVT1/NVD1)"
+description: "Stream live CommandBuffer deltas at ~5.18 KB/s @ 60fps over NVT1/NVD1 UDP, TCP, and WebSocket to zero-cdylib thin clients across desktop, mobile, and Web."
+order: 3
+---
+
+# Live Device Pairing (`NVT1` / `NVD1`)
+
+Live Pairing lets a single workstation run your Rust `NveApp` once and stream real-time UI deltas simultaneously to **zero-`cdylib` thin clients** across Skia Desktop, macOS AppKit, Windows Direct2D/RNW, iOS, Android, Qt 6, GTK4, and Web browsers — while ingesting remote touches, scrolls, and keyboard shortcuts back in real time.
+
+## Dual-Layer Wire Architecture
+
+### 1. Frame-Delta Codec (`NVD1`, `crates/nve-interop/src/sync_delta/`)
+
+Each rendered `NVE1` `CommandBuffer` is diffed against the previous committed frame inside `SyncDeltaSession`, which automatically picks the smallest wire representation per frame inside a fixed 32-byte little-endian **`NVD1`** header with 64-bit FNV-1a integrity verification:
+
+- **XOR + RLE (`PacketKind::XorRleDelta`)** — Zero-run RLE over `prev ^ next` with LEB128 varints; optimal for in-place numeric/color updates.
+- **`CommandBuffer` Changed-Op Delta (`PacketKind::CommandOpDelta`)** — Scans `NVE1` command boundaries zero-copy, collapses unchanged op runs into 3-byte `CopyRun` tokens, and ships **only** the raw bytes of changed or inserted commands — completely immune to mid-buffer byte shifts when a string changes length.
+- **Reliability** — Sequence numbers, cumulative + 64-bit selective ACK (`SACK`), `NACK`, bounded retransmit window (`DEFAULT_SYNC_WINDOW`), and out-of-order reorder buffer.
+
+Under stress testing (**15% packet loss + 20% packet reordering** at 60fps), `NVD1` sustains **`5.18 KB/s`** wire bandwidth with zero corrupted frames.
+
+### 2. Transport Envelope (`NVT1`, `crates/nve-interop/src/sync_transport/`)
+
+`NVD1` packets travel inside an 8-byte transport envelope (`TRANSPORT_MAGIC = b"NT"`, `version = 1`, `kind: TransportMsgKind`, `session_id: u32`) over three transports:
+
+- **UDP (`UdpDeltaServer` / `UdpDeltaClient`)** — MTU-safe datagrams capped at `MAX_UDP_DATAGRAM_BYTES = 1200` with automatic `DeltaFrag` fragmentation (`12`-byte subheader) and `FragNack` recovery.
+- **TCP (`TcpDeltaServer` / `TcpDeltaClient`)** — Length-prefixed binary stream framing.
+- **RFC-6455 Binary WebSocket** — Same server port (`--ws-port 8092`, path `/ws/nvd`) auto-detects HTTP WebSocket Upgrade handshakes so browsers (`hosts/web-shell`) connect with zero proxy.
+
+| `TransportMsgKind` | ID | Direction | Purpose |
+| :--- | :--- | :--- | :--- |
+| `Hello` / `HelloAck` / `Reject` | `1` / `2` / `3` | Bidirectional | Constant-time 16-byte token proof (`derive_token_proof`) + `schema_version` + `session_id` negotiation |
+| `DeltaSingle` / `DeltaFrag` / `FragNack` | `4` / `5` / `6` | Host → Client | Unfragmented or MTU-fragmented `NVD1` frame deltas |
+| `Ping` / `Pong` | `7` / `8` | Bidirectional | RTT measurement & keepalive (`heartbeat_interval_ms = 250`) |
+| `KeyframeRequest` | `9` | Client → Host | Requests full `NVE1` keyframe after reconnect or window overflow |
+| `Bye` | `10` | Bidirectional | Clean session teardown |
+| `InputEvents` | `11` | Client → Host | Raw binary `EventRing` batch (capped at `MAX_INPUT_EVENT_BYTES = 64 KiB`) |
+
+## Running a Paired Session
+
+Start `cargo nve pair` standalone (or pass `--pair` to `cargo nve dev`), then connect as many thin clients as you like:
+
+```bash title="Host workstation: start live NVD1 pairing server"
+cargo nve pair \
+  --package nve-studio-workspace \
+  --host 0.0.0.0 \
+  --udp-port 8091 \
+  --ws-port 8092 \
+  --token dev-secret \
+  --width 1280 --height 800 --fps 60
+```
+
+:::tabs
+::tab{label="Skia Desktop"}
+```bash title="Zero-cdylib Skia thin client over UDP"
+cargo run -p nve-skia-shell -- \
+  --pair-connect 127.0.0.1:8091 \
+  --pair-transport udp \
+  --pair-token dev-secret
+```
+::tab{label="Web Browser"}
+```text title="Open in any desktop or mobile browser"
+http://127.0.0.1:8080/?pair=ws://127.0.0.1:8092/ws/nvd&token=dev-secret
+```
+::tab{label="macOS / Windows / Qt / GTK"}
+```bash title="C++20 nve::PairClient thin clients (POSIX + WinSock2)"
+# macOS AppKit
+./hosts/macos-shell/build/nve_macos_shell \
+  --pair-connect 127.0.0.1:8092 --pair-transport ws --pair-token dev-secret
+
+# Windows 11 Direct2D (WinSock2)
+.\hosts\windows-shell\build\nve_windows_shell.exe \
+  --pair-connect 127.0.0.1:8092 --pair-transport ws --pair-token dev-secret
+
+# Qt 6 / GTK4
+./hosts/qt-shell/build/nve_qt_shell --pair-connect 127.0.0.1:8091 --pair-transport udp --pair-token dev-secret
+./hosts/gtk-shell/build/nve_gtk_shell --pair-connect 127.0.0.1:8091 --pair-transport udp --pair-token dev-secret
+```
+:::
+
+When `cargo nve pair` binds its sockets, it prints `NVE_PAIR_READY` along with the UDP/WS endpoints and pairing token for automated CI and Chrome E2E harnesses, and pushes live `SyncTelemetry` metrics into the paired Studio HUD.

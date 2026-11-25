@@ -1,0 +1,100 @@
+---
+title: "SwiftUI & Flutter"
+description: "NveSwiftUI with zero-alloc NveDirectArena & NveDirectEncodable, and Flutter nve_flutter Impeller NveCanvasView via dart:ffi and NveBinWriter."
+order: 8
+---
+
+# SwiftUI & Flutter Host Kits (`hosts/swiftui-kit`, `hosts/flutter-plugin`)
+
+When you want to embed NVE Rust components natively inside existing **SwiftUI** or **Flutter** apps — or build a full Flutter/SwiftUI shell over an NVE core — `NveSwiftUI` and `nve_flutter` bind straight to `nve_get_interface(1..=5)` with zero JSON serialization.
+
+## SwiftUI Host Kit (`hosts/swiftui-kit`)
+
+`NveSwiftUI` is a Swift Package Manager library supporting **iOS 16+** (`UIViewRepresentable`) and **macOS 13+** (`NSViewRepresentable`), importing generated C ABI headers (`nve_abi.generated.h`, `nve_scene_abi.generated.h`) via the `CNveAbi` C target:
+
+- **`NveDirectArena` & `NveDirectEncodable`** — Strongly typed Swift prop structs (including those emitted by `cargo nve codegen hybrid --target swift`) conform to `NveDirectEncodable` and encode directly into a stack-backed `NveDirectArena` using compile-time `StaticString` keys for `NveComponentApi::set_props_direct` — zero `[String: Any]` boxing and zero heap buffer pinning.
+- **`NveSurfaceRepresentable` & `NveSceneCanvasView`** — Integrates `sizeThatFits` intrinsic layout negotiation (`NveLayoutApi::measure`), CoreGraphics/SwiftUI Canvas `NVE_DRAW1` vector rendering, reactive direct prop updates, and automatic `dismantleUIView` / `dismantleNSView` teardown.
+- **`NveSurfaceController`, `NveEventRingCodec`, `NveChannelClient`** — Bind `NveSurfaceApi`, binary `EventRing` encoding, and thread-safe `NveChannelBus` streams.
+
+```swift title="Zero-copy typed SwiftUI embedding with NveDirectEncodable" highlight="1-6,15-21"
+struct CounterProps: Equatable, NveDirectEncodable {
+    let title: String
+    let count: Int64
+    func encodeDirect(into writer: inout NveDirectMapWriter) {
+        writer.put("title", title)
+        writer.put("count", count)
+    }
+}
+
+struct CounterHostView: View {
+    @StateObject private var controller = NveSurfaceController(
+        vtableSymbol: "nve_get_interface",
+        backend: .fabric
+    )
+    @State private var count: Int64 = 0
+
+    var body: some View {
+        NveSurfaceRepresentable(
+            componentName: "NveCounterCard",
+            props: CounterProps(title: "SwiftUI + NVE", count: count),
+            controller: controller,
+            onEvent: { event in if event.name == "onIncrement" { count += 1 } }
+        )
+    }
+}
+```
+
+```bash title="Run SwiftUI host kit tests"
+swift test --package-path hosts/swiftui-kit
+```
+
+## Flutter Plugin (`hosts/flutter-plugin`)
+
+`nve_flutter` offers three embedding paths on macOS, Windows, Linux, iOS, and Android, using generated `nve_core_abi.generated.dart` and `nve_scene_abi.generated.dart` bindings over `dart:ffi`:
+
+1. **Direct Impeller/Skia `Canvas` (`NveCanvasView`) — Zero `PlatformView`s** — A custom `LeafRenderObjectWidget` (`RenderNveCanvas`) decodes NVE's binary `CommandBuffer` via `dart:ffi`, lays out text with Flutter's native `TextPainter`, and paints directly onto Flutter's own Impeller/Skia `Canvas` (including `NVE_DRAW1` vector draw lists).
+2. **GPU Texture Compositing (`NveTextureHostWidget`)** — Zero-copy 120fps Skia texture sharing via `FlutterTextureRegistry` (`IOSurface`, `AHardwareBuffer`, `DXGI`, `DMA-BUF`).
+3. **Native Fabric Platform Views (`NvePlatformViewWidget`)** — `UiKitView` / `AndroidView` embedding when real OS controls are required inside a Flutter tree.
+
+Shared binary codecs **`NveBinWriter`** / **`NveBinReader`** and **`NveDirectEncodable`** replace duplicate generated writers so Dart prop/command encoding matches Rust's `BinValueView` bit-for-bit with zero JSON.
+
+```dart title="Mounting an NVE Rust cdylib directly on Flutter's Impeller Canvas" highlight="6-9,18"
+class DirectCounterScreen extends StatefulWidget {
+  const DirectCounterScreen({super.key, required this.libraryPath});
+  final String libraryPath;
+  @override
+  State<DirectCounterScreen> createState() => _DirectCounterScreenState();
+}
+
+class _DirectCounterScreenState extends State<DirectCounterScreen> {
+  late final NveCanvasController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = NveCanvasController.open(
+      surfaceId: 1,
+      libraryPath: widget.libraryPath,
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: NveCanvasView(controller: _controller),
+    floatingActionButton: FloatingActionButton(
+      onPressed: () => _controller.reloadLibrary(widget.libraryPath),
+      child: const Icon(Icons.refresh),
+    ),
+  );
+}
+```
+
+```bash title="Run Flutter plugin tests"
+(cd hosts/flutter-plugin && flutter test)
+```

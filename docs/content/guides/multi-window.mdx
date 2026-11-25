@@ -1,0 +1,76 @@
+---
+title: "Multi-Window Lifecycle"
+description: "WindowManager state machine, SurfacePresentation modes, modal parent blocking, cancelable close veto, NVW1 binary codec, and native host managers across 7 platforms."
+order: 5
+---
+
+# Multi-Window Lifecycle
+
+Desktop, tablet, and browser applications frequently open inspectors, detached editors, modal sheets, and popovers alongside a primary window. `crates/nve-interop/src/window.rs` implements a deterministic multi-window state machine (**`WindowManager`**) and zero-JSON binary wire codec (**`NVW1`**) shared across every host platform.
+
+## `SurfacePresentation` Modes
+
+Every NVE surface declares how it should be presented (`SurfacePresentation`):
+
+| Variant | Parent Required? | Modal / Cascade Behavior |
+| :--- | :--- | :--- |
+| `Embedded` | Optional host view | Inline child surface inside an existing window or framework view |
+| `PrimaryWindow(WindowDescriptor)` | No | Top-level application window; closing with `WindowFlags::EXIT_ON_CLOSE` triggers app exit |
+| `SecondaryWindow { parent, modal, descriptor }` | Optional | Independent top-level window; if `modal == true` or `WindowFlags::MODAL` is set, blocks input on `parent` and cascades on parent close |
+| `UtilityPanel { parent, always_on_top, descriptor }` | Optional | Floating inspector/palette window; cascades with `parent` when attached |
+| `Popover { anchor_surface, anchor_rect, descriptor }` | Required | Transient floating surface anchored to a logical rect on `anchor_surface`; cascades automatically |
+| `Sheet { parent, descriptor }` | Required | Platform-native sheet attached to `parent`; supports modal blocking and cascading close |
+
+`WindowDescriptor` carries `title`, `bounds: WindowRect { x, y, width, height }`, `min_size`, `max_size`, `state: WindowState` (`Normal`, `Minimized`, `Maximized`, `Fullscreen`), and `flags: WindowFlags` (`RESIZABLE`, `DECORATED`, `TRANSPARENT`, `ALWAYS_ON_TOP`, `MODAL`, `EXIT_ON_CLOSE`, `CLOSABLE`, `MINIMIZABLE`, `MAXIMIZABLE`).
+
+## Lifecycle State Machine, Modal Blocking & Close Veto
+
+`WindowManager` enforces cross-platform window invariants centrally in Rust:
+
+1. **Modal blocking** — Opening a modal `SecondaryWindow` or `Sheet` automatically marks its `parent` surface as input-blocked until the modal closes. Nested modals stack cleanly.
+2. **Cascading close** — Closing a parent window automatically closes all attached `Sheet`, `Popover`, child `UtilityPanel`, and modal `SecondaryWindow` descendants in bottom-up order.
+3. **Cancelable `CloseRequested` veto** — When a user clicks the OS close button, the host emits `WindowLifecycleEvent::CloseRequested { handle }`. The app can inspect unsaved documents and either confirm closure (`WindowCommand::Close`) or veto it (`WindowCommand::VetoClose`) to show a save-changes sheet.
+4. **Strict validation** — Non-finite coordinates, zero/negative dimensions, `min_size > max_size`, and titles exceeding `16,384` bytes are rejected before touching OS windowing APIs.
+
+## Binary `NVW1` Wire Protocol
+
+Commands (`WindowCommand`) and OS lifecycle events (`WindowLifecycleEvent`) cross `NVE_IFACE_HOST = 5` (`SERVICE_WINDOW = 0x0002`) in the little-endian **`NVW1`** container (`NVW1_HEADER_SIZE = 12`):
+
+- `0..4`: `magic = b"NVW1"`
+- `4..6`: `version: u16 = 1`
+- `6`: `kind: u8` (`1 = Commands`, `2 = Events`)
+- `7`: `reserved: u8 = 0`
+- `8..12`: `record_count: u32` (capped at `65,536`)
+
+```rust title="Opening a modal sheet and encoding NVW1 commands" highlight="4-12,15-17"
+use nve_interop::{
+    encode_window_commands, SurfacePresentation, WindowCommand, WindowDescriptor, WindowFlags,
+    WindowManager,
+};
+
+let mut wm = WindowManager::new();
+let sheet_desc = WindowDescriptor::new("Export Settings", 480.0, 320.0)
+    .with_min_size(360.0, 240.0)
+    .with_flags(WindowFlags::standard().with(WindowFlags::MODAL));
+
+let (sheet_handle, cmds) = wm.open_window(
+    2, // child SurfaceId
+    SurfacePresentation::Sheet { parent: 1, descriptor: sheet_desc },
+)?;
+assert!(wm.is_input_blocked(1));
+
+let wire: Vec<u8> = encode_window_commands(&cmds)?;
+// Deliver `wire` to host via SERVICE_WINDOW (0x0002)
+```
+
+## Native Host Window Managers Across All 7 Platforms
+
+| Host Shell | Implementation | Platform Mechanism |
+| :--- | :--- | :--- |
+| **Skia Desktop** | `hosts/skia-shell` | Multi-window `winit` event loop + per-window `SurfaceId` routing |
+| **macOS AppKit** | `hosts/macos-shell/NveMacWindowManager.mm` | `NSWindow`, `NSPanel`, `beginSheet:completionHandler:`, `NSPopover`, `NSWindowDelegate` close veto |
+| **iOS / iPadOS** | `hosts/ios-shell` | Multi-scene `UIWindowScene` / `UIApplicationSceneManifest` (`NveIosSceneDelegate`) |
+| **Windows Win32** | `hosts/windows-shell/NveWinWindowManager.cpp` | Owned `HWND`s (`GWLP_HWNDPARENT`), `EnableWindow(parent, FALSE)` modal blocking, `WM_CLOSE` veto |
+| **Linux GTK4** | `hosts/gtk-shell/NveGtkWindowManager.cpp` | `GtkWindow` / `gtk_window_set_transient_for` / `gtk_window_set_modal` / `close-request` signal |
+| **Qt 6** | `hosts/qt-shell/NveQtWindowManager.cpp` | `QWidget` / `QQuickView` windows with `Qt::WindowModal` and `QCloseEvent::ignore()` veto |
+| **Web WASM** | `hosts/web-shell/src/wasm_api.rs` | Multi-surface `ACTIVE_SHELLS` map + cross-tab `BroadcastChannel` coordination |

@@ -1,0 +1,75 @@
+---
+title: "Android & Jetpack Compose"
+description: "Zero-GC Android JNI DirectByteBuffer slabs, NveCanvasView, NVE_MET1 TalkBack metadata, zero-Gradle APK launcher, and Jetpack Compose NveSceneCanvas."
+order: 6
+---
+
+# Android & Jetpack Compose (`hosts/android-shell` + `hosts/compose-kit`)
+
+Android hosts read NVE's 64-byte `NveRenderNode` slabs straight from native C++ memory into Java/Kotlin via persistent **`DirectByteBuffer`** views — zero JSON, zero per-frame JNI object allocations, and zero GC pressure at 120fps.
+
+## Zero-GC JNI Slab Transport (`hosts/android-shell`)
+
+`hosts/android-shell/NveAndroidSurfaceJni.cpp` exposes `nve::NativeHostSession` to Android using `CachedDirectBuffer`:
+
+- Each scene slab (`nodes`, `text_slab`, `children_slab`, `dirty_indices`, `removed_ids`) and the dirty metadata slab (`NVE_MET1`) is wrapped in a `GlobalRef` `java.nio.ByteBuffer` via `NewDirectByteBuffer`.
+- `CachedDirectBuffer::sync` re-allocates the `DirectByteBuffer` **only** when a native slab pointer or capacity grows; empty slabs bind to a non-null sentinel with capacity `0` to avoid ART null-address quirks.
+- Generated bindings live in package **`dev.nve.android.generated`**: `dev.nve.android.generated.NveCoreAbi` and `dev.nve.android.generated.NveSceneBuffer` (verifying `SCHEMA_HASH = 0x00F2CF037DB50CC8`).
+- **`NveCanvasView.java`** paints layout rects, rounded borders, images, text, and `NVE_DRAW1` vector draw lists directly onto `android.graphics.Canvas`, while dispatching native touches and `TextInput` IME changes back via binary `EventRing`.
+- **TalkBack accessibility (`NVE_MET1`)** — `NveAndroidSurfaceJni.cpp` packs sparse accessibility metadata (`accessibilityLabel`, `accessibilityRole`, `accessibilityHint`, ARIA states) exclusively for dirty nodes into the flat `NVE_MET1` slab, consumed directly by Android's `AccessibilityNodeProvider`.
+- **Live pairing (`NveAndroidPairJni.cpp`)** — Connects the Android shell to `cargo nve pair` over UDP/TCP/WS without re-pushing `.so` binaries.
+
+### Standalone Zero-Gradle APK & Emulator Launcher
+
+`hosts/android-shell/run-emulator.sh` builds a signed `arm64-v8a` APK (`dev.nve.android`) directly using `$ANDROID_HOME` (`javac`, `d8`, `aapt2`, `zipalign`, `apksigner` — zero Gradle downloads) and installs/launches it on an Android Emulator:
+
+```bash title="Build APK, launch on emulator, and run host-side JNI CTest"
+# Build + verify signed APK only
+./hosts/android-shell/run-emulator.sh nve-example-counter --build-only
+
+# Build and launch NVE Studio on Pixel_10 (or first available AVD)
+./hosts/android-shell/run-emulator.sh nve-studio-workspace --screenshot /tmp/nve-android.png
+
+# Host-side JNI bridge CTest (runs natively without an emulator)
+cmake -S hosts/android-shell -B hosts/android-shell/build -G Ninja \
+  && cmake --build hosts/android-shell/build \
+  && ctest --test-dir hosts/android-shell/build --output-on-failure
+```
+
+<Callout kind="warning" title="Avoid Eclipse OpenJ9 with Android build-tools d8">
+On macOS arm64, running Android `build-tools/36.0.0/d8` under Eclipse OpenJ9 triggers a Scavenger GC assertion crash. `run-emulator.sh` automatically detects OpenJ9 and switches `JAVA_HOME` to a HotSpot/JBR JDK (e.g., Android Studio JBR or Temurin 21).
+</Callout>
+
+## Jetpack Compose Kit (`hosts/compose-kit`)
+
+`dev.nve.compose` is a drop-in Android Library Gradle module for embedding NVE Rust surfaces directly inside Jetpack Compose apps:
+
+- **`NveSceneBuffer.kt` & `NveBinValue.kt`** — Zero-GC `DirectByteBuffer` reader over 64-byte `NveRenderNode` slabs and compact little-endian binary `NveBinValue` prop/command codec (tags `0..7`, O(1) container skipping).
+- **`NveSurfaceComposable.kt` (`@Composable fun NveSurface` & `NveSceneCanvas`)** — Renders `NveSceneView`, `NVE_DRAW1` vector ops, `Image`, and `TextInput` inside Compose `Canvas`, maps `NVE_MET1` nodes onto `Modifier.semantics` (`Role.Button`, `Role.Image`, content descriptions), and wires `requestDisallowInterceptTouchEvent` gesture arbitration.
+- **`NveHostActivity.kt`** — Reusable `ComponentActivity` preserving `surfaceId` across lifecycle transitions and supporting Tier-2 `.so` hot-reload.
+
+```kotlin title="Embedding an NVE component in Jetpack Compose" highlight="6-18"
+@Composable
+fun CounterScreen() {
+    var count by remember { mutableIntStateOf(0) }
+    val controller = rememberNveSurfaceController(
+        componentName = "NveCounterCard",
+        vtableSymbol = "nve_get_interface",
+        backend = NveRenderBackend.FABRIC,
+    )
+
+    NveSurface(
+        componentName = "NveCounterCard",
+        modifier = Modifier.fillMaxWidth().height(180.dp),
+        vtableSymbol = "nve_get_interface",
+        backend = NveRenderBackend.FABRIC,
+        props = mapOf("title" to "Compose + NVE", "count" to count),
+        controller = controller,
+        onEvent = { event -> if (event.name == "onIncrement") count += 1 },
+    )
+}
+```
+
+```bash title="Run Compose JUnit 5 + Robolectric test suite"
+(cd hosts/compose-kit && ./run-tests.sh)
+```

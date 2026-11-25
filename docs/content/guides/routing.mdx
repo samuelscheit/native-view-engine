@@ -1,0 +1,85 @@
+---
+title: "Routing (nve-router)"
+description: "Type-safe zero-proc-macro define_routes!, stack/tab/modal navigation, guards, deep links, binary NVN1 channel sync, and nve-router::web History API integration."
+order: 3
+---
+
+# Routing (`nve-router`)
+
+`crates/nve-router` provides type-safe stack, tab, modal, and deep-link navigation for `nve-dioxus` with **zero proc-macro compile tax**, a compact binary **`NVN1`** host bridge on `NveChannelBus`, and a portable **Web History API** adapter (`nve-router::web`).
+
+## Defining Routes With `define_routes!`
+
+`define_routes!` is a pure `macro_rules!` DSL implementing the `Routable` trait — parsing static segments, typed path parameters (`:id`), wildcard tails (`*rest`), and `QueryParams` with zero `syn`/`quote` build overhead:
+
+```rust title="Declarative route enum with typed params and query strings" highlight="4-11"
+use nve_router::prelude::*;
+
+define_routes! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum AppRoute {
+        #[route("/")]
+        Home,
+        #[route("/issues/:id")]
+        IssueDetail { id: u64 },
+        #[route("/docs/*slug")]
+        DocPage { slug: String },
+        #[route("/settings/profile")]
+        ProfileSettings,
+    }
+}
+
+let route = AppRoute::from_uri("/issues/42?tab=activity").unwrap();
+assert_eq!(route, AppRoute::IssueDetail { id: 42 });
+assert_eq!(route.to_uri(), "/issues/42");
+```
+
+## Stack, Tabs, Modals & Navigation Guards
+
+- **`RouterState<R>`** — Manages the primary back/forward history stack (`push`, `replace`, `pop`, `go_forward`, `reset`), an independent modal presentation stack (`present_modal`, `dismiss_modal`), and emits typed `NavigationTransition<R>` deltas.
+- **`TabRouterState<R>`** — Coordinates multiple persistent tabs (`TabSpec`), preserving an independent navigation stack per tab (`switch_tab`, `active_tab_index`).
+- **`GuardChain<R>` & `NavigationGuard`** — Intercepts every transition before mutation with `GuardDecision::Allow`, `GuardDecision::Redirect(target)` (loop-protected by `DEFAULT_MAX_REDIRECT_HOPS`), or `GuardDecision::Deny(reason)`.
+- **`DeepLinkConfig`** — Matches custom URL schemes (`myapp://issue/42`) and universal/app links (`https://app.example.com/issues/42`), normalizes base paths, and tracks `DeepLinkOrigin` (`ColdLaunch`, `WarmOpen`, `Notification`, `Internal`).
+
+### Dioxus UI Bindings
+
+Wrap your root tree in `RouterProvider` (or `TabRouterProvider`), render the active view with `Outlet`, and trigger transitions with `Link` or hooks (`use_navigator()`, `use_route()`, `use_active_modal()`, `use_tab_navigator()`):
+
+```rust title="Mounting RouterProvider, Link, and Outlet in Dioxus" highlight="6-13"
+rsx! {
+    RouterProvider::<AppRoute> { initial: AppRoute::Home,
+        view { style: "flex-direction: row; gap: 12px;",
+            Link::<AppRoute> { to: AppRoute::Home, "Home" }
+            Link::<AppRoute> { to: AppRoute::IssueDetail { id: 42 }, "Issue #42" }
+        }
+        Outlet::<AppRoute> {
+            render: move |route| match route {
+                AppRoute::Home => rsx! { text { "Workspace Home" } },
+                AppRoute::IssueDetail { id } => rsx! { text { "Issue #{id}" } },
+                AppRoute::DocPage { slug } => rsx! { text { "Doc: {slug}" } },
+                AppRoute::ProfileSettings => rsx! { text { "Settings" } },
+            }
+        }
+    }
+}
+```
+
+## Interactive Router Sandbox
+
+Experiment with stack pushes, pops, modal sheets, guarded redirects, and deep-link URI resolution live:
+
+<LiveDemo id="router-sandbox" hydrate="visible" height={340} />
+
+## Binary `NVN1` Host Channel Bridge
+
+`RouterChannelBridge` binds `RouterState` / `TabRouterState` onto `nve_interop::NveChannelBus` (`CHANNEL_ID_NAVIGATION = 4`, topic `"navigation"`) using the zero-JSON **`NVN1`** binary packet format (`crates/nve-router/src/nvn1.rs`, minimum 20 bytes):
+
+- **Header:** `magic("NVN1")` (4 B) + `version(u8 = 1)` + `action(u8)` + `flags(u8: CAN_GO_BACK | CAN_GO_FORWARD | IS_MODAL)` + `reserved(u8 = 0)` + `stack_depth(u32)` + `active_tab_index(u32)` + `uri_len(u16)` + `uri_utf8` + `tab_id_len(u16)` + `tab_id_utf8`.
+- **Zero-copy decode (`NavPacketRef<'a>`)** — Native hosts (iOS `UINavigationController`, Android predictive back gesture, desktop title bars, or browser shells) inspect `can_go_back` and the current URI without allocating strings, and push inbound hardware-back or deep-link commands back into Rust over the same channel.
+
+## Web History API Adapter (`nve-router::web`)
+
+`crates/nve-router/src/web.rs` connects `RouterState<R>` to browser URLs with zero JavaScript glue:
+
+- **`HistoryBackend` trait** — Implemented by **`BrowserHistoryBackend`** on `wasm32` (wrapping `web-sys` `window.history` with RAII `popstate` listener cleanup on `Drop`) and **`MemoryHistoryBackend`** on all targets for deterministic native unit tests.
+- **`WebHistoryAdapter`** — Handles subpath deployments (e.g. GitHub Pages `normalize_base_path("/native-view-engine")`), loop-free `pushState`/`replaceState`/`popstate` synchronization, browser-accurate `<a>` click interception (respecting `Cmd`/`Ctrl`/`Shift`/middle-click, `target="_blank"`, and external origins), and `#anchor` smooth scrolling (`ScrollTarget::Top` / `ScrollTarget::Anchor(id)`).

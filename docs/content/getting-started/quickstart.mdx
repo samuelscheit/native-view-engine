@@ -1,0 +1,194 @@
+---
+title: "Quickstart"
+description: "Install prerequisites, run NVE Studio across Skia Desktop, Web WASM, macOS AppKit, and Windows Direct2D, and create your first NveApp cdylib."
+order: 2
+---
+
+# Quickstart
+
+This guide gets you from a fresh clone of `native-view-engine` to running the flagship **NVE Studio Workspace** on desktop and browser hosts, and authoring your first hot-swappable `NveApp`.
+
+## Prerequisites
+
+- **Rust toolchain** (Edition 2024; workspace tested on Rust 1.85+ / Cargo 1.100)
+- **Web target** (optional, for `hosts/web-shell`): `rustup target add wasm32-unknown-unknown` and `wasm-bindgen-cli` matching `Cargo.lock` (`0.2.130`)
+- **C++20 hosts** (optional, for macOS/iOS/Windows/GTK4/Qt6/Android): CMake 3.24+, Ninja, and platform SDK (Xcode CLT on macOS, MSVC 19+ / VS Build Tools on Windows, `libgtk-4-dev` or `Qt6` on Linux)
+
+Verify your local machine in one command:
+
+```bash title="Check local toolchains and caches"
+cargo nve doctor
+```
+
+## Run NVE Studio Workspace
+
+Build the flagship `nve-studio-workspace` and `nve-example-counter` dynamic libraries, then launch them on any host target.
+
+:::tabs
+::tab{label="Skia Desktop"}
+```bash title="Build and run on Skia Desktop (macOS / Linux / Windows)"
+# Build the app cdylibs
+cargo build -p nve-studio-workspace -p nve-example-counter
+
+# Launch NVE Studio in a 1280x800 native winit window
+cargo run -p nve-skia-shell -- \
+  target/debug/libnve_studio_workspace.dylib \
+  --no-ws --width 1280 --height 800
+
+# Or capture a headless PNG screenshot without opening a window
+cargo run -p nve-skia-shell -- \
+  target/debug/libnve_studio_workspace.dylib \
+  --no-ws --width 1280 --height 800 --screenshot studio.png
+```
+::tab{label="Web WASM"}
+```bash title="Build the size-optimized WASM bundle and serve locally"
+# Compiles nve-web-shell with --profile wasm-release, runs wasm-bindgen,
+# optional Wizer Frame-0 pre-initialization, and wasm-opt -Oz
+./hosts/web-shell/build.sh
+
+# Serve hosts/web-shell over HTTP (e.g., Python or miniserve)
+python3 -m http.server 8080 --directory hosts/web-shell
+```
+::tab{label="macOS AppKit"}
+```bash title="Build and launch the native macOS AppKit host"
+cargo build -p nve-studio-workspace
+
+cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja
+cmake --build hosts/macos-shell/build
+ctest --test-dir hosts/macos-shell/build --output-on-failure
+
+./hosts/macos-shell/build/nve_macos_shell \
+  --dylib target/debug/libnve_studio_workspace.dylib
+```
+::tab{label="Windows Direct2D"}
+```bash title="Build and launch the native Windows 11 Direct2D host (PowerShell)"
+cargo build -p nve-studio-workspace
+
+cmake -S hosts/windows-shell -B hosts/windows-shell/build -G Ninja
+cmake --build hosts/windows-shell/build
+ctest --test-dir hosts/windows-shell/build --output-on-failure
+
+.\hosts\windows-shell\build\nve_windows_shell.exe `
+  --dylib target\debug\nve_studio_workspace.dll
+```
+:::
+
+<Callout kind="info" title="Dynamic library extensions by OS">
+Cargo emits `lib<crate>.dylib` on macOS, `lib<crate>.so` on Linux/Android, and `<crate>.dll` on Windows. Crate hyphens (`nve-studio-workspace`) become underscores (`nve_studio_workspace`) in the library filename.
+</Callout>
+
+## Start the 2-Tier Hot-Reload Loop
+
+Run `cargo nve dev` to watch your crate's `src/` directory, apply `< 50 ms` Tier-1 RSX/style patches over WebSocket, and automatically hot-swap the compiled `cdylib` (Tier 2) on Rust logic changes:
+
+```bash title="Launch dev daemon with Skia preview and live NVD1 pairing"
+cargo nve dev --package nve-studio-workspace --skia --pair
+```
+
+When `--pair` is enabled, `nve dev` simultaneously streams binary `NVT1`/`NVD1` frame deltas on UDP port `8091` and WebSocket/TCP port `8092`. Any thin client (Skia, macOS, Windows, Qt 6, GTK4, iOS, Android, or Web `?pair=ws://...`) can connect without compiling or loading a local `.dylib`. See [Live Device Pairing](/interop/live-pairing) for full flags.
+
+## Build Your First `NveApp`
+
+Every NVE application implements the safe `nve_engine::NveApp` trait (zero `unsafe`) and exports the modular `nve_get_interface` C ABI via `nve_engine::export_nve_app!`.
+
+:::steps
+::step{title="Configure Cargo.toml as a dual rlib + cdylib crate"}
+```toml title="examples/my-app/Cargo.toml"
+[package]
+name = "my-nve-app"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["cdylib-export"]
+cdylib-export = []
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-dioxus = { workspace = true }
+nve-engine = { workspace = true }
+```
+::step{title="Author the Dioxus rsx! component and implement NveApp"}
+```rust title="examples/my-app/src/lib.rs" highlight="7-32,44-57"
+use nve_abi::{decode_events, FrameId, NveEventBatchRef, SurfaceId};
+use nve_dioxus::prelude::*;
+use nve_dioxus::DioxusSurface;
+use nve_engine::NveApp;
+
+#[component]
+pub fn CounterApp() -> Element {
+    let mut count = use_signal(|| 0i32);
+
+    rsx! {
+        view {
+            style: "width: 100%; height: 100%; padding: 24px; gap: 16px; background-color: #0f172a;",
+            text {
+                style: "color: #ffffff; font-size: 28px;",
+                "Count: {count}"
+            }
+            pressable {
+                style: "width: 160px; height: 48px; justify-content: center; align-items: center; background-color: #2563eb; border-radius: 12px;",
+                onpress: move |_| count += 1,
+                text {
+                    style: "color: #ffffff; font-size: 16px;",
+                    "Increment +"
+                }
+            }
+        }
+    }
+}
+
+pub struct CounterModule {
+    surface: DioxusSurface,
+    last_frame: Vec<u8>,
+}
+
+impl NveApp for CounterModule {
+    fn create(surface_id: SurfaceId) -> Self {
+        Self {
+            surface: DioxusSurface::new(surface_id, CounterApp),
+            last_frame: Vec::new(),
+        }
+    }
+
+    fn render(&mut self, frame_id: FrameId) -> &[u8] {
+        let (_, _, bytes) = self.surface.render_frame(frame_id);
+        self.last_frame = bytes;
+        &self.last_frame
+    }
+
+    fn dispatch_events(&mut self, encoded: &[u8]) -> bool {
+        decode_events(encoded)
+            .map(|evs| self.surface.dispatch_events(&evs))
+            .unwrap_or(false)
+    }
+
+    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        self.surface.dispatch_events_direct(events)
+    }
+}
+```
+::step{title="Export nve_get_interface in a dedicated module"}
+Wrap `export_nve_app!` inside a private `mod cdylib_export` behind the `cdylib-export` feature so MSVC and multi-app test binaries never suffer duplicate `nve_get_interface` symbol collisions under workspace feature unification:
+
+```rust title="examples/my-app/src/lib.rs"
+#[cfg(feature = "cdylib-export")]
+mod cdylib_export {
+    nve_engine::export_nve_app!(super::CounterModule);
+}
+```
+::step{title="Build and launch"}
+```bash title="Compile cdylib and preview immediately"
+cargo build -p my-nve-app
+cargo run -p nve-skia-shell -- target/debug/libmy_nve_app.dylib --no-ws
+```
+:::
+
+## Next Steps
+
+- Understand the crate dependency graph in [Workspace Architecture](/getting-started/workspace-architecture).
+- Dive into the binary wire format in [CommandBuffer & EventRing](/architecture/command-buffer-and-events).
+- Explore accessible building blocks in [UI Components (`nve-ui`)](/guides/ui-components).

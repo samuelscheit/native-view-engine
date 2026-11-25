@@ -1,0 +1,85 @@
+---
+title: "Benchmarks & Profiling"
+description: "Verified Criterion and C++20 Fabric benchmark baselines from benchmarks/baseline.json, WASM release size, and cold-start / peak RSS profiling."
+order: 2
+---
+
+# Benchmarks & Profiling
+
+Performance is continuously verified against `benchmarks/baseline.json` with a default **15% regression tolerance** (`25%` for sub-50 ns microbenchmarks) across both Rust Criterion (`crates/nve-bench`) and Release C++20 (`cxx/build/nve_fabric_bridge_bench`).
+
+All numbers below are real measured medians from `benchmarks/baseline.json` recorded on **Apple Silicon (`arm64`, Darwin, 20 cores)**.
+
+## ABI, Scene & Value Zero-Copy Microbenchmarks
+
+| Benchmark | Median | Mean | Notes |
+| :--- | ---: | ---: | :--- |
+| `abi/nve_get_interface/lookup_interface` | **0.98 ns** | 0.98 ns | Single-symbol interface table lookup |
+| `abi/nve_get_interface/surface_render_slice` | **1.33 ns** | 1.63 ns | Panic-safe `extern "C"` render slice return |
+| `abi/nve_get_interface/scalar_measure` | **3.55 ns** | 3.56 ns | Register-only `NveSizeConstraints -> NveIntrinsicSize` |
+| `abi/nve_get_interface/scalar_hit_test` | **8.72 ns** | 8.73 ns | Register-only `NveGestureDisposition` hit-test |
+| `abi/value/value_direct_ffi_read` | **17.09 ns** | 17.09 ns | Zero-copy `NveValueRef` nested field read |
+| `abi/value/value_binary_view_read` | **109.20 ns** | 109.46 ns | Zero-copy `BinValueView` wire read |
+| `abi/scene/scene_view_read_dirty_3_of_1000` | **24.82 ns** | 24.85 ns | Dirty-only 64B `NveRenderNode` read |
+| `abi/scene/scene_view_read_all_1000` | **7.80 µs** | 8.29 µs | Full 1,000-node linear slab scan |
+
+## `CommandBuffer` & `EventRing` Throughput
+
+| Benchmark | 100 Nodes / 16 Events | 1,000 Nodes / 256 Events | 10,000 Nodes |
+| :--- | ---: | ---: | ---: |
+| `abi/command_buffer_encode` | **2.02 µs** | **21.17 µs** | **209.84 µs** |
+| `abi/command_buffer_decode_streaming` (`CommandRef`) | **1.81 µs** | **18.05 µs** | **180.01 µs** |
+| `abi/command_buffer_decode` (owned) | **5.13 µs** | **49.51 µs** | **529.72 µs** |
+| `abi/event_ring/encode` | **137.15 ns** (16) | **1.82 µs** (256) | — |
+| `abi/event_ring/decode` | **346.73 ns** (16) | **5.10 µs** (256) | — |
+
+## C++20 Fabric Bridge & Layout Engines
+
+| Benchmark | Median | p95 | Throughput |
+| :--- | ---: | ---: | ---: |
+| `cxx::rn_bridge_render_press_roundtrip` | **667 ns** | 709 ns | 1.50M ops/s |
+| `cxx::incremental_patch_10_on_1000_nodes` | **7.12 µs** | 7.42 µs | 140.4k ops/s |
+| `cxx::scene_view_publish_10_on_1000` | **7.54 µs** | 7.88 µs | 132.6k ops/s |
+| `cxx::decode_mount_100_nodes` | **18.33 µs** | 18.92 µs | 54.5k ops/s |
+| `cxx::decode_mount_1000_nodes` | **171.48 µs** | 210.86 µs | 5.83k ops/s |
+| `cxx::decode_mount_5000_nodes` | **850.88 µs** | 916.75 µs | 1.18k ops/s |
+| `cxx::layout_pass_100_rows_heuristic` | **44.67 µs** | 45.00 µs | 22.4k ops/s |
+| `cxx::layout_pass_1000_rows_heuristic` | **450.69 µs** | 484.42 µs | 2.22k ops/s |
+| `cxx::layout_pass_1000_rows_custom_measurer` | **801.60 µs** | 848.93 µs | 1.25k ops/s |
+| `rust::backend_headless/taffy_layout/initial_rows/100` | **168.51 µs** | — | Pure Rust Taffy |
+| `rust::backend_headless/taffy_layout/initial_rows/1000` | **1.77 ms** | — | Static vs `dyn Box`: +0.56% |
+| `rust::backend_headless/hit_test/rows/1000` | **3.62 µs** | — | 100 rows: **344.6 ns** |
+
+## Frontend, Backends, Interop & Cold-Start Memory
+
+| Benchmark / Metric | Measured Value | Context |
+| :--- | ---: | :--- |
+| `dioxus/initial_frame_render` | **6.83 µs** | Full `VirtualDom` mount → `NVE1` |
+| `dioxus/incremental_state_update_diff` | **931 ns** | Fine-grained signal mutation → `NVE1` |
+| `dioxus/tier1_hot_patch_apply` | **1.33 µs** | In-place `NVP1` template patch |
+| `backend_skia/display_list_card` / `rasterize_card_393x852` | **6.42 µs** / **136.6 µs** | Software `PixelBuffer` + `CosmicText` |
+| `backend_skia/display_list_1000_nodes` / `rasterize_1000_nodes_393x852` | **961.7 µs** / **982.0 µs** | Full 1,000-node frame |
+| `backend_web/incremental_dom_patch_10_nodes` | **1.22 µs** | Keyed DOM mutation batch |
+| `backend_web/render_html_100_rows` / `500_rows` | **12.45 µs** / **65.05 µs** | Semantic HTML5 SSR |
+| `interop/gesture_arbitration/nested_scroll_sequence` | **64.51 ns** | Zero-alloc ancestor chain arbitration |
+| `interop/channel_bus/publish_subscribers/1` / `8` / `64` | **47.5 ns** / **66.7 ns** / **385.8 ns** | `NveChannelBus` binary fan-out |
+| **Studio WASM bundle size (`wasm-release` + `wasm-opt -Oz`)** | **285.8 KiB gzipped** | `hosts/web-shell/build.sh` |
+| **Cold `MmapSnapshot` Frame-0 + state restore (100 rows)** | **82–136 µs** | `29 µs` raw `mmap` open + `.nvewal` |
+| **Native flagship app RSS budget** | **< 40 MB RAM** | ~15 MB native binary vs 150–300 MB Electron |
+
+## Running Benchmarks & Capturing Traces
+
+```bash title="Run Criterion, C++20 Fabric benchmarks, and Perfetto trace capture"
+# 1. Full Rust Criterion suite
+cargo bench -p nve-bench
+
+# 2. Multi-backend CLI bench with Perfetto / Chrome trace export
+cargo nve bench --rows 1000 --frames 50 --trace /tmp/nve.perfetto.json
+
+# 3. Release C++20 Fabric/Yoga/JSI benchmark
+cmake -S cxx/nve-fabric-bridge -B cxx/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build cxx/build
+./cxx/build/nve_fabric_bridge_bench
+```
+
+Open `/tmp/nve.perfetto.json` in `https://ui.perfetto.dev` or `chrome://tracing` to inspect per-frame `reconcile_us`, `encode_us`, `decode_us`, `layout_us`, `diff_us`, and `mount_us` spans.

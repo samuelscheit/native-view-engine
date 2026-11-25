@@ -1,0 +1,55 @@
+---
+title: "Web WASM, CSS & SSR"
+description: "nve-backend-web and hosts/web-shell: Option 5 structural CSS cache, semantic HTML5 SSR, zero-flicker progressive island hydration, Wizer Frame-0, and 285.8 KiB gzipped builds."
+order: 3
+---
+
+# Web WASM, CSS & SSR (`nve-backend-web` + `hosts/web-shell`)
+
+`crates/nve-backend-web` compiles the exact same `NVE1` `CommandBuffer` pipeline to `wasm32-unknown-unknown` (browser DOM + CSS Flexbox + HTML5 `<canvas>`) and native Rust (static **HTML5 SSR**). `hosts/web-shell` packages it into a **285.8 KiB gzipped** `wasm-release` bundle with `Wizer` Frame-0 pre-initialization, multi-surface `ACTIVE_SHELLS`, and live `?pair=ws://...` device pairing.
+
+## Option 5 Hybrid CSS Architecture
+
+Naive WASM DOM engines rewrite inline `element.style.cssText` on every node mutation, triggering massive JS/WASM boundary crossings and preventing Blink's Matched Properties Cache (MPC) and Firefox Stylo from sharing computed styles across rows.
+
+`nve-backend-web` uses the adversarially verified **Option 5 Hybrid CSS Architecture**:
+
+1. **Deferred end-of-frame `dirty_styles` flush** — Multiple `SetLayout`/`SetStyle` ops touching one node coalesce into a single style flush at `Opcode::Commit`.
+2. **Static `.nve` base reset** — One `<style data-nve-base>` sheet handles box-sizing, flex defaults, and `font-family: inherit`, while `.nve-tl` handles Dioxus parent-to-leaf text style inheritance cleanly.
+3. **Content-addressed structural class cache (`.s<base36(fnv1a64)>`)** — Deterministic CSS declarations are hashed with FNV-1a64 and inserted once into a batched `CSSStyleSheet` (`replaceSync`/`insertRule`, capped at `MAX_DYNAMIC_RULES = 4096`). On NVE Studio Frame 0, this cuts CSS bytes by **-86.3%**, reduces DOM flush crossings from **723 → 269**, and achieves **~95%+** browser style-sharing hits.
+4. **Volatile inline escape hatch** — High-cardinality continuous values (`VirtualList` spacers `> 2048px`, fractional coordinates, animated opacity) bypass the rule table and write directly to inline styles so the stylesheet never thrashes.
+5. **Keyed minimal-diff `SetChildren`** — O(N) head/tail-trimmed DOM reconciliation replaces full child wipes, preserving focused inputs, IME composition, and scroll offsets.
+
+## Semantic HTML5 SSR & Progressive Island Hydration
+
+Running `nve-backend-web` natively on the server (or at build time via `nve-docs`) emits crawlable, zero-JS-functional HTML5:
+
+- **Semantic tag mapping (`render_ssr`)** — Maps roles, heading levels, and links to real `<h1>`–`<h6>`, `<nav>`, `<main>`, `<article>`, `<a href>`, `<pre><code>`, plus deterministic `<style data-nve-base>`, `<style data-nve-ssr data-nve-hashes="...">`, Open Graph `<meta>`, and `sitemap.xml`.
+- **Measured SSR throughput** (`benchmarks/baseline.json`): **12.45 µs** for 100 rows and **65.05 µs** for 500 rows; **1.22 µs** for an incremental 10-node DOM patch.
+- **Zero-flicker hydration (`hydrate_into`)** — Adopts existing `[data-nve-id]` DOM nodes in-place without wiping `innerHTML`, attaches root event delegation instead of per-node `wasm_bindgen::Closure` fan-out, and recovers gracefully if a subtree mismatches.
+- **Progressive islands** — Interactive `<LiveDemo>` / island subtrees support four hydration triggers: `load`, `visible` (`IntersectionObserver`), `interaction` (event capture & replay on first click/focus), and `idle` (`requestIdleCallback`).
+
+## `Wizer` Frame-0 & Size-Optimized Build Pipeline
+
+`hosts/web-shell/build.sh` automates the full four-stage production pipeline:
+
+:::steps
+::step{title="Compile with --profile wasm-release"}
+`cargo rustc --locked -p nve-web-shell --lib --crate-type cdylib --target wasm32-unknown-unknown --profile wasm-release` (`opt-level = "z"`, full LTO, `codegen-units = 1`, `panic = "abort"`, stripped symbols).
+::step{title="Generate ES module bindings"}
+`wasm-bindgen --target web --out-dir hosts/web-shell/pkg --no-typescript`.
+::step{title="Bake Frame-0 VDOM with Wizer (optional)"}
+When `wizer` is on `PATH`, `wizer --allow-wasi=false` executes `wizer.initialize` at build time and snapshots pre-initialized linear memory directly into the `.wasm` binary for instant browser boot.
+::step{title="Optimize with wasm-opt -Oz"}
+Runs Binaryen `wasm-opt -Oz` to produce the final **285.8 KiB gzipped** Studio bundle.
+:::
+
+```bash title="Unit tests, wasm32 compile check, and full release build"
+cargo test --locked -p nve-backend-web -p nve-web-shell \
+  && cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
+./hosts/web-shell/build.sh
+```
+
+## Multi-Window & Live Browser Pairing
+
+`hosts/web-shell/src/wasm_api.rs` manages multiple concurrent surfaces in `ACTIVE_SHELLS` (`BTreeMap<SurfaceId, ActiveShell>`) coordinated across tabs via `BroadcastChannel`. Opening the web shell with `?pair=ws://127.0.0.1:8092/ws/nvd&token=dev-secret` turns any desktop or mobile browser into a zero-install thin client receiving live `NVT1`/`NVD1` binary deltas and forwarding pointer/keyboard `InputEvents` back to `cargo nve pair`.
