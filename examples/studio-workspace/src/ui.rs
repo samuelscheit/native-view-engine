@@ -1,6 +1,7 @@
 //! Dioxus 0.7 `rsx!` shell for **Aether Workspace** + docked **NVE Studio** meta-workbench.
 //!
-//! Powered by shared `nve-ui` components, `nve-router` typed navigation, `nve-sdk` host services,
+//! Powered by shared `nve-ui` components, `nve-router` typed navigation, `nve-host-services`
+//! capability modules (`nve-clipboard`, `nve-system-env`),
 //! and the unified Environment [`TraitProvider`] + [`ReactiveTraitStore`] system adapting between
 //! desktop (`SizeClass::Medium` / `SizeClass::Expanded`) and mobile portrait (`SizeClass::Compact`).
 

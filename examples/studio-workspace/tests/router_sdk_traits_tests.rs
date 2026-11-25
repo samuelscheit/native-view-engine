@@ -3,8 +3,9 @@
 //! 2. Unified Environment `TraitKey`s (`SizeClass`, `ColorScheme`, `UiDensity`, `Locale`,
 //!    `StudioAccentTrait`, `StudioCompactModeTrait`, `TraitProvider`, `<TraitScope>`, and
 //!    breakpoint-only `update_viewport` with zero churn on 1px desktop drags),
-//! 3. `packages/framework/sdk` (`ClipboardClient` Markdown & deep-link copy + `SystemEnvClient` theme &
-//!    locale sync over both `MemoryHostServices` fallback and live `NVE_IFACE_HOST = 5` FFI).
+//! 3. `nve-host-services` + `nve-clipboard` + `nve-system-env` (`ClipboardClient` Markdown &
+//!    deep-link copy + `SystemEnvClient` theme & locale sync over both direct zero-serialization
+//!    `MemoryHostServices` fallback and live `NVE_IFACE_HOST = 5` FFI).
 
 use std::sync::{Arc, Mutex};
 
@@ -14,24 +15,25 @@ use nve_abi::{
     SERVICE_SYSTEM_ENV,
 };
 use nve_backend_headless::HeadlessBackend;
+use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_dioxus::prelude::*;
 use nve_dioxus::traits::{ReactiveTraitStore, TraitProvider, TraitScope};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{NveApp, RenderBackend, Viewport};
+use nve_host_services::{HostCallbackBridge, MemoryHostServices};
 use nve_interop::traits::{
     ColorScheme, HighContrast, Locale, ReducedMotion, SizeClass, TraitStore, UiDensity,
 };
 use nve_router::Routable;
-use nve_sdk::system_env::{
-    ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, TextDirection, ThemeSnapshot,
-    EVENT_LOCALE_CHANGED, EVENT_THEME_CHANGED,
-};
-use nve_sdk::{ClipboardClient, HostCallbackBridge, MemoryHostServices};
 use nve_studio_workspace::theme::LayoutMetrics;
 use nve_studio_workspace::{
     create_surface_with_services, resolve_studio_layout, studio_accent_override, AccentTheme,
     ActiveView, DensityMode, StudioAccentTrait, StudioCompactModeTrait, StudioHostServices,
     StudioRoute, StudioTraitPreviewChip, StudioWorkspaceModule, WorkspaceState,
+};
+use nve_system_env::{
+    ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, TextDirection,
+    ThemeSnapshot, EVENT_LOCALE_CHANGED, EVENT_THEME_CHANGED,
 };
 
 struct StudioHarness {
@@ -50,11 +52,14 @@ impl StudioHarness {
         let store = Arc::new(Mutex::new(initial));
 
         let memory = Arc::new(MemoryHostServices::new());
-        memory.set_theme(ThemeSnapshot {
-            color_scheme: SdkColorScheme::Dark,
-            ..ThemeSnapshot::default()
-        });
-        memory.set_locale(LocaleSnapshot::default());
+        memory.register(MemoryClipboard::new());
+        memory.register(MemorySystemEnv::with_initial(
+            ThemeSnapshot {
+                color_scheme: SdkColorScheme::Dark,
+                ..ThemeSnapshot::default()
+            },
+            LocaleSnapshot::default(),
+        ));
         let host_services = Arc::new(StudioHostServices::with_memory(Arc::clone(&memory)));
 
         let viewport = Viewport {
@@ -533,23 +538,26 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
 
     // Prepare a simulated native host behind `HostCallbackBridge` (`NVE_IFACE_HOST = 5`).
     let host_mem = Arc::new(MemoryHostServices::new());
-    host_mem.set_theme(ThemeSnapshot {
-        color_scheme: SdkColorScheme::Light,
-        contrast: ContrastLevel::High,
-        reduced_motion: true,
-        reduced_transparency: false,
-        accent_rgba: 0x38BD_F8FF,
-        font_scale_x1000: 1250,
-        scale_factor_x100: 200,
-    });
-    host_mem.set_locale(LocaleSnapshot {
-        tag: "de-DE".into(),
-        language: "de".into(),
-        region: "DE".into(),
-        text_direction: TextDirection::Ltr,
-        uses_24h_clock: true,
-        timezone: "Europe/Berlin".into(),
-    });
+    host_mem.register(MemoryClipboard::new());
+    host_mem.register(MemorySystemEnv::with_initial(
+        ThemeSnapshot {
+            color_scheme: SdkColorScheme::Light,
+            contrast: ContrastLevel::High,
+            reduced_motion: true,
+            reduced_transparency: false,
+            accent_rgba: 0x38BD_F8FF,
+            font_scale_x1000: 1250,
+            scale_factor_x100: 200,
+        },
+        LocaleSnapshot {
+            tag: "de-DE".into(),
+            language: "de".into(),
+            region: "DE".into(),
+            text_direction: TextDirection::Ltr,
+            uses_24h_clock: true,
+            timezone: "Europe/Berlin".into(),
+        },
+    ));
     let bridge = HostCallbackBridge::new(Arc::clone(&host_mem));
 
     // Bind host callbacks across the `NVE_IFACE_HOST = 5` ABI contract.

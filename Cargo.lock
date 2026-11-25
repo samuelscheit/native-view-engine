@@ -1515,6 +1515,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-audio"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+]
+
+[[package]]
 name = "nve-backend-headless"
 version = "0.1.0"
 dependencies = [
@@ -1576,6 +1584,7 @@ dependencies = [
 name = "nve-camera"
 version = "0.1.0"
 dependencies = [
+ "nve-host-services",
  "serde",
 ]
 
@@ -1598,10 +1607,17 @@ dependencies = [
  "nve-engine",
  "nve-interop",
  "nve-mdx",
- "nve-sdk",
  "nve-skia-shell",
  "serde_json",
  "tungstenite",
+]
+
+[[package]]
+name = "nve-clipboard"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
 ]
 
 [[package]]
@@ -1643,11 +1659,13 @@ dependencies = [
  "nve-abi",
  "nve-backend-headless",
  "nve-backend-web",
+ "nve-clipboard",
  "nve-dioxus",
+ "nve-host-services",
  "nve-interop",
  "nve-mdx",
  "nve-router",
- "nve-sdk",
+ "nve-system-env",
  "nve-ui",
 ]
 
@@ -1662,14 +1680,16 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-skia",
  "nve-backend-web",
+ "nve-clipboard",
  "nve-components",
  "nve-dioxus",
  "nve-docs",
  "nve-engine",
+ "nve-host-services",
  "nve-interop",
  "nve-mdx",
  "nve-router",
- "nve-sdk",
+ "nve-system-env",
  "nve-ui",
  "wasm-bindgen",
  "web-sys",
@@ -1703,6 +1723,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-filesystem"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+]
+
+[[package]]
+name = "nve-fonts"
+version = "0.1.0"
+dependencies = [
+ "nve-host-services",
+]
+
+[[package]]
+name = "nve-haptics"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+]
+
+[[package]]
+name = "nve-host-services"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-interop",
+]
+
+[[package]]
 name = "nve-interop"
 version = "0.1.0"
 dependencies = [
@@ -1725,8 +1776,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-linking"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+]
+
+[[package]]
+name = "nve-location"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+]
+
+[[package]]
 name = "nve-mdx"
 version = "0.1.0"
+
+[[package]]
+name = "nve-notifications"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+]
 
 [[package]]
 name = "nve-pair"
@@ -1751,11 +1826,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "nve-sdk"
+name = "nve-secure-store"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
- "nve-interop",
+ "nve-host-services",
+]
+
+[[package]]
+name = "nve-sensors"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+]
+
+[[package]]
+name = "nve-share"
+version = "0.1.0"
+dependencies = [
+ "nve-host-services",
 ]
 
 [[package]]
@@ -1765,13 +1855,27 @@ dependencies = [
  "crossbeam-channel",
  "nve-abi",
  "nve-backend-skia",
+ "nve-clipboard",
  "nve-engine",
+ "nve-filesystem",
+ "nve-haptics",
+ "nve-host-services",
  "nve-interop",
- "nve-sdk",
+ "nve-linking",
+ "nve-notifications",
+ "nve-secure-store",
+ "nve-system-env",
  "serde_json",
  "softbuffer",
  "tungstenite",
  "winit",
+]
+
+[[package]]
+name = "nve-storage"
+version = "0.1.0"
+dependencies = [
+ "nve-host-services",
 ]
 
 [[package]]
@@ -1785,16 +1889,27 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-skia",
  "nve-backend-web",
+ "nve-clipboard",
  "nve-components",
  "nve-dioxus",
  "nve-engine",
+ "nve-host-services",
  "nve-interop",
  "nve-layout-yoga",
  "nve-router",
- "nve-sdk",
+ "nve-system-env",
  "nve-ui",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nve-system-env"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
+ "nve-interop",
 ]
 
 [[package]]
@@ -1812,6 +1927,14 @@ dependencies = [
  "nve-backend-headless",
  "nve-dioxus",
  "nve-interop",
+]
+
+[[package]]
+name = "nve-web-auth"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-host-services",
 ]
 
 [[package]]

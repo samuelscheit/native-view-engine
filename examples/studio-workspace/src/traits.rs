@@ -10,7 +10,7 @@ use nve_interop::traits::{
     ColorScheme, HighContrast, Locale, ReducedMotion, ScaleFactor, SizeClass, TextScale,
     TraitEnvironment, TraitKey, TraitOverrides, TraitStore, UiDensity, ViewportChangeMask,
 };
-use nve_sdk::system_env::{ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, ThemeSnapshot};
+use nve_system_env::{ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, ThemeSnapshot};
 
 use crate::sdk::StudioSystemEnv;
 use crate::state::{AccentTheme, DensityMode, WorkspaceSnapshot};
@@ -49,7 +49,7 @@ pub const fn studio_density_to_trait(density: DensityMode) -> UiDensity {
     }
 }
 
-/// Maps an `nve-sdk` [`SdkColorScheme`] snapshot onto the built-in [`ColorScheme`] trait.
+/// Maps an `nve-system-env` [`SdkColorScheme`] snapshot onto the built-in [`ColorScheme`] trait.
 pub const fn sdk_color_scheme_to_trait(scheme: SdkColorScheme) -> ColorScheme {
     match scheme {
         SdkColorScheme::Light => ColorScheme::Light,
@@ -57,7 +57,7 @@ pub const fn sdk_color_scheme_to_trait(scheme: SdkColorScheme) -> ColorScheme {
     }
 }
 
-/// Maps an `nve-sdk` [`LocaleSnapshot`] onto the inline zero-allocation [`Locale`] trait.
+/// Maps an `nve-system-env` [`LocaleSnapshot`] onto the inline zero-allocation [`Locale`] trait.
 pub fn sdk_locale_to_trait(locale: &LocaleSnapshot) -> Locale {
     Locale::new(&locale.tag)
 }
@@ -113,7 +113,7 @@ pub fn resolve_studio_layout(env: &TraitEnvironment, m: LayoutMetrics) -> Resolv
     }
 }
 
-/// Applies Studio snapshot + `nve-sdk` [`ThemeSnapshot`] / [`LocaleSnapshot`] onto a [`TraitStore`].
+/// Applies Studio snapshot + `nve-system-env` [`ThemeSnapshot`] / [`LocaleSnapshot`] onto a [`TraitStore`].
 pub fn apply_studio_traits(
     store: &mut TraitStore,
     snapshot: &WorkspaceSnapshot,

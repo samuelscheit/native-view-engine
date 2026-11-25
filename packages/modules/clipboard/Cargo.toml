@@ -1,0 +1,10 @@
+[package]
+name = "nve-clipboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE clipboard capability module (SERVICE_CLIPBOARD = 0x0010)"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }

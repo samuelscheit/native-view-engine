@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use dioxus_core::consume_context;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
+use nve_clipboard::ClipboardClient;
+use nve_host_services::HostServiceProvider;
 use nve_mdx::{CompiledPage, CompiledSite, NavNode, PrevNext, SearchHit, SearchIndex};
 use nve_router::try_use_navigator;
-use nve_sdk::{ClipboardClient, HostServiceProvider};
 
 use crate::config::DocsSiteConfig;
 use crate::registry::{CustomPageRegistry, PlaygroundRegistry};
@@ -217,7 +218,7 @@ impl DocsAppState {
         self.dark_mode = !self.dark_mode;
     }
 
-    /// Synchronize dark/light mode with the host's `nve_sdk::SystemEnv` capability.
+    /// Synchronize dark/light mode with the host's `nve_system_env` capability.
     ///
     /// Returns `true` if `dark_mode` changed.
     pub fn sync_with_system_env(&mut self) -> bool {
@@ -345,7 +346,7 @@ impl DocsAppState {
         self.active_tabs.insert(group_key.into(), value.into());
     }
 
-    /// Write `code` to the host clipboard via `nve_sdk::ClipboardClient` and record copied feedback.
+    /// Write `code` to the host clipboard via `nve_clipboard::ClipboardClient` and record copied feedback.
     pub fn copy_code(&mut self, block_key: &str, code: &str) -> bool {
         let client = ClipboardClient::new(self.host_services.as_ref());
         if client.write_text(code).is_ok() {

@@ -1,0 +1,10 @@
+[package]
+name = "nve-haptics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE tactile haptic feedback capability module (SERVICE_HAPTICS = 0x0016)"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }

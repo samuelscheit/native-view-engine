@@ -29,7 +29,14 @@ nve-abi = { workspace = true }
 nve-engine = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-interop = { workspace = true }
-nve-sdk = { workspace = true }
+nve-host-services = { workspace = true }
+nve-clipboard = { workspace = true }
+nve-filesystem = { workspace = true }
+nve-secure-store = { workspace = true }
+nve-linking = { workspace = true }
+nve-system-env = { workspace = true }
+nve-notifications = { workspace = true }
+nve-haptics = { workspace = true }
 winit = { workspace = true }
 softbuffer = { workspace = true }
 tungstenite = { workspace = true }

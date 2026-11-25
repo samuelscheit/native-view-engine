@@ -10,7 +10,9 @@ nve-dioxus = { workspace = true }
 nve-interop = { workspace = true }
 nve-mdx = { workspace = true }
 nve-router = { workspace = true }
-nve-sdk = { workspace = true }
+nve-host-services = { workspace = true }
+nve-clipboard = { workspace = true }
+nve-system-env = { workspace = true }
 nve-ui = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }

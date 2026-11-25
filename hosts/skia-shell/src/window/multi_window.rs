@@ -20,7 +20,7 @@ use nve_interop::{
     SurfacePresentation, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
     WindowManager, WindowRect, WindowState,
 };
-use nve_sdk::LocaleSnapshot;
+use nve_system_env::LocaleSnapshot;
 use softbuffer::{Context, Surface};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::keyboard::ModifiersState;

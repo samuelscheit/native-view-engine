@@ -2,8 +2,9 @@
 
 use std::borrow::Cow;
 
+use nve_host_services::HostServiceProvider;
 use nve_mdx::{CalloutKind, TokenKind};
-use nve_sdk::{ColorScheme as SdkColorScheme, HostServiceProvider, SystemEnvClient};
+use nve_system_env::{ColorScheme as SdkColorScheme, SystemEnvClient};
 use nve_ui::{UiPalette, UiTheme};
 
 /// Syntax highlighting palette covering every [`nve_mdx::TokenKind`] variant.
@@ -173,7 +174,7 @@ impl DocsTheme {
         }
     }
 
-    /// Resolve initial dark/light mode from `nve_sdk::SystemEnvClient`, falling back to `default_dark`.
+    /// Resolve initial dark/light mode from `nve_system_env::SystemEnvClient`, falling back to `default_dark`.
     pub fn resolve_dark_from_system_env(
         provider: &dyn HostServiceProvider,
         default_dark: bool,

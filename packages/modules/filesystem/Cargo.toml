@@ -1,0 +1,10 @@
+[package]
+name = "nve-filesystem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE file picker & standard OS paths capability module (SERVICE_FILESYSTEM = 0x0011)"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }
