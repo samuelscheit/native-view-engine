@@ -1,23 +1,28 @@
 //! Web DOM / WASM RenderBackend consuming the exact same `nve-abi` `CommandBuffer`.
 //!
 //! - **Option 5 Hybrid CSS**: static `.nve` base reset (`NVE_BASE_RESET_CSS`), bounded
-//!   content-addressed structural stylesheet cache (`.s<base36(fnv1a64)>`), volatile/continuous
-//!   inline lane, `.nve-tl` leaf-text inheritance, and deferred once-per-frame style flushing.
+//!   content-addressed structural stylesheet cache (`.s<base36(fnv1a64)>`), zero-serialization
+//!   `@media` responsive rules (`.nve-m-<8hex>`), volatile/continuous inline lane, `.nve-tl`
+//!   leaf-text inheritance, and deferred once-per-frame style flushing.
 //! - **Keyed Minimal-Diff `SetChildren`**: O(N) head/tail-trimmed + LIS DOM reconciler preserving
 //!   element identity, focus, `<input>` cursor/IME, and `ScrollView` scroll position.
 //! - **Semantic HTML5 SSR**: `render_ssr()` and `render_ssr_document()` mapping semantic ARIA/link
-//!   props onto real HTML5 tags with deterministic CSS rules.
+//!   props onto real HTML5 tags with deterministic CSS rules and opt-in `<script data-nve-replay>`.
 //! - **Zero-Flicker Hydration & Root Event Delegation**: `hydrate_into()` adopts SSR DOM nodes
-//!   in-place with a single root delegated listener set and structured `HydrationMismatch` reports.
+//!   in-place with a single root delegated listener set, 3-way `StateReconciler` control
+//!   preservation, atomic pre-hydration replay, and structured `HydrationMismatch` reports.
 
 pub mod canvas;
 mod css;
 mod dom;
+mod event_replay;
 mod events;
+mod frame;
 mod hot_patch;
 mod html;
 #[cfg(feature = "hydrate")]
 mod hydrate;
+mod media_css;
 #[cfg(any(
     feature = "nv-blur",
     feature = "nv-webview",
@@ -30,32 +35,42 @@ mod raw_style;
 mod reconcile;
 #[cfg(feature = "ssr")]
 mod ssr;
-mod tree;
 mod style_hash;
 mod stylesheet;
-#[cfg(test)]
-mod ssr_hydrate_tests;
-#[cfg(test)]
-mod tests;
+mod tree;
+
 #[cfg(test)]
 mod css_format_tests;
 #[cfg(all(test, feature = "ssr"))]
 mod correctness_tests;
+#[cfg(test)]
+mod native_view_tests;
+#[cfg(test)]
+mod ssr_hydrate_tests;
+#[cfg(test)]
+mod tests;
 
 pub use css::{
     canonical_f32_bits, component_to_html_tag, is_semantic_tag_prop, layout_to_css,
     layout_to_css_into, resolve_semantic_tag, style_to_css, style_to_css_into, write_compact_color,
     write_compact_edges, MirrorElement, SemanticTag, NVE_BASE_RESET_CSS,
 };
-pub use raw_style::{
-    is_image_fit_prop, is_raw_style_prop, is_safe_css_value, raw_prop_to_object_fit, RawStyleProps,
+pub use dom::{
+    is_truthy_raw_prop, map_a11y_or_input_attr, raw_prop_route, MappedHtmlAttr, RawPropRoute,
 };
-pub use dom::{is_truthy_raw_prop, map_a11y_or_input_attr, raw_prop_route, MappedHtmlAttr, RawPropRoute};
+pub use event_replay::{
+    drain_valid_pre_hydration_events, pre_hydration_event_to_native, CapturedPreHydrationEvent,
+    MAX_REPLAY_AGE_MS, MAX_REPLAY_QUEUE_LEN, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
+};
 pub use events::{
-    encode_keydown_payload, resolve_delegated_node, ImeCompositionGuard, NodeEventMeta,
+    encode_keydown_payload, resolve_delegated_node, should_intercept_anchor_click,
+    ImeCompositionGuard, NodeEventMeta,
 };
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
+pub use media_css::{
+    compile_node_media_rules, format_media_class, write_responsive_patch_decls, CompiledMediaRule,
+};
 #[cfg(any(
     feature = "nv-blur",
     feature = "nv-webview",
@@ -80,6 +95,9 @@ pub use native_view::{
     CameraNodeState, CameraPreviewCommand, CameraPreviewFacing, CameraPreviewProps,
     StabilizationMode, TorchMode,
 };
+pub use raw_style::{
+    is_image_fit_prop, is_raw_style_prop, is_safe_css_value, raw_prop_to_object_fit, RawStyleProps,
+};
 pub use reconcile::{plan_keyed_child_ops, ChildDiffOp};
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
@@ -88,25 +106,22 @@ pub use style_hash::{
     is_volatile_dimension, is_volatile_opacity, VOLATILE_DIMENSION_LIMIT,
 };
 pub use stylesheet::{
-    resolve_node_style, ResolvedNodeStyle, StyleSheetCache, INCREMENTAL_RULE_BATCH_THRESHOLD,
-    MAX_DYNAMIC_RULES,
+    resolve_node_style, CachedRule, ResolvedNodeStyle, StyleSheetCache,
+    INCREMENTAL_RULE_BATCH_THRESHOLD, MAX_DYNAMIC_RULES,
 };
 
 #[cfg(target_arch = "wasm32")]
 use core::fmt::Write as _;
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use nve_abi::hash::HashMap;
 #[cfg(feature = "hydrate")]
 use nve_abi::hash::HashSet;
-use std::rc::Rc;
-
-use nve_abi::{
-    Command, CommandDecoder, ComponentKind, EventMask, NativeEvent, NodeId, SurfaceId,
-    ROOT_NODE_ID,
-};
 #[cfg(target_arch = "wasm32")]
 use nve_abi::Dimension;
-use nve_engine::{BackendApplyStats, BackendError, LayoutRect, RenderBackend, Viewport};
+use nve_abi::{ComponentKind, EventMask, NativeEvent, NodeId, SurfaceId, ROOT_NODE_ID};
+use nve_engine::Viewport;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
@@ -114,7 +129,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 #[cfg(target_arch = "wasm32")]
-use crate::events::{now_us, RootEventDelegator};
+use crate::events::RootEventDelegator;
+#[cfg(feature = "hydrate")]
+use crate::hydrate::HydratedControlState;
 #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
 use crate::hydrate::NativeSsrNode;
 
@@ -145,6 +162,12 @@ pub struct WebBackend {
     pub(crate) hydrated_dom_tags: HashMap<NodeId, String>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydrated_inline_nodes: HashSet<NodeId>,
+    #[cfg(feature = "hydrate")]
+    pub(crate) hydrated_controls: HashMap<NodeId, HydratedControlState>,
+    #[cfg(feature = "hydrate")]
+    pub(crate) pending_pre_hydration_events: Vec<CapturedPreHydrationEvent>,
+    #[cfg(feature = "hydrate")]
+    pub(crate) pending_responsive_dirty: Vec<NodeId>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_report: HydrationReport,
     #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
@@ -222,6 +245,12 @@ impl WebBackend {
             hydrated_dom_tags: HashMap::default(),
             #[cfg(feature = "hydrate")]
             hydrated_inline_nodes: HashSet::default(),
+            #[cfg(feature = "hydrate")]
+            hydrated_controls: HashMap::default(),
+            #[cfg(feature = "hydrate")]
+            pending_pre_hydration_events: Vec::new(),
+            #[cfg(feature = "hydrate")]
+            pending_responsive_dirty: Vec::new(),
             #[cfg(feature = "hydrate")]
             hydration_report: HydrationReport::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
@@ -330,7 +359,7 @@ impl WebBackend {
         self.ime_guards.borrow_mut().remove(&node_id);
     }
 
-    fn queue_leaf_text_children(&self, parent_id: NodeId, dirty_styles: &mut Vec<NodeId>) {
+    pub(crate) fn queue_leaf_text_children(&self, parent_id: NodeId, dirty_styles: &mut Vec<NodeId>) {
         if let Some(parent) = self.nodes.get(&parent_id)
             && parent.kind == ComponentKind::Text
         {
@@ -343,398 +372,6 @@ impl WebBackend {
                     dirty_styles.push(cid);
                 }
             }
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct FrameTimer(std::time::Instant);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl FrameTimer {
-    fn start() -> Self {
-        Self(std::time::Instant::now())
-    }
-    fn elapsed_us(&self) -> u64 {
-        self.0.elapsed().as_micros() as u64
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-struct FrameTimer(u64);
-
-#[cfg(target_arch = "wasm32")]
-impl FrameTimer {
-    fn start() -> Self {
-        Self(now_us())
-    }
-    fn elapsed_us(&self) -> u64 {
-        now_us().saturating_sub(self.0)
-    }
-}
-
-impl RenderBackend for WebBackend {
-    fn name(&self) -> &'static str {
-        if cfg!(target_arch = "wasm32") {
-            "web-dom-wasm"
-        } else {
-            "web-dom-mirror"
-        }
-    }
-
-    fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
-        self.surface_id.set(surface_id);
-        self.viewport = viewport;
-    }
-
-    fn submit_frame(&mut self, command_bytes: &[u8]) -> Result<BackendApplyStats, BackendError> {
-        let t_dec = FrameTimer::start();
-        let (header, commands) = CommandDecoder::new(command_bytes)?.decode_all()?;
-        let decode_us = t_dec.elapsed_us();
-        self.surface_id.set(header.surface_id);
-        self.frame_counter = self.frame_counter.saturating_add(1);
-        let current_frame = self.frame_counter;
-
-        let t_mount = FrameTimer::start();
-        let mut mutations = 0u32;
-        let mut replaced_existing = false;
-        let mut dirty_styles: Vec<NodeId> = Vec::new();
-        #[cfg(feature = "hydrate")]
-        let mut hydrated_seen: Vec<NodeId> = Vec::new();
-        #[cfg(target_arch = "wasm32")]
-        let mut dirty_canvases: Vec<NodeId> = Vec::new();
-
-        for cmd in commands {
-            match cmd {
-                // The root is the host's mount container: never replaced or removed.
-                Command::CreateNode { node_id: ROOT_NODE_ID, .. }
-                | Command::RemoveNode { node_id: ROOT_NODE_ID } => {}
-                Command::CreateNode { node_id, kind, custom_name } => {
-                    if self.nodes.contains_key(&node_id) { replaced_existing = true; }
-                    #[cfg(any(
-                        feature = "nv-blur",
-                        feature = "nv-webview",
-                        feature = "nv-video",
-                        feature = "nv-web-element",
-                        feature = "camera",
-                    ))]
-                    self.native_views.remove(&node_id);
-                    #[cfg(feature = "hydrate")]
-                    let mut mirror = MirrorElement::new(kind);
-                    #[cfg(not(feature = "hydrate"))]
-                    let mirror = MirrorElement::new(kind);
-                    #[cfg(feature = "hydrate")]
-                    let adopting_ssr = self.hydrating && self.has_ssr_dom_node(node_id);
-                    #[cfg(not(feature = "hydrate"))]
-                    let adopting_ssr = false;
-                    #[cfg(feature = "hydrate")]
-                    if adopting_ssr {
-                        mirror.has_inline_style = self.hydrated_inline_nodes.contains(&node_id);
-                        hydrated_seen.push(node_id);
-                    }
-                    self.nodes.insert(node_id, mirror);
-                    #[cfg(any(
-                        feature = "nv-blur",
-                        feature = "nv-webview",
-                        feature = "nv-video",
-                        feature = "nv-web-element",
-                        feature = "camera",
-                    ))]
-                    if kind == ComponentKind::Custom && let Some(name) = custom_name.as_deref() {
-                        self.init_custom_native_view(node_id, name);
-                    }
-                    #[cfg(not(any(
-                        feature = "nv-blur",
-                        feature = "nv-webview",
-                        feature = "nv-video",
-                        feature = "nv-web-element",
-                        feature = "camera",
-                    )))]
-                    let _ = custom_name;
-                    #[cfg(any(target_arch = "wasm32", feature = "hydrate"))]
-                    let eff_tag = self.nodes.get(&node_id).map(|m| self.effective_html_tag(node_id, m).to_owned()).unwrap_or_else(|| "div".to_owned());
-                    self.node_event_meta.borrow_mut().insert(node_id, NodeEventMeta { kind, mask: EventMask::NONE });
-                    if !adopting_ssr {
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            if let Some(old_el) = self.dom_nodes.remove(&node_id) { old_el.remove(); }
-                            self.ime_guards.borrow_mut().remove(&node_id);
-                            if let Some(doc) = web_sys::window().and_then(|w| w.document())
-                                && let Some(el) = dom::create_dom_element_for_tag(&doc, &eff_tag)
-                            {
-                                self.attr_scratch.clear();
-                                let _ = write!(&mut self.attr_scratch, "{node_id}");
-                                let _ = el.set_attribute("data-nve-id", &self.attr_scratch);
-                                #[cfg(any(
-                                    feature = "nv-blur",
-                                    feature = "nv-webview",
-                                    feature = "nv-video",
-                                    feature = "nv-web-element",
-                                    feature = "camera",
-                                ))]
-                                if let Some(nv) = self.native_views.get_mut(&node_id) {
-                                    native_view::sync_native_view_dom_attrs(&el, nv);
-                                }
-                                self.dom_nodes.insert(node_id, el);
-                            }
-                        }
-                        #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-                        {
-                            let new_id = self.next_native_instance_id;
-                            self.next_native_instance_id += 1;
-                            self.native_ssr_nodes.insert(node_id, NativeSsrNode { tag: eff_tag, instance_id: new_id, has_inline_style: false });
-                        }
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    if kind == ComponentKind::SkiaCanvas {
-                        dirty_canvases.push(node_id);
-                    }
-                    dirty_styles.push(node_id);
-                    mutations += 1;
-                }
-                Command::RemoveNode { node_id } => {
-                    self.detach_from_parent(node_id);
-                    self.nodes.remove(&node_id);
-                    #[cfg(any(
-                        feature = "nv-blur",
-                        feature = "nv-webview",
-                        feature = "nv-video",
-                        feature = "nv-web-element",
-                        feature = "camera",
-                    ))]
-                    self.native_views.remove(&node_id);
-                    self.remove_node_event_meta(node_id);
-                    #[cfg(target_arch = "wasm32")]
-                    if let Some(el) = self.dom_nodes.remove(&node_id) {
-                        el.remove();
-                    }
-                    #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-                    self.native_ssr_nodes.remove(&node_id);
-                    mutations += 1;
-                }
-                Command::SetChildren {
-                    parent_id,
-                    children,
-                } => {
-                    let Some(children) = self.adopt_children(parent_id, &children) else {
-                        continue;
-                    };
-                    let is_text_parent = self
-                        .nodes
-                        .get(&parent_id)
-                        .is_some_and(|p| p.kind == ComponentKind::Text);
-                    if is_text_parent {
-                        for &cid in &children {
-                            dirty_styles.push(cid);
-                        }
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    self.reconcile_dom_children(parent_id, &children);
-                    if let Some(p) = self.nodes.get_mut(&parent_id) {
-                        p.children = children;
-                    }
-                    mutations += 1;
-                }
-                Command::SetText { node_id, text } => {
-                    self.apply_text_mutation(node_id, &text);
-                    mutations += 1;
-                }
-                Command::SetLayout { node_id, layout } => {
-                    #[cfg(target_arch = "wasm32")]
-                    let mut is_canvas = false;
-                    if let Some(el) = self.nodes.get_mut(&node_id) {
-                        el.layout = layout;
-                        el.record_style_mutation(current_frame);
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            is_canvas = el.kind == ComponentKind::SkiaCanvas;
-                        }
-                    }
-                    dirty_styles.push(node_id);
-                    #[cfg(target_arch = "wasm32")]
-                    if is_canvas {
-                        dirty_canvases.push(node_id);
-                    }
-                    mutations += 1;
-                }
-                Command::SetStyle { node_id, style } => {
-                    if let Some(el) = self.nodes.get_mut(&node_id) {
-                        el.style = style;
-                        el.record_style_mutation(current_frame);
-                    }
-                    dirty_styles.push(node_id);
-                    self.queue_leaf_text_children(node_id, &mut dirty_styles);
-                    mutations += 1;
-                }
-                Command::SetRawProp {
-                    node_id,
-                    key,
-                    value,
-                } => {
-                    match raw_prop_route(&key) {
-                        RawPropRoute::DrawList => {
-                            let decoded_ops = canvas::decode_draw_list_prop(&value).unwrap_or_default();
-                            if let Some(el) = self.nodes.get_mut(&node_id) {
-                                el.draw_op_count = decoded_ops.len();
-                                el.draw_ops = decoded_ops;
-                                el.raw_props.insert(key, value);
-                            }
-                            #[cfg(target_arch = "wasm32")]
-                            {
-                                self.sync_dom_draw_ops_attr(node_id);
-                                dirty_canvases.push(node_id);
-                            }
-                        }
-                        RawPropRoute::NativeView => {
-                            #[cfg(any(
-                                feature = "nv-blur",
-                                feature = "nv-webview",
-                                feature = "nv-video",
-                                feature = "nv-web-element",
-                                feature = "camera",
-                            ))]
-                            {
-                                if let Some(el) = self.nodes.get_mut(&node_id) {
-                                    el.raw_props.insert(key.clone(), value.clone());
-                                }
-                                self.apply_native_view_prop(node_id, &key, &value, &mut dirty_styles);
-                            }
-                        }
-                        RawPropRoute::Style => {
-                            if let Some(el) = self.nodes.get_mut(&node_id) {
-                                el.raw_style.apply_prop(&key, &value);
-                                el.raw_props.insert(key, value);
-                                el.record_style_mutation(current_frame);
-                            }
-                            dirty_styles.push(node_id);
-                            self.queue_leaf_text_children(node_id, &mut dirty_styles);
-                        }
-                        RawPropRoute::Reserved => {}
-                        RawPropRoute::Attribute => {
-                            let mut tag_changed = false;
-                            if let Some(el) = self.nodes.get_mut(&node_id) {
-                                el.raw_props.insert(key.clone(), value.clone());
-                                // The root container keeps its tag.
-                                if node_id != ROOT_NODE_ID && is_semantic_tag_prop(&key) {
-                                    let sem = resolve_semantic_tag(el.kind, &el.raw_props);
-                                    if el.tag != sem.tag || el.wrap_code != sem.wrap_code {
-                                        el.tag = sem.tag;
-                                        el.wrap_code = sem.wrap_code;
-                                        tag_changed = true;
-                                    }
-                                }
-                            }
-                            #[cfg(target_arch = "wasm32")]
-                            {
-                                #[cfg(feature = "hydrate")]
-                                let skip_upgrade = self.hydrating;
-                                #[cfg(not(feature = "hydrate"))]
-                                let skip_upgrade = false;
-                                if tag_changed && !skip_upgrade {
-                                    self.upgrade_dom_element_tag(node_id);
-                                    dirty_styles.push(node_id);
-                                } else {
-                                    self.sync_dom_raw_prop(node_id, &key, &value);
-                                }
-                            }
-                            #[cfg(not(target_arch = "wasm32"))]
-                            let _ = tag_changed;
-                        }
-                    }
-                    mutations += 1;
-                }
-                Command::SetEventMask { node_id, mask } => {
-                    if let Some(el) = self.nodes.get_mut(&node_id) {
-                        el.event_mask = mask;
-                        let kind = el.kind;
-                        self.node_event_meta
-                            .borrow_mut()
-                            .insert(node_id, NodeEventMeta { kind, mask });
-                    }
-                    dirty_styles.push(node_id);
-                    mutations += 1;
-                }
-                Command::DispatchCommand { node_id, command_name, payload } => {
-                    #[cfg(any(
-                        feature = "nv-blur",
-                        feature = "nv-webview",
-                        feature = "nv-video",
-                        feature = "nv-web-element",
-                        feature = "camera",
-                    ))]
-                    if self.dispatch_native_view_command(node_id, &command_name, &payload) {
-                        mutations += 1;
-                    }
-                    #[cfg(not(any(
-                        feature = "nv-blur",
-                        feature = "nv-webview",
-                        feature = "nv-video",
-                        feature = "nv-web-element",
-                        feature = "camera",
-                    )))]
-                    let _ = (node_id, command_name, payload);
-                }
-                Command::Commit { .. } => {}
-            }
-        }
-
-        if replaced_existing {
-            self.prune_unreachable_nodes();
-        }
-
-        #[cfg(feature = "hydrate")]
-        if self.hydrating {
-            self.finalize_hydration(&hydrated_seen, &mut dirty_styles);
-        }
-
-        // Flush surviving dirty nodes ONCE after RemoveNode / prune_unreachable_nodes.
-        if !dirty_styles.is_empty() {
-            dirty_styles.sort_unstable();
-            dirty_styles.dedup();
-            self.flush_dirty_styles(&dirty_styles);
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        if !dirty_canvases.is_empty() {
-            dirty_canvases.sort_unstable();
-            dirty_canvases.dedup();
-            for nid in dirty_canvases {
-                self.repaint_canvas_node(nid);
-            }
-        }
-
-        let mount_us = t_mount.elapsed_us();
-        Ok(BackendApplyStats {
-            op_count: header.op_count,
-            mutation_count: mutations,
-            decode_us,
-            layout_us: 0,
-            diff_us: 0,
-            mount_us,
-        })
-    }
-
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        std::mem::take(&mut *self.events.borrow_mut())
-    }
-
-    fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.dom_nodes.get(&node_id).map(|el| {
-                let r = el.get_bounding_client_rect();
-                LayoutRect {
-                    x: r.x() as f32,
-                    y: r.y() as f32,
-                    width: r.width() as f32,
-                    height: r.height() as f32,
-                }
-            })
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = node_id;
-            None
         }
     }
 }

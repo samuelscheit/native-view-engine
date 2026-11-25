@@ -1,18 +1,23 @@
 //! Zero-flicker SSR DOM hydration (`WebBackend::hydrate_into` on `wasm32`,
 //! `WebBackend::hydrate_from_ssr` headless hydration simulator on native targets),
-//! structured [`HydrationMismatch`] reporting, and selective mismatched-subtree replacement.
+//! structured [`HydrationMismatch`] reporting, 3-way `StateReconciler` dirty-control preservation,
+//! and atomic pre-hydration event replay.
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
 use nve_abi::hash::HashMap;
 use nve_abi::hash::HashSet;
-
-use nve_abi::{NodeId, ROOT_NODE_ID};
+use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue, ROOT_NODE_ID};
+use nve_components::reconcile::{reconcile_three_way, ConflictPolicy, ThreeWayEntry};
 
 #[cfg(target_arch = "wasm32")]
 use core::fmt::Write as _;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
+use crate::dom::is_truthy_raw_prop;
+use crate::event_replay::{
+    drain_valid_pre_hydration_events, pre_hydration_event_to_native, CapturedPreHydrationEvent,
+};
 #[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
 use crate::ssr::SsrOutput;
 use crate::WebBackend;
@@ -34,16 +39,63 @@ pub struct HydrationReport {
     pub adopted_nodes: usize,
     pub replaced_nodes: usize,
     pub mismatches: Vec<HydrationMismatch>,
+    pub replayed_events: usize,
+    pub reconciled_dirty_controls: usize,
 }
 
-/// Native-side simulated SSR DOM node used to test exact DOM identity preservation and
-/// selective mismatch replacement without a browser.
+/// Captured SSR baseline (`base`) and live DOM value (`local`) of an adopted form control
+/// (`<input>`, `<textarea>`, `<select>`) awaiting 3-way reconciliation in `finalize_hydration`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HydratedControlState {
+    pub(crate) base: String,
+    pub(crate) local: String,
+}
+
+/// Native-side simulated SSR DOM node used to test exact DOM identity preservation,
+/// selective mismatch replacement, and 3-way dirty-control reconciliation without a browser.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeSsrNode {
     pub(crate) tag: String,
     pub(crate) instance_id: u64,
     pub(crate) has_inline_style: bool,
+    pub(crate) control_value: Option<String>,
+}
+
+#[inline]
+fn is_form_control_tag(tag: &str) -> bool {
+    matches!(tag, "input" | "textarea" | "select")
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
+fn unescape_html_attr(val: &str) -> String {
+    if !val.contains('&') {
+        return val.to_owned();
+    }
+    let mut out = String::with_capacity(val.len());
+    let mut rest = val;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        if let Some(after) = rest.strip_prefix("&quot;") {
+            out.push('"');
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("&lt;") {
+            out.push('<');
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("&gt;") {
+            out.push('>');
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("&amp;") {
+            out.push('&');
+            rest = after;
+        } else {
+            out.push('&');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Parses opening HTML tags containing `data-nve-id="..."` from an SSR HTML fragment for native
@@ -98,12 +150,18 @@ fn parse_ssr_html_nodes(html: &str) -> (Option<String>, HashMap<NodeId, NativeSs
             }
             let has_inline_style = extract_html_attr(attrs, "style")
                 .is_some_and(|s| !s.trim().is_empty());
+            let control_value = is_form_control_tag(&tag_name).then(|| {
+                extract_html_attr(attrs, "value")
+                    .map(unescape_html_attr)
+                    .unwrap_or_default()
+            });
             nodes.insert(
                 node_id,
                 NativeSsrNode {
                     tag: tag_name,
                     instance_id: next_instance_id,
                     has_inline_style,
+                    control_value,
                 },
             );
             next_instance_id += 1;
@@ -123,6 +181,52 @@ fn extract_html_attr<'a>(attrs: &'a str, name: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
+#[cfg(target_arch = "wasm32")]
+fn read_dom_control_base(el: &web_sys::Element, tag: &str) -> String {
+    match tag {
+        "input" => el.get_attribute("value").unwrap_or_default(),
+        "textarea" => el.text_content().unwrap_or_default(),
+        "select" => el
+            .query_selector("option[selected]")
+            .ok()
+            .flatten()
+            .and_then(|o| o.get_attribute("value").or_else(|| o.text_content()))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_dom_control_value(el: &web_sys::Element) -> Option<String> {
+    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+        return Some(inp.value());
+    }
+    if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        return Some(ta.value());
+    }
+    if let Some(sel) = el.dyn_ref::<web_sys::HtmlSelectElement>() {
+        return Some(sel.value());
+    }
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn write_dom_control_value(el: &web_sys::Element, val: &str) {
+    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+        if inp.value() != val {
+            inp.set_value(val);
+        }
+    } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        if ta.value() != val {
+            ta.set_value(val);
+        }
+    } else if let Some(sel) = el.dyn_ref::<web_sys::HtmlSelectElement>()
+        && sel.value() != val
+    {
+        sel.set_value(val);
+    }
+}
+
 impl WebBackend {
     /// Returns the structured hydration report populated by [`Self::hydrate_into`] or
     /// [`Self::hydrate_from_ssr`].
@@ -138,9 +242,46 @@ impl WebBackend {
         self.hydrated_dom_tags.contains_key(&node_id)
     }
 
+    /// Queues captured pre-hydration events to be filtered and replayed at the end of Frame 0
+    /// hydration (used directly by native tests; on `wasm32`, `hydrate_into` drains
+    /// `window.__nveReplayDrain()` automatically).
+    pub fn queue_pre_hydration_events(&mut self, events: Vec<CapturedPreHydrationEvent>) {
+        self.pending_pre_hydration_events.extend(events);
+    }
+
+    /// Simulates a user editing an SSR form control (`<input>`/`<textarea>`/`<select>`) before
+    /// hydration completes so native tests can verify 3-way `StateReconciler` preservation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_hydrated_dom_control_value(&mut self, node_id: NodeId, value: impl Into<String>) {
+        let value = value.into();
+        if let Some(ctrl) = self.hydrated_controls.get_mut(&node_id) {
+            ctrl.local = value.clone();
+        } else {
+            self.hydrated_controls.insert(
+                node_id,
+                HydratedControlState {
+                    base: String::new(),
+                    local: value.clone(),
+                },
+            );
+        }
+        if let Some(ssr_node) = self.native_ssr_nodes.get_mut(&node_id) {
+            ssr_node.control_value = Some(value);
+        }
+    }
+
+    /// Returns the simulated native DOM control `.value` for `node_id` after hydration.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_dom_control_value(&self, node_id: NodeId) -> Option<&str> {
+        self.native_ssr_nodes
+            .get(&node_id)
+            .and_then(|n| n.control_value.as_deref())
+    }
+
     /// Headless native hydration simulator: seeds `StyleSheetCache` from `ssr.rule_hashes` and
     /// parses existing SSR DOM nodes so the next `submit_frame()` adopts matching nodes in-place
-    /// (preserving `native_dom_instance_id`) and detects/replaces any mismatched tags.
+    /// (preserving `native_dom_instance_id`), reconciles dirty form controls via 3-way
+    /// `StateReconciler`, replays valid pre-hydration events, and replaces mismatched tags.
     #[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
     pub fn hydrate_from_ssr(ssr: &SsrOutput) -> Self {
         let mut backend = Self::new();
@@ -154,6 +295,15 @@ impl WebBackend {
             if node.has_inline_style {
                 backend.hydrated_inline_nodes.insert(node_id);
             }
+            if let Some(base) = &node.control_value {
+                backend.hydrated_controls.insert(
+                    node_id,
+                    HydratedControlState {
+                        base: base.clone(),
+                        local: base.clone(),
+                    },
+                );
+            }
         }
         backend.native_ssr_nodes = parsed_nodes;
         backend.next_native_instance_id = backend.native_ssr_nodes.len() as u64 + 1;
@@ -165,6 +315,8 @@ impl WebBackend {
             adopted_nodes: 0,
             replaced_nodes: 0,
             mismatches: Vec::new(),
+            replayed_events: 0,
+            reconciled_dirty_controls: 0,
         };
         backend
     }
@@ -178,7 +330,9 @@ impl WebBackend {
 
     /// Zero-flicker browser DOM hydration: adopts existing `[data-nve-id]` elements inside
     /// `container` WITHOUT wiping `container`, pre-populates [`StyleSheetCache`] from
-    /// `<style data-nve-ssr data-nve-hashes="...">`, and attaches root delegated listeners.
+    /// `<style data-nve-ssr data-nve-hashes="...">`, captures SSR/live control baselines for 3-way
+    /// reconciliation, attaches root delegated listeners, and atomically drains
+    /// `window.__nveReplayDrain()`.
     #[cfg(target_arch = "wasm32")]
     pub fn hydrate_into(container: web_sys::Element) -> Self {
         let mut backend = Self::new();
@@ -213,6 +367,13 @@ impl WebBackend {
                 {
                     backend.hydrated_inline_nodes.insert(nid);
                 }
+                if is_form_control_tag(&tag) {
+                    let base = read_dom_control_base(&el, &tag);
+                    let local = read_dom_control_value(&el).unwrap_or_else(|| base.clone());
+                    backend
+                        .hydrated_controls
+                        .insert(nid, HydratedControlState { base, local });
+                }
                 backend.hydrated_dom_tags.insert(nid, tag);
                 backend.dom_nodes.insert(nid, el);
             }
@@ -246,18 +407,47 @@ impl WebBackend {
 
         backend.attach_root_event_delegator(container);
         backend.attach_window_keydown_listener();
+        // Atomically detach pre-hydration capture listeners and buffer events for Frame 0 replay.
+        backend.pending_pre_hydration_events =
+            crate::event_replay::drain_browser_pre_hydration_events();
         backend
     }
 
+    fn resolve_press_replay_target(&self, start_id: NodeId) -> Option<NodeId> {
+        let mut cur = Some(start_id);
+        let mut depth = 0usize;
+        while let Some(id) = cur {
+            if depth > 256 {
+                break;
+            }
+            depth += 1;
+            if let Some(el) = self.nodes.get(&id)
+                && (el.event_mask & EventMask::PRESS) != 0
+            {
+                if el.raw_props.get("disabled").is_some_and(is_truthy_raw_prop) {
+                    return None;
+                }
+                return Some(id);
+            }
+            cur = self.parent_of.get(&id).copied();
+        }
+        let el = self.nodes.get(&start_id)?;
+        if el.raw_props.get("disabled").is_some_and(is_truthy_raw_prop) {
+            return None;
+        }
+        Some(start_id)
+    }
+
     /// Completes the hydration frame: verifies every adopted element's final semantic tag,
-    /// records structured [`HydrationMismatch`] entries, replaces ONLY mismatched subtrees,
-    /// and removes any orphaned SSR nodes absent from Frame 0.
+    /// replaces ONLY mismatched subtrees, reconciles dirty form controls via 3-way
+    /// `StateReconciler`, and replays valid pre-hydration events atomically.
     pub(crate) fn finalize_hydration(
         &mut self,
         seen_ids: &[NodeId],
         dirty_styles: &mut Vec<NodeId>,
     ) {
-        let mut checked: HashSet<NodeId> = HashSet::with_capacity_and_hasher(seen_ids.len() + 1, Default::default());
+        let mut checked: HashSet<NodeId> =
+            HashSet::with_capacity_and_hasher(seen_ids.len() + 1, Default::default());
         let mut to_check: Vec<NodeId> = Vec::with_capacity(seen_ids.len() + 1);
         if self.hydrated_dom_tags.contains_key(&ROOT_NODE_ID) && self.nodes.contains_key(&ROOT_NODE_ID)
         {
@@ -291,6 +481,7 @@ impl WebBackend {
             }
         }
 
+        let mismatched_set: HashSet<NodeId> = mismatched.iter().copied().collect();
         for nid in mismatched {
             self.replace_mismatched_hydrated_node(nid);
             dirty_styles.push(nid);
@@ -312,9 +503,106 @@ impl WebBackend {
             self.native_ssr_nodes.remove(&orphan);
         }
 
+        #[cfg(target_arch = "wasm32")]
+        let ts_us = crate::events::now_us();
+        #[cfg(not(target_arch = "wasm32"))]
+        let ts_us = 0u64;
+        let surface_id = self.surface_id.get();
+        let mut hydrated_events: Vec<NativeEvent> = Vec::new();
+
+        // 3-way StateReconciler for adopted form controls (enqueued BEFORE replayed actions so
+        // typed input syncs into Rust state before a pre-hydration Submit/Press runs).
+        let controls = std::mem::take(&mut self.hydrated_controls);
+        let mut control_entries: Vec<(NodeId, HydratedControlState)> = controls.into_iter().collect();
+        control_entries.sort_unstable_by_key(|(nid, _)| *nid);
+        for (nid, ctrl) in control_entries {
+            if mismatched_set.contains(&nid) {
+                continue;
+            }
+            let Some(incoming) = self.nodes.get(&nid).map(|el| match el.raw_props.get("value") {
+                Some(RawPropValue::String(v)) => v.clone(),
+                _ => el.text.clone().unwrap_or_default(),
+            }) else {
+                continue;
+            };
+            let decision = reconcile_three_way(
+                ThreeWayEntry {
+                    key: nid,
+                    base: ctrl.base,
+                    local: ctrl.local,
+                    incoming,
+                    local_clock: None,
+                    incoming_clock: None,
+                },
+                ConflictPolicy::PreferLocal,
+            );
+            if decision.emit_upstream {
+                if let Some(el) = self.nodes.get_mut(&nid) {
+                    el.text = Some(decision.resolved.clone());
+                    if el.raw_props.contains_key("value") {
+                        el.raw_props
+                            .insert("value".into(), RawPropValue::String(decision.resolved.clone()));
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(ssr_node) = self.native_ssr_nodes.get_mut(&nid) {
+                    ssr_node.control_value = Some(decision.resolved.clone());
+                }
+                self.hydration_report.reconciled_dirty_controls += 1;
+                hydrated_events.push(NativeEvent {
+                    surface_id,
+                    node_id: nid,
+                    timestamp_us: ts_us,
+                    kind: NativeEventKind::TextChange,
+                    payload: EventPayload::Text(decision.resolved),
+                });
+            } else if decision.apply_local {
+                #[cfg(target_arch = "wasm32")]
+                if let Some(dom_el) = self.dom_nodes.get(&nid) {
+                    write_dom_control_value(dom_el, &decision.resolved);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(ssr_node) = self.native_ssr_nodes.get_mut(&nid) {
+                    ssr_node.control_value = Some(decision.resolved);
+                }
+            } else {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(ssr_node) = self.native_ssr_nodes.get_mut(&nid) {
+                    ssr_node.control_value = Some(decision.resolved);
+                }
+            }
+        }
+
+        // Atomic replay of valid pre-hydration user interactions.
+        let raw_replay = std::mem::take(&mut self.pending_pre_hydration_events);
+        if !raw_replay.is_empty() {
+            let valid = drain_valid_pre_hydration_events(raw_replay, |id| self.nodes.contains_key(&id));
+            for ev in valid {
+                let target_id = match &ev {
+                    CapturedPreHydrationEvent::Press { node_id, .. } => {
+                        let Some(resolved) = self.resolve_press_replay_target(*node_id) else {
+                            continue;
+                        };
+                        resolved
+                    }
+                    _ => ev.node_id(),
+                };
+                hydrated_events.push(pre_hydration_event_to_native(ev, surface_id, ts_us, target_id));
+                self.hydration_report.replayed_events += 1;
+            }
+        }
+
         self.hydrated_dom_tags.clear();
         self.hydrated_inline_nodes.clear();
         self.hydrating = false;
+
+        if !hydrated_events.is_empty() {
+            self.events.borrow_mut().extend(hydrated_events);
+            let cb = self.on_event.borrow().clone();
+            if let Some(cb) = cb {
+                cb();
+            }
+        }
     }
 
     fn replace_mismatched_hydrated_node(&mut self, node_id: NodeId) {
@@ -332,6 +620,7 @@ impl WebBackend {
                     tag: expected_tag.to_owned(),
                     instance_id: new_id,
                     has_inline_style: false,
+                    control_value: None,
                 },
             );
         }
