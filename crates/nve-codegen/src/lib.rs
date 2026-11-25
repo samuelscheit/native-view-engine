@@ -26,6 +26,7 @@ pub mod export_flutter;
 pub mod export_rn;
 pub mod export_swiftui;
 pub mod export_web;
+pub mod hybrid;
 pub mod import_rn;
 pub mod ir;
 pub mod lexer;
@@ -45,6 +46,15 @@ pub use export_flutter::generate_export_flutter;
 pub use export_rn::generate_export_rn;
 pub use export_swiftui::generate_export_swiftui;
 pub use export_web::generate_export_web_component;
+pub use hybrid::{
+    compute_hybrid_interface_id, generate_hybrid_all, generate_hybrid_cpp, generate_hybrid_dart,
+    generate_hybrid_kotlin, generate_hybrid_rust, generate_hybrid_swift, generate_hybrid_target,
+    generate_hybrid_ts, parse_hybrid_rust_spec, parse_hybrid_rust_spec_file, HybridDefaultValue,
+    HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec, HybridFileSpec,
+    HybridGenerateOutput, HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec,
+    HybridStructSpec, HybridTarget, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION,
+    NVE_HYBRID_INTERFACE_ID_BASE,
+};
 pub use import_rn::generate_import_rn;
 pub use ir::{
     CommandSpec, ComponentOptions, DefaultValue, EventBubbling, EventSpec, ExportBackend,
