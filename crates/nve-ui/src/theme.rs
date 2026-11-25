@@ -6,7 +6,10 @@ use std::borrow::Cow;
 use dioxus_core::{provide_context, try_consume_context, use_hook, Element};
 use dioxus_core_macro::{component, rsx, Props};
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
+use nve_abi::ColorRgba;
 use nve_interop::{ColorScheme, ThemeContext};
+
+use crate::style_buf::parse_color_rgba;
 
 /// Semantic color tokens shared by all `nve-ui` components.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +28,125 @@ pub struct UiPalette {
     pub danger_fg: Cow<'static, str>,
     pub success: Cow<'static, str>,
     pub warning: Cow<'static, str>,
+}
+
+/// Pre-parsed [`ColorRgba`] companion to [`UiPalette`] so `nve-ui` components emit typed colors
+/// directly into `TypedStyle` without re-parsing hex strings on every render frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiPaletteRgba {
+    pub surface: ColorRgba,
+    pub surface_elevated: ColorRgba,
+    pub surface_subtle: ColorRgba,
+    pub text_primary: ColorRgba,
+    pub text_secondary: ColorRgba,
+    pub text_muted: ColorRgba,
+    pub border: ColorRgba,
+    pub border_focus: ColorRgba,
+    pub accent: ColorRgba,
+    pub accent_fg: ColorRgba,
+    pub danger: ColorRgba,
+    pub danger_fg: ColorRgba,
+    pub success: ColorRgba,
+    pub warning: ColorRgba,
+}
+
+impl UiPaletteRgba {
+    pub const LIGHT: Self = Self {
+        surface: ColorRgba::rgb(0xff, 0xff, 0xff),
+        surface_elevated: ColorRgba::rgb(0xf8, 0xfa, 0xfc),
+        surface_subtle: ColorRgba::rgb(0xf1, 0xf5, 0xf9),
+        text_primary: ColorRgba::rgb(0x0f, 0x17, 0x2a),
+        text_secondary: ColorRgba::rgb(0x33, 0x41, 0x55),
+        text_muted: ColorRgba::rgb(0x64, 0x74, 0x8b),
+        border: ColorRgba::rgb(0xcb, 0xd5, 0xe1),
+        border_focus: ColorRgba::rgb(0x25, 0x63, 0xeb),
+        accent: ColorRgba::rgb(0x25, 0x63, 0xeb),
+        accent_fg: ColorRgba::rgb(0xff, 0xff, 0xff),
+        danger: ColorRgba::rgb(0xdc, 0x26, 0x26),
+        danger_fg: ColorRgba::rgb(0xff, 0xff, 0xff),
+        success: ColorRgba::rgb(0x16, 0xa3, 0x4a),
+        warning: ColorRgba::rgb(0xd9, 0x77, 0x06),
+    };
+
+    pub const DARK: Self = Self {
+        surface: ColorRgba::rgb(0x0f, 0x17, 0x2a),
+        surface_elevated: ColorRgba::rgb(0x1e, 0x29, 0x3b),
+        surface_subtle: ColorRgba::rgb(0x17, 0x20, 0x33),
+        text_primary: ColorRgba::rgb(0xf8, 0xfa, 0xfc),
+        text_secondary: ColorRgba::rgb(0xcb, 0xd5, 0xe1),
+        text_muted: ColorRgba::rgb(0x94, 0xa3, 0xb8),
+        border: ColorRgba::rgb(0x33, 0x41, 0x55),
+        border_focus: ColorRgba::rgb(0x60, 0xa5, 0xfa),
+        accent: ColorRgba::rgb(0x3b, 0x82, 0xf6),
+        accent_fg: ColorRgba::rgb(0xff, 0xff, 0xff),
+        danger: ColorRgba::rgb(0xef, 0x44, 0x44),
+        danger_fg: ColorRgba::rgb(0xff, 0xff, 0xff),
+        success: ColorRgba::rgb(0x22, 0xc5, 0x5e),
+        warning: ColorRgba::rgb(0xf5, 0x9e, 0x0b),
+    };
+
+    pub const HIGH_CONTRAST_LIGHT: Self = Self {
+        surface: ColorRgba::rgb(0xff, 0xff, 0xff),
+        surface_elevated: ColorRgba::rgb(0xff, 0xff, 0xff),
+        surface_subtle: ColorRgba::rgb(0xf3, 0xf4, 0xf6),
+        text_primary: ColorRgba::rgb(0x00, 0x00, 0x00),
+        text_secondary: ColorRgba::rgb(0x11, 0x18, 0x27),
+        text_muted: ColorRgba::rgb(0x37, 0x41, 0x51),
+        border: ColorRgba::rgb(0x00, 0x00, 0x00),
+        border_focus: ColorRgba::rgb(0x00, 0x33, 0xcc),
+        accent: ColorRgba::rgb(0x00, 0x33, 0xcc),
+        accent_fg: ColorRgba::rgb(0xff, 0xff, 0xff),
+        danger: ColorRgba::rgb(0x99, 0x1b, 0x1b),
+        danger_fg: ColorRgba::rgb(0xff, 0xff, 0xff),
+        success: ColorRgba::rgb(0x14, 0x53, 0x2d),
+        warning: ColorRgba::rgb(0x92, 0x40, 0x0e),
+    };
+
+    pub const HIGH_CONTRAST_DARK: Self = Self {
+        surface: ColorRgba::rgb(0x00, 0x00, 0x00),
+        surface_elevated: ColorRgba::rgb(0x0a, 0x0a, 0x0a),
+        surface_subtle: ColorRgba::rgb(0x14, 0x14, 0x14),
+        text_primary: ColorRgba::rgb(0xff, 0xff, 0xff),
+        text_secondary: ColorRgba::rgb(0xf3, 0xf4, 0xf6),
+        text_muted: ColorRgba::rgb(0xd1, 0xd5, 0xdb),
+        border: ColorRgba::rgb(0xff, 0xff, 0xff),
+        border_focus: ColorRgba::rgb(0x7d, 0xd3, 0xfc),
+        accent: ColorRgba::rgb(0x38, 0xbd, 0xf8),
+        accent_fg: ColorRgba::rgb(0x00, 0x00, 0x00),
+        danger: ColorRgba::rgb(0xff, 0x6b, 0x6b),
+        danger_fg: ColorRgba::rgb(0x00, 0x00, 0x00),
+        success: ColorRgba::rgb(0x4a, 0xde, 0x80),
+        warning: ColorRgba::rgb(0xfa, 0xcc, 0x15),
+    };
+
+    /// Parses every token in `palette` into a `Copy` [`UiPaletteRgba`], falling back to
+    /// [`ColorRgba::TRANSPARENT`] if any custom token is malformed.
+    pub fn from_palette(palette: &UiPalette) -> Self {
+        let p = |raw: &str| parse_color_rgba(raw).unwrap_or(ColorRgba::TRANSPARENT);
+        Self {
+            surface: p(palette.surface.as_ref()),
+            surface_elevated: p(palette.surface_elevated.as_ref()),
+            surface_subtle: p(palette.surface_subtle.as_ref()),
+            text_primary: p(palette.text_primary.as_ref()),
+            text_secondary: p(palette.text_secondary.as_ref()),
+            text_muted: p(palette.text_muted.as_ref()),
+            border: p(palette.border.as_ref()),
+            border_focus: p(palette.border_focus.as_ref()),
+            accent: p(palette.accent.as_ref()),
+            accent_fg: p(palette.accent_fg.as_ref()),
+            danger: p(palette.danger.as_ref()),
+            danger_fg: p(palette.danger_fg.as_ref()),
+            success: p(palette.success.as_ref()),
+            warning: p(palette.warning.as_ref()),
+        }
+    }
+}
+
+impl UiPalette {
+    /// Converts this string-backed palette into pre-parsed [`ColorRgba`] tokens.
+    pub fn to_rgba(&self) -> UiPaletteRgba {
+        UiPaletteRgba::from_palette(self)
+    }
 }
 
 /// Spacing scale in logical points.
@@ -329,6 +451,22 @@ impl UiTheme {
             "#0f172a80"
         }
     }
+
+    /// Pre-parsed translucent overlay backdrop scrim matching the active theme polarity.
+    #[inline]
+    pub const fn backdrop_scrim_rgba(&self) -> ColorRgba {
+        match self.color_scheme {
+            ColorScheme::Dark | ColorScheme::HighContrastDark => ColorRgba::rgba(0x00, 0x00, 0x00, 0xb3),
+            ColorScheme::Light | ColorScheme::System | ColorScheme::HighContrastLight => {
+                ColorRgba::rgba(0x0f, 0x17, 0x2a, 0x80)
+            }
+        }
+    }
+
+    /// Returns pre-parsed [`UiPaletteRgba`] colors for this theme's palette.
+    pub fn palette_rgba(&self) -> UiPaletteRgba {
+        self.palette.to_rgba()
+    }
 }
 
 /// Formats a packed `0xRRGGBBAA` color into `#rrggbb` (opaque) or `#rrggbbaa`.
@@ -357,14 +495,19 @@ fn contrast_fg_for_rgba(rgba: u32) -> &'static str {
     }
 }
 
-/// Provides a reactive [`UiTheme`] to all descendant `nve-ui` components.
+/// Provides a reactive [`UiTheme`] and pre-parsed [`UiPaletteRgba`] to all descendant `nve-ui`
+/// components so themed renders never re-parse hex strings per frame.
 #[component]
 pub fn ThemeProvider(
     #[props(default = UiTheme::light())] theme: UiTheme,
     children: Element,
 ) -> Element {
     let mut ctx = use_hook(|| provide_context(Signal::new(theme.clone())));
+    let mut rgba_ctx = use_hook(|| {
+        provide_context(Signal::new(UiPaletteRgba::from_palette(&theme.palette)))
+    });
     if *ctx.peek() != theme {
+        rgba_ctx.set(UiPaletteRgba::from_palette(&theme.palette));
         ctx.set(theme);
     }
     rsx! { {children} }
@@ -377,6 +520,22 @@ pub fn use_theme() -> UiTheme {
     try_consume_context::<Signal<UiTheme>>()
         .map(|sig| sig.read().clone())
         .unwrap_or_else(UiTheme::light)
+}
+
+/// Reads both the active [`UiTheme`] and its pre-parsed [`UiPaletteRgba`] from context without
+/// re-parsing hex color strings on every render frame.
+pub fn use_theme_rgba() -> (UiTheme, UiPaletteRgba) {
+    let theme = use_theme();
+    let colors = try_consume_context::<Signal<UiPaletteRgba>>()
+        .map(|sig| *sig.read())
+        .unwrap_or_else(|| {
+            if theme == UiTheme::light() {
+                UiPaletteRgba::LIGHT
+            } else {
+                theme.palette_rgba()
+            }
+        });
+    (theme, colors)
 }
 
 /// Returns the backing `Signal<UiTheme>` from the nearest [`ThemeProvider`], if mounted.

@@ -4,10 +4,11 @@
 
 use dioxus_core::{Callback, EventHandler};
 use dioxus_core_macro::Props;
+use nve_abi::{ColorRgba, FlexAlign};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{StyleBuf, SurfaceStyle};
-use crate::theme::use_theme;
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
+use crate::theme::use_theme_rgba;
 
 /// Reusable integer-pixel Fenwick tree (Binary Indexed Tree) storing per-row heights with
 /// O(N) construction, O(1) total height, and O(log N) prefix sums, height updates, and
@@ -437,7 +438,7 @@ pub fn VirtualList(
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut state = use_signal(|| {
         let mut st = VirtualListState::new(heights.clone(), viewport_height, overscan);
         st.set_scroll_offset(initial_scroll_offset);
@@ -462,38 +463,32 @@ pub fn VirtualList(
     let top_spacer_id = format!("{base_id}-top-spacer");
     let bottom_spacer_id = format!("{base_id}-bottom-spacer");
 
-    let mut scroll_sb = StyleBuf::new();
-    scroll_sb
+    let scroll_style = TypedStyleBuilder::new()
         .width_pct(100.0)
         .height_px(viewport_height.max(1.0))
-        .flex_direction("column")
+        .flex_col()
         .overflow("hidden")
-        .surface(SurfaceStyle {
-            background: theme.palette.surface.as_ref(),
+        .surface(TypedSurfaceStyle {
+            background: colors.surface,
             border_width: 1.0,
-            border_color: theme.palette.border.as_ref(),
+            border_color: colors.border,
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        scroll_sb.raw(extra);
-    }
-    let scroll_style = scroll_sb.finish();
+        })
+        .finish();
 
-    let mut top_sb = StyleBuf::new();
-    top_sb
+    let top_style = TypedStyleBuilder::new()
         .width_pct(100.0)
         .height_px(slice.top_spacer_px)
-        .flex_shrink(0.0);
-    let top_style = top_sb.finish();
+        .flex_shrink(0.0)
+        .finish();
 
-    let mut bot_sb = StyleBuf::new();
-    bot_sb
+    let bottom_style = TypedStyleBuilder::new()
         .width_pct(100.0)
         .height_px(slice.bottom_spacer_px)
-        .flex_shrink(0.0);
-    let bottom_style = bot_sb.finish();
+        .flex_shrink(0.0)
+        .finish();
 
     let mut rows = Vec::with_capacity(slice.visible_count);
     for idx in slice.start..slice.end {
@@ -502,30 +497,29 @@ pub fn VirtualList(
         let row_tid = format!("{base_id}-row-{idx}");
         let aria_selected = if is_selected { "true" } else { "false" };
 
-        let mut row_sb = StyleBuf::new();
-        row_sb
+        let row_style = TypedStyleBuilder::new()
             .width_pct(100.0)
             .height_px(row_h)
             .flex_shrink(0.0)
-            .flex_direction("row")
-            .align_items("center")
-            .surface(SurfaceStyle {
+            .flex_row()
+            .align_items(FlexAlign::Center)
+            .surface(TypedSurfaceStyle {
                 background: if is_selected {
-                    theme.palette.surface_subtle.as_ref()
+                    colors.surface_subtle
                 } else {
-                    "transparent"
+                    ColorRgba::TRANSPARENT
                 },
                 border_width: if is_selected { 1.0 } else { 0.0 },
                 border_color: if is_selected {
-                    theme.palette.border_focus.as_ref()
+                    colors.border_focus
                 } else {
-                    "transparent"
+                    ColorRgba::TRANSPARENT
                 },
                 border_radius: 0.0,
                 opacity: 1.0,
                 box_shadow: "none",
-            });
-        let row_style = row_sb.finish();
+            })
+            .finish();
 
         let content = render_row.call((idx, is_selected));
         rows.push(rsx! {
@@ -535,7 +529,7 @@ pub fn VirtualList(
                 accessibility_role: "listitem",
                 aria_selected: "{aria_selected}",
                 tab_index: if is_selected { 0 } else { -1 },
-                style: "{row_style}",
+                nve_style: row_style,
                 onpress: move |_| {
                     state.write().selected_index = Some(idx);
                     if let Some(handler) = on_select {
@@ -553,7 +547,8 @@ pub fn VirtualList(
             accessibility_role: "list",
             accessibility_label: accessibility_label,
             tab_index: 0,
-            style: "{scroll_style}",
+            nve_style: scroll_style,
+            style: style,
             onscroll: move |ev: ScrollEvent| {
                 let y = ev.data().y;
                 state.write().set_scroll_offset(y);
@@ -567,12 +562,12 @@ pub fn VirtualList(
             },
             view {
                 test_id: "{top_spacer_id}",
-                style: "{top_style}",
+                nve_style: top_style,
             }
             {rows.into_iter()}
             view {
                 test_id: "{bottom_spacer_id}",
-                style: "{bottom_style}",
+                nve_style: bottom_style,
             }
         }
     }

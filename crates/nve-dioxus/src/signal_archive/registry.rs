@@ -6,7 +6,8 @@ use std::path::Path;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use nve_engine::{MmapSnapshot, SnapshotHeader, SnapshotWal, WalRecordKind};
 
-use super::codec::{SignalArchive, SignalCodec, SignalTableSnapshot};
+use super::codec::{SignalArchive, SignalTableSnapshot};
+use super::signal_codec::SignalCodec;
 use super::{signal_slot_id, SignalArchiveError, SignalValue};
 
 /// Summary returned by [`SignalRegistry::hydrate_from_table`] describing exact schema-evolution
