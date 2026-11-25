@@ -1,0 +1,703 @@
+//! Deep unit & edge-case tests for the Unified Extensible Environment (`TraitKey`,
+//! `TraitEnvironment`, `TraitOverrides`, `TraitResolver`, `TraitStore`) and First-Class Native
+//! Platform Primitive Escape Hatches (`NativeViewSpec`, binary `NVNP`/`NVNC` codecs,
+//! `NativeViewHandle`, `NativeViewRegistry`).
+
+use std::cell::Cell;
+
+use nve_abi::{Command, CommandBufferBuilder, CommandDecoder};
+use nve_interop::native_view::{
+    BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
+    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, NativeCommandDecoder,
+    NativePropDecoder, NativeViewCodecError, NativeViewHandle, NativeViewRegistry, NativeViewSpec,
+    VideoPlayer, VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView,
+    WebViewCommand, WebViewProps, NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC,
+};
+use nve_interop::surface::{
+    ColorScheme as SurfaceColorScheme, FrameworkKind, SafeAreaInsets, SurfaceEnvironment,
+    ThemeContext,
+};
+use nve_interop::traits::{
+    BuiltinTraits, CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast,
+    HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, ScaleFactor,
+    SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitStore, UiDensity,
+    VerticalSizeClass,
+};
+use nve_interop::TRANSPORT_MAGIC;
+
+struct BrandAccent;
+impl TraitKey for BrandAccent {
+    type Value = u32;
+    fn default_value() -> u32 {
+        0x2563_EBFF
+    }
+}
+
+struct FeatureTier;
+impl TraitKey for FeatureTier {
+    type Value = String;
+    fn default_value() -> String {
+        "free".to_owned()
+    }
+}
+
+struct MaxColumns;
+impl TraitKey for MaxColumns {
+    type Value = usize;
+    fn default_value() -> usize {
+        1
+    }
+}
+
+#[test]
+fn builtin_traits_o1_access_locale_rtl_and_size_class_thresholds() {
+    assert_eq!(TRANSPORT_MAGIC, *b"NT");
+
+    // Exact breakpoint boundaries for SizeClass
+    assert_eq!(SizeClass::from_width(-10.0), SizeClass::Compact);
+    assert_eq!(SizeClass::from_width(0.0), SizeClass::Compact);
+    assert_eq!(SizeClass::from_width(599.99), SizeClass::Compact);
+    assert_eq!(SizeClass::from_width(600.0), SizeClass::Medium);
+    assert_eq!(SizeClass::from_width(1023.99), SizeClass::Medium);
+    assert_eq!(SizeClass::from_width(1024.0), SizeClass::Expanded);
+    assert_eq!(SizeClass::from_width(f32::NAN), SizeClass::Compact);
+    assert_eq!(SizeClass::from_width(f32::INFINITY), SizeClass::Compact);
+
+    // Locale inline zero-alloc storage, RTL detection, and multibyte truncation safety
+    assert!(!Locale::EN_US.is_rtl());
+    assert_eq!(Locale::EN_US.as_str(), "en-US");
+    assert_eq!(Locale::new("   ").as_str(), "en-US");
+    assert!(Locale::new("ar-SA").is_rtl());
+    assert!(Locale::new("HE_IL").is_rtl());
+    assert!(Locale::new("fa-IR").is_rtl());
+    assert!(Locale::new("ur").is_rtl());
+    assert!(!Locale::new("ja-JP").is_rtl());
+    assert!(!Locale::new("fr-FR").is_rtl());
+    let long_utf8 = Locale::new("zh-Hant-TW-🚀-extra-long-tag-over-23-bytes");
+    assert!(long_utf8.as_str().len() <= 23);
+    assert!(!long_utf8.is_rtl());
+
+    // All 17 built-in traits round-trip cleanly through TraitEnvironment
+    let env = TraitEnvironment::new()
+        .with::<PlatformOs>(PlatformOs::Ios)
+        .with::<HostToolkit>(HostToolkit::UiKit)
+        .with::<SizeClass>(SizeClass::Medium)
+        .with::<VerticalSizeClass>(SizeClass::Expanded)
+        .with::<ContainerSize>(ContainerSize::new(720.0, 480.0))
+        .with::<Orientation>(Orientation::Landscape)
+        .with::<SafeAreaInsets>(SafeAreaInsets::new(59.0, 0.0, 34.0, 0.0))
+        .with::<ScaleFactor>(3.0)
+        .with::<PointerKind>(PointerKind::Coarse)
+        .with::<CanHover>(false)
+        .with::<HasHardwareKeyboard>(true)
+        .with::<ColorScheme>(ColorScheme::Dark)
+        .with::<ReducedMotion>(true)
+        .with::<HighContrast>(true)
+        .with::<TextScale>(1.35)
+        .with::<UiDensity>(UiDensity::Spacious)
+        .with::<Locale>(Locale::new("ar-AE"));
+
+    assert_eq!(env.get::<PlatformOs>(), PlatformOs::Ios);
+    assert_eq!(env.get::<HostToolkit>(), HostToolkit::UiKit);
+    assert_eq!(env.get::<SizeClass>(), SizeClass::Medium);
+    assert_eq!(env.get::<VerticalSizeClass>(), SizeClass::Expanded);
+    assert_eq!(env.get::<ContainerSize>(), ContainerSize::new(720.0, 480.0));
+    assert_eq!(env.get::<ContainerSize>().class, SizeClass::Medium);
+    assert_eq!(env.get::<Orientation>(), Orientation::Landscape);
+    assert_eq!(
+        env.get::<SafeAreaInsets>(),
+        SafeAreaInsets::new(59.0, 0.0, 34.0, 0.0)
+    );
+    assert_eq!(env.get::<ScaleFactor>(), 3.0);
+    assert_eq!(env.get::<PointerKind>(), PointerKind::Coarse);
+    assert!(!env.get::<CanHover>());
+    assert!(env.get::<HasHardwareKeyboard>());
+    assert_eq!(env.get::<ColorScheme>(), ColorScheme::Dark);
+    assert!(env.get::<ReducedMotion>());
+    assert!(env.get::<HighContrast>());
+    assert_eq!(env.get::<TextScale>(), 1.35);
+    assert_eq!(env.get::<UiDensity>(), UiDensity::Spacious);
+    assert_eq!(env.get::<Locale>().as_str(), "ar-AE");
+    assert!(env.get::<Locale>().is_rtl());
+}
+
+#[test]
+fn custom_trait_key_isolation_cow_inheritance_and_overrides_merge() {
+    let base = TraitEnvironment::new()
+        .with::<ColorScheme>(ColorScheme::Light)
+        .with::<BrandAccent>(0xFF00_88FF);
+
+    // Derived scopes inherit base custom keys and shadow independently without mutating parent.
+    let branch_a = base
+        .with::<FeatureTier>("pro".to_owned())
+        .with::<BrandAccent>(0x00FF_AAFF);
+    let branch_b = base.with::<MaxColumns>(4);
+
+    assert_eq!(base.get::<BrandAccent>(), 0xFF00_88FF);
+    assert_eq!(base.get::<FeatureTier>(), "free");
+    assert_eq!(base.get::<MaxColumns>(), 1);
+
+    assert_eq!(branch_a.get::<BrandAccent>(), 0x00FF_AAFF);
+    assert_eq!(branch_a.get::<FeatureTier>(), "pro");
+    assert_eq!(branch_a.get::<MaxColumns>(), 1);
+
+    assert_eq!(branch_b.get::<BrandAccent>(), 0xFF00_88FF);
+    assert_eq!(branch_b.get::<FeatureTier>(), "free");
+    assert_eq!(branch_b.get::<MaxColumns>(), 4);
+
+    // TraitOverrides merge & equality
+    let outer = TraitOverrides::new()
+        .with::<ColorScheme>(ColorScheme::Dark)
+        .with::<BrandAccent>(0x1111_11FF)
+        .with::<FeatureTier>("team".to_owned());
+    let inner = TraitOverrides::new()
+        .with::<BrandAccent>(0x2222_22FF)
+        .with::<UiDensity>(UiDensity::Compact);
+
+    let merged = outer.merge(&inner);
+    assert_eq!(merged.get::<ColorScheme>(), Some(ColorScheme::Dark));
+    assert_eq!(merged.get::<BrandAccent>(), Some(0x2222_22FF));
+    assert_eq!(merged.get::<FeatureTier>().as_deref(), Some("team"));
+    assert_eq!(merged.get::<UiDensity>(), Some(UiDensity::Compact));
+    assert_eq!(merged.get::<MaxColumns>(), None);
+
+    let applied = base.with_overrides(&merged);
+    assert_eq!(applied.get::<ColorScheme>(), ColorScheme::Dark);
+    assert_eq!(applied.get::<BrandAccent>(), 0x2222_22FF);
+    assert_eq!(applied.get::<FeatureTier>(), "team");
+    assert_eq!(applied.get::<UiDensity>(), UiDensity::Compact);
+
+    // Equality distinguishes different custom values even with same TypeId set.
+    let same_merged = outer.merge(&inner);
+    let diff_merged = outer.merge(&TraitOverrides::single::<BrandAccent>(0x3333_33FF));
+    assert_eq!(merged, same_merged);
+    assert_ne!(merged, diff_merged);
+}
+
+#[test]
+fn trait_resolver_priority_and_strict_short_circuiting() {
+    let env = TraitEnvironment::new()
+        .with::<PlatformOs>(PlatformOs::Ios)
+        .with::<SizeClass>(SizeClass::Compact)
+        .with::<FeatureTier>("enterprise".to_owned())
+        .with::<ColorScheme>(ColorScheme::Dark);
+
+    let later_pred_calls = Cell::new(0usize);
+    let later_value_calls = Cell::new(0usize);
+    let fallback_calls = Cell::new(0usize);
+
+    let padding = env
+        .resolve::<f32>()
+        .when_os(PlatformOs::Android, 24.0)
+        .when_os(PlatformOs::Ios, 16.0)
+        .when_size(SizeClass::Compact, 8.0)
+        .when::<FeatureTier>(
+            |tier| {
+                later_pred_calls.set(later_pred_calls.get() + 1);
+                tier == "enterprise"
+            },
+            32.0,
+        )
+        .when_with::<ColorScheme>(
+            |_| {
+                later_pred_calls.set(later_pred_calls.get() + 1);
+                true
+            },
+            || {
+                later_value_calls.set(later_value_calls.get() + 1);
+                99.0
+            },
+        )
+        .default_with(|| {
+            fallback_calls.set(fallback_calls.get() + 1);
+            12.0
+        });
+
+    assert_eq!(padding, 16.0);
+    assert_eq!(
+        later_pred_calls.get(),
+        0,
+        "short-circuiting must skip all subsequent predicates after first match"
+    );
+    assert_eq!(later_value_calls.get(), 0);
+    assert_eq!(fallback_calls.get(), 0);
+
+    // When earlier rules miss, custom predicate matches and fallback is skipped.
+    let cols = env
+        .resolve::<usize>()
+        .when_os(PlatformOs::Windows, 4)
+        .when_size(SizeClass::Expanded, 3)
+        .when::<FeatureTier>(|t| t == "enterprise", 6)
+        .default(1);
+    assert_eq!(cols, 6);
+
+    // When nothing matches, default is returned.
+    let missed = env
+        .resolve::<&'static str>()
+        .when_os(PlatformOs::Linux, "linux")
+        .when_size(SizeClass::Expanded, "expanded")
+        .when::<MaxColumns>(|&c| c > 2, "many")
+        .default("fallback");
+    assert_eq!(missed, "fallback");
+}
+
+#[test]
+fn trait_store_breakpoint_only_revisions_and_per_key_isolation() {
+    let mut store = TraitStore::new();
+
+    // Initial desktop viewport: 1200x800 => Expanded width, Medium height, Landscape orientation
+    let init = store.update_viewport(1200.0, 800.0);
+    assert!(init.size_class_changed);
+    assert!(init.vertical_size_class_changed);
+    assert!(init.orientation_changed);
+    assert!(init.container_size_changed);
+    assert_eq!(store.get::<SizeClass>(), SizeClass::Expanded);
+    assert_eq!(store.get::<VerticalSizeClass>(), SizeClass::Medium);
+    assert_eq!(store.get::<Orientation>(), Orientation::Landscape);
+
+    let sc_rev = store.revision::<SizeClass>();
+    let vsc_rev = store.revision::<VerticalSizeClass>();
+    let ori_rev = store.revision::<Orientation>();
+    let cs_rev = store.revision::<ContainerSize>();
+    let theme_rev = store.revision::<ColorScheme>();
+
+    // 1px drag: 1200x800 -> 1201x800 must NOT bump SizeClass, VerticalSizeClass, or Orientation!
+    let drag = store.update_viewport(1201.0, 800.0);
+    assert!(!drag.any_breakpoint_changed());
+    assert!(!drag.size_class_changed);
+    assert!(!drag.vertical_size_class_changed);
+    assert!(!drag.orientation_changed);
+    assert!(drag.container_size_changed);
+    assert_eq!(store.revision::<SizeClass>(), sc_rev);
+    assert_eq!(store.revision::<VerticalSizeClass>(), vsc_rev);
+    assert_eq!(store.revision::<Orientation>(), ori_rev);
+    assert_eq!(store.revision::<ColorScheme>(), theme_rev);
+    assert_eq!(store.revision::<ContainerSize>(), cs_rev + 1);
+
+    // Same exact viewport again bumps NOTHING (not even ContainerSize).
+    let noop = store.update_viewport(1201.0, 800.0);
+    assert!(!noop.any_changed());
+    assert_eq!(store.revision::<ContainerSize>(), cs_rev + 1);
+
+    // Shrink to 599x800 => Compact width, Medium height, Portrait orientation.
+    let mobile = store.update_viewport(599.0, 800.0);
+    assert!(mobile.size_class_changed);
+    assert!(!mobile.vertical_size_class_changed);
+    assert!(mobile.orientation_changed);
+    assert_eq!(store.get::<SizeClass>(), SizeClass::Compact);
+    assert_eq!(store.get::<Orientation>(), Orientation::Portrait);
+    let rev_599 = store.revision::<SizeClass>();
+    let ori_599 = store.revision::<Orientation>();
+
+    // Cross 599 -> 600 boundary => DOES bump SizeClass, does NOT bump Orientation!
+    let cross = store.update_viewport(600.0, 800.0);
+    assert!(cross.size_class_changed);
+    assert!(!cross.orientation_changed);
+    assert_eq!(store.get::<SizeClass>(), SizeClass::Medium);
+    assert_eq!(store.revision::<SizeClass>(), rev_599 + 1);
+    assert_eq!(store.revision::<Orientation>(), ori_599);
+
+    // Custom TraitKey per-key revision isolation via set & apply_overrides
+    assert!(store.set::<BrandAccent>(0xAAAA_AAFF));
+    assert!(store.set::<FeatureTier>("pro".to_owned()));
+    let accent_rev = store.revision::<BrandAccent>();
+    let tier_rev = store.revision::<FeatureTier>();
+
+    // Setting same value is a no-op.
+    assert!(!store.set::<BrandAccent>(0xAAAA_AAFF));
+    assert_eq!(store.revision::<BrandAccent>(), accent_rev);
+
+    // Batch override changing only FeatureTier must NOT bump BrandAccent's revision.
+    let batch = TraitOverrides::new()
+        .with::<BrandAccent>(0xAAAA_AAFF)
+        .with::<FeatureTier>("enterprise".to_owned());
+    let (changed_builtins, changed_custom) = store.apply_overrides(&batch);
+    assert_eq!(changed_builtins, 0);
+    assert_eq!(changed_custom.len(), 1);
+    assert_eq!(store.revision::<BrandAccent>(), accent_rev);
+    assert_eq!(store.revision::<FeatureTier>(), tier_rev + 1);
+}
+
+#[test]
+fn surface_environment_bridges_cleanly_to_and_from_trait_environment() {
+    let surface_env = SurfaceEnvironment {
+        theme: ThemeContext {
+            color_scheme: SurfaceColorScheme::HighContrastDark,
+            accent_rgba: 0x60A5_FAFF,
+            tokens: Default::default(),
+        },
+        safe_area: SafeAreaInsets::new(47.0, 0.0, 34.0, 0.0),
+        scale_factor: 3.0,
+        text_scale_factor: 1.25,
+        locale: "he-IL".to_owned(),
+        reduced_motion: true,
+    };
+
+    let trait_env = surface_env.to_trait_environment();
+    assert_eq!(trait_env.get::<ColorScheme>(), ColorScheme::Dark);
+    assert!(trait_env.get::<HighContrast>());
+    assert_eq!(trait_env.get::<SafeAreaInsets>(), surface_env.safe_area);
+    assert_eq!(trait_env.get::<ScaleFactor>(), 3.0);
+    assert_eq!(trait_env.get::<TextScale>(), 1.25);
+    assert_eq!(trait_env.get::<Locale>().as_str(), "he-IL");
+    assert!(trait_env.get::<Locale>().is_rtl());
+    assert!(trait_env.get::<ReducedMotion>());
+
+    let roundtripped = SurfaceEnvironment::from_trait_environment(&trait_env);
+    assert_eq!(
+        roundtripped.theme.color_scheme,
+        SurfaceColorScheme::HighContrastDark
+    );
+    assert_eq!(roundtripped.safe_area, surface_env.safe_area);
+    assert_eq!(roundtripped.scale_factor, 3.0);
+    assert_eq!(roundtripped.text_scale_factor, 1.25);
+    assert_eq!(roundtripped.locale, "he-IL");
+    assert!(roundtripped.reduced_motion);
+
+    let mut store = TraitStore::from_builtins(BuiltinTraits::default());
+    surface_env.apply_to_trait_store(&mut store);
+    assert_eq!(store.get::<ColorScheme>(), ColorScheme::Dark);
+    assert!(store.get::<HighContrast>());
+    assert_eq!(store.get::<Locale>().as_str(), "he-IL");
+
+    assert_eq!(FrameworkKind::WebDom.default_host_toolkit(), HostToolkit::WebDom);
+    assert_eq!(FrameworkKind::SwiftUI.default_host_toolkit(), HostToolkit::SwiftUi);
+    assert_eq!(
+        FrameworkKind::JetpackCompose.default_host_toolkit(),
+        HostToolkit::AndroidCompose
+    );
+}
+
+#[test]
+fn native_view_registry_exact_and_wildcard_matching() {
+    let mut reg = NativeViewRegistry::headless();
+    assert!(!reg.supports_spec::<BlurSurface>());
+    assert!(!reg.supports("web.video"));
+    assert!(!reg.supports(""));
+
+    reg.register_spec::<BlurSurface>().register("web.*");
+    assert!(reg.supports_spec::<BlurSurface>());
+    assert!(!reg.supports_spec::<WebView>());
+
+    // Wildcard `"web.*"` matches any non-empty suffix after `"web."`.
+    assert!(reg.supports("web.video"));
+    assert!(reg.supports("web.audio"));
+    assert!(reg.supports("web.svg"));
+    assert!(reg.supports("web.iframe"));
+    assert!(reg.supports("web.canvas"));
+    assert!(reg.supports("web.my-custom-element"));
+    assert!(!reg.supports("web."));
+    assert!(!reg.supports("web"));
+    assert!(!reg.supports("native.video"));
+
+    let video_props = WebElementProps::new("video");
+    assert!(reg.supports_props::<WebElement>(&video_props));
+
+    assert!(reg.unregister("web.*"));
+    assert!(!reg.supports("web.video"));
+    assert!(reg.supports_spec::<BlurSurface>());
+
+    // Presets
+    let web_reg = NativeViewRegistry::web_dom();
+    assert!(web_reg.supports("web.svg"));
+    assert!(!web_reg.supports_spec::<BlurSurface>());
+
+    let apple_reg = NativeViewRegistry::apple();
+    assert!(apple_reg.supports_spec::<BlurSurface>());
+    assert!(apple_reg.supports_spec::<WebView>());
+    assert!(apple_reg.supports_spec::<VideoPlayer>());
+    assert!(!apple_reg.supports("web.video"));
+}
+
+#[test]
+fn starter_native_view_specs_zero_json_binary_roundtrip_and_handle_commands() {
+    // 1. BlurSurface props binary round-trip
+    let blur = BlurSurfaceProps {
+        material: BlurMaterial::UltraThin,
+        intensity: 0.72,
+        tint: Some(0x1E29_3B80),
+    };
+    let blur_bytes = blur.to_prop_bytes().unwrap();
+    assert!(blur_bytes.starts_with(&NATIVE_PROPS_MAGIC));
+    assert_eq!(BlurSurfaceProps::from_prop_bytes(&blur_bytes).unwrap(), blur);
+
+    let blur_no_tint = BlurSurfaceProps {
+        material: BlurMaterial::Chrome,
+        intensity: 0.4,
+        tint: None,
+    };
+    assert_eq!(
+        BlurSurfaceProps::from_prop_bytes(&blur_no_tint.to_prop_bytes().unwrap()).unwrap(),
+        blur_no_tint
+    );
+
+    // 2. WebView props + commands binary round-trip through NativeViewHandle & CommandBuffer
+    let wv = WebViewProps {
+        url: "https://nve.dev/docs".into(),
+        allows_back_forward: false,
+    };
+    assert_eq!(
+        WebViewProps::from_prop_bytes(&wv.to_prop_bytes().unwrap()).unwrap(),
+        wv
+    );
+
+    let handle = NativeViewHandle::<WebView>::new();
+    assert!(!handle.is_bound());
+    assert_eq!(
+        handle.dispatch(WebViewCommand::Reload),
+        Err(NativeViewCodecError::UnboundHandle)
+    );
+    assert_eq!(
+        handle.encode_command_frame(1, WebViewCommand::GoBack),
+        Err(NativeViewCodecError::UnboundHandle)
+    );
+
+    handle.bind(7, 42);
+    assert!(handle.is_bound());
+    assert_eq!(handle.surface_id(), Some(7));
+    assert_eq!(handle.node_id(), Some(42));
+
+    let single_frame = handle
+        .encode_command_frame(10, WebViewCommand::Navigate("https://example.org".into()))
+        .unwrap();
+    let (hdr, cmds) = CommandDecoder::new(&single_frame)
+        .unwrap()
+        .decode_all()
+        .unwrap();
+    assert_eq!(hdr.surface_id, 7);
+    assert_eq!(hdr.frame_id, 10);
+    assert_eq!(cmds.len(), 2);
+    match &cmds[0] {
+        Command::DispatchCommand {
+            node_id,
+            command_name,
+            payload,
+        } => {
+            assert_eq!(*node_id, 42);
+            assert_eq!(command_name, "navigate");
+            assert!(payload.starts_with(&NATIVE_CMD_MAGIC));
+            assert_eq!(
+                WebViewCommand::from_command_bytes(payload).unwrap(),
+                WebViewCommand::Navigate("https://example.org".into())
+            );
+        }
+        other => panic!("expected DispatchCommand, got {other:?}"),
+    }
+
+    // Queue multiple WebView commands and drain into a standalone CommandBuffer frame
+    handle.dispatch(WebViewCommand::Reload).unwrap();
+    handle.dispatch(WebViewCommand::GoBack).unwrap();
+    handle.dispatch(WebViewCommand::GoForward).unwrap();
+    handle
+        .dispatch(WebViewCommand::EvaluateScript("window.nveReady()".into()))
+        .unwrap();
+    assert_eq!(handle.pending_count(), 4);
+
+    let batch_frame = handle.take_command_frame(11).unwrap();
+    assert_eq!(handle.pending_count(), 0);
+    assert!(handle.take_command_frame(12).is_none());
+
+    let (_, batch_cmds) = CommandDecoder::new(&batch_frame)
+        .unwrap()
+        .decode_all()
+        .unwrap();
+    let decoded_wv: Vec<WebViewCommand> = batch_cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::DispatchCommand { payload, .. } => {
+                Some(WebViewCommand::from_command_bytes(payload).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        decoded_wv,
+        vec![
+            WebViewCommand::Reload,
+            WebViewCommand::GoBack,
+            WebViewCommand::GoForward,
+            WebViewCommand::EvaluateScript("window.nveReady()".into()),
+        ]
+    );
+
+    // 3. VideoPlayer props + commands flushed directly into a CommandBufferBuilder
+    let vp = VideoPlayerProps {
+        source_uri: "https://cdn.nve.dev/demo.mp4".into(),
+        autoplay: true,
+        muted: true,
+        looping: false,
+        controls: true,
+    };
+    assert_eq!(
+        VideoPlayerProps::from_prop_bytes(&vp.to_prop_bytes().unwrap()).unwrap(),
+        vp
+    );
+
+    let vp_handle = NativeViewHandle::<VideoPlayer>::bound(3, 99);
+    vp_handle.dispatch(VideoPlayerCommand::Play).unwrap();
+    vp_handle
+        .dispatch(VideoPlayerCommand::SeekMs(12_500))
+        .unwrap();
+    vp_handle
+        .dispatch(VideoPlayerCommand::SetVolume(0.75))
+        .unwrap();
+    vp_handle.dispatch(VideoPlayerCommand::Pause).unwrap();
+
+    let mut builder = CommandBufferBuilder::new(3, 20);
+    assert_eq!(vp_handle.flush_into_builder(&mut builder), 4);
+    builder.commit(false);
+    let (_, vp_cmds) = CommandDecoder::new(builder.finish())
+        .unwrap()
+        .decode_all()
+        .unwrap();
+    let decoded_vp: Vec<VideoPlayerCommand> = vp_cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::DispatchCommand {
+                node_id, payload, ..
+            } => {
+                assert_eq!(*node_id, 99);
+                Some(VideoPlayerCommand::from_command_bytes(payload).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        decoded_vp,
+        vec![
+            VideoPlayerCommand::Play,
+            VideoPlayerCommand::SeekMs(12_500),
+            VideoPlayerCommand::SetVolume(0.75),
+            VideoPlayerCommand::Pause,
+        ]
+    );
+
+    // 4. WebElement props binary round-trip + `"web.<tag>"` resolution
+    let we = WebElementProps::new("iframe")
+        .with_attr("src", "https://nve.dev")
+        .with_attr("sandbox", "allow-scripts");
+    assert_eq!(WebElement::resolved_kind(&we), "web.iframe");
+    let we_bytes = we.to_prop_bytes().unwrap();
+    let we_dec = DecodedWebElementProps::from_prop_bytes(&we_bytes).unwrap();
+    assert_eq!(we_dec.tag, "iframe");
+    assert_eq!(we_dec.attrs, we.attrs);
+}
+
+#[test]
+fn binary_native_prop_and_command_decoders_reject_truncated_and_corrupt_buffers() {
+    // Empty & truncated headers
+    assert_eq!(
+        NativePropDecoder::decode(&[]).unwrap_err(),
+        NativeViewCodecError::Truncated
+    );
+    assert_eq!(
+        NativePropDecoder::decode(b"NVNP\x01").unwrap_err(),
+        NativeViewCodecError::Truncated
+    );
+    assert_eq!(
+        NativeCommandDecoder::decode(&[]).unwrap_err(),
+        NativeViewCodecError::Truncated
+    );
+    assert_eq!(
+        NativeCommandDecoder::decode(b"NVNC\x01\x01").unwrap_err(),
+        NativeViewCodecError::Truncated
+    );
+
+    // Bad magic & unsupported version
+    assert_eq!(
+        NativePropDecoder::decode(b"JSON\x01\x00\x00").unwrap_err(),
+        NativeViewCodecError::InvalidMagic(*b"JSON")
+    );
+    assert_eq!(
+        NativePropDecoder::decode(b"NVNP\x09\x00\x00").unwrap_err(),
+        NativeViewCodecError::UnsupportedVersion(9)
+    );
+    assert_eq!(
+        NativeCommandDecoder::decode(b"BAD!\x01\x01\x00\x00").unwrap_err(),
+        NativeViewCodecError::InvalidMagic(*b"BAD!")
+    );
+    assert_eq!(
+        NativeCommandDecoder::decode(b"NVNC\x02\x01\x00\x00").unwrap_err(),
+        NativeViewCodecError::UnsupportedVersion(2)
+    );
+
+    // Trailing bytes rejected
+    let mut valid_blur = BlurSurfaceProps::default().to_prop_bytes().unwrap();
+    valid_blur.push(0xFF);
+    assert_eq!(
+        BlurSurfaceProps::from_prop_bytes(&valid_blur).unwrap_err(),
+        NativeViewCodecError::TrailingBytes(1)
+    );
+
+    // Truncate valid command at every prefix length -> must return Err without panicking
+    let valid_cmd = WebViewCommand::Navigate("https://nve.dev/abc".into())
+        .encode_command()
+        .unwrap();
+    for cut in 0..valid_cmd.len() {
+        assert!(
+            WebViewCommand::from_command_bytes(&valid_cmd[..cut]).is_err(),
+            "truncated prefix len={cut} should fail"
+        );
+    }
+
+    // Invalid tag, invalid bool byte, invalid UTF-8, invalid enum, unknown opcode
+    let bad_tag = [b'N', b'V', b'N', b'P', 1, 1, 0, 1, 0, 99];
+    assert_eq!(
+        NativePropDecoder::decode(&bad_tag).unwrap_err(),
+        NativeViewCodecError::InvalidTag(99)
+    );
+
+    let bad_bool = [b'N', b'V', b'N', b'P', 1, 1, 0, 1, 0, 1, 2];
+    assert_eq!(
+        NativePropDecoder::decode(&bad_bool).unwrap_err(),
+        NativeViewCodecError::InvalidBool(2)
+    );
+
+    let bad_utf8 = [b'N', b'V', b'N', b'C', 1, 1, 0, 1, 7, 2, 0, 0, 0, 0xFF, 0xFE];
+    assert_eq!(
+        NativeCommandDecoder::decode(&bad_utf8).unwrap_err(),
+        NativeViewCodecError::InvalidUtf8
+    );
+
+    // OOM count bomb: declares 500 fields in a 7-byte buffer
+    let count_bomb = [b'N', b'V', b'N', b'P', 1, 0xF4, 0x01];
+    assert_eq!(
+        NativePropDecoder::decode(&count_bomb).unwrap_err(),
+        NativeViewCodecError::Truncated
+    );
+
+    // Unknown command opcode
+    let unknown_op = [b'N', b'V', b'N', b'C', 1, 0x39, 0x05, 0];
+    assert_eq!(
+        VideoPlayerCommand::from_command_bytes(&unknown_op).unwrap_err(),
+        NativeViewCodecError::UnknownCommandOpcode(0x0539)
+    );
+
+    // Wrong arg count for Reload (expects 0, given 1)
+    let wrong_args = [b'N', b'V', b'N', b'C', 1, 2, 0, 1, 1, 1];
+    assert_eq!(
+        WebViewCommand::from_command_bytes(&wrong_args).unwrap_err(),
+        NativeViewCodecError::UnexpectedArgCount {
+            expected: 0,
+            actual: 1
+        }
+    );
+
+    // Missing required field & type mismatch
+    let empty_props = [b'N', b'V', b'N', b'P', 1, 0, 0];
+    assert_eq!(
+        BlurSurfaceProps::from_prop_bytes(&empty_props).unwrap_err(),
+        NativeViewCodecError::MissingField(1)
+    );
+
+    let invalid_material = [
+        b'N', b'V', b'N', b'P', 1, 3, 0, // header (3 fields)
+        1, 0, 2, 77, 0, 0, 0, // field 1: u32 = 77 (invalid BlurMaterial)
+        2, 0, 5, 0, 0, 0x80, 0x3F, // field 2: f32 = 1.0
+        3, 0, 0, // field 3: Null
+    ];
+    assert_eq!(
+        BlurSurfaceProps::from_prop_bytes(&invalid_material).unwrap_err(),
+        NativeViewCodecError::InvalidEnum("BlurMaterial", 77)
+    );
+}
