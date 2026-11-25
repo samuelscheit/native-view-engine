@@ -9,9 +9,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Remaining Host `NativeViewRegistry` Mount Adapters (`hosts/windows-shell`, `hosts/qt-shell`, `hosts/gtk-shell`, `hosts/swiftui-kit`, `hosts/flutter-plugin`, `hosts/compose-kit`)** *(in flight)*
   - Extend `nve_native_view.hpp` (`NVNP`/`NVNC`) adapters to Windows (`Mica` / `WebView2`), Android/Compose, Qt 6, GTK4, SwiftUI, and Flutter (Web `"web.<tag>"` + `BlurSurface`/`WebView`/`VideoPlayer`, C++20 `nve_native_view.hpp`, and Apple `NSVisualEffectView`/`UIVisualEffectView`/`WKWebView` already landed).
 
-- [ ] **Pluggable Camera Package — Remaining Host Adapters (Apple `AVFoundation` + VisionCamera v5 iOS, Web `getUserMedia`, SwiftUI/Flutter Wrappers)** *(Apple + Web in flight)*
-  - Branch in flight (`t3/camera-apple-web-adapters`): wire `"nve.camera.preview"` (`NVNP`/`NVNC`/`NVCF`) into `hosts/apple-common` (shared `AVFoundation` for macOS + standalone iOS + pluggable VisionCamera v5 iOS bridge) and `crates/nve-backend-web` (`getUserMedia` → `<video>`).
-  - Follow-up after `NativeViewRegistry` lands: thin SwiftUI & Flutter camera wrappers and live Android Emulator virtual-scene verification once Android SDK cmdline-tools are installed (`CameraPreview` spec + `NVCF`, Android VisionCamera v5 + real Jetpack `CameraX` `PreviewView`, and C++20 Windows `MediaCapture` + Linux PipeWire/V4L2 backends already landed).
+- [ ] **Pluggable Camera Package — Thin SwiftUI/Flutter Wrappers & Live Emulator Camera Verification**
+  - All primary camera adapters are landed (`CameraPreview` spec + `NVCF`, Android VisionCamera v5 + real Jetpack `CameraX` `PreviewView`, Apple `AVFoundation` + VisionCamera v5 iOS bridge, Web `getUserMedia` `<video>`, C++20 Windows `MediaCapture` + Linux PipeWire/V4L2); remaining follow-ups are thin SwiftUI & Flutter camera wrappers (after `NativeViewRegistry` lands) and live Android Emulator virtual-scene verification once Android SDK cmdline-tools are installed.
 
 - [ ] **TV, Watch & Spatial Platform Backends (`tvOS`, `watchOS`, `visionOS`, `Android TV` / `Fire TV`)** *(Phase 1 in flight)*
   - **Phase 1 (Core Traits + 2D Spatial Focus + Android TV D-Pad)**:
