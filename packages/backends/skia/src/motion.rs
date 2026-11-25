@@ -13,6 +13,7 @@ use nve_components::motion::{
     lerp_style_property, resolve_transition_for, MotionPreference, TimedTransition,
     TransitionProperty, TransitionSpec,
 };
+use nve_components::transform::{lerp_transform_2d, Transform2D};
 use nve_engine::LayoutEngine;
 
 use crate::SkiaBackend;
@@ -76,12 +77,32 @@ fn prop_differs(a: &StyleProps, b: &StyleProps, prop: TransitionProperty) -> boo
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TransformAnim {
+    from: Transform2D,
+    to: Transform2D,
+    timer: TimedTransition,
+}
+
+#[inline]
+fn transform_differs(a: &Transform2D, b: &Transform2D) -> bool {
+    (a.translate_x - b.translate_x).abs() > 1e-4
+        || (a.translate_y - b.translate_y).abs() > 1e-4
+        || (a.scale_x - b.scale_x).abs() > 1e-4
+        || (a.scale_y - b.scale_y).abs() > 1e-4
+        || (a.rotate_deg - b.rotate_deg).abs() > 1e-4
+        || (a.origin_x - b.origin_x).abs() > 1e-4
+        || (a.origin_y - b.origin_y).abs() > 1e-4
+}
+
 /// Manages per-node declarative [`TransitionSpec`] animations for [`SkiaBackend`].
 #[derive(Debug, Clone, Default)]
 pub struct MotionDriver {
     transitions: HashMap<NodeId, Vec<TransitionSpec>>,
     last_target: HashMap<NodeId, StyleProps>,
     active: HashMap<NodeId, NodeMotion>,
+    last_transform: HashMap<NodeId, Transform2D>,
+    active_transform: HashMap<NodeId, TransformAnim>,
     preference: MotionPreference,
 }
 
@@ -100,7 +121,7 @@ impl MotionDriver {
     /// active reduced-motion-instant tracks immediately. Returns `true` if any track snapped.
     pub fn set_preference(&mut self, preference: MotionPreference) -> bool {
         self.preference = preference;
-        if !preference.is_reduced() || self.active.is_empty() {
+        if !preference.is_reduced() || (self.active.is_empty() && self.active_transform.is_empty()) {
             return false;
         }
         let mut snapped = false;
@@ -115,19 +136,32 @@ impl MotionDriver {
             }
             !motion.is_empty()
         });
+        self.active_transform.retain(|_, anim| {
+            if anim.timer.reduced_motion_instant {
+                snapped = true;
+                false
+            } else {
+                true
+            }
+        });
         snapped
     }
 
-    /// Returns `true` iff at least one visual style transition is mid-flight.
+    /// Returns `true` iff at least one visual style or transform transition is mid-flight.
     #[inline]
     pub fn needs_next_frame(&self) -> bool {
-        !self.active.is_empty()
+        !self.active.is_empty() || !self.active_transform.is_empty()
     }
 
     /// Returns the number of nodes with active in-flight transitions.
     #[inline]
     pub fn active_node_count(&self) -> usize {
         self.active.len()
+            + self
+                .active_transform
+                .keys()
+                .filter(|id| !self.active.contains_key(id))
+                .count()
     }
 
     /// Sets or clears declarative [`TransitionSpec`]s for `id`.
@@ -136,6 +170,8 @@ impl MotionDriver {
             self.transitions.remove(&id);
             self.last_target.remove(&id);
             self.active.remove(&id);
+            self.last_transform.remove(&id);
+            self.active_transform.remove(&id);
         } else {
             self.transitions.insert(id, specs);
         }
@@ -146,6 +182,65 @@ impl MotionDriver {
         if self.transitions.contains_key(&id) {
             self.last_target.entry(id).or_insert(style);
         }
+    }
+
+    /// Seeds the baseline [`Transform2D`] for `id` if it has transitions and no baseline yet.
+    pub fn seed_transform_baseline(&mut self, id: NodeId, transform: Transform2D) {
+        if self.transitions.contains_key(&id) {
+            self.last_transform.entry(id).or_insert(transform);
+        }
+    }
+
+    /// Resolves the currently animated [`Transform2D`] for `id`, falling back to `base`.
+    #[inline]
+    pub fn resolve_animated_transform(
+        &self,
+        id: NodeId,
+        base: Option<Transform2D>,
+    ) -> Option<Transform2D> {
+        if let Some(anim) = self.active_transform.get(&id) {
+            Some(lerp_transform_2d(&anim.from, &anim.to, anim.timer.progress()))
+        } else {
+            base
+        }
+    }
+
+    /// Synchronizes a node's newly resolved target [`Transform2D`], starting or smoothly
+    /// interrupting a `TransitionProperty::Transform` animation when configured.
+    pub fn sync_transform_target(&mut self, id: NodeId, target: Transform2D) {
+        let Some(specs) = self.transitions.get(&id) else {
+            self.active_transform.remove(&id);
+            self.last_transform.remove(&id);
+            return;
+        };
+        let Some(prev_target) = self.last_transform.insert(id, target) else {
+            return;
+        };
+        let current = self
+            .active_transform
+            .get(&id)
+            .map_or(prev_target, |a| lerp_transform_2d(&a.from, &a.to, a.timer.progress()));
+        if !transform_differs(&current, &target) {
+            self.active_transform.remove(&id);
+            return;
+        }
+        let Some(spec) = resolve_transition_for(specs, TransitionProperty::Transform) else {
+            self.active_transform.remove(&id);
+            return;
+        };
+        let instant_reduced = self.preference.is_reduced() && spec.reduced_motion_instant;
+        if instant_reduced || (spec.duration_ms == 0 && spec.delay_ms == 0) {
+            self.active_transform.remove(&id);
+            return;
+        }
+        self.active_transform.insert(
+            id,
+            TransformAnim {
+                from: current,
+                to: target,
+                timer: TimedTransition::new(0.0, 1.0, &spec),
+            },
+        );
     }
 
     /// Applies any active interpolated visual overrides for `id` onto `style`.
@@ -209,7 +304,7 @@ impl MotionDriver {
     /// Advances all active transitions by `dt_s` seconds, dropping settled nodes.
     /// Returns `true` if any active transition stepped and the display list needs a rebuild.
     pub fn advance(&mut self, dt_s: f32) -> bool {
-        if self.active.is_empty() {
+        if self.active.is_empty() && self.active_transform.is_empty() {
             return false;
         }
         let pref = self.preference;
@@ -220,6 +315,10 @@ impl MotionDriver {
             }
             !motion.is_empty()
         });
+        self.active_transform.retain(|_, anim| {
+            changed = true;
+            !anim.timer.step(dt_s, pref)
+        });
         changed
     }
 
@@ -228,6 +327,8 @@ impl MotionDriver {
         self.transitions.retain(|&id, _| keep(id));
         self.last_target.retain(|&id, _| keep(id));
         self.active.retain(|&id, _| keep(id));
+        self.last_transform.retain(|&id, _| keep(id));
+        self.active_transform.retain(|&id, _| keep(id));
     }
 }
 
@@ -265,6 +366,11 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         if let Some(style) = self.layout_tree.effective_style(id) {
             self.motion.seed_baseline(id, style);
         }
+        let tf = self
+            .layout_tree
+            .effective_transform(id)
+            .unwrap_or(Transform2D::IDENTITY);
+        self.motion.seed_transform_baseline(id, tf);
     }
 
     /// Bulk-synchronizes typed [`TransitionSpec`] slices from any producer (e.g. `DioxusSurface`).
@@ -308,6 +414,11 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             if let Some(target) = self.layout_tree.effective_style(id) {
                 self.motion.sync_target(id, target);
             }
+            let tf = self
+                .layout_tree
+                .effective_transform(id)
+                .unwrap_or(Transform2D::IDENTITY);
+            self.motion.sync_transform_target(id, tf);
         }
     }
 
@@ -322,6 +433,11 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             if let Some(target) = self.layout_tree.effective_style(id) {
                 self.motion.sync_target(id, target);
             }
+            let tf = self
+                .layout_tree
+                .effective_transform(id)
+                .unwrap_or(Transform2D::IDENTITY);
+            self.motion.sync_transform_target(id, tf);
         }
     }
 }

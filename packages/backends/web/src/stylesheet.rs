@@ -10,9 +10,12 @@ pub use crate::css::{
     write_volatile_inline_into,
 };
 use crate::css::MirrorElement;
+use crate::layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
 use crate::media_css::{compile_node_media_rules, CompiledMediaRule};
 use crate::state_css::{compile_node_state_rules, format_cursor_rule, CompiledStateRule};
-use crate::style_hash::{format_structural_class, hash_structural_style, is_inheriting_leaf_text};
+use crate::style_hash::{
+    format_structural_class, hash_structural_style_full, is_inheriting_leaf_text,
+};
 use crate::transition_css::compile_node_transitions;
 use nve_components::motion::TransitionSpec;
 
@@ -85,7 +88,9 @@ pub fn resolve_node_style(
 
     if node.is_consecutive_frame_volatile() {
         write_compact_layout_into(&node.layout, false, &mut inline_style);
+        write_compact_layout_ext_into(node.layout_ext.as_deref(), &mut inline_style);
         write_compact_style_into(&node.style, &node.raw_style, leaf_text, false, &mut inline_style);
+        write_compact_transform_into(node.transform, &mut inline_style);
         write_compact_cursor_into(node.cursor, &mut inline_style);
         TransitionSpec::write_css_list_into(&node.transitions, &mut inline_style);
         if !node.patch_css.is_empty() {
@@ -112,6 +117,7 @@ pub fn resolve_node_style(
 
     let mut structural_decls = String::with_capacity(96);
     write_compact_layout_into(&node.layout, true, &mut structural_decls);
+    write_compact_layout_ext_into(node.layout_ext.as_deref(), &mut structural_decls);
     write_compact_style_into(
         &node.style,
         &node.raw_style,
@@ -119,11 +125,19 @@ pub fn resolve_node_style(
         true,
         &mut structural_decls,
     );
+    write_compact_transform_into(node.transform, &mut structural_decls);
 
     let structural_rule = if structural_decls.is_empty() {
         None
     } else {
-        let hash = hash_structural_style(&node.layout, &node.style, &node.raw_style, leaf_text);
+        let hash = hash_structural_style_full(
+            &node.layout,
+            node.layout_ext.as_deref(),
+            &node.style,
+            node.transform,
+            &node.raw_style,
+            leaf_text,
+        );
         let cls = format_structural_class(hash);
         if existing_rule_check(&cls) || allow_new_rule {
             class_name.push(' ');

@@ -23,6 +23,7 @@ mod html;
 #[cfg(feature = "hydrate")]
 mod hydrate;
 mod input_attrs;
+mod layout_ext_css;
 mod media_css;
 #[cfg(any(
     feature = "nv-blur",
@@ -87,6 +88,7 @@ pub use visual_viewport::{
 };
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
+pub use layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
 pub use media_css::{
     compile_node_media_rules, format_media_class, write_responsive_patch_decls,
     write_style_patch_decls, CompiledMediaRule,

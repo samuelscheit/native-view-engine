@@ -517,6 +517,7 @@ impl WebBackend {
         if let Some(text) = self.nodes.get(&node_id).and_then(|n| n.text.clone()) {
             self.apply_text_mutation(node_id, &text);
         }
+        self.sync_dom_dir_attr(node_id);
     }
 
     #[cfg(target_arch = "wasm32")]

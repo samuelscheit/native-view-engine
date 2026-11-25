@@ -289,6 +289,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
     text_engine: &CosmicTextEngine,
     clip_bounds: LayoutRect,
     offset: (f32, f32),
+    in_transform: bool,
     inherited_text: InheritedTextStyle,
     sort_scratch: &mut Vec<NodeId>,
     ops: &mut Vec<PaintOp>,
@@ -299,7 +300,13 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
     };
 
     let patch = layout_tree.effective_patch(id);
-    if patch.display == Some(Display::None) {
+    if patch.display == Some(Display::None)
+        || (patch.display.is_none()
+            && node
+                .layout_ext
+                .as_deref()
+                .is_some_and(|e| e.display == Display::None))
+    {
         return;
     }
 
@@ -326,14 +333,29 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         return;
     }
 
+    let (stx, sty) = layout_tree.compute_sticky_delta(id, scroll_offsets);
+    let node_offset = (offset.0 + stx, offset.1 + sty);
+    let rect = offset_rect(node.computed_rect, node_offset);
+
+    let effective_tf = motion.resolve_animated_transform(id, patch.transform.or(node.transform));
+    let pushed_transform = effective_tf.is_some_and(|tf| !tf.is_identity());
+    let transform_op_idx = ops.len();
+    if let Some(tf) = effective_tf
+        && pushed_transform
+    {
+        ops.push(PaintOp::PushTransform {
+            matrix: tf.to_surface_matrix_2d(rect.x, rect.y, rect.width, rect.height),
+        });
+    }
+    let node_in_transform = in_transform || pushed_transform;
+
     let pushed_opacity = opacity < 0.999;
     let opacity_op_idx = ops.len();
     if pushed_opacity {
         ops.push(PaintOp::SaveOpacity(opacity));
     }
 
-    let rect = offset_rect(node.computed_rect, offset);
-    let in_clip = intersects_clip(clip_bounds, rect, 0.0);
+    let in_clip = node_in_transform || intersects_clip(clip_bounds, rect, 0.0);
     let radius = style.border_radius.max(0.0);
 
     // Emit outer box-shadows before background fill so shadows render behind the box.
@@ -348,7 +370,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
     }
     if style.border_width > 0.0
         && style.border_color.a > 0
-        && intersects_clip(clip_bounds, rect, style.border_width * 0.5)
+        && (node_in_transform || intersects_clip(clip_bounds, rect, style.border_width * 0.5))
     {
         ops.push(PaintOp::StrokeRoundedRect {
             rect,
@@ -453,9 +475,9 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                 } else {
                     sy
                 };
-                (offset.0 - sx, offset.1 - visual_sy)
+                (node_offset.0 - sx, node_offset.1 - visual_sy)
             } else {
-                offset
+                node_offset
             };
 
             let has_z_order = children.len() > 1
@@ -478,6 +500,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                         text_engine,
                         child_clip,
                         child_offset,
+                        node_in_transform,
                         child_inherited,
                         sort_scratch,
                         ops,
@@ -495,6 +518,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                         text_engine,
                         child_clip,
                         child_offset,
+                        node_in_transform,
                         child_inherited,
                         sort_scratch,
                         ops,
@@ -522,6 +546,14 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
             ops.pop();
         } else {
             ops.push(PaintOp::Restore);
+        }
+    }
+
+    if pushed_transform {
+        if ops.len() == transform_op_idx + 1 {
+            ops.pop();
+        } else {
+            ops.push(PaintOp::PopTransform);
         }
     }
 }

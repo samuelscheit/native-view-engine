@@ -17,8 +17,10 @@ use nve_abi::{
     SurfaceId, ROOT_NODE_ID,
 };
 use nve_components::interaction::{CursorKind, StateStyleRule};
+use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
+use nve_components::transform::Transform2D;
 use nve_interop::native_view::NativeViewHandleBinder;
 
 use crate::native_view::NATIVE_VIEW_TAG;
@@ -54,6 +56,8 @@ pub(crate) struct NodeRecord {
     pub(crate) cursor: Option<CursorKind>,
     pub(crate) state_rules: Vec<StateStyleRule>,
     pub(crate) transitions: Vec<TransitionSpec>,
+    pub(crate) layout_ext: Option<Box<LayoutExt>>,
+    pub(crate) transform: Option<Transform2D>,
 }
 
 impl Default for NodeRecord {
@@ -87,6 +91,8 @@ impl Default for NodeRecord {
             cursor: None,
             state_rules: Vec::new(),
             transitions: Vec::new(),
+            layout_ext: None,
+            transform: None,
         }
     }
 }
@@ -253,6 +259,37 @@ impl NveMutationWriter {
         self.nodes.iter().filter_map(|(&id, rec)| {
             (!rec.transitions.is_empty()).then_some((id, rec.transitions.as_slice()))
         })
+    }
+
+    /// Returns the direct typed [`LayoutExt`] for `node_id` (zero serialization).
+    #[inline]
+    pub fn node_layout_ext(&self, node_id: NodeId) -> Option<&LayoutExt> {
+        self.nodes.get(&node_id).and_then(|r| r.layout_ext.as_deref())
+    }
+
+    /// Iterates over all active nodes with non-default [`LayoutExt`] metadata.
+    #[inline]
+    pub fn iter_layout_ext(&self) -> impl Iterator<Item = (NodeId, &LayoutExt)> + '_ {
+        self.nodes.iter().filter_map(|(&id, rec)| {
+            rec.layout_ext
+                .as_deref()
+                .filter(|ext| !ext.is_default())
+                .map(|ext| (id, ext))
+        })
+    }
+
+    /// Returns the direct typed [`Transform2D`] for `node_id` (zero serialization).
+    #[inline]
+    pub fn node_transform(&self, node_id: NodeId) -> Option<Transform2D> {
+        self.nodes.get(&node_id).and_then(|r| r.transform)
+    }
+
+    /// Iterates over all active nodes with an explicit [`Transform2D`].
+    #[inline]
+    pub fn iter_transforms(&self) -> impl Iterator<Item = (NodeId, Transform2D)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(&id, rec)| rec.transform.map(|tf| (id, tf)))
     }
 
     pub(crate) fn has_event_mask(&self, node_id: NodeId, bit: u64) -> bool {

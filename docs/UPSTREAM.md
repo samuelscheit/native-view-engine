@@ -102,3 +102,9 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **Removing a focused `<input>` fires `blur` synchronously, mid-mutation**
   - **Observed**: a host that dispatches DOM events into Rust immediately gets re-entered while a frame is still being applied; with `RefCell` this is a `BorrowMutError` panic (`unreachable` under immediate-abort).
   - **Mitigation**: `hosts/web-shell` uses `try_borrow_mut` so the event waits for the next pump; a JS-side CommandBuffer interpreter must queue events raised during `apply` and flush them afterwards (prototype `nve_dom.js`, branch `t3/reduce-wasm-js-boundary`).
+
+### Taffy (`taffy 0.16.0`)
+
+- **`compute_leaf_layout` drops `style.aspect_ratio` under `SizingMode::ContentSize`**
+  - **Observed**: When Flexbox measures a leaf item's hypothetical cross size (`compute/flexbox.rs` passes `SizingMode::ContentSize` with `known_dimensions` populated from `flex-basis`), `compute/leaf.rs` resets `aspect_ratio` to `None`, so an empty leaf with `flex-basis` + `aspect-ratio` (and `width`/`height: auto`) collapses to `0` on the cross axis.
+  - **Mitigation**: `packages/backends/headless/src/taffy_engine.rs` transfers any single known axis through `style.aspect_ratio` (minus resolved padding+border) inside the non-text leaf measure closure.

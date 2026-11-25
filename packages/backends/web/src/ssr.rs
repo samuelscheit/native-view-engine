@@ -159,6 +159,9 @@ impl WebBackend {
         if !resolved.inline_style.is_empty() {
             write_attr("style", &resolved.inline_style, out);
         }
+        if let Some(dir) = crate::layout_ext_css::node_dir_attr(el.layout_ext.as_deref()) {
+            write_attr("dir", dir, out);
+        }
         #[cfg(any(
             feature = "nv-blur",
             feature = "nv-webview",

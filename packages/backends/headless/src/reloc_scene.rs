@@ -393,6 +393,8 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                         .then(|| tag_str.to_owned()),
                     text: text_arc,
                     layout,
+                    layout_ext: None,
+                    transform: None,
                     style,
                     has_explicit_style: sn.has_explicit_style(),
                     raw_props,

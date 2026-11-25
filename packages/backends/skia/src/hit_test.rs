@@ -192,25 +192,57 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             return None;
         }
         let node = self.layout_tree.node(id)?;
-        if node.style.opacity <= 0.001 {
+        if node.style.opacity <= 0.001
+            || node
+                .layout_ext
+                .as_deref()
+                .is_some_and(|e| e.display == nve_components::style_patch::Display::None)
+        {
             return None;
         }
 
-        let visual_rect = offset_rect(node.computed_rect, offset);
-        let inside_self =
-            point_in_rect(x, y, visual_rect) && clip.is_none_or(|c| point_in_rect(x, y, c));
-
-        if !inside_self && id != ROOT_NODE_ID {
+        let (stx, sty) = self
+            .layout_tree
+            .compute_sticky_delta(id, &self.scroll_offsets);
+        let node_offset = (offset.0 + stx, offset.1 + sty);
+        let visual_rect = offset_rect(node.computed_rect, node_offset);
+        if let Some(c) = clip
+            && !point_in_rect(x, y, c)
+        {
             return None;
         }
 
-        let child_clip = if should_clip_children(node) {
+        let effective_tf = self
+            .motion
+            .resolve_animated_transform(id, self.layout_tree.effective_transform(id));
+        let (px, py) = if let Some(tf) = effective_tf
+            && !tf.is_identity()
+        {
+            tf.inverse_map_surface_point(
+                x,
+                y,
+                visual_rect.x,
+                visual_rect.y,
+                visual_rect.width,
+                visual_rect.height,
+            )?
+        } else {
+            (x, y)
+        };
+        let inside_self = point_in_rect(px, py, visual_rect);
+
+        let clips = should_clip_children(node);
+        if !inside_self && id != ROOT_NODE_ID && clips {
+            return None;
+        }
+
+        let child_clip = if clips {
             let next = match clip {
                 Some(prev) => intersect_rects(prev, visual_rect),
                 None => Some(visual_rect),
             };
             match next {
-                Some(c) if point_in_rect(x, y, c) => Some(c),
+                Some(c) if point_in_rect(px, py, c) => Some(c),
                 _ => {
                     // Point is outside clipped region; children cannot be hit.
                     return if inside_self && filter.matches(&self.layout_tree, node) {
@@ -220,15 +252,17 @@ impl<L: LayoutEngine> SkiaBackend<L> {
                     };
                 }
             }
+        } else if effective_tf.is_some_and(|tf| !tf.is_identity()) {
+            None
         } else {
             clip
         };
 
         let (sx, sy) = self.visual_scroll_shift(node);
-        let child_offset = (offset.0 - sx, offset.1 - sy);
+        let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
 
         if let Some(hit) = self.visit_children_topmost_first(&node.children, |child| {
-            self.hit_test_filtered(child, x, y, child_offset, child_clip, filter, depth + 1)
+            self.hit_test_filtered(child, px, py, child_offset, child_clip, filter, depth + 1)
         }) {
             return Some(hit);
         }

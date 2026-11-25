@@ -41,6 +41,11 @@ pub use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
+pub use nve_components::layout_ext::{
+    compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
+    GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
+    PositionInsets, PositionMode,
+};
 pub use nve_components::media::{
     Display, FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow,
     ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH,
@@ -52,6 +57,9 @@ pub use nve_components::motion::{
     TimedTransition, TransitionProperty, TransitionSpec,
 };
 pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
+pub use nve_components::transform::{
+    affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
+};
 pub use signal_archive::{
     reconcile_signal_entry, signal_slot_id, BinValueSlot, HydrationReport, SignalArchive,
     SignalArchiveError, SignalCodec, SignalDelta, SignalDeltaOp, SignalRegistry,
@@ -125,6 +133,11 @@ pub mod prelude {
     pub use nve_components::interaction::{
         CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
     };
+    pub use nve_components::layout_ext::{
+        GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack, GridTrackPlacement,
+        GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges, PositionInsets,
+        PositionMode,
+    };
     pub use nve_components::media::{
         Display, FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow,
         ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign,
@@ -134,6 +147,7 @@ pub mod prelude {
         TimedTransition, TransitionProperty, TransitionSpec,
     };
     pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
+    pub use nve_components::transform::Transform2D;
     pub use dioxus_core;
     pub use dioxus_core::{Element, VirtualDom};
     pub use dioxus_core_macro::{component, rsx, Props};

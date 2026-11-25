@@ -9,6 +9,7 @@ use core::fmt::Write as _;
 use nve_abi::hash::HashMap;
 use nve_abi::num::{write_i64, write_u64};
 use nve_abi::{EdgeInsets, FlexAlign, FlexDirection, FlexJustify, NodeId};
+use nve_components::layout_ext::GridTrack;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::style_patch::StylePatch;
 
@@ -235,6 +236,98 @@ pub fn write_style_patch_decls(patch: &StylePatch, out: &mut String) {
         out.push_str("display:");
         out.push_str(display.as_css());
         out.push(';');
+    }
+    if let Some(fb) = patch.flex_basis {
+        out.push_str("flex-basis:");
+        write_compact_dim(fb, out);
+        out.push(';');
+    }
+    if let Some(ratio) = patch.aspect_ratio
+        && ratio.is_finite()
+        && ratio > 0.0
+    {
+        out.push_str("aspect-ratio:");
+        write_compact_num(ratio, out);
+        out.push(';');
+    }
+    if let Some(pos) = patch.position {
+        out.push_str("position:");
+        out.push_str(pos.as_css());
+        out.push(';');
+    }
+    for (prop, dim) in [
+        ("top:", patch.inset_top),
+        ("right:", patch.inset_right),
+        ("bottom:", patch.inset_bottom),
+        ("left:", patch.inset_left),
+    ] {
+        if let Some(d) = dim {
+            out.push_str(prop);
+            write_compact_dim(d, out);
+            out.push(';');
+        }
+    }
+    if let Some(cg) = patch.column_gap {
+        out.push_str("column-gap:");
+        write_compact_px(canonical_f32(cg).max(0.0), out);
+        out.push(';');
+    }
+    if let Some(rg) = patch.row_gap {
+        out.push_str("row-gap:");
+        write_compact_px(canonical_f32(rg).max(0.0), out);
+        out.push(';');
+    }
+    if let Some(ref cols) = patch.grid_template_columns
+        && !cols.is_empty()
+    {
+        out.push_str("grid-template-columns:");
+        GridTrack::write_css_list_into(cols, out);
+        out.push(';');
+    }
+    if let Some(ref rows) = patch.grid_template_rows
+        && !rows.is_empty()
+    {
+        out.push_str("grid-template-rows:");
+        GridTrack::write_css_list_into(rows, out);
+        out.push(';');
+    }
+    if let Some(gc) = patch.grid_column {
+        out.push_str("grid-column:");
+        gc.write_css_into(out);
+        out.push(';');
+    }
+    if let Some(gr) = patch.grid_row {
+        out.push_str("grid-row:");
+        gr.write_css_into(out);
+        out.push(';');
+    }
+    if let Some(dir) = patch.direction {
+        out.push_str("direction:");
+        out.push_str(dir.as_html_dir());
+        out.push(';');
+    }
+    if let Some(v) = patch.padding_inline_start {
+        out.push_str("padding-inline-start:");
+        write_compact_px(canonical_f32(v).max(0.0), out);
+        out.push(';');
+    }
+    if let Some(v) = patch.padding_inline_end {
+        out.push_str("padding-inline-end:");
+        write_compact_px(canonical_f32(v).max(0.0), out);
+        out.push(';');
+    }
+    if let Some(v) = patch.margin_inline_start {
+        out.push_str("margin-inline-start:");
+        write_compact_px(canonical_f32(v), out);
+        out.push(';');
+    }
+    if let Some(v) = patch.margin_inline_end {
+        out.push_str("margin-inline-end:");
+        write_compact_px(canonical_f32(v), out);
+        out.push(';');
+    }
+    if let Some(tf) = patch.transform {
+        tf.write_css_decls_into(true, out);
     }
     if let Some(cursor) = patch.cursor {
         out.push_str("cursor:");

@@ -75,8 +75,14 @@ pub use motion::MotionDriver;
 pub use nve_components::interaction::{
     CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
+pub use nve_components::layout_ext::{
+    compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
+    GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
+    PositionInsets, PositionMode,
+};
 pub use nve_components::motion::{EasingCurve, MotionPreference, TransitionProperty, TransitionSpec};
 pub use nve_components::style_patch::{Display, StylePatch};
+pub use nve_components::transform::Transform2D;
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{
@@ -105,6 +111,10 @@ pub enum PaintOp {
         radius: f32,
     },
     PopClip,
+    PushTransform {
+        matrix: [f32; 6],
+    },
+    PopTransform,
     DrawShadow {
         rect: LayoutRect,
         radius: f32,
@@ -248,10 +258,16 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         &self.display_list
     }
 
-    /// Computes the visual (scroll-shifted) layout rectangle of `node_id` in logical viewport coordinates.
+    /// Computes the visual (scroll-shifted + sticky-clamped) layout rectangle of `node_id` in
+    /// logical viewport coordinates.
     pub fn visual_rect_of(&self, node_id: NodeId) -> Option<LayoutRect> {
         let node = self.layout_tree.node(node_id)?;
         let mut rect = node.computed_rect;
+        let (own_sx, own_sy) = self
+            .layout_tree
+            .compute_sticky_delta(node_id, &self.scroll_offsets);
+        rect.x += own_sx;
+        rect.y += own_sy;
         let mut ancestor = node.parent;
         let mut depth = 0usize;
         while let Some(pid) = ancestor {
@@ -265,9 +281,50 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             let (sx, sy) = self.visual_scroll_shift(pnode);
             rect.x -= sx;
             rect.y -= sy;
+            let (stx, sty) = self
+                .layout_tree
+                .compute_sticky_delta(pid, &self.scroll_offsets);
+            rect.x += stx;
+            rect.y += sty;
             ancestor = pnode.parent;
         }
         Some(rect)
+    }
+
+    /// Directly attaches or clears zero-serialization [`LayoutExt`] on `id`, recomputing layout
+    /// and rebuilding the display list when changed.
+    pub fn set_node_layout_ext(&mut self, id: NodeId, ext: Option<LayoutExt>) {
+        if self.layout_tree.set_node_layout_ext(id, ext) {
+            self.layout_tree.recompute_layout();
+            self.reconcile_scroll_offsets();
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Directly attaches or clears zero-serialization [`Transform2D`] on `id`, syncing transitions
+    /// and rebuilding the display list when changed.
+    pub fn set_node_transform(&mut self, id: NodeId, transform: Option<Transform2D>) {
+        if self.layout_tree.set_node_transform(id, transform) {
+            self.sync_motion_targets(&[id]);
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Bulk-synchronizes [`LayoutExt`] and [`Transform2D`] metadata from any producer (e.g.
+    /// `DioxusSurface`), recomputing layout and rebuilding the display list when changed.
+    pub fn sync_layout_ext_from<'a>(
+        &mut self,
+        layout_exts: impl IntoIterator<Item = (NodeId, &'a LayoutExt)>,
+        transforms: impl IntoIterator<Item = (NodeId, Transform2D)>,
+    ) {
+        let dirty = self
+            .layout_tree
+            .sync_layout_ext_from(layout_exts, transforms);
+        if !dirty.is_empty() {
+            self.reconcile_scroll_offsets();
+            self.sync_motion_targets(&dirty);
+            self.rebuild_display_list();
+        }
     }
 
     pub fn rasterize(&self, buffer: &mut PixelBuffer, clear_color: ColorRgba) {
@@ -312,6 +369,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             self.text_engine.as_ref(),
             viewport_rect,
             (0.0, 0.0),
+            false,
             InheritedTextStyle::default(),
             &mut self.sort_scratch,
             &mut self.display_list.ops,

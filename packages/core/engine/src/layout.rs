@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use nve_abi::{ComponentKind, LayoutProps, NodeId, StyleProps};
+use nve_components::layout_ext::LayoutExt;
 
 use crate::{LayoutRect, Viewport};
 
@@ -152,6 +153,10 @@ pub trait LayoutEngine: Send {
     /// Applies Flexbox geometry properties (`LayoutProps`) to a node.
     fn set_layout(&mut self, id: NodeId, layout: &LayoutProps);
 
+    /// Applies extended zero-serialization layout properties (`flex-basis`, `aspect-ratio`,
+    /// `position` + insets, CSS Grid, and RTL logical layout) to a node.
+    fn set_layout_ext(&mut self, _id: NodeId, _ext: Option<&LayoutExt>) {}
+
     /// Applies visual style properties (`StyleProps`) relevant to layout (e.g. `font_size`).
     fn set_style(&mut self, id: NodeId, style: &StyleProps);
 
@@ -195,6 +200,10 @@ impl<L: LayoutEngine + ?Sized> LayoutEngine for Box<L> {
 
     fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
         (**self).set_layout(id, layout);
+    }
+
+    fn set_layout_ext(&mut self, id: NodeId, ext: Option<&LayoutExt>) {
+        (**self).set_layout_ext(id, ext);
     }
 
     fn set_style(&mut self, id: NodeId, style: &StyleProps) {

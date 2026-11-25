@@ -54,15 +54,16 @@ mod real_impl {
     use std::sync::Arc;
 
     use nve_abi::{ComponentKind, LayoutProps, NodeId, StyleProps};
+    use nve_components::layout_ext::LayoutExt;
     use nve_engine::{HeuristicTextMeasurer, LayoutEngine, LayoutRect, TextMeasurer, Viewport};
 
     use crate::ffi::{
         nve_yg_config_free, nve_yg_config_new, nve_yg_config_set_point_scale_factor,
-        nve_yg_node_apply_layout, nve_yg_node_calculate_layout, nve_yg_node_detach_and_clear,
-        nve_yg_node_free, nve_yg_node_get_layout_rect, nve_yg_node_mark_dirty,
-        nve_yg_node_new_with_config, nve_yg_node_set_children, nve_yg_node_set_fixed_size,
-        nve_yg_node_set_is_text, nve_yg_node_set_measure_hook, NveYogaLayoutProps,
-        NveYogaMeasureHook, YGConfigRef, YGNodeRef,
+        nve_yg_node_apply_layout, nve_yg_node_apply_layout_ext, nve_yg_node_calculate_layout,
+        nve_yg_node_detach_and_clear, nve_yg_node_free, nve_yg_node_get_layout_rect,
+        nve_yg_node_mark_dirty, nve_yg_node_new_with_config, nve_yg_node_set_children,
+        nve_yg_node_set_fixed_size, nve_yg_node_set_is_text, nve_yg_node_set_measure_hook,
+        NveYogaLayoutExt, NveYogaLayoutProps, NveYogaMeasureHook, YGConfigRef, YGNodeRef,
     };
     use crate::YogaUnavailableError;
 
@@ -342,6 +343,23 @@ mod real_impl {
             let props = NveYogaLayoutProps::from(layout);
             unsafe {
                 nve_yg_node_apply_layout(entry.yg_node, &props);
+            }
+        }
+
+        fn set_layout_ext(&mut self, id: NodeId, ext: Option<&LayoutExt>) {
+            let Some(entry) = self.nodes.get(&id) else {
+                return;
+            };
+            match ext {
+                Some(e) => {
+                    let ffi_ext = NveYogaLayoutExt::from(e);
+                    unsafe {
+                        nve_yg_node_apply_layout_ext(entry.yg_node, &ffi_ext);
+                    }
+                }
+                None => unsafe {
+                    nve_yg_node_apply_layout_ext(entry.yg_node, std::ptr::null());
+                },
             }
         }
 

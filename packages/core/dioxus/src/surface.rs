@@ -6,8 +6,10 @@ use std::time::Instant;
 use dioxus_core::{Element, VirtualDom};
 use nve_abi::{FrameId, NodeId, SurfaceId};
 use nve_components::interaction::{CursorKind, StateStyleRule};
+use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
+use nve_components::transform::Transform2D;
 use nve_engine::HotPatchMsg;
 
 use crate::signal_archive::{HydrationReport, SignalArchiveError, SignalRegistry};
@@ -136,6 +138,30 @@ impl DioxusSurface {
     #[inline]
     pub fn iter_transitions(&self) -> impl Iterator<Item = (NodeId, &[TransitionSpec])> + '_ {
         self.writer.iter_transitions()
+    }
+
+    /// Direct typed [`LayoutExt`] stored on `node_id` (zero serialization).
+    #[inline]
+    pub fn node_layout_ext(&self, node_id: NodeId) -> Option<&LayoutExt> {
+        self.writer.node_layout_ext(node_id)
+    }
+
+    /// Iterates over all active nodes with non-default [`LayoutExt`] metadata.
+    #[inline]
+    pub fn iter_layout_ext(&self) -> impl Iterator<Item = (NodeId, &LayoutExt)> + '_ {
+        self.writer.iter_layout_ext()
+    }
+
+    /// Direct typed [`Transform2D`] stored on `node_id` (zero serialization).
+    #[inline]
+    pub fn node_transform(&self, node_id: NodeId) -> Option<Transform2D> {
+        self.writer.node_transform(node_id)
+    }
+
+    /// Iterates over all active nodes with an explicit [`Transform2D`].
+    #[inline]
+    pub fn iter_transforms(&self) -> impl Iterator<Item = (NodeId, Transform2D)> + '_ {
+        self.writer.iter_transforms()
     }
 
     /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.

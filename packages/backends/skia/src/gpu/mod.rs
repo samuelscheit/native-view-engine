@@ -15,6 +15,8 @@
 //! - default: Zero-C++ `SoftwareFramePresenter` (backed by `PixelBuffer` +
 //!   `CosmicTextEngine`, blitted to `softbuffer` by `hosts/skia-shell`).
 
+#[cfg(feature = "skia")]
+pub mod cpu_surface;
 pub mod d3d12;
 pub mod metal;
 pub mod select;
