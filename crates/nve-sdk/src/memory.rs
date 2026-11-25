@@ -13,14 +13,21 @@ use nve_abi::{
 };
 use nve_interop::{ChannelPayload, NveChannelBus, PayloadEncoding};
 
+use crate::audio::SERVICE_AUDIO;
+use crate::camera::SERVICE_CAMERA;
 use crate::clipboard;
 use crate::error::SdkError;
 use crate::filesystem::{self, StandardPathKind};
+use crate::fonts::SERVICE_FONTS;
 use crate::haptics::{self, ImpactStyle, NotificationHaptic};
 use crate::linking;
+use crate::memory_tier2::MemoryTier2State;
 use crate::notifications::{self, NotificationPermission, NotificationRequest};
 use crate::provider::{HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider, InvokeResult};
 use crate::secure_store;
+use crate::sensors::{SERVICE_LOCATION, SERVICE_SENSORS};
+use crate::share_web::{SERVICE_SHARE, SERVICE_WEB_AUTH};
+use crate::storage::SERVICE_STORAGE;
 use crate::system_env::{self, LocaleSnapshot, ThemeSnapshot};
 
 /// Recorded haptic trigger for test assertions.
@@ -37,7 +44,7 @@ enum InjectedFault {
     Pending,
 }
 
-struct MemoryState {
+pub(crate) struct MemoryState {
     clipboard_text: Option<String>,
     standard_paths: BTreeMap<u8, String>,
     pick_files_result: Result<Vec<String>, SdkError>,
@@ -56,6 +63,7 @@ struct MemoryState {
     pending_async: BTreeMap<u64, Option<Result<Vec<u8>, SdkError>>>,
     events: VecDeque<HostEvent>,
     channel_bus: Arc<Mutex<NveChannelBus>>,
+    pub(crate) tier2: MemoryTier2State,
 }
 
 impl MemoryState {
@@ -86,14 +94,15 @@ impl MemoryState {
             pending_async: BTreeMap::new(),
             events: VecDeque::new(),
             channel_bus: Arc::new(Mutex::new(NveChannelBus::new())),
+            tier2: MemoryTier2State::new(),
         }
     }
 }
 
-/// Deterministic in-memory mock implementing all 7 Tier-1 SDK capabilities + fault injection.
+/// Deterministic in-memory mock implementing all Tier-1/2/3 SDK capabilities + fault injection.
 pub struct MemoryHostServices {
     next_request_id: AtomicU64,
-    state: Mutex<MemoryState>,
+    pub(crate) state: Mutex<MemoryState>,
 }
 
 impl Default for MemoryHostServices {
@@ -439,6 +448,13 @@ impl HostServiceProvider for MemoryHostServices {
                 st.haptics_log.push(RecordedHaptic::Selection);
                 Vec::new()
             }
+
+            // Tier-2/3 capabilities
+            (
+                SERVICE_STORAGE | SERVICE_FONTS | SERVICE_AUDIO | SERVICE_CAMERA
+                | SERVICE_LOCATION | SERVICE_SENSORS | SERVICE_SHARE | SERVICE_WEB_AUTH,
+                _,
+            ) => st.tier2.dispatch(service_id, method_id, request)?,
 
             _ => return Err(SdkError::Unsupported),
         };

@@ -11,15 +11,24 @@ use nve_abi::{
 };
 use nve_interop::{ChannelPayload, NveChannelBus, PayloadEncoding};
 
+use crate::audio::SERVICE_AUDIO;
+use crate::camera::SERVICE_CAMERA;
 use crate::clipboard;
 use crate::error::SdkError;
 use crate::filesystem;
+use crate::fonts::SERVICE_FONTS;
 use crate::haptics;
 use crate::linking;
 use crate::notifications;
 use crate::provider::{HostEvent, HostServiceProvider, InvokeResult};
 use crate::secure_store;
+use crate::sensors::{SERVICE_LOCATION, SERVICE_SENSORS};
+use crate::share_web::{SERVICE_SHARE, SERVICE_WEB_AUTH};
+use crate::storage::SERVICE_STORAGE;
 use crate::system_env::{self, LocaleSnapshot, TextDirection};
+
+pub mod storage;
+pub(crate) mod tier2;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -102,6 +111,7 @@ pub fn parse_locale_tag(
 pub struct NativeHostServices {
     channel_bus: Arc<Mutex<NveChannelBus>>,
     events: Mutex<VecDeque<HostEvent>>,
+    tier2: Mutex<tier2::NativeTier2State>,
 }
 
 impl Default for NativeHostServices {
@@ -112,17 +122,46 @@ impl Default for NativeHostServices {
 
 impl NativeHostServices {
     pub fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let tier2 = match platform::standard_path(filesystem::StandardPathKind::Data) {
+            Ok(dir) => tier2::NativeTier2State::with_storage_root(
+                std::path::PathBuf::from(dir).join("nve-kv"),
+            ),
+            Err(_) => tier2::NativeTier2State::in_memory(),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let tier2 = tier2::NativeTier2State::in_memory();
+
         Self {
             channel_bus: Arc::new(Mutex::new(NveChannelBus::new())),
             events: Mutex::new(VecDeque::new()),
+            tier2: Mutex::new(tier2),
+        }
+    }
+
+    /// Creates a native host backend whose `SERVICE_STORAGE` namespaces persist under `root_dir`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_storage_root(root_dir: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            channel_bus: Arc::new(Mutex::new(NveChannelBus::new())),
+            events: Mutex::new(VecDeque::new()),
+            tier2: Mutex::new(tier2::NativeTier2State::with_storage_root(root_dir.into())),
+        }
+    }
+
+    /// Creates a native host backend with an in-memory `NVK1` storage engine (ideal for headless/tests/WASM).
+    pub fn in_memory_storage() -> Self {
+        Self {
+            channel_bus: Arc::new(Mutex::new(NveChannelBus::new())),
+            events: Mutex::new(VecDeque::new()),
+            tier2: Mutex::new(tier2::NativeTier2State::in_memory()),
         }
     }
 
     pub fn with_channel_bus(channel_bus: Arc<Mutex<NveChannelBus>>) -> Self {
-        Self {
-            channel_bus,
-            events: Mutex::new(VecDeque::new()),
-        }
+        let mut svc = Self::new();
+        svc.channel_bus = channel_bus;
+        svc
     }
 
     pub fn channel_bus(&self) -> Arc<Mutex<NveChannelBus>> {
@@ -237,6 +276,15 @@ impl HostServiceProvider for NativeHostServices {
             (SERVICE_HAPTICS, haptics::METHOD_SELECTION) => {
                 platform::haptics_selection()?;
                 Vec::new()
+            }
+
+            (
+                SERVICE_STORAGE | SERVICE_FONTS | SERVICE_AUDIO | SERVICE_CAMERA
+                | SERVICE_LOCATION | SERVICE_SENSORS | SERVICE_SHARE | SERVICE_WEB_AUTH,
+                _,
+            ) => {
+                let mut guard = self.tier2.lock().unwrap_or_else(|e| e.into_inner());
+                guard.dispatch(service_id, method_id, request)?
             }
 
             _ => return Err(SdkError::Unsupported),

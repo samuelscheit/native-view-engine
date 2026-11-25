@@ -5,6 +5,25 @@ use crate::error::SdkError;
 /// Upper bound on element count in a single decoded sequence to prevent OOM DoS on corrupt buffers.
 pub const MAX_SEQ_ITEMS: usize = 65_536;
 
+/// FNV-1a 64-bit offset basis.
+pub const FNV1A_64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+/// FNV-1a 64-bit prime.
+pub const FNV1A_64_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Computes a deterministic 64-bit FNV-1a checksum over `bytes` with zero external dependencies.
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    fnv1a64_update(FNV1A_64_OFFSET, bytes)
+}
+
+/// Continues an incremental 64-bit FNV-1a checksum from `state`.
+pub fn fnv1a64_update(mut state: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        state ^= u64::from(b);
+        state = state.wrapping_mul(FNV1A_64_PRIME);
+    }
+    state
+}
+
 /// Little-endian binary encoder for host capability requests, responses, and push events.
 #[derive(Debug, Default, Clone)]
 pub struct BinWriter {
@@ -51,6 +70,18 @@ impl BinWriter {
     }
 
     pub fn write_u64(&mut self, v: u64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_i64(&mut self, v: i64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_f32(&mut self, v: f32) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_f64(&mut self, v: f64) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
@@ -101,6 +132,36 @@ impl BinWriter {
             Some(v) => {
                 self.write_u8(1);
                 self.write_u32(v);
+            }
+            None => self.write_u8(0),
+        }
+    }
+
+    pub fn write_opt_u64(&mut self, opt: Option<u64>) {
+        match opt {
+            Some(v) => {
+                self.write_u8(1);
+                self.write_u64(v);
+            }
+            None => self.write_u8(0),
+        }
+    }
+
+    pub fn write_opt_f32(&mut self, opt: Option<f32>) {
+        match opt {
+            Some(v) => {
+                self.write_u8(1);
+                self.write_f32(v);
+            }
+            None => self.write_u8(0),
+        }
+    }
+
+    pub fn write_opt_f64(&mut self, opt: Option<f64>) {
+        match opt {
+            Some(v) => {
+                self.write_u8(1);
+                self.write_f64(v);
             }
             None => self.write_u8(0),
         }
@@ -183,6 +244,25 @@ impl<'a> BinReader<'a> {
         ]))
     }
 
+    pub fn read_i64(&mut self) -> Result<i64, SdkError> {
+        let b = self.read_exact(8)?;
+        Ok(i64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
+    }
+
+    pub fn read_f32(&mut self) -> Result<f32, SdkError> {
+        let b = self.read_exact(4)?;
+        Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    pub fn read_f64(&mut self) -> Result<f64, SdkError> {
+        let b = self.read_exact(8)?;
+        Ok(f64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
+    }
+
     pub fn read_bytes(&mut self) -> Result<&'a [u8], SdkError> {
         let len = self.read_u32()? as usize;
         self.read_exact(len)
@@ -217,6 +297,30 @@ impl<'a> BinReader<'a> {
     pub fn read_opt_u32(&mut self) -> Result<Option<u32>, SdkError> {
         if self.read_bool()? {
             Ok(Some(self.read_u32()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn read_opt_u64(&mut self) -> Result<Option<u64>, SdkError> {
+        if self.read_bool()? {
+            Ok(Some(self.read_u64()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn read_opt_f32(&mut self) -> Result<Option<f32>, SdkError> {
+        if self.read_bool()? {
+            Ok(Some(self.read_f32()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn read_opt_f64(&mut self) -> Result<Option<f64>, SdkError> {
+        if self.read_bool()? {
+            Ok(Some(self.read_f64()?))
         } else {
             Ok(None)
         }

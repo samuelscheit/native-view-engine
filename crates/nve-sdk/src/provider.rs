@@ -3,7 +3,42 @@
 
 use std::sync::Arc;
 
+use crate::codec::BinReader;
 use crate::error::SdkError;
+
+/// Shared hardware/capability permission state used across Camera, Location, and Audio services.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PermissionStatus {
+    NotDetermined = 0,
+    Denied = 1,
+    Authorized = 2,
+    Restricted = 3,
+}
+
+impl PermissionStatus {
+    pub const fn from_u8(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(Self::NotDetermined),
+            1 => Some(Self::Denied),
+            2 => Some(Self::Authorized),
+            3 => Some(Self::Restricted),
+            _ => None,
+        }
+    }
+
+    pub fn encode(self) -> Vec<u8> {
+        vec![self as u8]
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, SdkError> {
+        let mut r = BinReader::new(bytes);
+        let raw = r.read_u8()?;
+        r.finish()?;
+        Self::from_u8(raw)
+            .ok_or_else(|| SdkError::Codec(format!("invalid PermissionStatus {raw}")))
+    }
+}
 
 /// Immediate or asynchronous result from [`HostServiceProvider::invoke_raw`].
 #[derive(Debug, Clone, PartialEq, Eq)]
