@@ -35,7 +35,7 @@ nve-studio-workspace = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
-web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "Performance", "ResizeObserver"] }
+web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "NodeList", "Performance", "ResizeObserver", "Storage", "VisibilityState"] }
 # Global allocator on wasm32: smaller (-2.5 KB brotli) and faster than std's dlmalloc
 # (docs/research/wasm-size/runtime.md).
 talc = "5.1.1"

@@ -1682,9 +1682,11 @@ dependencies = [
  "nve-docs",
  "nve-docs-site",
  "nve-engine",
+ "nve-example-counter",
  "nve-interop",
  "nve-mdx",
  "nve-skia-shell",
+ "nve-studio-workspace",
  "serde_json",
  "tungstenite",
 ]

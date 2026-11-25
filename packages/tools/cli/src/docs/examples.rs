@@ -10,7 +10,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use nve_backend_web::{
+    inject_ssg_with_scripts_into_shell_html, prerender_nve_app_frame0, SsrOutput,
+    PRE_HYDRATION_REPLAY_SCRIPT_TAG, WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG,
+};
 use nve_docs_site::GITHUB_REPO_URL;
+use nve_engine::Viewport;
+use nve_example_counter::CounterModule;
+use nve_studio_workspace::StudioWorkspaceModule;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ExampleAppSpec {
@@ -88,7 +95,9 @@ pub(crate) fn stage_example_apps(
                 let inner_dir = app_out.join("app");
                 copy_dir_recursive(&app_dir, &inner_dir)?;
                 copy_top_level_shared_assets(&shared_root, &app_out)?;
-                inject_embed_topbar_hider(&inner_dir.join("index.html"))?;
+                let app_index = inner_dir.join("index.html");
+                inject_embed_topbar_hider(&app_index)?;
+                inject_cold_ssr_and_bootstrap(&app_index, spec.slug)?;
                 ("per-app", Some("./app/index.html?ws=off&embed=1".to_string()))
             }
             DiscoveredBundle::Unified { root_dir } => {
@@ -96,10 +105,19 @@ pub(crate) fn stage_example_apps(
                     stage_unified_runtime(&root_dir, &runtime_dir)?;
                     staged_unified = true;
                 }
+                let app_html_name = format!("{}.html", spec.slug);
+                let app_html_path = runtime_dir.join(&app_html_name);
+                fs::copy(runtime_dir.join("index.html"), &app_html_path).map_err(|e| {
+                    format!(
+                        "failed to stage cold-SSR entry {}: {e}",
+                        app_html_path.display()
+                    )
+                })?;
+                inject_cold_ssr_and_bootstrap(&app_html_path, spec.slug)?;
                 (
                     "unified",
                     Some(format!(
-                        "../_runtime/index.html?app={}&ws=off&embed=1",
+                        "../_runtime/{app_html_name}?app={}&ws=off&embed=1",
                         spec.slug
                     )),
                 )
@@ -363,6 +381,43 @@ fn inject_embed_topbar_hider(index_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {e}", index_path.display()))
 }
 
+/// Pre-renders default Frame-0 SSG HTML + Option 5 CSS for any example `NveApp` via the generic
+/// engine-level [`prerender_nve_app_frame0`] helper so brand-new cold visitors paint at 0ms.
+fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
+    let vp = Viewport {
+        width: 1280.0,
+        height: 800.0,
+        scale_factor: 1.0,
+    };
+    let backend = match slug {
+        "studio" => prerender_nve_app_frame0::<StudioWorkspaceModule>(vp),
+        "counter" => prerender_nve_app_frame0::<CounterModule>(vp),
+        _ => return Ok(None),
+    }
+    .map_err(|e| format!("failed to prerender Frame-0 SSG for example '{slug}': {e}"))?;
+    Ok(Some(backend.render_ssr()))
+}
+
+/// Injects pre-rendered default Frame-0 SSG plus `<script data-nve-snapshot-boot>` and
+/// `<script data-nve-replay>` into a staged example HTML file.
+fn inject_cold_ssr_and_bootstrap(index_path: &Path, slug: &str) -> Result<(), String> {
+    if !index_path.is_file() {
+        return Ok(());
+    }
+    let html = fs::read_to_string(index_path)
+        .map_err(|e| format!("failed to read {}: {e}", index_path.display()))?;
+    let scripts = format!(
+        "{WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG}\n{PRE_HYDRATION_REPLAY_SCRIPT_TAG}"
+    );
+    let patched = if let Some(ssr) = render_example_default_ssr(slug)? {
+        inject_ssg_with_scripts_into_shell_html(&html, "app", &ssr, &scripts)
+    } else {
+        html
+    };
+    fs::write(index_path, patched)
+        .map_err(|e| format!("failed to write {}: {e}", index_path.display()))
+}
+
 fn join_base(base_path: &str, path: &str) -> String {
     let b = base_path.trim().trim_matches('/');
     let p = path.trim().trim_start_matches('/');
@@ -488,6 +543,7 @@ cargo run --locked -p nve-cli -- docs build --web-shell-dist hosts/web-shell/dis
           <a class="switch-tab" data-testid="portal-switch-studio" href="{studio_href}" data-active="{studio_active}">Studio</a>
           <a class="switch-tab" data-testid="portal-switch-counter" href="{counter_href}" data-active="{counter_active}">Counter</a>
         </nav>
+        <button id="portal-reset" class="nav-link" data-testid="portal-reset-btn" type="button" style="background:transparent;cursor:pointer;font-family:inherit;font-size:12px;" title="Clear cached snapshot and reset workspace">Reset</button>
         <span id="portal-status" class="status-pill hide-sm" data-ready="false">{initial_status}</span>
         <a class="nav-link hide-sm" href="{github_url}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
       </div>
@@ -500,16 +556,34 @@ cargo run --locked -p nve-cli -- docs build --web-shell-dist hosts/web-shell/dis
     (() => {{
       const frame = document.getElementById("nve-example-frame");
       const pill = document.getElementById("portal-status");
+      const resetBtn = document.getElementById("portal-reset");
       if (!frame || !pill) return;
+      const baseSrc = frame.getAttribute("src") || "";
+      if (new URLSearchParams(location.search).get("reset") === "1" && baseSrc && !baseSrc.includes("reset=1")) {{
+        frame.src = baseSrc + (baseSrc.includes("?") ? "&" : "?") + "reset=1";
+      }}
+      if (resetBtn) {{
+        resetBtn.addEventListener("click", () => {{
+          if (!baseSrc) return;
+          pill.textContent = "Resetting…";
+          pill.dataset.ready = "false";
+          frame.src = baseSrc + (baseSrc.includes("?") ? "&" : "?") + "reset=1";
+        }});
+      }}
       const poll = () => {{
         try {{
           const doc = frame.contentDocument;
           if (!doc) return;
           const app = doc.getElementById("app");
-          if (app && app.querySelector("[data-nve-id]")) {{
+          if (app && app.dataset.nveLive === "1") {{
             pill.textContent = "WASM Live ({bundle_mode})";
             pill.dataset.ready = "true";
             return;
+          }}
+          if (app && app.dataset.nveRestored === "1") {{
+            pill.textContent = "Instant Snapshot · Booting…";
+          }} else if (app && app.querySelector("[data-nve-id]")) {{
+            pill.textContent = "Instant SSR · Booting…";
           }}
         }} catch {{}}
         setTimeout(poll, 150);

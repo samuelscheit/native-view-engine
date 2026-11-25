@@ -27,3 +27,5 @@ nve-docs = { workspace = true }
 nve-mdx = { workspace = true }
 nve-skia-shell = { workspace = true }
 nve-docs-site = { path = "../../../examples/nve-docs-site", default-features = false }
+nve-example-counter = { path = "../../../examples/counter", default-features = false }
+nve-studio-workspace = { workspace = true }

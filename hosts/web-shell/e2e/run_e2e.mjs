@@ -703,6 +703,7 @@ async function main() {
 
     const errors = [];
     const consoleLogs = [];
+    let allowExpectedOfflineWasmError = false;
 
     cdp.on("Runtime.exceptionThrown", (params) => {
       const details = params.exceptionDetails || {};
@@ -715,6 +716,9 @@ async function main() {
         .join(" ");
       consoleLogs.push(`[console.${params.type}] ${text}`);
       if (params.type === "error" || params.type === "assert") {
+        if (allowExpectedOfflineWasmError && text.includes("[NVE Web] Boot failed:")) {
+          return;
+        }
         errors.push(`[console.${params.type}] ${text}`);
       }
       if (text.includes("[NVE Web Panic]") || text.includes("panicked at")) {
@@ -724,6 +728,14 @@ async function main() {
     cdp.on("Log.entryAdded", (params) => {
       const entry = params.entry || {};
       if (entry.level === "error") {
+        if (
+          allowExpectedOfflineWasmError &&
+          (String(entry.url || "").endsWith(".wasm") ||
+            String(entry.text || "").includes("ERR_BLOCKED_BY_CLIENT") ||
+            String(entry.text || "").includes("Failed to load resource"))
+        ) {
+          return;
+        }
         errors.push(`[log.error:${entry.source || "unknown"}] ${entry.text}`);
       }
     });
@@ -1876,6 +1888,432 @@ async function main() {
     }
     console.log("    PASS hostile CommandBuffers on the live DOM (root kept, moves/cycles/repeats, reserved keys, CSS-only props)");
 
+    // =========================================================================
+    // 8. Generic Web SSG (Cold Visit) + 0ms Instant Snapshot & State Restore (Returning Visit)
+    // =========================================================================
+    console.log("==> [8/8] Testing Cold SSG + 0ms Instant Snapshot & State Restore (.wasm blocked & unblocked, hydration, replay, ?reset=1)...");
+    await cdp.send("Network.enable");
+
+    // Stage real pre-rendered `/examples/_runtime/{studio,counter}.html` via `nve docs build`
+    // using the freshly built `hosts/web-shell/pkg/` bundles, served on a clean origin (empty localStorage).
+    const ssgTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nve-web-ssg-e2e-"));
+    const ssgBuild = spawnSync(
+      nveBin,
+      [
+        "docs",
+        "build",
+        "--content",
+        "docs/content",
+        "--skip-wasm",
+        "--web-shell-dist",
+        WEB_SHELL_DIR,
+        "--out",
+        ssgTmpDir,
+      ],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    if (ssgBuild.status !== 0) {
+      throw new Error(
+        `nve docs build for SSG E2E failed (exit=${ssgBuild.status}):\n${ssgBuild.stdout}\n${ssgBuild.stderr}`
+      );
+    }
+    const { server: ssgServer, port: ssgPort } = await startStaticServer(ssgTmpDir);
+    const ssgBaseUrl = `http://127.0.0.1:${ssgPort}`;
+    const studioSsgUrl = `${ssgBaseUrl}/examples/_runtime/studio.html?app=studio&ws=off`;
+    const counterSsgUrl = `${ssgBaseUrl}/examples/_runtime/counter.html?app=counter&ws=off`;
+
+    try {
+      // 8a. COLD FIRST VISIT (empty localStorage, .wasm COMPLETELY BLOCKED) -> full initial
+      //     Studio AND Counter UIs must ALREADY be visibly rendered at 0ms from embedded SSG HTML+CSS!
+      allowExpectedOfflineWasmError = true;
+      await cdp.send("Network.setBlockedURLs", { urls: ["*.wasm"] });
+      try {
+        await cdp.send("Page.navigate", { url: studioSsgUrl });
+        await waitForCondition(
+          cdp,
+          "Cold first-visit Studio SSG rendered full initial UI at 0ms with empty localStorage and .wasm blocked",
+          () => {
+            const app = document.getElementById("app");
+            const status = document.getElementById("nve-status");
+            const text = app?.innerText || "";
+            return (
+              localStorage.length === 0 &&
+              app?.dataset.nveRestored === undefined &&
+              window.__nveWasmMod === undefined &&
+              window.__nveController === undefined &&
+              Boolean(document.querySelector("style[data-nve-base]")) &&
+              Boolean(document.querySelector("style[data-nve-ssr][data-nve-hashes]")) &&
+              Boolean(app?.querySelector("[data-nve-ssr-hash]")) &&
+              typeof window.__nveReplayDrain === "function" &&
+              text.includes("AETHER") &&
+              text.includes("Issue Board") &&
+              text.includes("AET-101") &&
+              text.includes("Done (1)") &&
+              status?.textContent === "Snapshot (offline)"
+            );
+          }
+        );
+
+        await cdp.send("Page.navigate", { url: counterSsgUrl });
+        await waitForCondition(
+          cdp,
+          "Cold first-visit Counter SSG rendered full initial UI at 0ms with empty localStorage and .wasm blocked",
+          () => {
+            const app = document.getElementById("app");
+            const status = document.getElementById("nve-status");
+            const text = app?.innerText || "";
+            return (
+              localStorage.length === 0 &&
+              app?.dataset.nveRestored === undefined &&
+              window.__nveWasmMod === undefined &&
+              window.__nveController === undefined &&
+              Boolean(document.querySelector("style[data-nve-base]")) &&
+              Boolean(document.querySelector("style[data-nve-ssr][data-nve-hashes]")) &&
+              Boolean(app?.querySelector("[data-nve-ssr-hash]")) &&
+              text.includes("NATIVE VIEW ENGINE") &&
+              text.includes("Count: 0") &&
+              text.includes("Increment +") &&
+              status?.textContent === "Snapshot (offline)"
+            );
+          }
+        );
+        console.log("    PASS Cold First-Visit SSG with .wasm COMPLETELY BLOCKED (Studio + Counter painted at 0ms with empty localStorage)");
+      } finally {
+        await cdp.send("Network.setBlockedURLs", { urls: [] });
+        allowExpectedOfflineWasmError = false;
+      }
+
+      // 8b. COLD FIRST-VISIT ZERO-MISMATCH HYDRATION (.wasm unblocked, empty localStorage) for BOTH Studio & Counter!
+      const verifyColdSsgHydration = async (url, label, expectedAppName, minAdopted) => {
+        const paused = [];
+        const onPaused = (p) => paused.push(p.requestId);
+        cdp.on("Fetch.requestPaused", onPaused);
+        await cdp.send("Fetch.enable", {
+          patterns: [{ urlPattern: "*.wasm", requestStage: "Request" }],
+        });
+        try {
+          await cdp.send("Page.navigate", { url });
+          await waitForCondition(
+            cdp,
+            `${label} cold SSG DOM present before .wasm resolves`,
+            () =>
+              localStorage.length === 0 &&
+              Boolean(document.querySelector('#app [data-nve-id="1"][data-nve-ssr-hash]')) &&
+              window.__nveController === undefined
+          );
+          await evalJs(
+            cdp,
+            `(() => { window.__nveColdSsgRootBefore = document.querySelector('#app [data-nve-id="1"]'); return Boolean(window.__nveColdSsgRootBefore); })()`
+          );
+        } finally {
+          for (const requestId of paused) {
+            await cdp.send("Fetch.continueRequest", { requestId }).catch(() => {});
+          }
+          await cdp.send("Fetch.disable").catch(() => {});
+        }
+        await waitForCondition(
+          cdp,
+          `${label} cold SSG hydrated with 0 mismatches`,
+          `() => window.__nveController?.app_name === ${JSON.stringify(expectedAppName)} && window.__nveController?.is_hydrated() === true`
+        );
+        const stats = await evalJs(
+          cdp,
+          `(() => {
+            const ctrl = window.__nveController;
+            return {
+              hydrated: ctrl.is_hydrated(),
+              restored: ctrl.restored_from_snapshot(),
+              mismatches: Number(ctrl.hydration_mismatch_count()),
+              replaced: Number(ctrl.hydration_replaced_count()),
+              adopted: Number(ctrl.hydration_adopted_count()),
+              rootIdentityPreserved: window.__nveColdSsgRootBefore === document.querySelector('#app [data-nve-id="1"]'),
+            };
+          })()`
+        );
+        if (
+          !stats.hydrated ||
+          stats.restored !== false ||
+          stats.mismatches !== 0 ||
+          stats.replaced !== 0 ||
+          !(stats.adopted >= minAdopted) ||
+          !stats.rootIdentityPreserved
+        ) {
+          throw new Error(`${label} cold SSG hydration failed: ${JSON.stringify(stats)}`);
+        }
+        return stats;
+      };
+
+      const coldCounterStats = await verifyColdSsgHydration(counterSsgUrl, "Counter", "CounterApp", 5);
+      await evalJs(cdp, `window.__nveController?.clear_snapshot(); localStorage.clear(); true`);
+      const coldStudioStats = await verifyColdSsgHydration(studioSsgUrl, "Studio", "StudioWorkspaceApp", 20);
+      console.log(
+        `    PASS Cold First-Visit SSG Hydration (Studio adopted=${coldStudioStats.adopted} mismatches=0 rootId=true; Counter adopted=${coldCounterStats.adopted} mismatches=0 rootId=true)`
+      );
+
+      // 8c. RETURNING USER VISIT: Mutate Studio on the SSG page, persist NVWS1 + NWS1,
+      //     then block .wasm and assert <script data-nve-snapshot-boot> overrides default Board SSG with mutated Docs at 0ms!
+      await typeIntoInput(
+        cdp,
+        `document.querySelector('[testid="board-new-task-input"]')`,
+        "Zero-MS Snapshot Task",
+        "snapshot board-new-task-input"
+      );
+      await pressKey(cdp, { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await waitForCondition(
+        cdp,
+        "Mutated Studio added AET-105 Zero-MS Snapshot Task",
+        () => (document.getElementById("app")?.innerText || "").includes("Zero-MS Snapshot Task")
+      );
+      await clickElement(cdp, `document.querySelector('[testid="task-status-1"]')`, "snapshot task-status-1");
+      await waitForCondition(
+        cdp,
+        "Mutated Studio advanced AET-101 to Done (2)",
+        () => (document.getElementById("app")?.innerText || "").includes("Done (2)")
+      );
+      await clickElement(cdp, `document.querySelector('[testid="nav-docs"]')`, "snapshot nav-docs");
+      await waitForCondition(
+        cdp,
+        "Mutated Studio switched to Docs view",
+        () => (document.getElementById("app")?.innerText || "").includes("RFC-042: Zero-Copy NveSceneView")
+      );
+      await waitForCondition(
+        cdp,
+        "Studio NVWS1 frame snapshot and NVB1 NWS1 state persisted automatically to localStorage",
+        () => {
+          const snap = localStorage.getItem("nve:snap:studio:v2") || "";
+          const state = localStorage.getItem("nve:state:studio:v2") || "";
+          return (
+            snap.startsWith("NVWS1|2|") &&
+            snap.includes("RFC-042: Zero-Copy NveSceneView") &&
+            state.startsWith("NVB1|2|")
+          );
+        }
+      );
+
+      // BLOCK ALL `.wasm` requests and reload Studio SSG page -> returning user's mutated Docs view MUST override default Board SSG at 0ms!
+      allowExpectedOfflineWasmError = true;
+      await cdp.send("Network.setBlockedURLs", { urls: ["*.wasm"] });
+      try {
+        await cdp.send("Page.navigate", { url: studioSsgUrl });
+        await waitForCondition(
+          cdp,
+          "Returning-user 0ms snapshot overrode default Board SSG with mutated Docs view while .wasm was blocked",
+          () => {
+            const app = document.getElementById("app");
+            const status = document.getElementById("nve-status");
+            const text = app?.innerText || "";
+            return (
+              app?.dataset.nveRestored === "1" &&
+              window.__nveWasmMod === undefined &&
+              window.__nveController === undefined &&
+              Boolean(document.querySelector("style[data-nve-base]")) &&
+              Boolean(document.querySelector("style[data-nve-ssr][data-nve-hashes]")) &&
+              typeof window.__nveReplayDrain === "function" &&
+              text.includes("AETHER") &&
+              text.includes("RFC-042: Zero-Copy NveSceneView") &&
+              !text.includes("Issue Board") &&
+              status?.textContent === "Snapshot (offline)"
+            );
+          }
+        );
+        console.log("    PASS Returning-User 0ms Snapshot Override with .wasm COMPLETELY BLOCKED (mutated Docs overrode cold Board SSG)");
+      } finally {
+        await cdp.send("Network.setBlockedURLs", { urls: [] });
+        allowExpectedOfflineWasmError = false;
+      }
+
+      // 8d. Returning-User Hydration + Pre-Hydration Click Replay (pause .wasm mid-flight, click doc-tab-2, release .wasm).
+      const pausedWasmRequests = [];
+      const onFetchPaused = (params) => {
+        pausedWasmRequests.push(params.requestId);
+      };
+      cdp.on("Fetch.requestPaused", onFetchPaused);
+      await cdp.send("Fetch.enable", {
+        patterns: [{ urlPattern: "*.wasm", requestStage: "Request" }],
+      });
+      try {
+        await cdp.send("Page.navigate", { url: studioSsgUrl });
+        await waitForCondition(
+          cdp,
+          "0ms snapshot painted while .wasm request is paused mid-flight",
+          () =>
+            document.getElementById("app")?.dataset.nveRestored === "1" &&
+            Boolean(document.querySelector('[testid="doc-tab-2"]')) &&
+            window.__nveController === undefined
+        );
+        await evalJs(
+          cdp,
+          `(() => {
+            window.__nveSnapRootBefore = document.querySelector('#app [data-nve-id="1"]');
+            return Boolean(window.__nveSnapRootBefore);
+          })()`
+        );
+        await clickElement(cdp, `document.querySelector('[testid="doc-tab-2"]')`, "pre-hydration doc-tab-2");
+      } finally {
+        for (const requestId of pausedWasmRequests) {
+          await cdp.send("Fetch.continueRequest", { requestId }).catch(() => {});
+        }
+        await cdp.send("Fetch.disable").catch(() => {});
+      }
+
+      await waitForCondition(
+        cdp,
+        "WASM hydrated restored mutated Studio snapshot and replayed pre-hydration doc-tab-2 click",
+        () => {
+          const ctrl = window.__nveController;
+          const text = document.getElementById("app")?.innerText || "";
+          return (
+            Boolean(ctrl) &&
+            ctrl.restored_from_snapshot() === true &&
+            ctrl.is_hydrated() === true &&
+            text.includes("Pre-Flight Gates")
+          );
+        }
+      );
+
+      const snapHydrateStats = await evalJs(
+        cdp,
+        `(() => {
+          const ctrl = window.__nveController;
+          const rootAfter = document.querySelector('#app [data-nve-id="1"]');
+          return {
+            restored: ctrl.restored_from_snapshot(),
+            hydrated: ctrl.is_hydrated(),
+            mismatches: Number(ctrl.hydration_mismatch_count()),
+            replaced: Number(ctrl.hydration_replaced_count()),
+            adopted: Number(ctrl.hydration_adopted_count()),
+            replayed: Number(ctrl.hydration_replayed_events()),
+            rootIdentityPreserved: window.__nveSnapRootBefore === rootAfter,
+          };
+        })()`
+      );
+      if (
+        !snapHydrateStats.restored ||
+        !snapHydrateStats.hydrated ||
+        snapHydrateStats.mismatches !== 0 ||
+        snapHydrateStats.replaced !== 0 ||
+        !(snapHydrateStats.adopted > 20) ||
+        !(snapHydrateStats.replayed >= 1) ||
+        !snapHydrateStats.rootIdentityPreserved
+      ) {
+        throw new Error(`Snapshot hydration invariant failed: ${JSON.stringify(snapHydrateStats)}`);
+      }
+
+      await clickElement(cdp, `document.querySelector('[testid="nav-board"]')`, "restored nav-board");
+      await waitForCondition(
+        cdp,
+        "Restored Studio NWS1 preserved Board task AET-105 and Done (2)",
+        () => {
+          const text = document.getElementById("app")?.innerText || "";
+          return text.includes("Zero-MS Snapshot Task") && text.includes("Done (2)");
+        }
+      );
+      console.log(
+        `    PASS Returning-User Studio Hydration + Replay (adopted=${snapHydrateStats.adopted}, mismatches=0, replayed=${snapHydrateStats.replayed}, rootIdentity=true, NWS1 Board intact)`
+      );
+
+      // 8e. Counter Returning-User 0ms Snapshot + NWC1 State Restore + Zero-Mismatch Hydration.
+      await cdp.send("Page.navigate", { url: `${counterSsgUrl}&reset=1` });
+      await waitForCondition(
+        cdp,
+        "Counter SSG reset to Count: 0 with 0-mismatch cold SSG hydration",
+        () =>
+          window.__nveController?.app_name === "CounterApp" &&
+          window.__nveController?.is_hydrated() === true &&
+          Number(window.__nveController?.hydration_mismatch_count()) === 0 &&
+          (document.getElementById("app")?.innerText || "").includes("Count: 0")
+      );
+      await cdp.send("Page.navigate", { url: counterSsgUrl });
+      await waitForCondition(
+        cdp,
+        "Counter SSG mounted for mutation",
+        () =>
+          window.__nveController?.app_name === "CounterApp" &&
+          (document.getElementById("app")?.innerText || "").includes("Count: 0")
+      );
+      for (let i = 1; i <= 3; i++) {
+        await clickElement(cdp, findButtonByText("Increment +"), `Snapshot Counter Increment #${i}`);
+        await waitForCondition(
+          cdp,
+          `Counter incremented to Count: ${i}`,
+          `() => (document.getElementById("app")?.innerText || "").includes("Count: ${i}")`
+        );
+      }
+      await waitForCondition(
+        cdp,
+        "Counter NVWS1 + NWC1 persisted to localStorage",
+        () =>
+          (localStorage.getItem("nve:snap:counter:v1") || "").startsWith("NVWS1|1|") &&
+          (localStorage.getItem("nve:state:counter:v1") || "").startsWith("NVB1|1|")
+      );
+      await cdp.send("Page.navigate", { url: counterSsgUrl });
+      await waitForCondition(
+        cdp,
+        "Counter hydrated restored Count: 3 snapshot with 0 mismatches",
+        () => {
+          const ctrl = window.__nveController;
+          return (
+            Boolean(ctrl) &&
+            ctrl.app_name === "CounterApp" &&
+            ctrl.restored_from_snapshot() === true &&
+            ctrl.is_hydrated() === true &&
+            Number(ctrl.hydration_mismatch_count()) === 0 &&
+            (document.getElementById("app")?.innerText || "").includes("Count: 3")
+          );
+        }
+      );
+      console.log("    PASS Counter 0ms Instant Snapshot + NWC1 State Restore (Count: 3, mismatches=0)");
+
+      // 8f. `?reset=1` clears localStorage, preserves clean build-time SSG Board HTML with 0-mismatch hydration,
+      //     and corrupt storage falls back cleanly with zero panics.
+      await cdp.send("Page.navigate", { url: `${studioSsgUrl}&reset=1` });
+      await waitForCondition(
+        cdp,
+        "?reset=1 cleared localStorage and hydrated clean build-time SSG Studio Board with 0 mismatches",
+        () => {
+          const ctrl = window.__nveController;
+          const text = document.getElementById("app")?.innerText || "";
+          return (
+            ctrl?.app_name === "StudioWorkspaceApp" &&
+            ctrl?.restored_from_snapshot() === false &&
+            ctrl?.is_hydrated() === true &&
+            Number(ctrl?.hydration_mismatch_count()) === 0 &&
+            localStorage.getItem("nve:snap:studio:v2") === null &&
+            localStorage.getItem("nve:state:studio:v2") === null &&
+            text.includes("Issue Board") &&
+            text.includes("Done (1)") &&
+            !text.includes("Zero-MS Snapshot Task")
+          );
+        }
+      );
+      await evalJs(
+        cdp,
+        `(() => {
+          localStorage.setItem('nve:snap:studio:v2', 'NVWS1|2|0000000000000000||0|0|0|15\\n<div data-nve-id="1">corrupt</div>');
+          localStorage.setItem('nve:state:studio:v2', 'NVB1|2|!!!CORRUPT!!!');
+          return true;
+        })()`
+      );
+      await cdp.send("Page.navigate", { url: studioSsgUrl });
+      await waitForCondition(
+        cdp,
+        "Corrupt localStorage fell back cleanly to default Studio Board with 0 errors",
+        () => {
+          const text = document.getElementById("app")?.innerText || "";
+          return (
+            window.__nveController?.app_name === "StudioWorkspaceApp" &&
+            window.__nveController?.restored_from_snapshot() === false &&
+            text.includes("Issue Board") &&
+            text.includes("AET-101")
+          );
+        }
+      );
+      console.log("    PASS ?reset=1 clean clear (0-mismatch cold SSG fallback) + corrupt localStorage automatic recovery");
+    } finally {
+      await new Promise((resolve) => ssgServer.close(() => resolve()));
+      fs.rmSync(ssgTmpDir, { recursive: true, force: true });
+    }
+
     if (errors.length > 0) {
       throw new Error(
         `Browser console/runtime errors detected (${errors.length}):\n${errors.join("\n")}`
@@ -1884,6 +2322,14 @@ async function main() {
 
     // 7e. A real Rust panic prints its message and file:line (checked last: the trap poisons the
     //     instance). The trigger exists only in the dev bundle.
+    await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off&bundle=dev` });
+    await waitForCondition(
+      cdp,
+      "dev bundle remounted for deliberate panic probe",
+      () =>
+        window.__nveBundle === "dev" &&
+        typeof window.__nveWasmMod?.panic_probe === "function"
+    );
     const panicLine = lineOf(path.join(WEB_SHELL_DIR, "src/wasm_probe.rs"), 'panic!("{message}")');
     const logsBefore = consoleLogs.length;
     const panicOutcome = await evalJs(
@@ -1904,7 +2350,7 @@ async function main() {
     }
     console.log(`    PASS Rust panic message + location in the console (${location}) in the ${devBuild ? "debug" : "release"} dev bundle`);
 
-    console.log(`==> ALL 7 WEB WASM + LIVE PAIR + SSR/HYDRATION E2E SUITES PASSED (0 console errors and 0 WASM panics before the deliberate panic probe)`);
+    console.log(`==> ALL 8 WEB WASM + LIVE PAIR + SSR/HYDRATION + 0MS SNAPSHOT E2E SUITES PASSED (0 console errors and 0 WASM panics before the deliberate panic probe)`);
   } finally {
     await cleanup();
   }

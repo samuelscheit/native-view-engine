@@ -245,6 +245,18 @@ impl StudioWorkspaceModule {
         }
         report.processed_events > 0
     }
+
+    /// Restores workspace state from binary `NWS1` bytes; returns `false` if corrupt or version-mismatched.
+    pub fn try_restore_state(&mut self, state: &[u8]) -> bool {
+        let Some(restored) = WorkspaceState::from_bytes(state) else {
+            return false;
+        };
+        if let Ok(mut guard) = self.store.lock() {
+            *guard = restored;
+        }
+        self.reset_surface_with_current_store();
+        true
+    }
 }
 
 impl NveApp for StudioWorkspaceModule {
@@ -520,12 +532,7 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn restore_state(&mut self, state: &[u8]) {
-        if let Some(restored) = WorkspaceState::from_bytes(state) {
-            if let Ok(mut guard) = self.store.lock() {
-                *guard = restored;
-            }
-            self.reset_surface_with_current_store();
-        }
+        let _ = self.try_restore_state(state);
     }
 
     fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
