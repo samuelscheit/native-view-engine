@@ -486,8 +486,12 @@ final class NveDirectFfiAndSceneCanvasTests: XCTestCase {
             XCTAssertNotNil(rep)
             if let rep {
                 hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                XCTAssertEqual(rep.pixelsWide, 300)
-                XCTAssertEqual(rep.pixelsHigh, 200)
+                XCTAssertEqual(rep.size.width, 300, accuracy: 0.01)
+                XCTAssertEqual(rep.size.height, 200, accuracy: 0.01)
+                XCTAssertGreaterThanOrEqual(rep.pixelsWide, 300)
+                XCTAssertEqual(rep.pixelsWide % 300, 0)
+                XCTAssertGreaterThanOrEqual(rep.pixelsHigh, 200)
+                XCTAssertEqual(rep.pixelsHigh % 200, 0)
             }
         }
         #endif
