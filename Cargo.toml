@@ -67,3 +67,19 @@ debug = 1
 [profile.dev.package."*"]
 opt-level = 2
 debug = 0
+
+# Native release profile: cross-crate LTO with `panic = "unwind"` preserved so
+# `export_nve_app!` FFI boundaries can isolate Rust panics via `catch_unwind`.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
+# Size-optimized WASM profile for `hosts/web-shell`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

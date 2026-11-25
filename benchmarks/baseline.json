@@ -161,22 +161,22 @@
       "tolerance_pct": 15.0
     },
     "rust::abi/command_buffer_encode/100": {
-      "mean_ns": 4614.246,
-      "median_ns": 4622.708,
+      "mean_ns": 2019.913,
+      "median_ns": 2019.229,
       "name": "abi/command_buffer_encode/100",
       "suite": "rust",
       "tolerance_pct": 15.0
     },
     "rust::abi/command_buffer_encode/1000": {
-      "mean_ns": 43842.35,
-      "median_ns": 43739.097,
+      "mean_ns": 21261.78,
+      "median_ns": 21172.532,
       "name": "abi/command_buffer_encode/1000",
       "suite": "rust",
       "tolerance_pct": 15.0
     },
     "rust::abi/command_buffer_encode/10000": {
-      "mean_ns": 426621.232,
-      "median_ns": 426609.664,
+      "mean_ns": 209703.117,
+      "median_ns": 209838.842,
       "name": "abi/command_buffer_encode/10000",
       "suite": "rust",
       "tolerance_pct": 15.0
@@ -385,8 +385,8 @@
       "tolerance_pct": 15.0
     },
     "rust::interop/gesture_arbitration/nested_scroll_sequence": {
-      "mean_ns": 245.921,
-      "median_ns": 248.024,
+      "mean_ns": 64.918,
+      "median_ns": 64.51,
       "name": "interop/gesture_arbitration/nested_scroll_sequence",
       "suite": "rust",
       "tolerance_pct": 15.0

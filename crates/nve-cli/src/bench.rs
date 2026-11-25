@@ -1,5 +1,8 @@
-//! `nve bench` — Multi-backend frame benchmark and Perfetto/Chrome trace export.
+//! `nve bench` — Multi-backend frame benchmark, cold-start/RSS/binary-size profiler,
+//! and Perfetto/Chrome trace export.
 
+#[cfg(unix)]
+use std::ffi::{c_int, c_long};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -12,8 +15,237 @@ use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
 use nve_engine::{RenderBackend, SurfaceRunner, Viewport};
 
+#[cfg(unix)]
+const RUSAGE_SELF: c_int = 0;
+
+#[cfg(unix)]
+#[repr(C)]
+struct Timeval {
+    tv_sec: c_long,
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    tv_usec: i32,
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )))]
+    tv_usec: c_long,
+}
+
+#[cfg(unix)]
+#[repr(C)]
+struct Rusage {
+    ru_utime: Timeval,
+    ru_stime: Timeval,
+    ru_maxrss: c_long,
+    ru_ixrss: c_long,
+    ru_idrss: c_long,
+    ru_isrss: c_long,
+    ru_minflt: c_long,
+    ru_majflt: c_long,
+    ru_nswap: c_long,
+    ru_inblock: c_long,
+    ru_oublock: c_long,
+    ru_msgsnd: c_long,
+    ru_msgrcv: c_long,
+    ru_nsignals: c_long,
+    ru_nvcsw: c_long,
+    ru_nivcsw: c_long,
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn getrusage(who: c_int, usage: *mut Rusage) -> c_int;
+}
+
+/// Normalizes `rusage.ru_maxrss` to bytes: Apple platforms (macOS/iOS) report bytes directly,
+/// whereas Linux and other BSDs report kibibytes (KiB).
+#[inline]
+pub(crate) fn normalize_maxrss_to_bytes(raw_maxrss: i64, is_apple_os: bool) -> u64 {
+    if raw_maxrss <= 0 {
+        return 0;
+    }
+    let v = raw_maxrss as u64;
+    if is_apple_os {
+        v
+    } else {
+        v.saturating_mul(1024)
+    }
+}
+
+/// Returns the process peak resident set size (Peak RSS) in bytes via `getrusage(RUSAGE_SELF)`
+/// with zero external crate dependencies.
+pub(crate) fn peak_rss_bytes() -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let mut usage = std::mem::MaybeUninit::<Rusage>::zeroed();
+        // SAFETY: `usage` is a valid, zero-initialized `Rusage` buffer matching the platform ABI.
+        let rc = unsafe { getrusage(RUSAGE_SELF, usage.as_mut_ptr()) };
+        if rc != 0 {
+            return None;
+        }
+        // SAFETY: `getrusage` returned 0 and initialized `usage`.
+        let usage = unsafe { usage.assume_init() };
+        let is_apple = cfg!(any(target_os = "macos", target_os = "ios"));
+        Some(normalize_maxrss_to_bytes(usage.ru_maxrss as i64, is_apple))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Formats a byte count cleanly in both KiB and MiB.
+pub(crate) fn format_bytes_kib_mib(bytes: u64) -> String {
+    let kib = bytes as f64 / 1024.0;
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    format!("{mib:.2} MiB ({kib:.1} KiB, {bytes} B)")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ColdInitSample {
+    pub backend: &'static str,
+    pub cold_init_us: u64,
+    pub frame0_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArtifactSize {
+    pub label: String,
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+/// Measures cold backend + `SurfaceRunner` construction and an initial empty-surface commit.
+pub(crate) fn measure_cold_init_latencies() -> Vec<ColdInitSample> {
+    fn measure_one<B: RenderBackend>(make_backend: impl FnOnce() -> B) -> ColdInitSample {
+        let mut builder = CommandBufferBuilder::with_capacity(1, 0, 128);
+        builder.create_node(ROOT_NODE_ID + 1, ComponentKind::View, None);
+        builder.set_children(ROOT_NODE_ID, &[ROOT_NODE_ID + 1]);
+        builder.commit(true);
+        let frame0 = builder.into_bytes();
+
+        let t0 = Instant::now();
+        let backend = make_backend();
+        let mut runner = SurfaceRunner::new(1, Viewport::default(), backend);
+        runner
+            .backend_mut()
+            .submit_frame(&frame0)
+            .expect("cold-init frame0");
+        let cold_init_us = t0.elapsed().as_micros() as u64;
+        ColdInitSample {
+            backend: runner.backend().name(),
+            cold_init_us,
+            frame0_bytes: frame0.len(),
+        }
+    }
+
+    vec![
+        measure_one(HeadlessBackend::new),
+        measure_one(SkiaBackend::new),
+        measure_one(WebBackend::new),
+    ]
+}
+
+fn dylib_filename(stem: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("lib{stem}.dylib")
+    } else if cfg!(target_os = "windows") {
+        format!("{stem}.dll")
+    } else {
+        format!("lib{stem}.so")
+    }
+}
+
+fn exe_filename(stem: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{stem}.exe")
+    } else {
+        stem.to_owned()
+    }
+}
+
+/// Collects on-disk byte sizes for the running CLI binary and any built workspace cdylibs / WASM
+/// bundles discovered under `workspace_root`.
+pub(crate) fn collect_artifact_sizes(
+    workspace_root: &Path,
+    current_exe: Option<&Path>,
+) -> Vec<ArtifactSize> {
+    let mut results = Vec::new();
+    let mut seen_paths = Vec::new();
+
+    let mut push_if_exists = |label: String, path: PathBuf| {
+        if seen_paths.iter().any(|p: &PathBuf| p == &path) {
+            return;
+        }
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.is_file() {
+                seen_paths.push(path.clone());
+                results.push(ArtifactSize {
+                    label,
+                    path,
+                    bytes: meta.len(),
+                });
+            }
+        }
+    };
+
+    if let Some(exe) = current_exe {
+        push_if_exists("nve-cli (current exe)".to_owned(), exe.to_path_buf());
+    }
+
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|p| {
+            if p.is_absolute() {
+                p
+            } else {
+                workspace_root.join(p)
+            }
+        })
+        .unwrap_or_else(|| workspace_root.join("target"));
+
+    for profile in ["release", "debug"] {
+        for (label, fname) in [
+            (
+                format!("nve-example-counter cdylib ({profile})"),
+                dylib_filename("nve_example_counter"),
+            ),
+            (
+                format!("nve-studio-workspace cdylib ({profile})"),
+                dylib_filename("nve_studio_workspace"),
+            ),
+            (
+                format!("nve-skia-shell ({profile})"),
+                exe_filename("nve-skia-shell"),
+            ),
+        ] {
+            push_if_exists(label, target_dir.join(profile).join(fname));
+        }
+    }
+
+    push_if_exists(
+        "nve-web-shell WASM (pkg)".to_owned(),
+        workspace_root.join("hosts/web-shell/pkg/nve_web_shell_bg.wasm"),
+    );
+    push_if_exists(
+        "nve-web-shell WASM (wasm-release)".to_owned(),
+        target_dir.join("wasm32-unknown-unknown/wasm-release/nve_web_shell.wasm"),
+    );
+
+    results
+}
+
 pub(crate) fn build_initial_feed_cmd(rows: usize) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, 1);
+    let mut b = CommandBufferBuilder::with_capacity(1, 1, rows.saturating_mul(220).max(4096));
     let mut root_children = Vec::with_capacity(rows);
     let mut next_id = ROOT_NODE_ID + 1;
     let row_layout = LayoutProps {
@@ -51,7 +283,7 @@ pub(crate) fn build_initial_feed_cmd(rows: usize) -> Vec<u8> {
 }
 
 pub(crate) fn build_incremental_patch_cmd(frame_id: u64, rows: usize) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, frame_id);
+    let mut b = CommandBufferBuilder::with_capacity(1, frame_id, 1024);
     let updates = rows.min(10);
     for i in 0..updates {
         let idx = ((frame_id as usize * 7 + i) % rows) as u32;
@@ -111,9 +343,57 @@ pub(crate) fn cmd_bench(rows: usize, frames: usize, trace: Option<PathBuf>) {
     println!(
         "Native View Engine — Multi-Backend Frame Benchmark ({rows} rows, {frames} incremental frames)\n"
     );
+
+    let rss_before = peak_rss_bytes();
+    let cold_samples = measure_cold_init_latencies();
+
+    println!("Cold-Start Init (SurfaceRunner + Frame-0):");
+    for sample in &cold_samples {
+        println!(
+            "  [{:<16}] cold_init={}us (frame0={}B)",
+            sample.backend, sample.cold_init_us, sample.frame0_bytes
+        );
+    }
+    println!();
+
+    println!("Frame Benchmarks:");
     run_backend_bench(HeadlessBackend::new(), rows, frames, trace.as_deref());
     run_backend_bench(SkiaBackend::new(), rows, frames, None);
     run_backend_bench(WebBackend::new(), rows, frames, None);
+
+    let rss_after = peak_rss_bytes();
+    println!("\nMemory Footprint (Peak RSS via getrusage):");
+    match (rss_before, rss_after) {
+        (Some(before), Some(after)) => {
+            let delta = after.saturating_sub(before);
+            println!("  before bench: {}", format_bytes_kib_mib(before));
+            println!("  after bench:  {}", format_bytes_kib_mib(after));
+            println!("  peak delta:   +{}", format_bytes_kib_mib(delta));
+        }
+        (_, Some(after)) => {
+            println!("  peak RSS:     {}", format_bytes_kib_mib(after));
+        }
+        _ => {
+            println!("  peak RSS:     unavailable on this platform");
+        }
+    }
+
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let current_exe = std::env::current_exe().ok();
+    let artifacts = collect_artifact_sizes(&workspace_root, current_exe.as_deref());
+    println!("\nMeasured Binary / Artifact Sizes:");
+    if artifacts.is_empty() {
+        println!("  (no workspace binaries or cdylibs found)");
+    } else {
+        for art in &artifacts {
+            println!(
+                "  {:<38} {}  [{}]",
+                art.label,
+                format_bytes_kib_mib(art.bytes),
+                art.path.display()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -182,5 +462,70 @@ mod tests {
         let events: Vec<serde_json::Value> =
             serde_json::from_str(&raw).expect("valid Chrome trace JSON");
         assert_eq!(events.len(), 4 * 6);
+    }
+
+    #[test]
+    fn maxrss_normalization_handles_apple_bytes_linux_kib_and_edge_cases() {
+        // macOS/iOS reports bytes directly.
+        assert_eq!(normalize_maxrss_to_bytes(16_777_216, true), 16_777_216);
+        // Linux reports KiB -> multiplied by 1024.
+        assert_eq!(normalize_maxrss_to_bytes(16_384, false), 16_777_216);
+        // Zero and negative values clamp cleanly to 0.
+        assert_eq!(normalize_maxrss_to_bytes(0, true), 0);
+        assert_eq!(normalize_maxrss_to_bytes(0, false), 0);
+        assert_eq!(normalize_maxrss_to_bytes(-42, true), 0);
+        assert_eq!(normalize_maxrss_to_bytes(-42, false), 0);
+        // Saturation prevents overflow on extreme Linux values.
+        assert_eq!(normalize_maxrss_to_bytes(i64::MAX, false), u64::MAX);
+
+        assert_eq!(
+            format_bytes_kib_mib(1_048_576),
+            "1.00 MiB (1024.0 KiB, 1048576 B)"
+        );
+    }
+
+    #[test]
+    fn peak_rss_and_cold_init_measurements_succeed_on_host_platform() {
+        #[cfg(unix)]
+        {
+            let rss = peak_rss_bytes().expect("getrusage must succeed on unix");
+            assert!(rss > 0, "peak RSS must be non-zero");
+            assert!(
+                rss < 64 * 1024 * 1024 * 1024,
+                "peak RSS ({rss} B) looks unnormalized"
+            );
+        }
+
+        let samples = measure_cold_init_latencies();
+        assert_eq!(samples.len(), 3);
+        assert!(samples.iter().all(|s| s.frame0_bytes > 0));
+    }
+
+    #[test]
+    fn collect_artifact_sizes_discovers_existing_binaries_and_ignores_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "nve-cli-artifacts-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let release_dir = root.join("target/release");
+        let wasm_dir = root.join("hosts/web-shell/pkg");
+        std::fs::create_dir_all(&release_dir).unwrap();
+        std::fs::create_dir_all(&wasm_dir).unwrap();
+
+        let fake_exe = root.join("nve-fake");
+        let fake_dylib = release_dir.join(dylib_filename("nve_example_counter"));
+        let fake_wasm = wasm_dir.join("nve_web_shell_bg.wasm");
+        std::fs::write(&fake_exe, vec![0u8; 4096]).unwrap();
+        std::fs::write(&fake_dylib, vec![1u8; 8192]).unwrap();
+        std::fs::write(&fake_wasm, vec![2u8; 2048]).unwrap();
+
+        let found = collect_artifact_sizes(&root, Some(&fake_exe));
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].bytes, 4096);
+        assert!(found.iter().any(|a| a.bytes == 8192));
+        assert!(found.iter().any(|a| a.bytes == 2048));
     }
 }

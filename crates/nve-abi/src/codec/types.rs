@@ -77,19 +77,19 @@ pub enum Dimension {
 }
 
 impl Dimension {
-    pub(super) fn encode(&self, buf: &mut Vec<u8>) {
+    #[inline(always)]
+    pub(super) fn encode(&self, dst: &mut [u8; 5]) {
         match *self {
             Dimension::Auto => {
-                buf.push(0);
-                buf.extend_from_slice(&0.0f32.to_le_bytes());
+                *dst = [0, 0, 0, 0, 0];
             }
             Dimension::Points(v) => {
-                buf.push(1);
-                buf.extend_from_slice(&v.to_le_bytes());
+                let b = v.to_le_bytes();
+                *dst = [1, b[0], b[1], b[2], b[3]];
             }
             Dimension::Percent(v) => {
-                buf.push(2);
-                buf.extend_from_slice(&v.to_le_bytes());
+                let b = v.to_le_bytes();
+                *dst = [2, b[0], b[1], b[2], b[3]];
             }
         }
     }
@@ -209,11 +209,16 @@ impl EdgeInsets {
         }
     }
 
-    pub(super) fn encode(&self, buf: &mut Vec<u8>) {
-        buf.extend_from_slice(&self.top.to_le_bytes());
-        buf.extend_from_slice(&self.right.to_le_bytes());
-        buf.extend_from_slice(&self.bottom.to_le_bytes());
-        buf.extend_from_slice(&self.left.to_le_bytes());
+    #[inline(always)]
+    pub(super) fn encode(&self, dst: &mut [u8; 16]) {
+        let top = self.top.to_le_bytes();
+        let right = self.right.to_le_bytes();
+        let bottom = self.bottom.to_le_bytes();
+        let left = self.left.to_le_bytes();
+        dst[0..4].copy_from_slice(&top);
+        dst[4..8].copy_from_slice(&right);
+        dst[8..12].copy_from_slice(&bottom);
+        dst[12..16].copy_from_slice(&left);
     }
 
     #[inline(always)]
