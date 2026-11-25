@@ -67,9 +67,17 @@ class NveSurfaceState(val surfaceId: Int) {
     val mountedNodes: Map<Int, NveRenderNodeSnapshot>
         get() = _mountedNodes
 
+    private val _nodeMetadata = HashMap<Int, NveNodeMetadata>()
+    val nodeMetadata: Map<Int, NveNodeMetadata>
+        get() = _nodeMetadata
+
     fun applySceneFrame(meta: LongArray, slabs: NveSceneSlabs): NveSceneDiff {
         sceneBuffer.attachFromMeta(meta, slabs)
-        val diff = sceneBuffer.applyIncrementalDiff(_mountedNodes)
+        val diff = sceneBuffer.applyIncrementalDiff(
+            mountedNodes = _mountedNodes,
+            metadataById = _nodeMetadata,
+            metadataSlab = slabs.metadataSlab,
+        )
         lastFrameId = diff.frameId
         lastDiff = diff
         return diff
@@ -78,6 +86,7 @@ class NveSurfaceState(val surfaceId: Int) {
     internal fun clearScene() {
         sceneBuffer.clear()
         _mountedNodes.clear()
+        _nodeMetadata.clear()
         lastFrameId = 0L
         lastDiff = null
     }

@@ -9,29 +9,41 @@ import android.graphics.Paint;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextWatcher;
+import android.text.method.PasswordTransformationMethod;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.LruCache;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 import android.view.Window;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.RadioButton;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -43,7 +55,9 @@ import java.util.Set;
 /**
  * Standalone zero-Gradle Android Activity hosting any compiled NVE Rust app (`libnve_app.so`)
  * directly on native Android Views via cached zero-copy `DirectByteBuffer` `NveSceneBuffer` slabs
- * (zero JSON, `O(changed)` incremental reconciliation via `dirty_indices` and `removed_ids`).
+ * + batched `NVE_MET1` dirty-node metadata slab (zero JSON, zero per-prop JNI chatter,
+ * `O(changed)` incremental reconciliation via `dirty_indices`, `removed_ids`, and `NVE_DRAW1`
+ * `NveCanvasView`).
  */
 public final class NveMainActivity extends Activity {
     private static final String TAG = "NveMainActivity";
@@ -54,11 +68,46 @@ public final class NveMainActivity extends Activity {
     private static final int SLAB_BIT_CHILDREN = 1 << 2;
     private static final int SLAB_BIT_DIRTY = 1 << 3;
     private static final int SLAB_BIT_REMOVED = 1 << 4;
+    private static final int SLAB_BIT_METADATA = 1 << 5;
+
+    private static final int META_HEADER_SIZE = 32;
+    private static final int META_RECORD_HEADER_SIZE = 28;
+    private static final int META_FORMAT_VERSION = 1;
+    private static final int META_FLAG_DISABLED = 1 << 0;
+    private static final int META_FLAG_SECURE_TEXT_ENTRY = 1 << 1;
+    private static final int META_FLAG_MULTILINE = 1 << 2;
+    private static final int META_FLAG_HAS_DRAW_LIST = 1 << 3;
+    private static final int META_FLAG_DRAW_LIST_CORRUPT = 1 << 4;
+    private static final int META_FLAG_ACCESSIBILITY_HIDDEN = 1 << 5;
+    private static final int META_RESIZE_MODE_SHIFT = 8;
+    private static final int META_RESIZE_MODE_MASK = 0x3;
+    private static final byte[] META_MAGIC = {'N', 'V', 'E', '_', 'M', 'E', 'T', '1'};
 
     private static final int RESIZE_MODE_COVER = 0;
     private static final int RESIZE_MODE_CONTAIN = 1;
     private static final int RESIZE_MODE_STRETCH = 2;
     private static final int RESIZE_MODE_CENTER = 3;
+
+    private static final class NodeMetadata {
+        String label = "";
+        String role = "";
+        String hint = "";
+        String stateDesc = "";
+        String placeholder = "";
+        String testId = "";
+        boolean disabled = false;
+        boolean accessibilityHidden = false;
+        boolean secureTextEntry = false;
+        boolean multiline = false;
+        boolean drawListCorrupt = false;
+        int resizeMode = RESIZE_MODE_COVER;
+        // Transient byte range into `cachedMetadataBuf` for the current dirty frame only.
+        int frameDrawOffset = -1;
+        int frameDrawLen = 0;
+        long frameDrawFrameId = -1L;
+    }
+
+    private static final NodeMetadata EMPTY_METADATA = new NodeMetadata();
 
     static {
         System.loadLibrary("nve_android_shell");
@@ -93,6 +142,12 @@ public final class NveMainActivity extends Activity {
             int nodeId,
             String text);
 
+    private static native int nativeDispatchCustomEvent(
+            long handle,
+            int nodeId,
+            String name,
+            String payload);
+
     private static native int nativeDispatchScroll(
             long handle,
             int nodeId,
@@ -102,8 +157,6 @@ public final class NveMainActivity extends Activity {
     private static native int nativeRenderFrame(long handle, long[] outMeta);
 
     private static native int nativeGetSlabEpochMask(long handle);
-
-    private static native int nativeGetImageResizeMode(long handle, int nodeId);
 
     private static native ByteBuffer nativeGetNodesBuffer(long handle);
 
@@ -115,21 +168,27 @@ public final class NveMainActivity extends Activity {
 
     private static native ByteBuffer nativeGetRemovedIdsBuffer(long handle);
 
+    private static native ByteBuffer nativeGetMetadataBuffer(long handle);
+
     private final Map<Integer, View> nodeViews = new HashMap<>();
     private final Map<Integer, Integer> nodeTags = new HashMap<>();
     private final Map<Integer, FrameLayout> scrollInnerContainers = new HashMap<>();
     private final Map<Integer, Integer> nodeIndexById = new HashMap<>();
     private final Map<Integer, String> boundImageSrcById = new HashMap<>();
+    private final Map<Integer, NodeMetadata> nodeMetadataById = new HashMap<>();
     private final Set<Integer> scrollViewNodeIds = new HashSet<>();
+    private final List<Integer> metadataDirtyNodeIds = new ArrayList<>();
     private final NveSceneBuffer sceneBuffer = new NveSceneBuffer();
-    private final long[] sceneMeta = new long[7];
+    private final long[] sceneMeta = new long[8];
     private final LruCache<String, Bitmap> imageCache = createImageCache();
+    private byte[] metaTextScratch = new byte[128];
 
     private ByteBuffer cachedNodesBuf;
     private ByteBuffer cachedTextBuf;
     private ByteBuffer cachedChildrenBuf;
     private ByteBuffer cachedDirtyBuf;
     private ByteBuffer cachedRemovedBuf;
+    private ByteBuffer cachedMetadataBuf;
 
     private RootSurfaceLayout rootContainer;
     private long surfaceHandle = 0L;
@@ -137,6 +196,7 @@ public final class NveMainActivity extends Activity {
     private int lastRootWidthPx = 0;
     private int lastRootHeightPx = 0;
     private long lastSceneFrameId = -1L;
+    private long lastParsedMetadataFrameId = -1L;
     private boolean appLoaded = false;
     private boolean suppressTextWatcher = false;
 
@@ -216,14 +276,116 @@ public final class NveMainActivity extends Activity {
         cachedChildrenBuf = null;
         cachedDirtyBuf = null;
         cachedRemovedBuf = null;
+        cachedMetadataBuf = null;
         nodeViews.clear();
         nodeTags.clear();
         scrollInnerContainers.clear();
         nodeIndexById.clear();
         boundImageSrcById.clear();
+        nodeMetadataById.clear();
         scrollViewNodeIds.clear();
+        metadataDirtyNodeIds.clear();
         imageCache.evictAll();
         super.onDestroy();
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (appLoaded && surfaceHandle != 0L && event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
+            final View focused = getCurrentFocus();
+            final boolean editFocused = (focused instanceof EditText);
+            final String shorthand = formatKeyDownShorthand(event, editFocused);
+            if (shorthand != null) {
+                int dirty = nativeDispatchCustomEvent(surfaceHandle, ROOT_NODE_ID, "keydown", shorthand);
+                if (dirty != 0) {
+                    syncViews();
+                    if (isGlobalShortcut(event)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    /**
+     * Formats hardware keyboard events into compact zero-JSON shorthands matching
+     * `examples/studio-workspace/src/ui_palette.rs::parse_keydown_payload`
+     * (e.g. `"Cmd+k"`, `"Ctrl+k"`, `"ArrowDown"`, `"ArrowUp"`, `"Enter"`, `"Escape"`).
+     */
+    static String formatKeyDownShorthand(KeyEvent event, boolean editFocused) {
+        final int keyCode = event.getKeyCode();
+        final boolean meta = event.isMetaPressed();
+        final boolean ctrl = event.isCtrlPressed();
+        final boolean shift = event.isShiftPressed();
+        final boolean alt = event.isAltPressed();
+        final boolean hasPrimaryMod = meta || ctrl;
+
+        String keyName = null;
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DPAD_UP:
+                keyName = "ArrowUp";
+                break;
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                keyName = "ArrowDown";
+                break;
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                if (!editFocused || hasPrimaryMod || alt) {
+                    keyName = "ArrowLeft";
+                }
+                break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                if (!editFocused || hasPrimaryMod || alt) {
+                    keyName = "ArrowRight";
+                }
+                break;
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                if (!editFocused || hasPrimaryMod) {
+                    keyName = "Enter";
+                }
+                break;
+            case KeyEvent.KEYCODE_ESCAPE:
+                keyName = "Escape";
+                break;
+            case KeyEvent.KEYCODE_TAB:
+                keyName = "Tab";
+                break;
+            default:
+                if (hasPrimaryMod || alt) {
+                    if (keyCode >= KeyEvent.KEYCODE_A && keyCode <= KeyEvent.KEYCODE_Z) {
+                        keyName = String.valueOf((char) ('a' + (keyCode - KeyEvent.KEYCODE_A)));
+                    } else if (keyCode >= KeyEvent.KEYCODE_0 && keyCode <= KeyEvent.KEYCODE_9) {
+                        keyName = String.valueOf((char) ('0' + (keyCode - KeyEvent.KEYCODE_0)));
+                    } else if (keyCode == KeyEvent.KEYCODE_SPACE) {
+                        keyName = "Space";
+                    }
+                }
+                break;
+        }
+        if (keyName == null) {
+            return null;
+        }
+        if (!meta && !ctrl && !shift && !alt) {
+            return keyName;
+        }
+        StringBuilder sb = new StringBuilder(24);
+        if (meta) sb.append("Cmd+");
+        if (ctrl) sb.append("Ctrl+");
+        if (shift) sb.append("Shift+");
+        if (alt) sb.append("Alt+");
+        sb.append(keyName);
+        return sb.toString();
+    }
+
+    private static boolean isGlobalShortcut(KeyEvent event) {
+        final int code = event.getKeyCode();
+        if (code == KeyEvent.KEYCODE_ESCAPE) {
+            return true;
+        }
+        return (event.isMetaPressed() || event.isCtrlPressed())
+                && code >= KeyEvent.KEYCODE_A
+                && code <= KeyEvent.KEYCODE_Z;
     }
 
     private void handleRootSize(int widthPx, int heightPx) {
@@ -280,6 +442,9 @@ public final class NveMainActivity extends Activity {
         if (cachedRemovedBuf == null || (slabMask & SLAB_BIT_REMOVED) != 0) {
             cachedRemovedBuf = nativeGetRemovedIdsBuffer(surfaceHandle);
         }
+        if (cachedMetadataBuf == null || (slabMask & SLAB_BIT_METADATA) != 0) {
+            cachedMetadataBuf = nativeGetMetadataBuffer(surfaceHandle);
+        }
 
         sceneBuffer.attach(
                 sceneMeta[0],
@@ -300,7 +465,18 @@ public final class NveMainActivity extends Activity {
         final int nodeCount = sceneBuffer.nodeCount();
         final int dirtyCount = sceneBuffer.dirtyCount();
         final int removedCount = sceneBuffer.removedCount();
-        if (!fullSync && dirtyCount == 0 && removedCount == 0) {
+
+        metadataDirtyNodeIds.clear();
+        if (fullSync) {
+            nodeMetadataById.clear();
+            lastParsedMetadataFrameId = -1L;
+        }
+        if (frameId != lastParsedMetadataFrameId) {
+            parseDirtyMetadataSlab(cachedMetadataBuf, (int) sceneMeta[7], frameId);
+            lastParsedMetadataFrameId = frameId;
+        }
+
+        if (!fullSync && dirtyCount == 0 && removedCount == 0 && metadataDirtyNodeIds.isEmpty()) {
             return;
         }
 
@@ -316,7 +492,7 @@ public final class NveMainActivity extends Activity {
             boundImageSrcById.clear();
 
             for (int idx = 0; idx < nodeCount; idx++) {
-                upsertNodeAtIndex(idx);
+                upsertNodeAtIndex(idx, frameId);
             }
             final Set<View> managedViews = new HashSet<>(nodeViews.values());
             for (int idx = 0; idx < nodeCount; idx++) {
@@ -339,32 +515,165 @@ public final class NveMainActivity extends Activity {
             scrollViewNodeIds.remove(removedId);
             nodeIndexById.remove(removedId);
             boundImageSrcById.remove(removedId);
+            nodeMetadataById.remove(removedId);
         }
 
         // Pass 2: O(dirty) — update root and create/reuse/style only changed native Views.
+        final Set<Integer> updatedInDirtyPass = metadataDirtyNodeIds.isEmpty() ? null : new HashSet<Integer>();
         for (int d = 0; d < dirtyCount; d++) {
             final int idx = sceneBuffer.dirtyIndex(d);
             if (idx < 0 || idx >= nodeCount) {
                 continue;
             }
-            upsertNodeAtIndex(idx);
+            upsertNodeAtIndex(idx, frameId);
+            if (updatedInDirtyPass != null) {
+                updatedInDirtyPass.add(sceneBuffer.nodeId(idx));
+            }
+        }
+
+        // Pass 2b: O(dirty_metadata) — apply raw-prop-only metadata/drawList updates for nodes not
+        // already touched in `dirty_indices`.
+        for (int i = 0; i < metadataDirtyNodeIds.size(); i++) {
+            final int nid = metadataDirtyNodeIds.get(i);
+            if (updatedInDirtyPass != null && updatedInDirtyPass.contains(nid)) {
+                continue;
+            }
+            final View view = nodeViews.get(nid);
+            if (view == null) {
+                continue;
+            }
+            Integer idxObj = nodeIndexById.get(nid);
+            int idx = idxObj != null ? idxObj.intValue() : -1;
+            if (idx < 0 || idx >= nodeCount || sceneBuffer.nodeId(idx) != nid) {
+                idx = findSceneIndexByNodeId(nid, nodeCount);
+                if (idx >= 0) {
+                    nodeIndexById.put(nid, idx);
+                }
+            }
+            if (idx >= 0 && idx < nodeCount) {
+                applyNodeMetadataToView(view, nid, sceneBuffer.kind(idx), sceneBuffer, idx, frameId);
+            }
         }
 
         // Pass 3: O(dirty) — reconcile parent-child hierarchy for dirty containers.
-        final Set<View> managedViews = new HashSet<>(nodeViews.values());
-        for (int d = 0; d < dirtyCount; d++) {
-            final int idx = sceneBuffer.dirtyIndex(d);
-            if (idx < 0 || idx >= nodeCount) {
-                continue;
+        if (dirtyCount > 0) {
+            final Set<View> managedViews = new HashSet<>(nodeViews.values());
+            for (int d = 0; d < dirtyCount; d++) {
+                final int idx = sceneBuffer.dirtyIndex(d);
+                if (idx < 0 || idx >= nodeCount) {
+                    continue;
+                }
+                reconcileContainerAtIndex(idx, managedViews);
             }
-            reconcileContainerAtIndex(idx, managedViews);
+            refreshScrollViewBounds(nodeCount);
         }
 
-        refreshScrollViewBounds(nodeCount);
         lastSceneFrameId = frameId;
     }
 
-    private void upsertNodeAtIndex(int idx) {
+    /**
+     * Parses the single batched flat binary `NVE_MET1` buffer for this frame's dirty nodes
+     * (zero JSON, zero per-prop JNI calls).
+     */
+    private void parseDirtyMetadataSlab(ByteBuffer buf, int declaredBytes, long expectedFrameId) {
+        if (buf == null || buf.limit() < META_HEADER_SIZE) {
+            return;
+        }
+        for (int i = 0; i < META_MAGIC.length; i++) {
+            if (buf.get(i) != META_MAGIC[i]) {
+                return;
+            }
+        }
+        final int version = readU16Le(buf, 8);
+        if (version != META_FORMAT_VERSION) {
+            return;
+        }
+        final int recordCount = readI32Le(buf, 12);
+        final long slabFrameId = readI64Le(buf, 16);
+        final int totalBytes = readI32Le(buf, 24);
+        if (slabFrameId != expectedFrameId || recordCount <= 0) {
+            return;
+        }
+        final int bound = declaredBytes > 0 ? Math.min(declaredBytes, buf.limit()) : buf.limit();
+        if (totalBytes < META_HEADER_SIZE || totalBytes > bound) {
+            return;
+        }
+        if ((long) recordCount * META_RECORD_HEADER_SIZE > (long) (totalBytes - META_HEADER_SIZE)) {
+            return;
+        }
+
+        int pos = META_HEADER_SIZE;
+        for (int i = 0; i < recordCount; i++) {
+            if (totalBytes - pos < META_RECORD_HEADER_SIZE) {
+                break;
+            }
+            final int nodeId = readI32Le(buf, pos);
+            final int flags = readI32Le(buf, pos + 4);
+            final int labelLen = readU16Le(buf, pos + 8);
+            final int roleLen = readU16Le(buf, pos + 10);
+            final int hintLen = readU16Le(buf, pos + 12);
+            final int stateLen = readU16Le(buf, pos + 14);
+            final int placeholderLen = readU16Le(buf, pos + 16);
+            final int testIdLen = readU16Le(buf, pos + 18);
+            final int drawListLen = readI32Le(buf, pos + 20);
+            pos += META_RECORD_HEADER_SIZE;
+
+            if (drawListLen < 0) {
+                break;
+            }
+            final long payloadLen = (long) labelLen + roleLen + hintLen + stateLen
+                    + placeholderLen + testIdLen + drawListLen;
+            if (payloadLen > (long) (totalBytes - pos)) {
+                break;
+            }
+
+            NodeMetadata meta = nodeMetadataById.get(nodeId);
+            if (meta == null) {
+                meta = new NodeMetadata();
+                nodeMetadataById.put(nodeId, meta);
+            }
+            meta.label = readMetaUtf8(buf, pos, labelLen); pos += labelLen;
+            meta.role = readMetaUtf8(buf, pos, roleLen); pos += roleLen;
+            meta.hint = readMetaUtf8(buf, pos, hintLen); pos += hintLen;
+            meta.stateDesc = readMetaUtf8(buf, pos, stateLen); pos += stateLen;
+            meta.placeholder = readMetaUtf8(buf, pos, placeholderLen); pos += placeholderLen;
+            meta.testId = readMetaUtf8(buf, pos, testIdLen); pos += testIdLen;
+
+            meta.disabled = (flags & META_FLAG_DISABLED) != 0;
+            meta.secureTextEntry = (flags & META_FLAG_SECURE_TEXT_ENTRY) != 0;
+            meta.multiline = (flags & META_FLAG_MULTILINE) != 0;
+            meta.drawListCorrupt = (flags & META_FLAG_DRAW_LIST_CORRUPT) != 0;
+            meta.accessibilityHidden = (flags & META_FLAG_ACCESSIBILITY_HIDDEN) != 0;
+            meta.resizeMode = (flags >>> META_RESIZE_MODE_SHIFT) & META_RESIZE_MODE_MASK;
+
+            if (drawListLen > 0 && (flags & META_FLAG_HAS_DRAW_LIST) != 0) {
+                meta.frameDrawOffset = pos;
+                meta.frameDrawLen = drawListLen;
+                meta.frameDrawFrameId = expectedFrameId;
+            } else {
+                meta.frameDrawOffset = -1;
+                meta.frameDrawLen = 0;
+                meta.frameDrawFrameId = expectedFrameId;
+            }
+            pos += drawListLen;
+            metadataDirtyNodeIds.add(nodeId);
+        }
+    }
+
+    private String readMetaUtf8(ByteBuffer buf, int offset, int len) {
+        if (len <= 0) {
+            return "";
+        }
+        if (metaTextScratch.length < len) {
+            metaTextScratch = new byte[Math.max(len, metaTextScratch.length << 1)];
+        }
+        for (int i = 0; i < len; i++) {
+            metaTextScratch[i] = buf.get(offset + i);
+        }
+        return new String(metaTextScratch, 0, len, StandardCharsets.UTF_8);
+    }
+
+    private void upsertNodeAtIndex(int idx, long frameId) {
         final int id = sceneBuffer.nodeId(idx);
         if (id <= 0) {
             return;
@@ -397,7 +706,7 @@ public final class NveMainActivity extends Activity {
             }
         }
 
-        updateView(view, id, kind, hasChildren, sceneBuffer, idx);
+        updateView(view, id, kind, hasChildren, sceneBuffer, idx, frameId);
     }
 
     private void reconcileContainerAtIndex(int idx, Set<View> managedViews) {
@@ -497,6 +806,12 @@ public final class NveMainActivity extends Activity {
     }
 
     private View createViewForNode(final int nodeId, int kind, boolean hasChildren) {
+        if (kind == NveSceneBuffer.KIND_SKIA_CANVAS) {
+            NveCanvasView canvasView = new NveCanvasView(this);
+            canvasView.setDensity(density);
+            return canvasView;
+        }
+
         if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
             ScrollView scrollView = new ScrollView(this);
             scrollView.setFillViewport(false);
@@ -529,8 +844,9 @@ public final class NveMainActivity extends Activity {
         }
 
         if (kind == NveSceneBuffer.KIND_TEXT_INPUT) {
-            EditText editText = new EditText(this);
+            final EditText editText = new EditText(this);
             editText.setSingleLine(true);
+            editText.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
             editText.setIncludeFontPadding(false);
             editText.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
             int padH = dpToPx(8.0f);
@@ -552,6 +868,32 @@ public final class NveMainActivity extends Activity {
                     if (dirty != 0) {
                         syncViews();
                     }
+                }
+            });
+            editText.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+                @Override
+                public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
+                    if (surfaceHandle == 0L) {
+                        return false;
+                    }
+                    final boolean isSubmitAction = actionId == EditorInfo.IME_ACTION_DONE
+                            || actionId == EditorInfo.IME_ACTION_SEND
+                            || actionId == EditorInfo.IME_ACTION_GO
+                            || (actionId == EditorInfo.IME_NULL
+                                && event != null
+                                && event.getAction() == KeyEvent.ACTION_DOWN
+                                && (event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                                    || event.getKeyCode() == KeyEvent.KEYCODE_NUMPAD_ENTER));
+                    if (!isSubmitAction) {
+                        return false;
+                    }
+                    final CharSequence cs = v.getText();
+                    final String value = cs != null ? cs.toString() : "";
+                    int dirty = nativeDispatchCustomEvent(surfaceHandle, nodeId, "submit", value);
+                    if (dirty != 0) {
+                        syncViews();
+                    }
+                    return true;
                 }
             });
             return editText;
@@ -576,7 +918,8 @@ public final class NveMainActivity extends Activity {
             int kind,
             boolean hasChildren,
             NveSceneBuffer scene,
-            int idx) {
+            int idx,
+            long frameId) {
         final float xDp = scene.x(idx);
         final float yDp = scene.y(idx);
         final float wDp = Math.max(0.0f, scene.width(idx));
@@ -632,13 +975,12 @@ public final class NveMainActivity extends Activity {
                 boundImageSrcById.put(nodeId, src);
                 imageView.setImageBitmap(resolveBitmap(src));
             }
-            int resizeMode = nativeGetImageResizeMode(surfaceHandle, nodeId);
-            imageView.setScaleType(scaleTypeForResizeMode(resizeMode));
         } else if (kind == NveSceneBuffer.KIND_TEXT_INPUT && view instanceof EditText) {
             EditText editText = (EditText) view;
             String text = scene.readText(idx);
-            CharSequence current = editText.getText();
-            if (current == null || !text.equals(current.toString())) {
+            Editable current = editText.getText();
+            boolean composing = current != null && BaseInputConnection.getComposingSpanStart(current) >= 0;
+            if (!composing && (current == null || !text.equals(current.toString()))) {
                 suppressTextWatcher = true;
                 try {
                     editText.setText(text);
@@ -648,6 +990,7 @@ public final class NveMainActivity extends Activity {
                 }
             }
             editText.setTextColor(fgRgba != 0 ? rgbaToArgb(fgRgba) : Color.WHITE);
+            editText.setHintTextColor(Color.argb(138, 226, 232, 240));
             editText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, fontSizeDp > 0.0f ? fontSizeDp : 16.0f);
         } else if (kind == NveSceneBuffer.KIND_TEXT && !hasChildren && view instanceof TextView) {
             TextView tv = (TextView) view;
@@ -659,13 +1002,16 @@ public final class NveMainActivity extends Activity {
             tv.setTextSize(TypedValue.COMPLEX_UNIT_DIP, fontSizeDp > 0.0f ? fontSizeDp : 16.0f);
         }
 
-        final boolean interactive = scene.isInteractive(idx);
+        applyNodeMetadataToView(view, nodeId, kind, scene, idx, frameId);
+
+        final NodeMetadata meta = nodeMetadataById.getOrDefault(nodeId, EMPTY_METADATA);
+        final boolean interactive = scene.isInteractive(idx) && !meta.disabled;
         if (interactive && kind != NveSceneBuffer.KIND_TEXT_INPUT && kind != NveSceneBuffer.KIND_SCROLL_VIEW) {
             view.setClickable(true);
             view.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    if (surfaceHandle == 0L) {
+                    if (surfaceHandle == 0L || !v.isEnabled()) {
                         return;
                     }
                     nativeDispatchPress(surfaceHandle, nodeId, wDp * 0.5f, hDp * 0.5f);
@@ -675,6 +1021,142 @@ public final class NveMainActivity extends Activity {
         } else if (kind != NveSceneBuffer.KIND_TEXT_INPUT && kind != NveSceneBuffer.KIND_SCROLL_VIEW) {
             view.setOnClickListener(null);
             view.setClickable(false);
+        }
+    }
+
+    private void applyNodeMetadataToView(
+            View view,
+            int nodeId,
+            int kind,
+            NveSceneBuffer scene,
+            int idx,
+            long frameId) {
+        final NodeMetadata meta = nodeMetadataById.getOrDefault(nodeId, EMPTY_METADATA);
+
+        // TalkBack accessibility properties from batched `NVE_MET1` slab (zero per-prop JNI).
+        view.setEnabled(!meta.disabled);
+        view.setContentDescription(meta.label.isEmpty() ? null : meta.label);
+        if (meta.accessibilityHidden) {
+            view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        } else if (!meta.label.isEmpty() || !meta.role.isEmpty() || !meta.hint.isEmpty()
+                || !meta.stateDesc.isEmpty() || scene.isInteractive(idx)) {
+            view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+        } else {
+            view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        }
+
+        if (!meta.role.isEmpty() || !meta.hint.isEmpty() || !meta.stateDesc.isEmpty() || meta.disabled) {
+            final String role = meta.role;
+            final String hint = meta.hint;
+            final String stateDesc = meta.stateDesc;
+            final boolean disabled = meta.disabled;
+            view.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+                @Override
+                public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+                    super.onInitializeAccessibilityNodeInfo(host, info);
+                    info.setEnabled(!disabled);
+                    String className = androidClassNameForRole(role);
+                    if (className != null) {
+                        info.setClassName(className);
+                    }
+                    if ("header".equalsIgnoreCase(role) && Build.VERSION.SDK_INT >= 28) {
+                        info.setHeading(true);
+                    }
+                    if (!hint.isEmpty() && Build.VERSION.SDK_INT >= 26) {
+                        info.setHintText(hint);
+                    }
+                    if (!stateDesc.isEmpty() && Build.VERSION.SDK_INT >= 30) {
+                        info.setStateDescription(stateDesc);
+                    }
+                }
+            });
+        } else {
+            view.setAccessibilityDelegate(null);
+        }
+
+        if (kind == NveSceneBuffer.KIND_IMAGE && view instanceof ImageView) {
+            ((ImageView) view).setScaleType(scaleTypeForResizeMode(meta.resizeMode));
+        } else if (kind == NveSceneBuffer.KIND_TEXT_INPUT && view instanceof EditText) {
+            EditText editText = (EditText) view;
+            CharSequence prevHint = editText.getHint();
+            String nextHint = meta.placeholder;
+            if (nextHint.isEmpty()) {
+                if (prevHint != null) {
+                    editText.setHint(null);
+                }
+            } else if (prevHint == null || !nextHint.equals(prevHint.toString())) {
+                editText.setHint(nextHint);
+            }
+
+            final int desiredInputType;
+            if (meta.secureTextEntry) {
+                desiredInputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
+            } else if (meta.multiline) {
+                desiredInputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
+            } else {
+                desiredInputType = InputType.TYPE_CLASS_TEXT;
+            }
+            if (editText.getInputType() != desiredInputType) {
+                int selStart = editText.getSelectionStart();
+                int selEnd = editText.getSelectionEnd();
+                suppressTextWatcher = true;
+                try {
+                    editText.setSingleLine(!meta.multiline);
+                    editText.setInputType(desiredInputType);
+                    editText.setTransformationMethod(
+                            meta.secureTextEntry ? PasswordTransformationMethod.getInstance() : null);
+                    if (selStart >= 0 && selEnd >= 0) {
+                        int len = editText.getText() != null ? editText.getText().length() : 0;
+                        editText.setSelection(Math.min(selStart, len), Math.min(selEnd, len));
+                    }
+                } finally {
+                    suppressTextWatcher = false;
+                }
+            }
+        } else if (kind == NveSceneBuffer.KIND_SKIA_CANVAS && view instanceof NveCanvasView) {
+            NveCanvasView canvasView = (NveCanvasView) view;
+            canvasView.setDensity(density);
+            final int tLen = scene.textLen(idx);
+            final int tOff = scene.textOffset(idx);
+            if (cachedTextBuf != null && tLen >= NveCanvasView.HEADER_SIZE
+                    && NveCanvasView.hasDrawMagic(cachedTextBuf, tOff, tLen)) {
+                canvasView.setDrawListSlice(cachedTextBuf, tOff, tLen);
+            } else if (meta.frameDrawFrameId == frameId) {
+                if (meta.frameDrawOffset >= 0 && meta.frameDrawLen >= NveCanvasView.HEADER_SIZE
+                        && cachedMetadataBuf != null) {
+                    canvasView.setDrawListCopy(cachedMetadataBuf, meta.frameDrawOffset, meta.frameDrawLen);
+                } else {
+                    canvasView.clearDrawList();
+                }
+            } else if (meta.drawListCorrupt) {
+                canvasView.clearDrawList();
+            }
+        }
+    }
+
+    private static String androidClassNameForRole(String role) {
+        if (role == null || role.isEmpty()) {
+            return null;
+        }
+        String r = role.trim().toLowerCase(Locale.US);
+        switch (r) {
+            case "button":
+            case "pressable":
+            case "link":
+                return Button.class.getName();
+            case "checkbox":
+                return CheckBox.class.getName();
+            case "switch":
+            case "toggle":
+                return Switch.class.getName();
+            case "radio":
+            case "radiobutton":
+                return RadioButton.class.getName();
+            case "image":
+            case "img":
+                return ImageView.class.getName();
+            default:
+                return null;
         }
     }
 
@@ -793,6 +1275,23 @@ public final class NveMainActivity extends Activity {
             return 0;
         }
         return Math.round(dp * density);
+    }
+
+    private static int readU16Le(ByteBuffer buf, int pos) {
+        return (buf.get(pos) & 0xFF) | ((buf.get(pos + 1) & 0xFF) << 8);
+    }
+
+    private static int readI32Le(ByteBuffer buf, int pos) {
+        return (buf.get(pos) & 0xFF)
+                | ((buf.get(pos + 1) & 0xFF) << 8)
+                | ((buf.get(pos + 2) & 0xFF) << 16)
+                | ((buf.get(pos + 3) & 0xFF) << 24);
+    }
+
+    private static long readI64Le(ByteBuffer buf, int pos) {
+        long lo = readI32Le(buf, pos) & 0xFFFF_FFFFL;
+        long hi = readI32Le(buf, pos + 4) & 0xFFFF_FFFFL;
+        return lo | (hi << 32);
     }
 
     private static TextPaint measurePaint;

@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -46,6 +47,14 @@ JNIEXPORT jint JNICALL Java_dev_nve_android_NveMainActivity_nativeDispatchPress(
     jint node_id,
     jfloat x,
     jfloat y);
+
+JNIEXPORT jint JNICALL Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
+    JNIEnv* env,
+    jclass clazz,
+    jlong handle_ptr,
+    jint node_id,
+    jstring name,
+    jstring payload);
 
 JNIEXPORT jint JNICALL Java_dev_nve_android_NveMainActivity_nativeDispatchScroll(
     JNIEnv* env,
@@ -96,6 +105,11 @@ JNIEXPORT jobject JNICALL Java_dev_nve_android_NveMainActivity_nativeGetRemovedI
     JNIEnv* env,
     jclass clazz,
     jlong handle_ptr);
+
+JNIEXPORT jobject JNICALL Java_dev_nve_android_NveMainActivity_nativeGetMetadataBuffer(
+    JNIEnv* env,
+    jclass clazz,
+    jlong handle_ptr);
 }
 
 namespace {
@@ -113,6 +127,92 @@ struct FakeDirectBuffer {
   jlong capacity{0};
   int ref_count{1};
 };
+
+struct ParsedMetaRecord {
+  uint32_t node_id{0};
+  uint32_t flags{0};
+  std::string label;
+  std::string role;
+  std::string hint;
+  std::string state_desc;
+  std::string placeholder;
+  std::string test_id;
+  std::vector<uint8_t> draw_list;
+};
+
+uint16_t read_u16_le(const uint8_t* p) {
+  return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+uint32_t read_u32_le(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) |
+         (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
+}
+
+uint64_t read_u64_le(const uint8_t* p) {
+  uint64_t v = 0;
+  for (size_t i = 0; i < 8; ++i) {
+    v |= static_cast<uint64_t>(p[i]) << (i * 8);
+  }
+  return v;
+}
+
+std::unordered_map<uint32_t, ParsedMetaRecord> parse_metadata_slab(
+    const FakeDirectBuffer* buf,
+    uint64_t expected_frame_id,
+    uint32_t expected_used_bytes) {
+  NVE_CHECK(buf != nullptr && buf->address != nullptr);
+  NVE_CHECK(buf->capacity >= 32);
+  const auto* data = reinterpret_cast<const uint8_t*>(buf->address);
+  NVE_CHECK(std::memcmp(data, "NVE_MET1", 8) == 0);
+  NVE_CHECK(read_u16_le(data + 8) == 1u);
+  const uint32_t record_count = read_u32_le(data + 12);
+  const uint64_t frame_id = read_u64_le(data + 16);
+  const uint32_t total_bytes = read_u32_le(data + 24);
+  NVE_CHECK(frame_id == expected_frame_id);
+  NVE_CHECK(total_bytes == expected_used_bytes);
+  NVE_CHECK(static_cast<jlong>(total_bytes) <= buf->capacity);
+
+  std::unordered_map<uint32_t, ParsedMetaRecord> out;
+  size_t pos = 32;
+  for (uint32_t i = 0; i < record_count; ++i) {
+    NVE_CHECK(total_bytes - pos >= 28);
+    ParsedMetaRecord rec{};
+    rec.node_id = read_u32_le(data + pos + 0);
+    rec.flags = read_u32_le(data + pos + 4);
+    const uint16_t label_len = read_u16_le(data + pos + 8);
+    const uint16_t role_len = read_u16_le(data + pos + 10);
+    const uint16_t hint_len = read_u16_le(data + pos + 12);
+    const uint16_t state_len = read_u16_le(data + pos + 14);
+    const uint16_t placeholder_len = read_u16_le(data + pos + 16);
+    const uint16_t test_id_len = read_u16_le(data + pos + 18);
+    const uint32_t draw_len = read_u32_le(data + pos + 20);
+    pos += 28;
+
+    auto read_str = [&](size_t len) -> std::string {
+      NVE_CHECK(pos + len <= total_bytes);
+      std::string s(reinterpret_cast<const char*>(data + pos), len);
+      pos += len;
+      return s;
+    };
+    rec.label = read_str(label_len);
+    rec.role = read_str(role_len);
+    rec.hint = read_str(hint_len);
+    rec.state_desc = read_str(state_len);
+    rec.placeholder = read_str(placeholder_len);
+    rec.test_id = read_str(test_id_len);
+    NVE_CHECK(pos + draw_len <= total_bytes);
+    rec.draw_list.assign(data + pos, data + pos + draw_len);
+    pos += draw_len;
+
+    out[rec.node_id] = std::move(rec);
+  }
+  NVE_CHECK(pos == total_bytes);
+  NVE_CHECK(out.size() == record_count);
+  return out;
+}
 
 int g_active_utf_borrows = 0;
 int g_direct_buffer_allocations = 0;
@@ -213,7 +313,8 @@ void cleanup_fake_buffers() {
   g_all_direct_buffers.clear();
 }
 
-void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& mock_scene_so) {
+void test_direct_scene_view_cached_buffers_metadata_draw1_and_events(
+    const std::string& mock_scene_so) {
   JNINativeInterface_ table{};
   JNIEnv_ env = make_fake_env(table);
   g_direct_buffer_allocations = 0;
@@ -228,21 +329,22 @@ void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& m
           &env, nullptr, handle, reinterpret_cast<jstring>(&so_str)) == JNI_TRUE);
   NVE_CHECK(g_active_utf_borrows == 0);
 
-  // Frame 1: 6 nodes (root=1, text=2, pressable=3, banner=4, image=5, scroll=6).
-  FakeLongArray meta{std::vector<jlong>(7, 0)};
+  // Frame 1: 8 nodes (root=1, text=2, pressable=3, banner=4, image=5, scroll=6, textInput=7, canvas=8).
+  FakeLongArray meta{std::vector<jlong>(8, 0)};
   const jint count1 = Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
       &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta));
-  NVE_CHECK(count1 == 6);
+  NVE_CHECK(count1 == 8);
   NVE_CHECK(static_cast<uint64_t>(meta.data[0]) == NVE_SCENE_SCHEMA_HASH);
   NVE_CHECK(meta.data[1] == 1); // frame_id
-  NVE_CHECK(meta.data[2] == 6); // node_count
-  NVE_CHECK(meta.data[3] == 6); // dirty_count
+  NVE_CHECK(meta.data[2] == 8); // node_count
+  NVE_CHECK(meta.data[3] == 8); // dirty_count
   NVE_CHECK(meta.data[4] == 0); // removed_count
+  NVE_CHECK(meta.data[7] > 32); // batched NVE_MET1 metadata bytes
 
-  // All 5 DirectByteBuffers allocated once on Frame 1 -> epoch mask == 0x1F, 5 live GlobalRefs.
-  NVE_CHECK(Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle) == 0x1F);
-  NVE_CHECK(g_direct_buffer_allocations == 5);
-  NVE_CHECK(g_live_global_refs.size() == 5u);
+  // All 6 DirectByteBuffers allocated once on Frame 1 -> epoch mask == 0x3F, 6 live GlobalRefs.
+  NVE_CHECK(Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle) == 0x3F);
+  NVE_CHECK(g_direct_buffer_allocations == 6);
+  NVE_CHECK(g_live_global_refs.size() == 6u);
 
   auto* nodes_buf1 = reinterpret_cast<FakeDirectBuffer*>(
       Java_dev_nve_android_NveMainActivity_nativeGetNodesBuffer(&env, nullptr, handle));
@@ -254,11 +356,39 @@ void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& m
       Java_dev_nve_android_NveMainActivity_nativeGetDirtyIndicesBuffer(&env, nullptr, handle));
   auto* removed_buf1 = reinterpret_cast<FakeDirectBuffer*>(
       Java_dev_nve_android_NveMainActivity_nativeGetRemovedIdsBuffer(&env, nullptr, handle));
+  auto* meta_buf1 = reinterpret_cast<FakeDirectBuffer*>(
+      Java_dev_nve_android_NveMainActivity_nativeGetMetadataBuffer(&env, nullptr, handle));
 
-  NVE_CHECK(nodes_buf1->capacity == 6 * static_cast<jlong>(sizeof(NveRenderNode)));
-  NVE_CHECK(dirty_buf1->capacity == 6 * static_cast<jlong>(sizeof(uint32_t)));
-  NVE_CHECK(child_buf1->capacity == 5 * static_cast<jlong>(sizeof(uint32_t)));
+  NVE_CHECK(nodes_buf1->capacity == 8 * static_cast<jlong>(sizeof(NveRenderNode)));
+  NVE_CHECK(dirty_buf1->capacity == 8 * static_cast<jlong>(sizeof(uint32_t)));
+  NVE_CHECK(child_buf1->capacity == 7 * static_cast<jlong>(sizeof(uint32_t)));
   NVE_CHECK(removed_buf1->capacity == 0);
+
+  // Verify batched dirty-node NVE_MET1 metadata slab packs ONLY nodes with metadata (3, 5, 7, 8).
+  const auto meta1 = parse_metadata_slab(meta_buf1, 1u, static_cast<uint32_t>(meta.data[7]));
+  NVE_CHECK(meta1.size() == 4u);
+  NVE_CHECK(meta1.count(1) == 0 && meta1.count(2) == 0 && meta1.count(4) == 0 && meta1.count(6) == 0);
+
+  const auto& m3 = meta1.at(3);
+  NVE_CHECK(m3.label == "Increment counter");
+  NVE_CHECK(m3.role == "button");
+  NVE_CHECK(m3.hint == "Adds one");
+  NVE_CHECK((m3.flags & (1u << 0)) == 0u); // not disabled
+
+  const auto& m5 = meta1.at(5);
+  NVE_CHECK(((m5.flags >> 8) & 0x3u) == 1u); // resizeMode="contain"
+
+  const auto& m7 = meta1.at(7);
+  NVE_CHECK(m7.placeholder == "Enter secret");
+  NVE_CHECK((m7.flags & (1u << 1)) != 0u); // secureTextEntry == true
+  NVE_CHECK(m7.label == "Secret input");
+
+  const auto& m8 = meta1.at(8);
+  NVE_CHECK((m8.flags & (1u << 3)) != 0u); // FLAG_HAS_DRAW_LIST
+  NVE_CHECK((m8.flags & (1u << 4)) == 0u); // not corrupt
+  NVE_CHECK(m8.draw_list.size() > 15u);
+  NVE_CHECK(std::memcmp(m8.draw_list.data(), "NVE_DRAW1", 9) == 0);
+  NVE_CHECK(read_u32_le(m8.draw_list.data() + 11) == 8u); // all 8 opcodes!
 
   const auto* nodes = reinterpret_cast<const NveRenderNode*>(nodes_buf1->address);
   const auto* text_slab = reinterpret_cast<const char*>(text_buf1->address);
@@ -269,12 +399,14 @@ void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& m
   bool saw_pressable = false;
   bool saw_image = false;
   bool saw_scroll = false;
-  for (int i = 0; i < 6; ++i) {
+  bool saw_input = false;
+  bool saw_canvas = false;
+  for (int i = 0; i < 8; ++i) {
     if (nodes[i].node_id == 1) {
       saw_root = true;
-      NVE_CHECK(nodes[i].child_count == 5);
+      NVE_CHECK(nodes[i].child_count == 7);
       NVE_CHECK(children_slab[nodes[i].child_offset + 0] == 2);
-      NVE_CHECK(children_slab[nodes[i].child_offset + 4] == 6);
+      NVE_CHECK(children_slab[nodes[i].child_offset + 6] == 8);
     } else if (nodes[i].node_id == 2) {
       saw_label = true;
       NVE_CHECK((nodes[i].flags & NVE_NODE_LEAF_TEXT) != 0);
@@ -287,42 +419,54 @@ void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& m
       NVE_CHECK(nodes[i].kind == NVE_NODE_KIND_IMAGE);
       const std::string_view img_src(text_slab + nodes[i].text_offset, nodes[i].text_len);
       NVE_CHECK(img_src.rfind("data:image/png;base64,", 0) == 0);
-      // resizeMode="contain" -> code 1
       NVE_CHECK(Java_dev_nve_android_NveMainActivity_nativeGetImageResizeMode(&env, nullptr, handle, 5) == 1);
     } else if (nodes[i].node_id == 6) {
       saw_scroll = true;
       NVE_CHECK(nodes[i].kind == NVE_NODE_KIND_SCROLL_VIEW);
+    } else if (nodes[i].node_id == 7) {
+      saw_input = true;
+      NVE_CHECK(nodes[i].kind == NVE_NODE_KIND_TEXT_INPUT);
+    } else if (nodes[i].node_id == 8) {
+      saw_canvas = true;
+      NVE_CHECK(nodes[i].kind == NVE_NODE_KIND_SKIA_CANVAS);
     }
   }
-  NVE_CHECK(saw_root && saw_label && saw_pressable && saw_image && saw_scroll);
+  NVE_CHECK(saw_root && saw_label && saw_pressable && saw_image && saw_scroll && saw_input && saw_canvas);
 
-  // Calling nativeRenderFrame again with zero changes MUST reuse all 5 cached GlobalRefs (mask == 0).
+  // Calling nativeRenderFrame again with zero changes MUST reuse all 6 cached GlobalRefs (mask == 0).
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
-          &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 6);
+          &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 8);
   NVE_CHECK(Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle) == 0);
-  NVE_CHECK(g_direct_buffer_allocations == 5);
+  NVE_CHECK(g_direct_buffer_allocations == 6);
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeGetNodesBuffer(&env, nullptr, handle) ==
       reinterpret_cast<jobject>(nodes_buf1));
+  NVE_CHECK(
+      Java_dev_nve_android_NveMainActivity_nativeGetMetadataBuffer(&env, nullptr, handle) ==
+      reinterpret_cast<jobject>(meta_buf1));
 
-  // Press 1 -> updates ONLY node 2 text ("Count: 1 🚀"), so dirty_count == 1!
-  // Nodes, children, and removed slabs do NOT change -> cached GlobalRefs reused!
+  // Press 1 -> updates ONLY node 2 text ("Count: 1 🚀"), zero metadata changes -> record_count == 0,
+  // and metadata DirectByteBuffer GlobalRef reused with ZERO new allocations!
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeDispatchPress(&env, nullptr, handle, 3, 10.0f, 10.0f) ==
       1);
   const jint count2 = Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
       &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta));
-  NVE_CHECK(count2 == 6);
+  NVE_CHECK(count2 == 8);
   NVE_CHECK(meta.data[3] == 1); // dirty_count == 1 (O(changed)!)
   NVE_CHECK(meta.data[4] == 0); // removed_count == 0
+  NVE_CHECK(meta.data[7] == 32); // header-only NVE_MET1 (0 changed metadata records!)
   const jint mask2 = Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle);
   NVE_CHECK((mask2 & (1 << 0)) == 0); // nodes unchanged
   NVE_CHECK((mask2 & (1 << 1)) != 0); // text_slab grew
   NVE_CHECK((mask2 & (1 << 2)) == 0); // children_slab unchanged
-  NVE_CHECK((mask2 & (1 << 3)) != 0); // dirty_indices changed len (6 -> 1)
+  NVE_CHECK((mask2 & (1 << 3)) != 0); // dirty_indices changed len (8 -> 1)
   NVE_CHECK((mask2 & (1 << 4)) == 0); // removed_ids still empty
-  NVE_CHECK(g_live_global_refs.size() == 5u);
+  NVE_CHECK((mask2 & (1 << 5)) == 0); // metadata slab GlobalRef reused!
+  NVE_CHECK(g_live_global_refs.size() == 6u);
+  const auto meta2 = parse_metadata_slab(meta_buf1, static_cast<uint64_t>(meta.data[1]), 32u);
+  NVE_CHECK(meta2.empty());
 
   auto* nodes_buf2 = reinterpret_cast<FakeDirectBuffer*>(
       Java_dev_nve_android_NveMainActivity_nativeGetNodesBuffer(&env, nullptr, handle));
@@ -330,8 +474,8 @@ void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& m
       Java_dev_nve_android_NveMainActivity_nativeGetTextSlabBuffer(&env, nullptr, handle));
   auto* dirty_buf2 = reinterpret_cast<FakeDirectBuffer*>(
       Java_dev_nve_android_NveMainActivity_nativeGetDirtyIndicesBuffer(&env, nullptr, handle));
-  NVE_CHECK(nodes_buf2 == nodes_buf1); // exact GlobalRef reused!
-  NVE_CHECK(text_buf2 != text_buf1);   // updated GlobalRef after slab growth!
+  NVE_CHECK(nodes_buf2 == nodes_buf1);
+  NVE_CHECK(text_buf2 != text_buf1);
   nodes = reinterpret_cast<const NveRenderNode*>(nodes_buf2->address);
   text_slab = reinterpret_cast<const char*>(text_buf2->address);
   const uint32_t dirty_idx = reinterpret_cast<const uint32_t*>(dirty_buf2->address)[0];
@@ -346,23 +490,20 @@ void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& m
       1);
   const jint count3 = Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
       &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta));
-  NVE_CHECK(count3 == 5);
+  NVE_CHECK(count3 == 7);
   NVE_CHECK(meta.data[4] == 1); // removed_count == 1
-  const jint mask3 = Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle);
-  NVE_CHECK((mask3 & (1 << 0)) != 0); // nodes shrank (6 -> 5)
-  NVE_CHECK((mask3 & (1 << 4)) != 0); // removed_ids non-empty
   auto* removed_buf3 = reinterpret_cast<FakeDirectBuffer*>(
       Java_dev_nve_android_NveMainActivity_nativeGetRemovedIdsBuffer(&env, nullptr, handle));
   NVE_CHECK(removed_buf3->capacity == static_cast<jlong>(sizeof(uint32_t)));
   NVE_CHECK(reinterpret_cast<const uint32_t*>(removed_buf3->address)[0] == 4);
 
-  // Scroll event on ScrollView node 6 dispatches zero-copy EventKind::Scroll with exact (x, y)!
+  // Scroll event on ScrollView node 6 dispatches zero-copy EventKind::Scroll with exact (x, y).
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeDispatchScroll(&env, nullptr, handle, 6, 18.0f, 142.0f) ==
       1);
   const jint count4 = Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
       &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta));
-  NVE_CHECK(count4 == 5);
+  NVE_CHECK(count4 == 7);
   NVE_CHECK(meta.data[3] == 1);
   auto* nodes_buf4 = reinterpret_cast<FakeDirectBuffer*>(
       Java_dev_nve_android_NveMainActivity_nativeGetNodesBuffer(&env, nullptr, handle));
@@ -379,7 +520,83 @@ void test_direct_scene_view_cached_buffers_image_and_scroll(const std::string& m
           text_slab + nodes[scroll_dirty_idx].text_offset, nodes[scroll_dirty_idx].text_len) ==
       "Scroll: 18,142");
 
-  // Destroying surface MUST release all 5 GlobalRefs with zero leaks!
+  // Custom "submit" event on TextInput node 7 -> mutates accessibility & TextInput raw props ONLY
+  // on nodes 3 & 7 (NOT unchanged nodes 5 & 8!) with ZERO DirectByteBuffer reallocations for metadata!
+  const int allocs_before_submit = g_direct_buffer_allocations;
+  FakeJString submit_name{"submit"};
+  FakeJString submit_payload{"hunter2"};
+  NVE_CHECK(
+      Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
+          &env,
+          nullptr,
+          handle,
+          7,
+          reinterpret_cast<jstring>(&submit_name),
+          reinterpret_cast<jstring>(&submit_payload)) == 1);
+  NVE_CHECK(g_active_utf_borrows == 0);
+  NVE_CHECK(
+      Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
+          &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 7);
+  const jint mask_submit =
+      Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle);
+  NVE_CHECK((mask_submit & (1 << 5)) == 0); // high-water-mark metadata GlobalRef reused!
+  const auto meta_submit = parse_metadata_slab(
+      meta_buf1, static_cast<uint64_t>(meta.data[1]), static_cast<uint32_t>(meta.data[7]));
+  NVE_CHECK(meta_submit.size() == 2u); // ONLY dirty nodes 3 & 7!
+  NVE_CHECK(meta_submit.count(5) == 0 && meta_submit.count(8) == 0);
+  NVE_CHECK((meta_submit.at(3).flags & (1u << 0)) != 0u); // disabled == true
+  NVE_CHECK(meta_submit.at(3).label == "Counter locked");
+  NVE_CHECK(meta_submit.at(7).placeholder == "Submitted");
+  NVE_CHECK((meta_submit.at(7).flags & (1u << 1)) == 0u); // secureTextEntry == false
+  // Only text_slab grew (+1); zero metadata or per-prop JNI DirectByteBuffer allocations!
+  NVE_CHECK(g_direct_buffer_allocations <= allocs_before_submit + 2);
+
+  // Custom "keydown" event ("Cmd+k") -> corrupt NaN NVE_DRAW1 on node 8 is safely caught:
+  // FLAG_DRAW_LIST_CORRUPT set, draw_list_len == 0, no crash, only node 8 emitted!
+  FakeJString keydown_name{"keydown"};
+  FakeJString cmd_k{"Cmd+k"};
+  NVE_CHECK(
+      Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
+          &env,
+          nullptr,
+          handle,
+          1,
+          reinterpret_cast<jstring>(&keydown_name),
+          reinterpret_cast<jstring>(&cmd_k)) == 1);
+  NVE_CHECK(
+      Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
+          &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 7);
+  const auto meta_corrupt = parse_metadata_slab(
+      meta_buf1, static_cast<uint64_t>(meta.data[1]), static_cast<uint32_t>(meta.data[7]));
+  NVE_CHECK(meta_corrupt.size() == 1u);
+  NVE_CHECK(meta_corrupt.count(8) == 1u);
+  NVE_CHECK((meta_corrupt.at(8).flags & (1u << 3)) == 0u); // FLAG_HAS_DRAW_LIST cleared
+  NVE_CHECK((meta_corrupt.at(8).flags & (1u << 4)) != 0u); // FLAG_DRAW_LIST_CORRUPT set
+  NVE_CHECK(meta_corrupt.at(8).draw_list.empty());
+
+  // Custom "keydown" event ("Escape") -> valid `nve-draw1;b64,...` base64 recovery on node 8!
+  FakeJString esc_key{"Escape"};
+  NVE_CHECK(
+      Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
+          &env,
+          nullptr,
+          handle,
+          1,
+          reinterpret_cast<jstring>(&keydown_name),
+          reinterpret_cast<jstring>(&esc_key)) == 1);
+  NVE_CHECK(
+      Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
+          &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 7);
+  const auto meta_recovered = parse_metadata_slab(
+      meta_buf1, static_cast<uint64_t>(meta.data[1]), static_cast<uint32_t>(meta.data[7]));
+  NVE_CHECK(meta_recovered.size() == 1u);
+  NVE_CHECK(meta_recovered.count(8) == 1u);
+  NVE_CHECK((meta_recovered.at(8).flags & (1u << 3)) != 0u); // FLAG_HAS_DRAW_LIST restored
+  NVE_CHECK((meta_recovered.at(8).flags & (1u << 4)) == 0u); // FLAG_DRAW_LIST_CORRUPT cleared
+  NVE_CHECK(std::memcmp(meta_recovered.at(8).draw_list.data(), "NVE_DRAW1", 9) == 0);
+  NVE_CHECK(read_u32_le(meta_recovered.at(8).draw_list.data() + 11) == 8u);
+
+  // Destroying surface MUST release all 6 GlobalRefs with zero leaks!
   Java_dev_nve_android_NveMainActivity_nativeDestroySurface(&env, nullptr, handle);
   NVE_CHECK(g_live_global_refs.empty());
   cleanup_fake_buffers();
@@ -432,11 +649,11 @@ void test_surface_hotswap_and_atomic_rollback(
   NVE_CHECK(log->v1_last_frame_id == 1);
   NVE_CHECK(log->v1_destroy_count == 0);
 
-  FakeLongArray meta{std::vector<jlong>(7, 0)};
+  FakeLongArray meta{std::vector<jlong>(8, 0)};
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
           &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 1);
-  NVE_CHECK(g_live_global_refs.size() == 5u);
+  NVE_CHECK(g_live_global_refs.size() == 6u);
 
   // Failed hot-reloads while v1 is live MUST NOT tear down v1 or its slab buffers.
   NVE_CHECK(
@@ -467,12 +684,12 @@ void test_surface_hotswap_and_atomic_rollback(
   NVE_CHECK(log->v2_restore_count == 1);
   NVE_CHECK(std::string(log->v2_restored_state, log->v2_restored_len) == "v1-counter=42");
 
-  // Re-render v2 -> fresh GlobalRefs allocated (mask == 0x1F).
+  // Re-render v2 -> fresh GlobalRefs allocated (mask == 0x3F).
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
           &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 1);
-  NVE_CHECK(Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle) == 0x1F);
-  NVE_CHECK(g_live_global_refs.size() == 5u);
+  NVE_CHECK(Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(&env, nullptr, handle) == 0x3F);
+  NVE_CHECK(g_live_global_refs.size() == 6u);
 
   // Clean destroy frees v2 and all GlobalRefs.
   Java_dev_nve_android_NveMainActivity_nativeDestroySurface(&env, nullptr, 0);
@@ -486,7 +703,7 @@ void test_surface_hotswap_and_atomic_rollback(
 
 int main(int argc, char** argv) {
   NVE_CHECK(argc == 6);
-  test_direct_scene_view_cached_buffers_image_and_scroll(argv[1]);
+  test_direct_scene_view_cached_buffers_metadata_draw1_and_events(argv[1]);
   test_surface_hotswap_and_atomic_rollback(argv[2], argv[3], argv[4], argv[5]);
   std::cout << "nve_android_scene_test passed\n";
   return 0;
