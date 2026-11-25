@@ -53,8 +53,17 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
             }
             WindowCommand::CloseWindow { handle } => {
+                if let Some(modal_child) = self.window_manager.active_modal_blocker(handle) {
+                    if let Some(wid) = self.window_id_for_handle(modal_child)
+                        && let Some(sw) = self.windows.get(&wid)
+                    {
+                        sw.window.focus_window();
+                    }
+                    return;
+                }
                 if let Ok(closed) = self.window_manager.close_window(handle) {
                     self.finalize_closed_handles(event_loop, &closed);
+                    let _ = self.flush_window_lifecycle_events();
                 }
             }
             WindowCommand::SetTitle { handle, title } => {
@@ -67,15 +76,17 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
             }
             WindowCommand::SetBounds { handle, bounds } => {
-                if self.window_manager.set_bounds(handle, bounds).is_ok()
-                    && let Some(wid) = self.window_id_for_handle(handle)
-                    && let Some(sw) = self.windows.get(&wid)
-                {
-                    sw.window.set_outer_position(LogicalPosition::new(bounds.x as f64, bounds.y as f64));
-                    let _ = sw.window.request_inner_size(LogicalSize::new(
-                        bounds.width as f64,
-                        bounds.height as f64,
-                    ));
+                if self.window_manager.set_bounds(handle, bounds).is_ok() {
+                    if let Some(wid) = self.window_id_for_handle(handle)
+                        && let Some(sw) = self.windows.get(&wid)
+                    {
+                        sw.window.set_outer_position(LogicalPosition::new(bounds.x as f64, bounds.y as f64));
+                        let _ = sw.window.request_inner_size(LogicalSize::new(
+                            bounds.width as f64,
+                            bounds.height as f64,
+                        ));
+                    }
+                    let _ = self.flush_window_lifecycle_events();
                 }
             }
             WindowCommand::SetSizeConstraints { handle, min_size, max_size } => {
@@ -88,11 +99,13 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
             }
             WindowCommand::SetWindowState { handle, state } => {
-                if self.window_manager.set_window_state(handle, state).is_ok()
-                    && let Some(wid) = self.window_id_for_handle(handle)
-                    && let Some(sw) = self.windows.get(&wid)
-                {
-                    apply_window_state(&sw.window, state);
+                if self.window_manager.set_window_state(handle, state).is_ok() {
+                    if let Some(wid) = self.window_id_for_handle(handle)
+                        && let Some(sw) = self.windows.get(&wid)
+                    {
+                        apply_window_state(&sw.window, state);
+                    }
+                    let _ = self.flush_window_lifecycle_events();
                 }
             }
             WindowCommand::FocusWindow { handle } => match self.window_manager.focus_window(handle) {
@@ -102,6 +115,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     {
                         sw.window.focus_window();
                     }
+                    let _ = self.flush_window_lifecycle_events();
                 }
                 Err(WindowError::BlockedByModalChild { modal_child, .. }) => {
                     if let Some(wid) = self.window_id_for_handle(modal_child)
@@ -133,8 +147,21 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
             }
             WindowCommand::RespondCloseRequest { handle, allow } => {
-                if let Ok(closed) = self.window_manager.respond_close_request(handle, allow) && allow {
-                    self.finalize_closed_handles(event_loop, &closed);
+                self.host_services.take_pending_close_response(handle);
+                if allow && let Some(modal_child) = self.window_manager.active_modal_blocker(handle) {
+                    let _ = self.window_manager.respond_close_request(handle, false);
+                    if let Some(wid) = self.window_id_for_handle(modal_child)
+                        && let Some(sw) = self.windows.get(&wid)
+                    {
+                        sw.window.focus_window();
+                    }
+                    return;
+                }
+                if let Ok(closed) = self.window_manager.respond_close_request(handle, allow) {
+                    if allow {
+                        self.finalize_closed_handles(event_loop, &closed);
+                    }
+                    let _ = self.flush_window_lifecycle_events();
                 }
             }
         }
@@ -153,27 +180,48 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 else {
                     return;
                 };
+                if let Some(modal_child) = self.window_manager.active_modal_blocker(handle_id) {
+                    if let Some(modal_wid) = self.window_id_for_handle(modal_child)
+                        && let Some(modal_win) = self.windows.get(&modal_wid)
+                    {
+                        modal_win.window.focus_window();
+                    }
+                    return;
+                }
                 if self.window_manager.request_close(handle_id).is_err() {
+                    return;
+                }
+                let app_intercepted = self.flush_window_lifecycle_events();
+                if app_intercepted || self.host_services.has_pending_close_response(handle_id) {
                     return;
                 }
                 let allow = match self.close_veto_handler.as_mut() {
                     Some(cb) => cb(handle_id, surface_id),
                     None => true,
                 };
-                if let Ok(closed) = self.window_manager.respond_close_request(handle_id, allow) && allow {
-                    self.finalize_closed_handles(event_loop, &closed);
+                if let Ok(closed) = self.window_manager.respond_close_request(handle_id, allow) {
+                    if allow {
+                        self.finalize_closed_handles(event_loop, &closed);
+                    }
+                    let _ = self.flush_window_lifecycle_events();
                 }
             }
             WindowEvent::Focused(true) => {
                 let Some(handle_id) = self.windows.get(&window_id).map(|w| w.handle_id) else {
                     return;
                 };
-                if let Err(WindowError::BlockedByModalChild { modal_child, .. }) =
-                    self.window_manager.focus_window(handle_id)
-                    && let Some(modal_wid) = self.window_id_for_handle(modal_child)
-                    && let Some(modal_win) = self.windows.get(&modal_wid)
-                {
-                    modal_win.window.focus_window();
+                match self.window_manager.focus_window(handle_id) {
+                    Ok(()) => {
+                        let _ = self.flush_window_lifecycle_events();
+                    }
+                    Err(WindowError::BlockedByModalChild { modal_child, .. }) => {
+                        if let Some(modal_wid) = self.window_id_for_handle(modal_child)
+                            && let Some(modal_win) = self.windows.get(&modal_wid)
+                        {
+                            modal_win.window.focus_window();
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
             WindowEvent::Moved(pos) => {
@@ -185,6 +233,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                         WindowRect::new(pos.x as f32 / scale, pos.y as f32 / scale, cur.width, cur.height),
                         scale,
                     );
+                    let _ = self.flush_window_lifecycle_events();
                 }
             }
             WindowEvent::Resized(new_size) => {
@@ -208,6 +257,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     WindowRect::new(cur.x, cur.y, new_size.width as f32 / scale.max(0.001), new_size.height as f32 / scale.max(0.001)),
                     scale,
                 );
+                let _ = self.flush_window_lifecycle_events();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let Some(sw) = self.windows.get_mut(&window_id) else { return };
@@ -222,8 +272,28 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 {
                     eprintln!("[nve-skia-shell] hardware swapchain scale resize error: {err}");
                 }
+                let handle_id = sw.handle_id;
                 sw.sync_ime_state();
                 sw.window.request_redraw();
+                let cur = self.window_manager.get(handle_id).map(|w| w.descriptor.bounds).unwrap_or_default();
+                let _ = self.window_manager.set_bounds_with_scale(
+                    handle_id,
+                    WindowRect::new(cur.x, cur.y, size.width as f32 / scale.max(0.001), size.height as f32 / scale.max(0.001)),
+                    scale,
+                );
+                let _ = self.flush_window_lifecycle_events();
+                if let Some((_snap, batch)) = self.host_services.update_scale_factor(scale) {
+                    let _ = self.broadcast_host_event_batch(&batch);
+                }
+            }
+            WindowEvent::ThemeChanged(theme) => {
+                let scale = self
+                    .windows
+                    .get(&window_id)
+                    .map(|sw| sw.window.scale_factor() as f32)
+                    .unwrap_or(self.options.scale_factor);
+                let (_snap, batch) = self.host_services.update_theme_from_winit(theme, scale);
+                let _ = self.broadcast_host_event_batch(&batch);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(sw) = self.windows.get_mut(&window_id) else { return };

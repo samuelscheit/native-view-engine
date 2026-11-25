@@ -16,18 +16,19 @@ use super::{DesktopApp, DesktopHostError, DesktopSession};
 struct SurfaceCounterApp {
     surface_id: SurfaceId,
     presses: u32,
+    frame_buf: Vec<u8>,
 }
 
 impl SurfaceCounterApp {
     fn new(surface_id: SurfaceId) -> Self {
-        Self { surface_id, presses: 0 }
+        Self { surface_id, presses: 0, frame_buf: Vec::new() }
     }
 }
 
 impl DesktopApp for SurfaceCounterApp {
     fn generation(&self) -> u64 { 1 }
 
-    fn render(&mut self, frame_id: FrameId) -> Vec<u8> {
+    fn render(&mut self, frame_id: FrameId) -> &[u8] {
         let mut b = CommandBufferBuilder::new(self.surface_id, frame_id);
         b.create_node(2, ComponentKind::View, None);
         b.set_layout(
@@ -64,7 +65,8 @@ impl DesktopApp for SurfaceCounterApp {
         b.set_children(2, &[4]);
         b.set_children(ROOT_NODE_ID, &[2]);
         b.commit(true);
-        b.into_bytes()
+        self.frame_buf = b.into_bytes();
+        &self.frame_buf
     }
 
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {

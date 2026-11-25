@@ -166,11 +166,12 @@ impl HotAppInstance {
         &self.loaded_copy
     }
 
-    pub fn render(&mut self, frame_id: u64) -> Vec<u8> {
-        unsafe {
-            let slice = (self.surface.render)(self.handle, frame_id);
-            slice.as_slice().to_vec()
-        }
+    /// Renders a frame and borrows the binary `CommandBuffer` slice directly from the loaded
+    /// app module's internal frame buffer (zero heap allocation / zero `.to_vec()` copy per frame).
+    ///
+    /// The borrowed slice remains valid until the next `&mut self` call on this [`HotAppInstance`].
+    pub fn render(&mut self, frame_id: u64) -> &[u8] {
+        unsafe { (self.surface.render)(self.handle, frame_id).as_slice() }
     }
 
     pub fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
@@ -225,10 +226,12 @@ impl HotAppInstance {
         }
     }
 
-    pub fn drain_emitted_events(&mut self) -> Vec<u8> {
+    /// Drains outbound component events and borrows the encoded slice directly from the loaded
+    /// app module's internal buffer without copying.
+    pub fn drain_emitted_events(&mut self) -> &[u8] {
         match self.component {
-            Some(api) => unsafe { (api.drain_emitted_events)(self.handle).as_slice().to_vec() },
-            None => Vec::new(),
+            Some(api) => unsafe { (api.drain_emitted_events)(self.handle).as_slice() },
+            None => &[],
         }
     }
 
@@ -244,10 +247,12 @@ impl HotAppInstance {
         }
     }
 
-    pub fn snapshot_state(&mut self) -> Vec<u8> {
+    /// Captures serialized app state and borrows the slice directly from the loaded app module's
+    /// internal snapshot buffer without copying.
+    pub fn snapshot_state(&mut self) -> &[u8] {
         match self.dev {
-            Some(api) => unsafe { (api.snapshot_state)(self.handle).as_slice().to_vec() },
-            None => Vec::new(),
+            Some(api) => unsafe { (api.snapshot_state)(self.handle).as_slice() },
+            None => &[],
         }
     }
 
@@ -289,11 +294,18 @@ impl HotAppInstance {
     /// instantiates, and restores state on the candidate dylib BEFORE swapping out and unloading
     /// the existing instance. If any step fails, `self` stays 100% alive and untouched.
     pub fn reload(&mut self, new_dylib_path: &Path) -> Result<ReloadOutcome, LoaderError> {
-        let saved = self.snapshot_state();
+        let surface_id = self.surface_id;
         let previous_generation = self.generation;
         let next_gen = previous_generation + 1;
-        let mut candidate = Self::load(new_dylib_path, self.surface_id, next_gen, Some(&saved))?;
-        if let Some(cb) = self.bound_host {
+        let bound_host = self.bound_host;
+
+        let (mut candidate, preserved_state_bytes) = {
+            let saved = self.snapshot_state();
+            let len = saved.len();
+            let prior = (!saved.is_empty()).then_some(saved);
+            (Self::load(new_dylib_path, surface_id, next_gen, prior)?, len)
+        };
+        if let Some(cb) = bound_host {
             candidate.bind_host(Some(cb));
         }
         let old = std::mem::replace(self, candidate);
@@ -301,7 +313,7 @@ impl HotAppInstance {
         Ok(ReloadOutcome {
             previous_generation,
             generation: next_gen,
-            preserved_state_bytes: saved.len(),
+            preserved_state_bytes,
         })
     }
 }
