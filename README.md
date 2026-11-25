@@ -21,11 +21,12 @@ Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Relea
 | `nve_get_interface` FFI lookup / render slice | **0.98 – 1.33 ns** | Zero-cost C ABI dispatch (`catch_unwind` panic-safe) |
 | Direct `NveSceneView` dirty read (3 of 1,000 nodes) | **24.82 ns** | 64-byte cache-line `NveRenderNode`, zero decode |
 | Rust `NveValueRef` zero-copy nested field read | **17.09 ns** | Borrowed straight from C++ bump arena |
-| Streaming `CommandBuffer` decode (1,000 nodes) | **18.05 µs** | Zero-alloc `CommandRef` (~4.7 GiB/s) |
+| `GestureArbitrator` nested scroll arbitration | **64.51 ns** | Zero-alloc inline `SurfaceChain` + `FastU32Map` |
+| `CommandBuffer` encode / streaming decode (1,000 nodes) | **21.17 µs** / **18.05 µs** | Stack-packed encode & zero-alloc `CommandRef` (~4.7 GiB/s) |
 | C++20 Fabric incremental patch (10 / 1,000 nodes) | **7.12 µs** | Direct `NveSceneView` publish: **7.54 µs** |
 | Dioxus incremental state diff / Tier-1 hot-patch | **931 ns** / **1.33 µs** | Real RSX AST hot-patch diff `< 2.5 ms` |
 | 1,000-row Flexbox layout (`Taffy` / C++ standalone) | **1.77 ms** / **451 µs** | 1,000-row hit-test: **3.62 µs** |
-| Web DOM HTML SSR (100 / 500 rows) | **12.45 µs** / **65.05 µs** | Incremental 10-node patch: **1.22 µs** |
+| Web DOM HTML SSR (100 / 500 rows) | **12.45 µs** / **65.05 µs** | Studio WASM bundle: **285.8 KiB gzipped** (`wasm-release`) |
 | Skia display list (1,000 nodes) / card rasterize | **962 µs** / **136.6 µs** | Software + Apple Metal GPU swapchains |
 | Cold `mmap` Frame-0 + state restore (100 rows) | **82 – 136 µs** | `29 µs` raw `mmap` open + append-only `.nvewal` |
 
@@ -70,9 +71,11 @@ cargo run -p nve-skia-shell -- \
 # 5. Start the 2-tier hot-reload dev daemon (with optional live NVD1 pairing)
 cargo nve dev --package nve-studio-workspace --pair
 
-# 6. Or stream any app over bidirectional NVT1/NVD1 UDP + WebSocket pairing to thin clients
+# 6. Or stream any app over bidirectional NVT1/NVD1 UDP + WebSocket pairing to zero-cdylib thin clients
+#    (works simultaneously across Skia Desktop, macOS AppKit, Qt 6, GTK4, and Web Browser!)
 cargo nve pair --package nve-studio-workspace --udp-port 8091 --ws-port 8092 --token dev-secret
 cargo run -p nve-skia-shell -- --pair-connect 127.0.0.1:8091 --pair-transport udp --pair-token dev-secret
+./hosts/macos-shell/build/nve_macos_shell --pair-connect 127.0.0.1:8092 --pair-transport ws --pair-token dev-secret
 ```
 
 ## Documentation & Roadmap
