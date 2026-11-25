@@ -15,12 +15,13 @@ use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
 /// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.h`).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x9DDA_1760_DEC9_6BD1;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x54A4_A32B_6F25_8107;
 
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
 pub const NVE_IFACE_COMPONENT: u32 = 3;
 pub const NVE_IFACE_DEV: u32 = 4;
+pub const NVE_IFACE_HOST: u32 = 5;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

@@ -23,16 +23,20 @@ extern "C" {
 #endif
 #endif
 
-#define NVE_CORE_ABI_SCHEMA_HASH 0x9DDA1760DEC96BD1ULL
+#define NVE_CORE_ABI_SCHEMA_HASH 0x54A4A32B6F258107ULL
 #define NVE_ABI_MAGIC 0x3145564Eu
 #define NVE_ABI_VERSION 1u
 #define NVE_ROOT_NODE_ID 1u
+#define NVE_HOST_EVENT_MAGIC 0x3148564Eu
+#define NVE_HOST_EVENT_VERSION 1u
+#define NVE_CHANNEL_FLAG_RETAIN 1u
 
 /* Modular interface IDs resolved once via `nve_get_interface(uint32_t)`. */
 #define NVE_IFACE_SURFACE 1u /* const NveSurfaceApi* */
 #define NVE_IFACE_LAYOUT 2u /* const NveLayoutApi* */
 #define NVE_IFACE_COMPONENT 3u /* const NveComponentApi* */
 #define NVE_IFACE_DEV 4u /* const NveDevApi* */
+#define NVE_IFACE_HOST 5u /* const NveHostApi* */
 
 typedef enum NveOpcode {
   NVE_OP_CREATE_NODE = 1,
@@ -95,6 +99,19 @@ typedef enum NveEventPayloadTag {
   NVE_EVENT_PAYLOAD_LAYOUT = 4,
   NVE_EVENT_PAYLOAD_CUSTOM = 5,
 } NveEventPayloadTag;
+
+typedef enum NveHostStatus {
+  NVE_HOST_OK = 0,
+  NVE_HOST_PENDING = 1,
+  NVE_HOST_BUFFER_TOO_SMALL = -1,
+  NVE_HOST_UNSUPPORTED = -2,
+  NVE_HOST_PERMISSION_DENIED = -3,
+  NVE_HOST_INVALID_ARG = -4,
+  NVE_HOST_NOT_FOUND = -5,
+  NVE_HOST_CANCELLED = -6,
+  NVE_HOST_IO_ERROR = -7,
+  NVE_HOST_INTERNAL_ERROR = -8,
+} NveHostStatus;
 
 #define NVE_BIN_VALUE_MAX_DEPTH 64u
 
@@ -189,6 +206,15 @@ typedef struct NveIntrinsicSize {
   float height;
 } NveIntrinsicSize;
 
+typedef int32_t (*NveHostInvokeFn)(void* host_ctx, uint32_t service_id, uint32_t method_id, uint64_t request_id, NveBufferSlice request, uint8_t* out_buf, size_t out_cap, size_t* out_len);
+typedef int32_t (*NveHostChannelPublishFn)(void* host_ctx, uint32_t channel_id, uint32_t flags, NveBufferSlice payload);
+
+typedef struct NveHostCallbacks {
+  void* host_ctx;
+  NveHostInvokeFn invoke;
+  NveHostChannelPublishFn channel_publish;
+} NveHostCallbacks;
+
 #ifndef NVE_STATIC_ASSERT
 #if defined(__cplusplus)
 #define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)
@@ -240,6 +266,10 @@ NVE_STATIC_ASSERT(offsetof(NveSizeConstraints, max_h) == 12u, "NveSizeConstraint
 NVE_STATIC_ASSERT(sizeof(NveIntrinsicSize) == 8u, "NveIntrinsicSize size must be 8");
 NVE_STATIC_ASSERT(offsetof(NveIntrinsicSize, width) == 0u, "NveIntrinsicSize::width offset must be 0");
 NVE_STATIC_ASSERT(offsetof(NveIntrinsicSize, height) == 4u, "NveIntrinsicSize::height offset must be 4");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveHostCallbacks) == 24u, "NveHostCallbacks size must be 24 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveHostCallbacks, host_ctx) == 0u, "NveHostCallbacks::host_ctx offset must be 0");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveHostCallbacks, invoke) == 8u, "NveHostCallbacks::invoke offset must be 8");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveHostCallbacks, channel_publish) == 16u, "NveHostCallbacks::channel_publish offset must be 16");
 
 typedef void* NveAppHandle;
 typedef void* NveFabricHostHandle;
@@ -275,6 +305,12 @@ typedef struct NveDevApi {
   void (*restore_state)(NveAppHandle handle, NveBufferSlice state);
 } NveDevApi;
 
+/* Optional zero-JSON host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`). */
+typedef struct NveHostApi {
+  void (*bind_host)(NveAppHandle handle, const NveHostCallbacks* callbacks);
+  uint32_t (*dispatch_host_events)(NveAppHandle handle, NveBufferSlice batch);
+} NveHostApi;
+
 /* Single exported symbol per NVE module (`nve_get_interface`). */
 typedef const void* (*NveGetInterfaceFn)(uint32_t interface_id);
 NVE_API const void* nve_get_interface(uint32_t interface_id);
@@ -285,10 +321,11 @@ typedef struct NveModule {
   const NveLayoutApi* layout;
   const NveComponentApi* component;
   const NveDevApi* dev;
+  const NveHostApi* host;
 } NveModule;
 
 static inline NveModule nve_resolve_module(NveGetInterfaceFn get_iface) {
-  NveModule m = {NULL, NULL, NULL, NULL};
+  NveModule m = {NULL, NULL, NULL, NULL, NULL};
   if (!get_iface) {
     return m;
   }
@@ -296,6 +333,7 @@ static inline NveModule nve_resolve_module(NveGetInterfaceFn get_iface) {
   m.layout = (const NveLayoutApi*)get_iface(NVE_IFACE_LAYOUT);
   m.component = (const NveComponentApi*)get_iface(NVE_IFACE_COMPONENT);
   m.dev = (const NveDevApi*)get_iface(NVE_IFACE_DEV);
+  m.host = (const NveHostApi*)get_iface(NVE_IFACE_HOST);
   return m;
 }
 

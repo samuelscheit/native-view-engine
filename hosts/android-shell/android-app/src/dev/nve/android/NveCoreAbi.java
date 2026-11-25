@@ -8,19 +8,23 @@ package dev.nve.android;
 public final class NveCoreAbi {
     private NveCoreAbi() {}
 
-    public static final long CORE_ABI_SCHEMA_HASH = 0x9DDA1760DEC96BD1L;
-    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x9DDA1760DEC96BD1";
+    public static final long CORE_ABI_SCHEMA_HASH = 0x54A4A32B6F258107L;
+    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x54A4A32B6F258107";
 
     public static final int ABI_MAGIC = 0x3145564E;
     public static final int ABI_VERSION = 1;
     public static final int ROOT_NODE_ID = 1;
     public static final int BIN_VALUE_MAX_DEPTH = 64;
+    public static final int HOST_EVENT_MAGIC = 0x3148564E;
+    public static final int HOST_EVENT_VERSION = 1;
+    public static final int CHANNEL_FLAG_RETAIN = 1;
 
     // Modular interface IDs (`nve_get_interface`)
     public static final int IFACE_SURFACE = 1;
     public static final int IFACE_LAYOUT = 2;
     public static final int IFACE_COMPONENT = 3;
     public static final int IFACE_DEV = 4;
+    public static final int IFACE_HOST = 5;
 
     // NveOpcode
     public static final int OP_CREATE_NODE = 1;
@@ -78,6 +82,18 @@ public final class NveCoreAbi {
     public static final int EVENT_PAYLOAD_LAYOUT = 4;
     public static final int EVENT_PAYLOAD_CUSTOM = 5;
 
+    // NveHostStatus
+    public static final int HOST_OK = 0;
+    public static final int HOST_PENDING = 1;
+    public static final int HOST_BUFFER_TOO_SMALL = -1;
+    public static final int HOST_UNSUPPORTED = -2;
+    public static final int HOST_PERMISSION_DENIED = -3;
+    public static final int HOST_INVALID_ARG = -4;
+    public static final int HOST_NOT_FOUND = -5;
+    public static final int HOST_CANCELLED = -6;
+    public static final int HOST_IO_ERROR = -7;
+    public static final int HOST_INTERNAL_ERROR = -8;
+
     // Fixed ABI struct sizes
     public static final int SIZEOF_BUFFER_SLICE_64 = 16;
     public static final int SIZEOF_STR_SLICE_64 = 16;
@@ -92,4 +108,5 @@ public final class NveCoreAbi {
     public static final int SIZEOF_FRAME_STATS = 40;
     public static final int SIZEOF_SIZE_CONSTRAINTS = 16;
     public static final int SIZEOF_INTRINSIC_SIZE = 8;
+    public static final int SIZEOF_HOST_CALLBACKS_64 = 24;
 }

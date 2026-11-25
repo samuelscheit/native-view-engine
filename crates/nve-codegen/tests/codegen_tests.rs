@@ -906,6 +906,19 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     assert_eq!(core_files[0].content, core_files[1].content);
     assert_eq!(scene_files[0].content, scene_files[1].content);
 
+    // Verify NVE_IFACE_HOST = 5, NveHostStatus, NveHostCallbacks, and NveHostApi across all 5 Core ABI targets.
+    assert!(core_files[0].content.contains("#define NVE_IFACE_HOST 5u"));
+    assert!(core_files[0].content.contains("typedef enum NveHostStatus"));
+    assert!(core_files[0].content.contains("typedef struct NveHostCallbacks"));
+    assert!(core_files[0].content.contains("typedef struct NveHostApi"));
+    assert!(core_files[2].content.contains("const int nveIfaceHost = 5;"));
+    assert!(core_files[2].content.contains("enum NveHostStatus"));
+    assert!(core_files[2].content.contains("final class NveHostApi extends ffi.Struct"));
+    assert!(core_files[3].content.contains("public static final int IFACE_HOST = 5;"));
+    assert!(core_files[3].content.contains("public static final int HOST_BUFFER_TOO_SMALL = -1;"));
+    assert!(core_files[4].content.contains("HOST: 5,"));
+    assert!(core_files[4].content.contains("export const NVE_HOST_STATUS ="));
+
     let update_mode =
         std::env::var("NVE_UPDATE_ABI").is_ok() || std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
     for file in &all_files {

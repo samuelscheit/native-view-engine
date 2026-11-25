@@ -22,6 +22,18 @@ pub const NVE_ROOT_NODE_ID: u32 = 1;
 #[nve_hybrid_const]
 pub const NVE_BIN_VALUE_MAX_DEPTH: u32 = 64;
 
+/// Binary `NveHostEventBatch` wire magic (`"NVH1"` little-endian).
+#[nve_hybrid_const]
+pub const NVE_HOST_EVENT_MAGIC: u32 = 0x3148564E;
+
+/// Binary `NveHostEventBatch` wire version.
+#[nve_hybrid_const]
+pub const NVE_HOST_EVENT_VERSION: u32 = 1;
+
+/// Flag bit on `channel_publish` / `ChannelMessage` requesting retained channel state.
+#[nve_hybrid_const]
+pub const NVE_CHANNEL_FLAG_RETAIN: u32 = 1;
+
 /// Opaque handle to an instantiated NVE app/component.
 #[nve_hybrid_alias]
 pub type NveAppHandle = *mut c_void;
@@ -29,6 +41,14 @@ pub type NveAppHandle = *mut c_void;
 /// Opaque handle to a C++20 `nve-fabric-bridge` host instance.
 #[nve_hybrid_alias]
 pub type NveFabricHostHandle = *mut c_void;
+
+/// Host capability invocation callback function pointer (`NveHostCallbacks::invoke`).
+#[nve_hybrid_alias]
+pub type NveHostInvokeFn = *const c_void;
+
+/// Host channel-bus publish callback function pointer (`NveHostCallbacks::channel_publish`).
+#[nve_hybrid_alias]
+pub type NveHostChannelPublishFn = *const c_void;
 
 /// Binary CommandBuffer wire opcodes.
 #[nve_hybrid_enum(c_prefix = "NVE_OP_")]
@@ -268,6 +288,18 @@ pub struct NveIntrinsicSize {
     pub height: f32,
 }
 
+/// Host-provided zero-JSON callback table bound via `NveHostApi::bind_host`.
+#[repr(C)]
+#[nve_hybrid_struct(size_64 = 24)]
+pub struct NveHostCallbacks {
+    #[offset64(0)]
+    pub host_ctx: *mut c_void,
+    #[offset64(8)]
+    pub invoke: NveHostInvokeFn,
+    #[offset64(16)]
+    pub channel_publish: NveHostChannelPublishFn,
+}
+
 /// Required core surface interface (`NVE_IFACE_SURFACE = 1`).
 #[nve_hybrid_module(name = "Surface", interface_id = 1, c_name = "NveSurfaceApi")]
 pub trait NveSurfaceApiSpec {
@@ -303,6 +335,13 @@ pub trait NveDevApiSpec {
     fn apply_hot_patch(&mut self, patch_json: NveBufferSlice) -> u32;
     fn snapshot_state(&self) -> NveBufferSlice;
     fn restore_state(&mut self, state: NveBufferSlice);
+}
+
+/// Optional zero-JSON host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`).
+#[nve_hybrid_module(name = "Host", interface_id = 5, c_name = "NveHostApi")]
+pub trait NveHostApiSpec {
+    fn bind_host(&mut self, callbacks: *const NveHostCallbacks);
+    fn dispatch_host_events(&mut self, batch: NveBufferSlice) -> u32;
 }
 
 /// C API implemented by `cxx/nve-fabric-bridge` for iOS, macOS, Android, and headless Fabric tests.

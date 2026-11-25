@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use libloading::Library;
 use nve_abi::{
     NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
-    NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveMapEntry,
-    NveSizeConstraints, NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveGestureDisposition, NveGetInterfaceFn, NveHostApi, NveHostCallbacks, NveIntrinsicSize,
+    NveLayoutApi, NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT,
+    NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
 static STAGED_COPY_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -47,6 +47,8 @@ pub struct HotAppInstance {
     layout: Option<NveLayoutApi>,
     component: Option<NveComponentApi>,
     dev: Option<NveDevApi>,
+    host: Option<NveHostApi>,
+    bound_host: Option<NveHostCallbacks>,
     handle: NveAppHandle,
     surface_id: SurfaceId,
     generation: u64,
@@ -120,6 +122,10 @@ impl HotAppInstance {
             let p = unsafe { get_iface(NVE_IFACE_DEV) as *const NveDevApi };
             (!p.is_null()).then(|| unsafe { *p })
         };
+        let host = {
+            let p = unsafe { get_iface(NVE_IFACE_HOST) as *const NveHostApi };
+            (!p.is_null()).then(|| unsafe { *p })
+        };
 
         let handle = unsafe { (surface.create)(surface_id) };
         if handle.is_null() {
@@ -139,6 +145,8 @@ impl HotAppInstance {
             layout,
             component,
             dev,
+            host,
+            bound_host: None,
             handle,
             surface_id,
             generation,
@@ -243,6 +251,36 @@ impl HotAppInstance {
         }
     }
 
+    pub fn has_host_interface(&self) -> bool {
+        self.host.is_some()
+    }
+
+    /// Binds (or unbinds when `None`) host capability callbacks via `NVE_IFACE_HOST = 5`.
+    /// Returns `true` if the loaded module exposes `NveHostApi`.
+    pub fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) -> bool {
+        self.bound_host = callbacks;
+        match self.host {
+            Some(api) => {
+                let ptr = callbacks
+                    .as_ref()
+                    .map_or(std::ptr::null(), |cb| cb as *const NveHostCallbacks);
+                unsafe { (api.bind_host)(self.handle, ptr) };
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Dispatches a binary `NVH1` host-event batch via `NveHostApi::dispatch_host_events`.
+    pub fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        match self.host {
+            Some(api) => unsafe {
+                (api.dispatch_host_events)(self.handle, NveBufferSlice::from_slice(batch)) != 0
+            },
+            None => false,
+        }
+    }
+
     /// Transactionally hot-swaps this live instance to a freshly compiled dylib while preserving
     /// app state.
     ///
@@ -254,7 +292,10 @@ impl HotAppInstance {
         let saved = self.snapshot_state();
         let previous_generation = self.generation;
         let next_gen = previous_generation + 1;
-        let candidate = Self::load(new_dylib_path, self.surface_id, next_gen, Some(&saved))?;
+        let mut candidate = Self::load(new_dylib_path, self.surface_id, next_gen, Some(&saved))?;
+        if let Some(cb) = self.bound_host {
+            candidate.bind_host(Some(cb));
+        }
         let old = std::mem::replace(self, candidate);
         drop(old);
         Ok(ReloadOutcome {

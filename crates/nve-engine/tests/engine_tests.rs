@@ -13,9 +13,10 @@ use std::process::Command as ProcessCommand;
 use nve_abi::{
     CommandBufferBuilder, DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice,
     NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch, NveEventBatchRef,
-    NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveGestureDisposition, NveHostApi, NveHostCallbacks, NveHostEventBatch, NveHostStatus,
+    NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi,
+    NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT,
+    NVE_IFACE_SURFACE, SERVICE_LINKING,
 };
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{
@@ -1014,4 +1015,188 @@ fn surface_runner_sequences_frames_records_profiler_and_propagates_errors() {
     let err = runner.submit_recorded_frame(f2, 1, 1, &[]).unwrap_err();
     assert!(matches!(err, BackendError::Decode(DecodeError::Truncated)));
     assert_eq!(runner.profiler().frames().len(), 1);
+}
+
+// ============================================================================
+// 4. Modular NVE_IFACE_HOST = 5 (`bind_host`, `dispatch_host_events`, loader)
+// ============================================================================
+
+struct HostCapableApp {
+    bound_host_ctx: usize,
+    batches_seen: u32,
+    state_buf: Vec<u8>,
+}
+
+impl NveApp for HostCapableApp {
+    fn create(_surface_id: SurfaceId) -> Self {
+        Self {
+            bound_host_ctx: 0,
+            batches_seen: 0,
+            state_buf: Vec::new(),
+        }
+    }
+
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        self.state_buf = format!("ctx={};batches={}", self.bound_host_ctx, self.batches_seen).into_bytes();
+        &self.state_buf
+    }
+
+    fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+        false
+    }
+
+    fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+        self.bound_host_ctx = callbacks.map_or(0, |cb| cb.host_ctx as usize);
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        if let Ok(decoded) = NveHostEventBatch::decode(batch) {
+            self.batches_seen += decoded.len() as u32;
+            !decoded.is_empty()
+        } else {
+            false
+        }
+    }
+}
+
+nve_engine::export_nve_app!(HostCapableApp, symbol = nve_engine_host_test_get_interface);
+
+unsafe extern "C" {
+    fn nve_engine_host_test_get_interface(interface_id: u32) -> *const c_void;
+}
+
+#[test]
+fn export_nve_app_host_interface_bind_unbind_and_nvh1_dispatch() {
+    let surface =
+        unsafe { *(nve_engine_host_test_get_interface(NVE_IFACE_SURFACE) as *const NveSurfaceApi) };
+    let host =
+        unsafe { *(nve_engine_host_test_get_interface(NVE_IFACE_HOST) as *const NveHostApi) };
+
+    let handle = unsafe { (surface.create)(1) };
+    assert!(!handle.is_null());
+
+    // Bind non-null host callbacks with sentinel context pointer.
+    let cb = NveHostCallbacks {
+        host_ctx: 0x1234usize as *mut c_void,
+        invoke: None,
+        channel_publish: None,
+    };
+    unsafe { (host.bind_host)(handle, &cb) };
+
+    let mut batch = NveHostEventBatch::new();
+    batch.push_async_response(1, NveHostStatus::Ok, b"ok".to_vec());
+    batch.push_host_event(SERVICE_LINKING, 1, b"nve://home".to_vec());
+    let encoded = batch.encode();
+
+    assert_eq!(
+        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(&encoded)) },
+        1
+    );
+    assert_eq!(
+        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"corrupt")) },
+        0
+    );
+    let rendered = unsafe { (surface.render)(handle, 1).as_slice().to_vec() };
+    assert_eq!(rendered, format!("ctx={};batches=2", 0x1234usize).into_bytes());
+
+    // Unbind via NULL pointer resets host_ctx cleanly.
+    unsafe { (host.bind_host)(handle, std::ptr::null()) };
+    let rendered2 = unsafe { (surface.render)(handle, 2).as_slice().to_vec() };
+    assert_eq!(rendered2, b"ctx=0;batches=2");
+
+    unsafe { (surface.destroy)(handle) };
+}
+
+#[test]
+fn loader_resolves_host_interface_and_rebinds_across_hotswap() {
+    let dir = TempDirGuard::new("loader-host-iface");
+    let cdylib_src = r#"
+        use std::ffi::c_void;
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveHostCallbacks {
+            pub host_ctx: *mut c_void,
+            pub invoke: Option<unsafe extern "C" fn(*mut c_void, u32, u32, u64, NveBufferSlice, *mut u8, usize, *mut usize) -> i32>,
+            pub channel_publish: Option<unsafe extern "C" fn(*mut c_void, u32, u32, NveBufferSlice) -> i32>,
+        }
+
+        #[repr(C)]
+        pub struct NveSurfaceApi {
+            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
+            pub destroy: unsafe extern "C" fn(*mut c_void),
+            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
+            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
+        }
+
+        #[repr(C)]
+        pub struct NveHostApi {
+            pub bind_host: unsafe extern "C" fn(*mut c_void, *const NveHostCallbacks),
+            pub dispatch_host_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+        }
+
+        struct HostDylibApp {
+            host_ctx: usize,
+            event_bytes: usize,
+            buf: Vec<u8>,
+        }
+
+        unsafe extern "C" fn create(_: u32) -> *mut c_void {
+            Box::into_raw(Box::new(HostDylibApp { host_ctx: 0, event_bytes: 0, buf: Vec::new() })) as *mut c_void
+        }
+        unsafe extern "C" fn destroy(h: *mut c_void) {
+            if !h.is_null() { unsafe { drop(Box::from_raw(h as *mut HostDylibApp)); } }
+        }
+        unsafe extern "C" fn render(h: *mut c_void, _: u64) -> NveBufferSlice {
+            let app = unsafe { &mut *(h as *mut HostDylibApp) };
+            app.buf = format!("ctx={};ev={}", app.host_ctx, app.event_bytes).into_bytes();
+            NveBufferSlice { ptr: app.buf.as_ptr(), len: app.buf.len() }
+        }
+        unsafe extern "C" fn dispatch_events(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
+        unsafe extern "C" fn bind_host(h: *mut c_void, cb: *const NveHostCallbacks) {
+            let app = unsafe { &mut *(h as *mut HostDylibApp) };
+            app.host_ctx = if cb.is_null() { 0 } else { unsafe { (*cb).host_ctx as usize } };
+        }
+        unsafe extern "C" fn dispatch_host_events(h: *mut c_void, batch: NveBufferSlice) -> u32 {
+            let app = unsafe { &mut *(h as *mut HostDylibApp) };
+            app.event_bytes += batch.len;
+            u32::from(batch.len > 0)
+        }
+
+        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
+            create, destroy, render, dispatch_events, dispatch_events_direct: None,
+        };
+        static HOST_API: NveHostApi = NveHostApi { bind_host, dispatch_host_events };
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
+            match id {
+                1 => &SURFACE_API as *const NveSurfaceApi as *const c_void,
+                5 => &HOST_API as *const NveHostApi as *const c_void,
+                _ => std::ptr::null(),
+            }
+        }
+    "#;
+    let dylib = compile_test_cdylib(dir.path(), "host_iface_app", cdylib_src);
+    let mut inst = HotAppInstance::load(&dylib, 1, 1, None).expect("load host-capable dylib");
+    assert!(inst.has_host_interface());
+
+    let cb = NveHostCallbacks {
+        host_ctx: 0xBEEFusize as *mut c_void,
+        invoke: None,
+        channel_publish: None,
+    };
+    assert!(inst.bind_host(Some(cb)));
+    assert!(inst.dispatch_host_events(b"NVH1payload"));
+    assert_eq!(inst.render(1), format!("ctx={};ev=11", 0xBEEFusize).into_bytes());
+
+    // Reloading automatically re-binds the saved NveHostCallbacks onto generation 2!
+    let outcome = inst.reload(&dylib).expect("reload gen 2");
+    assert_eq!(outcome.generation, 2);
+    assert_eq!(inst.render(2), format!("ctx={};ev=0", 0xBEEFusize).into_bytes());
 }

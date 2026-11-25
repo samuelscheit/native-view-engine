@@ -15,7 +15,7 @@ public final class NveSurfaceController: ObservableObject {
     public let vtableSymbol: String
     public let backend: NveRenderBackend
 
-    private var module: NveModule = NveModule(surface: nil, layout: nil, component: nil, dev: nil)
+    private var module: NveModule = NveModule(surface: nil, layout: nil, component: nil, dev: nil, host: nil)
     private var handle: NveAppHandle?
     private var dylibHandle: UnsafeMutableRawPointer?
     private var frameCounter: UInt64 = 0
@@ -308,7 +308,7 @@ public final class NveSurfaceController: ObservableObject {
         }
         handle = nil
         lastPropsValue = nil
-        module = NveModule(surface: nil, layout: nil, component: nil, dev: nil)
+        module = NveModule(surface: nil, layout: nil, component: nil, dev: nil, host: nil)
         if let dylibHandle {
             dlclose(dylibHandle)
             self.dylibHandle = nil

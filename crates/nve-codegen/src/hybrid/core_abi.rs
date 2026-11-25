@@ -42,7 +42,7 @@ pub const NVE_RENDER_NODE_ALIGN: usize = 64;
 
 /// Deterministic FNV-1a 64-bit Core ABI schema hash (must match `crates/nve-abi/src/ffi.rs`
 /// and `core_abi_schema_hash()` verbatim).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x9DDA_1760_DEC9_6BD1;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x54A4_A32B_6F25_8107;
 
 /// Deterministic FNV-1a 64-bit scene schema hash (must match `crates/nve-abi/src/scene.rs`
 /// and `compute_scene_schema_hash(&scene_abi_spec())` verbatim).
@@ -172,6 +172,20 @@ fn dart_core_ffi_annotation(ty: &HybridType) -> Option<&'static str> {
     }
 }
 
+/// Signed status codes shared by `NveHostCallbacks::invoke`, `channel_publish`, and `NVH1`.
+const HOST_STATUS_VARIANTS: &[(&str, i32)] = &[
+    ("Ok", 0),
+    ("Pending", 1),
+    ("BufferTooSmall", -1),
+    ("Unsupported", -2),
+    ("PermissionDenied", -3),
+    ("InvalidArg", -4),
+    ("NotFound", -5),
+    ("Cancelled", -6),
+    ("IoError", -7),
+    ("InternalError", -8),
+];
+
 fn dart_core_native_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "ffi.Void".to_string(),
@@ -187,6 +201,12 @@ fn dart_core_native_type(ty: &HybridType) -> String {
         HybridType::F64 => "ffi.Double".to_string(),
         HybridType::Value => "NveValue".to_string(),
         HybridType::Struct(name) => name.clone(),
+        HybridType::Handle(name) if name == "NveHostInvokeFn" => {
+            "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_string()
+        }
+        HybridType::Handle(name) if name == "NveHostChannelPublishFn" => {
+            "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_string()
+        }
         HybridType::Handle(_) => "ffi.Pointer<ffi.Void>".to_string(),
         HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
             format!("ffi.Pointer<{}>", dart_core_native_type(inner))
@@ -208,6 +228,12 @@ fn dart_core_struct_field_type(ty: &HybridType) -> String {
         HybridType::F32 | HybridType::F64 => "double".to_string(),
         HybridType::Value => "NveValue".to_string(),
         HybridType::Struct(name) => name.clone(),
+        HybridType::Handle(name) if name == "NveHostInvokeFn" => {
+            "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_string()
+        }
+        HybridType::Handle(name) if name == "NveHostChannelPublishFn" => {
+            "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_string()
+        }
         HybridType::Handle(_) => "ffi.Pointer<ffi.Void>".to_string(),
         HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
             format!("ffi.Pointer<{}>", dart_core_native_type(inner))
@@ -358,6 +384,15 @@ pub fn generate_c_core_abi_h() -> String {
         let _ = writeln!(out);
     }
 
+    // Signed host-capability status enum (`NVE_IFACE_HOST = 5`)
+    let _ = writeln!(out, "typedef enum NveHostStatus {{");
+    for &(variant, code) in HOST_STATUS_VARIANTS {
+        let v_upper = to_snake_case(variant).to_ascii_uppercase();
+        let _ = writeln!(out, "  NVE_HOST_{v_upper} = {code},");
+    }
+    let _ = writeln!(out, "}} NveHostStatus;");
+    let _ = writeln!(out);
+
     if let Some(depth_const) = spec.consts.iter().find(|c| c.name == "NVE_BIN_VALUE_MAX_DEPTH") {
         let _ = writeln!(
             out,
@@ -374,6 +409,17 @@ pub fn generate_c_core_abi_h() -> String {
 
     // Structs and unions in declaration order
     for s in &spec.structs {
+        if s.name == "NveHostCallbacks" {
+            let _ = writeln!(
+                out,
+                "typedef int32_t (*NveHostInvokeFn)(void* host_ctx, uint32_t service_id, uint32_t method_id, uint64_t request_id, NveBufferSlice request, uint8_t* out_buf, size_t out_cap, size_t* out_len);"
+            );
+            let _ = writeln!(
+                out,
+                "typedef int32_t (*NveHostChannelPublishFn)(void* host_ctx, uint32_t channel_id, uint32_t flags, NveBufferSlice payload);"
+            );
+            let _ = writeln!(out);
+        }
         emit_c_core_struct_or_union(&mut out, s);
     }
 
@@ -431,6 +477,12 @@ pub fn generate_c_core_abi_h() -> String {
 
     // Handle aliases
     for a in &spec.aliases {
+        if matches!(
+            a.name.as_str(),
+            "NveHostInvokeFn" | "NveHostChannelPublishFn"
+        ) {
+            continue;
+        }
         let _ = writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
     }
     let _ = writeln!(out);
@@ -667,8 +719,57 @@ pub fn generate_dart_core_abi() -> String {
         let _ = writeln!(out);
     }
 
+    // Signed host-capability status enum (`NVE_IFACE_HOST = 5`)
+    let _ = writeln!(out, "enum NveHostStatus {{");
+    for (i, &(variant, code)) in HOST_STATUS_VARIANTS.iter().enumerate() {
+        let vname = dart_enum_variant_ident(variant);
+        let term = if i + 1 == HOST_STATUS_VARIANTS.len() {
+            ";"
+        } else {
+            ","
+        };
+        let _ = writeln!(out, "  {vname}({code}){term}");
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  const NveHostStatus(this.code);");
+    let _ = writeln!(out, "  final int code;");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  static NveHostStatus? fromCode(int code) {{");
+    let _ = writeln!(out, "    return switch (code) {{");
+    for &(variant, code) in HOST_STATUS_VARIANTS {
+        let vname = dart_enum_variant_ident(variant);
+        let _ = writeln!(out, "      {code} => NveHostStatus.{vname},");
+    }
+    let _ = writeln!(out, "      _ => null,");
+    let _ = writeln!(out, "    }};");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+
     // Core structs & union
     for s in &spec.structs {
+        if s.name == "NveHostCallbacks" {
+            let _ = writeln!(out, "typedef NveHostInvokeNative = ffi.Int32 Function(");
+            let _ = writeln!(out, "  ffi.Pointer<ffi.Void> hostCtx,");
+            let _ = writeln!(out, "  ffi.Uint32 serviceId,");
+            let _ = writeln!(out, "  ffi.Uint32 methodId,");
+            let _ = writeln!(out, "  ffi.Uint64 requestId,");
+            let _ = writeln!(out, "  NveBufferSlice request,");
+            let _ = writeln!(out, "  ffi.Pointer<ffi.Uint8> outBuf,");
+            let _ = writeln!(out, "  ffi.Size outCap,");
+            let _ = writeln!(out, "  ffi.Pointer<ffi.Size> outLen,");
+            let _ = writeln!(out, ");");
+            let _ = writeln!(
+                out,
+                "typedef NveHostChannelPublishNative = ffi.Int32 Function("
+            );
+            let _ = writeln!(out, "  ffi.Pointer<ffi.Void> hostCtx,");
+            let _ = writeln!(out, "  ffi.Uint32 channelId,");
+            let _ = writeln!(out, "  ffi.Uint32 flags,");
+            let _ = writeln!(out, "  NveBufferSlice payload,");
+            let _ = writeln!(out, ");");
+            let _ = writeln!(out);
+        }
         let base = if s.is_union { "ffi.Union" } else { "ffi.Struct" };
         let _ = writeln!(out, "final class {} extends {base} {{", s.name);
         for f in &s.fields {
@@ -810,6 +911,13 @@ pub fn generate_java_core_abi() -> String {
         let _ = writeln!(out);
     }
 
+    let _ = writeln!(out, "    // NveHostStatus");
+    for &(variant, code) in HOST_STATUS_VARIANTS {
+        let v_upper = to_snake_case(variant).to_ascii_uppercase();
+        let _ = writeln!(out, "    public static final int HOST_{v_upper} = {code};");
+    }
+    let _ = writeln!(out);
+
     let _ = writeln!(out, "    // Fixed ABI struct sizes");
     for s in &spec.structs {
         let sup = to_snake_case(&s.name).to_ascii_uppercase();
@@ -888,6 +996,18 @@ pub fn generate_ts_core_abi() -> String {
         );
         let _ = writeln!(out);
     }
+
+    let _ = writeln!(out, "export const NVE_HOST_STATUS = {{");
+    for &(variant, code) in HOST_STATUS_VARIANTS {
+        let v_upper = to_snake_case(variant).to_ascii_uppercase();
+        let _ = writeln!(out, "  {v_upper}: {code},");
+    }
+    let _ = writeln!(out, "}} as const;");
+    let _ = writeln!(
+        out,
+        "export type NveHostStatus = (typeof NVE_HOST_STATUS)[keyof typeof NVE_HOST_STATUS];"
+    );
+    let _ = writeln!(out);
 
     out
 }

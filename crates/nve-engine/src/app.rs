@@ -10,8 +10,8 @@ use std::cell::RefCell;
 
 use nve_abi::{
     encode_bin_value_to_vec, encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind,
-    NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
-    SurfaceId,
+    NveEventBatchRef, NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize, NvePropsRef,
+    NveSizeConstraints, SurfaceId,
 };
 
 thread_local! {
@@ -199,6 +199,16 @@ pub trait NveApp: Sized + 'static {
 
     /// Restores previously snapshotted state after a Tier-2 `cdylib` hot-swap.
     fn restore_state(&mut self, _state: &[u8]) {}
+
+    /// Binds host-provided zero-JSON capability callbacks (`NVE_IFACE_HOST = 5`).
+    /// Passing `None` unbinds any previously attached host callbacks.
+    fn bind_host(&mut self, _callbacks: Option<NveHostCallbacks>) {}
+
+    /// Dispatches a binary `NVH1` host-event batch (async completions, push events, channel messages).
+    /// Returns `true` if the surface should re-render.
+    fn dispatch_host_events(&mut self, _batch: &[u8]) -> bool {
+        false
+    }
 }
 
 /// Generates the modular `nve_get_interface` C ABI (and optional custom symbol alias) from any
@@ -213,9 +223,10 @@ macro_rules! export_nve_app {
             use ::std::ffi::c_void;
             use $crate::abi::{
                 NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveEventBatch,
-                NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NveLayoutApi,
-                NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NVE_IFACE_COMPONENT,
-                NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+                NveEventBatchRef, NveGestureDisposition, NveHostApi, NveHostCallbacks,
+                NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints,
+                NveSurfaceApi, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST,
+                NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
             };
             use $crate::NveApp;
 
@@ -414,6 +425,38 @@ macro_rules! export_nve_app {
                 });
             }
 
+            unsafe extern "C" fn __nve_bind_host(
+                handle: NveAppHandle,
+                callbacks: *const NveHostCallbacks,
+            ) {
+                if handle.is_null() {
+                    return;
+                }
+                $crate::app::ffi_catch_unwind("NveHostApi::bind_host", (), || {
+                    let app = unsafe { &mut *(handle as *mut $app_ty) };
+                    let bound = if callbacks.is_null() {
+                        None
+                    } else {
+                        Some(unsafe { *callbacks })
+                    };
+                    app.bind_host(bound);
+                });
+            }
+
+            unsafe extern "C" fn __nve_dispatch_host_events(
+                handle: NveAppHandle,
+                batch: NveBufferSlice,
+            ) -> u32 {
+                if handle.is_null() {
+                    return 0;
+                }
+                $crate::app::ffi_catch_unwind("NveHostApi::dispatch_host_events", 0, || {
+                    let app = unsafe { &mut *(handle as *mut $app_ty) };
+                    let bytes = unsafe { batch.as_slice() };
+                    u32::from(app.dispatch_host_events(bytes))
+                })
+            }
+
             static __NVE_SURFACE_API: NveSurfaceApi = NveSurfaceApi {
                 create: __nve_create,
                 destroy: __nve_destroy,
@@ -439,6 +482,11 @@ macro_rules! export_nve_app {
                 restore_state: __nve_restore_state,
             };
 
+            static __NVE_HOST_API: NveHostApi = NveHostApi {
+                bind_host: __nve_bind_host,
+                dispatch_host_events: __nve_dispatch_host_events,
+            };
+
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn $symbol(interface_id: u32) -> *const c_void {
                 match interface_id {
@@ -448,6 +496,7 @@ macro_rules! export_nve_app {
                         &__NVE_COMPONENT_API as *const NveComponentApi as *const c_void
                     }
                     NVE_IFACE_DEV => &__NVE_DEV_API as *const NveDevApi as *const c_void,
+                    NVE_IFACE_HOST => &__NVE_HOST_API as *const NveHostApi as *const c_void,
                     _ => ::std::ptr::null(),
                 }
             }
@@ -462,9 +511,9 @@ mod tests {
 
     use nve_abi::{
         NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
-        NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NveSizeConstraints,
-        NveSurfaceApi, NveValue, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT,
-        NVE_IFACE_SURFACE,
+        NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi,
+        NveMapEntry, NveSizeConstraints, NveSurfaceApi, NveValue, NVE_IFACE_COMPONENT,
+        NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
     };
 
     use super::*;
@@ -484,6 +533,8 @@ mod tests {
         ApplyHotPatch,
         SnapshotState,
         RestoreState,
+        BindHost,
+        DispatchHostEvents,
         Destroy,
         NonStringPayload,
     }
@@ -608,6 +659,19 @@ mod tests {
             }
             self.state_buf = state.to_vec();
         }
+
+        fn bind_host(&mut self, _callbacks: Option<NveHostCallbacks>) {
+            if current_panic_target() == PanicTarget::BindHost {
+                panic!("boom in bind_host");
+            }
+        }
+
+        fn dispatch_host_events(&mut self, _batch: &[u8]) -> bool {
+            if current_panic_target() == PanicTarget::DispatchHostEvents {
+                panic!("boom in dispatch_host_events");
+            }
+            true
+        }
     }
 
     crate::export_nve_app!(PanickingTestApp, symbol = test_panicking_app_get_interface);
@@ -632,6 +696,8 @@ mod tests {
         };
         let dev =
             unsafe { &*(test_panicking_app_get_interface(NVE_IFACE_DEV) as *const NveDevApi) };
+        let host =
+            unsafe { &*(test_panicking_app_get_interface(NVE_IFACE_HOST) as *const NveHostApi) };
         let dispatch_direct = surface
             .dispatch_events_direct
             .expect("dispatch_events_direct exported");
@@ -639,7 +705,7 @@ mod tests {
             .set_props_direct
             .expect("set_props_direct exported");
 
-        // 0. Null handle guards across all 12 handle-taking shims (no dereference, no panic).
+        // 0. Null handle guards across all 14 handle-taking shims (no dereference, no panic).
         let null_h = std::ptr::null_mut();
         unsafe {
             assert_eq!((surface.render)(null_h, 1).len, 0);
@@ -662,6 +728,8 @@ mod tests {
             assert_eq!((dev.apply_hot_patch)(null_h, NveBufferSlice::EMPTY), 0);
             assert_eq!((dev.snapshot_state)(null_h).len, 0);
             (dev.restore_state)(null_h, NveBufferSlice::EMPTY);
+            (host.bind_host)(null_h, std::ptr::null());
+            assert_eq!((host.dispatch_host_events)(null_h, NveBufferSlice::EMPTY), 0);
             (surface.destroy)(null_h);
         }
         assert_eq!(last_ffi_panic(), None);
@@ -797,6 +865,23 @@ mod tests {
         unsafe { (dev.restore_state)(handle, NveBufferSlice::from_slice(&[9, 8, 7])) };
         let msg = take_last_ffi_panic().unwrap();
         assert!(msg.contains("NveDevApi::restore_state") && msg.contains("boom in restore_state"));
+
+        set_panic_target(PanicTarget::BindHost);
+        let empty_cb = NveHostCallbacks::EMPTY;
+        unsafe { (host.bind_host)(handle, &empty_cb) };
+        let msg = take_last_ffi_panic().unwrap();
+        assert!(msg.contains("NveHostApi::bind_host") && msg.contains("boom in bind_host"));
+
+        set_panic_target(PanicTarget::DispatchHostEvents);
+        assert_eq!(
+            unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"NVH1")) },
+            0
+        );
+        let msg = take_last_ffi_panic().unwrap();
+        assert!(
+            msg.contains("NveHostApi::dispatch_host_events")
+                && msg.contains("boom in dispatch_host_events")
+        );
 
         // 4. Panicking `destroy` (Drop) survives without aborting and records the message.
         set_panic_target(PanicTarget::Destroy);

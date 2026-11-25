@@ -1371,12 +1371,13 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
     let core = nve_codegen::parse_hybrid_rust_spec_file(&core_path).expect("parse nve_core_abi.nve.rs");
     let scene = nve_codegen::parse_hybrid_rust_spec_file(&scene_path).expect("parse nve_scene_abi.nve.rs");
 
-    // Verify core modular interfaces keep exact fixed IDs 1..=4
-    assert_eq!(core.modules.len(), 4);
+    // Verify core modular interfaces keep exact fixed IDs 1..=5
+    assert_eq!(core.modules.len(), 5);
     assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE);
     assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT);
     assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT);
     assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV);
+    assert_eq!(core.modules[4].interface_id(), nve_abi::NVE_IFACE_HOST);
 
     // Verify scene node layout descriptors
     let render_node = scene.find_struct("NveRenderNode").expect("NveRenderNode");

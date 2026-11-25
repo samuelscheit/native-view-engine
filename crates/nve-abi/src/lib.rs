@@ -5,6 +5,7 @@
 pub mod codec;
 pub mod events;
 pub mod ffi;
+pub mod host;
 pub mod scene;
 pub mod value;
 
@@ -22,7 +23,14 @@ pub use ffi::{
     NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
     NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
     NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+};
+pub use host::{
+    HostBatchError, NveHostApi, NveHostCallbacks, NveHostChannelPublishFn, NveHostEventBatch,
+    NveHostEventKind, NveHostEventRecord, NveHostEventRecordRef, NveHostInvokeFn, NveHostStatus,
+    NVE_CHANNEL_FLAG_RETAIN, NVE_HOST_EVENT_MAGIC, NVE_HOST_EVENT_VERSION, SERVICE_CHANNEL,
+    SERVICE_CLIPBOARD, SERVICE_FILESYSTEM, SERVICE_HAPTICS, SERVICE_LINKING, SERVICE_NOTIFICATIONS,
+    SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 pub use scene::{
     component_kind_to_scene_u8, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView,

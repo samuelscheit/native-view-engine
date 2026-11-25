@@ -3,20 +3,24 @@
 
 import 'dart:ffi' as ffi;
 
-/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x9DDA1760DEC96BD1`).
-const int nveCoreAbiSchemaHash = -7072314560009901103;
-const String nveCoreAbiSchemaHashHex = '0x9DDA1760DEC96BD1';
+/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x54A4A32B6F258107`).
+const int nveCoreAbiSchemaHash = 6099179202310144263;
+const String nveCoreAbiSchemaHashHex = '0x54A4A32B6F258107';
 
 const int nveAbiMagic = 0x3145564E;
 const int nveAbiVersion = 1;
 const int nveRootNodeId = 1;
 const int nveBinValueMaxDepth = 64;
+const int nveHostEventMagic = 0x3148564E;
+const int nveHostEventVersion = 1;
+const int nveChannelFlagRetain = 1;
 
 /// Modular interface IDs passed to `nve_get_interface(uint32_t)`.
 const int nveIfaceSurface = 1;
 const int nveIfaceLayout = 2;
 const int nveIfaceComponent = 3;
 const int nveIfaceDev = 4;
+const int nveIfaceHost = 5;
 
 enum NveOpcode {
   createNode(1),
@@ -176,6 +180,38 @@ enum NveEventPayloadTag {
   }
 }
 
+enum NveHostStatus {
+  ok(0),
+  pending(1),
+  bufferTooSmall(-1),
+  unsupported(-2),
+  permissionDenied(-3),
+  invalidArg(-4),
+  notFound(-5),
+  cancelled(-6),
+  ioError(-7),
+  internalError(-8);
+
+  const NveHostStatus(this.code);
+  final int code;
+
+  static NveHostStatus? fromCode(int code) {
+    return switch (code) {
+      0 => NveHostStatus.ok,
+      1 => NveHostStatus.pending,
+      -1 => NveHostStatus.bufferTooSmall,
+      -2 => NveHostStatus.unsupported,
+      -3 => NveHostStatus.permissionDenied,
+      -4 => NveHostStatus.invalidArg,
+      -5 => NveHostStatus.notFound,
+      -6 => NveHostStatus.cancelled,
+      -7 => NveHostStatus.ioError,
+      -8 => NveHostStatus.internalError,
+      _ => null,
+    };
+  }
+}
+
 final class NveBufferSlice extends ffi.Struct {
   external ffi.Pointer<ffi.Uint8> ptr;
   @ffi.Size()
@@ -298,6 +334,29 @@ final class NveIntrinsicSize extends ffi.Struct {
   external double height;
 }
 
+typedef NveHostInvokeNative = ffi.Int32 Function(
+  ffi.Pointer<ffi.Void> hostCtx,
+  ffi.Uint32 serviceId,
+  ffi.Uint32 methodId,
+  ffi.Uint64 requestId,
+  NveBufferSlice request,
+  ffi.Pointer<ffi.Uint8> outBuf,
+  ffi.Size outCap,
+  ffi.Pointer<ffi.Size> outLen,
+);
+typedef NveHostChannelPublishNative = ffi.Int32 Function(
+  ffi.Pointer<ffi.Void> hostCtx,
+  ffi.Uint32 channelId,
+  ffi.Uint32 flags,
+  NveBufferSlice payload,
+);
+
+final class NveHostCallbacks extends ffi.Struct {
+  external ffi.Pointer<ffi.Void> hostCtx;
+  external ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>> invoke;
+  external ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>> channelPublish;
+}
+
 typedef NveCreateNative = ffi.Pointer<ffi.Void> Function(
   ffi.Uint32 surfaceId,
 );
@@ -349,6 +408,14 @@ typedef NveRestoreStateNative = ffi.Void Function(
   ffi.Pointer<ffi.Void> handle,
   NveBufferSlice state,
 );
+typedef NveBindHostNative = ffi.Void Function(
+  ffi.Pointer<ffi.Void> handle,
+  ffi.Pointer<NveHostCallbacks> callbacks,
+);
+typedef NveDispatchHostEventsNative = ffi.Uint32 Function(
+  ffi.Pointer<ffi.Void> handle,
+  NveBufferSlice batch,
+);
 typedef NveGetInterfaceNative = ffi.Pointer<ffi.Void> Function(ffi.Uint32 interfaceId);
 
 final class NveSurfaceApi extends ffi.Struct {
@@ -374,5 +441,10 @@ final class NveDevApi extends ffi.Struct {
   external ffi.Pointer<ffi.NativeFunction<NveApplyHotPatchNative>> applyHotPatch;
   external ffi.Pointer<ffi.NativeFunction<NveSnapshotStateNative>> snapshotState;
   external ffi.Pointer<ffi.NativeFunction<NveRestoreStateNative>> restoreState;
+}
+
+final class NveHostApi extends ffi.Struct {
+  external ffi.Pointer<ffi.NativeFunction<NveBindHostNative>> bindHost;
+  external ffi.Pointer<ffi.NativeFunction<NveDispatchHostEventsNative>> dispatchHostEvents;
 }
 
