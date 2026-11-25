@@ -1324,3 +1324,300 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
         assert_eq!(on_disk, file.content, "drift in {}", file.relative_path);
     }
 }
+
+#[test]
+fn hybrid_emitters_escape_interpolation_quotes_and_newlines_across_all_6_targets() {
+    let adversarial_spec = r#"
+/// Doc line 1
+/// Doc line 2
+#[nve_hybrid_view(name = "SafeBanner")]
+pub trait SafeBannerSpec {
+    #[prop(default = "$HOME/${USER}")]
+    fn env_template(&self) -> String;
+
+    #[prop(default = "it's a \\ \"quoted\" \\(swift)\nline2\r\t$price")]
+    fn rich_literal(&self) -> String;
+
+    #[prop(default = -9223372036854775808)]
+    fn min_i64(&self) -> i64;
+
+    #[event]
+    fn on_banner(&self, text: String);
+
+    #[method]
+    fn echo(&self, input: &str) -> String;
+}
+"#;
+
+    let spec = parse_hybrid_rust_spec(adversarial_spec).expect("parse adversarial hybrid spec");
+    assert_eq!(
+        spec.views[0].props[2].default_value,
+        Some(HybridDefaultValue::Int(i64::MIN))
+    );
+
+    let all = generate_hybrid_all(&spec, HybridTarget::ALL).expect("generate all 6 targets");
+    assert_eq!(all.len(), 6);
+
+    // 1. Kotlin: `$` must be escaped to `\$` so `$HOME`, `${USER}`, `$price` never interpolate.
+    let kt_out = generate_hybrid_target(&spec, HybridTarget::Kotlin).unwrap();
+    let kt_src = &kt_out.files[0].content;
+    assert!(kt_src.contains("\\$HOME/\\${USER}"));
+    assert!(kt_src.contains("\\$price"));
+    assert!(!kt_src.replace("\\$", "").contains("$HOME"));
+    assert!(!kt_src.replace("\\$", "").contains("${USER}"));
+
+    // 2. Dart: `'`, `$`, `\`, `\n`, `\r`, `\t` must all be escaped inside single-quoted literals.
+    let dart_out = generate_hybrid_target(&spec, HybridTarget::Dart).unwrap();
+    let dart_src = &dart_out.files[0].content;
+    assert!(dart_src.contains("'\\$HOME/\\${USER}'"));
+    assert!(dart_src.contains("it\\'s a \\\\ \"quoted\" \\\\(swift)\\nline2\\r\\t\\$price"));
+    assert!(!dart_src.replace("\\$", "").contains("'$HOME"));
+    assert!(!dart_src.replace("\\$", "").contains("${USER}"));
+
+    // 3. Swift: `\` must be escaped so `\(swift)` becomes `\\(swift)` (no Swift string interpolation).
+    let swift_out = generate_hybrid_target(&spec, HybridTarget::Swift).unwrap();
+    let swift_src = &swift_out.files[0].content;
+    assert!(swift_src.contains("\\\\(swift)"));
+    assert!(swift_src.contains("\\\"quoted\\\""));
+
+    // 4. Rust + C++20: verify real compilers accept the emitted code cleanly!
+    let rust_out = generate_hybrid_target(&spec, HybridTarget::Rust).unwrap();
+    let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
+    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
+
+    if tool_available("clang++") {
+        let dir = temp_test_dir("adversarial_cpp");
+        cpp_out.write_to_dir(&dir).unwrap();
+        let driver = dir.join("check.cpp");
+        std::fs::write(
+            &driver,
+            r#"
+#include <cassert>
+#include "SafeBannerHybridSpec.hpp"
+void check() {
+  nve::hybrid::SafeBannerProps p;
+  assert(p.envTemplate == "$HOME/${USER}");
+}
+"#,
+        )
+        .unwrap();
+        let out = Command::new("clang++")
+            .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
+            .arg(format!("-I{}", nve_inc.display()))
+            .arg(format!("-I{}", dir.display()))
+            .arg(&driver)
+            .output()
+            .expect("clang++ adversarial hybrid cpp");
+        assert!(
+            out.status.success(),
+            "adversarial hybrid C++20 failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    if tool_available("swiftc") {
+        let dir = temp_test_dir("adversarial_swift");
+        cpp_out.write_to_dir(&dir).unwrap();
+        swift_out.write_to_dir(&dir).unwrap();
+        let out = Command::new("swiftc")
+            .arg("-typecheck")
+            .arg("-import-objc-header")
+            .arg(dir.join("SafeBannerHybridAbi.h"))
+            .arg("-I")
+            .arg(&nve_inc)
+            .arg("-I")
+            .arg(&dir)
+            .arg(dir.join("SafeBannerHybridSpec.swift"))
+            .output()
+            .expect("swiftc adversarial hybrid swift");
+        assert!(
+            out.status.success(),
+            "adversarial hybrid Swift failed swiftc -typecheck:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    if tool_available("dart") {
+        let dir = temp_test_dir("adversarial_dart");
+        let lib_dir = dir.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        dart_out.write_to_dir(&lib_dir).unwrap();
+        std::fs::write(
+            dir.join("pubspec.yaml"),
+            "name: nve_adv_check\nenvironment:\n  sdk: '>=3.3.0 <4.0.0'\n",
+        )
+        .unwrap();
+        let out = Command::new("dart")
+            .args(["analyze", "--fatal-infos"])
+            .arg(&dir)
+            .output()
+            .expect("dart analyze adversarial hybrid dart");
+        assert!(
+            out.status.success(),
+            "adversarial hybrid Dart failed dart analyze:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Real rustc verification of adversarial Rust output
+    let _touch = nve_abi::NveValue::null();
+    let dir = temp_test_dir("adversarial_rust");
+    rust_out.write_to_dir(&dir).unwrap();
+    let current_exe = std::env::current_exe().expect("current_exe");
+    let deps_dir = current_exe.parent().expect("deps dir");
+    let nve_abi_rlib = std::fs::read_dir(deps_dir)
+        .expect("read deps dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
+        })
+        .expect("libnve_abi-*.rlib");
+    let out = Command::new("rustc")
+        .args(["--edition=2024", "--crate-type=lib", "-D", "warnings"])
+        .arg("-L")
+        .arg(format!("dependency={}", deps_dir.display()))
+        .arg("--extern")
+        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
+        .arg(dir.join("safe_banner_hybrid.rs"))
+        .arg("-o")
+        .arg(dir.join("libsafe_banner_hybrid.rlib"))
+        .output()
+        .expect("rustc adversarial hybrid rust");
+    assert!(
+        out.status.success(),
+        "adversarial hybrid Rust failed rustc:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fuzz_hybrid_parser_never_panics_on_adversarial_and_truncated_inputs() {
+    // 1. Sampled UTF-8 prefix truncations across the entire realistic hybrid spec
+    let indices: Vec<usize> = REALISTIC_HYBRID_SPEC.char_indices().map(|(i, _)| i).collect();
+    for (step, &byte_idx) in indices.iter().enumerate() {
+        if step % 3 == 0 || byte_idx + 64 >= REALISTIC_HYBRID_SPEC.len() {
+            let _ = parse_hybrid_rust_spec(&REALISTIC_HYBRID_SPEC[..byte_idx]);
+        }
+    }
+
+    // 2. Deep nesting & numeric edge cases (must return Err cleanly, never panic/stack overflow)
+    let edge_cases = [
+        format!(
+            "#[nve_hybrid_module(name = \"Deep\")] pub trait DeepSpec {{ fn f(&self) -> {}u32{}; }}",
+            "Option<".repeat(256),
+            ">".repeat(256)
+        ),
+        format!(
+            "#[nve_hybrid_module(name = \"Ptr\")] pub trait PtrSpec {{ fn f(&self) -> {}u8; }}",
+            "*const ".repeat(256)
+        ),
+        format!(
+            "#[nve_hybrid_module(name = \"Ref\")] pub trait RefSpec {{ fn f(&self) -> {}u8; }}",
+            "&".repeat(256)
+        ),
+        "#[nve_hybrid_view(name = \"V\")] pub trait VSpec { #[prop(default = -999999999999999999999999)] fn x(&self) -> i64; }".to_owned(),
+        "#[nve_hybrid_enum] pub enum E { A = 4294967295, B }".to_owned(),
+        "#[nve_hybrid_enum] pub enum E { A = 9999999999999999999999999 }".to_owned(),
+        "#[nve_hybrid_module(name = \"M\")] #[nve_hybrid_view(name = \"V\")] pub trait Dual {}".to_owned(),
+        "\"\\".to_owned(),
+        "/* /* nested unclosed".to_owned(),
+        "0x".to_owned(),
+        "1e+".to_owned(),
+        "#[".to_owned(),
+        "#[a(".to_owned(),
+        "pub(crate".to_owned(),
+    ];
+    for case in &edge_cases {
+        let _ = parse_hybrid_rust_spec(case);
+    }
+
+    // 3. 1,200 deterministic PRNG adversarial token streams
+    let tokens: &[&str] = &[
+        "#[nve_hybrid_enum]",
+        "#[nve_hybrid_struct]",
+        "#[nve_hybrid_union]",
+        "#[nve_hybrid_module(name = \"M\")]",
+        "#[nve_hybrid_view(name = \"V\")]",
+        "#[nve_hybrid_const]",
+        "#[nve_hybrid_alias]",
+        "#[nve_hybrid_c_fn]",
+        "#[prop(default = \"$HOME/${x}\")]",
+        "#[prop(default = -1)]",
+        "#[event]",
+        "#[method]",
+        "#[repr(C, align(8))]",
+        "pub",
+        "enum",
+        "struct",
+        "union",
+        "trait",
+        "fn",
+        "const",
+        "type",
+        "extern",
+        "\"C\"",
+        "use",
+        "&self",
+        "&mut self",
+        "Option",
+        "Vec",
+        "Result",
+        "i32",
+        "u64",
+        "f32",
+        "String",
+        "NveValue",
+        "{",
+        "}",
+        "(",
+        ")",
+        "[",
+        "]",
+        "<",
+        ">",
+        ":",
+        "::",
+        ";",
+        ",",
+        "=",
+        "->",
+        "&",
+        "-",
+        "*",
+        ".",
+        "!",
+        "#",
+        "/// doc\n",
+        "/* c */",
+        "'a",
+        "0xFF",
+        "1.5e-2",
+        "\"\\n\\t\"",
+        "foo",
+    ];
+    let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
+    let mut next_u64 = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+
+    for _ in 0..1200 {
+        let len = (next_u64() as usize % 32) + 1;
+        let mut s = String::with_capacity(len * 8);
+        for _ in 0..len {
+            s.push_str(tokens[(next_u64() as usize) % tokens.len()]);
+            s.push(' ');
+        }
+        let _ = parse_hybrid_rust_spec(&s);
+    }
+}

@@ -70,15 +70,25 @@ impl DecodedImage {
     /// Reads the RGBA pixel at integer coordinates `(x, y)` (clamped to image bounds).
     #[inline]
     pub fn pixel_clamped(&self, x: i32, y: i32) -> ColorRgba {
-        let cx = x.clamp(0, self.width as i32 - 1) as usize;
-        let cy = y.clamp(0, self.height as i32 - 1) as usize;
-        let idx = (cy * self.width as usize + cx) * 4;
-        ColorRgba::rgba(
-            self.rgba[idx],
-            self.rgba[idx + 1],
-            self.rgba[idx + 2],
-            self.rgba[idx + 3],
-        )
+        if self.width == 0 || self.height == 0 {
+            return ColorRgba::TRANSPARENT;
+        }
+        let cx = x.clamp(0, (self.width - 1).min(i32::MAX as u32) as i32) as usize;
+        let cy = y.clamp(0, (self.height - 1).min(i32::MAX as u32) as i32) as usize;
+        let Some(idx) = cy
+            .checked_mul(self.width as usize)
+            .and_then(|row| row.checked_add(cx))
+            .and_then(|px| px.checked_mul(4))
+        else {
+            return ColorRgba::TRANSPARENT;
+        };
+        let Some(end) = idx.checked_add(4) else {
+            return ColorRgba::TRANSPARENT;
+        };
+        let Some(px) = self.rgba.get(idx..end) else {
+            return ColorRgba::TRANSPARENT;
+        };
+        ColorRgba::rgba(px[0], px[1], px[2], px[3])
     }
 
     /// Nearest-neighbor sample at pixel-space coordinates `(sx, sy)` (pixel centers at `i + 0.5`).
@@ -545,12 +555,13 @@ fn percent_decode(input: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push((hi << 4) | lo);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -765,6 +776,16 @@ impl PngHeader {
     }
 }
 
+const ADAM7_PASSES: [(u32, u32, u32, u32); 7] = [
+    (0, 0, 8, 8),
+    (4, 0, 8, 8),
+    (0, 4, 4, 8),
+    (2, 0, 4, 4),
+    (0, 2, 2, 4),
+    (1, 0, 2, 2),
+    (0, 1, 1, 2),
+];
+
 /// Strictly bounds-checked RFC 2083 PNG decoder producing straight-alpha RGBA8888 pixels.
 ///
 /// Never panics on truncated, corrupted, or adversarial PNG payloads.
@@ -791,19 +812,28 @@ pub fn decode_png(bytes: &[u8]) -> Result<DecodedImage, ImageDecodeError> {
         let chunk_type = &bytes[pos + 4..pos + 8];
         pos += 8;
 
-        if bytes.len() - pos < len + 4 {
+        let chunk_total = len
+            .checked_add(4)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("PNG chunk length overflow".to_string()))?;
+        if bytes.len() - pos < chunk_total {
             return Err(ImageDecodeError::InvalidPng(
                 "truncated PNG chunk payload".to_string(),
             ));
         }
-        let data = &bytes[pos..pos + len];
-        let expected_crc = u32::from_be_bytes([
-            bytes[pos + len],
-            bytes[pos + len + 1],
-            bytes[pos + len + 2],
-            bytes[pos + len + 3],
-        ]);
-        pos += len + 4;
+        let data_end = pos
+            .checked_add(len)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("PNG chunk offset overflow".to_string()))?;
+        let crc_end = pos
+            .checked_add(chunk_total)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("PNG chunk offset overflow".to_string()))?;
+        let data = bytes
+            .get(pos..data_end)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("truncated PNG chunk payload".to_string()))?;
+        let crc_bytes = bytes
+            .get(data_end..crc_end)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("truncated PNG chunk CRC".to_string()))?;
+        let expected_crc = u32::from_be_bytes([crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]);
+        pos = crc_end;
 
         let actual_crc = crc32_ieee(chunk_type, data);
         if actual_crc != expected_crc {
@@ -852,13 +882,16 @@ pub fn decode_png(bytes: &[u8]) -> Result<DecodedImage, ImageDecodeError> {
                 });
             }
             b"PLTE" => {
-                if header.is_none() || data.is_empty() || data.len() % 3 != 0 || data.len() > 256 * 3
+                if header.is_none()
+                    || data.is_empty()
+                    || !data.len().is_multiple_of(3)
+                    || data.len() > 256 * 3
                 {
                     return Err(ImageDecodeError::InvalidPng("invalid PLTE chunk".to_string()));
                 }
                 let mut pal = Vec::with_capacity(data.len() / 3);
-                for rgb in data.chunks_exact(3) {
-                    pal.push([rgb[0], rgb[1], rgb[2]]);
+                for &rgb in data.as_chunks::<3>().0 {
+                    pal.push(rgb);
                 }
                 palette = Some(pal);
             }
@@ -942,28 +975,25 @@ pub fn decode_png(bytes: &[u8]) -> Result<DecodedImage, ImageDecodeError> {
         )?;
     } else {
         // Adam7 interlace passes: (x_start, y_start, x_step, y_step)
-        const ADAM7: [(u32, u32, u32, u32); 7] = [
-            (0, 0, 8, 8),
-            (4, 0, 8, 8),
-            (0, 4, 4, 8),
-            (2, 0, 4, 4),
-            (0, 2, 2, 4),
-            (1, 0, 2, 2),
-            (0, 1, 1, 2),
-        ];
         let mut cursor = 0usize;
-        for &(xs, ys, xstep, ystep) in &ADAM7 {
+        for &(xs, ys, xstep, ystep) in &ADAM7_PASSES {
             if xs >= hdr.width || ys >= hdr.height {
                 continue;
             }
             let pw = (hdr.width - xs).div_ceil(xstep);
             let ph = (hdr.height - ys).div_ceil(ystep);
             let row_bytes = hdr.scanline_bytes(pw)?;
+            let stride = row_bytes
+                .checked_add(1)
+                .ok_or_else(|| ImageDecodeError::InvalidPng("pass stride overflow".to_string()))?;
             let pass_bytes = (ph as usize)
-                .checked_mul(row_bytes + 1)
+                .checked_mul(stride)
                 .ok_or_else(|| ImageDecodeError::InvalidPng("pass size overflow".to_string()))?;
+            let end = cursor
+                .checked_add(pass_bytes)
+                .ok_or_else(|| ImageDecodeError::InvalidPng("Adam7 cursor overflow".to_string()))?;
             let slice = inflated
-                .get(cursor..cursor + pass_bytes)
+                .get(cursor..end)
                 .ok_or_else(|| ImageDecodeError::InvalidPng("truncated Adam7 pass".to_string()))?;
             decode_pass(
                 hdr,
@@ -978,7 +1008,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<DecodedImage, ImageDecodeError> {
                 ph,
                 &mut rgba,
             )?;
-            cursor += pass_bytes;
+            cursor = end;
         }
     }
 
@@ -992,29 +1022,26 @@ pub fn decode_png(bytes: &[u8]) -> Result<DecodedImage, ImageDecodeError> {
 fn expected_decompressed_size(hdr: PngHeader) -> Result<usize, ImageDecodeError> {
     if hdr.interlace == 0 {
         let row_bytes = hdr.scanline_bytes(hdr.width)?;
+        let stride = row_bytes.checked_add(1).ok_or_else(|| {
+            ImageDecodeError::InvalidPng("decompressed size overflow".to_string())
+        })?;
         return (hdr.height as usize)
-            .checked_mul(row_bytes + 1)
+            .checked_mul(stride)
             .ok_or_else(|| ImageDecodeError::InvalidPng("decompressed size overflow".to_string()));
     }
-    const ADAM7: [(u32, u32, u32, u32); 7] = [
-        (0, 0, 8, 8),
-        (4, 0, 8, 8),
-        (0, 4, 4, 8),
-        (2, 0, 4, 4),
-        (0, 2, 2, 4),
-        (1, 0, 2, 2),
-        (0, 1, 1, 2),
-    ];
     let mut total = 0usize;
-    for &(xs, ys, xstep, ystep) in &ADAM7 {
+    for &(xs, ys, xstep, ystep) in &ADAM7_PASSES {
         if xs >= hdr.width || ys >= hdr.height {
             continue;
         }
         let pw = (hdr.width - xs).div_ceil(xstep);
         let ph = (hdr.height - ys).div_ceil(ystep);
         let row_bytes = hdr.scanline_bytes(pw)?;
+        let stride = row_bytes.checked_add(1).ok_or_else(|| {
+            ImageDecodeError::InvalidPng("decompressed size overflow".to_string())
+        })?;
         let pass_bytes = (ph as usize)
-            .checked_mul(row_bytes + 1)
+            .checked_mul(stride)
             .ok_or_else(|| ImageDecodeError::InvalidPng("decompressed size overflow".to_string()))?;
         total = total
             .checked_add(pass_bytes)
@@ -1038,18 +1065,43 @@ fn decode_pass(
     out_rgba: &mut [u8],
 ) -> Result<(), ImageDecodeError> {
     let row_bytes = hdr.scanline_bytes(pass_w)?;
+    let stride = row_bytes
+        .checked_add(1)
+        .ok_or_else(|| ImageDecodeError::InvalidPng("scanline stride overflow".to_string()))?;
     let bpp = hdr.filter_bpp();
     let mut prev_row = vec![0u8; row_bytes];
     let mut cur_row = vec![0u8; row_bytes];
 
     for py in 0..pass_h {
-        let src_off = (py as usize) * (row_bytes + 1);
-        let filter = pass_data[src_off];
-        let filtered = &pass_data[src_off + 1..src_off + 1 + row_bytes];
+        let src_off = (py as usize)
+            .checked_mul(stride)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("scanline offset overflow".to_string()))?;
+        let &filter = pass_data
+            .get(src_off)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("truncated PNG scanline".to_string()))?;
+        let row_start = src_off
+            .checked_add(1)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("scanline offset overflow".to_string()))?;
+        let row_end = row_start
+            .checked_add(row_bytes)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("scanline offset overflow".to_string()))?;
+        let filtered = pass_data
+            .get(row_start..row_end)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("truncated PNG scanline".to_string()))?;
         unfilter_scanline(filter, filtered, &prev_row, &mut cur_row, bpp)?;
 
-        let dst_y = (y_start + py * y_step) as usize;
-        let row_dst_base = dst_y * (hdr.width as usize);
+        let dst_y = py
+            .checked_mul(y_step)
+            .and_then(|dy| y_start.checked_add(dy))
+            .ok_or_else(|| ImageDecodeError::InvalidPng("Adam7 Y coordinate overflow".to_string()))?;
+        if dst_y >= hdr.height {
+            return Err(ImageDecodeError::InvalidPng(
+                "Adam7 Y coordinate out of bounds".to_string(),
+            ));
+        }
+        let row_dst_base = (dst_y as usize)
+            .checked_mul(hdr.width as usize)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("pixel row offset overflow".to_string()))?;
         expand_row_to_rgba(
             hdr,
             &cur_row,
@@ -1130,14 +1182,44 @@ fn paeth_predictor(a: u8, b: u8, c: u8) -> u8 {
 }
 
 #[inline]
-fn read_packed_sample(row: &[u8], bit_depth: u8, index: usize) -> u8 {
-    match bit_depth {
-        1 => (row[index >> 3] >> (7 - (index & 7))) & 1,
-        2 => (row[index >> 2] >> (6 - ((index & 3) * 2))) & 3,
-        4 => (row[index >> 1] >> (4 - ((index & 1) * 4))) & 15,
-        8 => row[index],
+fn read_packed_sample(row: &[u8], bit_depth: u8, index: usize) -> Result<u8, ImageDecodeError> {
+    let sample = match bit_depth {
+        1 => {
+            let b = *row
+                .get(index >> 3)
+                .ok_or_else(|| ImageDecodeError::InvalidPng("scanline read out of bounds".to_string()))?;
+            (b >> (7 - (index & 7))) & 1
+        }
+        2 => {
+            let b = *row
+                .get(index >> 2)
+                .ok_or_else(|| ImageDecodeError::InvalidPng("scanline read out of bounds".to_string()))?;
+            (b >> (6 - ((index & 3) * 2))) & 3
+        }
+        4 => {
+            let b = *row
+                .get(index >> 1)
+                .ok_or_else(|| ImageDecodeError::InvalidPng("scanline read out of bounds".to_string()))?;
+            (b >> (4 - ((index & 1) * 4))) & 15
+        }
+        8 => *row
+            .get(index)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("scanline read out of bounds".to_string()))?,
         _ => 0,
-    }
+    };
+    Ok(sample)
+}
+
+#[inline]
+fn read_row_slice(row: &[u8], px: usize, stride: usize) -> Result<&[u8], ImageDecodeError> {
+    let start = px
+        .checked_mul(stride)
+        .ok_or_else(|| ImageDecodeError::InvalidPng("scanline pixel offset overflow".to_string()))?;
+    let end = start
+        .checked_add(stride)
+        .ok_or_else(|| ImageDecodeError::InvalidPng("scanline pixel offset overflow".to_string()))?;
+    row.get(start..end)
+        .ok_or_else(|| ImageDecodeError::InvalidPng("scanline read out of bounds".to_string()))
 }
 
 #[inline]
@@ -1176,7 +1258,7 @@ fn expand_row_to_rgba(
     for px in 0..pass_w as usize {
         let (r, g, b, a) = match (hdr.color_type, hdr.bit_depth) {
             (0, d @ (1 | 2 | 4 | 8)) => {
-                let raw = read_packed_sample(row, d, px);
+                let raw = read_packed_sample(row, d, px)?;
                 let g8 = scale_subbyte_gray(raw, d);
                 let alpha = if trns_gray16 == Some(raw as u16) {
                     0
@@ -1186,14 +1268,15 @@ fn expand_row_to_rgba(
                 (g8, g8, g8, alpha)
             }
             (0, 16) => {
-                let raw = u16::from_be_bytes([row[px * 2], row[px * 2 + 1]]);
+                let s = read_row_slice(row, px, 2)?;
+                let raw = u16::from_be_bytes([s[0], s[1]]);
                 let g8 = (raw >> 8) as u8;
                 let alpha = if trns_gray16 == Some(raw) { 0 } else { 255 };
                 (g8, g8, g8, alpha)
             }
             (2, 8) => {
-                let i = px * 3;
-                let (r, g, b) = (row[i], row[i + 1], row[i + 2]);
+                let s = read_row_slice(row, px, 3)?;
+                let (r, g, b) = (s[0], s[1], s[2]);
                 let alpha = if trns_rgb16 == Some((r as u16, g as u16, b as u16)) {
                     0
                 } else {
@@ -1202,10 +1285,10 @@ fn expand_row_to_rgba(
                 (r, g, b, alpha)
             }
             (2, 16) => {
-                let i = px * 6;
-                let r16 = u16::from_be_bytes([row[i], row[i + 1]]);
-                let g16 = u16::from_be_bytes([row[i + 2], row[i + 3]]);
-                let b16 = u16::from_be_bytes([row[i + 4], row[i + 5]]);
+                let s = read_row_slice(row, px, 6)?;
+                let r16 = u16::from_be_bytes([s[0], s[1]]);
+                let g16 = u16::from_be_bytes([s[2], s[3]]);
+                let b16 = u16::from_be_bytes([s[4], s[5]]);
                 let alpha = if trns_rgb16 == Some((r16, g16, b16)) {
                     0
                 } else {
@@ -1214,7 +1297,7 @@ fn expand_row_to_rgba(
                 ((r16 >> 8) as u8, (g16 >> 8) as u8, (b16 >> 8) as u8, alpha)
             }
             (3, d @ (1 | 2 | 4 | 8)) => {
-                let idx = read_packed_sample(row, d, px) as usize;
+                let idx = read_packed_sample(row, d, px)? as usize;
                 let pal = palette.ok_or_else(|| {
                     ImageDecodeError::InvalidPng("missing PLTE for indexed PNG".to_string())
                 })?;
@@ -1225,23 +1308,23 @@ fn expand_row_to_rgba(
                 (rgb[0], rgb[1], rgb[2], alpha)
             }
             (4, 8) => {
-                let i = px * 2;
-                let g8 = row[i];
-                (g8, g8, g8, row[i + 1])
+                let s = read_row_slice(row, px, 2)?;
+                let g8 = s[0];
+                (g8, g8, g8, s[1])
             }
             (4, 16) => {
-                let i = px * 4;
-                let g8 = row[i];
-                let a8 = row[i + 2];
+                let s = read_row_slice(row, px, 4)?;
+                let g8 = s[0];
+                let a8 = s[2];
                 (g8, g8, g8, a8)
             }
             (6, 8) => {
-                let i = px * 4;
-                (row[i], row[i + 1], row[i + 2], row[i + 3])
+                let s = read_row_slice(row, px, 4)?;
+                (s[0], s[1], s[2], s[3])
             }
             (6, 16) => {
-                let i = px * 8;
-                (row[i], row[i + 2], row[i + 4], row[i + 6])
+                let s = read_row_slice(row, px, 8)?;
+                (s[0], s[2], s[4], s[6])
             }
             _ => {
                 return Err(ImageDecodeError::InvalidPng(
@@ -1250,12 +1333,31 @@ fn expand_row_to_rgba(
             }
         };
 
-        let dst_x = (x_start + (px as u32) * x_step) as usize;
-        let out_idx = (row_dst_base + dst_x) * 4;
-        out_rgba[out_idx] = r;
-        out_rgba[out_idx + 1] = g;
-        out_rgba[out_idx + 2] = b;
-        out_rgba[out_idx + 3] = a;
+        let px_u32 = u32::try_from(px)
+            .map_err(|_| ImageDecodeError::InvalidPng("Adam7 X coordinate overflow".to_string()))?;
+        let dst_x = px_u32
+            .checked_mul(x_step)
+            .and_then(|dx| x_start.checked_add(dx))
+            .ok_or_else(|| ImageDecodeError::InvalidPng("Adam7 X coordinate overflow".to_string()))?;
+        if dst_x >= hdr.width {
+            return Err(ImageDecodeError::InvalidPng(
+                "Adam7 X coordinate out of bounds".to_string(),
+            ));
+        }
+        let out_idx = row_dst_base
+            .checked_add(dst_x as usize)
+            .and_then(|p| p.checked_mul(4))
+            .ok_or_else(|| ImageDecodeError::InvalidPng("RGBA buffer index overflow".to_string()))?;
+        let out_end = out_idx
+            .checked_add(4)
+            .ok_or_else(|| ImageDecodeError::InvalidPng("RGBA buffer index overflow".to_string()))?;
+        let dst_px = out_rgba.get_mut(out_idx..out_end).ok_or_else(|| {
+            ImageDecodeError::InvalidPng("RGBA pixel write out of bounds".to_string())
+        })?;
+        dst_px[0] = r;
+        dst_px[1] = g;
+        dst_px[2] = b;
+        dst_px[3] = a;
     }
 
     Ok(())
@@ -1291,7 +1393,9 @@ mod tests {
             assert_eq!(img.rgba.len(), 8 * 8 * 4);
             let opaque_non_black = img
                 .rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|px| px[3] > 0 && (px[0] > 0 || px[1] > 0 || px[2] > 0))
                 .count();
             assert!(
@@ -1393,5 +1497,31 @@ mod tests {
         let center_crop = compute_image_placement(dst, 200, 100, ImageResizeMode::Center).unwrap();
         assert_eq!((center_crop.dst_x, center_crop.dst_y, center_crop.dst_w, center_crop.dst_h), (10.0, 20.0, 100.0, 50.0));
         assert_eq!((center_crop.src_x, center_crop.src_y, center_crop.src_w, center_crop.src_h), (50.0, 25.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn adam7_and_pass_indexing_reject_overflow_and_out_of_bounds_cleanly() {
+        let hdr = PngHeader {
+            width: 4,
+            height: 4,
+            bit_depth: 8,
+            color_type: 6,
+            interlace: 1,
+        };
+        let mut rgba = vec![0u8; 4 * 4 * 4];
+        let one_row = vec![0u8; 1 + 4]; // filter byte + 1 RGBA pixel
+
+        // Overflow in y_start + py * y_step must return Err instead of panicking.
+        assert!(decode_pass(hdr, &one_row, None, None, 0, u32::MAX, 1, 1, 1, 1, &mut rgba).is_err());
+        assert!(decode_pass(hdr, &[0u8; 10], None, None, 0, 0, 1, u32::MAX, 1, 2, &mut rgba).is_err());
+        // Out-of-bounds y_start >= hdr.height must return Err.
+        assert!(decode_pass(hdr, &one_row, None, None, 0, 4, 1, 1, 1, 1, &mut rgba).is_err());
+        // Overflow / out-of-bounds x_start + px * x_step must return Err.
+        assert!(decode_pass(hdr, &one_row, None, None, u32::MAX, 0, 1, 1, 1, 1, &mut rgba).is_err());
+        assert!(decode_pass(hdr, &one_row, None, None, 4, 0, 1, 1, 1, 1, &mut rgba).is_err());
+        // Truncated pass_data and undersized out_rgba must return Err.
+        assert!(decode_pass(hdr, &[], None, None, 0, 0, 1, 1, 1, 1, &mut rgba).is_err());
+        let mut tiny = vec![0u8; 2];
+        assert!(decode_pass(hdr, &one_row, None, None, 0, 0, 1, 1, 1, 1, &mut tiny).is_err());
     }
 }

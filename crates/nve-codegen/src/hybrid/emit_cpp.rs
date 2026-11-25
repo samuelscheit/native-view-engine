@@ -18,8 +18,8 @@ use crate::hybrid::ir::{
 };
 use crate::ir::GeneratedFile;
 use crate::naming::{
-    cpp_ident, escape_string_literal, format_float_literal, to_camel_case, to_pascal_case,
-    to_snake_case,
+    c_field_ident, cpp_ident, escape_c_like_string, format_float_literal, to_camel_case,
+    to_pascal_case, to_snake_case,
 };
 
 /// Emits `<Stem>HybridAbi.h` (pure C11) and `<Stem>HybridSpec.hpp` (C++20).
@@ -626,7 +626,7 @@ fn emit_cpp_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileSpec
     writeln!(out, "    w.write_map({}u, [&](BinWriter& w) {{", s.fields.len()).unwrap();
     for f in &s.fields {
         let fname = cpp_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_c_like_string(&f.name);
         writeln!(out, "      w.write_map_key(\"{key_lit}\");").unwrap();
         emit_cpp_bin_write(out, "      ", "w", &fname, &f.ty);
     }
@@ -641,7 +641,7 @@ fn emit_cpp_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileSpec
     writeln!(out, "      const auto key = r.read_map_key();").unwrap();
     for (idx, f) in s.fields.iter().enumerate() {
         let fname = cpp_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_c_like_string(&f.name);
         let cond = if idx == 0 { "if" } else { "else if" };
         writeln!(out, "      {cond} (key == \"{key_lit}\") {{").unwrap();
         emit_cpp_bin_read(out, "        ", "r", &format!("out.{fname}"), &f.ty);
@@ -856,7 +856,7 @@ fn emit_cpp_set_props(out: &mut String, pascal: &str, v: &HybridViewSpec) {
     }
     for (idx, p) in v.props.iter().enumerate() {
         let pname = cpp_ident(&p.name);
-        let key_lit = escape_string_literal(&p.name);
+        let key_lit = escape_c_like_string(&p.name);
         writeln!(out, "    {{").unwrap();
         writeln!(out, "      NveMapEntry entry{{}};").unwrap();
         writeln!(
@@ -1103,20 +1103,6 @@ fn cpp_param_type(ty: &HybridType) -> String {
         HybridType::Optional(inner) => format!("const std::optional<{}>&", cpp_owned_type(inner)),
         HybridType::Vec(inner) => format!("const std::vector<{}>&", cpp_owned_type(inner)),
         other => cpp_owned_type(other),
-    }
-}
-
-fn c_field_ident(raw: &str) -> String {
-    let s = to_snake_case(raw);
-    match s.as_str() {
-        "auto" | "break" | "case" | "char" | "const" | "continue" | "default" | "do" | "double"
-        | "else" | "enum" | "extern" | "float" | "for" | "goto" | "if" | "inline" | "int"
-        | "long" | "register" | "restrict" | "return" | "short" | "signed" | "sizeof"
-        | "static" | "struct" | "switch" | "typedef" | "union" | "unsigned" | "void"
-        | "volatile" | "while" | "class" | "delete" | "new" | "namespace" | "template" => {
-            format!("{s}_")
-        }
-        _ => s,
     }
 }
 
@@ -1372,6 +1358,8 @@ fn cpp_prop_default_initializer(ty: &HybridType, def: Option<&HybridDefaultValue
         (HybridDefaultValue::Bool(b), _) => b.to_string(),
         (HybridDefaultValue::Int(i), HybridType::F32) => format!("{i}.0f"),
         (HybridDefaultValue::Int(i), HybridType::F64) => format!("{i}.0"),
+        (HybridDefaultValue::Int(i), _) if *i == i64::MIN => "INT64_MIN".to_string(),
+        (HybridDefaultValue::Int(i), HybridType::I64) => format!("{i}LL"),
         (HybridDefaultValue::Int(i), _) => i.to_string(),
         (HybridDefaultValue::UInt(u), HybridType::F32) => format!("{u}.0f"),
         (HybridDefaultValue::UInt(u), HybridType::F64) => format!("{u}.0"),
@@ -1379,7 +1367,7 @@ fn cpp_prop_default_initializer(ty: &HybridType, def: Option<&HybridDefaultValue
         (HybridDefaultValue::UInt(u), _) => format!("{u}u"),
         (HybridDefaultValue::Float(f), HybridType::F32) => format!("{}f", format_float_literal(*f)),
         (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-        (HybridDefaultValue::String(s), _) => format!("\"{}\"", escape_string_literal(s)),
+        (HybridDefaultValue::String(s), _) => format!("\"{}\"", escape_c_like_string(s)),
         (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
             format!("{enum_name}::{variant}")
         }

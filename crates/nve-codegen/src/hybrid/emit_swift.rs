@@ -16,8 +16,8 @@ use crate::hybrid::ir::{
 };
 use crate::ir::GeneratedFile;
 use crate::naming::{
-    escape_string_literal, format_float_literal, swift_ident, to_camel_case, to_pascal_case,
-    to_snake_case,
+    c_field_ident, escape_c_like_string, format_float_literal, swift_ident, to_camel_case,
+    to_pascal_case,
 };
 
 /// Emits `<Stem>HybridSpec.swift` targeting direct C interop with `<Stem>HybridAbi.h`.
@@ -432,7 +432,7 @@ fn emit_swift_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileSp
     writeln!(out, "        w.writeMap(count: {}) {{ w in", s.fields.len()).unwrap();
     for f in &s.fields {
         let fname = swift_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_c_like_string(&f.name);
         writeln!(out, "            w.writeMapKey(\"{key_lit}\")").unwrap();
         emit_swift_bin_write(out, "            ", "w", &format!("self.{fname}"), &f.ty);
     }
@@ -453,7 +453,7 @@ fn emit_swift_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileSp
     writeln!(out, "            switch key {{").unwrap();
     for f in &s.fields {
         let fname = swift_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_c_like_string(&f.name);
         writeln!(out, "            case \"{key_lit}\":").unwrap();
         emit_swift_bin_read(out, "                ", "r", &format!("out.{fname}"), &f.ty);
     }
@@ -644,7 +644,7 @@ fn emit_swift_set_props(out: &mut String, pascal: &str, v: &HybridViewSpec) {
     writeln!(out, "        var keyIndices: [Int] = []").unwrap();
     writeln!(out, "        var valBufIndices: [Int] = []").unwrap();
     for p in &v.props {
-        let key_lit = escape_string_literal(&p.name);
+        let key_lit = escape_c_like_string(&p.name);
         let pname = swift_ident(&p.name);
         writeln!(out, "        keyIndices.append(pinnedBuffers.count)").unwrap();
         writeln!(out, "        pinnedBuffers.append(Array(\"{key_lit}\".utf8))").unwrap();
@@ -1108,7 +1108,7 @@ fn swift_default_value(
             (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
             (HybridDefaultValue::UInt(u), _) => u.to_string(),
             (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-            (HybridDefaultValue::String(s), _) => format!("\"{}\"", escape_string_literal(s)),
+            (HybridDefaultValue::String(s), _) => format!("\"{}\"", escape_c_like_string(s)),
             (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
                 format!("{enum_name}.{}", swift_ident(variant))
             }
@@ -1272,20 +1272,6 @@ fn emit_swift_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
         | HybridType::Handle(_) => {}
-    }
-}
-
-fn c_field_ident(raw: &str) -> String {
-    let s = to_snake_case(raw);
-    match s.as_str() {
-        "auto" | "break" | "case" | "char" | "const" | "continue" | "default" | "do" | "double"
-        | "else" | "enum" | "extern" | "float" | "for" | "goto" | "if" | "inline" | "int"
-        | "long" | "register" | "restrict" | "return" | "short" | "signed" | "sizeof"
-        | "static" | "struct" | "switch" | "typedef" | "union" | "unsigned" | "void"
-        | "volatile" | "while" | "class" | "delete" | "new" | "namespace" | "template" => {
-            format!("{s}_")
-        }
-        _ => s,
     }
 }
 

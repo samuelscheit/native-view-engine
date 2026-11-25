@@ -96,7 +96,9 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CodegenError> {
             }
             let mut text = String::new();
             while i < chars.len() && chars[i] != '\n' {
-                text.push(advance(&mut i, &mut line, &mut col).unwrap());
+                if let Some(ch) = advance(&mut i, &mut line, &mut col) {
+                    text.push(ch);
+                }
             }
             if is_doc {
                 tokens.push(Tok {
@@ -205,8 +207,9 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CodegenError> {
                 advance(&mut i, &mut line, &mut col);
                 advance(&mut i, &mut line, &mut col);
                 while i < chars.len() && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
-                    let ch = advance(&mut i, &mut line, &mut col).unwrap();
-                    if ch != '_' {
+                    if let Some(ch) = advance(&mut i, &mut line, &mut col)
+                        && ch != '_'
+                    {
                         raw.push(ch);
                     }
                 }
@@ -226,8 +229,9 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CodegenError> {
             }
             let mut is_float = false;
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                let ch = advance(&mut i, &mut line, &mut col).unwrap();
-                if ch != '_' {
+                if let Some(ch) = advance(&mut i, &mut line, &mut col)
+                    && ch != '_'
+                {
                     raw.push(ch);
                 }
             }
@@ -236,23 +240,31 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CodegenError> {
                 && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())
             {
                 is_float = true;
-                raw.push(advance(&mut i, &mut line, &mut col).unwrap());
+                if let Some(dot) = advance(&mut i, &mut line, &mut col) {
+                    raw.push(dot);
+                }
                 while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                    let ch = advance(&mut i, &mut line, &mut col).unwrap();
-                    if ch != '_' {
+                    if let Some(ch) = advance(&mut i, &mut line, &mut col)
+                        && ch != '_'
+                    {
                         raw.push(ch);
                     }
                 }
             }
             if i < chars.len() && matches!(chars[i], 'e' | 'E') {
                 is_float = true;
-                raw.push(advance(&mut i, &mut line, &mut col).unwrap());
-                if i < chars.len() && matches!(chars[i], '+' | '-') {
-                    raw.push(advance(&mut i, &mut line, &mut col).unwrap());
+                if let Some(exp) = advance(&mut i, &mut line, &mut col) {
+                    raw.push(exp);
+                }
+                if i < chars.len() && matches!(chars[i], '+' | '-')
+                    && let Some(sign) = advance(&mut i, &mut line, &mut col)
+                {
+                    raw.push(sign);
                 }
                 while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                    let ch = advance(&mut i, &mut line, &mut col).unwrap();
-                    if ch != '_' {
+                    if let Some(ch) = advance(&mut i, &mut line, &mut col)
+                        && ch != '_'
+                    {
                         raw.push(ch);
                     }
                 }
@@ -295,7 +307,9 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CodegenError> {
         if c.is_ascii_alphabetic() || c == '_' {
             let mut ident = String::new();
             while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                ident.push(advance(&mut i, &mut line, &mut col).unwrap());
+                if let Some(ch) = advance(&mut i, &mut line, &mut col) {
+                    ident.push(ch);
+                }
             }
             tokens.push(Tok {
                 kind: TokKind::Ident(ident),
@@ -391,24 +405,57 @@ enum AttrValue {
     Float(f64),
 }
 
+const MAX_PARSE_DEPTH: usize = 128;
+
 struct Parser {
     tokens: Vec<Tok>,
+    eof: Tok,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
     fn new(tokens: Vec<Tok>) -> Self {
-        Self { tokens, pos: 0 }
+        let eof = tokens
+            .last()
+            .filter(|t| matches!(t.kind, TokKind::Eof))
+            .cloned()
+            .unwrap_or(Tok {
+                kind: TokKind::Eof,
+                line: 1,
+                col: 1,
+            });
+        Self {
+            tokens,
+            eof,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    fn enter_depth(&mut self) -> Result<(), CodegenError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            let tok = self.peek();
+            return Err(CodegenError::parse(
+                tok.line,
+                tok.col,
+                "maximum type nesting depth exceeded",
+            ));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    fn exit_depth(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn peek(&self) -> &Tok {
-        self.tokens.get(self.pos).unwrap_or(self.tokens.last().unwrap())
+        self.tokens.get(self.pos).unwrap_or(&self.eof)
     }
 
     fn peek_next(&self) -> &Tok {
-        self.tokens
-            .get(self.pos + 1)
-            .unwrap_or(self.tokens.last().unwrap())
+        self.tokens.get(self.pos + 1).unwrap_or(&self.eof)
     }
 
     fn bump(&mut self) -> Tok {
@@ -572,10 +619,25 @@ impl Parser {
                 let next = self.bump();
                 match next.kind {
                     TokKind::Int(u, _) => {
-                        let signed = i64::try_from(u).map_err(|_| {
-                            CodegenError::parse(next.line, next.col, "integer literal out of i64 range")
-                        })?;
-                        Ok(AttrValue::Int(-signed))
+                        let neg = if u == (i64::MAX as u64) + 1 {
+                            i64::MIN
+                        } else {
+                            let signed = i64::try_from(u).map_err(|_| {
+                                CodegenError::parse(
+                                    next.line,
+                                    next.col,
+                                    "integer literal out of i64 range",
+                                )
+                            })?;
+                            signed.checked_neg().ok_or_else(|| {
+                                CodegenError::parse(
+                                    next.line,
+                                    next.col,
+                                    "integer literal out of i64 range",
+                                )
+                            })?
+                        };
+                        Ok(AttrValue::Int(neg))
                     }
                     TokKind::Float(f) => Ok(AttrValue::Float(-f)),
                     _ => Err(CodegenError::parse(
@@ -647,10 +709,10 @@ impl Parser {
 
             // Optional file-level namespace via `#[nve_hybrid_namespace(name = "...")]` or module attr
             for attr in &attrs {
-                if attr_matches(&attr.name, "nve_hybrid_namespace") {
-                    if let Some(ns) = attr_string_arg(attr, "name") {
-                        file.namespace = Some(ns);
-                    }
+                if attr_matches(&attr.name, "nve_hybrid_namespace")
+                    && let Some(ns) = attr_string_arg(attr, "name")
+                {
+                    file.namespace = Some(ns);
                 }
             }
 
@@ -755,8 +817,7 @@ impl Parser {
                 let view_attr = attrs
                     .iter()
                     .find(|a| attr_matches(&a.name, "nve_hybrid_view"));
-                if mod_attr.is_some() && view_attr.is_some() {
-                    let a = mod_attr.unwrap();
+                if let (Some(a), Some(_)) = (mod_attr, view_attr) {
                     return Err(CodegenError::parse(
                         a.line,
                         a.col,
@@ -1166,6 +1227,13 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<HybridType, CodegenError> {
+        self.enter_depth()?;
+        let res = self.parse_type_inner();
+        self.exit_depth();
+        res
+    }
+
+    fn parse_type_inner(&mut self) -> Result<HybridType, CodegenError> {
         let tok = self.peek().clone();
         // Unit `()` -> Void
         if self.eat(&TokKind::LParen) {
@@ -1211,7 +1279,10 @@ impl Parser {
         while self.eat(&TokKind::ColonColon) {
             path.push(self.expect_ident("type path segment")?);
         }
-        let last = path.last().unwrap().as_str();
+        let last = path
+            .last()
+            .ok_or_else(|| CodegenError::parse(tok.line, tok.col, "empty type path"))?
+            .as_str();
 
         match last {
             "c_void" => Ok(HybridType::Void),
@@ -1273,10 +1344,10 @@ fn attr_matches(attr_name: &str, short_name: &str) -> bool {
 
 fn attr_string_arg(attr: &ParsedAttr, key: &str) -> Option<String> {
     attr.args.iter().find_map(|(k, v)| {
-        if k == key {
-            if let AttrValue::Str(s) = v {
-                return Some(s.clone());
-            }
+        if k == key
+            && let AttrValue::Str(s) = v
+        {
+            return Some(s.clone());
         }
         None
     })
@@ -1326,10 +1397,10 @@ fn apply_struct_layout_attrs(
     spec.expected_size = attr_usize_arg(attr, "size")?;
     spec.expected_size_64 = attr_usize_arg(attr, "size_64")?;
     spec.align = attr_usize_arg(attr, "align")?;
-    if spec.align.is_none() {
-        if let Some(ra) = repr_attr {
-            spec.align = attr_usize_arg(ra, "align")?;
-        }
+    if spec.align.is_none()
+        && let Some(ra) = repr_attr
+    {
+        spec.align = attr_usize_arg(ra, "align")?;
     }
     Ok(())
 }

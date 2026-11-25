@@ -9,8 +9,8 @@ use crate::ir::{
     ObjectField, PropSpec, PropType,
 };
 use crate::naming::{
-    dart_ident, escape_string_literal, escape_ts_single_quoted, format_float_literal,
-    strip_on_prefix, to_pascal_case, to_snake_case,
+    dart_ident, escape_dart_single_quoted_string, format_float_literal, int_enum_variant_camel,
+    sanitize_single_line_comment, strip_on_prefix, to_pascal_case, to_snake_case,
 };
 
 /// Generates a typed Flutter `StatefulWidget` + `dart:ffi` binding from an `NveExportSpec`.
@@ -56,18 +56,20 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     // 1. Direct `dart:ffi` modular interface resolver (`nve_get_interface`)
     let _ = writeln!(
         out,
-        "/// Direct `dart:ffi` symbol binding for `{name}`'s modular interface resolver (`{vtable_sym}`)."
+        "/// Direct `dart:ffi` symbol binding for `{}`'s modular interface resolver (`{}`).",
+        sanitize_single_line_comment(name),
+        sanitize_single_line_comment(vtable_sym)
     );
     let _ = writeln!(out, "class {name}NativeBindings {{");
     let _ = writeln!(
         out,
         "  static const String componentName = '{}';",
-        escape_ts_single_quoted(name)
+        escape_dart_single_quoted_string(name)
     );
     let _ = writeln!(
         out,
         "  static const String vtableSymbol = '{}';",
-        escape_ts_single_quoted(vtable_sym)
+        escape_dart_single_quoted_string(vtable_sym)
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "  final ffi.DynamicLibrary library;");
@@ -122,7 +124,8 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     // 4. Typed imperative command controller wrapping `NveSurfaceController`
     let _ = writeln!(
         out,
-        "/// Imperative controller for `{name}` delegating to `NveSurfaceController`."
+        "/// Imperative controller for `{}` delegating to `NveSurfaceController`.",
+        sanitize_single_line_comment(name)
     );
     let _ = writeln!(out, "class {name}Controller {{");
     let _ = writeln!(out, "  final NveSurfaceController inner;");
@@ -152,20 +155,20 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
             let _ = writeln!(
                 out,
                 "    inner.dispatchCommand('{}');",
-                escape_ts_single_quoted(&cmd.name)
+                escape_dart_single_quoted_string(&cmd.name)
             );
         } else {
             let _ = writeln!(
                 out,
                 "    inner.dispatchCommand('{}', <String, dynamic>{{",
-                escape_ts_single_quoted(&cmd.name)
+                escape_dart_single_quoted_string(&cmd.name)
             );
             for p in &cmd.params {
                 let pname = dart_ident(&p.name);
                 let _ = writeln!(
                     out,
                     "      '{}': {pname},",
-                    escape_ts_single_quoted(&p.name)
+                    escape_dart_single_quoted_string(&p.name)
                 );
             }
             let _ = writeln!(out, "    }});");
@@ -178,13 +181,15 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     // 5. Typed `StatefulWidget`
     if let Some(doc) = &spec.doc {
         for line in doc.lines() {
-            let _ = writeln!(out, "/// {line}");
+            let _ = writeln!(out, "/// {}", sanitize_single_line_comment(line));
         }
     }
     let _ = writeln!(out, "class {name} extends StatefulWidget {{");
     for prop in &spec.props {
         if let Some(doc) = &prop.doc {
-            let _ = writeln!(out, "  /// {doc}");
+            for line in doc.lines() {
+                let _ = writeln!(out, "  /// {}", sanitize_single_line_comment(line));
+            }
         }
         let field = dart_ident(&prop.name);
         let ty = dart_prop_type(name, prop);
@@ -238,7 +243,7 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "  Map<String, dynamic> _encodeProps() {{");
     let _ = writeln!(out, "    final map = <String, dynamic>{{}};");
     for prop in &spec.props {
-        let key = escape_ts_single_quoted(&prop.name);
+        let key = escape_dart_single_quoted_string(&prop.name);
         let field = dart_ident(&prop.name);
         let is_nullable = dart_prop_is_nullable(prop);
         let expr = dart_encode_prop_expr(&format!("widget.{field}"), prop, is_nullable);
@@ -267,8 +272,8 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
         let _ = writeln!(
             out,
             "      case '{}':\n      case '{}':",
-            escape_ts_single_quoted(&ev.name),
-            escape_ts_single_quoted(&short)
+            escape_dart_single_quoted_string(&ev.name),
+            escape_dart_single_quoted_string(&short)
         );
         if ev.payload.is_empty() {
             let _ = writeln!(out, "        widget.{cb}?.call();");
@@ -324,7 +329,7 @@ fn emit_dart_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
                     out,
                     "  {}('{}'){sep}",
                     dart_ident(v),
-                    escape_ts_single_quoted(v)
+                    escape_dart_single_quoted_string(v)
                 );
             }
             let _ = writeln!(out);
@@ -338,11 +343,7 @@ fn emit_dart_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
             let _ = writeln!(out, "enum {enum_name} {{");
             for (i, v) in variants.iter().enumerate() {
                 let sep = if i + 1 == variants.len() { ";" } else { "," };
-                let vname = if *v < 0 {
-                    format!("neg{}", v.unsigned_abs())
-                } else {
-                    format!("v{v}")
-                };
+                let vname = int_enum_variant_camel(*v);
                 let _ = writeln!(out, "  {vname}({v}){sep}");
             }
             let _ = writeln!(out);
@@ -387,7 +388,7 @@ fn emit_dart_event_class(out: &mut String, comp_name: &str, ev: &EventSpec) {
     let _ = writeln!(out, "    return {cls}(");
     for f in &ev.payload {
         let fname = dart_ident(&f.name);
-        let key = escape_ts_single_quoted(&f.name);
+        let key = escape_dart_single_quoted_string(&f.name);
         let expr = dart_from_json_expr(&key, f);
         let _ = writeln!(out, "      {fname}: {expr},");
     }
@@ -499,7 +500,7 @@ fn dart_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
             Some(format_float_literal(*f))
         }
         (PropType::String, DefaultValue::String(s)) => {
-            Some(format!("'{}'", escape_ts_single_quoted(s)))
+            Some(format!("'{}'", escape_dart_single_quoted_string(s)))
         }
         (PropType::StringEnum { variants }, DefaultValue::String(s)) if variants.contains(s) => {
             Some(format!(
@@ -511,11 +512,7 @@ fn dart_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
         (PropType::IntEnum { variants }, DefaultValue::Int(i))
             if variants.contains(&(*i as i32)) =>
         {
-            let vname = if *i < 0 {
-                format!("neg{}", i.unsigned_abs())
-            } else {
-                format!("v{i}")
-            };
+            let vname = int_enum_variant_camel(*i as i32);
             Some(format!("{comp_name}{}.{vname}", to_pascal_case(&prop.name)))
         }
         _ => None,
@@ -526,7 +523,6 @@ fn dart_encode_prop_expr(access: &str, prop: &PropSpec, nullable: bool) -> Strin
     let bang = if nullable { "!" } else { "" };
     match &prop.prop_type {
         PropType::Color => {
-            let _ = escape_string_literal;
             format!(
                 "'#${{{access}{bang}.toARGB32().toRadixString(16).padLeft(8, '0')}}'"
             )

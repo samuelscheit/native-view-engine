@@ -9,7 +9,8 @@ use crate::ir::{
     PropSpec, PropType,
 };
 use crate::naming::{
-    escape_string_literal, format_float_literal, strip_on_prefix, swift_ident, to_pascal_case,
+    escape_c_like_string, format_float_literal, int_enum_variant_camel,
+    sanitize_single_line_comment, strip_on_prefix, swift_ident, to_pascal_case,
 };
 
 /// Generates a typed SwiftUI `View` wrapping `NveSwiftUI.NveSurfaceRepresentable`.
@@ -63,7 +64,8 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     // 3. ObservableObject Controller wrapping `NveSurfaceController`
     let _ = writeln!(
         out,
-        "/// Imperative command controller for `{name}` wrapping `NveSwiftUI.NveSurfaceController`."
+        "/// Imperative command controller for `{}` wrapping `NveSwiftUI.NveSurfaceController`.",
+        sanitize_single_line_comment(name)
     );
     let _ = writeln!(out, "public final class {name}Controller: ObservableObject {{");
     let _ = writeln!(out, "    public let inner: NveSurfaceController");
@@ -92,13 +94,13 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
             let _ = writeln!(
                 out,
                 "        inner.dispatchCommand(name: \"{}\")",
-                escape_string_literal(&cmd.name)
+                escape_c_like_string(&cmd.name)
             );
         } else {
             let _ = writeln!(out, "        var args: [String: Any] = [:]");
             for p in &cmd.params {
                 let pname = swift_ident(&p.name);
-                let key = escape_string_literal(&p.name);
+                let key = escape_c_like_string(&p.name);
                 if p.optional {
                     let _ = writeln!(out, "        if let {pname} {{ args[\"{key}\"] = {pname} }}");
                 } else {
@@ -108,7 +110,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
             let _ = writeln!(
                 out,
                 "        inner.dispatchCommand(name: \"{}\", args: args)",
-                escape_string_literal(&cmd.name)
+                escape_c_like_string(&cmd.name)
             );
         }
         let _ = writeln!(out, "    }}");
@@ -119,13 +121,15 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     // 4. Typed SwiftUI View struct
     if let Some(doc) = &spec.doc {
         for line in doc.lines() {
-            let _ = writeln!(out, "/// {line}");
+            let _ = writeln!(out, "/// {}", sanitize_single_line_comment(line));
         }
     }
     let _ = writeln!(out, "public struct {name}View: View {{");
     for prop in &spec.props {
         if let Some(doc) = &prop.doc {
-            let _ = writeln!(out, "    /// {doc}");
+            for line in doc.lines() {
+                let _ = writeln!(out, "    /// {}", sanitize_single_line_comment(line));
+            }
         }
         let field = swift_ident(&prop.name);
         let ty = swift_prop_type(name, prop);
@@ -181,7 +185,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "    private func encodedProps() -> [String: Any] {{");
     let _ = writeln!(out, "        var dict: [String: Any] = [:]");
     for prop in &spec.props {
-        let key = escape_string_literal(&prop.name);
+        let key = escape_c_like_string(&prop.name);
         let field = swift_ident(&prop.name);
         let is_opt = swift_prop_is_optional(prop);
         let expr = swift_encode_prop_expr(&field, prop, is_opt);
@@ -210,8 +214,8 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
         let _ = writeln!(
             out,
             "        case \"{}\", \"{}\":",
-            escape_string_literal(&ev.name),
-            escape_string_literal(&short)
+            escape_c_like_string(&ev.name),
+            escape_c_like_string(&short)
         );
         if ev.payload.is_empty() {
             let _ = writeln!(out, "            {cb}?()");
@@ -235,12 +239,12 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
     let _ = writeln!(
         out,
         "            componentName: \"{}\",",
-        escape_string_literal(name)
+        escape_c_like_string(name)
     );
     let _ = writeln!(
         out,
         "            vtableSymbol: \"{}\",",
-        escape_string_literal(vtable_sym)
+        escape_c_like_string(vtable_sym)
     );
     let _ = writeln!(out, "            backend: {backend_case},");
     let _ = writeln!(out, "            props: encodedProps(),");
@@ -266,7 +270,7 @@ fn emit_swift_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
                     out,
                     "    case {} = \"{}\"",
                     swift_ident(v),
-                    escape_string_literal(v)
+                    escape_c_like_string(v)
                 );
             }
             let _ = writeln!(out, "}}");
@@ -279,11 +283,7 @@ fn emit_swift_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
                 "public enum {enum_name}: Int32, Sendable, Hashable, Codable, CaseIterable {{"
             );
             for v in variants {
-                let vname = if *v < 0 {
-                    format!("neg{}", v.unsigned_abs())
-                } else {
-                    format!("v{v}")
-                };
+                let vname = int_enum_variant_camel(*v);
                 let _ = writeln!(out, "    case {vname} = {v}");
             }
             let _ = writeln!(out, "}}");
@@ -362,7 +362,7 @@ fn swift_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
             Some(format_float_literal(*f))
         }
         (PropType::String | PropType::Color, DefaultValue::String(s)) => {
-            Some(format!("\"{}\"", escape_string_literal(s)))
+            Some(format!("\"{}\"", escape_c_like_string(s)))
         }
         (PropType::StringEnum { variants }, DefaultValue::String(s)) if variants.contains(s) => {
             let _ = comp_name;
@@ -371,11 +371,7 @@ fn swift_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
         (PropType::IntEnum { variants }, DefaultValue::Int(i))
             if variants.contains(&(*i as i32)) =>
         {
-            let vname = if *i < 0 {
-                format!("neg{}", i.unsigned_abs())
-            } else {
-                format!("v{i}")
-            };
+            let vname = int_enum_variant_camel(*i as i32);
             Some(format!(".{vname}"))
         }
         _ => None,

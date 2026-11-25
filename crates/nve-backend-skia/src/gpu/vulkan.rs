@@ -126,13 +126,19 @@ mod imp {
         readback_rgba: Vec<u8>,
     }
 
+    fn load_vulkan_entry() -> Result<ash::Entry, GpuSurfaceError> {
+        // SAFETY: `ash::Entry::load` opens the platform Vulkan loader library via `dlopen`
+        // (`libvulkan.so.1` / `libMoltenVK.dylib` / `vulkan-1.dll`) with standard OS semantics.
+        unsafe { ash::Entry::load() }.map_err(|e| {
+            GpuSurfaceError::DeviceUnavailable(format!("failed to load Vulkan loader: {e}"))
+        })
+    }
+
     impl VulkanSwapchain {
         /// Creates an offscreen Vulkan GPU context and VRAM-backed Skia render target.
         pub fn new_offscreen(config: GpuSurfaceConfig) -> Result<Self, GpuSurfaceError> {
             let vk_cfg = VulkanSwapchainConfig::from_surface_config(config)?;
-            let entry = unsafe { ash::Entry::load() }.map_err(|e| {
-                GpuSurfaceError::DeviceUnavailable(format!("failed to load Vulkan loader: {e}"))
-            })?;
+            let entry = load_vulkan_entry()?;
             let (instance, instance_exts) = create_instance(&entry, &[])?;
             let (physical_device, queue_family_index) =
                 pick_physical_device(&instance, None, &[])?;
@@ -190,9 +196,7 @@ mod imp {
                 .display_handle()
                 .map_err(|e| GpuSurfaceError::WindowHandleError(e.to_string()))?;
 
-            let entry = unsafe { ash::Entry::load() }.map_err(|e| {
-                GpuSurfaceError::DeviceUnavailable(format!("failed to load Vulkan loader: {e}"))
-            })?;
+            let entry = load_vulkan_entry()?;
             let surface_exts = required_surface_extensions(disp_handle.as_raw())?;
             let (instance, instance_exts) = create_instance(&entry, &surface_exts)?;
             let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);

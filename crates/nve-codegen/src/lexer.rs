@@ -71,7 +71,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CodegenError> {
     while pos < len {
         let start_line = line;
         let start_col = col;
-        let ch = src[pos..].chars().next().unwrap();
+        let Some(ch) = src[pos..].chars().next() else {
+            break;
+        };
 
         // Whitespace
         if ch.is_whitespace() {
@@ -85,8 +87,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CodegenError> {
             if next == b'/' {
                 advance(&mut pos, &mut line, &mut col);
                 advance(&mut pos, &mut line, &mut col);
-                while pos < len {
-                    let c = advance(&mut pos, &mut line, &mut col).unwrap();
+                while let Some(c) = advance(&mut pos, &mut line, &mut col) {
                     if c == '\n' {
                         break;
                     }
@@ -109,10 +110,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CodegenError> {
                         closed = true;
                         break;
                     }
-                    if let Some(c) = advance(&mut pos, &mut line, &mut col) {
-                        if is_doc {
-                            raw.push(c);
-                        }
+                    if let Some(c) = advance(&mut pos, &mut line, &mut col)
+                        && is_doc
+                    {
+                        raw.push(c);
                     }
                 }
                 if !closed {
@@ -142,8 +143,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CodegenError> {
             advance(&mut pos, &mut line, &mut col);
             let mut val = String::new();
             let mut closed = false;
-            while pos < len {
-                let c = advance(&mut pos, &mut line, &mut col).unwrap();
+            while let Some(c) = advance(&mut pos, &mut line, &mut col) {
                 if c == '\\' {
                     if let Some(esc) = advance(&mut pos, &mut line, &mut col) {
                         match esc {
@@ -183,8 +183,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CodegenError> {
         // Numbers (including hex 0x..., decimals 1.5, exponent 1e-3)
         if ch.is_ascii_digit() {
             let mut num = String::new();
-            while pos < len {
-                let c = src[pos..].chars().next().unwrap();
+            while let Some(c) = src[pos..].chars().next() {
                 if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
                     num.push(c);
                     advance(&mut pos, &mut line, &mut col);
@@ -203,8 +202,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CodegenError> {
         // Identifiers (ASCII letters, `_`, `$`, plus digits after first char)
         if ch.is_ascii_alphabetic() || ch == '_' || ch == '$' {
             let mut ident = String::new();
-            while pos < len {
-                let c = src[pos..].chars().next().unwrap();
+            while let Some(c) = src[pos..].chars().next() {
                 if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
                     ident.push(c);
                     advance(&mut pos, &mut line, &mut col);

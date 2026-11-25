@@ -17,7 +17,8 @@ use crate::hybrid::ir::{
 };
 use crate::ir::GeneratedFile;
 use crate::naming::{
-    dart_ident, escape_string_literal, format_float_literal, to_camel_case, to_pascal_case,
+    dart_ident, escape_dart_single_quoted_string, format_float_literal, to_camel_case,
+    to_pascal_case,
 };
 
 /// Emits `<stem>_hybrid.dart` using pure `dart:ffi` (zero JSON, zero `package:ffi`).
@@ -459,7 +460,7 @@ fn emit_dart_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileSpe
     writeln!(out, "    w.writeMap({}, (mw) {{", s.fields.len()).unwrap();
     for f in &s.fields {
         let fname = dart_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_dart_single_quoted_string(&f.name);
         writeln!(out, "      mw.writeMapKey('{key_lit}');").unwrap();
         emit_dart_bin_write(out, "      ", "mw", &fname, &f.ty);
     }
@@ -478,7 +479,7 @@ fn emit_dart_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileSpe
     writeln!(out, "      switch (r.readMapKey()) {{").unwrap();
     for f in &s.fields {
         let fname = dart_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_dart_single_quoted_string(&f.name);
         writeln!(out, "        case '{key_lit}':").unwrap();
         emit_dart_bin_read(out, "          ", "r", &format!("_{fname}"), &f.ty);
     }
@@ -755,40 +756,49 @@ fn emit_dart_client(
     writeln!(out, "  }}").unwrap();
     writeln!(out).unwrap();
 
+    let mut methods_body = String::new();
     if let Some(v) = view {
-        emit_dart_set_props(out, pascal, v);
+        emit_dart_set_props(&mut methods_body, pascal, v);
     }
 
     for m in methods {
-        emit_dart_client_method(out, pascal, m, spec);
+        emit_dart_client_method(&mut methods_body, pascal, m, spec);
     }
 
-    writeln!(out, "  NveHybridOwnedBytes _copyToNative(List<int> bytes) {{").unwrap();
-    writeln!(out, "    if (bytes.isEmpty) return ffi.Struct.create<NveHybridOwnedBytes>();").unwrap();
-    writeln!(out, "    final buf = _allocBytes(bytes.length);").unwrap();
-    writeln!(out, "    buf.ptr.asTypedList(bytes.length).setAll(0, bytes);").unwrap();
-    writeln!(out, "    return buf;").unwrap();
-    writeln!(out, "  }}").unwrap();
-    writeln!(out).unwrap();
+    out.push_str(&methods_body);
 
-    writeln!(out, "  String _takeString(NveHybridOwnedBytes raw) {{").unwrap();
-    writeln!(out, "    try {{").unwrap();
-    writeln!(out, "      if (raw.ptr == ffi.nullptr || raw.len == 0) return '';").unwrap();
-    writeln!(out, "      return utf8.decode(raw.ptr.asTypedList(raw.len));").unwrap();
-    writeln!(out, "    }} finally {{").unwrap();
-    writeln!(out, "      if (raw.ptr != ffi.nullptr) _freeBytes(raw);").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "  }}").unwrap();
-    writeln!(out).unwrap();
+    if methods_body.contains("_copyToNative(") {
+        writeln!(out, "  NveHybridOwnedBytes _copyToNative(List<int> bytes) {{").unwrap();
+        writeln!(out, "    if (bytes.isEmpty) return ffi.Struct.create<NveHybridOwnedBytes>();").unwrap();
+        writeln!(out, "    final buf = _allocBytes(bytes.length);").unwrap();
+        writeln!(out, "    buf.ptr.asTypedList(bytes.length).setAll(0, bytes);").unwrap();
+        writeln!(out, "    return buf;").unwrap();
+        writeln!(out, "  }}").unwrap();
+        writeln!(out).unwrap();
+    }
 
-    writeln!(out, "  Uint8List _takeBytes(NveHybridOwnedBytes raw) {{").unwrap();
-    writeln!(out, "    try {{").unwrap();
-    writeln!(out, "      if (raw.ptr == ffi.nullptr || raw.len == 0) return Uint8List(0);").unwrap();
-    writeln!(out, "      return Uint8List.fromList(raw.ptr.asTypedList(raw.len));").unwrap();
-    writeln!(out, "    }} finally {{").unwrap();
-    writeln!(out, "      if (raw.ptr != ffi.nullptr) _freeBytes(raw);").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "  }}").unwrap();
+    if methods_body.contains("_takeString(") {
+        writeln!(out, "  String _takeString(NveHybridOwnedBytes raw) {{").unwrap();
+        writeln!(out, "    try {{").unwrap();
+        writeln!(out, "      if (raw.ptr == ffi.nullptr || raw.len == 0) return '';").unwrap();
+        writeln!(out, "      return utf8.decode(raw.ptr.asTypedList(raw.len));").unwrap();
+        writeln!(out, "    }} finally {{").unwrap();
+        writeln!(out, "      if (raw.ptr != ffi.nullptr) _freeBytes(raw);").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "  }}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    if methods_body.contains("_takeBytes(") {
+        writeln!(out, "  Uint8List _takeBytes(NveHybridOwnedBytes raw) {{").unwrap();
+        writeln!(out, "    try {{").unwrap();
+        writeln!(out, "      if (raw.ptr == ffi.nullptr || raw.len == 0) return Uint8List(0);").unwrap();
+        writeln!(out, "      return Uint8List.fromList(raw.ptr.asTypedList(raw.len));").unwrap();
+        writeln!(out, "    }} finally {{").unwrap();
+        writeln!(out, "      if (raw.ptr != ffi.nullptr) _freeBytes(raw);").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "  }}").unwrap();
+    }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
@@ -810,7 +820,7 @@ fn emit_dart_set_props(out: &mut String, pascal: &str, v: &HybridViewSpec) {
     writeln!(out, "      final entriesPtr = entriesBuf.ptr.cast<NveMapEntry>();").unwrap();
     for (idx, p) in v.props.iter().enumerate() {
         let pname = dart_ident(&p.name);
-        let key_lit = escape_string_literal(&p.name);
+        let key_lit = escape_dart_single_quoted_string(&p.name);
         writeln!(out, "      {{").unwrap();
         writeln!(out, "        final kBuf = _copyToNative(utf8.encode('{key_lit}'));").unwrap();
         writeln!(out, "        tempBufs.add(kBuf);").unwrap();
@@ -1323,7 +1333,7 @@ fn dart_default_value(
             (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
             (HybridDefaultValue::UInt(u), _) => u.to_string(),
             (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-            (HybridDefaultValue::String(s), _) => format!("'{}'", escape_string_literal(s)),
+            (HybridDefaultValue::String(s), _) => format!("'{}'", escape_dart_single_quoted_string(s)),
             (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
                 format!("{enum_name}.{}", dart_ident(variant))
             }

@@ -15,7 +15,8 @@ use crate::ir::{
     NveExportSpec, ObjectField, PropSpec, PropType,
 };
 use crate::naming::{
-    cpp_ident, escape_string_literal, escape_ts_single_quoted, format_float_literal, kotlin_ident,
+    cpp_ident, escape_c_like_string, escape_kotlin_string, escape_ts_single_quoted,
+    format_float_literal, kotlin_ident, sanitize_block_comment, sanitize_single_line_comment,
     strip_on_prefix, to_pascal_case, to_snake_case,
 };
 
@@ -174,7 +175,7 @@ fn emit_native_component_ts(spec: &NveExportSpec) -> String {
 
     if let Some(doc) = &spec.doc {
         let _ = writeln!(out, "/**");
-        for line in doc.lines() {
+        for line in sanitize_block_comment(doc).lines() {
             let _ = writeln!(out, " * {line}");
         }
         let _ = writeln!(out, " */");
@@ -183,7 +184,11 @@ fn emit_native_component_ts(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "export interface NativeProps extends ViewProps {{");
     for prop in &spec.props {
         if let Some(doc) = &prop.doc {
-            let _ = writeln!(out, "  /** {doc} */");
+            let _ = writeln!(
+                out,
+                "  /** {} */",
+                sanitize_single_line_comment(&sanitize_block_comment(doc))
+            );
         }
         let opt = if prop.optional || prop.default_value.is_some() {
             "?"
@@ -203,7 +208,11 @@ fn emit_native_component_ts(spec: &NveExportSpec) -> String {
 
     for ev in &spec.events {
         if let Some(doc) = &ev.doc {
-            let _ = writeln!(out, "  /** {doc} */");
+            let _ = writeln!(
+                out,
+                "  /** {} */",
+                sanitize_single_line_comment(&sanitize_block_comment(doc))
+            );
         }
         let handler = match ev.bubbling {
             EventBubbling::Direct => "DirectEventHandler",
@@ -354,10 +363,7 @@ fn ts_default_literal(def: &DefaultValue) -> String {
         DefaultValue::Null => "null".to_owned(),
         DefaultValue::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
         DefaultValue::Int(i) => i.to_string(),
-        DefaultValue::Float(f) => {
-            let s = f.to_string();
-            if s.contains('.') { s } else { format!("{s}.0") }
-        }
+        DefaultValue::Float(f) => format_float_literal(*f),
         DefaultValue::String(s) => format!("'{}'", escape_ts_single_quoted(s)),
     }
 }
@@ -380,7 +386,8 @@ fn emit_cpp_bridge_hpp(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// C++20 bridge connecting RN Fabric `{name}` Props/EventEmitter <-> `nve::NveRnComponentBridge`."
+        "// C++20 bridge connecting RN Fabric `{}` Props/EventEmitter <-> `nve::NveRnComponentBridge`.",
+        sanitize_single_line_comment(name)
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "#include \"nve_abi.h\"");
@@ -403,7 +410,7 @@ fn emit_cpp_bridge_hpp(spec: &NveExportSpec) -> String {
     let _ = writeln!(
         out,
         "inline constexpr std::string_view k{name}Name = \"{}\";",
-        escape_string_literal(name)
+        escape_c_like_string(name)
     );
     let _ = writeln!(
         out,
@@ -531,7 +538,7 @@ fn emit_cpp_bridge_cpp(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(out, "  nve::PropMap map;");
     for prop in &spec.props {
-        let key = escape_string_literal(&prop.name);
+        let key = escape_c_like_string(&prop.name);
         let field = cpp_ident(&prop.name);
         let is_opt = prop.optional && export_cpp_default(prop).is_none();
         if is_opt {
@@ -640,8 +647,8 @@ fn emit_cpp_bridge_cpp(spec: &NveExportSpec) -> String {
         let _ = writeln!(
             out,
             "  {kw} (ev.name == \"{}\" || ev.name == \"{}\") {{",
-            escape_string_literal(&ev.name),
-            escape_string_literal(&short_name)
+            escape_c_like_string(&ev.name),
+            escape_c_like_string(&short_name)
         );
         let _ = writeln!(out, "    if (callbacks_.{cb_name}) {{");
         let _ = writeln!(out, "      callbacks_.{cb_name}(payload);");
@@ -689,7 +696,7 @@ fn export_cpp_default(prop: &PropSpec) -> Option<String> {
         (PropType::Double, DefaultValue::Int(i)) => Some(format!("{i}.0")),
         (PropType::Double, DefaultValue::Float(f)) => Some(format_float_literal(*f)),
         (PropType::String | PropType::StringEnum { .. } | PropType::Color, DefaultValue::String(s)) => {
-            Some(format!("\"{}\"", escape_string_literal(s)))
+            Some(format!("\"{}\"", escape_c_like_string(s)))
         }
         _ => None,
     }
@@ -783,7 +790,7 @@ fn emit_ios_component_view_mm(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(out, "  NSMutableDictionary<NSString *, id> *dict = [NSMutableDictionary dictionary];");
     for prop in &spec.props {
-        let key = escape_string_literal(&prop.name);
+        let key = escape_c_like_string(&prop.name);
         let field = cpp_ident(&prop.name);
         match &prop.prop_type {
             PropType::Bool => {
@@ -814,7 +821,7 @@ fn emit_ios_component_view_mm(spec: &NveExportSpec) -> String {
                 let _ = writeln!(
                     out,
                     "  // Prop `{}` forwarded via dictionary if serializable",
-                    prop.name
+                    sanitize_single_line_comment(&prop.name)
                 );
             }
         }
@@ -845,15 +852,15 @@ fn emit_ios_component_view_mm(spec: &NveExportSpec) -> String {
         let _ = writeln!(
             out,
             "    {kw} ([eventName isEqualToString:@\"{}\"] || [eventName isEqualToString:@\"{}\"]) {{",
-            escape_string_literal(&ev.name),
-            escape_string_literal(&short_name)
+            escape_c_like_string(&ev.name),
+            escape_c_like_string(&short_name)
         );
         let _ = writeln!(
             out,
             "      {name}EventEmitter::{ev_struct_name} eventPayload{{}};"
         );
         for f in &ev.payload {
-            let fkey = escape_string_literal(&f.name);
+            let fkey = escape_c_like_string(&f.name);
             let ffield = cpp_ident(&f.name);
             emit_objc_payload_field(&mut out, &fkey, &ffield, f);
         }
@@ -987,7 +994,7 @@ fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     let _ = writeln!(
         out,
         "        const val REACT_CLASS = \"{}\"",
-        escape_string_literal(name)
+        escape_kotlin_string(name)
     );
     let _ = writeln!(
         out,
@@ -1018,7 +1025,7 @@ fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     for prop in &spec.props {
         let setter = format!("set{}", to_pascal_case(&prop.name));
         let param = kotlin_ident(&prop.name);
-        let key = escape_string_literal(&prop.name);
+        let key = escape_kotlin_string(&prop.name);
         let (kt_ty, annotation) = kotlin_prop_sig(prop);
         let _ = writeln!(out);
         let _ = writeln!(out, "    {annotation}");
@@ -1057,8 +1064,8 @@ fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
             let _ = writeln!(
                 out,
                 "        builder.put(\"{}\", MapBuilder.of(\"registrationName\", \"{}\"))",
-                escape_string_literal(&top),
-                escape_string_literal(&ev.name)
+                escape_kotlin_string(&top),
+                escape_kotlin_string(&ev.name)
             );
         }
         let _ = writeln!(out, "        return builder.build()");
@@ -1080,8 +1087,8 @@ fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
             let _ = writeln!(
                 out,
                 "        builder.put(\"{}\", MapBuilder.of(\"phasedRegistrationNames\", MapBuilder.of(\"bubbled\", \"{}\")))",
-                escape_string_literal(&top),
-                escape_string_literal(&ev.name)
+                escape_kotlin_string(&top),
+                escape_kotlin_string(&ev.name)
             );
         }
         let _ = writeln!(out, "        return builder.build()");
@@ -1104,7 +1111,7 @@ fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
         if !ev.payload.is_empty() {
             let _ = writeln!(out, "        val json = JSONObject(payloadJson)");
             for f in &ev.payload {
-                let fkey = escape_string_literal(&f.name);
+                let fkey = escape_kotlin_string(&f.name);
                 match &f.field_type {
                     PropType::Bool => {
                         let _ = writeln!(
@@ -1136,7 +1143,7 @@ fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
         let _ = writeln!(
             out,
             "        reactContext.getJSModule(RCTEventEmitter::class.java).receiveEvent(view.id, \"{}\", event)",
-            escape_string_literal(&top)
+            escape_kotlin_string(&top)
         );
         let _ = writeln!(out, "    }}");
     }
@@ -1146,7 +1153,7 @@ fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
 }
 
 fn kotlin_prop_sig(prop: &PropSpec) -> (String, String) {
-    let key = escape_string_literal(&prop.name);
+    let key = escape_kotlin_string(&prop.name);
     match &prop.prop_type {
         PropType::Bool => {
             let def = match prop.default_value {
@@ -1241,7 +1248,7 @@ fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> String {
     let _ = writeln!(
         out,
         "inline constexpr std::wstring_view k{name}RnwComponentName = L\"{}\";",
-        escape_string_literal(name)
+        escape_c_like_string(name)
     );
     let _ = writeln!(
         out,
@@ -1326,8 +1333,8 @@ fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> String {
         let _ = writeln!(
             out,
             "    {kw} (ev.name == \"{}\" || ev.name == \"{}\") {{",
-            escape_string_literal(&ev.name),
-            escape_string_literal(&short_name)
+            escape_c_like_string(&ev.name),
+            escape_c_like_string(&short_name)
         );
         let _ = writeln!(out, "      if (callbacks_.{cb_name}) {{");
         let _ = writeln!(out, "        callbacks_.{cb_name}(payload);");

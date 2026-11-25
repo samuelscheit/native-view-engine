@@ -28,6 +28,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          components: clippy
 
       - name: Setup Node.js (for Web WASM CDP E2E)
         uses: actions/setup-node@v4
@@ -55,12 +56,13 @@ jobs:
           cargo build -p nve-example-counter -p nve-studio-workspace
           cargo test --workspace
           cargo test -p nve-backend-skia -p nve-skia-shell
+          cargo check -p nve-backend-skia --features skia-vulkan
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
           cargo check -p nve-web-shell --target wasm32-unknown-unknown
-          if cargo run -q -p nve-cli -- codegen abi --help >/dev/null 2>&1; then
-            cargo run -p nve-cli -- codegen abi --check
-          fi
+          # --no-deps and -A clippy::collapsible-if isolate owned crates from pre-existing warnings in unowned files
+          cargo clippy --no-deps -p nve-codegen -p nve-backend-skia --all-targets -- -D warnings -A clippy::collapsible-if
+          cargo run --locked -p nve-cli -- codegen abi --check
 
       - name: Run Python benchmark-regression unit tests
         run: python3 -B -m unittest discover -s scripts/tests -v
@@ -89,8 +91,8 @@ jobs:
             done
           fi
           if [ -z "$CHROME_PATH" ]; then
-            echo "Chrome/Chromium not present on runner; skipping Web WASM E2E."
-            exit 0
+            echo "error: Chrome/Chromium not present on runner; Web WASM E2E cannot be skipped in CI." >&2
+            exit 1
           fi
 
           LOCKED_VER="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/, "", $3); print $3; exit}' Cargo.lock)"
@@ -206,6 +208,7 @@ jobs:
           cargo build -p nve-example-counter -p nve-studio-workspace
           cargo test --workspace
           cargo test -p nve-backend-skia -p nve-skia-shell
+          cargo check -p nve-backend-skia --features skia-metal
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 
@@ -217,6 +220,20 @@ jobs:
           cmake --build build/fabric-bridge
           ctest --test-dir build/fabric-bridge --output-on-failure
           ./build/fabric-bridge/nve_fabric_bridge_bench --iters 10
+
+      - name: Build and test C++20 Fabric bridge (ASan + UBSan)
+        run: |
+          cmake -S cxx/nve-fabric-bridge -B build/fabric-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DNVE_BUILD_BENCHMARKS=OFF \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build/fabric-asan
+          ASAN_OPTIONS=detect_leaks=0 \
+            UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+            ctest --test-dir build/fabric-asan --output-on-failure
 
       - name: Build and test macOS AppKit host shell
         run: |
@@ -275,6 +292,7 @@ jobs:
           cargo build -p nve-example-counter -p nve-studio-workspace
           cargo test --workspace
           cargo test -p nve-backend-skia -p nve-skia-shell
+          cargo check -p nve-backend-skia --features skia-d3d
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 

@@ -383,9 +383,14 @@ suite_skia_desktop_shell() {
   cargo run -p nve-skia-shell -- --help >/dev/null
 }
 
+suite_skia_gpu_check() {
+  cd "$REPO_ROOT"
+  cargo check -p nve-backend-skia --features "$SKIA_GPU_FEATURE"
+}
+
 suite_abi_codegen_parity() {
   cd "$REPO_ROOT"
-  cargo run -p nve-cli -- codegen abi --check
+  cargo run --locked -p nve-cli -- codegen abi --check
 }
 
 suite_rust_wasm() {
@@ -611,13 +616,24 @@ else
   skip_suite "Skia desktop shell" "cargo not found"
 fi
 
-# 1b. ABI codegen parity (auto-detected once `nve codegen abi` is available)
+# 1a2. Skia platform GPU feature check
+SKIA_GPU_FEATURE=""
+case "$OS_NAME" in
+  Darwin) SKIA_GPU_FEATURE="skia-metal" ;;
+  Linux) SKIA_GPU_FEATURE="skia-vulkan" ;;
+  MINGW*|MSYS*|CYGWIN*) SKIA_GPU_FEATURE="skia-d3d" ;;
+esac
+if [ -n "$SKIA_GPU_FEATURE" ] && command -v cargo >/dev/null 2>&1; then
+  run_suite "Skia GPU feature check" suite_skia_gpu_check "cargo check -p nve-backend-skia --features $SKIA_GPU_FEATURE"
+elif [ -z "$SKIA_GPU_FEATURE" ]; then
+  skip_suite "Skia GPU feature check" "no platform GPU feature mapped for $OS_NAME"
+else
+  skip_suite "Skia GPU feature check" "cargo not found"
+fi
+
+# 1b. ABI codegen parity
 if command -v cargo >/dev/null 2>&1; then
-  if (cd "$REPO_ROOT" && cargo run -q -p nve-cli -- codegen abi --help >/dev/null 2>&1); then
-    run_suite "ABI codegen parity" suite_abi_codegen_parity "cargo run -p nve-cli -- codegen abi --check"
-  else
-    skip_suite "ABI codegen parity" "nve codegen abi subcommand not yet available"
-  fi
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "cargo run --locked -p nve-cli -- codegen abi --check"
 else
   skip_suite "ABI codegen parity" "cargo not found"
 fi

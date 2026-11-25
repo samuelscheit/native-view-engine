@@ -9,7 +9,8 @@ use crate::ir::{
     ObjectField, PropSpec, PropType,
 };
 use crate::naming::{
-    escape_string_literal, format_float_literal, kotlin_ident, strip_on_prefix, to_pascal_case,
+    escape_kotlin_string, format_float_literal, int_enum_variant_pascal, kotlin_ident,
+    sanitize_block_comment, strip_on_prefix, to_pascal_case,
 };
 
 /// Generates a typed Jetpack Compose `@Composable` wrapper targeting `dev.nve.compose.NveSurface`.
@@ -74,7 +75,8 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     // 3. Typed imperative controller + remember helper
     let _ = writeln!(
         out,
-        "/** Imperative command controller for `{name}` backed by `NveSurfaceController`. */"
+        "/** Imperative command controller for `{}` backed by `NveSurfaceController`. */",
+        sanitize_block_comment(name)
     );
     let _ = writeln!(
         out,
@@ -98,20 +100,20 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
             let _ = writeln!(
                 out,
                 "        inner.dispatchCommand(\"{}\")",
-                escape_string_literal(&cmd.name)
+                escape_kotlin_string(&cmd.name)
             );
         } else {
             let _ = writeln!(out, "        val args = buildMap<String, Any?> {{");
             for p in &cmd.params {
                 let pname = kotlin_ident(&p.name);
-                let key = escape_string_literal(&p.name);
+                let key = escape_kotlin_string(&p.name);
                 let _ = writeln!(out, "            put(\"{key}\", {pname})");
             }
             let _ = writeln!(out, "        }}");
             let _ = writeln!(
                 out,
                 "        inner.dispatchCommand(\"{}\", args)",
-                escape_string_literal(&cmd.name)
+                escape_kotlin_string(&cmd.name)
             );
         }
         let _ = writeln!(out, "    }}");
@@ -125,12 +127,12 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     let _ = writeln!(
         out,
         "        componentName = \"{}\",",
-        escape_string_literal(name)
+        escape_kotlin_string(name)
     );
     let _ = writeln!(
         out,
         "        vtableSymbol = \"{}\",",
-        escape_string_literal(vtable_sym)
+        escape_kotlin_string(vtable_sym)
     );
     let _ = writeln!(out, "        backend = {backend_enum},");
     let _ = writeln!(out, "    )");
@@ -141,7 +143,7 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     // 4. Typed `@Composable` function
     if let Some(doc) = &spec.doc {
         let _ = writeln!(out, "/**");
-        for line in doc.lines() {
+        for line in sanitize_block_comment(doc).lines() {
             let _ = writeln!(out, " * {line}");
         }
         let _ = writeln!(out, " */");
@@ -171,7 +173,7 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     // Encode props map
     let _ = writeln!(out, "    val encodedProps = buildMap<String, Any?> {{");
     for prop in &spec.props {
-        let key = escape_string_literal(&prop.name);
+        let key = escape_kotlin_string(&prop.name);
         let param = kotlin_ident(&prop.name);
         let nullable = compose_prop_is_nullable(prop);
         let expr = compose_encode_prop_expr(&param, prop, nullable);
@@ -189,13 +191,13 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     let _ = writeln!(
         out,
         "        componentName = \"{}\",",
-        escape_string_literal(name)
+        escape_kotlin_string(name)
     );
     let _ = writeln!(out, "        modifier = modifier,");
     let _ = writeln!(
         out,
         "        vtableSymbol = \"{}\",",
-        escape_string_literal(vtable_sym)
+        escape_kotlin_string(vtable_sym)
     );
     let _ = writeln!(out, "        backend = {backend_enum},");
     let _ = writeln!(out, "        props = encodedProps,");
@@ -212,8 +214,8 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
         let _ = writeln!(
             out,
             "                    \"{}\", \"{}\" -> {{",
-            escape_string_literal(&ev.name),
-            escape_string_literal(&short)
+            escape_kotlin_string(&ev.name),
+            escape_kotlin_string(&short)
         );
         if ev.payload.is_empty() {
             let _ = writeln!(out, "                        {cb}?.invoke()");
@@ -250,7 +252,7 @@ fn emit_kotlin_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
                     out,
                     "    {}(\"{}\"){sep}",
                     to_pascal_case(v),
-                    escape_string_literal(v)
+                    escape_kotlin_string(v)
                 );
             }
             let _ = writeln!(out, "}}");
@@ -261,11 +263,7 @@ fn emit_kotlin_aux_enum(out: &mut String, comp_name: &str, prop: &PropSpec) {
             let _ = writeln!(out, "enum class {enum_name}(val wireValue: Int) {{");
             for (i, v) in variants.iter().enumerate() {
                 let sep = if i + 1 == variants.len() { ";" } else { "," };
-                let vname = if *v < 0 {
-                    format!("Neg{}", v.unsigned_abs())
-                } else {
-                    format!("V{v}")
-                };
+                let vname = int_enum_variant_pascal(*v);
                 let _ = writeln!(out, "    {vname}({v}){sep}");
             }
             let _ = writeln!(out, "}}");
@@ -297,7 +295,7 @@ fn emit_kotlin_event_data_class(out: &mut String, comp_name: &str, ev: &EventSpe
     let _ = writeln!(out, "        fun fromJson(json: JSONObject): {cls} = {cls}(");
     for f in &ev.payload {
         let fname = kotlin_ident(&f.name);
-        let key = escape_string_literal(&f.name);
+        let key = escape_kotlin_string(&f.name);
         let expr = kotlin_from_json_expr(&key, f);
         let _ = writeln!(out, "            {fname} = {expr},");
     }
@@ -398,7 +396,7 @@ fn compose_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
         (PropType::Double, DefaultValue::Int(i)) => Some(format!("{i}.0")),
         (PropType::Double, DefaultValue::Float(f)) => Some(format_float_literal(*f)),
         (PropType::String | PropType::Color, DefaultValue::String(s)) => {
-            Some(format!("\"{}\"", escape_string_literal(s)))
+            Some(format!("\"{}\"", escape_kotlin_string(s)))
         }
         (PropType::StringEnum { variants }, DefaultValue::String(s)) if variants.contains(s) => {
             Some(format!(
@@ -410,11 +408,7 @@ fn compose_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
         (PropType::IntEnum { variants }, DefaultValue::Int(i))
             if variants.contains(&(*i as i32)) =>
         {
-            let vname = if *i < 0 {
-                format!("Neg{}", i.unsigned_abs())
-            } else {
-                format!("V{i}")
-            };
+            let vname = int_enum_variant_pascal(*i as i32);
             Some(format!("{comp_name}{}.{vname}", to_pascal_case(&prop.name)))
         }
         _ => None,

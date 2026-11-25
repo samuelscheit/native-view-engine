@@ -99,13 +99,13 @@ pub fn to_camel_case(input: &str) -> String {
 pub fn strip_on_prefix(event_name: &str) -> String {
     if let Some(rest) = event_name.strip_prefix("on") {
         let mut chars = rest.chars();
-        if let Some(first) = chars.next() {
-            if first.is_ascii_uppercase() {
-                let mut out = String::with_capacity(rest.len());
-                out.push(first.to_ascii_lowercase());
-                out.push_str(chars.as_str());
-                return out;
-            }
+        if let Some(first) = chars.next()
+            && first.is_ascii_uppercase()
+        {
+            let mut out = String::with_capacity(rest.len());
+            out.push(first.to_ascii_lowercase());
+            out.push_str(chars.as_str());
+            return out;
         }
     }
     to_camel_case(event_name)
@@ -221,8 +221,46 @@ pub fn web_component_tag(component_name: &str) -> String {
     }
 }
 
-/// Escapes a string literal for Rust/C++/TS/Kotlin double-quoted literals.
-pub fn escape_string_literal(s: &str) -> String {
+/// Escapes reserved C11/C++20 keywords for snake_case C struct/vtable field names.
+pub fn c_field_ident(raw: &str) -> String {
+    let mut s = to_snake_case(raw);
+    if s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        s.insert(0, '_');
+    }
+    match s.as_str() {
+        "auto" | "break" | "case" | "char" | "const" | "continue" | "default" | "do" | "double"
+        | "else" | "enum" | "extern" | "float" | "for" | "goto" | "if" | "inline" | "int"
+        | "long" | "register" | "restrict" | "return" | "short" | "signed" | "sizeof"
+        | "static" | "struct" | "switch" | "typedef" | "union" | "unsigned" | "void"
+        | "volatile" | "while" | "class" | "delete" | "new" | "namespace" | "template" => {
+            format!("{s}_")
+        }
+        _ => s,
+    }
+}
+
+/// Formats an integer enum discriminant as a `PascalCase` variant identifier (`Neg1` / `V0`).
+pub fn int_enum_variant_pascal(v: i32) -> String {
+    if v < 0 {
+        format!("Neg{}", v.unsigned_abs())
+    } else {
+        format!("V{v}")
+    }
+}
+
+/// Formats an integer enum discriminant as a `camelCase` variant identifier (`neg1` / `v0`).
+pub fn int_enum_variant_camel(v: i32) -> String {
+    if v < 0 {
+        format!("neg{}", v.unsigned_abs())
+    } else {
+        format!("v{v}")
+    }
+}
+
+/// Escapes a string literal for C11, C++20, ObjC++, Rust, and Swift double-quoted literals.
+///
+/// Escaping `\` -> `\\` also prevents Swift `\(...)` string interpolation.
+pub fn escape_c_like_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     for ch in s.chars() {
         match ch {
@@ -231,14 +269,87 @@ pub fn escape_string_literal(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
             c => out.push(c),
         }
     }
     out
 }
 
+/// Escapes a string literal for Kotlin double-quoted literals.
+///
+/// Escapes `$` -> `\$` so `"$HOME"` and `"${expr}"` never trigger Kotlin string interpolation,
+/// and escapes `\0` as `\u0000` (Kotlin does not accept `\0`).
+pub fn escape_kotlin_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\u0000"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Escapes a string literal for Dart single-quoted literals.
+///
+/// Escapes `$` -> `\$` so `'$HOME'` and `'${expr}'` never trigger Dart string interpolation,
+/// and escapes `\0` as `\u0000`.
+pub fn escape_dart_single_quoted_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '$' => out.push_str("\\$"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\u0000"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Sanitizes untrusted text for inclusion in a single-line (`//` or `///`) comment.
+///
+/// Strips CR/LF and Unicode line separators so comment breakout onto a new line is impossible.
+pub fn sanitize_single_line_comment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_sep = false;
+    for ch in s.chars() {
+        if matches!(ch, '\r' | '\n' | '\u{2028}' | '\u{2029}') {
+            if !prev_sep && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_sep = true;
+        } else {
+            out.push(ch);
+            prev_sep = false;
+        }
+    }
+    out.trim_end().to_owned()
+}
+
+/// Sanitizes untrusted text for inclusion in a block comment (`/* ... */` or `/** ... */`).
+///
+/// Breaks any `*/` sequence and strips `\r` so block-comment breakout is impossible.
+pub fn sanitize_block_comment(s: &str) -> String {
+    s.replace('\r', "").replace("*/", "* /")
+}
+
 /// Formats an `f64` so integral values always include `.0` (valid in C++, Kotlin, Swift, Dart, TS).
 pub fn format_float_literal(f: f64) -> String {
+    if !f.is_finite() {
+        return "0.0".to_owned();
+    }
     let s = f.to_string();
     if s.contains('.') || s.contains('e') || s.contains('E') {
         s
@@ -247,7 +358,7 @@ pub fn format_float_literal(f: f64) -> String {
     }
 }
 
-/// Escapes a string literal for TypeScript single-quoted literals.
+/// Escapes a string literal for TypeScript/JavaScript single-quoted literals.
 pub fn escape_ts_single_quoted(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     for ch in s.chars() {
@@ -257,6 +368,9 @@ pub fn escape_ts_single_quoted(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\u0000"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             c => out.push(c),
         }
     }

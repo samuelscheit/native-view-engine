@@ -39,10 +39,10 @@ fn parse_rn_spec_file_inner(path: &Path, depth: usize) -> Result<ParsedRnSpec, C
     match parse_rn_spec(&source) {
         Ok(spec) => Ok(spec),
         Err(orig_err) => {
-            if let Some(target_rel) = detect_reexport_target(&source) {
-                if let Some(resolved) = resolve_relative_spec(path, &target_rel) {
-                    return parse_rn_spec_file_inner(&resolved, depth + 1);
-                }
+            if let Some(target_rel) = detect_reexport_target(&source)
+                && let Some(resolved) = resolve_relative_spec(path, &target_rel)
+            {
+                return parse_rn_spec_file_inner(&resolved, depth + 1);
             }
             Err(orig_err)
         }
@@ -52,16 +52,14 @@ fn parse_rn_spec_file_inner(path: &Path, depth: usize) -> Result<ParsedRnSpec, C
 fn detect_reexport_target(source: &str) -> Option<String> {
     let tokens = tokenize(source).ok()?;
     for (i, tok) in tokens.iter().enumerate() {
-        if matches!(&tok.kind, TokenKind::Ident(s) if s == "from") {
-            if let Some(Token {
+        if matches!(&tok.kind, TokenKind::Ident(s) if s == "from")
+            && let Some(Token {
                 kind: TokenKind::StringLit(rel),
                 ..
             }) = tokens.get(i + 1)
-            {
-                if rel.starts_with('.') {
-                    return Some(rel.clone());
-                }
-            }
+            && rel.starts_with('.')
+        {
+            return Some(rel.clone());
         }
     }
     None
@@ -164,9 +162,13 @@ struct TurboModuleCall {
     enforcing: bool,
 }
 
+const MAX_PARSE_DEPTH: usize = 128;
+
 struct Parser {
     tokens: Vec<Token>,
+    eof: Token,
     pos: usize,
+    depth: usize,
     type_aliases: HashMap<String, TypeExpr>,
     interfaces: HashMap<String, InterfaceDecl>,
     component_call: Option<ComponentCall>,
@@ -176,9 +178,20 @@ struct Parser {
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
+        let eof = tokens
+            .last()
+            .filter(|t| matches!(t.kind, TokenKind::Eof))
+            .cloned()
+            .unwrap_or(Token {
+                kind: TokenKind::Eof,
+                line: 1,
+                col: 1,
+            });
         Self {
             tokens,
+            eof,
             pos: 0,
+            depth: 0,
             type_aliases: HashMap::new(),
             interfaces: HashMap::new(),
             component_call: None,
@@ -187,10 +200,25 @@ impl Parser {
         }
     }
 
+    fn enter_depth(&mut self) -> Result<(), CodegenError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            let tok = self.peek();
+            return Err(CodegenError::parse(
+                tok.line,
+                tok.col,
+                "maximum type nesting depth exceeded",
+            ));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    fn exit_depth(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
     fn peek(&self) -> &Token {
-        self.tokens
-            .get(self.pos)
-            .unwrap_or_else(|| self.tokens.last().unwrap())
+        self.tokens.get(self.pos).unwrap_or(&self.eof)
     }
 
     fn peek_skip_docs(&self) -> &Token {
@@ -201,7 +229,7 @@ impl Parser {
             }
             idx += 1;
         }
-        self.tokens.last().unwrap()
+        &self.eof
     }
 
     fn peek_nth_non_doc(&self, n: usize) -> &Token {
@@ -216,7 +244,7 @@ impl Parser {
             }
             idx += 1;
         }
-        self.tokens.last().unwrap()
+        &self.eof
     }
 
     fn take_doc_comments(&mut self) -> Option<String> {
@@ -349,11 +377,11 @@ impl Parser {
                 continue;
             }
 
-            if self.at_ident("TurboModuleRegistry") {
-                if let Some(call) = self.try_parse_turbomodule_call()? {
-                    self.turbomodule_call = Some(call);
-                    continue;
-                }
+            if self.at_ident("TurboModuleRegistry")
+                && let Some(call) = self.try_parse_turbomodule_call()?
+            {
+                self.turbomodule_call = Some(call);
+                continue;
             }
 
             // Skip any other top-level token cleanly
@@ -390,12 +418,12 @@ impl Parser {
             return Ok(());
         }
 
-        if self.at_ident("TurboModuleRegistry") {
-            if let Some(call) = self.try_parse_turbomodule_call()? {
-                self.turbomodule_call = Some(call);
-                self.skip_to_statement_end();
-                return Ok(());
-            }
+        if self.at_ident("TurboModuleRegistry")
+            && let Some(call) = self.try_parse_turbomodule_call()?
+        {
+            self.turbomodule_call = Some(call);
+            self.skip_to_statement_end();
+            return Ok(());
         }
 
         // Handle `(TurboModuleRegistry.get<Spec>(...) as ?Spec)` or other expressions
@@ -407,12 +435,12 @@ impl Parser {
                 self.skip_to_statement_end();
                 return Ok(());
             }
-            if self.at_ident("TurboModuleRegistry") {
-                if let Some(call) = self.try_parse_turbomodule_call()? {
-                    self.turbomodule_call = Some(call);
-                    self.skip_to_statement_end();
-                    return Ok(());
-                }
+            if self.at_ident("TurboModuleRegistry")
+                && let Some(call) = self.try_parse_turbomodule_call()?
+            {
+                self.turbomodule_call = Some(call);
+                self.skip_to_statement_end();
+                return Ok(());
             }
             let tok = self.next_tok();
             match tok.kind {
@@ -441,11 +469,11 @@ impl Parser {
                 self.commands_call = Some(call);
                 continue;
             }
-            if self.at_ident("TurboModuleRegistry") {
-                if let Some(call) = self.try_parse_turbomodule_call()? {
-                    self.turbomodule_call = Some(call);
-                    continue;
-                }
+            if self.at_ident("TurboModuleRegistry")
+                && let Some(call) = self.try_parse_turbomodule_call()?
+            {
+                self.turbomodule_call = Some(call);
+                continue;
             }
             let tok = self.next_tok();
             match tok.kind {
@@ -724,6 +752,13 @@ impl Parser {
     }
 
     fn parse_primary_type(&mut self) -> Result<TypeExpr, CodegenError> {
+        self.enter_depth()?;
+        let res = self.parse_primary_type_inner();
+        self.exit_depth();
+        res
+    }
+
+    fn parse_primary_type_inner(&mut self) -> Result<TypeExpr, CodegenError> {
         self.skip_docs();
         let tok = self.peek().clone();
         match &tok.kind {
@@ -826,14 +861,14 @@ impl Parser {
 
     fn parse_paren_or_fn_type(&mut self) -> Result<TypeExpr, CodegenError> {
         let saved = self.pos;
-        if let Ok(params) = self.parse_param_list() {
-            if self.eat(&TokenKind::FatArrow) {
-                let ret = self.parse_type_expr()?;
-                return Ok(TypeExpr::Function {
-                    params,
-                    ret: Box::new(ret),
-                });
-            }
+        if let Ok(params) = self.parse_param_list()
+            && self.eat(&TokenKind::FatArrow)
+        {
+            let ret = self.parse_type_expr()?;
+            return Ok(TypeExpr::Function {
+                params,
+                ret: Box::new(ret),
+            });
         }
         // Backtrack and parse as parenthesized type
         self.pos = saved;
@@ -1118,9 +1153,9 @@ impl Parser {
             .props_type
             .clone()
             .or_else(|| {
-                if self.interfaces.contains_key("NativeProps") {
-                    Some("NativeProps".to_owned())
-                } else if self.type_aliases.contains_key("NativeProps") {
+                if self.interfaces.contains_key("NativeProps")
+                    || self.type_aliases.contains_key("NativeProps")
+                {
                     Some("NativeProps".to_owned())
                 } else {
                     None
@@ -1229,10 +1264,10 @@ impl Parser {
                 Ok(())
             }
             TypeExpr::Named { name, args } => {
-                if matches!(name.as_str(), "Readonly" | "$ReadOnly" | "Partial") {
-                    if let Some(inner) = args.first() {
-                        return self.collect_expr_members(inner, extends_view_props, out, visited);
-                    }
+                if matches!(name.as_str(), "Readonly" | "$ReadOnly" | "Partial")
+                    && let Some(inner) = args.first()
+                {
+                    return self.collect_expr_members(inner, extends_view_props, out, visited);
                 }
                 if name == "ViewProps" || name.ends_with(".ViewProps") {
                     *extends_view_props = true;

@@ -17,7 +17,7 @@ use crate::hybrid::ir::{
 };
 use crate::ir::GeneratedFile;
 use crate::naming::{
-    cpp_ident, escape_string_literal, format_float_literal, kotlin_ident, to_camel_case,
+    cpp_ident, escape_kotlin_string, format_float_literal, kotlin_ident, to_camel_case,
     to_pascal_case, to_snake_case,
 };
 
@@ -365,7 +365,7 @@ fn emit_kotlin_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileS
     writeln!(out, "        w.writeMap({}) {{ mw ->", s.fields.len()).unwrap();
     for f in &s.fields {
         let fname = kotlin_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_kotlin_string(&f.name);
         writeln!(out, "            mw.writeMapKey(\"{key_lit}\")").unwrap();
         emit_kotlin_bin_write(out, "            ", "mw", &fname, &f.ty);
     }
@@ -384,7 +384,7 @@ fn emit_kotlin_struct(out: &mut String, s: &HybridStructSpec, spec: &HybridFileS
     writeln!(out, "                when (r.readMapKey()) {{").unwrap();
     for f in &s.fields {
         let fname = kotlin_ident(&f.name);
-        let key_lit = escape_string_literal(&f.name);
+        let key_lit = escape_kotlin_string(&f.name);
         writeln!(out, "                    \"{key_lit}\" -> {{").unwrap();
         emit_kotlin_bin_read(out, "                        ", "r", &format!("_{fname}"), &f.ty);
         writeln!(out, "                    }}").unwrap();
@@ -523,7 +523,7 @@ fn emit_kotlin_client(
         writeln!(out, "        w.writeMap({}) {{ mw ->", v.props.len()).unwrap();
         for p in &v.props {
             let pname = kotlin_ident(&p.name);
-            let key_lit = escape_string_literal(&p.name);
+            let key_lit = escape_kotlin_string(&p.name);
             writeln!(out, "            mw.writeMapKey(\"{key_lit}\")").unwrap();
             emit_kotlin_bin_write(out, "            ", "mw", &format!("props.{pname}"), &p.ty);
         }
@@ -662,10 +662,10 @@ jbyteArray to_jbyte_array(JNIEnv* env, std::span<const uint8_t> data) {{
     .unwrap();
 
     for m in &spec.modules {
-        emit_jni_cpp_target(&mut out, &m.name, &m.methods, false, spec);
+        emit_jni_cpp_target(&mut out, &m.name, &m.methods, false);
     }
     for v in &spec.views {
-        emit_jni_cpp_target(&mut out, &v.name, &v.methods, true, spec);
+        emit_jni_cpp_target(&mut out, &v.name, &v.methods, true);
     }
     out
 }
@@ -675,7 +675,6 @@ fn emit_jni_cpp_target(
     name: &str,
     methods: &[HybridMethodSpec],
     is_view: bool,
-    spec: &HybridFileSpec,
 ) {
     let pascal = to_pascal_case(name);
     let upper = to_snake_case(name).to_ascii_uppercase();
@@ -842,7 +841,7 @@ fn emit_jni_cpp_target(
             other => {
                 writeln!(out, "    const auto _res = {call_expr};").unwrap();
                 writeln!(out, "    nve::hybrid::BinWriter _rw;").unwrap();
-                emit_jni_cpp_bin_write(out, "    ", "_rw", "_res", other, spec);
+                emit_jni_cpp_bin_write(out, "    ", "_rw", "_res", other);
                 writeln!(out, "    return to_jbyte_array(env, _rw.bytes());").unwrap();
             }
         }
@@ -1011,7 +1010,6 @@ fn emit_jni_cpp_bin_write(
     w: &str,
     expr: &str,
     ty: &HybridType,
-    spec: &HybridFileSpec,
 ) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});").unwrap(),
@@ -1036,13 +1034,13 @@ fn emit_jni_cpp_bin_write(
         HybridType::Value => writeln!(out, "{indent}{w}.write_raw({expr}.bin_bytes);").unwrap(),
         HybridType::Optional(inner) => {
             writeln!(out, "{indent}if ({expr}.has_value()) {{").unwrap();
-            emit_jni_cpp_bin_write(out, &format!("{indent}  "), w, &format!("(*{expr})"), inner, spec);
+            emit_jni_cpp_bin_write(out, &format!("{indent}  "), w, &format!("(*{expr})"), inner);
             writeln!(out, "{indent}}} else {{ {w}.write_null(); }}").unwrap();
         }
         HybridType::Vec(inner) => {
             writeln!(out, "{indent}{w}.write_array(static_cast<uint32_t>({expr}.size()), [&](nve::hybrid::BinWriter& _aw) {{").unwrap();
             writeln!(out, "{indent}  for (const auto& _el : {expr}) {{").unwrap();
-            emit_jni_cpp_bin_write(out, &format!("{indent}    "), "_aw", "_el", inner, spec);
+            emit_jni_cpp_bin_write(out, &format!("{indent}    "), "_aw", "_el", inner);
             writeln!(out, "{indent}  }}").unwrap();
             writeln!(out, "{indent}}});").unwrap();
         }
@@ -1121,7 +1119,7 @@ fn kotlin_default_value(
                 format!("{}f", format_float_literal(*f))
             }
             (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-            (HybridDefaultValue::String(s), _) => format!("\"{}\"", escape_string_literal(s)),
+            (HybridDefaultValue::String(s), _) => format!("\"{}\"", escape_kotlin_string(s)),
             (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
                 format!("{enum_name}.{variant}")
             }
