@@ -6,6 +6,82 @@
 pub const GLYPH_WIDTH: usize = 5;
 pub const GLYPH_HEIGHT: usize = 7;
 
+/// Derived pixel metrics for the embedded 5x7 bitmap font at a given logical `font_size`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BitmapFontMetrics {
+    pub glyph_w: f32,
+    pub glyph_h: f32,
+    pub advance_x: f32,
+    pub line_height: f32,
+}
+
+/// Computes consistent metrics shared between [`BitmapFontTextMeasurer`] and the software rasterizer.
+#[inline]
+pub fn bitmap_font_metrics(font_size: f32) -> BitmapFontMetrics {
+    let fs = if font_size.is_finite() && font_size > 0.0 {
+        font_size
+    } else {
+        16.0
+    };
+    let glyph_h = fs.max(GLYPH_HEIGHT as f32);
+    let glyph_w = (fs * 0.48).max(GLYPH_WIDTH as f32);
+    let advance_x = (fs * 0.58).max((GLYPH_WIDTH + 1) as f32);
+    let line_height = (fs * 1.35).max(glyph_h + 2.0);
+    BitmapFontMetrics {
+        glyph_w,
+        glyph_h,
+        advance_x,
+        line_height,
+    }
+}
+
+/// [`nve_engine::TextMeasurer`] backed by the embedded 5x7 bitmap font metrics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BitmapFontTextMeasurer;
+
+impl nve_engine::TextMeasurer for BitmapFontTextMeasurer {
+    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
+        if text.is_empty() {
+            return (0.0, 0.0);
+        }
+        let metrics = bitmap_font_metrics(font_size);
+        let mut max_line_w = 0.0f32;
+        let mut total_lines = 0.0f32;
+
+        match max_width {
+            Some(mw) if !mw.is_finite() || mw <= 0.0 => {
+                let explicit_lines = text.split('\n').count().max(1) as f32;
+                (0.0, explicit_lines * metrics.line_height)
+            }
+            Some(mw) => {
+                for line in text.split('\n') {
+                    let raw_w = line.chars().count() as f32 * metrics.advance_x;
+                    if raw_w > mw {
+                        let wrapped = (raw_w / mw).ceil().max(1.0);
+                        max_line_w = max_line_w.max(mw);
+                        total_lines += wrapped;
+                    } else {
+                        max_line_w = max_line_w.max(raw_w);
+                        total_lines += 1.0;
+                    }
+                }
+                (
+                    max_line_w.max(1.0).min(mw),
+                    total_lines.max(1.0) * metrics.line_height,
+                )
+            }
+            None => {
+                for line in text.split('\n') {
+                    let raw_w = line.chars().count() as f32 * metrics.advance_x;
+                    max_line_w = max_line_w.max(raw_w);
+                    total_lines += 1.0;
+                }
+                (max_line_w.max(1.0), total_lines.max(1.0) * metrics.line_height)
+            }
+        }
+    }
+}
+
 /// Each glyph is 7 rows; bits `4..=0` (MSB to LSB) represent columns `0..5`.
 const FALLBACK_GLYPH: [u8; GLYPH_HEIGHT] = [
     0b11111,

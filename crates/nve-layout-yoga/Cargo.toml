@@ -1,0 +1,17 @@
+[package]
+name = "nve-layout-yoga"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Real React Native Yoga C++20 LayoutEngine implementation for native-view-engine"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-engine = { workspace = true }
+
+[build-dependencies]
+cc = { workspace = true }
+
+[dev-dependencies]
+nve-backend-headless = { workspace = true }
+nve-example-counter = { workspace = true }

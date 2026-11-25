@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod hotreload;
+pub mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
 pub mod profiler;
@@ -12,6 +13,9 @@ use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
 
 pub use app::NveApp;
 pub use hotreload::HotPatchMsg;
+pub use layout::{
+    BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, LayoutEngine, TextMeasurer,
+};
 pub use profiler::{FrameProfiler, FrameTiming};
 
 #[derive(Debug, Clone, Copy, PartialEq)]

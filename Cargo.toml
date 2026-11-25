@@ -4,6 +4,7 @@ members = [
     "crates/nve-abi",
     "crates/nve-components",
     "crates/nve-engine",
+    "crates/nve-layout-yoga",
     "crates/nve-dioxus",
     "crates/nve-codegen",
     "crates/nve-interop",
@@ -25,6 +26,7 @@ license = "MIT"
 nve-abi = { path = "crates/nve-abi" }
 nve-components = { path = "crates/nve-components" }
 nve-engine = { path = "crates/nve-engine" }
+nve-layout-yoga = { path = "crates/nve-layout-yoga" }
 nve-dioxus = { path = "crates/nve-dioxus" }
 nve-codegen = { path = "crates/nve-codegen" }
 nve-interop = { path = "crates/nve-interop" }
@@ -37,6 +39,7 @@ dioxus-core = "0.7.10"
 dioxus-signals = "0.7.10"
 dioxus-core-macro = "0.7.10"
 taffy = "0.16.0"
+cc = "1.11"
 libloading = "0.9.1"
 clap = { version = "4.6.10", features = ["derive"] }
 notify = "9.0.0"

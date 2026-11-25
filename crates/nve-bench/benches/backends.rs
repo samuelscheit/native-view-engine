@@ -2,13 +2,14 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use nve_abi::ColorRgba;
-use nve_backend_headless::HeadlessBackend;
+use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
 use nve_bench::{
     build_card_scene_cmd, build_row_patch_cmd, build_row_tree_cmd, DEFAULT_VIEWPORT,
 };
-use nve_engine::RenderBackend;
+use nve_engine::{DynLayoutEngine, RenderBackend};
+use nve_layout_yoga::YogaLayoutEngine;
 
 fn bench_headless_backend(c: &mut Criterion) {
     let mut layout_group = c.benchmark_group("backend_headless/taffy_layout");
@@ -142,9 +143,63 @@ fn bench_web_backend(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_taffy_vs_yoga(c: &mut Criterion) {
+    let mut group = c.benchmark_group("layout_engine/taffy_vs_yoga");
+    for &rows in &[100usize, 1_000] {
+        let init_bytes = build_row_tree_cmd(rows, 1);
+        group.throughput(Throughput::Elements((rows * 2) as u64));
+
+        group.bench_with_input(BenchmarkId::new("taffy_static", rows), &init_bytes, |b, bytes| {
+            b.iter_batched(
+                || {
+                    let mut backend = HeadlessBackend::new();
+                    backend.set_viewport(1, DEFAULT_VIEWPORT);
+                    backend
+                },
+                |mut backend| black_box(backend.submit_frame(black_box(bytes)).unwrap()),
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.bench_with_input(BenchmarkId::new("taffy_dyn_box", rows), &init_bytes, |b, bytes| {
+            b.iter_batched(
+                || {
+                    let boxed: DynLayoutEngine = Box::new(TaffyLayoutEngine::new());
+                    let mut backend = HeadlessBackend::with_layout(boxed);
+                    backend.set_viewport(1, DEFAULT_VIEWPORT);
+                    backend
+                },
+                |mut backend| black_box(backend.submit_frame(black_box(bytes)).unwrap()),
+                BatchSize::SmallInput,
+            );
+        });
+
+        if YogaLayoutEngine::is_available() {
+            group.bench_with_input(
+                BenchmarkId::new("yoga_rn_static", rows),
+                &init_bytes,
+                |b, bytes| {
+                    b.iter_batched(
+                        || {
+                            let yoga = YogaLayoutEngine::new().expect("RN Yoga available");
+                            let mut backend = HeadlessBackend::with_layout(yoga);
+                            backend.set_viewport(1, DEFAULT_VIEWPORT);
+                            backend
+                        },
+                        |mut backend| black_box(backend.submit_frame(black_box(bytes)).unwrap()),
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     backend_benches,
     bench_headless_backend,
+    bench_taffy_vs_yoga,
     bench_skia_backend,
     bench_web_backend
 );

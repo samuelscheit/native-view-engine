@@ -1,17 +1,25 @@
-//! Pure-Rust headless RenderBackend powered by `taffy` Flexbox layout.
+//! Pure-Rust headless RenderBackend generic over any [`LayoutEngine`] (defaulting to [`TaffyLayoutEngine`]).
 //!
 //! Provides <50ms edit->test verification of any Rust UI frontend, mutation diffing,
-//! coordinate hit-testing, simulated native events, and an ASCII tree + rect inspector.
+//! coordinate hit-testing, simulated native events, live layout-engine swapping, and an
+//! ASCII tree + rect inspector.
+
+pub mod taffy_engine;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{
-    Command, CommandDecoder, ComponentKind, Dimension, FlexAlign, FlexDirection, FlexJustify,
-    LayoutProps, NativeEvent, NodeId, RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
+    Command, CommandDecoder, ComponentKind, LayoutProps, NativeEvent, NodeId, RawPropValue,
+    StyleProps, SurfaceId, ROOT_NODE_ID,
 };
-use nve_engine::{BackendApplyStats, BackendError, LayoutRect, RenderBackend, Viewport};
-use taffy::prelude as tf;
+use nve_engine::{
+    BackendApplyStats, BackendError, HeuristicTextMeasurer, LayoutEngine, LayoutRect,
+    RenderBackend, TextMeasurer, Viewport,
+};
+
+pub use taffy_engine::{to_taffy_dim, to_taffy_lpa, to_taffy_style, TaffyLayoutEngine};
 
 #[derive(Debug, Clone)]
 pub struct HeadlessNode {
@@ -36,32 +44,41 @@ pub enum HeadlessMutation {
     UpdateStyle(NodeId),
 }
 
-pub struct HeadlessBackend {
+pub struct HeadlessBackend<L: LayoutEngine = TaffyLayoutEngine> {
     surface_id: SurfaceId,
     viewport: Viewport,
     nodes: HashMap<NodeId, HeadlessNode>,
-    taffy: tf::TaffyTree<()>,
-    taffy_ids: HashMap<NodeId, tf::NodeId>,
+    layout: L,
+    text_measurer: Arc<dyn TextMeasurer>,
     prev_rects: HashMap<NodeId, LayoutRect>,
     last_mutations: Vec<HeadlessMutation>,
     pending_events: Vec<NativeEvent>,
     dispatched_commands: Vec<(NodeId, String, Vec<u8>)>,
 }
 
-impl Default for HeadlessBackend {
+impl Default for HeadlessBackend<TaffyLayoutEngine> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HeadlessBackend {
+impl HeadlessBackend<TaffyLayoutEngine> {
     pub fn new() -> Self {
+        Self::with_layout(TaffyLayoutEngine::new())
+    }
+}
+
+impl<L: LayoutEngine> HeadlessBackend<L> {
+    /// Creates a headless backend backed by any concrete or boxed [`LayoutEngine`].
+    pub fn with_layout(mut layout: L) -> Self {
+        let text_measurer: Arc<dyn TextMeasurer> = Arc::new(HeuristicTextMeasurer);
+        layout.set_text_measurer(Arc::clone(&text_measurer));
         let mut this = Self {
             surface_id: 1,
             viewport: Viewport::default(),
             nodes: HashMap::new(),
-            taffy: tf::TaffyTree::new(),
-            taffy_ids: HashMap::new(),
+            layout,
+            text_measurer,
             prev_rects: HashMap::new(),
             last_mutations: Vec::new(),
             pending_events: Vec::new(),
@@ -69,6 +86,67 @@ impl HeadlessBackend {
         };
         this.ensure_node(ROOT_NODE_ID, ComponentKind::Root, None);
         this
+    }
+
+    pub fn layout_engine(&self) -> &L {
+        &self.layout
+    }
+
+    pub fn layout_engine_mut(&mut self) -> &mut L {
+        &mut self.layout
+    }
+
+    pub fn text_measurer(&self) -> &Arc<dyn TextMeasurer> {
+        &self.text_measurer
+    }
+
+    /// Replaces the active [`TextMeasurer`] and propagates it to the underlying [`LayoutEngine`].
+    pub fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
+        self.text_measurer = Arc::clone(&measurer);
+        self.layout.set_text_measurer(measurer);
+    }
+
+    /// Hot-swaps the active [`LayoutEngine`] to `next`, replaying the entire retained node tree
+    /// (nodes, layouts, styles, text, children, and active [`TextMeasurer`]) and recomputing rects.
+    pub fn swap_layout_engine<NewL: LayoutEngine>(self, mut next: NewL) -> HeadlessBackend<NewL> {
+        next.reset();
+        next.set_text_measurer(Arc::clone(&self.text_measurer));
+
+        // Pass 1: create all nodes and replay their layout, style, and text state.
+        for node in self.nodes.values() {
+            next.upsert_node(node.id, node.kind);
+            next.set_layout(node.id, &node.layout);
+            next.set_style(node.id, &node.style);
+            if let Some(text) = &node.text {
+                next.set_text(node.id, text);
+            }
+        }
+        // Pass 2: attach children once every node exists in `next`.
+        for node in self.nodes.values() {
+            if !node.children.is_empty() {
+                next.set_children(node.id, &node.children);
+            }
+        }
+
+        let mut swapped = HeadlessBackend {
+            surface_id: self.surface_id,
+            viewport: self.viewport,
+            nodes: self.nodes,
+            layout: next,
+            text_measurer: self.text_measurer,
+            prev_rects: self.prev_rects,
+            last_mutations: self.last_mutations,
+            pending_events: self.pending_events,
+            dispatched_commands: self.dispatched_commands,
+        };
+        swapped.recompute_layout();
+        swapped
+    }
+
+    /// Re-runs the active layout engine against the retained tree and refreshes all `computed_rect`s.
+    pub fn recompute_layout(&mut self) {
+        let mut scratch = Vec::new();
+        self.run_layout_and_diff(&mut scratch);
     }
 
     pub fn nodes(&self) -> &HashMap<NodeId, HeadlessNode> {
@@ -154,13 +232,14 @@ impl HeadlessBackend {
         if let Some(existing) = self.nodes.get_mut(&id) {
             existing.kind = kind;
             existing.custom_name = custom_name;
+            self.layout.upsert_node(id, kind);
             return;
         }
-        let taffy_id = self
-            .taffy
-            .new_leaf(tf::Style::default())
-            .expect("taffy leaf allocation");
-        self.taffy_ids.insert(id, taffy_id);
+        let default_layout = LayoutProps::default();
+        let default_style = StyleProps::default();
+        self.layout.upsert_node(id, kind);
+        self.layout.set_layout(id, &default_layout);
+        self.layout.set_style(id, &default_style);
         self.nodes.insert(
             id,
             HeadlessNode {
@@ -168,8 +247,8 @@ impl HeadlessBackend {
                 kind,
                 custom_name,
                 text: None,
-                layout: LayoutProps::default(),
-                style: StyleProps::default(),
+                layout: default_layout,
+                style: default_style,
                 raw_props: HashMap::new(),
                 event_mask: 0,
                 children: Vec::new(),
@@ -178,50 +257,14 @@ impl HeadlessBackend {
         );
     }
 
-    fn sync_taffy_style(&mut self, id: NodeId) {
-        let Some(node) = self.nodes.get(&id) else {
-            return;
-        };
-        let Some(&tid) = self.taffy_ids.get(&id) else {
-            return;
-        };
-        let mut style = to_taffy_style(&node.layout);
-        if id == ROOT_NODE_ID {
-            style.size = tf::Size {
-                width: tf::Dimension::length(self.viewport.width),
-                height: tf::Dimension::length(self.viewport.height),
-            };
-        } else if node.kind == ComponentKind::Text {
-            // Deterministic intrinsic text sizing for headless layout verification.
-            if let Some(text) = &node.text {
-                if matches!(node.layout.width, Dimension::Auto) {
-                    let approx_w = (text.chars().count() as f32 * node.style.font_size * 0.58)
-                        .min(self.viewport.width);
-                    style.size.width = tf::Dimension::length(approx_w.max(1.0));
-                }
-                if matches!(node.layout.height, Dimension::Auto) {
-                    style.size.height = tf::Dimension::length(node.style.font_size * 1.35);
-                }
-            }
-        }
-        let _ = self.taffy.set_style(tid, style);
-    }
-
     fn run_layout_and_diff(&mut self, mutations: &mut Vec<HeadlessMutation>) -> (u64, u64) {
         let t_layout = Instant::now();
-        self.sync_taffy_style(ROOT_NODE_ID);
-        if let Some(&root_tid) = self.taffy_ids.get(&ROOT_NODE_ID) {
-            let avail = tf::Size {
-                width: tf::AvailableSpace::Definite(self.viewport.width),
-                height: tf::AvailableSpace::Definite(self.viewport.height),
-            };
-            let _ = self.taffy.compute_layout(root_tid, avail);
-        }
+        self.layout.compute_layout(ROOT_NODE_ID, self.viewport);
         let layout_us = t_layout.elapsed().as_micros() as u64;
 
         let t_diff = Instant::now();
         let mut new_rects = HashMap::with_capacity(self.nodes.len());
-        self.collect_rects(ROOT_NODE_ID, 0.0, 0.0, &mut new_rects);
+        self.collect_rects(ROOT_NODE_ID, &mut new_rects);
         for (&id, &rect) in &new_rects {
             if let Some(node) = self.nodes.get_mut(&id) {
                 node.computed_rect = rect;
@@ -235,43 +278,31 @@ impl HeadlessBackend {
         (layout_us, diff_us)
     }
 
-    fn collect_rects(
-        &self,
-        id: NodeId,
-        origin_x: f32,
-        origin_y: f32,
-        out: &mut HashMap<NodeId, LayoutRect>,
-    ) {
-        let Some(&tid) = self.taffy_ids.get(&id) else {
+    fn collect_rects(&self, id: NodeId, out: &mut HashMap<NodeId, LayoutRect>) {
+        let Some(rect) = self.layout.layout_of(id) else {
             return;
-        };
-        let Ok(layout) = self.taffy.layout(tid) else {
-            return;
-        };
-        let rect = LayoutRect {
-            x: origin_x + layout.location.x,
-            y: origin_y + layout.location.y,
-            width: layout.size.width,
-            height: layout.size.height,
         };
         out.insert(id, rect);
         if let Some(node) = self.nodes.get(&id) {
             for &child in &node.children {
-                self.collect_rects(child, rect.x, rect.y, out);
+                self.collect_rects(child, out);
             }
         }
     }
 }
 
-impl RenderBackend for HeadlessBackend {
+impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
     fn name(&self) -> &'static str {
-        "headless-taffy"
+        match self.layout.name() {
+            "taffy" => "headless-taffy",
+            "yoga" => "headless-yoga",
+            _ => "headless-custom",
+        }
     }
 
     fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
         self.surface_id = surface_id;
         self.viewport = viewport;
-        self.sync_taffy_style(ROOT_NODE_ID);
     }
 
     fn submit_frame(&mut self, command_bytes: &[u8]) -> Result<BackendApplyStats, BackendError> {
@@ -292,9 +323,7 @@ impl RenderBackend for HeadlessBackend {
                 }
                 Command::RemoveNode { node_id } => {
                     self.nodes.remove(&node_id);
-                    if let Some(tid) = self.taffy_ids.remove(&node_id) {
-                        let _ = self.taffy.remove(tid);
-                    }
+                    self.layout.remove_node(node_id);
                     self.prev_rects.remove(&node_id);
                     mutations.push(HeadlessMutation::Remove(node_id));
                 }
@@ -307,22 +336,16 @@ impl RenderBackend for HeadlessBackend {
                     } else {
                         return Err(BackendError::InvalidNode(parent_id));
                     }
-                    if let Some(&parent_tid) = self.taffy_ids.get(&parent_id) {
-                        let child_tids: Vec<tf::NodeId> = children
-                            .iter()
-                            .filter_map(|cid| self.taffy_ids.get(cid).copied())
-                            .collect();
-                        let _ = self.taffy.set_children(parent_tid, &child_tids);
-                    }
+                    self.layout.set_children(parent_id, &children);
                 }
                 Command::SetText { node_id, text } => {
                     if let Some(node) = self.nodes.get_mut(&node_id) {
                         node.text = Some(text.clone());
-                        mutations.push(HeadlessMutation::UpdateText(node_id, text));
+                        mutations.push(HeadlessMutation::UpdateText(node_id, text.clone()));
                     } else {
                         return Err(BackendError::InvalidNode(node_id));
                     }
-                    self.sync_taffy_style(node_id);
+                    self.layout.set_text(node_id, &text);
                 }
                 Command::SetLayout { node_id, layout } => {
                     if let Some(node) = self.nodes.get_mut(&node_id) {
@@ -330,7 +353,7 @@ impl RenderBackend for HeadlessBackend {
                     } else {
                         return Err(BackendError::InvalidNode(node_id));
                     }
-                    self.sync_taffy_style(node_id);
+                    self.layout.set_layout(node_id, &layout);
                 }
                 Command::SetStyle { node_id, style } => {
                     if let Some(node) = self.nodes.get_mut(&node_id) {
@@ -339,7 +362,7 @@ impl RenderBackend for HeadlessBackend {
                     } else {
                         return Err(BackendError::InvalidNode(node_id));
                     }
-                    self.sync_taffy_style(node_id);
+                    self.layout.set_style(node_id, &style);
                 }
                 Command::SetRawProp {
                     node_id,
@@ -402,108 +425,123 @@ impl RenderBackend for HeadlessBackend {
     }
 }
 
-pub fn to_taffy_dim(d: Dimension) -> tf::Dimension {
-    match d {
-        Dimension::Auto => tf::Dimension::auto(),
-        Dimension::Points(v) => tf::Dimension::length(v),
-        Dimension::Percent(v) => tf::Dimension::percent(v / 100.0),
-    }
-}
-
-pub fn to_taffy_lpa(d: Dimension) -> tf::LengthPercentageAuto {
-    match d {
-        Dimension::Auto => tf::LengthPercentageAuto::auto(),
-        Dimension::Points(v) => tf::LengthPercentageAuto::length(v),
-        Dimension::Percent(v) => tf::LengthPercentageAuto::percent(v / 100.0),
-    }
-}
-
-pub fn to_taffy_style(l: &LayoutProps) -> tf::Style {
-    use taffy::style::{
-        AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignmentSafety,
-    };
-    let justify_kw = match l.justify_content {
-        FlexJustify::FlexStart => AlignContentKeyword::FlexStart,
-        FlexJustify::Center => AlignContentKeyword::Center,
-        FlexJustify::FlexEnd => AlignContentKeyword::FlexEnd,
-        FlexJustify::SpaceBetween => AlignContentKeyword::SpaceBetween,
-        FlexJustify::SpaceAround => AlignContentKeyword::SpaceAround,
-        FlexJustify::SpaceEvenly => AlignContentKeyword::SpaceEvenly,
-    };
-    let align_kw = match l.align_items {
-        FlexAlign::Stretch => AlignItemsKeyword::Stretch,
-        FlexAlign::FlexStart => AlignItemsKeyword::FlexStart,
-        FlexAlign::Center => AlignItemsKeyword::Center,
-        FlexAlign::FlexEnd => AlignItemsKeyword::FlexEnd,
-        FlexAlign::Baseline => AlignItemsKeyword::Baseline,
-    };
-    tf::Style {
-        display: tf::Display::Flex,
-        flex_direction: match l.flex_direction {
-            FlexDirection::Column => tf::FlexDirection::Column,
-            FlexDirection::Row => tf::FlexDirection::Row,
-            FlexDirection::ColumnReverse => tf::FlexDirection::ColumnReverse,
-            FlexDirection::RowReverse => tf::FlexDirection::RowReverse,
-        },
-        justify_content: AlignContent {
-            keyword: justify_kw,
-            safety: AlignmentSafety::Default,
-        },
-        align_items: AlignItems {
-            keyword: align_kw,
-            safety: AlignmentSafety::Default,
-        },
-        flex_grow: l.flex_grow,
-        flex_shrink: l.flex_shrink,
-        gap: tf::Size {
-            width: tf::LengthPercentage::length(l.gap),
-            height: tf::LengthPercentage::length(l.gap),
-        },
-        size: tf::Size {
-            width: to_taffy_dim(l.width),
-            height: to_taffy_dim(l.height),
-        },
-        min_size: tf::Size {
-            width: to_taffy_lpa(l.min_width),
-            height: to_taffy_lpa(l.min_height),
-        },
-        max_size: tf::Size {
-            width: to_taffy_lpa(l.max_width),
-            height: to_taffy_lpa(l.max_height),
-        },
-        padding: tf::Rect {
-            top: tf::LengthPercentage::length(l.padding.top),
-            right: tf::LengthPercentage::length(l.padding.right),
-            bottom: tf::LengthPercentage::length(l.padding.bottom),
-            left: tf::LengthPercentage::length(l.padding.left),
-        },
-        margin: tf::Rect {
-            top: tf::LengthPercentageAuto::length(l.margin.top),
-            right: tf::LengthPercentageAuto::length(l.margin.right),
-            bottom: tf::LengthPercentageAuto::length(l.margin.bottom),
-            left: tf::LengthPercentageAuto::length(l.margin.left),
-        },
-        ..Default::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_abi::{CommandBufferBuilder, EdgeInsets, EventMask};
+    use nve_abi::{CommandBufferBuilder, Dimension, EdgeInsets, EventMask, FlexAlign, FlexDirection};
+    use nve_engine::DynLayoutEngine;
 
-    #[test]
-    fn computes_flexbox_layout_and_hit_testing() {
-        let mut backend = HeadlessBackend::new();
-        backend.set_viewport(
-            1,
-            Viewport {
-                width: 400.0,
-                height: 800.0,
-                scale_factor: 2.0,
-            },
-        );
+    /// Minimal custom [`LayoutEngine`] stacking every child vertically in fixed-height bands.
+    struct BandStackLayout {
+        band_height: f32,
+        children: HashMap<NodeId, Vec<NodeId>>,
+        texts: HashMap<NodeId, String>,
+        font_sizes: HashMap<NodeId, f32>,
+        kinds: HashMap<NodeId, ComponentKind>,
+        rects: HashMap<NodeId, LayoutRect>,
+        measurer: Arc<dyn TextMeasurer>,
+    }
 
+    impl BandStackLayout {
+        fn new(band_height: f32) -> Self {
+            Self {
+                band_height,
+                children: HashMap::new(),
+                texts: HashMap::new(),
+                font_sizes: HashMap::new(),
+                kinds: HashMap::new(),
+                rects: HashMap::new(),
+                measurer: Arc::new(HeuristicTextMeasurer),
+            }
+        }
+
+        fn layout_rec(&mut self, id: NodeId, x: f32, y: f32, width: f32) -> f32 {
+            let is_text = self.kinds.get(&id) == Some(&ComponentKind::Text);
+            let (node_w, node_h) = if is_text {
+                let text = self.texts.get(&id).map(String::as_str).unwrap_or("");
+                let fs = self.font_sizes.get(&id).copied().unwrap_or(16.0);
+                self.measurer.measure(text, fs, Some(width))
+            } else {
+                (width, self.band_height)
+            };
+
+            let child_ids = self.children.get(&id).cloned().unwrap_or_default();
+            let mut cursor_y = y;
+            for child in child_ids {
+                cursor_y += self.layout_rec(child, x + 10.0, cursor_y, (width - 20.0).max(0.0));
+            }
+            let total_h = if cursor_y > y { cursor_y - y } else { node_h };
+            self.rects.insert(
+                id,
+                LayoutRect {
+                    x,
+                    y,
+                    width: node_w,
+                    height: total_h,
+                },
+            );
+            total_h
+        }
+    }
+
+    impl LayoutEngine for BandStackLayout {
+        fn name(&self) -> &'static str {
+            "band-stack"
+        }
+
+        fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
+            self.kinds.insert(id, kind);
+        }
+
+        fn remove_node(&mut self, id: NodeId) {
+            self.kinds.remove(&id);
+            self.children.remove(&id);
+            self.texts.remove(&id);
+            self.font_sizes.remove(&id);
+            self.rects.remove(&id);
+        }
+
+        fn set_layout(&mut self, _id: NodeId, _layout: &LayoutProps) {}
+
+        fn set_style(&mut self, id: NodeId, style: &StyleProps) {
+            self.font_sizes.insert(id, style.font_size);
+        }
+
+        fn set_text(&mut self, id: NodeId, text: &str) {
+            self.texts.insert(id, text.to_owned());
+        }
+
+        fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
+            self.children.insert(parent, children.to_vec());
+        }
+
+        fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
+            self.measurer = measurer;
+        }
+
+        fn compute_layout(&mut self, root: NodeId, viewport: Viewport) {
+            self.rects.clear();
+            let _ = self.layout_rec(root, 0.0, 0.0, viewport.width);
+            if let Some(r) = self.rects.get_mut(&root) {
+                r.width = viewport.width;
+                r.height = viewport.height;
+            }
+        }
+
+        fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
+            self.rects.get(&id).copied()
+        }
+
+        fn reset(&mut self) {
+            self.children.clear();
+            self.texts.clear();
+            self.font_sizes.clear();
+            self.kinds.clear();
+            self.rects.clear();
+        }
+    }
+
+    fn build_sample_frame() -> Vec<u8> {
         let mut b = CommandBufferBuilder::new(1, 1);
         b.create_node(2, ComponentKind::View, None);
         b.set_layout(
@@ -512,6 +550,7 @@ mod tests {
                 width: Dimension::Percent(100.0),
                 height: Dimension::Points(120.0),
                 flex_direction: FlexDirection::Row,
+                align_items: FlexAlign::FlexStart,
                 padding: EdgeInsets::all(16.0),
                 gap: 12.0,
                 ..Default::default()
@@ -529,13 +568,35 @@ mod tests {
         b.set_event_mask(3, EventMask::PRESS);
         b.create_node(4, ComponentKind::Text, None);
         b.set_text(4, "Tap me");
+        b.set_style(
+            4,
+            &StyleProps {
+                font_size: 20.0,
+                ..Default::default()
+            },
+        );
         b.set_children(3, &[4]);
         b.set_children(2, &[3]);
         b.set_children(ROOT_NODE_ID, &[2]);
         b.commit(true);
+        b.into_bytes()
+    }
 
-        let stats = backend.submit_frame(b.finish()).unwrap();
+    #[test]
+    fn computes_flexbox_layout_and_hit_testing() {
+        let mut backend = HeadlessBackend::new();
+        backend.set_viewport(
+            1,
+            Viewport {
+                width: 400.0,
+                height: 800.0,
+                scale_factor: 2.0,
+            },
+        );
+
+        let stats = backend.submit_frame(&build_sample_frame()).unwrap();
         assert!(stats.mutation_count >= 4);
+        assert_eq!(backend.name(), "headless-taffy");
 
         let btn = backend.layout_of(3).unwrap();
         assert_eq!(btn.x, 16.0);
@@ -545,5 +606,119 @@ mod tests {
 
         assert_eq!(backend.hit_test(50.0, 30.0, true), Some(3));
         assert_eq!(backend.hit_test(350.0, 30.0, true), None);
+    }
+
+    #[test]
+    fn supports_monomorphized_custom_layout_engine_and_live_swap() {
+        let frame = build_sample_frame();
+        let viewport = Viewport {
+            width: 400.0,
+            height: 800.0,
+            scale_factor: 1.0,
+        };
+
+        // Start with Taffy
+        let mut taffy_backend = HeadlessBackend::new();
+        taffy_backend.set_viewport(1, viewport);
+        taffy_backend.submit_frame(&frame).unwrap();
+        assert_eq!(taffy_backend.layout_of(3).unwrap().x, 16.0);
+        assert_eq!(taffy_backend.hit_test(50.0, 30.0, true), Some(3));
+
+        // Live-swap to compile-time generic BandStackLayout: tree, styles, text, and hit-testing survive.
+        let custom_backend: HeadlessBackend<BandStackLayout> =
+            taffy_backend.swap_layout_engine(BandStackLayout::new(60.0));
+        assert_eq!(custom_backend.name(), "headless-custom");
+        assert_eq!(custom_backend.layout_engine().name(), "band-stack");
+        assert_eq!(
+            custom_backend.node(4).and_then(|n| n.text.as_deref()),
+            Some("Tap me")
+        );
+        // BandStackLayout indents each nesting level by 10px: root(0) -> view2(10) -> btn3(20)
+        let btn_custom = custom_backend.layout_of(3).unwrap();
+        assert_eq!(btn_custom.x, 20.0);
+        assert_eq!(btn_custom.y, 0.0);
+        assert_eq!(custom_backend.hit_test(35.0, 10.0, true), Some(3));
+
+        // Swap back to Taffy and verify original Flexbox geometry is restored identically.
+        let restored: HeadlessBackend<TaffyLayoutEngine> =
+            custom_backend.swap_layout_engine(TaffyLayoutEngine::new());
+        let btn_restored = restored.layout_of(3).unwrap();
+        assert_eq!(btn_restored.x, 16.0);
+        assert_eq!(btn_restored.y, 16.0);
+        assert_eq!(btn_restored.width, 100.0);
+        assert_eq!(btn_restored.height, 44.0);
+        assert_eq!(restored.hit_test(50.0, 30.0, true), Some(3));
+    }
+
+    #[test]
+    fn supports_runtime_boxed_dyn_layout_engine() {
+        let frame = build_sample_frame();
+        let viewport = Viewport {
+            width: 400.0,
+            height: 800.0,
+            scale_factor: 1.0,
+        };
+
+        let boxed: DynLayoutEngine = Box::new(TaffyLayoutEngine::new());
+        let mut backend: HeadlessBackend<DynLayoutEngine> = HeadlessBackend::with_layout(boxed);
+        backend.set_viewport(1, viewport);
+        backend.submit_frame(&frame).unwrap();
+        assert_eq!(backend.layout_engine().name(), "taffy");
+        assert_eq!(backend.layout_of(3).unwrap().x, 16.0);
+
+        // Swap inside the same concrete type HeadlessBackend<DynLayoutEngine>!
+        let swapped: HeadlessBackend<DynLayoutEngine> =
+            backend.swap_layout_engine(Box::new(BandStackLayout::new(50.0)) as DynLayoutEngine);
+        assert_eq!(swapped.layout_engine().name(), "band-stack");
+        assert_eq!(swapped.layout_of(3).unwrap().x, 20.0);
+    }
+
+    #[test]
+    fn custom_text_measurer_propagates_into_taffy_and_survives_swap() {
+        let mut backend = HeadlessBackend::new();
+        backend.set_viewport(
+            1,
+            Viewport {
+                width: 300.0,
+                height: 400.0,
+                scale_factor: 1.0,
+            },
+        );
+        // Custom measurer returning fixed 123x45 for any non-empty text.
+        backend.set_text_measurer(Arc::new(|text: &str, _fs: f32, _mw: Option<f32>| {
+            if text.is_empty() {
+                (0.0, 0.0)
+            } else {
+                (123.0, 45.0)
+            }
+        }));
+
+        let mut b = CommandBufferBuilder::new(1, 1);
+        b.create_node(2, ComponentKind::View, None);
+        b.set_layout(
+            2,
+            &LayoutProps {
+                width: Dimension::Points(260.0),
+                flex_direction: FlexDirection::Column,
+                align_items: FlexAlign::FlexStart,
+                ..Default::default()
+            },
+        );
+        b.create_node(3, ComponentKind::Text, None);
+        b.set_text(3, "Measured");
+        b.set_children(2, &[3]);
+        b.set_children(ROOT_NODE_ID, &[2]);
+        b.commit(true);
+
+        backend.submit_frame(b.finish()).unwrap();
+        let rect = backend.layout_of(3).unwrap();
+        assert_eq!(rect.width, 123.0);
+        assert_eq!(rect.height, 45.0);
+
+        // Swapping engines preserves the custom TextMeasurer!
+        let swapped = backend.swap_layout_engine(BandStackLayout::new(40.0));
+        let swapped_text_rect = swapped.layout_of(3).unwrap();
+        assert_eq!(swapped_text_rect.width, 123.0);
+        assert_eq!(swapped_text_rect.height, 45.0);
     }
 }

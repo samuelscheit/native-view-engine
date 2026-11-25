@@ -313,11 +313,12 @@ fn draw_text(
         return;
     }
 
-    // Match HeadlessBackend's `font_size * 0.58` horizontal advance and `font_size * 1.35` line height.
-    let glyph_h = font_size.max(7.0);
-    let glyph_w = (font_size * 0.48).max(5.0);
-    let advance_x = (font_size * 0.58).max(6.0);
-    let line_height = (font_size * 1.35).max(glyph_h + 2.0);
+    // Share exact metrics with `BitmapFontTextMeasurer` so layout and rasterization stay in lockstep.
+    let metrics = crate::font::bitmap_font_metrics(font_size);
+    let glyph_h = metrics.glyph_h;
+    let glyph_w = metrics.glyph_w;
+    let advance_x = metrics.advance_x;
+    let line_height = metrics.line_height;
 
     // Vertically center single-line text gently within its computed box.
     let vertical_pad = if !text.contains('\n') && rect.height > glyph_h {

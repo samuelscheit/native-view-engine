@@ -10,11 +10,14 @@ default = []
 desktop = ["dep:winit", "dep:softbuffer", "dep:tungstenite", "dep:crossbeam-channel", "dep:serde_json"]
 # Full hardware-accelerated Skia canvas (adds skia-safe on top of desktop)
 skia = ["desktop", "dep:skia-safe"]
+# Real React Native Yoga C++20 layout engine integration (compiled when RN_REACT_COMMON_DIR is set)
+yoga = ["dep:nve-layout-yoga"]
 
 [dependencies]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }
 nve-backend-headless = { workspace = true }
+nve-layout-yoga = { workspace = true, optional = true }
 skia-safe = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 softbuffer = { workspace = true, optional = true }

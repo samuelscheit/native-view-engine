@@ -1422,6 +1422,7 @@ dependencies = [
  "nve-abi",
  "nve-backend-headless",
  "nve-engine",
+ "nve-layout-yoga",
  "serde_json",
  "skia-safe",
  "softbuffer",
@@ -1451,6 +1452,7 @@ dependencies = [
  "nve-dioxus",
  "nve-engine",
  "nve-interop",
+ "nve-layout-yoga",
 ]
 
 [[package]]
@@ -1534,6 +1536,17 @@ dependencies = [
  "nve-abi",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nve-layout-yoga"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "nve-abi",
+ "nve-backend-headless",
+ "nve-engine",
+ "nve-example-counter",
 ]
 
 [[package]]
