@@ -17,3 +17,49 @@ Iteration speed is a hard architectural invariant of `native-view-engine`, not a
 2. **Fast macOS Linking:** `.cargo/config.toml` sets `-C split-debuginfo=unpacked` to skip `dsymutil` on every dev rebuild.
 3. **Workspace Dependency Profiles:** `Cargo.toml` compiles heavy dependencies (e.g. `taffy`, `serde`) with `opt-level = 2` while keeping workspace crates at `opt-level = 0` so runtime tests and benchmarks stay fast without slowing down incremental workspace compiles.
 4. **Stage-by-Stage Telemetry:** Every committed frame records `FrameTiming` (`reconcile_us`, `encode_us`, `apply_us`, `layout_us`, `diff_us`, `mount_us`) and exports Chrome/Perfetto JSON traces (`cargo nve bench --trace bench.trace.json`).
+
+## Canonical Build, Test & Benchmark Commands
+
+```bash
+# Rust workspace tests, Clippy gate, ABI drift check, and benchmarks
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run --locked -p nve-cli -- codegen abi --check
+cargo bench --workspace
+cargo nve bench
+
+# Build nve-example-counter cdylib (Tier-2 hot-swap & native host embedding)
+cargo build -p nve-example-counter
+
+# C++20 Fabric/Yoga/JSI bridge CTest & benchmark
+# (omit -DRN_REACT_COMMON_DIR for standalone mode without RN Yoga/JSI)
+cmake -S cxx/nve-fabric-bridge -B cxx/build -G Ninja \
+  -DRN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon \
+  && cmake --build cxx/build \
+  && ctest --test-dir cxx/build --output-on-failure
+./cxx/build/nve_fabric_bridge_bench
+
+# macOS AppKit host CTest (optionally pass -DRN_REACT_COMMON_DIR=...)
+cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja \
+  && cmake --build hosts/macos-shell/build \
+  && ctest --test-dir hosts/macos-shell/build --output-on-failure
+
+# iOS Simulator SDK Objective-C++ syntax check
+xcrun --sdk iphonesimulator clang++ -std=c++20 -fobjc-arc -fsyntax-only \
+  -Icxx/nve-fabric-bridge/include -Ihosts/apple-common -Ihosts/ios-shell \
+  hosts/ios-shell/NveFabricHost.mm hosts/ios-shell/RCTNveComponentView.mm
+
+# SwiftUI host kit & Flutter plugin tests
+swift test --package-path hosts/swiftui-kit
+(cd hosts/flutter-plugin && flutter test)
+
+# Skia desktop host tests & CLI launch
+cargo test -p nve-backend-skia -p nve-skia-shell
+cargo run -p nve-skia-shell -- target/debug/libnve_example_counter.dylib --no-ws
+
+# Web WASM host unit tests, wasm32 compile check, bundle, and headless Chrome E2E
+cargo test --locked -p nve-backend-web -p nve-web-shell \
+  && cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
+./hosts/web-shell/build.sh
+node hosts/web-shell/e2e/run_e2e.mjs --no-screenshot
+```

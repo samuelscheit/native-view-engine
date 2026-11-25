@@ -6,6 +6,8 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Codegen Hygiene
 
+- **Windows 11 Live Verification of Wave 13 SDK, `NveWinWindowManager`, RNW 0.88 & `.generated.h`** (`4e046ca`)
+  - Verified natively on Windows 11 (`samuel-pc`, MSVC 19.51): `codegen abi --check` (10/10 files, 0 CRLF/LF drift), `nve-sdk` (`windows.rs`: Win32 Clipboard, CredMan, `ShellExecuteW`, Registry theme, `GetUserDefaultLocaleName`) + `nve-router` + `nve-ui` + `nve-mdx` + `nve-interop` (87/87 tests, 0 Clippy warnings), `cxx/nve-fabric-bridge` (2/2 CTest, 0 `/W4` warnings), `hosts/windows-shell` Standalone & RNW 0.88 Fabric (`NveWinWindowManager`, 3/3 CTest each, 0 `/W4` warnings across 67 Ninja targets), and Skia D3D12 (40/40 tests).
 - **Option 5 Hybrid Web CSS, Keyed `SetChildren`, Semantic HTML5 SSR & Zero-Flicker Progressive Hydration** (`36a6e5a`)
   - Replaced inline `cssText` thrashing with deferred end-of-frame style flushing, static `NVE_BASE_RESET_CSS`, deterministic FNV-1a64 `.s<base36>` structural stylesheet cache (`MAX_DYNAMIC_RULES = 4096`, batched `adoptedStyleSheets`), volatile/continuous inline escape hatch, `.nve-tl` leaf-text inheritance, and structured `RawStyleProps` (`font-weight`, `text-align`, `box-shadow`, `overflow`, `object-fit`). Cut Studio Frame 0 HTML+CSS payload by **-77.2%** (`112,281 B -> 25,637 B`).
   - Added O(N) head/tail + LIS keyed `SetChildren` DOM reconciliation preserving `<input>` focus/IME and scroll state, Semantic HTML5 `render_ssr`/`render_ssr_document`, single-root `RootEventDelegator`, in-place `hydrate_into` with mismatch recovery, and `ProgressiveIslandHost` (`Load` / `Visible` / `Interaction` with replay / `Idle`).

@@ -1,90 +1,38 @@
 # AGENTS.md — `native-view-engine`
 
-Concise architecture invariants, engineering rules, and verified build/test commands for agents working in this repository.
+High-signal invariants, engineering focus areas, and workflow rules for agents working in this repository.
 
-## Architecture Invariants
+## Documentation Map (`docs/`)
 
-- **Single binary IR & modular C ABI** (`crates/nve-abi`, `cxx/nve-fabric-bridge/include/nve_abi.generated.h`, `crates/nve-engine`):
-  - Every frame crosses the Rust/host boundary as one flat, batched binary `CommandBuffer` and `EventRing` (`submit_frame`). Never add per-prop FFI/JNI crossings or `folly::dynamic` serialization.
-  - Expose app modules solely via `nve_get_interface(uint32_t)` (`NVE_IFACE_SURFACE=1`, `NVE_IFACE_LAYOUT=2`, `NVE_IFACE_COMPONENT=3`, `NVE_IFACE_DEV=4`), backed by the safe Rust `NveApp` trait and `export_nve_app!` macro. No monolithic vtables or legacy compatibility shims.
-  - Keep `crates/nve-engine` framework-agnostic (zero dependency on `dioxus-core`).
-- **Multi-backend & interop architecture**:
-  - **Frontend**: `crates/nve-dioxus` — Dioxus 0.7 `WriteMutations` adapter emitting `CommandBuffer`s + Tier-1 RSX hot-patch.
-  - **C++20 Fabric/Yoga/JSI bridge**: `cxx/nve-fabric-bridge` — zero-Hermes React Native Fabric/Yoga adapter with mock `jsi::Runtime` event recorder (`NVE_WITH_RN_YOGA`, `NVE_WITH_RN_JSI`, `NVE_WITH_RN_FABRIC`).
-  - **Desktop Skia/winit**: `crates/nve-backend-skia` (pure rendering backend with optional `--features skia` / `skia-metal` / `skia-vulkan` / `skia-d3d`) + `hosts/skia-shell` (`nve-skia-shell` runnable `winit`/`softbuffer`/GPU window host).
-  - **Web WASM DOM**: `crates/nve-backend-web` + `hosts/web-shell` — decodes the same `CommandBuffer` onto browser DOM + CSS Flexbox.
-  - **Headless**: `crates/nve-backend-headless` — pure-Rust Taffy layout + mutation recorder for sub-second tests.
-  - **Bi-directional 5-target codegen**: `crates/nve-codegen` — `import_rn` (`*NativeComponent.{ts,js}` / `Native*.{ts,js}`) and `export` from one `NveExportSpec` to React Native Fabric, Flutter `dart:ffi`, SwiftUI, Jetpack Compose, and Web Components.
-  - **Universal interop**: `crates/nve-interop` — `SurfaceOrchestrator`, `LayoutNegotiator`, `GestureArbitrator`, `NveChannelBus`, `RenderHandoff`, and opt-in `<Island>` specs.
+- [docs/architecture.md](docs/architecture.md) — Multi-backend architecture, binary IR/ABI model, and crate/host layout.
+- [docs/BACKLOG.md](docs/BACKLOG.md) — Open prioritized roadmap (keep open-only).
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — Complete reverse-chronological log of shipped milestones.
+- [docs/UPSTREAM.md](docs/UPSTREAM.md) — Known upstream bugs, toolchain/OS quirks, and mitigations.
+- [docs/iteration-speed.md](docs/iteration-speed.md) — 4-tier hot-reload budgets and canonical per-host build/test/benchmark commands.
+- [scripts/check-all.sh](scripts/check-all.sh) — Unified cross-platform verification script (`--quick` or full).
 
-## Engineering Rules
+## Non-Negotiable Invariants
 
-- **Strict DRY across platform hosts**: Put shared Apple UIKit/AppKit host logic (ABI loading, hot-swap, style/event/tree helpers) in `hosts/apple-common/` — never copy-paste between `hosts/ios-shell/` and `hosts/macos-shell/`.
-- **Zero backwards compatibility**: Refactor cleanly and delete dead/legacy code, obsolete exports, and shims instead of preserving compatibility layers.
-- **Root causes only**: Fix underlying invariants rather than patching symptoms.
-- **Deep tests & live benchmarks**: Write edge-case, property, and fuzz tests (truncated/corrupt buffers, layout/style inheritance, hot-swap state preservation, ABI error paths) instead of smoke tests. Keep statistical benchmarks (`cargo bench`, `nve_fabric_bridge_bench`) green.
-- **Keep files modular**: Split oversized files along clear subsystem boundaries.
-- **Generated file naming invariant**: Every generated non-Java file MUST contain `.generated.` in its filename (`<name>.generated.<ext>`), e.g., `nve_abi.generated.h`, `nve_core_abi.generated.dart`, `nve_core_abi.generated.ts`, `<Stem>HybridSpec.generated.{hpp,swift,kt}`. Every generated Java file MUST live inside a `generated/` package directory (e.g., `package dev.nve.android.generated;` in `.../generated/NveCoreAbi.java`) because `javac` forbids dots in `public class` filenames. Never add legacy un-suffixed symlinks or shim headers.
+- **Single binary IR & modular C ABI**: Every frame crosses the Rust/host boundary as one flat batched `CommandBuffer`, `EventRing`, or zero-decode `NveSceneView`. Expose modules solely via `nve_get_interface(1..=5)` (`NveApp` + `export_nve_app!`). Keep `crates/nve-engine` framework-agnostic (zero dependency on `dioxus-core`).
+- **Generated-file naming**: Every generated non-Java file MUST include `.generated.` (`*.generated.{h,dart,ts,rs,swift,kt,cpp}`). Every generated Java file MUST live in a `generated/` package (`package dev.nve.android.generated;`). Keep `cargo run --locked -p nve-cli -- codegen abi --check` green; never add un-suffixed shim headers or symlinks.
+- **Keep build/trace artifacts out of git**: Never commit `*.trace.json`, `*.perfetto.json`, `cxx/build*`, `hosts/*/build`, `hosts/swiftui-kit/.build`, `hosts/flutter-plugin/.dart_tool`, or compiled binaries.
 
-## Orchestration & Git Workflow
+## How We Work & Core Focus Areas
 
-- **Delegation**: Always use T3 `delegate_task` (never native subagents) for delegation; pass `isolation: "worktree"` for parallel work.
-- **Never commit build or trace artifacts**: Keep `*.trace.json`, `*.perfetto.json`, `cxx/build*`, `hosts/*/build`, `hosts/swiftui-kit/.build`, `hosts/flutter-plugin/.dart_tool`, and compiled libraries/objects out of git.
-- **Clean commits**: Inspect `git diff`, then commit only your files using a conventional commit message on stdin:
-  ```bash
-  git commit --only <paths> -F - <<'EOF'
-  feat(scope): concise summary
-  EOF
-  ```
+- **Zero-overhead, zero-JSON boundaries**: For every boundary (FFI, events, interop, host bridges, sync/CRDT), research proven designs and choose the zero-cost binary / direct-FFI / zero-copy path even when harder. Never ship JSON serialization, wrapper layers, or extra per-frame copies; lock `#[repr(C)]` layouts with compile-time `offset_of!` and C11 `_Static_assert(offsetof(...))`.
+- **Strict DRY & modular code (`< 650` lines)**: Share platform and wire logic instead of copy-pasting (e.g., `hosts/apple-common/` for iOS + macOS, `cxx/nve-fabric-bridge/` for C++ hosts, single-source `nve-codegen` for ABI/codecs). Split oversized files along cohesive subsystem boundaries.
+- **Zero backwards compatibility**: Refactor cleanly and delete dead/legacy code, obsolete exports, and fallback shims immediately instead of keeping compatibility layers.
+- **Root causes & upstream memory**: Fix underlying invariants rather than patching symptoms. Whenever you hit an upstream bug, quirk, or footgun in a dependency, compiler, or platform toolkit, document version + symptom + mitigation in [docs/UPSTREAM.md](docs/UPSTREAM.md).
+- **Deep verification, live E2E & visual review**: Write edge-case, property, fuzz, and live E2E tests (corrupt/truncated buffers, focus/IME/a11y, hot-swap state preservation, ABI error paths) rather than smoke tests. Keep workspace + `wasm32` Clippy (`-D warnings`), host CTest/Swift/Flutter suites, and statistical benchmarks (`cargo bench`, `nve_fabric_bridge_bench`) green. For visual/UI changes, capture and inspect rendered screenshots (plus an adversarial review) before calling work done.
+- **Parallel execution & fast landing**: Do small tasks directly; delegate substantial work via T3 `delegate_task` (never native subagents) with strictly disjoint file ownership (`isolation: "worktree"` for parallel local work, remote Windows `samuel-pc` for Win32/MSVC/D3D12/RNW verification). Merge and verify finished branches onto `main` immediately—do not batch finished branches while waiting on others.
+- **Clean commits**: Inspect `git diff` and commit only your own paths with a conventional commit message on stdin (`git commit --only <paths> -F - <<'EOF'`).
 
-## Canonical Build, Test & Benchmark Commands
+## Quick Verification Entry Points
 
 ```bash
-# Rust workspace tests & statistical benchmarks (plus CLI frame bench)
-cargo test --workspace
-cargo bench --workspace
-cargo nve bench
-
-# Build nve-example-counter cdylib (Tier-2 hot-swap & native host embedding)
-cargo build -p nve-example-counter
-
-# C++20 Fabric/Yoga/JSI bridge CTest & benchmark
-# (omit -DRN_REACT_COMMON_DIR for standalone mode without RN Yoga/JSI)
-cmake -S cxx/nve-fabric-bridge -B cxx/build -G Ninja \
-  -DRN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon \
-  && cmake --build cxx/build \
-  && ctest --test-dir cxx/build --output-on-failure
-./cxx/build/nve_fabric_bridge_bench
-
-# macOS AppKit host CTest (optionally pass -DRN_REACT_COMMON_DIR=...)
-cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja \
-  && cmake --build hosts/macos-shell/build \
-  && ctest --test-dir hosts/macos-shell/build --output-on-failure
-
-# iOS Simulator SDK Objective-C++ syntax check
-xcrun --sdk iphonesimulator clang++ -std=c++20 -fobjc-arc -fsyntax-only \
-  -Icxx/nve-fabric-bridge/include -Ihosts/apple-common -Ihosts/ios-shell \
-  hosts/ios-shell/NveFabricHost.mm hosts/ios-shell/RCTNveComponentView.mm
-
-# SwiftUI host kit tests
-swift test --package-path hosts/swiftui-kit
-
-# Flutter plugin tests
-(cd hosts/flutter-plugin && flutter test)
-
-# Skia desktop host tests & CLI launch
-cargo test -p nve-backend-skia -p nve-skia-shell
-cargo run -p nve-skia-shell -- target/debug/libnve_example_counter.dylib --no-ws
-
-# Web WASM host unit tests, wasm32 compile check, and full JS/WASM bundle
-cargo test --locked -p nve-backend-web -p nve-web-shell \
-  && cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
-./hosts/web-shell/build.sh
+./scripts/check-all.sh --quick                                        # Fast local suite
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
+cargo run --locked -p nve-cli -- codegen abi --check                  # Single-source ABI drift check
 ```
 
-## Learned rules
-
-- **Zero-overhead first**: For every boundary (FFI, events, interop, host bridges), research proven designs on the web and choose the zero-cost one, even when it is harder and takes longer. Never ship a quick solution that adds runtime overhead, such as serializing to JSON, wrapper layers or extra copies.
-- **Delegate only real work**: Do small tasks yourself, such as a backlog or doc entry, instead of spawning a delegate. Give a delegate its own worktree only when it runs in parallel with others that edit the same files. Otherwise let it work in the shared checkout.
-- **Merge as soon as done**: When a delegate's branch is finished and verified, merge it into `main` immediately, or have the delegate merge itself. Do not batch finished branches while waiting on others.
-- **Document upstream issues**: Whenever an agent or delegate discovers an upstream bug, quirk, or footgun in a dependency or platform toolkit, document it concisely (version, symptom, and mitigation) in `docs/UPSTREAM.md`.
+See [docs/iteration-speed.md](docs/iteration-speed.md) for CMake/Ninja, iOS/macOS, Windows RNW, Android, SwiftUI, Flutter, Skia, Web WASM, and benchmark commands.

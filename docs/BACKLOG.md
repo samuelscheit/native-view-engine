@@ -21,9 +21,8 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
 
 ## P1 — Unified Environment/Trait System, Native Primitive Escape Hatches & Host Glue
 
-- [ ] **Post-Wave-13 Host Services & Multi-Window Integration Glue (`hosts/skia-shell`, `hosts/windows-shell`)**
+- [ ] **Post-Wave-13 Host Services & Multi-Window Integration Glue (`hosts/skia-shell`)** *(in flight)*
   - Wire `SERVICE_WINDOW = 0x0002` into `DesktopWindowHost` (`NveHostCallbacks::invoke` → `WindowManager` + `HostWakeEvent::WindowCommand` + `NVH1` lifecycle pushes) and bind `NativeHostServices` (`NveHostApi::bind_host` + live OS theme/locale pushes on `CHANNEL_ID_THEME`/`CHANNEL_ID_LOCALE`).
-  - Live-verify `NveWinWindowManager`, `.generated.` MSVC builds, and `crates/nve-sdk/src/native/windows.rs` (Win32 Clipboard, `CredReadW`/`CredWriteW`, `ShellExecuteW`, Registry theme, `GetUserDefaultLocaleName`) natively on Windows 11 (`samuel-pc`).
 
 - [ ] **Unified Extensible Environment / Trait System (`crates/nve-interop`, `crates/nve-dioxus`, `crates/nve-ui`)**
   - Generalize `SurfaceEnvironment` into a typed, zero-string-lookup `TraitKey` / `Environment` system (SwiftUI `EnvironmentValues` × Compose `CompositionLocal` × CSS `@media`/`@container`):
