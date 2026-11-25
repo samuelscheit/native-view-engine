@@ -77,49 +77,28 @@ impl WindowState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct WindowFlags(pub u32);
+nve_abi::define_bitflags! {
+    #[derive(Serialize, Deserialize)]
+    pub struct WindowFlags(u32) {
+        const RESIZABLE = 1 << 0;
+        const DECORATED = 1 << 1;
+        const TRANSPARENT = 1 << 2;
+        const ALWAYS_ON_TOP = 1 << 3;
+        const MODAL = 1 << 4;
+        const EXIT_ON_CLOSE = 1 << 5;
+        const CLOSABLE = 1 << 6;
+        const MINIMIZABLE = 1 << 7;
+        const MAXIMIZABLE = 1 << 8;
+    }
+}
 
 impl WindowFlags {
-    pub const RESIZABLE: u32 = 1 << 0;
-    pub const DECORATED: u32 = 1 << 1;
-    pub const TRANSPARENT: u32 = 1 << 2;
-    pub const ALWAYS_ON_TOP: u32 = 1 << 3;
-    pub const MODAL: u32 = 1 << 4;
-    pub const EXIT_ON_CLOSE: u32 = 1 << 5;
-    pub const CLOSABLE: u32 = 1 << 6;
-    pub const MINIMIZABLE: u32 = 1 << 7;
-    pub const MAXIMIZABLE: u32 = 1 << 8;
-    pub const fn empty() -> Self {
-        Self(0)
-    }
     pub const fn standard() -> Self {
-        Self(
-            Self::RESIZABLE
-                | Self::DECORATED
-                | Self::CLOSABLE
-                | Self::MINIMIZABLE
-                | Self::MAXIMIZABLE,
-        )
-    }
-    pub const fn bits(self) -> u32 {
-        self.0
-    }
-    pub const fn contains(self, f: u32) -> bool {
-        (self.0 & f) == f
-    }
-    pub const fn with(self, f: u32) -> Self {
-        Self(self.0 | f)
-    }
-    pub const fn without(self, f: u32) -> Self {
-        Self(self.0 & !f)
-    }
-    pub fn set(&mut self, f: u32, on: bool) {
-        if on {
-            self.0 |= f;
-        } else {
-            self.0 &= !f;
-        }
+        Self::RESIZABLE
+            .union(Self::DECORATED)
+            .union(Self::CLOSABLE)
+            .union(Self::MINIMIZABLE)
+            .union(Self::MAXIMIZABLE)
     }
 }
 

@@ -4,6 +4,7 @@
 
 extern crate self as nve_abi;
 
+pub mod bitflags;
 #[cfg(feature = "wire")]
 pub mod codec;
 #[cfg(feature = "wire")]
