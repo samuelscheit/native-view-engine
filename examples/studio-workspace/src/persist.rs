@@ -1,50 +1,64 @@
-//! Crash-safe local-first binary persistence (`NVE_SNAP` + `.nvewal`) for **Aether Workspace**.
+//! Crash-safe local-first binary persistence (`MmapOffsetArena` + `NVERELOC`) for **Aether Workspace**.
 //!
-//! On native targets, [`WorkspaceStore`] pairs `nve_engine::MmapSnapshot` +
-//! `write_snapshot_atomic` with `SnapshotWal` (`.nvewal`) for O(1) incremental appends,
-//! automatic compaction once the WAL exceeds byte/record thresholds, torn-tail recovery,
-//! and corrupt-file fallback to default state.
+//! On native targets, [`WorkspaceStore`] wraps [`nve_engine::NativeInstantBootStore`] combining:
+//! - Double-buffered crash-atomic `state.nvemmap` (`MmapOffsetArena`, Slots A/B + XXH64 checksums),
+//! - Optional returning-user pre-rendered Frame-0 cache (`user_frame0.nvereloc`),
+//! - Automatic online compaction, torn-header recovery, schema-version invalidation, and
+//!   corrupt-file recovery to default state.
 //!
 //! On `wasm32`, [`WorkspaceStore`] compiles to a zero-cost no-op stub with identical API.
 
 use std::fmt;
 
-use nve_engine::WalDurability;
+use nve_engine::{
+    StateStoreConfig, DEFAULT_STATE_ARENA_CAPACITY, DEFAULT_STATE_ARENA_FILE,
+    DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
+};
 
 use crate::state::WORKSPACE_STATE_BIN_VERSION;
 
 /// Opt-in environment variable enabling local-first persistence for `StudioWorkspaceModule`.
 pub const STUDIO_PERSIST_ENV_VAR: &str = "NVE_STUDIO_DATA_DIR";
 
-/// Base `NVE_SNAP` snapshot file name inside a workspace data directory.
-pub const SNAPSHOT_FILE_NAME: &str = "workspace.nvesnap";
+/// Crash-atomic `MmapOffsetArena` state file name inside a workspace data directory.
+pub const STATE_ARENA_FILE_NAME: &str = DEFAULT_STATE_ARENA_FILE;
 
-/// Append-only `NVE_WAL1` write-ahead log file name inside a workspace data directory.
-pub const WAL_FILE_NAME: &str = "workspace.nvewal";
+/// Per-user pre-rendered Frame-0 `NVERELOC` scene file name inside a workspace data directory.
+pub const USER_FRAME0_FILE_NAME: &str = DEFAULT_USER_FRAME0_FILE;
 
-/// Default WAL record count threshold triggering automatic compaction into `workspace.nvesnap`.
-pub const DEFAULT_WAL_COMPACT_MAX_RECORDS: u64 = 32;
+/// Default automatic online compaction interval (saves between compactions).
+pub const DEFAULT_COMPACT_INTERVAL: u64 = 32;
 
-/// Default WAL byte size threshold triggering automatic compaction into `workspace.nvesnap`.
-pub const DEFAULT_WAL_COMPACT_MAX_BYTES: u64 = 256 * 1024;
-
-/// Application schema version embedded in `NVE_SNAP` and `NVE_WAL1` headers.
+/// Application schema version embedded in Studio `state.nvemmap` and `frame0.nvereloc` headers.
 pub const STUDIO_SNAPSHOT_SCHEMA_VERSION: u32 = WORKSPACE_STATE_BIN_VERSION as u32;
 
 /// Compaction and durability configuration for [`WorkspaceStore`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PersistConfig {
-    pub max_wal_bytes: u64,
-    pub max_wal_records: u64,
-    pub durability: WalDurability,
+    pub initial_capacity: usize,
+    pub compact_headroom: usize,
+    pub auto_compact_every: u64,
+    pub sync_on_save: bool,
 }
 
 impl Default for PersistConfig {
     fn default() -> Self {
         Self {
-            max_wal_bytes: DEFAULT_WAL_COMPACT_MAX_BYTES,
-            max_wal_records: DEFAULT_WAL_COMPACT_MAX_RECORDS,
-            durability: WalDurability::Buffered,
+            initial_capacity: DEFAULT_STATE_ARENA_CAPACITY,
+            compact_headroom: DEFAULT_STATE_COMPACT_HEADROOM,
+            auto_compact_every: DEFAULT_COMPACT_INTERVAL,
+            sync_on_save: false,
+        }
+    }
+}
+
+impl PersistConfig {
+    pub const fn to_state_store_config(self) -> StateStoreConfig {
+        StateStoreConfig {
+            initial_capacity: self.initial_capacity,
+            compact_headroom: self.compact_headroom,
+            sync_on_save: self.sync_on_save,
+            auto_compact_every: self.auto_compact_every,
         }
     }
 }
@@ -53,28 +67,28 @@ impl Default for PersistConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PersistRecoveryStats {
     pub loaded_from_disk: bool,
-    pub replayed_wal_records: usize,
-    pub truncated_torn_wal_bytes: u64,
-    pub recovered_from_corrupt_snapshot: bool,
-    pub recovered_from_corrupt_wal: bool,
+    pub schema_mismatch_reset: bool,
+    pub recovered_from_corrupt_arena: bool,
+    pub active_slot: usize,
+    pub generation: u64,
 }
 
 /// Outcome returned by [`WorkspaceStore::save`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PersistOutcome {
-    pub wal_seq: u64,
+    pub generation: u64,
+    pub active_slot: usize,
     pub compacted: bool,
-    pub wal_record_count: u64,
-    pub wal_file_len: u64,
-    pub snapshot_checksum: u64,
+    pub used_bytes: usize,
+    pub capacity_bytes: usize,
+    pub payload_checksum: u64,
 }
 
 /// Persistence error surfaced by [`WorkspaceStore`] operations.
 #[derive(Debug)]
 pub enum PersistError {
     Io(std::io::Error),
-    Snapshot(nve_engine::SnapshotError),
-    Wal(nve_engine::WalError),
+    InstantBoot(nve_engine::InstantBootError),
     CorruptState(&'static str),
 }
 
@@ -82,8 +96,7 @@ impl fmt::Display for PersistError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(err) => write!(f, "persistence I/O error: {err}"),
-            Self::Snapshot(err) => write!(f, "snapshot error: {err}"),
-            Self::Wal(err) => write!(f, "WAL error: {err}"),
+            Self::InstantBoot(err) => write!(f, "instant-boot store error: {err}"),
             Self::CorruptState(msg) => write!(f, "corrupt workspace state: {msg}"),
         }
     }
@@ -97,44 +110,29 @@ impl From<std::io::Error> for PersistError {
     }
 }
 
-impl From<nve_engine::SnapshotError> for PersistError {
-    fn from(value: nve_engine::SnapshotError) -> Self {
-        Self::Snapshot(value)
-    }
-}
-
-impl From<nve_engine::WalError> for PersistError {
-    fn from(value: nve_engine::WalError) -> Self {
-        Self::Wal(value)
+impl From<nve_engine::InstantBootError> for PersistError {
+    fn from(value: nve_engine::InstantBootError) -> Self {
+        Self::InstantBoot(value)
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
-    use std::fs;
     use std::path::{Path, PathBuf};
 
-    use nve_engine::{write_snapshot_atomic, MmapSnapshot, SnapshotWal, WalRecordKind};
+    use nve_engine::{InstantFrame0, NativeInstantBootStore, VerifyMode};
 
     use crate::state::WorkspaceState;
 
     use super::{
-        PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, SNAPSHOT_FILE_NAME,
-        STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION, WAL_FILE_NAME,
+        PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, STUDIO_PERSIST_ENV_VAR,
+        STUDIO_SNAPSHOT_SCHEMA_VERSION,
     };
 
-    const SNAPSHOT_META_TAG: &[u8] = b"nve-studio-nws1-v2";
-
-    /// Crash-safe local-first binary store backed by `MmapSnapshot` + `write_snapshot_atomic`
-    /// + `SnapshotWal` (`.nvewal`).
+    /// Crash-safe local-first binary store backed by [`NativeInstantBootStore`]
+    /// (`MmapOffsetArena` double-buffered `state.nvemmap` + atomic `user_frame0.nvereloc`).
     pub struct WorkspaceStore {
-        dir: PathBuf,
-        snapshot_path: PathBuf,
-        wal_path: PathBuf,
-        wal: SnapshotWal,
-        config: PersistConfig,
-        base_checksum: u64,
-        compaction_count: u64,
+        boot_store: NativeInstantBootStore,
         initial_state: WorkspaceState,
         recovery: PersistRecoveryStats,
     }
@@ -160,71 +158,60 @@ mod imp {
             dir: impl AsRef<Path>,
             config: PersistConfig,
         ) -> Result<Self, PersistError> {
-            let dir = dir.as_ref().to_path_buf();
-            fs::create_dir_all(&dir)?;
-            let snapshot_path = dir.join(SNAPSHOT_FILE_NAME);
-            let wal_path = dir.join(WAL_FILE_NAME);
+            let mut boot_store = NativeInstantBootStore::open(
+                dir,
+                STUDIO_SNAPSHOT_SCHEMA_VERSION,
+                config.to_state_store_config(),
+            )?;
+            let raw_rec = boot_store.recovery_stats();
+            let mut recovery = PersistRecoveryStats {
+                loaded_from_disk: raw_rec.loaded_from_disk,
+                schema_mismatch_reset: raw_rec.schema_mismatch_reset,
+                recovered_from_corrupt_arena: raw_rec.recovered_from_corrupt_arena,
+                active_slot: raw_rec.active_slot,
+                generation: raw_rec.generation,
+            };
 
-            let mut recovery = PersistRecoveryStats::default();
-
-            if snapshot_path.exists() {
-                match load_base_snapshot(&snapshot_path) {
-                    Ok((base_state, base_checksum)) => {
-                        recovery.loaded_from_disk = true;
-                        let (wal, state) = open_and_replay_wal(
-                            &wal_path,
-                            base_checksum,
-                            base_state,
-                            config.durability,
-                            &mut recovery,
-                        )?;
-                        return Ok(Self {
-                            dir,
-                            snapshot_path,
-                            wal_path,
-                            wal,
-                            config,
-                            base_checksum,
-                            compaction_count: 0,
-                            initial_state: state,
-                            recovery,
-                        });
+            let initial_state = match boot_store.state_bytes() {
+                Ok(Some(bytes)) => match WorkspaceState::from_bytes(bytes) {
+                    Some(decoded) => decoded,
+                    None => {
+                        recovery.loaded_from_disk = false;
+                        recovery.recovered_from_corrupt_arena = true;
+                        let default_state = WorkspaceState::default();
+                        boot_store.reset()?;
+                        let _ = boot_store.save_state(&default_state.to_bytes())?;
+                        default_state
                     }
-                    Err(_) => {
-                        // Corrupt or incompatible base snapshot: cleanly recover to default state.
-                        recovery.recovered_from_corrupt_snapshot = true;
-                    }
+                },
+                Ok(None) => WorkspaceState::default(),
+                Err(_) => {
+                    recovery.loaded_from_disk = false;
+                    recovery.recovered_from_corrupt_arena = true;
+                    let default_state = WorkspaceState::default();
+                    boot_store.reset()?;
+                    let _ = boot_store.save_state(&default_state.to_bytes())?;
+                    default_state
                 }
-            }
-
-            let default_state = WorkspaceState::default();
-            let state_bytes = default_state.to_bytes();
-            let header = write_snapshot_atomic(
-                &snapshot_path,
-                STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                0,
-                &[],
-                &state_bytes,
-                SNAPSHOT_META_TAG,
-            )?;
-            let wal = SnapshotWal::create_fresh(
-                &wal_path,
-                STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                header.checksum_xxh64,
-                config.durability,
-            )?;
+            };
 
             Ok(Self {
-                dir,
-                snapshot_path,
-                wal_path,
-                wal,
-                config,
-                base_checksum: header.checksum_xxh64,
-                compaction_count: 0,
-                initial_state: default_state,
+                boot_store,
+                initial_state,
                 recovery,
             })
+        }
+
+        /// Attaches a bundled pre-baked `frame0.nvereloc` path for 0-latency cold first launch.
+        pub fn with_default_frame0_path(mut self, path: impl AsRef<Path>) -> Self {
+            self.boot_store = self.boot_store.with_default_frame0_path(path);
+            self
+        }
+
+        /// Attaches embedded pre-baked `frame0.nvereloc` bytes for 0-latency cold first launch.
+        pub fn with_default_frame0_bytes(mut self, bytes: &[u8]) -> Self {
+            self.boot_store = self.boot_store.with_default_frame0_bytes(bytes);
+            self
         }
 
         #[inline]
@@ -234,17 +221,22 @@ mod imp {
 
         #[inline]
         pub fn dir(&self) -> &Path {
-            &self.dir
+            self.boot_store.user_dir()
         }
 
         #[inline]
-        pub fn snapshot_path(&self) -> &Path {
-            &self.snapshot_path
+        pub fn state_arena_path(&self) -> Option<&Path> {
+            self.boot_store.state_arena_path()
         }
 
         #[inline]
-        pub fn wal_path(&self) -> &Path {
-            &self.wal_path
+        pub fn user_frame0_path(&self) -> &Path {
+            self.boot_store.user_frame0_path()
+        }
+
+        #[inline]
+        pub fn boot_store(&self) -> &NativeInstantBootStore {
+            &self.boot_store
         }
 
         #[inline]
@@ -258,154 +250,86 @@ mod imp {
         }
 
         #[inline]
-        pub fn wal_record_count(&self) -> u64 {
-            self.wal.record_count()
+        pub fn generation(&self) -> u64 {
+            self.boot_store.state_store().generation()
         }
 
         #[inline]
-        pub fn wal_file_len(&self) -> u64 {
-            self.wal.file_len()
+        pub fn active_slot(&self) -> usize {
+            self.boot_store.state_store().active_slot()
         }
 
         #[inline]
-        pub fn base_snapshot_checksum(&self) -> u64 {
-            self.base_checksum
+        pub fn used_bytes(&self) -> usize {
+            self.boot_store.state_store().used_bytes()
         }
 
         #[inline]
         pub fn compaction_count(&self) -> u64 {
-            self.compaction_count
+            self.boot_store.state_store().compaction_count()
         }
 
-        /// Appends `state` incrementally to `.nvewal` and automatically compacts into
-        /// `workspace.nvesnap` when either byte or record threshold is reached.
+        /// Loads the best available pre-rendered Frame-0 `NVERELOC` scene (`user_frame0.nvereloc`
+        /// or bundled `frame0.nvereloc`).
+        pub fn load_instant_frame0(&self, mode: VerifyMode) -> Option<InstantFrame0> {
+            self.boot_store.load_frame0(mode)
+        }
+
+        /// Crash-atomically commits `state` into double-buffered `state.nvemmap` (`MmapOffsetArena`),
+        /// automatically compacting when thresholds or capacity limits are reached.
         pub fn save(&mut self, state: &WorkspaceState) -> Result<PersistOutcome, PersistError> {
             let state_bytes = state.to_bytes();
-            let wal_seq = self
-                .wal
-                .append_delta(WalRecordKind::StateDelta, &state_bytes)?;
-            let mut compacted = false;
-
-            if self
-                .wal
-                .should_compact(self.config.max_wal_bytes, self.config.max_wal_records)
-            {
-                let header = self.wal.compact(
-                    &self.snapshot_path,
-                    STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                    &[],
-                    &state_bytes,
-                    SNAPSHOT_META_TAG,
-                )?;
-                self.base_checksum = header.checksum_xxh64;
-                self.compaction_count = self.compaction_count.saturating_add(1);
-                compacted = true;
-            }
-
+            let out = self.boot_store.save_state(&state_bytes)?;
             Ok(PersistOutcome {
-                wal_seq,
-                compacted,
-                wal_record_count: self.wal.record_count(),
-                wal_file_len: self.wal.file_len(),
-                snapshot_checksum: self.base_checksum,
+                generation: out.generation,
+                active_slot: out.active_slot,
+                compacted: out.compacted,
+                used_bytes: out.used_bytes,
+                capacity_bytes: out.capacity_bytes,
+                payload_checksum: out.payload_checksum,
             })
         }
 
-        /// Crash-safely compacts `state` (with optional Frame-0 `CommandBuffer` bytes) into a
-        /// fresh atomic `NVE_SNAP` file and rotates `.nvewal` to an empty header.
-        pub fn compact(
+        /// Persists both `state` (into `state.nvemmap`) and a pre-rendered `SceneRelocView` buffer
+        /// (into `user_frame0.nvereloc`) and forces online compaction.
+        pub fn save_checkpoint(
             &mut self,
             state: &WorkspaceState,
-            frame0_bytes: &[u8],
-        ) -> Result<u64, PersistError> {
+            scene_reloc_bytes: &[u8],
+        ) -> Result<PersistOutcome, PersistError> {
             let state_bytes = state.to_bytes();
-            let header = self.wal.compact(
-                &self.snapshot_path,
-                STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                frame0_bytes,
-                &state_bytes,
-                SNAPSHOT_META_TAG,
-            )?;
-            self.base_checksum = header.checksum_xxh64;
-            self.compaction_count = self.compaction_count.saturating_add(1);
-            Ok(self.base_checksum)
+            let out = self
+                .boot_store
+                .save_checkpoint(scene_reloc_bytes, &state_bytes)?;
+            Ok(PersistOutcome {
+                generation: out.generation,
+                active_slot: out.active_slot,
+                compacted: out.compacted,
+                used_bytes: out.used_bytes,
+                capacity_bytes: out.capacity_bytes,
+                payload_checksum: out.payload_checksum,
+            })
         }
 
-        /// Re-reads the persisted base `MmapSnapshot` and replays `.nvewal` to verify disk state.
+        /// Explicitly compacts `state.nvemmap` in place, reclaiming dead arena bytes.
+        pub fn compact(&mut self) -> Result<(usize, usize), PersistError> {
+            Ok(self.boot_store.state_store_mut().compact()?)
+        }
+
+        /// Re-reads and validates the latest committed `WorkspaceState` from `state.nvemmap`.
         pub fn load_state(&self) -> Result<WorkspaceState, PersistError> {
-            let (mut state, _) = load_base_snapshot(&self.snapshot_path)?;
-            self.wal.replay_into(|rec| -> Result<(), &'static str> {
-                if rec.kind == WalRecordKind::StateDelta {
-                    let decoded = WorkspaceState::from_bytes(rec.payload)
-                        .ok_or("invalid NWS1 v2 state payload in WAL record")?;
-                    state = decoded;
-                }
-                Ok(())
-            })?;
-            Ok(state)
+            let Some(bytes) = self.boot_store.state_bytes()? else {
+                return Ok(WorkspaceState::default());
+            };
+            WorkspaceState::from_bytes(bytes)
+                .ok_or(PersistError::CorruptState("NWS1 v2 decode failed"))
         }
-    }
 
-    fn load_base_snapshot(path: &Path) -> Result<(WorkspaceState, u64), PersistError> {
-        let snap = MmapSnapshot::open_with_schema(path, STUDIO_SNAPSHOT_SCHEMA_VERSION)?;
-        let decoded = WorkspaceState::from_bytes(snap.state_bytes())
-            .ok_or(PersistError::CorruptState("NWS1 v2 decode failed"))?;
-        Ok((decoded, snap.checksum_xxh64()))
-    }
-
-    fn open_and_replay_wal(
-        wal_path: &Path,
-        base_checksum: u64,
-        base_state: WorkspaceState,
-        durability: nve_engine::WalDurability,
-        recovery: &mut PersistRecoveryStats,
-    ) -> Result<(SnapshotWal, WorkspaceState), PersistError> {
-        match SnapshotWal::open_or_create_with_durability(
-            wal_path,
-            STUDIO_SNAPSHOT_SCHEMA_VERSION,
-            base_checksum,
-            durability,
-        ) {
-            Ok(wal) => {
-                recovery.truncated_torn_wal_bytes = wal.recovered_truncated_bytes();
-                let mut latest = base_state.clone();
-                let mut replayed = 0usize;
-                let replay_res = wal.replay_into(|rec| -> Result<(), &'static str> {
-                    if rec.kind == WalRecordKind::StateDelta {
-                        let decoded = WorkspaceState::from_bytes(rec.payload)
-                            .ok_or("corrupt NWS1 v2 payload inside WAL")?;
-                        latest = decoded;
-                        replayed += 1;
-                    }
-                    Ok(())
-                });
-                match replay_res {
-                    Ok(_) => {
-                        recovery.replayed_wal_records = replayed;
-                        Ok((wal, latest))
-                    }
-                    Err(_) => {
-                        recovery.recovered_from_corrupt_wal = true;
-                        let fresh = SnapshotWal::create_fresh(
-                            wal_path,
-                            STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                            base_checksum,
-                            durability,
-                        )?;
-                        Ok((fresh, base_state))
-                    }
-                }
-            }
-            Err(_) => {
-                recovery.recovered_from_corrupt_wal = true;
-                let fresh = SnapshotWal::create_fresh(
-                    wal_path,
-                    STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                    base_checksum,
-                    durability,
-                )?;
-                Ok((fresh, base_state))
-            }
+        /// Resets persisted state and deletes any cached `user_frame0.nvereloc`.
+        pub fn reset(&mut self) -> Result<(), PersistError> {
+            self.boot_store.reset()?;
+            self.initial_state = WorkspaceState::default();
+            Ok(())
         }
     }
 }
@@ -414,18 +338,20 @@ mod imp {
 mod imp {
     use std::path::{Path, PathBuf};
 
+    use nve_engine::{InstantFrame0, VerifyMode};
+
     use crate::state::WorkspaceState;
 
     use super::{
-        PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, SNAPSHOT_FILE_NAME,
-        WAL_FILE_NAME,
+        PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, STATE_ARENA_FILE_NAME,
+        USER_FRAME0_FILE_NAME,
     };
 
     /// Zero-cost no-op persistence stub for `wasm32` targets.
     pub struct WorkspaceStore {
         dir: PathBuf,
-        snapshot_path: PathBuf,
-        wal_path: PathBuf,
+        state_arena_path: PathBuf,
+        user_frame0_path: PathBuf,
         initial_state: WorkspaceState,
     }
 
@@ -444,11 +370,19 @@ mod imp {
         ) -> Result<Self, PersistError> {
             let dir = dir.as_ref().to_path_buf();
             Ok(Self {
-                snapshot_path: dir.join(SNAPSHOT_FILE_NAME),
-                wal_path: dir.join(WAL_FILE_NAME),
+                state_arena_path: dir.join(STATE_ARENA_FILE_NAME),
+                user_frame0_path: dir.join(USER_FRAME0_FILE_NAME),
                 dir,
                 initial_state: WorkspaceState::default(),
             })
+        }
+
+        pub fn with_default_frame0_path(self, _path: impl AsRef<Path>) -> Self {
+            self
+        }
+
+        pub fn with_default_frame0_bytes(self, _bytes: &[u8]) -> Self {
+            self
         }
 
         #[inline]
@@ -462,13 +396,13 @@ mod imp {
         }
 
         #[inline]
-        pub fn snapshot_path(&self) -> &Path {
-            &self.snapshot_path
+        pub fn state_arena_path(&self) -> Option<&Path> {
+            Some(&self.state_arena_path)
         }
 
         #[inline]
-        pub fn wal_path(&self) -> &Path {
-            &self.wal_path
+        pub fn user_frame0_path(&self) -> &Path {
+            &self.user_frame0_path
         }
 
         #[inline]
@@ -482,17 +416,17 @@ mod imp {
         }
 
         #[inline]
-        pub fn wal_record_count(&self) -> u64 {
+        pub fn generation(&self) -> u64 {
             0
         }
 
         #[inline]
-        pub fn wal_file_len(&self) -> u64 {
+        pub fn active_slot(&self) -> usize {
             0
         }
 
         #[inline]
-        pub fn base_snapshot_checksum(&self) -> u64 {
+        pub fn used_bytes(&self) -> usize {
             0
         }
 
@@ -502,28 +436,52 @@ mod imp {
         }
 
         #[inline]
+        pub fn load_instant_frame0(&self, _mode: VerifyMode) -> Option<InstantFrame0> {
+            None
+        }
+
+        #[inline]
         pub fn save(&mut self, _state: &WorkspaceState) -> Result<PersistOutcome, PersistError> {
             Ok(PersistOutcome {
-                wal_seq: 0,
+                generation: 0,
+                active_slot: 0,
                 compacted: false,
-                wal_record_count: 0,
-                wal_file_len: 0,
-                snapshot_checksum: 0,
+                used_bytes: 0,
+                capacity_bytes: 0,
+                payload_checksum: 0,
             })
         }
 
         #[inline]
-        pub fn compact(
+        pub fn save_checkpoint(
             &mut self,
             _state: &WorkspaceState,
-            _frame0_bytes: &[u8],
-        ) -> Result<u64, PersistError> {
-            Ok(0)
+            _scene_reloc_bytes: &[u8],
+        ) -> Result<PersistOutcome, PersistError> {
+            Ok(PersistOutcome {
+                generation: 0,
+                active_slot: 0,
+                compacted: false,
+                used_bytes: 0,
+                capacity_bytes: 0,
+                payload_checksum: 0,
+            })
+        }
+
+        #[inline]
+        pub fn compact(&mut self) -> Result<(usize, usize), PersistError> {
+            Ok((0, 0))
         }
 
         #[inline]
         pub fn load_state(&self) -> Result<WorkspaceState, PersistError> {
             Ok(self.initial_state.clone())
+        }
+
+        #[inline]
+        pub fn reset(&mut self) -> Result<(), PersistError> {
+            self.initial_state = WorkspaceState::default();
+            Ok(())
         }
     }
 }

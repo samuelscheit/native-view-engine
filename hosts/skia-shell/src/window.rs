@@ -1,11 +1,12 @@
 //! Cross-platform desktop preview window (`winit` + `softbuffer` / hardware GPU swapchains)
 //! with live hit-testing, interactive `TextInput` focus/IME/caret editing, 2-tier WebSocket
 //! hot reload (`HotPatchMsg` from `ws://127.0.0.1:8089`), and instant-boot Frame-0
-//! `MmapSnapshot` replay + atomic save on exit.
+//! `NVERELOC` + `MmapOffsetArena` (`NativeInstantBootStore`) replay & atomic save on exit.
 
 pub mod clipboard;
 pub mod hot_reload_client;
 pub mod input;
+pub mod instant_boot;
 pub mod multi_window;
 pub mod pair_client;
 pub mod session;
@@ -29,21 +30,23 @@ mod tests;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
 
 use nve_abi::{ColorRgba, FrameId, SurfaceId};
 use nve_backend_skia::encode_rgb_png;
 use nve_backend_skia::gpu::GpuBackendKind;
 use nve_backend_skia::raster::PixelBuffer;
-use nve_backend_skia::SkiaBackend;
 use nve_engine::loader::{HotAppInstance, LoaderError};
-use nve_engine::{BackendError, MmapSnapshot, RenderBackend, SnapshotError, Viewport};
+use nve_engine::{BackendError, InstantBootError, RelocError};
 
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 pub use clipboard::{default_clipboard, ClipboardProvider, InMemoryClipboard};
 pub use hot_reload_client::HotReloadClient;
 pub use input::format_keydown_shorthand;
+pub(crate) use instant_boot::prewarm_from_options;
+pub use instant_boot::{
+    replay_instant_boot_store_into_backend, replay_snapshot_into_backend, PrewarmedSnapshot,
+};
 pub use multi_window::{CloseOutcome, HeadlessMultiWindowHost, HostWakeEvent, SurfaceWindow};
 pub use pair_client::{PairConnectConfig, PairTransport, PairedRemoteApp, DEFAULT_PAIR_WS_PATH};
 pub use session::DesktopSession;
@@ -55,7 +58,8 @@ pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8089";
 pub enum DesktopHostError {
     Loader(LoaderError),
     Backend(BackendError),
-    Snapshot(SnapshotError),
+    Reloc(RelocError),
+    InstantBoot(InstantBootError),
     Io(std::io::Error),
     Pairing(String),
     EventLoop(String),
@@ -68,7 +72,8 @@ impl fmt::Display for DesktopHostError {
         match self {
             Self::Loader(err) => write!(f, "failed to load NVE app cdylib: {err}"),
             Self::Backend(err) => write!(f, "render backend error: {err}"),
-            Self::Snapshot(err) => write!(f, "snapshot error: {err}"),
+            Self::Reloc(err) => write!(f, "NVERELOC error: {err}"),
+            Self::InstantBoot(err) => write!(f, "instant-boot error: {err}"),
             Self::Io(err) => write!(f, "I/O error: {err}"),
             Self::Pairing(msg) => write!(f, "live pairing error: {msg}"),
             Self::EventLoop(msg) => write!(f, "event loop error: {msg}"),
@@ -92,9 +97,15 @@ impl From<BackendError> for DesktopHostError {
     }
 }
 
-impl From<SnapshotError> for DesktopHostError {
-    fn from(value: SnapshotError) -> Self {
-        Self::Snapshot(value)
+impl From<RelocError> for DesktopHostError {
+    fn from(value: RelocError) -> Self {
+        Self::Reloc(value)
+    }
+}
+
+impl From<InstantBootError> for DesktopHostError {
+    fn from(value: InstantBootError) -> Self {
+        Self::InstantBoot(value)
     }
 }
 
@@ -104,7 +115,7 @@ impl From<std::io::Error> for DesktopHostError {
     }
 }
 
-/// Configuration for the live desktop preview window and optional instant-boot snapshot.
+/// Configuration for the live desktop preview window and optional instant-boot store/snapshot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopPreviewOptions {
     pub title: String,
@@ -118,6 +129,8 @@ pub struct DesktopPreviewOptions {
     pub preferred_backend: GpuBackendKind,
     pub vsync: bool,
     pub snapshot_path: Option<PathBuf>,
+    pub instant_boot_dir: Option<PathBuf>,
+    pub default_frame0_path: Option<PathBuf>,
     pub schema_version: u32,
 }
 
@@ -135,6 +148,8 @@ impl Default for DesktopPreviewOptions {
             preferred_backend: GpuBackendKind::platform_preferred(),
             vsync: true,
             snapshot_path: None,
+            instant_boot_dir: None,
+            default_frame0_path: None,
             schema_version: 1,
         }
     }
@@ -365,49 +380,6 @@ impl DesktopApp for HotAppSlot {
             SkiaHostEvent::LocaleChanged(_) | SkiaHostEvent::WindowLifecycle(_) => false,
         }
     }
-}
-
-/// Pre-warmed Frame-0 backend state decoded directly from a zero-copy [`MmapSnapshot`] prior to
-/// loading any app `cdylib`.
-pub struct PrewarmedSnapshot {
-    pub backend: SkiaBackend,
-    pub pixel_buffer: PixelBuffer,
-    pub frame0_bytes: Vec<u8>,
-    pub state_bytes: Vec<u8>,
-    pub restore_us: u64,
-}
-
-/// Opens an `NVE_SNAP` snapshot with schema validation, replays its zero-copy Frame-0
-/// `CommandBuffer` straight into a [`SkiaBackend`], and rasterizes Frame 0 before any app `cdylib`
-/// is loaded.
-pub fn replay_snapshot_into_backend(
-    path: &Path,
-    schema_version: u32,
-    surface_id: SurfaceId,
-    viewport: Viewport,
-    clear_color: ColorRgba,
-) -> Result<PrewarmedSnapshot, DesktopHostError> {
-    let t0 = Instant::now();
-    let snap = MmapSnapshot::open_with_schema(path, schema_version)?;
-    let frame0 = snap.frame0_command_buffer();
-    let mut backend = SkiaBackend::new();
-    backend.set_viewport(surface_id, viewport);
-    if !frame0.is_empty() {
-        backend.submit_frame(frame0)?;
-    }
-    let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
-    let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
-    let mut pixel_buffer = PixelBuffer::new(phys_w, phys_h);
-    backend.rasterize(&mut pixel_buffer, clear_color);
-    let restore_us = t0.elapsed().as_micros() as u64;
-
-    Ok(PrewarmedSnapshot {
-        backend,
-        pixel_buffer,
-        frame0_bytes: frame0.to_vec(),
-        state_bytes: snap.state_bytes().to_vec(),
-        restore_us,
-    })
 }
 
 /// Writes a [`PixelBuffer`] to disk as a binary `P6` PPM image.

@@ -1,10 +1,10 @@
-//! Zero-JSON binary Dioxus Signal Table Archiver & incremental WAL delta codec.
+//! Zero-JSON binary Dioxus Signal Table Archiver & incremental delta codec.
 //!
-//! Stores typed signal slots keyed by deterministic 64-bit FNV-1a hashes of
+//! Stores typed signal slots keyed by deterministic 64-bit XXH64 hashes of
 //! `(component_path, signal_name)` so `DioxusSurface` apps can snapshot state into
-//! [`nve_engine::MmapSnapshot::state_bytes`], stream incremental dirty-slot deltas into
-//! [`nve_engine::SnapshotWal`], compact deterministically, and hydrate safely across app
-//! upgrades (tolerating added, removed, or re-typed signal slots without crashing).
+//! [`nve_engine::NativeStateStore`] (`MmapOffsetArena`), stream incremental dirty-slot deltas,
+//! compact deterministically, and hydrate safely across app upgrades (tolerating added, removed,
+//! or re-typed signal slots without crashing).
 //!
 //! # Binary Layouts (little-endian, XXH64 checksummed)
 //!
@@ -42,7 +42,7 @@ use nve_components::reconcile::{
     reconcile_three_way, ConflictPolicy, ReconcileDecision, ThreeWayEntry,
 };
 use nve_engine::hash::Xxh64Hasher;
-use nve_engine::WalError;
+use nve_engine::{ArenaError, InstantBootError};
 
 /// Reconciles one signal slot during hot-reload using 3-way merge (`ConflictPolicy::PreferLocal`).
 ///
@@ -213,7 +213,8 @@ pub enum SignalArchiveError {
     UnsortedOrDuplicateSlot(u64),
     TrailingBytes(usize),
     PayloadTooLarge(usize),
-    Wal(WalError),
+    Arena(ArenaError),
+    InstantBoot(InstantBootError),
 }
 
 impl From<DecodeError> for SignalArchiveError {
@@ -222,9 +223,15 @@ impl From<DecodeError> for SignalArchiveError {
     }
 }
 
-impl From<WalError> for SignalArchiveError {
-    fn from(err: WalError) -> Self {
-        Self::Wal(err)
+impl From<ArenaError> for SignalArchiveError {
+    fn from(err: ArenaError) -> Self {
+        Self::Arena(err)
+    }
+}
+
+impl From<InstantBootError> for SignalArchiveError {
+    fn from(err: InstantBootError) -> Self {
+        Self::InstantBoot(err)
     }
 }
 
@@ -255,7 +262,8 @@ impl fmt::Display for SignalArchiveError {
             }
             Self::TrailingBytes(n) => write!(f, "signal archive has {n} trailing bytes"),
             Self::PayloadTooLarge(n) => write!(f, "signal payload length {n} exceeds u32::MAX"),
-            Self::Wal(e) => write!(f, "signal archive WAL error: {e}"),
+            Self::Arena(e) => write!(f, "signal archive arena error: {e}"),
+            Self::InstantBoot(e) => write!(f, "signal archive instant-boot error: {e}"),
         }
     }
 }
@@ -263,7 +271,8 @@ impl fmt::Display for SignalArchiveError {
 impl std::error::Error for SignalArchiveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Wal(e) => Some(e),
+            Self::Arena(e) => Some(e),
+            Self::InstantBoot(e) => Some(e),
             _ => None,
         }
     }

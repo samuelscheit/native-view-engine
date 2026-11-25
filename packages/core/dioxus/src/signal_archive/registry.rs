@@ -1,11 +1,11 @@
-//! App/surface-scoped `SignalRegistry` for registration, snapshotting, WAL streaming, and hydration.
+//! App/surface-scoped `SignalRegistry` for registration, snapshotting, `MmapOffsetArena`
+//! persistence, and schema-safe cold hydration.
 
 use nve_abi::hash::HashSet;
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
-use nve_engine::{MmapSnapshot, SnapshotHeader, SnapshotWal, WalRecordKind};
+use nve_engine::{NativeStateStore, StateSaveOutcome};
 
 use super::codec::{SignalArchive, SignalTableSnapshot};
 use super::signal_codec::SignalCodec;
@@ -153,7 +153,7 @@ impl SignalRegistry {
         snap
     }
 
-    /// Encodes a full `NVE_SIG1` snapshot of all registered signals for `MmapSnapshot.state_bytes()`.
+    /// Encodes a full `NVE_SIG1` snapshot of all registered signals for [`NativeStateStore`].
     pub fn encode_full(&self) -> Result<Vec<u8>, SignalArchiveError> {
         self.capture().encode()
     }
@@ -178,45 +178,30 @@ impl SignalRegistry {
         Ok(Some(encoded))
     }
 
-    /// Appends an incremental dirty-slot delta to `wal` when any signal changed since last persist.
-    ///
-    /// Returns `Ok(Some(seq))` if a delta record was appended, or `Ok(None)` if clean.
-    pub fn persist_delta_to_wal(
+    /// Crash-atomically persists the current signal table into `store` (`MmapOffsetArena`) when
+    /// any registered signal changed since the last persisted baseline.
+    pub fn persist_if_dirty_to_store(
         &mut self,
-        wal: &mut SnapshotWal,
-    ) -> Result<Option<u64>, SignalArchiveError> {
+        store: &mut NativeStateStore,
+    ) -> Result<Option<StateSaveOutcome>, SignalArchiveError> {
         let current = self.capture();
-        let delta = current.diff_since(&self.last_persisted);
-        if delta.is_empty() {
+        if current.diff_since(&self.last_persisted).is_empty() {
             return Ok(None);
         }
-        let encoded = delta.encode()?;
-        let seq = wal.append_delta(WalRecordKind::StateDelta, &encoded)?;
+        let outcome = SignalArchive::save_to_store(store, &current)?;
         self.last_persisted = current;
-        Ok(Some(seq))
+        Ok(Some(outcome))
     }
 
-    /// Captures the full signal table, atomically compacts Frame-0 + state into `snapshot_path`,
-    /// rotates `wal_path`, and refreshes the incremental diff baseline.
-    pub fn compact_to_snapshot(
+    /// Unconditionally persists the full signal table into `store` and refreshes the diff baseline.
+    pub fn persist_to_store(
         &mut self,
-        snapshot_path: impl AsRef<Path>,
-        wal_path: impl AsRef<Path>,
-        frame0_bytes: &[u8],
-        metadata_bytes: &[u8],
-    ) -> Result<(SnapshotHeader, SnapshotWal), SignalArchiveError> {
+        store: &mut NativeStateStore,
+    ) -> Result<StateSaveOutcome, SignalArchiveError> {
         let current = self.capture();
-        let state_bytes = current.encode()?;
-        let res = SnapshotWal::compact_into_snapshot(
-            snapshot_path,
-            wal_path,
-            self.schema_version,
-            frame0_bytes,
-            &state_bytes,
-            metadata_bytes,
-        )?;
+        let outcome = SignalArchive::save_to_store(store, &current)?;
         self.last_persisted = current;
-        Ok(res)
+        Ok(outcome)
     }
 
     /// Hydrates all matching registered signals from `table` with strict schema-evolution safety:
@@ -311,14 +296,13 @@ impl SignalRegistry {
         Ok(self.hydrate_from_table(&table))
     }
 
-    /// Loads state from an [`MmapSnapshot`], folds any companion [`SnapshotWal`] state deltas on
-    /// top, and hydrates all matching registered signals deterministically.
-    pub fn hydrate_from_snapshot_and_wal(
+    /// Loads state from a [`NativeStateStore`] (`MmapOffsetArena`) and hydrates all matching
+    /// registered signals deterministically.
+    pub fn hydrate_from_store(
         &mut self,
-        snapshot: &MmapSnapshot,
-        wal: Option<&SnapshotWal>,
+        store: &NativeStateStore,
     ) -> Result<HydrationReport, SignalArchiveError> {
-        let table = SignalArchive::open_from_snapshot_and_wal(snapshot, wal)?;
+        let table = SignalArchive::load_from_store(store)?;
         Ok(self.hydrate_from_table(&table))
     }
 }

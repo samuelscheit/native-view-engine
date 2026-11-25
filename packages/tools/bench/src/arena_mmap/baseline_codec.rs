@@ -1,28 +1,19 @@
-//! Workload A Baseline 1 codecs:
-//! - **Baseline 1a (`json`)**: Zero-dependency `serde_json`-equivalent JSON serializer &
+//! Workload A Baseline 1 codec:
+//! - **Baseline 1 (`json`)**: Zero-dependency `serde_json`-equivalent JSON serializer &
 //!   deserializer into owned `Vec<OwnedTask>`.
-//! - **Baseline 1b (`nve_snap`)**: `NVE_SNAP` container (`nve_engine::encode_snapshot` +
-//!   `MmapSnapshot::open`) wrapping a compact binary encoding deserialized into owned
-//!   `Vec<OwnedTask>`.
 
 use std::fmt;
 use std::io;
 use std::path::Path;
 
-use nve_engine::{encode_snapshot, MmapSnapshot};
-
 use nve_engine::mmap_arena::{read_file_bytes, write_file_bytes};
 use super::OwnedTask;
-
-const SNAP_SCHEMA_VERSION: u32 = 1;
-const BIN_MAGIC: [u8; 4] = *b"NVTK";
 
 #[derive(Debug)]
 pub enum CodecError {
     Io(io::Error),
     Malformed(&'static str),
     InvalidUtf8,
-    Snapshot(String),
 }
 
 impl fmt::Display for CodecError {
@@ -31,7 +22,6 @@ impl fmt::Display for CodecError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Malformed(msg) => write!(f, "malformed payload: {msg}"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
-            Self::Snapshot(msg) => write!(f, "snapshot error: {msg}"),
         }
     }
 }
@@ -404,120 +394,6 @@ pub fn read_tasks_json(path: &Path) -> Result<Vec<OwnedTask>, CodecError> {
     decode_tasks_json(&bytes)
 }
 
-// ============================================================================
-// Baseline 1b: NVE_SNAP container + compact binary owned encode/decode
-// ============================================================================
-
-/// Encodes `tasks` into a compact binary stream wrapped in an `NVE_SNAP` container
-/// (80-byte header + XXH64 checksum).
-pub fn encode_tasks_nve_snap(tasks: &[OwnedTask]) -> Vec<u8> {
-    let mut state = Vec::with_capacity(tasks.len() * 240 + 8);
-    state.extend_from_slice(&BIN_MAGIC);
-    state.extend_from_slice(&(tasks.len() as u32).to_le_bytes());
-    for t in tasks {
-        state.extend_from_slice(&t.id.to_le_bytes());
-        state.extend_from_slice(&t.created_at_ms.to_le_bytes());
-        state.extend_from_slice(&t.updated_at_ms.to_le_bytes());
-        state.extend_from_slice(&t.priority.to_le_bytes());
-        state.extend_from_slice(&t.status.to_le_bytes());
-        state.extend_from_slice(&t.assignee_id.to_le_bytes());
-        state.extend_from_slice(&t.flags.to_le_bytes());
-        write_len_prefixed_str(&mut state, &t.title);
-        write_len_prefixed_str(&mut state, &t.body);
-        write_len_prefixed_str(&mut state, &t.tag);
-    }
-    encode_snapshot(SNAP_SCHEMA_VERSION, 0, &[], &state, &[])
-}
-
-#[inline]
-fn write_len_prefixed_str(out: &mut Vec<u8>, s: &str) {
-    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-    out.extend_from_slice(s.as_bytes());
-}
-
-fn read_u32(bytes: &[u8], pos: &mut usize) -> Result<u32, CodecError> {
-    let end = pos
-        .checked_add(4)
-        .ok_or(CodecError::Malformed("offset overflow"))?;
-    let slice = bytes
-        .get(*pos..end)
-        .ok_or(CodecError::Malformed("truncated u32"))?;
-    *pos = end;
-    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
-
-fn read_u64(bytes: &[u8], pos: &mut usize) -> Result<u64, CodecError> {
-    let end = pos
-        .checked_add(8)
-        .ok_or(CodecError::Malformed("offset overflow"))?;
-    let slice = bytes
-        .get(*pos..end)
-        .ok_or(CodecError::Malformed("truncated u64"))?;
-    *pos = end;
-    Ok(u64::from_le_bytes([
-        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-    ]))
-}
-
-fn read_len_prefixed_str(bytes: &[u8], pos: &mut usize) -> Result<String, CodecError> {
-    let len = read_u32(bytes, pos)? as usize;
-    let end = pos
-        .checked_add(len)
-        .ok_or(CodecError::Malformed("string len overflow"))?;
-    let slice = bytes
-        .get(*pos..end)
-        .ok_or(CodecError::Malformed("truncated string"))?;
-    *pos = end;
-    let s = std::str::from_utf8(slice).map_err(|_| CodecError::InvalidUtf8)?;
-    Ok(s.to_owned())
-}
-
-/// Decodes the state section of an `NVE_SNAP` file into owned `Vec<OwnedTask>`.
-pub fn decode_tasks_nve_snap_state(state: &[u8]) -> Result<Vec<OwnedTask>, CodecError> {
-    if state.len() < 8 || state[0..4] != BIN_MAGIC {
-        return Err(CodecError::Malformed("invalid NVTK header"));
-    }
-    let mut pos = 4usize;
-    let count = read_u32(state, &mut pos)? as usize;
-    let mut out = Vec::with_capacity(count);
-    for _ in 0..count {
-        let id = read_u64(state, &mut pos)?;
-        let created_at_ms = read_u64(state, &mut pos)? as i64;
-        let updated_at_ms = read_u64(state, &mut pos)? as i64;
-        let priority = read_u32(state, &mut pos)?;
-        let status = read_u32(state, &mut pos)?;
-        let assignee_id = read_u32(state, &mut pos)?;
-        let flags = read_u32(state, &mut pos)?;
-        let title = read_len_prefixed_str(state, &mut pos)?;
-        let body = read_len_prefixed_str(state, &mut pos)?;
-        let tag = read_len_prefixed_str(state, &mut pos)?;
-        out.push(OwnedTask {
-            id,
-            created_at_ms,
-            updated_at_ms,
-            priority,
-            status,
-            assignee_id,
-            flags,
-            title,
-            body,
-            tag,
-        });
-    }
-    Ok(out)
-}
-
-pub fn write_tasks_nve_snap(path: &Path, tasks: &[OwnedTask]) -> Result<usize, CodecError> {
-    let bytes = encode_tasks_nve_snap(tasks);
-    write_file_bytes(path, &bytes)?;
-    Ok(bytes.len())
-}
-
-pub fn read_tasks_nve_snap(path: &Path) -> Result<Vec<OwnedTask>, CodecError> {
-    let snap = MmapSnapshot::open(path).map_err(|e| CodecError::Snapshot(e.to_string()))?;
-    decode_tasks_nve_snap_state(snap.state_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,15 +411,6 @@ mod tests {
         let guard = TempFileGuard::new("json_rt", "json");
         write_tasks_json(guard.path(), &tasks).expect("write json");
         let from_disk = read_tasks_json(guard.path()).expect("read json");
-        assert_eq!(from_disk, tasks);
-    }
-
-    #[test]
-    fn nve_snap_round_trip_matches_owned_tasks() {
-        let tasks = generate_workspace_tasks(256);
-        let guard = TempFileGuard::new("snap_rt", "nvesnap");
-        write_tasks_nve_snap(guard.path(), &tasks).expect("write nve_snap");
-        let from_disk = read_tasks_nve_snap(guard.path()).expect("read nve_snap");
         assert_eq!(from_disk, tasks);
     }
 }

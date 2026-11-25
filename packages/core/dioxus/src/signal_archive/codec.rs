@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use nve_abi::BinValueView;
 use nve_engine::hash::Xxh64Hasher;
-use nve_engine::{MmapSnapshot, SnapshotWal, WalRecordKind};
+use nve_engine::{NativeStateStore, StateSaveOutcome};
 
 use super::{
     signal_slot_id, SignalArchiveError, SignalValue, SignalValueTag, NVE_SIGNAL_ARCHIVE_MAGIC,
@@ -214,7 +214,7 @@ impl SignalDeltaOp {
     }
 }
 
-/// Incremental dirty-slot delta suitable for direct [`SnapshotWal::append_delta`] persistence.
+/// Incremental dirty-slot delta for lightweight differential state updates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalDelta {
     pub schema_version: u32,
@@ -390,7 +390,7 @@ impl SignalTableSnapshot {
     }
 
     /// Encodes the full signal table into a checksummed, zero-JSON `NVE_SIG1` binary buffer
-    /// suitable for [`nve_engine::MmapSnapshot::state_bytes`].
+    /// suitable for [`nve_engine::NativeStateStore`] (`MmapOffsetArena`) persistence.
     pub fn encode(&self) -> Result<Vec<u8>, SignalArchiveError> {
         let slot_count = u32::try_from(self.slots.len())
             .map_err(|_| SignalArchiveError::PayloadTooLarge(self.slots.len()))?;
@@ -482,25 +482,10 @@ impl SignalTableSnapshot {
         let delta = SignalDelta::decode(bytes)?;
         Ok(self.apply_delta(&delta))
     }
-
-    /// Replays all [`WalRecordKind::StateDelta`] records from `wal` in sequence order into `self`.
-    ///
-    /// Returns the number of WAL state-delta records applied.
-    pub fn replay_wal(&mut self, wal: &SnapshotWal) -> Result<usize, SignalArchiveError> {
-        let mut applied_records = 0usize;
-        wal.replay_into(|rec| -> Result<(), SignalArchiveError> {
-            if rec.kind == WalRecordKind::StateDelta {
-                self.apply_delta_bytes(rec.payload)?;
-                applied_records += 1;
-            }
-            Ok(())
-        })?;
-        Ok(applied_records)
-    }
 }
 
-/// High-level stateless entry points for encoding, decoding, and folding `MmapSnapshot` + `SnapshotWal`
-/// signal tables.
+/// High-level stateless entry points for encoding, decoding, and persisting signal tables into
+/// [`NativeStateStore`] (`MmapOffsetArena`).
 pub struct SignalArchive;
 
 impl SignalArchive {
@@ -525,35 +510,22 @@ impl SignalArchive {
         SignalDelta::decode(bytes)
     }
 
-    /// Decodes a base full signal table (or starts empty when `base_state_bytes` is empty)
-    /// and folds every [`WalRecordKind::StateDelta`] record from `wal` on top.
-    pub fn fold_with_wal(
-        base_state_bytes: &[u8],
-        wal: &SnapshotWal,
-    ) -> Result<SignalTableSnapshot, SignalArchiveError> {
-        let mut table = if base_state_bytes.is_empty() {
-            SignalTableSnapshot::new(wal.header().base_schema_version)
-        } else {
-            SignalTableSnapshot::decode(base_state_bytes)?
-        };
-        table.replay_wal(wal)?;
-        Ok(table)
+    /// Crash-atomically persists `snapshot` into a double-buffered [`NativeStateStore`].
+    pub fn save_to_store(
+        store: &mut NativeStateStore,
+        snapshot: &SignalTableSnapshot,
+    ) -> Result<StateSaveOutcome, SignalArchiveError> {
+        let bytes = snapshot.encode()?;
+        Ok(store.save(&bytes)?)
     }
 
-    /// Loads the signal table from an [`MmapSnapshot`] and optionally folds a companion [`SnapshotWal`].
-    pub fn open_from_snapshot_and_wal(
-        snapshot: &MmapSnapshot,
-        wal: Option<&SnapshotWal>,
+    /// Loads the latest committed signal table directly from a [`NativeStateStore`].
+    pub fn load_from_store(
+        store: &NativeStateStore,
     ) -> Result<SignalTableSnapshot, SignalArchiveError> {
-        let state = snapshot.state_bytes();
-        let mut table = if state.is_empty() {
-            SignalTableSnapshot::new(snapshot.app_schema_version())
-        } else {
-            SignalTableSnapshot::decode(state)?
-        };
-        if let Some(wal) = wal {
-            table.replay_wal(wal)?;
+        match store.load_bytes()? {
+            Some(bytes) if !bytes.is_empty() => SignalTableSnapshot::decode(bytes),
+            _ => Ok(SignalTableSnapshot::new(store.schema_version())),
         }
-        Ok(table)
     }
 }

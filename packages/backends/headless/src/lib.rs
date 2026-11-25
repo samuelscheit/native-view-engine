@@ -6,6 +6,7 @@
 
 mod frame;
 mod interaction;
+pub mod reloc_scene;
 pub mod slot_map;
 pub mod taffy_engine;
 mod validate;
@@ -26,6 +27,7 @@ pub use nve_components::interaction::{
     CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
 pub use nve_components::style_patch::{Display, StylePatch};
+pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
 pub use slot_map::{NodeSlotMap, DENSE_SLOT_LIMIT};
 use slot_map::VisitStamps;
 pub use taffy_engine::{to_taffy_dim, to_taffy_lpa, to_taffy_style, TaffyLayoutEngine};

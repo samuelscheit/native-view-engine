@@ -252,7 +252,6 @@ mod tests {
         assert_eq!(xxh64(b"", 0), 0xEF46_DB37_51D8_E999);
         assert_eq!(xxh64(b"a", 0), 0xD24E_C4F1_A98C_6E5B);
         assert_eq!(xxh64(b"abc", 0), 0x44BC_2CF5_AD77_0999);
-        assert_eq!(xxh64(b"NVE_SNAP", 0), 0x3C2A_9102_3F0E_7727);
 
         let seq_1: Vec<u8> = (0..1u8).collect();
         let seq_4: Vec<u8> = (0..4u8).collect();
@@ -352,7 +351,7 @@ mod tests {
                     );
                 }
 
-                // Specifically test NVE_SNAP / NVERELOC header split (first 24 bytes, then tail).
+                // Specifically test NVERELOC header split (first 24 bytes, then tail).
                 if len >= 32 {
                     let mut hasher = Xxh64Hasher::new(seed);
                     hasher.update(&slice[..24]);

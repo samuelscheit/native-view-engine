@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dioxus_signals::WritableExt;
 use nve_abi::{NveMapEntry, NveValue};
-use nve_engine::{write_snapshot_atomic, MmapSnapshot, SnapshotWal, WalRecordKind};
+use nve_engine::{NativeStateStore, StateStoreConfig};
 
 use super::codec::{write_header, HEADER_SIZE};
 use super::*;
@@ -77,20 +77,17 @@ fn roundtrip_all_signal_value_types_and_bin_value() {
 }
 
 #[test]
-fn incremental_delta_folding_and_compaction_equivalence() {
+fn incremental_delta_folding_and_arena_compaction_equivalence() {
     let dir = TempDir::new("compact_eq");
-    let snap_path = dir.path().join("state.nvesnap");
-    let wal_path = dir.path().join("state.nvewal");
+    let arena_path = dir.path().join("state.nvemmap");
 
     let mut base = SignalTableSnapshot::new(2);
     base.set_named("App", "count", SignalValue::I64(1));
     base.set_named("App", "tab", SignalValue::Str("board".into()));
     base.set_named("App", "ephemeral", SignalValue::Bool(true));
 
-    let base_bytes = base.encode().unwrap();
-    let snap_hdr =
-        write_snapshot_atomic(&snap_path, 2, 0, b"FRAME0_BASE", &base_bytes, b"").unwrap();
-    let mut wal = SnapshotWal::open_or_create(&wal_path, 2, snap_hdr.checksum_xxh64).unwrap();
+    let mut store = NativeStateStore::open(&arena_path, 2, StateStoreConfig::default()).unwrap();
+    SignalArchive::save_to_store(&mut store, &base).unwrap();
 
     // Delta 1: mutate count, add filter.
     let mut step1 = base.clone();
@@ -98,8 +95,7 @@ fn incremental_delta_folding_and_compaction_equivalence() {
     step1.set_named("App", "filter", SignalValue::Str("open".into()));
     let d1 = step1.diff_since(&base);
     assert_eq!(d1.len(), 2);
-    wal.append_delta(WalRecordKind::StateDelta, &d1.encode().unwrap())
-        .unwrap();
+    let d1_bytes = d1.encode().unwrap();
 
     // Delta 2: mutate count again, remove ephemeral, update tab.
     let mut step2 = step1.clone();
@@ -108,31 +104,23 @@ fn incremental_delta_folding_and_compaction_equivalence() {
     step2.remove(signal_slot_id("App", "ephemeral"));
     let d2 = step2.diff_since(&step1);
     assert_eq!(d2.len(), 3);
-    wal.append_delta(WalRecordKind::StateDelta, &d2.encode().unwrap())
-        .unwrap();
+    let d2_bytes = d2.encode().unwrap();
 
     // Unchanged diff produces empty delta.
     assert!(step2.diff_since(&step2).is_empty());
 
-    // Fold base + WAL and compare against direct full snapshot compaction.
-    let base_mmap = MmapSnapshot::open_with_schema(&snap_path, 2).unwrap();
-    let folded = SignalArchive::open_from_snapshot_and_wal(&base_mmap, Some(&wal)).unwrap();
+    // Fold deltas onto base loaded from MmapOffsetArena.
+    let mut folded = SignalArchive::load_from_store(&store).unwrap();
+    folded.apply_delta_bytes(&d1_bytes).unwrap();
+    folded.apply_delta_bytes(&d2_bytes).unwrap();
     assert_eq!(folded, step2);
 
-    let compacted_state = folded.encode().unwrap();
-    let (_new_hdr, rotated_wal) = SnapshotWal::compact_into_snapshot(
-        &snap_path,
-        &wal_path,
-        2,
-        b"FRAME0_COMPACTED",
-        &compacted_state,
-        b"",
-    )
-    .unwrap();
+    SignalArchive::save_to_store(&mut store, &folded).unwrap();
+    store.compact().unwrap();
+    drop(store);
 
-    let compacted_mmap = MmapSnapshot::open_with_schema(&snap_path, 2).unwrap();
-    let from_compacted =
-        SignalArchive::open_from_snapshot_and_wal(&compacted_mmap, Some(&rotated_wal)).unwrap();
+    let reopened = NativeStateStore::open(&arena_path, 2, StateStoreConfig::default()).unwrap();
+    let from_compacted = SignalArchive::load_from_store(&reopened).unwrap();
     assert_eq!(from_compacted, folded);
     assert_eq!(from_compacted, step2);
 }
@@ -140,8 +128,7 @@ fn incremental_delta_folding_and_compaction_equivalence() {
 #[test]
 fn registry_handles_schema_evolution_added_removed_and_retyped_slots() {
     let dir = TempDir::new("schema_evo");
-    let snap_path = dir.path().join("evo.nvesnap");
-    let wal_path = dir.path().join("evo.nvewal");
+    let arena_path = dir.path().join("evo.nvemmap");
 
     // App v1 state:
     let v1_count = Rc::new(RefCell::new(10i32));
@@ -191,15 +178,14 @@ fn registry_handles_schema_evolution_added_removed_and_retyped_slots() {
         );
     }
 
-    let (_hdr, mut wal) = reg_v1
-        .compact_to_snapshot(&snap_path, &wal_path, b"FRAME0_V1", b"")
-        .unwrap();
+    let mut store = NativeStateStore::open(&arena_path, 1, StateStoreConfig::default()).unwrap();
+    reg_v1.persist_to_store(&mut store).unwrap();
 
-    // Mutate count and stream delta into WAL.
+    // Mutate count and persist incrementally.
     *v1_count.borrow_mut() = 77;
-    assert_eq!(reg_v1.persist_delta_to_wal(&mut wal).unwrap(), Some(1));
+    assert!(reg_v1.persist_if_dirty_to_store(&mut store).unwrap().is_some());
     // Clean persist returns None.
-    assert_eq!(reg_v1.persist_delta_to_wal(&mut wal).unwrap(), None);
+    assert!(reg_v1.persist_if_dirty_to_store(&mut store).unwrap().is_none());
 
     // App v2 upgrades schema:
     // - keeps `App/count` (i32) and `App/theme` (String)
@@ -253,10 +239,7 @@ fn registry_handles_schema_evolution_added_removed_and_retyped_slots() {
         );
     }
 
-    let snap = MmapSnapshot::open(&snap_path).unwrap();
-    let report = reg_v2
-        .hydrate_from_snapshot_and_wal(&snap, Some(&wal))
-        .unwrap();
+    let report = reg_v2.hydrate_from_store(&store).unwrap();
 
     assert_eq!(report.source_schema_version, 1);
     assert_eq!(report.hydrated_slots, 2);
@@ -264,7 +247,7 @@ fn registry_handles_schema_evolution_added_removed_and_retyped_slots() {
     assert_eq!(report.skipped_type_mismatches, 1); // zoom i64 -> f64
     assert_eq!(report.untouched_new_slots, 1); // sidebar_open
 
-    // Matching slots restored (including WAL delta count=77); incompatible/new slots kept safe defaults.
+    // Matching slots restored (including updated count=77); incompatible/new slots kept safe defaults.
     assert_eq!(*v2_count.borrow(), 77);
     assert_eq!(*v2_theme.borrow(), "dark");
     assert_eq!(*v2_zoom.borrow(), 1.5);

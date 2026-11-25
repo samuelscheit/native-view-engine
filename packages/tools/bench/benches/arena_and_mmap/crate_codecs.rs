@@ -1,6 +1,6 @@
 //! Apples-to-apples adapters for `serde_json`, `rkyv` (0.8), and `musli-zerocopy` (0.1)
-//! operating on the exact same Studio Workspace task schema and fixtures as `NVE_SNAP`,
-//! `NVERELOC`, and `MmapOffsetArena`.
+//! operating on the exact same Studio Workspace task schema and fixtures as `NVERELOC`
+//! and `MmapOffsetArena`.
 
 #![allow(dead_code)]
 

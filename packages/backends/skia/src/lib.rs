@@ -17,6 +17,7 @@ pub mod image_cache;
 mod interaction;
 mod motion;
 pub mod raster;
+mod reloc_scene;
 mod scroll;
 pub mod text;
 mod text_cache;

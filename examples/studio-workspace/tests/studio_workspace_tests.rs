@@ -15,11 +15,14 @@ use nve_backend_web::WebBackend;
 use nve_components::{CanvasOp, DrawListDecoder, ImageResizeMode, NVE_DRAW_MAGIC};
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
-use nve_engine::snapshot::{write_snapshot_atomic, MmapSnapshot};
+use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
+use nve_engine::reloc::{
+    encode_reloc_bundle, write_reloc_atomic, MmapReloc, RelocBundleView, VerifyMode,
+};
 use nve_engine::xxh64;
 use nve_engine::{
     DynLayoutEngine, HotPatchMsg, LayoutEngine, LayoutRect, NveApp, RenderBackend, TextMeasurer,
-    Viewport, WalDurability, WAL_HEADER_SIZE,
+    Viewport,
 };
 use nve_interop::{
     DeltaPacketRef, NvePluginHost, PluginRequirement, SyncDeltaSession, SyncMetrics,
@@ -29,7 +32,7 @@ use nve_studio_workspace::{
     create_surface_for_viewport, fuzzy_score, AccentTheme, ActiveView, ChannelKind,
     CornerRadiusMode, DensityMode, DocBlockKind, LayoutEngineMode, PersistConfig,
     StudioWorkspaceModule, SyncTransportMode, WorkbenchPreset, WorkspaceState, WorkspaceStore,
-    HOST_SURFACES, MAX_HISTORY, MOBILE_BREAKPOINT_PT, SNAPSHOT_FILE_NAME, WAL_FILE_NAME,
+    HOST_SURFACES, MAX_HISTORY, MOBILE_BREAKPOINT_PT, STATE_ARENA_FILE_NAME,
     WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION,
 };
 
@@ -700,35 +703,37 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     let frame0_bytes = freeze_app.render(1).to_vec();
     assert!(frame0_bytes.len() > 24);
 
-    // Atomically write the NVE_SNAP container to disk.
-    write_snapshot_atomic(
-        &snap_path,
+    // Atomically write the NVERELOC bundle container to disk.
+    let bundle = encode_reloc_bundle(
         1,
         0,
         &frame0_bytes,
         &saved_state_bytes,
         b"viewport=960x640@1x;app=studio-workspace",
     )
-    .expect("write studio snapshot atomically");
+    .expect("encode studio NVERELOC bundle");
+    write_reloc_atomic(&snap_path, &bundle).expect("write studio NVERELOC atomically");
 
     // 2. Cold instant-boot restore: mmap open + zero-copy Frame-0 submit + state restore.
     let mut cold_host = HeadlessBackend::new();
     cold_host.set_viewport(1, vp);
 
     let t0 = Instant::now();
-    let snap = MmapSnapshot::open_with_schema(&snap_path, 1).expect("cold mmap open");
+    let mapped =
+        MmapReloc::open_with_schema(&snap_path, 1, VerifyMode::Full).expect("cold mmap open");
+    let snap = RelocBundleView::from_view(mapped.view()).expect("parse NVERELOC bundle");
     let t_mmap = t0.elapsed();
 
     // Prove true zero-copy: both slices borrow straight out of the mmap region.
-    let base = snap.as_bytes().as_ptr() as usize;
-    let end = base + snap.as_bytes().len();
-    let f0_ptr = snap.frame0_command_buffer().as_ptr() as usize;
-    let st_ptr = snap.state_bytes().as_ptr() as usize;
-    assert!(f0_ptr >= base && f0_ptr + snap.frame0_command_buffer().len() <= end);
-    assert!(st_ptr >= base && st_ptr + snap.state_bytes().len() <= end);
+    let base = mapped.as_bytes().as_ptr() as usize;
+    let end = base + mapped.as_bytes().len();
+    let f0_ptr = snap.frame0().as_ptr() as usize;
+    let st_ptr = snap.state().as_ptr() as usize;
+    assert!(f0_ptr >= base && f0_ptr + snap.frame0().len() <= end);
+    assert!(st_ptr >= base && st_ptr + snap.state().len() <= end);
 
     cold_host
-        .submit_frame(snap.frame0_command_buffer())
+        .submit_frame(snap.frame0())
         .expect("zero-copy Frame-0 submit");
     let t_frame0 = t0.elapsed();
 
@@ -742,13 +747,13 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     // Now boot a fresh StudioWorkspaceModule and restore its full state from mmap bytes.
     let mut cold_app = StudioWorkspaceModule::create(1);
     let t_state_start = Instant::now();
-    cold_app.restore_state(snap.state_bytes());
+    cold_app.restore_state(snap.state());
     let t_state = t_state_start.elapsed();
     assert_eq!(cold_app.state_snapshot(), expected_state);
 
     eprintln!(
-        "[studio-workspace snapshot] size={} B | cold mmap open={} us | mmap+Frame0 submit={} us | state restore={} us",
-        snap.as_bytes().len(),
+        "[studio-workspace reloc] size={} B | cold mmap open={} us | mmap+Frame0 submit={} us | state restore={} us",
+        mapped.as_bytes().len(),
         t_mmap.as_micros(),
         t_frame0.as_micros(),
         t_state.as_micros(),
@@ -758,24 +763,25 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     if let Ok(export_path) = std::env::var("NVE_TEST_EXPORT_RUST_SNAPSHOT")
         && !export_path.is_empty()
     {
-        std::fs::copy(&snap_path, &export_path).expect("export rust snapshot for C++ test");
+        std::fs::copy(&snap_path, &export_path).expect("export rust NVERELOC for C++ test");
     }
     if let Ok(cpp_in) = std::env::var("NVE_TEST_CPP_SNAPSHOT_IN")
         && !cpp_in.is_empty()
     {
-        let cpp_snap =
-            MmapSnapshot::open_with_schema(&cpp_in, 1).expect("open C++-written snapshot");
-        assert_eq!(cpp_snap.meta_bytes(), b"cpp-roundtrip");
+        let cpp_mapped = MmapReloc::open_with_schema(&cpp_in, 1, VerifyMode::Full)
+            .expect("open C++-written NVERELOC");
+        let cpp_snap = RelocBundleView::from_view(cpp_mapped.view()).expect("parse C++ bundle");
+        assert_eq!(cpp_snap.meta(), b"cpp-roundtrip");
         let mut verify_host = HeadlessBackend::new();
         verify_host.set_viewport(1, vp);
         verify_host
-            .submit_frame(cpp_snap.frame0_command_buffer())
+            .submit_frame(cpp_snap.frame0())
             .expect("submit C++-written Frame-0 into Rust HeadlessBackend");
         let verify_tree = verify_host.render_ascii_tree();
         assert!(verify_tree.contains("# engineering"));
         assert!(verify_tree.contains("X-Ray HUD: ON"));
         let mut verify_app = StudioWorkspaceModule::create(1);
-        verify_app.restore_state(cpp_snap.state_bytes());
+        verify_app.restore_state(cpp_snap.state());
         assert_eq!(verify_app.state_snapshot(), expected_state);
     }
 
@@ -795,7 +801,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         "cold mmap + Frame-0 restore unexpectedly slow: {t_frame0:?}"
     );
 
-    drop(snap);
+    drop(mapped);
     let _ = std::fs::remove_dir_all(&snap_dir);
 }
 
@@ -1930,30 +1936,29 @@ fn nws1_v2_fnv1a64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
 }
 
 #[test]
-fn workspace_store_cold_save_wal_torn_tail_compaction_and_full_restart_recovery() {
+fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() {
     let dir = unique_test_dir("persist");
     let cfg = PersistConfig {
-        max_wal_bytes: 0,
-        max_wal_records: 4,
-        durability: WalDurability::Buffered,
+        initial_capacity: 128 * 1024,
+        compact_headroom: 64 * 1024,
+        auto_compact_every: 4,
+        sync_on_save: true,
     };
 
-    // 1. Cold open initializes base NVE_SNAP + empty .nvewal.
+    // 1. Cold open initializes double-buffered `state.nvemmap` (MmapOffsetArena).
     let mut store = WorkspaceStore::open_with_config(&dir, cfg).expect("cold open store");
     assert!(store.is_enabled());
     assert!(!store.recovery_stats().loaded_from_disk);
-    assert_eq!(store.wal_record_count(), 0);
-    assert!(dir.join(SNAPSHOT_FILE_NAME).exists());
-    assert!(dir.join(WAL_FILE_NAME).exists());
+    assert_eq!(store.generation(), 1);
+    assert!(dir.join(STATE_ARENA_FILE_NAME).exists());
 
-    // 2. Mutate tasks, messages, docs, checklist state, theme, and workbench across 3 WAL appends.
+    // 2. Mutate tasks, messages, docs, checklist state, theme, and workbench across 3 atomic commits.
     let mut state = store.initial_state().clone();
-    assert!(state.create_custom_task("Ship local-first WAL persistence"));
-    state.send_quick_reply(ChannelKind::Engineering, "WAL append #1 verified");
-    let out1 = store.save(&state).expect("wal append 1");
-    assert_eq!(out1.wal_seq, 1);
+    assert!(state.create_custom_task("Ship local-first MmapOffsetArena persistence"));
+    state.send_quick_reply(ChannelKind::Engineering, "Arena commit #1 verified");
+    let out1 = store.save(&state).expect("arena commit 1");
+    assert_eq!(out1.generation, 2);
     assert!(!out1.compacted);
-    assert_eq!(out1.wal_record_count, 1);
 
     state.select_view(ActiveView::Docs);
     assert!(state.toggle_doc_checklist(7));
@@ -1961,10 +1966,10 @@ fn workspace_store_cold_save_wal_torn_tail_compaction_and_full_restart_recovery(
         .add_doc_block(DocBlockKind::Code, "WorkspaceStore::open(dir)")
         .expect("add code block");
     assert!(state.update_doc_block_text(4, "Updated binary CommandBuffer invariant."));
-    let out2 = store.save(&state).expect("wal append 2");
-    assert_eq!(out2.wal_seq, 2);
+    let out2 = store.save(&state).expect("arena commit 2");
+    assert_eq!(out2.generation, 3);
     assert!(!out2.compacted);
-    assert_eq!(out2.wal_record_count, 2);
+    let state_at_gen3 = state.clone();
 
     state.set_accent(AccentTheme::Violet);
     state.set_radius(CornerRadiusMode::Pill);
@@ -1972,72 +1977,73 @@ fn workspace_store_cold_save_wal_torn_tail_compaction_and_full_restart_recovery(
     state.select_view(ActiveView::Workbench);
     state.set_workbench_preset(WorkbenchPreset::Mobile);
     state.select_workbench_host("skia-metal");
-    let out3 = store.save(&state).expect("wal append 3");
-    assert_eq!(out3.wal_seq, 3);
+    let out3 = store.save(&state).expect("arena commit 3");
+    assert_eq!(out3.generation, 4);
     assert!(!out3.compacted);
-    assert_eq!(out3.wal_record_count, 3);
-    let state_before_crash = state.clone();
+    let active_slot_gen4 = out3.active_slot;
     drop(store);
 
-    // 3. Simulate mid-write crash: append 17 torn trailing garbage bytes to workspace.nvewal.
+    // 3. Simulate mid-write crash tearing the active header slot (Slot B for gen=4).
     {
-        use std::io::Write;
+        use std::io::{Seek, SeekFrom, Write};
         let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(dir.join(WAL_FILE_NAME))
-            .expect("open wal for torn-tail injection");
-        f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
-            .expect("write torn tail");
+            .write(true)
+            .open(dir.join(STATE_ARENA_FILE_NAME))
+            .expect("open state.nvemmap for torn-slot injection");
+        let slot_off = (active_slot_gen4 * ARENA_HEADER_SLOT_SIZE) as u64;
+        f.seek(SeekFrom::Start(slot_off)).unwrap();
+        f.write_all(&[0xDEu8; ARENA_HEADER_SLOT_SIZE]).unwrap();
+        f.sync_all().unwrap();
     }
 
-    // 4. Cold restart recovers cleanly from torn tail & replays all 3 valid WAL records!
+    // 4. Cold restart transparently recovers the intact previous slot (gen=3)!
     let mut store_reopened =
-        WorkspaceStore::open_with_config(&dir, cfg).expect("recover torn-tail WAL");
+        WorkspaceStore::open_with_config(&dir, cfg).expect("recover torn header slot");
     let stats = store_reopened.recovery_stats();
     assert!(stats.loaded_from_disk);
-    assert_eq!(stats.truncated_torn_wal_bytes, 17);
-    assert_eq!(stats.replayed_wal_records, 3);
-    assert!(!stats.recovered_from_corrupt_snapshot);
-    assert!(!stats.recovered_from_corrupt_wal);
-    assert_eq!(store_reopened.initial_state(), &state_before_crash);
-    assert_eq!(store_reopened.wal_record_count(), 3);
+    assert!(!stats.recovered_from_corrupt_arena);
+    assert_eq!(stats.generation, 3);
+    assert_eq!(store_reopened.initial_state(), &state_at_gen3);
 
-    // 5. 4th append crosses `max_wal_records = 4` -> triggers automatic atomic compaction!
+    // 5. Commit 4 more times to cross `auto_compact_every = 4` -> triggers automatic online compaction!
     let mut state_after_compact = store_reopened.initial_state().clone();
+    state_after_compact.set_accent(AccentTheme::Violet);
+    state_after_compact.set_radius(CornerRadiusMode::Pill);
+    state_after_compact.set_density(DensityMode::Compact);
     state_after_compact.send_quick_reply(ChannelKind::Design, "Post-compaction message");
     assert!(state_after_compact.toggle_doc_checklist(6));
-    let out4 = store_reopened
-        .save(&state_after_compact)
-        .expect("wal append 4 triggers compaction");
-    assert!(out4.compacted, "4th WAL append must trigger auto-compaction");
-    assert_eq!(store_reopened.compaction_count(), 1);
-    assert_eq!(store_reopened.wal_record_count(), 0);
-    assert_eq!(store_reopened.wal_file_len(), WAL_HEADER_SIZE as u64);
+    let mut saw_compact = false;
+    for _ in 0..4 {
+        let out = store_reopened
+            .save(&state_after_compact)
+            .expect("arena commit triggering compaction");
+        saw_compact |= out.compacted;
+    }
+    assert!(saw_compact, "4th commit must trigger auto-compaction");
+    assert!(store_reopened.compaction_count() >= 1);
     assert_eq!(
         store_reopened.load_state().expect("load_state after compact"),
         state_after_compact
     );
     drop(store_reopened);
 
-    // 6. Full cold restart after compaction restores directly from MmapSnapshot with 0 WAL replays.
+    // 6. Full cold restart after compaction restores directly from MmapOffsetArena in O(1).
     let store_cold =
         WorkspaceStore::open_with_config(&dir, cfg).expect("cold restart after compaction");
     let cold_stats = store_cold.recovery_stats();
     assert!(cold_stats.loaded_from_disk);
-    assert_eq!(cold_stats.replayed_wal_records, 0);
-    assert_eq!(cold_stats.truncated_torn_wal_bytes, 0);
     let restored = store_cold.initial_state();
     assert_eq!(restored, &state_after_compact);
     assert!(restored
         .current
         .tasks
         .iter()
-        .any(|t| t.title == "Ship local-first WAL persistence"));
+        .any(|t| t.title == "Ship local-first MmapOffsetArena persistence"));
     assert!(restored
         .current
         .eng_messages
         .iter()
-        .any(|m| m.body == "WAL append #1 verified"));
+        .any(|m| m.body == "Arena commit #1 verified"));
     assert!(restored
         .current
         .design_messages
@@ -2066,14 +2072,14 @@ fn workspace_store_cold_save_wal_torn_tail_compaction_and_full_restart_recovery(
         .any(|b| b.id == added_blk && b.text == "WorkspaceStore::open(dir)"));
     drop(store_cold);
 
-    // 7. Corrupt base snapshot file falls back cleanly to default state without panicking.
-    std::fs::write(dir.join(SNAPSHOT_FILE_NAME), b"CORRUPTED_SNAPSHOT_BYTES")
-        .expect("corrupt snapshot file");
-    let store_corrupt_snap =
-        WorkspaceStore::open_with_config(&dir, cfg).expect("fallback on corrupt snapshot");
-    assert!(store_corrupt_snap.recovery_stats().recovered_from_corrupt_snapshot);
-    assert_eq!(store_corrupt_snap.initial_state(), &WorkspaceState::default());
-    drop(store_corrupt_snap);
+    // 7. Corrupt arena file falls back cleanly to default state without panicking.
+    std::fs::write(dir.join(STATE_ARENA_FILE_NAME), b"CORRUPTED_ARENA_BYTES")
+        .expect("corrupt arena file");
+    let store_corrupt =
+        WorkspaceStore::open_with_config(&dir, cfg).expect("fallback on corrupt arena");
+    assert!(store_corrupt.recovery_stats().recovered_from_corrupt_arena);
+    assert_eq!(store_corrupt.initial_state(), &WorkspaceState::default());
+    drop(store_corrupt);
 
     // 8. StudioWorkspaceModule::create_with_persist_dir auto-persists live mutations across cold restarts.
     let mod_dir = unique_test_dir("module-persist");
@@ -2083,7 +2089,7 @@ fn workspace_store_cold_save_wal_torn_tail_compaction_and_full_restart_recovery(
         let _ = app.render(1);
         assert!(app.set_props(br#"{"accent":"green","view":"docs"}"#));
         let _ = app.render(2);
-        assert!(app.persist_store().expect("persist store").wal_record_count() >= 1);
+        assert!(app.persist_store().expect("persist store").generation() >= 2);
     }
     {
         let app2 =
@@ -2160,7 +2166,7 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(h.find_by_test_id("doc-markdown-preview").is_some());
     let tree_md = h.ascii();
     assert!(tree_md.contains("# RFC-042: Zero-Copy NveSceneView"));
-    assert!(tree_md.contains("- [x] Enable crash-safe NVE_SNAP + .nvewal local persistence in Studio"));
+    assert!(tree_md.contains("- [x] Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio"));
     assert!(tree_md.contains("- [ ] Verify crash-safe .nvewal compaction"));
     h.assert_no_horizontal_overflow("docs-1280x800-with-markdown");
 
@@ -2172,7 +2178,7 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(md.contains("\n\n## Binary ABI Invariants\n\n"));
     assert!(md.contains("```\nnve_get_interface(NVE_IFACE_SURFACE) -> submit_frame(&[u8])\n```"));
     assert!(md.contains("- [x] Eliminate JSON scene descriptors"));
-    assert!(md.contains("- [ ] Enable crash-safe NVE_SNAP"));
+    assert!(md.contains("- [ ] Enable crash-safe NVERELOC"));
 
     // Verify Cmd+K Command Palette reaches ActiveView::Docs cleanly.
     let mut app = StudioWorkspaceModule::create(1);

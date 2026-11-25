@@ -49,7 +49,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL isPaired;
 @property (nonatomic, readonly) BOOL isPairedConnected;
 
-/// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` snapshot file before any dylib loads.
+/// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` snapshot file before any dylib loads.
 /// Mounts native views immediately and caches the snapshot state for seamless `restore_state`
 /// once the live app dylib or interface attaches.
 - (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath

@@ -17,6 +17,7 @@ mod dev;
 mod docs;
 mod doctor;
 mod pair;
+mod prerender;
 mod rsx_diff;
 mod static_http;
 
@@ -29,6 +30,7 @@ use crate::codegen::CodegenAction;
 use crate::dev::DevOptions;
 use crate::docs::DocsAction;
 use crate::pair::PairOptions;
+use crate::prerender::PrerenderOptions;
 
 #[derive(Parser)]
 #[command(name = "nve", about = "Native View Engine developer CLI")]
@@ -165,6 +167,24 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: DocsAction,
     },
+    /// Pre-bake a zero-copy `frame0.nvereloc` instant-boot scene for any native NVE app.
+    Prerender {
+        /// App to prerender (`studio` or `counter`).
+        #[arg(long, default_value = "studio")]
+        app: String,
+        /// Output file path for the pre-baked `frame0.nvereloc` binary.
+        #[arg(long)]
+        out: PathBuf,
+        /// Target logical viewport width in points.
+        #[arg(long, default_value_t = 1280.0)]
+        width: f32,
+        /// Target logical viewport height in points.
+        #[arg(long, default_value_t = 800.0)]
+        height: f32,
+        /// Target HiDPI scale factor.
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+    },
 }
 
 fn main() {
@@ -248,6 +268,19 @@ fn main() {
         }),
         Commands::Codegen { action } => codegen::cmd_codegen(action),
         Commands::Docs { action } => docs::cmd_docs(action),
+        Commands::Prerender {
+            app,
+            out,
+            width,
+            height,
+            scale,
+        } => prerender::cmd_prerender(PrerenderOptions {
+            app,
+            out,
+            width,
+            height,
+            scale,
+        }),
     }
 }
 
@@ -504,6 +537,37 @@ mod tests {
                 action: DocsAction::Dev { port: 4173, .. }
             }
         ));
+
+        match Cli::try_parse_from([
+            "nve",
+            "prerender",
+            "--app",
+            "studio",
+            "--out",
+            "/tmp/frame0.nvereloc",
+            "--width",
+            "1280",
+            "--height",
+            "800",
+        ])
+        .unwrap()
+        .command
+        {
+            Commands::Prerender {
+                app,
+                out,
+                width,
+                height,
+                scale,
+            } => {
+                assert_eq!(app, "studio");
+                assert_eq!(out, PathBuf::from("/tmp/frame0.nvereloc"));
+                assert_eq!(width, 1280.0);
+                assert_eq!(height, 800.0);
+                assert_eq!(scale, 1.0);
+            }
+            _ => panic!("expected Prerender"),
+        }
 
         // Invalid invocations must be rejected cleanly.
         assert!(Cli::try_parse_from(["nve"]).is_err());

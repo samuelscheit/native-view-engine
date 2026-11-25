@@ -39,7 +39,6 @@ void test_mmap_snapshot_and_session_instant_boot() {
     assert(nve::xxh64(nullptr, 0u, 0u) == 0xEF46DB3751D8E999ULL);
     assert(nve::xxh64(reinterpret_cast<const uint8_t*>("a"), 1u, 0u) == 0xD24EC4F1A98C6E5BULL);
     assert(nve::xxh64(reinterpret_cast<const uint8_t*>("abc"), 3u, 0u) == 0x44BC2CF5AD770999ULL);
-    assert(nve::xxh64(reinterpret_cast<const uint8_t*>("NVE_SNAP"), 8u, 0u) == 0x3C2A91023F0E7727ULL);
 
     std::vector<uint8_t> seq(1024u);
     for (size_t i = 0; i < seq.size(); ++i) {
@@ -95,13 +94,14 @@ void test_mmap_snapshot_and_session_instant_boot() {
         snap_path.string(), 3u, snap, /*verify_checksum=*/true, &open_st));
     assert(open_st == nve::SnapshotStatus::Ok);
     assert(snap.is_open());
-    assert(snap.format_version() == nve::kSnapshotFormatVersion);
+    assert(snap.format_version() == nve::kRelocFormatVersion);
     assert(snap.app_schema_version() == 3u);
     assert(snap.flags() == 0x00010002u);
-    assert(snap.header().frame0_offset == nve::kSnapshotHeaderSize);
-    assert(snap.header().frame0_offset % 8u == 0u);
-    assert(snap.header().state_offset % 8u == 0u);
-    assert(snap.header().meta_offset % 8u == 0u);
+    assert(snap.header().root_offset == nve::kRelocHeaderSize);
+    assert(snap.bundle_root().frame0.offset == nve::kRelocBundleMinSize);
+    assert(snap.bundle_root().frame0.offset % 8u == 0u);
+    assert(snap.bundle_root().state.offset % 8u == 0u);
+    assert(snap.bundle_root().meta.offset % 8u == 0u);
     assert(snap.verify_checksum());
 
     const NveBufferSlice mapped_f0 = snap.frame0_slice();
@@ -154,14 +154,14 @@ void test_mmap_snapshot_and_session_instant_boot() {
 #endif
   }
 
-  // 12c. Empty sections roundtrip (exact 80-byte container).
+  // 12c. Empty sections roundtrip (exact 96-byte NVERELOC bundle container).
   {
-    const fs::path empty_path = tmp.dir / "empty_sections.nvesnap";
+    const fs::path empty_path = tmp.dir / "empty_sections.nvereloc";
     assert(nve::write_snapshot_atomic(
         empty_path.string(), 0u, NveBufferSlice{nullptr, 0u}, NveBufferSlice{nullptr, 0u}));
     nve::MmapSnapshot snap;
     assert(nve::MmapSnapshot::open(empty_path.string(), snap));
-    assert(snap.size() == nve::kSnapshotHeaderSize);
+    assert(snap.size() == nve::kRelocBundleMinSize);
     assert(snap.frame0_slice().len == 0u);
     assert(snap.state_slice().len == 0u);
     assert(snap.meta_slice().len == 0u);
@@ -220,56 +220,56 @@ void test_mmap_snapshot_and_session_instant_boot() {
       assert(st == nve::SnapshotStatus::UnsupportedFormatVersion);
     }
 
-    // Non-zero reserved field
+    // Non-zero reserved field (bytes 40..64 in 64-byte RelocHeader)
     {
       auto v = base;
-      v[20] = 1u;
+      v[40] = 1u;
       assert(!nve::MmapSnapshot::from_bytes(std::move(v), bad, true, &st));
       assert(st == nve::SnapshotStatus::InvalidReservedHeader);
     }
 
-    // Flipped bit in header prefix, checksum, and payload
-    for (size_t off : {size_t{12}, size_t{16}, size_t{24}, nve::kSnapshotHeaderSize, base.size() - 1u}) {
+    // Flipped bit in header prefix, checksum, schema_version, and payload
+    for (size_t off : {size_t{12}, size_t{24}, size_t{32}, nve::kRelocHeaderSize, base.size() - 1u}) {
       auto v = base;
       v[off] ^= 0x01u;
       assert(!nve::MmapSnapshot::from_bytes(std::move(v), bad, true, &st));
       assert(st == nve::SnapshotStatus::ChecksumMismatch);
     }
 
-    // Unaligned section offset (81)
+    // Unaligned section offset (97) in RelocBundleRoot.frame0.offset (at byte 64)
     {
       auto v = base;
-      const uint64_t bad_off = 81u;
-      std::memcpy(v.data() + 32u, &bad_off, sizeof(bad_off));
+      const uint32_t bad_off = 97u;
+      std::memcpy(v.data() + nve::kRelocHeaderSize + 0u, &bad_off, sizeof(bad_off));
       assert(!nve::MmapSnapshot::from_bytes(std::move(v), bad, false, &st));
       assert(st == nve::SnapshotStatus::UnalignedSection);
     }
 
-    // Section offset inside header (< 80)
+    // Section offset inside header (< 64)
     {
       auto v = base;
-      const uint64_t bad_off = 16u;
-      std::memcpy(v.data() + 32u, &bad_off, sizeof(bad_off));
+      const uint32_t bad_off = 16u;
+      std::memcpy(v.data() + nve::kRelocHeaderSize + 0u, &bad_off, sizeof(bad_off));
       assert(!nve::MmapSnapshot::from_bytes(std::move(v), bad, false, &st));
       assert(st == nve::SnapshotStatus::SectionOutOfBounds);
     }
 
-    // Out-of-bounds length past EOF
+    // Out-of-bounds length past EOF (state.len at offset 64 + 12)
     {
       auto v = base;
-      const uint64_t huge_len = 999999u;
-      std::memcpy(v.data() + 56u, &huge_len, sizeof(huge_len));
+      const uint32_t huge_len = 999999u;
+      std::memcpy(v.data() + nve::kRelocHeaderSize + 12u, &huge_len, sizeof(huge_len));
       assert(!nve::MmapSnapshot::from_bytes(std::move(v), bad, false, &st));
       assert(st == nve::SnapshotStatus::SectionOutOfBounds);
     }
 
-    // uint64_t overflow (`offset + len`)
+    // uint32_t + uint32_t out-of-bounds (meta.offset + meta.len at offset 64 + 16)
     {
       auto v = base;
-      const uint64_t off = nve::kSnapshotHeaderSize;
-      const uint64_t max_u64 = std::numeric_limits<uint64_t>::max();
-      std::memcpy(v.data() + 64u, &off, sizeof(off));
-      std::memcpy(v.data() + 72u, &max_u64, sizeof(max_u64));
+      const uint32_t off = static_cast<uint32_t>(nve::kRelocBundleMinSize);
+      const uint32_t max_u32 = std::numeric_limits<uint32_t>::max();
+      std::memcpy(v.data() + nve::kRelocHeaderSize + 16u, &off, sizeof(off));
+      std::memcpy(v.data() + nve::kRelocHeaderSize + 20u, &max_u32, sizeof(max_u32));
       assert(!nve::MmapSnapshot::from_bytes(std::move(v), bad, false, &st));
       assert(st == nve::SnapshotStatus::SectionOutOfBounds);
     }
@@ -277,10 +277,10 @@ void test_mmap_snapshot_and_session_instant_boot() {
     // Overlapping sections (`state` points at `frame0`)
     {
       auto v = base;
-      const uint64_t f0_off = nve::kSnapshotHeaderSize;
-      const uint64_t overlap_len = 8u;
-      std::memcpy(v.data() + 48u, &f0_off, sizeof(f0_off));
-      std::memcpy(v.data() + 56u, &overlap_len, sizeof(overlap_len));
+      const uint32_t f0_off = static_cast<uint32_t>(nve::kRelocBundleMinSize);
+      const uint32_t overlap_len = 8u;
+      std::memcpy(v.data() + nve::kRelocHeaderSize + 8u, &f0_off, sizeof(f0_off));
+      std::memcpy(v.data() + nve::kRelocHeaderSize + 12u, &overlap_len, sizeof(overlap_len));
       assert(!nve::MmapSnapshot::from_bytes(std::move(v), bad, false, &st));
       assert(st == nve::SnapshotStatus::OverlappingSections);
     }

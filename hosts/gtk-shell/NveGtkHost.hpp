@@ -170,7 +170,7 @@ class NveGtkHost {
   bool is_paired() const noexcept { return session_.is_paired(); }
   bool is_paired_connected() const noexcept { return session_.is_paired_connected(); }
 
-  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
+  /// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` file before any dylib loads.
   bool replay_snapshot(
       std::string_view path,
       uint32_t expected_schema_version,

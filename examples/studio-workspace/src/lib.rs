@@ -44,8 +44,8 @@ use nve_system_env::{SystemEnvEvent, ThemeSnapshot};
 pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use persist::{
     PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, WorkspaceStore,
-    DEFAULT_WAL_COMPACT_MAX_BYTES, DEFAULT_WAL_COMPACT_MAX_RECORDS, SNAPSHOT_FILE_NAME,
-    STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION, WAL_FILE_NAME,
+    DEFAULT_COMPACT_INTERVAL, STATE_ARENA_FILE_NAME, STUDIO_PERSIST_ENV_VAR,
+    STUDIO_SNAPSHOT_SCHEMA_VERSION, USER_FRAME0_FILE_NAME,
 };
 pub use routes::{
     StudioRoute, StudioRouter, STUDIO_DEEP_LINK_HOST, STUDIO_DEEP_LINK_SCHEME,

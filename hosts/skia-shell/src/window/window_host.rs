@@ -26,7 +26,7 @@ use super::multi_window::{
 use super::pair_client::{PairConnectConfig, PairedRemoteApp};
 use super::session::DesktopSession;
 use super::{
-    replay_snapshot_into_backend, DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot,
+    prewarm_from_options, DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot,
 };
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
@@ -67,35 +67,7 @@ impl DesktopWindowHost<HotAppSlot> {
             scale_factor: scale,
         };
 
-        let prewarmed = options
-            .snapshot_path
-            .as_deref()
-            .filter(|p| p.exists())
-            .and_then(|snap_path| {
-                match replay_snapshot_into_backend(
-                    snap_path,
-                    options.schema_version,
-                    options.surface_id,
-                    initial_viewport,
-                    options.clear_color,
-                ) {
-                    Ok(prewarmed) => {
-                        eprintln!(
-                            "[nve-skia-shell] Instant-boot Frame-0 mmap restore from '{}' in {} us",
-                            snap_path.display(),
-                            prewarmed.restore_us
-                        );
-                        Some(prewarmed)
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "[nve-skia-shell] Warning: ignoring snapshot '{}' ({err}); cold-booting app",
-                            snap_path.display()
-                        );
-                        None
-                    }
-                }
-            });
+        let prewarmed = prewarm_from_options(&options, initial_viewport);
 
         let host_services = SkiaHostServices::new();
         let mut session = if let Some(prewarmed) = prewarmed {
@@ -301,10 +273,40 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         if self.snapshot_saved {
             return;
         }
+        let schema_version = self.options.schema_version;
+        if let Some(boot_dir) = self.options.instant_boot_dir.clone() {
+            let app_tag = self.options.title.clone();
+            let saved = if let Some(wid) = self.primary_window_id
+                && let Some(win) = self.windows.get_mut(&wid)
+            {
+                Some(
+                    win.session
+                        .save_instant_boot_checkpoint(&boot_dir, schema_version, &app_tag),
+                )
+            } else {
+                self.primary_session
+                    .as_mut()
+                    .map(|s| s.save_instant_boot_checkpoint(&boot_dir, schema_version, &app_tag))
+            };
+            if let Some(res) = saved {
+                self.snapshot_saved = true;
+                match res {
+                    Ok(_) => eprintln!(
+                        "[nve-skia-shell] Saved instant-boot user_frame0.nvereloc + state.nvemmap to '{}' (schema v{schema_version})",
+                        boot_dir.display()
+                    ),
+                    Err(err) => eprintln!(
+                        "[nve-skia-shell] Warning: failed to save instant-boot store to '{}': {err}",
+                        boot_dir.display()
+                    ),
+                }
+            }
+            return;
+        }
+
         let Some(snap_path) = self.options.snapshot_path.clone() else {
             return;
         };
-        let schema_version = self.options.schema_version;
         let saved = if let Some(wid) = self.primary_window_id
             && let Some(win) = self.windows.get_mut(&wid)
         {
@@ -318,7 +320,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         self.snapshot_saved = true;
         match res {
             Ok(_) => eprintln!(
-                "[nve-skia-shell] Saved Frame-0 + state snapshot to '{}' (schema v{schema_version})",
+                "[nve-skia-shell] Saved Frame-0 + state NVERELOC to '{}' (schema v{schema_version})",
                 snap_path.display()
             ),
             Err(err) => eprintln!(
