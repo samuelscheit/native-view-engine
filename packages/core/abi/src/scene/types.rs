@@ -1,6 +1,8 @@
 use std::fmt;
 use std::mem::{align_of, offset_of, size_of};
 
+use nve_abi_macros::NveAbi;
+
 use crate::NodeId;
 
 /// Exact byte size of one `NveRenderNode` record (one 64-byte CPU cache line).
@@ -37,27 +39,68 @@ pub const fn component_kind_to_scene_u8(kind: u16) -> u8 {
 
 /// One 64-byte (single cache line) zero-decode render node shared across all host ABIs.
 #[repr(C, align(64))]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, NveAbi)]
+#[nve_abi(size = 64)]
 pub struct NveRenderNode {
+    /// Stable node identifier (`NVE_ROOT_NODE_ID == 1`).
+    #[nve_abi(offset = 0)]
     pub node_id: u32,
+    /// Compact `NVE_NODE_KIND_*` component discriminant.
+    #[nve_abi(offset = 4)]
     pub kind: u8,
+    /// Bitmask of `NVE_NODE_LEAF_TEXT`, `NVE_NODE_INTERACTIVE`, `NVE_NODE_CLIP_BOUNDS`.
+    #[nve_abi(offset = 5)]
     pub flags: u8,
+    /// Normalized opacity quantized to `0..=255` (`255 == 1.0`).
+    #[nve_abi(offset = 6)]
     pub opacity_u8: u8,
+    /// Explicit zero padding byte.
+    #[nve_abi(offset = 7)]
     pub _pad0: u8,
+    /// Parent-relative X origin in logical points / DIPs.
+    #[nve_abi(offset = 8)]
     pub x: f32,
+    /// Parent-relative Y origin in logical points / DIPs.
+    #[nve_abi(offset = 12)]
     pub y: f32,
+    /// Computed layout width in logical points / DIPs.
+    #[nve_abi(offset = 16)]
     pub width: f32,
+    /// Computed layout height in logical points / DIPs.
+    #[nve_abi(offset = 20)]
     pub height: f32,
+    /// Packed RGBA8888 background color (`r | (g<<8) | (b<<16) | (a<<24)`).
+    #[nve_abi(offset = 24)]
     pub bg_rgba: u32,
+    /// Packed RGBA8888 foreground text color.
+    #[nve_abi(offset = 28)]
     pub text_rgba: u32,
+    /// Packed RGBA8888 border stroke color.
+    #[nve_abi(offset = 32)]
     pub border_rgba: u32,
+    /// Corner radius in logical points / DIPs.
+    #[nve_abi(offset = 36)]
     pub border_radius: f32,
+    /// Border stroke thickness in logical points / DIPs.
+    #[nve_abi(offset = 40)]
     pub border_width: f32,
+    /// Font size in logical points / DIPs.
+    #[nve_abi(offset = 44)]
     pub font_size: f32,
+    /// Byte offset into `text_slab`.
+    #[nve_abi(offset = 48)]
     pub text_offset: u32,
+    /// UTF-8 byte length inside `text_slab`.
+    #[nve_abi(offset = 52)]
     pub text_len: u16,
+    /// Number of child `u32` IDs inside `children_slab`.
+    #[nve_abi(offset = 54)]
     pub child_count: u16,
+    /// Element offset (in `u32` entries) into `children_slab`.
+    #[nve_abi(offset = 56)]
     pub child_offset: u32,
+    /// Stacking z-index order.
+    #[nve_abi(offset = 60)]
     pub z_index: i32,
 }
 
@@ -171,20 +214,41 @@ impl NveRenderNode {
 
 /// Zero-decode flat scene view handed across the FFI / JNI / WASM boundary.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
 pub struct NveSceneView {
+    /// Must equal `NVE_SCENE_SCHEMA_HASH`.
+    #[nve_abi(offset = 0)]
     pub schema_hash: u64,
+    /// Monotonic frame counter.
+    #[nve_abi(offset = 8)]
     pub frame_id: u64,
+    /// Total live nodes in `nodes`.
+    #[nve_abi(offset = 16)]
     pub node_count: u32,
+    /// Count of changed node indices in `dirty_indices`.
+    #[nve_abi(offset = 20)]
     pub dirty_count: u32,
+    /// Count of removed node IDs in `removed_ids`.
+    #[nve_abi(offset = 24)]
     pub removed_count: u32,
+    /// Byte length of `text_slab`.
+    #[nve_abi(offset = 28)]
     pub text_slab_len: u32,
+    /// Element count (`u32` entries) of `children_slab`.
+    #[nve_abi(offset = 32)]
     pub children_slab_len: u32,
+    /// Explicit 8-byte pointer alignment padding.
+    #[nve_abi(offset = 36)]
     pub _pad: u32,
+    /// Contiguous array of `node_count` `NveRenderNode` entries.
     pub nodes: *const NveRenderNode,
+    /// Contiguous UTF-8 text byte slab.
     pub text_slab: *const u8,
+    /// Contiguous `u32` child node ID slab.
     pub children_slab: *const u32,
+    /// Indices into `nodes` modified during `frame_id`.
     pub dirty_indices: *const u32,
+    /// Node IDs removed during `frame_id`.
     pub removed_ids: *const u32,
 }
 

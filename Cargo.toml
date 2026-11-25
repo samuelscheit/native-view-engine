@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/core/abi",
+    "packages/core/abi-macros",
     "packages/core/components",
     "packages/core/engine",
     "packages/core/layout-yoga",
@@ -49,6 +50,7 @@ license = "MIT"
 
 [workspace.dependencies]
 nve-abi = { path = "packages/core/abi" }
+nve-abi-macros = { path = "packages/core/abi-macros" }
 nve-components = { path = "packages/core/components" }
 nve-engine = { path = "packages/core/engine" }
 nve-layout-yoga = { path = "packages/core/layout-yoga" }

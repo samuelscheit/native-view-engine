@@ -8,7 +8,7 @@ use super::*;
 
 /// Generates `nve_abi.generated.h` (used identically by `cxx/nve-fabric-bridge/include/nve_abi.generated.h`
 /// and `hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.generated.h`) directly from
-/// `packages/core/codegen/specs/nve_core_abi.nve.rs`.
+/// `packages/core/abi/src/schema.rs`.
 pub fn generate_c_core_abi_h() -> String {
     let spec = core_abi_spec();
     let schema_hash = spec.file_schema_hash();
@@ -20,7 +20,7 @@ pub fn generate_c_core_abi_h() -> String {
     );
     let _ = writeln!(
         out,
-        "/* Single-source NVE Core C ABI generated from packages/core/codegen/specs/nve_core_abi.nve.rs. */"
+        "/* Single-source NVE Core C ABI generated from packages/core/abi/src/schema.rs. */"
     );
     let _ = writeln!(out, "#pragma once");
     let _ = writeln!(out);
@@ -448,7 +448,7 @@ fn emit_c_function_decl(out: &mut String, f: &HybridMethodSpec) {
 
 /// Generates `nve_scene_abi.generated.h` (used identically by `cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h`
 /// and `hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.generated.h`) directly from
-/// `packages/core/codegen/specs/nve_scene_abi.nve.rs`.
+/// `packages/core/abi/src/schema.rs`.
 pub fn generate_c_scene_abi_h() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);

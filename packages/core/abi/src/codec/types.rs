@@ -1,72 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::ffi::{ComponentKind, Opcode};
 use crate::{FrameId, SurfaceId};
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Opcode {
-    CreateNode = 1,
-    RemoveNode = 2,
-    SetChildren = 3,
-    SetText = 4,
-    SetLayout = 5,
-    SetStyle = 6,
-    SetRawProp = 7,
-    SetEventMask = 8,
-    DispatchCommand = 9,
-    Commit = 10,
-}
-
-impl Opcode {
-    #[inline(always)]
-    pub(super) fn from_u8(v: u8) -> Result<Self, DecodeError> {
-        match v {
-            1 => Ok(Self::CreateNode),
-            2 => Ok(Self::RemoveNode),
-            3 => Ok(Self::SetChildren),
-            4 => Ok(Self::SetText),
-            5 => Ok(Self::SetLayout),
-            6 => Ok(Self::SetStyle),
-            7 => Ok(Self::SetRawProp),
-            8 => Ok(Self::SetEventMask),
-            9 => Ok(Self::DispatchCommand),
-            10 => Ok(Self::Commit),
-            other => Err(DecodeError::UnknownOpcode(other)),
-        }
-    }
-}
-
-#[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ComponentKind {
-    Root = 0,
-    View = 1,
-    Text = 2,
-    ScrollView = 3,
-    Image = 4,
-    TextInput = 5,
-    Pressable = 6,
-    SkiaCanvas = 7,
-    Custom = 0xFFFF,
-}
-
-impl ComponentKind {
-    #[inline(always)]
-    pub fn from_u16(v: u16) -> Result<Self, DecodeError> {
-        match v {
-            0 => Ok(Self::Root),
-            1 => Ok(Self::View),
-            2 => Ok(Self::Text),
-            3 => Ok(Self::ScrollView),
-            4 => Ok(Self::Image),
-            5 => Ok(Self::TextInput),
-            6 => Ok(Self::Pressable),
-            7 => Ok(Self::SkiaCanvas),
-            0xFFFF => Ok(Self::Custom),
-            other => Err(DecodeError::InvalidEnum("ComponentKind", other as u32)),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum Dimension {

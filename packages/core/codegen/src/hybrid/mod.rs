@@ -31,12 +31,12 @@ use crate::error::CodegenError;
 use crate::ir::{write_generated_files, GeneratedFile};
 
 pub use core_abi::{
-    compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec, generate_all_abi_files,
-    generate_all_core_abi_files, generate_all_scene_abi_files, generate_c_core_abi_h,
-    generate_c_scene_abi_h, generate_dart_core_abi, generate_dart_scene_abi,
+    compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec, from_abi_descriptor,
+    generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
+    generate_c_core_abi_h, generate_c_scene_abi_h, generate_dart_core_abi, generate_dart_scene_abi,
     generate_java_core_abi, generate_java_scene_buffer, generate_ts_core_abi,
-    generate_ts_scene_view, scene_abi_spec, NVE_CORE_ABI_SCHEMA_HASH, NVE_CORE_ABI_SPEC_SOURCE,
-    NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE, NVE_SCENE_ABI_SPEC_SOURCE, NVE_SCENE_SCHEMA_HASH,
+    generate_ts_scene_view, scene_abi_spec, NVE_CORE_ABI_SCHEMA_HASH, NVE_RENDER_NODE_ALIGN,
+    NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
 };
 pub use emit_cpp::generate_hybrid_cpp;
 pub use emit_dart::generate_hybrid_dart;

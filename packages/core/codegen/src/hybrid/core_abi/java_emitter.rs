@@ -7,7 +7,7 @@ use super::*;
 // ============================================================================
 
 /// Generates `hosts/android-shell/android-app/src/dev/nve/android/generated/NveCoreAbi.java`
-/// directly from `packages/core/codegen/specs/nve_core_abi.nve.rs`.
+/// directly from `packages/core/abi/src/schema.rs`.
 pub fn generate_java_core_abi() -> String {
     let spec = core_abi_spec();
     let schema_hash = spec.file_schema_hash();
@@ -19,7 +19,7 @@ pub fn generate_java_core_abi() -> String {
     );
     let _ = writeln!(
         out,
-        "// Single-source NVE Core ABI constants generated from specs/nve_core_abi.nve.rs."
+        "// Single-source NVE Core ABI constants generated from packages/core/abi/src/schema.rs."
     );
     let _ = writeln!(out, "package dev.nve.android.generated;");
     let _ = writeln!(out);
@@ -109,7 +109,7 @@ pub fn generate_java_core_abi() -> String {
 // ============================================================================
 
 /// Generates `hosts/android-shell/android-app/src/dev/nve/android/generated/NveSceneBuffer.java`
-/// directly from `packages/core/codegen/specs/nve_scene_abi.nve.rs`.
+/// directly from `packages/core/abi/src/schema.rs`.
 pub fn generate_java_scene_buffer() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);

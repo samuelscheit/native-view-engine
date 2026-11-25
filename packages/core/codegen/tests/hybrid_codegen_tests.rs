@@ -1655,11 +1655,13 @@ pub trait ModBSpec {
 #[test]
 fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
     let root = workspace_root();
-    let core_path = root.join("packages/core/codegen/specs/nve_core_abi.nve.rs");
-    let scene_path = root.join("packages/core/codegen/specs/nve_scene_abi.nve.rs");
+    assert!(
+        !root.join("packages/core/codegen/specs").exists(),
+        "packages/core/codegen/specs/ must stay deleted (colocated #[derive(NveAbi)] is the single source of truth)"
+    );
 
-    let core = nve_codegen::parse_hybrid_rust_spec_file(&core_path).expect("parse nve_core_abi.nve.rs");
-    let scene = nve_codegen::parse_hybrid_rust_spec_file(&scene_path).expect("parse nve_scene_abi.nve.rs");
+    let core = nve_codegen::core_abi_spec();
+    let scene = nve_codegen::scene_abi_spec();
 
     // Verify core modular interfaces keep exact fixed IDs 1..=5
     assert_eq!(core.modules.len(), 5);

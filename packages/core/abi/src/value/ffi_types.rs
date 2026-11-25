@@ -1,6 +1,8 @@
 use core::mem::{align_of, size_of};
 
-use crate::{DecodeError, NativeEventKind, NveBufferSlice};
+use nve_abi_macros::NveAbi;
+
+use crate::{DecodeError, NativeEventKind, NveBufferSlice, NveEventPayloadTag};
 
 use super::ffi_views::NveValueRef;
 
@@ -33,7 +35,8 @@ pub(super) unsafe fn guarded_slice<'a, T>(ptr: *const T, len: usize) -> Option<&
 
 /// Borrowed UTF-8 string slice matching `NveStrSlice` in `nve_abi.generated.h`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub struct NveStrSlice {
     pub ptr: *const u8,
     pub len: usize,
@@ -80,7 +83,8 @@ impl NveStrSlice {
 
 /// Discriminant tags shared between `NveValue::tag` and the binary `NveBinValue` wire format.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
+#[nve_abi(c_prefix = "NVE_VAL_")]
 pub enum NveValueTag {
     Null = 0,
     Bool = 1,
@@ -117,22 +121,28 @@ impl NveValueTag {
     }
 }
 
+/// Contiguous slice of `NveValue` items.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub struct NveValueArray {
     pub ptr: *const NveValue,
     pub len: usize,
 }
 
+/// Contiguous slice of `NveMapEntry` key/value pairs.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub struct NveValueMap {
     pub ptr: *const NveMapEntry,
     pub len: usize,
 }
 
+/// Untagged union payload inside `NveValue`.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub union NveValueData {
     pub bool_val: u8,
     pub i64_val: i64,
@@ -145,8 +155,10 @@ pub union NveValueData {
 
 /// Tagged union value matching `struct NveValue` in `nve_abi.generated.h` (24 bytes, align 8 on 64-bit).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 24)]
 pub struct NveValue {
+    /// `NveValueTag` discriminant.
     pub tag: u32,
     pub data: NveValueData,
 }
@@ -261,7 +273,8 @@ impl Default for NveValue {
 
 /// Key/value entry matching `struct NveMapEntry` in `nve_abi.generated.h` (40 bytes, align 8 on 64-bit).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 40)]
 pub struct NveMapEntry {
     pub key: NveStrSlice,
     pub value: NveValue,
@@ -279,19 +292,34 @@ impl NveMapEntry {
 
 /// Direct FFI event matching `struct NveDirectEvent` in `nve_abi.generated.h` (96 bytes, align 8 on 64-bit).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 96)]
 pub struct NveDirectEvent {
+    #[nve_abi(offset = 0)]
     pub surface_id: u32,
+    #[nve_abi(offset = 4)]
     pub node_id: u32,
+    #[nve_abi(offset = 8)]
     pub timestamp_us: u64,
+    /// `NativeEventKind` (1..8).
+    #[nve_abi(offset = 16)]
     pub kind: u8,
+    /// `NveEventPayloadTag` (0..5).
+    #[nve_abi(offset = 17)]
     pub payload_tag: u8,
+    #[nve_abi(offset64 = 24)]
     pub name: NveStrSlice,
+    #[nve_abi(offset64 = 40)]
     pub x: f32,
+    #[nve_abi(offset64 = 44)]
     pub y: f32,
+    #[nve_abi(offset64 = 48)]
     pub width: f32,
+    #[nve_abi(offset64 = 52)]
     pub height: f32,
+    #[nve_abi(offset64 = 56)]
     pub text: NveStrSlice,
+    #[nve_abi(offset64 = 72)]
     pub value: NveValue,
 }
 
@@ -323,7 +351,7 @@ impl NveDirectEvent {
             node_id,
             timestamp_us,
             kind: NativeEventKind::Press as u8,
-            payload_tag: 1,
+            payload_tag: NveEventPayloadTag::Point as u8,
             name: NveStrSlice::EMPTY,
             x,
             y,
@@ -346,7 +374,7 @@ impl NveDirectEvent {
             node_id,
             timestamp_us,
             kind: NativeEventKind::TextChange as u8,
-            payload_tag: 3,
+            payload_tag: NveEventPayloadTag::Text as u8,
             name: NveStrSlice::EMPTY,
             x: 0.0,
             y: 0.0,
@@ -370,7 +398,7 @@ impl NveDirectEvent {
             node_id,
             timestamp_us,
             kind: NativeEventKind::Custom as u8,
-            payload_tag: 5,
+            payload_tag: NveEventPayloadTag::Custom as u8,
             name: NveStrSlice::from_str(name),
             x: 0.0,
             y: 0.0,
@@ -384,7 +412,8 @@ impl NveDirectEvent {
 
 /// Contiguous batch of direct events matching `struct NveEventBatch` in `nve_abi.generated.h`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub struct NveEventBatch {
     pub ptr: *const NveDirectEvent,
     pub len: u32,
@@ -425,10 +454,14 @@ impl NveEventBatch {
 /// Direct zero-copy typed prop entry matching `struct NvePropEntry` in `nve_abi.generated.h`
 /// (32 bytes, align 8 on 64-bit).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 32)]
 pub struct NvePropEntry {
+    #[nve_abi(offset = 0)]
     pub field_id: u16,
+    #[nve_abi(offset = 2)]
     pub _pad: [u8; 6],
+    #[nve_abi(offset = 8)]
     pub value: NveValue,
 }
 
@@ -446,10 +479,14 @@ impl NvePropEntry {
 /// Zero-copy raw pointer slice of typed prop entries matching `struct NvePropSlice` in
 /// `nve_abi.generated.h` (16 bytes, align 8 on 64-bit).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub struct NvePropSlice {
+    #[nve_abi(offset = 0)]
     pub entries: *const NvePropEntry,
+    #[nve_abi(offset64 = 8)]
     pub len: u32,
+    #[nve_abi(offset64 = 12)]
     pub _pad: u32,
 }
 
@@ -495,11 +532,16 @@ impl NvePropSlice {
 /// Zero-copy direct imperative command dispatch record matching `struct NveCommandSlice` in
 /// `nve_abi.generated.h` (16 bytes, align 8 on 64-bit).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub struct NveCommandSlice {
+    #[nve_abi(offset = 0)]
     pub opcode: u16,
+    #[nve_abi(offset = 2)]
     pub arg_count: u16,
+    #[nve_abi(offset = 4)]
     pub _pad: u32,
+    #[nve_abi(offset = 8)]
     pub args: *const NveValue,
 }
 

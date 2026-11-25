@@ -7,7 +7,7 @@ use super::*;
 // ============================================================================
 
 /// Generates `hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart` directly from
-/// `packages/core/codegen/specs/nve_core_abi.nve.rs`.
+/// `packages/core/abi/src/schema.rs`.
 pub fn generate_dart_core_abi() -> String {
     let spec = core_abi_spec();
     let schema_hash = spec.file_schema_hash();
@@ -20,7 +20,7 @@ pub fn generate_dart_core_abi() -> String {
     );
     let _ = writeln!(
         out,
-        "// Single-source NVE Core C ABI `dart:ffi` bindings generated from specs/nve_core_abi.nve.rs."
+        "// Single-source NVE Core C ABI `dart:ffi` bindings generated from packages/core/abi/src/schema.rs."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "import 'dart:ffi' as ffi;");
@@ -243,7 +243,7 @@ pub fn generate_dart_core_abi() -> String {
 // ============================================================================
 
 /// Generates `hosts/flutter-plugin/lib/src/nve_scene_abi.generated.dart` directly from
-/// `packages/core/codegen/specs/nve_scene_abi.nve.rs`.
+/// `packages/core/abi/src/schema.rs`.
 pub fn generate_dart_scene_abi() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);
