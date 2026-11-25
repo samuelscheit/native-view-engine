@@ -38,6 +38,9 @@ if(NOT TARGET Qt6::Quick OR NOT TARGET Qt6::Qml)
     "/usr/local/lib/cmake")
 endif()
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveCodegen.cmake")
+nve_ensure_abi_codegen()
+
 if(NOT TARGET nve_fabric_bridge)
   add_subdirectory(
     "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge"

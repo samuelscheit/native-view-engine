@@ -60,3 +60,30 @@ dependencies {
     testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
     testImplementation("org.robolectric:robolectric:4.14.1")
 }
+
+val nveRepoRoot = rootProject.projectDir.resolve("../..").canonicalFile
+val nveGeneratedJavaDir =
+    nveRepoRoot.resolve("hosts/android-shell/android-app/src/dev/nve/android/generated")
+val nveGeneratedJavaFiles = listOf(
+    nveGeneratedJavaDir.resolve("NveCoreAbi.java"),
+    nveGeneratedJavaDir.resolve("NveSceneBuffer.java"),
+    nveGeneratedJavaDir.resolve("NveWireCodecs.java"),
+)
+
+val generateNveAbi by tasks.registering(Exec::class) {
+    group = "codegen"
+    description = "Generate NVE Core/Scene ABI and Wire Codec bindings via nve-cli when missing."
+    workingDir = nveRepoRoot
+    commandLine("cargo", "run", "--locked", "-p", "nve-cli", "--", "codegen", "abi")
+    onlyIf {
+        !project.hasProperty("nveSkipCodegen") && nveGeneratedJavaFiles.any { !it.isFile }
+    }
+}
+
+tasks.matching {
+    it.name == "preBuild" ||
+        it.name == "compileJava" ||
+        (it.name.startsWith("compile") && it.name.endsWith("JavaWithJavac"))
+}.configureEach {
+    dependsOn(generateNveAbi)
+}

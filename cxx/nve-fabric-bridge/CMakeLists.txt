@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/NveCodegen.cmake")
+nve_ensure_abi_codegen()
+
 option(NVE_WITH_RN_FABRIC "Enable full React Native Fabric ShadowTree/UIManager/EventListener integration" OFF)
 option(NVE_WITH_RN_YOGA "Link against React Native Yoga (auto-enabled when RN_REACT_COMMON_DIR is set)" ON)
 option(NVE_WITH_RN_JSI "Link against React Native JSI for MockJsiRecorderRuntime (auto-enabled when RN_REACT_COMMON_DIR is set)" ON)

@@ -121,6 +121,12 @@ if [[ ! -f "$RUST_DYLIB" ]]; then
 fi
 
 echo "==> [2/4] Compiling standalone iOS Simulator host binary..."
+if [[ ! -f "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.generated.h" \
+   || ! -f "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h" \
+   || ! -f "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_wire_codecs.generated.hpp" ]]; then
+  echo "==> Generating NVE ABI + Wire Codec headers (nve-cli codegen abi)..."
+  (cd "$REPO_ROOT" && cargo run --locked -p nve-cli -- codegen abi)
+fi
 CLANGXX=(xcrun --sdk iphonesimulator clang++)
 COMMON_FLAGS=(
   -std=c++20

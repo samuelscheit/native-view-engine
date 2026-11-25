@@ -65,6 +65,7 @@ jobs:
           cargo check -p nve-web-shell --target wasm32-unknown-unknown
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
+          cargo run --locked -p nve-cli -- codegen abi
           cargo run --locked -p nve-cli -- codegen abi --check
 
       - name: Run Python benchmark-regression unit tests
@@ -178,6 +179,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Setup JDK 21 (Temurin)
         uses: actions/setup-java@v4
         with:
@@ -186,6 +193,11 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate NVE ABI & Wire Codec bindings
+        run: |
+          cargo run --locked -p nve-cli -- codegen abi
+          cargo run --locked -p nve-cli -- codegen abi --check
 
       - name: Ensure Android SDK platform 35 is available
         run: |
@@ -225,6 +237,8 @@ jobs:
           cargo check -p nve-backend-skia --features skia-metal
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
+          cargo run --locked -p nve-cli -- codegen abi
+          cargo run --locked -p nve-cli -- codegen abi --check
 
       - name: Build and test C++20 Fabric bridge
         run: |
@@ -309,6 +323,8 @@ jobs:
           cargo check -p nve-backend-skia --features skia-d3d
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
+          cargo run --locked -p nve-cli -- codegen abi
+          cargo run --locked -p nve-cli -- codegen abi --check
 
       - name: Build and test C++20 Fabric bridge
         shell: pwsh

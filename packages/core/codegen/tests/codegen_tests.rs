@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::Path;
 
 use nve_codegen::{
@@ -865,6 +867,7 @@ fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
     let tmp = std::env::temp_dir().join("nve_codegen_cpp20_syntax_check");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
+    common::write_generated_c_abi_headers(&tmp);
 
     // 1. Check Direction 1 (`import_rn`) C++20 Fabric adapter header
     let imported = import_rn_source(EMBEDDED_SWITCH_SPEC).expect("import Switch");
@@ -884,9 +887,9 @@ fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
     let status_import = std::process::Command::new("clang++")
         .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
         .arg("-I")
-        .arg(&include_dir)
-        .arg("-I")
         .arg(&tmp)
+        .arg("-I")
+        .arg(&include_dir)
         .arg(&import_harness)
         .output()
         .expect("run clang++ on import_rn adapter");
@@ -904,9 +907,9 @@ fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
     let status_export = std::process::Command::new("clang++")
         .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
         .arg("-I")
-        .arg(&include_dir)
-        .arg("-I")
         .arg(&tmp)
+        .arg("-I")
+        .arg(&include_dir)
         .arg(tmp.join(&exported.cpp_bridge_cpp.relative_path))
         .output()
         .expect("run clang++ on export_rn bridge");
@@ -931,11 +934,11 @@ fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
         let status_rnw = std::process::Command::new("clang++")
             .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
             .arg("-I")
+            .arg(&tmp)
+            .arg("-I")
             .arg(&include_dir)
             .arg("-I")
             .arg(&windows_include_dir)
-            .arg("-I")
-            .arg(&tmp)
             .arg(&rnw_harness)
             .output()
             .expect("run clang++ on export_rn RNW component view");
@@ -1000,52 +1003,31 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     assert!(core_files[3].content.contains("public static final int SIZEOF_PROP_SLICE_64 = 16;"));
     assert!(core_files[3].content.contains("public static final int SIZEOF_COMMAND_SLICE_64 = 16;"));
 
+    assert_eq!(all_files, generate_all_abi_files(), "ABI codegen must be deterministic");
+
+    // Materialize all 15 files into a tempdir to verify full disk emission independent of repo state.
+    let tmp_abi = std::env::temp_dir().join(format!(
+        "nve_codegen_abi_materialize_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_abi);
+    for file in &all_files {
+        let out_path = tmp_abi.join(&file.relative_path);
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent).expect("create temp ABI parent dirs");
+        }
+        std::fs::write(&out_path, &file.content).expect("write temp ABI file");
+        assert_eq!(std::fs::read_to_string(&out_path).unwrap(), file.content);
+    }
+    let _ = std::fs::remove_dir_all(&tmp_abi);
+
     let update_mode =
         std::env::var("NVE_UPDATE_ABI").is_ok() || std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
-    for file in &all_files {
-        let fname = Path::new(&file.relative_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap();
-        if file.relative_path.ends_with(".java") {
-            assert!(
-                file.relative_path.contains("/generated/"),
-                "generated Java file must live inside a `generated/` package directory: {}",
-                file.relative_path
-            );
-            assert!(
-                file.content.contains("package dev.nve.android.generated;"),
-                "generated Java file must declare `package dev.nve.android.generated;`: {}",
-                file.relative_path
-            );
-        } else {
-            assert!(
-                fname.contains(".generated."),
-                "generated non-Java file must contain `.generated.` in filename: {}",
-                file.relative_path
-            );
-        }
-        let full_path = repo_root.join(&file.relative_path);
-        if update_mode {
-            if let Some(parent) = full_path.parent() {
-                std::fs::create_dir_all(parent).expect("create parent dirs");
-            }
-            std::fs::write(&full_path, &file.content).expect("write generated ABI file");
-        }
-        let on_disk = std::fs::read_to_string(&full_path)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "missing generated ABI file {}: {e}",
-                    full_path.display()
-                )
-            })
-            .replace("\r\n", "\n");
-        assert_eq!(
-            on_disk, file.content,
-            "ABI schema drift detected in {}! Re-run with NVE_UPDATE_ABI=1 or `cargo nve codegen abi` to regenerate.",
-            file.relative_path
-        );
-    }
+    common::assert_generated_file_naming_and_optional_disk_parity(
+        &all_files,
+        &repo_root,
+        update_mode,
+    );
 }
 
 #[test]
@@ -1203,13 +1185,14 @@ fn export_and_import_neutralize_string_interpolation_and_comment_breakout() {
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
+        common::write_generated_c_abi_headers(&tmp);
         rn.write_to_dir(&tmp).unwrap();
         let out = std::process::Command::new("clang++")
             .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
             .arg("-I")
-            .arg(&include_dir)
-            .arg("-I")
             .arg(&tmp)
+            .arg("-I")
+            .arg(&include_dir)
             .arg(tmp.join(&rn.cpp_bridge_cpp.relative_path))
             .output()
             .expect("clang++ adversarial export_rn");

@@ -3,6 +3,8 @@ project(nve_android_shell LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveCodegen.cmake")
+nve_ensure_abi_codegen()
 add_subdirectory(../../cxx/nve-fabric-bridge nve-fabric-bridge-build)
 
 add_library(nve_android_shell SHARED

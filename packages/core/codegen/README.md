@@ -34,6 +34,8 @@ Every generated file emitted by `nve-codegen` MUST obey one of two strict naming
 
 Never add un-suffixed shim headers or symlinks alongside generated artifacts.
 
+All generated Core ABI, Scene ABI, and Wire Codec files (`*.generated.*` and `hosts/android-shell/android-app/src/dev/nve/android/generated/`) are **gitignored** and materialized automatically by host build hooks (CMake `cxx/cmake/NveCodegen.cmake`, Gradle `generateNveAbi`, `hosts/web-shell/build.sh`, `scripts/check-all.sh`, and CI) or on demand via `cargo run --locked -p nve-cli -- codegen abi`. Rust tests (`cargo test --workspace`) run cleanly on a fresh checkout with zero generated files on disk.
+
 ## Defining Schemas (Colocated `#[derive(NveAbi)]` in Owning Packages)
 
 Centralized `.nve.rs` spec files (`packages/core/codegen/specs/`) have been **eliminated**. Every owning crate derives `#[derive(nve_abi::NveAbi)]` (implemented with zero external dependencies in `packages/core/abi-macros`) directly on its real compiled `#[repr(C)]` structs, unions, and `#[repr(u8|u16|u32|i32)]` enums:
@@ -59,6 +61,6 @@ cargo test --locked -p nve-codegen
 # Enforce zero Clippy warnings across library and tests
 cargo clippy --locked -p nve-codegen --all-targets -- -D warnings
 
-# Verify all 15 checked-in Core ABI (5) + Scene ABI (5) + Wire Codec (5) artifacts have zero drift
-cargo run --locked -p nve-cli -- codegen abi --check
+# Generate all 15 Core ABI (5) + Scene ABI (5) + Wire Codec (5) artifacts on disk and verify 15/15 parity
+cargo run --locked -p nve-cli -- codegen abi && cargo run --locked -p nve-cli -- codegen abi --check
 ```
