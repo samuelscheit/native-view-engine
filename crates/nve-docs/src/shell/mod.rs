@@ -31,7 +31,13 @@ pub fn DocsShell() -> Element {
     let mobile_drawer_open = snap.mobile_drawer_open;
     let viewport_mode = viewport.mode_label();
     let site_title = snap.config.site_title.clone();
-    let page = snap.current_page().cloned();
+    let active_route = snap.active_route.as_str().to_string();
+    let custom_page = snap.custom_pages.get(&active_route).cloned();
+    let page = if custom_page.is_none() {
+        snap.current_page().cloned()
+    } else {
+        None
+    };
     let page_toc_enabled = page.as_ref().is_none_or(|p| p.frontmatter.toc);
     let color_scheme_attr = if theme.is_dark { "dark" } else { "light" };
     drop(snap);
@@ -47,6 +53,7 @@ pub fn DocsShell() -> Element {
                 accessibility_label: "{site_title}",
                 "viewport-mode": "{viewport_mode}",
                 "data-theme": "{color_scheme_attr}",
+                "data-route": "{active_route}",
                 style: "width: 100%; height: 100%; flex-direction: column; background-color: {theme.canvas}; color: {theme.text};",
                 onkeydown: move |ev: KeyEvent| {
                     let data = ev.data();
@@ -71,45 +78,54 @@ pub fn DocsShell() -> Element {
                 // Sticky top navbar
                 DocsNavbar {}
 
-                // Body row: Desktop Sidebar (260px) | Main Scrollable Article | Right TOC (220px)
+                // Body row: Full-bleed custom page OR 3-column Fumadocs layout
                 view {
                     test_id: "docs-body",
                     style: "flex-grow: 1; flex-shrink: 1; width: 100%; flex-direction: row; background-color: {theme.canvas};",
 
-                    if !is_mobile {
-                        DocsSidebar { mobile_overlay: false }
-                    }
+                    if let Some(render_custom) = custom_page {
+                        scrollview {
+                            test_id: "docs-custom-scroll",
+                            accessibility_role: "main",
+                            style: "flex-grow: 1; flex-shrink: 1; width: 100%; height: 100%; flex-direction: column; align-items: center; background-color: {theme.canvas};",
+                            {render_custom()}
+                        }
+                    } else {
+                        if !is_mobile {
+                            DocsSidebar { mobile_overlay: false }
+                        }
 
-                    // Center content scroll column
-                    scrollview {
-                        test_id: "docs-main-scroll",
-                        accessibility_role: "main",
-                        style: "flex-grow: 1; flex-shrink: 1; height: 100%; flex-direction: column; background-color: {theme.canvas};",
-                        view {
-                            test_id: "docs-article-container",
-                            style: "width: 100%; max-width: 820px; flex-direction: column; padding-horizontal: {main_padding_h}; padding-vertical: {main_padding_v}; gap: 20px;",
+                        // Center content scroll column
+                        scrollview {
+                            test_id: "docs-main-scroll",
+                            accessibility_role: "main",
+                            style: "flex-grow: 1; flex-shrink: 1; height: 100%; flex-direction: column; background-color: {theme.canvas};",
+                            view {
+                                test_id: "docs-article-container",
+                                style: "width: 100%; max-width: 820px; flex-direction: column; padding-horizontal: {main_padding_h}; padding-vertical: {main_padding_v}; gap: 20px;",
 
-                            Breadcrumbs {}
+                                Breadcrumbs {}
 
-                            if let Some(compiled_page) = page {
-                                DocsArticle { page: compiled_page }
-                            } else {
-                                view {
-                                    test_id: "docs-empty-page",
-                                    style: "padding: 24px; border-width: 1px; border-color: {theme.border}; border-radius: 10px; background-color: {theme.surface};",
-                                    text {
-                                        style: "font-size: 16px; color: {theme.muted};",
-                                        "No documentation pages found for this route."
+                                if let Some(compiled_page) = page {
+                                    DocsArticle { page: compiled_page }
+                                } else {
+                                    view {
+                                        test_id: "docs-empty-page",
+                                        style: "padding: 24px; border-width: 1px; border-color: {theme.border}; border-radius: 10px; background-color: {theme.surface};",
+                                        text {
+                                            style: "font-size: 16px; color: {theme.muted};",
+                                            "No documentation pages found for this route."
+                                        }
                                     }
                                 }
+
+                                PageFooter {}
                             }
-
-                            PageFooter {}
                         }
-                    }
 
-                    if show_toc && page_toc_enabled {
-                        DocsToc {}
+                        if show_toc && page_toc_enabled {
+                            DocsToc {}
+                        }
                     }
                 }
 

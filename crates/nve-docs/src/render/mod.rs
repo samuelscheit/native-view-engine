@@ -24,7 +24,10 @@ use crate::state::use_docs_state;
 #[component]
 pub fn DocsArticle(page: CompiledPage) -> Element {
     let state = use_docs_state();
-    let theme = state.read().theme();
+    let snap = state.read();
+    let theme = snap.theme();
+    let public_route = snap.config.docs_route_for_content(&page.route);
+    drop(snap);
 
     // Avoid duplicating an H1 when the page's first block already repeats `page.title`.
     let body_blocks: Vec<Block> = match page.blocks.first() {
@@ -44,7 +47,7 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
             test_id: "docs-article",
             accessibility_role: "article",
             accessibility_label: "{page.title}",
-            "data-route": "{page.route}",
+            "data-route": "{public_route}",
             style: "width: 100%; flex-direction: column; gap: 18px;",
 
             // Article header (badge, H1 title, description, tags)

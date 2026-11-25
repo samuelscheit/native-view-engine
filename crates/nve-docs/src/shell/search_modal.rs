@@ -16,6 +16,7 @@ pub fn SearchModal() -> Element {
     let theme = snap.theme();
     let query = snap.search_query.clone();
     let selected_idx = snap.search_selected;
+    let config = snap.config.clone();
     let hits = if is_open {
         snap.search_hits(MAX_SEARCH_HITS)
     } else {
@@ -108,7 +109,7 @@ pub fn SearchModal() -> Element {
                             let idx = state.read().search_selected;
                             let current_hits = state.read().search_hits(MAX_SEARCH_HITS);
                             if let Some(hit) = current_hits.get(idx).or_else(|| current_hits.first()) {
-                                let route = crate::route::DocsRoute::new(&hit.route);
+                                let route = state.read().config.docs_route_for_content(&hit.route);
                                 let anchor = (!hit.anchor.is_empty()).then(|| hit.anchor.clone());
                                 navigate_to_target(state, Some(route), anchor);
                             }
@@ -154,10 +155,10 @@ pub fn SearchModal() -> Element {
                                 let title_c = if is_selected { theme.accent } else { theme.text };
                                 let tid = format!("docs-search-hit-{idx}");
                                 let sel_attr = if is_selected { "true" } else { "false" };
-                                let hit_route = hit.route.clone();
+                                let hit_route = config.docs_route_for_content(&hit.route);
                                 let hit_anchor = hit.anchor.clone();
                                 let section_badge = if hit.section.is_empty() || hit.section == hit.title {
-                                    hit.route.clone()
+                                    hit_route.as_str().to_string()
                                 } else {
                                     hit.section.clone()
                                 };
@@ -170,9 +171,8 @@ pub fn SearchModal() -> Element {
                                         aria_selected: "{sel_attr}",
                                         style: "width: 100%; flex-direction: column; gap: 4px; padding-horizontal: 12px; padding-vertical: 10px; border-radius: 8px; background-color: {bg}; border-width: 1px; border-color: {border_c};",
                                         onpress: move |_| {
-                                            let route = crate::route::DocsRoute::new(&hit_route);
                                             let anchor = (!hit_anchor.is_empty()).then(|| hit_anchor.clone());
-                                            navigate_to_target(state, Some(route), anchor);
+                                            navigate_to_target(state, Some(hit_route.clone()), anchor);
                                         },
                                         view {
                                             style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 8px;",
@@ -221,7 +221,7 @@ fn handle_search_nav_key(
         "Enter" => {
             let idx = state.read().search_selected;
             if let Some(hit) = hit_list.get(idx).or_else(|| hit_list.first()) {
-                let route = crate::route::DocsRoute::new(&hit.route);
+                let route = state.read().config.docs_route_for_content(&hit.route);
                 let anchor = (!hit.anchor.is_empty()).then(|| hit.anchor.clone());
                 navigate_to_target(state, Some(route), anchor);
             }

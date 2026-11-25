@@ -58,8 +58,10 @@ impl DocsWebSession {
         })
     }
 
-    fn current_article_route(&self) -> Option<String> {
-        let id = self.find_node_by_test_id("docs-article")?;
+    fn current_active_route(&self) -> Option<String> {
+        let id = self
+            .find_node_by_test_id("docs-root")
+            .or_else(|| self.find_node_by_test_id("docs-article"))?;
         match self.backend.node(id)?.raw_props.get("data-route") {
             Some(RawPropValue::String(r)) => Some(r.clone()),
             _ => None,
@@ -85,13 +87,14 @@ impl DocsWebSession {
         self.dark_mode = dark;
         sync_document_theme(dark);
 
-        if let Some(route) = self.current_article_route()
+        if let Some(route) = self.current_active_route()
             && route != self.last_route
         {
             self.last_route = route.clone();
             let parsed = DocsRoute::new(&route);
             if push_history {
                 self.history.sync_push(&parsed);
+                reset_scroll_containers();
             }
             sync_document_title(&route, &self.base_path);
         }
@@ -294,6 +297,19 @@ fn measure_browser_viewport(window: &web_sys::Window, container: &web_sys::Eleme
     DocsViewport::new(w, h)
 }
 
+fn reset_scroll_containers() {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        for sel in [
+            "[testid=\"docs-custom-scroll\"]",
+            "[testid=\"docs-main-scroll\"]",
+        ] {
+            if let Ok(Some(el)) = doc.query_selector(sel) {
+                el.set_scroll_top(0);
+            }
+        }
+    }
+}
+
 fn sync_document_theme(dark: bool) {
     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
         if let Some(root) = doc.document_element() {
@@ -313,10 +329,16 @@ fn sync_document_theme(dark: bool) {
 fn sync_document_title(route: &str, base_path: &str) {
     let site = embedded_compiled_site();
     let cfg = nve_docs_site_config(base_path);
-    let title = match site.page(route) {
-        Some(page) if route == "/" => format!("{} — {}", page.title, cfg.site_title),
-        Some(page) => format!("{} — {}", page.title, cfg.site_title),
-        None => cfg.site_title,
+    let title = match route {
+        "/" => format!("{} — Native-speed UI in Rust", cfg.site_title),
+        "/examples" => format!("Examples & Live Playgrounds — {}", cfg.site_title),
+        other => match cfg
+            .content_route_for(other)
+            .and_then(|cr| site.page(&cr))
+        {
+            Some(page) => format!("{} — {}", page.title, cfg.site_title),
+            None => cfg.site_title,
+        },
     };
     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
         doc.set_title(&title);
@@ -435,8 +457,13 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
             let Some(href) = anchor.get_attribute("href") else {
                 return;
             };
+            // Standalone lazy-loaded WASM example apps (/examples/studio/, /examples/counter/)
+            // must perform a real browser navigation so their independent WASM bundles boot cleanly.
+            if anchor.get_attribute("data-nve-hard-nav").as_deref() == Some("true") {
+                return;
+            }
             let link_target = anchor.get_attribute("target");
-            let should_intercept = session_links
+            let intercepted = session_links
                 .borrow()
                 .history
                 .should_intercept_link_click(
@@ -447,9 +474,10 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
                     ev.alt_key(),
                     ev.button(),
                     link_target.as_deref(),
-                )
-                .is_some();
-            if should_intercept {
+                );
+            if let Some(route) = intercepted
+                && !route.as_str().starts_with("/examples/")
+            {
                 ev.prevent_default();
             }
         },

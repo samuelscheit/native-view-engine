@@ -11,7 +11,7 @@ use nve_router::try_use_navigator;
 use nve_sdk::{ClipboardClient, HostServiceProvider};
 
 use crate::config::DocsSiteConfig;
-use crate::registry::PlaygroundRegistry;
+use crate::registry::{CustomPageRegistry, PlaygroundRegistry};
 use crate::route::DocsRoute;
 use crate::theme::DocsTheme;
 
@@ -82,6 +82,7 @@ pub struct DocsAppState {
     pub search_index: Arc<SearchIndex>,
     pub config: DocsSiteConfig,
     pub playgrounds: Arc<PlaygroundRegistry>,
+    pub custom_pages: Arc<CustomPageRegistry>,
     pub host_services: Arc<dyn HostServiceProvider>,
     pub active_route: DocsRoute,
     pub dark_mode: bool,
@@ -106,14 +107,40 @@ impl DocsAppState {
         initial_route: DocsRoute,
         viewport: DocsViewport,
     ) -> Self {
+        Self::new_with_pages(
+            config,
+            site,
+            playgrounds,
+            Arc::new(CustomPageRegistry::new()),
+            host_services,
+            initial_route,
+            viewport,
+        )
+    }
+
+    /// Construct initial state with custom full-bleed pages (such as `/` landing and `/examples`).
+    pub fn new_with_pages(
+        config: DocsSiteConfig,
+        site: Arc<CompiledSite>,
+        playgrounds: Arc<PlaygroundRegistry>,
+        custom_pages: Arc<CustomPageRegistry>,
+        host_services: Arc<dyn HostServiceProvider>,
+        initial_route: DocsRoute,
+        viewport: DocsViewport,
+    ) -> Self {
         let dark_mode = config.default_dark;
         let search_index = Arc::new(site.search_index.clone());
         let mut collapsed_folders = BTreeSet::new();
         collect_initially_collapsed(&site.nav.items, &mut collapsed_folders);
-        let resolved_route = if site.page(initial_route.as_str()).is_some() {
+        let is_known_route = custom_pages.contains(initial_route.as_str())
+            || config
+                .content_route_for(initial_route.as_str())
+                .and_then(|cr| site.page(&cr))
+                .is_some();
+        let resolved_route = if is_known_route {
             initial_route
         } else if let Some(first) = site.pages.first() {
-            DocsRoute::new(&first.route)
+            config.docs_route_for_content(&first.route)
         } else {
             initial_route
         };
@@ -123,6 +150,7 @@ impl DocsAppState {
             search_index,
             config,
             playgrounds,
+            custom_pages,
             host_services,
             active_route: resolved_route,
             dark_mode,
@@ -145,16 +173,20 @@ impl DocsAppState {
 
     /// Resolve the active compiled page, falling back to the first page if not found.
     pub fn current_page(&self) -> Option<&CompiledPage> {
+        let content_route = self.config.content_route_for(self.active_route.as_str())?;
         self.site
-            .page(self.active_route.as_str())
+            .page(&content_route)
             .or_else(|| self.site.pages.first())
     }
 
     /// Return Prev/Next pagination links for the active route.
     pub fn prev_next(&self) -> PrevNext {
+        let Some(content_route) = self.config.content_route_for(self.active_route.as_str()) else {
+            return PrevNext::default();
+        };
         self.site
             .prev_next
-            .get(self.active_route.as_str())
+            .get(&content_route)
             .cloned()
             .unwrap_or_default()
     }
@@ -294,7 +326,7 @@ impl DocsAppState {
 
     /// Navigate to a specific search hit and close the modal.
     pub fn select_search_hit(&mut self, hit: &SearchHit) -> DocsRoute {
-        let route = DocsRoute::new(&hit.route);
+        let route = self.config.docs_route_for_content(&hit.route);
         let anchor = (!hit.anchor.is_empty()).then(|| hit.anchor.clone());
         self.navigate_with_anchor(Some(route.clone()), anchor);
         route
@@ -331,13 +363,31 @@ impl DocsAppState {
 
     /// Compute the breadcrumb trail `(title, route)` for the active route from `CompiledSite::nav`.
     pub fn breadcrumbs(&self) -> Vec<(String, String)> {
-        let target = self.active_route.as_str();
+        let Some(target) = self.config.content_route_for(self.active_route.as_str()) else {
+            return Vec::new();
+        };
         let mut trail = Vec::new();
-        if find_breadcrumbs(&self.site.nav.items, target, &mut trail) {
-            return trail;
+        if find_breadcrumbs(&self.site.nav.items, &target, &mut trail) {
+            return trail
+                .into_iter()
+                .map(|(title, route)| {
+                    let resolved = if route.is_empty() {
+                        String::new()
+                    } else {
+                        self.config.docs_route_for_content(&route).as_str().to_string()
+                    };
+                    (title, resolved)
+                })
+                .collect();
         }
         if let Some(page) = self.current_page() {
-            vec![(page.title.clone(), page.route.clone())]
+            vec![(
+                page.title.clone(),
+                self.config
+                    .docs_route_for_content(&page.route)
+                    .as_str()
+                    .to_string(),
+            )]
         } else {
             Vec::new()
         }

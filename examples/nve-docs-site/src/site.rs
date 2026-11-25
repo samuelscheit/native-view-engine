@@ -13,6 +13,9 @@ include!(concat!(
 /// Official repository URL used by navbar links and "Edit this page" links.
 pub const GITHUB_REPO_URL: &str = "https://github.com/samuelscheit/native-view-engine";
 
+/// Public route prefix where the 30 compiled MDX docs pages are mounted.
+pub const DOCS_ROUTE_PREFIX: &str = "/docs";
+
 /// Base URL joined with `page.source_path` for "Edit this page on GitHub".
 pub const GITHUB_EDIT_BASE_URL: &str =
     "https://github.com/samuelscheit/native-view-engine/edit/main/docs/content";
@@ -52,43 +55,16 @@ pub fn nve_docs_site_config_with_theme(base_path: &str, default_dark: bool) -> D
         .with_github_repo(GITHUB_REPO_URL)
         .with_edit_base_url(GITHUB_EDIT_BASE_URL)
         .with_base_path(base_path)
+        .with_docs_prefix(DOCS_ROUTE_PREFIX)
         .with_default_dark(default_dark)
         .with_sections(vec![
+            DocsNavSection::new("docs", "Docs", "/docs", "/docs"),
+            DocsNavSection::new("examples", "Examples", "/examples", "/examples"),
             DocsNavSection::new(
-                "getting-started",
-                "Getting Started",
-                "/getting-started",
-                "/getting-started/quickstart",
-            ),
-            DocsNavSection::new(
-                "architecture",
-                "Architecture",
-                "/architecture",
-                "/architecture/modular-c-abi",
-            ),
-            DocsNavSection::new(
-                "guides",
-                "Guides",
-                "/guides",
-                "/guides/ui-components",
-            ),
-            DocsNavSection::new(
-                "hosts",
-                "Hosts",
-                "/hosts",
-                "/hosts/overview",
-            ),
-            DocsNavSection::new(
-                "interop",
-                "Interop",
-                "/interop",
-                "/interop/islands",
-            ),
-            DocsNavSection::new(
-                "reference",
-                "Reference",
-                "/reference",
-                "/reference/cli",
+                "benchmarks",
+                "Benchmarks",
+                "/docs/reference/benchmarks",
+                "/docs/reference/benchmarks",
             ),
         ])
 }

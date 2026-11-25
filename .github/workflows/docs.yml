@@ -11,6 +11,9 @@ on:
       - "crates/nve-router/**"
       - "crates/nve-cli/src/docs/**"
       - "examples/nve-docs-site/**"
+      - "examples/studio-workspace/**"
+      - "examples/counter/**"
+      - "hosts/web-shell/**"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
@@ -21,6 +24,9 @@ on:
       - "crates/nve-router/**"
       - "crates/nve-cli/src/docs/**"
       - "examples/nve-docs-site/**"
+      - "examples/studio-workspace/**"
+      - "examples/counter/**"
+      - "hosts/web-shell/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -48,11 +54,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install wasm-bindgen-cli matching Cargo.lock
+      - name: Install WASM build tools (wasm-bindgen-cli, wasm-tools, binaryen, brotli)
         run: |
+          sudo apt-get update && sudo apt-get install -y binaryen brotli
           WBG_VER=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/, "", $3); print $3; exit}' Cargo.lock)
-          echo "Installing wasm-bindgen-cli ${WBG_VER}"
+          echo "Installing wasm-bindgen-cli ${WBG_VER} and wasm-tools"
           cargo install --locked wasm-bindgen-cli --version "${WBG_VER}"
+          cargo install --locked wasm-tools
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -67,17 +75,21 @@ jobs:
       - name: Validate docs content (links, anchors, _meta.toml, LiveDemo IDs)
         run: cargo run --locked -p nve-cli -- docs check
 
-      - name: Build static SSR + WASM docs site for GitHub Pages
+      - name: Build lazy-loaded hosts/web-shell WASM example apps (Studio & Counter)
+        run: ./hosts/web-shell/build.sh
+
+      - name: Build unified static SSR Landing, Docs & Examples site for GitHub Pages
         run: |
           cargo run --locked -p nve-cli -- docs build \
             --content docs/content \
             --out dist/docs \
             --base-path /native-view-engine \
-            --site-url https://samuelscheit.github.io/native-view-engine
+            --site-url https://samuelscheit.github.io/native-view-engine \
+            --web-shell-dist hosts/web-shell/dist
 
-      - name: Run headless Chrome SSR + Progressive Hydration E2E
+      - name: Run headless Chrome SSR, Hydration & Live WASM Examples E2E
         run: |
-          node examples/nve-docs-site/e2e/run_docs_e2e.mjs dist/docs --base-path /native-view-engine --shots-dir /tmp/nve-docs-shots
+          node examples/nve-docs-site/e2e/run_docs_e2e.mjs dist/docs --base-path /native-view-engine --shots-dir /tmp/nve-landing-shots
 
       - name: Configure GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

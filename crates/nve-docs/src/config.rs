@@ -2,6 +2,8 @@
 
 use nve_mdx::normalize_route;
 
+use crate::route::DocsRoute;
+
 /// Top-level documentation section displayed in the sticky navbar tab bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocsNavSection {
@@ -66,11 +68,14 @@ pub struct DocsSiteConfig {
     pub github_repo_url: Option<String>,
     /// Optional base URL for "Edit this page on GitHub" links (joined with `page.source_path`).
     pub edit_base_url: Option<String>,
-    /// Optional deployment base path (e.g. `""` or `"/docs"`).
+    /// Optional deployment base path (e.g. `""` or `"/native-view-engine"`).
     pub base_path: String,
+    /// Optional route prefix under which compiled MDX docs pages live (e.g. `""` for standalone
+    /// docs sites, or `"/docs"` when mounted alongside a `/` landing page and `/examples` gallery).
+    pub docs_prefix: String,
     /// Whether the site defaults to Fumadocs/Linear dark mode when the host reports `Unspecified`.
     pub default_dark: bool,
-    /// Top-bar section switcher tabs (e.g. `Guides`, `Architecture`, `Hosts`, `Reference`).
+    /// Top-bar section switcher tabs (e.g. `Docs`, `Examples`, `Benchmarks`).
     pub sections: Vec<DocsNavSection>,
 }
 
@@ -83,6 +88,7 @@ impl Default for DocsSiteConfig {
             github_repo_url: None,
             edit_base_url: None,
             base_path: String::new(),
+            docs_prefix: String::new(),
             default_dark: true,
             sections: Vec::new(),
         }
@@ -125,6 +131,14 @@ impl DocsSiteConfig {
         self
     }
 
+    /// Mount compiled MDX documentation pages under a sub-path prefix (e.g. `"/docs"`).
+    ///
+    /// Leave empty (`""`, the default) for standalone docs sites rooted at `"/"`.
+    pub fn with_docs_prefix(mut self, docs_prefix: impl Into<String>) -> Self {
+        self.docs_prefix = normalize_base_path(&docs_prefix.into());
+        self
+    }
+
     pub fn with_default_dark(mut self, default_dark: bool) -> Self {
         self.default_dark = default_dark;
         self
@@ -150,6 +164,72 @@ impl DocsSiteConfig {
         Some(format!("{base}/{rel}"))
     }
 
+    /// Map a compiled MDX content route (e.g. `"/"` or `"/guides/ui-components"`) to its
+    /// public application [`DocsRoute`] under [`Self::docs_prefix`].
+    ///
+    /// Idempotent when `content_route` already starts with `docs_prefix`.
+    pub fn docs_route_for_content(&self, content_route: &str) -> DocsRoute {
+        let norm = normalize_route(content_route);
+        if self.docs_prefix.is_empty() {
+            return DocsRoute(norm);
+        }
+        if norm == "/" {
+            return DocsRoute(self.docs_prefix.clone());
+        }
+        if norm == self.docs_prefix
+            || norm
+                .strip_prefix(&self.docs_prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+        {
+            return DocsRoute(norm);
+        }
+        DocsRoute(format!("{}{}", self.docs_prefix, norm))
+    }
+
+    /// Strip [`Self::docs_prefix`] from a public application route to recover the compiled
+    /// MDX content route (e.g. `"/docs"` -> `Some("/")`, `"/docs/guides/x"` -> `Some("/guides/x")`).
+    ///
+    /// Returns `None` when `docs_prefix` is non-empty and `app_route` lies outside the docs prefix
+    /// (such as `"/"` or `"/examples"`).
+    pub fn content_route_for(&self, app_route: &str) -> Option<String> {
+        let norm = normalize_route(app_route);
+        if self.docs_prefix.is_empty() {
+            return Some(norm);
+        }
+        if norm == self.docs_prefix {
+            return Some("/".to_string());
+        }
+        norm.strip_prefix(&self.docs_prefix)
+            .filter(|rest| rest.starts_with('/'))
+            .map(str::to_string)
+    }
+
+    /// Resolve a compiled MDX content route (plus optional `#anchor`) to a full `href`
+    /// combining `base_path` and `docs_prefix`.
+    pub fn resolve_docs_href(&self, content_route_or_url: &str) -> String {
+        let trimmed = content_route_or_url.trim();
+        if trimmed.is_empty() {
+            return self.resolve_href(self.docs_route_for_content("/").as_str());
+        }
+        if trimmed.starts_with('#')
+            || trimmed.starts_with("http://")
+            || trimmed.starts_with("https://")
+            || trimmed.starts_with("mailto:")
+        {
+            return trimmed.to_string();
+        }
+        let (path_part, anchor) = match trimmed.split_once('#') {
+            Some((p, a)) => (p, Some(a)),
+            None => (trimmed, None),
+        };
+        let app_route = self.docs_route_for_content(path_part);
+        let joined = self.resolve_href(app_route.as_str());
+        match anchor {
+            Some(a) if !a.is_empty() => format!("{joined}#{a}"),
+            _ => joined,
+        }
+    }
+
     /// Resolve a site-internal route (and optional `#anchor`) against `base_path` for SSR `href`.
     pub fn resolve_href(&self, route_or_url: &str) -> String {
         let trimmed = route_or_url.trim();
@@ -157,7 +237,7 @@ impl DocsSiteConfig {
             return if self.base_path.is_empty() {
                 "/".to_string()
             } else {
-                self.base_path.clone()
+                format!("{}/", self.base_path)
             };
         }
         if trimmed.starts_with('#')
@@ -176,7 +256,7 @@ impl DocsSiteConfig {
         let joined = if base.is_empty() {
             norm
         } else if norm == "/" {
-            base
+            format!("{base}/")
         } else {
             format!("{base}{norm}")
         };

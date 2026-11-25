@@ -147,13 +147,20 @@ fn InlineNodeView(
         } => {
             let label = inlines_plain_text(&link_children);
             let display = if label.is_empty() { url.clone() } else { label };
-            let internal_target = DocsRoute::parse_link_target(&url);
+            let config = state.read().config.clone();
+            let internal_target = DocsRoute::parse_link_target(&url).map(|(route, anchor)| {
+                let mapped = route.map(|r| config.docs_route_for_content(r.as_str()));
+                (mapped, anchor)
+            });
             let href = match &internal_target {
-                Some((Some(route), Some(anchor))) => format!("{}#{anchor}", route.href(&base_path)),
-                Some((Some(route), None)) => route.href(&base_path),
+                Some((Some(route), Some(anchor))) => {
+                    format!("{}#{anchor}", config.resolve_href(route.as_str()))
+                }
+                Some((Some(route), None)) => config.resolve_href(route.as_str()),
                 Some((None, Some(anchor))) => format!("#{anchor}"),
                 _ => url.clone(),
             };
+            let _ = &base_path;
             let tid = internal_target.as_ref().and_then(|(route, _)| {
                 route
                     .as_ref()

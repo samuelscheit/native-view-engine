@@ -25,8 +25,8 @@ use nve_sdk::{HostServiceProvider, MemoryHostServices};
 
 pub use config::{DocsNavSection, DocsSiteConfig};
 pub use registry::{
-    PlaygroundEntry, PlaygroundMeta, PlaygroundRegistry, PlaygroundRenderer,
-    default_component_registry,
+    CustomPageRegistry, CustomPageRenderer, PlaygroundEntry, PlaygroundMeta, PlaygroundRegistry,
+    PlaygroundRenderer, default_component_registry,
 };
 pub use route::DocsRoute;
 pub use shell::{Breadcrumbs, DocsNavbar, DocsShell, DocsSidebar, DocsToc, PageFooter, SearchModal};
@@ -110,10 +110,36 @@ pub fn create_docs_surface_with_viewport(
     playgrounds: Arc<PlaygroundRegistry>,
     host_services: Arc<dyn HostServiceProvider>,
 ) -> DioxusSurface {
-    let initial_state = DocsAppState::new(
+    create_docs_surface_with_pages(
+        surface_id,
+        initial_route,
+        viewport,
         config,
         site,
         playgrounds,
+        Arc::new(CustomPageRegistry::new()),
+        host_services,
+    )
+}
+
+/// Create a [`DioxusSurface`] with full-bleed custom routes (e.g. `/` landing and `/examples`
+/// gallery) sharing the unified navbar, theme toggle, and `⌘K` search modal with MDX docs pages.
+#[allow(clippy::too_many_arguments)]
+pub fn create_docs_surface_with_pages(
+    surface_id: SurfaceId,
+    initial_route: impl AsRef<str>,
+    viewport: DocsViewport,
+    config: DocsSiteConfig,
+    site: Arc<CompiledSite>,
+    playgrounds: Arc<PlaygroundRegistry>,
+    custom_pages: Arc<CustomPageRegistry>,
+    host_services: Arc<dyn HostServiceProvider>,
+) -> DioxusSurface {
+    let initial_state = DocsAppState::new_with_pages(
+        config,
+        site,
+        playgrounds,
+        custom_pages,
         host_services,
         DocsRoute::new(initial_route),
         viewport,

@@ -141,7 +141,7 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
     let snap = state.read();
     let theme = snap.theme();
     let active_route = snap.active_route.as_str().to_string();
-    let base_path = snap.config.base_path.clone();
+    let config = snap.config.clone();
 
     let indent_px = (depth as u32).saturating_mul(12);
 
@@ -169,8 +169,9 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             badge,
             ..
         } => {
-            let is_active = route == active_route;
-            let href = DocsRoute::new(&route).href(&base_path);
+            let target = config.docs_route_for_content(&route);
+            let is_active = target.as_str() == active_route;
+            let href = config.resolve_href(target.as_str());
             let tid = format!("docs-nav-{}", route_test_id_slug(&route));
             drop(snap);
 
@@ -186,7 +187,6 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             } else {
                 "transparent"
             };
-            let target = DocsRoute::new(&route);
 
             rsx! {
                 pressable {
@@ -254,10 +254,15 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             ..
         } => {
             let is_collapsed = snap.is_folder_collapsed(&slug);
-            let is_index_active = index_route.as_deref() == Some(active_route.as_str());
-            let index_href = index_route
+            let mapped_index_route = index_route
                 .as_deref()
-                .map(|r| DocsRoute::new(r).href(&base_path));
+                .map(|r| config.docs_route_for_content(r));
+            let is_index_active = mapped_index_route
+                .as_ref()
+                .is_some_and(|r| r.as_str() == active_route);
+            let index_href = mapped_index_route
+                .as_ref()
+                .map(|r| config.resolve_href(r.as_str()));
             drop(snap);
 
             let chevron = if is_collapsed { "▸" } else { "▾" };
@@ -280,8 +285,8 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                         "href": index_href.unwrap_or_default(),
                         style: "width: 100%; flex-direction: row; align-items: center; justify-content: space-between; padding-vertical: 6px; padding-horizontal: 8px; border-radius: 6px;",
                         onpress: move |_| {
-                            if let Some(ref route) = index_route {
-                                navigate_to(state, DocsRoute::new(route));
+                            if let Some(ref route) = mapped_index_route {
+                                navigate_to(state, route.clone());
                             } else {
                                 state.write().toggle_folder(&slug_for_toggle);
                             }

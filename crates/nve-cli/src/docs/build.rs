@@ -15,6 +15,7 @@ use nve_engine::RenderBackend;
 use nve_mdx::CompiledSite;
 
 use crate::docs::check::validate_content_dir;
+use crate::docs::examples::{EXAMPLE_APPS, ExamplesStageSummary, stage_example_apps};
 
 /// Build configuration for `cargo nve docs build`.
 #[derive(Debug, Clone)]
@@ -24,6 +25,8 @@ pub(crate) struct BuildOptions {
     pub base_path: String,
     pub site_url: String,
     pub skip_wasm: bool,
+    pub web_shell_dist: Option<PathBuf>,
+    pub with_examples: bool,
 }
 
 /// Metrics returned after a successful static + optional WASM build.
@@ -35,11 +38,13 @@ pub(crate) struct BuildSummary {
     pub search_index_bytes: usize,
     pub wasm_raw_bytes: Option<usize>,
     pub wasm_gzip_bytes: Option<usize>,
+    pub examples: ExamplesStageSummary,
 }
 
 const DOCS_HEAD_CHROME: &str = concat!(
     "<meta name=\"theme-color\" content=\"#09090b\">\n",
     "<style data-nve-docs-chrome>",
+    "*,*::before,*::after{box-sizing:border-box;}",
     "html,body{margin:0;padding:0;width:100%;height:100%;background:#09090b;color:#fafafa;",
     "font-family:Inter,-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,Helvetica,Arial,sans-serif;",
     "-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}",
@@ -52,7 +57,12 @@ const DOCS_HEAD_CHROME: &str = concat!(
     "[testid=\"docs-sidebar-scroll\"]{min-height:0;overflow-y:auto;scrollbar-width:thin;}",
     "[testid=\"docs-toc\"]{border-top:0!important;border-right:0!important;border-bottom:0!important;min-height:0;height:100%;overflow-y:auto;}",
     "[testid=\"docs-main-scroll\"]{min-height:0;height:100%;overflow-y:auto;align-items:center!important;scrollbar-width:thin;}",
+    "[testid=\"docs-custom-scroll\"]{min-height:0;width:100%;height:100%;overflow-y:auto;overflow-x:hidden;align-items:center!important;scrollbar-width:thin;}",
     "[testid=\"docs-article-container\"]{flex-shrink:0!important;padding-bottom:64px!important;}",
+    "[testid=\"landing-page\"],[testid=\"examples-gallery-page\"]{flex-shrink:0!important;}",
+    "[testid=\"landing-hero-glow\"]{background:radial-gradient(ellipse 68% 58% at 50% 0%,rgba(56,189,248,0.11),transparent 72%);}",
+    "[data-theme=\"light\"] [testid=\"landing-hero-glow\"]{background:radial-gradient(ellipse 68% 58% at 50% 0%,rgba(2,132,199,0.08),transparent 72%);}",
+    "[testid=\"landing-hero-h1\"] span,[testid=\"examples-hero-h1\"] span{letter-spacing:-0.03em;line-height:1.1;}",
     "[testid=\"docs-sidebar-overlay\"]{position:fixed!important;inset:0!important;z-index:400!important;}",
     "[testid=\"docs-search-dialog-backdrop\"]{position:fixed!important;inset:0!important;z-index:1000!important;}",
     "[testid=\"docs-inlines\"]{display:block!important;width:100%;line-height:1.7;word-wrap:break-word;}",
@@ -62,6 +72,10 @@ const DOCS_HEAD_CHROME: &str = concat!(
     "[testid=\"docs-inlines\"] a{text-decoration:underline;text-underline-offset:3px;}",
     "[testid=\"docs-code-tokens\"]{display:block!important;white-space:pre;line-height:1.55;}",
     "[testid=\"docs-code-tokens\"] span{display:inline!important;white-space:pre;}",
+    "[testid=\"landing-cta-row\"] a,[testid=\"hero-tab-live\"],[testid=\"hero-tab-code\"],[testid=\"hero-tab-ir\"],[testid=\"landing-cli-copy\"],[testid^=\"examples-pg-tab-\"],[testid^=\"hero-host-\"]{white-space:nowrap!important;}",
+    "[testid=\"bench-bar-legend\"],[testid=\"bento-host-pills\"],[testid=\"bench-controls-bar\"]{flex-wrap:wrap!important;}",
+    "a,button,[role=\"button\"],[role=\"link\"],[role=\"tab\"]{cursor:pointer;}",
+    "a:hover,button:hover,[role=\"button\"]:hover,[role=\"link\"]:hover,[role=\"tab\"]:hover{opacity:0.92;}",
     "a{color:inherit;text-decoration:none;}",
     "a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid #38bdf8;outline-offset:1px;}",
     "code,pre{font-family:ui-monospace,\"SFMono-Regular\",Menlo,Monaco,Consolas,monospace;}",
@@ -95,6 +109,7 @@ pub(crate) fn run_build(opts: &BuildOptions) -> Result<BuildSummary, String> {
     };
 
     let site = Arc::new(report.site);
+    let site_cfg = nve_docs_site::nve_docs_site_config(&base_path);
     let has_wasm = !opts.skip_wasm;
 
     // 1. Emit binary NVS1 search index.
@@ -106,78 +121,155 @@ pub(crate) fn run_build(opts: &BuildOptions) -> Result<BuildSummary, String> {
     fs::write(opts.out.join(".nojekyll"), b"")
         .map_err(|e| format!("failed to write .nojekyll: {e}"))?;
 
-    // 3. Emit sitemap.xml.
-    let sitemap = build_sitemap_xml(&site, &site_url);
+    // 3. Emit sitemap.xml (Landing, Examples Gallery, Live WASM Examples, and all /docs/** pages).
+    let sitemap = build_sitemap_xml(&site, &site_cfg, &site_url);
     fs::write(opts.out.join("sitemap.xml"), &sitemap)
         .map_err(|e| format!("failed to write sitemap.xml: {e}"))?;
 
-    // 4. Emit static semantic HTML5 + Option 5 CSS pages for EVERY compiled route.
+    // 4. Emit static semantic HTML5 + Option 5 CSS pages for:
+    //    - "/" (Landing Page)
+    //    - "/examples" (Examples Gallery)
+    //    - "/docs" & "/docs/<slug>" (all compiled MDX docs pages)
     let mut total_html_bytes = 0usize;
     let mut total_css_bytes = 0usize;
+    let mut pages_emitted = 0usize;
     let body_scripts = has_wasm.then(|| hydration_bootstrap_script(&base_path));
 
-    for page in &site.pages {
-        let mut surface = nve_docs_site::create_nve_docs_surface_full(
-            1,
-            Arc::clone(&site),
-            &page.route,
+    let custom_ssr_routes: [(&str, &str, &str); 2] = [
+        (
+            "/",
+            "Native View Engine — Native-speed UI in Rust",
+            "Write declarative UI once in Rust with zero JSON and one binary ABI across 10 native, GPU Skia, and Web WASM hosts.",
+        ),
+        (
+            "/examples",
+            "Interactive Examples & Live Playgrounds — Native View Engine",
+            "Launch lazy-loaded WebAssembly apps (Aether Workspace + NVE Studio, Counter) and explore 5 live embedded docs playgrounds.",
+        ),
+    ];
+
+    for (route, title, desc) in custom_ssr_routes {
+        let (html_len, css_len) = emit_ssr_page(
+            &site,
+            &opts.out,
+            route,
             &base_path,
-            DocsViewport::desktop_default(),
-            true,
-        );
-        let (_, _, frame_bytes) = surface.render_frame(1);
-        let mut backend = WebBackend::new();
-        backend
-            .submit_frame(&frame_bytes)
-            .map_err(|e| format!("SSR submit_frame failed for '{}': {e}", page.route))?;
-
-        let ssr_preview = backend.render_ssr();
-        total_css_bytes += ssr_preview.base_css.len() + ssr_preview.style_css.len();
-
-        let canonical = canonical_url_for(&site_url, &page.route);
-        let doc_html = backend.render_ssr_document(&SsrDocumentOptions {
-            title: format!("{} — Native View Engine", page.title),
-            description: (!page.description.is_empty()).then(|| page.description.clone()),
-            canonical_url: Some(canonical),
-            og_image: None,
-            lang: Some("en".to_string()),
-            head_extra: Some(DOCS_HEAD_CHROME.to_string()),
-            body_scripts: body_scripts.clone(),
-        });
-
-        let out_file = route_output_path(&opts.out, &page.route);
-        if let Some(parent) = out_file.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-        }
-        fs::write(&out_file, &doc_html)
-            .map_err(|e| format!("failed to write {}: {e}", out_file.display()))?;
-        total_html_bytes += doc_html.len();
+            &site_url,
+            title,
+            Some(desc),
+            body_scripts.as_deref(),
+        )?;
+        total_html_bytes += html_len;
+        total_css_bytes += css_len;
+        pages_emitted += 1;
     }
 
-    // 5. Emit 404.html fallback (hydrates client-side for GitHub Pages SPA routes).
+    for page in &site.pages {
+        let public_route = site_cfg.docs_route_for_content(&page.route);
+        let page_title = format!("{} — Native View Engine", page.title);
+        let desc = (!page.description.is_empty()).then_some(page.description.as_str());
+        let (html_len, css_len) = emit_ssr_page(
+            &site,
+            &opts.out,
+            public_route.as_str(),
+            &base_path,
+            &site_url,
+            &page_title,
+            desc,
+            body_scripts.as_deref(),
+        )?;
+        total_html_bytes += html_len;
+        total_css_bytes += css_len;
+        pages_emitted += 1;
+    }
+
+    // 5. Stage lazy-loaded live WASM example apps (/examples/studio/ and /examples/counter/).
+    let repo_root = find_workspace_root();
+    let examples = stage_example_apps(
+        &repo_root,
+        &opts.out,
+        &base_path,
+        opts.web_shell_dist.as_deref(),
+        opts.with_examples,
+        opts.skip_wasm,
+    )?;
+    pages_emitted += examples.pages_emitted;
+
+    // 6. Emit 404.html fallback (hydrates client-side for GitHub Pages SPA routes).
     let not_found_html = render_404_page(&site, &base_path, &site_url, body_scripts.as_deref())?;
     fs::write(opts.out.join("404.html"), &not_found_html)
         .map_err(|e| format!("failed to write 404.html: {e}"))?;
 
     let summary = BuildSummary {
-        pages_emitted: site.pages.len(),
+        pages_emitted,
         total_html_bytes,
         total_css_bytes,
         search_index_bytes: search_bytes.len(),
         wasm_raw_bytes,
         wasm_gzip_bytes,
+        examples,
     };
 
     print_build_summary(&opts.out, &summary);
     Ok(summary)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_ssr_page(
+    site: &Arc<CompiledSite>,
+    out_dir: &Path,
+    public_route: &str,
+    base_path: &str,
+    site_url: &str,
+    title: &str,
+    description: Option<&str>,
+    body_scripts: Option<&str>,
+) -> Result<(usize, usize), String> {
+    let mut surface = nve_docs_site::create_nve_docs_surface_full(
+        1,
+        Arc::clone(site),
+        public_route,
+        base_path,
+        DocsViewport::desktop_default(),
+        true,
+    );
+    let (_, _, frame_bytes) = surface.render_frame(1);
+    let mut backend = WebBackend::new();
+    backend
+        .submit_frame(&frame_bytes)
+        .map_err(|e| format!("SSR submit_frame failed for '{public_route}': {e}"))?;
+
+    let ssr_preview = backend.render_ssr();
+    let css_bytes = ssr_preview.base_css.len() + ssr_preview.style_css.len();
+
+    let canonical = canonical_url_for(site_url, public_route);
+    let doc_html = backend.render_ssr_document(&SsrDocumentOptions {
+        title: title.to_string(),
+        description: description.map(str::to_string),
+        canonical_url: Some(canonical),
+        og_image: None,
+        lang: Some("en".to_string()),
+        head_extra: Some(DOCS_HEAD_CHROME.to_string()),
+        body_scripts: body_scripts.map(str::to_string),
+    });
+
+    let out_file = route_output_path(out_dir, public_route);
+    if let Some(parent) = out_file.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+    fs::write(&out_file, &doc_html)
+        .map_err(|e| format!("failed to write {}: {e}", out_file.display()))?;
+    Ok((doc_html.len(), css_bytes))
+}
+
 fn print_build_summary(out: &Path, s: &BuildSummary) {
     println!(
-        "✓ docs build complete -> {} ({} pages)",
+        "✓ docs build complete -> {} ({} pages | examples: studio={}, counter={})",
         out.display(),
-        s.pages_emitted
+        s.pages_emitted,
+        s.examples.studio_mode,
+        s.examples.counter_mode,
     );
     println!(
         "  HTML: {:.1} KiB | CSS (inlined across pages): {:.1} KiB | search.nvs1: {:.1} KiB",
@@ -225,12 +317,25 @@ fn canonical_url_for(site_url: &str, route: &str) -> String {
     }
 }
 
-fn build_sitemap_xml(site: &CompiledSite, site_url: &str) -> String {
-    let mut xml = String::with_capacity(site.pages.len() * 96 + 160);
+fn build_sitemap_xml(
+    site: &CompiledSite,
+    site_cfg: &nve_docs::DocsSiteConfig,
+    site_url: &str,
+) -> String {
+    let mut xml = String::with_capacity((site.pages.len() + 4) * 96 + 160);
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     xml.push_str("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+    for static_route in ["/", "/examples"] {
+        let loc = canonical_url_for(site_url, static_route);
+        let _ = writeln!(xml, "  <url><loc>{}</loc></url>", escape_xml(&loc));
+    }
+    for app in EXAMPLE_APPS {
+        let loc = canonical_url_for(site_url, &format!("/examples/{}", app.slug));
+        let _ = writeln!(xml, "  <url><loc>{}</loc></url>", escape_xml(&loc));
+    }
     for page in &site.pages {
-        let loc = canonical_url_for(site_url, &page.route);
+        let public_route = site_cfg.docs_route_for_content(&page.route);
+        let loc = canonical_url_for(site_url, public_route.as_str());
         let _ = writeln!(xml, "  <url><loc>{}</loc></url>", escape_xml(&loc));
     }
     xml.push_str("</urlset>\n");
