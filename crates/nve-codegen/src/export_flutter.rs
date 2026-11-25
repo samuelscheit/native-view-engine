@@ -264,7 +264,7 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
         out,
         "    if (event.kind != NveEventKind.custom || event.name == null) return;"
     );
-    let _ = writeln!(out, "    final payload = event.payloadJson ?? const <String, dynamic>{{}};");
+    let _ = writeln!(out, "    final binView = event.payload.parseBinValue();");
     let _ = writeln!(out, "    switch (event.name) {{");
     for ev in &spec.events {
         let cb = dart_ident(&ev.name);
@@ -281,7 +281,7 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
             let ev_cls = dart_event_class_name(name, ev);
             let _ = writeln!(
                 out,
-                "        widget.{cb}?.call({ev_cls}.fromJson(payload));"
+                "        if (binView != null) {{ widget.{cb}?.call({ev_cls}.fromBinView(binView)); }}"
             );
         }
         let _ = writeln!(out, "        break;");
@@ -384,12 +384,12 @@ fn emit_dart_event_class(out: &mut String, comp_name: &str, ev: &EventSpec) {
     }
     let _ = writeln!(out, "  }});");
     let _ = writeln!(out);
-    let _ = writeln!(out, "  factory {cls}.fromJson(Map<String, dynamic> json) {{");
+    let _ = writeln!(out, "  factory {cls}.fromBinView(NveBinValueView view) {{");
     let _ = writeln!(out, "    return {cls}(");
     for f in &ev.payload {
         let fname = dart_ident(&f.name);
         let key = escape_dart_single_quoted_string(&f.name);
-        let expr = dart_from_json_expr(&key, f);
+        let expr = dart_from_bin_view_expr(&key, f);
         let _ = writeln!(out, "      {fname}: {expr},");
     }
     let _ = writeln!(out, "    );");
@@ -398,35 +398,35 @@ fn emit_dart_event_class(out: &mut String, comp_name: &str, ev: &EventSpec) {
     let _ = writeln!(out);
 }
 
-fn dart_from_json_expr(key: &str, f: &ObjectField) -> String {
+fn dart_from_bin_view_expr(key: &str, f: &ObjectField) -> String {
     let opt = f.optional || f.nullable;
     match &f.field_type {
         PropType::Bool => {
             if opt {
-                format!("json['{key}'] as bool?")
+                format!("view.get('{key}')?.asBool()")
             } else {
-                format!("(json['{key}'] as bool?) ?? false")
+                format!("view.get('{key}')?.asBool() ?? false")
             }
         }
         PropType::Int32 | PropType::IntEnum { .. } => {
             if opt {
-                format!("(json['{key}'] as num?)?.toInt()")
+                format!("view.get('{key}')?.asInt64()")
             } else {
-                format!("(json['{key}'] as num?)?.toInt() ?? 0")
+                format!("view.get('{key}')?.asInt64() ?? 0")
             }
         }
         PropType::Float | PropType::Double => {
             if opt {
-                format!("(json['{key}'] as num?)?.toDouble()")
+                format!("view.get('{key}')?.asNumber()")
             } else {
-                format!("(json['{key}'] as num?)?.toDouble() ?? 0.0")
+                format!("view.get('{key}')?.asNumber() ?? 0.0")
             }
         }
         _ => {
             if opt {
-                format!("json['{key}'] as String?")
+                format!("view.get('{key}')?.asString()")
             } else {
-                format!("(json['{key}'] as String?) ?? ''")
+                format!("view.get('{key}')?.asString() ?? ''")
             }
         }
     }

@@ -1,0 +1,275 @@
+//! Unconditional compile-time ABI layout verification for every `#[repr(C)]` vtable,
+//! POD struct, union, and FFI enum in `nve-abi`.
+//!
+//! Mirrors the C11/C++20 `NVE_STATIC_ASSERT` checks emitted into `nve_abi.generated.h`
+//! and `nve_scene_abi.generated.h` so any Rust/C layout divergence fails compilation
+//! immediately across both 32-bit and 64-bit targets.
+
+use core::mem::{align_of, offset_of, size_of};
+
+use crate::ffi::{
+    NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
+    NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig,
+};
+use crate::host::{NveHostApi, NveHostCallbacks, NveHostEventKind, NveHostStatus};
+use crate::scene::{NveRenderNode, NveSceneView, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE};
+use crate::value::{
+    NveDirectEvent, NveEventBatch, NveMapEntry, NveStrSlice, NveValue, NveValueArray,
+    NveValueData, NveValueMap, NveValueTag,
+};
+
+const PTR_SIZE: usize = size_of::<*const ()>();
+const PTR_ALIGN: usize = align_of::<*const ()>();
+
+const fn align_up(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
+}
+
+// Pointer-width-aware assertions (compile-checked on both 32-bit and 64-bit targets).
+const _: () = {
+    // ---- Repr enums ----
+    assert!(size_of::<NveGestureDisposition>() == 1);
+    assert!(align_of::<NveGestureDisposition>() == 1);
+    assert!(size_of::<NveHostStatus>() == 4);
+    assert!(align_of::<NveHostStatus>() == 4);
+    assert!(size_of::<NveHostEventKind>() == 1);
+    assert!(align_of::<NveHostEventKind>() == 1);
+    assert!(size_of::<NveValueTag>() == 4);
+    assert!(align_of::<NveValueTag>() == 4);
+
+    // ---- Core POD structs (ffi.rs) ----
+    assert!(size_of::<NveBufferSlice>() == 2 * PTR_SIZE);
+    assert!(align_of::<NveBufferSlice>() == PTR_ALIGN);
+    assert!(offset_of!(NveBufferSlice, ptr) == 0);
+    assert!(offset_of!(NveBufferSlice, len) == PTR_SIZE);
+
+    assert!(size_of::<NveSurfaceConfig>() == 16);
+    assert!(align_of::<NveSurfaceConfig>() == 4);
+    assert!(offset_of!(NveSurfaceConfig, surface_id) == 0);
+    assert!(offset_of!(NveSurfaceConfig, width) == 4);
+    assert!(offset_of!(NveSurfaceConfig, height) == 8);
+    assert!(offset_of!(NveSurfaceConfig, scale_factor) == 12);
+
+    assert!(size_of::<NveFrameStats>() == 40);
+    assert!(align_of::<NveFrameStats>() == align_of::<u64>());
+    assert!(offset_of!(NveFrameStats, op_count) == 0);
+    assert!(offset_of!(NveFrameStats, mutation_count) == 4);
+    assert!(offset_of!(NveFrameStats, decode_us) == 8);
+    assert!(offset_of!(NveFrameStats, layout_us) == 16);
+    assert!(offset_of!(NveFrameStats, diff_us) == 24);
+    assert!(offset_of!(NveFrameStats, mount_us) == 32);
+
+    assert!(size_of::<NveSizeConstraints>() == 16);
+    assert!(align_of::<NveSizeConstraints>() == 4);
+    assert!(offset_of!(NveSizeConstraints, min_w) == 0);
+    assert!(offset_of!(NveSizeConstraints, min_h) == 4);
+    assert!(offset_of!(NveSizeConstraints, max_w) == 8);
+    assert!(offset_of!(NveSizeConstraints, max_h) == 12);
+
+    assert!(size_of::<NveIntrinsicSize>() == 8);
+    assert!(align_of::<NveIntrinsicSize>() == 4);
+    assert!(offset_of!(NveIntrinsicSize, width) == 0);
+    assert!(offset_of!(NveIntrinsicSize, height) == 4);
+
+    // ---- Core modular interface vtables (ffi.rs) ----
+    assert!(size_of::<NveSurfaceApi>() == 5 * PTR_SIZE);
+    assert!(align_of::<NveSurfaceApi>() == PTR_ALIGN);
+    assert!(offset_of!(NveSurfaceApi, create) == 0);
+    assert!(offset_of!(NveSurfaceApi, destroy) == PTR_SIZE);
+    assert!(offset_of!(NveSurfaceApi, render) == 2 * PTR_SIZE);
+    assert!(offset_of!(NveSurfaceApi, dispatch_events) == 3 * PTR_SIZE);
+    assert!(offset_of!(NveSurfaceApi, dispatch_events_direct) == 4 * PTR_SIZE);
+
+    assert!(size_of::<NveLayoutApi>() == 2 * PTR_SIZE);
+    assert!(align_of::<NveLayoutApi>() == PTR_ALIGN);
+    assert!(offset_of!(NveLayoutApi, measure) == 0);
+    assert!(offset_of!(NveLayoutApi, hit_test) == PTR_SIZE);
+
+    assert!(size_of::<NveComponentApi>() == 3 * PTR_SIZE);
+    assert!(align_of::<NveComponentApi>() == PTR_ALIGN);
+    assert!(offset_of!(NveComponentApi, set_props) == 0);
+    assert!(offset_of!(NveComponentApi, drain_emitted_events) == PTR_SIZE);
+    assert!(offset_of!(NveComponentApi, set_props_direct) == 2 * PTR_SIZE);
+
+    assert!(size_of::<NveDevApi>() == 3 * PTR_SIZE);
+    assert!(align_of::<NveDevApi>() == PTR_ALIGN);
+    assert!(offset_of!(NveDevApi, apply_hot_patch) == 0);
+    assert!(offset_of!(NveDevApi, snapshot_state) == PTR_SIZE);
+    assert!(offset_of!(NveDevApi, restore_state) == 2 * PTR_SIZE);
+
+    // ---- Host capability structs & vtable (host/mod.rs) ----
+    assert!(size_of::<NveHostCallbacks>() == 3 * PTR_SIZE);
+    assert!(align_of::<NveHostCallbacks>() == PTR_ALIGN);
+    assert!(offset_of!(NveHostCallbacks, host_ctx) == 0);
+    assert!(offset_of!(NveHostCallbacks, invoke) == PTR_SIZE);
+    assert!(offset_of!(NveHostCallbacks, channel_publish) == 2 * PTR_SIZE);
+
+    assert!(size_of::<NveHostApi>() == 2 * PTR_SIZE);
+    assert!(align_of::<NveHostApi>() == PTR_ALIGN);
+    assert!(offset_of!(NveHostApi, bind_host) == 0);
+    assert!(offset_of!(NveHostApi, dispatch_host_events) == PTR_SIZE);
+
+    // ---- Direct FFI value & event types (value/ffi_types.rs) ----
+    assert!(size_of::<NveStrSlice>() == 2 * PTR_SIZE);
+    assert!(align_of::<NveStrSlice>() == PTR_ALIGN);
+    assert!(offset_of!(NveStrSlice, ptr) == 0);
+    assert!(offset_of!(NveStrSlice, len) == PTR_SIZE);
+
+    assert!(size_of::<NveValueArray>() == 2 * PTR_SIZE);
+    assert!(align_of::<NveValueArray>() == PTR_ALIGN);
+    assert!(offset_of!(NveValueArray, ptr) == 0);
+    assert!(offset_of!(NveValueArray, len) == PTR_SIZE);
+
+    assert!(size_of::<NveValueMap>() == 2 * PTR_SIZE);
+    assert!(align_of::<NveValueMap>() == PTR_ALIGN);
+    assert!(offset_of!(NveValueMap, ptr) == 0);
+    assert!(offset_of!(NveValueMap, len) == PTR_SIZE);
+
+    assert!(offset_of!(NveValueData, bool_val) == 0);
+    assert!(offset_of!(NveValueData, i64_val) == 0);
+    assert!(offset_of!(NveValueData, f64_val) == 0);
+    assert!(offset_of!(NveValueData, str_val) == 0);
+    assert!(offset_of!(NveValueData, bytes_val) == 0);
+    assert!(offset_of!(NveValueData, array_val) == 0);
+    assert!(offset_of!(NveValueData, map_val) == 0);
+
+    assert!(offset_of!(NveValue, tag) == 0);
+    assert!(offset_of!(NveValue, data) == align_of::<NveValueData>());
+    assert!(
+        size_of::<NveValue>()
+            == align_up(
+                align_of::<NveValueData>() + size_of::<NveValueData>(),
+                align_of::<NveValue>()
+            )
+    );
+
+    assert!(offset_of!(NveMapEntry, key) == 0);
+    assert!(offset_of!(NveMapEntry, value) == align_up(size_of::<NveStrSlice>(), align_of::<NveValue>()));
+    assert!(
+        size_of::<NveMapEntry>()
+            == align_up(
+                offset_of!(NveMapEntry, value) + size_of::<NveValue>(),
+                align_of::<NveMapEntry>()
+            )
+    );
+
+    assert!(offset_of!(NveDirectEvent, surface_id) == 0);
+    assert!(offset_of!(NveDirectEvent, node_id) == 4);
+    assert!(offset_of!(NveDirectEvent, timestamp_us) == 8);
+    assert!(offset_of!(NveDirectEvent, kind) == 16);
+    assert!(offset_of!(NveDirectEvent, payload_tag) == 17);
+    assert!(offset_of!(NveDirectEvent, name) == align_up(18, align_of::<NveStrSlice>()));
+    assert!(offset_of!(NveDirectEvent, x) == offset_of!(NveDirectEvent, name) + size_of::<NveStrSlice>());
+    assert!(offset_of!(NveDirectEvent, y) == offset_of!(NveDirectEvent, x) + 4);
+    assert!(offset_of!(NveDirectEvent, width) == offset_of!(NveDirectEvent, y) + 4);
+    assert!(offset_of!(NveDirectEvent, height) == offset_of!(NveDirectEvent, width) + 4);
+    assert!(
+        offset_of!(NveDirectEvent, text)
+            == align_up(offset_of!(NveDirectEvent, height) + 4, align_of::<NveStrSlice>())
+    );
+    assert!(
+        offset_of!(NveDirectEvent, value)
+            == align_up(
+                offset_of!(NveDirectEvent, text) + size_of::<NveStrSlice>(),
+                align_of::<NveValue>()
+            )
+    );
+
+    assert!(offset_of!(NveEventBatch, ptr) == 0);
+    assert!(offset_of!(NveEventBatch, len) == PTR_SIZE);
+    assert!(align_of::<NveEventBatch>() == PTR_ALIGN);
+    assert!(size_of::<NveEventBatch>() == align_up(PTR_SIZE + 4, PTR_ALIGN));
+
+    // ---- Scene ABI types (scene/types.rs) ----
+    assert!(size_of::<NveRenderNode>() == NVE_RENDER_NODE_SIZE);
+    assert!(align_of::<NveRenderNode>() == NVE_RENDER_NODE_ALIGN);
+    assert!(offset_of!(NveRenderNode, node_id) == 0);
+    assert!(offset_of!(NveRenderNode, kind) == 4);
+    assert!(offset_of!(NveRenderNode, flags) == 5);
+    assert!(offset_of!(NveRenderNode, opacity_u8) == 6);
+    assert!(offset_of!(NveRenderNode, _pad0) == 7);
+    assert!(offset_of!(NveRenderNode, x) == 8);
+    assert!(offset_of!(NveRenderNode, y) == 12);
+    assert!(offset_of!(NveRenderNode, width) == 16);
+    assert!(offset_of!(NveRenderNode, height) == 20);
+    assert!(offset_of!(NveRenderNode, bg_rgba) == 24);
+    assert!(offset_of!(NveRenderNode, text_rgba) == 28);
+    assert!(offset_of!(NveRenderNode, border_rgba) == 32);
+    assert!(offset_of!(NveRenderNode, border_radius) == 36);
+    assert!(offset_of!(NveRenderNode, border_width) == 40);
+    assert!(offset_of!(NveRenderNode, font_size) == 44);
+    assert!(offset_of!(NveRenderNode, text_offset) == 48);
+    assert!(offset_of!(NveRenderNode, text_len) == 52);
+    assert!(offset_of!(NveRenderNode, child_count) == 54);
+    assert!(offset_of!(NveRenderNode, child_offset) == 56);
+    assert!(offset_of!(NveRenderNode, z_index) == 60);
+
+    assert!(offset_of!(NveSceneView, schema_hash) == 0);
+    assert!(offset_of!(NveSceneView, frame_id) == 8);
+    assert!(offset_of!(NveSceneView, node_count) == 16);
+    assert!(offset_of!(NveSceneView, dirty_count) == 20);
+    assert!(offset_of!(NveSceneView, removed_count) == 24);
+    assert!(offset_of!(NveSceneView, text_slab_len) == 28);
+    assert!(offset_of!(NveSceneView, children_slab_len) == 32);
+    assert!(offset_of!(NveSceneView, _pad) == 36);
+    assert!(offset_of!(NveSceneView, nodes) == 40);
+    assert!(offset_of!(NveSceneView, text_slab) == 40 + PTR_SIZE);
+    assert!(offset_of!(NveSceneView, children_slab) == 40 + 2 * PTR_SIZE);
+    assert!(offset_of!(NveSceneView, dirty_indices) == 40 + 3 * PTR_SIZE);
+    assert!(offset_of!(NveSceneView, removed_ids) == 40 + 4 * PTR_SIZE);
+    assert!(
+        size_of::<NveSceneView>() == align_up(40 + 5 * PTR_SIZE, align_of::<NveSceneView>())
+    );
+};
+
+// Exact 64-bit ABI verification matching the checked-in C/Swift/Dart/TS/Java artifacts.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(size_of::<NveBufferSlice>() == 16);
+    assert!(align_of::<NveBufferSlice>() == 8);
+    assert!(size_of::<NveStrSlice>() == 16);
+    assert!(align_of::<NveStrSlice>() == 8);
+    assert!(size_of::<NveValueArray>() == 16);
+    assert!(align_of::<NveValueArray>() == 8);
+    assert!(size_of::<NveValueMap>() == 16);
+    assert!(align_of::<NveValueMap>() == 8);
+    assert!(size_of::<NveValueData>() == 16);
+    assert!(align_of::<NveValueData>() == 8);
+
+    assert!(size_of::<NveValue>() == 24);
+    assert!(align_of::<NveValue>() == 8);
+    assert!(offset_of!(NveValue, data) == 8);
+
+    assert!(size_of::<NveMapEntry>() == 40);
+    assert!(align_of::<NveMapEntry>() == 8);
+    assert!(offset_of!(NveMapEntry, value) == 16);
+
+    assert!(size_of::<NveDirectEvent>() == 96);
+    assert!(align_of::<NveDirectEvent>() == 8);
+    assert!(offset_of!(NveDirectEvent, name) == 24);
+    assert!(offset_of!(NveDirectEvent, x) == 40);
+    assert!(offset_of!(NveDirectEvent, y) == 44);
+    assert!(offset_of!(NveDirectEvent, width) == 48);
+    assert!(offset_of!(NveDirectEvent, height) == 52);
+    assert!(offset_of!(NveDirectEvent, text) == 56);
+    assert!(offset_of!(NveDirectEvent, value) == 72);
+
+    assert!(size_of::<NveEventBatch>() == 16);
+    assert!(align_of::<NveEventBatch>() == 8);
+    assert!(offset_of!(NveEventBatch, len) == 8);
+
+    assert!(size_of::<NveSurfaceApi>() == 40);
+    assert!(size_of::<NveLayoutApi>() == 16);
+    assert!(size_of::<NveComponentApi>() == 24);
+    assert!(size_of::<NveDevApi>() == 24);
+    assert!(size_of::<NveHostCallbacks>() == 24);
+    assert!(size_of::<NveHostApi>() == 16);
+
+    assert!(size_of::<NveSceneView>() == 80);
+    assert!(align_of::<NveSceneView>() == 8);
+    assert!(offset_of!(NveSceneView, nodes) == 40);
+    assert!(offset_of!(NveSceneView, text_slab) == 48);
+    assert!(offset_of!(NveSceneView, children_slab) == 56);
+    assert!(offset_of!(NveSceneView, dirty_indices) == 64);
+    assert!(offset_of!(NveSceneView, removed_ids) == 72);
+};

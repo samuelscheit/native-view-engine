@@ -86,19 +86,9 @@ pub fn import_rn_file(spec_path: &Path) -> Result<ImportRnOutput, CodegenError> 
 // Direction 2: Target-Specific Exporters
 // ===========================================================================
 
-/// Export an `NveExportSpec` to a drop-in React Native Fabric NativeComponent package (5 files).
+/// Export an `NveExportSpec` to a drop-in React Native Fabric NativeComponent package (6 files).
 pub fn export_rn_spec(spec: &NveExportSpec) -> Result<ExportRnOutput, CodegenError> {
     generate_export_rn(spec)
-}
-
-pub fn export_rn_json(spec_json: &str) -> Result<ExportRnOutput, CodegenError> {
-    let spec = NveExportSpec::from_json(spec_json)?;
-    generate_export_rn(&spec)
-}
-
-pub fn export_rn_json_file(spec_json_path: &Path) -> Result<ExportRnOutput, CodegenError> {
-    let spec = NveExportSpec::from_json_file(spec_json_path)?;
-    generate_export_rn(&spec)
 }
 
 /// Export an `NveExportSpec` to a typed Flutter `StatefulWidget` using `dart:ffi` + `nve_flutter`.
@@ -106,19 +96,9 @@ pub fn export_flutter(spec: &NveExportSpec) -> Result<ExportFlutterOutput, Codeg
     generate_export_flutter(spec)
 }
 
-pub fn export_flutter_json(spec_json: &str) -> Result<ExportFlutterOutput, CodegenError> {
-    let spec = NveExportSpec::from_json(spec_json)?;
-    generate_export_flutter(&spec)
-}
-
 /// Export an `NveExportSpec` to a typed SwiftUI `View` wrapping `NveSwiftUI.NveSurfaceRepresentable`.
 pub fn export_swiftui(spec: &NveExportSpec) -> Result<ExportSwiftUiOutput, CodegenError> {
     generate_export_swiftui(spec)
-}
-
-pub fn export_swiftui_json(spec_json: &str) -> Result<ExportSwiftUiOutput, CodegenError> {
-    let spec = NveExportSpec::from_json(spec_json)?;
-    generate_export_swiftui(&spec)
 }
 
 /// Export an `NveExportSpec` to a typed Jetpack Compose `@Composable` wrapping `dev.nve.compose.NveSurface`.
@@ -126,23 +106,11 @@ pub fn export_compose(spec: &NveExportSpec) -> Result<ExportComposeOutput, Codeg
     generate_export_compose(spec)
 }
 
-pub fn export_compose_json(spec_json: &str) -> Result<ExportComposeOutput, CodegenError> {
-    let spec = NveExportSpec::from_json(spec_json)?;
-    generate_export_compose(&spec)
-}
-
 /// Export an `NveExportSpec` to a typed Custom Element `<nve-...>` + `.d.ts` wrapping `wasm-bindgen`.
 pub fn export_web_component(
     spec: &NveExportSpec,
 ) -> Result<ExportWebComponentOutput, CodegenError> {
     generate_export_web_component(spec)
-}
-
-pub fn export_web_component_json(
-    spec_json: &str,
-) -> Result<ExportWebComponentOutput, CodegenError> {
-    let spec = NveExportSpec::from_json(spec_json)?;
-    generate_export_web_component(&spec)
 }
 
 // ===========================================================================

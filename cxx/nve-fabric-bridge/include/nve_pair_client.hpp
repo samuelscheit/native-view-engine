@@ -104,7 +104,10 @@ struct TransportEnvelopeView {
   std::span<const uint8_t> payload{};
 };
 
-/// Decoded `Hello` handshake payload (32 bytes).
+inline constexpr size_t kHelloPayloadWireSize = 32u;
+inline constexpr size_t kHelloAckPayloadWireSize = 20u;
+
+/// Decoded `Hello` handshake payload (32 bytes on the wire).
 struct HelloPayload {
   uint16_t schema_version{kDefaultPairSchemaVersion};
   uint16_t max_window{64};
@@ -113,7 +116,7 @@ struct HelloPayload {
   std::array<uint8_t, 16> token_proof{};
 };
 
-/// Decoded `HelloAck` handshake payload (20 bytes).
+/// Decoded `HelloAck` handshake payload (20 bytes on the wire).
 struct HelloAckPayload {
   uint16_t schema_version{kDefaultPairSchemaVersion};
   uint16_t server_max_window{64};
@@ -122,7 +125,7 @@ struct HelloAckPayload {
   bool resync_required{false};
 };
 
-/// Decoded fixed 32-byte `NVD1` packet header.
+/// Decoded fixed 32-byte `NVD1` packet header (wire layout: 4B magic + 28B header fields).
 struct DeltaPacketHeader {
   uint8_t version{kSyncDeltaVersion};
   DeltaPacketKind kind{DeltaPacketKind::Keyframe};
@@ -133,6 +136,32 @@ struct DeltaPacketHeader {
   uint32_t payload_len{0};
   uint64_t checksum{0};
 };
+
+// Compile-time layout & wire-size verification for pair/NVD1 protocol headers.
+static_assert(kTransportHeaderSize == 8u, "NVT1 transport header must be 8 bytes");
+static_assert(kFragSubheaderSize == 12u, "NVT1 fragment subheader must be 12 bytes");
+static_assert(kDeltaHeaderSize == 32u, "NVD1 wire packet header must be 32 bytes");
+static_assert(sizeof(HelloPayload) == kHelloPayloadWireSize, "HelloPayload size must be 32 bytes");
+static_assert(offsetof(HelloPayload, schema_version) == 0u, "HelloPayload::schema_version offset mismatch");
+static_assert(offsetof(HelloPayload, max_window) == 2u, "HelloPayload::max_window offset mismatch");
+static_assert(offsetof(HelloPayload, client_last_seq) == 4u, "HelloPayload::client_last_seq offset mismatch");
+static_assert(offsetof(HelloPayload, client_nonce) == 8u, "HelloPayload::client_nonce offset mismatch");
+static_assert(offsetof(HelloPayload, token_proof) == 16u, "HelloPayload::token_proof offset mismatch");
+static_assert(offsetof(HelloAckPayload, schema_version) == 0u, "HelloAckPayload::schema_version offset mismatch");
+static_assert(offsetof(HelloAckPayload, server_max_window) == 2u, "HelloAckPayload::server_max_window offset mismatch");
+static_assert(offsetof(HelloAckPayload, server_seq) == 4u, "HelloAckPayload::server_seq offset mismatch");
+static_assert(offsetof(HelloAckPayload, server_nonce) == 8u, "HelloAckPayload::server_nonce offset mismatch");
+static_assert(offsetof(HelloAckPayload, resync_required) == 16u, "HelloAckPayload::resync_required offset mismatch");
+static_assert(alignof(uint64_t) != 8u || sizeof(HelloAckPayload) == 24u, "HelloAckPayload size must be 24 bytes on 8-byte-aligned u64 targets");
+static_assert(offsetof(DeltaPacketHeader, version) == 0u, "DeltaPacketHeader::version offset mismatch");
+static_assert(offsetof(DeltaPacketHeader, kind) == 1u, "DeltaPacketHeader::kind offset mismatch");
+static_assert(offsetof(DeltaPacketHeader, flags) == 2u, "DeltaPacketHeader::flags offset mismatch");
+static_assert(offsetof(DeltaPacketHeader, seq) == 4u, "DeltaPacketHeader::seq offset mismatch");
+static_assert(offsetof(DeltaPacketHeader, base_seq) == 8u, "DeltaPacketHeader::base_seq offset mismatch");
+static_assert(offsetof(DeltaPacketHeader, ack_seq) == 12u, "DeltaPacketHeader::ack_seq offset mismatch");
+static_assert(offsetof(DeltaPacketHeader, payload_len) == 16u, "DeltaPacketHeader::payload_len offset mismatch");
+static_assert(alignof(uint64_t) != 8u || offsetof(DeltaPacketHeader, checksum) == 24u, "DeltaPacketHeader::checksum offset mismatch");
+static_assert(alignof(uint64_t) != 8u || sizeof(DeltaPacketHeader) == kDeltaHeaderSize, "DeltaPacketHeader size must be 32 bytes on 8-byte-aligned u64 targets");
 
 /// Zero-copy validated `NVD1` packet view.
 struct DeltaPacketView {
