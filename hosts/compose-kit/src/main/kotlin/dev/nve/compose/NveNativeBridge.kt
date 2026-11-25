@@ -34,6 +34,30 @@ interface NveBridgeBackend {
     fun submitEvents(handlePtr: Long, eventRingBytes: ByteArray): Boolean
 
     /**
+     * Returns a reusable native-owned direct [ByteBuffer] for zero-copy `EventRing` submission,
+     * or `null` when this backend only supports `ByteArray` submission (e.g. JVM mocks).
+     */
+    fun getEventScratchBuffer(handlePtr: Long): ByteBuffer? = null
+
+    /**
+     * Submits the first [byteLength] bytes written into [getEventScratchBuffer] with zero JNI
+     * array pinning or copying.
+     */
+    fun submitEventsDirect(handlePtr: Long, byteLength: Int): Boolean = false
+
+    /**
+     * Returns a reusable native-owned direct [ByteBuffer] for zero-copy binary prop updates,
+     * or `null` when this backend only supports `ByteArray` props.
+     */
+    fun getPropScratchBuffer(handlePtr: Long): ByteBuffer? = null
+
+    /**
+     * Submits the first [byteLength] bytes written into [getPropScratchBuffer] with zero JNI
+     * array pinning or copying.
+     */
+    fun setPropsDirect(handlePtr: Long, byteLength: Int): Boolean = false
+
+    /**
      * Renders one frame and writes the 7-element metadata tuple into [outMeta]:
      * `[schema_hash, frame_id, node_count, dirty_count, removed_count, text_slab_len, children_slab_len]`.
      * Returns the rendered node count, or `-1` on failure.
@@ -118,6 +142,14 @@ object NveJniBridge {
 
     external fun nativeSubmitEvents(handlePtr: Long, eventRingBytes: ByteArray): Boolean
 
+    external fun nativeGetEventScratchBuffer(handlePtr: Long): ByteBuffer?
+
+    external fun nativeSubmitEventsDirect(handlePtr: Long, byteLength: Int): Boolean
+
+    external fun nativeGetPropScratchBuffer(handlePtr: Long): ByteBuffer?
+
+    external fun nativeSetPropsDirect(handlePtr: Long, byteLength: Int): Boolean
+
     external fun nativeRenderFrame(handlePtr: Long, frameId: Long, outMeta: LongArray): Int
 
     external fun nativeGetNodesBuffer(handlePtr: Long): ByteBuffer?
@@ -191,6 +223,18 @@ object NveNativeBridge : NveBridgeBackend {
 
     override fun submitEvents(handlePtr: Long, eventRingBytes: ByteArray): Boolean =
         NveJniBridge.nativeSubmitEvents(handlePtr, eventRingBytes)
+
+    override fun getEventScratchBuffer(handlePtr: Long): ByteBuffer? =
+        NveJniBridge.nativeGetEventScratchBuffer(handlePtr)
+
+    override fun submitEventsDirect(handlePtr: Long, byteLength: Int): Boolean =
+        NveJniBridge.nativeSubmitEventsDirect(handlePtr, byteLength)
+
+    override fun getPropScratchBuffer(handlePtr: Long): ByteBuffer? =
+        NveJniBridge.nativeGetPropScratchBuffer(handlePtr)
+
+    override fun setPropsDirect(handlePtr: Long, byteLength: Int): Boolean =
+        NveJniBridge.nativeSetPropsDirect(handlePtr, byteLength)
 
     override fun renderFrame(handlePtr: Long, frameId: Long, outMeta: LongArray): Int =
         NveJniBridge.nativeRenderFrame(handlePtr, frameId, outMeta)

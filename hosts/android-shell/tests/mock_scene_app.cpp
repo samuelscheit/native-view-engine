@@ -25,6 +25,8 @@ struct MockSceneApp {
   std::string last_submit;
   uint32_t keydown_count{0};
   std::string last_keydown;
+  uint32_t props_count{0};
+  std::vector<uint8_t> last_props;
   std::vector<uint8_t> frame;
 };
 
@@ -249,6 +251,10 @@ std::vector<uint8_t> build_frame(const MockSceneApp& app, uint64_t frame_id) {
     push_create_node(ops, 8, NVE_COMP_SKIA_CANVAS); ++op_count;
     push_set_raw_bytes(ops, 8, "drawList", build_valid_draw1_all_ops()); ++op_count;
     push_set_children(ops, 1, {2, 3, 4, 5, 6, 7, 8}); ++op_count;
+  } else if (app.props_count > 0) {
+    std::string summary = "Props: len=" + std::to_string(app.last_props.size()) +
+                          " b0=" + std::to_string(app.last_props.empty() ? 0 : app.last_props[0]);
+    push_set_text(ops, 2, summary); ++op_count;
   } else if (app.keydown_count > 0) {
     if (app.last_keydown == "Cmd+k") {
       // Raw-prop-only corrupt drawList update to verify safety and zero-crash degradation.
@@ -362,6 +368,20 @@ uint32_t scene_dispatch_events_direct(NveAppHandle handle, NveEventBatch batch) 
   return dirty;
 }
 
+uint32_t scene_set_props(NveAppHandle handle, NveBufferSlice props) {
+  auto* app = static_cast<MockSceneApp*>(handle);
+  if (!app || props.ptr == nullptr || props.len == 0u) {
+    return 0;
+  }
+  app->props_count += 1;
+  app->last_props.assign(props.ptr, props.ptr + props.len);
+  return 1;
+}
+
+NveBufferSlice scene_drain_emitted_events(NveAppHandle) {
+  return NveBufferSlice{nullptr, 0u};
+}
+
 } // namespace
 
 extern "C" const void* nve_get_interface(uint32_t interface_id) {
@@ -372,5 +392,17 @@ extern "C" const void* nve_get_interface(uint32_t interface_id) {
       .dispatch_events = &scene_dispatch_events,
       .dispatch_events_direct = &scene_dispatch_events_direct,
   };
-  return interface_id == NVE_IFACE_SURFACE ? &kSurface : nullptr;
+  static const NveComponentApi kComponent{
+      .set_props = &scene_set_props,
+      .drain_emitted_events = &scene_drain_emitted_events,
+      .set_props_direct = nullptr,
+  };
+  switch (interface_id) {
+    case NVE_IFACE_SURFACE:
+      return &kSurface;
+    case NVE_IFACE_COMPONENT:
+      return &kComponent;
+    default:
+      return nullptr;
+  }
 }

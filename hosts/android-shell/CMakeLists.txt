@@ -7,6 +7,7 @@ add_subdirectory(../../cxx/nve-fabric-bridge nve-fabric-bridge-build)
 
 add_library(nve_android_shell SHARED
   NveAndroidSurfaceJni.cpp
+  NveAndroidDirectChannel.cpp
   NveAndroidMetadataPacker.cpp
   NveAndroidPairJni.cpp
 )
@@ -64,6 +65,21 @@ if(NOT ANDROID)
         $<TARGET_FILE:nve_mock_app_v2>
         $<TARGET_FILE:nve_mock_app_bad_iface>
         $<TARGET_FILE:nve_jni_test_recorder>
+    )
+
+    add_executable(nve_android_direct_channel_test tests/android_direct_channel_test.cpp)
+    if(NOT MSVC)
+      target_compile_options(nve_android_direct_channel_test PRIVATE -Wall -Wextra -Werror)
+    endif()
+    target_include_directories(nve_android_direct_channel_test PRIVATE ${JNI_INCLUDE_DIRS})
+    target_link_libraries(nve_android_direct_channel_test
+      PRIVATE
+        nve_android_shell
+        nve_fabric_bridge
+    )
+    add_test(
+      NAME android_direct_channel_test
+      COMMAND nve_android_direct_channel_test $<TARGET_FILE:nve_mock_scene_app>
     )
   endif()
 endif()
