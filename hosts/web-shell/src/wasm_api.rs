@@ -13,6 +13,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::wasm_hydrate::SsrRenderResult;
 use crate::session::{HotReloadAction, WebAppSession, PREINIT_SURFACE_ID};
 use crate::wasm_pair::{active_paired_scene_view_ptr, nve_extract_binary_message};
 use crate::wasm_popup::{
@@ -187,6 +188,34 @@ impl WebAppController {
     pub fn node_count(&self) -> usize { self.session.borrow().backend().node_count() }
 
     pub fn render_html(&self) -> String { self.session.borrow().backend().render_html() }
+
+    pub fn render_ssr_bundle(&self) -> SsrRenderResult {
+        SsrRenderResult::from_output(self.session.borrow().backend().render_ssr())
+    }
+
+    pub fn is_hydrated(&self) -> bool {
+        self.session.borrow().backend().hydration_report().hydrated
+    }
+
+    pub fn hydration_mismatch_count(&self) -> usize {
+        self.session.borrow().backend().hydration_report().mismatches.len()
+    }
+
+    pub fn hydration_adopted_count(&self) -> usize {
+        self.session.borrow().backend().hydration_report().adopted_nodes
+    }
+
+    pub fn hydration_replaced_count(&self) -> usize {
+        self.session.borrow().backend().hydration_report().replaced_nodes
+    }
+
+    pub fn hydration_seeded_rules(&self) -> usize {
+        self.session.borrow().backend().hydration_report().seeded_rule_count
+    }
+
+    pub fn stylesheet_rule_count(&self) -> usize {
+        self.session.borrow().backend().stylesheet().rule_count()
+    }
 
     pub fn scene_view_ptr(&self) -> usize { self.session.borrow().scene_view_ptr() as usize }
 
@@ -376,11 +405,12 @@ fn find_mount_container(
     Ok((window, container))
 }
 
-fn start_surface_app<F>(
+pub(crate) fn start_surface_app_inner<F>(
     app_name: &'static str,
     surface_id: SurfaceId,
     mount_id: &str,
     ws_url: Option<String>,
+    hydrate: bool,
     build_session: F,
 ) -> Result<WebAppController, JsValue>
 where
@@ -393,7 +423,11 @@ where
     let (window, container) = find_mount_container(surface_id, mount_id)?;
     let viewport = browser_viewport(&container);
     let container_for_resize = container.clone();
-    let backend = WebBackend::mount_into(container);
+    let backend = if hydrate {
+        WebBackend::hydrate_into(container)
+    } else {
+        WebBackend::mount_into(container)
+    };
     let session = Rc::new(RefCell::new(build_session(surface_id, backend, viewport)));
 
     let session_for_events = Rc::clone(&session);
@@ -477,7 +511,7 @@ pub fn start_studio_workspace_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_surface_app("StudioWorkspaceApp", surface_id, mount_id, ws_url, WebAppSession::new_studio_workspace)
+    start_surface_app_inner("StudioWorkspaceApp", surface_id, mount_id, ws_url, false, WebAppSession::new_studio_workspace)
 }
 
 #[wasm_bindgen]
@@ -494,5 +528,5 @@ pub fn start_counter_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_surface_app("CounterApp", surface_id, mount_id, ws_url, WebAppSession::new_counter)
+    start_surface_app_inner("CounterApp", surface_id, mount_id, ws_url, false, WebAppSession::new_counter)
 }

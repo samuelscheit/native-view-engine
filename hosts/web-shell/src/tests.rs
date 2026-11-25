@@ -416,7 +416,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         .expect("expected task-avatar-1 image node");
     let avatar_el = session.backend().node(avatar_id).unwrap();
     assert_eq!(avatar_el.kind, ComponentKind::Image);
-    assert_eq!(avatar_el.object_fit, Some("cover"));
+    assert_eq!(avatar_el.raw_style.object_fit, Some("cover"));
     assert!(avatar_el.combined_css().contains("object-fit:cover;"));
     assert!(matches!(
         avatar_el.raw_props.get("src"),

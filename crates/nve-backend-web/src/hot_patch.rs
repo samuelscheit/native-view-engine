@@ -154,7 +154,7 @@ impl WebBackend {
             }
         }
 
-        // 2. Attribute / CSS style patches: target exact node(s), never spray unrelated nodes.
+        // 2. Attribute / CSS style patches: target exact node(s), routed to Tier-1 inline lane.
         if !attr_updates.is_empty() {
             let mut css_fragment = String::with_capacity(attr_updates.len() * 32);
             for (k, v) in attr_updates {
@@ -191,14 +191,15 @@ impl WebBackend {
                 }
             };
 
+            let mut dirty_targets = Vec::with_capacity(attr_targets.len());
             for nid in attr_targets {
                 if let Some(el) = self.nodes.get_mut(&nid) {
                     el.patch_css.push_str(&css_fragment);
+                    dirty_targets.push(nid);
                 }
-                #[cfg(target_arch = "wasm32")]
-                self.sync_dom_style(nid);
                 mutations += 1;
             }
+            self.flush_dirty_styles(&dirty_targets);
         }
 
         mutations

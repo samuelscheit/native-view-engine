@@ -2,15 +2,29 @@
 //! zero-copy `NveSceneView` linear-memory exports, and 2-tier WebSocket hot-reload
 //! (`HotPatchMsg::TemplatePatch` + `DylibReload` + `DevStatus`).
 
+pub mod hydrate;
 pub mod multi_window;
 pub mod pairing;
 pub mod session;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_api;
 #[cfg(target_arch = "wasm32")]
+pub mod wasm_hydrate;
+#[cfg(target_arch = "wasm32")]
 pub mod wasm_pair;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_popup;
+
+pub use hydrate::{
+    CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec,
+};
+#[cfg(target_arch = "wasm32")]
+pub use wasm_hydrate::{
+    hydrate_counter_app, hydrate_counter_app_on_surface, hydrate_studio_workspace_app,
+    hydrate_studio_workspace_app_on_surface, render_counter_ssr_bundle, render_studio_ssr_bundle,
+    render_studio_ssr_document, run_semantic_style_hydration_probe, ProgressiveIslandHost,
+    SsrRenderResult,
+};
 
 pub use multi_window::{
     PopupWindowError, PopupWindowSpec, WebMultiWindowHost, DEFAULT_WINDOW_SYNC_CHANNEL,
