@@ -147,6 +147,22 @@ NveGtkHost::NveGtkHost(NveSurfaceConfig config)
   const std::string root_cls = scoped_root_class();
   gtk_widget_add_css_class(root_widget_, root_cls.c_str());
 
+  // Decouple GtkFixed's child minimum-size requisition from the hosting GtkWindow so the
+  // window can always shrink smaller as well as grow larger without showing scrollbars.
+  viewport_widget_ = gtk_scrolled_window_new();
+  g_object_ref_sink(viewport_widget_);
+  gtk_scrolled_window_set_policy(
+      GTK_SCROLLED_WINDOW(viewport_widget_), GTK_POLICY_EXTERNAL, GTK_POLICY_EXTERNAL);
+  gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(viewport_widget_), FALSE);
+  gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(viewport_widget_), FALSE);
+  gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(viewport_widget_), 1);
+  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(viewport_widget_), 1);
+  gtk_scrolled_window_set_has_frame(GTK_SCROLLED_WINDOW(viewport_widget_), FALSE);
+  gtk_widget_set_hexpand(viewport_widget_, TRUE);
+  gtk_widget_set_vexpand(viewport_widget_, TRUE);
+  gtk_widget_add_css_class(viewport_widget_, root_cls.c_str());
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(viewport_widget_), root_widget_);
+
   css_provider_ = gtk_css_provider_new();
   display_ = gtk_widget_get_display(root_widget_);
   if (display_ == nullptr) {
@@ -159,7 +175,7 @@ NveGtkHost::NveGtkHost(NveSurfaceConfig config)
   }
 
   tick_callback_id_ =
-      gtk_widget_add_tick_callback(root_widget_, &NveGtkHost::on_tick_callback, this, nullptr);
+      gtk_widget_add_tick_callback(viewport_widget_, &NveGtkHost::on_tick_callback, this, nullptr);
 
   install_pango_text_measurer();
 }
@@ -167,8 +183,8 @@ NveGtkHost::NveGtkHost(NveSurfaceConfig config)
 NveGtkHost::~NveGtkHost() {
   detach_window_resize();
 
-  if (root_widget_ != nullptr && tick_callback_id_ != 0u) {
-    gtk_widget_remove_tick_callback(root_widget_, tick_callback_id_);
+  if (viewport_widget_ != nullptr && tick_callback_id_ != 0u) {
+    gtk_widget_remove_tick_callback(viewport_widget_, tick_callback_id_);
     tick_callback_id_ = 0u;
   }
 
@@ -189,6 +205,11 @@ NveGtkHost::~NveGtkHost() {
   if (display_ != nullptr) {
     g_object_unref(display_);
     display_ = nullptr;
+  }
+  if (viewport_widget_ != nullptr) {
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(viewport_widget_), nullptr);
+    g_object_unref(viewport_widget_);
+    viewport_widget_ = nullptr;
   }
   if (root_widget_ != nullptr) {
     unparent_all_fixed_children(root_widget_);
@@ -362,12 +383,13 @@ void NveGtkHost::set_surface_size(float width, float height, float scale_factor)
 }
 
 void NveGtkHost::sync_surface_size_from_widget() {
-  if (root_widget_ == nullptr) {
+  GtkWidget* target = (viewport_widget_ != nullptr) ? viewport_widget_ : root_widget_;
+  if (target == nullptr) {
     return;
   }
-  const int w = gtk_widget_get_width(root_widget_);
-  const int h = gtk_widget_get_height(root_widget_);
-  const int scale = std::max(1, gtk_widget_get_scale_factor(root_widget_));
+  const int w = gtk_widget_get_width(target);
+  const int h = gtk_widget_get_height(target);
+  const int scale = std::max(1, gtk_widget_get_scale_factor(target));
   if (w <= 0 || h <= 0) {
     return;
   }

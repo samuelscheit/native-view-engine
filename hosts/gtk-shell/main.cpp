@@ -207,7 +207,7 @@ void on_app_activate(GtkApplication* app, gpointer user_data) {
     (void)state->host->attach_interface(&BuiltinGtkDemoApp::get_interface, 1u);
   }
 
-  gtk_window_set_child(GTK_WINDOW(window), state->host->root_widget());
+  gtk_window_set_child(GTK_WINDOW(window), state->host->host_widget());
   gtk_window_present(GTK_WINDOW(window));
 }
 

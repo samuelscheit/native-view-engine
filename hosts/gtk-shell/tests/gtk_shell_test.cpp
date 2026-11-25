@@ -342,6 +342,8 @@ void test_attached_widgets_pango_and_swaps() {
   nve::NveGtkHost host(cfg);
   NVE_CHECK(host.root_widget() != nullptr);
   NVE_CHECK(GTK_IS_FIXED(host.root_widget()));
+  NVE_CHECK(host.host_widget() != nullptr);
+  NVE_CHECK(GTK_IS_SCROLLED_WINDOW(host.host_widget()));
   NVE_CHECK(!host.is_loaded());
   NVE_CHECK(host.node_count() == 0u);
   NVE_CHECK(host.widget_for_node_id(NVE_ROOT_NODE_ID) == host.root_widget());
@@ -367,11 +369,20 @@ void test_attached_widgets_pango_and_swaps() {
   // 2. Attach in-process interface + event callback
   std::vector<nve::DecodedEvent> received_events;
   host.set_event_callback([&](const nve::DecodedEvent& ev) { received_events.push_back(ev); });
-
   NVE_CHECK(host.attach_interface(&MockGtkRustComponent::get_interface, 9u));
   NVE_CHECK(host.is_loaded());
   NVE_CHECK(host.surface_id() == 9u);
   NVE_CHECK(host.node_count() == 7u);
+  {
+    // Verify host_widget() never locks the hosting GtkWindow minimum size when grown large.
+    host.set_surface_size(960.0f, 640.0f, 1.0f);
+    int min_w = 0, nat_w = 0, min_h = 0, nat_h = 0;
+    gtk_widget_measure(host.host_widget(), GTK_ORIENTATION_HORIZONTAL, -1, &min_w, &nat_w, nullptr, nullptr);
+    gtk_widget_measure(host.host_widget(), GTK_ORIENTATION_VERTICAL, -1, &min_h, &nat_h, nullptr, nullptr);
+    NVE_CHECK(min_w <= 16);
+    NVE_CHECK(min_h <= 16);
+    host.set_surface_size(500.0f, 200.0f, 1.0f);
+  }
 
   GtkWidget* container = host.widget_for_node_id(2u);
   GtkWidget* label_widget = host.widget_for_node_id(3u);

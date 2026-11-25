@@ -108,8 +108,12 @@ class NveGtkHost {
   /// Look up the retained `GtkWidget*` for a node ID (`NVE_ROOT_NODE_ID` returns `root_widget()`).
   GtkWidget* widget_for_node_id(uint32_t node_id) const noexcept;
 
-  /// Root `GtkFixed` widget suitable for `gtk_window_set_child(...)` or embedding.
+  /// Root `GtkFixed` content container holding NVE's top-level child widgets.
   GtkWidget* root_widget() const noexcept { return root_widget_; }
+
+  /// Freely resizable viewport widget (`GTK_POLICY_EXTERNAL`, min size 1x1) wrapping
+  /// `root_widget()` for `gtk_window_set_child(...)` so the window can shrink and grow.
+  GtkWidget* host_widget() const noexcept { return viewport_widget_; }
 
   /// Total active shadow nodes (including root) when an app is loaded, else `0`.
   uint32_t node_count() const noexcept;
@@ -207,6 +211,7 @@ class NveGtkHost {
   GtkViewAdapter adapter_{this};
   RetainedViewReconciler<GtkWidget*, GtkViewAdapter> reconciler_;
 
+  GtkWidget* viewport_widget_{nullptr};
   GtkWidget* root_widget_{nullptr};
   GdkDisplay* display_{nullptr};
   GtkCssProvider* css_provider_{nullptr};
