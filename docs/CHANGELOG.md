@@ -6,6 +6,9 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Wave 14 (Zero-Copy, DRY & Production Docs)
 
+- **Host-Side `NativeViewRegistry` Mount Adapters (Web, C++20 Fabric Bridge & Apple AppKit/UIKit)** (`37eae45`)
+  - Implemented zero-JSON `NVNP`/`NVNC` binary decoders and mount adapters in `crates/nve-backend-web/src/native_view.rs` (`"web.<tag>"` safe HTML5/custom-element passthrough, `BlurSurface` `backdrop-filter`, sandboxed `WebView` `<iframe>`, and `VideoPlayer` `<video>` with `Play`/`Pause`/`SeekMs`/`SetVolume` commands across live DOM + SSR + zero-flicker hydration).
+  - Added header-only zero-alloc `cxx/nve-fabric-bridge/include/nve_native_view.hpp` (`NvnpDecoder`, `NvncDecoder`, wildcard `NativeViewRegistry`, `bind_to_fabric_host`) and `hosts/apple-common/NveAppleNativeViews.{h,mm}` mounting real `NSVisualEffectView`/`UIVisualEffectView` + `WKWebView` (`22/22` Web tests, `0` Clippy warnings, `wasm32` clean, `3/3` C++ bridge CTest, `5/5` macOS CTest, iOS Simulator ObjC++ `-Werror` clean).
 - **Flagship Studio Adoption of `nve-router`, `nve-sdk` & Unified Environment `TraitKey`s** (`9762be7`)
   - Added typed `StudioRoute` (`define_routes!` for `/board`, `/task/:id`, `/channels`, `/docs`, `/doc/:id`, `/workbench`, `/stream`, `/islands`, `/metrics`) with Back/Forward stack sync and `aether://studio/...` deep links (`routes.rs`, `state/navigation.rs`).
   - Wired root `TraitProvider` + `ReactiveTraitStore` with custom `StudioAccentTrait`/`StudioCompactModeTrait` and breakpoint-only `use_trait::<SizeClass>()` + `env.resolve()` (eliminating 1px desktop drag churn), plus dual-mode `StudioHostServices` (`FfiHostServices` over `NVE_IFACE_HOST = 5` with `MemoryHostServices` fallback) for `ClipboardClient` Markdown/URL copy and `SystemEnvClient` theme/locale sync (`34/34` tests, `0` Clippy warnings, `wasm32` clean).
