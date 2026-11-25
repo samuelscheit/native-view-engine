@@ -2,7 +2,9 @@
 #import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
 #import "NveAppleImageCache.h"
+#if defined(NVE_ENABLE_NATIVE_VIEWS) && NVE_ENABLE_NATIVE_VIEWS
 #import "NveAppleNativeViews.h"
+#endif
 #import "NveMacFabricHost.h"
 #import "RCTNveMacComponentView.h"
 
@@ -2176,9 +2178,18 @@ int main() {
       srv.join();
     }
 
-    // 13. NativeViewRegistry + real AppKit NSVisualEffectView (BlurSurface) & WKWebView (WebView)
-    //     driven by zero-JSON NVNP props and NVNC DispatchCommand frames through FabricHost.
+    // 13. NativeViewRegistry opt-in module & pluggable runtime hook verification.
+#if defined(NVE_ENABLE_NATIVE_VIEWS) && NVE_ENABLE_NATIVE_VIEWS
     {
+      // Verify NveAppleComponentViewBase auto-installs the opt-in Apple native view registry.
+      RCTNveMacComponentView *nvComponentView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 320, 200)];
+      nve::NativeViewRegistry *autoReg = [nvComponentView nativeViewRegistry];
+      assert(autoReg != nullptr);
+      assert(autoReg->supports(nve::kNativeKindBlurSurface) == (NVE_APPLE_HAS_BLUR != 0));
+      assert(autoReg->supports(nve::kNativeKindWebView) == (NVE_APPLE_HAS_WEBVIEW != 0));
+      assert(autoReg->supports(nve::kNativeKindVideoPlayer) == (NVE_APPLE_HAS_VIDEO != 0));
+
       auto push_u16 = [](std::vector<uint8_t> &b, uint16_t v) {
         b.push_back(static_cast<uint8_t>(v & 0xFFu));
         b.push_back(static_cast<uint8_t>((v >> 8u) & 0xFFu));
@@ -2224,12 +2235,16 @@ int main() {
 
       nve::NativeViewRegistry registry;
       nve::apple::register_apple_native_views(registry);
-      assert(registry.supports(nve::kNativeKindBlurSurface));
-      assert(registry.supports(nve::kNativeKindBlurAlias));
-      assert(registry.supports(nve::kNativeKindWebView));
-      assert(registry.supports(nve::kNativeKindWebViewAlias));
+      assert(registry.supports(nve::kNativeKindBlurSurface) == (NVE_APPLE_HAS_BLUR != 0));
+      assert(registry.supports(nve::kNativeKindBlurAlias) == (NVE_APPLE_HAS_BLUR != 0));
+      assert(registry.supports(nve::kNativeKindWebView) == (NVE_APPLE_HAS_WEBVIEW != 0));
+      assert(registry.supports(nve::kNativeKindWebViewAlias) == (NVE_APPLE_HAS_WEBVIEW != 0));
+      assert(registry.supports(nve::kNativeKindVideoPlayer) == (NVE_APPLE_HAS_VIDEO != 0));
+      assert(registry.supports(nve::kNativeKindVideoAlias) == (NVE_APPLE_HAS_VIDEO != 0));
+#if NVE_APPLE_HAS_WEBVIEW
       assert(!nve::apple::is_safe_apple_webview_url("javascript:alert(1)"));
       assert(nve::apple::is_safe_apple_webview_url("https://nve.dev/docs"));
+#endif
 
       NveSurfaceConfig cfg{.surface_id = 1u, .width = 480.0f, .height = 320.0f, .scale_factor = 2.0f};
       NveFabricHostHandle host = nve_fabric_host_create(cfg);
@@ -2250,6 +2265,7 @@ int main() {
       enc1.commit(true);
       assert(nve_fabric_host_submit_frame(host, enc1.finish(), nullptr) == 0);
 
+#if NVE_APPLE_HAS_BLUR
       NSView *blurRaw = nve::apple::native_view_for_node(registry, 20u);
       assert(blurRaw != nil && [blurRaw isKindOfClass:[NSVisualEffectView class]]);
       assert([blurRaw isKindOfClass:[NveAppleBlurSurfaceView class]]);
@@ -2258,7 +2274,9 @@ int main() {
       assert(blurView.material == NSVisualEffectMaterialHeaderView);
       assert(std::fabs(blurView.nveBlurIntensity - 0.75f) < 1e-4f);
       assert(blurView.nveHasTint == YES && blurView.nveTintRgba == 0x204060CCu);
+#endif
 
+#if NVE_APPLE_HAS_WEBVIEW
       NSView *wvRaw = nve::apple::native_view_for_node(registry, 21u);
       assert(wvRaw != nil && [wvRaw isKindOfClass:[WKWebView class]]);
       assert([wvRaw isKindOfClass:[NveAppleWebView class]]);
@@ -2266,6 +2284,7 @@ int main() {
       assert([webView.nveLastRequestedUrl isEqualToString:@"https://nve.dev/home"]);
       assert(webView.nveAllowsBackForward == YES && webView.allowsBackForwardNavigationGestures == YES);
       assert(webView.nveNavigationCount == 1u);
+#endif
 
       // Frame 2: update BlurSurface (clear tint, Chrome material) + dispatch NVNC WebView commands.
       const auto blur2 = encode_blur_props(nve::BlurMaterial::Chrome, 0.9f, std::nullopt);
@@ -2279,24 +2298,76 @@ int main() {
       enc2.commit(true);
       assert(nve_fabric_host_submit_frame(host, enc2.finish(), nullptr) == 0);
 
+#if NVE_APPLE_HAS_BLUR
       assert(blurView.nveBlurMaterial == nve::BlurMaterial::Chrome);
       assert(blurView.material == NSVisualEffectMaterialTitlebar);
       assert(blurView.nveHasTint == NO);
+      assert(registry.unmount(20u));
+#endif
+#if NVE_APPLE_HAS_WEBVIEW
       assert([webView.nveLastRequestedUrl isEqualToString:@"https://nve.dev/api"]);
       assert(webView.nveNavigationCount == 2u);
       assert(webView.nveReloadCount == 1u);
       assert(webView.nveGoBackCount == 1u);
       assert(webView.nveGoForwardCount == 1u);
-
-      // Clean unmount via registry
-      assert(registry.unmount(20u));
       assert(registry.unmount(21u));
+#endif
       assert(registry.mounted_count() == 0u);
       nve_fabric_host_destroy(host);
     }
+#else
+    {
+      // Thin shell default (NVE_ENABLE_NATIVE_VIEWS=OFF): no default native view registry is
+      // allocated and zero WebKit dependency is linked, while pluggable runtime registration works.
+      RCTNveMacComponentView *thinView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 320, 200)];
+      assert([thinView nativeViewRegistry] == nullptr);
+
+      int bindCount = 0;
+      nve::NativeViewRegistry customReg;
+      nve::NativeViewAdapter customAdapter{};
+      customAdapter.create = [](uint32_t, std::string_view, const nve::NvnpDecoder *) -> void * {
+        return reinterpret_cast<void *>(static_cast<uintptr_t>(0x1234u));
+      };
+      customReg.register_adapter("nve.custom_test_view", std::move(customAdapter));
+      [thinView attachNativeViewRegistry:&customReg
+                                  binder:[&](NveFabricHostHandle host, nve::NativeViewRegistry &r) {
+                                    assert(host != nullptr);
+                                    r.bind_to_fabric_host(host, "nve.custom_test_view");
+                                    ++bindCount;
+                                  }];
+      assert([thinView nativeViewRegistry] == &customReg);
+      assert(customReg.supports("nve.custom_test_view"));
+      assert(bindCount == 0); // no active FabricHost yet
+
+      // Detaching resets to nullptr cleanly.
+      [thinView attachNativeViewRegistry:nullptr binder:nullptr];
+      assert([thinView nativeViewRegistry] == nullptr);
+
+      // Process-wide runtime hook overrides work in thin mode as well.
+      bool hookRegistered = false;
+      nve::apple::set_default_native_view_hooks(
+          [&](nve::NativeViewRegistry &r) {
+            hookRegistered = true;
+            r.register_adapter("nve.runtime_plugin", nve::NativeViewAdapter{});
+          },
+          nullptr);
+      RCTNveMacComponentView *hookedView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 320, 200)];
+      assert(hookRegistered);
+      assert([hookedView nativeViewRegistry] != nullptr);
+      assert([hookedView nativeViewRegistry]->supports("nve.runtime_plugin"));
+      nve::apple::clear_default_native_view_hooks();
+    }
+#endif
 
     std::cout << "nve_macos_shell_test passed ("
               << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+AppKit" : "Standalone+AppKit")
+#if defined(NVE_ENABLE_NATIVE_VIEWS) && NVE_ENABLE_NATIVE_VIEWS
+              << "+NativeViews"
+#else
+              << "+ThinShell"
+#endif
               << ")\n";
   }
   return 0;
