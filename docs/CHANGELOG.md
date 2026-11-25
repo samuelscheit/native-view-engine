@@ -6,6 +6,9 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Wave 14 (Zero-Copy, DRY & Production Docs)
 
+- **Wave 14D — Single-Source Generated `EventRing`, `NVE_DRAW1` & FNV-1a Wire Codecs** (`f970d29`)
+  - Added single-source declarative wire codec spec (`crates/nve-codegen/src/wire_codecs/`, schema hash `0x95F1C5176E2F6C99`) emitting compiler-verified `.generated.` wire codecs (`nve_wire_codecs.generated.{hpp,dart,ts}`, `NveWireCodecs.generated.swift`, `dev.nve.android.generated.NveWireCodecs`) wired into `cargo nve codegen abi [--check]` (`15/15` artifacts) and `cargo nve codegen wire [--check]`.
+  - Cross-checked every opcode/constant against `nve-abi`/`nve-components` and verified real cross-language execution (`clang++`, `swiftc`, `dart`, `javac`/`java`, `node`) decoding each host's emitted `EventRing` + `NK1` wire bytes through Rust (`62/62` Rust tests, `0` Clippy warnings, `50/50` Swift, `61/61` Flutter).
 - **Windows 11 Live Re-Verification of Wave 14A/B/C, Docs Finale, Tier-2/3 SDK & RNW 0.88 (`samuel-pc`)** (`2c2efd0`)
   - Fixed `NVE_WITH_RN_JSI=1` protected `facebook::jsi::Runtime::PointerValue` visibility in split `mock_jsi_arena.hpp`/`mock_jsi_runtime.hpp` and restored `aria-label="Command Palette"` / `role="searchbox"` on `nve_ui::Dialog` & `nve_ui::Input` in Studio (`ui_palette.rs`).
   - Verified natively on Windows 11 (MSVC 19.51, Ninja Release): `411/411` full Rust workspace tests, `0` Cargo/rustc/Clippy warnings, `10/10` `codegen abi --check`, `2/2` `cxx/nve-fabric-bridge`, `3/3` Standalone + `3/3` RNW 0.88 Fabric (`67/67` Ninja targets, `0` `/W4` warnings), and `40/40` Skia D3D12 tests.
