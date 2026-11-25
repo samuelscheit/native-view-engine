@@ -3,6 +3,7 @@
 
 pub mod components;
 pub mod focus;
+pub mod spatial_focus;
 pub mod style_buf;
 pub mod theme;
 
@@ -16,6 +17,10 @@ pub use components::{
 pub use focus::{
     current_focused_id, notify_focus_scope, use_focus_scope, FocusScope, FocusScopeProvider,
     FocusTrap, FocusTrapAction, FocusableEntry, Orientation, RovingFocus,
+};
+pub use spatial_focus::{
+    FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
+    SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
 };
 pub use nve_dioxus::TypedStyle;
 pub use style_buf::{
@@ -41,6 +46,10 @@ pub mod prelude {
     pub use crate::focus::{
         use_focus_scope, FocusScope, FocusScopeProvider, FocusTrap, FocusTrapAction,
         FocusableEntry, Orientation, RovingFocus,
+    };
+    pub use crate::spatial_focus::{
+        FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
+        SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
     };
     pub use crate::style_buf::{
         parse_color_rgba, StyleBuf, SurfaceStyle, TextStyle, TypedStyleBuilder, TypedSurfaceStyle,

@@ -18,10 +18,10 @@ use nve_interop::surface::{
     ThemeContext,
 };
 use nve_interop::traits::{
-    BuiltinTraits, CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast,
-    HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, ScaleFactor,
-    SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitStore, UiDensity,
-    VerticalSizeClass,
+    BuiltinTraitSlot, BuiltinTraits, CanHover, ColorScheme, ContainerSize, DeviceFormFactor,
+    HasHardwareKeyboard, HighContrast, HostToolkit, Locale, Orientation, PlatformOs, PointerKind,
+    ReducedMotion, ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides,
+    TraitStore, UiDensity, VerticalSizeClass, BUILTIN_TRAIT_COUNT,
 };
 use nve_interop::TRANSPORT_MAGIC;
 
@@ -700,4 +700,232 @@ fn binary_native_prop_and_command_decoders_reject_truncated_and_corrupt_buffers(
         BlurSurfaceProps::from_prop_bytes(&invalid_material).unwrap_err(),
         NativeViewCodecError::InvalidEnum("BlurMaterial", 77)
     );
+}
+
+#[test]
+fn tv_watch_spatial_platform_os_form_factor_and_pointer_discriminants() {
+    // Existing PlatformOs discriminants 0..=6 preserved + new 7..=10 variants
+    assert_eq!(PlatformOs::MacOs as u8, 0);
+    assert_eq!(PlatformOs::Ios as u8, 1);
+    assert_eq!(PlatformOs::Windows as u8, 2);
+    assert_eq!(PlatformOs::Android as u8, 3);
+    assert_eq!(PlatformOs::Linux as u8, 4);
+    assert_eq!(PlatformOs::Web as u8, 5);
+    assert_eq!(PlatformOs::Unknown as u8, 6);
+    assert_eq!(PlatformOs::TvOs as u8, 7);
+    assert_eq!(PlatformOs::WatchOs as u8, 8);
+    assert_eq!(PlatformOs::VisionOs as u8, 9);
+    assert_eq!(PlatformOs::AndroidTv as u8, 10);
+
+    // DeviceFormFactor discriminants and default
+    assert_eq!(DeviceFormFactor::default(), DeviceFormFactor::Desktop);
+    assert_eq!(DeviceFormFactor::Phone as u8, 0);
+    assert_eq!(DeviceFormFactor::Tablet as u8, 1);
+    assert_eq!(DeviceFormFactor::Desktop as u8, 2);
+    assert_eq!(DeviceFormFactor::Tv as u8, 3);
+    assert_eq!(DeviceFormFactor::Watch as u8, 4);
+    assert_eq!(DeviceFormFactor::Spatial as u8, 5);
+
+    // PointerKind discriminants
+    assert_eq!(PointerKind::Fine as u8, 0);
+    assert_eq!(PointerKind::Coarse as u8, 1);
+    assert_eq!(PointerKind::None as u8, 2);
+    assert_eq!(PointerKind::Remote as u8, 3);
+    assert_eq!(PointerKind::Crown as u8, 4);
+    assert_eq!(PointerKind::Gaze as u8, 5);
+
+    // Classification helpers
+    for os in [
+        PlatformOs::MacOs,
+        PlatformOs::Ios,
+        PlatformOs::TvOs,
+        PlatformOs::WatchOs,
+        PlatformOs::VisionOs,
+    ] {
+        assert!(os.is_apple(), "{os:?} must be classified as Apple");
+    }
+    for os in [
+        PlatformOs::Windows,
+        PlatformOs::Android,
+        PlatformOs::AndroidTv,
+        PlatformOs::Linux,
+        PlatformOs::Web,
+        PlatformOs::Unknown,
+    ] {
+        assert!(!os.is_apple(), "{os:?} must not be classified as Apple");
+    }
+
+    assert!(PlatformOs::TvOs.is_tv());
+    assert!(PlatformOs::AndroidTv.is_tv());
+    assert!(!PlatformOs::Android.is_tv());
+    assert!(!PlatformOs::Ios.is_tv());
+
+    assert!(PlatformOs::WatchOs.is_watch());
+    assert!(!PlatformOs::Ios.is_watch());
+
+    assert!(PlatformOs::VisionOs.is_spatial());
+    assert!(!PlatformOs::MacOs.is_spatial());
+
+    // Default form factor mapping
+    assert_eq!(PlatformOs::Ios.default_form_factor(), DeviceFormFactor::Phone);
+    assert_eq!(
+        PlatformOs::Android.default_form_factor(),
+        DeviceFormFactor::Phone
+    );
+    assert_eq!(
+        PlatformOs::MacOs.default_form_factor(),
+        DeviceFormFactor::Desktop
+    );
+    assert_eq!(
+        PlatformOs::Windows.default_form_factor(),
+        DeviceFormFactor::Desktop
+    );
+    assert_eq!(
+        PlatformOs::Linux.default_form_factor(),
+        DeviceFormFactor::Desktop
+    );
+    assert_eq!(
+        PlatformOs::Web.default_form_factor(),
+        DeviceFormFactor::Desktop
+    );
+    assert_eq!(
+        PlatformOs::Unknown.default_form_factor(),
+        DeviceFormFactor::Desktop
+    );
+    assert_eq!(PlatformOs::TvOs.default_form_factor(), DeviceFormFactor::Tv);
+    assert_eq!(
+        PlatformOs::AndroidTv.default_form_factor(),
+        DeviceFormFactor::Tv
+    );
+    assert_eq!(
+        PlatformOs::WatchOs.default_form_factor(),
+        DeviceFormFactor::Watch
+    );
+    assert_eq!(
+        PlatformOs::VisionOs.default_form_factor(),
+        DeviceFormFactor::Spatial
+    );
+}
+
+#[test]
+fn builtin_traits_18_slots_host_defaults_and_resolver_form_factors() {
+    assert_eq!(BUILTIN_TRAIT_COUNT, 18);
+    assert_eq!(BuiltinTraitSlot::ALL.len(), 18);
+    assert_eq!(BuiltinTraitSlot::DeviceFormFactor.index(), 17);
+    assert_eq!(BuiltinTraitSlot::DeviceFormFactor.bit(), 1u32 << 17);
+
+    // Host input & form-factor defaults per platform
+    let tvos = BuiltinTraits::for_platform(PlatformOs::TvOs, HostToolkit::SwiftUi);
+    assert_eq!(tvos.device_form_factor, DeviceFormFactor::Tv);
+    assert_eq!(tvos.pointer_kind, PointerKind::Remote);
+    assert!(!tvos.can_hover);
+    assert!(!tvos.has_hardware_keyboard);
+
+    let android_tv = BuiltinTraits::for_platform(PlatformOs::AndroidTv, HostToolkit::AndroidCompose);
+    assert_eq!(android_tv.device_form_factor, DeviceFormFactor::Tv);
+    assert_eq!(android_tv.pointer_kind, PointerKind::Remote);
+    assert!(!android_tv.can_hover);
+    assert!(!android_tv.has_hardware_keyboard);
+
+    let watchos = BuiltinTraits::for_platform(PlatformOs::WatchOs, HostToolkit::SwiftUi);
+    assert_eq!(watchos.device_form_factor, DeviceFormFactor::Watch);
+    assert_eq!(watchos.pointer_kind, PointerKind::Crown);
+    assert!(!watchos.can_hover);
+    assert!(!watchos.has_hardware_keyboard);
+
+    let visionos = BuiltinTraits::for_platform(PlatformOs::VisionOs, HostToolkit::SwiftUi);
+    assert_eq!(visionos.device_form_factor, DeviceFormFactor::Spatial);
+    assert_eq!(visionos.pointer_kind, PointerKind::Gaze);
+    assert!(visionos.can_hover);
+    assert!(!visionos.has_hardware_keyboard);
+
+    let current = BuiltinTraits::for_current_host(HostToolkit::Headless);
+    assert_eq!(current.platform_os, PlatformOs::current());
+    assert_eq!(
+        current.device_form_factor,
+        PlatformOs::current().default_form_factor()
+    );
+
+    // TraitResolver when_form_factor / when_tv / when_watch / when_spatial + short-circuiting
+    let tv_env = TraitEnvironment::from_builtins(tvos);
+    assert_eq!(
+        tv_env
+            .resolve::<&'static str>()
+            .when_watch("watch")
+            .when_spatial("spatial")
+            .when_tv("tv-10ft")
+            .default("other"),
+        "tv-10ft"
+    );
+
+    let watch_env = TraitEnvironment::from_builtins(watchos);
+    assert_eq!(
+        watch_env
+            .resolve::<u32>()
+            .when_tv(48)
+            .when_watch(12)
+            .when_spatial(36)
+            .default(16),
+        12
+    );
+
+    let spatial_env = TraitEnvironment::from_builtins(visionos);
+    assert_eq!(
+        spatial_env
+            .resolve::<&'static str>()
+            .when_form_factor(DeviceFormFactor::Tablet, "tablet")
+            .when_spatial("glass-depth")
+            .when_form_factor(DeviceFormFactor::Spatial, "later-unused")
+            .default("flat"),
+        "glass-depth"
+    );
+
+    let tablet_env = TraitEnvironment::new().with::<DeviceFormFactor>(DeviceFormFactor::Tablet);
+    assert_eq!(
+        tablet_env
+            .resolve::<&'static str>()
+            .when_tv("tv")
+            .when_watch("watch")
+            .when_spatial("spatial")
+            .when_form_factor(DeviceFormFactor::Tablet, "split-pane")
+            .default("default"),
+        "split-pane"
+    );
+
+    // TraitStore revision isolation & TraitOverrides roundtrip for DeviceFormFactor
+    let mut store = TraitStore::new();
+    assert_eq!(store.get::<DeviceFormFactor>(), DeviceFormFactor::Desktop);
+    assert_eq!(store.revision::<DeviceFormFactor>(), 0);
+
+    // No-op setting same value must not bump revision
+    assert!(!store.set::<DeviceFormFactor>(DeviceFormFactor::Desktop));
+    assert_eq!(store.revision::<DeviceFormFactor>(), 0);
+
+    let os_rev_before = store.revision::<PlatformOs>();
+    assert!(store.set::<DeviceFormFactor>(DeviceFormFactor::Tv));
+    assert_eq!(store.get::<DeviceFormFactor>(), DeviceFormFactor::Tv);
+    assert_eq!(store.revision::<DeviceFormFactor>(), 1);
+    assert_eq!(store.revision::<PlatformOs>(), os_rev_before);
+
+    // TraitOverrides merge & apply_overrides on DeviceFormFactor
+    let ov_outer = TraitOverrides::new()
+        .with::<DeviceFormFactor>(DeviceFormFactor::Watch)
+        .with::<PointerKind>(PointerKind::Crown);
+    let ov_inner = TraitOverrides::single::<DeviceFormFactor>(DeviceFormFactor::Spatial);
+    let merged = ov_outer.merge(&ov_inner);
+    assert_eq!(merged.get::<DeviceFormFactor>(), Some(DeviceFormFactor::Spatial));
+    assert_eq!(merged.get::<PointerKind>(), Some(PointerKind::Crown));
+
+    let (changed_mask, changed_custom) = store.apply_overrides(&merged);
+    assert!(changed_custom.is_empty());
+    assert_ne!(changed_mask & BuiltinTraitSlot::DeviceFormFactor.bit(), 0);
+    assert_ne!(changed_mask & BuiltinTraitSlot::PointerKind.bit(), 0);
+    assert_eq!(store.get::<DeviceFormFactor>(), DeviceFormFactor::Spatial);
+    assert_eq!(store.get::<PointerKind>(), PointerKind::Crown);
+    assert_eq!(store.revision::<DeviceFormFactor>(), 2);
+
+    // Applying identical overrides again changes nothing
+    let (noop_mask, _) = store.apply_overrides(&merged);
+    assert_eq!(noop_mask, 0);
+    assert_eq!(store.revision::<DeviceFormFactor>(), 2);
 }

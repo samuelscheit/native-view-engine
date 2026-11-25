@@ -1,5 +1,6 @@
-//! Built-in environment value types (`PlatformOs`, `HostToolkit`, `SizeClass`, `ContainerSize`,
-//! `Orientation`, `PointerKind`, `ColorScheme`, `UiDensity`, `Locale`) and primitive marker keys.
+//! Built-in environment value types (`PlatformOs`, `DeviceFormFactor`, `HostToolkit`, `SizeClass`,
+//! `ContainerSize`, `Orientation`, `PointerKind`, `ColorScheme`, `UiDensity`, `Locale`) and
+//! primitive marker keys.
 
 use std::fmt;
 
@@ -26,6 +27,10 @@ pub enum PlatformOs {
     Web = 5,
     #[default]
     Unknown = 6,
+    TvOs = 7,
+    WatchOs = 8,
+    VisionOs = 9,
+    AndroidTv = 10,
 }
 
 impl PlatformOs {
@@ -43,6 +48,18 @@ impl PlatformOs {
         {
             Self::Ios
         }
+        #[cfg(all(not(target_arch = "wasm32"), target_os = "tvos"))]
+        {
+            Self::TvOs
+        }
+        #[cfg(all(not(target_arch = "wasm32"), target_os = "watchos"))]
+        {
+            Self::WatchOs
+        }
+        #[cfg(all(not(target_arch = "wasm32"), target_os = "visionos"))]
+        {
+            Self::VisionOs
+        }
         #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
         {
             Self::Windows
@@ -59,6 +76,9 @@ impl PlatformOs {
             target_arch = "wasm32",
             target_os = "macos",
             target_os = "ios",
+            target_os = "tvos",
+            target_os = "watchos",
+            target_os = "visionos",
             target_os = "windows",
             target_os = "android",
             target_os = "linux"
@@ -70,7 +90,10 @@ impl PlatformOs {
 
     #[inline]
     pub const fn is_apple(self) -> bool {
-        matches!(self, Self::MacOs | Self::Ios)
+        matches!(
+            self,
+            Self::MacOs | Self::Ios | Self::TvOs | Self::WatchOs | Self::VisionOs
+        )
     }
 
     #[inline]
@@ -82,6 +105,48 @@ impl PlatformOs {
     pub const fn is_desktop(self) -> bool {
         matches!(self, Self::MacOs | Self::Windows | Self::Linux)
     }
+
+    #[inline]
+    pub const fn is_tv(self) -> bool {
+        matches!(self, Self::TvOs | Self::AndroidTv)
+    }
+
+    #[inline]
+    pub const fn is_watch(self) -> bool {
+        matches!(self, Self::WatchOs)
+    }
+
+    #[inline]
+    pub const fn is_spatial(self) -> bool {
+        matches!(self, Self::VisionOs)
+    }
+
+    /// Returns the default physical device form factor associated with this OS.
+    #[inline]
+    pub const fn default_form_factor(&self) -> DeviceFormFactor {
+        match self {
+            Self::Ios | Self::Android => DeviceFormFactor::Phone,
+            Self::MacOs | Self::Windows | Self::Linux | Self::Web | Self::Unknown => {
+                DeviceFormFactor::Desktop
+            }
+            Self::TvOs | Self::AndroidTv => DeviceFormFactor::Tv,
+            Self::WatchOs => DeviceFormFactor::Watch,
+            Self::VisionOs => DeviceFormFactor::Spatial,
+        }
+    }
+}
+
+/// Physical device form factor running the active NVE surface.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DeviceFormFactor {
+    Phone = 0,
+    Tablet = 1,
+    #[default]
+    Desktop = 2,
+    Tv = 3,
+    Watch = 4,
+    Spatial = 5,
 }
 
 /// Native rendering or embedding host toolkit backing the surface.
@@ -205,7 +270,8 @@ impl Orientation {
     }
 }
 
-/// Primary pointing device precision (`@media (pointer: fine | coarse | none)`).
+/// Primary pointing or navigation input device precision (`@media (pointer: ...)` plus TV,
+/// wearable, and spatial input modalities).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum PointerKind {
@@ -213,6 +279,12 @@ pub enum PointerKind {
     Fine = 0,
     Coarse = 1,
     None = 2,
+    /// Directional TV remote / Siri Remote / D-Pad / gamepad navigation.
+    Remote = 3,
+    /// Digital Crown / rotary bezel + compact touch interaction.
+    Crown = 4,
+    /// Eye tracking + pinch gaze interaction on visionOS / XR headsets.
+    Gaze = 5,
 }
 
 /// Binary light/dark appearance scheme for the trait environment.
