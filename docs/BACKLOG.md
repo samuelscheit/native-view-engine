@@ -4,9 +4,6 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining host harden
 
 ## P1 — Host & Runtime Hardening
 
-- [ ] **Android Compose (`hosts/compose-kit`)**
-  - Add an Android Library Gradle module for `hosts/compose-kit` and `NveHostActivity.kt` CI tests.
-
 - [ ] **Standalone Flexbox (`cxx/nve-fabric-bridge`)**
   - Implement post-flex wrapping text re-measurement and true `Baseline` alignment in standalone `fabric_adapter.cpp`.
 
