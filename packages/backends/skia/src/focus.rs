@@ -1,11 +1,15 @@
-//! Focus, caret, range selection, and IME composition state for [`crate::SkiaBackend`].
+//! Focus, grapheme-safe caret, BiDi visual navigation, multi-run range selection, and IME
+//! composition/cursor-rect state for [`crate::SkiaBackend`].
 
 use nve_abi::{ComponentKind, NodeId};
-use nve_engine::LayoutEngine;
+use nve_engine::{LayoutEngine, LayoutRect};
 
+use crate::text::DEFAULT_FONT_WEIGHT;
+use crate::text_grapheme::{clamp_grapheme_boundary, grapheme_count};
 use crate::text_input::{
-    clamp_char_boundary, compute_text_input_inner_rect, compute_text_input_scroll_x,
-    cursor_byte_index_at_local_x, is_secure_node, raw_text_input_value,
+    compute_ime_cursor_rect, compute_text_input_inner_rect, compute_text_input_scroll_x,
+    cursor_byte_index_at_local_x, is_multiline_node, is_secure_node, raw_text_input_value,
+    selection_rects_for_range as compute_selection_rects,
 };
 use crate::SkiaBackend;
 
@@ -14,7 +18,7 @@ use crate::SkiaBackend;
 pub struct TextFocusState {
     pub focused_node: Option<NodeId>,
     /// Caret (active end) UTF-8 byte offset within the focused `TextInput`'s committed value
-    /// (always clamped to a valid UTF-8 char boundary).
+    /// (always clamped to a valid UAX #29 grapheme cluster boundary).
     pub caret_byte_index: usize,
     /// Selection anchor UTF-8 byte offset (`selection_anchor != caret_byte_index` indicates an
     /// active range selection).
@@ -64,8 +68,14 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             .is_some_and(|n| n.kind == ComponentKind::TextInput && is_secure_node(n))
     }
 
+    pub fn is_multiline_text_input(&self, node_id: NodeId) -> bool {
+        self.layout_tree
+            .node(node_id)
+            .is_some_and(|n| n.kind == ComponentKind::TextInput && is_multiline_node(n))
+    }
+
     /// Hit-tests a logical viewport X coordinate against a `TextInput` node and returns the
-    /// closest UTF-8 byte boundary inside its current committed value.
+    /// closest UAX #29 grapheme byte boundary inside its current committed value.
     pub fn cursor_index_at_x(&self, node_id: NodeId, logical_x: f32) -> Option<usize> {
         let node = self.layout_tree.node(node_id)?;
         if node.kind != ComponentKind::TextInput {
@@ -86,6 +96,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
                 &committed,
                 self.focus.caret_byte_index,
                 font_size,
+                DEFAULT_FONT_WEIGHT,
                 is_secure,
                 text_rect.width,
             )
@@ -97,9 +108,134 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             self.text_engine.as_ref(),
             &committed,
             font_size,
+            DEFAULT_FONT_WEIGHT,
             is_secure,
             local_x,
         ))
+    }
+
+    /// Computes visual selection highlight rectangles (multiple disjoint rects when spanning
+    /// mixed LTR/RTL BiDi runs) in logical viewport coordinates for logical byte range `start..end`.
+    pub fn selection_rects_for_range(
+        &self,
+        node_id: NodeId,
+        start: usize,
+        end: usize,
+    ) -> Vec<LayoutRect> {
+        let Some(node) = self.layout_tree.node(node_id) else {
+            return Vec::new();
+        };
+        if node.kind != ComponentKind::TextInput {
+            return Vec::new();
+        }
+        let Some(committed) = self.text_input_value(node_id) else {
+            return Vec::new();
+        };
+        let Some(visual_rect) = self.visual_rect_of(node_id) else {
+            return Vec::new();
+        };
+        let font_size = if node.style.font_size > 0.0 {
+            node.style.font_size
+        } else {
+            13.0
+        };
+        let text_rect = compute_text_input_inner_rect(node, visual_rect, font_size);
+        let caret_h = (font_size * 1.25).clamp(8.0, (visual_rect.height - 4.0).max(4.0));
+        let line_h = (font_size * 1.35).min(text_rect.height);
+        let caret_y = text_rect.y + ((line_h - caret_h) * 0.5).max(0.0);
+        let is_secure = is_secure_node(node);
+        let scroll_x = if self.focus.focused_node == Some(node_id) {
+            compute_text_input_scroll_x(
+                self.text_engine.as_ref(),
+                &committed,
+                self.focus.caret_byte_index,
+                font_size,
+                DEFAULT_FONT_WEIGHT,
+                is_secure,
+                text_rect.width,
+            )
+        } else {
+            0.0
+        };
+        compute_selection_rects(
+            self.text_engine.as_ref(),
+            &committed,
+            start,
+            end,
+            font_size,
+            DEFAULT_FONT_WEIGHT,
+            is_secure,
+            text_rect,
+            caret_y,
+            caret_h,
+            scroll_x,
+        )
+    }
+
+    /// Steps `caret` visually left (`delta < 0`) or right (`delta > 0`) by one grapheme cluster
+    /// across mixed LTR/RTL BiDi runs in `node_id`.
+    pub fn move_caret_visual(&self, node_id: NodeId, caret: usize, delta: i32) -> usize {
+        let Some(node) = self.layout_tree.node(node_id) else {
+            return caret;
+        };
+        if node.kind != ComponentKind::TextInput {
+            return caret;
+        }
+        let Some(committed) = self.text_input_value(node_id) else {
+            return caret;
+        };
+        let font_size = if node.style.font_size > 0.0 {
+            node.style.font_size
+        } else {
+            13.0
+        };
+        let shaped = self
+            .text_engine
+            .shape_single_line(&committed, font_size, DEFAULT_FONT_WEIGHT);
+        shaped.move_caret_visual(&committed, caret, delta)
+    }
+
+    /// Returns the exact logical viewport rectangle of the live caret (or active IME preedit span)
+    /// for the focused `TextInput`, accounting for ancestor `ScrollView` scroll offsets, padding,
+    /// horizontal text scroll, and BiDi glyph positions.
+    pub fn focused_ime_cursor_rect(&self) -> Option<LayoutRect> {
+        let node_id = self.focus.focused_node?;
+        let node = self.layout_tree.node(node_id)?;
+        if node.kind != ComponentKind::TextInput {
+            return None;
+        }
+        let committed = self.text_input_value(node_id)?;
+        let visual_rect = self.visual_rect_of(node_id)?;
+        let font_size = if node.style.font_size > 0.0 {
+            node.style.font_size
+        } else {
+            13.0
+        };
+        Some(compute_ime_cursor_rect(
+            node,
+            visual_rect,
+            font_size,
+            &committed,
+            &self.focus,
+            self.text_engine.as_ref(),
+        ))
+    }
+
+    /// Returns the exact physical-pixel IME cursor/preedit rectangle scaled by
+    /// `self.viewport.scale_factor` for OS IME candidate popups (`winit::Window::set_ime_cursor_area`).
+    pub fn focused_ime_cursor_physical_rect(&self) -> Option<LayoutRect> {
+        let logical = self.focused_ime_cursor_rect()?;
+        let scale = if self.viewport.scale_factor.is_finite() && self.viewport.scale_factor > 0.0 {
+            self.viewport.scale_factor
+        } else {
+            1.0
+        };
+        Some(LayoutRect {
+            x: logical.x * scale,
+            y: logical.y * scale,
+            width: logical.width * scale,
+            height: logical.height * scale,
+        })
     }
 
     pub fn text_input_value(&self, node_id: NodeId) -> Option<String> {
@@ -162,8 +298,8 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let id = self.focus.focused_node?;
         let (s, e) = self.focus.selection_range()?;
         let val = self.text_input_value(id)?;
-        let cs = clamp_char_boundary(&val, s);
-        let ce = clamp_char_boundary(&val, e);
+        let cs = clamp_grapheme_boundary(&val, s);
+        let ce = clamp_grapheme_boundary(&val, e);
         (cs < ce).then(|| val[cs..ce].to_owned())
     }
 
@@ -174,18 +310,30 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let Some(val) = self.text_input_value(id) else {
             return 0;
         };
-        let clamped = clamp_char_boundary(&val, self.focus.caret_byte_index);
+        let clamped = clamp_grapheme_boundary(&val, self.focus.caret_byte_index);
         val[..clamped].chars().count()
     }
 
-    /// Moves the caret to `byte_index` (clamped to a valid char boundary), collapsing any active
-    /// selection (`selection_anchor = caret_byte_index`).
+    /// Returns the caret position measured in UAX #29 extended grapheme clusters.
+    pub fn caret_grapheme_index(&self) -> usize {
+        let Some(id) = self.focus.focused_node else {
+            return 0;
+        };
+        let Some(val) = self.text_input_value(id) else {
+            return 0;
+        };
+        let clamped = clamp_grapheme_boundary(&val, self.focus.caret_byte_index);
+        grapheme_count(&val[..clamped])
+    }
+
+    /// Moves the caret to `byte_index` (clamped to a valid UAX #29 grapheme boundary), collapsing
+    /// any active selection (`selection_anchor = caret_byte_index`).
     pub fn set_caret_byte_index(&mut self, byte_index: usize) {
         self.set_selection_range(byte_index, byte_index);
     }
 
-    /// Sets the selection anchor and active caret byte indices (both clamped to valid UTF-8 char
-    /// boundaries) and rebuilds the display list when changed.
+    /// Sets the selection anchor and active caret byte indices (both clamped to valid UAX #29
+    /// grapheme boundaries) and rebuilds the display list when changed.
     pub fn set_selection_range(&mut self, anchor: usize, caret: usize) {
         let (clamped_anchor, clamped_caret) = self
             .focus
@@ -193,8 +341,8 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             .and_then(|id| self.text_input_value(id))
             .map_or((0, 0), |v| {
                 (
-                    clamp_char_boundary(&v, anchor),
-                    clamp_char_boundary(&v, caret),
+                    clamp_grapheme_boundary(&v, anchor),
+                    clamp_grapheme_boundary(&v, caret),
                 )
             });
         let changed = self.focus.selection_anchor != clamped_anchor
@@ -233,8 +381,8 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let normalized = preedit.filter(|s| !s.is_empty());
         let normalized_cursor = normalized.as_deref().and_then(|text| {
             cursor.map(|(s, e)| {
-                let cs = clamp_char_boundary(text, s);
-                let ce = clamp_char_boundary(text, e.max(s));
+                let cs = clamp_grapheme_boundary(text, s);
+                let ce = clamp_grapheme_boundary(text, e.max(s));
                 (cs, ce)
             })
         });
@@ -252,9 +400,9 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             return;
         };
         let clamped = match &value {
-            Some(v) => clamp_char_boundary(v, caret_byte_index),
+            Some(v) => clamp_grapheme_boundary(v, caret_byte_index),
             None => self.layout_tree.node(id).map_or(0, |n| {
-                clamp_char_boundary(raw_text_input_value(n), caret_byte_index)
+                clamp_grapheme_boundary(raw_text_input_value(n), caret_byte_index)
             }),
         };
         self.focus.uncontrolled_value = value;
@@ -281,9 +429,9 @@ impl<L: LayoutEngine> SkiaBackend<L> {
                 .as_deref()
                 .unwrap_or_else(|| raw_text_input_value(node));
             self.focus.caret_byte_index =
-                clamp_char_boundary(current_val, self.focus.caret_byte_index);
+                clamp_grapheme_boundary(current_val, self.focus.caret_byte_index);
             self.focus.selection_anchor =
-                clamp_char_boundary(current_val, self.focus.selection_anchor);
+                clamp_grapheme_boundary(current_val, self.focus.selection_anchor);
         } else {
             self.focus.caret_byte_index = 0;
             self.focus.selection_anchor = 0;

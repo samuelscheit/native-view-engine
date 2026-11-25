@@ -36,6 +36,9 @@ enum class EventKind : uint8_t {
   Blur = 6,
   Layout = 7,
   Custom = 8,
+  CompositionStart = 9,
+  CompositionUpdate = 10,
+  CompositionEnd = 11,
 };
 
 /// Decoded event from an `EventRing` (`nve_abi::encode_events`).

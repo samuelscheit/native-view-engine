@@ -19,8 +19,8 @@ pub mod typed_style;
 mod writer;
 
 pub use elements::{
-    FocusEvent, FocusEventData, KeyEvent, KeyEventData, ScrollEvent, ScrollEventData, SubmitEvent,
-    SubmitEventData,
+    CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent, KeyEventData,
+    ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData,
 };
 pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
@@ -92,8 +92,8 @@ pub type CustomEvent = Event<CustomEventData>;
 
 pub mod prelude {
     pub use crate::elements::{
-        self as dioxus_elements, events::*, KeyEvent, KeyEventData, PressEvent, SubmitEvent,
-        SubmitEventData, TextEvent,
+        self as dioxus_elements, events::*, CompositionEvent, CompositionEventData, KeyEvent,
+        KeyEventData, PressEvent, SubmitEvent, SubmitEventData, TextEvent,
     };
     pub use crate::native_view::{
         use_native_view_handle, use_native_view_registry, use_provide_native_view_registry,

@@ -724,6 +724,9 @@ void write_decoded_event_to_js(rnw::IJSValueWriter const& writer, const nve::Dec
       writer.WriteDouble(static_cast<double>(ev.height));
       break;
     case nve::EventKind::TextChange:
+    case nve::EventKind::CompositionStart:
+    case nve::EventKind::CompositionUpdate:
+    case nve::EventKind::CompositionEnd:
       writer.WritePropertyName(L"text");
       writer.WriteString(winrt::to_hstring(ev.text));
       break;

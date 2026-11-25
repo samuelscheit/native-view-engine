@@ -16,6 +16,7 @@ impl EventMask {
     pub const BLUR: u64 = 1 << 5;
     pub const LAYOUT: u64 = 1 << 6;
     pub const CUSTOM: u64 = 1 << 7;
+    pub const COMPOSITION: u64 = 1 << 8;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -337,7 +338,29 @@ mod tests {
                     data: vec![9, 8, 7],
                 },
             },
+            NativeEvent {
+                surface_id: 1,
+                node_id: 13,
+                timestamp_us: 124_000,
+                kind: NativeEventKind::CompositionStart,
+                payload: EventPayload::Text("ni".into()),
+            },
+            NativeEvent {
+                surface_id: 1,
+                node_id: 13,
+                timestamp_us: 124_100,
+                kind: NativeEventKind::CompositionUpdate,
+                payload: EventPayload::Text("nihao".into()),
+            },
+            NativeEvent {
+                surface_id: 1,
+                node_id: 13,
+                timestamp_us: 124_200,
+                kind: NativeEventKind::CompositionEnd,
+                payload: EventPayload::Text("你好".into()),
+            },
         ];
+        assert_eq!(EventMask::COMPOSITION, 1 << 8);
         let encoded = encode_events(&events);
         let decoded = decode_events(&encoded).unwrap();
         assert_eq!(events, decoded);

@@ -422,6 +422,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             base_title: desc.title,
             modifiers: ModifiersState::empty(),
             ime_allowed: false,
+            last_ime_cursor_rect: None,
             last_cursor: nve_backend_skia::CursorKind::Auto,
             last_telemetry: None,
         };

@@ -7,6 +7,11 @@ use nve_abi::{ComponentKind, EventMask, NodeId};
 pub use crate::input_attrs::{ImeCompositionGuard, InputSyncTracker};
 #[cfg(any(target_arch = "wasm32", test))]
 pub use crate::input_attrs::IME_PROCESS_KEY_CODE;
+#[cfg(target_arch = "wasm32")]
+use crate::input_attrs::{
+    web_composition_cancel_on_blur, web_composition_end, web_composition_start,
+    web_composition_update,
+};
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
@@ -174,8 +179,9 @@ pub(crate) struct RootEventDelegator {
     focusin: Closure<dyn FnMut(web_sys::FocusEvent)>,
     focusout: Closure<dyn FnMut(web_sys::FocusEvent)>,
     scroll: Closure<dyn FnMut(web_sys::Event)>,
-    compositionstart: Closure<dyn FnMut(web_sys::Event)>,
-    compositionend: Closure<dyn FnMut(web_sys::Event)>,
+    compositionstart: Closure<dyn FnMut(web_sys::CompositionEvent)>,
+    compositionupdate: Closure<dyn FnMut(web_sys::CompositionEvent)>,
+    compositionend: Closure<dyn FnMut(web_sys::CompositionEvent)>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -190,6 +196,7 @@ impl Drop for RootEventDelegator {
         let _ = c.remove_event_listener_with_callback("focusout", self.focusout.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback_and_bool("scroll", self.scroll.as_ref().unchecked_ref(), true);
         let _ = c.remove_event_listener_with_callback("compositionstart", self.compositionstart.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback("compositionupdate", self.compositionupdate.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("compositionend", self.compositionend.as_ref().unchecked_ref());
     }
 }
@@ -407,10 +414,11 @@ impl WebBackend {
             })
         };
 
-        // 5. focusout (bubbled replacement for non-bubbling blur).
+        // 5. focusout (bubbled replacement for non-bubbling blur; ends any active composition).
         let focusout = {
             let root = container.clone();
             let meta = Rc::clone(&self.node_event_meta);
+            let ime = Rc::clone(&self.ime_guards);
             let events = Rc::clone(&self.events);
             let on_event = Rc::clone(&self.on_event);
             let surface_id = Rc::clone(&self.surface_id);
@@ -422,13 +430,20 @@ impl WebBackend {
                     })
                 };
                 if let Some((node_id, _)) = found {
+                    let ts = now_us();
+                    let comp_end = ime.borrow().get(&node_id).and_then(|g| {
+                        web_composition_cancel_on_blur(g, surface_id.get(), node_id, ts)
+                    });
+                    if let Some(end_ev) = comp_end {
+                        emit_event(&events, &on_event, end_ev);
+                    }
                     emit_event(
                         &events,
                         &on_event,
                         NativeEvent {
                             surface_id: surface_id.get(),
                             node_id,
-                            timestamp_us: now_us(),
+                            timestamp_us: ts,
                             kind: NativeEventKind::Blur,
                             payload: EventPayload::Empty,
                         },
@@ -474,61 +489,69 @@ impl WebBackend {
             })
         };
 
-        // 7. compositionstart (bubbled).
-        let compositionstart = {
-            let root = container.clone();
-            let meta = Rc::clone(&self.node_event_meta);
-            let ime = Rc::clone(&self.ime_guards);
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let found = {
-                    let map = meta.borrow();
-                    find_delegated_ancestor(&root, ev.target(), &map, |m| {
-                        m.kind == ComponentKind::TextInput
-                    })
-                };
+        // 7-8. compositionstart & compositionupdate (bubbled, preserves ImeCompositionGuard).
+        let make_comp = |is_update: bool| {
+            let (root, meta, ime, events, on_event, surface_id) = (
+                container.clone(),
+                Rc::clone(&self.node_event_meta),
+                Rc::clone(&self.ime_guards),
+                Rc::clone(&self.events),
+                Rc::clone(&self.on_event),
+                Rc::clone(&self.surface_id),
+            );
+            Closure::<dyn FnMut(web_sys::CompositionEvent)>::new(move |ev: web_sys::CompositionEvent| {
+                let found = find_delegated_ancestor(&root, ev.target(), &meta.borrow(), |m| {
+                    m.kind == ComponentKind::TextInput
+                });
                 if let Some((node_id, _)) = found {
-                    ime.borrow_mut()
-                        .entry(node_id)
-                        .or_default()
-                        .on_composition_start();
+                    let data = ev.data().unwrap_or_default();
+                    let event = {
+                        let mut guards = ime.borrow_mut();
+                        let guard = guards.entry(node_id).or_default();
+                        if is_update {
+                            web_composition_update(guard, surface_id.get(), node_id, now_us(), data)
+                        } else {
+                            web_composition_start(guard, surface_id.get(), node_id, now_us(), data)
+                        }
+                    };
+                    emit_event(&events, &on_event, event);
                 }
             })
         };
+        let (compositionstart, compositionupdate) = (make_comp(false), make_comp(true));
 
-        // 8. compositionend (bubbled, commits final IME string as TextChange).
+        // 9. compositionend (bubbled, emits CompositionEnd + committed TextChange).
         let compositionend = {
-            let root = container.clone();
-            let meta = Rc::clone(&self.node_event_meta);
-            let ime = Rc::clone(&self.ime_guards);
-            let input_sync = Rc::clone(&self.input_sync);
-            let events = Rc::clone(&self.events);
-            let on_event = Rc::clone(&self.on_event);
-            let surface_id = Rc::clone(&self.surface_id);
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let found = {
-                    let map = meta.borrow();
-                    find_delegated_ancestor(&root, ev.target(), &map, |m| {
-                        m.kind == ComponentKind::TextInput
-                    })
-                };
+            let (root, meta, ime, input_sync, events, on_event, surface_id) = (
+                container.clone(),
+                Rc::clone(&self.node_event_meta),
+                Rc::clone(&self.ime_guards),
+                Rc::clone(&self.input_sync),
+                Rc::clone(&self.events),
+                Rc::clone(&self.on_event),
+                Rc::clone(&self.surface_id),
+            );
+            Closure::<dyn FnMut(web_sys::CompositionEvent)>::new(move |ev: web_sys::CompositionEvent| {
+                let found = find_delegated_ancestor(&root, ev.target(), &meta.borrow(), |m| {
+                    m.kind == ComponentKind::TextInput
+                });
                 if let Some((node_id, el)) = found {
-                    ime.borrow_mut()
-                        .entry(node_id)
-                        .or_default()
-                        .on_composition_end();
-                    let raw = read_dom_input_value(&el);
-                    let text = input_sync.borrow_mut().on_composition_end(node_id, raw);
-                    emit_event(
-                        &events,
-                        &on_event,
-                        NativeEvent {
-                            surface_id: surface_id.get(),
+                    let [end_ev, change_ev] = {
+                        let mut guards = ime.borrow_mut();
+                        let guard = guards.entry(node_id).or_default();
+                        let mut sync = input_sync.borrow_mut();
+                        web_composition_end(
+                            guard,
+                            &mut sync,
+                            surface_id.get(),
                             node_id,
-                            timestamp_us: now_us(),
-                            kind: NativeEventKind::TextChange,
-                            payload: EventPayload::Text(text),
-                        },
-                    );
+                            now_us(),
+                            ev.data().unwrap_or_default(),
+                            read_dom_input_value(&el),
+                        )
+                    };
+                    emit_event(&events, &on_event, end_ev);
+                    emit_event(&events, &on_event, change_ev);
                 }
             })
         };
@@ -541,6 +564,7 @@ impl WebBackend {
         let _ = container.add_event_listener_with_callback("focusout", focusout.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback_and_bool("scroll", scroll.as_ref().unchecked_ref(), true);
         let _ = container.add_event_listener_with_callback("compositionstart", compositionstart.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("compositionupdate", compositionupdate.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback("compositionend", compositionend.as_ref().unchecked_ref());
 
         self.root_delegator = Some(RootEventDelegator {
@@ -553,6 +577,7 @@ impl WebBackend {
             focusout,
             scroll,
             compositionstart,
+            compositionupdate,
             compositionend,
         });
     }

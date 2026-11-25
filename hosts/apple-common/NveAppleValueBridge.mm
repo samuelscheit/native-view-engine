@@ -144,6 +144,9 @@ NSDictionary<NSString *, id> *payload_dictionary_from_event(const nve::DecodedEv
       dict[@"contentHeight"] = @(ev.height);
       break;
     case nve::EventKind::TextChange:
+    case nve::EventKind::CompositionStart:
+    case nve::EventKind::CompositionUpdate:
+    case nve::EventKind::CompositionEnd:
       dict[@"text"] = nsstring_from_sv(ev.text);
       break;
     case nve::EventKind::Layout:

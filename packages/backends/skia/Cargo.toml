@@ -42,6 +42,7 @@ nve-components = { workspace = true }
 nve-engine = { workspace = true }
 nve-backend-headless = { workspace = true }
 cosmic-text = { workspace = true }
+unicode-segmentation = { workspace = true }
 flate2 = "1.1"
 raw-window-handle = "0.6.2"
 nve-layout-yoga = { workspace = true, optional = true }

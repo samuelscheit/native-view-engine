@@ -5,6 +5,7 @@
 
 pub mod clipboard;
 pub mod hot_reload_client;
+mod ime;
 pub mod input;
 pub mod instant_boot;
 pub mod multi_window;
@@ -26,6 +27,8 @@ mod multi_window_tests;
 mod pair_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_maturity_tests;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

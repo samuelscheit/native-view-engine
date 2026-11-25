@@ -152,6 +152,9 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
         ("BLUR", NativeEventKind::Blur as u8),
         ("LAYOUT", NativeEventKind::Layout as u8),
         ("CUSTOM", NativeEventKind::Custom as u8),
+        ("COMPOSITION_START", NativeEventKind::CompositionStart as u8),
+        ("COMPOSITION_UPDATE", NativeEventKind::CompositionUpdate as u8),
+        ("COMPOSITION_END", NativeEventKind::CompositionEnd as u8),
     ];
     assert_eq!(wc::EVENT_KINDS.len(), expected_kinds.len());
     for (spec_v, (name, abi_val)) in wc::EVENT_KINDS.iter().zip(expected_kinds.iter()) {
@@ -168,6 +171,7 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
         ("BLUR", EventMask::BLUR),
         ("LAYOUT", EventMask::LAYOUT),
         ("CUSTOM", EventMask::CUSTOM),
+        ("COMPOSITION", EventMask::COMPOSITION),
     ];
     assert_eq!(wc::EVENT_MASKS.len(), expected_masks.len());
     for (spec_m, (name, abi_val)) in wc::EVENT_MASKS.iter().zip(expected_masks.iter()) {

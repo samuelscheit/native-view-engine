@@ -169,6 +169,24 @@ pub const EVENT_KINDS: &[WireEnumVariant] = &[
         screaming: "CUSTOM",
         value: 8,
     },
+    WireEnumVariant {
+        pascal: "CompositionStart",
+        camel: "compositionStart",
+        screaming: "COMPOSITION_START",
+        value: 9,
+    },
+    WireEnumVariant {
+        pascal: "CompositionUpdate",
+        camel: "compositionUpdate",
+        screaming: "COMPOSITION_UPDATE",
+        value: 10,
+    },
+    WireEnumVariant {
+        pascal: "CompositionEnd",
+        camel: "compositionEnd",
+        screaming: "COMPOSITION_END",
+        value: 11,
+    },
 ];
 
 /// Payload tag descriptor for `EventPayload` wire framing.
@@ -292,6 +310,12 @@ pub const EVENT_MASKS: &[WireBitflag] = &[
         camel: "custom",
         screaming: "CUSTOM",
         value: 1 << 7,
+    },
+    WireBitflag {
+        pascal: "Composition",
+        camel: "composition",
+        screaming: "COMPOSITION",
+        value: 1 << 8,
     },
 ];
 

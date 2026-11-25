@@ -1,7 +1,12 @@
-//! Pure UTF-8 text editing, word-boundary selection, key-action classification, and `winit`
-//! cursor icon mapping helpers shared by `hosts/skia-shell/src/window/`.
+//! Pure UAX #29 grapheme-safe UTF-8 text editing, word/paragraph selection, paste line-ending
+//! normalization, key-action classification, and `winit` cursor icon mapping helpers shared by
+//! `hosts/skia-shell/src/window/`.
 
 use nve_backend_skia::CursorKind;
+pub use nve_backend_skia::{
+    clamp_grapheme_boundary, next_grapheme_boundary, normalize_line_endings, paragraph_bounds_at,
+    prev_grapheme_boundary, word_bounds_at,
+};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::CursorIcon;
 
@@ -50,97 +55,8 @@ pub fn format_keydown_shorthand(
     out
 }
 
-#[inline]
-pub fn clamp_char_boundary(s: &str, byte_index: usize) -> usize {
-    let mut idx = byte_index.min(s.len());
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
-
-#[inline]
-pub fn prev_char_boundary(s: &str, byte_index: usize) -> usize {
-    let idx = clamp_char_boundary(s, byte_index);
-    if idx == 0 {
-        return 0;
-    }
-    let mut prev = idx - 1;
-    while prev > 0 && !s.is_char_boundary(prev) {
-        prev -= 1;
-    }
-    prev
-}
-
-#[inline]
-pub fn next_char_boundary(s: &str, byte_index: usize) -> usize {
-    let idx = clamp_char_boundary(s, byte_index);
-    if idx >= s.len() {
-        return s.len();
-    }
-    let mut next = idx + 1;
-    while next < s.len() && !s.is_char_boundary(next) {
-        next += 1;
-    }
-    next
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CharClass {
-    Word,
-    Whitespace,
-    Punct,
-}
-
-#[inline]
-fn classify_char(c: char) -> CharClass {
-    if c.is_alphanumeric() || c == '_' {
-        CharClass::Word
-    } else if c.is_whitespace() {
-        CharClass::Whitespace
-    } else {
-        CharClass::Punct
-    }
-}
-
-/// Computes the `(start, end)` UTF-8 byte range of the word (or contiguous whitespace/punctuation
-/// run) surrounding `byte_index` for double-click selection.
-pub fn word_bounds_at(s: &str, byte_index: usize) -> (usize, usize) {
-    if s.is_empty() {
-        return (0, 0);
-    }
-    let mut idx = clamp_char_boundary(s, byte_index);
-    if idx == s.len() {
-        idx = prev_char_boundary(s, idx);
-    }
-    let Some(target_ch) = s[idx..].chars().next() else {
-        return (0, 0);
-    };
-    let target_class = classify_char(target_ch);
-
-    let mut start = idx;
-    while start > 0 {
-        let prev = prev_char_boundary(s, start);
-        let ch = s[prev..start].chars().next().unwrap();
-        if classify_char(ch) != target_class {
-            break;
-        }
-        start = prev;
-    }
-
-    let mut end = idx;
-    while end < s.len() {
-        let next = next_char_boundary(s, end);
-        let ch = s[end..next].chars().next().unwrap();
-        if classify_char(ch) != target_class {
-            break;
-        }
-        end = next;
-    }
-
-    (start, end)
-}
-
+/// Inserts `inserted` at a UAX #29 grapheme-clamped `caret` (or replacing `selection`), returning
+/// `(new_text, new_caret_byte_index)`.
 pub fn insert_text_at(
     current: &str,
     caret: usize,
@@ -148,15 +64,15 @@ pub fn insert_text_at(
     inserted: &str,
 ) -> (String, usize) {
     if let Some((raw_s, raw_e)) = selection {
-        let s = clamp_char_boundary(current, raw_s);
-        let e = clamp_char_boundary(current, raw_e.max(raw_s));
+        let s = clamp_grapheme_boundary(current, raw_s);
+        let e = clamp_grapheme_boundary(current, raw_e.max(raw_s));
         let mut out = String::with_capacity(current.len() - (e - s) + inserted.len());
         out.push_str(&current[..s]);
         out.push_str(inserted);
         out.push_str(&current[e..]);
         return (out, s + inserted.len());
     }
-    let idx = clamp_char_boundary(current, caret);
+    let idx = clamp_grapheme_boundary(current, caret);
     let mut out = String::with_capacity(current.len() + inserted.len());
     out.push_str(&current[..idx]);
     out.push_str(inserted);
@@ -164,14 +80,16 @@ pub fn insert_text_at(
     (out, idx + inserted.len())
 }
 
+/// Deletes the active selection or the single UAX #29 extended grapheme cluster immediately
+/// before `caret`. Never splits ZWJ emoji, regional flags, skin-tone modifiers, or combining marks.
 pub fn delete_backward(
     current: &str,
     caret: usize,
     selection: Option<(usize, usize)>,
 ) -> Option<(String, usize)> {
     if let Some((raw_s, raw_e)) = selection {
-        let s = clamp_char_boundary(current, raw_s);
-        let e = clamp_char_boundary(current, raw_e.max(raw_s));
+        let s = clamp_grapheme_boundary(current, raw_s);
+        let e = clamp_grapheme_boundary(current, raw_e.max(raw_s));
         if s < e {
             let mut out = String::with_capacity(current.len() - (e - s));
             out.push_str(&current[..s]);
@@ -179,25 +97,27 @@ pub fn delete_backward(
             return Some((out, s));
         }
     }
-    let idx = clamp_char_boundary(current, caret);
+    let idx = clamp_grapheme_boundary(current, caret);
     if idx == 0 {
         return None;
     }
-    let prev = prev_char_boundary(current, idx);
+    let prev = prev_grapheme_boundary(current, idx);
     let mut out = String::with_capacity(current.len() - (idx - prev));
     out.push_str(&current[..prev]);
     out.push_str(&current[idx..]);
     Some((out, prev))
 }
 
+/// Deletes the active selection or the single UAX #29 extended grapheme cluster immediately
+/// after `caret`. Never splits ZWJ emoji, regional flags, skin-tone modifiers, or combining marks.
 pub fn delete_forward(
     current: &str,
     caret: usize,
     selection: Option<(usize, usize)>,
 ) -> Option<(String, usize)> {
     if let Some((raw_s, raw_e)) = selection {
-        let s = clamp_char_boundary(current, raw_s);
-        let e = clamp_char_boundary(current, raw_e.max(raw_s));
+        let s = clamp_grapheme_boundary(current, raw_s);
+        let e = clamp_grapheme_boundary(current, raw_e.max(raw_s));
         if s < e {
             let mut out = String::with_capacity(current.len() - (e - s));
             out.push_str(&current[..s]);
@@ -205,11 +125,11 @@ pub fn delete_forward(
             return Some((out, s));
         }
     }
-    let idx = clamp_char_boundary(current, caret);
+    let idx = clamp_grapheme_boundary(current, caret);
     if idx >= current.len() {
         return None;
     }
-    let next = next_char_boundary(current, idx);
+    let next = next_grapheme_boundary(current, idx);
     let mut out = String::with_capacity(current.len() - (next - idx));
     out.push_str(&current[..idx]);
     out.push_str(&current[next..]);
@@ -221,25 +141,29 @@ pub fn is_printable_text(s: &str) -> bool {
     !s.is_empty() && !s.chars().any(|c| c.is_control())
 }
 
-pub(crate) fn sanitize_pasted_single_line(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut prev_cr = false;
-    for ch in raw.chars() {
-        if ch == '\r' {
+/// Normalizes `\r\n` and `\r` to `\n`, collapses line breaks and tabs into single spaces for
+/// single-line `TextInput` paste, and strips non-printable control characters.
+pub fn sanitize_pasted_single_line(raw: &str) -> String {
+    let normalized = normalize_line_endings(raw);
+    let mut out = String::with_capacity(normalized.len());
+    for ch in normalized.chars() {
+        if ch == '\n' || ch == '\t' {
             out.push(' ');
-            prev_cr = true;
-        } else if ch == '\n' {
-            if !prev_cr {
-                out.push(' ');
-            }
-            prev_cr = false;
-        } else {
-            prev_cr = false;
-            if ch == '\t' {
-                out.push(' ');
-            } else if !ch.is_control() {
-                out.push(ch);
-            }
+        } else if !ch.is_control() {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Normalizes `\r\n` and `\r` into `\n` for multiline `TextInput` paste while preserving `\n` and
+/// `\t` and stripping other non-printable control characters.
+pub fn sanitize_pasted_multiline(raw: &str) -> String {
+    let normalized = normalize_line_endings(raw);
+    let mut out = String::with_capacity(normalized.len());
+    for ch in normalized.chars() {
+        if ch == '\n' || ch == '\t' || !ch.is_control() {
+            out.push(ch);
         }
     }
     out

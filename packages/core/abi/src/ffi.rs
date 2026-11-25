@@ -17,7 +17,7 @@ use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
 /// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.generated.h`).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x154F_92A3_95F3_3D12;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0xFB51_2A2A_DD6F_AF57;
 
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
@@ -234,6 +234,9 @@ pub enum NativeEventKind {
     Blur = 6,
     Layout = 7,
     Custom = 8,
+    CompositionStart = 9,
+    CompositionUpdate = 10,
+    CompositionEnd = 11,
 }
 
 impl NativeEventKind {
@@ -248,6 +251,9 @@ impl NativeEventKind {
             6 => Some(Self::Blur),
             7 => Some(Self::Layout),
             8 => Some(Self::Custom),
+            9 => Some(Self::CompositionStart),
+            10 => Some(Self::CompositionUpdate),
+            11 => Some(Self::CompositionEnd),
             _ => None,
         }
     }

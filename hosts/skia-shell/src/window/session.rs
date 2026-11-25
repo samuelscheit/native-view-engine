@@ -19,8 +19,8 @@ use nve_backend_skia::gpu::GpuSurfaceConfig;
 use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use nve_backend_skia::{CursorKind, SkiaBackend};
 use nve_engine::{
-    encode_reloc_bundle, write_reloc_atomic, HotPatchMsg, NativeInstantBootStore, RelocHeader,
-    RenderBackend, StateSaveOutcome, StateStoreConfig, VerifyMode, Viewport,
+    encode_reloc_bundle, write_reloc_atomic, HotPatchMsg, LayoutRect, NativeInstantBootStore,
+    RelocHeader, RenderBackend, StateSaveOutcome, StateStoreConfig, VerifyMode, Viewport,
 };
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
@@ -53,6 +53,7 @@ pub struct DesktopSession<A: DesktopApp> {
     pub(super) last_click_time: Option<Instant>,
     pub(super) last_click_pos: (f32, f32),
     pub(super) last_click_node: Option<NodeId>,
+    pub(super) last_click_count: u8,
     pub(super) clipboard: Box<dyn ClipboardProvider>,
     status_banner: Option<String>,
     show_hud: bool,
@@ -121,6 +122,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             last_click_time: None,
             last_click_pos: (0.0, 0.0),
             last_click_node: None,
+            last_click_count: 0,
             clipboard: default_clipboard(),
             status_banner: None,
             show_hud,
@@ -176,6 +178,16 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn focused_node(&self) -> Option<NodeId> {
         self.backend.focused_node()
+    }
+
+    /// Logical viewport rectangle of the live caret or active IME preedit span.
+    pub fn ime_cursor_rect_logical(&self) -> Option<LayoutRect> {
+        self.backend.focused_ime_cursor_rect()
+    }
+
+    /// Physical-pixel viewport rectangle of the live caret or active IME preedit span.
+    pub fn ime_cursor_rect_physical(&self) -> Option<LayoutRect> {
+        self.backend.focused_ime_cursor_physical_rect()
     }
 
     pub fn with_clipboard(mut self, clipboard: Box<dyn ClipboardProvider>) -> Self {

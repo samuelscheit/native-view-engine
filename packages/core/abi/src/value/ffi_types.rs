@@ -301,7 +301,7 @@ pub struct NveDirectEvent {
     pub node_id: u32,
     #[nve_abi(offset = 8)]
     pub timestamp_us: u64,
-    /// `NativeEventKind` (1..8).
+    /// `NativeEventKind` (1..=11).
     #[nve_abi(offset = 16)]
     pub kind: u8,
     /// `NveEventPayloadTag` (0..5).
@@ -374,6 +374,30 @@ impl NveDirectEvent {
             node_id,
             timestamp_us,
             kind: NativeEventKind::TextChange as u8,
+            payload_tag: NveEventPayloadTag::Text as u8,
+            name: NveStrSlice::EMPTY,
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            text: NveStrSlice::from_str(text),
+            value: NveValue::null(),
+        }
+    }
+
+    #[inline]
+    pub const fn composition(
+        surface_id: u32,
+        node_id: u32,
+        timestamp_us: u64,
+        kind: NativeEventKind,
+        text: &str,
+    ) -> Self {
+        Self {
+            surface_id,
+            node_id,
+            timestamp_us,
+            kind: kind as u8,
             payload_tag: NveEventPayloadTag::Text as u8,
             name: NveStrSlice::EMPTY,
             x: 0.0,

@@ -1621,6 +1621,7 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "raw-window-handle",
  "skia-safe",
+ "unicode-segmentation",
  "windows",
 ]
 

@@ -51,6 +51,8 @@ pub fn generate_c_core_abi_h() -> String {
         "/* Single-source NVE Core C ABI generated from packages/core/abi/src/schema.rs. */"
     );
     let _ = writeln!(out, "#pragma once");
+    let _ = writeln!(out, "#ifndef NVE_ABI_GENERATED_H");
+    let _ = writeln!(out, "#define NVE_ABI_GENERATED_H");
     let _ = writeln!(out);
     let _ = writeln!(out, "#include <stddef.h>");
     let _ = writeln!(out, "#include <stdint.h>");
@@ -424,6 +426,8 @@ pub fn generate_c_core_abi_h() -> String {
     let _ = writeln!(out, "#ifdef __cplusplus");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out, "#endif");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#endif /* NVE_ABI_GENERATED_H */");
     out
 }
 

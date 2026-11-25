@@ -300,7 +300,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 let Some(sw) = self.windows.get_mut(&window_id) else { return };
                 let scale = sw.session.viewport().scale_factor.max(0.001);
                 match sw.session.handle_pointer_move_logical(position.x as f32 / scale, position.y as f32 / scale) {
-                    Ok(true) => { sw.sync_cursor_state(); sw.window.request_redraw(); }
+                    Ok(true) => { sw.sync_ime_state(); sw.sync_cursor_state(); sw.window.request_redraw(); }
                     Ok(false) => sw.sync_cursor_state(),
                     Err(err) => eprintln!("[nve-skia-shell] pointer move error: {err}"),
                 }
@@ -346,7 +346,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 };
                 let (x, y) = sw.session.cursor_logical();
                 match sw.session.handle_scroll_logical(x, y, dx, dy) {
-                    Ok(true) => sw.window.request_redraw(),
+                    Ok(true) => { sw.sync_ime_state(); sw.window.request_redraw(); }
                     Ok(false) => {}
                     Err(err) => eprintln!("[nve-skia-shell] scroll dispatch error: {err}"),
                 }
