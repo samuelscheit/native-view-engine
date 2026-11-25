@@ -87,7 +87,8 @@ pub use native_view::{
 };
 pub use traits::{
     BUILTIN_TRAIT_COUNT, BuiltinTraitSlot, BuiltinTraits, CanHover,
-    ColorScheme as TraitColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast, HostToolkit,
+    ColorScheme as TraitColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard,
+    HighContrast, HostToolkit,
     Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, ScaleFactor, SizeClass, TextScale,
     TraitEnvironment, TraitKey, TraitOverrides, TraitResolver, TraitStore, UiDensity,
     VerticalSizeClass, ViewportChangeMask,

@@ -30,7 +30,7 @@ High-signal invariants, engineering practices, and workflow rules for agents wor
 
 ## Orchestrator
 
-- **Parallel execution without bottlenecking**: Do tiny tasks directly; delegate substantial work via T3 `delegate_task` (never native subagents) with strictly disjoint file ownership (`isolation: "worktree"` for parallel local work, remote Windows `samuel-pc` for Win32/MSVC/D3D12/RNW verification). Check and coordinate with peer threads touching adjacent areas before editing shared surfaces.
+- **Parallel execution without bottlenecking**: Do tiny tasks directly; delegate substantial work (and all subagent reviews) exclusively via T3 `delegate_task` — NEVER use Antigravity's native `invoke_subagent` — with strictly disjoint file ownership (`isolation: "worktree"` for parallel local work, remote Windows `samuel-pc` for Win32/MSVC/D3D12/RNW verification). Check and coordinate with peer threads touching adjacent areas before editing shared surfaces.
 - **Fast landing & live steering**: Merge, verify, and push finished branches onto `main` immediately as each completes—never batch finished branches while waiting on others. Steer active delegates mid-turn (`t3_thread_send`) when requirements evolve rather than letting work go stale.
 
 ## Quick Verification Entry Points

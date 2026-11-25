@@ -1,10 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published, prereleased]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -102,6 +105,17 @@ jobs:
           fi
           ./hosts/web-shell/build.sh --dev
           NVE_CHROME_BIN="$CHROME_PATH" node hosts/web-shell/e2e/run_e2e.mjs --no-screenshot
+
+      - name: Verify docs content, static SSR build & headless Chrome E2E
+        run: |
+          cargo run --locked -p nve-cli -- docs check
+          cargo run --locked -p nve-cli -- docs build \
+            --content docs/content \
+            --out dist/docs \
+            --base-path /native-view-engine \
+            --site-url https://samuelscheit.github.io/native-view-engine \
+            --web-shell-dist hosts/web-shell
+          node examples/nve-docs-site/e2e/run_docs_e2e.mjs dist/docs --base-path /native-view-engine --shots-dir /tmp/nve-landing-shots
 
       - name: Build and test C++20 Fabric bridge (Release + bench)
         run: |
