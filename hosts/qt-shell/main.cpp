@@ -1,10 +1,18 @@
 #include "NveQtWidget.hpp"
 
+#ifdef NVE_QT_HAS_QUICK
+#include "NveQtQuickItem.hpp"
+#include <QQmlComponent>
+#include <QQuickView>
+#include <QUrl>
+#endif
+
 #include <QApplication>
 #include <QFileInfo>
 #include <QObject>
 #include <QString>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -15,7 +23,7 @@
 
 namespace {
 
-/// Minimal built-in interactive NVE demo used when `nve_qt_shell` is launched without `--dylib`.
+/// Minimal built-in interactive NVE demo used when `nve_qt_shell` is launched without a dylib.
 class BuiltinQtDemoApp {
  public:
   explicit BuiltinQtDemoApp(uint32_t sid) : surface_id_(sid) {}
@@ -37,6 +45,21 @@ class BuiltinQtDemoApp {
     }
     for (const auto& ev : decoded) {
       if (ev.kind == nve::EventKind::Press && ev.node_id == 4) {
+        ++self->count_;
+        return 1;
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<BuiltinQtDemoApp*>(h);
+    if (batch.ptr == nullptr) {
+      return 0;
+    }
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4) {
         ++self->count_;
         return 1;
       }
@@ -68,7 +91,7 @@ class BuiltinQtDemoApp {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
-        .dispatch_events_direct = nullptr,
+        .dispatch_events_direct = &dispatch_events_direct,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = nullptr,
@@ -209,36 +232,120 @@ class BuiltinQtDemoApp {
   std::string state_buf_;
 };
 
+#ifdef NVE_QT_HAS_QUICK
+int runQuickShell(
+    QApplication& app,
+    const QString& dylib_path,
+    const QString& snapshot_path,
+    uint32_t schema_version,
+    int width,
+    int height) {
+  nve::qt::NveQtQuickItem::registerQmlType();
+
+  QQuickView view;
+  view.setTitle(QStringLiteral("NVE Qt Quick GPU Host Shell"));
+  view.setResizeMode(QQuickView::SizeRootObjectToView);
+  view.resize(width, height);
+
+  const QUrl qml_url;
+  QQmlComponent component(view.engine());
+  component.setData(QByteArrayLiteral("import Nve 1.0\nNveSurface {}\n"), qml_url);
+  QObject* root_obj = component.create(view.rootContext());
+  auto* surface = qobject_cast<nve::qt::NveQtQuickItem*>(root_obj);
+  if (surface == nullptr) {
+    std::cerr << "[nve-qt-shell] Failed to create QML NveSurface: "
+              << component.errorString().toStdString() << "\n";
+    delete root_obj;
+    return 1;
+  }
+
+  view.setContent(qml_url, &component, root_obj);
+  surface->setSize(QSizeF(width, height));
+
+  if (!snapshot_path.isEmpty() && QFileInfo::exists(snapshot_path)) {
+    uint64_t restore_us = 0u;
+    if (surface->replaySnapshot(snapshot_path, schema_version, 1u, &restore_us)) {
+      std::cout << "[nve-qt-shell] Instant-boot Frame-0 mmap restore (Quick GPU) from '"
+                << snapshot_path.toStdString() << "' in " << restore_us << " us\n";
+    }
+  }
+
+  view.show();
+
+  if (!dylib_path.isEmpty()) {
+    int err_code = 0;
+    QString err_msg;
+    if (!surface->loadDylib(dylib_path, 1, &err_code, &err_msg)) {
+      std::cerr << "Failed to load NVE dylib '" << dylib_path.toStdString()
+                << "' (code " << err_code << "): " << err_msg.toStdString() << "\n";
+      return 1;
+    }
+  } else {
+    if (!surface->attachInterface(&BuiltinQtDemoApp::get_interface, 1)) {
+      std::cerr << "Failed to attach built-in NVE Qt demo app\n";
+      return 1;
+    }
+  }
+
+  if (!snapshot_path.isEmpty()) {
+    QObject::connect(
+        &app,
+        &QApplication::aboutToQuit,
+        surface,
+        [surface, snapshot_path, schema_version]() {
+          if (surface->saveSnapshot(snapshot_path, schema_version)) {
+            std::cout << "[nve-qt-shell] Saved Frame-0 + state snapshot to '"
+                      << snapshot_path.toStdString() << "' (schema v" << schema_version << ")\n";
+          } else {
+            std::cerr << "[nve-qt-shell] Warning: failed to save snapshot to '"
+                      << snapshot_path.toStdString() << "'\n";
+          }
+        });
+  }
+
+  return app.exec();
+}
+#endif
+
 } // namespace
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
 
+  bool use_quick = false;
   QString dylib_path;
   QString snapshot_path;
   uint32_t schema_version = 1u;
   int width = 640;
   int height = 420;
-  for (int i = 1; i + 1 < argc; ++i) {
-    if (std::strcmp(argv[i], "--dylib") == 0) {
-      dylib_path = QString::fromUtf8(argv[i + 1]);
-      ++i;
-    } else if (std::strcmp(argv[i], "--snapshot") == 0) {
-      snapshot_path = QString::fromUtf8(argv[i + 1]);
-      ++i;
-    } else if (std::strcmp(argv[i], "--schema") == 0) {
-      const long parsed = std::strtol(argv[i + 1], nullptr, 10);
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--quick") == 0) {
+      use_quick = true;
+    } else if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
+      dylib_path = QString::fromUtf8(argv[++i]);
+    } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
+      snapshot_path = QString::fromUtf8(argv[++i]);
+    } else if (std::strcmp(argv[i], "--schema") == 0 && i + 1 < argc) {
+      const long parsed = std::strtol(argv[++i], nullptr, 10);
       if (parsed >= 0) {
         schema_version = static_cast<uint32_t>(parsed);
       }
-      ++i;
-    } else if (std::strcmp(argv[i], "--width") == 0) {
-      width = std::max(120, std::atoi(argv[i + 1]));
-      ++i;
-    } else if (std::strcmp(argv[i], "--height") == 0) {
-      height = std::max(120, std::atoi(argv[i + 1]));
-      ++i;
+    } else if (std::strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
+      width = std::max(120, std::atoi(argv[++i]));
+    } else if (std::strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
+      height = std::max(120, std::atoi(argv[++i]));
+    } else if (argv[i][0] != '-' && dylib_path.isEmpty()) {
+      dylib_path = QString::fromUtf8(argv[i]);
     }
+  }
+
+  if (use_quick) {
+#ifdef NVE_QT_HAS_QUICK
+    return runQuickShell(app, dylib_path, snapshot_path, schema_version, width, height);
+#else
+    std::cerr << "[nve-qt-shell] Error: --quick requested, but this binary was built without Qt6::Quick.\n";
+    return 1;
+#endif
   }
 
   nve::qt::NveQtWidget window;

@@ -6,18 +6,35 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Prefer unified prefixes (/opt/homebrew, /opt/homebrew/opt/qt) before split kegs (qtbase,
+# qtdeclarative) so Qt6Config.cmake discovers Widgets, Quick, and Qml together.
 foreach(_nve_qt_hint IN ITEMS
     "/opt/homebrew/opt/qt"
-    "/opt/homebrew/opt/qtbase"
     "/opt/homebrew"
+    "/opt/homebrew/opt/qtdeclarative"
+    "/opt/homebrew/opt/qtbase"
     "/usr/local/opt/qt"
+    "/usr/local"
+    "/usr/local/opt/qtdeclarative"
     "/usr/local/opt/qtbase")
   if(EXISTS "${_nve_qt_hint}")
     list(APPEND CMAKE_PREFIX_PATH "${_nve_qt_hint}")
   endif()
 endforeach()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets OPTIONAL_COMPONENTS Quick Qml)
+if(NOT TARGET Qt6::Quick OR NOT TARGET Qt6::Qml)
+  find_package(Qt6Qml QUIET PATHS
+    "/opt/homebrew/opt/qtdeclarative/lib/cmake"
+    "/opt/homebrew/lib/cmake"
+    "/usr/local/opt/qtdeclarative/lib/cmake"
+    "/usr/local/lib/cmake")
+  find_package(Qt6Quick QUIET PATHS
+    "/opt/homebrew/opt/qtdeclarative/lib/cmake"
+    "/opt/homebrew/lib/cmake"
+    "/usr/local/opt/qtdeclarative/lib/cmake"
+    "/usr/local/lib/cmake")
+endif()
 
 if(NOT TARGET nve_fabric_bridge)
   add_subdirectory(
@@ -27,6 +44,7 @@ if(NOT TARGET nve_fabric_bridge)
 endif()
 
 add_library(nve_qt_shell_lib STATIC
+  NveQtCommon.hpp
   NveQtWidget.hpp
   NveQtWidget.cpp
 )
@@ -47,6 +65,25 @@ target_link_libraries(nve_qt_shell_lib
     nve_fabric_bridge
     Qt6::Widgets
 )
+
+set(NVE_QT_HAS_QUICK OFF)
+if(TARGET Qt6::Quick AND TARGET Qt6::Qml)
+  set(NVE_QT_HAS_QUICK ON)
+  message(STATUS "nve_qt_shell: Qt6::Quick found — enabling GPU Scene Graph NveQtQuickItem")
+  target_sources(nve_qt_shell_lib
+    PRIVATE
+      NveQtQuickItem.hpp
+      NveQtQuickItem.cpp
+  )
+  target_compile_definitions(nve_qt_shell_lib PUBLIC NVE_QT_HAS_QUICK=1)
+  target_link_libraries(nve_qt_shell_lib
+    PUBLIC
+      Qt6::Quick
+      Qt6::Qml
+  )
+else()
+  message(STATUS "nve_qt_shell: Qt6::Quick not found — building QWidget host only")
+endif()
 
 add_executable(nve_qt_shell main.cpp)
 if(MSVC)
@@ -81,3 +118,30 @@ add_dependencies(nve_qt_shell_test
 
 add_test(NAME qt_shell_test COMMAND nve_qt_shell_test)
 set_tests_properties(qt_shell_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+if(NVE_QT_HAS_QUICK)
+  add_executable(nve_qt_quick_test tests/qt_quick_test.cpp)
+  if(MSVC)
+    target_compile_options(nve_qt_quick_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
+  else()
+    target_compile_options(nve_qt_quick_test PRIVATE -Wall -Wextra)
+  endif()
+  target_include_directories(nve_qt_quick_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/src"
+  )
+  target_compile_definitions(nve_qt_quick_test PRIVATE
+    NVE_TEST_VALID_DYLIB="$<TARGET_FILE:nve_bridge_fixture_valid>"
+    NVE_TEST_NO_ENTRY_DYLIB="$<TARGET_FILE:nve_bridge_fixture_no_entry>"
+    NVE_TEST_NO_SURFACE_DYLIB="$<TARGET_FILE:nve_bridge_fixture_no_surface>"
+  )
+  target_link_libraries(nve_qt_quick_test PRIVATE nve_qt_shell_lib)
+  add_dependencies(nve_qt_quick_test
+    nve_bridge_fixture_valid
+    nve_bridge_fixture_no_entry
+    nve_bridge_fixture_no_surface
+  )
+
+  add_test(NAME qt_quick_test COMMAND nve_qt_quick_test)
+  set_tests_properties(qt_quick_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+endif()

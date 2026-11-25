@@ -1,9 +1,9 @@
 #include "NveQtWidget.hpp"
+#include "NveQtCommon.hpp"
 
 #include <QApplication>
 #include <QColor>
 #include <QFont>
-#include <QFontMetricsF>
 #include <QGraphicsOpacityEffect>
 #include <QLabel>
 #include <QLineEdit>
@@ -29,20 +29,12 @@ namespace {
 
 constexpr const char* kNodeIdProperty = "nveNodeId";
 
-QColor qcolor_from_rgba(uint32_t rgba) noexcept {
-  const auto c = nve::unpack_rgba(rgba);
-  return QColor(c.r8, c.g8, c.b8, c.a8);
+inline QColor qcolor_from_rgba(uint32_t rgba) noexcept {
+  return qcolorFromRgba(rgba);
 }
 
-QFont make_nve_font(float font_size) {
-  QFont font;
-  if (QApplication::instance() != nullptr) {
-    font = QApplication::font();
-  }
-  const int px =
-      std::max(1, static_cast<int>(std::lround(font_size > 0.0f ? font_size : 16.0f)));
-  font.setPixelSize(px);
-  return font;
+inline QFont make_nve_font(float font_size) {
+  return makeNveFont(font_size);
 }
 
 void apply_widget_opacity(QWidget* widget, float opacity) {
@@ -487,40 +479,7 @@ NveQtWidget::NveQtWidget(QWidget* parent) : QWidget(parent), impl_(std::make_uni
 NveQtWidget::~NveQtWidget() = default;
 
 nve::TextMeasurerCallback NveQtWidget::makeQtTextMeasurer() {
-  return [](std::string_view text, float font_size, float max_width) -> NveIntrinsicSize {
-    if (text.empty()) {
-      return NveIntrinsicSize{0.0f, 0.0f};
-    }
-    const QString qtext = QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
-    const QFont font = make_nve_font(font_size);
-    const QFontMetricsF fm(font);
-    const bool constrained = (max_width > 0.0f && std::isfinite(max_width));
-    const qreal constraint_w = constrained ? static_cast<qreal>(max_width) : 1.0e6;
-    const QRectF bounds = fm.boundingRect(
-        QRectF(0.0, 0.0, constraint_w, 1.0e6),
-        Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
-        qtext);
-
-    qreal w = bounds.width();
-    qreal h = std::max(bounds.height(), fm.height());
-
-    if (!qtext.contains(QChar('\n'))) {
-      const qreal adv = fm.horizontalAdvance(qtext);
-      if (!constrained || adv <= constraint_w) {
-        w = std::max(w, adv);
-      }
-    }
-
-    // Add 2px horizontal slack so QLabel with wordWrap enabled never wraps the final glyph.
-    qreal final_w = std::ceil(w) + 2.0;
-    if (constrained) {
-      final_w = std::min(final_w, std::ceil(constraint_w));
-    }
-    return NveIntrinsicSize{
-        static_cast<float>(final_w),
-        static_cast<float>(std::ceil(h)),
-    };
-  };
+  return makeSharedQtTextMeasurer();
 }
 
 bool NveQtWidget::attachInterface(NveGetInterfaceFn getInterface, uint32_t surfaceId) {
