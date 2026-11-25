@@ -281,6 +281,9 @@ impl WorkspaceState {
             s.doc_editing_block_id = None;
             s.doc_edit_draft.clear();
         });
+        if self.current.active_view == super::ActiveView::Docs {
+            self.router.push(crate::routes::StudioRoute::Doc { id: doc_id });
+        }
     }
 
     pub fn create_new_doc(&mut self) -> u32 {

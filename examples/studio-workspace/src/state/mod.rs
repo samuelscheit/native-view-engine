@@ -8,6 +8,7 @@ pub mod crdt_sync;
 mod docs;
 mod history;
 mod models;
+mod navigation;
 mod workbench;
 
 pub use codec::{WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION};
@@ -28,6 +29,9 @@ pub use models::{
 };
 pub use workbench::{HostSurfaceSpec, WorkbenchPreset, WorkbenchState, HOST_SURFACES};
 
+use crate::routes::StudioRouter;
+use crate::sdk::StudioSystemEnv;
+use crate::traits::{build_studio_trait_store, StudioTraitBox};
 use crate::ui_palette::CommandPaletteState;
 
 /// Top-level runtime state persisted across Tier-2 `cdylib` hot-swaps and time-travel scrubs.
@@ -39,11 +43,18 @@ pub struct WorkspaceState {
     pub frame_count: u64,
     pub palette: CommandPaletteState,
     pub sync_telemetry: SyncTelemetryState,
+    pub router: StudioRouter,
+    pub focused_task_id: Option<u32>,
+    pub system_env: StudioSystemEnv,
+    pub last_clipboard_notice: Option<String>,
+    pub trait_store: StudioTraitBox,
 }
 
 impl Default for WorkspaceState {
     fn default() -> Self {
         let initial = WorkspaceSnapshot::default();
+        let system_env = StudioSystemEnv::default();
+        let trait_store = StudioTraitBox(build_studio_trait_store(&initial, &system_env));
         Self {
             history: vec![initial.clone()],
             current: initial,
@@ -51,6 +62,11 @@ impl Default for WorkspaceState {
             frame_count: 1,
             palette: CommandPaletteState::default(),
             sync_telemetry: SyncTelemetryState::default(),
+            router: StudioRouter::default(),
+            focused_task_id: None,
+            system_env,
+            last_clipboard_notice: None,
+            trait_store,
         }
     }
 }
