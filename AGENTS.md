@@ -76,3 +76,7 @@ cargo test --locked -p nve-backend-web -p nve-web-shell \
   && cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
 ./hosts/web-shell/build.sh
 ```
+
+## Learned rules
+
+- **Zero-overhead first**: For every boundary (FFI, events, interop, host bridges), research proven designs on the web and choose the zero-cost one, even when it is harder and takes longer. Never ship a quick solution that adds runtime overhead, such as serializing to JSON, wrapper layers or extra copies.
