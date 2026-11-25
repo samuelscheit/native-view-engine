@@ -4,6 +4,7 @@
 //! Keeps command buffers, event batches, Dioxus surfaces, modular FFI modules, and
 //! `hosts/web-shell/pkg` size metrics DRY across every benchmark group.
 
+pub mod arena_mmap;
 pub mod wasm_bundle_size;
 
 pub use wasm_bundle_size::{
