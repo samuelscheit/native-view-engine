@@ -181,6 +181,13 @@ struct ShadowNodeEntry {
   const TextMeasurerCallback* text_measurer{nullptr};
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
   YGNodeRef yg_node{nullptr};
+#else
+  uint64_t measure_gen{0};
+  float cached_avail_w{-2.0f};
+  float cached_avail_h{-2.0f};
+  bool cached_w_def{false};
+  bool cached_h_def{false};
+  NveIntrinsicSize cached_measure{};
 #endif
 };
 
@@ -872,17 +879,50 @@ class FabricHost {
     }
 #else
     const uint64_t ts = now_us();
-    compute_fallback_layout(NVE_ROOT_NODE_ID, 0.0f, 0.0f, config_.width, config_.height, ts);
+    const uint64_t measure_gen = ++gen_counter_;
+    const float root_w = resolve_definite_dim(root_it->second.layout.width, config_.width);
+    const float root_h = resolve_definite_dim(root_it->second.layout.height, config_.height);
+    compute_fallback_layout(
+        NVE_ROOT_NODE_ID,
+        0.0f,
+        0.0f,
+        (root_w >= 0.0f) ? root_w : config_.width,
+        (root_h >= 0.0f) ? root_h : config_.height,
+        ts,
+        measure_gen);
 #endif
   }
 
 #if !(defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA)
-  static float resolve_dim(const Dimension& d, float parent_size, float fallback) noexcept {
+  static constexpr float kUnconstrained = -1.0f;
+
+  static float resolve_definite_dim(const Dimension& d, float parent_size) noexcept {
     switch (d.tag) {
-      case 1: return d.value;
-      case 2: return parent_size * (d.value * 0.01f);
-      default: return fallback;
+      case 1:
+        return std::max(0.0f, d.value);
+      case 2:
+        return (parent_size >= 0.0f) ? std::max(0.0f, parent_size * (d.value * 0.01f))
+                                     : kUnconstrained;
+      default:
+        return kUnconstrained;
     }
+  }
+
+  static float clamp_axis_size(
+      float val,
+      const Dimension& min_d,
+      const Dimension& max_d,
+      float parent_size) noexcept {
+    val = std::max(0.0f, val);
+    const float max_v = resolve_definite_dim(max_d, parent_size);
+    if (max_v >= 0.0f) {
+      val = std::min(val, max_v);
+    }
+    const float min_v = resolve_definite_dim(min_d, parent_size);
+    if (min_v >= 0.0f) {
+      val = std::max(val, min_v);
+    }
+    return std::max(0.0f, val);
   }
 
   NveIntrinsicSize measure_text_fallback(const ShadowNodeEntry& entry, float max_w) const {
@@ -914,6 +954,141 @@ class FabricHost {
     return NveIntrinsicSize{out_w, out_h};
   }
 
+  NveIntrinsicSize measure_intrinsic_size(
+      uint32_t node_id,
+      float avail_w,
+      float avail_h,
+      bool parent_w_def,
+      bool parent_h_def,
+      uint64_t measure_gen,
+      uint32_t depth) {
+    if (depth > 512) return NveIntrinsicSize{0.0f, 0.0f};
+    auto it = nodes_.find(node_id);
+    if (it == nodes_.end()) return NveIntrinsicSize{0.0f, 0.0f};
+    ShadowNodeEntry& node = it->second;
+
+    if (node.measure_gen == measure_gen &&
+        node.cached_w_def == parent_w_def &&
+        node.cached_h_def == parent_h_def &&
+        std::fabs(node.cached_avail_w - avail_w) <= 1e-3f &&
+        std::fabs(node.cached_avail_h - avail_h) <= 1e-3f) {
+      return node.cached_measure;
+    }
+
+    const LayoutProps& l = node.layout;
+    const float pct_base_w = parent_w_def ? avail_w : kUnconstrained;
+    const float pct_base_h = parent_h_def ? avail_h : kUnconstrained;
+
+    float known_w = resolve_definite_dim(l.width, pct_base_w);
+    float known_h = resolve_definite_dim(l.height, pct_base_h);
+    if (known_w >= 0.0f) {
+      known_w = clamp_axis_size(known_w, l.min_width, l.max_width, pct_base_w);
+    }
+    if (known_h >= 0.0f) {
+      known_h = clamp_axis_size(known_h, l.min_height, l.max_height, pct_base_h);
+    }
+
+    NveIntrinsicSize result{0.0f, 0.0f};
+    if (known_w >= 0.0f && known_h >= 0.0f) {
+      result = NveIntrinsicSize{known_w, known_h};
+    } else if (node.kind == NVE_COMP_TEXT && node.children.empty()) {
+      float text_max_w = 0.0f;
+      if (known_w >= 0.0f) {
+        text_max_w = known_w;
+      } else {
+        float bound_w = avail_w;
+        const float max_w_dim = resolve_definite_dim(l.max_width, pct_base_w);
+        if (max_w_dim >= 0.0f) {
+          bound_w = (bound_w >= 0.0f) ? std::min(bound_w, max_w_dim) : max_w_dim;
+        }
+        if (bound_w > 0.0f) {
+          text_max_w = bound_w;
+        }
+      }
+      const NveIntrinsicSize measured = measure_text_fallback(node, text_max_w);
+      result.width = (known_w >= 0.0f)
+                         ? known_w
+                         : clamp_axis_size(measured.width, l.min_width, l.max_width, pct_base_w);
+      result.height = (known_h >= 0.0f)
+                          ? known_h
+                          : clamp_axis_size(measured.height, l.min_height, l.max_height, pct_base_h);
+    } else {
+      const float pad_w = std::max(0.0f, l.padding.left) + std::max(0.0f, l.padding.right);
+      const float pad_h = std::max(0.0f, l.padding.top) + std::max(0.0f, l.padding.bottom);
+      if (node.children.empty()) {
+        result.width = (known_w >= 0.0f)
+                           ? known_w
+                           : clamp_axis_size(pad_w, l.min_width, l.max_width, pct_base_w);
+        result.height = (known_h >= 0.0f)
+                            ? known_h
+                            : clamp_axis_size(pad_h, l.min_height, l.max_height, pct_base_h);
+      } else {
+        const bool is_row = (l.flex_direction == 1 || l.flex_direction == 3);
+        const float gap = std::max(0.0f, l.gap);
+
+        float bound_w = known_w;
+        if (bound_w < 0.0f) {
+          bound_w = avail_w;
+          const float max_w_dim = resolve_definite_dim(l.max_width, pct_base_w);
+          if (max_w_dim >= 0.0f) {
+            bound_w = (bound_w >= 0.0f) ? std::min(bound_w, max_w_dim) : max_w_dim;
+          }
+        }
+        const float inner_avail_w =
+            (bound_w >= 0.0f) ? std::max(0.0f, bound_w - pad_w) : kUnconstrained;
+
+        const float inner_avail_h =
+            (known_h >= 0.0f) ? std::max(0.0f, known_h - pad_h) : kUnconstrained;
+
+        float sum_main = 0.0f;
+        float max_cross = 0.0f;
+        size_t valid_children = 0;
+        for (uint32_t cid : node.children) {
+          auto cit = nodes_.find(cid);
+          if (cit == nodes_.end()) continue;
+          const LayoutProps& cl = cit->second.layout;
+          const float c_mw = cl.margin.left + cl.margin.right;
+          const float c_mh = cl.margin.top + cl.margin.bottom;
+          const float c_avail_w =
+              (inner_avail_w >= 0.0f) ? std::max(0.0f, inner_avail_w - c_mw) : kUnconstrained;
+          const float c_avail_h =
+              (inner_avail_h >= 0.0f) ? std::max(0.0f, inner_avail_h - c_mh) : kUnconstrained;
+          const NveIntrinsicSize cs = measure_intrinsic_size(
+              cid, c_avail_w, c_avail_h, known_w >= 0.0f, known_h >= 0.0f, measure_gen, depth + 1);
+          const float outer_w = std::max(0.0f, cs.width + c_mw);
+          const float outer_h = std::max(0.0f, cs.height + c_mh);
+          if (is_row) {
+            sum_main += outer_w;
+            max_cross = std::max(max_cross, outer_h);
+          } else {
+            sum_main += outer_h;
+            max_cross = std::max(max_cross, outer_w);
+          }
+          ++valid_children;
+        }
+        if (valid_children > 1) {
+          sum_main += gap * static_cast<float>(valid_children - 1);
+        }
+        const float content_w = pad_w + (is_row ? sum_main : max_cross);
+        const float content_h = pad_h + (is_row ? max_cross : sum_main);
+        result.width = (known_w >= 0.0f)
+                           ? known_w
+                           : clamp_axis_size(content_w, l.min_width, l.max_width, pct_base_w);
+        result.height = (known_h >= 0.0f)
+                            ? known_h
+                            : clamp_axis_size(content_h, l.min_height, l.max_height, pct_base_h);
+      }
+    }
+
+    node.measure_gen = measure_gen;
+    node.cached_avail_w = avail_w;
+    node.cached_avail_h = avail_h;
+    node.cached_w_def = parent_w_def;
+    node.cached_h_def = parent_h_def;
+    node.cached_measure = result;
+    return result;
+  }
+
   void compute_fallback_layout(
       uint32_t node_id,
       float x,
@@ -921,6 +1096,7 @@ class FabricHost {
       float w,
       float h,
       uint64_t ts,
+      uint64_t measure_gen,
       uint32_t depth = 0) {
     if (depth > 512) return;
     auto it = nodes_.find(node_id);
@@ -939,77 +1115,207 @@ class FabricHost {
 
     if (node.children.empty()) return;
 
-    const bool is_row = (node.layout.flex_direction == 1 || node.layout.flex_direction == 3);
-    const float inner_x = node.layout.padding.left;
-    const float inner_y = node.layout.padding.top;
-    const float inner_w = std::max(0.0f, w - node.layout.padding.left - node.layout.padding.right);
-    const float inner_h = std::max(0.0f, h - node.layout.padding.top - node.layout.padding.bottom);
+    std::vector<uint32_t> live_children;
+    live_children.reserve(node.children.size());
+    for (uint32_t cid : node.children) {
+      if (nodes_.find(cid) != nodes_.end()) {
+        live_children.push_back(cid);
+      }
+    }
+    if (live_children.empty()) return;
+
+    const LayoutProps& nl = node.layout;
+    const bool is_row = (nl.flex_direction == 1 || nl.flex_direction == 3);
+    const bool is_reverse = (nl.flex_direction == 2 || nl.flex_direction == 3);
+    const float pad_l = std::max(0.0f, nl.padding.left);
+    const float pad_r = std::max(0.0f, nl.padding.right);
+    const float pad_t = std::max(0.0f, nl.padding.top);
+    const float pad_b = std::max(0.0f, nl.padding.bottom);
+    const float inner_x = pad_l;
+    const float inner_y = pad_t;
+    const float inner_w = std::max(0.0f, w - pad_l - pad_r);
+    const float inner_h = std::max(0.0f, h - pad_t - pad_b);
     const float main_avail = is_row ? inner_w : inner_h;
     const float cross_avail = is_row ? inner_h : inner_w;
-    const float total_gap =
-        node.children.size() > 1 ? node.layout.gap * static_cast<float>(node.children.size() - 1) : 0.0f;
+    const float gap = std::max(0.0f, nl.gap);
+    const size_t count = live_children.size();
+    const float total_gap = (count > 1) ? gap * static_cast<float>(count - 1) : 0.0f;
 
     float fixed_main = 0.0f;
     float total_grow = 0.0f;
-    std::vector<float> child_main(node.children.size(), 0.0f);
-    std::vector<float> child_cross(node.children.size(), cross_avail);
+    std::vector<float> child_main(count, 0.0f);
+    std::vector<float> child_cross(count, 0.0f);
 
-    for (size_t i = 0; i < node.children.size(); ++i) {
-      auto cit = nodes_.find(node.children[i]);
-      if (cit == nodes_.end()) continue;
-      const auto& cl = cit->second.layout;
+    for (size_t i = 0; i < count; ++i) {
+      const auto& child = nodes_.at(live_children[i]);
+      const LayoutProps& cl = child.layout;
       const float m_margin = is_row ? (cl.margin.left + cl.margin.right) : (cl.margin.top + cl.margin.bottom);
       const float c_margin = is_row ? (cl.margin.top + cl.margin.bottom) : (cl.margin.left + cl.margin.right);
       const Dimension& m_dim = is_row ? cl.width : cl.height;
       const Dimension& c_dim = is_row ? cl.height : cl.width;
-      float fallback_main = 0.0f;
-      float fallback_cross = std::max(0.0f, cross_avail - c_margin);
-      if (cit->second.kind == NVE_COMP_TEXT && cit->second.children.empty()) {
-        float max_w = 0.0f;
-        if (cl.width.tag == 1) {
-          max_w = cl.width.value;
-        } else if (cl.width.tag == 2) {
-          max_w = inner_w * (cl.width.value * 0.01f);
-        } else {
-          max_w = is_row ? std::max(0.0f, main_avail - m_margin) : std::max(0.0f, cross_avail - c_margin);
+      const Dimension& m_min = is_row ? cl.min_width : cl.min_height;
+      const Dimension& m_max = is_row ? cl.max_width : cl.max_height;
+      const Dimension& c_min = is_row ? cl.min_height : cl.min_width;
+      const Dimension& c_max = is_row ? cl.max_height : cl.max_width;
+
+      const float def_main = resolve_definite_dim(m_dim, main_avail);
+      const float def_cross = resolve_definite_dim(c_dim, cross_avail);
+      const bool cross_stretched = (def_cross < 0.0f && nl.align_items == 0);
+
+      float resolved_main =
+          (def_main >= 0.0f) ? clamp_axis_size(def_main, m_min, m_max, main_avail) : kUnconstrained;
+      float resolved_cross =
+          (def_cross >= 0.0f)
+              ? clamp_axis_size(def_cross, c_min, c_max, cross_avail)
+              : (cross_stretched
+                     ? clamp_axis_size(std::max(0.0f, cross_avail - c_margin), c_min, c_max, cross_avail)
+                     : kUnconstrained);
+
+      if (resolved_main < 0.0f || resolved_cross < 0.0f) {
+        const float c_mw = cl.margin.left + cl.margin.right;
+        const float c_mh = cl.margin.top + cl.margin.bottom;
+        const float c_avail_w = is_row
+            ? ((resolved_main >= 0.0f) ? resolved_main : std::max(0.0f, inner_w - c_mw))
+            : ((resolved_cross >= 0.0f) ? resolved_cross : std::max(0.0f, inner_w - c_mw));
+        const float c_avail_h = is_row
+            ? ((resolved_cross >= 0.0f) ? resolved_cross : std::max(0.0f, inner_h - c_mh))
+            : ((resolved_main >= 0.0f) ? resolved_main : kUnconstrained);
+        const bool c_w_def = is_row ? (resolved_main >= 0.0f) : (resolved_cross >= 0.0f);
+        const bool c_h_def = is_row ? (resolved_cross >= 0.0f) : (resolved_main >= 0.0f);
+        const NveIntrinsicSize measured = measure_intrinsic_size(
+            live_children[i], c_avail_w, c_avail_h, c_w_def, c_h_def, measure_gen, depth + 1);
+        if (resolved_main < 0.0f) {
+          resolved_main = clamp_axis_size(is_row ? measured.width : measured.height, m_min, m_max, main_avail);
         }
-        const NveIntrinsicSize measured = measure_text_fallback(cit->second, max_w);
-        fallback_main = is_row ? measured.width : measured.height;
-        if (is_row) {
-          fallback_cross = measured.height;
-        } else if (node.layout.align_items != 0) {
-          fallback_cross = std::min(measured.width, fallback_cross);
+        if (resolved_cross < 0.0f) {
+          resolved_cross = clamp_axis_size(is_row ? measured.height : measured.width, c_min, c_max, cross_avail);
         }
       }
-      child_main[i] = resolve_dim(m_dim, main_avail, fallback_main);
-      child_cross[i] = resolve_dim(c_dim, cross_avail, fallback_cross);
+
+      child_main[i] = resolved_main;
+      child_cross[i] = resolved_cross;
       fixed_main += child_main[i] + m_margin;
       total_grow += std::max(0.0f, cl.flex_grow);
     }
 
-    const float leftover = std::max(0.0f, main_avail - fixed_main - total_gap);
-    if (total_grow > 0.0f && leftover > 0.0f) {
-      for (size_t i = 0; i < node.children.size(); ++i) {
-        auto cit = nodes_.find(node.children[i]);
-        if (cit == nodes_.end()) continue;
-        if (cit->second.layout.flex_grow > 0.0f) {
-          child_main[i] += leftover * (cit->second.layout.flex_grow / total_grow);
+    const float free_main = main_avail - fixed_main - total_gap;
+    if (free_main > 0.0f && total_grow > 0.0f) {
+      for (size_t i = 0; i < count; ++i) {
+        const LayoutProps& cl = nodes_.at(live_children[i]).layout;
+        if (cl.flex_grow > 0.0f) {
+          const Dimension& m_min = is_row ? cl.min_width : cl.min_height;
+          const Dimension& m_max = is_row ? cl.max_width : cl.max_height;
+          child_main[i] =
+              clamp_axis_size(child_main[i] + free_main * (cl.flex_grow / total_grow), m_min, m_max, main_avail);
+        }
+      }
+    } else if (free_main < 0.0f) {
+      float total_scaled_shrink = 0.0f;
+      for (size_t i = 0; i < count; ++i) {
+        const LayoutProps& cl = nodes_.at(live_children[i]).layout;
+        total_scaled_shrink += std::max(0.0f, cl.flex_shrink) * child_main[i];
+      }
+      if (total_scaled_shrink > 0.0f) {
+        const float overflow = -free_main;
+        for (size_t i = 0; i < count; ++i) {
+          const LayoutProps& cl = nodes_.at(live_children[i]).layout;
+          const float weight = std::max(0.0f, cl.flex_shrink) * child_main[i];
+          if (weight > 0.0f) {
+            const Dimension& m_min = is_row ? cl.min_width : cl.min_height;
+            const Dimension& m_max = is_row ? cl.max_width : cl.max_height;
+            const float shrunk = std::max(0.0f, child_main[i] - overflow * (weight / total_scaled_shrink));
+            child_main[i] = clamp_axis_size(shrunk, m_min, m_max, main_avail);
+          }
         }
       }
     }
 
-    float cursor = is_row ? inner_x : inner_y;
-    for (size_t i = 0; i < node.children.size(); ++i) {
-      auto cit = nodes_.find(node.children[i]);
-      if (cit == nodes_.end()) continue;
-      const auto& cl = cit->second.layout;
-      const float cx = is_row ? (cursor + cl.margin.left) : (inner_x + cl.margin.left);
-      const float cy = is_row ? (inner_y + cl.margin.top) : (cursor + cl.margin.top);
+    float used_main = total_gap;
+    for (size_t i = 0; i < count; ++i) {
+      const LayoutProps& cl = nodes_.at(live_children[i]).layout;
+      const float m_margin = is_row ? (cl.margin.left + cl.margin.right) : (cl.margin.top + cl.margin.bottom);
+      used_main += child_main[i] + m_margin;
+    }
+
+    const float rem_main = main_avail - used_main;
+    float leading_main = 0.0f;
+    float between_extra = 0.0f;
+    switch (nl.justify_content) {
+      case 1: /* Center */
+        leading_main = rem_main * 0.5f;
+        break;
+      case 2: /* FlexEnd */
+        leading_main = rem_main;
+        break;
+      case 3: /* SpaceBetween */
+        if (count > 1 && rem_main > 0.0f) {
+          between_extra = rem_main / static_cast<float>(count - 1);
+        }
+        break;
+      case 4: /* SpaceAround */
+        if (rem_main > 0.0f) {
+          between_extra = rem_main / static_cast<float>(count);
+          leading_main = between_extra * 0.5f;
+        } else {
+          leading_main = rem_main * 0.5f;
+        }
+        break;
+      case 5: /* SpaceEvenly */
+        if (rem_main > 0.0f) {
+          between_extra = rem_main / static_cast<float>(count + 1);
+          leading_main = between_extra;
+        } else {
+          leading_main = rem_main * 0.5f;
+        }
+        break;
+      case 0: /* FlexStart */
+      default:
+        break;
+    }
+
+    float cursor = is_reverse
+        ? ((is_row ? (inner_x + inner_w) : (inner_y + inner_h)) - leading_main)
+        : ((is_row ? inner_x : inner_y) + leading_main);
+
+    for (size_t i = 0; i < count; ++i) {
+      const LayoutProps& cl = nodes_.at(live_children[i]).layout;
+      const float m_margin_start = is_row ? cl.margin.left : cl.margin.top;
+      const float m_margin_end = is_row ? cl.margin.right : cl.margin.bottom;
+      const float c_margin_start = is_row ? cl.margin.top : cl.margin.left;
+      const float c_margin_end = is_row ? cl.margin.bottom : cl.margin.right;
+
+      const float rem_cross = cross_avail - (child_cross[i] + c_margin_start + c_margin_end);
+      float cross_offset = c_margin_start;
+      switch (nl.align_items) {
+        case 2: /* Center */
+          cross_offset = c_margin_start + rem_cross * 0.5f;
+          break;
+        case 3: /* FlexEnd */
+          cross_offset = c_margin_start + rem_cross;
+          break;
+        case 0: /* Stretch */
+        case 1: /* FlexStart */
+        case 4: /* Baseline */
+        default:
+          cross_offset = c_margin_start;
+          break;
+      }
+
+      float main_pos = 0.0f;
+      if (is_reverse) {
+        cursor -= m_margin_end + child_main[i];
+        main_pos = cursor;
+        cursor -= m_margin_start + gap + between_extra;
+      } else {
+        main_pos = cursor + m_margin_start;
+        cursor += m_margin_start + child_main[i] + m_margin_end + gap + between_extra;
+      }
+
+      const float cx = is_row ? main_pos : (inner_x + cross_offset);
+      const float cy = is_row ? (inner_y + cross_offset) : main_pos;
       const float cw = is_row ? child_main[i] : child_cross[i];
       const float ch = is_row ? child_cross[i] : child_main[i];
-      compute_fallback_layout(node.children[i], cx, cy, cw, ch, ts, depth + 1);
-      cursor += child_main[i] + (is_row ? (cl.margin.left + cl.margin.right) : (cl.margin.top + cl.margin.bottom)) +
-                node.layout.gap;
+      compute_fallback_layout(live_children[i], cx, cy, cw, ch, ts, measure_gen, depth + 1);
     }
   }
 #endif

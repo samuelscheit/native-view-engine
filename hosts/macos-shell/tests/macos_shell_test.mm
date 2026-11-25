@@ -506,21 +506,83 @@ int main() {
       std::vector<NSTextField *> labels = collectLabels(counterView);
       assert(labels.size() >= 4);
 
-      bool sawTitle = false, sawCount0 = false, sawInc = false, sawReset = false;
+      NSTextField *titleLbl = nil;
+      NSTextField *countLbl = nil;
+      NSTextField *incLbl = nil;
+      NSTextField *resetLbl = nil;
       for (NSTextField *lbl : labels) {
         assert(lbl.frame.size.width > 20.0);
         assert(lbl.frame.size.height >= 16.0);
         NSColor *srgb = [lbl.textColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
         assert(srgb != nil && srgb.alphaComponent > 0.99);
-        if ([lbl.stringValue isEqualToString:@"NATIVE VIEW ENGINE"]) sawTitle = true;
+        if ([lbl.stringValue isEqualToString:@"NATIVE VIEW ENGINE"]) titleLbl = lbl;
         if ([lbl.stringValue isEqualToString:@"Count: 0"]) {
-          sawCount0 = true;
+          countLbl = lbl;
           assert(approx_eq(lbl.font.pointSize, 28.0));
         }
-        if ([lbl.stringValue isEqualToString:@"Increment +"]) sawInc = true;
-        if ([lbl.stringValue isEqualToString:@"Reset"]) sawReset = true;
+        if ([lbl.stringValue isEqualToString:@"Increment +"]) incLbl = lbl;
+        if ([lbl.stringValue isEqualToString:@"Reset"]) resetLbl = lbl;
       }
-      assert(sawTitle && sawCount0 && sawInc && sawReset);
+      assert(titleLbl != nil && countLbl != nil && incLbl != nil && resetLbl != nil);
+
+      // Helper to find the nearest ancestor view with an opaque layer background color.
+      auto findOpaqueAncestor = [](NSView *leaf, NSView *stopAt) -> NSView * {
+        for (NSView *cur = leaf.superview; cur != nil && cur != stopAt; cur = cur.superview) {
+          CGColorRef bg = cur.layer.backgroundColor;
+          if (bg != nullptr && CGColorGetAlpha(bg) > 0.9) {
+            return cur;
+          }
+        }
+        return nil;
+      };
+
+      // Verify top dark slate card (#1e293b) exists with real geometry & contains both card labels.
+      NSView *cardView = findOpaqueAncestor(titleLbl, counterView);
+      assert(cardView != nil);
+      assert(findOpaqueAncestor(countLbl, counterView) == cardView);
+      assert(cardView.frame.size.width > 200.0);
+      assert(cardView.frame.size.height > 60.0);
+
+      NSColor *cardColor =
+          [[NSColor colorWithCGColor:cardView.layer.backgroundColor]
+              colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+      assert(cardColor != nil);
+      assert(approx_eq(cardColor.redComponent, 0x1e / 255.0, 0.03));
+      assert(approx_eq(cardColor.greenComponent, 0x29 / 255.0, 0.03));
+      assert(approx_eq(cardColor.blueComponent, 0x3b / 255.0, 0.03));
+      assert(cardColor.alphaComponent > 0.99);
+
+      const NSRect cardInRoot = [cardView convertRect:cardView.bounds toView:counterView];
+      const NSRect titleInRoot = [titleLbl convertRect:titleLbl.bounds toView:counterView];
+      const NSRect countInRoot = [countLbl convertRect:countLbl.bounds toView:counterView];
+      assert(NSContainsRect(NSInsetRect(cardInRoot, -1.0, -1.0), titleInRoot));
+      assert(NSContainsRect(NSInsetRect(cardInRoot, -1.0, -1.0), countInRoot));
+      assert(titleInRoot.origin.y < countInRoot.origin.y);
+
+      // Verify both buttons sit strictly below the top card, side by side, with centered labels.
+      NSView *incBtn = findOpaqueAncestor(incLbl, counterView);
+      NSView *resetBtn = findOpaqueAncestor(resetLbl, counterView);
+      assert(incBtn != nil && resetBtn != nil && incBtn != cardView && resetBtn != cardView);
+      assert(incBtn.gestureRecognizers.count >= 1);
+      assert(resetBtn.gestureRecognizers.count >= 1);
+      assert(approx_eq(incBtn.frame.size.width, 160.0, 1.0));
+      assert(approx_eq(incBtn.frame.size.height, 48.0, 1.0));
+      assert(approx_eq(resetBtn.frame.size.width, 120.0, 1.0));
+      assert(approx_eq(resetBtn.frame.size.height, 48.0, 1.0));
+
+      const NSRect incBtnInRoot = [incBtn convertRect:incBtn.bounds toView:counterView];
+      const NSRect resetBtnInRoot = [resetBtn convertRect:resetBtn.bounds toView:counterView];
+      assert(incBtnInRoot.origin.y > NSMaxY(cardInRoot));
+      assert(resetBtnInRoot.origin.y > NSMaxY(cardInRoot));
+      assert(approx_eq(incBtnInRoot.origin.y, resetBtnInRoot.origin.y, 1.0));
+      assert(resetBtnInRoot.origin.x > NSMaxX(incBtnInRoot));
+
+      const NSRect incLblInBtn = [incLbl convertRect:incLbl.bounds toView:incBtn];
+      const NSRect resetLblInBtn = [resetLbl convertRect:resetLbl.bounds toView:resetBtn];
+      assert(std::fabs(NSMidX(incLblInBtn) - incBtn.bounds.size.width * 0.5) <= 4.0);
+      assert(std::fabs(NSMidY(incLblInBtn) - incBtn.bounds.size.height * 0.5) <= 4.0);
+      assert(std::fabs(NSMidX(resetLblInBtn) - resetBtn.bounds.size.width * 0.5) <= 4.0);
+      assert(std::fabs(NSMidY(resetLblInBtn) - resetBtn.bounds.size.height * 0.5) <= 4.0);
 
       // Verify state preservation across live Rust dylib hot-reload
       assert([counterView applyPropsDictionary:@{@"initialCount" : @5}]);
