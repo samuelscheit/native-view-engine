@@ -15,6 +15,7 @@ members = [
     "packages/backends/web",
     "packages/framework/ui",
     "packages/framework/router",
+    "packages/framework/i18n",
     "packages/framework/mdx",
     "packages/framework/docs",
     "packages/tools/cli",
@@ -60,6 +61,7 @@ nve-interop = { path = "packages/core/interop" }
 nve-host-services = { path = "packages/core/host-services" }
 nve-ui = { path = "packages/framework/ui" }
 nve-router = { path = "packages/framework/router" }
+nve-i18n = { path = "packages/framework/i18n" }
 nve-mdx = { path = "packages/framework/mdx" }
 nve-docs = { path = "packages/framework/docs" }
 nve-backend-headless = { path = "packages/backends/headless" }
