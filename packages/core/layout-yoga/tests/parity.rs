@@ -4,7 +4,7 @@
 //! When compiled without `RN_REACT_COMMON_DIR`, tests verify the clean `YogaUnavailableError`
 //! fallback path so `cargo test --workspace` always succeeds on every machine.
 //! When compiled with `RN_REACT_COMMON_DIR`, every Flexbox parity, text wrapping, mutation,
-//! live engine swap, and `examples/counter` CommandBuffer assertion executes against real RN Yoga.
+//! live engine swap, and `examples/kitchen-sink` CommandBuffer assertion executes against real RN Yoga.
 
 use std::sync::Arc;
 
@@ -263,12 +263,12 @@ fn parity_justify_and_align_variants() {
 }
 
 #[test]
-fn parity_examples_counter_command_buffer_and_live_swap() {
+fn parity_examples_kitchen_sink_command_buffer_and_live_swap() {
     if !YogaLayoutEngine::is_available() {
         return;
     }
 
-    let mut surface = nve_example_counter::create_surface(1);
+    let mut surface = nve_example_kitchen_sink::create_surface(1);
     let (_, _, cmd_bytes) = surface.render_frame(1);
 
     let viewport = Viewport {
@@ -289,15 +289,15 @@ fn parity_examples_counter_command_buffer_and_live_swap() {
     let mut node_ids: Vec<NodeId> = taffy_backend.nodes().keys().copied().collect();
     node_ids.sort_unstable();
     assert!(
-        node_ids.len() >= 7,
-        "expected full counter UI tree, found {} nodes",
+        node_ids.len() >= 20,
+        "expected full kitchen-sink UI tree, found {} nodes",
         node_ids.len()
     );
 
     for &id in &node_ids {
         let tr = taffy_backend.layout_of(id).unwrap();
         let yr = yoga_backend.layout_of(id).unwrap();
-        assert_rect_parity("examples/counter", id, tr, yr);
+        assert_rect_parity("examples/kitchen-sink", id, tr, yr);
     }
 
     // Live swap Taffy -> Yoga -> Box<dyn LayoutEngine> -> Taffy and verify all rects stay in parity!

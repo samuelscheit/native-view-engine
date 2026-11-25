@@ -1,10 +1,10 @@
 //! Pluggable `hosts/web-shell` WASM example bundle discovery and NVE Portal Bar wrapper emission
-//! for `/examples/studio/` and `/examples/counter/`.
+//! for `/examples/studio/` and `/examples/kitchen-sink/`.
 //!
 //! Supports BOTH:
 //! - Unified `hosts/web-shell` bundles (`index.html` + `pkg/<slug>/manifest.json`, which names the
 //!   entry files in the content-hashed `pkg/<slug>/<hash>/` directory `build.sh` publishes)
-//! - Future per-app bundles (`<dist>/studio/` and `<dist>/counter/`) with zero code changes.
+//! - Future per-app bundles (`<dist>/studio/` and `<dist>/kitchen-sink/`) with zero code changes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use nve_backend_web::{
 };
 use nve_docs_site::GITHUB_REPO_URL;
 use nve_engine::Viewport;
-use nve_example_counter::CounterModule;
+use nve_example_kitchen_sink::KitchenSinkModule;
 use nve_studio_workspace::StudioWorkspaceModule;
 
 #[derive(Debug, Clone, Copy)]
@@ -33,9 +33,9 @@ pub(crate) const EXAMPLE_APPS: [ExampleAppSpec; 2] = [
         description: "Multi-pane workspace, 100k Fenwick VirtualList, X-Ray inspector, and NVC1 CRDTs in WASM.",
     },
     ExampleAppSpec {
-        slug: "counter",
-        title: "Interactive Counter",
-        description: "Minimal NveApp proving fine-grained Dioxus signals and zero-JSON binary CommandBuffer patching.",
+        slug: "kitchen-sink",
+        title: "NVE Kitchen Sink Gallery",
+        description: "Interactive showcase of every nve-ui component, theme/density/i18n switching, Canvas draw lists, and ErrorBoundary recovery.",
     },
 ];
 
@@ -52,11 +52,11 @@ pub(crate) enum DiscoveredBundle {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExamplesStageSummary {
     pub studio_mode: &'static str,
-    pub counter_mode: &'static str,
+    pub kitchen_sink_mode: &'static str,
     pub pages_emitted: usize,
 }
 
-/// Discover, stage, and wrap `/examples/studio/` and `/examples/counter/` in the NVE Portal Bar.
+/// Discover, stage, and wrap `/examples/studio/` and `/examples/kitchen-sink/` in the NVE Portal Bar.
 pub(crate) fn stage_example_apps(
     repo_root: &Path,
     out_dir: &Path,
@@ -132,8 +132,8 @@ pub(crate) fn stage_example_apps(
         summary.pages_emitted += 1;
         if spec.slug == "studio" {
             summary.studio_mode = mode_label;
-        } else if spec.slug == "counter" {
-            summary.counter_mode = mode_label;
+        } else if spec.slug == "kitchen-sink" {
+            summary.kitchen_sink_mode = mode_label;
         }
     }
 
@@ -243,13 +243,13 @@ fn run_web_shell_build(repo_root: &Path) -> Result<(), String> {
         ));
     }
     println!(
-        "==> Building hosts/web-shell WASM example bundles ({} studio counter)...",
+        "==> Building hosts/web-shell WASM example bundles ({} studio kitchen-sink)...",
         script.display()
     );
     let status = Command::new("bash")
         .current_dir(repo_root)
         .arg(&script)
-        .args(["studio", "counter"])
+        .args(["studio", "kitchen-sink"])
         .status()
         .map_err(|e| format!("failed to execute {}: {e}", script.display()))?;
     if !status.success() {
@@ -384,17 +384,32 @@ fn inject_embed_topbar_hider(index_path: &Path) -> Result<(), String> {
 /// Pre-renders default Frame-0 SSG HTML + Option 5 CSS for any example `NveApp` via the generic
 /// engine-level [`prerender_nve_app_frame0`] helper so brand-new cold visitors paint at 0ms.
 fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
+    use nve_backend_web::WebBackend;
+    use nve_engine::{NveApp, RenderBackend};
+
     let vp = Viewport {
         width: 1280.0,
         height: 800.0,
         scale_factor: 1.0,
     };
     let backend = match slug {
-        "studio" => prerender_nve_app_frame0::<StudioWorkspaceModule>(vp),
-        "counter" => prerender_nve_app_frame0::<CounterModule>(vp),
+        "studio" => prerender_nve_app_frame0::<StudioWorkspaceModule>(vp)
+            .map_err(|e| format!("failed to prerender Frame-0 SSG for example '{slug}': {e}"))?,
+        "kitchen-sink" => {
+            let mut app = KitchenSinkModule::create(1);
+            let mut web = WebBackend::new();
+            web.set_viewport(1, vp);
+            let frame0 = app.render(1).to_vec();
+            web.submit_frame(&frame0)
+                .map_err(|e| format!("failed to submit kitchen-sink Frame-0 SSG: {e}"))?;
+            let surface = app.surface();
+            web.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
+            web.sync_interaction_from(surface.iter_cursors(), surface.iter_state_rules());
+            web.sync_transitions_from(surface.iter_transitions());
+            web
+        }
         _ => return Ok(None),
-    }
-    .map_err(|e| format!("failed to prerender Frame-0 SSG for example '{slug}': {e}"))?;
+    };
     Ok(Some(backend.render_ssr()))
 }
 
@@ -444,10 +459,10 @@ fn render_portal_wrapper_html(
     let examples_href = join_base(base_path, "examples/");
     let docs_href = join_base(base_path, "docs/");
     let studio_href = join_base(base_path, "examples/studio/");
-    let counter_href = join_base(base_path, "examples/counter/");
+    let kitchen_sink_href = join_base(base_path, "examples/kitchen-sink/");
 
     let studio_active = if spec.slug == "studio" { "true" } else { "false" };
-    let counter_active = if spec.slug == "counter" { "true" } else { "false" };
+    let kitchen_sink_active = if spec.slug == "kitchen-sink" { "true" } else { "false" };
     let initial_status = if iframe_src.is_some() {
         "Booting WASM…"
     } else {
@@ -541,7 +556,7 @@ cargo run --locked -p nve-cli -- docs build --web-shell-dist hosts/web-shell/dis
       <div class="portal-right">
         <nav class="switcher" aria-label="Switch live example">
           <a class="switch-tab" data-testid="portal-switch-studio" href="{studio_href}" data-active="{studio_active}">Studio</a>
-          <a class="switch-tab" data-testid="portal-switch-counter" href="{counter_href}" data-active="{counter_active}">Counter</a>
+          <a class="switch-tab" data-testid="portal-switch-kitchen-sink" href="{kitchen_sink_href}" data-active="{kitchen_sink_active}">Kitchen Sink</a>
         </nav>
         <button id="portal-reset" class="nav-link" data-testid="portal-reset-btn" type="button" style="background:transparent;cursor:pointer;font-family:inherit;font-size:12px;" title="Clear cached snapshot and reset workspace">Reset</button>
         <span id="portal-status" class="status-pill hide-sm" data-ready="false">{initial_status}</span>
@@ -602,9 +617,9 @@ cargo run --locked -p nve-cli -- docs build --web-shell-dist hosts/web-shell/dis
         examples_href = examples_href,
         docs_href = docs_href,
         studio_href = studio_href,
-        counter_href = counter_href,
+        kitchen_sink_href = kitchen_sink_href,
         studio_active = studio_active,
-        counter_active = counter_active,
+        kitchen_sink_active = kitchen_sink_active,
         initial_status = initial_status,
         github_url = GITHUB_REPO_URL,
         main_body = main_body,

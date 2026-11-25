@@ -47,7 +47,7 @@ pub(crate) fn dylib_path_for_package(package: &str) -> PathBuf {
 pub(crate) fn default_watch_dir_for_package(package: &str) -> PathBuf {
     match package {
         "nve-studio-workspace" => PathBuf::from("examples/studio-workspace/src"),
-        "nve-example-counter" => PathBuf::from("examples/counter/src"),
+        "nve-example-kitchen-sink" => PathBuf::from("examples/kitchen-sink/src"),
         other => {
             let stripped = other
                 .strip_prefix("nve-example-")
@@ -417,15 +417,15 @@ mod tests {
 
     #[test]
     fn hot_reload_helpers_cover_platform_paths_and_filters() {
-        let dylib = dylib_path_for_package("nve-example-counter");
+        let dylib = dylib_path_for_package("nve-example-kitchen-sink");
         let s = dylib.to_string_lossy();
-        assert!(s.contains("nve_example_counter"), "unexpected path: {s}");
+        assert!(s.contains("nve_example_kitchen_sink"), "unexpected path: {s}");
         if cfg!(target_os = "macos") {
-            assert_eq!(s, "target/debug/libnve_example_counter.dylib");
+            assert_eq!(s, "target/debug/libnve_example_kitchen_sink.dylib");
         } else if cfg!(target_os = "windows") {
-            assert_eq!(s, "target/debug/nve_example_counter.dll");
+            assert_eq!(s, "target/debug/nve_example_kitchen_sink.dll");
         } else {
-            assert_eq!(s, "target/debug/libnve_example_counter.so");
+            assert_eq!(s, "target/debug/libnve_example_kitchen_sink.so");
         }
 
         assert_eq!(ws_url_for_port(8089), "ws://127.0.0.1:8089");
@@ -435,8 +435,8 @@ mod tests {
             PathBuf::from("examples/studio-workspace/src")
         );
         assert_eq!(
-            default_watch_dir_for_package("nve-example-counter"),
-            PathBuf::from("examples/counter/src")
+            default_watch_dir_for_package("nve-example-kitchen-sink"),
+            PathBuf::from("examples/kitchen-sink/src")
         );
         assert!(is_relevant_source_path(Path::new(
             "examples/studio-workspace/src/ui.rs"
@@ -468,8 +468,8 @@ mod tests {
         let r = |target, host| web_dev_redirect(target, host, 8089);
         assert_eq!(r("/", Some("127.0.0.1:8088")).as_deref(), Some("/?ws=ws://127.0.0.1:8089"));
         assert_eq!(
-            r("/index.html?app=counter", Some("192.168.1.20:8088")).as_deref(),
-            Some("/index.html?app=counter&ws=ws://192.168.1.20:8089"),
+            r("/index.html?app=kitchen-sink", Some("192.168.1.20:8088")).as_deref(),
+            Some("/index.html?app=kitchen-sink&ws=ws://192.168.1.20:8089"),
             "LAN clients get the host they used; other params survive"
         );
         assert_eq!(r("/", Some("[::1]:8088")).as_deref(), Some("/?ws=ws://[::1]:8089"));
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(r("/", Some("")).as_deref(), Some("/?ws=ws://127.0.0.1:8089"));
         assert_eq!(web_dev_redirect("/?app=studio", None, 9001).as_deref(), Some("/?app=studio&ws=ws://127.0.0.1:9001"));
         // Explicit modes are never overridden (incl. `ws=off` and a bare `dev` key).
-        for target in ["/?ws=off", "/?dev", "/?dev=1", "/?pair=ws://x&token=t", "/?bundle=studio", "/?app=counter&ws=ws://h:1"] {
+        for target in ["/?ws=off", "/?dev", "/?dev=1", "/?pair=ws://x&token=t", "/?bundle=studio", "/?app=kitchen-sink&ws=ws://h:1"] {
             assert_eq!(r(target, Some("h:8088")), None, "{target}");
         }
         // Only the shell page redirects; assets are served as-is.

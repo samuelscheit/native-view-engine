@@ -172,30 +172,30 @@ final class NveDirectFfiAndSceneCanvasTests: XCTestCase {
         XCTAssertEqual(capturedLarge[5].1, .string("present"))
         XCTAssertEqual(capturedLarge[6].1, .bytes(Data(hugePayload)))
 
-        // 4. Live end-to-end round-trip against built Rust `libnve_example_counter.dylib` when present.
+        // 4. Live end-to-end round-trip against built Rust `libnve_example_kitchen_sink.dylib` when present.
         let workspaceRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // NveSwiftUITests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // swiftui-kit
             .deletingLastPathComponent() // hosts
             .deletingLastPathComponent() // workspace root
-        let counterDylib = workspaceRoot.appendingPathComponent("target/debug/libnve_example_counter.dylib")
-        if FileManager.default.fileExists(atPath: counterDylib.path) {
-            struct CounterDirectProps: Equatable, NveDirectEncodable {
+        let kitchenSinkDylib = workspaceRoot.appendingPathComponent("target/debug/libnve_example_kitchen_sink.dylib")
+        if FileManager.default.fileExists(atPath: kitchenSinkDylib.path) {
+            struct KitchenSinkDirectProps: Equatable, NveDirectEncodable {
                 var initialCount: Int64
                 var label: String
                 var directPropCount: Int { 2 }
                 func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {
-                    builder.write("initial_count", initialCount)
+                    builder.write("initialCount", initialCount)
                     builder.write("label", label)
                 }
             }
             let controller = NveSurfaceController(
                 surfaceId: 901,
-                dylibPath: counterDylib.path
+                dylibPath: kitchenSinkDylib.path
             )
             XCTAssertTrue(controller.isMounted)
-            _ = controller.setDirectProps(CounterDirectProps(initialCount: 7, label: "TypedCounter"))
+            _ = controller.setDirectProps(KitchenSinkDirectProps(initialCount: 7, label: "TypedKitchenSink"))
             let frameBytes = controller.renderFrame()
             XCTAssertGreaterThan(frameBytes.count, 8)
             controller.destroy()

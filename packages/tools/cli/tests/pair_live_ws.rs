@@ -1,6 +1,6 @@
 //! Integration tests for `nve pair`: ephemeral OS port binding (`--ws-port 0 --udp-port 0`),
 //! machine-parseable `NVE_PAIR_READY` stdout readiness output, and live RFC-6455 binary WebSocket
-//! `NVT1`/`NVD1` frame streaming + `InputEvents` round-trips against `nve-example-counter`.
+//! `NVT1`/`NVD1` frame streaming + `InputEvents` round-trips against `nve-example-kitchen-sink`.
 
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
@@ -52,7 +52,7 @@ fn target_dir(root: &Path) -> PathBuf {
     }
 }
 
-fn counter_cdylib_path() -> PathBuf {
+fn kitchen_sink_cdylib_path() -> PathBuf {
     static DYLIB: OnceLock<PathBuf> = OnceLock::new();
     DYLIB
         .get_or_init(|| {
@@ -67,21 +67,21 @@ fn counter_cdylib_path() -> PathBuf {
             let prefix = if cfg!(target_os = "windows") { "" } else { "lib" };
             let path = target_dir(&root)
                 .join("debug")
-                .join(format!("{prefix}nve_example_counter.{ext}"));
+                .join(format!("{prefix}nve_example_kitchen_sink.{ext}"));
             if !path.exists() {
                 let status = Command::new("cargo")
-                    .args(["build", "--locked", "-p", "nve-example-counter"])
+                    .args(["build", "--locked", "-p", "nve-example-kitchen-sink"])
                     .current_dir(&root)
                     .status()
-                    .expect("invoke cargo build -p nve-example-counter");
+                    .expect("invoke cargo build -p nve-example-kitchen-sink");
                 assert!(
                     status.success(),
-                    "cargo build --locked -p nve-example-counter failed with {status}"
+                    "cargo build --locked -p nve-example-kitchen-sink failed with {status}"
                 );
             }
             assert!(
                 path.exists(),
-                "expected counter cdylib at {}",
+                "expected kitchen-sink cdylib at {}",
                 path.display()
             );
             path
@@ -115,7 +115,7 @@ fn parse_ready_line(line: &str) -> Option<ReadyInfo> {
 }
 
 fn spawn_pair_and_wait_ready(extra_args: &[&str]) -> (ChildGuard, Vec<String>, ReadyInfo) {
-    let dylib = counter_cdylib_path();
+    let dylib = kitchen_sink_cdylib_path();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nve"));
     cmd.arg("pair")
         .arg("--dylib")
@@ -256,9 +256,9 @@ fn nve_pair_ephemeral_ports_readiness_and_live_ws_roundtrip() {
             scale_factor: 1.0,
         },
     );
-    headless.submit_frame(&f0).expect("submit initial Counter frame");
+    headless.submit_frame(&f0).expect("submit initial Kitchen Sink frame");
     let tree0 = headless.render_ascii_tree();
-    assert!(tree0.contains("NATIVE VIEW ENGINE"), "tree0:\n{tree0}");
+    assert!(tree0.contains("NVE Kitchen Sink"), "tree0:\n{tree0}");
     assert!(tree0.contains("Count: 0"), "tree0:\n{tree0}");
 
     let inc_node = find_pressable_with_label(&headless, "Increment +")

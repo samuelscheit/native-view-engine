@@ -213,16 +213,16 @@ class _SyntheticNativeApp {
   }
 }
 
-String _resolveCounterLibraryPath() {
-  final envPath = Platform.environment['NVE_COUNTER_LIB'];
+String _resolveKitchenSinkLibraryPath() {
+  final envPath = Platform.environment['NVE_KITCHEN_SINK_LIB'];
   if (envPath != null && envPath.isNotEmpty && File(envPath).existsSync()) {
     return envPath;
   }
   final libName = Platform.isMacOS
-      ? 'libnve_example_counter.dylib'
+      ? 'libnve_example_kitchen_sink.dylib'
       : Platform.isWindows
-          ? 'nve_example_counter.dll'
-          : 'libnve_example_counter.so';
+          ? 'nve_example_kitchen_sink.dll'
+          : 'libnve_example_kitchen_sink.so';
   final candidates = <String>[
     '../../target/debug/$libName',
     'target/debug/$libName',
@@ -236,7 +236,7 @@ String _resolveCounterLibraryPath() {
     }
   }
   throw StateError(
-    'Could not find $libName. Run `cargo build -p nve-example-counter` first '
+    'Could not find $libName. Run `cargo build -p nve-example-kitchen-sink` first '
     '(searched from ${Directory.current.path}).',
   );
 }
@@ -832,13 +832,13 @@ void main() {
   });
 
   // =========================================================================
-  // 4. Live real Rust cdylib (`libnve_example_counter.dylib`) integration test
+  // 4. Live real Rust cdylib (`libnve_example_kitchen_sink.dylib`) integration test
   // =========================================================================
-  group('Live Rust nve-example-counter cdylib on NveCanvasView', () {
+  group('Live Rust nve-example-kitchen-sink cdylib on NveCanvasView', () {
     testWidgets(
-      'renders counter card, handles real taps, preserves state across reloadLibrary, resets, and rasterizes PNG',
+      'renders kitchen sink gallery, handles real taps, preserves state across reloadLibrary, resets, and rasterizes PNG',
       (WidgetTester tester) async {
-        final libPath = _resolveCounterLibraryPath();
+        final libPath = _resolveKitchenSinkLibraryPath();
 
         // Load a real proportional system font when available so text renders with crisp glyphs.
         String? fontFamily;
@@ -879,8 +879,8 @@ void main() {
               child: RepaintBoundary(
                 key: boundaryKey,
                 child: SizedBox(
-                  width: 480,
-                  height: 360,
+                  width: 960,
+                  height: 720,
                   child: NveCanvasView(controller: controller),
                 ),
               ),
@@ -913,26 +913,16 @@ void main() {
           throw StateError('No Pressable ancestor found for "$label"');
         }
 
-        // 1. Assert top dark slate card (#1e293b) geometry: width > 200, height > 60
-        final cardNode = renderBox.debugNodes.values.firstWhere(
-          (n) => n.style.background == const NveColorRgba.rgb(0x1E, 0x29, 0x3B),
-        );
-        final cardRect = renderBox.layoutOf(cardNode.id)!;
-        expect(cardRect.width, greaterThan(200));
-        expect(cardRect.height, greaterThan(60));
-
-        // 2. Assert "NATIVE VIEW ENGINE" and "Count: 0" at 28px inside the card above buttons
-        final titleNode = findLeafText('NATIVE VIEW ENGINE');
+        // 1. Assert "NVE Kitchen Sink" and "Count: 0" at 28px above the button row
+        final titleNode = findLeafText('NVE Kitchen Sink');
         final countNode = findLeafText('Count: 0');
         final incButton = findPressableForLabel('Increment +');
         final resetButton = findPressableForLabel('Reset');
         final incText = findLeafText('Increment +');
         final resetText = findLeafText('Reset');
 
-        expect(titleNode.style.fontSize, closeTo(14.0, 0.1));
-        expect(titleNode.style.textColor, const NveColorRgba.rgb(0x38, 0xBD, 0xF8));
+        expect(titleNode.style.fontSize, closeTo(16.0, 0.5));
         expect(countNode.style.fontSize, closeTo(28.0, 0.1));
-        expect(countNode.style.textColor, NveColorRgba.white);
 
         final countRect = renderBox.layoutOf(countNode.id)!;
         final incBtnRect = renderBox.layoutOf(incButton.id)!;
@@ -940,8 +930,7 @@ void main() {
         final incTextRect = renderBox.layoutOf(incText.id)!;
         final resetTextRect = renderBox.layoutOf(resetText.id)!;
 
-        // "Count: 0" lies inside the dark slate card and above the button row.
-        expect(cardRect.contains(countRect.center), isTrue);
+        // "Count: 0" lies above the button row.
         expect(countRect.bottom, lessThan(incBtnRect.top));
 
         // "Increment +" and "Reset" centered inside their buttons (<= 4px tolerance).

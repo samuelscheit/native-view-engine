@@ -56,7 +56,7 @@ jobs:
 
       - name: Build and test Rust workspace + Skia shell + WASM check
         run: |
-          cargo build -p nve-example-counter -p nve-studio-workspace
+          cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
           cargo test --workspace
           cargo test -p nve-backend-skia -p nve-skia-shell
           cargo check -p nve-backend-skia --features skia-vulkan
@@ -148,12 +148,12 @@ jobs:
           test -x ./build/qt-shell/nve_qt_quick_test
           QT_QPA_PLATFORM=offscreen ctest --test-dir build/qt-shell --output-on-failure
           QT_QPA_PLATFORM=offscreen \
-            NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.so" \
+            NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.so" \
             NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
             ./build/qt-shell/nve_qt_shell_test
           QT_QPA_PLATFORM=offscreen \
             QT_QUICK_BACKEND=software \
-            NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.so" \
+            NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.so" \
             NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
             ./build/qt-shell/nve_qt_quick_test
 
@@ -161,7 +161,7 @@ jobs:
         run: |
           cmake -S hosts/gtk-shell -B build/gtk-shell -G Ninja
           cmake --build build/gtk-shell
-          NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.so" \
+          NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.so" \
             NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
             xvfb-run -a ctest --test-dir build/gtk-shell --output-on-failure
 
@@ -231,7 +231,7 @@ jobs:
 
       - name: Build and test Rust workspace + Skia shell
         run: |
-          cargo build -p nve-example-counter -p nve-studio-workspace
+          cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
           cargo test --workspace
           cargo test -p nve-backend-skia -p nve-skia-shell
           cargo check -p nve-backend-skia --features skia-metal
@@ -268,7 +268,7 @@ jobs:
           cmake -S hosts/macos-shell -B build/macos-shell -G Ninja
           cmake --build build/macos-shell
           ctest --test-dir build/macos-shell --output-on-failure
-          NVE_TEST_COUNTER_DYLIB="$PWD/target/debug/libnve_example_counter.dylib" \
+          NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.dylib" \
             NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.dylib" \
             ./build/macos-shell/nve_macos_shell_test
 
@@ -317,7 +317,7 @@ jobs:
       - name: Build and test Rust workspace + Skia shell
         shell: pwsh
         run: |
-          cargo build -p nve-example-counter -p nve-studio-workspace
+          cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
           cargo test --workspace
           cargo test -p nve-backend-skia -p nve-skia-shell
           cargo check -p nve-backend-skia --features skia-d3d
@@ -341,6 +341,6 @@ jobs:
         run: |
           cmake -S hosts/windows-shell -B build/windows-shell -G Ninja
           cmake --build build/windows-shell
-          $env:NVE_TEST_COUNTER_DYLIB = (Resolve-Path target\debug\nve_example_counter.dll).Path
+          $env:NVE_TEST_KITCHEN_SINK_DYLIB = (Resolve-Path target\debug\nve_example_kitchen_sink.dll).Path
           $env:NVE_TEST_STUDIO_DYLIB = (Resolve-Path target\debug\nve_studio_workspace.dll).Path
           ctest --test-dir build/windows-shell --output-on-failure

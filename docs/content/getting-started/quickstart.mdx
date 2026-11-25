@@ -22,13 +22,13 @@ cargo nve doctor
 
 ## Run NVE Studio Workspace
 
-Build the flagship `nve-studio-workspace` and `nve-example-counter` dynamic libraries, then launch them on any host target.
+Build the flagship `nve-studio-workspace` and `nve-example-kitchen-sink` dynamic libraries, then launch them on any host target.
 
 :::tabs
 ::tab{label="Skia Desktop"}
 ```bash title="Build and run on Skia Desktop (macOS / Linux / Windows)"
 # Build the app cdylibs
-cargo build -p nve-studio-workspace -p nve-example-counter
+cargo build -p nve-studio-workspace -p nve-example-kitchen-sink
 
 # Launch NVE Studio in a 1280x800 native winit window
 cargo run -p nve-skia-shell -- \
@@ -42,7 +42,7 @@ cargo run -p nve-skia-shell -- \
 ```
 ::tab{label="Web WASM"}
 ```bash title="Build the size-optimized WASM bundle and serve locally"
-# Builds pkg/studio, pkg/counter (production, one app each) and pkg/dev
+# Builds pkg/studio, pkg/kitchen-sink (production, one app each) and pkg/dev
 # (hot reload, pairing) with the size-tuned release pipeline
 ./hosts/web-shell/build.sh
 

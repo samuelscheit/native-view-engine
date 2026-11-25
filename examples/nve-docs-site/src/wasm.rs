@@ -466,7 +466,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
             let Some(href) = anchor.get_attribute("href") else {
                 return;
             };
-            // Standalone lazy-loaded WASM example apps (/examples/studio/, /examples/counter/)
+            // Standalone lazy-loaded WASM example apps (/examples/studio/, /examples/kitchen-sink/)
             // must perform a real browser navigation so their independent WASM bundles boot cleanly.
             if anchor.get_attribute("data-nve-hard-nav").as_deref() == Some("true") {
                 return;

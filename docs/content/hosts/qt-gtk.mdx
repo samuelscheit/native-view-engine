@@ -27,14 +27,14 @@ Enabled automatically whenever `Qt6::Quick` is installed (`QML_ELEMENT` / `NveSu
 - Multi-window lifecycle handled by `NveQtWindowManager.{hpp,cpp}` (`Qt::WindowModal` + `QCloseEvent::ignore()` close veto).
 
 ```bash title="Build, test offscreen, and launch Qt Quick or QWidget mode"
-cargo build -p nve-example-counter
+cargo build -p nve-example-kitchen-sink
 
 cmake -S hosts/qt-shell -B hosts/qt-shell/build -G Ninja
 cmake --build hosts/qt-shell/build
 ctest --test-dir hosts/qt-shell/build --output-on-failure
 
 # GPU Qt Quick mode (omit --quick for QWidget mode)
-./hosts/qt-shell/build/nve_qt_shell --quick target/debug/libnve_example_counter.dylib
+./hosts/qt-shell/build/nve_qt_shell --quick target/debug/libnve_example_kitchen_sink.dylib
 ```
 
 ## Linux GTK4 Shell (`hosts/gtk-shell`)

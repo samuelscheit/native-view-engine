@@ -10,7 +10,7 @@ pub mod wasm_bundle_size;
 pub use wasm_bundle_size::{
     default_brotli_budget, measure_bundle_dir, measure_web_shell_bundles,
     measure_workspace_web_shell_bundles, AssetSizeBreakdown, BudgetStatus, WasmBundleMetrics,
-    WasmBundleReport, DEFAULT_BROTLI_BUDGET_COUNTER, DEFAULT_BROTLI_BUDGET_DEV,
+    WasmBundleReport, DEFAULT_BROTLI_BUDGET_DEV, DEFAULT_BROTLI_BUDGET_KITCHEN_SINK,
     DEFAULT_BROTLI_BUDGET_STUDIO, DEFAULT_WEB_SHELL_BUNDLES,
 };
 

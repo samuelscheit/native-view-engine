@@ -227,14 +227,29 @@ impl WebMultiWindowHost {
     }
 }
 
-#[cfg(all(test, feature = "app-counter"))]
+#[cfg(all(test, feature = "app-kitchen-sink"))]
 mod tests {
-    use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind};
+    use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
     use nve_backend_web::WebBackend;
     use nve_engine::Viewport;
     use nve_interop::WindowRect;
 
     use super::*;
+
+    fn find_testid_node_id(backend: &WebBackend, testid: &str) -> nve_abi::NodeId {
+        backend
+            .iter_nodes()
+            .find_map(|(id, el)| {
+                el.raw_props
+                    .get("testID")
+                    .or_else(|| el.raw_props.get("data-testid"))
+                    .and_then(|v| match v {
+                        nve_abi::RawPropValue::String(s) if s == testid => Some(id),
+                        _ => None,
+                    })
+            })
+            .expect("testID present in backend")
+    }
 
     #[test]
     fn popup_spec_validates_inputs_and_formats_features_and_blocker_error() {
@@ -271,8 +286,9 @@ mod tests {
 
         let mut studio = WebAppSession::new_studio_workspace(1, WebBackend::new(), Viewport::default());
         studio.render_initial().unwrap();
-        let mut counter = WebAppSession::new_counter(2, WebBackend::new(), Viewport::default());
-        counter.render_initial().unwrap();
+        let mut kitchen_sink =
+            WebAppSession::new_kitchen_sink(2, WebBackend::new(), Viewport::default());
+        kitchen_sink.render_initial().unwrap();
 
         let h1 = host
             .mount_surface(
@@ -281,13 +297,14 @@ mod tests {
                 SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Studio", 1280.0, 800.0)),
             )
             .unwrap();
-        let spec2 = PopupWindowSpec::new(2, "Counter Popup", 420, 360).unwrap();
+        let spec2 = PopupWindowSpec::new(2, "Kitchen Sink Popup", 420, 360).unwrap();
         let h2 = host
-            .mount_surface(2, counter, spec2.to_presentation(Some(1)))
+            .mount_surface(2, kitchen_sink, spec2.to_presentation(Some(1)))
             .unwrap();
 
         // Mount a popover anchored to surface 1 that must cascade when surface 1 unmounts.
-        let mut popover = WebAppSession::new_counter(3, WebBackend::new(), Viewport::default());
+        let mut popover =
+            WebAppSession::new_kitchen_sink(3, WebBackend::new(), Viewport::default());
         popover.render_initial().unwrap();
         let _h3 = host
             .mount_surface(
@@ -305,16 +322,14 @@ mod tests {
         assert!(matches!(
             host.mount_surface(
                 1,
-                WebAppSession::new_counter(1, WebBackend::new(), Viewport::default()),
+                WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default()),
                 SurfacePresentation::PrimaryWindow(WindowDescriptor::default()),
             ),
             Err(PopupWindowError::DuplicateSurface(1))
         ));
 
         // Clicking Increment on surface 2 updates surface 2 only, leaving surface 3 untouched.
-        let inc_node = (1..=64)
-            .find(|&id| (host.session(2).unwrap().backend().event_mask_of(id) & EventMask::PRESS) != 0)
-            .unwrap();
+        let inc_node = find_testid_node_id(host.session(2).unwrap().backend(), "ks-counter-inc");
         host.session_mut(2).unwrap().backend().push_event(NativeEvent {
             surface_id: 2,
             node_id: inc_node,

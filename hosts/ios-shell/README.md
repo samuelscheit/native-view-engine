@@ -4,20 +4,20 @@ This directory provides a standalone zero-Xcode-project iOS Simulator runner and
 
 ## Quick Start: One-Command iOS Simulator Launcher (`run-simulator.sh`)
 
-Build, sign, install, and launch any NVE Rust app (`nve-studio-workspace`, `nve-example-counter`, or any crate exporting `nve_get_interface`) directly in the iOS Simulator — no `.xcodeproj` or `xcodebuild` required:
+Build, sign, install, and launch any NVE Rust app (`nve-studio-workspace`, `nve-example-kitchen-sink`, or any crate exporting `nve_get_interface`) directly in the iOS Simulator — no `.xcodeproj` or `xcodebuild` required:
 
 ```bash
 # Default: build & launch nve-studio-workspace in the iOS Simulator
 ./hosts/ios-shell/run-simulator.sh
 
-# Launch the interactive counter example
-./hosts/ios-shell/run-simulator.sh nve-example-counter
+# Launch the interactive Kitchen Sink gallery
+./hosts/ios-shell/run-simulator.sh nve-example-kitchen-sink
 
 # Build the signed NveIosShell.app bundle only (no Simulator boot/install)
-./hosts/ios-shell/run-simulator.sh nve-example-counter --build-only
+./hosts/ios-shell/run-simulator.sh nve-example-kitchen-sink --build-only
 
 # Headless launch + screenshot capture on a specific Simulator
-./hosts/ios-shell/run-simulator.sh nve-example-counter \
+./hosts/ios-shell/run-simulator.sh nve-example-kitchen-sink \
   --headless \
   --device "iPhone 16 Pro" \
   --screenshot /tmp/nve-ios.png

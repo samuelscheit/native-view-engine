@@ -15,4 +15,4 @@ cc = { workspace = true }
 
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
-nve-example-counter = { workspace = true }
+nve-example-kitchen-sink = { workspace = true }

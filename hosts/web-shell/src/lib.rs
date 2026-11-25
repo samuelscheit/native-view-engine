@@ -1,11 +1,13 @@
 //! Web WASM shell mounting NVE apps onto browser DOM with live interactive events and SSR
 //! hydration. Cargo features select what a bundle contains (see `Cargo.toml`): one app per
-//! production bundle (`app-studio` / `app-counter`), plus `dev` (binary `NVP1` hot reload,
+//! production bundle (`app-studio` / `app-kitchen-sink`), plus `dev` (binary `NVP1` hot reload,
 //! `NVT1`/`NVD1` pairing), `multi-window` (popups + `NVW1` window sync) and `scene-view`
 //! (zero-copy `NveSceneView` linear-memory export).
 
-#[cfg(not(any(feature = "app-studio", feature = "app-counter")))]
-compile_error!("nve-web-shell bundles at least one app: enable `app-studio` and/or `app-counter`");
+#[cfg(not(any(feature = "app-studio", feature = "app-kitchen-sink")))]
+compile_error!(
+    "nve-web-shell bundles at least one app: enable `app-studio` and/or `app-kitchen-sink`"
+);
 
 #[cfg(target_arch = "wasm32")]
 #[global_allocator]
@@ -48,16 +50,18 @@ pub use session::HotReloadAction;
 pub use session::{WebAppSession, DEFAULT_SURFACE_ID};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_api::{active_shell_count, active_surface_ids, WebAppController};
-#[cfg(all(target_arch = "wasm32", feature = "app-counter"))]
-pub use wasm_api::{start_counter_app, start_counter_app_on_surface};
+#[cfg(all(target_arch = "wasm32", feature = "app-kitchen-sink"))]
+pub use wasm_api::{start_kitchen_sink_app, start_kitchen_sink_app_on_surface};
 #[cfg(all(target_arch = "wasm32", feature = "app-studio"))]
 pub use wasm_api::{start_studio_workspace_app, start_studio_workspace_app_on_surface};
 #[cfg(all(target_arch = "wasm32", feature = "scene-view"))]
 pub use wasm_api::{nve_web_scene_view_ptr, nve_web_scene_view_ptr_for_surface};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_hydrate::{ProgressiveIslandHost, SsrRenderResult};
-#[cfg(all(target_arch = "wasm32", feature = "app-counter"))]
-pub use wasm_hydrate::{hydrate_counter_app, hydrate_counter_app_on_surface, render_counter_ssr_bundle};
+#[cfg(all(target_arch = "wasm32", feature = "app-kitchen-sink"))]
+pub use wasm_hydrate::{
+    hydrate_kitchen_sink_app, hydrate_kitchen_sink_app_on_surface, render_kitchen_sink_ssr_bundle,
+};
 #[cfg(all(target_arch = "wasm32", feature = "app-studio"))]
 pub use wasm_hydrate::{
     hydrate_studio_workspace_app, hydrate_studio_workspace_app_on_surface,

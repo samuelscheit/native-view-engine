@@ -51,12 +51,12 @@ ctest --test-dir hosts/gtk-shell/build --output-on-failure
 # Run CTest in headless Linux CI with xvfb-run:
 xvfb-run -a ctest --test-dir hosts/gtk-shell/build --output-on-failure
 
-# Run CTest with the live Rust counter cdylib:
-cargo build -p nve-example-counter
-NVE_TEST_COUNTER_DYLIB="$(pwd)/target/debug/libnve_example_counter.so" \
+# Run CTest with the live Rust Kitchen Sink cdylib:
+cargo build -p nve-example-kitchen-sink
+NVE_TEST_KITCHEN_SINK_DYLIB="$(pwd)/target/debug/libnve_example_kitchen_sink.so" \
   xvfb-run -a ctest --test-dir hosts/gtk-shell/build --output-on-failure
 
 # Launch the interactive GTK4 preview window:
 ./hosts/gtk-shell/build/nve_gtk_shell
-./hosts/gtk-shell/build/nve_gtk_shell --dylib target/debug/libnve_example_counter.so
+./hosts/gtk-shell/build/nve_gtk_shell --dylib target/debug/libnve_example_kitchen_sink.so
 ```

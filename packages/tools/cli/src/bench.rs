@@ -221,8 +221,8 @@ pub(crate) fn collect_artifact_sizes(
     for profile in ["release", "debug"] {
         for (label, fname) in [
             (
-                format!("nve-example-counter cdylib ({profile})"),
-                dylib_filename("nve_example_counter"),
+                format!("nve-example-kitchen-sink cdylib ({profile})"),
+                dylib_filename("nve_example_kitchen_sink"),
             ),
             (
                 format!("nve-studio-workspace cdylib ({profile})"),
@@ -238,7 +238,7 @@ pub(crate) fn collect_artifact_sizes(
     }
 
     // `hosts/web-shell/build.sh` bundles: one production bundle per app + the dev bundle.
-    for bundle in ["studio", "counter", "dev"] {
+    for bundle in ["studio", "kitchen-sink", "dev"] {
         if let Some(wasm) = web_shell_bundle_wasm(&workspace_root.join("hosts/web-shell/pkg").join(bundle)) {
             push_if_exists(format!("nve-web-shell WASM (pkg/{bundle})"), wasm);
         }
@@ -529,7 +529,7 @@ mod tests {
         std::fs::create_dir_all(&wasm_dir).unwrap();
 
         let fake_exe = root.join("nve-fake");
-        let fake_dylib = release_dir.join(dylib_filename("nve_example_counter"));
+        let fake_dylib = release_dir.join(dylib_filename("nve_example_kitchen_sink"));
         let fake_wasm = wasm_dir.join("nve_web_shell_bg.wasm");
         std::fs::write(&fake_exe, vec![0u8; 4096]).unwrap();
         std::fs::write(&fake_dylib, vec![1u8; 8192]).unwrap();

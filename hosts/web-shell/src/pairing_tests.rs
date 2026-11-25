@@ -7,7 +7,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use nve_abi::events::{decode_keydown_bytes, KEYDOWN_WIRE_MAGIC};
-use nve_abi::{decode_events, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{decode_events, EventPayload, NativeEvent, NativeEventKind};
 use nve_backend_web::WebBackend;
 use nve_engine::Viewport;
 use nve_interop::{
@@ -76,15 +76,6 @@ fn ws_recv_binary(stream: &mut TcpStream, read_buf: &mut Vec<u8>) -> Vec<u8> {
     }
 }
 
-fn find_first_pressable(backend: &WebBackend) -> NodeId {
-    let mut ids: Vec<NodeId> = backend
-        .iter_nodes()
-        .filter_map(|(id, el)| ((el.event_mask & EventMask::PRESS) != 0).then_some(id))
-        .collect();
-    ids.sort_unstable();
-    ids.into_iter().next().expect("at least one pressable node")
-}
-
 #[test]
 fn web_pair_client_full_nvt1_ws_handshake_delta_dom_render_and_input_events_with_tcp_delta_server()
 {
@@ -93,9 +84,9 @@ fn web_pair_client_full_nvt1_ws_handshake_delta_dom_render_and_input_events_with
         TcpDeltaServer::bind("127.0.0.1:0", PairingConfig::new(token)).expect("bind TcpDeltaServer");
     let addr = server.local_addr();
 
-    // Authoritative server-side CounterApp surface.
-    let mut counter = nve_example_counter::create_surface(1);
-    let (_, _, frame1) = counter.render_frame(1);
+    // Authoritative server-side KitchenSinkApp surface.
+    let mut kitchen_sink = nve_example_kitchen_sink::create_surface(1);
+    let (_, _, frame1) = kitchen_sink.render_frame(1);
     server.send_frame(&frame1).expect("seed initial keyframe");
 
     // Browser-side PairedWebSession (no local app VDOM!).
@@ -137,7 +128,7 @@ fn web_pair_client_full_nvt1_ws_handshake_delta_dom_render_and_input_events_with
     let html_f1 = web_session.backend().render_html();
     assert!(
         html_f1.contains("Count: 0"),
-        "expected remote CounterApp Frame 1 DOM mirror to contain 'Count: 0', got: {html_f1}"
+        "expected remote KitchenSinkApp Frame 1 DOM mirror to contain 'Count: 0', got: {html_f1}"
     );
     #[cfg(feature = "scene-view")]
     assert!(web_session.scene().view().node_count > 0);
@@ -151,7 +142,17 @@ fn web_pair_client_full_nvt1_ws_handshake_delta_dom_render_and_input_events_with
     assert_eq!(layout_evs[0].kind, NativeEventKind::Layout);
 
     // 2. Simulate local DOM click in WebBackend -> encode into NVT1 InputEvents = 11 -> send to server.
-    let btn_id = find_first_pressable(web_session.backend());
+    let btn_id = web_session
+        .backend()
+        .iter_nodes()
+        .find_map(|(id, el)| {
+            matches!(
+                el.raw_props.get("testID"),
+                Some(nve_abi::RawPropValue::String(s)) if s == "ks-counter-inc"
+            )
+            .then_some(id)
+        })
+        .expect("ks-counter-inc button in remote mirror");
     web_session.backend().push_event(NativeEvent {
         surface_id: 1,
         node_id: btn_id,
@@ -170,14 +171,14 @@ fn web_pair_client_full_nvt1_ws_handshake_delta_dom_render_and_input_events_with
     );
     ws_send_binary(&mut stream, &click_nvt1);
 
-    // Server decodes the InputEvents = 11 backchannel, mutates CounterApp, and streams an NVD1 delta.
+    // Server decodes the InputEvents = 11 backchannel, mutates KitchenSinkApp, and streams an NVD1 delta.
     let (peer_sid, click_ring) = server
         .recv_events(Duration::from_secs(2))
         .expect("server received click InputEvents");
     assert_eq!(peer_sid, u64::from(web_session.session_id()));
     let click_evs = decode_events(&click_ring).expect("valid click EventRing");
-    assert!(counter.dispatch_events(&click_evs));
-    let (_, _, frame2) = counter.render_frame(2);
+    assert!(kitchen_sink.dispatch_events(&click_evs));
+    let (_, _, frame2) = kitchen_sink.render_frame(2);
     assert_eq!(server.send_frame(&frame2).expect("broadcast delta frame"), 1);
 
     // Client receives NVD1 delta -> WebBackend DOM mirror updates to "Count: 1"!

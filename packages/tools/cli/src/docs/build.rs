@@ -145,7 +145,7 @@ pub(crate) fn run_build(opts: &BuildOptions) -> Result<BuildSummary, String> {
         (
             "/examples",
             "Interactive Examples & Live Playgrounds — Native View Engine",
-            "Launch lazy-loaded WebAssembly apps (Aether Workspace + NVE Studio, Counter) and explore 5 live embedded docs playgrounds.",
+            "Launch lazy-loaded WebAssembly apps (Aether Workspace + NVE Studio, Kitchen Sink) and explore 5 live embedded docs playgrounds.",
         ),
     ];
 
@@ -184,7 +184,7 @@ pub(crate) fn run_build(opts: &BuildOptions) -> Result<BuildSummary, String> {
         pages_emitted += 1;
     }
 
-    // 5. Stage lazy-loaded live WASM example apps (/examples/studio/ and /examples/counter/).
+    // 5. Stage lazy-loaded live WASM example apps (/examples/studio/ and /examples/kitchen-sink/).
     let repo_root = find_workspace_root();
     let examples = stage_example_apps(
         &repo_root,
@@ -270,11 +270,11 @@ fn emit_ssr_page(
 
 fn print_build_summary(out: &Path, s: &BuildSummary) {
     println!(
-        "✓ docs build complete -> {} ({} pages | examples: studio={}, counter={})",
+        "✓ docs build complete -> {} ({} pages | examples: studio={}, kitchen-sink={})",
         out.display(),
         s.pages_emitted,
         s.examples.studio_mode,
-        s.examples.counter_mode,
+        s.examples.kitchen_sink_mode,
     );
     println!(
         "  HTML: {:.1} KiB | CSS (inlined across pages): {:.1} KiB | search.nvs1: {:.1} KiB",

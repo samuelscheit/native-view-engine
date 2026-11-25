@@ -5,14 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 
-APP_PKG="nve-example-counter"
+APP_PKG="nve-example-kitchen-sink"
 BUILD_ONLY=0
 AVD_NAME=""
 SCREENSHOT_PATH=""
 
 usage() {
   cat <<'EOF'
-Usage: ./hosts/android-shell/run-emulator.sh [nve-studio-workspace|nve-example-counter] [--build-only] [--avd <name>] [--screenshot <out.png>]
+Usage: ./hosts/android-shell/run-emulator.sh [nve-studio-workspace|nve-example-kitchen-sink] [--build-only] [--avd <name>] [--screenshot <out.png>]
 
 Cross-compiles an NVE Rust app (`aarch64-linux-android`) + `libnve_android_shell.so` (`arm64-v8a`),
 packages and debug-signs a zero-Gradle APK (`hosts/android-shell/build/nve-android-shell.apk`),

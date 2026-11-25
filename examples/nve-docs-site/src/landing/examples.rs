@@ -1,5 +1,5 @@
 //! Examples Gallery Page (`/examples/`) showcasing standalone lazy-loaded WASM apps
-//! (`/examples/studio/`, `/examples/counter/`) and all 5 live interactive docs playgrounds.
+//! (`/examples/studio/`, `/examples/kitchen-sink/`) and all 5 live interactive docs playgrounds.
 
 use nve_dioxus::prelude::*;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
@@ -83,7 +83,7 @@ pub fn ExamplesGalleryPage() -> Element {
     );
 
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
-    let counter_href = resolve_example_app_href(&config.base_path, "/examples/counter");
+    let kitchen_sink_href = resolve_example_app_href(&config.base_path, "/examples/kitchen-sink");
     let selected_spec = PLAYGROUND_SPECS
         .iter()
         .find(|p| p.id == selected_id)
@@ -197,9 +197,9 @@ pub fn ExamplesGalleryPage() -> Element {
                             }
                         }
 
-                        // Counter App Card
+                        // Kitchen Sink Gallery Card
                         view {
-                            test_id: "example-card-counter",
+                            test_id: "example-card-kitchen-sink",
                             style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 20px; padding: 24px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
                             view {
                                 style: "flex-direction: column; gap: 12px;",
@@ -207,40 +207,40 @@ pub fn ExamplesGalleryPage() -> Element {
                                     style: "flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
                                     text {
                                         style: "font-size: 11px; font-weight: 700; color: {theme.accent_alt};",
-                                        "MINIMAL REFERENCE APP"
+                                        "COMPONENT GALLERY"
                                     }
                                     text {
                                         style: "font-size: 11px; font-family: monospace; color: {theme.muted};",
-                                        "/examples/counter/"
+                                        "/examples/kitchen-sink/"
                                     }
                                 }
                                 text {
                                     style: "font-size: 22px; font-weight: 800; color: {theme.text};",
-                                    "Interactive Counter"
+                                    "NVE Kitchen Sink Gallery"
                                 }
                                 text {
                                     style: "font-size: 14px; color: {theme.muted}; line-height: 1.55;",
-                                    "Ultra-lean NveApp reference implementation demonstrating fine-grained Dioxus signals, single-buffer NVE1 frame emission, and direct DOM patching with zero JSON serialization."
+                                    "Interactive showcase of every nve-ui component and engine primitive: Dark/Light themes, UiDensity, live nve-i18n locales & RTL, overlays, 1k VirtualList, NVE_DRAW1 Canvas, and UiErrorBoundary recovery."
                                 }
                                 view {
                                     style: "flex-direction: row; flex-wrap: wrap; gap: 6px; padding-top: 2px;",
-                                    PillBadge { label: "WASM".to_string(), accent: true }
-                                    PillBadge { label: "Native Desktop".to_string() }
+                                    PillBadge { label: "All nve-ui".to_string(), accent: true }
+                                    PillBadge { label: "nve-i18n + RTL".to_string() }
                                     PillBadge { label: "Zero JSON".to_string(), secondary: true }
-                                    PillBadge { label: "Minimal ABI".to_string() }
+                                    PillBadge { label: "ErrorBoundary".to_string() }
                                 }
                             }
                             view {
                                 style: "flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;",
                                 pressable {
-                                    test_id: "example-launch-counter",
+                                    test_id: "example-launch-kitchen-sink",
                                     accessibility_role: "link",
-                                    "href": "{counter_href}",
+                                    "href": "{kitchen_sink_href}",
                                     "data-nve-hard-nav": "true",
                                     style: "padding-horizontal: 18px; padding-vertical: 10px; border-radius: 9px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                                     text {
                                         style: "font-size: 14px; font-weight: 700; color: {theme.text};",
-                                        "Launch Counter →"
+                                        "Launch Kitchen Sink →"
                                     }
                                 }
                                 text {

@@ -6,7 +6,7 @@
 //!
 //! Usage:
 //!   cargo run -p nve-skia-shell -- \
-//!     target/debug/libnve_example_counter.dylib \
+//!     target/debug/libnve_example_kitchen_sink.dylib \
 //!     [--ws ws://127.0.0.1:8089 | --no-ws] \
 //!     [--snapshot <path.nvesnap>] [--schema <ver>] \
 //!     [--screenshot <out.ppm>] [--width W] [--height H] [--scale S] [--no-hud]

@@ -12,7 +12,7 @@ on:
       - "packages/tools/cli/src/docs/**"
       - "examples/nve-docs-site/**"
       - "examples/studio-workspace/**"
-      - "examples/counter/**"
+      - "examples/kitchen-sink/**"
       - "hosts/web-shell/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -74,8 +74,8 @@ jobs:
           cargo run --locked -p nve-cli -- codegen abi
           cargo run --locked -p nve-cli -- codegen abi --check
 
-      - name: Build lazy-loaded WASM example apps (Studio & Counter)
-        run: ./hosts/web-shell/build.sh studio counter
+      - name: Build lazy-loaded WASM example apps (Studio & Kitchen Sink)
+        run: ./hosts/web-shell/build.sh studio kitchen-sink
 
       - name: Build static SSR Landing, Docs & Examples site
         run: |

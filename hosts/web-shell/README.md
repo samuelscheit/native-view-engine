@@ -4,7 +4,7 @@ Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-ba
 
 ## Architecture
 
-1. **`DioxusSurface`** (`nve_studio_workspace::create_surface(1)` by default, or `nve_example_counter::create_surface(1)` via `?app=counter`) reconciles `rsx!` into a batched binary `CommandBuffer`.
+1. **`DioxusSurface`** (`nve_studio_workspace::create_surface(1)` by default, or `nve_example_kitchen_sink::create_surface(1)` via `?app=kitchen-sink`) reconciles `rsx!` into a batched binary `CommandBuffer`.
 2. **`WebBackend::mount_into(container)`** decodes the `CommandBuffer` and mutates real `web_sys::Element` nodes, applying Flexbox `LayoutProps` + `StyleProps` via `HtmlElement::style().set_css_text(...)`.
 3. **Interactive DOM Events**: `EventMask::PRESS` (`click`) and `EventMask::TEXT_CHANGE` (`input`) attach real `wasm_bindgen::closure::Closure` listeners that push `NativeEvent`s into a shared `Rc<RefCell<Vec<NativeEvent>>>` and trigger an immediate incremental re-render (`drain_events -> DioxusSurface::dispatch_events -> render_frame -> submit_recorded_frame`).
 4. **2-Tier Hot Reload (`nve dev`, `dev` bundle only)**: `?dev` connects a browser `WebSocket` to `ws://<host>:8089` (`?ws=<url>` picks another endpoint) consuming binary `NVP1` `nve_engine::HotPatchMsg` frames (text frames are ignored):
@@ -27,25 +27,25 @@ Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-ba
 ## Build & Run
 
 ```bash
-# Release bundles: pkg/studio, pkg/counter (one app each, production) and pkg/dev
+# Release bundles: pkg/studio, pkg/kitchen-sink (one app each, production) and pkg/dev
 # (both apps + NVP1 hot reload, pairing, popups, scene view, E2E probes)
 ./hosts/web-shell/build.sh
 
 # Only some bundles, or the fast stable debug build (what `nve dev` and the E2E use)
-./hosts/web-shell/build.sh counter
+./hosts/web-shell/build.sh kitchen-sink
 ./hosts/web-shell/build.sh --dev
 
 # Serve locally
 python3 -m http.server 8080 -d hosts/web-shell
 ```
 
-Open `http://127.0.0.1:8080` (studio) or `?app=counter` in any modern browser; each loads its own
+Open `http://127.0.0.1:8080` (studio) or `?app=kitchen-sink` in any modern browser; each loads its own
 production bundle. `index.html` loads `pkg/dev` instead for `?dev` / `?ws=<url>` (hot reload) and
-`?pair=...` (thin client), or any bundle via `?bundle=<studio|counter|dev>`.
+`?pair=...` (thin client), or any bundle via `?bundle=<studio|kitchen-sink|dev>`.
 
 For live hot reload just run `cargo run -p nve-cli -- dev` and open the printed
 `http://127.0.0.1:8088/` (`--web-port`). `nve dev` serves `hosts/web-shell` itself, rebuilds
-`pkg/dev` on save, and redirects a bare `/` or `/?app=counter` to the same URL plus
+`pkg/dev` on save, and redirects a bare `/` or `/?app=kitchen-sink` to the same URL plus
 `ws=ws://<host>:<--port>`, so the dev bundle connects to the daemon with no flags to remember
 (LAN clients get the host they used). Explicit `ws`, `dev`, `pair` or `bundle` parameters are
 never rewritten.

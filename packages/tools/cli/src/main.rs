@@ -417,7 +417,7 @@ mod tests {
             "nve",
             "pair",
             "--dylib",
-            "target/debug/libnve_example_counter.dylib",
+            "target/debug/libnve_example_kitchen_sink.dylib",
             "--host",
             "127.0.0.1",
             "--udp-port",
@@ -449,7 +449,7 @@ mod tests {
             } => {
                 assert_eq!(
                     dylib,
-                    Some(PathBuf::from("target/debug/libnve_example_counter.dylib"))
+                    Some(PathBuf::from("target/debug/libnve_example_kitchen_sink.dylib"))
                 );
                 assert!(package.is_none());
                 assert_eq!(host, "127.0.0.1");

@@ -6,12 +6,12 @@
 # under the hash directory is immutable; only index.html and the manifests change between builds
 # (see README.md "Caching").
 #
-#   studio   `--no-default-features --features app-studio`   production Studio Workspace
-#   counter  `--no-default-features --features app-counter`  production Counter
-#   dev      default features: both apps, NVP1 hot reload, pairing, popups, scene view, probes
+#   studio        `--no-default-features --features app-studio`        production Studio Workspace
+#   kitchen-sink  `--no-default-features --features app-kitchen-sink`  production Kitchen Sink
+#   dev           default features: both apps, NVP1 hot reload, pairing, popups, scene view, probes
 #
 # index.html loads pkg/<app> for `?app=<app>` and pkg/dev for `?dev`, `?ws=<url>`, `?pair=...`
-# (or an explicit `?bundle=<name>`). Usage: build.sh [--release | --dev] [studio|counter|dev ...]
+# (or an explicit `?bundle=<name>`). Usage: build.sh [--release | --dev] [studio|kitchen-sink|dev ...]
 # (default: all three bundles).
 #
 # Release (default) is a size pipeline tuned for the *brotli* bytes users download, measured in
@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PKG_ROOT="${SCRIPT_DIR}/pkg"
 
-usage() { echo "Usage: $0 [--release | --dev] [studio|counter|dev ...]" >&2; exit 1; }
+usage() { echo "Usage: $0 [--release | --dev] [studio|kitchen-sink|dev ...]" >&2; exit 1; }
 
 PROFILE="wasm-release"
 BUNDLES=()
@@ -39,27 +39,27 @@ for arg in "$@"; do
   case "$arg" in
     --dev|--debug) PROFILE="debug" ;;
     --release) PROFILE="wasm-release" ;;
-    studio|counter|dev) BUNDLES+=("$arg") ;;
+    studio|kitchen-sink|dev) BUNDLES+=("$arg") ;;
     *) usage ;;
   esac
 done
-(( ${#BUNDLES[@]} )) || BUNDLES=(studio counter dev)
+(( ${#BUNDLES[@]} )) || BUNDLES=(studio kitchen-sink dev)
 
 # Cargo feature selection per bundle.
 bundle_features() {
   case "$1" in
     studio) echo "--no-default-features --features app-studio" ;;
-    counter) echo "--no-default-features --features app-counter" ;;
+    kitchen-sink) echo "--no-default-features --features app-kitchen-sink" ;;
     dev) echo "" ;;
   esac
 }
 
-# Brotli (wasm + JS) budgets, ~3% above the sizes measured in docs/research/wasm-size/README.md.
+# Brotli (wasm + JS) budgets, ~3% above measured sizes.
 bundle_budget() {
   case "$1" in
     studio) echo "${WASM_BROTLI_BUDGET_STUDIO:-316416}" ;;
-    counter) echo "${WASM_BROTLI_BUDGET_COUNTER:-135168}" ;;
-    dev) echo "${WASM_BROTLI_BUDGET_DEV:-353280}" ;;
+    kitchen-sink) echo "${WASM_BROTLI_BUDGET_KITCHEN_SINK:-315392}" ;;
+    dev) echo "${WASM_BROTLI_BUDGET_DEV:-485376}" ;;
   esac
 }
 

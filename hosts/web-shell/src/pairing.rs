@@ -17,7 +17,7 @@ use nve_interop::{
 #[cfg(feature = "scene-view")]
 use crate::scene::SceneMirror;
 
-#[cfg(all(test, not(target_arch = "wasm32"), feature = "app-counter"))]
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "app-kitchen-sink"))]
 #[path = "pairing_tests.rs"]
 mod tests;
 

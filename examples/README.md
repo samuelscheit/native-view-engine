@@ -2,14 +2,14 @@
 
 ## Runnable
 
-- **[`counter`](counter/)** (`nve-example-counter`) — Stateful Dioxus `rsx!` counter built as both `rlib` (headless/CLI/tests) and `cdylib` (`nve_get_interface` native hosts & Tier-2 hot-swap).
+- **[`kitchen-sink`](kitchen-sink/)** (`nve-example-kitchen-sink`) — Flagship interactive component gallery showcasing every `nve-ui` widget, Dark/Light theming, `Compact`/`Comfortable`/`Spacious` `UiDensity`, live `nve-i18n` locales & RTL, overlays, 1k `VirtualList`, `NVE_DRAW1` Canvas, `UiErrorBoundary` recovery, and versioned binary state snapshots (`rlib` + `cdylib` for native hosts & Tier-2 hot-swap).
 - **[`studio-workspace`](studio-workspace/)** (`nve-studio-workspace`) — Flagship **Aether Workspace** (local-first issue board, `# engineering` / `# design-sync` channels, live layout/frame stress metrics) paired with a docked, toggleable **NVE Studio** meta-workbench (live accent/radius/density self-patching, X-Ray Flexbox HUD, deterministic time-travel scrubber, and Tier-2 `cdylib` state preservation).
 
 ```bash
-# Counter example
-cargo build -p nve-example-counter
-cargo test -p nve-example-counter
-cargo nve dev --package nve-example-counter --watch examples/counter/src
+# Kitchen Sink component gallery example
+cargo build -p nve-example-kitchen-sink
+cargo test -p nve-example-kitchen-sink
+cargo nve dev --package nve-example-kitchen-sink --watch examples/kitchen-sink/src
 
 # Studio Workspace flagship example (single cdylib across every native host)
 cargo build -p nve-studio-workspace

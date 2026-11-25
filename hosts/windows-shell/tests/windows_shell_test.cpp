@@ -635,13 +635,13 @@ void test_rnw_component_host_and_dylib_lifecycle() {
 }
 
 void test_live_counter_dylib_if_configured() {
-  const std::string dylib_env = get_env_string("NVE_TEST_COUNTER_DYLIB");
+  const std::string dylib_env = get_env_string("NVE_TEST_KITCHEN_SINK_DYLIB");
   if (dylib_env.empty()) {
     return;
   }
 
   nve::win::NveRnwComponentHost host;
-  const NveSurfaceConfig cfg{.surface_id = 1, .width = 640.0f, .height = 420.0f, .scale_factor = 1.0f};
+  const NveSurfaceConfig cfg{.surface_id = 1, .width = 1280.0f, .height = 800.0f, .scale_factor = 1.0f};
   int err_code = 0;
   std::string err_msg;
   NVE_CHECK(host.load_dylib(dylib_env, cfg, &err_code, &err_msg));
@@ -676,7 +676,7 @@ void test_live_counter_dylib_if_configured() {
   };
 
   // Assert all 4 counter labels exist, have non-zero frames, and opaque text color.
-  const auto* lbl_title = find_leaf_by_text("NATIVE VIEW ENGINE");
+  const auto* lbl_title = find_leaf_by_text("NVE Kitchen Sink");
   const auto* lbl_count = find_leaf_by_text("Count: 0");
   const auto* lbl_inc = find_leaf_by_text("Increment +");
   const auto* lbl_reset = find_leaf_by_text("Reset");

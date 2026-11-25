@@ -5,14 +5,6 @@ use nve_abi::{
     ROOT_NODE_ID,
 };
 
-fn find_pressable_nodes(backend: &WebBackend) -> Vec<NodeId> {
-    let mut ids: Vec<NodeId> = (1..=64)
-        .filter(|&id| (backend.event_mask_of(id) & EventMask::PRESS) != 0)
-        .collect();
-    ids.sort_unstable();
-    ids
-}
-
 fn find_node_by_test_id(backend: &WebBackend, target: &str) -> Option<NodeId> {
     fn walk(backend: &WebBackend, id: NodeId, target: &str) -> Option<NodeId> {
         let el = backend.node(id)?;
@@ -117,36 +109,24 @@ fn assert_scene_view_matches_backend(session: &WebAppSession) {
 }
 
 #[test]
-fn counter_app_mounts_clicks_incrementally_and_resets() {
-    let mut session = WebAppSession::new_counter(1, WebBackend::new(), Viewport::default());
+fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
+    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
     let init = session.render_initial().unwrap();
     assert!(init.op_count > 0);
     assert!(init.mutation_count > 0);
 
     let html0 = session.backend().render_html();
-    assert!(html0.contains("NATIVE VIEW ENGINE"));
+    assert!(html0.contains("NVE Kitchen Sink"));
     assert!(html0.contains("Count: 0"));
     assert!(html0.contains("Increment +"));
     assert!(html0.contains("Reset"));
     assert_scene_view_matches_backend(&session);
 
-    let buttons = find_pressable_nodes(session.backend());
-    assert_eq!(buttons.len(), 2, "expected Increment and Reset buttons");
-    let increment_id = buttons[0];
-    let reset_id = buttons[1];
-
     for expected in 1..=2 {
-        session.backend().push_event(NativeEvent {
-            surface_id: 1,
-            node_id: increment_id,
-            timestamp_us: expected as u64 * 1000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 80.0, y: 24.0 },
-        });
-        let timing = session.pump_events().unwrap().expect("expected frame");
+        let timing = press_test_id(&mut session, "ks-counter-inc", expected as u64 * 1000);
         assert!(
-            timing.mutation_count <= 2,
-            "incremental click should only patch changed text, got {} mutations",
+            timing.mutation_count > 0 && timing.mutation_count < 24,
+            "incremental click should only patch changed nodes, got {} mutations",
             timing.mutation_count
         );
         let html = session.backend().render_html();
@@ -157,28 +137,21 @@ fn counter_app_mounts_clicks_incrementally_and_resets() {
         assert_eq!(view.removed_count, 0);
     }
 
-    session.backend().push_event(NativeEvent {
-        surface_id: 1,
-        node_id: reset_id,
-        timestamp_us: 3000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 60.0, y: 24.0 },
-    });
-    session.pump_events().unwrap().expect("expected reset frame");
+    press_test_id(&mut session, "ks-counter-reset", 3000);
     assert!(session.backend().render_html().contains("Count: 0"));
     assert_scene_view_matches_backend(&session);
 }
 
 #[test]
 fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
-    let mut session = WebAppSession::new_counter(1, WebBackend::new(), Viewport::default());
+    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
     assert_scene_view_matches_backend(&session);
 
     // Tier-1 TemplatePatch over zero-JSON binary NVP1 wire frame.
     let tpl = HotPatchMsg::TemplatePatch {
         generation: 3,
-        template_id: "CounterApp".into(),
+        template_id: "KitchenSinkApp".into(),
         attr_updates: vec![("border-color".into(), "#38bdf8".into())],
         text_updates: vec![(0, "NVE LIVE PATCHED".into())],
         target_test_id: None,
@@ -193,7 +166,7 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
             mutations,
         } => {
             assert_eq!(generation, 3);
-            assert_eq!(template_id, "CounterApp");
+            assert_eq!(template_id, "KitchenSinkApp");
             assert!(mutations > 0);
         }
         other => panic!("unexpected action: {other:?}"),
@@ -210,7 +183,7 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     // Tier-2 DylibReload over a binary NVP1 frame.
     let reload = HotPatchMsg::DylibReload {
         generation: 4,
-        dylib_path: "target/debug/libnve_example_counter.dylib".into(),
+        dylib_path: "target/debug/libnve_example_kitchen_sink.dylib".into(),
         build_ms: 215,
     };
     let act2 = session.handle_hot_patch_frame(&reload.to_bytes()).unwrap();
@@ -218,21 +191,21 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
         act2,
         HotReloadAction::ReloadPage {
             generation: 4,
-            dylib_path: "target/debug/libnve_example_counter.dylib".into(),
+            dylib_path: "target/debug/libnve_example_kitchen_sink.dylib".into(),
             build_ms: 215,
         }
     );
 
     // DevStatus over binary NVP1 wire frame.
     let status = HotPatchMsg::DevStatus {
-        message: "watching examples/counter/src".into(),
+        message: "watching examples/kitchen-sink/src".into(),
         latency_ms: 12,
     };
     let act3 = session.handle_hot_patch_frame(&status.to_bytes()).unwrap();
     assert_eq!(
         act3,
         HotReloadAction::DevStatus {
-            message: "watching examples/counter/src".into(),
+            message: "watching examples/kitchen-sink/src".into(),
             latency_ms: 12,
         }
     );
@@ -339,7 +312,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
 
 #[test]
 fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
-    let mut session = WebAppSession::new_counter(1, WebBackend::new(), Viewport::default());
+    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
     let ptr_before = session.scene().view_ptr();
     let empty_view = unsafe { *ptr_before };
     assert_eq!(empty_view.schema_hash, NVE_SCENE_SCHEMA_HASH);

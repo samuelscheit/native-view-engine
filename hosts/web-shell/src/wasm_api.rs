@@ -28,8 +28,8 @@ use crate::wasm_snapshot::{
     clear_persisted_snapshot, load_persisted_state, query_has_reset, query_has_ssr_demo,
     SnapshotPersistenceGuard, SnapshotTrigger,
 };
-#[cfg(feature = "app-counter")]
-use nve_example_counter::{decode_counter_state, COUNTER_STATE_BIN_VERSION};
+#[cfg(feature = "app-kitchen-sink")]
+use nve_example_kitchen_sink::{decode_kitchen_sink_state, KITCHEN_SINK_STATE_VERSION};
 #[cfg(feature = "app-studio")]
 use nve_studio_workspace::{WorkspaceState, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
@@ -672,9 +672,9 @@ pub(crate) fn is_valid_studio_state(bytes: &[u8]) -> bool {
     WorkspaceState::from_bytes(bytes).is_some()
 }
 
-#[cfg(feature = "app-counter")]
-pub(crate) fn is_valid_counter_state(bytes: &[u8]) -> bool {
-    decode_counter_state(bytes).is_some()
+#[cfg(feature = "app-kitchen-sink")]
+pub(crate) fn is_valid_kitchen_sink_state(bytes: &[u8]) -> bool {
+    decode_kitchen_sink_state(bytes).is_some()
 }
 
 #[cfg(feature = "app-studio")]
@@ -706,31 +706,31 @@ pub fn start_studio_workspace_app_on_surface(
     )
 }
 
-#[cfg(feature = "app-counter")]
+#[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
-pub fn start_counter_app(
+pub fn start_kitchen_sink_app(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_counter_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
+    start_kitchen_sink_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
 }
 
-#[cfg(feature = "app-counter")]
+#[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
-pub fn start_counter_app_on_surface(
+pub fn start_kitchen_sink_app_on_surface(
     surface_id: SurfaceId,
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
-        "CounterApp",
-        "counter",
-        COUNTER_STATE_BIN_VERSION,
+        "KitchenSinkApp",
+        "kitchen-sink",
+        KITCHEN_SINK_STATE_VERSION,
         surface_id,
         mount_id,
         ws_url,
         false,
-        is_valid_counter_state,
-        WebAppSession::new_counter_with_state,
+        is_valid_kitchen_sink_state,
+        WebAppSession::new_kitchen_sink_with_state,
     )
 }

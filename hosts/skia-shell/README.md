@@ -14,21 +14,21 @@ Cross-platform desktop host (`nve-skia-shell`) that loads any compiled NVE `cdyl
 
 ```bash
 # Build an example app cdylib
-cargo build -p nve-example-counter
+cargo build -p nve-example-kitchen-sink
 
 # Launch the Skia desktop shell (zero-C++ softbuffer default)
 cargo run -p nve-skia-shell -- \
-  target/debug/libnve_example_counter.dylib --no-ws
+  target/debug/libnve_example_kitchen_sink.dylib --no-ws
 
 # Launch with Frame-0 MmapSnapshot instant boot + atomic save on exit
 cargo run -p nve-skia-shell -- \
-  target/debug/libnve_example_counter.dylib \
-  --no-ws --snapshot /tmp/counter.nvesnap --schema 1
+  target/debug/libnve_example_kitchen_sink.dylib \
+  --no-ws --snapshot /tmp/kitchen-sink.nvesnap --schema 1
 
 # Headless PPM screenshot capture
 cargo run -p nve-skia-shell -- \
-  target/debug/libnve_example_counter.dylib \
-  --no-ws --width 640 --height 420 --scale 2.0 --screenshot /tmp/counter.ppm
+  target/debug/libnve_example_kitchen_sink.dylib \
+  --no-ws --width 1280 --height 800 --scale 2.0 --screenshot /tmp/kitchen-sink.ppm
 
 # Build with Apple Metal hardware GPU swapchain (macOS)
 FORCE_SKIA_BINARIES_DOWNLOAD=1 cargo check -p nve-skia-shell --features skia-metal

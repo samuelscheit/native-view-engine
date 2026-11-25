@@ -1,5 +1,5 @@
 //! Browser `wasm32` bindings for zero-flicker SSR hydration (`hydrate_studio_workspace_app`,
-//! `hydrate_counter_app`, `SsrRenderResult`), progressive island hydration
+//! `hydrate_kitchen_sink_app`, `SsrRenderResult`), progressive island hydration
 //! (`ProgressiveIslandHost`), and a live `RawStyleProps`/semantic HTML5 SSR probe.
 
 use std::cell::{Cell, RefCell};
@@ -7,29 +7,29 @@ use nve_abi::hash::HashMap;
 use std::rc::Rc;
 
 use nve_abi::NodeId;
-#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_abi::SurfaceId;
 #[cfg(feature = "app-studio")]
 use nve_backend_web::SsrDocumentOptions;
-#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_backend_web::WebBackend;
-#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_engine::Viewport;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler};
-#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
-#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use crate::wasm_api::{start_surface_app_inner, WebAppController};
-#[cfg(feature = "app-counter")]
-use crate::wasm_api::is_valid_counter_state;
+#[cfg(feature = "app-kitchen-sink")]
+use crate::wasm_api::is_valid_kitchen_sink_state;
 #[cfg(feature = "app-studio")]
 use crate::wasm_api::is_valid_studio_state;
-#[cfg(feature = "app-counter")]
-use nve_example_counter::COUNTER_STATE_BIN_VERSION;
+#[cfg(feature = "app-kitchen-sink")]
+use nve_example_kitchen_sink::KITCHEN_SINK_STATE_VERSION;
 #[cfg(feature = "app-studio")]
 use nve_studio_workspace::STUDIO_SNAPSHOT_SCHEMA_VERSION;
 
@@ -181,11 +181,18 @@ pub fn render_studio_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
     Ok(SsrRenderResult::from_output(session.backend().render_ssr()))
 }
 
-#[cfg(feature = "app-counter")]
+#[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
-pub fn render_counter_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
-    let mut session = WebAppSession::new_counter(DEFAULT_SURFACE_ID, WebBackend::new(), Viewport::default());
-    session.render_initial().map_err(|e| JsValue::from_str(&format!("counter SSR render failed: {e}")))?;
+pub fn render_kitchen_sink_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
+    let vp = Viewport {
+        width: 1280.0,
+        height: 800.0,
+        scale_factor: 1.0,
+    };
+    let mut session = WebAppSession::new_kitchen_sink(DEFAULT_SURFACE_ID, WebBackend::new(), vp);
+    session
+        .render_initial()
+        .map_err(|e| JsValue::from_str(&format!("kitchen-sink SSR render failed: {e}")))?;
     Ok(SsrRenderResult::from_output(session.backend().render_ssr()))
 }
 
@@ -224,29 +231,29 @@ pub fn hydrate_studio_workspace_app_on_surface(
     )
 }
 
-#[cfg(feature = "app-counter")]
+#[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
-pub fn hydrate_counter_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
-    hydrate_counter_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
+pub fn hydrate_kitchen_sink_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
+    hydrate_kitchen_sink_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
 }
 
-#[cfg(feature = "app-counter")]
+#[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
-pub fn hydrate_counter_app_on_surface(
+pub fn hydrate_kitchen_sink_app_on_surface(
     surface_id: SurfaceId,
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
-        "CounterApp",
-        "counter",
-        COUNTER_STATE_BIN_VERSION,
+        "KitchenSinkApp",
+        "kitchen-sink",
+        KITCHEN_SINK_STATE_VERSION,
         surface_id,
         mount_id,
         ws_url,
         true,
-        is_valid_counter_state,
-        WebAppSession::new_counter_with_state,
+        is_valid_kitchen_sink_state,
+        WebAppSession::new_kitchen_sink_with_state,
     )
 }
 

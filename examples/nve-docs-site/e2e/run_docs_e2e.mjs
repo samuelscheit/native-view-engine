@@ -817,9 +817,9 @@ async function run() {
     console.log("    ✓ Desktop /docs/reference/benchmarks captured + post-hydration <a href> SPA nav preserved window.__nveSpaMarker === 42");
 
     // -----------------------------------------------------------------------
-    // 4. LIVE LAZY-LOADED WASM EXAMPLE APPS (/examples/studio/ & /examples/counter/)
+    // 4. LIVE LAZY-LOADED WASM EXAMPLE APPS (/examples/studio/ & /examples/kitchen-sink/)
     // -----------------------------------------------------------------------
-    console.log("==> [4/5] Verifying lazy-loaded live WASM example apps (/examples/studio/ & /examples/counter/)...");
+    console.log("==> [4/5] Verifying lazy-loaded live WASM example apps (/examples/studio/ & /examples/kitchen-sink/)...");
     const { cdp: exCdp } = await createPageCdp(chrome.debugPort);
     await exCdp.setViewport(1440, 900, false, 1);
 
@@ -846,22 +846,22 @@ async function run() {
       await exCdp.capturePng(path.join(shotsDir, "example-studio-live.png"));
       console.log(`    ✓ /examples/studio/ live WASM booted (mode=${studioMeta.mode}, rendered AETHER, example-studio-live.png captured)`);
 
-      // Switch to Counter via Portal Bar link and verify Count: 0 -> 1
-      await exCdp.navigate(`${origin}/examples/counter/`);
+      // Switch to Kitchen Sink via Portal Bar link and verify Count: 0 -> 1
+      await exCdp.navigate(`${origin}/examples/kitchen-sink/`);
       await exCdp.waitFor(
         `(() => {
           const f = document.getElementById("nve-example-frame");
           const txt = f?.contentDocument?.body?.innerText || "";
-          return txt.includes("Count: 0");
+          return txt.includes("NVE Kitchen Sink") && txt.includes("Count: 0");
         })()`,
         15000,
-        "Counter WASM Count: 0 render"
+        "Kitchen Sink WASM Count: 0 render"
       );
       await exCdp.eval(`(() => {
         const doc = document.getElementById("nve-example-frame").contentDocument;
-        const els = Array.from(doc.querySelectorAll("#app [data-nve-id]"));
-        const btn = els.find((el) => el.textContent && el.textContent.trim() === "Increment +");
-        if (!btn) throw new Error("Counter Increment + button not found");
+        const btn = doc.querySelector('[testid="ks-counter-inc"]')
+          || Array.from(doc.querySelectorAll("#app [data-nve-id]")).find((el) => el.textContent && el.textContent.trim() === "Increment +");
+        if (!btn) throw new Error("Kitchen Sink Increment + button not found");
         btn.click();
       })()`);
       await exCdp.waitFor(
@@ -871,9 +871,9 @@ async function run() {
           return txt.includes("Count: 1");
         })()`,
         5000,
-        "Counter WASM increment Count: 0 -> 1"
+        "Kitchen Sink WASM increment Count: 0 -> 1"
       );
-      console.log("    ✓ /examples/counter/ live WASM booted and incremented Count: 0 -> 1");
+      console.log("    ✓ /examples/kitchen-sink/ live WASM booted and incremented Count: 0 -> 1");
     } else {
       console.log(`    ! /examples/studio/ in fallback mode (${studioMeta.mode}) — skipping live WASM assertions`);
     }

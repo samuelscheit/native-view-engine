@@ -2,7 +2,7 @@
 # Launch all locally available NVE hosts side-by-side in parallel.
 # Usage:
 #   ./examples/studio-workspace/start.sh                 # launches studio-workspace on all hosts
-#   ./examples/studio-workspace/start.sh --counter       # launches counter example instead
+#   ./examples/studio-workspace/start.sh --kitchen-sink  # launches kitchen-sink example instead
 #   ./examples/studio-workspace/start.sh --no-web        # skip web WASM dev server
 set -euo pipefail
 
@@ -17,10 +17,10 @@ WEB_PORT="${NVE_WEB_PORT:-8080}"
 
 for arg in "$@"; do
   case "$arg" in
-    --counter)
-      APP_PKG="nve-example-counter"
-      APP_LIB="nve_example_counter"
-      WEB_APP="counter"
+    --kitchen-sink)
+      APP_PKG="nve-example-kitchen-sink"
+      APP_LIB="nve_example_kitchen_sink"
+      WEB_APP="kitchen-sink"
       ;;
     --studio)
       APP_PKG="nve-studio-workspace"
@@ -31,7 +31,7 @@ for arg in "$@"; do
       START_WEB=0
       ;;
     -h|--help)
-      echo "Usage: $0 [--studio|--counter] [--no-web]"
+      echo "Usage: $0 [--studio|--kitchen-sink] [--no-web]"
       exit 0
       ;;
     *)
