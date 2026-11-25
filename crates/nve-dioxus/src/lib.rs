@@ -363,7 +363,8 @@ impl NveMutationWriter {
                 text_updates,
                 ..
             } => {
-                let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
+                let mut ids: Vec<NodeId> = self.nodes.keys().copied().collect();
+                ids.sort_unstable();
                 let mut changed = false;
                 for (k, v) in attr_updates {
                     for &nid in &ids {
@@ -373,10 +374,27 @@ impl NveMutationWriter {
                         }
                     }
                 }
-                for (idx, text) in text_updates {
-                    if let Some(&nid) = ids.get(*idx) {
-                        self.builder.set_text(nid, text);
-                        changed = true;
+                if !text_updates.is_empty() {
+                    let leaf_text_ids: Vec<NodeId> = ids
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            self.nodes.get(id).is_some_and(|n| {
+                                n.kind == ComponentKind::Text && n.children.is_empty()
+                            })
+                        })
+                        .collect();
+                    let non_root_ids: Vec<NodeId> =
+                        ids.iter().copied().filter(|&id| id != ROOT_NODE_ID).collect();
+                    for (idx, text) in text_updates {
+                        let target = leaf_text_ids
+                            .get(*idx)
+                            .copied()
+                            .or_else(|| non_root_ids.get(*idx).copied());
+                        if let Some(nid) = target {
+                            self.builder.set_text(nid, text);
+                            changed = true;
+                        }
                     }
                 }
                 changed

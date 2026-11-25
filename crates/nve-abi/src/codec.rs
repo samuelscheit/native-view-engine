@@ -709,7 +709,10 @@ impl<'a> CommandDecoder<'a> {
     }
 
     pub fn decode_all(mut self) -> Result<(CommandBufferHeader, Vec<Command>), DecodeError> {
-        let mut cmds = Vec::with_capacity(self.header.op_count as usize);
+        let initial_cap = (self.header.op_count as usize)
+            .min(self.reader.remaining())
+            .min(4096);
+        let mut cmds = Vec::with_capacity(initial_cap);
         while let Some(cmd) = self.next_command()? {
             cmds.push(cmd);
         }

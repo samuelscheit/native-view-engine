@@ -211,6 +211,9 @@ pub fn decode_events(bytes: &[u8]) -> Result<Vec<NativeEvent>, DecodeError> {
             payload,
         });
     }
+    if pos != bytes.len() {
+        return Err(DecodeError::TrailingBytes(bytes.len() - pos));
+    }
     Ok(out)
 }
 

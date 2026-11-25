@@ -1,0 +1,37 @@
+[package]
+name = "nve-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+bench = false
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-backend-headless = { workspace = true }
+nve-backend-skia = { workspace = true }
+nve-backend-web = { workspace = true }
+nve-dioxus = { workspace = true }
+nve-engine = { workspace = true }
+nve-interop = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "abi"
+harness = false
+
+[[bench]]
+name = "dioxus"
+harness = false
+
+[[bench]]
+name = "backends"
+harness = false
+
+[[bench]]
+name = "interop"
+harness = false

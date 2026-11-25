@@ -11,6 +11,7 @@ members = [
     "crates/nve-backend-skia",
     "crates/nve-backend-web",
     "crates/nve-cli",
+    "crates/nve-bench",
     "examples/counter",
     "hosts/web-shell",
 ]
@@ -48,6 +49,7 @@ winit = "0.30.13"
 softbuffer = "0.4.8"
 wasm-bindgen = "0.2.130"
 web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlElement", "CssStyleDeclaration", "Window", "Text", "Node", "MouseEvent", "EventTarget", "Event", "WebSocket", "MessageEvent", "console"] }
+criterion = "0.8.2"
 
 # Fast incremental builds: keep workspace crates unoptimized while optimizing heavy deps once.
 [profile.dev]
