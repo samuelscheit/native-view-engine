@@ -700,5 +700,88 @@ final class NveSurfaceControllerTests: XCTestCase {
             ])
         )
     }
+
+    @MainActor
+    func testMacOSRepresentableDirectPropsZeroBoxingPath() {
+        struct CardProps: Equatable, NveDirectEncodable {
+            var title: String
+            var count: Int64
+            var directPropCount: Int { 2 }
+            func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {
+                builder.write("title", title)
+                builder.write("count", count)
+            }
+        }
+
+        let (controller, state) = makeMountedController(surfaceId: 62)
+        let view = NveSurfaceRepresentable(
+            componentName: "NveCounterCard",
+            directProps: CardProps(title: "TypedView", count: 11),
+            controller: controller
+        )
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = CGRect(x: 0, y: 0, width: 200, height: 100)
+        hostingView.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(state.setPropsHistory.isEmpty)
+        XCTAssertEqual(state.setPropsDirectHistory.count, 1)
+        XCTAssertEqual(
+            NveBinValue.map(state.setPropsDirectHistory[0]),
+            NveBinValue.map([("title", .string("TypedView")), ("count", .int64(11))])
+        )
+    }
     #endif
+
+    func testSetDirectPropsEquatableDeduplicationCleanUpdateFallbackAndCacheInvalidation() throws {
+        struct TypedProps: Equatable, NveDirectEncodable {
+            var count: Int64
+            var label: String
+            var directPropCount: Int { 2 }
+            func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {
+                builder.write("count", count)
+                builder.write("label", label)
+            }
+        }
+
+        let (controller, state) = makeMountedController(surfaceId: 71)
+        let p1 = TypedProps(count: 1, label: "first")
+        XCTAssertTrue(controller.setDirectProps(p1))
+        XCTAssertTrue(state.setPropsHistory.isEmpty)
+        XCTAssertEqual(state.setPropsDirectHistory.count, 1)
+        XCTAssertEqual(state.renderedFrameIds, [1])
+
+        // Identical Equatable value skips FFI & render completely.
+        XCTAssertFalse(controller.setDirectProps(TypedProps(count: 1, label: "first")))
+        XCTAssertEqual(state.setPropsDirectHistory.count, 1)
+        XCTAssertEqual(state.renderedFrameIds, [1])
+
+        // Clean update (return 0) still updates dedup state and skips render.
+        state.setPropsReturnValue = 0
+        let p2 = TypedProps(count: 2, label: "clean")
+        XCTAssertFalse(controller.setDirectProps(p2))
+        XCTAssertEqual(state.setPropsDirectHistory.count, 2)
+        XCTAssertEqual(state.renderedFrameIds, [1])
+        XCTAssertFalse(controller.setDirectProps(p2))
+        XCTAssertEqual(state.setPropsDirectHistory.count, 2)
+
+        // Switching to dynamic setProps invalidates direct cache so re-sending p2 succeeds.
+        state.setPropsReturnValue = 1
+        XCTAssertTrue(controller.setProps(["count": 99]))
+        XCTAssertEqual(state.setPropsDirectHistory.count, 3)
+        XCTAssertTrue(controller.setDirectProps(p2))
+        XCTAssertEqual(state.setPropsDirectHistory.count, 4)
+
+        // Fallback vtable (set_props_direct == nil) still encodes NveDirectEncodable to binary NveBinValue.
+        let (fallbackCtrl, fallbackState) = makeMountedController(
+            surfaceId: 72,
+            getInterface: mockFallbackOnlyInterface
+        )
+        XCTAssertTrue(fallbackCtrl.setDirectProps(TypedProps(count: 55, label: "fallback")))
+        XCTAssertTrue(fallbackState.setPropsDirectHistory.isEmpty)
+        XCTAssertEqual(fallbackState.setPropsHistory.count, 1)
+        try NveBinValueView.withParsed(fallbackState.setPropsHistory[0]) { view in
+            XCTAssertEqual(view.mapValue(forKey: "count")?.int64Value, 55)
+            XCTAssertEqual(view.mapValue(forKey: "label")?.stringValue, "fallback")
+        }
+    }
 }

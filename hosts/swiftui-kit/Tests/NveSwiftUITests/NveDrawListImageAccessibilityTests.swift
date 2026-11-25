@@ -205,12 +205,16 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
         for file in files {
             let content = try String(contentsOf: file, encoding: .utf8)
             let lineCount = content.components(separatedBy: .newlines).count
-            // Existing NveDirectFfi.swift is 551 lines; all split/new files stay < 550 lines.
-            if file.lastPathComponent != "NveDirectFfi.swift" {
+            XCTAssertLessThan(
+                lineCount,
+                550,
+                "\(file.lastPathComponent) has \(lineCount) lines (expected < 550)"
+            )
+            if file.lastPathComponent.hasPrefix("NveDirect") {
                 XCTAssertLessThan(
                     lineCount,
-                    550,
-                    "\(file.lastPathComponent) has \(lineCount) lines (expected < 550)"
+                    300,
+                    "\(file.lastPathComponent) has \(lineCount) lines (expected < 300)"
                 )
             }
         }

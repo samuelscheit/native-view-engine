@@ -4,7 +4,7 @@ import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nve_flutter/src/nve_bin_value.dart';
+import 'package:nve_flutter/nve_hybrid_runtime.dart';
 import 'package:nve_flutter/src/nve_scene_abi_gen.dart';
 
 class _NativeAlloc {
@@ -301,4 +301,142 @@ void main() {
       );
     });
   });
+
+  group('Shared NveBinWriter / NveBinReader & NveDirectEncodable runtime', () {
+    test('NveBinWriter and NveBinReader round-trip all types and match NveBinValueView', () {
+      final writer = NveBinWriter();
+      writer.writeMap(6, (mw) {
+        mw.writeMapKey('flag');
+        mw.writeBool(true);
+        mw.writeMapKey('count');
+        mw.writeInt64(-123456789);
+        mw.writeMapKey('ratio');
+        mw.writeDouble(3.25);
+        mw.writeMapKey('title');
+        mw.writeString('Shared Dart 🚀');
+        mw.writeMapKey('blob');
+        mw.writeBytes(Uint8List.fromList(<int>[0xDE, 0xAD]));
+        mw.writeMapKey('items');
+        mw.writeArray(2, (aw) {
+          aw.writeNull();
+          aw.writeInt64(99);
+        });
+      });
+      final bytes = writer.takeBytes();
+
+      // Must validate cleanly under strict NveBinValueView.
+      final view = NveBinValueView.parse(bytes);
+      expect(view.get('title')?.asString(), 'Shared Dart 🚀');
+      expect(view.get('items')?.arrayAt(1)?.asInt64(), 99);
+
+      // Must round-trip via streaming NveBinReader.
+      final reader = NveBinReader(bytes);
+      expect(reader.beginMap(), 6);
+      expect(reader.readMapKey(), 'flag');
+      expect(reader.readBool(), isTrue);
+      expect(reader.readMapKey(), 'count');
+      expect(reader.readInt64(), -123456789);
+      expect(reader.readMapKey(), 'ratio');
+      expect(reader.readDouble(), closeTo(3.25, 1e-12));
+      expect(reader.readMapKey(), 'title');
+      expect(reader.readString(), 'Shared Dart 🚀');
+      expect(reader.readMapKey(), 'blob');
+      expect(reader.readBytes(), <int>[0xDE, 0xAD]);
+      expect(reader.readMapKey(), 'items');
+      expect(reader.beginArray(), 2);
+      expect(reader.readNullIfPresent(), isTrue);
+      expect(reader.readInt64(), 99);
+
+      // Truncated buffers throw StateError instead of RangeError.
+      expect(() => NveBinReader(Uint8List(0)).peekTag(), throwsStateError);
+      expect(() => NveBinReader(Uint8List.fromList(<int>[2, 1, 2])).readInt64(), throwsStateError);
+    });
+
+    test('NveDirectPropsWriter.withEncodedProps encodes typed props and >4 KiB overflow', () {
+      final bigStr = List<String>.filled(350, 'Flutter-Arena-⚡-').join();
+      final props = _SampleDirectProps(
+        title: bigStr,
+        count: 77,
+        ratio: 1.5,
+        muted: true,
+        note: null,
+        payload: Uint8List.fromList(<int>[1, 2, 3, 4]),
+      );
+
+      NveDirectPropsWriter.withEncodedProps(props, (entries, count) {
+        expect(count, 6);
+        expect(entries, isNot(ffi.nullptr));
+        final e0 = entries[0];
+        expect(utf8.decode(e0.key.ptr.asTypedList(e0.key.len)), 'title');
+        expect(e0.value.tag, NveValueTag.str.code);
+        expect(utf8.decode(e0.value.data.strVal.ptr.asTypedList(e0.value.data.strVal.len)), bigStr);
+
+        final e1 = entries[1];
+        expect(utf8.decode(e1.key.ptr.asTypedList(e1.key.len)), 'count');
+        expect(e1.value.tag, NveValueTag.i64.code);
+        expect(e1.value.data.i64Val, 77);
+
+        final e2 = entries[2];
+        expect(e2.value.tag, NveValueTag.f64.code);
+        expect(e2.value.data.f64Val, closeTo(1.5, 1e-12));
+
+        final e3 = entries[3];
+        expect(e3.value.tag, NveValueTag.boolValue.code);
+        expect(e3.value.data.boolVal, 1);
+
+        final e4 = entries[4];
+        expect(e4.value.tag, NveValueTag.nullValue.code);
+
+        final e5 = entries[5];
+        expect(e5.value.tag, NveValueTag.bytes.code);
+        expect(e5.value.data.bytesVal.ptr.asTypedList(e5.value.data.bytesVal.len), <int>[1, 2, 3, 4]);
+      });
+
+      NveDirectPropsWriter.withEncodedProps(const _EmptyDirectProps(), (entries, count) {
+        expect(entries, ffi.nullptr);
+        expect(count, 0);
+      });
+    });
+  });
+}
+
+class _SampleDirectProps implements NveDirectEncodable {
+  const _SampleDirectProps({
+    required this.title,
+    required this.count,
+    required this.ratio,
+    required this.muted,
+    required this.note,
+    required this.payload,
+  });
+
+  final String title;
+  final int count;
+  final double ratio;
+  final bool muted;
+  final String? note;
+  final Uint8List payload;
+
+  @override
+  int get directPropCount => 6;
+
+  @override
+  void encodeDirect(NveDirectPropsBuilder builder) {
+    builder.writeString('title', title);
+    builder.writeInt64('count', count);
+    builder.writeDouble('ratio', ratio);
+    builder.writeBool('muted', muted);
+    builder.writeString('note', note);
+    builder.writeBytes('payload', payload);
+  }
+}
+
+class _EmptyDirectProps implements NveDirectEncodable {
+  const _EmptyDirectProps();
+
+  @override
+  int get directPropCount => 0;
+
+  @override
+  void encodeDirect(NveDirectPropsBuilder builder) {}
 }

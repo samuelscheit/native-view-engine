@@ -34,10 +34,16 @@ public final class NveHostContainerView: NvePlatformView {
 /// - Imperative commands via `NveSurfaceController`
 /// - Strongly typed outbound event callbacks via `onEvent`
 public struct NveSurfaceRepresentable {
+    private enum PropsPayload {
+        case dynamic([String: Any])
+        case direct((NveSurfaceController) -> Bool)
+    }
+
     public let componentName: String
     public let vtableSymbol: String
     public let backend: NveRenderBackend
     public let props: [String: Any]
+    private let propsPayload: PropsPayload
     public let controller: NveSurfaceController?
     public let onEvent: ((NveEvent) -> Void)?
 
@@ -53,6 +59,27 @@ public struct NveSurfaceRepresentable {
         self.vtableSymbol = vtableSymbol
         self.backend = backend
         self.props = props
+        self.propsPayload = .dynamic(props)
+        self.controller = controller
+        self.onEvent = onEvent
+    }
+
+    /// Zero-copy typed fast path for strongly typed `NveDirectEncodable & Equatable` prop structs:
+    /// skips `[String: Any]` boxing, `NveBinValue` heap-tree construction, and key sorting on every
+    /// SwiftUI update.
+    public init<P: NveDirectEncodable & Equatable>(
+        componentName: String,
+        vtableSymbol: String = "nve_get_interface",
+        backend: NveRenderBackend = .fabric,
+        directProps: P,
+        controller: NveSurfaceController? = nil,
+        onEvent: ((NveEvent) -> Void)? = nil
+    ) {
+        self.componentName = componentName
+        self.vtableSymbol = vtableSymbol
+        self.backend = backend
+        self.props = [:]
+        self.propsPayload = .direct { active in active.setDirectProps(directProps) }
         self.controller = controller
         self.onEvent = onEvent
     }
@@ -97,7 +124,12 @@ public struct NveSurfaceRepresentable {
         let active = coordinator.controller
         active.onEvent = onEvent
         view.controller = active
-        _ = active.setProps(props)
+        switch propsPayload {
+        case let .dynamic(dict):
+            _ = active.setProps(dict)
+        case let .direct(apply):
+            _ = apply(active)
+        }
     }
 
     private func computeSizeThatFits(

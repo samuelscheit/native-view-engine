@@ -37,6 +37,10 @@ pub fn generate_hybrid_swift(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>
     )
     .unwrap();
     writeln!(out).unwrap();
+    writeln!(out, "#if canImport(NveSwiftUI)").unwrap();
+    writeln!(out, "import NveSwiftUI").unwrap();
+    writeln!(out, "#endif").unwrap();
+    writeln!(out).unwrap();
 
     emit_swift_common(&mut out, spec);
 
@@ -482,8 +486,8 @@ fn emit_swift_module(out: &mut String, m: &HybridModuleSpec, spec: &HybridFileSp
 fn emit_swift_view(out: &mut String, v: &HybridViewSpec, spec: &HybridFileSpec) {
     let pascal = to_pascal_case(&v.name);
 
-    // Props struct
-    writeln!(out, "public struct {pascal}Props: Equatable {{").unwrap();
+    // Props struct (conforms to `NveDirectEncodable` for zero-alloc stack-slab arena encoding)
+    writeln!(out, "public struct {pascal}Props: Equatable, NveDirectEncodable {{").unwrap();
     for p in &v.props {
         let pname = swift_ident(&p.name);
         writeln!(out, "    public var {pname}: {}", swift_type(&p.ty)).unwrap();
@@ -502,6 +506,16 @@ fn emit_swift_view(out: &mut String, v: &HybridViewSpec, spec: &HybridFileSpec) 
     for p in &v.props {
         let pname = swift_ident(&p.name);
         writeln!(out, "        self.{pname} = {pname}").unwrap();
+    }
+    writeln!(out, "    }}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "    public var directPropCount: Int {{ {} }}", v.props.len()).unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "    public func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {{").unwrap();
+    for p in &v.props {
+        let key_lit = escape_c_like_string(&p.name);
+        let pname = swift_ident(&p.name);
+        emit_swift_direct_prop_write(out, &key_lit, &format!("self.{pname}"), &p.ty);
     }
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
@@ -626,161 +640,68 @@ fn emit_swift_client(
     writeln!(out).unwrap();
 }
 
-fn emit_swift_set_props(out: &mut String, pascal: &str, v: &HybridViewSpec) {
-    writeln!(out, "    public func setProps(_ props: {pascal}Props) throws {{").unwrap();
-    writeln!(out, "        guard let h = handle, let setFn = vtable.pointee.set_props_direct else {{ throw NveHybridError.nullHandle }}").unwrap();
-    if v.props.is_empty() {
-        writeln!(out, "        let status = setFn(h, nil, 0)").unwrap();
-        writeln!(out, "        if status != Int32(NVE_HYBRID_OK.rawValue) {{ throw NveHybridError.remoteError(\"setProps failed\") }}").unwrap();
-        writeln!(out, "    }}").unwrap();
-        writeln!(out).unwrap();
-        return;
-    }
-
-    // Store UTF-8 byte arrays for every prop key + string/bytes/binary prop value so buffer pointers
-    // remain pinned cleanly for the duration of `set_props_direct`.
-    writeln!(out, "        var pinnedBuffers: [[UInt8]] = []").unwrap();
-    writeln!(out, "        pinnedBuffers.reserveCapacity({})", v.props.len() * 2).unwrap();
-    writeln!(out, "        var keyIndices: [Int] = []").unwrap();
-    writeln!(out, "        var valBufIndices: [Int] = []").unwrap();
-    for p in &v.props {
-        let key_lit = escape_c_like_string(&p.name);
-        let pname = swift_ident(&p.name);
-        writeln!(out, "        keyIndices.append(pinnedBuffers.count)").unwrap();
-        writeln!(out, "        pinnedBuffers.append(Array(\"{key_lit}\".utf8))").unwrap();
-        match &p.ty {
-            HybridType::String => {
-                writeln!(out, "        valBufIndices.append(pinnedBuffers.count)").unwrap();
-                writeln!(out, "        pinnedBuffers.append(Array(props.{pname}.utf8))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::String) => {
-                writeln!(out, "        if let _s = props.{pname} {{").unwrap();
-                writeln!(out, "            valBufIndices.append(pinnedBuffers.count)").unwrap();
-                writeln!(out, "            pinnedBuffers.append(Array(_s.utf8))").unwrap();
-                writeln!(out, "        }} else {{ valBufIndices.append(-1) }}").unwrap();
-            }
-            HybridType::Bytes => {
-                writeln!(out, "        valBufIndices.append(pinnedBuffers.count)").unwrap();
-                writeln!(out, "        pinnedBuffers.append(props.{pname})").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::Bytes) => {
-                writeln!(out, "        if let _b = props.{pname} {{").unwrap();
-                writeln!(out, "            valBufIndices.append(pinnedBuffers.count)").unwrap();
-                writeln!(out, "            pinnedBuffers.append(_b)").unwrap();
-                writeln!(out, "        }} else {{ valBufIndices.append(-1) }}").unwrap();
-            }
+fn emit_swift_direct_prop_write(out: &mut String, key_lit: &str, expr: &str, ty: &HybridType) {
+    match ty {
+        HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::F32
+        | HybridType::F64
+        | HybridType::String
+        | HybridType::Bytes => {
+            writeln!(out, "        builder.write(\"{key_lit}\", {expr})").unwrap();
+        }
+        HybridType::Enum(_) => {
+            writeln!(out, "        builder.write(\"{key_lit}\", enum: {expr})").unwrap();
+        }
+        HybridType::Optional(inner) => match inner.as_ref() {
             HybridType::Bool
+            | HybridType::U8
+            | HybridType::U16
+            | HybridType::Usize
             | HybridType::I32
             | HybridType::U32
             | HybridType::I64
             | HybridType::U64
             | HybridType::F32
             | HybridType::F64
-            | HybridType::Enum(_) => {
-                writeln!(out, "        valBufIndices.append(-1)").unwrap();
-            }
-            HybridType::Optional(inner)
-                if matches!(
-                    inner.as_ref(),
-                    HybridType::Bool
-                        | HybridType::I32
-                        | HybridType::U32
-                        | HybridType::I64
-                        | HybridType::U64
-                        | HybridType::F32
-                        | HybridType::F64
-                        | HybridType::Enum(_)
-                ) =>
-            {
-                writeln!(out, "        valBufIndices.append(-1)").unwrap();
-            }
-            other => {
-                writeln!(out, "        do {{").unwrap();
-                writeln!(out, "            var _w = NveHybridBinWriter()").unwrap();
-                emit_swift_bin_write(out, "            ", "_w", &format!("props.{pname}"), other);
-                writeln!(out, "            valBufIndices.append(pinnedBuffers.count)").unwrap();
-                writeln!(out, "            pinnedBuffers.append(_w.bytes)").unwrap();
-                writeln!(out, "        }}").unwrap();
-            }
-        }
-    }
-
-    // Flatten all pinned bytes into a single contiguous byte array so ONE `withUnsafeBufferPointer`
-    // pins every key & value slice simultaneously with zero heap overhead per entry!
-    writeln!(out, "        var flatBytes: [UInt8] = []").unwrap();
-    writeln!(out, "        var offsets: [(Int, Int)] = []").unwrap();
-    writeln!(out, "        offsets.reserveCapacity(pinnedBuffers.count)").unwrap();
-    writeln!(out, "        for b in pinnedBuffers {{").unwrap();
-    writeln!(out, "            offsets.append((flatBytes.count, b.count))").unwrap();
-    writeln!(out, "            flatBytes.append(contentsOf: b)").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "        let status: Int32 = flatBytes.withUnsafeBufferPointer {{ flatBuf in").unwrap();
-    writeln!(out, "            let base = flatBuf.baseAddress").unwrap();
-    writeln!(out, "            var entries: [NveMapEntry] = []").unwrap();
-    writeln!(out, "            entries.reserveCapacity({})", v.props.len()).unwrap();
-    for (idx, p) in v.props.iter().enumerate() {
-        let pname = swift_ident(&p.name);
-        writeln!(out, "            do {{").unwrap();
-        writeln!(out, "                let (ko, kl) = offsets[keyIndices[{idx}]]").unwrap();
-        writeln!(out, "                let keySlice = NveStrSlice(ptr: base?.advanced(by: ko), len: kl)").unwrap();
-        match &p.ty {
-            HybridType::Bool => {
-                writeln!(out, "                let val = NveValue(tag: NVE_VAL_BOOL.rawValue, data: NveValueData(bool_val: props.{pname} ? 1 : 0))").unwrap();
-            }
-            HybridType::I32 | HybridType::U32 | HybridType::I64 => {
-                writeln!(out, "                let val = NveValue(tag: NVE_VAL_I64.rawValue, data: NveValueData(i64_val: Int64(props.{pname})))").unwrap();
-            }
-            HybridType::U64 => {
-                writeln!(out, "                let val = NveValue(tag: NVE_VAL_I64.rawValue, data: NveValueData(i64_val: Int64(bitPattern: props.{pname})))").unwrap();
+            | HybridType::String
+            | HybridType::Bytes => {
+                writeln!(out, "        builder.write(\"{key_lit}\", {expr})").unwrap();
             }
             HybridType::Enum(_) => {
-                writeln!(out, "                let val = NveValue(tag: NVE_VAL_I64.rawValue, data: NveValueData(i64_val: Int64(props.{pname}.rawValue)))").unwrap();
+                writeln!(out, "        builder.write(\"{key_lit}\", enum: {expr})").unwrap();
             }
-            HybridType::F32 | HybridType::F64 => {
-                writeln!(out, "                let val = NveValue(tag: NVE_VAL_F64.rawValue, data: NveValueData(f64_val: Double(props.{pname})))").unwrap();
+            other => {
+                writeln!(out, "        if let _optProp = {expr} {{").unwrap();
+                writeln!(out, "            var _w = NveHybridBinWriter()").unwrap();
+                emit_swift_bin_write(out, "            ", "_w", "_optProp", other);
+                writeln!(out, "            builder.write(\"{key_lit}\", _w.bytes)").unwrap();
+                writeln!(out, "        }} else {{").unwrap();
+                writeln!(out, "            builder.writeNull(\"{key_lit}\")").unwrap();
+                writeln!(out, "        }}").unwrap();
             }
-            HybridType::String => {
-                writeln!(out, "                let (vo, vl) = offsets[valBufIndices[{idx}]]").unwrap();
-                writeln!(out, "                let val = NveValue(tag: NVE_VAL_STR.rawValue, data: NveValueData(str_val: NveStrSlice(ptr: base?.advanced(by: vo), len: vl)))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::String) => {
-                writeln!(out, "                let val: NveValue = valBufIndices[{idx}] >= 0 ? {{").unwrap();
-                writeln!(out, "                    let (vo, vl) = offsets[valBufIndices[{idx}]]").unwrap();
-                writeln!(out, "                    return NveValue(tag: NVE_VAL_STR.rawValue, data: NveValueData(str_val: NveStrSlice(ptr: base?.advanced(by: vo), len: vl)))").unwrap();
-                writeln!(out, "                }}() : NveValue(tag: NVE_VAL_NULL.rawValue, data: NveValueData(i64_val: 0))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::Bytes) => {
-                writeln!(out, "                let val: NveValue = valBufIndices[{idx}] >= 0 ? {{").unwrap();
-                writeln!(out, "                    let (vo, vl) = offsets[valBufIndices[{idx}]]").unwrap();
-                writeln!(out, "                    return NveValue(tag: NVE_VAL_BYTES.rawValue, data: NveValueData(bytes_val: NveBufferSlice(ptr: base?.advanced(by: vo), len: vl)))").unwrap();
-                writeln!(out, "                }}() : NveValue(tag: NVE_VAL_NULL.rawValue, data: NveValueData(i64_val: 0))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::Bool) => {
-                writeln!(out, "                let val = props.{pname}.map {{ NveValue(tag: NVE_VAL_BOOL.rawValue, data: NveValueData(bool_val: $0 ? 1 : 0)) }} ?? NveValue(tag: NVE_VAL_NULL.rawValue, data: NveValueData(i64_val: 0))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::I32 | HybridType::U32 | HybridType::I64) => {
-                writeln!(out, "                let val = props.{pname}.map {{ NveValue(tag: NVE_VAL_I64.rawValue, data: NveValueData(i64_val: Int64($0))) }} ?? NveValue(tag: NVE_VAL_NULL.rawValue, data: NveValueData(i64_val: 0))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::U64) => {
-                writeln!(out, "                let val = props.{pname}.map {{ NveValue(tag: NVE_VAL_I64.rawValue, data: NveValueData(i64_val: Int64(bitPattern: $0))) }} ?? NveValue(tag: NVE_VAL_NULL.rawValue, data: NveValueData(i64_val: 0))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::Enum(_)) => {
-                writeln!(out, "                let val = props.{pname}.map {{ NveValue(tag: NVE_VAL_I64.rawValue, data: NveValueData(i64_val: Int64($0.rawValue))) }} ?? NveValue(tag: NVE_VAL_NULL.rawValue, data: NveValueData(i64_val: 0))").unwrap();
-            }
-            HybridType::Optional(inner) if matches!(inner.as_ref(), HybridType::F32 | HybridType::F64) => {
-                writeln!(out, "                let val = props.{pname}.map {{ NveValue(tag: NVE_VAL_F64.rawValue, data: NveValueData(f64_val: Double($0))) }} ?? NveValue(tag: NVE_VAL_NULL.rawValue, data: NveValueData(i64_val: 0))").unwrap();
-            }
-            _ => {
-                writeln!(out, "                let (vo, vl) = offsets[valBufIndices[{idx}]]").unwrap();
-                writeln!(out, "                let val = NveValue(tag: NVE_VAL_BYTES.rawValue, data: NveValueData(bytes_val: NveBufferSlice(ptr: base?.advanced(by: vo), len: vl)))").unwrap();
-            }
+        },
+        other => {
+            writeln!(out, "        do {{").unwrap();
+            writeln!(out, "            var _w = NveHybridBinWriter()").unwrap();
+            emit_swift_bin_write(out, "            ", "_w", expr, other);
+            writeln!(out, "            builder.write(\"{key_lit}\", _w.bytes)").unwrap();
+            writeln!(out, "        }}").unwrap();
         }
-        writeln!(out, "                entries.append(NveMapEntry(key: keySlice, value: val))").unwrap();
-        writeln!(out, "            }}").unwrap();
     }
-    writeln!(out, "            return entries.withUnsafeBufferPointer {{ ebuf in").unwrap();
-    writeln!(out, "                setFn(h, ebuf.baseAddress, UInt32(ebuf.count))").unwrap();
-    writeln!(out, "            }}").unwrap();
+}
+
+fn emit_swift_set_props(out: &mut String, pascal: &str, _v: &HybridViewSpec) {
+    writeln!(out, "    public func setProps(_ props: {pascal}Props) throws {{").unwrap();
+    writeln!(out, "        guard let h = handle, let setFn = vtable.pointee.set_props_direct else {{ throw NveHybridError.nullHandle }}").unwrap();
+    writeln!(out, "        let status: Int32 = try NveDirectPropsWriter.withEncodedProps(props) {{ ptr, count in").unwrap();
+    writeln!(out, "            setFn(h, ptr, count)").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "        if status != Int32(NVE_HYBRID_OK.rawValue) {{").unwrap();
     writeln!(out, "            throw NveHybridError.remoteError(\"setProps failed\")").unwrap();

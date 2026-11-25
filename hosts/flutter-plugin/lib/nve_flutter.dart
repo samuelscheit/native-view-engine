@@ -10,11 +10,9 @@
 /// - `NveTextureHostWidget` & `NvePlatformViewWidget` (`surface_widgets.dart`)
 library nve_flutter;
 
+export 'nve_hybrid_runtime.dart';
 export 'src/app_instance.dart';
 export 'src/channel_client.dart';
-export 'src/direct_ffi.dart';
 export 'src/event_codec.dart';
-export 'src/nve_bin_value.dart';
-export 'src/nve_core_abi_gen.dart';
 export 'src/nve_scene_abi_gen.dart';
 export 'src/surface_widgets.dart';

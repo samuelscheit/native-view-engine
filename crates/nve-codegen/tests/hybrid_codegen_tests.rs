@@ -722,15 +722,82 @@ struct JNIEnv {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn swift_direct_runtime_files() -> Vec<PathBuf> {
+    let swift_src = workspace_root().join("hosts/swiftui-kit/Sources/NveSwiftUI");
+    [
+        "NveBinValue.swift",
+        "NveEventTypes.swift",
+        "NveDirectArena.swift",
+        "NveDirectValueEncoding.swift",
+        "NveDirectWriters.swift",
+    ]
+    .into_iter()
+    .map(|f| swift_src.join(f))
+    .collect()
+}
+
+fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
+    let flutter_plugin_root = workspace_root().join("hosts/flutter-plugin");
+    let canonical_plugin = std::fs::canonicalize(&flutter_plugin_root).unwrap_or(flutter_plugin_root);
+    let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let to_file_uri = |p: &Path| {
+        let s = p.to_string_lossy().replace('\\', "/");
+        if s.starts_with('/') {
+            format!("file://{s}")
+        } else {
+            format!("file:///{s}")
+        }
+    };
+    let dart_tool = dir.join(".dart_tool");
+    std::fs::create_dir_all(&dart_tool).unwrap();
+    let config = format!(
+        r#"{{
+  "configVersion": 2,
+  "packages": [
+    {{
+      "name": "{pkg_name}",
+      "rootUri": "{}",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    }},
+    {{
+      "name": "nve_flutter",
+      "rootUri": "{}",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    }}
+  ]
+}}
+"#,
+        to_file_uri(&canonical_dir),
+        to_file_uri(&canonical_plugin),
+    );
+    std::fs::write(dart_tool.join("package_config.json"), config).unwrap();
+}
+
 #[test]
 fn real_compiler_verifies_swift_direct_c_interop() {
-    if !tool_available("swiftc") {
-        return;
-    }
-
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
     let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
     let swift_out = generate_hybrid_target(&spec, HybridTarget::Swift).unwrap();
+
+    // Verify generated Swift uses the shared zero-alloc stack-slab arena (never legacy pinnedBuffers).
+    let swift_src = &swift_out.files[0].content;
+    assert!(
+        !swift_src.contains("pinnedBuffers"),
+        "generated Swift must not contain legacy pinnedBuffers heap encoder"
+    );
+    assert!(
+        !swift_src.contains("flatBytes"),
+        "generated Swift must not flatten heap byte arrays in setProps"
+    );
+    assert!(swift_src.contains("NveDirectEncodable"));
+    assert!(swift_src.contains("NveDirectPropsBuilder"));
+    assert!(swift_src.contains("NveDirectPropsWriter.withEncodedProps"));
+
+    if !tool_available("swiftc") {
+        return;
+    }
 
     let dir = temp_test_dir("swift");
     cpp_out.write_to_dir(&dir).unwrap();
@@ -740,17 +807,22 @@ fn real_compiler_verifies_swift_direct_c_interop() {
     let abi_h = dir.join("CryptoHybridAbi.h");
     let swift_file = dir.join("CryptoHybridSpec.swift");
 
-    let swift_check = Command::new("swiftc")
+    let mut swift_cmd = Command::new("swiftc");
+    swift_cmd
         .arg("-typecheck")
         .arg("-import-objc-header")
         .arg(&abi_h)
         .arg("-I")
         .arg(&nve_inc)
         .arg("-I")
-        .arg(&dir)
+        .arg(&dir);
+    for runtime_file in swift_direct_runtime_files() {
+        swift_cmd.arg(runtime_file);
+    }
+    let swift_check = swift_cmd
         .arg(&swift_file)
         .output()
-        .expect("run swiftc -typecheck on generated Swift spec");
+        .expect("run swiftc -typecheck on generated Swift spec against shared NveSwiftUI arena");
     assert!(
         swift_check.status.success(),
         "Swift direct C-interop spec failed swiftc -typecheck:\nstdout:\n{}\nstderr:\n{}",
@@ -1001,24 +1073,43 @@ fn main() {
 
 #[test]
 fn real_analyzer_verifies_generated_dart_ffi_bindings() {
+    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
+    let dart_out = generate_hybrid_target(&spec, HybridTarget::Dart).unwrap();
+    let dart_src = &dart_out.files[0].content;
+
+    // Verify generated Dart reuses the shared Flutter runtime instead of duplicating codecs/structs.
+    assert!(dart_src.contains("import 'package:nve_flutter/nve_hybrid_runtime.dart';"));
+    assert!(dart_src.contains("implements NveDirectEncodable"));
+    assert!(dart_src.contains("NveDirectPropsWriter.withEncodedProps"));
+    assert!(
+        !dart_src.contains("class NveBinWriter"),
+        "generated Dart must not duplicate NveBinWriter"
+    );
+    assert!(
+        !dart_src.contains("class NveBinReader"),
+        "generated Dart must not duplicate NveBinReader"
+    );
+    assert!(
+        !dart_src.contains("final class NveMapEntry"),
+        "generated Dart must not duplicate core ABI FFI structs"
+    );
+
     if !tool_available("dart") {
         return;
     }
-
-    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
-    let dart_out = generate_hybrid_target(&spec, HybridTarget::Dart).unwrap();
 
     let dir = temp_test_dir("dart");
     let lib_dir = dir.join("lib");
     std::fs::create_dir_all(&lib_dir).unwrap();
     dart_out.write_to_dir(&lib_dir).unwrap();
 
-    // Minimal pubspec so `dart analyze` uses Dart 3.x SDK rules without network access.
+    // Minimal pubspec + offline package_config.json resolving `package:nve_flutter/` to disk.
     std::fs::write(
         dir.join("pubspec.yaml"),
-        "name: nve_hybrid_check\nenvironment:\n  sdk: '>=3.3.0 <4.0.0'\n",
+        "name: nve_hybrid_check\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
     )
     .unwrap();
+    write_offline_dart_package_config(&dir, "nve_hybrid_check");
 
     let dart_check = Command::new("dart")
         .args(["analyze", "--fatal-infos"])
@@ -1031,6 +1122,153 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
         "Generated Dart FFI file failed dart analyze:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&dart_check.stdout),
         String::from_utf8_lossy(&dart_check.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
+    use core::mem::{align_of, offset_of, size_of};
+    use nve_abi::{
+        NveBufferSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NveStrSlice, NveValue,
+        NveValueArray, NveValueData, NveValueMap,
+    };
+
+    if !tool_available("clang") {
+        return;
+    }
+
+    let mut c_src = String::from("#include <stddef.h>\n#include <stdalign.h>\n#include \"nve_abi.h\"\n\n");
+
+    let mut check_layout = |c_ty: &str, sz: usize, al: usize, fields: &[(&str, usize)]| {
+        c_src.push_str(&format!(
+            "_Static_assert(sizeof({c_ty}) == {sz}u, \"sizeof({c_ty}) mismatch vs Rust\");\n"
+        ));
+        c_src.push_str(&format!(
+            "_Static_assert(alignof({c_ty}) == {al}u, \"alignof({c_ty}) mismatch vs Rust\");\n"
+        ));
+        for &(field, off) in fields {
+            c_src.push_str(&format!(
+                "_Static_assert(offsetof({c_ty}, {field}) == {off}u, \"offsetof({c_ty}, {field}) mismatch vs Rust\");\n"
+            ));
+        }
+    };
+
+    check_layout(
+        "NveBufferSlice",
+        size_of::<NveBufferSlice>(),
+        align_of::<NveBufferSlice>(),
+        &[
+            ("ptr", offset_of!(NveBufferSlice, ptr)),
+            ("len", offset_of!(NveBufferSlice, len)),
+        ],
+    );
+    check_layout(
+        "NveStrSlice",
+        size_of::<NveStrSlice>(),
+        align_of::<NveStrSlice>(),
+        &[
+            ("ptr", offset_of!(NveStrSlice, ptr)),
+            ("len", offset_of!(NveStrSlice, len)),
+        ],
+    );
+    check_layout(
+        "NveValueArray",
+        size_of::<NveValueArray>(),
+        align_of::<NveValueArray>(),
+        &[
+            ("ptr", offset_of!(NveValueArray, ptr)),
+            ("len", offset_of!(NveValueArray, len)),
+        ],
+    );
+    check_layout(
+        "NveValueMap",
+        size_of::<NveValueMap>(),
+        align_of::<NveValueMap>(),
+        &[
+            ("ptr", offset_of!(NveValueMap, ptr)),
+            ("len", offset_of!(NveValueMap, len)),
+        ],
+    );
+    check_layout(
+        "NveValueData",
+        size_of::<NveValueData>(),
+        align_of::<NveValueData>(),
+        &[
+            ("bool_val", offset_of!(NveValueData, bool_val)),
+            ("i64_val", offset_of!(NveValueData, i64_val)),
+            ("f64_val", offset_of!(NveValueData, f64_val)),
+            ("str_val", offset_of!(NveValueData, str_val)),
+            ("bytes_val", offset_of!(NveValueData, bytes_val)),
+            ("array_val", offset_of!(NveValueData, array_val)),
+            ("map_val", offset_of!(NveValueData, map_val)),
+        ],
+    );
+    check_layout(
+        "NveValue",
+        size_of::<NveValue>(),
+        align_of::<NveValue>(),
+        &[
+            ("tag", offset_of!(NveValue, tag)),
+            ("data", offset_of!(NveValue, data)),
+        ],
+    );
+    check_layout(
+        "NveMapEntry",
+        size_of::<NveMapEntry>(),
+        align_of::<NveMapEntry>(),
+        &[
+            ("key", offset_of!(NveMapEntry, key)),
+            ("value", offset_of!(NveMapEntry, value)),
+        ],
+    );
+    check_layout(
+        "NveDirectEvent",
+        size_of::<NveDirectEvent>(),
+        align_of::<NveDirectEvent>(),
+        &[
+            ("surface_id", offset_of!(NveDirectEvent, surface_id)),
+            ("node_id", offset_of!(NveDirectEvent, node_id)),
+            ("timestamp_us", offset_of!(NveDirectEvent, timestamp_us)),
+            ("kind", offset_of!(NveDirectEvent, kind)),
+            ("payload_tag", offset_of!(NveDirectEvent, payload_tag)),
+            ("name", offset_of!(NveDirectEvent, name)),
+            ("x", offset_of!(NveDirectEvent, x)),
+            ("y", offset_of!(NveDirectEvent, y)),
+            ("width", offset_of!(NveDirectEvent, width)),
+            ("height", offset_of!(NveDirectEvent, height)),
+            ("text", offset_of!(NveDirectEvent, text)),
+            ("value", offset_of!(NveDirectEvent, value)),
+        ],
+    );
+    check_layout(
+        "NveEventBatch",
+        size_of::<NveEventBatch>(),
+        align_of::<NveEventBatch>(),
+        &[
+            ("ptr", offset_of!(NveEventBatch, ptr)),
+            ("len", offset_of!(NveEventBatch, len)),
+        ],
+    );
+
+    let dir = temp_test_dir("abi_offsetof_parity");
+    let c_file = dir.join("check_offsets.c");
+    std::fs::write(&c_file, &c_src).unwrap();
+
+    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
+    let check = Command::new("clang")
+        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
+        .arg(format!("-I{}", nve_inc.display()))
+        .arg(&c_file)
+        .output()
+        .expect("run clang to verify Rust offset_of! matches C offsetof in nve_abi.h");
+    assert!(
+        check.status.success(),
+        "Rust offset_of! vs C nve_abi.h offsetof mismatch:\nstdout:\n{}\nstderr:\n{}\nC source:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr),
+        c_src
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1498,14 +1736,19 @@ void check() {
         let dir = temp_test_dir("adversarial_swift");
         cpp_out.write_to_dir(&dir).unwrap();
         swift_out.write_to_dir(&dir).unwrap();
-        let out = Command::new("swiftc")
+        let mut swift_cmd = Command::new("swiftc");
+        swift_cmd
             .arg("-typecheck")
             .arg("-import-objc-header")
             .arg(dir.join("SafeBannerHybridAbi.h"))
             .arg("-I")
             .arg(&nve_inc)
             .arg("-I")
-            .arg(&dir)
+            .arg(&dir);
+        for runtime_file in swift_direct_runtime_files() {
+            swift_cmd.arg(runtime_file);
+        }
+        let out = swift_cmd
             .arg(dir.join("SafeBannerHybridSpec.swift"))
             .output()
             .expect("swiftc adversarial hybrid swift");
@@ -1524,9 +1767,10 @@ void check() {
         dart_out.write_to_dir(&lib_dir).unwrap();
         std::fs::write(
             dir.join("pubspec.yaml"),
-            "name: nve_adv_check\nenvironment:\n  sdk: '>=3.3.0 <4.0.0'\n",
+            "name: nve_adv_check\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
         )
         .unwrap();
+        write_offline_dart_package_config(&dir, "nve_adv_check");
         let out = Command::new("dart")
             .args(["analyze", "--fatal-infos"])
             .arg(&dir)

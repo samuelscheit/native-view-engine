@@ -330,10 +330,114 @@ class NveNativeArena {
   }
 }
 
+/// Strongly typed Dart prop records implement [NveDirectEncodable] to write directly into
+/// [NveNativeArena] for `set_props_direct` with zero per-field FFI allocations or `Map` boxing.
+abstract interface class NveDirectEncodable {
+  int get directPropCount;
+  void encodeDirect(NveDirectPropsBuilder builder);
+}
+
+/// Arena-backed builder populating contiguous `NveMapEntry` slots for `set_props_direct`.
+class NveDirectPropsBuilder {
+  NveDirectPropsBuilder._(this.arena, this._entries, this._capacity);
+
+  final NveNativeArena arena;
+  final ffi.Pointer<NveMapEntry> _entries;
+  final int _capacity;
+  int _count = 0;
+
+  int get count => _count;
+  ffi.Pointer<NveMapEntry> get entriesPtr => _entries;
+
+  NveMapEntry _next(String key) {
+    if (_count >= _capacity) {
+      throw StateError('NveDirectPropsBuilder exceeded declared directPropCount ($_capacity)');
+    }
+    final entry = _entries[_count++];
+    arena.writeStrSlice(entry.key, key);
+    return entry;
+  }
+
+  void writeNull(String key) {
+    final entry = _next(key);
+    entry.value.tag = NveValueTag.nullValue.code;
+    entry.value.data.i64Val = 0;
+  }
+
+  void writeBool(String key, bool? value) {
+    if (value == null) {
+      writeNull(key);
+      return;
+    }
+    final entry = _next(key);
+    entry.value.tag = NveValueTag.boolValue.code;
+    entry.value.data.boolVal = value ? 1 : 0;
+  }
+
+  void writeInt64(String key, int? value) {
+    if (value == null) {
+      writeNull(key);
+      return;
+    }
+    final entry = _next(key);
+    entry.value.tag = NveValueTag.i64.code;
+    entry.value.data.i64Val = value;
+  }
+
+  void writeDouble(String key, double? value) {
+    if (value == null) {
+      writeNull(key);
+      return;
+    }
+    final entry = _next(key);
+    entry.value.tag = NveValueTag.f64.code;
+    entry.value.data.f64Val = value;
+  }
+
+  void writeString(String key, String? value) {
+    if (value == null) {
+      writeNull(key);
+      return;
+    }
+    final entry = _next(key);
+    entry.value.tag = NveValueTag.str.code;
+    arena.writeStrSlice(entry.value.data.strVal, value);
+  }
+
+  void writeBytes(String key, Uint8List? value) {
+    if (value == null) {
+      writeNull(key);
+      return;
+    }
+    final entry = _next(key);
+    entry.value.tag = NveValueTag.bytes.code;
+    arena.writeBytesSlice(entry.value.data.bytesVal, value);
+  }
+}
+
 /// Zero-JSON direct writer populating `NveMapEntry[]` + `NveValue` structs for
 /// `NveComponentApi.set_props_direct`.
 class NveDirectPropsWriter {
   const NveDirectPropsWriter._();
+
+  static T withEncodedProps<T>(
+    NveDirectEncodable props,
+    T Function(ffi.Pointer<NveMapEntry> entries, int count) body,
+  ) {
+    final capacity = props.directPropCount;
+    if (capacity <= 0) {
+      return body(ffi.nullptr, 0);
+    }
+    final arena = NveNativeArena();
+    try {
+      final entriesPtr = arena.allocStructArray<NveMapEntry>(ffi.sizeOf<NveMapEntry>(), capacity);
+      final builder = NveDirectPropsBuilder._(arena, entriesPtr, capacity);
+      props.encodeDirect(builder);
+      return body(builder.entriesPtr, builder.count);
+    } finally {
+      arena.dispose();
+    }
+  }
 
   static T withProps<T>(
     Map<String, Object?> props,

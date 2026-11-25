@@ -20,6 +20,8 @@ public final class NveSurfaceController: ObservableObject {
     private var dylibHandle: UnsafeMutableRawPointer?
     private var frameCounter: UInt64 = 0
     private var lastPropsValue: NveBinValue?
+    private var lastDirectProps: Any?
+    private var lastDirectPropsEqual: ((Any) -> Bool)?
     private var fallbackIntrinsicSize: CGSize = CGSize(width: 240, height: 120)
 
     public var onEvent: ((NveEvent) -> Void)?
@@ -81,6 +83,70 @@ public final class NveSurfaceController: ObservableObject {
         self.module = resolved
         self.handle = created
         self.lastPropsValue = nil
+        self.lastDirectProps = nil
+        self.lastDirectPropsEqual = nil
+    }
+
+    /// Zero-copy typed fast path for `NveDirectEncodable & Equatable` prop structs:
+    /// skips `[String: Any]` boxing, `NveBinValue` heap-tree construction, and key sorting.
+    @discardableResult
+    public func setDirectProps<P: NveDirectEncodable & Equatable>(_ props: P) -> Bool {
+        if let eq = lastDirectPropsEqual, eq(props) {
+            return false
+        }
+        guard let needsRender = applyDirectProps(props) else {
+            return false
+        }
+        lastPropsValue = nil
+        lastDirectProps = props
+        lastDirectPropsEqual = { other in (other as? P) == props }
+        return needsRender
+    }
+
+    /// Zero-copy typed fast path for `NveDirectEncodable` prop structs (without `Equatable` dedup).
+    @discardableResult
+    public func setDirectProps<P: NveDirectEncodable>(_ props: P) -> Bool {
+        guard let needsRender = applyDirectProps(props) else {
+            return false
+        }
+        lastPropsValue = nil
+        lastDirectProps = nil
+        lastDirectPropsEqual = nil
+        return needsRender
+    }
+
+    private func applyDirectProps<P: NveDirectEncodable>(_ props: P) -> Bool? {
+        guard let handle, let component = module.component?.pointee else {
+            return nil
+        }
+        let needsRender: UInt32
+        if let directFn = component.set_props_direct {
+            guard let status = try? NveDirectPropsWriter.withEncodedProps(props, { ptr, count in
+                directFn(handle, ptr, count)
+            }) else {
+                return nil
+            }
+            needsRender = status
+        } else if let binFn = component.set_props {
+            guard let binData = try? NveDirectPropsWriter.encodeFallbackBinData(from: props) else {
+                return nil
+            }
+            needsRender = binData.withUnsafeBytes { raw -> UInt32 in
+                let slice = NveBufferSlice(
+                    ptr: raw.bindMemory(to: UInt8.self).baseAddress,
+                    len: raw.count
+                )
+                return binFn(handle, slice)
+            }
+        } else {
+            return nil
+        }
+
+        if needsRender != 0 {
+            renderFrame()
+        }
+        drainAndForwardEvents()
+        return needsRender != 0
     }
 
     /// Pushes typed props via `NveComponentApi.set_props_direct` (zero JSON), falling back to
@@ -119,6 +185,8 @@ public final class NveSurfaceController: ObservableObject {
         }
 
         lastPropsValue = canonical
+        lastDirectProps = nil
+        lastDirectPropsEqual = nil
         if needsRender != 0 {
             renderFrame()
         }
@@ -308,6 +376,8 @@ public final class NveSurfaceController: ObservableObject {
         }
         handle = nil
         lastPropsValue = nil
+        lastDirectProps = nil
+        lastDirectPropsEqual = nil
         module = NveModule(surface: nil, layout: nil, component: nil, dev: nil, host: nil)
         if let dylibHandle {
             dlclose(dylibHandle)

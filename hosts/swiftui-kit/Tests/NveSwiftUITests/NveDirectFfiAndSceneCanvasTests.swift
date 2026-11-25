@@ -46,7 +46,161 @@ private func packRgba(_ r: UInt8, _ g: UInt8, _ b: UInt8, _ a: UInt8 = 255) -> U
     UInt32(r) | (UInt32(g) << 8) | (UInt32(b) << 16) | (UInt32(a) << 24)
 }
 
+private enum SampleQuality: UInt32, Equatable {
+    case auto = 0
+    case uhd4k = 11
+}
+
+private struct SampleNestedMeta: Equatable, NveDirectEncodable {
+    var tag: String
+    var version: Int32
+
+    var directPropCount: Int { 2 }
+
+    func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {
+        builder.write("tag", tag)
+        builder.write("version", version)
+    }
+}
+
+private struct SampleTypedProps: Equatable, NveDirectEncodable {
+    var title: String
+    var count: Int64
+    var ratio: Double
+    var muted: Bool
+    var quality: SampleQuality
+    var optionalNote: String?
+    var payload: [UInt8]
+    var meta: SampleNestedMeta
+
+    var directPropCount: Int { 8 }
+
+    func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {
+        builder.write("title", title)
+        builder.write("count", count)
+        builder.write("ratio", ratio)
+        builder.write("muted", muted)
+        builder.write("quality", enum: quality)
+        builder.write("optional_note", optionalNote)
+        builder.write("payload", payload)
+        try builder.write("meta", nested: meta)
+    }
+}
+
+private struct EmptyTypedProps: Equatable, NveDirectEncodable {
+    var directPropCount: Int { 0 }
+    func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {}
+}
+
 final class NveDirectFfiAndSceneCanvasTests: XCTestCase {
+    func testDirectEncodableTypedPropsZeroHeapStackSlabOverflowAndLiveCounterDylib() throws {
+        // 1. Small typed payload stays completely on the 4 KiB stack slab (zero heap chunks!).
+        let small = SampleTypedProps(
+            title: "ZeroAlloc 🚀",
+            count: -42,
+            ratio: 2.5,
+            muted: true,
+            quality: .uhd4k,
+            optionalNote: nil,
+            payload: [0xCA, 0xFE],
+            meta: SampleNestedMeta(tag: "fast", version: 3)
+        )
+
+        NveDirectArena.withArena { arena in
+            let titleKey: StaticString = "title"
+            let keySlice = arena.staticStringSlice(titleKey)
+            XCTAssertEqual(keySlice.ptr, titleKey.utf8Start)
+            XCTAssertEqual(keySlice.len, titleKey.utf8CodeUnitCount)
+            XCTAssertEqual(arena.heapChunkCount, 0)
+        }
+
+        let capturedSmall: [(String, NveBinValue)] = try NveDirectPropsWriter.withEncodedProps(small) { ptr, count in
+            XCTAssertEqual(count, 8)
+            let base = try XCTUnwrap(ptr)
+            return (0 ..< Int(count)).map { idx in
+                (readSliceString(base[idx].key), readDirectValue(base[idx].value))
+            }
+        }
+        XCTAssertEqual(
+            NveBinValue.map(capturedSmall),
+            NveBinValue.map([
+                ("title", .string("ZeroAlloc 🚀")),
+                ("count", .int64(-42)),
+                ("ratio", .float64(2.5)),
+                ("muted", .bool(true)),
+                ("quality", .int64(11)),
+                ("optional_note", .null),
+                ("payload", .bytes(Data([0xCA, 0xFE]))),
+                ("meta", .map([("tag", .string("fast")), ("version", .int64(3))])),
+            ])
+        )
+
+        // 2. Empty typed props passes (nil, 0).
+        try NveDirectPropsWriter.withEncodedProps(EmptyTypedProps()) { ptr, count in
+            XCTAssertNil(ptr)
+            XCTAssertEqual(count, 0)
+        }
+
+        // 3. Large >4 KiB payload cleanly spills to heap overflow chunks without moving earlier slices.
+        let hugeTitle = String(repeating: "ArenaOverflow-⚡-", count: 400) // > 6 KiB
+        let hugePayload = [UInt8](repeating: 0xAB, count: 5000)
+        let large = SampleTypedProps(
+            title: hugeTitle,
+            count: 999,
+            ratio: 0.75,
+            muted: false,
+            quality: .auto,
+            optionalNote: "present",
+            payload: hugePayload,
+            meta: SampleNestedMeta(tag: "overflow", version: 9)
+        )
+
+        NveDirectArena.withArena { arena in
+            _ = arena.copyString(hugeTitle)
+            _ = arena.copyBytes(hugePayload)
+            XCTAssertGreaterThanOrEqual(arena.heapChunkCount, 1)
+        }
+
+        let capturedLarge: [(String, NveBinValue)] = try NveDirectPropsWriter.withEncodedProps(large) { ptr, count in
+            XCTAssertEqual(count, 8)
+            let base = try XCTUnwrap(ptr)
+            return (0 ..< Int(count)).map { idx in
+                (readSliceString(base[idx].key), readDirectValue(base[idx].value))
+            }
+        }
+        XCTAssertEqual(capturedLarge[0].1, .string(hugeTitle))
+        XCTAssertEqual(capturedLarge[5].1, .string("present"))
+        XCTAssertEqual(capturedLarge[6].1, .bytes(Data(hugePayload)))
+
+        // 4. Live end-to-end round-trip against built Rust `libnve_example_counter.dylib` when present.
+        let workspaceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // NveSwiftUITests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // swiftui-kit
+            .deletingLastPathComponent() // hosts
+            .deletingLastPathComponent() // workspace root
+        let counterDylib = workspaceRoot.appendingPathComponent("target/debug/libnve_example_counter.dylib")
+        if FileManager.default.fileExists(atPath: counterDylib.path) {
+            struct CounterDirectProps: Equatable, NveDirectEncodable {
+                var initialCount: Int64
+                var label: String
+                var directPropCount: Int { 2 }
+                func encodeDirect(into builder: inout NveDirectPropsBuilder) throws {
+                    builder.write("initial_count", initialCount)
+                    builder.write("label", label)
+                }
+            }
+            let controller = NveSurfaceController(
+                surfaceId: 901,
+                dylibPath: counterDylib.path
+            )
+            XCTAssertTrue(controller.isMounted)
+            _ = controller.setDirectProps(CounterDirectProps(initialCount: 7, label: "TypedCounter"))
+            let frameBytes = controller.renderFrame()
+            XCTAssertGreaterThan(frameBytes.count, 8)
+            controller.destroy()
+        }
+    }
     func testZeroJsonSerializationAnywhereInNveSwiftUISources() throws {
         let testsDir = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // NveSwiftUITests

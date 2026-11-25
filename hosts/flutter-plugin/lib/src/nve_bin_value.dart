@@ -3,8 +3,10 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'nve_bin_codec.dart';
 import 'nve_core_abi_gen.dart';
 
+export 'nve_bin_codec.dart';
 export 'nve_core_abi_gen.dart' show nveBinValueMaxDepth;
 
 /// Binary `NveBinValue` wire tags `0..7`.
@@ -454,90 +456,14 @@ class _ValidatedSpan {
 /// Compact binary encoder producing `NveBinValue` wire payloads from Dart values.
 class NveBinValueEncoder {
   static Uint8List encode(Object? value) {
-    final BytesBuilder builder = BytesBuilder(copy: false);
-    _encodeDepth(value, builder, 0);
-    return builder.takeBytes();
-  }
-
-  static void _encodeDepth(Object? value, BytesBuilder out, int depth) {
-    if (value == null) {
-      out.addByte(NveBinValueTag.nullValue.wireCode);
-      return;
-    }
-    if (value is bool) {
-      out.addByte(NveBinValueTag.boolValue.wireCode);
-      out.addByte(value ? 1 : 0);
-      return;
-    }
-    if (value is int) {
-      out.addByte(NveBinValueTag.i64.wireCode);
-      final ByteData bd = ByteData(8)..setInt64(0, value, Endian.little);
-      out.add(bd.buffer.asUint8List());
-      return;
-    }
-    if (value is double) {
-      out.addByte(NveBinValueTag.f64.wireCode);
-      final ByteData bd = ByteData(8)..setFloat64(0, value, Endian.little);
-      out.add(bd.buffer.asUint8List());
-      return;
-    }
-    if (value is String) {
-      final Uint8List utf8Bytes = Uint8List.fromList(utf8.encode(value));
-      out.addByte(NveBinValueTag.str.wireCode);
-      _writeU32LE(out, utf8Bytes.length);
-      out.add(utf8Bytes);
-      return;
-    }
-    if (value is Uint8List) {
-      out.addByte(NveBinValueTag.bytes.wireCode);
-      _writeU32LE(out, value.length);
-      out.add(value);
-      return;
-    }
-    if (value is List<Object?>) {
-      if (depth >= nveBinValueMaxDepth) {
-        throw const NveBinValueException(
-          NveBinValueErrorKind.maxDepthExceeded,
-          'Exceeded maximum nesting depth of $nveBinValueMaxDepth',
-        );
-      }
-      final BytesBuilder payload = BytesBuilder(copy: false);
-      _writeU32LE(payload, value.length);
-      for (final Object? elem in value) {
-        _encodeDepth(elem, payload, depth + 1);
-      }
-      final Uint8List payloadBytes = payload.takeBytes();
-      out.addByte(NveBinValueTag.array.wireCode);
-      _writeU32LE(out, payloadBytes.length);
-      out.add(payloadBytes);
-      return;
-    }
-    if (value is Map<String, Object?>) {
-      if (depth >= nveBinValueMaxDepth) {
-        throw const NveBinValueException(
-          NveBinValueErrorKind.maxDepthExceeded,
-          'Exceeded maximum nesting depth of $nveBinValueMaxDepth',
-        );
-      }
-      final BytesBuilder payload = BytesBuilder(copy: false);
-      _writeU32LE(payload, value.length);
-      for (final MapEntry<String, Object?> entry in value.entries) {
-        final Uint8List kb = Uint8List.fromList(utf8.encode(entry.key));
-        _writeU32LE(payload, kb.length);
-        payload.add(kb);
-        _encodeDepth(entry.value, payload, depth + 1);
-      }
-      final Uint8List payloadBytes = payload.takeBytes();
-      out.addByte(NveBinValueTag.map.wireCode);
-      _writeU32LE(out, payloadBytes.length);
-      out.add(payloadBytes);
-      return;
-    }
-    throw ArgumentError('Unsupported NveBinValue type: ${value.runtimeType}');
-  }
-
-  static void _writeU32LE(BytesBuilder out, int value) {
-    final ByteData bd = ByteData(4)..setUint32(0, value, Endian.little);
-    out.add(bd.buffer.asUint8List());
+    final NveBinWriter writer = NveBinWriter();
+    writer.writeDynamic(
+      value,
+      onMaxDepthExceeded: () => throw const NveBinValueException(
+        NveBinValueErrorKind.maxDepthExceeded,
+        'Exceeded maximum nesting depth of $nveBinValueMaxDepth',
+      ),
+    );
+    return writer.takeBytes();
   }
 }

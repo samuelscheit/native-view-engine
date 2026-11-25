@@ -1,6 +1,4 @@
-use std::mem::{align_of, size_of};
-#[cfg(target_pointer_width = "64")]
-use std::mem::offset_of;
+use core::mem::{align_of, offset_of, size_of};
 
 use crate::{DecodeError, NativeEventKind, NveBufferSlice};
 
@@ -425,23 +423,66 @@ impl NveEventBatch {
 }
 
 // Compile-time C ABI layout verification matching `cxx/nve-fabric-bridge/include/nve_abi.h`.
+const _: () = {
+    // Pointer-width-independent field offsets (must hold on 32-bit and 64-bit targets).
+    assert!(offset_of!(NveBufferSlice, ptr) == 0);
+    assert!(offset_of!(NveStrSlice, ptr) == 0);
+    assert!(offset_of!(NveValueArray, ptr) == 0);
+    assert!(offset_of!(NveValueMap, ptr) == 0);
+    assert!(offset_of!(NveValueData, bool_val) == 0);
+    assert!(offset_of!(NveValueData, i64_val) == 0);
+    assert!(offset_of!(NveValueData, f64_val) == 0);
+    assert!(offset_of!(NveValueData, str_val) == 0);
+    assert!(offset_of!(NveValueData, bytes_val) == 0);
+    assert!(offset_of!(NveValueData, array_val) == 0);
+    assert!(offset_of!(NveValueData, map_val) == 0);
+    assert!(offset_of!(NveValue, tag) == 0);
+    assert!(offset_of!(NveMapEntry, key) == 0);
+    assert!(offset_of!(NveDirectEvent, surface_id) == 0);
+    assert!(offset_of!(NveDirectEvent, node_id) == 4);
+    assert!(offset_of!(NveDirectEvent, timestamp_us) == 8);
+    assert!(offset_of!(NveDirectEvent, kind) == 16);
+    assert!(offset_of!(NveDirectEvent, payload_tag) == 17);
+    assert!(offset_of!(NveEventBatch, ptr) == 0);
+};
+
 #[cfg(target_pointer_width = "64")]
 const _: () = {
+    assert!(size_of::<NveBufferSlice>() == 16);
+    assert!(align_of::<NveBufferSlice>() == 8);
+    assert!(offset_of!(NveBufferSlice, ptr) == 0);
+    assert!(offset_of!(NveBufferSlice, len) == 8);
+
     assert!(size_of::<NveStrSlice>() == 16);
     assert!(align_of::<NveStrSlice>() == 8);
+    assert!(offset_of!(NveStrSlice, ptr) == 0);
+    assert!(offset_of!(NveStrSlice, len) == 8);
+
+    assert!(size_of::<NveValueArray>() == 16);
+    assert!(align_of::<NveValueArray>() == 8);
+    assert!(offset_of!(NveValueArray, ptr) == 0);
+    assert!(offset_of!(NveValueArray, len) == 8);
+
+    assert!(size_of::<NveValueMap>() == 16);
+    assert!(align_of::<NveValueMap>() == 8);
+    assert!(offset_of!(NveValueMap, ptr) == 0);
+    assert!(offset_of!(NveValueMap, len) == 8);
+
+    assert!(size_of::<NveValueData>() == 16);
+    assert!(align_of::<NveValueData>() == 8);
+
     assert!(size_of::<NveValue>() == 24);
     assert!(align_of::<NveValue>() == 8);
-    assert!(size_of::<NveMapEntry>() == 40);
-    assert!(align_of::<NveMapEntry>() == 8);
-    assert!(size_of::<NveDirectEvent>() == 96);
-    assert!(align_of::<NveDirectEvent>() == 8);
-    assert!(size_of::<NveEventBatch>() == 16);
-    assert!(align_of::<NveEventBatch>() == 8);
-
     assert!(offset_of!(NveValue, tag) == 0);
     assert!(offset_of!(NveValue, data) == 8);
+
+    assert!(size_of::<NveMapEntry>() == 40);
+    assert!(align_of::<NveMapEntry>() == 8);
     assert!(offset_of!(NveMapEntry, key) == 0);
     assert!(offset_of!(NveMapEntry, value) == 16);
+
+    assert!(size_of::<NveDirectEvent>() == 96);
+    assert!(align_of::<NveDirectEvent>() == 8);
     assert!(offset_of!(NveDirectEvent, surface_id) == 0);
     assert!(offset_of!(NveDirectEvent, node_id) == 4);
     assert!(offset_of!(NveDirectEvent, timestamp_us) == 8);
@@ -454,4 +495,9 @@ const _: () = {
     assert!(offset_of!(NveDirectEvent, height) == 52);
     assert!(offset_of!(NveDirectEvent, text) == 56);
     assert!(offset_of!(NveDirectEvent, value) == 72);
+
+    assert!(size_of::<NveEventBatch>() == 16);
+    assert!(align_of::<NveEventBatch>() == 8);
+    assert!(offset_of!(NveEventBatch, ptr) == 0);
+    assert!(offset_of!(NveEventBatch, len) == 8);
 };
