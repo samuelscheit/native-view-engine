@@ -16,8 +16,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
   - Replace `NVE_DRAW1` with a codegen-locked `#[repr(C)]` `NveDrawOp` slab (`&[NveDrawOp]`), delete the 3× duplicated `NVNP`/`NVNC` codecs in favor of direct `NvePropSlice`/`NveValue`, unify `NVCF` to one `#[repr(C)]` struct, and replace `NVT2`/`NVL1`/`NVW1`/`NVN1`/`NVDS`/`NVE_MET1` in-process codecs with direct typed / `#[repr(C)]` structs.
   - Extend `packages/core/codegen` to generate zero-copy aligned `#[repr(C)]` + `RelocSlice` views (`view_from_aligned_bytes` / `as_bytes`) for legitimate disk/network formats in `packages/core/wire` instead of hand-written Rust encode/decode code.
 
-- [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (`cargo nve build` Tier-3 Target Recipes & Web TV)** *(CLI recipes in flight)*
-  - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad) and Phase 2 (standalone `packages/modules/tv` + real `tvOS`, `watchOS`, `visionOS`, and `iOS` SDK builds + static `NveInterfaceResolver` in `hosts/swiftui-kit`) are landed; CLI `aarch64-apple-{tvos,visionos,watchos}` staticlib recipes are in flight; remaining work is Web TV D-Pad key handling in `nve-backend-web`.
+- [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (Web TV D-Pad Remaining)**
+  - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad), Phase 2 (standalone `packages/modules/tv` + real `tvOS`/`watchOS`/`visionOS`/`iOS` SDK builds + static `NveInterfaceResolver`), and Phase 3 CLI (`nve build --target tvos/visionos/watchos` + `.xcframework` recipes) are landed; remaining work is Web TV D-Pad key handling in `nve-backend-web`.
 
 - [ ] **Allocator & Live `mmap` App-State Snapshotting Benchmark Experiment (`packages/tools/bench`)** *(in flight)*
   - Compare live `mmap` 32-bit offset-arena, `RelocSlice` (`Full`/`HeaderOnly`/`Unchecked`), `FrameArena` bump allocator, and (`rkyv`/`musli-zerocopy`) against current `NVE_SNAP` / per-frame heap allocation before standardizing app-state persistence.
