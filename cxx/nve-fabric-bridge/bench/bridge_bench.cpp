@@ -1,6 +1,7 @@
 #include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
 #include "nve_abi.h"
+#include "nve_host_runtime.hpp"
 #include "nve_rn_component.hpp"
 
 #include <algorithm>
@@ -674,6 +675,60 @@ int main(int argc, char** argv) {
               host, NveBufferSlice{buf.data(), buf.size()}, &stats);
           do_not_optimize(rc);
           do_not_optimize(stats.mutation_count);
+        }));
+    nve_fabric_host_destroy(host);
+  }
+
+  // 2b. Direct zero-copy NveSceneView publish + dirty-slice read (10 mutations on 1,000 nodes).
+  if (should_run("scene_view_publish_10_on_1000", cfg)) {
+    const auto base = encode_tree_mount(1, 1, 1000);
+    NveFabricHostHandle host = nve_fabric_host_create(surface_cfg);
+    NveFrameStats stats{};
+    const int32_t mount_rc = nve_fabric_host_submit_frame(
+        host, NveBufferSlice{base.bytes.data(), base.bytes.size()}, &stats);
+    do_not_optimize(mount_rc);
+
+    auto encode_patch = [&](uint64_t frame_id, bool variant) {
+      nve::CommandBufferEncoder enc(1, frame_id);
+      const size_t stride = std::max<size_t>(1, base.text_node_ids.size() / 5);
+      for (size_t i = 0; i < 5 && i * stride < base.text_node_ids.size(); ++i) {
+        const uint32_t tid = base.text_node_ids[i * stride];
+        enc.set_text(
+            tid,
+            variant ? ("Scene metric " + std::to_string(i) + " [live]")
+                    : ("Scene metric " + std::to_string(i) + " [idle]"));
+        nve::StyleProps st{};
+        st.text_color_rgba = variant ? 0xFF38BDF8u : 0xFFF8FAFCu;
+        st.font_size = variant ? 16.0f : 15.0f;
+        enc.set_style(tid, st);
+      }
+      enc.commit(true);
+      const NveBufferSlice s = enc.finish();
+      return std::vector<uint8_t>(s.ptr, s.ptr + s.len);
+    };
+
+    const std::vector<uint8_t> patch_a = encode_patch(2, true);
+    const std::vector<uint8_t> patch_b = encode_patch(3, false);
+
+    results.push_back(run_bench(
+        "scene_view_publish_10_on_1000",
+        30,
+        400,
+        /*ops_per_iter=*/1,
+        cfg,
+        [&](int iter) {
+          const auto& buf = (iter & 1) ? patch_a : patch_b;
+          const int32_t rc = nve_fabric_host_submit_frame(
+              host, NveBufferSlice{buf.data(), buf.size()}, &stats);
+          const NveSceneView view = nve::fabric_host_scene_view(host);
+          size_t text_bytes = 0u;
+          for (uint32_t d = 0u; d < view.dirty_count; ++d) {
+            const NveRenderNode& node = view.nodes[view.dirty_indices[d]];
+            text_bytes += nve::scene_node_text(view, node).size();
+          }
+          do_not_optimize(rc);
+          do_not_optimize(view.dirty_count);
+          do_not_optimize(text_bytes);
         }));
     nve_fabric_host_destroy(host);
   }

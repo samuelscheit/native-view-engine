@@ -119,6 +119,16 @@ class BinaryReader {
     return true;
   }
 
+  bool read_u32_array(size_t count, std::vector<uint32_t>& out) {
+    if (!ok_pointer() || count > remaining() / sizeof(uint32_t)) return false;
+    out.resize(count);
+    if (count > 0) {
+      std::memcpy(out.data(), ptr_ + pos_, count * sizeof(uint32_t));
+      pos_ += count * sizeof(uint32_t);
+    }
+    return true;
+  }
+
   bool skip(size_t len) {
     if (!ok_pointer() || remaining() < len) return false;
     pos_ += len;

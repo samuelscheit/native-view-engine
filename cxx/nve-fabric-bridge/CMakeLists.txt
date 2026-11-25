@@ -23,7 +23,11 @@ elseif(NOT RN_REACT_COMMON_DIR AND DEFINED ENV{RN_COMMON_DIR} AND EXISTS "$ENV{R
 endif()
 
 add_library(nve_fabric_bridge STATIC
-  src/fabric_adapter.cpp
+  src/shadow_tree.cpp
+  src/yoga_layout.cpp
+  src/flexbox_solver.cpp
+  src/scene_publisher.cpp
+  src/fabric_c_api.cpp
   src/nve_rn_component.cpp
 )
 
@@ -99,7 +103,16 @@ add_library(nve_bridge_fixture_no_surface SHARED tests/session_fixture.c)
 target_compile_definitions(nve_bridge_fixture_no_surface PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_NO_SURFACE=1)
 target_include_directories(nve_bridge_fixture_no_surface PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(nve_fabric_bridge_test tests/bridge_test.cpp)
+add_executable(nve_fabric_bridge_test
+  tests/test_main.cpp
+  tests/test_abi_and_bridge.cpp
+  tests/test_flexbox_layout.cpp
+  tests/test_flexbox_parity.cpp
+  tests/test_fuzz.cpp
+  tests/test_host_runtime.cpp
+  tests/test_mmap_snapshot.cpp
+  tests/test_scene_view.cpp
+)
 target_include_directories(nve_fabric_bridge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(nve_fabric_bridge_test PRIVATE
   NVE_BRIDGE_FIXTURE_VALID="$<TARGET_FILE:nve_bridge_fixture_valid>"

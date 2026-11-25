@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nve_abi.h"
+#include "nve_scene_abi.h"
 #include "nve_value.hpp"
 
 #include <cstddef>
@@ -101,12 +102,13 @@ struct RenderedNodeSnapshot {
   int32_t z_index{0};
   uint64_t event_mask{0};
   std::vector<uint32_t> children;
+  RawPropMap raw_props;
 };
 
 /// Decode an `EventRing` byte slice (`nve_abi::encode_events`) into `DecodedEvent` records.
 bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_events);
 
-/// Host inspection & control helpers implemented by `src/fabric_adapter.cpp`.
+/// Host inspection & control helpers implemented by `nve_fabric_bridge`.
 bool fabric_host_get_node_layout(NveFabricHostHandle host, uint32_t node_id, LayoutRect* out_rect);
 bool fabric_host_has_yoga_layout() noexcept;
 bool fabric_host_set_surface_size(
@@ -145,6 +147,10 @@ void fabric_host_register_custom_component(
     NveFabricHostHandle host,
     CustomComponentDescriptor descriptor);
 std::vector<RenderedNodeSnapshot> fabric_host_snapshot_nodes(NveFabricHostHandle host);
+
+/// Return a zero-copy, incrementally updated 64-byte `NveSceneView` pointing directly into
+/// `host`'s internal node/text/children/dirty/removed slabs (zero snapshot materialization).
+NveSceneView fabric_host_scene_view(NveFabricHostHandle host) noexcept;
 
 /// Freeze-dry the live shadow tree inside `host` into a complete, self-contained Frame-0
 /// `CommandBuffer` suitable for zero-copy instant-boot `MmapSnapshot` persistence.

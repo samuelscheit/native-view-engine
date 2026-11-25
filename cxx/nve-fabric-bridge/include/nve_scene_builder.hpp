@@ -187,9 +187,25 @@ class SceneTableBuilder {
     return node;
   }
 
+  static std::string_view effective_snapshot_text(const RenderedNodeSnapshot& snap) noexcept {
+    if (snap.kind == NVE_COMP_IMAGE && !snap.raw_props.empty()) {
+      static constexpr const char* kImageKeys[] = {"src", "source", "uri", "image_src", "imageSrc"};
+      for (const char* key : kImageKeys) {
+        auto it = snap.raw_props.find(key);
+        if (it != snap.raw_props.end()) {
+          if (const auto* s = std::get_if<std::string>(&it->second); s != nullptr && !s->empty()) {
+            return std::string_view(*s);
+          }
+        }
+      }
+    }
+    return std::string_view(snap.text);
+  }
+
   void upsert_snapshot(const RenderedNodeSnapshot& snap) {
+    const std::string_view effective_text = effective_snapshot_text(snap);
     const size_t clamped_text_len =
-        std::min<size_t>(snap.text.size(), std::numeric_limits<uint16_t>::max());
+        std::min<size_t>(effective_text.size(), std::numeric_limits<uint16_t>::max());
     const uint16_t text_len_u16 = static_cast<uint16_t>(clamped_text_len);
 
     const size_t clamped_child_count =
@@ -211,7 +227,7 @@ class SceneTableBuilder {
             prev_len == clamped_text_len &&
             (prev_len == 0u ||
              (prev_start <= text_slab_.size() && prev_len <= text_slab_.size() - prev_start &&
-              std::memcmp(text_slab_.data() + prev_start, snap.text.data(), prev_len) == 0));
+              std::memcmp(text_slab_.data() + prev_start, effective_text.data(), prev_len) == 0));
         if (same_text) {
           text_offset = prev.text_offset;
           text_len = prev.text_len;
@@ -225,7 +241,7 @@ class SceneTableBuilder {
           if (clamped_text_len > 0u) {
             text_offset = static_cast<uint32_t>(text_slab_.size());
             text_len = text_len_u16;
-            const auto* bytes = reinterpret_cast<const uint8_t*>(snap.text.data());
+            const auto* bytes = reinterpret_cast<const uint8_t*>(effective_text.data());
             text_slab_.insert(text_slab_.end(), bytes, bytes + clamped_text_len);
           }
         }
@@ -278,7 +294,7 @@ class SceneTableBuilder {
     uint32_t text_offset = 0u;
     if (clamped_text_len > 0u) {
       text_offset = static_cast<uint32_t>(text_slab_.size());
-      const auto* bytes = reinterpret_cast<const uint8_t*>(snap.text.data());
+      const auto* bytes = reinterpret_cast<const uint8_t*>(effective_text.data());
       text_slab_.insert(text_slab_.end(), bytes, bytes + clamped_text_len);
       live_text_bytes_ += clamped_text_len;
     }
