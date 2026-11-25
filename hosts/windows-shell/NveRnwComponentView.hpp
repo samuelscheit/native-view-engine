@@ -30,10 +30,15 @@ struct NveWinNodeVisual {
   uint16_t kind{0};
   uint32_t view_tag{0};
   bool is_text_leaf{false};
+  bool is_scroll_view{false};
   bool interactive{false};
   std::string custom_name;
   std::string text;
   nve::LayoutRect layout{};
+  float scroll_x{0.0f};
+  float scroll_y{0.0f};
+  float content_width{0.0f};
+  float content_height{0.0f};
   uint32_t background_rgba{0};
   uint32_t text_color_rgba{0};
   uint32_t border_color_rgba{0};
@@ -53,6 +58,11 @@ struct FlattenedVisualNode {
   float abs_x{0.0f};
   float abs_y{0.0f};
   float effective_opacity{1.0f};
+  bool clipped{false};
+  float clip_left{0.0f};
+  float clip_top{0.0f};
+  float clip_right{0.0f};
+  float clip_bottom{0.0f};
 };
 
 /// Result of interactive hit-testing in surface DIP coordinates.
@@ -60,6 +70,16 @@ struct HitTestResult {
   uint32_t node_id{0};
   float local_x{0.0f};
   float local_y{0.0f};
+};
+
+/// Result of scrolling a `NVE_COMP_SCROLL_VIEW` container at surface DIP coordinates.
+struct ScrollResult {
+  uint32_t node_id{0};
+  float scroll_x{0.0f};
+  float scroll_y{0.0f};
+  float content_width{0.0f};
+  float content_height{0.0f};
+  bool scrolled{false};
 };
 
 /// Reconciled retained visual tree backed directly by `nve::RetainedViewReconciler`.
@@ -91,10 +111,32 @@ class NveWinVisualTree {
   std::vector<FlattenedVisualNode> build_draw_order() const;
 
   /// Find the topmost interactive node (`NVE_COMP_PRESSABLE` or `kEventMaskPress`) in reverse
-  /// z/tree order containing `(surface_x, surface_y)`.
+  /// z/tree order containing `(surface_x, surface_y)` while respecting scroll offsets & clipping.
   std::optional<HitTestResult> hit_test_interactive(float surface_x, float surface_y) const;
 
+  /// Scroll the innermost scrollable `NVE_COMP_SCROLL_VIEW` containing `(surface_x, surface_y)`
+  /// by `(delta_x, delta_y)` DIPs (positive scrolls right/down). Chains to outer scroll views
+  /// when the inner container is already at its scroll boundary.
+  ScrollResult scroll_at(float surface_x, float surface_y, float delta_x, float delta_y);
+
+  /// Directly set clamped scroll offsets on a `NVE_COMP_SCROLL_VIEW` node. Returns true if changed.
+  bool set_scroll_offset(uint32_t node_id, float scroll_x, float scroll_y);
+
+  /// Hit-test the vertical scrollbar hit strip on the right edge of any scrollable `ScrollView`.
+  std::optional<uint32_t> hit_test_vertical_scrollbar(
+      float surface_x,
+      float surface_y,
+      float track_hit_width = 12.0f) const;
+
  private:
+  struct ClipRect {
+    bool active{false};
+    float left{0.0f};
+    float top{0.0f};
+    float right{0.0f};
+    float bottom{0.0f};
+  };
+
   struct Adapter {
     uint32_t root_background_rgba{0};
     nve::LayoutRect root_layout{};
@@ -132,8 +174,11 @@ class NveWinVisualTree {
       float origin_x,
       float origin_y,
       float inherited_opacity,
+      const ClipRect& clip,
       std::vector<FlattenedVisualNode>& out,
       uint32_t depth) const;
+
+  void update_scroll_extents(uint32_t node_id, uint32_t depth);
 
   Adapter adapter_{};
   nve::RetainedViewReconciler<NveWinNodeVisual, Adapter> reconciler_{};
@@ -213,6 +258,13 @@ class NveRnwComponentHost {
   /// Hit-test `(surface_x, surface_y)` in DIPs against the topmost interactive node and dispatch
   /// a press event if hit. Returns non-zero if the Rust component requested a re-render.
   uint32_t dispatch_click_at(float surface_x, float surface_y);
+
+  /// Scroll the `NVE_COMP_SCROLL_VIEW` under `(surface_x, surface_y)` by `(delta_x, delta_y)`
+  /// DIPs (positive scrolls right/down). Returns true if any scroll offset changed.
+  bool dispatch_scroll_at(float surface_x, float surface_y, float delta_x, float delta_y);
+
+  /// Directly update a `NVE_COMP_SCROLL_VIEW` scroll offset (e.g. scrollbar thumb drag).
+  bool set_scroll_offset(uint32_t node_id, float scroll_x, float scroll_y);
 
   /// Zero-serialization intrinsic size measurement via `NveLayoutApi::measure` (if exposed).
   std::optional<NveIntrinsicSize> measure(NveSizeConstraints constraints) const;

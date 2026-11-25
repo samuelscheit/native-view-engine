@@ -845,8 +845,136 @@ void test_frame0_mmap_snapshot_roundtrip() {
 
     NVE_CHECK(studio_cold.load_dylib(studio_env, studio_cfg));
     NVE_CHECK(contains_text(studio_cold, "Live Metrics"));
+
+    // Verify Board/Issues ScrollView is bounded and scrollable with real Yoga layout once tasks
+    // overflow the viewport (click "+ New Task" 6 times so 10 tasks exceed 640px height).
+    nve::win::NveRnwComponentHost board_host;
+    const NveSurfaceConfig board_cfg{
+        .surface_id = 1, .width = 960.0f, .height = 640.0f, .scale_factor = 1.0f};
+    NVE_CHECK(board_host.load_dylib(studio_env, board_cfg));
+    uint32_t new_task_btn_id = 0;
+    for (const auto& flat : board_host.visual_tree().build_draw_order()) {
+      const auto* node = board_host.visual_tree().find(flat.node_id);
+      if (node != nullptr && node->is_text_leaf && node->text == "+ New Task") {
+        uint32_t cur = node->parent_id;
+        for (int hops = 0; hops < 8 && cur != 0 && cur != NVE_ROOT_NODE_ID; ++hops) {
+          if (const auto* p = board_host.visual_tree().find(cur)) {
+            if (p->interactive) {
+              new_task_btn_id = p->node_id;
+              break;
+            }
+            cur = p->parent_id;
+          } else {
+            break;
+          }
+        }
+        break;
+      }
+    }
+    NVE_CHECK(new_task_btn_id != 0);
+    for (int i = 0; i < 6; ++i) {
+      NVE_CHECK(board_host.dispatch_press(new_task_btn_id, 10.0f, 10.0f) != 0);
+    }
+
+    uint32_t board_scroll_id = 0;
+    for (const auto& flat : board_host.visual_tree().build_draw_order()) {
+      const auto* node = board_host.visual_tree().find(flat.node_id);
+      if (node != nullptr && node->is_scroll_view) {
+        board_scroll_id = node->node_id;
+        break;
+      }
+    }
+    NVE_CHECK(board_scroll_id != 0);
+    const auto* board_scroll = board_host.visual_tree().find(board_scroll_id);
+    NVE_CHECK(board_scroll != nullptr);
+    std::cout << "[windows_shell_test] Board ScrollView viewport_h=" << board_scroll->layout.height
+              << " content_h=" << board_scroll->content_height << "\n";
+    NVE_CHECK(board_scroll->layout.height > 100.0f && board_scroll->layout.height < 640.0f);
+    NVE_CHECK(board_scroll->content_height > board_scroll->layout.height + 100.0f);
+    const auto scroll_rect = board_host.visual_tree().absolute_rect(board_scroll_id);
+    NVE_CHECK(scroll_rect.has_value());
+    NVE_CHECK(board_host.dispatch_scroll_at(
+        scroll_rect->x + scroll_rect->width * 0.5f,
+        scroll_rect->y + scroll_rect->height * 0.5f,
+        0.0f,
+        96.0f));
+    NVE_CHECK(approx_eq(board_host.visual_tree().find(board_scroll_id)->scroll_y, 96.0f));
+    // Clicking "+ New Task" again must preserve existing scroll offset across re-render!
+    NVE_CHECK(board_host.dispatch_press(new_task_btn_id, 10.0f, 10.0f) != 0);
+    NVE_CHECK(approx_eq(board_host.visual_tree().find(board_scroll_id)->scroll_y, 96.0f));
     fs::remove(studio_snap, ec);
   }
+}
+
+void test_scroll_view_clipping_scrolling_and_hit_testing() {
+  nve::win::NveWinVisualTree tree;
+
+  nve::RenderedNodeSnapshot root{};
+  root.node_id = NVE_ROOT_NODE_ID;
+  root.kind = NVE_COMP_ROOT;
+  root.layout = {0.0f, 0.0f, 300.0f, 200.0f};
+  root.children = {100};
+
+  nve::RenderedNodeSnapshot scroller{};
+  scroller.node_id = 100;
+  scroller.kind = NVE_COMP_SCROLL_VIEW;
+  scroller.layout = {10.0f, 20.0f, 200.0f, 100.0f};
+  scroller.children = {101, 102, 103};
+
+  nve::RenderedNodeSnapshot item1{};
+  item1.node_id = 101;
+  item1.kind = NVE_COMP_PRESSABLE;
+  item1.layout = {0.0f, 0.0f, 180.0f, 60.0f};
+
+  nve::RenderedNodeSnapshot item2{};
+  item2.node_id = 102;
+  item2.kind = NVE_COMP_PRESSABLE;
+  item2.layout = {0.0f, 70.0f, 180.0f, 60.0f};
+
+  nve::RenderedNodeSnapshot item3{};
+  item3.node_id = 103;
+  item3.kind = NVE_COMP_PRESSABLE;
+  item3.layout = {0.0f, 140.0f, 180.0f, 60.0f}; // bottom = 200 > viewport 100
+
+  tree.sync({root, scroller, item1, item2, item3});
+
+  const auto* sv = tree.find(100);
+  NVE_CHECK(sv != nullptr && sv->is_scroll_view);
+  NVE_CHECK(approx_eq(sv->content_height, 200.0f));
+  NVE_CHECK(approx_eq(sv->scroll_y, 0.0f));
+
+  // Initially item1 is visible at surface y in [20, 80]; item3 is below viewport clip [20, 120]
+  // at surface y in [160, 220] and MUST NOT be hit-testable outside the ScrollView clip.
+  const auto hit_top = tree.hit_test_interactive(50.0f, 40.0f);
+  NVE_CHECK(hit_top.has_value() && hit_top->node_id == 101);
+  NVE_CHECK(!tree.hit_test_interactive(50.0f, 175.0f).has_value());
+
+  // Scroll down by 90 DIPs inside the ScrollView -> item3 moves to surface y = 20 + 140 - 90 = 70.
+  const auto res = tree.scroll_at(50.0f, 60.0f, 0.0f, 90.0f);
+  NVE_CHECK(res.scrolled && res.node_id == 100);
+  NVE_CHECK(approx_eq(res.scroll_y, 90.0f));
+
+  // item1 is now scrolled above viewport (surface y = 20 + 0 - 90 = -70.. -10) -> unclickable.
+  // item3 is now visible at surface y in [70, 130] clipped to [20, 120] -> clickable at y=95.
+  const auto hit_scrolled = tree.hit_test_interactive(50.0f, 95.0f);
+  NVE_CHECK(hit_scrolled.has_value() && hit_scrolled->node_id == 103);
+  NVE_CHECK(approx_eq(hit_scrolled->local_y, 25.0f));
+
+  // Overscrolling clamps at max_scroll = 200 - 100 = 100.
+  const auto res2 = tree.scroll_at(50.0f, 60.0f, 0.0f, 500.0f);
+  NVE_CHECK(res2.scrolled && approx_eq(res2.scroll_y, 100.0f));
+  NVE_CHECK(!tree.scroll_at(50.0f, 60.0f, 0.0f, 50.0f).scrolled);
+
+  // Scrollbar hit strip on the right edge (x in [198, 210], y in [20, 120]) hits ScrollView 100.
+  const auto sb_hit = tree.hit_test_vertical_scrollbar(206.0f, 50.0f);
+  NVE_CHECK(sb_hit.has_value() && *sb_hit == 100);
+
+  // Re-sync preserves scroll offset; shrinking content clamps scroll_y cleanly.
+  tree.sync({root, scroller, item1, item2, item3});
+  NVE_CHECK(approx_eq(tree.find(100)->scroll_y, 100.0f));
+  scroller.children = {101};
+  tree.sync({root, scroller, item1});
+  NVE_CHECK(approx_eq(tree.find(100)->scroll_y, 0.0f));
 }
 
 } // namespace
@@ -854,6 +982,7 @@ void test_frame0_mmap_snapshot_roundtrip() {
 int main() {
   test_directwrite_text_measurer();
   test_visual_tree_reconciler_and_hit_testing();
+  test_scroll_view_clipping_scrolling_and_hit_testing();
   test_rnw_component_host_and_dylib_lifecycle();
   test_live_counter_dylib_if_configured();
   test_frame0_mmap_snapshot_roundtrip();

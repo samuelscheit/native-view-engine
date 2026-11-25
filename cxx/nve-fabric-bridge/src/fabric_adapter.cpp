@@ -803,6 +803,9 @@ class FabricHost {
     entry.yg_node = YGNodeNewWithConfig(yg_config_);
     YGNodeSetContext(entry.yg_node, &entry);
     apply_yg_layout_props(entry.yg_node, entry.layout);
+    if (entry.kind == NVE_COMP_SCROLL_VIEW) {
+      YGNodeStyleSetOverflow(entry.yg_node, YGOverflowScroll);
+    }
     if (entry.kind == NVE_COMP_TEXT && entry.children.empty()) {
       YGNodeSetNodeType(entry.yg_node, YGNodeTypeText);
       YGNodeSetMeasureFunc(entry.yg_node, &measure_text_node);

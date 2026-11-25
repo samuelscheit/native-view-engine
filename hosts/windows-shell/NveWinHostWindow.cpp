@@ -109,7 +109,14 @@ void paint_node_recursive(
     }
   }
 
+  const bool clip_scroll = (node->is_scroll_view && w > 0.0f && h > 0.0f);
+  if (clip_scroll) {
+    rt->PushAxisAlignedClip(D2D1::RectF(abs_x, abs_y, abs_x + w, abs_y + h), D2D1_ANTIALIAS_MODE_ALIASED);
+  }
+
   if (!node->children.empty()) {
+    const float child_origin_x = clip_scroll ? (abs_x - node->scroll_x) : abs_x;
+    const float child_origin_y = clip_scroll ? (abs_y - node->scroll_y) : abs_y;
     std::vector<uint32_t> ordered = node->children;
     std::stable_sort(ordered.begin(), ordered.end(), [&tree](uint32_t a, uint32_t b) {
       const NveWinNodeVisual* va = tree.find(a);
@@ -119,8 +126,46 @@ void paint_node_recursive(
       return za < zb;
     });
     for (uint32_t child_id : ordered) {
-      paint_node_recursive(rt, brush, tree, measurer, child_id, abs_x, abs_y, depth + 1);
+      paint_node_recursive(
+          rt, brush, tree, measurer, child_id, child_origin_x, child_origin_y, depth + 1);
     }
+  }
+
+  if (clip_scroll) {
+    // Draw subtle native-style vertical & horizontal scrollbar indicators when content overflows.
+    if (node->content_height > h + 0.5f && h > 16.0f && w > 12.0f) {
+      constexpr float kBarWidth = 5.0f;
+      constexpr float kBarInset = 2.0f;
+      const float track_h = std::max(1.0f, h - 2.0f * kBarInset);
+      const float thumb_h = std::clamp(track_h * (h / node->content_height), 24.0f, track_h);
+      const float max_scroll = std::max(1.0f, node->content_height - h);
+      const float ratio = std::clamp(node->scroll_y / max_scroll, 0.0f, 1.0f);
+      const float thumb_top = abs_y + kBarInset + (track_h - thumb_h) * ratio;
+      const D2D1_RECT_F thumb_rect = D2D1::RectF(
+          abs_x + w - kBarInset - kBarWidth,
+          thumb_top,
+          abs_x + w - kBarInset,
+          thumb_top + thumb_h);
+      brush->SetColor(D2D1::ColorF(0.58f, 0.64f, 0.72f, 0.45f));
+      rt->FillRoundedRectangle(D2D1::RoundedRect(thumb_rect, 2.5f, 2.5f), brush);
+    }
+    if (node->content_width > w + 0.5f && w > 16.0f && h > 12.0f) {
+      constexpr float kBarHeight = 5.0f;
+      constexpr float kBarInset = 2.0f;
+      const float track_w = std::max(1.0f, w - 2.0f * kBarInset);
+      const float thumb_w = std::clamp(track_w * (w / node->content_width), 24.0f, track_w);
+      const float max_scroll = std::max(1.0f, node->content_width - w);
+      const float ratio = std::clamp(node->scroll_x / max_scroll, 0.0f, 1.0f);
+      const float thumb_left = abs_x + kBarInset + (track_w - thumb_w) * ratio;
+      const D2D1_RECT_F thumb_rect = D2D1::RectF(
+          thumb_left,
+          abs_y + h - kBarInset - kBarHeight,
+          thumb_left + thumb_w,
+          abs_y + h - kBarInset);
+      brush->SetColor(D2D1::ColorF(0.58f, 0.64f, 0.72f, 0.45f));
+      rt->FillRoundedRectangle(D2D1::RoundedRect(thumb_rect, 2.5f, 2.5f), brush);
+    }
+    rt->PopAxisAlignedClip();
   }
 
   if (opacity_layer != nullptr) {
@@ -538,11 +583,115 @@ void NveWinHostWindow::on_resize(UINT width_px, UINT height_px) {
   ::InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void NveWinHostWindow::on_left_button_down(int x_px, int y_px) {
+  const float scale = dpi_scale();
+  const float dip_x = static_cast<float>(x_px) / scale;
+  const float dip_y = static_cast<float>(y_px) / scale;
+  const auto hit_sb = host_.visual_tree().hit_test_vertical_scrollbar(dip_x, dip_y);
+  if (hit_sb.has_value()) {
+    if (const NveWinNodeVisual* node = host_.visual_tree().find(*hit_sb)) {
+      dragging_scroll_node_id_ = *hit_sb;
+      drag_start_dip_y_ = dip_y;
+      drag_start_scroll_y_ = node->scroll_y;
+      if (hwnd_ != nullptr) {
+        ::SetCapture(hwnd_);
+      }
+      update_scrollbar_drag(dip_y);
+    }
+  }
+}
+
+void NveWinHostWindow::on_mouse_move(int /*x_px*/, int y_px) {
+  if (dragging_scroll_node_id_ == 0) {
+    return;
+  }
+  const float scale = dpi_scale();
+  update_scrollbar_drag(static_cast<float>(y_px) / scale);
+}
+
+void NveWinHostWindow::update_scrollbar_drag(float dip_y) {
+  const NveWinNodeVisual* node = host_.visual_tree().find(dragging_scroll_node_id_);
+  if (node == nullptr || !node->is_scroll_view || node->content_height <= node->layout.height + 0.5f) {
+    return;
+  }
+  const auto rect = host_.visual_tree().absolute_rect(dragging_scroll_node_id_);
+  if (!rect.has_value() || rect->height <= 4.0f) {
+    return;
+  }
+  const float h = rect->height;
+  const float track_h = std::max(1.0f, h - 4.0f);
+  const float thumb_h = std::clamp(track_h * (h / node->content_height), 24.0f, track_h);
+  const float movable = std::max(1.0f, track_h - thumb_h);
+  const float max_scroll = std::max(0.0f, node->content_height - h);
+
+  // If the user dragged noticeably, move relative to drag start; on initial click, jump smoothly
+  // toward the clicked track position if outside the thumb.
+  const float delta_y = dip_y - drag_start_dip_y_;
+  float next_scroll_y = drag_start_scroll_y_ + (delta_y / movable) * max_scroll;
+  if (std::fabs(delta_y) < 1e-3f) {
+    const float current_thumb_top =
+        rect->y + 2.0f + (track_h - thumb_h) * (node->scroll_y / std::max(1.0f, max_scroll));
+    if (dip_y < current_thumb_top || dip_y > current_thumb_top + thumb_h) {
+      const float target_thumb_top = dip_y - 0.5f * thumb_h;
+      const float ratio = std::clamp((target_thumb_top - (rect->y + 2.0f)) / movable, 0.0f, 1.0f);
+      next_scroll_y = ratio * max_scroll;
+      drag_start_scroll_y_ = next_scroll_y;
+    }
+  }
+  if (host_.set_scroll_offset(dragging_scroll_node_id_, node->scroll_x, next_scroll_y)) {
+    ::InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
 void NveWinHostWindow::on_left_button_up(int x_px, int y_px) {
+  if (dragging_scroll_node_id_ != 0) {
+    dragging_scroll_node_id_ = 0;
+    if (::GetCapture() == hwnd_) {
+      ::ReleaseCapture();
+    }
+    return;
+  }
   const float scale = dpi_scale();
   const float dip_x = static_cast<float>(x_px) / scale;
   const float dip_y = static_cast<float>(y_px) / scale;
   if (host_.dispatch_click_at(dip_x, dip_y) > 0) {
+    ::InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+
+void NveWinHostWindow::on_mouse_wheel(WPARAM wparam, LPARAM lparam, bool horizontal) {
+  if (hwnd_ == nullptr) {
+    return;
+  }
+  // WM_MOUSEWHEEL / WM_MOUSEHWHEEL deliver screen coordinates in lParam.
+  POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  ::ScreenToClient(hwnd_, &pt);
+
+  const float scale = dpi_scale();
+  const float dip_x = static_cast<float>(pt.x) / scale;
+  const float dip_y = static_cast<float>(pt.y) / scale;
+
+  UINT wheel_lines = 3u;
+  (void)::SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheel_lines, 0);
+  if (wheel_lines == WHEEL_PAGESCROLL || wheel_lines == 0u) {
+    wheel_lines = 3u;
+  }
+  const float step_per_notch = static_cast<float>(wheel_lines) * 16.0f;
+  const float notches = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wparam)) /
+                        static_cast<float>(WHEEL_DELTA);
+
+  const bool shift_held = (GET_KEYSTATE_WPARAM(wparam) & MK_SHIFT) != 0;
+  float delta_x = 0.0f;
+  float delta_y = 0.0f;
+  if (horizontal) {
+    delta_x = notches * step_per_notch;
+  } else if (shift_held) {
+    delta_x = -notches * step_per_notch;
+  } else {
+    delta_y = -notches * step_per_notch;
+  }
+
+  if (host_.dispatch_scroll_at(dip_x, dip_y, delta_x, delta_y)) {
     ::InvalidateRect(hwnd_, nullptr, FALSE);
   }
 }
@@ -605,8 +754,23 @@ LRESULT NveWinHostWindow::handle_message(UINT msg, WPARAM wparam, LPARAM lparam)
       ::InvalidateRect(hwnd_, nullptr, FALSE);
       return 0;
     }
+    case WM_LBUTTONDOWN:
+      on_left_button_down(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      return 0;
+    case WM_MOUSEMOVE:
+      on_mouse_move(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      return 0;
     case WM_LBUTTONUP:
       on_left_button_up(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      return 0;
+    case WM_CAPTURECHANGED:
+      dragging_scroll_node_id_ = 0;
+      return 0;
+    case WM_MOUSEWHEEL:
+      on_mouse_wheel(wparam, lparam, /*horizontal=*/false);
+      return 0;
+    case WM_MOUSEHWHEEL:
+      on_mouse_wheel(wparam, lparam, /*horizontal=*/true);
       return 0;
     case WM_DESTROY:
       discard_device_resources();

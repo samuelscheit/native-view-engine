@@ -99,13 +99,20 @@ class NveWinHostWindow {
   NveSurfaceConfig current_surface_config() const noexcept;
   void on_paint();
   void on_resize(UINT width_px, UINT height_px);
+  void on_left_button_down(int x_px, int y_px);
+  void on_mouse_move(int x_px, int y_px);
   void on_left_button_up(int x_px, int y_px);
+  void on_mouse_wheel(WPARAM wparam, LPARAM lparam, bool horizontal);
+  void update_scrollbar_drag(float dip_y);
 
   WinHostWindowOptions options_{};
   HWND hwnd_{nullptr};
   ID2D1Factory* d2d_factory_{nullptr};
   ID2D1HwndRenderTarget* render_target_{nullptr};
   NveRnwComponentHost host_{};
+  uint32_t dragging_scroll_node_id_{0};
+  float drag_start_dip_y_{0.0f};
+  float drag_start_scroll_y_{0.0f};
 };
 
 #endif // defined(_WIN32)

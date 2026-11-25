@@ -33,6 +33,13 @@ void NveWinVisualTree::Adapter::update_view(
   view.kind = snap.kind;
   view.view_tag = nve::view_tag_for_snapshot(snap);
   view.is_text_leaf = (snap.kind == NVE_COMP_TEXT && snap.children.empty());
+  view.is_scroll_view = (snap.kind == NVE_COMP_SCROLL_VIEW);
+  if (!view.is_scroll_view) {
+    view.scroll_x = 0.0f;
+    view.scroll_y = 0.0f;
+    view.content_width = 0.0f;
+    view.content_height = 0.0f;
+  }
   view.interactive =
       (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & nve::kEventMaskPress) != 0);
   view.custom_name = snap.custom_name;
@@ -53,9 +60,49 @@ void NveWinVisualTree::Adapter::destroy_view(uint32_t /*node_id*/, NveWinNodeVis
   ++destroyed_count;
 }
 
+void NveWinVisualTree::update_scroll_extents(uint32_t node_id, uint32_t depth) {
+  if (depth > 512) {
+    return;
+  }
+  NveWinNodeVisual* node = reconciler_.find(node_id);
+  if (node == nullptr) {
+    return;
+  }
+
+  for (uint32_t child_id : node->children) {
+    update_scroll_extents(child_id, depth + 1);
+  }
+
+  if (node->is_scroll_view) {
+    float max_right = std::max(0.0f, node->layout.width);
+    float max_bottom = std::max(0.0f, node->layout.height);
+    for (uint32_t child_id : node->children) {
+      if (const NveWinNodeVisual* child = reconciler_.find(child_id)) {
+        const float child_right = child->layout.x + std::max(0.0f, child->layout.width);
+        const float child_bottom = child->layout.y + std::max(0.0f, child->layout.height);
+        if (std::isfinite(child_right)) {
+          max_right = std::max(max_right, child_right);
+        }
+        if (std::isfinite(child_bottom)) {
+          max_bottom = std::max(max_bottom, child_bottom);
+        }
+      }
+    }
+    node->content_width = max_right;
+    node->content_height = max_bottom;
+    const float max_scroll_x = std::max(0.0f, node->content_width - std::max(0.0f, node->layout.width));
+    const float max_scroll_y = std::max(0.0f, node->content_height - std::max(0.0f, node->layout.height));
+    node->scroll_x = std::clamp(node->scroll_x, 0.0f, max_scroll_x);
+    node->scroll_y = std::clamp(node->scroll_y, 0.0f, max_scroll_y);
+  }
+}
+
 void NveWinVisualTree::sync(const std::vector<nve::RenderedNodeSnapshot>& snapshots) {
   adapter_.root_children.clear();
   reconciler_.sync(snapshots, adapter_);
+  for (uint32_t child_id : adapter_.root_children) {
+    update_scroll_extents(child_id, 0);
+  }
 }
 
 void NveWinVisualTree::clear() {
@@ -85,6 +132,10 @@ std::optional<nve::LayoutRect> NveWinVisualTree::absolute_rect(uint32_t node_id)
     }
     abs_x += parent->layout.x;
     abs_y += parent->layout.y;
+    if (parent->is_scroll_view) {
+      abs_x -= parent->scroll_x;
+      abs_y -= parent->scroll_y;
+    }
     cur_parent = parent->parent_id;
     ++hops;
   }
@@ -96,6 +147,7 @@ void NveWinVisualTree::append_draw_order(
     float origin_x,
     float origin_y,
     float inherited_opacity,
+    const ClipRect& clip,
     std::vector<FlattenedVisualNode>& out,
     uint32_t depth) const {
   if (depth > 512) {
@@ -116,10 +168,39 @@ void NveWinVisualTree::append_draw_order(
       .abs_x = abs_x,
       .abs_y = abs_y,
       .effective_opacity = effective_opacity,
+      .clipped = clip.active,
+      .clip_left = clip.left,
+      .clip_top = clip.top,
+      .clip_right = clip.right,
+      .clip_bottom = clip.bottom,
   });
 
   if (node->children.empty()) {
     return;
+  }
+
+  float child_origin_x = abs_x;
+  float child_origin_y = abs_y;
+  ClipRect child_clip = clip;
+  if (node->is_scroll_view) {
+    child_origin_x -= node->scroll_x;
+    child_origin_y -= node->scroll_y;
+    const float vp_left = abs_x;
+    const float vp_top = abs_y;
+    const float vp_right = abs_x + std::max(0.0f, node->layout.width);
+    const float vp_bottom = abs_y + std::max(0.0f, node->layout.height);
+    if (child_clip.active) {
+      child_clip.left = std::max(child_clip.left, vp_left);
+      child_clip.top = std::max(child_clip.top, vp_top);
+      child_clip.right = std::min(child_clip.right, vp_right);
+      child_clip.bottom = std::min(child_clip.bottom, vp_bottom);
+    } else {
+      child_clip.active = true;
+      child_clip.left = vp_left;
+      child_clip.top = vp_top;
+      child_clip.right = vp_right;
+      child_clip.bottom = vp_bottom;
+    }
   }
 
   std::vector<uint32_t> ordered = node->children;
@@ -132,7 +213,8 @@ void NveWinVisualTree::append_draw_order(
   });
 
   for (uint32_t child_id : ordered) {
-    append_draw_order(child_id, abs_x, abs_y, effective_opacity, out, depth + 1);
+    append_draw_order(
+        child_id, child_origin_x, child_origin_y, effective_opacity, child_clip, out, depth + 1);
   }
 }
 
@@ -149,8 +231,9 @@ std::vector<FlattenedVisualNode> NveWinVisualTree::build_draw_order() const {
     return za < zb;
   });
 
+  const ClipRect no_clip{};
   for (uint32_t child_id : ordered_roots) {
-    append_draw_order(child_id, 0.0f, 0.0f, 1.0f, out, 0);
+    append_draw_order(child_id, 0.0f, 0.0f, 1.0f, no_clip, out, 0);
   }
   return out;
 }
@@ -170,6 +253,11 @@ std::optional<HitTestResult> NveWinVisualTree::hit_test_interactive(
     if (node->layout.width <= 0.0f || node->layout.height <= 0.0f) {
       continue;
     }
+    if (it->clipped &&
+        (surface_x < it->clip_left || surface_x > it->clip_right || surface_y < it->clip_top ||
+         surface_y > it->clip_bottom)) {
+      continue;
+    }
     const float x0 = it->abs_x;
     const float y0 = it->abs_y;
     const float x1 = x0 + node->layout.width;
@@ -180,6 +268,111 @@ std::optional<HitTestResult> NveWinVisualTree::hit_test_interactive(
           .local_x = surface_x - x0,
           .local_y = surface_y - y0,
       };
+    }
+  }
+  return std::nullopt;
+}
+
+ScrollResult NveWinVisualTree::scroll_at(
+    float surface_x,
+    float surface_y,
+    float delta_x,
+    float delta_y) {
+  if (!std::isfinite(delta_x)) delta_x = 0.0f;
+  if (!std::isfinite(delta_y)) delta_y = 0.0f;
+  if (std::fabs(delta_x) < 1e-4f && std::fabs(delta_y) < 1e-4f) {
+    return {};
+  }
+
+  const std::vector<FlattenedVisualNode> order = build_draw_order();
+  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+    NveWinNodeVisual* node = reconciler_.find(it->node_id);
+    if (node == nullptr || !node->is_scroll_view) {
+      continue;
+    }
+    if (it->effective_opacity <= 0.0f) {
+      continue;
+    }
+    if (node->layout.width <= 0.0f || node->layout.height <= 0.0f) {
+      continue;
+    }
+    if (it->clipped &&
+        (surface_x < it->clip_left || surface_x > it->clip_right || surface_y < it->clip_top ||
+         surface_y > it->clip_bottom)) {
+      continue;
+    }
+    const float x0 = it->abs_x;
+    const float y0 = it->abs_y;
+    const float x1 = x0 + node->layout.width;
+    const float y1 = y0 + node->layout.height;
+    if (surface_x < x0 || surface_x > x1 || surface_y < y0 || surface_y > y1) {
+      continue;
+    }
+
+    const float max_x = std::max(0.0f, node->content_width - node->layout.width);
+    const float max_y = std::max(0.0f, node->content_height - node->layout.height);
+    const float next_x = std::clamp(node->scroll_x + delta_x, 0.0f, max_x);
+    const float next_y = std::clamp(node->scroll_y + delta_y, 0.0f, max_y);
+    if (std::fabs(next_x - node->scroll_x) > 1e-3f || std::fabs(next_y - node->scroll_y) > 1e-3f) {
+      node->scroll_x = next_x;
+      node->scroll_y = next_y;
+      return ScrollResult{
+          .node_id = node->node_id,
+          .scroll_x = node->scroll_x,
+          .scroll_y = node->scroll_y,
+          .content_width = node->content_width,
+          .content_height = node->content_height,
+          .scrolled = true,
+      };
+    }
+  }
+  return {};
+}
+
+bool NveWinVisualTree::set_scroll_offset(uint32_t node_id, float scroll_x, float scroll_y) {
+  NveWinNodeVisual* node = reconciler_.find(node_id);
+  if (node == nullptr || !node->is_scroll_view) {
+    return false;
+  }
+  const float max_x = std::max(0.0f, node->content_width - std::max(0.0f, node->layout.width));
+  const float max_y = std::max(0.0f, node->content_height - std::max(0.0f, node->layout.height));
+  const float next_x = std::isfinite(scroll_x) ? std::clamp(scroll_x, 0.0f, max_x) : node->scroll_x;
+  const float next_y = std::isfinite(scroll_y) ? std::clamp(scroll_y, 0.0f, max_y) : node->scroll_y;
+  if (std::fabs(next_x - node->scroll_x) <= 1e-3f && std::fabs(next_y - node->scroll_y) <= 1e-3f) {
+    return false;
+  }
+  node->scroll_x = next_x;
+  node->scroll_y = next_y;
+  return true;
+}
+
+std::optional<uint32_t> NveWinVisualTree::hit_test_vertical_scrollbar(
+    float surface_x,
+    float surface_y,
+    float track_hit_width) const {
+  const std::vector<FlattenedVisualNode> order = build_draw_order();
+  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+    const NveWinNodeVisual* node = reconciler_.find(it->node_id);
+    if (node == nullptr || !node->is_scroll_view || it->effective_opacity <= 0.0f) {
+      continue;
+    }
+    if (node->layout.width <= track_hit_width || node->layout.height <= 0.0f) {
+      continue;
+    }
+    if (node->content_height <= node->layout.height + 0.5f) {
+      continue;
+    }
+    if (it->clipped &&
+        (surface_x < it->clip_left || surface_x > it->clip_right || surface_y < it->clip_top ||
+         surface_y > it->clip_bottom)) {
+      continue;
+    }
+    const float x1 = it->abs_x + node->layout.width;
+    const float x0 = x1 - track_hit_width;
+    const float y0 = it->abs_y;
+    const float y1 = y0 + node->layout.height;
+    if (surface_x >= x0 && surface_x <= x1 && surface_y >= y0 && surface_y <= y1) {
+      return node->node_id;
     }
   }
   return std::nullopt;
@@ -341,6 +534,26 @@ uint32_t NveRnwComponentHost::dispatch_click_at(float surface_x, float surface_y
   return dispatch_press(hit->node_id, hit->local_x, hit->local_y);
 }
 
+bool NveRnwComponentHost::dispatch_scroll_at(
+    float surface_x,
+    float surface_y,
+    float delta_x,
+    float delta_y) {
+  const ScrollResult res = visual_tree_.scroll_at(surface_x, surface_y, delta_x, delta_y);
+  if (res.scrolled && on_visual_tree_changed_) {
+    on_visual_tree_changed_();
+  }
+  return res.scrolled;
+}
+
+bool NveRnwComponentHost::set_scroll_offset(uint32_t node_id, float scroll_x, float scroll_y) {
+  const bool changed = visual_tree_.set_scroll_offset(node_id, scroll_x, scroll_y);
+  if (changed && on_visual_tree_changed_) {
+    on_visual_tree_changed_();
+  }
+  return changed;
+}
+
 std::optional<NveIntrinsicSize> NveRnwComponentHost::measure(
     NveSizeConstraints constraints) const {
   if (!session_.is_valid()) {
@@ -377,6 +590,7 @@ struct NveRnwComponentUserData
   std::shared_ptr<NveRnwComponentHost> host{std::make_shared<NveRnwComponentHost>()};
   rnw::EventEmitter event_emitter{nullptr};
   rnw::ComponentView::PointerReleased_revoker pointer_released_revoker{};
+  rnw::ComponentView::PointerWheelChanged_revoker pointer_wheel_revoker{};
   rnw::ComponentView::Destroying_revoker destroying_revoker{};
 };
 
@@ -496,6 +710,31 @@ winrt::com_ptr<NveRnwComponentUserData> initialize_view_host(
         auto pt = args.GetCurrentPoint(comp_view.Tag());
         const auto pos = pt.Position();
         if (strong->host->dispatch_click_at(pos.X, pos.Y) > 0) {
+          args.Handled(true);
+        }
+      });
+
+  user_data->pointer_wheel_revoker = view.PointerWheelChanged(
+      winrt::auto_revoke,
+      [weak_data](
+          winrt::Windows::Foundation::IInspectable const& sender,
+          rnw_input::PointerRoutedEventArgs const& args) {
+        auto strong = weak_data.get();
+        if (!strong || !strong->host) {
+          return;
+        }
+        auto comp_view = sender.try_as<rnw::ComponentView>();
+        if (!comp_view) {
+          return;
+        }
+        auto pt = args.GetCurrentPoint(comp_view.Tag());
+        const auto pos = pt.Position();
+        const auto props = pt.Properties();
+        const float wheel = static_cast<float>(props.MouseWheelDelta()) / 120.0f;
+        const float step = 48.0f;
+        const float dx = props.IsHorizontalMouseWheel() ? (wheel * step) : 0.0f;
+        const float dy = props.IsHorizontalMouseWheel() ? 0.0f : (-wheel * step);
+        if (strong->host->dispatch_scroll_at(pos.X, pos.Y, dx, dy)) {
           args.Handled(true);
         }
       });
