@@ -2,8 +2,11 @@
 //! classification shared by `stylesheet.rs` and `ssr.rs`.
 
 use nve_abi::{ColorRgba, ComponentKind, Dimension, EdgeInsets, LayoutProps, StyleProps};
+use nve_components::layout_ext::LayoutExt;
+use nve_components::transform::Transform2D;
 
 use crate::css::{canonical_f32, canonical_f32_bits, MirrorElement};
+use crate::layout_ext_css::hash_layout_ext_and_transform;
 use crate::raw_style::RawStyleProps;
 
 /// Point dimension threshold above which `Dimension::Points(v)` routes to the inline lane
@@ -133,6 +136,18 @@ pub fn hash_structural_style(
     raw: &RawStyleProps,
     leaf_text: bool,
 ) -> u64 {
+    hash_structural_style_full(layout, None, style, None, raw, leaf_text)
+}
+
+/// Computes deterministic FNV-1a64 hash including optional [`LayoutExt`] and [`Transform2D`].
+pub fn hash_structural_style_full(
+    layout: &LayoutProps,
+    layout_ext: Option<&LayoutExt>,
+    style: &StyleProps,
+    transform: Option<Transform2D>,
+    raw: &RawStyleProps,
+    leaf_text: bool,
+) -> u64 {
     let mut h = FNV1A_OFFSET_BASIS;
     let sanitize_dim = |d: Dimension| if is_volatile_dimension(d) { Dimension::Auto } else { d };
     h = fnv1a_dim(h, sanitize_dim(layout.width));
@@ -191,5 +206,5 @@ pub fn hash_structural_style(
     h = fnv1a_opt_str(h, raw.effective_overflow());
     h = fnv1a_opt_str(h, raw.effective_flex_wrap());
     h = fnv1a_opt_str(h, raw.object_fit);
-    h
+    hash_layout_ext_and_transform(h, layout_ext, transform)
 }

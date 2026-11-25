@@ -175,6 +175,12 @@ impl NveMutationWriter {
         rec.cursor = typed.cursor;
         rec.state_rules.clone_from(&typed.state_rules);
         rec.transitions.clone_from(&typed.transitions);
+        rec.layout_ext = typed
+            .layout_ext
+            .as_deref()
+            .filter(|ext| !ext.is_default())
+            .map(|ext| Box::new(ext.clone()));
+        rec.transform = typed.transform;
         rec.typed_style = Some(typed);
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
@@ -193,6 +199,8 @@ impl NveMutationWriter {
         rec.cursor = None;
         rec.state_rules.clear();
         rec.transitions.clear();
+        rec.layout_ext = None;
+        rec.transform = None;
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
 

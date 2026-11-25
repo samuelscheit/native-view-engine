@@ -170,6 +170,9 @@ impl WebBackend {
             css.push_str(&nv.extra_css);
         }
         write_attr("style", &css, out);
+        if let Some(dir) = crate::layout_ext_css::node_dir_attr(el.layout_ext.as_deref()) {
+            write_attr("dir", dir, out);
+        }
         out.push('>');
         if is_void_html_tag(tag) {
             return None;

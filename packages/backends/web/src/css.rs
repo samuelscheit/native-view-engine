@@ -1,6 +1,7 @@
 //! CSS Flexbox/style translation, Option 5 Hybrid compact formatting, semantic HTML5 tag
 //! resolution, and [`MirrorElement`].
 
+use crate::layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
 use crate::raw_style::RawStyleProps;
 use crate::style_hash::{is_volatile_dimension, is_volatile_opacity};
 
@@ -12,8 +13,10 @@ use nve_abi::{
 };
 use nve_components::canvas_ir::CanvasOp;
 use nve_components::interaction::{CursorKind, StateStyleRule};
+use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
+use nve_components::transform::Transform2D;
 
 /// Static `.nve` base reset stylesheet emitted once on mount or SSR.
 ///
@@ -371,7 +374,9 @@ pub struct MirrorElement {
     pub tag: &'static str,
     pub wrap_code: bool,
     pub layout: LayoutProps,
+    pub layout_ext: Option<Box<LayoutExt>>,
     pub style: StyleProps,
+    pub transform: Option<Transform2D>,
     pub raw_style: RawStyleProps,
     pub patch_css: String,
     pub class_name: String,
@@ -406,7 +411,9 @@ impl MirrorElement {
             tag: component_to_html_tag(kind),
             wrap_code: false,
             layout: LayoutProps::default(),
+            layout_ext: None,
             style: StyleProps::default(),
+            transform: None,
             raw_style: RawStyleProps::default(),
             patch_css: String::new(),
             class_name: String::new(),
@@ -453,7 +460,9 @@ impl MirrorElement {
     pub fn combined_css_into(&self, out: &mut String) {
         out.push_str(kind_default_css(self.kind, self.event_mask));
         layout_to_css_into(&self.layout, out);
+        write_compact_layout_ext_into(self.layout_ext.as_deref(), out);
         style_to_css_into(&self.style, out);
+        write_compact_transform_into(self.transform, out);
         write_compact_cursor_into(self.cursor, out);
         TransitionSpec::write_css_list_into(&self.transitions, out);
         self.raw_style.write_compact_into(false, out);

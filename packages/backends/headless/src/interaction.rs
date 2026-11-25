@@ -110,9 +110,9 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest interaction-eligible node
     /// (event subscribers, `Pressable`/`TextInput`, disabled nodes, or any node declaring
-    /// `state_rules` or `cursor`).
+    /// `state_rules` or `cursor`), accounting for scroll offsets, sticky clamping, and `Transform2D`.
     pub fn hit_test_interaction(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_interaction_rec(ROOT_NODE_ID, x, y, 0)
+        self.hit_test_interaction_rec(ROOT_NODE_ID, x, y, (0.0, 0.0), 0)
     }
 
     fn hit_test_interaction_rec(
@@ -120,27 +120,49 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         id: NodeId,
         x: f32,
         y: f32,
+        offset: (f32, f32),
         depth: usize,
     ) -> Option<NodeId> {
         if depth > MAX_TREE_DEPTH {
             return None;
         }
         let node = self.nodes.get(id)?;
-        if node.style.opacity <= 0.001 {
+        if node.style.opacity <= 0.001
+            || node
+                .layout_ext
+                .as_deref()
+                .is_some_and(|e| e.display == nve_components::style_patch::Display::None)
+        {
             return None;
         }
-        let r = node.computed_rect;
-        let inside = r.width > 0.0
-            && r.height > 0.0
-            && x >= r.x
-            && x <= r.x + r.width
-            && y >= r.y
-            && y <= r.y + r.height;
-        if !inside && id != ROOT_NODE_ID {
+        let (stx, sty) = self.compute_sticky_delta(id, &self.scroll_offsets);
+        let node_offset = (offset.0 + stx, offset.1 + sty);
+        let r_x = node.computed_rect.x + node_offset.0;
+        let r_y = node.computed_rect.y + node_offset.1;
+        let r_w = node.computed_rect.width;
+        let r_h = node.computed_rect.height;
+        let (px, py) = if let Some(tf) = self.effective_transform(id)
+            && !tf.is_identity()
+        {
+            tf.inverse_map_surface_point(x, y, r_x, r_y, r_w, r_h)?
+        } else {
+            (x, y)
+        };
+        let inside = r_w > 0.0
+            && r_h > 0.0
+            && px >= r_x
+            && px <= r_x + r_w
+            && py >= r_y
+            && py <= r_y + r_h;
+        if !inside && id != ROOT_NODE_ID && crate::layout_ext::node_clips_overflow(node) {
             return None;
         }
+        let (sx, sy) = self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
+        let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
         for &child in node.children.iter().rev() {
-            if let Some(hit) = self.hit_test_interaction_rec(child, x, y, depth + 1) {
+            if let Some(hit) =
+                self.hit_test_interaction_rec(child, px, py, child_offset, depth + 1)
+            {
                 return Some(hit);
             }
         }

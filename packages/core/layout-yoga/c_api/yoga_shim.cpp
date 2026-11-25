@@ -57,6 +57,32 @@ struct NveYogaRect {
   float height;
 };
 
+struct NveYogaLayoutExt {
+  uint8_t display;         // 0=flex, 1=none
+  uint8_t flex_basis_tag;  // 0=auto, 1=px, 2=pct
+  float flex_basis_val;
+  uint8_t has_aspect_ratio;
+  float aspect_ratio;
+  uint8_t position_mode;   // 0=relative, 1=absolute, 2=sticky(normal flow)
+  uint8_t top_tag;
+  float top_val;
+  uint8_t right_tag;
+  float right_val;
+  uint8_t bottom_tag;
+  float bottom_val;
+  uint8_t left_tag;
+  float left_val;
+  uint8_t direction;       // 0=inherit, 1=ltr, 2=rtl
+  uint8_t has_pad_start;
+  float pad_start;
+  uint8_t has_pad_end;
+  float pad_end;
+  uint8_t has_mar_start;
+  float mar_start;
+  uint8_t has_mar_end;
+  float mar_end;
+};
+
 static uint8_t encode_measure_mode(YGMeasureMode mode) noexcept {
   switch (mode) {
     case YGMeasureModeUndefined:
@@ -330,6 +356,90 @@ void nve_yg_node_apply_layout(YGNodeRef node, const NveYogaLayoutProps* props) {
   YGNodeStyleSetMargin(node, YGEdgeRight, props->margin_right);
   YGNodeStyleSetMargin(node, YGEdgeBottom, props->margin_bottom);
   YGNodeStyleSetMargin(node, YGEdgeLeft, props->margin_left);
+}
+
+static void apply_position_edge(YGNodeRef node, YGEdge edge, uint8_t tag, float val) {
+  switch (tag) {
+    case 1:
+      YGNodeStyleSetPosition(node, edge, val);
+      break;
+    case 2:
+      YGNodeStyleSetPositionPercent(node, edge, val);
+      break;
+    default:
+      YGNodeStyleSetPosition(node, edge, YGUndefined);
+      break;
+  }
+}
+
+void nve_yg_node_apply_layout_ext(YGNodeRef node, const NveYogaLayoutExt* ext) {
+  if (!node) {
+    return;
+  }
+  if (!ext) {
+    YGNodeStyleSetDisplay(node, YGDisplayFlex);
+    YGNodeStyleSetFlexBasisAuto(node);
+    YGNodeStyleSetAspectRatio(node, YGUndefined);
+    YGNodeStyleSetPositionType(node, YGPositionTypeRelative);
+    YGNodeStyleSetPosition(node, YGEdgeTop, YGUndefined);
+    YGNodeStyleSetPosition(node, YGEdgeRight, YGUndefined);
+    YGNodeStyleSetPosition(node, YGEdgeBottom, YGUndefined);
+    YGNodeStyleSetPosition(node, YGEdgeLeft, YGUndefined);
+    YGNodeStyleSetDirection(node, YGDirectionInherit);
+    YGNodeStyleSetPadding(node, YGEdgeStart, YGUndefined);
+    YGNodeStyleSetPadding(node, YGEdgeEnd, YGUndefined);
+    YGNodeStyleSetMargin(node, YGEdgeStart, YGUndefined);
+    YGNodeStyleSetMargin(node, YGEdgeEnd, YGUndefined);
+    return;
+  }
+  YGNodeStyleSetDisplay(node, ext->display == 1 ? YGDisplayNone : YGDisplayFlex);
+  switch (ext->flex_basis_tag) {
+    case 1:
+      YGNodeStyleSetFlexBasis(node, ext->flex_basis_val);
+      break;
+    case 2:
+      YGNodeStyleSetFlexBasisPercent(node, ext->flex_basis_val);
+      break;
+    default:
+      YGNodeStyleSetFlexBasisAuto(node);
+      break;
+  }
+  if (ext->has_aspect_ratio && std::isfinite(ext->aspect_ratio) && ext->aspect_ratio > 0.0f) {
+    YGNodeStyleSetAspectRatio(node, ext->aspect_ratio);
+  } else {
+    YGNodeStyleSetAspectRatio(node, YGUndefined);
+  }
+  if (ext->position_mode == 1) {
+    YGNodeStyleSetPositionType(node, YGPositionTypeAbsolute);
+  } else {
+    YGNodeStyleSetPositionType(node, YGPositionTypeRelative);
+  }
+  if (ext->position_mode != 2) {
+    apply_position_edge(node, YGEdgeTop, ext->top_tag, ext->top_val);
+    apply_position_edge(node, YGEdgeRight, ext->right_tag, ext->right_val);
+    apply_position_edge(node, YGEdgeBottom, ext->bottom_tag, ext->bottom_val);
+    apply_position_edge(node, YGEdgeLeft, ext->left_tag, ext->left_val);
+  } else {
+    YGNodeStyleSetPosition(node, YGEdgeTop, YGUndefined);
+    YGNodeStyleSetPosition(node, YGEdgeRight, YGUndefined);
+    YGNodeStyleSetPosition(node, YGEdgeBottom, YGUndefined);
+    YGNodeStyleSetPosition(node, YGEdgeLeft, YGUndefined);
+  }
+  switch (ext->direction) {
+    case 1:
+      YGNodeStyleSetDirection(node, YGDirectionLTR);
+      break;
+    case 2:
+      YGNodeStyleSetDirection(node, YGDirectionRTL);
+      break;
+    default:
+      YGNodeStyleSetDirection(node, YGDirectionInherit);
+      break;
+  }
+  YGNodeStyleSetPadding(node, YGEdgeStart, ext->has_pad_start ? ext->pad_start : YGUndefined);
+  YGNodeStyleSetPadding(node, YGEdgeEnd, ext->has_pad_end ? ext->pad_end : YGUndefined);
+  YGNodeStyleSetMargin(node, YGEdgeStart, ext->has_mar_start ? ext->mar_start : YGUndefined);
+  YGNodeStyleSetMargin(node, YGEdgeEnd, ext->has_mar_end ? ext->mar_end : YGUndefined);
 }
 
 void nve_yg_node_set_fixed_size(YGNodeRef node, float width, float height) {

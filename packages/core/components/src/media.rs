@@ -403,7 +403,7 @@ impl MediaQuery {
 }
 
 /// One conditional responsive style rule pairing a [`MediaQuery`] with a [`StylePatch`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResponsiveRule {
     pub query: MediaQuery,
     pub patch: StylePatch,

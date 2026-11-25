@@ -156,7 +156,7 @@ pub enum FocusModality {
 
 /// One conditional interactive pseudo-state style rule pairing an [`InteractionState`] bitmask
 /// with a sparse [`StylePatch`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StateStyleRule {
     pub state: InteractionState,
     pub patch: StylePatch,

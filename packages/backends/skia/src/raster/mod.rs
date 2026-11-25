@@ -2,8 +2,10 @@
 
 mod canvas;
 pub(crate) mod clip;
+mod pixel_buffer;
 pub mod shadow;
 pub(crate) mod text_blend;
+mod transform;
 
 use nve_abi::ColorRgba;
 use nve_engine::{LayoutRect, TextMeasurer};
@@ -17,156 +19,13 @@ use shadow::draw_box_shadow;
 pub(crate) use text_blend::{
     blend_color_glyph, blend_mask_glyph, blend_subpixel_glyph, draw_bitmap_text,
 };
+use transform::{
+    fill_rounded_rect_transformed, map_logical_rect_approx, stroke_rounded_rect_transformed,
+    TransformStack, TransformedStroke,
+};
 
+pub use pixel_buffer::PixelBuffer;
 pub use shadow::{parse_box_shadow, BoxShadow};
-
-/// Contiguous `0x00RRGGBB` pixel buffer suitable for direct blitting into `softbuffer`.
-#[derive(Debug, Clone)]
-pub struct PixelBuffer {
-    width: u32,
-    height: u32,
-    pixels: Vec<u32>,
-}
-
-impl PixelBuffer {
-    pub fn new(width: u32, height: u32) -> Self {
-        let len = (width as usize).saturating_mul(height as usize);
-        Self {
-            width,
-            height,
-            pixels: vec![0; len],
-        }
-    }
-
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if self.width == width && self.height == height {
-            return;
-        }
-        self.width = width;
-        self.height = height;
-        let len = (width as usize).saturating_mul(height as usize);
-        self.pixels.resize(len, 0);
-    }
-
-    #[inline]
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    #[inline]
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    #[inline]
-    pub fn pixels(&self) -> &[u32] {
-        &self.pixels
-    }
-
-    #[inline]
-    pub fn pixels_mut(&mut self) -> &mut [u32] {
-        &mut self.pixels
-    }
-
-    #[inline]
-    pub const fn pack_rgb(r: u8, g: u8, b: u8) -> u32 {
-        ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-    }
-
-    #[inline]
-    pub const fn unpack_rgb(pixel: u32) -> (u8, u8, u8) {
-        (
-            ((pixel >> 16) & 0xFF) as u8,
-            ((pixel >> 8) & 0xFF) as u8,
-            (pixel & 0xFF) as u8,
-        )
-    }
-
-    pub fn clear(&mut self, color: ColorRgba) {
-        let packed = Self::pack_rgb(color.r, color.g, color.b);
-        self.pixels.fill(packed);
-    }
-
-    #[inline]
-    pub fn get_rgb(&self, x: u32, y: u32) -> Option<(u8, u8, u8)> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        let idx = (y as usize) * (self.width as usize) + (x as usize);
-        self.pixels.get(idx).copied().map(Self::unpack_rgb)
-    }
-
-    #[inline]
-    pub fn set_rgb(&mut self, x: u32, y: u32, r: u8, g: u8, b: u8) {
-        if x < self.width && y < self.height {
-            let idx = (y as usize) * (self.width as usize) + (x as usize);
-            self.pixels[idx] = Self::pack_rgb(r, g, b);
-        }
-    }
-
-    /// Src-over blends `color` with extra coverage `coverage` (`0.0..=1.0`) at `(x, y)`.
-    #[inline]
-    pub fn blend_pixel(&mut self, x: i32, y: i32, color: ColorRgba, coverage: f32) {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-            return;
-        }
-        let eff_a = ((color.a as f32) * coverage.clamp(0.0, 1.0)).round() as u32;
-        if eff_a == 0 {
-            return;
-        }
-        let idx = (y as usize) * (self.width as usize) + (x as usize);
-        if eff_a >= 255 {
-            self.pixels[idx] = Self::pack_rgb(color.r, color.g, color.b);
-            return;
-        }
-        let dst = self.pixels[idx];
-        let dr = (dst >> 16) & 0xFF;
-        let dg = (dst >> 8) & 0xFF;
-        let db = dst & 0xFF;
-        let inv_a = 255 - eff_a;
-        let r = (color.r as u32 * eff_a + dr * inv_a + 127) / 255;
-        let g = (color.g as u32 * eff_a + dg * inv_a + 127) / 255;
-        let b = (color.b as u32 * eff_a + db * inv_a + 127) / 255;
-        self.pixels[idx] = (r << 16) | (g << 8) | b;
-    }
-
-    /// Fast horizontal span fill for opaque or semi-transparent interior rows.
-    #[inline]
-    pub(crate) fn blend_span(&mut self, y: i32, x0: i32, x1: i32, color: ColorRgba, opacity: f32) {
-        if y < 0 || y >= self.height as i32 || x1 <= x0 {
-            return;
-        }
-        let start = x0.max(0) as usize;
-        let end = x1.min(self.width as i32).max(0) as usize;
-        if start >= end {
-            return;
-        }
-        let eff_a = ((color.a as f32) * opacity.clamp(0.0, 1.0)).round() as u32;
-        if eff_a == 0 {
-            return;
-        }
-        let row_offset = (y as usize) * (self.width as usize);
-        let slice = &mut self.pixels[row_offset + start..row_offset + end];
-        if eff_a >= 255 {
-            slice.fill(Self::pack_rgb(color.r, color.g, color.b));
-        } else {
-            let sr = color.r as u32 * eff_a;
-            let sg = color.g as u32 * eff_a;
-            let sb = color.b as u32 * eff_a;
-            let inv_a = 255 - eff_a;
-            for px in slice.iter_mut() {
-                let dst = *px;
-                let dr = (dst >> 16) & 0xFF;
-                let dg = (dst >> 8) & 0xFF;
-                let db = dst & 0xFF;
-                let r = (sr + dr * inv_a + 127) / 255;
-                let g = (sg + dg * inv_a + 127) / 255;
-                let b = (sb + db * inv_a + 127) / 255;
-                *px = (r << 16) | (g << 8) | b;
-            }
-        }
-    }
-}
 
 pub(crate) fn fill_rounded_rect(
     buf: &mut PixelBuffer,
@@ -391,9 +250,11 @@ fn rasterize_display_list_inner(
     let mut opacity_stack: Vec<f32> = Vec::with_capacity(8);
     opacity_stack.push(1.0);
     let mut clip_stack = ClipStack::new(buffer.width(), buffer.height());
+    let mut transform_stack = TransformStack::new();
 
     for op in &display_list.ops {
         let cur_opacity = *opacity_stack.last().unwrap_or(&1.0);
+        let is_tf = !transform_stack.is_identity();
         match op {
             PaintOp::SaveOpacity(alpha) => {
                 opacity_stack.push(cur_opacity * alpha.clamp(0.0, 1.0));
@@ -404,10 +265,21 @@ fn rasterize_display_list_inner(
                 }
             }
             PaintOp::PushClip { rect, radius } => {
-                clip_stack.push(scale_rect(*rect, scale), radius * scale);
+                let eff = if is_tf {
+                    map_logical_rect_approx(transform_stack.current(), *rect, scale)
+                } else {
+                    *rect
+                };
+                clip_stack.push(scale_rect(eff, scale), radius * scale);
             }
             PaintOp::PopClip => {
                 clip_stack.pop();
+            }
+            PaintOp::PushTransform { matrix } => {
+                transform_stack.push_logical(*matrix, scale);
+            }
+            PaintOp::PopTransform => {
+                transform_stack.pop();
             }
             PaintOp::DrawShadow {
                 rect,
@@ -418,10 +290,15 @@ fn rasterize_display_list_inner(
                 spread_radius,
                 color,
             } => {
+                let eff = if is_tf {
+                    map_logical_rect_approx(transform_stack.current(), *rect, scale)
+                } else {
+                    *rect
+                };
                 draw_box_shadow(
                     buffer,
                     &clip_stack,
-                    scale_rect(*rect, scale),
+                    scale_rect(eff, scale),
                     radius * scale,
                     offset_x * scale,
                     offset_y * scale,
@@ -436,14 +313,26 @@ fn rasterize_display_list_inner(
                 radius,
                 color,
             } => {
-                fill_rounded_rect(
-                    buffer,
-                    &clip_stack,
-                    scale_rect(*rect, scale),
-                    radius * scale,
-                    *color,
-                    cur_opacity,
-                );
+                if is_tf {
+                    fill_rounded_rect_transformed(
+                        buffer,
+                        &clip_stack,
+                        transform_stack.current(),
+                        scale_rect(*rect, scale),
+                        radius * scale,
+                        *color,
+                        cur_opacity,
+                    );
+                } else {
+                    fill_rounded_rect(
+                        buffer,
+                        &clip_stack,
+                        scale_rect(*rect, scale),
+                        radius * scale,
+                        *color,
+                        cur_opacity,
+                    );
+                }
             }
             PaintOp::StrokeRoundedRect {
                 rect,
@@ -451,15 +340,30 @@ fn rasterize_display_list_inner(
                 width,
                 color,
             } => {
-                stroke_rounded_rect(
-                    buffer,
-                    &clip_stack,
-                    scale_rect(*rect, scale),
-                    radius * scale,
-                    width * scale,
-                    *color,
-                    cur_opacity,
-                );
+                if is_tf {
+                    stroke_rounded_rect_transformed(
+                        buffer,
+                        &clip_stack,
+                        transform_stack.current(),
+                        TransformedStroke {
+                            rect: scale_rect(*rect, scale),
+                            radius: radius * scale,
+                            width: width * scale,
+                            color: *color,
+                            opacity: cur_opacity,
+                        },
+                    );
+                } else {
+                    stroke_rounded_rect(
+                        buffer,
+                        &clip_stack,
+                        scale_rect(*rect, scale),
+                        radius * scale,
+                        width * scale,
+                        *color,
+                        cur_opacity,
+                    );
+                }
             }
             PaintOp::DrawText {
                 rect,
@@ -472,11 +376,16 @@ fn rasterize_display_list_inner(
                 if clip_stack.is_empty() {
                     continue;
                 }
+                let eff = if is_tf {
+                    map_logical_rect_approx(transform_stack.current(), *rect, scale)
+                } else {
+                    *rect
+                };
                 let phys_clip = Some(clip_stack.bounds());
                 if let Some(engine) = text_engine {
                     engine.rasterize_text_styled_clipped(
                         buffer,
-                        *rect,
+                        eff,
                         text,
                         *font_size,
                         *font_weight,
@@ -489,7 +398,7 @@ fn rasterize_display_list_inner(
                 } else {
                     draw_bitmap_text(
                         buffer,
-                        scale_rect(*rect, scale),
+                        scale_rect(eff, scale),
                         text,
                         font_size * scale,
                         *font_weight,
@@ -506,10 +415,15 @@ fn rasterize_display_list_inner(
                 src,
                 resize_mode,
             } => {
+                let eff = if is_tf {
+                    map_logical_rect_approx(transform_stack.current(), *rect, scale)
+                } else {
+                    *rect
+                };
                 draw_image(
                     buffer,
                     &clip_stack,
-                    *rect,
+                    eff,
                     *radius,
                     src,
                     *resize_mode,
@@ -518,7 +432,12 @@ fn rasterize_display_list_inner(
                 );
             }
             PaintOp::CustomSkiaCanvas { rect, ops, .. } => {
-                execute_canvas_ops(buffer, &mut clip_stack, *rect, ops, scale, cur_opacity);
+                let eff = if is_tf {
+                    map_logical_rect_approx(transform_stack.current(), *rect, scale)
+                } else {
+                    *rect
+                };
+                execute_canvas_ops(buffer, &mut clip_stack, eff, ops, scale, cur_opacity);
             }
         }
     }

@@ -5,15 +5,22 @@
 //! reparsing round-trip on hot UI render paths while staying 100% compatible with optional
 //! inline `style: "..."` user overrides.
 
+mod layout_ext;
+
 use std::borrow::Cow;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
-use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps, StyleProps};
+use nve_abi::{
+    ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
+    StyleProps,
+};
 use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
+use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
 use nve_components::style_patch::StylePatch;
+use nve_components::transform::Transform2D;
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
 pub const NVE_TYPED_STYLE_ATTR: &str = "nve_style";
@@ -43,8 +50,9 @@ impl IntoAttributeValue for ShowOn {
 /// Direct binary layout + visual style payload forwarded via Dioxus `AttributeValue::Any`.
 ///
 /// Copies `LayoutProps`, `StyleProps`, optional raw style fields (`font-weight`, `text-align`,
-/// `box-shadow`, `overflow`, `object-fit`), and optional responsive `@media` visibility/rules
-/// straight into `NodeRecord` inside `NveMutationWriter` without formatting or parsing any CSS.
+/// `box-shadow`, `overflow`, `object-fit`), lazy extended layout (`LayoutExt`), `Transform2D`,
+/// and optional responsive `@media` / interactive pseudo-state / transition rules straight into
+/// `NodeRecord` inside `NveMutationWriter` without formatting or parsing any CSS.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
     pub layout: LayoutProps,
@@ -56,6 +64,8 @@ pub struct TypedStyle {
     pub box_shadow: Option<Cow<'static, str>>,
     pub overflow: Option<Cow<'static, str>>,
     pub object_fit: Option<Cow<'static, str>>,
+    pub layout_ext: Option<Box<LayoutExt>>,
+    pub transform: Option<Transform2D>,
     pub show_on: Option<MediaQuery>,
     pub responsive: Vec<ResponsiveRule>,
     pub cursor: Option<CursorKind>,
@@ -85,6 +95,8 @@ impl TypedStyle {
             box_shadow: None,
             overflow: None,
             object_fit: None,
+            layout_ext: None,
+            transform: None,
             show_on: None,
             responsive: Vec::new(),
             cursor: None,
@@ -94,8 +106,14 @@ impl TypedStyle {
     }
 
     #[inline]
-    fn sanitize(v: f32) -> f32 {
+    pub(super) fn sanitize(v: f32) -> f32 {
         if v.is_finite() { v } else { 0.0 }
+    }
+
+    #[inline]
+    pub(super) fn ext_mut(&mut self) -> &mut LayoutExt {
+        self.layout_ext
+            .get_or_insert_with(|| Box::new(LayoutExt::default()))
     }
 
     // --- Layout dimensions ---
@@ -311,7 +329,8 @@ impl TypedStyle {
 
     #[inline]
     pub fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
-        self.layout.margin = EdgeInsets::symmetric(Self::sanitize(vertical), Self::sanitize(horizontal));
+        self.layout.margin =
+            EdgeInsets::symmetric(Self::sanitize(vertical), Self::sanitize(horizontal));
         self.has_layout = true;
         self
     }
@@ -443,22 +462,18 @@ impl TypedStyle {
 
     // --- Declarative responsive visibility & `@media` style rules ---
 
-    /// Declares that this node is visible only when `query` matches (stored directly as an
-    /// 8-byte `#[repr(C)]` [`MediaQuery`] on `NodeRecord` with zero serialization).
     #[inline]
     pub fn show_on(mut self, query: MediaQuery) -> Self {
         self.show_on = Some(query);
         self
     }
 
-    /// Appends a conditional [`ResponsiveRule`] applying `patch` whenever `query` matches.
     #[inline]
     pub fn at(mut self, query: MediaQuery, patch: StylePatch) -> Self {
         self.responsive.push(ResponsiveRule::new(query, patch));
         self
     }
 
-    /// Builder-closure variant of [`Self::at`] for inline patch construction.
     #[inline]
     pub fn at_with(
         self,
@@ -468,19 +483,16 @@ impl TypedStyle {
         self.at(query, build(StylePatch::new()))
     }
 
-    /// Shorthand for `.at(MediaQuery::compact(), patch)` (`< 600pt`).
     #[inline]
     pub fn on_compact(self, patch: StylePatch) -> Self {
         self.at(MediaQuery::compact(), patch)
     }
 
-    /// Shorthand for `.at(MediaQuery::medium(), patch)` (`600..1024pt`).
     #[inline]
     pub fn on_medium(self, patch: StylePatch) -> Self {
         self.at(MediaQuery::medium(), patch)
     }
 
-    /// Shorthand for `.at(MediaQuery::expanded(), patch)` (`>= 1024pt`).
     #[inline]
     pub fn on_expanded(self, patch: StylePatch) -> Self {
         self.at(MediaQuery::expanded(), patch)
@@ -488,21 +500,18 @@ impl TypedStyle {
 
     // --- Interactive pseudo-state rules & typed pointer cursor ---
 
-    /// Sets the base pointer cursor icon for this node (zero serialization).
     #[inline]
     pub fn cursor(mut self, cursor: CursorKind) -> Self {
         self.cursor = Some(cursor);
         self
     }
 
-    /// Appends a conditional [`StateStyleRule`] applying `patch` whenever `state` is active.
     #[inline]
     pub fn on_state(mut self, state: InteractionState, patch: StylePatch) -> Self {
         self.state_rules.push(StateStyleRule::new(state, patch));
         self
     }
 
-    /// Builder-closure variant of [`Self::on_state`].
     #[inline]
     pub fn on_state_with(
         self,
@@ -512,61 +521,51 @@ impl TypedStyle {
         self.on_state(state, build(StylePatch::new()))
     }
 
-    /// Shorthand for `.on_state(InteractionState::HOVER, patch)`.
     #[inline]
     pub fn on_hover(self, patch: StylePatch) -> Self {
         self.on_state(InteractionState::HOVER, patch)
     }
 
-    /// Builder-closure shorthand for `:hover`.
     #[inline]
     pub fn on_hover_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
         self.on_state_with(InteractionState::HOVER, build)
     }
 
-    /// Shorthand for `.on_state(InteractionState::ACTIVE, patch)`.
     #[inline]
     pub fn on_active(self, patch: StylePatch) -> Self {
         self.on_state(InteractionState::ACTIVE, patch)
     }
 
-    /// Builder-closure shorthand for `:active`.
     #[inline]
     pub fn on_active_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
         self.on_state_with(InteractionState::ACTIVE, build)
     }
 
-    /// Shorthand for `.on_state(InteractionState::FOCUS, patch)`.
     #[inline]
     pub fn on_focus(self, patch: StylePatch) -> Self {
         self.on_state(InteractionState::FOCUS, patch)
     }
 
-    /// Builder-closure shorthand for `:focus`.
     #[inline]
     pub fn on_focus_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
         self.on_state_with(InteractionState::FOCUS, build)
     }
 
-    /// Shorthand for `.on_state(InteractionState::FOCUS_VISIBLE, patch)`.
     #[inline]
     pub fn on_focus_visible(self, patch: StylePatch) -> Self {
         self.on_state(InteractionState::FOCUS_VISIBLE, patch)
     }
 
-    /// Builder-closure shorthand for `:focus-visible`.
     #[inline]
     pub fn on_focus_visible_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
         self.on_state_with(InteractionState::FOCUS_VISIBLE, build)
     }
 
-    /// Shorthand for `.on_state(InteractionState::DISABLED, patch)`.
     #[inline]
     pub fn on_disabled(self, patch: StylePatch) -> Self {
         self.on_state(InteractionState::DISABLED, patch)
     }
 
-    /// Builder-closure shorthand for `:disabled`.
     #[inline]
     pub fn on_disabled_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
         self.on_state_with(InteractionState::DISABLED, build)
@@ -574,15 +573,12 @@ impl TypedStyle {
 
     // --- Declarative style transitions ---
 
-    /// Appends a declarative [`TransitionSpec`] (zero serialization: native CSS `transition:` on
-    /// Web, `MotionDriver` interpolation on Skia/native).
     #[inline]
     pub fn transition(mut self, spec: TransitionSpec) -> Self {
         self.transitions.push(spec);
         self
     }
 
-    /// Appends a slice of declarative [`TransitionSpec`]s in order.
     #[inline]
     pub fn transitions(mut self, specs: &[TransitionSpec]) -> Self {
         self.transitions.extend_from_slice(specs);

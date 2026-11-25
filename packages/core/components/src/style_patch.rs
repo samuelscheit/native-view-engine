@@ -10,13 +10,19 @@ use nve_abi::{
 };
 
 use crate::interaction::CursorKind;
+use crate::layout_ext::{
+    GridTrack, GridTrackPlacement, LayoutDirection, LayoutExt, PositionMode,
+};
+use crate::transform::Transform2D;
 
-/// Strictly typed `display` override for [`StylePatch`].
+/// Strictly typed `display` mode shared by [`LayoutExt`] and [`StylePatch`].
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Display {
+    #[default]
     Flex = 0,
     None = 1,
+    Grid = 2,
 }
 
 impl Display {
@@ -25,6 +31,7 @@ impl Display {
         match self {
             Self::Flex => "flex",
             Self::None => "none",
+            Self::Grid => "grid",
         }
     }
 }
@@ -96,14 +103,33 @@ impl TextAlign {
 /// Sparse, strictly typed layout, visual style, and cursor overrides shared by both responsive
 /// `@media` rules and interactive pseudo-state rules (`:hover`, `:focus`, `:focus-visible`,
 /// `:active`, `:disabled`).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct StylePatch {
     pub flex_direction: Option<FlexDirection>,
     pub justify_content: Option<FlexJustify>,
     pub align_items: Option<FlexAlign>,
     pub flex_grow: Option<f32>,
     pub flex_shrink: Option<f32>,
+    pub flex_basis: Option<Dimension>,
+    pub aspect_ratio: Option<f32>,
+    pub position: Option<PositionMode>,
+    pub inset_top: Option<Dimension>,
+    pub inset_right: Option<Dimension>,
+    pub inset_bottom: Option<Dimension>,
+    pub inset_left: Option<Dimension>,
     pub gap: Option<f32>,
+    pub column_gap: Option<f32>,
+    pub row_gap: Option<f32>,
+    pub grid_template_columns: Option<Box<[GridTrack]>>,
+    pub grid_template_rows: Option<Box<[GridTrack]>>,
+    pub grid_column: Option<GridTrackPlacement>,
+    pub grid_row: Option<GridTrackPlacement>,
+    pub direction: Option<LayoutDirection>,
+    pub padding_inline_start: Option<f32>,
+    pub padding_inline_end: Option<f32>,
+    pub margin_inline_start: Option<f32>,
+    pub margin_inline_end: Option<f32>,
+    pub transform: Option<Transform2D>,
     pub width: Option<Dimension>,
     pub height: Option<Dimension>,
     pub min_width: Option<Dimension>,
@@ -137,7 +163,26 @@ impl StylePatch {
             align_items: None,
             flex_grow: None,
             flex_shrink: None,
+            flex_basis: None,
+            aspect_ratio: None,
+            position: None,
+            inset_top: None,
+            inset_right: None,
+            inset_bottom: None,
+            inset_left: None,
             gap: None,
+            column_gap: None,
+            row_gap: None,
+            grid_template_columns: None,
+            grid_template_rows: None,
+            grid_column: None,
+            grid_row: None,
+            direction: None,
+            padding_inline_start: None,
+            padding_inline_end: None,
+            margin_inline_start: None,
+            margin_inline_end: None,
+            transform: None,
             width: None,
             height: None,
             min_width: None,
@@ -170,7 +215,26 @@ impl StylePatch {
             && self.align_items.is_none()
             && self.flex_grow.is_none()
             && self.flex_shrink.is_none()
+            && self.flex_basis.is_none()
+            && self.aspect_ratio.is_none()
+            && self.position.is_none()
+            && self.inset_top.is_none()
+            && self.inset_right.is_none()
+            && self.inset_bottom.is_none()
+            && self.inset_left.is_none()
             && self.gap.is_none()
+            && self.column_gap.is_none()
+            && self.row_gap.is_none()
+            && self.grid_template_columns.is_none()
+            && self.grid_template_rows.is_none()
+            && self.grid_column.is_none()
+            && self.grid_row.is_none()
+            && self.direction.is_none()
+            && self.padding_inline_start.is_none()
+            && self.padding_inline_end.is_none()
+            && self.margin_inline_start.is_none()
+            && self.margin_inline_end.is_none()
+            && self.transform.is_none()
             && self.width.is_none()
             && self.height.is_none()
             && self.min_width.is_none()
@@ -247,7 +311,34 @@ impl StylePatch {
     #[inline] pub fn text_align(mut self, align: TextAlign) -> Self { self.text_align = Some(align); self }
     #[inline] pub fn font_weight(mut self, weight: u16) -> Self { self.font_weight = Some(weight.clamp(1, 1000)); self }
     #[inline] pub fn display(mut self, display: Display) -> Self { self.display = Some(display); self }
+    #[inline] pub fn display_grid(self) -> Self { self.display(Display::Grid) }
     #[inline] pub fn cursor(mut self, cursor: CursorKind) -> Self { self.cursor = Some(cursor); self }
+    #[inline] pub fn flex_basis(mut self, d: Dimension) -> Self { self.flex_basis = Some(d); self }
+    #[inline] pub fn flex_basis_px(self, v: f32) -> Self { self.flex_basis(Dimension::Points(Self::sanitize(v).max(0.0))) }
+    #[inline] pub fn flex_basis_pct(self, v: f32) -> Self { self.flex_basis(Dimension::Percent(Self::sanitize(v).clamp(0.0, 100.0))) }
+    #[inline] pub fn aspect_ratio(mut self, ratio: f32) -> Self { if ratio.is_finite() && ratio > 0.0 { self.aspect_ratio = Some(ratio); } self }
+    #[inline] pub fn position(mut self, mode: PositionMode) -> Self { self.position = Some(mode); self }
+    #[inline] pub fn inset_top(mut self, d: Dimension) -> Self { self.inset_top = Some(d); self }
+    #[inline] pub fn inset_right(mut self, d: Dimension) -> Self { self.inset_right = Some(d); self }
+    #[inline] pub fn inset_bottom(mut self, d: Dimension) -> Self { self.inset_bottom = Some(d); self }
+    #[inline] pub fn inset_left(mut self, d: Dimension) -> Self { self.inset_left = Some(d); self }
+    #[inline] pub fn column_gap(mut self, v: f32) -> Self { self.column_gap = Some(Self::sanitize(v).max(0.0)); self }
+    #[inline] pub fn row_gap(mut self, v: f32) -> Self { self.row_gap = Some(Self::sanitize(v).max(0.0)); self }
+    #[inline] pub fn grid_cols(mut self, tracks: impl Into<Vec<GridTrack>>) -> Self { self.grid_template_columns = Some(tracks.into().into_boxed_slice()); self }
+    #[inline] pub fn grid_rows(mut self, tracks: impl Into<Vec<GridTrack>>) -> Self { self.grid_template_rows = Some(tracks.into().into_boxed_slice()); self }
+    #[inline] pub fn grid_column(mut self, p: GridTrackPlacement) -> Self { self.grid_column = Some(p); self }
+    #[inline] pub fn grid_row(mut self, p: GridTrackPlacement) -> Self { self.grid_row = Some(p); self }
+    #[inline] pub fn grid_column_span(self, span: u16) -> Self { self.grid_column(GridTrackPlacement::span(span)) }
+    #[inline] pub fn grid_row_span(self, span: u16) -> Self { self.grid_row(GridTrackPlacement::span(span)) }
+    #[inline] pub fn direction(mut self, dir: LayoutDirection) -> Self { self.direction = Some(dir); self }
+    #[inline] pub fn padding_inline_start(mut self, v: f32) -> Self { self.padding_inline_start = Some(Self::sanitize(v).max(0.0)); self }
+    #[inline] pub fn padding_inline_end(mut self, v: f32) -> Self { self.padding_inline_end = Some(Self::sanitize(v).max(0.0)); self }
+    #[inline] pub fn margin_inline_start(mut self, v: f32) -> Self { self.margin_inline_start = Some(Self::sanitize(v)); self }
+    #[inline] pub fn margin_inline_end(mut self, v: f32) -> Self { self.margin_inline_end = Some(Self::sanitize(v)); self }
+    #[inline] pub fn transform(mut self, tf: Transform2D) -> Self { self.transform = Some(tf); self }
+    #[inline] pub fn translate(mut self, x: f32, y: f32) -> Self { let tf = self.transform.unwrap_or(Transform2D::IDENTITY).with_translate(x, y); self.transform = Some(tf); self }
+    #[inline] pub fn scale(mut self, s: f32) -> Self { let tf = self.transform.unwrap_or(Transform2D::IDENTITY).with_scale(s); self.transform = Some(tf); self }
+    #[inline] pub fn rotate(mut self, deg: f32) -> Self { let tf = self.transform.unwrap_or(Transform2D::IDENTITY).with_rotate(deg); self.transform = Some(tf); self }
 
     /// Merges all populated fields from `other` on top of `self` (last-writer-wins cascade).
     pub fn merge(&mut self, other: &Self) {
@@ -256,7 +347,26 @@ impl StylePatch {
         if other.align_items.is_some() { self.align_items = other.align_items; }
         if other.flex_grow.is_some() { self.flex_grow = other.flex_grow; }
         if other.flex_shrink.is_some() { self.flex_shrink = other.flex_shrink; }
+        if other.flex_basis.is_some() { self.flex_basis = other.flex_basis; }
+        if other.aspect_ratio.is_some() { self.aspect_ratio = other.aspect_ratio; }
+        if other.position.is_some() { self.position = other.position; }
+        if other.inset_top.is_some() { self.inset_top = other.inset_top; }
+        if other.inset_right.is_some() { self.inset_right = other.inset_right; }
+        if other.inset_bottom.is_some() { self.inset_bottom = other.inset_bottom; }
+        if other.inset_left.is_some() { self.inset_left = other.inset_left; }
         if other.gap.is_some() { self.gap = other.gap; }
+        if other.column_gap.is_some() { self.column_gap = other.column_gap; }
+        if other.row_gap.is_some() { self.row_gap = other.row_gap; }
+        if let Some(ref cols) = other.grid_template_columns { self.grid_template_columns = Some(cols.clone()); }
+        if let Some(ref rows) = other.grid_template_rows { self.grid_template_rows = Some(rows.clone()); }
+        if other.grid_column.is_some() { self.grid_column = other.grid_column; }
+        if other.grid_row.is_some() { self.grid_row = other.grid_row; }
+        if other.direction.is_some() { self.direction = other.direction; }
+        if other.padding_inline_start.is_some() { self.padding_inline_start = other.padding_inline_start; }
+        if other.padding_inline_end.is_some() { self.padding_inline_end = other.padding_inline_end; }
+        if other.margin_inline_start.is_some() { self.margin_inline_start = other.margin_inline_start; }
+        if other.margin_inline_end.is_some() { self.margin_inline_end = other.margin_inline_end; }
+        if other.transform.is_some() { self.transform = other.transform; }
         if other.width.is_some() { self.width = other.width; }
         if other.height.is_some() { self.height = other.height; }
         if other.min_width.is_some() { self.min_width = other.min_width; }
@@ -279,6 +389,29 @@ impl StylePatch {
         if other.font_weight.is_some() { self.font_weight = other.font_weight; }
         if other.display.is_some() { self.display = other.display; }
         if other.cursor.is_some() { self.cursor = other.cursor; }
+    }
+
+    /// Applies extended layout overrides (grid, flex-basis, aspect-ratio, position, RTL) onto `ext`.
+    pub fn apply_layout_ext_to(&self, ext: &mut LayoutExt) {
+        if let Some(d) = self.display { ext.display = d; }
+        if let Some(fb) = self.flex_basis { ext.flex_basis = fb; }
+        if let Some(ar) = self.aspect_ratio { ext.aspect_ratio = Some(ar); }
+        if let Some(pos) = self.position { ext.position = pos; }
+        if let Some(v) = self.inset_top { ext.insets.top = v; }
+        if let Some(v) = self.inset_right { ext.insets.right = v; }
+        if let Some(v) = self.inset_bottom { ext.insets.bottom = v; }
+        if let Some(v) = self.inset_left { ext.insets.left = v; }
+        if let Some(cg) = self.column_gap { ext.grid_mut().column_gap = Some(cg); }
+        if let Some(rg) = self.row_gap { ext.grid_mut().row_gap = Some(rg); }
+        if let Some(ref cols) = self.grid_template_columns { ext.grid_mut().template_columns = cols.to_vec(); }
+        if let Some(ref rows) = self.grid_template_rows { ext.grid_mut().template_rows = rows.to_vec(); }
+        if let Some(gc) = self.grid_column { ext.grid_item.column = gc; }
+        if let Some(gr) = self.grid_row { ext.grid_item.row = gr; }
+        if let Some(dir) = self.direction { ext.direction = Some(dir); }
+        if let Some(v) = self.padding_inline_start { ext.padding_inline.start = Some(v); }
+        if let Some(v) = self.padding_inline_end { ext.padding_inline.end = Some(v); }
+        if let Some(v) = self.margin_inline_start { ext.margin_inline.start = Some(v); }
+        if let Some(v) = self.margin_inline_end { ext.margin_inline.end = Some(v); }
     }
 
     /// Applies all present visual style overrides onto `style` (paint-only fast path).

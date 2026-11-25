@@ -7,6 +7,7 @@ pub mod client_hints;
 pub mod input_hints;
 pub mod interaction;
 pub mod keyboard;
+pub mod layout_ext;
 pub mod media;
 pub mod motion;
 pub mod motion_clock;
@@ -16,6 +17,7 @@ pub mod reconcile;
 pub mod spring;
 pub mod style_patch;
 mod tracker;
+pub mod transform;
 
 pub use canvas_ir::{
     CanvasOp, DrawListBuilder, DrawListDecoder, DrawListError, DrawListHeader, ImageResizeMode,
@@ -51,7 +53,15 @@ pub use reconcile::{
 pub use spring::{
     MotionPreference, SpringSpec, SpringState, DEFAULT_REST_DISPLACEMENT, DEFAULT_REST_VELOCITY,
 };
+pub use layout_ext::{
+    compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
+    GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
+    PositionInsets, PositionMode,
+};
 pub use style_patch::{Display, FlexWrap, Overflow, StylePatch, TextAlign};
+pub use transform::{
+    affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
+};
 
 use nve_abi::num::parse_f32;
 use nve_abi::{

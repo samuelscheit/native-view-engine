@@ -6,8 +6,10 @@
 
 mod frame;
 mod interaction;
+mod layout_ext;
 pub mod slot_map;
 pub mod taffy_engine;
+pub mod taffy_style;
 mod validate;
 
 use std::collections::HashMap;
@@ -25,10 +27,18 @@ use nve_engine::{
 pub use nve_components::interaction::{
     CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
+pub use nve_components::layout_ext::{
+    compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
+    GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
+    PositionInsets, PositionMode,
+};
 pub use nve_components::style_patch::{Display, StylePatch};
+pub use nve_components::transform::Transform2D;
 pub use slot_map::{NodeSlotMap, DENSE_SLOT_LIMIT};
 use slot_map::VisitStamps;
-pub use taffy_engine::{to_taffy_dim, to_taffy_lpa, to_taffy_style, TaffyLayoutEngine};
+pub use taffy_engine::{
+    to_taffy_dim, to_taffy_lpa, to_taffy_style, to_taffy_style_with_ext, TaffyLayoutEngine,
+};
 use validate::fmt_node;
 
 pub(crate) const MAX_TREE_DEPTH: usize = 512;
@@ -40,6 +50,8 @@ pub struct HeadlessNode {
     pub custom_name: Option<String>,
     pub text: Option<Arc<str>>,
     pub layout: LayoutProps,
+    pub layout_ext: Option<Box<LayoutExt>>,
+    pub transform: Option<Transform2D>,
     pub style: StyleProps,
     pub has_explicit_style: bool,
     pub raw_props: HashMap<String, RawPropValue>,
@@ -80,6 +92,7 @@ pub struct HeadlessBackend<L: LayoutEngine = TaffyLayoutEngine> {
     pub(crate) has_nested_text: bool,
     pub(crate) visit_stamps: VisitStamps,
     pub(crate) interaction: InteractionTracker,
+    pub(crate) scroll_offsets: HashMap<NodeId, (f32, f32)>,
     pub(crate) scratch_children: Vec<NodeId>,
     pub(crate) scratch_old_children: Vec<NodeId>,
     pub(crate) scratch_prev_parents: Vec<NodeId>,
@@ -121,6 +134,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             has_nested_text: false,
             visit_stamps: VisitStamps::new(),
             interaction: InteractionTracker::new(),
+            scroll_offsets: HashMap::new(),
             scratch_children: Vec::new(),
             scratch_old_children: Vec::new(),
             scratch_prev_parents: Vec::new(),
@@ -176,6 +190,9 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         for node in self.nodes.values() {
             next.upsert_node(node.id, node.kind);
             next.set_layout(node.id, &node.layout);
+            if node.layout_ext.is_some() {
+                next.set_layout_ext(node.id, node.layout_ext.as_deref());
+            }
             next.set_style(node.id, &node.style);
             if let Some(text) = node.text.as_deref() {
                 next.set_text(node.id, text);
@@ -200,6 +217,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             has_nested_text: self.has_nested_text,
             visit_stamps: self.visit_stamps,
             interaction: self.interaction,
+            scroll_offsets: self.scroll_offsets,
             scratch_children: self.scratch_children,
             scratch_old_children: self.scratch_old_children,
             scratch_prev_parents: self.scratch_prev_parents,
@@ -243,8 +261,9 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
 
     /// Hit-tests the committed layout tree in reverse paint order, returning the deepest node
     /// containing `(x, y)` (preferring nodes that subscribe to events if `interactive_only`).
+    /// Accounts for scroll offsets, `position: sticky` clamping, and `Transform2D` inverse mapping.
     pub fn hit_test(&self, x: f32, y: f32, interactive_only: bool) -> Option<NodeId> {
-        self.hit_test_rec(ROOT_NODE_ID, x, y, interactive_only, 0)
+        self.hit_test_rec(ROOT_NODE_ID, x, y, (0.0, 0.0), interactive_only, 0)
     }
 
     fn hit_test_rec(
@@ -252,6 +271,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         id: NodeId,
         x: f32,
         y: f32,
+        offset: (f32, f32),
         interactive_only: bool,
         depth: usize,
     ) -> Option<NodeId> {
@@ -259,13 +279,34 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             return None;
         }
         let node = self.nodes.get(id)?;
-        let r = node.computed_rect;
-        let inside = x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
-        if !inside && id != ROOT_NODE_ID {
+        if node.layout_ext.as_deref().is_some_and(|e| e.display == Display::None) {
             return None;
         }
+        let (stx, sty) = self.compute_sticky_delta(id, &self.scroll_offsets);
+        let node_offset = (offset.0 + stx, offset.1 + sty);
+        let r = LayoutRect {
+            x: node.computed_rect.x + node_offset.0,
+            y: node.computed_rect.y + node_offset.1,
+            width: node.computed_rect.width,
+            height: node.computed_rect.height,
+        };
+        let (px, py) = if let Some(tf) = self.effective_transform(id)
+            && !tf.is_identity()
+        {
+            tf.inverse_map_surface_point(x, y, r.x, r.y, r.width, r.height)?
+        } else {
+            (x, y)
+        };
+        let inside = px >= r.x && px <= r.x + r.width && py >= r.y && py <= r.y + r.height;
+        if !inside && id != ROOT_NODE_ID && layout_ext::node_clips_overflow(node) {
+            return None;
+        }
+        let (sx, sy) = self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
+        let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
         for &child in node.children.iter().rev() {
-            if let Some(hit) = self.hit_test_rec(child, x, y, interactive_only, depth + 1) {
+            if let Some(hit) =
+                self.hit_test_rec(child, px, py, child_offset, interactive_only, depth + 1)
+            {
                 return Some(hit);
             }
         }
@@ -318,6 +359,8 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                 custom_name: custom_name.map(ToOwned::to_owned),
                 text: None,
                 layout: LayoutProps::default(),
+                layout_ext: None,
+                transform: None,
                 style: StyleProps::default(),
                 has_explicit_style: false,
                 raw_props: HashMap::new(),

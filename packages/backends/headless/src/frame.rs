@@ -76,6 +76,7 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                     }
                     self.layout.remove_node(node_id);
                     self.prev_rects.remove(node_id);
+                    self.scroll_offsets.remove(&node_id);
                     let _ = self.interaction.remove_node(node_id);
                     if track_mutations {
                         self.last_mutations.push(HeadlessMutation::Remove(node_id));
