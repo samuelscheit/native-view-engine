@@ -1,8 +1,12 @@
 //! Deep unit, validation, determinism, cross-language Rust <-> C++20 real-compiler execution,
 //! and adversarial security tests for NVE's zero-copy `RelocSlice` & `VerifyMode` codegen.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
+
+use common::{compile_and_run_cpp20, tool_available};
 
 use nve_codegen::{
     generate_reloc_all, generate_reloc_cpp, generate_reloc_rust, CodegenError, RelocEnum,
@@ -18,13 +22,6 @@ fn temp_test_dir(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
-}
-
-fn tool_available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
 }
 
 /// Realistic multi-struct schema exercising:
@@ -268,7 +265,6 @@ fn rejects_invalid_reloc_schemas() {
 #[test]
 fn real_compiler_rust_and_cpp20_round_trip_and_adversarial_security() {
     assert!(tool_available("rustc"), "rustc must be available");
-    assert!(tool_available("clang++"), "clang++ must be available");
 
     let dir = temp_test_dir("roundtrip");
     let schema = realistic_asset_pack_schema();
@@ -733,29 +729,7 @@ int main() {{
     )
     .unwrap();
 
-    let cpp_exe = dir.join("cpp_reloc_driver");
-    let clang_out = Command::new("clang++")
-        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])
-        .arg(format!("-I{}", dir.display()))
-        .arg(&cpp_driver)
-        .arg("-o")
-        .arg(&cpp_exe)
-        .output()
-        .expect("run clang++");
-    assert!(
-        clang_out.status.success(),
-        "clang++ -std=c++20 -Wall -Wextra -Werror failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&clang_out.stdout),
-        String::from_utf8_lossy(&clang_out.stderr)
-    );
-
-    let cpp_run = Command::new(&cpp_exe).output().expect("execute cpp driver");
-    assert!(
-        cpp_run.status.success(),
-        "cpp reloc driver failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&cpp_run.stdout),
-        String::from_utf8_lossy(&cpp_run.stderr)
-    );
+    compile_and_run_cpp20(&cpp_driver, "cpp_reloc_driver", &[&dir], &dir);
 
     assert_eq!(RELOC_HEADER_SIZE, 32);
     let _ = std::fs::remove_dir_all(&dir);

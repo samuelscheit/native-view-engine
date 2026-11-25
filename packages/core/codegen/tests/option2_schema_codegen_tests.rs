@@ -5,8 +5,12 @@
 //! `clang -std=c11 -Wall -Wextra -Werror`, `clang++ -std=c++20 -Wall -Wextra -Werror`, and
 //! `rustc --edition=2024 -D warnings`.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use common::{check_c11_syntax, compile_and_run_cpp20, tool_available};
 
 use nve_codegen::{
     generate_hybrid_target, generate_reloc_all, HybridEnumSpec, HybridEnumVariant,
@@ -34,13 +38,6 @@ fn temp_test_dir(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
-}
-
-fn tool_available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
 }
 
 fn field(name: &str, ty: HybridType, offset: Option<usize>, offset_64: Option<usize>) -> HybridFieldSpec {
@@ -800,8 +797,6 @@ fn option2_draw_ops_and_host_services_validate_and_hash_deterministically() {
 
 #[test]
 fn option2_draw_ops_and_host_services_compile_under_c11_cpp20_and_rust2024() {
-    assert!(tool_available("clang"), "clang must be available");
-    assert!(tool_available("clang++"), "clang++ must be available");
     assert!(tool_available("rustc"), "rustc must be available");
 
     let dir = temp_test_dir("compile");
@@ -846,19 +841,7 @@ uint64_t _check_hashes(void) {
     )
     .unwrap();
 
-    let c11 = Command::new("clang")
-        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-        .arg(format!("-I{}", nve_inc.display()))
-        .arg(format!("-I{}", dir.display()))
-        .arg(&c_driver)
-        .output()
-        .expect("run clang -std=c11");
-    assert!(
-        c11.status.success(),
-        "C11 compile failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&c11.stdout),
-        String::from_utf8_lossy(&c11.stderr)
-    );
+    check_c11_syntax(&c_driver, &[&nve_inc, &dir], &dir);
 
     // 2. Compile AND execute a C++20 binary exercising both Hybrid C++20 headers + DrawSlab Reloc header
     let cpp_driver = dir.join("check_cpp20.cpp");
@@ -969,30 +952,7 @@ int main() {
     )
     .unwrap();
 
-    let cpp_exe = dir.join("check_cpp20");
-    let cpp20 = Command::new("clang++")
-        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])
-        .arg(format!("-I{}", nve_inc.display()))
-        .arg(format!("-I{}", dir.display()))
-        .arg(&cpp_driver)
-        .arg("-o")
-        .arg(&cpp_exe)
-        .output()
-        .expect("run clang++ -std=c++20");
-    assert!(
-        cpp20.status.success(),
-        "C++20 compile failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&cpp20.stdout),
-        String::from_utf8_lossy(&cpp20.stderr)
-    );
-
-    let cpp_run = Command::new(&cpp_exe).output().expect("execute check_cpp20");
-    assert!(
-        cpp_run.status.success(),
-        "C++20 execution failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&cpp_run.stdout),
-        String::from_utf8_lossy(&cpp_run.stderr)
-    );
+    compile_and_run_cpp20(&cpp_driver, "check_cpp20", &[&nve_inc, &dir], &dir);
 
     // 3. Also verify the companion NveDrawSlab Rust 2024 module compiles with `-D warnings`
     let rust_check = Command::new("rustc")
