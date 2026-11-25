@@ -1,6 +1,5 @@
-//! Unified NVE Core ABI + Scene ABI generator dogfooding the Nitro-style Rust-first
-//! `hybrid` parser & IR (`packages/core/codegen/specs/nve_core_abi.nve.rs` and
-//! `packages/core/codegen/specs/nve_scene_abi.nve.rs`).
+//! Unified NVE Core ABI + Scene ABI generator consuming single-source-of-truth colocated
+//! `#[derive(NveAbi)]` descriptors directly from `packages/core/abi/src/schema.rs`.
 //!
 //! Emits all 10 checked-in ABI artifacts from ONE pipeline:
 //!
@@ -21,69 +20,62 @@
 mod c_emitter;
 mod dart_emitter;
 mod java_emitter;
+mod schema_bridge;
 mod ts_emitter;
 
 pub use c_emitter::{generate_c_core_abi_h, generate_c_scene_abi_h};
 pub use dart_emitter::{generate_dart_core_abi, generate_dart_scene_abi};
 pub use java_emitter::{generate_java_core_abi, generate_java_scene_buffer};
+pub use schema_bridge::from_abi_descriptor;
 pub use ts_emitter::{generate_ts_core_abi, generate_ts_scene_view};
 
 use crate::hybrid::ir::{
     fnv1a_64_update, HybridEnumSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec,
     HybridStructSpec, HybridType, FNV1A_64_OFFSET_BASIS,
 };
-use crate::hybrid::parser::parse_hybrid_rust_spec;
 use crate::ir::GeneratedFile;
 use crate::naming::{to_camel_case, to_pascal_case, to_snake_case};
 
-/// Embedded declarative Rust spec for NVE's Core ABI.
-pub const NVE_CORE_ABI_SPEC_SOURCE: &str = include_str!("../../../specs/nve_core_abi.nve.rs");
-
-/// Embedded declarative Rust spec for NVE's 64-byte Scene ABI.
-pub const NVE_SCENE_ABI_SPEC_SOURCE: &str = include_str!("../../../specs/nve_scene_abi.nve.rs");
-
 /// Exact byte stride of one `NveRenderNode` record (one 64-byte cache line).
-pub const NVE_RENDER_NODE_SIZE: usize = 64;
+pub const NVE_RENDER_NODE_SIZE: usize = nve_abi::NVE_RENDER_NODE_SIZE;
 
 /// Required cache-line alignment of `NveRenderNode`.
-pub const NVE_RENDER_NODE_ALIGN: usize = 64;
+pub const NVE_RENDER_NODE_ALIGN: usize = nve_abi::NVE_RENDER_NODE_ALIGN;
 
 /// Deterministic FNV-1a 64-bit Core ABI schema hash (must match `packages/core/abi/src/ffi.rs`
 /// and `core_abi_schema_hash()` verbatim).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x8AE8_9F10_3A70_D669;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = nve_abi::NVE_CORE_ABI_SCHEMA_HASH;
 
-/// Deterministic FNV-1a 64-bit scene schema hash (must match `packages/core/abi/src/scene.rs`
+/// Deterministic FNV-1a 64-bit scene schema hash (must match `packages/core/abi/src/scene/types.rs`
 /// and `compute_scene_schema_hash(&scene_abi_spec())` verbatim).
-pub const NVE_SCENE_SCHEMA_HASH: u64 = 0x00F2_CF03_7DB5_0CC8;
+pub const NVE_SCENE_SCHEMA_HASH: u64 = nve_abi::NVE_SCENE_SCHEMA_HASH;
 
-/// Parses and validates `packages/core/codegen/specs/nve_core_abi.nve.rs` via the unified
-/// `hybrid` Rust spec parser.
+/// Builds the validated Core ABI [`HybridFileSpec`] directly from the real compiled
+/// `#[derive(NveAbi)]` types in `packages/core/abi/src/schema.rs`.
 pub fn core_abi_spec() -> HybridFileSpec {
-    parse_hybrid_rust_spec(NVE_CORE_ABI_SPEC_SOURCE)
-        .expect("embedded specs/nve_core_abi.nve.rs must parse and validate cleanly")
+    from_abi_descriptor(&nve_abi::schema::core_abi_descriptor())
 }
 
-/// Parses and validates `packages/core/codegen/specs/nve_scene_abi.nve.rs` via the unified
-/// `hybrid` Rust spec parser.
+/// Builds the validated Scene ABI [`HybridFileSpec`] directly from the real compiled
+/// `NveRenderNode` and `NveSceneView` types in `packages/core/abi/src/schema.rs`.
 pub fn scene_abi_spec() -> HybridFileSpec {
-    parse_hybrid_rust_spec(NVE_SCENE_ABI_SPEC_SOURCE)
-        .expect("embedded specs/nve_scene_abi.nve.rs must parse and validate cleanly")
+    from_abi_descriptor(&nve_abi::schema::scene_abi_descriptor())
 }
 
-/// Deterministic FNV-1a 64-bit schema hash computed from the parsed Core ABI `HybridFileSpec`.
+/// Deterministic FNV-1a 64-bit schema hash computed from the colocated Core ABI `HybridFileSpec`.
 pub fn core_abi_schema_hash() -> u64 {
     core_abi_spec().file_schema_hash()
 }
 
-/// Computes the exact FNV-1a 64-bit Scene ABI schema hash from the parsed `nve_scene_abi.nve.rs`
-/// `HybridFileSpec` using the identical byte sequence verified by `packages/core/abi/src/scene.rs`.
+/// Computes the exact FNV-1a 64-bit Scene ABI schema hash from the colocated Scene ABI
+/// `HybridFileSpec` using the identical byte sequence verified by `packages/core/abi/src/scene/types.rs`.
 pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
     let render_node = spec
         .find_struct("NveRenderNode")
-        .expect("nve_scene_abi.nve.rs must declare NveRenderNode");
+        .expect("scene_abi_descriptor must declare NveRenderNode");
     let scene_view = spec
         .find_struct("NveSceneView")
-        .expect("nve_scene_abi.nve.rs must declare NveSceneView");
+        .expect("scene_abi_descriptor must declare NveSceneView");
     let node_size = render_node
         .expected_size
         .expect("NveRenderNode must declare size = 64");

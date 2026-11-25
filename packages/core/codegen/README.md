@@ -26,19 +26,21 @@ Every generated file emitted by `nve-codegen` MUST obey one of two strict naming
 
 Never add un-suffixed shim headers or symlinks alongside generated artifacts.
 
-## Defining Schemas (Colocated in Owning Packages)
+## Defining Schemas (Colocated `#[derive(NveAbi)]` in Owning Packages)
 
-Schemas MUST NOT be centralized in `packages/core/codegen/specs/` — each owning crate/module owns its own schema directly in Rust using typed IR structs (`RelocSchema` or `HybridFileSpec`), ready for `trait NveSchema` / `#[derive(NveAbi)]` integration without hand-parsed `.nve.rs` files:
+Centralized `.nve.rs` spec files (`packages/core/codegen/specs/`) have been **eliminated**. Every owning crate derives `#[derive(nve_abi::NveAbi)]` (implemented with zero external dependencies in `packages/core/abi-macros`) directly on its real compiled `#[repr(C)]` structs, unions, and `#[repr(u8|u16|u32|i32)]` enums:
 
+- **Compile-time single source of truth (`packages/core/abi-macros` + `packages/core/abi/src/schema.rs`)**:
+  - `#[derive(NveAbi)]` emits `impl NveStructSchema` / `NveUnionSchema` / `NveEnumSchema` + `NveSchema` with `const SCHEMA` carrying `rustc`-computed `core::mem::size_of::<Self>()`, `core::mem::align_of::<Self>()`, `core::mem::offset_of!(Self, field)`, and enum discriminants.
+  - Optional layout contracts (`#[nve_abi(size = N, size_64 = N, align = N)]` and field `#[nve_abi(offset = N, offset64 = N, c_type = "...")]`) emit compile-time `const` assertions automatically.
+  - `nve-codegen` converts colocated `nve_abi::schema::AbiFileDescriptor` values (`core_abi_descriptor()`, `scene_abi_descriptor()`) directly into `HybridFileSpec` via `from_abi_descriptor` — zero duplicated spec files and zero `wasm32` runtime bloat (dead-code-eliminated `const` metadata).
 - **Zero-copy binary slabs (`mmap`, disk caches, network/IPC frames)**: construct a `nve_codegen::RelocSchema` (`RelocStruct`, `RelocField`, `RelocEnum`, `RelocType::{RelocSlice, RelocStr, ...}`) in the owning crate and call `generate_reloc_rust(&schema)` / `generate_reloc_cpp(&schema)` (or `generate_reloc_all(&schema)`).
   - Use `VerifyMode::Full` for untrusted network sockets and external files (verifies alignment, magic, FNV-1a64 `schema_hash`, bounds, `u32` overflow, UTF-8, `bool`, enum discriminants, and recursion depth before creating any reference).
   - Use `VerifyMode::HeaderOnly` for trusted local `mmap` caches and compiled-in static assets (O(1) header + root check).
   - Use `unsafe { view_unchecked(buf) }` for 0-check raw pointer casts when invariants are already proven.
-- **Direct in-process FFI (static `extern "C"` by default; optional vtables for `dlopen`/`cdylib`)**: construct a `nve_codegen::HybridFileSpec` (`HybridStructSpec`, `HybridEnumSpec`, `c_functions`, and optionally `HybridModuleSpec`/`HybridViewSpec`) directly in Rust and call `generate_hybrid_target(&spec, HybridTarget::Cpp)` (or `generate_hybrid_all`).
+- **Direct in-process FFI (static `extern "C"` by default; optional vtables for `dlopen`/`cdylib`)**: derive `#[derive(NveAbi)]` on real `#[repr(C)]` types or construct a `nve_codegen::HybridFileSpec` (`HybridStructSpec`, `HybridEnumSpec`, `c_functions`, and optionally `HybridModuleSpec`/`HybridViewSpec`) directly in Rust and call `generate_hybrid_target(&spec, HybridTarget::Cpp)` (or `generate_hybrid_all`).
   - **Default for statically linked builds**: emit **direct static `extern "C"` C functions** via `HybridFileSpec::c_functions` (zero vtable, zero indirect call overhead, LTO-inlinable — e.g. `nve_clipboard_write_text(NveStrSlice text) -> int32_t`, `nve_system_env_get_theme(NveHybridNveThemeSnapshot* out_theme) -> int32_t`).
   - **Strictly optional for dynamic plugins**: emit `#[repr(C)]` function-pointer vtable structs (`HybridModuleSpec`) **only** for `dlopen` / `LoadLibrary` `cdylib` hot-reload boundaries where symbols cannot be statically linked.
-
-*(Note: `specs/nve_core_abi.nve.rs` and `specs/nve_scene_abi.nve.rs` remain only for the existing 10 Core/Scene ABI artifacts until migrated; do not add new `.nve.rs` files under `specs/`.)*
 
 ## Verification & ABI Drift Check
 

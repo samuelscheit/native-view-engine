@@ -7,7 +7,7 @@ use super::*;
 // ============================================================================
 
 /// Generates `hosts/web-shell/nve_core_abi.generated.ts` directly from
-/// `packages/core/codegen/specs/nve_core_abi.nve.rs`.
+/// `packages/core/abi/src/schema.rs`.
 pub fn generate_ts_core_abi() -> String {
     let spec = core_abi_spec();
     let schema_hash = spec.file_schema_hash();
@@ -19,7 +19,7 @@ pub fn generate_ts_core_abi() -> String {
     );
     let _ = writeln!(
         out,
-        "// Single-source NVE Core ABI constants generated from specs/nve_core_abi.nve.rs."
+        "// Single-source NVE Core ABI constants generated from packages/core/abi/src/schema.rs."
     );
     let _ = writeln!(out);
     let _ = writeln!(
@@ -84,7 +84,7 @@ pub fn generate_ts_core_abi() -> String {
 // ============================================================================
 
 /// Generates `hosts/web-shell/nve_scene_view.generated.ts` directly from
-/// `packages/core/codegen/specs/nve_scene_abi.nve.rs`.
+/// `packages/core/abi/src/schema.rs`.
 pub fn generate_ts_scene_view() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);

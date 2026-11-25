@@ -44,18 +44,18 @@ pub use export_swiftui::generate_export_swiftui;
 pub use export_web::generate_export_web_component;
 pub use hybrid::{
     compute_hybrid_interface_id, compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec,
-    generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
-    generate_c_core_abi_h, generate_c_scene_abi_h, generate_dart_core_abi, generate_dart_scene_abi,
-    generate_hybrid_all, generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin,
-    generate_hybrid_rust, generate_hybrid_swift, generate_hybrid_target, generate_hybrid_ts,
-    generate_java_core_abi, generate_java_scene_buffer, generate_ts_core_abi,
-    generate_ts_scene_view, parse_hybrid_rust_spec, parse_hybrid_rust_spec_file, scene_abi_spec,
-    HybridAliasSpec, HybridConstSpec, HybridDefaultValue, HybridEnumSpec, HybridEnumVariant,
-    HybridEventSpec, HybridFieldSpec, HybridFileSpec, HybridGenerateOutput, HybridMethodSpec,
-    HybridModuleSpec, HybridParamSpec, HybridPropSpec, HybridStructSpec, HybridTarget, HybridType,
-    HybridViewSpec, NVE_CORE_ABI_SCHEMA_HASH, NVE_CORE_ABI_SPEC_SOURCE, NVE_HYBRID_ABI_VERSION,
-    NVE_HYBRID_INTERFACE_ID_BASE, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
-    NVE_SCENE_ABI_SPEC_SOURCE, NVE_SCENE_SCHEMA_HASH,
+    from_abi_descriptor, generate_all_abi_files, generate_all_core_abi_files,
+    generate_all_scene_abi_files, generate_c_core_abi_h, generate_c_scene_abi_h,
+    generate_dart_core_abi, generate_dart_scene_abi, generate_hybrid_all, generate_hybrid_cpp,
+    generate_hybrid_dart, generate_hybrid_kotlin, generate_hybrid_rust, generate_hybrid_swift,
+    generate_hybrid_target, generate_hybrid_ts, generate_java_core_abi, generate_java_scene_buffer,
+    generate_ts_core_abi, generate_ts_scene_view, parse_hybrid_rust_spec,
+    parse_hybrid_rust_spec_file, scene_abi_spec, HybridAliasSpec, HybridConstSpec,
+    HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec,
+    HybridFileSpec, HybridGenerateOutput, HybridMethodSpec, HybridModuleSpec, HybridParamSpec,
+    HybridPropSpec, HybridStructSpec, HybridTarget, HybridType, HybridViewSpec,
+    NVE_CORE_ABI_SCHEMA_HASH, NVE_HYBRID_ABI_VERSION, NVE_HYBRID_INTERFACE_ID_BASE,
+    NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
 };
 pub use import_rn::generate_import_rn;
 pub use ir::{

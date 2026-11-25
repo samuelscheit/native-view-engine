@@ -11,6 +11,8 @@
 
 use std::ffi::c_void;
 
+use nve_abi_macros::NveAbi;
+
 use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
@@ -23,8 +25,10 @@ pub const NVE_IFACE_COMPONENT: u32 = 3;
 pub const NVE_IFACE_DEV: u32 = 4;
 pub const NVE_IFACE_HOST: u32 = 5;
 
+/// Borrowed immutable byte slice across the C ABI.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 16)]
 pub struct NveBufferSlice {
     pub ptr: *const u8,
     pub len: usize,
@@ -54,32 +58,52 @@ impl NveBufferSlice {
     }
 }
 
+/// Surface viewport configuration passed to `nve_fabric_host_create`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size = 16)]
 pub struct NveSurfaceConfig {
+    #[nve_abi(offset = 0)]
     pub surface_id: u32,
+    #[nve_abi(offset = 4)]
     pub width: f32,
+    #[nve_abi(offset = 8)]
     pub height: f32,
+    #[nve_abi(offset = 12)]
     pub scale_factor: f32,
 }
 
+/// Per-frame timing and mutation counters populated by `nve_fabric_host_submit_frame`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, NveAbi)]
+#[nve_abi(size = 40)]
 pub struct NveFrameStats {
+    #[nve_abi(offset = 0)]
     pub op_count: u32,
+    #[nve_abi(offset = 4)]
     pub mutation_count: u32,
+    #[nve_abi(offset = 8)]
     pub decode_us: u64,
+    #[nve_abi(offset = 16)]
     pub layout_us: u64,
+    #[nve_abi(offset = 24)]
     pub diff_us: u64,
+    #[nve_abi(offset = 32)]
     pub mount_us: u64,
 }
 
+/// Box layout constraints passed to `NveLayoutApi::measure`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, NveAbi)]
+#[nve_abi(size = 16)]
 pub struct NveSizeConstraints {
+    #[nve_abi(offset = 0)]
     pub min_w: f32,
+    #[nve_abi(offset = 4)]
     pub min_h: f32,
+    #[nve_abi(offset = 8)]
     pub max_w: f32,
+    #[nve_abi(offset = 12)]
     pub max_h: f32,
 }
 
@@ -94,15 +118,92 @@ impl NveSizeConstraints {
     }
 }
 
+/// Measured intrinsic dimensions returned by `NveLayoutApi::measure`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, NveAbi)]
+#[nve_abi(size = 8)]
 pub struct NveIntrinsicSize {
+    #[nve_abi(offset = 0)]
     pub width: f32,
+    #[nve_abi(offset = 4)]
     pub height: f32,
 }
 
+/// Binary CommandBuffer wire opcodes.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
+#[nve_abi(name = "NveOpcode", c_prefix = "NVE_OP_")]
+pub enum Opcode {
+    CreateNode = 1,
+    RemoveNode = 2,
+    SetChildren = 3,
+    SetText = 4,
+    SetLayout = 5,
+    SetStyle = 6,
+    SetRawProp = 7,
+    SetEventMask = 8,
+    DispatchCommand = 9,
+    Commit = 10,
+}
+
+impl Opcode {
+    #[inline(always)]
+    pub const fn from_u8(v: u8) -> Result<Self, DecodeError> {
+        match v {
+            1 => Ok(Self::CreateNode),
+            2 => Ok(Self::RemoveNode),
+            3 => Ok(Self::SetChildren),
+            4 => Ok(Self::SetText),
+            5 => Ok(Self::SetLayout),
+            6 => Ok(Self::SetStyle),
+            7 => Ok(Self::SetRawProp),
+            8 => Ok(Self::SetEventMask),
+            9 => Ok(Self::DispatchCommand),
+            10 => Ok(Self::Commit),
+            other => Err(DecodeError::UnknownOpcode(other)),
+        }
+    }
+}
+
+/// Built-in and custom component discriminants.
+#[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[nve_abi(name = "NveComponentKind", c_prefix = "NVE_COMP_")]
+pub enum ComponentKind {
+    Root = 0,
+    View = 1,
+    Text = 2,
+    ScrollView = 3,
+    Image = 4,
+    TextInput = 5,
+    Pressable = 6,
+    SkiaCanvas = 7,
+    Custom = 0xFFFF,
+}
+
+impl ComponentKind {
+    #[inline(always)]
+    pub const fn from_u16(v: u16) -> Result<Self, DecodeError> {
+        match v {
+            0 => Ok(Self::Root),
+            1 => Ok(Self::View),
+            2 => Ok(Self::Text),
+            3 => Ok(Self::ScrollView),
+            4 => Ok(Self::Image),
+            5 => Ok(Self::TextInput),
+            6 => Ok(Self::Pressable),
+            7 => Ok(Self::SkiaCanvas),
+            0xFFFF => Ok(Self::Custom),
+            other => Err(DecodeError::InvalidEnum("ComponentKind", other as u32)),
+        }
+    }
+}
+
+/// Gesture arbitration disposition returned by `NveLayoutApi::hit_test`.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
+#[nve_abi(c_prefix = "NVE_GESTURE_", dart_fallback = "PassThrough")]
 pub enum NveGestureDisposition {
     Claim = 1,
     PassThrough = 2,
@@ -121,8 +222,9 @@ impl NveGestureDisposition {
 
 /// Native event discriminator matching `enum NveEventKind` in `nve_abi.generated.h`.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[nve_abi(name = "NveEventKind", c_prefix = "NVE_EVENT_", dart_fallback = "Custom")]
 pub enum NativeEventKind {
     Press = 1,
     LongPress = 2,
@@ -157,6 +259,19 @@ impl NativeEventKind {
             None => Err(DecodeError::InvalidEnum("NativeEventKind", v as u32)),
         }
     }
+}
+
+/// Event payload wire tag matching `EventPayload` in `packages/core/abi/src/events.rs`.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
+#[nve_abi(c_prefix = "NVE_EVENT_PAYLOAD_")]
+pub enum NveEventPayloadTag {
+    Empty = 0,
+    Point = 1,
+    Scroll = 2,
+    Text = 3,
+    Layout = 4,
+    Custom = 5,
 }
 
 /// Validation / decoding errors shared across zero-copy FFI views and binary wire codecs.

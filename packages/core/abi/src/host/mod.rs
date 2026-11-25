@@ -5,6 +5,8 @@
 use std::ffi::c_void;
 use std::fmt;
 
+use nve_abi_macros::NveAbi;
+
 use crate::ffi::{NveAppHandle, NveBufferSlice};
 
 #[cfg(feature = "wire")]
@@ -38,7 +40,8 @@ pub const SERVICE_HAPTICS: u32 = 0x0016;
 /// Signed status codes returned by `NveHostCallbacks::invoke`, `channel_publish`, and `NVH1`
 /// async response records.
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
+#[nve_abi(c_prefix = "NVE_HOST_")]
 pub enum NveHostStatus {
     Ok = 0,
     Pending = 1,
@@ -123,10 +126,14 @@ pub type NveHostChannelPublishFn = unsafe extern "C" fn(
 
 /// Host-provided zero-JSON callback table bound via `NveHostApi::bind_host`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(size_64 = 24)]
 pub struct NveHostCallbacks {
+    #[nve_abi(offset64 = 0)]
     pub host_ctx: *mut c_void,
+    #[nve_abi(offset64 = 8, c_type = "NveHostInvokeFn")]
     pub invoke: Option<NveHostInvokeFn>,
+    #[nve_abi(offset64 = 16, c_type = "NveHostChannelPublishFn")]
     pub channel_publish: Option<NveHostChannelPublishFn>,
 }
 
@@ -155,7 +162,8 @@ pub struct NveHostApi {
 
 /// Wire tag for each record inside an `NVH1` host-event batch.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
+#[nve_abi(c_prefix = "NVE_HOST_EVENT_")]
 pub enum NveHostEventKind {
     AsyncResponse = 1,
     HostPushEvent = 2,

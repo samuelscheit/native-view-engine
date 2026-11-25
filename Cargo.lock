@@ -1510,9 +1510,14 @@ dependencies = [
 name = "nve-abi"
 version = "0.1.0"
 dependencies = [
+ "nve-abi-macros",
  "rustc-hash",
  "serde",
 ]
+
+[[package]]
+name = "nve-abi-macros"
+version = "0.1.0"
 
 [[package]]
 name = "nve-audio"

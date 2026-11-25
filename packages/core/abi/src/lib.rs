@@ -2,6 +2,8 @@
 //! `NvePropSlice`, `NveCommandSlice`, `NveEventBatch`), plus optional binary wire codecs
 //! (`CommandBuffer`, `EventRing`, `NveBinValue`, `NVH1`) gated behind `feature = "wire"`.
 
+extern crate self as nve_abi;
+
 #[cfg(feature = "wire")]
 pub mod codec;
 #[cfg(feature = "wire")]
@@ -12,13 +14,16 @@ pub mod host;
 mod layout_asserts;
 pub mod num;
 pub mod scene;
+pub mod schema;
 pub mod value;
+
+pub use nve_abi_macros::NveAbi;
 
 #[cfg(feature = "wire")]
 pub use codec::{
     ChildIdIter, ColorRgba, Command, CommandBufferBuilder, CommandBufferHeader, CommandDecoder,
-    CommandRef, ComponentKind, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify,
-    LayoutProps, RawPropValue, RawPropValueRef, StyleProps, NVE_ABI_MAGIC, NVE_ABI_VERSION,
+    CommandRef, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
+    RawPropValue, RawPropValueRef, StyleProps, NVE_ABI_MAGIC, NVE_ABI_VERSION,
 };
 #[cfg(feature = "wire")]
 pub use events::{
@@ -26,10 +31,11 @@ pub use events::{
     EventMask, EventPayload, NativeEvent, KEYDOWN_WIRE_MAGIC,
 };
 pub use ffi::{
-    DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
-    NveFrameStats, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi,
-    NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    ComponentKind, DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi,
+    NveDevApi, NveEventPayloadTag, NveFrameStats, NveGestureDisposition, NveGetInterfaceFn,
+    NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, Opcode,
+    NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST,
+    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 #[cfg(feature = "wire")]
 pub use host::{
