@@ -47,6 +47,9 @@ add_library(nve_qt_shell_lib STATIC
   NveQtCommon.hpp
   NveQtWidget.hpp
   NveQtWidget.cpp
+  NveQtCustomWidgets.cpp
+  NveQtTextInputA11y.cpp
+  NveQtWidgetReconciler.cpp
 )
 
 target_include_directories(nve_qt_shell_lib

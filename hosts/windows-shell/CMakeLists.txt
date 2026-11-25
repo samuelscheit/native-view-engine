@@ -18,7 +18,11 @@ set(NVE_WIN_SHELL_SOURCES
   NveRnwComponentView.cpp
 )
 if(WIN32)
-  list(APPEND NVE_WIN_SHELL_SOURCES NveWinHostWindow.cpp)
+  list(APPEND NVE_WIN_SHELL_SOURCES
+    NveWinHostWindow.cpp
+    NveWinD2DRenderer.cpp
+    NveWinD2DMedia.cpp
+  )
 endif()
 
 add_library(nve_windows_shell_lib STATIC ${NVE_WIN_SHELL_SOURCES})

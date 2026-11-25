@@ -17,6 +17,9 @@ endif()
 
 add_library(nve_gtk_shell_lib STATIC
   NveGtkHost.cpp
+  NveGtkMedia.cpp
+  NveGtkStyleA11y.cpp
+  NveGtkReconciler.cpp
 )
 
 target_include_directories(nve_gtk_shell_lib
