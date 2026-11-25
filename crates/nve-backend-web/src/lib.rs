@@ -16,6 +16,7 @@ mod dom;
 mod events;
 mod hot_patch;
 mod hydrate;
+pub mod native_view;
 mod reconcile;
 mod ssr;
 mod style_hash;
@@ -36,6 +37,11 @@ pub use events::{
     encode_keydown_payload, resolve_delegated_node, ImeCompositionGuard, NodeEventMeta,
 };
 pub use hydrate::{HydrationMismatch, HydrationReport};
+pub use native_view::{
+    BlurMaterial, BlurSurfaceProps, DecodedNativeView, NativeCommandDecoder, NativePropDecoder,
+    NativeValueRef, NativeViewCodecError, NativeViewNodeState, VideoPlayerCommand,
+    VideoPlayerProps, WebElementProps, WebViewCommand, WebViewProps,
+};
 pub use reconcile::{plan_keyed_child_ops, ChildDiffOp};
 pub use ssr::{SsrDocumentOptions, SsrOutput};
 pub use style_hash::{
@@ -79,6 +85,7 @@ pub struct WebBackend {
     pub(crate) viewport: Viewport,
     pub(crate) frame_counter: u64,
     pub(crate) nodes: HashMap<NodeId, MirrorElement>,
+    pub(crate) native_views: HashMap<NodeId, NativeViewNodeState>,
     pub(crate) parent_of: HashMap<NodeId, NodeId>,
     pub(crate) stylesheet: StyleSheetCache,
     pub(crate) events: Rc<RefCell<Vec<NativeEvent>>>,
@@ -144,6 +151,7 @@ impl WebBackend {
             viewport: Viewport::default(),
             frame_counter: 0,
             nodes,
+            native_views: HashMap::new(),
             parent_of: HashMap::new(),
             stylesheet: StyleSheetCache::new(),
             events: Rc::new(RefCell::new(Vec::new())),
@@ -322,38 +330,35 @@ impl RenderBackend for WebBackend {
 
         for cmd in commands {
             match cmd {
-                Command::CreateNode { node_id, kind, .. } => {
-                    if self.nodes.contains_key(&node_id) {
-                        replaced_existing = true;
-                    }
+                Command::CreateNode { node_id, kind, custom_name } => {
+                    if self.nodes.contains_key(&node_id) { replaced_existing = true; }
+                    self.native_views.remove(&node_id);
                     let mut mirror = MirrorElement::new(kind);
-                    let tag = mirror.tag;
                     let adopting_ssr = self.hydrating && self.has_ssr_dom_node(node_id);
                     if adopting_ssr {
                         mirror.has_inline_style = self.hydrated_inline_nodes.contains(&node_id);
                         hydrated_seen.push(node_id);
                     }
                     self.nodes.insert(node_id, mirror);
-                    self.node_event_meta.borrow_mut().insert(
-                        node_id,
-                        NodeEventMeta {
-                            kind,
-                            mask: EventMask::NONE,
-                        },
-                    );
+                    if kind == ComponentKind::Custom && let Some(name) = custom_name.as_deref() {
+                        self.init_custom_native_view(node_id, name);
+                    }
+                    let eff_tag = self.nodes.get(&node_id).map(|m| self.effective_html_tag(node_id, m).to_owned()).unwrap_or_else(|| "div".to_owned());
+                    self.node_event_meta.borrow_mut().insert(node_id, NodeEventMeta { kind, mask: EventMask::NONE });
                     if !adopting_ssr {
                         #[cfg(target_arch = "wasm32")]
                         {
-                            if let Some(old_el) = self.dom_nodes.remove(&node_id) {
-                                old_el.remove();
-                            }
+                            if let Some(old_el) = self.dom_nodes.remove(&node_id) { old_el.remove(); }
                             self.ime_guards.borrow_mut().remove(&node_id);
                             if let Some(doc) = web_sys::window().and_then(|w| w.document())
-                                && let Ok(el) = doc.create_element(tag)
+                                && let Some(el) = native_view::create_dom_element_for_tag(&doc, &eff_tag)
                             {
                                 self.attr_scratch.clear();
                                 let _ = write!(&mut self.attr_scratch, "{node_id}");
                                 let _ = el.set_attribute("data-nve-id", &self.attr_scratch);
+                                if let Some(nv) = self.native_views.get_mut(&node_id) {
+                                    native_view::sync_native_view_dom_attrs(&el, nv);
+                                }
                                 self.dom_nodes.insert(node_id, el);
                             }
                         }
@@ -361,14 +366,7 @@ impl RenderBackend for WebBackend {
                         {
                             let new_id = self.next_native_instance_id;
                             self.next_native_instance_id += 1;
-                            self.native_ssr_nodes.insert(
-                                node_id,
-                                NativeSsrNode {
-                                    tag: tag.to_owned(),
-                                    instance_id: new_id,
-                                    has_inline_style: false,
-                                },
-                            );
+                            self.native_ssr_nodes.insert(node_id, NativeSsrNode { tag: eff_tag, instance_id: new_id, has_inline_style: false });
                         }
                     }
                     #[cfg(target_arch = "wasm32")]
@@ -380,6 +378,7 @@ impl RenderBackend for WebBackend {
                 }
                 Command::RemoveNode { node_id } => {
                     self.nodes.remove(&node_id);
+                    self.native_views.remove(&node_id);
                     self.parent_of.remove(&node_id);
                     self.remove_node_event_meta(node_id);
                     for parent in self.nodes.values_mut() {
@@ -478,6 +477,11 @@ impl RenderBackend for WebBackend {
                             }
                             dirty_canvases.push(node_id);
                         }
+                    } else if native_view::is_native_view_prop(&key) {
+                        if let Some(el) = self.nodes.get_mut(&node_id) {
+                            el.raw_props.insert(key.clone(), value.clone());
+                        }
+                        self.apply_native_view_prop(node_id, &key, &value, &mut dirty_styles);
                     } else if is_raw_style_prop(&key) {
                         if let Some(el) = self.nodes.get_mut(&node_id) {
                             el.raw_style.apply_prop(&key, &value);
@@ -522,7 +526,10 @@ impl RenderBackend for WebBackend {
                     dirty_styles.push(node_id);
                     mutations += 1;
                 }
-                Command::DispatchCommand { .. } | Command::Commit { .. } => {}
+                Command::DispatchCommand { node_id, command_name, payload } => {
+                    if self.dispatch_native_view_command(node_id, &command_name, &payload) { mutations += 1; }
+                }
+                Command::Commit { .. } => {}
             }
         }
 

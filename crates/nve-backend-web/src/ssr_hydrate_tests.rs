@@ -621,3 +621,275 @@ fn root_event_delegation_resolves_nearest_matching_ancestor() {
         None
     );
 }
+
+fn nvnp_encode(fields: &[(u16, crate::NativeValueRef<'_>)]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&crate::native_view::NATIVE_PROPS_MAGIC);
+    buf.push(crate::native_view::NATIVE_PROPS_VERSION);
+    buf.extend_from_slice(&(fields.len() as u16).to_le_bytes());
+    for &(id, val) in fields {
+        buf.extend_from_slice(&id.to_le_bytes());
+        match val {
+            crate::NativeValueRef::Null => buf.push(0),
+            crate::NativeValueRef::Bool(b) => {
+                buf.push(1);
+                buf.push(u8::from(b));
+            }
+            crate::NativeValueRef::U32(n) => {
+                buf.push(2);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            crate::NativeValueRef::I64(n) => {
+                buf.push(3);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            crate::NativeValueRef::U64(n) => {
+                buf.push(4);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            crate::NativeValueRef::F32(n) => {
+                buf.push(5);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            crate::NativeValueRef::F64(n) => {
+                buf.push(6);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            crate::NativeValueRef::Str(s) => {
+                buf.push(7);
+                buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
+            crate::NativeValueRef::Bytes(b) => {
+                buf.push(8);
+                buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+                buf.extend_from_slice(b);
+            }
+        }
+    }
+    buf
+}
+
+fn nvnc_encode(opcode: u16, args: &[crate::NativeValueRef<'_>]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&crate::native_view::NATIVE_CMD_MAGIC);
+    buf.push(crate::native_view::NATIVE_CMD_VERSION);
+    buf.extend_from_slice(&opcode.to_le_bytes());
+    buf.push(args.len() as u8);
+    for &val in args {
+        match val {
+            crate::NativeValueRef::U64(n) => {
+                buf.push(4);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            crate::NativeValueRef::F32(n) => {
+                buf.push(5);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            crate::NativeValueRef::Str(s) => {
+                buf.push(7);
+                buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
+            _ => buf.push(0),
+        }
+    }
+    buf
+}
+
+fn pack_web_attrs(attrs: &[(&str, &str)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for &(k, v) in attrs {
+        out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+        out.extend_from_slice(v.as_bytes());
+    }
+    out
+}
+
+#[test]
+fn native_view_web_element_blur_webview_and_video_ssr_hydration_and_commands() {
+    use crate::native_view::{
+        is_safe_web_attr, is_safe_web_url, validate_web_element_tag, NATIVE_VIEW_KIND_PROP_KEY,
+        NATIVE_VIEW_PROPS_PROP_KEY,
+    };
+    use crate::{BlurMaterial, NativeValueRef};
+
+    // 1. Security allowlist & sanitization checks.
+    for ok_tag in [
+        "video", "audio", "svg", "iframe", "canvas", "input", "select", "textarea", "progress",
+        "meter", "details", "summary", "my-chart", "x-video-hud",
+    ] {
+        assert!(validate_web_element_tag(ok_tag).is_some(), "expected {ok_tag} allowed");
+    }
+    for bad_tag in ["script", "style", "object", "embed", "My-Chart", "bad-", "font-face", "div"] {
+        assert!(validate_web_element_tag(bad_tag).is_none(), "expected {bad_tag} rejected");
+    }
+    assert!(!is_safe_web_url("javascript:alert(1)"));
+    assert!(!is_safe_web_url("  JaVa\tScRiPt:alert(1)"));
+    assert!(!is_safe_web_url("data:text/html,<script>alert(1)</script>"));
+    assert!(is_safe_web_url("https://nve.dev/docs"));
+    assert!(is_safe_web_url("/assets/intro.mp4"));
+    assert!(!is_safe_web_attr("onclick", "alert(1)"));
+    assert!(!is_safe_web_attr("ONERROR", "alert(1)"));
+    assert!(!is_safe_web_attr("srcdoc", "<script>alert(1)</script>"));
+    assert!(!is_safe_web_attr("src", "javascript:alert(1)"));
+    assert!(is_safe_web_attr("viewBox", "0 0 24 24"));
+
+    // 2. Build a single frame containing BlurSurface, WebView, VideoPlayer, allowlisted WebElement,
+    //    custom Web Component, and an adversarial <script> attempt.
+    let blur_bytes = nvnp_encode(&[
+        (1, NativeValueRef::U32(BlurMaterial::Thick as u32)),
+        (2, NativeValueRef::F32(0.5)),
+        (3, NativeValueRef::U32(0x10203080)),
+    ]);
+    let webview_bytes = nvnp_encode(&[
+        (1, NativeValueRef::Str("https://nve.dev/embed")),
+        (2, NativeValueRef::Bool(true)),
+    ]);
+    let video_bytes = nvnp_encode(&[
+        (1, NativeValueRef::Str("https://cdn.nve.dev/hero.mp4")),
+        (2, NativeValueRef::Bool(false)),
+        (3, NativeValueRef::Bool(true)),
+        (4, NativeValueRef::Bool(true)),
+        (5, NativeValueRef::Bool(true)),
+    ]);
+    let svg_attrs = pack_web_attrs(&[
+        ("viewBox", "0 0 32 32"),
+        ("onclick", "alert(1)"),
+        ("aria-hidden", "true"),
+    ]);
+    let svg_bytes = nvnp_encode(&[
+        (1, NativeValueRef::Str("svg")),
+        (2, NativeValueRef::U32(3)),
+        (3, NativeValueRef::Bytes(&svg_attrs)),
+    ]);
+    let custom_attrs = pack_web_attrs(&[("data-mode", "pro"), ("srcdoc", "<b>bad</b>")]);
+    let custom_bytes = nvnp_encode(&[
+        (1, NativeValueRef::Str("my-chart")),
+        (2, NativeValueRef::U32(2)),
+        (3, NativeValueRef::Bytes(&custom_attrs)),
+    ]);
+    let bad_script_attrs = pack_web_attrs(&[("src", "https://evil.test/x.js")]);
+    let bad_script_bytes = nvnp_encode(&[
+        (1, NativeValueRef::Str("script")),
+        (2, NativeValueRef::U32(1)),
+        (3, NativeValueRef::Bytes(&bad_script_attrs)),
+    ]);
+
+    let mut b = CommandBufferBuilder::new(1, 1);
+    b.create_node(2, ComponentKind::Custom, Some("nve.blur_surface"));
+    b.set_raw_prop(2, NATIVE_VIEW_KIND_PROP_KEY, &RawPropValue::String("nve.blur_surface".into()));
+    b.set_raw_prop(2, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(blur_bytes));
+
+    b.create_node(3, ComponentKind::Custom, Some("nve.web_view"));
+    b.set_raw_prop(3, NATIVE_VIEW_KIND_PROP_KEY, &RawPropValue::String("nve.web_view".into()));
+    b.set_raw_prop(3, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(webview_bytes));
+
+    b.create_node(4, ComponentKind::Custom, Some("nve.video_player"));
+    b.set_raw_prop(4, NATIVE_VIEW_KIND_PROP_KEY, &RawPropValue::String("nve.video_player".into()));
+    b.set_raw_prop(4, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(video_bytes));
+
+    b.create_node(5, ComponentKind::Custom, Some("web.svg"));
+    b.set_raw_prop(5, NATIVE_VIEW_KIND_PROP_KEY, &RawPropValue::String("web.svg".into()));
+    b.set_raw_prop(5, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(svg_bytes));
+
+    b.create_node(6, ComponentKind::Custom, Some("web.my-chart"));
+    b.set_raw_prop(6, NATIVE_VIEW_KIND_PROP_KEY, &RawPropValue::String("web.my-chart".into()));
+    b.set_raw_prop(6, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(custom_bytes));
+
+    b.create_node(7, ComponentKind::Custom, Some("web.script"));
+    b.set_raw_prop(7, NATIVE_VIEW_KIND_PROP_KEY, &RawPropValue::String("web.script".into()));
+    b.set_raw_prop(7, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(bad_script_bytes));
+
+    b.set_children(ROOT_NODE_ID, &[2, 3, 4, 5, 6, 7]);
+    b.commit(true);
+    let frame0 = b.finish().to_vec();
+
+    let mut backend = WebBackend::new();
+    backend.submit_frame(&frame0).unwrap();
+    let ssr = backend.render_ssr();
+    let mirror_html = backend.render_html();
+
+    for html in [&ssr.html, &mirror_html] {
+        // BlurSurface emits backdrop-filter + -webkit-backdrop-filter + tint
+        assert!(html.contains("backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);"));
+        assert!(html.contains("background-color:rgba(16,32,48,0.502);"));
+        // WebView emits sandboxed <iframe>
+        assert!(html.contains("<iframe data-nve-id=\"3\""));
+        assert!(html.contains("sandbox=\"allow-scripts allow-same-origin allow-forms allow-popups\""));
+        assert!(html.contains("src=\"https://nve.dev/embed\""));
+        // VideoPlayer emits <video> with muted/loop/controls
+        assert!(html.contains("<video data-nve-id=\"4\""));
+        assert!(html.contains("src=\"https://cdn.nve.dev/hero.mp4\""));
+        assert!(html.contains(" muted loop controls playsinline"));
+        // WebElement <svg> preserves safe attrs and strips onclick
+        assert!(html.contains("<svg data-nve-id=\"5\""));
+        assert!(html.contains("viewBox=\"0 0 32 32\""));
+        assert!(html.contains("aria-hidden=\"true\""));
+        assert!(!html.contains("onclick"));
+        // Custom element <my-chart> mounted and srcdoc stripped
+        assert!(html.contains("<my-chart data-nve-id=\"6\""));
+        assert!(html.contains("data-mode=\"pro\""));
+        assert!(!html.contains("srcdoc"));
+        // <script> rejected and downgraded to <div> without src
+        assert!(!html.contains("<script"));
+        assert!(html.contains("<div data-nve-id=\"7\""));
+        assert!(!html.contains("evil.test"));
+    }
+
+    // 3. Zero-flicker SSR hydration adopts built-in native views (blur <div>, <iframe>, <video>, <svg>).
+    let mut b_hyd = CommandBufferBuilder::new(1, 1);
+    b_hyd.create_node(2, ComponentKind::Custom, Some("nve.blur_surface"));
+    b_hyd.create_node(3, ComponentKind::Custom, Some("nve.web_view"));
+    b_hyd.create_node(4, ComponentKind::Custom, Some("nve.video_player"));
+    b_hyd.create_node(5, ComponentKind::Custom, Some("web.svg"));
+    b_hyd.set_children(ROOT_NODE_ID, &[2, 3, 4, 5]);
+    b_hyd.commit(true);
+    let hyd_frame = b_hyd.finish().to_vec();
+    let mut srv_hyd = WebBackend::new();
+    srv_hyd.submit_frame(&hyd_frame).unwrap();
+    let ssr_hyd = srv_hyd.render_ssr();
+    let mut cli_hyd = WebBackend::hydrate_from_ssr(&ssr_hyd);
+    cli_hyd.submit_frame(&hyd_frame).unwrap();
+    assert!(cli_hyd.hydration_report().mismatches.is_empty());
+    assert_eq!(cli_hyd.hydration_report().adopted_nodes, 5);
+
+    // 4. Imperative NVNC commands via Command::DispatchCommand (WebView + VideoPlayer).
+    let mut b2 = CommandBufferBuilder::new(1, 2);
+    b2.dispatch_command(3, "navigate", &nvnc_encode(1, &[NativeValueRef::Str("javascript:alert(1)")]));
+    b2.dispatch_command(3, "navigate", &nvnc_encode(1, &[NativeValueRef::Str("https://nve.dev/next")]));
+    b2.dispatch_command(3, "reload", &nvnc_encode(2, &[]));
+    b2.dispatch_command(3, "go_back", &nvnc_encode(3, &[]));
+    b2.dispatch_command(3, "go_forward", &nvnc_encode(4, &[]));
+    b2.dispatch_command(4, "play", &nvnc_encode(1, &[]));
+    b2.dispatch_command(4, "seek_ms", &nvnc_encode(3, &[NativeValueRef::U64(12_345)]));
+    b2.dispatch_command(4, "set_volume", &nvnc_encode(4, &[NativeValueRef::F32(0.42)]));
+    b2.dispatch_command(4, "pause", &nvnc_encode(2, &[]));
+    b2.commit(false);
+    backend.submit_frame(b2.finish()).unwrap();
+
+    let wv = backend.native_view(3).unwrap();
+    assert_eq!(wv.current_url.as_deref(), Some("https://nve.dev/next"));
+    assert_eq!(wv.reload_count, 1);
+    assert_eq!(wv.go_back_count, 1);
+    assert_eq!(wv.go_forward_count, 1);
+
+    let vp = backend.native_view(4).unwrap();
+    assert!(!vp.playing);
+    assert_eq!(vp.position_ms, 12_345);
+    assert!((vp.volume - 0.42).abs() < 1e-6);
+
+    // 5. Shorthand aliases ("nve.blur", "nve.webview", "nve.video", "nve.native.kind") + corrupt buffer resilience.
+    let mut b3 = CommandBufferBuilder::new(1, 3);
+    b3.create_node(10, ComponentKind::Custom, None);
+    b3.set_raw_prop(10, "nve.native.kind", &RawPropValue::String("nve.blur".into()));
+    b3.set_raw_prop(10, NATIVE_VIEW_PROPS_PROP_KEY, &RawPropValue::Bytes(vec![0xFF, 0x00]));
+    b3.dispatch_command(3, "navigate", &[0x00, 0x01, 0x02]);
+    b3.commit(true);
+    backend.submit_frame(b3.finish()).unwrap();
+    assert_eq!(backend.native_view(10).unwrap().resolved_tag, "div");
+    assert!(backend.native_view(10).unwrap().extra_css.contains("backdrop-filter:blur("));
+    assert_eq!(backend.native_view(3).unwrap().current_url.as_deref(), Some("https://nve.dev/next"));
+}

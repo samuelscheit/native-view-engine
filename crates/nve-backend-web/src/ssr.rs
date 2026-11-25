@@ -88,8 +88,13 @@ impl WebBackend {
             return;
         };
         let sem = resolve_semantic_tag(el.kind, &el.raw_props);
+        let tag = if el.kind == ComponentKind::Custom {
+            self.effective_html_tag(id, el)
+        } else {
+            sem.tag
+        };
         *hash = fnv1a_step(*hash, &id.to_le_bytes());
-        *hash = fnv1a_step(*hash, sem.tag.as_bytes());
+        *hash = fnv1a_step(*hash, tag.as_bytes());
         *hash = fnv1a_step(*hash, &[u8::from(sem.wrap_code)]);
         if let Some(t) = &el.text {
             *hash = fnv1a_step(*hash, t.as_bytes());
@@ -112,14 +117,19 @@ impl WebBackend {
             return;
         };
         let sem = resolve_semantic_tag(el.kind, &el.raw_props);
+        let tag = if el.kind == ComponentKind::Custom { self.effective_html_tag(id, el) } else { sem.tag };
         let allow_new = rules.len() < MAX_DYNAMIC_RULES;
-        let resolved = resolve_node_style(el, parent, allow_new, |cls| rules.contains_key(cls));
+        let mut resolved = resolve_node_style(el, parent, allow_new, |cls| rules.contains_key(cls));
         if let Some((cls, decls)) = resolved.structural_rule {
             rules.entry(cls).or_insert(decls);
         }
+        let native_view = (el.kind == ComponentKind::Custom).then(|| self.native_views.get(&id)).flatten();
+        if let Some(nv) = native_view && !nv.extra_css.is_empty() {
+            resolved.inline_style.push_str(&nv.extra_css);
+        }
 
         out.push('<');
-        out.push_str(sem.tag);
+        out.push_str(tag);
         out.push_str(" data-nve-id=\"");
         let _ = write!(out, "{id}");
         out.push('"');
@@ -132,6 +142,9 @@ impl WebBackend {
 
         if !resolved.inline_style.is_empty() {
             write_attr("style", &resolved.inline_style, out);
+        }
+        if let Some(nv) = native_view {
+            crate::native_view::write_native_view_html_attrs(nv, out);
         }
 
         // Semantic link `href`.
@@ -240,24 +253,14 @@ impl WebBackend {
         }
 
         out.push('>');
-        if is_void_html_tag(sem.tag) {
-            return;
-        }
+        if is_void_html_tag(tag) { return; }
 
-        if sem.wrap_code {
-            out.push_str("<code>");
-        }
-        if let Some(t) = &el.text {
-            push_html_text_escaped(t, out);
-        }
-        for &child in &el.children {
-            self.fmt_ssr_node(child, Some(el), root_hash, rules, out);
-        }
-        if sem.wrap_code {
-            out.push_str("</code>");
-        }
+        if sem.wrap_code { out.push_str("<code>"); }
+        if let Some(t) = &el.text { push_html_text_escaped(t, out); }
+        for &child in &el.children { self.fmt_ssr_node(child, Some(el), root_hash, rules, out); }
+        if sem.wrap_code { out.push_str("</code>"); }
         out.push_str("</");
-        out.push_str(sem.tag);
+        out.push_str(tag);
         out.push('>');
     }
 
