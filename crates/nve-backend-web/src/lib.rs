@@ -15,10 +15,13 @@ mod css;
 mod dom;
 mod events;
 mod hot_patch;
+mod html;
 mod hydrate;
 pub mod native_view;
 mod reconcile;
+mod raw_style;
 mod ssr;
+mod tree;
 mod style_hash;
 mod stylesheet;
 #[cfg(test)]
@@ -27,14 +30,18 @@ mod ssr_hydrate_tests;
 mod tests;
 #[cfg(test)]
 mod css_format_tests;
+#[cfg(test)]
+mod correctness_tests;
 
 pub use css::{
-    canonical_f32_bits, component_to_html_tag, is_image_fit_prop, is_raw_style_prop,
-    is_semantic_tag_prop, layout_to_css, layout_to_css_into, raw_prop_to_object_fit,
-    resolve_semantic_tag, style_to_css, style_to_css_into, write_compact_color,
-    write_compact_edges, MirrorElement, RawStyleProps, SemanticTag, NVE_BASE_RESET_CSS,
+    canonical_f32_bits, component_to_html_tag, is_semantic_tag_prop, layout_to_css,
+    layout_to_css_into, resolve_semantic_tag, style_to_css, style_to_css_into, write_compact_color,
+    write_compact_edges, MirrorElement, SemanticTag, NVE_BASE_RESET_CSS,
 };
-pub use dom::{is_truthy_raw_prop, map_a11y_or_input_attr, MappedHtmlAttr};
+pub use raw_style::{
+    is_image_fit_prop, is_raw_style_prop, is_safe_css_value, raw_prop_to_object_fit, RawStyleProps,
+};
+pub use dom::{is_truthy_raw_prop, map_a11y_or_input_attr, raw_prop_route, MappedHtmlAttr, RawPropRoute};
 pub use events::{
     encode_keydown_payload, resolve_delegated_node, ImeCompositionGuard, NodeEventMeta,
 };
@@ -332,6 +339,9 @@ impl RenderBackend for WebBackend {
 
         for cmd in commands {
             match cmd {
+                // The root is the host's mount container: never replaced or removed.
+                Command::CreateNode { node_id: ROOT_NODE_ID, .. }
+                | Command::RemoveNode { node_id: ROOT_NODE_ID } => {}
                 Command::CreateNode { node_id, kind, custom_name } => {
                     if self.nodes.contains_key(&node_id) { replaced_existing = true; }
                     self.native_views.remove(&node_id);
@@ -379,13 +389,10 @@ impl RenderBackend for WebBackend {
                     mutations += 1;
                 }
                 Command::RemoveNode { node_id } => {
+                    self.detach_from_parent(node_id);
                     self.nodes.remove(&node_id);
                     self.native_views.remove(&node_id);
-                    self.parent_of.remove(&node_id);
                     self.remove_node_event_meta(node_id);
-                    for parent in self.nodes.values_mut() {
-                        parent.children.retain(|&cid| cid != node_id);
-                    }
                     #[cfg(target_arch = "wasm32")]
                     if let Some(el) = self.dom_nodes.remove(&node_id) {
                         el.remove();
@@ -398,17 +405,9 @@ impl RenderBackend for WebBackend {
                     parent_id,
                     children,
                 } => {
-                    if let Some(old_children) = self.nodes.get(&parent_id).map(|p| p.children.clone())
-                    {
-                        for old_cid in old_children {
-                            if self.parent_of.get(&old_cid) == Some(&parent_id) {
-                                self.parent_of.remove(&old_cid);
-                            }
-                        }
-                    }
-                    for &cid in &children {
-                        self.parent_of.insert(cid, parent_id);
-                    }
+                    let Some(children) = self.adopt_children(parent_id, &children) else {
+                        continue;
+                    };
                     let is_text_parent = self
                         .nodes
                         .get(&parent_id)
@@ -461,59 +460,60 @@ impl RenderBackend for WebBackend {
                     key,
                     value,
                 } => {
-                    if canvas::is_draw_list_prop(&key) {
-                        let decoded_ops = canvas::decode_draw_list_prop(&value).unwrap_or_default();
-                        let op_count = decoded_ops.len();
-                        if let Some(el) = self.nodes.get_mut(&node_id) {
-                            el.draw_op_count = op_count;
-                            el.draw_ops = decoded_ops;
-                            el.raw_props.insert(key, value);
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            if let Some(dom_el) = self.dom_nodes.get(&node_id) {
-                                self.attr_scratch.clear();
-                                let _ = write!(&mut self.attr_scratch, "{op_count}");
-                                let _ = dom_el
-                                    .set_attribute("data-nve-draw-ops", &self.attr_scratch);
+                    match raw_prop_route(&key) {
+                        RawPropRoute::DrawList => {
+                            let decoded_ops = canvas::decode_draw_list_prop(&value).unwrap_or_default();
+                            if let Some(el) = self.nodes.get_mut(&node_id) {
+                                el.draw_op_count = decoded_ops.len();
+                                el.draw_ops = decoded_ops;
+                                el.raw_props.insert(key, value);
                             }
-                            dirty_canvases.push(node_id);
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                self.sync_dom_draw_ops_attr(node_id);
+                                dirty_canvases.push(node_id);
+                            }
                         }
-                    } else if native_view::is_native_view_prop(&key) {
-                        if let Some(el) = self.nodes.get_mut(&node_id) {
-                            el.raw_props.insert(key.clone(), value.clone());
+                        RawPropRoute::NativeView => {
+                            if let Some(el) = self.nodes.get_mut(&node_id) {
+                                el.raw_props.insert(key.clone(), value.clone());
+                            }
+                            self.apply_native_view_prop(node_id, &key, &value, &mut dirty_styles);
                         }
-                        self.apply_native_view_prop(node_id, &key, &value, &mut dirty_styles);
-                    } else if is_raw_style_prop(&key) {
-                        if let Some(el) = self.nodes.get_mut(&node_id) {
-                            el.raw_style.apply_prop(&key, &value);
-                            el.raw_props.insert(key, value);
-                            el.record_style_mutation(current_frame);
+                        RawPropRoute::Style => {
+                            if let Some(el) = self.nodes.get_mut(&node_id) {
+                                el.raw_style.apply_prop(&key, &value);
+                                el.raw_props.insert(key, value);
+                                el.record_style_mutation(current_frame);
+                            }
+                            dirty_styles.push(node_id);
+                            self.queue_leaf_text_children(node_id, &mut dirty_styles);
                         }
-                        dirty_styles.push(node_id);
-                        self.queue_leaf_text_children(node_id, &mut dirty_styles);
-                    } else {
-                        let mut tag_changed = false;
-                        if let Some(el) = self.nodes.get_mut(&node_id) {
-                            el.raw_props.insert(key.clone(), value.clone());
-                            if is_semantic_tag_prop(&key) {
-                                let sem = resolve_semantic_tag(el.kind, &el.raw_props);
-                                if el.tag != sem.tag || el.wrap_code != sem.wrap_code {
-                                    el.tag = sem.tag;
-                                    el.wrap_code = sem.wrap_code;
-                                    tag_changed = true;
+                        RawPropRoute::Reserved => {}
+                        RawPropRoute::Attribute => {
+                            let mut tag_changed = false;
+                            if let Some(el) = self.nodes.get_mut(&node_id) {
+                                el.raw_props.insert(key.clone(), value.clone());
+                                // The root container keeps its tag.
+                                if node_id != ROOT_NODE_ID && is_semantic_tag_prop(&key) {
+                                    let sem = resolve_semantic_tag(el.kind, &el.raw_props);
+                                    if el.tag != sem.tag || el.wrap_code != sem.wrap_code {
+                                        el.tag = sem.tag;
+                                        el.wrap_code = sem.wrap_code;
+                                        tag_changed = true;
+                                    }
                                 }
                             }
+                            #[cfg(target_arch = "wasm32")]
+                            if tag_changed && !self.hydrating {
+                                self.upgrade_dom_element_tag(node_id);
+                                dirty_styles.push(node_id);
+                            } else {
+                                self.sync_dom_raw_prop(node_id, &key, &value);
+                            }
+                            #[cfg(not(target_arch = "wasm32"))]
+                            let _ = tag_changed;
                         }
-                        #[cfg(target_arch = "wasm32")]
-                        if tag_changed && !self.hydrating {
-                            self.upgrade_dom_element_tag(node_id);
-                            dirty_styles.push(node_id);
-                        } else {
-                            self.sync_dom_raw_prop(node_id, &key, &value);
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let _ = tag_changed;
                     }
                     mutations += 1;
                 }

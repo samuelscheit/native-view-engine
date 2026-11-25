@@ -10,8 +10,9 @@ use nve_abi::{
 
 use crate::css::{
     canonical_f32, write_compact_color, write_compact_dim, write_compact_edges, write_compact_num,
-    write_compact_px, MirrorElement, RawStyleProps,
+    write_compact_px, MirrorElement,
 };
+use crate::raw_style::RawStyleProps;
 use crate::style_hash::{
     format_structural_class, hash_structural_style, is_inheriting_leaf_text, is_volatile_dimension,
     is_volatile_opacity,

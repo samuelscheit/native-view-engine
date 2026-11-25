@@ -535,11 +535,16 @@ fn maps_aria_accessibility_and_input_attributes_in_html_ssr_and_dom_mapper() {
     );
     assert_eq!(
         map_a11y_or_input_attr(ComponentKind::TextInput, "secureTextEntry", &RawPropValue::Bool(true)),
-        Some(MappedHtmlAttr::InputPassword(true))
+        Some(MappedHtmlAttr::Set("type", "password"))
+    );
+    // A non-secure input and any non-input element carry no `type`, like render_html and SSR.
+    assert_eq!(
+        map_a11y_or_input_attr(ComponentKind::TextInput, "secureTextEntry", &RawPropValue::Bool(false)),
+        Some(MappedHtmlAttr::Remove("type"))
     );
     assert_eq!(
         map_a11y_or_input_attr(ComponentKind::View, "secureTextEntry", &RawPropValue::Bool(true)),
-        None
+        Some(MappedHtmlAttr::Remove("type"))
     );
     assert_eq!(
         map_a11y_or_input_attr(ComponentKind::TextInput, "readOnly", &RawPropValue::String("true".into())),

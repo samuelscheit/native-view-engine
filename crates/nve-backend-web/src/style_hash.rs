@@ -3,7 +3,8 @@
 
 use nve_abi::{ColorRgba, ComponentKind, Dimension, EdgeInsets, LayoutProps, StyleProps};
 
-use crate::css::{canonical_f32, canonical_f32_bits, MirrorElement, RawStyleProps};
+use crate::css::{canonical_f32, canonical_f32_bits, MirrorElement};
+use crate::raw_style::RawStyleProps;
 
 /// Point dimension threshold above which `Dimension::Points(v)` routes to the inline lane
 /// (catches `VirtualList` spacers and large scroll/canvas surfaces).

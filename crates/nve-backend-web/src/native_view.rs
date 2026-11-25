@@ -5,6 +5,7 @@
 use nve_abi::num::write_f32;
 use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue};
 use crate::css::MirrorElement;
+use crate::html::write_attr;
 use crate::WebBackend;
 
 pub const NATIVE_PROPS_MAGIC: [u8; 4] = *b"NVNP";
@@ -551,41 +552,30 @@ fn apply_nvnp_to_state(state: &mut NativeViewNodeState, bytes: &[u8]) -> bool {
     state.resolved_tag != prev_tag
 }
 
-fn push_escaped_attr(name: &str, val: &str, out: &mut String) {
-    out.push(' '); out.push_str(name); out.push_str("=\"");
-    for ch in val.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"), '"' => out.push_str("&quot;"),
-            '<' => out.push_str("&lt;"), '>' => out.push_str("&gt;"), c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-
 fn write_camera_html_attrs(cam: &CameraNodeState, out: &mut String) {
     out.push_str(" autoplay playsinline muted");
-    push_escaped_attr("data-nve-camera", "1", out);
-    push_escaped_attr("data-nve-camera-facing", cam.facing.as_str(), out);
-    push_escaped_attr("data-nve-camera-torch", cam.torch.as_str(), out);
-    push_escaped_attr("data-nve-camera-zoom", &format_camera_zoom(cam.zoom), out);
-    push_escaped_attr("data-nve-camera-fps", &cam.fps.to_string(), out);
-    push_escaped_attr("data-nve-camera-active", if cam.active { "1" } else { "0" }, out);
-    push_escaped_attr("data-nve-camera-audio", if cam.audio_enabled { "1" } else { "0" }, out);
-    if let Some(id) = cam.device_id.as_deref() && !id.is_empty() { push_escaped_attr("data-nve-camera-device", id, out); }
-    if cam.recording { push_escaped_attr("data-nve-camera-recording", "1", out); }
+    write_attr("data-nve-camera", "1", out);
+    write_attr("data-nve-camera-facing", cam.facing.as_str(), out);
+    write_attr("data-nve-camera-torch", cam.torch.as_str(), out);
+    write_attr("data-nve-camera-zoom", &format_camera_zoom(cam.zoom), out);
+    write_attr("data-nve-camera-fps", &cam.fps.to_string(), out);
+    write_attr("data-nve-camera-active", if cam.active { "1" } else { "0" }, out);
+    write_attr("data-nve-camera-audio", if cam.audio_enabled { "1" } else { "0" }, out);
+    if let Some(id) = cam.device_id.as_deref() && !id.is_empty() { write_attr("data-nve-camera-device", id, out); }
+    if cam.recording { write_attr("data-nve-camera-recording", "1", out); }
 }
 
 pub(crate) fn write_native_view_html_attrs(state: &NativeViewNodeState, out: &mut String) {
-    push_escaped_attr("data-nve-native-kind", &state.kind, out);
+    write_attr("data-nve-native-kind", &state.kind, out);
     match &state.decoded {
         Some(DecodedNativeView::BlurSurface(_)) => {}
         Some(DecodedNativeView::WebView(_)) => {
-            push_escaped_attr("sandbox", WEBVIEW_SANDBOX_ATTR, out);
-            push_escaped_attr("referrerpolicy", "no-referrer", out);
-            if let Some(url) = state.current_url.as_deref() && is_safe_web_url(url) { push_escaped_attr("src", url, out); }
+            write_attr("sandbox", WEBVIEW_SANDBOX_ATTR, out);
+            write_attr("referrerpolicy", "no-referrer", out);
+            if let Some(url) = state.current_url.as_deref() && is_safe_web_url(url) { write_attr("src", url, out); }
         }
         Some(DecodedNativeView::VideoPlayer(p)) => {
-            if is_safe_web_url(&p.source_uri) { push_escaped_attr("src", &p.source_uri, out); }
+            if is_safe_web_url(&p.source_uri) { write_attr("src", &p.source_uri, out); }
             for (flag, name) in [(p.autoplay, " autoplay"), (p.muted, " muted"), (p.looping, " loop"), (p.controls, " controls")] {
                 if flag { out.push_str(name); }
             }
@@ -593,11 +583,11 @@ pub(crate) fn write_native_view_html_attrs(state: &NativeViewNodeState, out: &mu
         }
         Some(DecodedNativeView::CameraPreview(_)) => write_camera_html_attrs(&state.camera, out),
         Some(DecodedNativeView::WebElement(p)) => {
-            for (k, v) in &p.attrs { if is_safe_web_attr(k, v) { push_escaped_attr(k, v, out); } }
+            for (k, v) in &p.attrs { if is_safe_web_attr(k, v) { write_attr(k, v, out); } }
         }
         None if matches!(state.kind.as_str(), KIND_WEB_VIEW | KIND_WEB_VIEW_ALIAS) => {
-            push_escaped_attr("sandbox", WEBVIEW_SANDBOX_ATTR, out);
-            push_escaped_attr("referrerpolicy", "no-referrer", out);
+            write_attr("sandbox", WEBVIEW_SANDBOX_ATTR, out);
+            write_attr("referrerpolicy", "no-referrer", out);
         }
         None if matches!(state.kind.as_str(), KIND_CAMERA_PREVIEW | KIND_CAMERA_ALIAS) => {
             write_camera_html_attrs(&state.camera, out);
