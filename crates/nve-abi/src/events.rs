@@ -81,6 +81,123 @@ pub struct NativeEvent {
     pub payload: EventPayload,
 }
 
+/// 3-byte ASCII wire magic identifying a compact zero-JSON binary keydown payload (`NK1`).
+///
+/// Layout: `[b'N', b'K', b'1', flags_u8, utf8_key...]`
+/// where `flags_u8` packs modifier bits:
+/// - bit 0 (`0x01`): `meta`
+/// - bit 1 (`0x02`): `ctrl`
+/// - bit 2 (`0x04`): `shift`
+/// - bit 3 (`0x08`): `alt`
+pub const KEYDOWN_WIRE_MAGIC: [u8; 3] = *b"NK1";
+pub const KEYDOWN_FLAG_META: u8 = 1 << 0;
+pub const KEYDOWN_FLAG_CTRL: u8 = 1 << 1;
+pub const KEYDOWN_FLAG_SHIFT: u8 = 1 << 2;
+pub const KEYDOWN_FLAG_ALT: u8 = 1 << 3;
+
+/// Decoded zero-JSON keyboard event from `NativeEventKind::Custom` (`name: "keydown"`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DecodedKeyDown {
+    pub key: String,
+    pub meta: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+impl DecodedKeyDown {
+    #[inline]
+    pub fn has_primary_modifier(&self) -> bool {
+        self.meta || self.ctrl
+    }
+}
+
+/// Encodes a keyboard event into the compact zero-JSON `NK1` binary payload:
+/// `[b'N', b'K', b'1', flags_u8, utf8_key...]`.
+pub fn encode_keydown_bytes(
+    key: &str,
+    meta: bool,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Vec<u8> {
+    let flags = (u8::from(meta) * KEYDOWN_FLAG_META)
+        | (u8::from(ctrl) * KEYDOWN_FLAG_CTRL)
+        | (u8::from(shift) * KEYDOWN_FLAG_SHIFT)
+        | (u8::from(alt) * KEYDOWN_FLAG_ALT);
+    let mut out = Vec::with_capacity(4 + key.len());
+    out.extend_from_slice(&KEYDOWN_WIRE_MAGIC);
+    out.push(flags);
+    out.extend_from_slice(key.as_bytes());
+    out
+}
+
+/// Decodes a `keydown` payload from either:
+/// 1. Compact binary `NK1` framing (`[b'N', b'K', b'1', flags_u8, utf8_key...]`), or
+/// 2. Compact UTF-8 shorthand (`"Cmd+k"`, `"Ctrl+Shift+Enter"`, `"Escape"`, `"Enter"`, `"+"`).
+pub fn decode_keydown_bytes(data: &[u8]) -> Option<DecodedKeyDown> {
+    if data.starts_with(&KEYDOWN_WIRE_MAGIC) {
+        if data.len() < 5 {
+            return None;
+        }
+        let flags = data[3];
+        let key = std::str::from_utf8(&data[4..]).ok()?;
+        if key.is_empty() {
+            return None;
+        }
+        return Some(DecodedKeyDown {
+            key: key.to_owned(),
+            meta: (flags & KEYDOWN_FLAG_META) != 0,
+            ctrl: (flags & KEYDOWN_FLAG_CTRL) != 0,
+            shift: (flags & KEYDOWN_FLAG_SHIFT) != 0,
+            alt: (flags & KEYDOWN_FLAG_ALT) != 0,
+        });
+    }
+
+    let raw_text = std::str::from_utf8(data).ok()?;
+    let trimmed = raw_text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed == "+" {
+        return Some(DecodedKeyDown {
+            key: "+".to_owned(),
+            ..DecodedKeyDown::default()
+        });
+    }
+
+    if trimmed.contains('+') {
+        let mut out = DecodedKeyDown::default();
+        // Preserve trailing literal `+` key in combinations like `"Cmd++"`.
+        let (mod_section, key_part) = if let Some(prefix) = trimmed.strip_suffix("++") {
+            (prefix, "+")
+        } else {
+            let split_at = trimmed.rfind('+')?;
+            (&trimmed[..split_at], trimmed[split_at + 1..].trim())
+        };
+        if key_part.is_empty() {
+            return None;
+        }
+        for tok in mod_section.split('+').map(str::trim).filter(|s| !s.is_empty()) {
+            match tok.to_ascii_lowercase().as_str() {
+                "cmd" | "meta" | "super" => out.meta = true,
+                "ctrl" | "control" => out.ctrl = true,
+                "shift" => out.shift = true,
+                "alt" | "opt" | "option" => out.alt = true,
+                _ => {}
+            }
+        }
+        out.key = key_part.to_owned();
+        return Some(out);
+    }
+
+    Some(DecodedKeyDown {
+        key: trimmed.to_owned(),
+        ..DecodedKeyDown::default()
+    })
+}
+
 pub fn encode_events(events: &[NativeEvent]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + events.len() * 32);
     out.extend_from_slice(&(events.len() as u32).to_le_bytes());
@@ -252,5 +369,104 @@ mod tests {
         let encoded = encode_events(&events);
         let decoded = decode_events(&encoded).unwrap();
         assert_eq!(events, decoded);
+    }
+
+    #[test]
+    fn keydown_binary_nk1_and_shorthand_roundtrip_and_edge_cases() {
+        // Every single modifier flag combination roundtrips through NK1 binary framing.
+        for mask in 0u8..16 {
+            let meta = (mask & KEYDOWN_FLAG_META) != 0;
+            let ctrl = (mask & KEYDOWN_FLAG_CTRL) != 0;
+            let shift = (mask & KEYDOWN_FLAG_SHIFT) != 0;
+            let alt = (mask & KEYDOWN_FLAG_ALT) != 0;
+            let encoded = encode_keydown_bytes("k", meta, ctrl, shift, alt);
+            assert_eq!(&encoded[..3], &KEYDOWN_WIRE_MAGIC);
+            assert_eq!(encoded[3], mask);
+            assert_eq!(&encoded[4..], b"k");
+            let decoded = decode_keydown_bytes(&encoded).expect("valid NK1");
+            assert_eq!(
+                decoded,
+                DecodedKeyDown {
+                    key: "k".into(),
+                    meta,
+                    ctrl,
+                    shift,
+                    alt,
+                }
+            );
+            assert_eq!(decoded.has_primary_modifier(), meta || ctrl);
+        }
+
+        // Multi-byte UTF-8 and space keys survive NK1 verbatim without trimming.
+        let space = encode_keydown_bytes(" ", false, false, true, false);
+        assert_eq!(
+            decode_keydown_bytes(&space),
+            Some(DecodedKeyDown {
+                key: " ".into(),
+                shift: true,
+                ..Default::default()
+            })
+        );
+        let cjk = encode_keydown_bytes("漢", true, false, false, true);
+        assert_eq!(
+            decode_keydown_bytes(&cjk),
+            Some(DecodedKeyDown {
+                key: "漢".into(),
+                meta: true,
+                alt: true,
+                ..Default::default()
+            })
+        );
+
+        // Compact UTF-8 shorthand works seamlessly.
+        assert_eq!(
+            decode_keydown_bytes(b"Cmd+k"),
+            Some(DecodedKeyDown {
+                key: "k".into(),
+                meta: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            decode_keydown_bytes(b"Ctrl+Shift+Alt+Enter"),
+            Some(DecodedKeyDown {
+                key: "Enter".into(),
+                ctrl: true,
+                shift: true,
+                alt: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            decode_keydown_bytes(b"Escape"),
+            Some(DecodedKeyDown {
+                key: "Escape".into(),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            decode_keydown_bytes(b"+"),
+            Some(DecodedKeyDown {
+                key: "+".into(),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            decode_keydown_bytes(b"Cmd++"),
+            Some(DecodedKeyDown {
+                key: "+".into(),
+                meta: true,
+                ..Default::default()
+            })
+        );
+
+        // Truncated / empty / invalid UTF-8 inputs return None safely.
+        assert_eq!(decode_keydown_bytes(&[]), None);
+        assert_eq!(decode_keydown_bytes(b"   "), None);
+        assert_eq!(decode_keydown_bytes(b"NK1"), None);
+        assert_eq!(decode_keydown_bytes(b"NK1\x01"), None);
+        assert_eq!(decode_keydown_bytes(&[b'N', b'K', b'1', 0, 0xFF, 0xFE]), None);
+        assert_eq!(decode_keydown_bytes(&[0xFF, 0xFE]), None);
+        assert_eq!(decode_keydown_bytes(b"Cmd+"), None);
     }
 }

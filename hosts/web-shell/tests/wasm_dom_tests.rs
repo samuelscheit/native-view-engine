@@ -85,8 +85,18 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
     assert!(html0.contains("AETHER"));
     assert!(html0.contains("Issue Board"));
     assert!(html0.contains("NVE STUDIO"));
+    assert!(html0.contains("LIVE SYNC"));
+    assert!(html0.contains("LAN QUIC"));
     assert!(html0.contains("X-Ray HUD: OFF"));
     assert!(find_node_by_test_id(session.backend(), "studio-panel").is_some());
+    assert!(find_node_by_test_id(session.backend(), "studio-sync-telemetry").is_some());
+
+    // Cycle Live Sync transport mode via Studio panel button.
+    press_test_id(&mut session, "sync-transport-cycle", 50);
+    let after_sync = session.backend().render_html();
+    assert_balanced_dom(&after_sync);
+    assert!(after_sync.contains("USB Mux"));
+    assert!(after_sync.contains("1 peer"));
 
     // Create a new task and verify board counts + filter pills respond cleanly.
     press_test_id(&mut session, "btn-new-task", 100);

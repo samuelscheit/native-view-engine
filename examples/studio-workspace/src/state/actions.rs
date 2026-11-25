@@ -1,542 +1,15 @@
-//! Deterministic state machine, workspace domain model, and bounded time-travel history
-//! for **Aether Workspace** + **NVE Studio**.
+//! State transition actions for navigation, Issue Board, chat channels, 100k Stream,
+//! NVE Studio controls, Live Sync telemetry, `Cmd+K` Command Palette, and `<Island>` sandbox.
 
-use nve_engine::BuiltinLayout;
-use serde::{Deserialize, Serialize};
+use crate::ui_islands::{format_disposition, format_lifecycle, GestureSimMode, IslandSandboxRuntime};
+use crate::ui_palette::{execute_palette_action, filter_palette_items};
 
-use crate::ui_islands::{
-    format_disposition, format_lifecycle, GestureSimMode, IslandSandboxRuntime, IslandsSnapshot,
+use super::models::{
+    AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
+    LayoutEngineMode, Priority, SyncTelemetryState, TaskItem, TaskStatus, MAX_STRESS_ROWS,
+    MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
 };
-use crate::ui_palette::{
-    execute_palette_action, filter_palette_items, fuzzy_score, CommandPaletteState,
-};
-
-/// Maximum number of retained deterministic snapshots in the time-travel ring.
-pub const MAX_HISTORY: usize = 64;
-
-/// Maximum stress rows rendered in the Metrics view to keep frame sizes snappy.
-pub const MAX_STRESS_ROWS: usize = 96;
-
-/// Maximum number of telemetry samples plotted by the live `SkiaCanvas` sparkline.
-pub const MAX_TELEMETRY_SAMPLES: usize = 24;
-
-/// Responsive breakpoint (in logical points) below which the desktop 3-column layout
-/// collapses into a single-column mobile portrait layout with collapsible drawers.
-pub const MOBILE_BREAKPOINT_PT: f32 = 620.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActiveView {
-    Board,
-    ChannelEngineering,
-    ChannelDesign,
-    Stream100k,
-    Islands,
-    Metrics,
-}
-
-impl ActiveView {
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Board => "Issue Board",
-            Self::ChannelEngineering => "# engineering",
-            Self::ChannelDesign => "# design-sync",
-            Self::Stream100k => "100k Stream",
-            Self::Islands => "Multi-Host Islands",
-            Self::Metrics => "Live Metrics",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BoardFilter {
-    All,
-    Active,
-    Done,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Priority {
-    P0,
-    P1,
-    P2,
-}
-
-impl Priority {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::P0 => "P0",
-            Self::P1 => "P1",
-            Self::P2 => "P2",
-        }
-    }
-
-    pub const fn badge_bg(self) -> &'static str {
-        match self {
-            Self::P0 => "#450a0a",
-            Self::P1 => "#451a03",
-            Self::P2 => "#0c4a6e",
-        }
-    }
-
-    pub const fn badge_fg(self) -> &'static str {
-        match self {
-            Self::P0 => "#fca5a5",
-            Self::P1 => "#fcd34d",
-            Self::P2 => "#7dd3fc",
-        }
-    }
-
-    pub const fn badge_border(self) -> &'static str {
-        match self {
-            Self::P0 => "#ef4444",
-            Self::P1 => "#f59e0b",
-            Self::P2 => "#38bdf8",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskStatus {
-    Todo,
-    InProgress,
-    Done,
-}
-
-impl TaskStatus {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Todo => "Todo",
-            Self::InProgress => "In Progress",
-            Self::Done => "Done",
-        }
-    }
-
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Todo => Self::InProgress,
-            Self::InProgress => Self::Done,
-            Self::Done => Self::Todo,
-        }
-    }
-
-    pub const fn pill_bg(self) -> &'static str {
-        match self {
-            Self::Todo => "#1e293b",
-            Self::InProgress => "#1e1b4b",
-            Self::Done => "#052e16",
-        }
-    }
-
-    pub const fn pill_fg(self) -> &'static str {
-        match self {
-            Self::Todo => "#cbd5e1",
-            Self::InProgress => "#c4b5fd",
-            Self::Done => "#86efac",
-        }
-    }
-
-    pub const fn pill_border(self) -> &'static str {
-        match self {
-            Self::Todo => "#475569",
-            Self::InProgress => "#8b5cf6",
-            Self::Done => "#22c55e",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskItem {
-    pub id: u32,
-    pub key: String,
-    pub title: String,
-    pub assignee: String,
-    pub tag: String,
-    pub priority: Priority,
-    pub status: TaskStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChannelKind {
-    Engineering,
-    Design,
-}
-
-impl ChannelKind {
-    pub const fn tag(self) -> &'static str {
-        match self {
-            Self::Engineering => "#engineering",
-            Self::Design => "#design-sync",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub id: u32,
-    pub author: String,
-    pub badge_bg: String,
-    pub badge_fg: String,
-    pub timestamp: String,
-    pub body: String,
-    pub reactions: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AccentTheme {
-    Cyan,
-    Violet,
-    Green,
-    Amber,
-}
-
-impl AccentTheme {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Cyan => "Cyan",
-            Self::Violet => "Violet",
-            Self::Green => "Green",
-            Self::Amber => "Amber",
-        }
-    }
-
-    pub const fn hex(self) -> &'static str {
-        match self {
-            Self::Cyan => "#38bdf8",
-            Self::Violet => "#a78bfa",
-            Self::Green => "#22c55e",
-            Self::Amber => "#f59e0b",
-        }
-    }
-
-    /// Subtle dark tinted fill for active sidebar tabs and badges.
-    pub const fn tint_bg(self) -> &'static str {
-        match self {
-            Self::Cyan => "#0c2d42",
-            Self::Violet => "#241942",
-            Self::Green => "#0c2e1f",
-            Self::Amber => "#36220a",
-        }
-    }
-
-    /// High-contrast dark ink rendered atop solid accent buttons.
-    pub const fn on_accent_fg(self) -> &'static str {
-        "#0b1120"
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CornerRadiusMode {
-    Sharp,
-    Soft,
-    Pill,
-}
-
-impl CornerRadiusMode {
-    pub const fn px(self) -> u32 {
-        match self {
-            Self::Sharp => 0,
-            Self::Soft => 12,
-            Self::Pill => 18,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Sharp => "Sharp",
-            Self::Soft => "Soft",
-            Self::Pill => "Pill",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DensityMode {
-    Normal,
-    Compact,
-}
-
-impl DensityMode {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Normal => "Normal",
-            Self::Compact => "Compact",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum LayoutEngineMode {
-    #[default]
-    Taffy,
-    Yoga,
-}
-
-impl LayoutEngineMode {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Taffy => "Taffy",
-            Self::Yoga => "Yoga",
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Taffy => "taffy",
-            Self::Yoga => "yoga",
-        }
-    }
-
-    pub const fn readout_label(self) -> &'static str {
-        match self {
-            Self::Taffy => "Active: Taffy (Rust)",
-            Self::Yoga => "Active: Yoga (C++20)",
-        }
-    }
-
-    pub const fn to_builtin(self) -> BuiltinLayout {
-        match self {
-            Self::Taffy => BuiltinLayout::Taffy,
-            Self::Yoga => BuiltinLayout::Yoga,
-        }
-    }
-
-    pub const fn toggled(self) -> Self {
-        match self {
-            Self::Taffy => Self::Yoga,
-            Self::Yoga => Self::Taffy,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Stream100kState {
-    pub scroll_offset_y: u32,
-    pub viewport_height: u32,
-    pub overscan: usize,
-    pub variable_heights: bool,
-    pub expanded_rows: Vec<usize>,
-}
-
-impl Default for Stream100kState {
-    fn default() -> Self {
-        Self {
-            scroll_offset_y: 0,
-            viewport_height: 360,
-            overscan: 2,
-            variable_heights: true,
-            expanded_rows: Vec::new(),
-        }
-    }
-}
-
-fn default_viewport_width() -> u32 {
-    960
-}
-
-fn default_viewport_height() -> u32 {
-    640
-}
-
-fn default_telemetry_samples() -> Vec<u32> {
-    vec![195, 224, 188, 262, 210, 176, 238, 192]
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StudioConfig {
-    pub panel_open: bool,
-    pub accent: AccentTheme,
-    pub radius: CornerRadiusMode,
-    pub density: DensityMode,
-    pub xray: bool,
-    #[serde(default)]
-    pub layout_engine: LayoutEngineMode,
-}
-
-impl Default for StudioConfig {
-    fn default() -> Self {
-        Self {
-            panel_open: true,
-            accent: AccentTheme::Cyan,
-            radius: CornerRadiusMode::Soft,
-            density: DensityMode::Normal,
-            xray: false,
-            layout_engine: LayoutEngineMode::Taffy,
-        }
-    }
-}
-
-/// Complete serializable snapshot of the workspace & live studio configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceSnapshot {
-    pub active_view: ActiveView,
-    pub board_filter: BoardFilter,
-    #[serde(default)]
-    pub board_search_query: String,
-    #[serde(default)]
-    pub new_task_draft: String,
-    pub tasks: Vec<TaskItem>,
-    pub next_task_id: u32,
-    pub eng_messages: Vec<ChatMessage>,
-    pub design_messages: Vec<ChatMessage>,
-    #[serde(default)]
-    pub eng_draft: String,
-    #[serde(default)]
-    pub design_draft: String,
-    pub next_msg_id: u32,
-    pub stress_rows: usize,
-    #[serde(default = "default_telemetry_samples")]
-    pub telemetry_samples_us: Vec<u32>,
-    #[serde(default)]
-    pub stream: Stream100kState,
-    #[serde(default)]
-    pub islands: IslandsSnapshot,
-    pub studio: StudioConfig,
-    pub action_label: String,
-    #[serde(default = "default_viewport_width")]
-    pub viewport_width: u32,
-    #[serde(default = "default_viewport_height")]
-    pub viewport_height: u32,
-    #[serde(default)]
-    pub mobile_nav_open: bool,
-    #[serde(default)]
-    pub mobile_studio_open: bool,
-}
-
-impl Default for WorkspaceSnapshot {
-    fn default() -> Self {
-        Self {
-            active_view: ActiveView::Board,
-            board_filter: BoardFilter::All,
-            board_search_query: String::new(),
-            new_task_draft: String::new(),
-            tasks: vec![
-                TaskItem {
-                    id: 1,
-                    key: "AET-101".into(),
-                    title: "Zero-copy EventRing ABI".into(),
-                    assignee: "@maya".into(),
-                    tag: "ABI".into(),
-                    priority: Priority::P0,
-                    status: TaskStatus::InProgress,
-                },
-                TaskItem {
-                    id: 2,
-                    key: "AET-102".into(),
-                    title: "Qt 6 + AppKit scroll view".into(),
-                    assignee: "@liam".into(),
-                    tag: "Hosts".into(),
-                    priority: Priority::P1,
-                    status: TaskStatus::Todo,
-                },
-                TaskItem {
-                    id: 3,
-                    key: "AET-103".into(),
-                    title: "Tier-2 cdylib state swap".into(),
-                    assignee: "@sara".into(),
-                    tag: "HotSwap".into(),
-                    priority: Priority::P2,
-                    status: TaskStatus::Done,
-                },
-                TaskItem {
-                    id: 4,
-                    key: "AET-104".into(),
-                    title: "Sub-ms Taffy layout diff".into(),
-                    assignee: "@dev".into(),
-                    tag: "Layout".into(),
-                    priority: Priority::P1,
-                    status: TaskStatus::Todo,
-                },
-            ],
-            next_task_id: 5,
-            eng_messages: vec![
-                ChatMessage {
-                    id: 1,
-                    author: "maya".into(),
-                    badge_bg: "#0c4a6e".into(),
-                    badge_fg: "#7dd3fc".into(),
-                    timestamp: "09:41".into(),
-                    body: "Single ABI drives all 4 hosts!".into(),
-                    reactions: 4,
-                },
-                ChatMessage {
-                    id: 2,
-                    author: "liam".into(),
-                    badge_bg: "#2e1065".into(),
-                    badge_fg: "#c4b5fd".into(),
-                    timestamp: "09:44".into(),
-                    body: "p99 diff holds 0.38ms @ 1k.".into(),
-                    reactions: 3,
-                },
-                ChatMessage {
-                    id: 3,
-                    author: "sara".into(),
-                    badge_bg: "#052e16".into(),
-                    badge_fg: "#86efac".into(),
-                    timestamp: "09:49".into(),
-                    body: "Tier-2 reload kept snapshots.".into(),
-                    reactions: 2,
-                },
-            ],
-            design_messages: vec![
-                ChatMessage {
-                    id: 101,
-                    author: "aria".into(),
-                    badge_bg: "#451a03".into(),
-                    badge_fg: "#fcd34d".into(),
-                    timestamp: "10:05".into(),
-                    body: "Dark slate contrast verified.".into(),
-                    reactions: 5,
-                },
-                ChatMessage {
-                    id: 102,
-                    author: "noah".into(),
-                    badge_bg: "#0c4a6e".into(),
-                    badge_fg: "#7dd3fc".into(),
-                    timestamp: "10:12".into(),
-                    body: "Try X-Ray HUD + Pill radius!".into(),
-                    reactions: 3,
-                },
-            ],
-            eng_draft: String::new(),
-            design_draft: String::new(),
-            next_msg_id: 200,
-            stress_rows: 4,
-            telemetry_samples_us: default_telemetry_samples(),
-            stream: Stream100kState::default(),
-            islands: IslandsSnapshot::default(),
-            studio: StudioConfig::default(),
-            action_label: "Workspace Boot".into(),
-            viewport_width: default_viewport_width(),
-            viewport_height: default_viewport_height(),
-            mobile_nav_open: false,
-            mobile_studio_open: false,
-        }
-    }
-}
-
-/// Top-level runtime state persisted across Tier-2 `cdylib` hot-swaps and time-travel scrubs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceState {
-    pub current: WorkspaceSnapshot,
-    pub history: Vec<WorkspaceSnapshot>,
-    pub cursor: usize,
-    pub frame_count: u64,
-    #[serde(default)]
-    pub palette: CommandPaletteState,
-}
-
-impl Default for WorkspaceState {
-    fn default() -> Self {
-        let initial = WorkspaceSnapshot::default();
-        Self {
-            history: vec![initial.clone()],
-            current: initial,
-            cursor: 0,
-            frame_count: 1,
-            palette: CommandPaletteState::default(),
-        }
-    }
-}
+use super::WorkspaceState;
 
 const NEW_TASK_TEMPLATES: &[(&str, &str, &str, Priority)] = &[
     ("Local-first CRDT sync", "@maya", "Sync", Priority::P0),
@@ -547,37 +20,6 @@ const NEW_TASK_TEMPLATES: &[(&str, &str, &str, Priority)] = &[
 ];
 
 impl WorkspaceState {
-    /// Commits a deterministic state transition onto the bounded time-travel history stack.
-    fn commit_action<F>(&mut self, label: impl Into<String>, mutate: F)
-    where
-        F: FnOnce(&mut WorkspaceSnapshot),
-    {
-        // Truncate any speculative redo future if we branched from an older cursor.
-        if self.cursor + 1 < self.history.len() {
-            self.history.truncate(self.cursor + 1);
-        }
-        mutate(&mut self.current);
-        self.current.action_label = label.into();
-        // Record a deterministic mutation-cost timing sample for the live SkiaCanvas sparkline.
-        let sample_us = 155u32
-            + ((self.current.tasks.len() as u32) * 11
-                + (self.current.stress_rows as u32) * 7
-                + (self.frame_count as u32 % 9) * 19)
-                % 220;
-        self.current.telemetry_samples_us.push(sample_us);
-        if self.current.telemetry_samples_us.len() > MAX_TELEMETRY_SAMPLES {
-            let extra = self.current.telemetry_samples_us.len() - MAX_TELEMETRY_SAMPLES;
-            self.current.telemetry_samples_us.drain(0..extra);
-        }
-        self.history.push(self.current.clone());
-        if self.history.len() > MAX_HISTORY {
-            let overflow = self.history.len() - MAX_HISTORY;
-            self.history.drain(0..overflow);
-        }
-        self.cursor = self.history.len().saturating_sub(1);
-        self.frame_count = self.frame_count.saturating_add(1);
-    }
-
     pub fn is_mobile_portrait(&self) -> bool {
         (self.current.viewport_width as f32) < MOBILE_BREAKPOINT_PT
     }
@@ -861,53 +303,46 @@ impl WorkspaceState {
         self.commit_action(label, |s| s.studio.xray = next);
     }
 
-    pub fn scrub_first(&mut self) {
-        if self.cursor == 0 || self.history.is_empty() {
-            return;
+    /// Updates live sync / pairing telemetry metrics without polluting time-travel history.
+    pub fn update_sync_telemetry(&mut self, telemetry: SyncTelemetryState) -> bool {
+        if self.sync_telemetry == telemetry {
+            return false;
         }
-        self.cursor = 0;
-        self.current = self.history[0].clone();
+        self.sync_telemetry = telemetry;
         self.frame_count = self.frame_count.saturating_add(1);
+        true
     }
 
-    pub fn scrub_undo(&mut self) {
-        if self.cursor == 0 || self.history.is_empty() {
-            return;
+    /// Cycles the active live sync transport mode (LAN QUIC -> USB Mux -> Relay WSS -> Offline).
+    pub fn cycle_sync_transport(&mut self) {
+        let next = self.sync_telemetry.transport.next();
+        self.sync_telemetry.transport = next;
+        match next {
+            super::models::SyncTransportMode::LanQuic => {
+                self.sync_telemetry.connected_peers = 2;
+                self.sync_telemetry.kbps_tenths = 38;
+                self.sync_telemetry.compression_tenths = 64;
+                self.sync_telemetry.rtt_ms_tenths = 14;
+            }
+            super::models::SyncTransportMode::UsbMux => {
+                self.sync_telemetry.connected_peers = 1;
+                self.sync_telemetry.kbps_tenths = 24;
+                self.sync_telemetry.compression_tenths = 72;
+                self.sync_telemetry.rtt_ms_tenths = 4;
+            }
+            super::models::SyncTransportMode::RelayWss => {
+                self.sync_telemetry.connected_peers = 3;
+                self.sync_telemetry.kbps_tenths = 51;
+                self.sync_telemetry.compression_tenths = 58;
+                self.sync_telemetry.rtt_ms_tenths = 264;
+            }
+            super::models::SyncTransportMode::Offline => {
+                self.sync_telemetry.connected_peers = 0;
+                self.sync_telemetry.kbps_tenths = 0;
+                self.sync_telemetry.compression_tenths = 10;
+                self.sync_telemetry.rtt_ms_tenths = 0;
+            }
         }
-        self.cursor -= 1;
-        self.current = self.history[self.cursor].clone();
-        self.frame_count = self.frame_count.saturating_add(1);
-    }
-
-    pub fn scrub_redo(&mut self) {
-        if self.cursor + 1 >= self.history.len() {
-            return;
-        }
-        self.cursor += 1;
-        self.current = self.history[self.cursor].clone();
-        self.frame_count = self.frame_count.saturating_add(1);
-    }
-
-    pub fn scrub_live(&mut self) {
-        let last = self.history.len().saturating_sub(1);
-        if self.cursor == last || self.history.is_empty() {
-            return;
-        }
-        self.cursor = last;
-        self.current = self.history[last].clone();
-        self.frame_count = self.frame_count.saturating_add(1);
-    }
-
-    pub fn scrub_to(&mut self, index: usize) {
-        if self.history.is_empty() {
-            return;
-        }
-        let target = index.min(self.history.len() - 1);
-        if self.cursor == target {
-            return;
-        }
-        self.cursor = target;
-        self.current = self.history[target].clone();
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
@@ -1164,80 +599,5 @@ impl WorkspaceState {
             s.islands.last_gesture_reason = reason_str;
             s.islands.last_gesture_cancelled_count = decision.cancelled_surfaces.len();
         });
-    }
-
-    pub fn can_undo(&self) -> bool {
-        self.cursor > 0
-    }
-
-    pub fn can_redo(&self) -> bool {
-        self.cursor + 1 < self.history.len()
-    }
-
-    pub fn history_len(&self) -> usize {
-        self.history.len()
-    }
-
-    pub fn snapshot_index_1based(&self) -> usize {
-        self.cursor + 1
-    }
-
-    pub fn active_task_count(&self) -> usize {
-        self.current
-            .tasks
-            .iter()
-            .filter(|t| t.status != TaskStatus::Done)
-            .count()
-    }
-
-    pub fn done_task_count(&self) -> usize {
-        self.current
-            .tasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::Done)
-            .count()
-    }
-
-    pub fn total_message_count(&self) -> usize {
-        self.current.eng_messages.len() + self.current.design_messages.len()
-    }
-
-    pub fn filtered_tasks(&self) -> Vec<TaskItem> {
-        let search = self.current.board_search_query.trim();
-        self.current
-            .tasks
-            .iter()
-            .filter(|t| {
-                let status_ok = match self.current.board_filter {
-                    BoardFilter::All => true,
-                    BoardFilter::Active => t.status != TaskStatus::Done,
-                    BoardFilter::Done => t.status == TaskStatus::Done,
-                };
-                if !status_ok {
-                    return false;
-                }
-                if search.is_empty() {
-                    return true;
-                }
-                let hay = format!("{} {} {} {}", t.key, t.title, t.assignee, t.tag);
-                fuzzy_score(search, &hay).is_some()
-            })
-            .cloned()
-            .collect()
-    }
-
-    pub fn to_json_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap_or_default()
-    }
-
-    pub fn from_json_bytes(bytes: &[u8]) -> Option<Self> {
-        let mut parsed: Self = serde_json::from_slice(bytes).ok()?;
-        if parsed.history.is_empty() {
-            parsed.history.push(parsed.current.clone());
-            parsed.cursor = 0;
-        } else if parsed.cursor >= parsed.history.len() {
-            parsed.cursor = parsed.history.len() - 1;
-        }
-        Some(parsed)
     }
 }

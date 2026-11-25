@@ -99,6 +99,8 @@ macro_rules! define_element {
                 test_id => "testID",
                 accessibility_label => "accessibilityLabel",
                 accessibility_role => "accessibilityRole",
+                accessibility_hint => "accessibilityHint",
+                disabled => "disabled",
                 $($( $extra_ident => $extra_name, )*)?
             }
         }
@@ -126,6 +128,7 @@ pub mod elements {
         value => "value",
         multiline => "multiline",
         secure_text_entry => "secureTextEntry",
+        read_only => "readOnly",
     });
     define_element!(skia_canvas, "skia-canvas", {
         draw_list => "drawList",
@@ -178,5 +181,7 @@ pub mod GlobalAttributes {
         test_id => "testID",
         accessibility_label => "accessibilityLabel",
         accessibility_role => "accessibilityRole",
+        accessibility_hint => "accessibilityHint",
+        disabled => "disabled",
     }
 }

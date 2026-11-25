@@ -5,7 +5,7 @@
 //! `Image`, `SkiaCanvas`) and exports the modular `nve_get_interface` C ABI via
 //! `nve_engine::export_nve_app!` with zero `unsafe`, full Tier-1 hot-patching, and Tier-2 `cdylib`
 //! hot-swap state preservation (preserving every task, message, theme, X-Ray setting, `<Island>`
-//! sandbox state, and deterministic time-travel snapshot).
+//! sandbox state, Live Sync telemetry, and deterministic time-travel snapshot).
 
 pub mod assets;
 pub mod state;
@@ -20,19 +20,20 @@ pub mod virtual_list;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    decode_events, encode_events, Command, CommandBufferBuilder, CommandDecoder, EventPayload,
-    FrameId, NativeEvent, NativeEventKind, NveGestureDisposition, NveIntrinsicSize,
-    NveSizeConstraints, RawPropValue, SurfaceId, ROOT_NODE_ID,
+    decode_events, encode_events, BinValueView, EventPayload, FrameId, NativeEvent,
+    NativeEventKind, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
+    SurfaceId, ROOT_NODE_ID,
 };
-use nve_components::{DrawListDecoder, DRAW_LIST_ATTR_PREFIX};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
 
 pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use state::{
     AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
-    LayoutEngineMode, Priority, Stream100kState, StudioConfig, TaskItem, TaskStatus,
-    WorkspaceSnapshot, WorkspaceState, MAX_HISTORY, MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
+    LayoutEngineMode, Priority, Stream100kState, StudioConfig, SyncTelemetryState,
+    SyncTransportMode, TaskItem, TaskStatus, WorkspaceSnapshot, WorkspaceState, MAX_HISTORY,
+    MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT, WORKSPACE_STATE_BIN_MAGIC,
+    WORKSPACE_STATE_BIN_VERSION,
 };
 pub use ui::StudioWorkspaceApp;
 pub use ui_islands::{
@@ -78,65 +79,116 @@ pub fn create_surface_with_store(
     surface
 }
 
-/// Upgrades any `drawList` string prop carrying `nve-draw1;b64,...` inside a `CommandBuffer`
-/// into a zero-JSON binary [`RawPropValue::Bytes`] payload (`NVE_DRAW1...`).
-///
-/// Fast-paths with zero decode/re-encode overhead whenever the frame contains no draw-list prop.
-pub fn upgrade_draw_list_props_to_bytes(frame_bytes: Vec<u8>) -> Vec<u8> {
-    let needle = DRAW_LIST_ATTR_PREFIX.as_bytes();
-    if !frame_bytes.windows(needle.len()).any(|w| w == needle) {
-        return frame_bytes;
+fn parse_accent(s: &str) -> Option<AccentTheme> {
+    match s.to_ascii_lowercase().as_str() {
+        "cyan" => Some(AccentTheme::Cyan),
+        "violet" => Some(AccentTheme::Violet),
+        "green" => Some(AccentTheme::Green),
+        "amber" => Some(AccentTheme::Amber),
+        _ => None,
     }
-    let Ok((header, commands)) =
-        CommandDecoder::new(&frame_bytes).and_then(CommandDecoder::decode_all)
-    else {
-        return frame_bytes;
-    };
-    let mut builder = CommandBufferBuilder::new(header.surface_id, header.frame_id);
-    for cmd in commands {
-        match cmd {
-            Command::CreateNode {
-                node_id,
-                kind,
-                custom_name,
-            } => builder.create_node(node_id, kind, custom_name.as_deref()),
-            Command::RemoveNode { node_id } => builder.remove_node(node_id),
-            Command::SetChildren {
-                parent_id,
-                children,
-            } => builder.set_children(parent_id, &children),
-            Command::SetText { node_id, text } => builder.set_text(node_id, &text),
-            Command::SetLayout { node_id, layout } => builder.set_layout(node_id, &layout),
-            Command::SetStyle { node_id, style } => builder.set_style(node_id, &style),
-            Command::SetRawProp {
-                node_id,
-                key,
-                value,
-            } => {
-                if key == "drawList" {
-                    if let RawPropValue::String(ref s) = value {
-                        if let Ok(raw_draw_bytes) = DrawListDecoder::decode_attr_bytes(s) {
-                            builder.set_raw_prop(
-                                node_id,
-                                &key,
-                                &RawPropValue::Bytes(raw_draw_bytes),
-                            );
-                            continue;
-                        }
-                    }
-                }
-                builder.set_raw_prop(node_id, &key, &value);
-            }
-            Command::SetEventMask { node_id, mask } => builder.set_event_mask(node_id, mask),
-            Command::DispatchCommand {
-                node_id,
-                command_name,
-                payload,
-            } => builder.dispatch_command(node_id, &command_name, &payload),
-            Command::Commit { sync_mount } => builder.commit(sync_mount),
+}
+
+fn parse_layout_engine(s: &str) -> Option<LayoutEngineMode> {
+    match s.to_ascii_lowercase().as_str() {
+        "taffy" => Some(LayoutEngineMode::Taffy),
+        "yoga" => Some(LayoutEngineMode::Yoga),
+        _ => None,
+    }
+}
+
+fn parse_active_view(s: &str) -> Option<ActiveView> {
+    match s.to_ascii_lowercase().as_str() {
+        "board" => Some(ActiveView::Board),
+        "engineering" => Some(ActiveView::ChannelEngineering),
+        "design" => Some(ActiveView::ChannelDesign),
+        "stream" | "stream100k" | "100k" => Some(ActiveView::Stream100k),
+        "islands" | "island" => Some(ActiveView::Islands),
+        "metrics" => Some(ActiveView::Metrics),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct PropUpdates<'a> {
+    studio_open: Option<bool>,
+    accent: Option<&'a str>,
+    layout_engine: Option<&'a str>,
+    view: Option<&'a str>,
+    viewport_width: Option<f64>,
+    viewport_height: Option<f64>,
+    stream_scroll_y: Option<u64>,
+    sync_transport: Option<&'a str>,
+    sync_peers: Option<u16>,
+    sync_kbps: Option<f64>,
+    sync_compression: Option<f64>,
+    sync_rtt_ms: Option<f64>,
+}
+
+fn apply_prop_updates(guard: &mut WorkspaceState, upd: PropUpdates<'_>) -> bool {
+    let mut changed = false;
+    if let Some(open) = upd.studio_open {
+        if guard.current.studio.panel_open != open {
+            guard.toggle_studio_panel();
+            changed = true;
         }
     }
-    builder.into_bytes()
+    if let Some(accent) = upd.accent.and_then(parse_accent) {
+        guard.set_accent(accent);
+        changed = true;
+    }
+    if let Some(mode) = upd.layout_engine.and_then(parse_layout_engine) {
+        guard.set_layout_engine(mode);
+        changed = true;
+    }
+    if let Some(v) = upd.view.and_then(parse_active_view) {
+        guard.select_view(v);
+        changed = true;
+    }
+    if upd.viewport_width.is_some() || upd.viewport_height.is_some() {
+        let next_w = upd
+            .viewport_width
+            .map(|v| v as f32)
+            .unwrap_or(guard.current.viewport_width as f32);
+        let next_h = upd
+            .viewport_height
+            .map(|v| v as f32)
+            .unwrap_or(guard.current.viewport_height as f32);
+        if guard.set_viewport_size(next_w, next_h) {
+            changed = true;
+        }
+    }
+    if let Some(scroll_y) = upd.stream_scroll_y {
+        guard.set_stream_scroll_offset(scroll_y.min(u32::MAX as u64) as u32);
+        changed = true;
+    }
+    if upd.sync_transport.is_some()
+        || upd.sync_peers.is_some()
+        || upd.sync_kbps.is_some()
+        || upd.sync_compression.is_some()
+        || upd.sync_rtt_ms.is_some()
+    {
+        let mut tel = guard.sync_telemetry.clone();
+        if let Some(mode) = upd.sync_transport.and_then(SyncTransportMode::parse) {
+            tel.transport = mode;
+        }
+        if let Some(peers) = upd.sync_peers {
+            tel.connected_peers = peers;
+        }
+        if let Some(kbps) = upd.sync_kbps.filter(|v| v.is_finite() && *v >= 0.0) {
+            tel.kbps_tenths = (kbps * 10.0).round() as u32;
+        }
+        if let Some(ratio) = upd.sync_compression.filter(|v| v.is_finite() && *v >= 0.0) {
+            tel.compression_tenths = ((ratio * 10.0).round() as u32).min(u16::MAX as u32) as u16;
+        }
+        if let Some(rtt) = upd.sync_rtt_ms.filter(|v| v.is_finite() && *v >= 0.0) {
+            tel.rtt_ms_tenths = (rtt * 10.0).round() as u32;
+        }
+        if guard.update_sync_telemetry(tel) {
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Safe `NveApp` wrapper exported via `nve_get_interface` for native shells & Tier-2 hot-swap.
@@ -146,7 +198,6 @@ pub struct StudioWorkspaceModule {
     surface: DioxusSurface,
     mounted: bool,
     last_reported_layout_engine: LayoutEngineMode,
-    last_frame_buf: Vec<u8>,
     last_state_buf: Vec<u8>,
     last_emitted_events_buf: Vec<u8>,
 }
@@ -163,6 +214,19 @@ impl StudioWorkspaceModule {
             .map(|g| g.clone())
             .unwrap_or_else(|e| e.into_inner().clone())
     }
+
+    /// Applies an already-decoded [`HotPatchMsg`] directly with zero serialization.
+    pub fn apply_hot_patch_msg(&mut self, msg: &HotPatchMsg) -> bool {
+        self.surface.apply_hot_patch(msg)
+    }
+
+    /// Decodes a wire hot-patch frame (`NVP1` binary or UTF-8 JSON) and queues it on the surface.
+    pub fn apply_hot_patch_wire(&mut self, raw: &[u8]) -> bool {
+        let Ok(msg) = HotPatchMsg::from_wire(raw) else {
+            return false;
+        };
+        self.surface.apply_hot_patch(&msg)
+    }
 }
 
 impl NveApp for StudioWorkspaceModule {
@@ -174,25 +238,21 @@ impl NveApp for StudioWorkspaceModule {
             surface: create_surface(surface_id),
             mounted: false,
             last_reported_layout_engine: LayoutEngineMode::Taffy,
-            last_frame_buf: Vec::new(),
             last_state_buf: Vec::new(),
             last_emitted_events_buf: Vec::new(),
         }
     }
 
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let bytes = if !self.mounted {
+        if !self.mounted {
             ui::set_pending_store(Arc::clone(&self.store));
-            let (_, _, bytes) = self.surface.render_frame(frame_id);
-            ui::clear_pending_store();
             self.mounted = true;
-            bytes
+            let slice = self.surface.render_frame_slice(frame_id);
+            ui::clear_pending_store();
+            slice
         } else {
-            let (_, _, bytes) = self.surface.render_frame(frame_id);
-            bytes
-        };
-        self.last_frame_buf = upgrade_draw_list_props_to_bytes(bytes);
-        &self.last_frame_buf
+            self.surface.render_frame_slice(frame_id)
+        }
     }
 
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
@@ -303,75 +363,112 @@ impl NveApp for StudioWorkspaceModule {
         NveGestureDisposition::Claim
     }
 
-    fn set_props(&mut self, props_json: &[u8]) -> bool {
-        let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_json) else {
-            return false;
+    fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {
+        let upd = PropUpdates {
+            studio_open: props.get("studioOpen").and_then(|v| v.as_bool()),
+            accent: props.get("accent").and_then(|v| v.as_str()),
+            layout_engine: props.get("layoutEngine").and_then(|v| v.as_str()),
+            view: props.get("view").and_then(|v| v.as_str()),
+            viewport_width: props.get("viewportWidth").and_then(|v| v.as_number()),
+            viewport_height: props.get("viewportHeight").and_then(|v| v.as_number()),
+            stream_scroll_y: props
+                .get("streamScrollY")
+                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                .filter(|&n| n >= 0)
+                .map(|n| n as u64),
+            sync_transport: props.get("syncTransport").and_then(|v| v.as_str()),
+            sync_peers: props
+                .get("syncPeers")
+                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                .and_then(|n| u16::try_from(n).ok()),
+            sync_kbps: props.get("syncKbps").and_then(|v| v.as_number()),
+            sync_compression: props.get("syncCompression").and_then(|v| v.as_number()),
+            sync_rtt_ms: props.get("syncRttMs").and_then(|v| v.as_number()),
         };
-        let mut changed = false;
-        if let Ok(mut guard) = self.store.lock() {
-            if let Some(open) = val.get("studioOpen").and_then(|v| v.as_bool()) {
-                if guard.current.studio.panel_open != open {
-                    guard.toggle_studio_panel();
-                    changed = true;
-                }
-            }
-            if let Some(accent) = val.get("accent").and_then(|v| v.as_str()) {
-                let parsed = match accent.to_ascii_lowercase().as_str() {
-                    "cyan" => Some(AccentTheme::Cyan),
-                    "violet" => Some(AccentTheme::Violet),
-                    "green" => Some(AccentTheme::Green),
-                    "amber" => Some(AccentTheme::Amber),
-                    _ => None,
+        let changed = self
+            .store
+            .lock()
+            .map(|mut guard| apply_prop_updates(&mut guard, upd))
+            .unwrap_or(false);
+        if changed {
+            self.reset_surface_with_current_store();
+        }
+        changed
+    }
+
+    fn set_props(&mut self, props_bytes: &[u8]) -> bool {
+        // Fast path: zero-JSON binary `NveBinValue` map.
+        if let Ok(view) = BinValueView::parse(props_bytes) {
+            if view.as_map().is_some() {
+                let upd = PropUpdates {
+                    studio_open: view.get("studioOpen").and_then(|v| v.as_bool()),
+                    accent: view.get("accent").and_then(|v| v.as_str()),
+                    layout_engine: view.get("layoutEngine").and_then(|v| v.as_str()),
+                    view: view.get("view").and_then(|v| v.as_str()),
+                    viewport_width: view
+                        .get("viewportWidth")
+                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                    viewport_height: view
+                        .get("viewportHeight")
+                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                    stream_scroll_y: view
+                        .get("streamScrollY")
+                        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                        .filter(|&n| n >= 0)
+                        .map(|n| n as u64),
+                    sync_transport: view.get("syncTransport").and_then(|v| v.as_str()),
+                    sync_peers: view
+                        .get("syncPeers")
+                        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                        .and_then(|n| u16::try_from(n).ok()),
+                    sync_kbps: view
+                        .get("syncKbps")
+                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                    sync_compression: view
+                        .get("syncCompression")
+                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                    sync_rtt_ms: view
+                        .get("syncRttMs")
+                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
                 };
-                if let Some(theme) = parsed {
-                    guard.set_accent(theme);
-                    changed = true;
+                let changed = self
+                    .store
+                    .lock()
+                    .map(|mut guard| apply_prop_updates(&mut guard, upd))
+                    .unwrap_or(false);
+                if changed {
+                    self.reset_surface_with_current_store();
                 }
-            }
-            if let Some(engine) = val.get("layoutEngine").and_then(|v| v.as_str()) {
-                let parsed = match engine.to_ascii_lowercase().as_str() {
-                    "taffy" => Some(LayoutEngineMode::Taffy),
-                    "yoga" => Some(LayoutEngineMode::Yoga),
-                    _ => None,
-                };
-                if let Some(mode) = parsed {
-                    guard.set_layout_engine(mode);
-                    changed = true;
-                }
-            }
-            if let Some(view) = val.get("view").and_then(|v| v.as_str()) {
-                let parsed = match view.to_ascii_lowercase().as_str() {
-                    "board" => Some(ActiveView::Board),
-                    "engineering" => Some(ActiveView::ChannelEngineering),
-                    "design" => Some(ActiveView::ChannelDesign),
-                    "stream" | "stream100k" | "100k" => Some(ActiveView::Stream100k),
-                    "islands" | "island" => Some(ActiveView::Islands),
-                    "metrics" => Some(ActiveView::Metrics),
-                    _ => None,
-                };
-                if let Some(v) = parsed {
-                    guard.select_view(v);
-                    changed = true;
-                }
-            }
-            let vp_w = val.get("viewportWidth").and_then(|v| v.as_f64());
-            let vp_h = val.get("viewportHeight").and_then(|v| v.as_f64());
-            if vp_w.is_some() || vp_h.is_some() {
-                let next_w = vp_w
-                    .map(|v| v as f32)
-                    .unwrap_or(guard.current.viewport_width as f32);
-                let next_h = vp_h
-                    .map(|v| v as f32)
-                    .unwrap_or(guard.current.viewport_height as f32);
-                if guard.set_viewport_size(next_w, next_h) {
-                    changed = true;
-                }
-            }
-            if let Some(scroll_y) = val.get("streamScrollY").and_then(|v| v.as_u64()) {
-                guard.set_stream_scroll_offset(scroll_y.min(u32::MAX as u64) as u32);
-                changed = true;
+                return changed;
             }
         }
+
+        // Fallback for UTF-8 JSON props from external hosts / dynamic plugin tests.
+        let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_bytes) else {
+            return false;
+        };
+        let upd = PropUpdates {
+            studio_open: val.get("studioOpen").and_then(|v| v.as_bool()),
+            accent: val.get("accent").and_then(|v| v.as_str()),
+            layout_engine: val.get("layoutEngine").and_then(|v| v.as_str()),
+            view: val.get("view").and_then(|v| v.as_str()),
+            viewport_width: val.get("viewportWidth").and_then(|v| v.as_f64()),
+            viewport_height: val.get("viewportHeight").and_then(|v| v.as_f64()),
+            stream_scroll_y: val.get("streamScrollY").and_then(|v| v.as_u64()),
+            sync_transport: val.get("syncTransport").and_then(|v| v.as_str()),
+            sync_peers: val
+                .get("syncPeers")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u16::try_from(n).ok()),
+            sync_kbps: val.get("syncKbps").and_then(|v| v.as_f64()),
+            sync_compression: val.get("syncCompression").and_then(|v| v.as_f64()),
+            sync_rtt_ms: val.get("syncRttMs").and_then(|v| v.as_f64()),
+        };
+        let changed = self
+            .store
+            .lock()
+            .map(|mut guard| apply_prop_updates(&mut guard, upd))
+            .unwrap_or(false);
         if changed {
             self.reset_surface_with_current_store();
         }
@@ -403,24 +500,21 @@ impl NveApp for StudioWorkspaceModule {
         &self.last_emitted_events_buf
     }
 
-    fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
-        let Ok(msg) = HotPatchMsg::from_json(patch_json) else {
-            return false;
-        };
-        self.surface.apply_hot_patch(&msg)
+    fn apply_hot_patch(&mut self, patch_wire: &str) -> bool {
+        self.apply_hot_patch_wire(patch_wire.as_bytes())
     }
 
     fn snapshot_state(&mut self) -> &[u8] {
         self.last_state_buf = self
             .store
             .lock()
-            .map(|g| g.to_json_bytes())
+            .map(|g| g.to_bytes())
             .unwrap_or_default();
         &self.last_state_buf
     }
 
     fn restore_state(&mut self, state: &[u8]) {
-        if let Some(restored) = WorkspaceState::from_json_bytes(state) {
+        if let Some(restored) = WorkspaceState::from_bytes(state) {
             if let Ok(mut guard) = self.store.lock() {
                 *guard = restored;
             }

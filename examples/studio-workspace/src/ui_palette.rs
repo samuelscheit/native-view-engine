@@ -4,6 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use nve_abi::events::decode_keydown_bytes;
 use nve_dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -41,75 +42,17 @@ impl KeyDownEvent {
     }
 }
 
-/// Parses a `keydown` custom event payload from either compact UTF-8 shorthand
-/// (`"Cmd+k"`, `"Ctrl+k"`, `"ArrowDown"`, `"ArrowUp"`, `"Enter"`, `"Escape"`) or JSON
-/// (`{"key":"k","meta":true,"ctrl":false}`).
+/// Parses a `keydown` custom event payload from either zero-JSON binary `NK1` framing
+/// (`[b'N', b'K', b'1', flags_u8, utf8_key...]`) or compact UTF-8 shorthand
+/// (`"Cmd+k"`, `"Ctrl+k"`, `"ArrowDown"`, `"ArrowUp"`, `"Enter"`, `"Escape"`).
 pub fn parse_keydown_payload(data: &[u8]) -> Option<KeyDownEvent> {
-    let text = std::str::from_utf8(data).ok()?.trim();
-    if text.is_empty() {
-        return None;
-    }
-
-    if text.starts_with('{') {
-        let val: serde_json::Value = serde_json::from_str(text).ok()?;
-        let key = val.get("key")?.as_str()?.trim().to_owned();
-        if key.is_empty() {
-            return None;
-        }
-        return Some(KeyDownEvent {
-            key,
-            meta: val
-                .get("meta")
-                .or_else(|| val.get("metaKey"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            ctrl: val
-                .get("ctrl")
-                .or_else(|| val.get("ctrlKey"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            shift: val
-                .get("shift")
-                .or_else(|| val.get("shiftKey"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            alt: val
-                .get("alt")
-                .or_else(|| val.get("altKey"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        });
-    }
-
-    let mut meta = false;
-    let mut ctrl = false;
-    let mut shift = false;
-    let mut alt = false;
-    let mut key_part = text;
-
-    if text.contains('+') {
-        let parts: Vec<&str> = text.split('+').map(str::trim).filter(|s| !s.is_empty()).collect();
-        if parts.is_empty() {
-            return None;
-        }
-        for &mod_tok in &parts[..parts.len() - 1] {
-            match mod_tok.to_ascii_lowercase().as_str() {
-                "cmd" | "meta" | "super" => meta = true,
-                "ctrl" | "control" => ctrl = true,
-                "shift" => shift = true,
-                "alt" | "opt" | "option" => alt = true,
-                _ => {}
-            }
-        }
-        key_part = parts[parts.len() - 1];
-    }
-
+    let kd = decode_keydown_bytes(data)?;
     Some(KeyDownEvent {
-        key: key_part.to_owned(),
-        meta,
-        ctrl,
-        shift,
-        alt,
+        key: kd.key,
+        meta: kd.meta,
+        ctrl: kd.ctrl,
+        shift: kd.shift,
+        alt: kd.alt,
     })
 }
 

@@ -2,10 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use nve_abi::events::encode_keydown_bytes;
 use nve_abi::{
-    decode_events, encode_events, ColorRgba, Command, CommandDecoder, ComponentKind, EventMask,
-    EventPayload, LayoutProps, NativeEvent, NativeEventKind, NodeId, NveGestureDisposition,
-    NveSizeConstraints, RawPropValue, StyleProps, ROOT_NODE_ID,
+    decode_events, encode_bin_value_to_vec, encode_events, ColorRgba, Command, CommandDecoder,
+    ComponentKind, EventMask, EventPayload, LayoutProps, NativeEvent, NativeEventKind, NodeId,
+    NveGestureDisposition, NveMapEntry, NvePropsRef, NveSizeConstraints, NveValue, RawPropValue,
+    StyleProps, ROOT_NODE_ID,
 };
 use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
@@ -24,8 +26,8 @@ use nve_interop::{
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
     create_surface_for_viewport, fuzzy_score, AccentTheme, ActiveView, ChannelKind,
-    CornerRadiusMode, DensityMode, LayoutEngineMode, StudioWorkspaceModule, WorkspaceState,
-    MAX_HISTORY, MOBILE_BREAKPOINT_PT,
+    CornerRadiusMode, DensityMode, LayoutEngineMode, StudioWorkspaceModule, SyncTransportMode,
+    WorkspaceState, MAX_HISTORY, MOBILE_BREAKPOINT_PT, WORKSPACE_STATE_BIN_MAGIC,
 };
 
 struct MultiBackendHarness {
@@ -391,9 +393,21 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     assert_eq!((measured.width, measured.height), (960.0, 640.0));
     assert_eq!(app.hit_test(10.0, 10.0, 0), NveGestureDisposition::Claim);
 
-    assert!(app.set_props(br#"{"accent":"amber","view":"metrics","studioOpen":true}"#));
+    // Direct zero-JSON `set_props_direct` via NveMapEntry / NveValue.
+    let direct_entries = [
+        NveMapEntry::new("accent", NveValue::from_str("amber")),
+        NveMapEntry::new("view", NveValue::from_str("metrics")),
+        NveMapEntry::new("studioOpen", NveValue::bool(true)),
+        NveMapEntry::new("syncTransport", NveValue::from_str("usb-mux")),
+        NveMapEntry::new("syncPeers", NveValue::i64(3)),
+        NveMapEntry::new("syncKbps", NveValue::f64(4.6)),
+        NveMapEntry::new("syncCompression", NveValue::f64(7.2)),
+        NveMapEntry::new("syncRttMs", NveValue::f64(0.8)),
+    ];
+    let direct_props = unsafe { NvePropsRef::from_slice(&direct_entries) };
+    assert!(app.set_props_direct(direct_props));
     let _ = app.render(1);
-    let patch_json = HotPatchMsg::TemplatePatch {
+    let patch = HotPatchMsg::TemplatePatch {
         generation: 1,
         template_id: "studio".into(),
         target_test_id: None,
@@ -401,17 +415,20 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         attr_updates: vec![("opacity".into(), "0.95".into())],
         text_updates: vec![],
         text_replacements: vec![],
-    }
-    .to_json();
-    assert!(app.apply_hot_patch(&patch_json));
+    };
+    assert!(app.apply_hot_patch_wire(&patch.to_bytes()));
     let _ = app.render(2);
 
     let saved = app.snapshot_state().to_vec();
     assert!(!saved.is_empty());
+    assert!(
+        saved.starts_with(&WORKSPACE_STATE_BIN_MAGIC),
+        "snapshot_state must emit zero-JSON NWS1 binary format"
+    );
 
     let mut restored_app = StudioWorkspaceModule::create(1);
-    // Corrupt JSON must be safely ignored.
-    restored_app.restore_state(b"{not-valid-json");
+    // Corrupt / JSON bytes must be safely ignored.
+    restored_app.restore_state(b"{not-valid-binary");
     assert_eq!(
         restored_app.state_snapshot().current.studio.accent,
         AccentTheme::Cyan
@@ -422,6 +439,21 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     assert_eq!(snap.current.studio.accent, AccentTheme::Amber);
     assert_eq!(snap.current.active_view, ActiveView::Metrics);
     assert!(snap.current.studio.panel_open);
+    assert_eq!(snap.sync_telemetry.transport, SyncTransportMode::UsbMux);
+    assert_eq!(snap.sync_telemetry.connected_peers, 3);
+    assert_eq!(snap.sync_telemetry.kbps_tenths, 46);
+    assert_eq!(snap.sync_telemetry.compression_tenths, 72);
+    assert_eq!(snap.sync_telemetry.rtt_ms_tenths, 8);
+
+    // Also verify zero-JSON binary `NveBinValue` props via `set_props`.
+    let bin_entries = [NveMapEntry::new("accent", NveValue::from_str("green"))];
+    let bin_map = NveValue::map(&bin_entries);
+    let bin_bytes = encode_bin_value_to_vec(unsafe { bin_map.as_ref() }).unwrap();
+    assert!(restored_app.set_props(&bin_bytes));
+    assert_eq!(
+        restored_app.state_snapshot().current.studio.accent,
+        AccentTheme::Green
+    );
 
     let frame = restored_app.render(3);
     let mut host = HeadlessBackend::new();
@@ -434,16 +466,22 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         },
     );
     host.submit_frame(frame).unwrap();
-    assert!(host.render_ascii_tree().contains("Live Metrics"));
+    let tree = host.render_ascii_tree();
+    assert!(tree.contains("Live Metrics"));
+    assert!(tree.contains("LIVE SYNC"));
+    assert!(tree.contains("USB Mux"));
+    assert!(tree.contains("3 peers"));
+    assert!(tree.contains("4.6 KB/s | 7.2x | 0.8ms"));
 
-    // Verify additional state transitions serialize cleanly.
+    // Verify additional state transitions serialize cleanly via binary NWS1 codec.
     let mut s2 = WorkspaceState::default();
     s2.set_radius(CornerRadiusMode::Pill);
     s2.set_density(DensityMode::Compact);
     s2.toggle_xray();
     s2.send_quick_reply(ChannelKind::Engineering, "Checking roundtrip");
-    let raw = s2.to_json_bytes();
-    let decoded = WorkspaceState::from_json_bytes(&raw).expect("roundtrip state");
+    let raw = s2.to_bytes();
+    assert!(raw.starts_with(&WORKSPACE_STATE_BIN_MAGIC));
+    let decoded = WorkspaceState::from_bytes(&raw).expect("roundtrip state");
     assert_eq!(decoded, s2);
 }
 
@@ -1428,8 +1466,9 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
         host.submit_frame(&frame).unwrap();
     };
 
-    // Open via JSON keydown Cmd+k.
-    send_keydown(&mut app, &mut host, br#"{"key":"k","meta":true}"#, 2);
+    // Open via zero-JSON NK1 binary keydown Cmd+k.
+    let nk1_cmd_k = encode_keydown_bytes("k", true, false, false, false);
+    send_keydown(&mut app, &mut host, &nk1_cmd_k, 2);
     assert!(app.state_snapshot().palette.open);
     assert!(host.render_ascii_tree().contains("CMD+K PALETTE"));
 

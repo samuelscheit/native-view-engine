@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use nve_dioxus::prelude::*;
 
 use crate::state::{
-    AccentTheme, CornerRadiusMode, DensityMode, LayoutEngineMode, WorkspaceSnapshot, WorkspaceState,
+    AccentTheme, CornerRadiusMode, DensityMode, LayoutEngineMode, SyncTelemetryState,
+    WorkspaceSnapshot, WorkspaceState,
 };
 use crate::theme::{
     card_border, control_border, panel_border, row_border, LayoutMetrics, CARD_ALT_BG, CONTROL_BG,
@@ -21,6 +22,7 @@ pub(crate) fn render_studio_panel(
     store: &Arc<Mutex<WorkspaceState>>,
     version: Signal<u64>,
     current: &WorkspaceSnapshot,
+    sync_telemetry: &SyncTelemetryState,
     snap_idx: usize,
     hist_len: usize,
     can_undo: bool,
@@ -63,10 +65,29 @@ pub(crate) fn render_studio_panel(
     let xray_lbl = if xray { "X-Ray HUD: ON" } else { "X-Ray HUD: OFF" };
 
     let s_xray = Arc::clone(store);
+    let s_sync = Arc::clone(store);
     let s_tt_first = Arc::clone(store);
     let s_tt_undo = Arc::clone(store);
     let s_tt_redo = Arc::clone(store);
     let s_tt_live = Arc::clone(store);
+
+    let sync_transport_lbl = sync_telemetry.transport.label();
+    let sync_transport_slug = sync_telemetry.transport.as_str();
+    let sync_peers_lbl = format!(
+        "{} {}",
+        sync_telemetry.connected_peers,
+        if sync_telemetry.connected_peers == 1 {
+            "peer"
+        } else {
+            "peers"
+        }
+    );
+    let sync_metrics_lbl = format!(
+        "{} | {} | {}",
+        sync_telemetry.format_kbps(),
+        sync_telemetry.format_compression(),
+        sync_telemetry.format_rtt()
+    );
 
     rsx! {
         view {
@@ -250,6 +271,30 @@ pub(crate) fn render_studio_panel(
                 text {
                     style: "color: {xray_fg}; font-size: 11px;",
                     "{xray_lbl}"
+                }
+            }
+
+            // Live Sync / Pairing Telemetry Card
+            view {
+                test_id: "studio-sync-telemetry",
+                "sync-transport": "{sync_transport_slug}",
+                accessibility_label: "Live Sync and Pairing Telemetry",
+                style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 3px; padding: 6px; background-color: {CARD_ALT_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+                view {
+                    style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
+                    text { style: "color: {TEXT_MUTED}; font-size: 9px;", "LIVE SYNC" }
+                    pressable {
+                        test_id: "sync-transport-cycle",
+                        accessibility_label: "Cycle live sync transport mode",
+                        style: "height: 16px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 5px; background-color: {accent_tint}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {accent_hex};",
+                        onpress: move |_| mutate_state(&s_sync, version, |st| st.cycle_sync_transport()),
+                        text { style: "color: {accent_hex}; font-size: 9px;", "{sync_transport_lbl}" }
+                    }
+                }
+                view {
+                    style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
+                    text { style: "color: {TEXT_PRIMARY}; font-size: 10px;", "{sync_peers_lbl}" }
+                    text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "{sync_metrics_lbl}" }
                 }
             }
 

@@ -72,6 +72,7 @@ pub fn StudioWorkspaceApp() -> Element {
     let (
         current,
         palette,
+        sync_telemetry,
         palette_matches,
         is_mobile,
         frame_num,
@@ -99,6 +100,7 @@ pub fn StudioWorkspaceApp() -> Element {
         (
             guard.current.clone(),
             guard.palette.clone(),
+            guard.sync_telemetry.clone(),
             pal_matches,
             guard.is_mobile_portrait(),
             guard.frame_count,
@@ -385,7 +387,7 @@ pub fn StudioWorkspaceApp() -> Element {
                 }
 
                 if current.mobile_studio_open {
-                    {render_studio_panel(&store, version, &current, snap_idx, hist_len, can_undo, can_redo, m, true)}
+                    {render_studio_panel(&store, version, &current, &sync_telemetry, snap_idx, hist_len, can_undo, can_redo, m, true)}
                 }
             }
 
@@ -966,7 +968,7 @@ pub fn StudioWorkspaceApp() -> Element {
             // 3. RIGHT DOCKED NVE STUDIO META-WORKBENCH (desktop >= 620pt when open)
             // =========================================================================
             if !is_mobile && studio.panel_open {
-                {render_studio_panel(&store, version, &current, snap_idx, hist_len, can_undo, can_redo, m, false)}
+                {render_studio_panel(&store, version, &current, &sync_telemetry, snap_idx, hist_len, can_undo, can_redo, m, false)}
             }
         }
     }
