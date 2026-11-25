@@ -3,6 +3,9 @@
 
 pub mod components;
 pub mod focus;
+pub mod form;
+pub mod history;
+pub mod positioning;
 #[cfg(feature = "spatial-focus")]
 pub mod spatial_focus;
 pub mod style_buf;
@@ -13,14 +16,23 @@ pub use components::{
     FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
 };
 pub use components::{
-    use_toast, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Checkbox,
-    Col, Dialog, DropdownMenu, IconButton, Input, MenuItem, Modal, Popover, Row, Separator, Stack,
-    Switch, TabList, TabPanel, TabTrigger, TabsRoot, ToastController, ToastItem, ToastLive,
-    ToastOptions, ToastProvider, ToastQueue, ToastVariant, ToastViewport, Tooltip,
+    default_combobox_filter, use_toast, Badge, BadgeVariant, BottomSheet, BottomSheetState, Button,
+    ButtonSize, ButtonVariant, Card, CardVariant, Checkbox, Col, Combobox, ComboboxAction,
+    ComboboxOption, ComboboxState, Dialog, DragHandoff, DropdownMenu, IconButton, Input, MenuItem,
+    Modal, Popover, Row, Separator, SheetDetent, SheetSnapOutcome, SplitBound, SplitPane,
+    SplitPaneState, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot, ToastController,
+    ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue, ToastVariant, ToastViewport,
+    Tooltip,
 };
 pub use focus::{
     current_focused_id, notify_focus_scope, use_focus_scope, FocusScope, FocusScopeProvider,
     FocusTrap, FocusTrapAction, FocusableEntry, Orientation, RovingFocus,
+};
+pub use form::{FieldHandle, FieldState, FormState, ValidationToken};
+pub use history::UndoRedoStack;
+pub use positioning::{
+    compute_overlay_position, point_in_safe_polygon, Alignment, ComputedPosition, Placement, Point,
+    PositionOptions, Rect, Side, Size, Viewport,
 };
 #[cfg(feature = "spatial-focus")]
 pub use spatial_focus::{
@@ -45,15 +57,23 @@ pub mod prelude {
         FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
     };
     pub use crate::components::{
-        use_toast, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant,
-        Checkbox, Col, Dialog, DropdownMenu, IconButton, Input, MenuItem, Modal, Popover, Row,
-        Separator, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot, ToastController,
-        ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue, ToastVariant, ToastViewport,
-        Tooltip,
+        default_combobox_filter, use_toast, Badge, BadgeVariant, BottomSheet, BottomSheetState,
+        Button, ButtonSize, ButtonVariant, Card, CardVariant, Checkbox, Col, Combobox,
+        ComboboxAction, ComboboxOption, ComboboxState, Dialog, DragHandoff, DropdownMenu,
+        IconButton, Input, MenuItem, Modal, Popover, Row, Separator, SheetDetent,
+        SheetSnapOutcome, SplitBound, SplitPane, SplitPaneState, Stack, Switch, TabList, TabPanel,
+        TabTrigger, TabsRoot, ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider,
+        ToastQueue, ToastVariant, ToastViewport, Tooltip,
     };
     pub use crate::focus::{
         use_focus_scope, FocusScope, FocusScopeProvider, FocusTrap, FocusTrapAction,
         FocusableEntry, Orientation, RovingFocus,
+    };
+    pub use crate::form::{FieldHandle, FieldState, FormState, ValidationToken};
+    pub use crate::history::UndoRedoStack;
+    pub use crate::positioning::{
+        compute_overlay_position, point_in_safe_polygon, Alignment, ComputedPosition, Placement,
+        Point, PositionOptions, Rect, Side, Size, Viewport,
     };
     #[cfg(feature = "spatial-focus")]
     pub use crate::spatial_focus::{
