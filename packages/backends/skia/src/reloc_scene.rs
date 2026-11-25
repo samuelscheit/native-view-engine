@@ -236,7 +236,7 @@ fn emit_reloc_node(
             ops.push(PaintOp::CustomSkiaCanvas {
                 node_id: node.node_id,
                 rect,
-                ops: canvas_ops,
+                ops: canvas_ops.into(),
             });
         }
     }
