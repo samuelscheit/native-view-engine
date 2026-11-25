@@ -460,6 +460,7 @@ pub(crate) fn canonical_a11y_attr_key(name: &str) -> Option<&'static str> {
         }
         "ariaOrientation" | "aria-orientation" | "aria_orientation" => Some("ariaOrientation"),
         "ariaInvalid" | "aria-invalid" | "aria_invalid" => Some("ariaInvalid"),
+        "ariaDisabled" | "aria-disabled" | "aria_disabled" => Some("ariaDisabled"),
         _ => None,
     }
 }

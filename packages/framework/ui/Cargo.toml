@@ -12,6 +12,7 @@ spatial-focus = []
 [dependencies]
 nve-abi = { workspace = true }
 nve-dioxus = { workspace = true }
+nve-i18n = { workspace = true }
 nve-interop = { path = "../../core/interop", default-features = false }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }

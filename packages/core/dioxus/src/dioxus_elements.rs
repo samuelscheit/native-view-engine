@@ -86,6 +86,7 @@ macro_rules! define_a11y_attrs {
             aria_multiselectable => "ariaMultiSelectable",
             aria_orientation => "ariaOrientation",
             aria_invalid => "ariaInvalid",
+            aria_disabled => "ariaDisabled",
         }
     };
 }

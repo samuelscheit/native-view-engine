@@ -4,6 +4,12 @@ pub mod actions;
 pub mod bottom_sheet;
 pub mod combobox;
 pub mod combobox_state;
+pub mod date_picker;
+pub mod date_picker_calendar;
+pub mod date_picker_grid;
+pub mod date_picker_input;
+pub mod date_picker_range_state;
+pub mod date_picker_state;
 pub mod dropdown;
 pub mod error_boundary;
 pub mod forms;
@@ -22,6 +28,13 @@ pub use bottom_sheet::{
 };
 pub use combobox::{
     default_combobox_filter, Combobox, ComboboxAction, ComboboxOption, ComboboxState,
+};
+pub use date_picker::{
+    add_days, add_months_clamped, add_years_clamped, civil_from_days, days_from_civil,
+    days_in_month, end_of_week, start_of_week, CalendarCell, CalendarMonthGrid, DateConstraints,
+    DatePicker, DatePickerAction, DatePickerState, DateRange, DateRangeAction, DateRangePicker,
+    DateRangePickerState, DateSegment, DateSegmentInput, DateSegmentOrder, DisabledDatePredicate,
+    HourCycle, RangeEndpoint, SegmentKeyOutcome, TimeOfDay,
 };
 pub use dropdown::{DropdownMenu, MenuItem};
 pub use error_boundary::{
