@@ -23,9 +23,6 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
   - Build `examples/nve-docs-site` with all 5 live interactive playgrounds (`ui-playground`, `virtual-list-100k`, `router-sandbox`, `canvas-draw1`, `crdt-simulator`) running as both static+hydrated web site AND native desktop/mobile app (`export_nve_app!`).
   - Ship `.github/workflows/docs.yml` with link/schema checks, JS-off SSR + JS-on progressive hydration Chrome E2E, visual screenshot inspection, and GitHub Pages deployment.
 
-- [ ] **Enforce `.generated.<ext>` Naming (and Java `generated/` Package) Across All Codegen Targets** *(in flight)*
-  - Rename all 8 non-Java generated ABI files to `*.generated.{h,dart,ts}`, move `NveCoreAbi.java` & `NveSceneBuffer.java` into package `dev.nve.android.generated`, update `nve-codegen` + `cargo nve codegen abi --check` + `AGENTS.md`, and keep zero legacy shim headers.
-
 ---
 
 ## P1 — Unified Environment/Trait System, Native Primitive Escape Hatches & Host Glue

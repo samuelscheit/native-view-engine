@@ -4,8 +4,10 @@ Chronological log of completed, verified milestones in `native-view-engine`.
 
 ---
 
-## Docs & Web Foundations (Phase 1B–1C)
+## Docs, Web Foundations & Codegen Hygiene
 
+- **Enforce `.generated.<ext>` & Java `generated/` Package Convention** (`b305607`)
+  - Renamed all 8 non-Java checked-in ABI artifacts to `*.generated.{h,dart,ts}`, moved `NveCoreAbi.java` and `NveSceneBuffer.java` into `package dev.nve.android.generated;`, updated all `nve-codegen` emitters, `cargo nve codegen abi --check` (10/10 artifacts), host builds, and docs with zero legacy shims.
 - **`crates/nve-mdx` Pure-Rust `.md`/`.mdx` Compiler & `NVS1` Search Index** (`47e793b`)
   - Zero-dependency CommonMark/GFM parser, YAML/TOML frontmatter, Nextra-style `_meta.toml` navigation + `PrevNext`, fenced directives (`:::callout`, `:::tabs`, `:::steps`, `:::cards`, `:::demo`), declarative `<Component prop="val" num={42} />` tags + ` ```rsx live ` blocks, compile-time schema/link/anchor validator, 13-language pure-Rust syntax highlighter, deterministic Rust/Dioxus codegen, and binary `NVS1` full-text search index (`< 1 ms` queries, FNV-1a64 checksum). 12/12 tests, 0 Clippy warnings, `wasm32` clean.
 - **`nve-router::web` Browser History API Adapter** (`0827eab`)
