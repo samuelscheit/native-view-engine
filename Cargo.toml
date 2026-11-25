@@ -86,11 +86,16 @@ lto = "thin"
 codegen-units = 1
 panic = "unwind"
 
-# Size-optimized WASM profile for `hosts/web-shell`.
+# Size-optimized WASM profile for `hosts/web-shell` (driven by hosts/web-shell/build.sh, which adds
+# nightly -Zbuild-std + -Cpanic=immediate-abort; see docs/research/wasm-size/toolchain.md).
+# `strip = "debuginfo"`, not "symbols": wasm-ld's --strip-all also drops the `target_features`
+# section, which makes wasm-bindgen fall back to the larger non-externref JS glue and makes
+# wasm-opt reject the module (bulk-memory/nontrapping-fptoint are on by default since Rust 1.87).
+# The name section is removed later by wasm-opt --strip-debug.
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"
-lto = true
+lto = "fat"
 codegen-units = 1
 panic = "abort"
-strip = "symbols"
+strip = "debuginfo"

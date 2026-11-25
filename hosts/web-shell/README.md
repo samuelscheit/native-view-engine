@@ -14,8 +14,12 @@ Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-ba
 
 ## Prerequisites
 
-- Rust target: `rustup target add wasm32-unknown-unknown`
+- Rust target: `rustup target add wasm32-unknown-unknown` (`--dev` builds on stable)
 - `wasm-bindgen` CLI matching the workspace `wasm-bindgen` crate version (`cargo install wasm-bindgen-cli --version <ver>`)
+- Release builds additionally need: the pinned nightly with `rust-src` (auto-installed; override with
+  `NVE_WASM_TOOLCHAIN`), binaryen `wasm-opt`, `wasm-tools`, `brotli`, `python3`, and optionally `npx`
+  (terser JS minification). The release pipeline and its measured savings are documented in
+  `docs/research/wasm-size/toolchain.md`; `pkg/` contains precompressed `.br`/`.gz` files to serve.
 
 ## Build & Run
 

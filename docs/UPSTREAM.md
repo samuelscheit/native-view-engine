@@ -69,3 +69,17 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **Windows `core.autocrlf = true` vs LF-only generated ABI drift checks**
   - **Observed**: Checking out generated `.h`/`.dart`/`.java`/`.ts` ABI bindings with CRLF on Windows trips byte-for-byte drift checks against LF generator output.
   - **Mitigation**: `crates/nve-codegen/tests/{codegen_tests,hybrid_codegen_tests}.rs` and `crates/nve-cli/src/codegen.rs` normalize `\r\n` to `\n` before comparison.
+
+### WebAssembly size toolchain (rustc nightly 2026-09-28/10-20, wasm-bindgen 0.2.130, binaryen 133, wizer 10, wasm-snip 0.4)
+
+- **`strip = "symbols"` drops `target_features`; wasm-opt then rejects the module and build scripts silently ship unoptimized wasm**
+  - **Observed**: wasm-ld `--strip-all` removes the `target_features` custom section. Since Rust 1.87 (LLVM 20) wasm32-unknown-unknown emits bulk-memory and nontrapping-fptoint by default, so `wasm-opt -Oz` fails validation (`memory.copy operations require bulk memory`, rust-lang/rust#141080); our old `build.sh` caught the failure and shipped the unoptimized file. wasm-bindgen 0.2.130 additionally warns and falls back to the non-externref JS glue (+6.5 KB raw).
+  - **Mitigation**: `[profile.wasm-release] strip = "debuginfo"`; names are removed by `wasm-opt --strip-debug` after wasm-bindgen (wasm-bindgen#5205/#5382 track detection without the section).
+- **binaryen `-Oz`/`-Os`/`-O2+` make brotli/gzip output larger on LLVM `-Oz` input**
+  - **Observed**: raw −7 % but brotli +1.1 %, gzip +1.6 %. Culprits measured pass-by-pass: inlining-optimizing, local-cse, memory-packing, coalesce/simplify-locals, const-hoisting, and function reordering (random function order costs +4 KB brotli / +22 KB gzip). binaryen#4322 is open since 2021.
+  - **Mitigation**: `hosts/web-shell/build.sh` runs an explicit compression-neutral pass list and sorts functions by size before it.
+- **binaryen drops the `name` section unless `-g` is passed** — later name-based tools (snip, twiggy) see `$N` indices only. Run name-based rewrites before wasm-opt.
+- **wasm-snip 0.4.0 cannot parse externref modules** (`failed to parse code section: found type anyref, expected i32`; its walrus is pre-reference-types). Mitigation: `hosts/web-shell/tools/wat-snip.py` (wasm-tools print/parse round trip).
+- **Wizer 10 cannot pre-initialize wasm-bindgen output** (`unsupported ref.null instruction`, reference types unsupported). On the raw pre-bindgen module it runs, but the heap snapshot grows the data section 96 KB → 348 KB (+61 KB brotli) and cannot remove the render code (still needed at runtime). Mitigation: Wizer step removed from `build.sh`.
+- **`-Zvirtual-function-elimination` ICEs with `-Zbuild-std`** (`llvm.type.checked.load intrinsic must be lowered by the LowerTypeTests pass`, rust-lang/rust#164267, fix PR #164290). Passing it only to the final crate builds but saves just 0.3 KB brotli; not used.
+- **`panic_immediate_abort` build-std feature is gone** (nightly ≥ 2025-09-24): use `-Zunstable-options -Cpanic=immediate-abort` with `-Zbuild-std` (rust-lang/rust#146317).
