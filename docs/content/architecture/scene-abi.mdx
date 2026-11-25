@@ -10,7 +10,7 @@ After a backend decodes a `CommandBuffer` and computes Flexbox layout, native ho
 
 ## `NveRenderNode`: Exactly One CPU Cache Line
 
-`NveRenderNode` (`crates/nve-abi/src/scene/types.rs`) is `#[repr(C, align(64))]` and strictly verified at compile time to occupy **64 bytes** (`NVE_RENDER_NODE_SIZE == 64`, `NVE_RENDER_NODE_ALIGN == 64`). Every field offset is locked by `const` `offset_of!` assertions in Rust and `_Static_assert(offsetof(...))` in `nve_scene_abi.generated.h`.
+`NveRenderNode` (`packages/core/abi/src/scene/types.rs`) is `#[repr(C, align(64))]` and strictly verified at compile time to occupy **64 bytes** (`NVE_RENDER_NODE_SIZE == 64`, `NVE_RENDER_NODE_ALIGN == 64`). Every field offset is locked by `const` `offset_of!` assertions in Rust and `_Static_assert(offsetof(...))` in `nve_scene_abi.generated.h`.
 
 | Offset | Size | Field | Type | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -70,7 +70,7 @@ Instead of re-walking the entire tree every frame, hosts iterate only `dirty_ind
 
 All UTF-8 node strings live packed inside `text_slab`. A host slices `&text_slab[node.text_offset .. node.text_offset + node.text_len]` directly with zero string allocation.
 
-For `NVE_NODE_KIND_SKIA_CANVAS` (`kind == 7`) nodes, vector drawing operations use the **`NVE_DRAW1`** binary draw-list IR (`crates/nve-components/src/canvas_ir/`):
+For `NVE_NODE_KIND_SKIA_CANVAS` (`kind == 7`) nodes, vector drawing operations use the **`NVE_DRAW1`** binary draw-list IR (`packages/core/components/src/canvas_ir/`):
 
 - 15-byte header: `b"NVE_DRAW1"` (9 B) + `version: u16 (1)` + `op_count: u32` (capped at `65,536`)
 - 8 compact opcodes: `Clear`, `FillRect`, `FillRoundedRect`, `FillCircle`, `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`

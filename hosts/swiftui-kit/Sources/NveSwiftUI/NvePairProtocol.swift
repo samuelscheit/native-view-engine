@@ -1,7 +1,7 @@
 import Foundation
 
 /// Wire constants for `NVT1` transport framing and `NVD1` frame-delta packets.
-/// Matches `crates/nve-interop/src/sync_transport/protocol.rs` and `crates/nve-interop/src/sync_delta/`.
+/// Matches `packages/core/interop/src/sync_transport/protocol.rs` and `packages/core/interop/src/sync_delta/`.
 public enum NvePairProtocol {
     public static let transportMagic: [UInt8] = [0x4E, 0x54] // "NT"
     public static let transportVersion: UInt8 = 1

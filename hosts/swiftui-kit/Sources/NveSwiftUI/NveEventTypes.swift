@@ -8,7 +8,7 @@ public enum NveRenderBackend: String, Sendable, Hashable {
     case skia
 }
 
-/// Native event kind mirroring `NativeEventKind` in `crates/nve-abi/src/events.rs`.
+/// Native event kind mirroring `NativeEventKind` in `packages/core/abi/src/events.rs`.
 public enum NveEventKind: UInt8, Sendable, Hashable {
     case press = 1
     case longPress = 2
@@ -20,7 +20,7 @@ public enum NveEventKind: UInt8, Sendable, Hashable {
     case custom = 8
 }
 
-/// Gesture arbitration outcome mirroring `GestureDisposition` in `crates/nve-interop`.
+/// Gesture arbitration outcome mirroring `GestureDisposition` in `packages/core/interop`.
 public enum NveGestureDisposition: UInt8, Sendable, Hashable {
     case claim = 1
     case passThrough = 2
@@ -85,7 +85,7 @@ public enum NveEventRingError: Error, Equatable, Sendable {
     case trailingBytes(Int)
 }
 
-// MARK: - Binary EventRing Codec (matches `crates/nve-abi/src/events.rs`, Zero JSON)
+// MARK: - Binary EventRing Codec (matches `packages/core/abi/src/events.rs`, Zero JSON)
 
 public enum NveEventRingCodec {
     /// Strictly decodes a binary `EventRing` buffer, throwing on truncation, unknown enums,

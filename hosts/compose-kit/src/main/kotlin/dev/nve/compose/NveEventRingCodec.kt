@@ -8,7 +8,7 @@ import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 
 /**
- * Native event discriminator matching `NativeEventKind` in `crates/nve-abi/src/events.rs`.
+ * Native event discriminator matching `NativeEventKind` in `packages/core/abi/src/events.rs`.
  */
 enum class NveEventKind(val code: Int) {
     PRESS(1),
@@ -30,7 +30,7 @@ enum class NveEventKind(val code: Int) {
 }
 
 /**
- * Gesture arbitration outcome mirroring `GestureDisposition` in `crates/nve-interop`.
+ * Gesture arbitration outcome mirroring `GestureDisposition` in `packages/core/interop`.
  */
 enum class NveGestureDisposition(val code: Int) {
     CLAIM(1),
@@ -45,7 +45,7 @@ enum class NveGestureDisposition(val code: Int) {
 
 /**
  * Strictly typed binary payload carried by an [NveEvent] in `EventRing` wire format
- * (`crates/nve-abi/src/events.rs`), with zero JSON conversion.
+ * (`packages/core/abi/src/events.rs`), with zero JSON conversion.
  */
 sealed interface NveEventPayload {
     val tag: Int
@@ -118,7 +118,7 @@ sealed class NveEventRingException(message: String) : IllegalArgumentException(m
 }
 
 /**
- * Binary event crossing the host <-> Rust `EventRing` boundary (`crates/nve-abi/src/events.rs`).
+ * Binary event crossing the host <-> Rust `EventRing` boundary (`packages/core/abi/src/events.rs`).
  */
 data class NveEvent(
     val surfaceId: Int,
@@ -139,7 +139,7 @@ data class NveEvent(
 }
 
 /**
- * Binary `EventRing` encoder & decoder matching `crates/nve-abi/src/events.rs` byte-for-byte.
+ * Binary `EventRing` encoder & decoder matching `packages/core/abi/src/events.rs` byte-for-byte.
  *
  * Wire layout (all integers little-endian):
  * - Header: `u32 event_count`

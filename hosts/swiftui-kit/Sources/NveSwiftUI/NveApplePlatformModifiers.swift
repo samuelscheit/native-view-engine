@@ -75,7 +75,7 @@ public struct NveAppleDeviceProfile: Equatable, Sendable {
 
 // MARK: - Zero-JSON `NK1` Binary KeyDown Codec & tvOS Siri Remote Mapping
 
-/// Decoded zero-JSON `NK1` binary keydown payload matching `crates/nve-abi/src/events.rs`.
+/// Decoded zero-JSON `NK1` binary keydown payload matching `packages/core/abi/src/events.rs`.
 public struct NveNk1KeyDown: Equatable, Sendable {
     public let key: String
     public let meta, ctrl, shift, alt: Bool

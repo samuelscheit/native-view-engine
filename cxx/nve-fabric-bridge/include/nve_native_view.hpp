@@ -310,7 +310,7 @@ class NvncDecoder {
 };
 
 // =============================================================================
-// Typed Starter Spec Decoders (matching crates/nve-interop/src/native_view/specs.rs)
+// Typed Starter Spec Decoders (matching packages/core/interop/src/native_view/specs.rs)
 // =============================================================================
 
 enum class BlurMaterial : uint8_t { UltraThin = 0, Thin = 1, Regular = 2, Thick = 3, Chrome = 4, SystemMaterial = 5 };

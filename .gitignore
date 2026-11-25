@@ -7,6 +7,11 @@ hosts/*/build/
 hosts/swiftui-kit/.build/
 hosts/flutter-plugin/.dart_tool/
 hosts/flutter-plugin/pubspec.lock
+packages/modules/native-views/flutter/.dart_tool/
+packages/modules/native-views/flutter/pubspec.lock
+packages/modules/native-views/flutter/build/
+packages/modules/*/android/.gradle/
+packages/modules/*/android/build/
 **/*.o
 **/*.a
 **/*.dylib

@@ -17,10 +17,10 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 
 - **Nested `Text` wrapper/leaf split for inline literals**
   - **Observed**: `text { style: "...", "literal" }` emits a styled parent `Text` element wrapping an unstyled child `Text` leaf node, so host shells that don't inherit text styles render invisible or unstyled leaves.
-  - **Mitigation**: `crates/nve-dioxus/src/lib.rs` and `cxx/nve-fabric-bridge/src/fabric_adapter.cpp` propagate `text_color` and `font_size` from styled parent `Text` nodes down to unstyled child `Text` leaves; native hosts mount wrapper `Text` nodes with children as containers and leaf `Text` nodes as native text labels.
+  - **Mitigation**: `packages/core/dioxus/src/lib.rs` and `cxx/nve-fabric-bridge/src/fabric_adapter.cpp` propagate `text_color` and `font_size` from styled parent `Text` nodes down to unstyled child `Text` leaves; native hosts mount wrapper `Text` nodes with children as containers and leaf `Text` nodes as native text labels.
 - **Event attribute `"on"` prefix mismatch**
   - **Observed**: `WriteMutations` delivers event attributes prefixed with `"on"` (e.g., `"onclick"`), while `VirtualDom::runtime().handle_event` expects the unprefixed name (`"click"`).
-  - **Mitigation**: `crates/nve-dioxus/src/lib.rs` strips the leading `"on"` via `attr.name.get(2..)`.
+  - **Mitigation**: `packages/core/dioxus/src/lib.rs` strips the leading `"on"` via `attr.name.get(2..)`.
 - **`anyhow` `std` feature drags backtrace printing + `rustc-demangle` into wasm**
   - **Observed**: dioxus-core depends on `anyhow` (1.0.105) with default features; `std` makes every error capture a `std::backtrace::Backtrace` whose `Debug`/`Display` printer links `rustc-demangle` (~19 KB raw, −12 KB brotli on the counter wasm), reachable through a vtable so it survives fat LTO and `-Cpanic=immediate-abort`, although wasm32-unknown-unknown never captures frames.
   - **Mitigation**: fork `samuelscheit/dioxus@nve/v0.7.10-wasm-size` (commit `6f7e0d1`, pinned by rev `e617997` in the root `[patch.crates-io]`): the dioxus workspace dep is `anyhow = { default-features = false }` and every member that needs `std` opts back in (Cargo ignores a member's `default-features = false` when the workspace dep enables defaults). no_std anyhow uses `core::error::Error`, so no backtrace or demangler is linked and `build.sh` no longer snips anything. Drop the patch once upstream takes it.
@@ -34,7 +34,7 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 
 - **`std::time::Instant::now()` panics at runtime**
   - **Observed**: Calling `std::time::Instant::now()` inside `DioxusSurface::render_frame` causes an immediate runtime panic when booted in browser WASM (`hosts/web-shell`).
-  - **Mitigation**: Target-gated `FrameTimer` in `crates/nve-dioxus/src/lib.rs` (real `Instant` on native, no-op on `wasm32`).
+  - **Mitigation**: Target-gated `FrameTimer` in `packages/core/dioxus/src/lib.rs` (real `Instant` on native, no-op on `wasm32`).
 
 ### Xcode 27 / CoreSimulator
 
@@ -64,10 +64,10 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 
 - **`afd.sys` `SO_RCVTIMEO` UDP datagram drops & `WSAECONNRESET` bounces**
   - **Observed**: On Windows 11 (`10.0.26200`), calling blocking `recv_from` on a `UdpSocket` with a short `SO_RCVTIMEO` (e.g., 5 ms) cancels pending `IOCTL_AFD_RECV_DATAGRAM` IRPs on each 15.625 ms timer tick, silently dropping incoming loopback datagrams (~75% test flake). Unreachable UDP replies also surface `WSAECONNRESET` (`ErrorKind::ConnectionReset`) on subsequent `recv_from` calls.
-  - **Mitigation**: `crates/nve-interop/src/sync_transport/udp.rs` uses `set_nonblocking(true)` with a short sleep on `WouldBlock` and ignores `ErrorKind::ConnectionReset` on `recv_from`.
+  - **Mitigation**: `packages/core/interop/src/sync_transport/udp.rs` uses `set_nonblocking(true)` with a short sleep on `WouldBlock` and ignores `ErrorKind::ConnectionReset` on `recv_from`.
 - **Cargo `1.100.0` per-unit `build-dir` layout + Windows 32 KiB `CreateProcessW` limit (`OS error 206`)**
   - **Observed**: Cargo `1.100.0` places `.rlib`s under `target/<profile>/build/<pkg>/<hash>/out/` instead of flat `target/<profile>/deps/`. Passing every `-L dependency=...` directory on the `rustc` command line exceeds Windows' 32,767-char `CreateProcessW` limit (`ERROR_FILENAME_EXCED_RANGE`).
-  - **Mitigation**: `crates/nve-codegen/tests/hybrid_codegen_tests.rs` scans both layouts and passes dependency flags via a `rustc @response_file`.
+  - **Mitigation**: `packages/core/codegen/tests/hybrid_codegen_tests.rs` scans both layouts and passes dependency flags via a `rustc @response_file`.
 - **MSVC `link.exe` `LNK2005` duplicate `nve_get_interface` under workspace feature unification**
   - **Observed**: In `cargo test --workspace`, Cargo unifies `default = ["cdylib-export"]` across `examples/counter` and `examples/studio-workspace`. When `nve-web-shell` links both `rlib`s, MSVC `link.exe` rejects duplicate `nve_get_interface` definitions if the export shares the root-module CGU with normal library functions.
   - **Mitigation**: Wrap `export_nve_app!` inside a private `mod cdylib_export` so `rustc` places `nve_get_interface` in its own CGU (`cdylib` DLLs still export it cleanly while multi-app `rlib` test binaries avoid pulling duplicate symbols).
@@ -76,7 +76,7 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
   - **Mitigation**: Serialize MSVC Ninja builds or use `/Z7` / `Release` without shared PDBs.
 - **Windows `core.autocrlf = true` vs LF-only generated ABI drift checks**
   - **Observed**: Checking out generated `.h`/`.dart`/`.java`/`.ts` ABI bindings with CRLF on Windows trips byte-for-byte drift checks against LF generator output.
-  - **Mitigation**: `crates/nve-codegen/tests/{codegen_tests,hybrid_codegen_tests}.rs` and `crates/nve-cli/src/codegen.rs` normalize `\r\n` to `\n` before comparison.
+  - **Mitigation**: `packages/core/codegen/tests/{codegen_tests,hybrid_codegen_tests}.rs` and `packages/tools/cli/src/codegen.rs` normalize `\r\n` to `\n` before comparison.
 
 ### WebAssembly size toolchain (rustc nightly 2026-09-28/10-20, wasm-bindgen 0.2.130, binaryen 133, wizer 10, wasm-snip 0.4)
 

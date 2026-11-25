@@ -12,8 +12,8 @@ Every platform host in `native-view-engine` consumes the exact same `NVE1` binar
 
 | Host Target | Directory | Rendering / UI Layer | Text Shaping | Accessibility & IME | Multi-Window | Live Pairing (`--pair-connect`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Desktop Skia** | `crates/nve-backend-skia`, `hosts/skia-shell` | Skia Metal / Vulkan / D3D12 / CPU + `softbuffer` (`winit`) | `cosmic-text 0.19` | `TextInput` IME + selection + OS clipboard | Yes (`winit`) | Yes (UDP / TCP / WS) |
-| **Web WASM & SSR** | `crates/nve-backend-web`, `hosts/web-shell` | Browser DOM + Option 5 CSS cache + `<canvas>` | Browser native | Full ARIA + native DOM IME + HTML5 SSR | Yes (`ACTIVE_SHELLS` + `BroadcastChannel`) | Yes (`?pair=ws://...`) |
+| **Desktop Skia** | `packages/backends/skia`, `hosts/skia-shell` | Skia Metal / Vulkan / D3D12 / CPU + `softbuffer` (`winit`) | `cosmic-text 0.19` | `TextInput` IME + selection + OS clipboard | Yes (`winit`) | Yes (UDP / TCP / WS) |
+| **Web WASM & SSR** | `packages/backends/web`, `hosts/web-shell` | Browser DOM + Option 5 CSS cache + `<canvas>` | Browser native | Full ARIA + native DOM IME + HTML5 SSR | Yes (`ACTIVE_SHELLS` + `BroadcastChannel`) | Yes (`?pair=ws://...`) |
 | **macOS AppKit** | `hosts/macos-shell`, `hosts/apple-common` | `NSView` / `NSTextField` / `NSScrollView` / `CGContext` (+ RN-macOS Fabric) | CoreText / AppKit | VoiceOver + macOS IME | Yes (`NveMacWindowManager`) | Yes (`nve::PairClient`) |
 | **iOS / iPadOS UIKit** | `hosts/ios-shell`, `hosts/apple-common` | `UIView` / `UILabel` / `UIScrollView` / `CGContext` (+ RN Fabric) | CoreText / UIKit | VoiceOver + iOS IME | Yes (`UIWindowScene` / iOS 27) | Yes (`nve::PairClient`) |
 | **Windows 11 / RNW** | `hosts/windows-shell` | Win32 Direct2D / WIC + RNW 0.88 Composition Fabric | DirectWrite (`IDWriteTextLayout`) | UI Automation + Win32 IME | Yes (`NveWinWindowManager`) | Yes (WinSock2 `PairClient`) |

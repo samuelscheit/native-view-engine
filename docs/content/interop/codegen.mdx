@@ -6,7 +6,7 @@ order: 1
 
 # Bi-Directional Codegen (`nve-codegen`)
 
-`crates/nve-codegen` has zero external dependencies beyond `std`, `serde`, and `serde_json`, and powers four code generation pipelines from a single unified IR:
+`packages/core/codegen` has zero external dependencies beyond `std`, `serde`, and `serde_json`, and powers four code generation pipelines from a single unified IR:
 
 1. **Single-source Core & Scene ABI generation (`cargo nve codegen abi`)** — Emits all 10 checked-in ABI artifacts across C, Swift, Dart, Java, and TypeScript from `specs/nve_core_abi.nve.rs` and `specs/nve_scene_abi.nve.rs`.
 2. **Nitro-style 6-target Hybrid FFI (`cargo nve codegen hybrid`)** — Parses declarative Rust `#[nve_hybrid_*]` specs and emits zero-JSON bindings for `rust`, `cpp`, `swift`, `kotlin`, `dart`, and `ts`.

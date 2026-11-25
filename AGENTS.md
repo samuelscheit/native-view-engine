@@ -13,7 +13,7 @@ High-signal invariants, engineering practices, and workflow rules for agents wor
 
 ## Non-Negotiable Invariants
 
-- **Single binary IR & modular C ABI**: Every frame crosses the Rust/host boundary as one flat batched `CommandBuffer`, `EventRing`, or zero-decode `NveSceneView`. Expose modules solely via `nve_get_interface(1..=5)` (`NveApp` + `export_nve_app!`). Keep `crates/nve-engine` framework-agnostic (zero dependency on `dioxus-core`).
+- **Single binary IR & modular C ABI**: Every frame crosses the Rust/host boundary as one flat batched `CommandBuffer`, `EventRing`, or zero-decode `NveSceneView`. Expose modules solely via `nve_get_interface(1..=5)` (`NveApp` + `export_nve_app!`). Keep `packages/core/engine` framework-agnostic (zero dependency on `dioxus-core`).
 - **Generated-file naming**: Every generated non-Java file MUST include `.generated.` (`*.generated.{h,hpp,dart,ts,rs,swift,kt,cpp}`). Every generated Java file MUST live in a `generated/` package (`package dev.nve.android.generated;`). Keep `cargo run --locked -p nve-cli -- codegen abi --check` green (`15/15` Core + Scene + Wire artifacts); never add un-suffixed shim headers or symlinks.
 - **Keep build/trace artifacts out of git**: Never commit `*.trace.json`, `*.perfetto.json`, `cxx/build*`, `hosts/*/build`, `hosts/swiftui-kit/.build`, `hosts/flutter-plugin/.dart_tool`, screenshots, or compiled binaries.
 

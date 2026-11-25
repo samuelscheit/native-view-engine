@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test
 class NveCameraBackendTest {
 
     // =========================================================================
-    // 1. Cross-language NVNP / NVNC / NVCF byte parity with crates/nve-interop
+    // 1. Cross-language NVNP / NVNC / NVCF byte parity with packages/core/interop
     // =========================================================================
 
     @Test

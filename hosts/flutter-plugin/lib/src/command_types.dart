@@ -18,7 +18,7 @@ const int nveMaxOpCount = 1000000;
 /// Maximum finite layout/style scalar magnitude (matches `kMaxLayoutScalar` in C++).
 const double nveMaxLayoutScalar = 1e7;
 
-/// Event subscription bitflags matching `EventMask` in `crates/nve-abi/src/events.rs`.
+/// Event subscription bitflags matching `EventMask` in `packages/core/abi/src/events.rs`.
 abstract final class NveEventMask {
   static const int none = 0;
   static const int press = 1 << 0;
@@ -31,7 +31,7 @@ abstract final class NveEventMask {
   static const int custom = 1 << 7;
 }
 
-/// Dimension unit tag matching `Dimension` in `crates/nve-abi/src/codec.rs`.
+/// Dimension unit tag matching `Dimension` in `packages/core/abi/src/codec.rs`.
 enum NveDimensionUnit {
   auto(0),
   points(1),
@@ -86,7 +86,7 @@ class NveDimension {
       };
 }
 
-/// Flexbox main-axis direction matching `FlexDirection` in `crates/nve-abi/src/codec.rs`.
+/// Flexbox main-axis direction matching `FlexDirection` in `packages/core/abi/src/codec.rs`.
 enum NveFlexDirection {
   column(0),
   row(1),
@@ -110,7 +110,7 @@ enum NveFlexDirection {
   }
 }
 
-/// Flexbox main-axis justification matching `FlexJustify` in `crates/nve-abi/src/codec.rs`.
+/// Flexbox main-axis justification matching `FlexJustify` in `packages/core/abi/src/codec.rs`.
 enum NveFlexJustify {
   flexStart(0),
   center(1),
@@ -135,7 +135,7 @@ enum NveFlexJustify {
   }
 }
 
-/// Flexbox cross-axis alignment matching `FlexAlign` in `crates/nve-abi/src/codec.rs`.
+/// Flexbox cross-axis alignment matching `FlexAlign` in `packages/core/abi/src/codec.rs`.
 enum NveFlexAlign {
   stretch(0),
   flexStart(1),
@@ -158,7 +158,7 @@ enum NveFlexAlign {
   }
 }
 
-/// Edge insets matching `EdgeInsets` in `crates/nve-abi/src/codec.rs`.
+/// Edge insets matching `EdgeInsets` in `packages/core/abi/src/codec.rs`.
 class NveEdgeInsets {
   const NveEdgeInsets({
     this.top = 0.0,
@@ -203,7 +203,7 @@ class NveEdgeInsets {
   int get hashCode => Object.hash(top, right, bottom, left);
 }
 
-/// Flexbox layout properties matching `LayoutProps` in `crates/nve-abi/src/codec.rs`.
+/// Flexbox layout properties matching `LayoutProps` in `packages/core/abi/src/codec.rs`.
 class NveLayoutProps {
   const NveLayoutProps({
     this.width = const NveDimension.auto(),
@@ -240,7 +240,7 @@ class NveLayoutProps {
   final NveEdgeInsets margin;
 }
 
-/// Wire RGBA color matching `ColorRgba` in `crates/nve-abi/src/codec.rs`.
+/// Wire RGBA color matching `ColorRgba` in `packages/core/abi/src/codec.rs`.
 ///
 /// On the wire (`ColorRgba::to_u32().to_le_bytes()`), bytes are laid out as
 /// `[r, g, b, a]` (so little-endian `uint32` is `0xAABBGGRR`).
@@ -287,7 +287,7 @@ class NveColorRgba {
   String toString() => 'NveColorRgba($r, $g, $b, $a)';
 }
 
-/// Visual style properties matching `StyleProps` in `crates/nve-abi/src/codec.rs`.
+/// Visual style properties matching `StyleProps` in `packages/core/abi/src/codec.rs`.
 class NveStyleProps {
   const NveStyleProps({
     this.background = NveColorRgba.transparent,
@@ -334,7 +334,7 @@ class NveStyleProps {
   }
 }
 
-/// Discriminator for `RawPropValue` in `crates/nve-abi/src/codec.rs`.
+/// Discriminator for `RawPropValue` in `packages/core/abi/src/codec.rs`.
 enum NveRawPropKind {
   nullValue(0),
   boolValue(1),

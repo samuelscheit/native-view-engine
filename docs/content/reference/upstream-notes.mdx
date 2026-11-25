@@ -19,7 +19,7 @@ Every upstream bug, platform SDK quirk, or toolchain footgun discovered during d
 
 - **Nested `Text` wrapper/leaf split** — Inline literals inside styled `text { style: "...", "hello" }` emit a styled parent `Text` wrapping an unstyled leaf `Text`. **Mitigation:** `nve-dioxus` and `fabric_adapter.cpp` propagate `text_color` and `font_size` downward; native hosts mount wrapper `Text` nodes as containers and leaf `Text` nodes as native text labels.
 - **Event attribute `"on"` prefix mismatch** — `WriteMutations` emits `"onclick"` while `VirtualDom::runtime().handle_event` expects `"click"`. **Mitigation:** `nve-dioxus` strips the leading `"on"`.
-- **`std::time::Instant::now()` panics on `wasm32-unknown-unknown`** — **Mitigation:** Target-gated `FrameTimer` in `crates/nve-dioxus/src/lib.rs`.
+- **`std::time::Instant::now()` panics on `wasm32-unknown-unknown`** — **Mitigation:** Target-gated `FrameTimer` in `packages/core/dioxus/src/lib.rs`.
 
 ## Apple, Android & Linux Toolkits
 
@@ -38,8 +38,8 @@ Every upstream bug, platform SDK quirk, or toolchain footgun discovered during d
 
 ## Windows 11 (`afd.sys`), MSVC `19.51` & Cargo `1.100.0`
 
-- **`afd.sys` `SO_RCVTIMEO` UDP datagram drops & `WSAECONNRESET`** — Short `SO_RCVTIMEO` values on Windows 11 cancel pending `IOCTL_AFD_RECV_DATAGRAM` IRPs (~75% flake). **Mitigation:** `crates/nve-interop/src/sync_transport/udp.rs` uses non-blocking sockets (`set_nonblocking(true)`) and ignores `ErrorKind::ConnectionReset`.
-- **Cargo `1.100.0` per-unit `build-dir` vs. 32 KiB `CreateProcessW` limit (`OS error 206`)** — Passing every dependency directory on the `rustc` CLI overflows Windows' 32,767-char command-line limit. **Mitigation:** `crates/nve-codegen/tests/hybrid_codegen_tests.rs` passes flags via a `rustc @response_file`.
+- **`afd.sys` `SO_RCVTIMEO` UDP datagram drops & `WSAECONNRESET`** — Short `SO_RCVTIMEO` values on Windows 11 cancel pending `IOCTL_AFD_RECV_DATAGRAM` IRPs (~75% flake). **Mitigation:** `packages/core/interop/src/sync_transport/udp.rs` uses non-blocking sockets (`set_nonblocking(true)`) and ignores `ErrorKind::ConnectionReset`.
+- **Cargo `1.100.0` per-unit `build-dir` vs. 32 KiB `CreateProcessW` limit (`OS error 206`)** — Passing every dependency directory on the `rustc` CLI overflows Windows' 32,767-char command-line limit. **Mitigation:** `packages/core/codegen/tests/hybrid_codegen_tests.rs` passes flags via a `rustc @response_file`.
 - **MSVC `link.exe` `LNK2005` duplicate `nve_get_interface`** — Workspace feature unification can pull `cdylib-export` into multi-app `rlib` test binaries. **Mitigation:** Wrap `export_nve_app!` inside a private `mod cdylib_export` so `rustc` isolates the symbol into its own CGU.
 - **MSVC `mspdbsrv.exe` `C1090` on concurrent Ninja `/Zi /FS` builds** — **Mitigation:** Serialize MSVC Ninja builds or use `/Z7` / `Release`.
 - **Windows `core.autocrlf = true` vs. LF-only ABI drift checks** — **Mitigation:** `nve-codegen` tests and `cargo nve codegen abi --check` normalize `\r\n` to `\n` before comparison.

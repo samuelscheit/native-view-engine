@@ -1,10 +1,10 @@
 import Foundation
 
 /// Maximum nesting depth permitted by the binary `NveBinValue` wire format
-/// (matches `NVE_BIN_VALUE_MAX_DEPTH` in `crates/nve-abi/src/value.rs`).
+/// (matches `NVE_BIN_VALUE_MAX_DEPTH` in `packages/core/abi/src/value.rs`).
 public let nveBinValueMaxDepth = 64
 
-/// Binary `NveBinValue` wire tags `0..7` matching `crates/nve-abi/src/value.rs`.
+/// Binary `NveBinValue` wire tags `0..7` matching `packages/core/abi/src/value.rs`.
 public enum NveBinValueTag: UInt8, Equatable, Sendable {
     case null = 0
     case bool = 1

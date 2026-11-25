@@ -1,11 +1,9 @@
 [package]
 name = "nve-tv"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Standalone opt-in TV spatial focus engine, remote action mapper, NK1 binary codec, and title-safe overscan calculator for Native View Engine"
-
-[workspace]
 
 [features]
 default = []

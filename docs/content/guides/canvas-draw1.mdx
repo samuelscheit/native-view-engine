@@ -10,7 +10,7 @@ For telemetry sparklines, charts, custom gauges, and bespoke vector chrome that 
 
 ## Wire Layout
 
-Defined in `crates/nve-components/src/canvas_ir/` (`NVE_DRAW_HEADER_SIZE = 15`):
+Defined in `packages/core/components/src/canvas_ir/` (`NVE_DRAW_HEADER_SIZE = 15`):
 
 | Offset | Size | Field | Value / Bounds |
 | :--- | :--- | :--- | :--- |
@@ -81,8 +81,8 @@ Every platform host decodes the exact same `NVE_DRAW1` byte stream via either Ru
 
 | Host Target | Native Graphics API | Implementation |
 | :--- | :--- | :--- |
-| **Desktop Skia** | Skia `Canvas` (Metal / Vulkan / D3D12) or software `PixelBuffer` | `crates/nve-backend-skia/src/display_list.rs` |
-| **Web WASM** | HTML5 `<canvas>` 2D (`CanvasRenderingContext2D`) | `crates/nve-backend-web/src/canvas.rs` |
+| **Desktop Skia** | Skia `Canvas` (Metal / Vulkan / D3D12) or software `PixelBuffer` | `packages/backends/skia/src/display_list.rs` |
+| **Web WASM** | HTML5 `<canvas>` 2D (`CanvasRenderingContext2D`) | `packages/backends/web/src/canvas.rs` |
 | **macOS & iOS** | CoreGraphics (`CGContext`) | `hosts/apple-common/NveAppleCanvasView.mm` |
 | **Windows** | Direct2D (`ID2D1RenderTarget` / `ID2D1PathGeometry`) | `hosts/windows-shell/NveWinD2DMedia.cpp` |
 | **Linux GTK4** | Cairo (`cairo_t` via `GtkDrawingArea` / `GtkSnapshot`) | `hosts/gtk-shell/NveGtkMedia.cpp` |

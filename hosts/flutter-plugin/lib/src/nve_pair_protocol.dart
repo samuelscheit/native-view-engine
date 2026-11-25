@@ -5,7 +5,7 @@ import 'event_codec.dart';
 import 'nve_core_abi.generated.dart';
 
 /// Wire constants for `NVT1` transport framing and `NVD1` frame-delta packets.
-/// Matches `crates/nve-interop/src/sync_transport/protocol.rs` and `crates/nve-interop/src/sync_delta/`.
+/// Matches `packages/core/interop/src/sync_transport/protocol.rs` and `packages/core/interop/src/sync_delta/`.
 abstract final class NvePairProtocol {
   static const int transportMagic0 = 0x4E; // 'N'
   static const int transportMagic1 = 0x54; // 'T'

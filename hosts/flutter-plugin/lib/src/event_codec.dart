@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'nve_bin_value.dart';
 import 'nve_core_abi.generated.dart';
 
-/// Strongly typed zero-JSON event payload mirroring `EventPayload` in `crates/nve-abi/src/events.rs`.
+/// Strongly typed zero-JSON event payload mirroring `EventPayload` in `packages/core/abi/src/events.rs`.
 sealed class NveEventPayload {
   const NveEventPayload();
 
@@ -229,7 +229,7 @@ class NveEvent {
 
 typedef NveEventCallback = void Function(NveEvent event);
 
-/// Encodes a single pointer `Press` event matching `crates/nve-abi/src/events.rs`
+/// Encodes a single pointer `Press` event matching `packages/core/abi/src/events.rs`
 /// (`NativeEventKind::Press = 1`, `EventPayload::Point { x, y } = tag 1`).
 Uint8List encodePressEvent({
   required int surfaceId,
@@ -254,7 +254,7 @@ Uint8List encodePressEvent({
   return out;
 }
 
-/// Encodes a single `Scroll` event matching `crates/nve-abi/src/events.rs`
+/// Encodes a single `Scroll` event matching `packages/core/abi/src/events.rs`
 /// (`NativeEventKind::Scroll = 3`, `EventPayload::Scroll { x, y, content_width, content_height } = tag 2`).
 Uint8List encodeScrollEvent({
   required int surfaceId,
@@ -283,7 +283,7 @@ Uint8List encodeScrollEvent({
   return out;
 }
 
-/// Binary encoder/decoder for `EventRing` buffers matching `crates/nve-abi/src/events.rs`.
+/// Binary encoder/decoder for `EventRing` buffers matching `packages/core/abi/src/events.rs`.
 class NveEventRingCodec {
   const NveEventRingCodec._();
 

@@ -6,7 +6,7 @@ order: 2
 
 # Benchmarks & Profiling
 
-Performance is continuously verified against `benchmarks/baseline.json` with a default **15% regression tolerance** (`25%` for sub-50 ns microbenchmarks) across both Rust Criterion (`crates/nve-bench`) and Release C++20 (`cxx/build/nve_fabric_bridge_bench`).
+Performance is continuously verified against `benchmarks/baseline.json` with a default **15% regression tolerance** (`25%` for sub-50 ns microbenchmarks) across both Rust Criterion (`packages/tools/bench`) and Release C++20 (`cxx/build/nve_fabric_bridge_bench`).
 
 All numbers below are real measured medians from `benchmarks/baseline.json` recorded on **Apple Silicon (`arm64`, Darwin, 20 cores)**.
 

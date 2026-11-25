@@ -24,7 +24,7 @@
 namespace nve {
 
 // =============================================================================
-// Wire Protocol Constants (Byte-for-Byte Match with `crates/nve-interop`)
+// Wire Protocol Constants (Byte-for-Byte Match with `packages/core/interop`)
 // =============================================================================
 
 inline constexpr std::array<uint8_t, 2> kTransportMagic = {'N', 'T'};

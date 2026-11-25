@@ -5,11 +5,11 @@ on:
     branches: [main]
     paths:
       - "docs/content/**"
-      - "crates/nve-mdx/**"
-      - "crates/nve-docs/**"
-      - "crates/nve-backend-web/**"
-      - "crates/nve-router/**"
-      - "crates/nve-cli/src/docs/**"
+      - "packages/framework/mdx/**"
+      - "packages/framework/docs/**"
+      - "packages/backends/web/**"
+      - "packages/framework/router/**"
+      - "packages/tools/cli/src/docs/**"
       - "examples/nve-docs-site/**"
       - "examples/studio-workspace/**"
       - "examples/counter/**"

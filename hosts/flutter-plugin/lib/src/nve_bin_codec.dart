@@ -1,5 +1,5 @@
 /// Shared streaming binary `NveBinValue` encoder & reader matching
-/// `crates/nve-abi/src/value.rs` (`encode_bin_value`, tags 0..7, little-endian, max depth 64).
+/// `packages/core/abi/src/value.rs` (`encode_bin_value`, tags 0..7, little-endian, max depth 64).
 ///
 /// Pure Dart SDK (zero `package:flutter` imports) so both `nve_flutter` runtime code and
 /// generated `nve-codegen` hybrid Dart bindings share one canonical implementation.

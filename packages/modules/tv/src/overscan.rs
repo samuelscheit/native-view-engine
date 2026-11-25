@@ -60,7 +60,7 @@ pub enum Nk1Error {
     InvalidUtf8,
 }
 
-/// Zero-JSON `NK1` binary keydown payload matching `crates/nve-abi/src/events.rs` byte-for-byte.
+/// Zero-JSON `NK1` binary keydown payload matching `packages/core/abi/src/events.rs` byte-for-byte.
 ///
 /// Wire layout: `[0x4E ('N'), 0x4B ('K'), 0x31 ('1'), flags_u8, utf8_key...]`
 #[derive(Debug, Clone, PartialEq, Eq)]
