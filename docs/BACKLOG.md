@@ -9,18 +9,13 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining platform ve
 
 ## P1 — Host & Runtime Hardening
 
-- [ ] **Android JNI & Compose (`hosts/android-shell`, `hosts/compose-kit`)**
-  - Swap `hosts/android-shell/NveAndroidSurfaceJni.cpp` snapshot transfer from JSON to a direct `ByteBuffer` binary buffer so Android stays zero-JSON end-to-end.
+- [ ] **Android Compose (`hosts/compose-kit`)**
   - Add an Android Library Gradle module for `hosts/compose-kit` and `NveHostActivity.kt` CI tests.
-
-- [ ] **Flutter & SwiftUI binary decoders**
-  - Add direct binary `NveBinValue` decoding in `hosts/flutter-plugin` and `hosts/swiftui-kit`.
 
 - [ ] **Standalone Flexbox (`cxx/nve-fabric-bridge`)**
   - Implement post-flex wrapping text re-measurement and true `Baseline` alignment in standalone `fabric_adapter.cpp`.
 
 - [ ] **Bi-directional codegen (`crates/nve-codegen`)**
-  - Emit `react-native-windows` Fabric registration alongside iOS and Android.
   - Support zero-copy `NveValue` typed props and event bindings.
 
 ## P2 — Core Engine & Platform Completeness
