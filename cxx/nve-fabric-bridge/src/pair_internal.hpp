@@ -291,6 +291,7 @@ inline bool is_in_progress(int err) noexcept {
   return err == WSAEWOULDBLOCK || err == WSAEINPROGRESS;
 }
 inline bool is_interrupted(int err) noexcept { return err == WSAEINTR; }
+inline bool is_udp_conn_reset(int err) noexcept { return err == WSAECONNRESET; }
 inline void close_socket(SocketHandle s) noexcept {
   if (is_valid_socket(s)) ::closesocket(s);
 }
@@ -397,6 +398,7 @@ inline int last_socket_error() noexcept { return errno; }
 inline bool is_would_block(int err) noexcept { return err == EAGAIN || err == EWOULDBLOCK; }
 inline bool is_in_progress(int err) noexcept { return err == EINPROGRESS; }
 inline bool is_interrupted(int err) noexcept { return err == EINTR; }
+inline bool is_udp_conn_reset(int) noexcept { return false; }
 inline void close_socket(SocketHandle s) noexcept {
   if (is_valid_socket(s)) ::close(s);
 }
