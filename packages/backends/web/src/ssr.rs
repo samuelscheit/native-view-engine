@@ -4,11 +4,14 @@
 use core::fmt::Write as _;
 use std::collections::BTreeMap;
 
+use nve_abi::hash::HashSet;
 use nve_abi::{ComponentKind, NodeId, RawPropValue, ROOT_NODE_ID};
 
 use crate::css::{resolve_semantic_tag, NVE_BASE_RESET_CSS};
 use crate::dom::is_truthy_raw_prop;
+use crate::event_replay::PRE_HYDRATION_REPLAY_SCRIPT_TAG;
 use crate::html::{close_html_element, is_void_html_tag, push_attr_escaped, push_text_escaped, write_attr};
+use crate::media_css::CompiledMediaRule;
 use crate::stylesheet::{resolve_node_style, MAX_DYNAMIC_RULES};
 use crate::tree::Visit;
 use crate::WebBackend;
@@ -36,6 +39,7 @@ pub struct SsrDocumentOptions {
     pub lang: Option<String>,
     pub head_extra: Option<String>,
     pub body_scripts: Option<String>,
+    pub enable_event_replay: bool,
 }
 
 
@@ -77,22 +81,30 @@ impl WebBackend {
 
     /// Writes the start tag, attributes, an open `<code>` wrapper and the text of a childless
     /// node; `Some((tag, wrap_code))` when the element has content to close.
+    #[allow(clippy::too_many_arguments)]
     fn open_ssr_element(
         &self,
         id: NodeId,
         parent: Option<NodeId>,
         root_hash: u64,
         rules: &mut BTreeMap<String, String>,
+        media_rules: &mut Vec<CompiledMediaRule>,
+        media_seen: &mut HashSet<String>,
         out: &mut String,
     ) -> Option<(&str, bool)> {
         let el = self.nodes.get(&id)?;
         let parent = parent.and_then(|pid| self.nodes.get(&pid));
         let sem = resolve_semantic_tag(el.kind, &el.raw_props);
         let tag = if el.kind == ComponentKind::Custom { self.effective_html_tag(id, el) } else { sem.tag };
-        let allow_new = rules.len() < MAX_DYNAMIC_RULES;
+        let allow_new = rules.len() + media_rules.len() < MAX_DYNAMIC_RULES;
         let mut resolved = resolve_node_style(el, parent, allow_new, |cls| rules.contains_key(cls));
         if let Some((cls, decls)) = resolved.structural_rule {
             rules.entry(cls).or_insert(decls);
+        }
+        for media_rule in resolved.media_rules {
+            if media_seen.insert(media_rule.class_name.clone()) {
+                media_rules.push(media_rule);
+            }
         }
         #[cfg(any(
             feature = "nv-blur",
@@ -257,15 +269,26 @@ impl WebBackend {
         Some((tag, sem.wrap_code))
     }
 
-    /// Emits Semantic HTML5 + deterministically sorted Option 5 Hybrid structural CSS rules.
+    /// Emits Semantic HTML5 + deterministically ordered Option 5 Hybrid structural CSS rules
+    /// followed by all responsive `@media` rules so overrides always win in the cascade.
     pub fn render_ssr(&self) -> SsrOutput {
         let root_hash = self.compute_ssr_tree_hash();
         let mut rules: BTreeMap<String, String> = BTreeMap::new();
+        let mut media_rules: Vec<CompiledMediaRule> = Vec::new();
+        let mut media_seen: HashSet<String> = HashSet::default();
         let mut html = String::with_capacity(self.nodes.len().saturating_mul(96).max(64));
         let mut open: Vec<(&str, bool)> = Vec::new();
         self.walk(ROOT_NODE_ID, |id, parent, step| match step {
             Visit::Enter => self
-                .open_ssr_element(id, parent, root_hash, &mut rules, &mut html)
+                .open_ssr_element(
+                    id,
+                    parent,
+                    root_hash,
+                    &mut rules,
+                    &mut media_rules,
+                    &mut media_seen,
+                    &mut html,
+                )
                 .map(|closing| open.push(closing))
                 .is_some(),
             Visit::Exit => {
@@ -278,11 +301,19 @@ impl WebBackend {
             }
         });
 
-        let mut style_css = String::with_capacity(rules.len().saturating_mul(64));
-        let mut rule_hashes = Vec::with_capacity(rules.len());
+        let mut style_css =
+            String::with_capacity((rules.len() + media_rules.len()).saturating_mul(64));
+        let mut rule_hashes = Vec::with_capacity(rules.len() + media_rules.len());
+        // 1. Emit ALL base structural rules FIRST.
         for (cls, decls) in rules {
             let _ = writeln!(&mut style_css, ".{cls}{{{decls}}}");
             rule_hashes.push(cls);
+        }
+        // 2. Emit ALL `@media` rules AFTER base structural rules so responsive overrides win.
+        for rule in media_rules {
+            rule.write_css_rule_into(&mut style_css);
+            style_css.push('\n');
+            rule_hashes.push(rule.class_name);
         }
 
         SsrOutput {
@@ -360,6 +391,10 @@ impl WebBackend {
         out.push_str("</head>\n<body>\n<div id=\"app\">");
         out.push_str(&ssr.html);
         out.push_str("</div>\n");
+        if opts.enable_event_replay {
+            out.push_str(PRE_HYDRATION_REPLAY_SCRIPT_TAG);
+            out.push('\n');
+        }
         if let Some(scripts) = opts.body_scripts.as_deref().filter(|s| !s.is_empty()) {
             out.push_str(scripts);
             if !scripts.ends_with('\n') {

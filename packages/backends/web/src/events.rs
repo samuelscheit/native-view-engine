@@ -54,6 +54,32 @@ where
         .find_map(|&(id, meta)| predicate(meta).then_some(id))
 }
 
+/// Returns `true` when a hydrated click on an `<a href="...">` inside an interactive
+/// `EventMask::PRESS` node should call `preventDefault()` and emit `NativeEventKind::Press` for
+/// zero-reload SPA navigation, or `false` to let the browser handle it natively (modifier clicks,
+/// non-primary mouse buttons, `target="_blank"`, or `download`).
+#[inline]
+pub fn should_intercept_anchor_click(
+    button: i16,
+    meta: bool,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    target_attr: Option<&str>,
+    has_download: bool,
+) -> bool {
+    if button != 0 || meta || ctrl || shift || alt || has_download {
+        return false;
+    }
+    if let Some(target) = target_attr {
+        let trimmed = target.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("_self") {
+            return false;
+        }
+    }
+    true
+}
+
 /// Encodes a keyboard event into the zero-JSON compact `NK1` binary payload consumed by
 /// `NativeEventKind::Custom` (`name: "keydown"`).
 pub fn encode_keydown_payload(
@@ -235,6 +261,27 @@ impl WebBackend {
                 if let Some((node_id, el)) = found {
                     if el.has_attribute("disabled") {
                         return;
+                    }
+                    // Post-hydration `<a href>` SPA interception (Option B): plain left-clicks on
+                    // internal links call `preventDefault()` and emit `Press`; modifier/middle/
+                    // `_blank`/`download` clicks pass through to native browser navigation.
+                    if let Some(anchor) = target_to_element(ev.target())
+                        .and_then(|t| t.closest("a[href]").ok().flatten())
+                        .filter(|a| a.get_attribute("href").is_some_and(|h| !h.trim().is_empty()))
+                    {
+                        let target_attr = anchor.get_attribute("target");
+                        if !should_intercept_anchor_click(
+                            ev.button(),
+                            ev.meta_key(),
+                            ev.ctrl_key(),
+                            ev.shift_key(),
+                            ev.alt_key(),
+                            target_attr.as_deref(),
+                            anchor.has_attribute("download"),
+                        ) {
+                            return;
+                        }
+                        ev.prevent_default();
                     }
                     emit_event(
                         &events,

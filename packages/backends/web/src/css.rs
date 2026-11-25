@@ -2,6 +2,7 @@
 //! resolution, and [`MirrorElement`].
 
 use crate::raw_style::RawStyleProps;
+use crate::style_hash::{is_volatile_dimension, is_volatile_opacity};
 
 use nve_abi::hash::HashMap;
 use nve_abi::num::{write_f32, write_i64, write_u64};
@@ -10,6 +11,7 @@ use nve_abi::{
     FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
 };
 use nve_components::canvas_ir::CanvasOp;
+use nve_components::media::{MediaQuery, ResponsiveRule};
 
 /// Static `.nve` base reset stylesheet emitted once on mount or SSR.
 ///
@@ -381,6 +383,8 @@ pub struct MirrorElement {
     pub raw_props: HashMap<String, RawPropValue>,
     pub draw_ops: Vec<CanvasOp>,
     pub draw_op_count: usize,
+    pub show_on: Option<MediaQuery>,
+    pub responsive_rules: Vec<ResponsiveRule>,
 }
 
 impl MirrorElement {
@@ -411,6 +415,8 @@ impl MirrorElement {
             raw_props: HashMap::default(),
             draw_ops: Vec::new(),
             draw_op_count: 0,
+            show_on: None,
+            responsive_rules: Vec::new(),
         }
     }
 
@@ -450,5 +456,149 @@ impl MirrorElement {
         let mut out = String::with_capacity(384 + self.patch_css.len());
         self.combined_css_into(&mut out);
         out
+    }
+}
+
+/// Emits compact non-default layout declarations into `out`, optionally skipping volatile dims.
+pub fn write_compact_layout_into(l: &LayoutProps, skip_volatile: bool, out: &mut String) {
+    match l.flex_direction {
+        FlexDirection::Column => {}
+        FlexDirection::Row => out.push_str("flex-direction:row;"),
+        FlexDirection::ColumnReverse => out.push_str("flex-direction:column-reverse;"),
+        FlexDirection::RowReverse => out.push_str("flex-direction:row-reverse;"),
+    }
+    match l.justify_content {
+        FlexJustify::FlexStart => {}
+        FlexJustify::Center => out.push_str("justify-content:center;"),
+        FlexJustify::FlexEnd => out.push_str("justify-content:flex-end;"),
+        FlexJustify::SpaceBetween => out.push_str("justify-content:space-between;"),
+        FlexJustify::SpaceAround => out.push_str("justify-content:space-around;"),
+        FlexJustify::SpaceEvenly => out.push_str("justify-content:space-evenly;"),
+    }
+    match l.align_items {
+        FlexAlign::Stretch => {}
+        FlexAlign::FlexStart => out.push_str("align-items:flex-start;"),
+        FlexAlign::Center => out.push_str("align-items:center;"),
+        FlexAlign::FlexEnd => out.push_str("align-items:flex-end;"),
+        FlexAlign::Baseline => out.push_str("align-items:baseline;"),
+    }
+    let fg = canonical_f32(l.flex_grow);
+    if fg != 0.0 {
+        out.push_str("flex-grow:");
+        write_compact_num(fg, out);
+        out.push(';');
+    }
+    let fs = canonical_f32(l.flex_shrink);
+    if (fs - 1.0).abs() > f32::EPSILON {
+        out.push_str("flex-shrink:");
+        write_compact_num(fs, out);
+        out.push(';');
+    }
+    let gap = canonical_f32(l.gap);
+    if gap != 0.0 {
+        out.push_str("gap:");
+        write_compact_px(gap, out);
+        out.push(';');
+    }
+
+    for (prop, dim) in [
+        ("width:", l.width),
+        ("height:", l.height),
+        ("min-width:", l.min_width),
+        ("min-height:", l.min_height),
+        ("max-width:", l.max_width),
+        ("max-height:", l.max_height),
+    ] {
+        if dim != Dimension::Auto && !(skip_volatile && is_volatile_dimension(dim)) {
+            out.push_str(prop);
+            write_compact_dim(dim, out);
+            out.push(';');
+        }
+    }
+
+    write_compact_edges("padding", l.padding, out);
+    write_compact_edges("margin", l.margin, out);
+}
+
+/// Emits compact non-default visual & raw style declarations into `out`.
+pub fn write_compact_style_into(
+    s: &StyleProps,
+    raw: &RawStyleProps,
+    leaf_text: bool,
+    skip_volatile_opacity: bool,
+    out: &mut String,
+) {
+    if s.background.a > 0 {
+        out.push_str("background-color:");
+        write_compact_color(s.background, out);
+        out.push(';');
+    }
+    if !leaf_text && s.text_color != ColorRgba::BLACK {
+        out.push_str("color:");
+        write_compact_color(s.text_color, out);
+        out.push(';');
+    }
+    let bw = canonical_f32(s.border_width);
+    if bw > 0.0 {
+        out.push_str("border:");
+        write_compact_px(bw, out);
+        out.push_str(" solid ");
+        write_compact_color(s.border_color, out);
+        out.push(';');
+    }
+    let br = canonical_f32(s.border_radius);
+    if br != 0.0 {
+        out.push_str("border-radius:");
+        write_compact_px(br, out);
+        out.push(';');
+    }
+    let op = canonical_f32(s.opacity);
+    if (op - 1.0).abs() > f32::EPSILON && !(skip_volatile_opacity && is_volatile_opacity(op)) {
+        out.push_str("opacity:");
+        write_compact_num(op, out);
+        out.push(';');
+    }
+    let fs = canonical_f32(s.font_size);
+    if !leaf_text && (fs - 16.0).abs() > f32::EPSILON {
+        out.push_str("font-size:");
+        write_compact_px(fs, out);
+        out.push(';');
+    }
+    if s.z_index != 0 {
+        out.push_str("z-index:");
+        write_i64(out, i64::from(s.z_index));
+        out.push(';');
+    }
+    raw.write_compact_into(leaf_text, out);
+}
+
+/// Emits ONLY volatile dimensions, non-discrete opacity, and Tier-1 `patch_css` into `out`.
+pub fn write_volatile_inline_into(
+    l: &LayoutProps,
+    s: &StyleProps,
+    patch_css: &str,
+    out: &mut String,
+) {
+    for (prop, dim) in [
+        ("width:", l.width),
+        ("height:", l.height),
+        ("min-width:", l.min_width),
+        ("min-height:", l.min_height),
+        ("max-width:", l.max_width),
+        ("max-height:", l.max_height),
+    ] {
+        if is_volatile_dimension(dim) {
+            out.push_str(prop);
+            write_compact_dim(dim, out);
+            out.push(';');
+        }
+    }
+    if is_volatile_opacity(s.opacity) && (canonical_f32(s.opacity) - 1.0).abs() > f32::EPSILON {
+        out.push_str("opacity:");
+        write_compact_num(s.opacity, out);
+        out.push(';');
+    }
+    if !patch_css.is_empty() {
+        out.push_str(patch_css);
     }
 }
