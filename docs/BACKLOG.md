@@ -19,8 +19,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (Web TV D-Pad Remaining)**
   - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad), Phase 2 (standalone `packages/modules/tv` + real `tvOS`/`watchOS`/`visionOS`/`iOS` SDK builds + static `NveInterfaceResolver`), and Phase 3 CLI (`nve build --target tvos/visionos/watchos` + `.xcframework` recipes) are landed; remaining work is Web TV D-Pad key handling in `nve-backend-web`.
 
-- [ ] **Allocator & Live `mmap` App-State Snapshotting Benchmark Experiment (`packages/tools/bench`)** *(in flight)*
-  - Compare live `mmap` 32-bit offset-arena, `RelocSlice` (`Full`/`HeaderOnly`/`Unchecked`), `FrameArena` bump allocator, and (`rkyv`/`musli-zerocopy`) against current `NVE_SNAP` / per-frame heap allocation before standardizing app-state persistence.
+- [ ] **Adopt Measured Allocator & Persistence Architecture (`FrameArena` + `MmapOffsetArena` / Hardware-Hashed `NVERELOC`)**
+  - Benchmark experiment (`bf6f52c`) proved `FrameArena` (`3.55×` at 50k nodes), pre-validated `NVERELOC` (`1.18×` faster than owned `Vec` in RAM), and `MmapOffsetArena` (`2.23 ns` / `39.6 µs` `msync` incremental edits, `41.8 µs` open) and identified serial FNV-1a as the full-verify bottleneck; promote `FrameArena` into `nve-engine`/`nve-dioxus`, replace serial blob FNV-1a with hardware CRC32C, and standardize local state persistence on `MmapOffsetArena` (or `NVERELOC` + WAL).
 
 ---
 
