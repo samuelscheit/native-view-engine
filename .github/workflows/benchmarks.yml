@@ -1,0 +1,78 @@
+name: Benchmarks
+
+on:
+  schedule:
+    # Run nightly at 04:00 UTC to track continuous performance trends on main.
+    - cron: "0 4 * * *"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Global regression threshold percentage (overrides default when no per-metric tolerance is set)"
+        required: false
+        default: "15.0"
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark-regression:
+    name: Rust Criterion + C++20 Fabric Bridge Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install CMake and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - name: Test benchmark regression script
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Build C++20 Fabric bridge benchmark (Release)
+        run: |
+          cmake -S cxx/nve-fabric-bridge -B build/fabric-bench -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNVE_BUILD_BENCHMARKS=ON
+          cmake --build build/fabric-bench --target nve_fabric_bridge_bench
+
+      - name: Run benchmarks and compare against baseline
+        id: compare
+        continue-on-error: true
+        run: |
+          python3 scripts/bench-regress.py compare \
+            --baseline benchmarks/baseline.json \
+            --current run \
+            --rust \
+            --cxx-bin build/fabric-bench/nve_fabric_bridge_bench \
+            --threshold "${{ inputs.threshold || '15.0' }}" \
+            --markdown "$GITHUB_STEP_SUMMARY" \
+            --report-json build/benchmark-report.json \
+            --save-current build/benchmark-current.json
+
+      - name: Upload benchmark report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-regression-report
+          path: |
+            build/benchmark-report.json
+            build/benchmark-current.json
+          if-no-files-found: warn
+          retention-days: 30

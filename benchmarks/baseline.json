@@ -1,0 +1,406 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-25T03:22:26Z",
+  "machine": {
+    "arch": "arm64",
+    "os": "Darwin",
+    "cpu_count": 20
+  },
+  "default_tolerance_pct": 15.0,
+  "benchmarks": {
+    "cxx::c_abi_resolve_measure_hit_test": {
+      "mean_ns": 6184.08,
+      "median_ns": 6167.0,
+      "name": "c_abi_resolve_measure_hit_test",
+      "ops_per_sec": 162153397.11,
+      "p95_ns": 6375.0,
+      "p99_ns": 6500.0,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::decode_mount_1000_nodes": {
+      "mean_ns": 248980.85,
+      "median_ns": 186687.0,
+      "name": "decode_mount_1000_nodes",
+      "ops_per_sec": 5356.56,
+      "p95_ns": 570213.15,
+      "p99_ns": 734584.17,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::decode_mount_100_nodes": {
+      "mean_ns": 19376.39,
+      "median_ns": 18562.5,
+      "name": "decode_mount_100_nodes",
+      "ops_per_sec": 53872.05,
+      "p95_ns": 20920.2,
+      "p99_ns": 46658.16,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::decode_mount_5000_nodes": {
+      "mean_ns": 1113552.8,
+      "median_ns": 930604.0,
+      "name": "decode_mount_5000_nodes",
+      "ops_per_sec": 1074.57,
+      "p95_ns": 1746387.5,
+      "p99_ns": 1903385.0,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::incremental_patch_10_on_1000_nodes": {
+      "mean_ns": 63920.13,
+      "median_ns": 56041.0,
+      "name": "incremental_patch_10_on_1000_nodes",
+      "ops_per_sec": 17844.08,
+      "p95_ns": 104717.0,
+      "p99_ns": 225151.33,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::layout_pass_1000_rows_custom_measurer": {
+      "mean_ns": 514802.11,
+      "median_ns": 497583.5,
+      "name": "layout_pass_1000_rows_custom_measurer",
+      "ops_per_sec": 2009.71,
+      "p95_ns": 649889.9,
+      "p99_ns": 730900.33,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::layout_pass_1000_rows_heuristic": {
+      "mean_ns": 274865.04,
+      "median_ns": 260292.0,
+      "name": "layout_pass_1000_rows_heuristic",
+      "ops_per_sec": 3841.84,
+      "p95_ns": 358600.0,
+      "p99_ns": 512255.42,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::layout_pass_100_rows_custom_measurer": {
+      "mean_ns": 49090.01,
+      "median_ns": 47833.5,
+      "name": "layout_pass_100_rows_custom_measurer",
+      "ops_per_sec": 20905.85,
+      "p95_ns": 52281.25,
+      "p99_ns": 84314.76,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::layout_pass_100_rows_heuristic": {
+      "mean_ns": 27897.5,
+      "median_ns": 27750.0,
+      "name": "layout_pass_100_rows_heuristic",
+      "ops_per_sec": 36036.04,
+      "p95_ns": 28418.1,
+      "p99_ns": 29876.58,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::rn_bridge_render_press_roundtrip": {
+      "mean_ns": 717.5,
+      "median_ns": 708.0,
+      "name": "rn_bridge_render_press_roundtrip",
+      "ops_per_sec": 1412429.38,
+      "p95_ns": 834.0,
+      "p99_ns": 916.01,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/command_buffer_decode/100": {
+      "mean_ns": 11013.324,
+      "median_ns": 10499.426,
+      "name": "abi/command_buffer_decode/100",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/command_buffer_decode/1000": {
+      "mean_ns": 120499.126,
+      "median_ns": 107673.441,
+      "name": "abi/command_buffer_decode/1000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/command_buffer_decode/10000": {
+      "mean_ns": 1513781.845,
+      "median_ns": 1448272.312,
+      "name": "abi/command_buffer_decode/10000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/command_buffer_encode/100": {
+      "mean_ns": 4623.116,
+      "median_ns": 4184.205,
+      "name": "abi/command_buffer_encode/100",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/command_buffer_encode/1000": {
+      "mean_ns": 41850.41,
+      "median_ns": 38830.364,
+      "name": "abi/command_buffer_encode/1000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/command_buffer_encode/10000": {
+      "mean_ns": 391226.251,
+      "median_ns": 377863.542,
+      "name": "abi/command_buffer_encode/10000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/event_ring/decode/16": {
+      "mean_ns": 378.216,
+      "median_ns": 351.9,
+      "name": "abi/event_ring/decode/16",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/event_ring/decode/256": {
+      "mean_ns": 4994.89,
+      "median_ns": 4964.665,
+      "name": "abi/event_ring/decode/256",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/event_ring/encode/16": {
+      "mean_ns": 145.47,
+      "median_ns": 142.551,
+      "name": "abi/event_ring/encode/16",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/event_ring/encode/256": {
+      "mean_ns": 2001.506,
+      "median_ns": 1916.168,
+      "name": "abi/event_ring/encode/256",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/nve_get_interface/lookup_interface": {
+      "mean_ns": 1.034,
+      "median_ns": 1.001,
+      "name": "abi/nve_get_interface/lookup_interface",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::abi/nve_get_interface/scalar_hit_test": {
+      "mean_ns": 9.308,
+      "median_ns": 9.309,
+      "name": "abi/nve_get_interface/scalar_hit_test",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::abi/nve_get_interface/scalar_measure": {
+      "mean_ns": 2.211,
+      "median_ns": 2.009,
+      "name": "abi/nve_get_interface/scalar_measure",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::abi/nve_get_interface/surface_render_slice": {
+      "mean_ns": 1.365,
+      "median_ns": 1.355,
+      "name": "abi/nve_get_interface/surface_render_slice",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::abi/scene/scene_view_read_all_1000": {
+      "mean_ns": 8546.638,
+      "median_ns": 8171.484,
+      "name": "abi/scene/scene_view_read_all_1000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/scene/scene_view_read_dirty_3_of_1000": {
+      "mean_ns": 25.742,
+      "median_ns": 25.711,
+      "name": "abi/scene/scene_view_read_dirty_3_of_1000",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::abi/value/value_binary_view_read": {
+      "mean_ns": 110.301,
+      "median_ns": 108.637,
+      "name": "abi/value/value_binary_view_read",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::abi/value/value_direct_ffi_read": {
+      "mean_ns": 20.321,
+      "median_ns": 20.33,
+      "name": "abi/value/value_direct_ffi_read",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::backend_headless/hit_test/rows/100": {
+      "mean_ns": 949.454,
+      "median_ns": 942.363,
+      "name": "backend_headless/hit_test/rows/100",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_headless/hit_test/rows/1000": {
+      "mean_ns": 10243.089,
+      "median_ns": 10214.538,
+      "name": "backend_headless/hit_test/rows/1000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_headless/taffy_layout/initial_rows/100": {
+      "mean_ns": 313070.358,
+      "median_ns": 308583.971,
+      "name": "backend_headless/taffy_layout/initial_rows/100",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_headless/taffy_layout/initial_rows/1000": {
+      "mean_ns": 3524479.662,
+      "median_ns": 3522244.526,
+      "name": "backend_headless/taffy_layout/initial_rows/1000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_skia/display_list_1000_nodes": {
+      "mean_ns": 1853325.322,
+      "median_ns": 1784784.75,
+      "name": "backend_skia/display_list_1000_nodes",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_skia/display_list_card": {
+      "mean_ns": 13123.847,
+      "median_ns": 12246.499,
+      "name": "backend_skia/display_list_card",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_skia/rasterize_1000_nodes_393x852": {
+      "mean_ns": 1013361.516,
+      "median_ns": 971903.133,
+      "name": "backend_skia/rasterize_1000_nodes_393x852",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_skia/rasterize_card_393x852": {
+      "mean_ns": 165176.582,
+      "median_ns": 140821.493,
+      "name": "backend_skia/rasterize_card_393x852",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_web/incremental_dom_patch_10_nodes": {
+      "mean_ns": 1540.95,
+      "median_ns": 1533.449,
+      "name": "backend_web/incremental_dom_patch_10_nodes",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_web/render_html_100_rows": {
+      "mean_ns": 63543.372,
+      "median_ns": 62616.259,
+      "name": "backend_web/render_html_100_rows",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::backend_web/render_html_500_rows": {
+      "mean_ns": 302551.674,
+      "median_ns": 303861.978,
+      "name": "backend_web/render_html_500_rows",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::dioxus/incremental_state_update_diff": {
+      "mean_ns": 995.324,
+      "median_ns": 993.476,
+      "name": "dioxus/incremental_state_update_diff",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::dioxus/initial_frame_render": {
+      "mean_ns": 8577.002,
+      "median_ns": 8332.678,
+      "name": "dioxus/initial_frame_render",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::dioxus/tier1_hot_patch_apply": {
+      "mean_ns": 1686.894,
+      "median_ns": 1646.002,
+      "name": "dioxus/tier1_hot_patch_apply",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::interop/channel_bus/publish_subscribers/1": {
+      "mean_ns": 51.872,
+      "median_ns": 45.951,
+      "name": "interop/channel_bus/publish_subscribers/1",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::interop/channel_bus/publish_subscribers/64": {
+      "mean_ns": 400.761,
+      "median_ns": 396.83,
+      "name": "interop/channel_bus/publish_subscribers/64",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::interop/channel_bus/publish_subscribers/8": {
+      "mean_ns": 68.709,
+      "median_ns": 68.272,
+      "name": "interop/channel_bus/publish_subscribers/8",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::interop/gesture_arbitration/nested_scroll_sequence": {
+      "mean_ns": 184.279,
+      "median_ns": 182.374,
+      "name": "interop/gesture_arbitration/nested_scroll_sequence",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::interop/intrinsic_layout/cached_hit": {
+      "mean_ns": 68.879,
+      "median_ns": 36.11,
+      "name": "interop/intrinsic_layout/cached_hit",
+      "suite": "rust",
+      "tolerance_pct": 25.0
+    },
+    "rust::interop/intrinsic_layout/uncached_measure_and_snap": {
+      "mean_ns": 74.44,
+      "median_ns": 73.762,
+      "name": "interop/intrinsic_layout/uncached_measure_and_snap",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::layout_engine/taffy_vs_yoga/taffy_dyn_box/100": {
+      "mean_ns": 363912.993,
+      "median_ns": 348105.362,
+      "name": "layout_engine/taffy_vs_yoga/taffy_dyn_box/100",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::layout_engine/taffy_vs_yoga/taffy_dyn_box/1000": {
+      "mean_ns": 3783367.487,
+      "median_ns": 3700738.562,
+      "name": "layout_engine/taffy_vs_yoga/taffy_dyn_box/1000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::layout_engine/taffy_vs_yoga/taffy_static/100": {
+      "mean_ns": 320375.094,
+      "median_ns": 307883.263,
+      "name": "layout_engine/taffy_vs_yoga/taffy_static/100",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    },
+    "rust::layout_engine/taffy_vs_yoga/taffy_static/1000": {
+      "mean_ns": 3700984.218,
+      "median_ns": 3647041.826,
+      "name": "layout_engine/taffy_vs_yoga/taffy_static/1000",
+      "suite": "rust",
+      "tolerance_pct": 15.0
+    }
+  }
+}
