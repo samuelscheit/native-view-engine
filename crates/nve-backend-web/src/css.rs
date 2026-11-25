@@ -1,16 +1,30 @@
-//! CSS Flexbox/style translation, HTML tag resolution, image `object-fit` mapping,
-//! and the cross-target [`MirrorElement`] DOM node model.
+//! CSS Flexbox/style translation, Option 5 Hybrid compact formatting, semantic HTML5 tag
+//! resolution, raw CSS style properties (`RawStyleProps`), and [`MirrorElement`].
 
 use core::fmt::Write as _;
 use std::collections::HashMap;
 
 use nve_abi::{
-    ColorRgba, ComponentKind, Dimension, EventMask, FlexAlign, FlexDirection, FlexJustify,
-    LayoutProps, NodeId, RawPropValue, StyleProps,
+    ColorRgba, ComponentKind, Dimension, EdgeInsets, EventMask, FlexAlign, FlexDirection,
+    FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
 };
 use nve_components::canvas_ir::{CanvasOp, ImageResizeMode};
 
-/// Maps `resizeMode` / `resize_mode` / `objectFit` raw prop values to CSS `object-fit` keywords.
+/// Static `.nve` base reset stylesheet emitted once on mount or SSR.
+///
+/// Uses `font-family:inherit` (never `font:inherit`) on buttons/inputs so inherited `font-size`
+/// is never clobbered by the CSS `font` shorthand reset.
+pub const NVE_BASE_RESET_CSS: &str = concat!(
+    ".nve{display:flex;box-sizing:border-box;flex-direction:column;justify-content:flex-start;align-items:stretch;flex:0 1 auto;margin:0;padding:0;border:0 solid transparent;color:#000;font-size:16px}",
+    ".nve-s{overflow:auto}",
+    ".nve-b{cursor:pointer;appearance:none;background:transparent;font-family:inherit}",
+    ".nve-i{font-family:inherit;outline:none}",
+    ".nve-p{cursor:pointer}",
+    ".nve-tl{color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}"
+);
+
+/// Maps `resizeMode` / `resize_mode` / `objectFit` / `object-fit` raw prop values to CSS
+/// `object-fit` keywords.
 pub fn raw_prop_to_object_fit(value: &RawPropValue) -> Option<&'static str> {
     match value {
         RawPropValue::String(raw) => {
@@ -43,10 +57,172 @@ pub fn raw_prop_to_object_fit(value: &RawPropValue) -> Option<&'static str> {
     }
 }
 
-/// Returns `true` if `key` names an image fit prop (`resizeMode`, `resize_mode`, or `objectFit`).
+/// Returns `true` if `key` names an image fit prop (`resizeMode`, `resize_mode`, `objectFit`,
+/// or `object-fit`).
 #[inline]
 pub fn is_image_fit_prop(key: &str) -> bool {
-    matches!(key, "resizeMode" | "resize_mode" | "objectFit")
+    matches!(key, "resizeMode" | "resize_mode" | "objectFit" | "object-fit")
+}
+
+/// Returns `true` if `key` names a CSS style raw prop captured by [`RawStyleProps`] rather than
+/// an HTML attribute.
+#[inline]
+pub fn is_raw_style_prop(key: &str) -> bool {
+    matches!(
+        key,
+        "font-weight"
+            | "fontWeight"
+            | "font_weight"
+            | "text-align"
+            | "textAlign"
+            | "text_align"
+            | "box-shadow"
+            | "boxShadow"
+            | "box_shadow"
+            | "overflow"
+            | "resizeMode"
+            | "resize_mode"
+            | "objectFit"
+            | "object-fit"
+    )
+}
+
+/// Compact structured CSS properties routed from `Command::SetRawProp` instead of being written
+/// as invalid HTML attributes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawStyleProps {
+    pub font_weight: Option<String>,
+    pub text_align: Option<String>,
+    pub box_shadow: Option<String>,
+    pub overflow: Option<String>,
+    pub object_fit: Option<&'static str>,
+}
+
+fn raw_prop_trimmed_string(value: &RawPropValue) -> Option<String> {
+    match value {
+        RawPropValue::String(s) => {
+            let trimmed = s.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        }
+        RawPropValue::I64(n) => Some(n.to_string()),
+        RawPropValue::F64(n) if n.is_finite() => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+impl RawStyleProps {
+    /// Applies a raw prop if `key` is a recognized CSS style prop. Returns `true` when handled.
+    pub fn apply_prop(&mut self, key: &str, value: &RawPropValue) -> bool {
+        match key {
+            "font-weight" | "fontWeight" | "font_weight" => {
+                self.font_weight = if matches!(value, RawPropValue::Null) {
+                    None
+                } else {
+                    raw_prop_trimmed_string(value)
+                };
+                true
+            }
+            "text-align" | "textAlign" | "text_align" => {
+                self.text_align = if matches!(value, RawPropValue::Null) {
+                    None
+                } else {
+                    raw_prop_trimmed_string(value)
+                };
+                true
+            }
+            "box-shadow" | "boxShadow" | "box_shadow" => {
+                self.box_shadow = if matches!(value, RawPropValue::Null) {
+                    None
+                } else {
+                    raw_prop_trimmed_string(value)
+                };
+                true
+            }
+            "overflow" => {
+                self.overflow = if matches!(value, RawPropValue::Null) {
+                    None
+                } else {
+                    raw_prop_trimmed_string(value)
+                };
+                true
+            }
+            _ if is_image_fit_prop(key) => {
+                self.object_fit = if matches!(value, RawPropValue::Null) {
+                    None
+                } else {
+                    raw_prop_to_object_fit(value)
+                };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[inline]
+    pub fn effective_font_weight(&self) -> Option<&str> {
+        self.font_weight
+            .as_deref()
+            .filter(|v| !v.eq_ignore_ascii_case("normal") && *v != "400")
+    }
+
+    #[inline]
+    pub fn effective_text_align(&self) -> Option<&str> {
+        self.text_align
+            .as_deref()
+            .filter(|v| !v.eq_ignore_ascii_case("left") && !v.eq_ignore_ascii_case("start"))
+    }
+
+    #[inline]
+    pub fn effective_box_shadow(&self) -> Option<&str> {
+        self.box_shadow
+            .as_deref()
+            .filter(|v| !v.eq_ignore_ascii_case("none"))
+    }
+
+    #[inline]
+    pub fn effective_overflow(&self) -> Option<&str> {
+        self.overflow
+            .as_deref()
+            .filter(|v| !v.eq_ignore_ascii_case("visible"))
+    }
+
+    /// Appends non-default raw style declarations into `out`.
+    pub fn write_compact_into(&self, skip_typography: bool, out: &mut String) {
+        if !skip_typography {
+            if let Some(fw) = self.effective_font_weight() {
+                out.push_str("font-weight:");
+                out.push_str(fw);
+                out.push(';');
+            }
+            if let Some(ta) = self.effective_text_align() {
+                out.push_str("text-align:");
+                out.push_str(ta);
+                out.push(';');
+            }
+        }
+        if let Some(bs) = self.effective_box_shadow() {
+            out.push_str("box-shadow:");
+            out.push_str(bs);
+            out.push(';');
+        }
+        if let Some(ov) = self.effective_overflow() {
+            out.push_str("overflow:");
+            out.push_str(ov);
+            out.push(';');
+        }
+        if let Some(fit) = self.object_fit {
+            out.push_str("object-fit:");
+            out.push_str(fit);
+            out.push(';');
+        }
+    }
+}
+
+/// Resolved semantic HTML5 tag metadata for a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticTag {
+    pub tag: &'static str,
+    pub wrap_code: bool,
 }
 
 pub fn component_to_html_tag(kind: ComponentKind) -> &'static str {
@@ -61,8 +237,178 @@ pub fn component_to_html_tag(kind: ComponentKind) -> &'static str {
     }
 }
 
+/// Returns `true` if `key` can affect semantic HTML5 tag resolution.
 #[inline]
-fn write_dim(d: Dimension, out: &mut String) {
+pub fn is_semantic_tag_prop(key: &str) -> bool {
+    matches!(
+        key,
+        "accessibilityRole" | "accessibility_role" | "ariaLevel" | "aria-level" | "aria_level" | "href"
+    )
+}
+
+fn parse_aria_level(raw_props: &HashMap<String, RawPropValue>) -> u8 {
+    let val = raw_props
+        .get("ariaLevel")
+        .or_else(|| raw_props.get("aria-level"))
+        .or_else(|| raw_props.get("aria_level"));
+    let level = match val {
+        Some(RawPropValue::I64(n)) => *n,
+        Some(RawPropValue::F64(n)) if n.is_finite() => *n as i64,
+        Some(RawPropValue::String(s)) => s.trim().parse::<i64>().unwrap_or(2),
+        _ => 2,
+    };
+    level.clamp(1, 6) as u8
+}
+
+/// Resolves semantic HTML5 tags from `accessibilityRole`, `ariaLevel`, and `href`.
+pub fn resolve_semantic_tag(
+    kind: ComponentKind,
+    raw_props: &HashMap<String, RawPropValue>,
+) -> SemanticTag {
+    if let Some(RawPropValue::String(role)) = raw_props
+        .get("accessibilityRole")
+        .or_else(|| raw_props.get("accessibility_role"))
+    {
+        match role.trim().to_ascii_lowercase().as_str() {
+            "heading" => {
+                let tag = match parse_aria_level(raw_props) {
+                    1 => "h1",
+                    2 => "h2",
+                    3 => "h3",
+                    4 => "h4",
+                    5 => "h5",
+                    _ => "h6",
+                };
+                return SemanticTag { tag, wrap_code: false };
+            }
+            "navigation" => return SemanticTag { tag: "nav", wrap_code: false },
+            "main" => return SemanticTag { tag: "main", wrap_code: false },
+            "article" => return SemanticTag { tag: "article", wrap_code: false },
+            "complementary" => return SemanticTag { tag: "aside", wrap_code: false },
+            "banner" => return SemanticTag { tag: "header", wrap_code: false },
+            "contentinfo" => return SemanticTag { tag: "footer", wrap_code: false },
+            "link" => {
+                if matches!(raw_props.get("href"), Some(RawPropValue::String(h)) if !h.trim().is_empty()) {
+                    return SemanticTag { tag: "a", wrap_code: false };
+                }
+            }
+            "code" => return SemanticTag { tag: "code", wrap_code: false },
+            "codeblock" => return SemanticTag { tag: "pre", wrap_code: true },
+            _ => {}
+        }
+    }
+    SemanticTag {
+        tag: component_to_html_tag(kind),
+        wrap_code: false,
+    }
+}
+
+/// Canonicalizes an `f32` to deterministic IEEE-754 bits (folding `-0.0` and non-finite to `0`).
+#[inline]
+pub fn canonical_f32_bits(v: f32) -> u32 {
+    if !v.is_finite() || v == 0.0 {
+        0
+    } else {
+        v.to_bits()
+    }
+}
+
+#[inline]
+pub(crate) fn canonical_f32(v: f32) -> f32 {
+    if !v.is_finite() || v == 0.0 {
+        0.0
+    } else {
+        v
+    }
+}
+
+/// Formats a compact CSS numeric value (`0` instead of `-0`, no trailing `.0`).
+#[inline]
+pub(crate) fn write_compact_num(v: f32, out: &mut String) {
+    let v = canonical_f32(v);
+    let _ = write!(out, "{v}");
+}
+
+/// Formats a compact CSS pixel length (`0` without unit, otherwise `{v}px`).
+#[inline]
+pub(crate) fn write_compact_px(v: f32, out: &mut String) {
+    let v = canonical_f32(v);
+    if v == 0.0 {
+        out.push('0');
+    } else {
+        let _ = write!(out, "{v}px");
+    }
+}
+
+/// Formats a compact [`Dimension`] into `out`.
+#[inline]
+pub(crate) fn write_compact_dim(d: Dimension, out: &mut String) {
+    match d {
+        Dimension::Auto => out.push_str("auto"),
+        Dimension::Points(v) => write_compact_px(v, out),
+        Dimension::Percent(v) => {
+            let v = canonical_f32(v);
+            if v == 0.0 {
+                out.push('0');
+            } else {
+                let _ = write!(out, "{v}%");
+            }
+        }
+    }
+}
+
+/// Formats a [`ColorRgba`] compactly: `#rrggbb` when `a == 255`, `transparent` when `a == 0`,
+/// otherwise `rgba(r,g,b,a)`.
+#[inline]
+pub fn write_compact_color(c: ColorRgba, out: &mut String) {
+    if c.a == 255 {
+        let _ = write!(out, "#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+    } else if c.a == 0 {
+        out.push_str("transparent");
+    } else {
+        let alpha = format!("{:.3}", c.a as f32 / 255.0);
+        let trimmed = alpha.trim_end_matches('0').trim_end_matches('.');
+        let _ = write!(out, "rgba({},{},{},{trimmed})", c.r, c.g, c.b);
+    }
+}
+
+/// Appends compact 1/2/3/4-value CSS shorthand for `padding` or `margin`, omitting all-zero edges.
+pub fn write_compact_edges(prop: &str, e: EdgeInsets, out: &mut String) {
+    let t = canonical_f32(e.top);
+    let r = canonical_f32(e.right);
+    let b = canonical_f32(e.bottom);
+    let l = canonical_f32(e.left);
+    if t == 0.0 && r == 0.0 && b == 0.0 && l == 0.0 {
+        return;
+    }
+    out.push_str(prop);
+    out.push(':');
+    if t == r && r == b && b == l {
+        write_compact_px(t, out);
+    } else if t == b && r == l {
+        write_compact_px(t, out);
+        out.push(' ');
+        write_compact_px(r, out);
+    } else if r == l {
+        write_compact_px(t, out);
+        out.push(' ');
+        write_compact_px(r, out);
+        out.push(' ');
+        write_compact_px(b, out);
+    } else {
+        write_compact_px(t, out);
+        out.push(' ');
+        write_compact_px(r, out);
+        out.push(' ');
+        write_compact_px(b, out);
+        out.push(' ');
+        write_compact_px(l, out);
+    }
+    out.push(';');
+}
+
+#[inline]
+fn write_dim_full(d: Dimension, out: &mut String) {
     match d {
         Dimension::Auto => out.push_str("auto"),
         Dimension::Points(v) => {
@@ -75,7 +421,7 @@ fn write_dim(d: Dimension, out: &mut String) {
 }
 
 #[inline]
-fn write_rgba(c: ColorRgba, out: &mut String) {
+fn write_rgba_full(c: ColorRgba, out: &mut String) {
     let _ = write!(
         out,
         "rgba({},{},{},{:.3})",
@@ -86,7 +432,7 @@ fn write_rgba(c: ColorRgba, out: &mut String) {
     );
 }
 
-/// Appends Flexbox CSS declarations for `l` directly into `out` with zero intermediate allocations.
+/// Appends full Flexbox CSS declarations for `l` directly into `out` (used by `render_html`).
 pub fn layout_to_css_into(l: &LayoutProps, out: &mut String) {
     let dir = match l.flex_direction {
         FlexDirection::Column => "column",
@@ -121,9 +467,9 @@ pub fn layout_to_css_into(l: &LayoutProps, out: &mut String) {
         ";flex-grow:{};flex-shrink:{};gap:{}px;width:",
         l.flex_grow, l.flex_shrink, l.gap
     );
-    write_dim(l.width, out);
+    write_dim_full(l.width, out);
     out.push_str(";height:");
-    write_dim(l.height, out);
+    write_dim_full(l.height, out);
     let _ = write!(
         out,
         ";padding:{}px {}px {}px {}px;margin:{}px {}px {}px {}px;",
@@ -139,22 +485,22 @@ pub fn layout_to_css_into(l: &LayoutProps, out: &mut String) {
 
     if l.min_width != Dimension::Auto {
         out.push_str("min-width:");
-        write_dim(l.min_width, out);
+        write_dim_full(l.min_width, out);
         out.push(';');
     }
     if l.min_height != Dimension::Auto {
         out.push_str("min-height:");
-        write_dim(l.min_height, out);
+        write_dim_full(l.min_height, out);
         out.push(';');
     }
     if l.max_width != Dimension::Auto {
         out.push_str("max-width:");
-        write_dim(l.max_width, out);
+        write_dim_full(l.max_width, out);
         out.push(';');
     }
     if l.max_height != Dimension::Auto {
         out.push_str("max-height:");
-        write_dim(l.max_height, out);
+        write_dim_full(l.max_height, out);
         out.push(';');
     }
 }
@@ -165,14 +511,14 @@ pub fn layout_to_css(l: &LayoutProps) -> String {
     out
 }
 
-/// Appends visual style CSS declarations for `s` directly into `out` with zero intermediate allocations.
+/// Appends full visual style CSS declarations for `s` directly into `out` (used by `render_html`).
 pub fn style_to_css_into(s: &StyleProps, out: &mut String) {
     out.push_str("background-color:");
-    write_rgba(s.background, out);
+    write_rgba_full(s.background, out);
     out.push_str(";color:");
-    write_rgba(s.text_color, out);
+    write_rgba_full(s.text_color, out);
     let _ = write!(out, ";border:{}px solid ", s.border_width);
-    write_rgba(s.border_color, out);
+    write_rgba_full(s.border_color, out);
     let _ = write!(
         out,
         ";border-radius:{}px;opacity:{};font-size:{}px;z-index:{};",
@@ -189,23 +535,28 @@ pub fn style_to_css(s: &StyleProps) -> String {
 fn kind_default_css(kind: ComponentKind, event_mask: u64) -> &'static str {
     match kind {
         ComponentKind::ScrollView => "overflow:auto;",
-        ComponentKind::Pressable => "cursor:pointer;appearance:none;font:inherit;",
-        ComponentKind::TextInput => "font:inherit;outline:none;",
+        ComponentKind::Pressable => "cursor:pointer;appearance:none;background:transparent;font-family:inherit;",
+        ComponentKind::TextInput => "font-family:inherit;outline:none;",
         _ if (event_mask & EventMask::PRESS) != 0 => "cursor:pointer;",
         _ => "",
     }
 }
 
+/// Cross-target DOM mirror node with zero stored `layout_css`/`style_css` heap bloat.
 #[derive(Debug, Clone)]
 pub struct MirrorElement {
     pub kind: ComponentKind,
     pub tag: &'static str,
+    pub wrap_code: bool,
     pub layout: LayoutProps,
     pub style: StyleProps,
-    pub layout_css: String,
-    pub style_css: String,
+    pub raw_style: RawStyleProps,
     pub patch_css: String,
-    pub object_fit: Option<&'static str>,
+    pub class_name: String,
+    pub inline_style: String,
+    pub has_inline_style: bool,
+    pub last_style_frame: u64,
+    pub consecutive_style_frames: u8,
     pub text: Option<String>,
     pub children: Vec<NodeId>,
     pub event_mask: u64,
@@ -219,12 +570,16 @@ impl MirrorElement {
         Self {
             kind,
             tag: component_to_html_tag(kind),
+            wrap_code: false,
             layout: LayoutProps::default(),
             style: StyleProps::default(),
-            layout_css: String::new(),
-            style_css: String::new(),
+            raw_style: RawStyleProps::default(),
             patch_css: String::new(),
-            object_fit: None,
+            class_name: String::new(),
+            inline_style: String::new(),
+            has_inline_style: false,
+            last_style_frame: 0,
+            consecutive_style_frames: 0,
             text: None,
             children: Vec::new(),
             event_mask: EventMask::NONE,
@@ -234,32 +589,40 @@ impl MirrorElement {
         }
     }
 
-    /// Appends full inline `style` text into `out` without allocating an intermediate `String`.
+    /// Records a style/layout mutation on `frame_id` to detect consecutive-frame volatility.
+    #[inline]
+    pub(crate) fn record_style_mutation(&mut self, frame_id: u64) {
+        if frame_id == 0 || self.last_style_frame == frame_id {
+            return;
+        }
+        if self.last_style_frame > 0 && self.last_style_frame.saturating_add(1) == frame_id {
+            self.consecutive_style_frames = self.consecutive_style_frames.saturating_add(1);
+        } else {
+            self.consecutive_style_frames = 1;
+        }
+        self.last_style_frame = frame_id;
+    }
+
+    /// Returns `true` when this node mutated styles in `>= 2` consecutive frames.
+    #[inline]
+    pub fn is_consecutive_frame_volatile(&self) -> bool {
+        self.consecutive_style_frames >= 2
+    }
+
+    /// Appends full inline `style` text into `out` on demand without storing cached strings.
     #[inline]
     pub fn combined_css_into(&self, out: &mut String) {
         out.push_str(kind_default_css(self.kind, self.event_mask));
-        out.push_str(&self.layout_css);
-        out.push_str(&self.style_css);
-        if let Some(fit) = self.object_fit {
-            out.push_str("object-fit:");
-            out.push_str(fit);
-            out.push(';');
-        }
+        layout_to_css_into(&self.layout, out);
+        style_to_css_into(&self.style, out);
+        self.raw_style.write_compact_into(false, out);
         out.push_str(&self.patch_css);
     }
 
-    /// Full inline `style` text combining kind defaults, typed layout, typed style, `object-fit`,
+    /// Full inline `style` text combining kind defaults, typed layout, typed style, `RawStyleProps`,
     /// and Tier-1 patches.
     pub fn combined_css(&self) -> String {
-        let base = kind_default_css(self.kind, self.event_mask);
-        let fit_len = self.object_fit.map_or(0, |f| f.len() + 12);
-        let mut out = String::with_capacity(
-            base.len()
-                + self.layout_css.len()
-                + self.style_css.len()
-                + fit_len
-                + self.patch_css.len(),
-        );
+        let mut out = String::with_capacity(384 + self.patch_css.len());
         self.combined_css_into(&mut out);
         out
     }

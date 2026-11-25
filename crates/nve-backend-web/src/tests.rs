@@ -366,10 +366,10 @@ fn maps_image_resize_mode_alt_and_src_in_mirror_and_html() {
     b.commit(true);
     web.submit_frame(b.finish()).unwrap();
 
-    assert_eq!(web.node(2).unwrap().object_fit, Some("cover"));
-    assert_eq!(web.node(3).unwrap().object_fit, Some("contain"));
-    assert_eq!(web.node(4).unwrap().object_fit, Some("fill"));
-    assert_eq!(web.node(5).unwrap().object_fit, Some("none"));
+    assert_eq!(web.node(2).unwrap().raw_style.object_fit, Some("cover"));
+    assert_eq!(web.node(3).unwrap().raw_style.object_fit, Some("contain"));
+    assert_eq!(web.node(4).unwrap().raw_style.object_fit, Some("fill"));
+    assert_eq!(web.node(5).unwrap().raw_style.object_fit, Some("none"));
 
     let html = web.render_html();
     assert!(html.contains(
@@ -392,8 +392,8 @@ fn maps_image_resize_mode_alt_and_src_in_mirror_and_html() {
     b2.set_raw_prop(3, "resizeMode", &RawPropValue::Null);
     b2.commit(true);
     web.submit_frame(b2.finish()).unwrap();
-    assert_eq!(web.node(2).unwrap().object_fit, Some("contain"));
-    assert_eq!(web.node(3).unwrap().object_fit, None);
+    assert_eq!(web.node(2).unwrap().raw_style.object_fit, Some("contain"));
+    assert_eq!(web.node(3).unwrap().raw_style.object_fit, None);
 }
 
 #[test]

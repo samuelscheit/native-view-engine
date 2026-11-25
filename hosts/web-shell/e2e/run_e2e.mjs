@@ -705,7 +705,7 @@ async function main() {
     // =========================================================================
     // 1. Aether Workspace + NVE Studio Desktop 1280x800 (`/?app=studio&ws=off`)
     // =========================================================================
-    console.log("==> [1/6] Testing Aether Workspace + NVE Studio Desktop 1280x800 (?app=studio&ws=off)...");
+    console.log("==> [1/7] Testing Aether Workspace + NVE Studio Desktop 1280x800 (?app=studio&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off` });
 
     await waitForCondition(
@@ -1035,7 +1035,7 @@ async function main() {
     // =========================================================================
     // 2. Responsive Mobile Portrait Resize (`393x852`, < 620pt breakpoint)
     // =========================================================================
-    console.log("==> [2/6] Testing Responsive Mobile Portrait Resize (393x852 -> 1280x800)...");
+    console.log("==> [2/7] Testing Responsive Mobile Portrait Resize (393x852 -> 1280x800)...");
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 393,
       height: 852,
@@ -1092,7 +1092,7 @@ async function main() {
     // =========================================================================
     // 3. Counter App (`/?app=counter&ws=off`)
     // =========================================================================
-    console.log("==> [3/6] Testing Counter App (?app=counter&ws=off)...");
+    console.log("==> [3/7] Testing Counter App (?app=counter&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=counter&ws=off` });
 
     await waitForCondition(
@@ -1143,7 +1143,7 @@ async function main() {
     // =========================================================================
     // 4. Studio Docs View (`ActiveView::Docs`)
     // =========================================================================
-    console.log("==> [4/6] Testing Studio Docs View (ActiveView::Docs)...");
+    console.log("==> [4/7] Testing Studio Docs View (ActiveView::Docs)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off` });
     await waitForCondition(
       cdp,
@@ -1319,7 +1319,7 @@ async function main() {
     // =========================================================================
     // 5. Studio Workbench View (`ActiveView::Workbench`)
     // =========================================================================
-    console.log("==> [5/6] Testing Studio Workbench View (ActiveView::Workbench)...");
+    console.log("==> [5/7] Testing Studio Workbench View (ActiveView::Workbench)...");
     await clickElement(
       cdp,
       `document.querySelector('[testid="nav-workbench"]')`,
@@ -1434,7 +1434,7 @@ async function main() {
     // =========================================================================
     // 6. Live `nve pair` Binary WebSocket Thin-Client (`?pair=ws://...&token=...`)
     // =========================================================================
-    console.log("==> [6/6] Testing Live nve pair Binary WebSocket Thin-Client (?pair=ws://...&token=...)...");
+    console.log("==> [6/7] Testing Live nve pair Binary WebSocket Thin-Client (?pair=ws://...&token=...)...");
     const { nveBin, counterDylib } = ensurePairArtifacts();
     try {
       pairServer = await launchPairServer(nveBin, counterDylib);
@@ -1522,13 +1522,224 @@ async function main() {
       pairServer = null;
     }
 
+    // =========================================================================
+    // 7. Option 5 Hybrid CSS + Semantic SSR + Zero-Flicker Hydration + Progressive Islands
+    // =========================================================================
+    console.log("==> [7/7] Testing Option 5 Hybrid CSS, Semantic SSR & Zero-Flicker Hydration (?app=studio&ws=off&ssr=1)...");
+    await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off&ssr=1` });
+
+    await waitForCondition(
+      cdp,
+      "StudioWorkspaceApp hydrated over SSR DOM with 0 mismatches",
+      () => {
+        const ctrl = window.__nveController;
+        const text = document.getElementById("app")?.innerText || "";
+        return (
+          Boolean(ctrl) &&
+          ctrl.is_hydrated() &&
+          Boolean(window.__nveSsrPreHydrate) &&
+          text.includes("AETHER") &&
+          text.includes("AET-101")
+        );
+      }
+    );
+
+    const hydrateStats = await evalJs(
+      cdp,
+      `(() => {
+        const ctrl = window.__nveController;
+        const pre = window.__nveSsrPreHydrate;
+        const rootAfter = document.querySelector('#app [data-nve-id="1"]');
+        const searchAfter = document.querySelector('[testid="board-search-input"]');
+        const statusAfter = document.querySelector('[testid="task-status-1"]');
+        const invalidStyleAttrs = document.querySelectorAll('[font-weight],[text-align],[box-shadow]').length;
+        return {
+          isHydrated: ctrl.is_hydrated(),
+          mismatches: Number(ctrl.hydration_mismatch_count()),
+          adopted: Number(ctrl.hydration_adopted_count()),
+          replaced: Number(ctrl.hydration_replaced_count()),
+          seededRules: Number(ctrl.hydration_seeded_rules()),
+          sheetRules: Number(ctrl.stylesheet_rule_count()),
+          rootIdentityPreserved: pre.rootEl === rootAfter,
+          searchIdentityPreserved: pre.searchInput === searchAfter,
+          statusIdentityPreserved: pre.statusBtn === statusAfter,
+          invalidStyleAttrs,
+          ssrHtmlBytes: pre.htmlBytes,
+          ssrCssBytes: pre.cssBytes,
+          legacyHtmlBytes: ctrl.render_html().length,
+        };
+      })()`
+    );
+
+    if (
+      !hydrateStats.isHydrated ||
+      hydrateStats.mismatches !== 0 ||
+      hydrateStats.replaced !== 0 ||
+      !(hydrateStats.adopted > 20) ||
+      !(hydrateStats.seededRules > 0) ||
+      !hydrateStats.rootIdentityPreserved ||
+      !hydrateStats.searchIdentityPreserved ||
+      !hydrateStats.statusIdentityPreserved ||
+      hydrateStats.invalidStyleAttrs !== 0
+    ) {
+      throw new Error(`SSR hydration invariant failed: ${JSON.stringify(hydrateStats)}`);
+    }
+
+    // 7a. Verify preserved <input> focus & element identity across keyed SetChildren updates.
+    await typeIntoInput(
+      cdp,
+      `document.querySelector('[testid="board-search-input"]')`,
+      "AppKit",
+      "hydrated board-search-input"
+    );
+    await waitForCondition(
+      cdp,
+      "Hydrated search filtered board to AET-102 while preserving <input> focus",
+      () => {
+        const text = document.getElementById("app")?.innerText || "";
+        const inp = document.querySelector('[testid="board-search-input"]');
+        return (
+          text.includes("AET-102") &&
+          !text.includes("AET-101") &&
+          document.activeElement === inp &&
+          inp === window.__nveSsrPreHydrate.searchInput
+        );
+      }
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="board-search-clear"]')`,
+      "hydrated board-search-clear"
+    );
+    await waitForCondition(
+      cdp,
+      "Hydrated board search cleared via root event delegation",
+      () => (document.getElementById("app")?.innerText || "").includes("AET-101")
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="task-status-1"]')`,
+      "hydrated task-status-1"
+    );
+    await waitForCondition(
+      cdp,
+      "Hydrated task-status-1 delegated click updated Done (2)",
+      () => (document.getElementById("app")?.innerText || "").includes("Done (2)")
+    );
+
+    // 7b. Verify semantic HTML5 tags + non-empty rendered box-shadow / font-weight / text-align
+    //     + zero-mismatch hydration identity preservation on the style probe.
+    const styleProbe = await evalJs(
+      cdp,
+      `(() => {
+        const host = document.createElement('div');
+        host.id = 'nve-style-probe';
+        document.body.appendChild(host);
+        // First pass mounts SSR HTML + hydrates; capture pre-hydrate nodes from a second clean hydration pass.
+        const firstMismatches = window.__nveWasmMod.run_semantic_style_hydration_probe('nve-style-probe');
+        const cardBefore = host.querySelector('article[testid="probe-card"]');
+        const headingBefore = host.querySelector('h1[testid="probe-heading"]');
+        const linkBefore = host.querySelector('a[testid="probe-link"]');
+        const secondMismatches = window.__nveWasmMod.run_semantic_style_hydration_probe('nve-style-probe');
+        const cardAfter = host.querySelector('article[testid="probe-card"]');
+        const headingAfter = host.querySelector('h1[testid="probe-heading"]');
+        const linkAfter = host.querySelector('a[testid="probe-link"]');
+        const cardStyle = cardAfter ? getComputedStyle(cardAfter) : null;
+        const headingStyle = headingAfter ? getComputedStyle(headingAfter) : null;
+        const res = {
+          firstMismatches: Number(firstMismatches),
+          secondMismatches: Number(secondMismatches),
+          cardIdentity: Boolean(cardBefore && cardBefore === cardAfter),
+          headingIdentity: Boolean(headingBefore && headingBefore === headingAfter),
+          linkIdentity: Boolean(linkBefore && linkBefore === linkAfter),
+          linkHref: linkAfter?.getAttribute('href'),
+          boxShadow: cardStyle?.boxShadow || '',
+          fontWeight: headingStyle?.fontWeight || '',
+          textAlign: headingStyle?.textAlign || '',
+          invalidAttrs: host.querySelectorAll('[box-shadow],[font-weight],[text-align]').length,
+        };
+        host.remove();
+        return res;
+      })()`
+    );
+
+    if (
+      styleProbe.firstMismatches !== 0 ||
+      styleProbe.secondMismatches !== 0 ||
+      !styleProbe.cardIdentity ||
+      !styleProbe.headingIdentity ||
+      !styleProbe.linkIdentity ||
+      styleProbe.linkHref !== "/docs/ssr" ||
+      !styleProbe.boxShadow ||
+      styleProbe.boxShadow === "none" ||
+      styleProbe.fontWeight !== "700" ||
+      styleProbe.textAlign !== "center" ||
+      styleProbe.invalidAttrs !== 0
+    ) {
+      throw new Error(`Semantic SSR / RawStyleProps hydration probe failed: ${JSON.stringify(styleProbe)}`);
+    }
+
+    // 7c. Verify ProgressiveIslandHost (load, visible via IntersectionObserver, interaction + event replay, idle).
+    const islandCheck = await evalJs(
+      cdp,
+      `(async () => {
+        const box = document.createElement('div');
+        box.id = 'nve-island-probe';
+        box.innerHTML =
+          '<div data-nve-id="20" data-nve-island="isl-load" data-nve-hydrate="load"></div>' +
+          '<div data-nve-id="21" data-nve-island="isl-vis" data-nve-hydrate="visible" style="width:20px;height:20px;"></div>' +
+          '<div data-nve-id="22" data-nve-island="isl-int" data-nve-hydrate="interaction"><button id="isl-btn" data-nve-id="23">Go</button></div>' +
+          '<div data-nve-id="24" data-nve-island="isl-idle" data-nve-hydrate="idle"></div>';
+        document.body.appendChild(box);
+        let replayedClicks = 0;
+        const intEl = box.querySelector('[data-nve-island="isl-int"]');
+        intEl.addEventListener('nve:island-hydrated', () => {
+          box.querySelector('#isl-btn').addEventListener('click', () => { replayedClicks += 1; });
+        });
+        const host = window.__nveWasmMod.ProgressiveIslandHost.attach('nve-island-probe');
+        const loadImmediate = host.is_hydrated('isl-load');
+        const intBeforeClick = host.is_hydrated('isl-int');
+        box.querySelector('#isl-btn').click();
+        await new Promise((r) => setTimeout(r, 120));
+        const res = {
+          loadImmediate,
+          intBeforeClick,
+          visHydrated: host.is_hydrated('isl-vis'),
+          intHydrated: host.is_hydrated('isl-int'),
+          idleHydrated: host.is_hydrated('isl-idle'),
+          hydratedCount: Number(host.hydrated_count()),
+          replayedEvents: Number(host.replayed_event_count()),
+          replayedClicks,
+        };
+        host.free();
+        box.remove();
+        return res;
+      })()`
+    );
+    if (
+      !islandCheck.loadImmediate ||
+      islandCheck.intBeforeClick ||
+      !islandCheck.visHydrated ||
+      !islandCheck.intHydrated ||
+      !islandCheck.idleHydrated ||
+      islandCheck.hydratedCount !== 4 ||
+      islandCheck.replayedEvents < 1 ||
+      islandCheck.replayedClicks < 1
+    ) {
+      throw new Error(`ProgressiveIslandHost E2E check failed: ${JSON.stringify(islandCheck)}`);
+    }
+
+    console.log(
+      `    PASS SSR + Zero-Flicker Hydration (adopted=${hydrateStats.adopted}, mismatches=0, elBefore===elAfter, focus preserved, boxShadow=${styleProbe.boxShadow}, fontWeight=${styleProbe.fontWeight}, textAlign=${styleProbe.textAlign}, islands=4/4 replayed=${islandCheck.replayedClicks}, SSR=${hydrateStats.ssrHtmlBytes + hydrateStats.ssrCssBytes}B vs legacy=${hydrateStats.legacyHtmlBytes}B)`
+    );
+
     if (errors.length > 0) {
       throw new Error(
         `Browser console/runtime errors detected (${errors.length}):\n${errors.join("\n")}`
       );
     }
 
-    console.log(`==> ALL 6 WEB WASM + LIVE PAIR E2E SUITES PASSED (0 console errors, 0 WASM panics)`);
+    console.log(`==> ALL 7 WEB WASM + LIVE PAIR + SSR/HYDRATION E2E SUITES PASSED (0 console errors, 0 WASM panics)`);
   } finally {
     await cleanup();
   }

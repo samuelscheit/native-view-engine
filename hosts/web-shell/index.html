@@ -400,16 +400,53 @@
 					const bust = Date.now();
 					const wasmMod = await import(`./pkg/nve_web_shell.js?v=${bust}`);
 					await wasmMod.default(new URL(`./pkg/nve_web_shell_bg.wasm?v=${bust}`, window.location.href));
+					window.__nveWasmMod = wasmMod;
+
 					if (isPaired) {
 						bootPairedClient(wasmMod, pairParam, pairToken);
 					} else {
 						const mode = isCounter ? "counter" : "studio";
+						const ssrParam = params.get("ssr");
+						const wantSsrDemo = ssrParam === "1" || ssrParam === "true";
 						if (statusEl) statusEl.dataset.mode = mode;
 						if (appEl) appEl.dataset.nveMode = mode;
-						const controller = isCounter
-							? wasmMod.start_counter_app("app", hotReloadWsUrl)
-							: wasmMod.start_studio_workspace_app("app", hotReloadWsUrl);
+
+						if (wantSsrDemo && appEl) {
+							const ssr = isCounter
+								? wasmMod.render_counter_ssr_bundle()
+								: wasmMod.render_studio_ssr_bundle();
+							const baseStyle = document.createElement("style");
+							baseStyle.setAttribute("data-nve-base", "");
+							baseStyle.textContent = ssr.base_css;
+							const ssrStyle = document.createElement("style");
+							ssrStyle.setAttribute("data-nve-ssr", "");
+							ssrStyle.setAttribute("data-nve-hashes", ssr.rule_hashes_csv);
+							ssrStyle.textContent = ssr.style_css;
+							document.head.append(baseStyle, ssrStyle);
+							appEl.innerHTML = ssr.html;
+							window.__nveSsrPreHydrate = {
+								rootEl: appEl.querySelector('[data-nve-id="1"]'),
+								searchInput: appEl.querySelector('[testid="board-search-input"]'),
+								statusBtn: appEl.querySelector('[testid="task-status-1"]'),
+								ruleCount: ssr.rule_count,
+								rootHash: ssr.root_hash_hex,
+								htmlBytes: ssr.html.length,
+								cssBytes: ssr.style_css.length,
+							};
+						}
+
+						const hasPreRenderedSsr = Boolean(appEl && appEl.querySelector("[data-nve-ssr-hash]"));
+						const controller = hasPreRenderedSsr
+							? isCounter
+								? wasmMod.hydrate_counter_app("app", hotReloadWsUrl)
+								: wasmMod.hydrate_studio_workspace_app("app", hotReloadWsUrl)
+							: isCounter
+								? wasmMod.start_counter_app("app", hotReloadWsUrl)
+								: wasmMod.start_studio_workspace_app("app", hotReloadWsUrl);
 						window.__nveController = controller;
+						if (appEl && appEl.querySelector("[data-nve-island]")) {
+							window.__nveIslandHost = wasmMod.ProgressiveIslandHost.attach("app");
+						}
 					}
 				} catch (err) {
 					console.error("[NVE Web] Boot failed:", err);
