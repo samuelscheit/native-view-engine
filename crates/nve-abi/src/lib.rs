@@ -15,7 +15,8 @@ pub use codec::{
     NVE_ABI_VERSION,
 };
 pub use events::{
-    decode_events, encode_events, EventMask, EventPayload, NativeEvent, NativeEventKind,
+    decode_events, decode_keydown_bytes, encode_events, encode_keydown_bytes, DecodedKeyDown,
+    EventMask, EventPayload, NativeEvent, NativeEventKind, KEYDOWN_WIRE_MAGIC,
 };
 pub use ffi::{
     NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
