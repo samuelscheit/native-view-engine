@@ -6,6 +6,8 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Codegen Hygiene
 
+- **SwiftUI Kit & Flutter Plugin Thin-Client `NVT1`/`NVD1` Pairing (10/10 Host Parity)** (`ffe1d5f`)
+  - Implemented pure-Swift (`URLSessionWebSocketTask`, `NvePairProtocol.swift`, `NvePairClient.swift`, `NvePairedSurfaceView.swift`) and pure-Dart (`dart:io` `WebSocket`, `nve_pair_protocol.dart`, `nve_pair_client.dart`, `nve_paired_surface.dart`) zero-JSON binary `NVT1` + `NVD1` (`Keyframe`/`XorRleDelta`/`CommandOpDelta`) + `InputEvents = 11` thin-client pairing clients and interactive UI views, completing live pairing parity across all 10 NVE platform hosts. Verified: 50/50 `swift test`, 60/60 `flutter test`, 0 `flutter analyze` issues, all source files `< 550` lines.
 - **Tier-2/3 `crates/nve-sdk` Native Storage & Hardware Modules** (`a5ae15c`)
   - Implemented 8 zero-JSON binary `NVH1` services (`0x0020..=0x0027`, pairwise-distinct from Tier-1 `0x0010..=0x0016`) over `NVE_IFACE_HOST = 5` across 15 modular files (`< 600` lines each, zero new external deps): crash-safe `NVK1` binary KV store (`StorageClient` with FNV-1a64 checksums, atomic batches, torn-tail recovery, atomic compaction), custom font loader (`FontClient` validating TTF/OTF/WOFF/WOFF2/TTC), `AudioClient`, `CameraClient`, `LocationClient`, `SensorClient` (zero-copy 20-byte `#[repr(C)]` `SensorSample`), `ShareClient`, and `WebAuthClient` (`ASWebAuthenticationSession`/Custom Tabs/OAuth). Wired into `NativeHostServices` and `MemoryHostServices`. Verified: 14/14 tests, 0 native & `wasm32` Clippy warnings.
 - **Wave 14A — Complete ABI Field-Offset Locks, Zero-JSON Codegen, Modular Splits & `.gitattributes`** (`99c1d99`)

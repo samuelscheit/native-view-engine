@@ -41,7 +41,5 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
 
 ## Flagship / Vision (Remaining Work Only)
 
-- [ ] **NVE Studio (Meta Workbench)**
-  - Add thin-client pairing UI for Flutter and SwiftUI shells (Skia, Web, macOS, Windows WinSock2, iOS, Android, Qt 6, and GTK4 already landed).
-- [ ] **Flagship Local-First Workspace & Messaging App (`examples/studio-workspace`)**
+- [ ] **Flagship Local-First Workspace & Messaging App (`examples/studio-workspace`)** *(in flight)*
   - Wire live multi-peer `NVC1` CRDT delta exchange over paired `NVT1` transport sessions and migrate inline Studio UI chrome onto `nve-ui`, `nve-router`, `nve-sdk`, and Environment Traits.
