@@ -65,10 +65,42 @@ function parseArgs(argv) {
   return { screenshotPath, rebuild, devBuild };
 }
 
+/** The entry files `build.sh` published for `bundle` (`pkg/<bundle>/<hash>/...`), or null. */
+function bundleFiles(bundle) {
+  const dir = path.join(PKG_DIR, bundle);
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    const files = { js: path.join(dir, manifest.js), wasm: path.join(dir, manifest.wasm) };
+    return fs.existsSync(files.js) && fs.existsSync(files.wasm) ? files : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every bundle (studio and counter included, which carry no test hook) installs the console panic
+ * hook at instantiation: the wasm exports the `#[wasm_bindgen(start)]` entry and carries the hook's
+ * `[NVE Web Panic]` prefix.
+ */
+function assertPanicHookInEveryBundle() {
+  for (const bundle of BUNDLES) {
+    const bytes = fs.readFileSync(bundleFiles(bundle).wasm);
+    const exports = WebAssembly.Module.exports(new WebAssembly.Module(bytes)).map((e) => e.name);
+    if (!exports.includes("__wbindgen_start") || !bytes.includes("[NVE Web Panic]")) {
+      throw new Error(`pkg/${bundle} does not install the panic hook at start (exports: ${exports.length})`);
+    }
+  }
+}
+
+/** 1-based line of the first line in `file` containing `needle`. */
+function lineOf(file, needle) {
+  const idx = fs.readFileSync(file, "utf8").split("\n").findIndex((l) => l.includes(needle));
+  if (idx < 0) throw new Error(`${needle} not found in ${file}`);
+  return idx + 1;
+}
+
 function ensureWasmBuilt(rebuild, devBuild) {
-  const built = BUNDLES.every((bundle) =>
-    ["nve_web_shell.js", "nve_web_shell_bg.wasm"].every((f) => fs.existsSync(path.join(PKG_DIR, bundle, f)))
-  );
+  const built = BUNDLES.every((bundle) => bundleFiles(bundle) !== null);
   if (!rebuild && built) {
     return;
   }
@@ -626,6 +658,7 @@ async function stopChrome(chrome) {
 async function main() {
   const { screenshotPath, rebuild, devBuild } = parseArgs(process.argv.slice(2));
   ensureWasmBuilt(rebuild, devBuild);
+  assertPanicHookInEveryBundle();
   const chromeBin = findChromeBinary();
 
   const { server, port } = await startStaticServer(WEB_SHELL_DIR);
@@ -720,6 +753,8 @@ async function main() {
           typeof m?.start_studio_workspace_app === "function" &&
           m.start_counter_app === undefined &&
           m.run_semantic_style_hydration_probe === undefined &&
+          m.run_hostile_frame_probe === undefined &&
+          m.panic_probe === undefined &&
           m.nve_web_scene_view_ptr === undefined
         );
       }
@@ -1121,6 +1156,8 @@ async function main() {
           typeof m?.start_counter_app === "function" &&
           m.start_studio_workspace_app === undefined &&
           m.run_semantic_style_hydration_probe === undefined &&
+          m.run_hostile_frame_probe === undefined &&
+          m.panic_probe === undefined &&
           m.nve_web_scene_view_ptr === undefined
         );
       }
@@ -1777,13 +1814,97 @@ async function main() {
       `    PASS SSR + Zero-Flicker Hydration (adopted=${hydrateStats.adopted}, mismatches=0, elBefore===elAfter, focus preserved, boxShadow=${styleProbe.boxShadow}, fontWeight=${styleProbe.fontWeight}, textAlign=${styleProbe.textAlign}, islands=4/4 replayed=${islandCheck.replayedClicks}, SSR=${hydrateStats.ssrHtmlBytes + hydrateStats.ssrCssBytes}B vs legacy=${hydrateStats.legacyHtmlBytes}B)`
     );
 
+    // 7d. Hostile CommandBuffers against the live DOM path (root container, cycles, moves,
+    //     reserved keys, CSS-only props, CSS injection, input type, draw ops, text vs children).
+    const hostile = await evalJs(
+      cdp,
+      `(() => {
+        const host = document.createElement('div');
+        host.id = 'nve-hostile-probe';
+        document.body.appendChild(host);
+        window.__nveWasmMod.run_hostile_frame_probe('nve-hostile-probe');
+        const all = (id) => host.querySelectorAll('[data-nve-id="' + id + '"]');
+        const n = (id) => all(id)[0];
+        const id = (el) => el?.getAttribute('data-nve-id');
+        const res = {
+          connected: host.isConnected && document.getElementById('nve-hostile-probe') === host,
+          rootTag: host.tagName,
+          rootId: host.getAttribute('data-nve-id'),
+          rootChildren: [...host.children].map(id).join(','),
+          counts: [2, 3, 4, 5, 6, 7, 8].map((i) => all(i).length).join(','),
+          movedParent: id(n(6)?.parentElement),
+          keptChildParent: id(n(7)?.parentElement),
+          node6Text: n(6)?.textContent,
+          node2Text: n(2)?.textContent,
+          node2Elements: n(2)?.childElementCount,
+          node2Class: n(2)?.getAttribute('class') || '',
+          node2Style: n(2)?.getAttribute('style') || '',
+          flexWrap: n(2) ? getComputedStyle(n(2)).flexWrap : '',
+          fontWeight: n(2) ? getComputedStyle(n(2)).fontWeight : '',
+          boxShadow: n(2) ? getComputedStyle(n(2)).boxShadow : '',
+          hidden: [2, 3, 4, 6, 7, 8].filter((i) => n(i) && getComputedStyle(n(i)).display === 'none').join(','),
+          inputType: n(3)?.getAttribute('type'),
+          drawOps: n(4)?.getAttribute('data-nve-draw-ops'),
+          rawAttrs: host.querySelectorAll('[flex-wrap],[font-weight],[box-shadow],[securetextentry],[role]').length,
+        };
+        host.remove();
+        return res;
+      })()`
+    );
+    const hostileExpected = {
+      connected: true,
+      rootTag: "DIV",
+      rootId: "1",
+      rootChildren: "2,3,4,8",
+      counts: "1,1,1,0,1,1,1",
+      movedParent: "8",
+      keptChildParent: "6",
+      node6Text: "kept child",
+      node2Text: "restored text",
+      node2Elements: 0,
+      flexWrap: "wrap",
+      fontWeight: "700",
+      boxShadow: "none",
+      hidden: "",
+      inputType: null,
+      drawOps: null,
+      rawAttrs: 0,
+    };
+    const hostileDiff = Object.entries(hostileExpected).filter(([k, v]) => hostile[k] !== v);
+    if (hostileDiff.length || hostile.node2Class.includes("evil") || hostile.node2Style.includes("255, 0, 0")) {
+      throw new Error(`Hostile frame probe failed (${JSON.stringify(hostileDiff)}): ${JSON.stringify(hostile)}`);
+    }
+    console.log("    PASS hostile CommandBuffers on the live DOM (root kept, moves/cycles/repeats, reserved keys, CSS-only props)");
+
     if (errors.length > 0) {
       throw new Error(
         `Browser console/runtime errors detected (${errors.length}):\n${errors.join("\n")}`
       );
     }
 
-    console.log(`==> ALL 7 WEB WASM + LIVE PAIR + SSR/HYDRATION E2E SUITES PASSED (0 console errors, 0 WASM panics)`);
+    // 7e. A real Rust panic prints its message and file:line (checked last: the trap poisons the
+    //     instance). The trigger exists only in the dev bundle.
+    const panicLine = lineOf(path.join(WEB_SHELL_DIR, "src/wasm_probe.rs"), 'panic!("{message}")');
+    const logsBefore = consoleLogs.length;
+    const panicOutcome = await evalJs(
+      cdp,
+      `(() => { try { window.__nveWasmMod.panic_probe('nve-e2e-panic-probe'); return 'returned'; } catch (e) { return String(e); } })()`
+    );
+    const panicLogs = consoleLogs.slice(logsBefore).filter((l) => l.includes("[NVE Web Panic]"));
+    const location = `hosts/web-shell/src/wasm_probe.rs:${panicLine}:`;
+    if (
+      panicLogs.length !== 1 ||
+      !panicLogs[0].includes("nve-e2e-panic-probe") ||
+      !panicLogs[0].includes(location) ||
+      !/RuntimeError|unreachable/.test(panicOutcome)
+    ) {
+      throw new Error(
+        `Panic probe: expected one "[NVE Web Panic]" log with the message and ${location}, then a trap; got ${JSON.stringify({ panicLogs, panicOutcome })}`
+      );
+    }
+    console.log(`    PASS Rust panic message + location in the console (${location}) in the ${devBuild ? "debug" : "release"} dev bundle`);
+
+    console.log(`==> ALL 7 WEB WASM + LIVE PAIR + SSR/HYDRATION E2E SUITES PASSED (0 console errors and 0 WASM panics before the deliberate panic probe)`);
   } finally {
     await cleanup();
   }

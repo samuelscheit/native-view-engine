@@ -35,13 +35,15 @@ Running `nve-backend-web` natively on the server (or at build time via `nve-docs
 
 :::steps
 ::step{title="Compile per bundle with --profile wasm-release"}
-Pinned nightly, `-Zbuild-std` with `optimize_for_size`, `-Cpanic=immediate-abort`, and the bundle's Cargo features (`--no-default-features --features app-studio` for studio).
+Pinned nightly, `-Zbuild-std` with `optimize_for_size`, `panic = "abort"` with panic messages and locations kept (a production panic logs `[NVE Web Panic] panicked at <file>:<line>:<col>`), and the bundle's Cargo features (`--no-default-features --features app-studio` for studio).
 ::step{title="Generate ES module bindings"}
-`wasm-bindgen --target web --out-dir hosts/web-shell/pkg/<bundle> --no-typescript`.
+`wasm-bindgen --target web --no-typescript` into a staging directory.
 ::step{title="Sort functions by size"}
 `tools/wasm-sort-funcs.py` (worth ~1 KB brotli / ~22 KB gzip).
 ::step{title="Compression-tuned wasm-opt, terser, precompression"}
 An explicit brotli-positive pass list (not `-Oz`), minified JS glue, and `.br`/`.gz` files next to each shipped file. Each bundle must stay under its brotli budget.
+::step{title="Publish content-hashed"}
+The bundle lands in `pkg/<bundle>/<hash>/` (immutable: serve with `Cache-Control: public, max-age=31536000, immutable`) and `pkg/<bundle>/manifest.json` names its entry files; `index.html` revalidates only the manifest. See `hosts/web-shell/README.md` "Caching".
 :::
 
 ```bash title="Unit tests, wasm32 compile check, and full release build"

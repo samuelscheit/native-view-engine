@@ -99,3 +99,76 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
     let mismatches = client.hydration_report().mismatches.len();
     Ok(mismatches)
 }
+
+fn mount_probe_container(mount_id: &str) -> Result<web_sys::Element, JsValue> {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(mount_id))
+        .ok_or_else(|| JsValue::from_str(&format!("mount '#{mount_id}' not found")))
+}
+
+fn apply_probe_frame(web: &mut WebBackend, build: impl FnOnce(&mut CommandBufferBuilder)) -> Result<(), JsValue> {
+    let mut b = CommandBufferBuilder::new(98, 1);
+    build(&mut b);
+    b.commit(true);
+    web.submit_frame(b.finish())
+        .map(|_| ())
+        .map_err(|e| JsValue::from_str(&format!("hostile probe frame failed: {e}")))
+}
+
+/// Mounts a live `WebBackend` into `#<mount_id>` and applies hostile CommandBuffers the live DOM
+/// path must survive: create/remove/retag/re-parent of the root container, cycles, repeats and
+/// moves, reserved raw-prop keys, CSS-only raw props and CSS-injecting values, non-secure inputs,
+/// empty draw lists, and text set on a node with children. The E2E inspects the resulting DOM.
+#[wasm_bindgen]
+pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
+    use ComponentKind as K;
+    let s = |v: &str| RawPropValue::String(v.into());
+    let mut web = WebBackend::mount_into(mount_probe_container(mount_id)?);
+    apply_probe_frame(&mut web, |b| {
+        b.create_node(2, K::View, None);
+        b.set_text(2, "parent text");
+        b.set_raw_prop(2, "flex-wrap", &s("wrap"));
+        b.set_raw_prop(2, "font-weight", &s("700"));
+        b.set_raw_prop(2, "style", &s("color: rgb(255, 0, 0)"));
+        b.set_raw_prop(2, "class", &s("evil"));
+        b.set_raw_prop(2, "data-nve-id", &s("99"));
+        b.set_raw_prop(2, "box-shadow", &s("red;} .nve{display:none"));
+        b.create_node(3, K::TextInput, None);
+        b.set_raw_prop(3, "testID", &s("probe-input"));
+        b.create_node(4, K::SkiaCanvas, None);
+        b.set_raw_prop(4, "drawList", &RawPropValue::Bytes(Vec::new()));
+        b.create_node(5, K::Text, None);
+        b.set_text(5, "child of two");
+        b.create_node(6, K::Text, None);
+        b.set_text(6, "own text");
+        b.create_node(7, K::Text, None);
+        b.set_text(7, "kept child");
+        b.create_node(8, K::View, None);
+        b.set_children(ROOT_NODE_ID, &[2, 3, 4, 6, 8]);
+        b.set_children(2, &[5]);
+        b.set_children(6, &[7]);
+    })?;
+    apply_probe_frame(&mut web, |b| {
+        b.create_node(ROOT_NODE_ID, K::Text, None);
+        b.set_raw_prop(ROOT_NODE_ID, "accessibilityRole", &s("navigation"));
+        b.set_raw_prop(ROOT_NODE_ID, "data-nve-id", &s("7"));
+        b.set_children(5, &[2]);
+        b.set_children(2, &[5, 5, ROOT_NODE_ID, 2]);
+        b.set_children(8, &[6, 6]);
+        b.set_children(5, &[ROOT_NODE_ID]);
+        b.remove_node(ROOT_NODE_ID);
+        b.set_raw_prop(3, "secureTextEntry", &RawPropValue::Bool(true));
+        b.set_raw_prop(3, "secureTextEntry", &RawPropValue::Bool(false));
+        b.set_text(6, "replaced own text");
+        b.set_text(2, "restored text");
+    })?;
+    apply_probe_frame(&mut web, |b| b.set_children(2, &[]))
+}
+
+/// Panics with `message`, so the E2E can check that a release bundle prints the panic message and
+/// its `file:line`. Dev bundle only: production bundles carry no trigger.
+#[wasm_bindgen]
+pub fn panic_probe(message: &str) {
+    panic!("{message}");
+}

@@ -649,8 +649,7 @@ fi
 DETECTED_CHROME_BIN=""
 WEB_E2E_BUILD_BUNDLE=0
 # The E2E loads every build.sh bundle (pkg/studio, pkg/counter, pkg/dev); dev is built last.
-WEB_PKG_JS="$REPO_ROOT/hosts/web-shell/pkg/dev/nve_web_shell.js"
-WEB_PKG_WASM="$REPO_ROOT/hosts/web-shell/pkg/dev/nve_web_shell_bg.wasm"
+WEB_PKG_MANIFEST="$REPO_ROOT/hosts/web-shell/pkg/dev/manifest.json"
 if ! command -v node >/dev/null 2>&1; then
   skip_suite "Web WASM E2E (CDP)" "node not found"
 elif ! has_node_websocket; then
@@ -660,10 +659,10 @@ elif ! DETECTED_CHROME_BIN="$(detect_chrome_bin)"; then
 elif [ "$QUICK_MODE" -eq 0 ] && command -v cargo >/dev/null 2>&1 && has_wasm_target && has_wasm_bindgen; then
   WEB_E2E_BUILD_BUNDLE=1
   run_suite "Web WASM E2E (CDP)" suite_web_wasm_e2e "build.sh --dev + headless Chrome CDP"
-elif [ -f "$WEB_PKG_JS" ] && [ -f "$WEB_PKG_WASM" ]; then
+elif [ -f "$WEB_PKG_MANIFEST" ]; then
   run_suite "Web WASM E2E (CDP)" suite_web_wasm_e2e "existing pkg/ + headless Chrome CDP"
 elif [ "$QUICK_MODE" -eq 1 ]; then
-  skip_suite "Web WASM E2E (CDP)" "hosts/web-shell/pkg/dev/nve_web_shell.js missing (run ./hosts/web-shell/build.sh --dev or omit --quick)"
+  skip_suite "Web WASM E2E (CDP)" "hosts/web-shell/pkg/dev/manifest.json missing (run ./hosts/web-shell/build.sh --dev or omit --quick)"
 else
   skip_suite "Web WASM E2E (CDP)" "wasm-bindgen or wasm32-unknown-unknown target not installed"
 fi

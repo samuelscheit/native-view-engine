@@ -2,7 +2,8 @@
 //! for `/examples/studio/` and `/examples/counter/`.
 //!
 //! Supports BOTH:
-//! - Unified `hosts/web-shell` bundles (`index.html` + `pkg/nve_web_shell.js` + `*.wasm`)
+//! - Unified `hosts/web-shell` bundles (`index.html` + `pkg/<slug>/manifest.json`, which names the
+//!   entry files in the content-hashed `pkg/<slug>/<hash>/` directory `build.sh` publishes)
 //! - Future per-app bundles (`<dist>/studio/` and `<dist>/counter/`) with zero code changes.
 
 use std::fs;
@@ -167,9 +168,9 @@ fn discover_for_app(candidates: &[PathBuf], slug: &str) -> DiscoveredBundle {
             };
         }
     }
-    // 2. Fall back to unified bundle (`<dir>/index.html` + `<dir>/pkg/` with `.wasm`/`.js`).
+    // 2. Fall back to the unified bundle (`<dir>/index.html` + `<dir>/pkg/<slug>/manifest.json`).
     for dir in candidates {
-        if is_unified_bundle_dir(dir) {
+        if is_unified_bundle_dir(dir, slug) {
             return DiscoveredBundle::Unified {
                 root_dir: dir.clone(),
             };
@@ -188,10 +189,8 @@ fn is_per_app_bundle_dir(dir: &Path) -> bool {
     has_index && (has_pkg || has_direct_wasm)
 }
 
-fn is_unified_bundle_dir(dir: &Path) -> bool {
-    dir.join("index.html").is_file()
-        && dir.join("pkg").is_dir()
-        && dir_has_wasm_or_js(&dir.join("pkg"))
+fn is_unified_bundle_dir(dir: &Path, slug: &str) -> bool {
+    dir.join("index.html").is_file() && dir.join("pkg").join(slug).join("manifest.json").is_file()
 }
 
 fn dir_has_wasm_or_js(dir: &Path) -> bool {

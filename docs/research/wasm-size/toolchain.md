@@ -85,6 +85,33 @@ It is passed through `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS`, so host bu
 are unaffected, and the workspace's stable `Cargo.toml` stays parseable. Cargo's `panic = "immediate-abort"`
 profile key would need `cargo-features` and therefore a nightly for every workspace build.
 
+### Decision: panic messages in production (over −23 KB)
+
+Release bundles no longer pass `-Zunstable-options -Cpanic=immediate-abort -Zfmt-debug=shallow
+-Zlocation-detail=none`. With them, every Rust panic in production was a bare
+`RuntimeError: unreachable` with no message and no location. Bugs that only show up on real data or
+browsers were not diagnosable, and the profile is `panic = "abort"` anyway, so nothing could catch them.
+
+What stays: the pinned nightly, `-Zbuild-std=std,panic_abort` and
+`-Zbuild-std-features=optimize_for_size` (std rebuilt for size, −4.2 KB), and `panic = "abort"`. The
+nightly is kept for `optimize_for_size` alone. A `#[wasm_bindgen(start)]` hook installed at
+instantiation in every bundle logs `[NVE Web Panic] panicked at <file>:<line>:<col>:\n<message>`
+before the abort trap. The web-shell E2E proves it on release builds:
+
+- it triggers a real panic through a dev-bundle-only export (`panic_probe`) and checks the message
+  and `hosts/web-shell/src/wasm_probe.rs:<line>:`
+- it checks that studio and counter export `__wbindgen_start` and carry the hook string, without
+  shipping any trigger
+
+Measured cost on this code (`t3/web-host-fixes`, pinned nightly, total brotli wasm+JS): studio
++20,788 (285,929 → 306,717), counter +16,366 (114,514 → 130,880), dev +22,884 (319,827 → 342,711) B
+compared with the same build with the three flags (measured by setting them through
+`CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS`, which `build.sh` no longer sets). The budgets in `build.sh` were re-based ~3 % above the new sizes.
+
+wasm-bindgen emits the start entry as an unnamed shim (externref table init, then the hook).
+`tools/wasm-sort-funcs.py` therefore prints with `wasm-tools print --name-unnamed`, because a
+function without a name would be referenced by index and could not be moved.
+
 ### 2. Target and features
 
 | Variant | wasm br | JS br | total Δ vs generic |
@@ -267,14 +294,14 @@ The step was removed. Removing the source-side `wizer.initialize` export and `Pr
 |---:|---|---:|:---:|---|
 | 1 | Precompressed brotli q11 at the edge instead of on-the-fly q4–q5 | **27–42 KB** vs typical CDN | S | Needs host config (`.br` sidecars are now emitted) |
 | 2 | Compression Dictionary Transport for returning visitors | −73 … −90 % per update | M | Chromium only; other browsers fall back; the server must keep old builds addressable |
-| 3 | Nightly `-Zbuild-std` + `-Cpanic=immediate-abort` | **23.1 KB** (measured) | S (done) | Pinned nightly for release builds. Panics trap without a message (already `panic=abort`, so not catchable either); use `--dev` to debug panics |
+| 3 | Nightly `-Zbuild-std` + `-Cpanic=immediate-abort` | **23.1 KB** (measured) | S (reverted) | Reverted by decision, see "Decision: panic messages in production". Panics trap without a message or location, so a production panic cannot be diagnosed |
 | 4 | Snip `rustc_demangle` + `std::backtrace` | **5.8 KB** | S (done) | None at runtime (unreachable on this target). Build needs python3 + wasm-tools |
 | 5 | `optimize_for_size` std | **4.2 KB** | S (done) | Slower sort/fmt algorithms (not hot here) |
 | 6 | Tuned wasm-opt list instead of `-Oz` | 3.2 KB vs none; 5.9 KB vs working `-Oz` | S (done) | None |
 | 7 | Minify the JS glue (terser) | **2.6 KB** | S (done) | Needs `npx`; skipped with a notice when absent |
 | 8 | `-Zfmt-debug=none` (instead of shallow) | 2.6 KB | S + source | Breaks 3 visible strings until fixed: gesture "Reason" (`examples/studio-workspace/src/state/actions.rs:594`), pairing reject reason (`hosts/web-shell/src/pairing.rs:237`), and every `Display` implemented as `{self:?}` (`SceneError`, `DecodeError`, `BackendError`, `LoaderError`) |
 | 9 | Size-sorted function order | 1.1 KB (gzip/zstd also improve) | S (done) | None |
-| 10 | `fmt-debug=shallow` + `location-detail=none` | 0.8 KB | S (done) | `{:?}` of structs prints only type names |
+| 10 | `fmt-debug=shallow` + `location-detail=none` | 0.8 KB | S (reverted) | Reverted with rank 3: locations are what make a panic message useful |
 | 11 | `strip="debuginfo"` | ~0.1 KB, but fixes the wasm-opt failure and externref glue (JS −6.5 KB raw) | S (done) | None |
 | 12 | Remove the wizer step | avoids +61 KB when wizer is installed | S (done) | None (it could not work on bindgen output) |
 | — | Rejected: opt-level s, thin LTO, mir-opt-level 4, inline-threshold, VFE, bleeding-edge/mvp CPU, zstd over br, any `-O`/`-Oz`, wasm32v1-none, alternative backends | — | — | — |
@@ -284,8 +311,9 @@ The step was removed. Removing the source-side `wizer.initialize` export and `Pr
 - `Cargo.toml` `[profile.wasm-release]`: `lto = "fat"` (explicit) and `strip = "debuginfo"` (was `"symbols"`).
 - `hosts/web-shell/build.sh`, release pipeline:
   1. Pinned nightly `nightly-2026-10-20` (override with `NVE_WASM_TOOLCHAIN`), auto-installed with `rust-src`.
-     Build flags: `-Zbuild-std=std,panic_abort -Zbuild-std-features=optimize_for_size` and wasm32-only rustflags
-     `-Zunstable-options -Cpanic=immediate-abort -Zfmt-debug=shallow -Zlocation-detail=none`.
+     Build flags: `-Zbuild-std=std,panic_abort -Zbuild-std-features=optimize_for_size`. The wasm32-only
+     rustflags `-Zunstable-options -Cpanic=immediate-abort -Zfmt-debug=shallow -Zlocation-detail=none` were
+     later removed again (see "Decision: panic messages in production").
   2. wasm-bindgen with names kept.
   3. `tools/wat-snip.py`: snip, then size sort.
   4. The tuned wasm-opt list.

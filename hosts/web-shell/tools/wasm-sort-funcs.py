@@ -4,9 +4,11 @@
 Placing similar-sized (and therefore often similar-shaped) functions next to each other is worth
 ~1 KB brotli / ~22 KB gzip on the web-shell bundle (docs/research/wasm-size/toolchain.md). Moving
 `(func ...)` blocks is semantics-preserving only because the printed text references functions
-symbolically (`$name`), so the input must still carry its `name` section (wasm-bindgen output
-without --remove-name-section); a module with an unnamed defined function is rejected. Run
-wasm-opt afterwards to strip the names; its pass list must not reorder functions again.
+symbolically (`$name`): the input keeps its `name` section (wasm-bindgen output without
+--remove-name-section) and `--name-unnamed` synthesizes names for the functions it lacks (e.g.
+wasm-bindgen's generated `__wbindgen_start` shim, which would otherwise be referenced by index).
+A function still printed without a name is rejected. Run wasm-opt afterwards to strip the names;
+its pass list must not reorder functions again.
 
     wasm-sort-funcs.py IN.wasm OUT.wasm
 """
@@ -19,7 +21,7 @@ def main() -> None:
     if len(sys.argv) != 3:
         sys.exit(__doc__.strip().splitlines()[-1].strip())
     src, dst = sys.argv[1], sys.argv[2]
-    wat = subprocess.run(["wasm-tools", "print", src], check=True, capture_output=True, text=True).stdout
+    wat = subprocess.run(["wasm-tools", "print", "--name-unnamed", src], check=True, capture_output=True, text=True).stdout
     lines = wat.split("\n")
     named = re.compile(r'^  \(func \$(?:"(?:[^"\\]|\\.)*"|\S+) ')
     quoted = re.compile(r'"(?:[^"\\]|\\.)*"')

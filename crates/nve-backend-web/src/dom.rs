@@ -13,10 +13,11 @@ use wasm_bindgen::JsCast;
 
 #[cfg(target_arch = "wasm32")]
 use crate::canvas;
-#[cfg(target_arch = "wasm32")]
-use crate::css::is_raw_style_prop;
+use crate::raw_style::is_raw_style_prop;
 #[cfg(target_arch = "wasm32")]
 use crate::reconcile::{plan_keyed_child_ops, ChildDiffOp};
+use crate::html::{close_html_element, is_void_html_tag, push_text_escaped, write_attr};
+use crate::tree::Visit;
 use crate::stylesheet::resolve_node_style;
 use crate::WebBackend;
 
@@ -40,13 +41,45 @@ pub fn is_truthy_raw_prop(value: &RawPropValue) -> bool {
     }
 }
 
+/// Where a `SetRawProp` lands. One decision for the mirror, SSR and the live DOM path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawPropRoute {
+    /// `drawList`: decoded into canvas ops, shown as `data-nve-draw-ops`.
+    DrawList,
+    /// Native view props (NVNP payloads, navigation, camera state).
+    NativeView,
+    /// A CSS declaration slot of [`crate::RawStyleProps`]; never an HTML attribute.
+    Style,
+    /// Attributes the backend owns on every element: ignored, so an app prop cannot fight the
+    /// stylesheet flush (`style`, `class`) or break the child lookup and hydration
+    /// (`data-nve-id`, `data-nve-ssr-hash`).
+    Reserved,
+    /// Everything else: an HTML attribute (ARIA and input keys mapped by
+    /// [`map_a11y_or_input_attr`]).
+    Attribute,
+}
+
+/// Routes a raw prop key; see [`RawPropRoute`].
+pub fn raw_prop_route(key: &str) -> RawPropRoute {
+    if crate::canvas::is_draw_list_prop(key) {
+        RawPropRoute::DrawList
+    } else if crate::native_view::is_native_view_prop(key) {
+        RawPropRoute::NativeView
+    } else if is_raw_style_prop(key) {
+        RawPropRoute::Style
+    } else if matches!(key, "style" | "class" | "data-nve-id" | "data-nve-ssr-hash") {
+        RawPropRoute::Reserved
+    } else {
+        RawPropRoute::Attribute
+    }
+}
+
 /// Canonical HTML / ARIA attribute mutation produced from an NVE raw prop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MappedHtmlAttr<'a> {
     Set(&'static str, &'a str),
     Remove(&'static str),
     Disabled(bool),
-    InputPassword(bool),
     ReadOnly(bool),
 }
 
@@ -72,9 +105,15 @@ pub fn map_a11y_or_input_attr<'a>(
             _ => Some(MappedHtmlAttr::Remove("aria-description")),
         },
         "disabled" => Some(MappedHtmlAttr::Disabled(is_truthy_raw_prop(value))),
-        "secureTextEntry" | "secure_text_entry" if kind == ComponentKind::TextInput => {
-            Some(MappedHtmlAttr::InputPassword(is_truthy_raw_prop(value)))
-        }
+        // Only a secure input carries `type`; every other element (and a non-secure input, whose
+        // default type is text) has none, as in `render_html` and SSR.
+        "secureTextEntry" | "secure_text_entry" => Some(
+            if kind == ComponentKind::TextInput && is_truthy_raw_prop(value) {
+                MappedHtmlAttr::Set("type", "password")
+            } else {
+                MappedHtmlAttr::Remove("type")
+            },
+        ),
         "readOnly" | "read_only" | "readonly" => {
             Some(MappedHtmlAttr::ReadOnly(is_truthy_raw_prop(value)))
         }
@@ -82,25 +121,6 @@ pub fn map_a11y_or_input_attr<'a>(
     }
 }
 
-fn push_html_attr_escaped(val: &str, out: &mut String) {
-    for ch in val.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '"' => out.push_str("&quot;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            c => out.push(c),
-        }
-    }
-}
-
-fn write_attr(name: &str, val: &str, out: &mut String) {
-    out.push(' ');
-    out.push_str(name);
-    out.push_str("=\"");
-    push_html_attr_escaped(val, out);
-    out.push('"');
-}
 
 #[cfg(target_arch = "wasm32")]
 #[inline]
@@ -123,9 +143,20 @@ impl WebBackend {
     /// diagnostic dump used by mirror tests and benchmarks; use [`Self::render_ssr`] for
     /// production Semantic HTML5 + Option 5 Hybrid CSS SSR).
     pub fn fmt_html_into(&self, id: NodeId, out: &mut String) {
-        let Some(el) = self.nodes.get(&id) else {
-            return;
-        };
+        let mut open: Vec<&str> = Vec::new();
+        self.walk(id, |nid, _, step| match step {
+            Visit::Enter => self.open_html_element(nid, out).map(|tag| open.push(tag)).is_some(),
+            Visit::Exit => {
+                close_html_element(open.pop().unwrap_or("div"), out);
+                false
+            }
+        });
+    }
+
+    /// Writes the start tag (and the text of a childless node); `Some(tag)` when the element
+    /// has content to close.
+    fn open_html_element(&self, id: NodeId, out: &mut String) -> Option<&str> {
+        let el = self.nodes.get(&id)?;
         let tag = self.effective_html_tag(id, el);
         out.push('<');
         out.push_str(tag);
@@ -150,10 +181,8 @@ impl WebBackend {
             if let Some(RawPropValue::String(alt)) = el.raw_props.get("alt") {
                 write_attr("alt", alt, out);
             }
-        } else if el.kind == ComponentKind::SkiaCanvas && el.draw_op_count > 0 {
-            out.push_str(" data-nve-draw-ops=\"");
-            let _ = write!(out, "{}", el.draw_op_count);
-            out.push('"');
+        } else if let Some(ops) = el.draw_ops_attr() {
+            let _ = write!(out, " data-nve-draw-ops=\"{ops}\"");
         }
 
         if let Some(RawPropValue::String(label)) = el.raw_props.get("accessibilityLabel").or_else(|| el.raw_props.get("accessibility_label")) && !label.is_empty() {
@@ -187,16 +216,15 @@ impl WebBackend {
             out.push_str(" readonly");
         }
 
-        out.push_str(" style=\"");
-        el.combined_css_into(out);
-        if let Some(nv) = self.native_views.get(&id) { out.push_str(&nv.extra_css); }
-        out.push_str("\">");
-        if matches!(tag, "img" | "input" | "br" | "hr" | "meta" | "link") { return; }
-        if let Some(t) = &el.text { out.push_str(t); }
-        for &child in &el.children { self.fmt_html_into(child, out); }
-        out.push_str("</");
-        out.push_str(tag);
+        let mut css = String::with_capacity(384);
+        el.combined_css_into(&mut css);
+        if let Some(nv) = self.native_views.get(&id) { css.push_str(&nv.extra_css); }
+        write_attr("style", &css, out);
         out.push('>');
+        if is_void_html_tag(tag) { return None; }
+        // Text shows only while the node has no element children, as in the live DOM.
+        if let Some(t) = el.text.as_deref().filter(|_| el.children.is_empty()) { push_text_escaped(t, out); }
+        Some(tag)
     }
 
     pub fn render_html(&self) -> String {
@@ -207,11 +235,11 @@ impl WebBackend {
 
     pub(crate) fn apply_text_mutation(&mut self, node_id: NodeId, text: &str) {
         #[cfg(target_arch = "wasm32")]
-        let (is_input, wrap_code) = self
+        let (is_input, wrap_code, has_children) = self
             .nodes
             .get(&node_id)
-            .map(|n| (n.kind == ComponentKind::TextInput, n.wrap_code))
-            .unwrap_or((false, false));
+            .map(|n| (n.kind == ComponentKind::TextInput, n.wrap_code, !n.children.is_empty()))
+            .unwrap_or((false, false, false));
 
         if let Some(el) = self.nodes.get_mut(&node_id) {
             match &mut el.text {
@@ -231,7 +259,9 @@ impl WebBackend {
                 {
                     inp.set_value(text);
                 }
-            } else {
+            } else if !has_children {
+                // Text shows only while the node has no element children (it returns when
+                // `SetChildren` empties the node, see `reconcile_dom_children`).
                 let target = self.text_or_child_mount_target(dom_el, wrap_code);
                 if target.text_content().as_deref() != Some(text) {
                     target.set_text_content(Some(text));
@@ -325,11 +355,12 @@ impl WebBackend {
         let mut to_remove: Vec<web_sys::Node> = Vec::new();
         let mut old_ids: Vec<NodeId> = Vec::with_capacity(len as usize);
         let mut seen_old: HashSet<NodeId> = HashSet::with_capacity_and_hasher(len as usize, Default::default());
-        let keep_text_node = new_children.is_empty()
-            && self
-                .nodes
-                .get(&parent_id)
-                .is_some_and(|n| n.text.is_some());
+        let restore_text = self
+            .nodes
+            .get(&parent_id)
+            .filter(|n| new_children.is_empty() && n.kind != ComponentKind::TextInput)
+            .and_then(|n| n.text.as_deref());
+        let keep_text_node = restore_text.is_some();
 
         for i in 0..len {
             let Some(child) = child_nodes.item(i) else {
@@ -383,6 +414,27 @@ impl WebBackend {
                 }
             }
         }
+        if let Some(text) = restore_text
+            && container.text_content().as_deref() != Some(text)
+        {
+            container.set_text_content(Some(text));
+        }
+    }
+
+    /// Writes or removes `data-nve-draw-ops` from [`crate::MirrorElement::draw_ops_attr`].
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn sync_dom_draw_ops_attr(&mut self, node_id: NodeId) {
+        let Some(dom_el) = self.dom_nodes.get(&node_id) else {
+            return;
+        };
+        match self.nodes.get(&node_id).and_then(crate::MirrorElement::draw_ops_attr) {
+            Some(ops) => {
+                self.attr_scratch.clear();
+                let _ = write!(&mut self.attr_scratch, "{ops}");
+                set_attr_if_changed(dom_el, "data-nve-draw-ops", &self.attr_scratch);
+            }
+            None => remove_attr_if_present(dom_el, "data-nve-draw-ops"),
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -402,8 +454,9 @@ impl WebBackend {
 
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn sync_dom_raw_prop(&mut self, node_id: NodeId, key: &str, value: &RawPropValue) {
-        // CSS style props belong exclusively in `RawStyleProps` / stylesheet, never HTML attrs.
-        if is_raw_style_prop(key) {
+        // Styles, draw lists, native view props and reserved keys are never HTML attributes
+        // (this also runs for every stored prop when a semantic retag rebuilds the element).
+        if raw_prop_route(key) != RawPropRoute::Attribute {
             return;
         }
         let Some(dom_el) = self.dom_nodes.get(&node_id) else {
@@ -426,12 +479,6 @@ impl WebBackend {
                 MappedHtmlAttr::Disabled(false) => {
                     remove_attr_if_present(dom_el, "disabled");
                     remove_attr_if_present(dom_el, "aria-disabled");
-                }
-                MappedHtmlAttr::InputPassword(true) => {
-                    set_attr_if_changed(dom_el, "type", "password");
-                }
-                MappedHtmlAttr::InputPassword(false) => {
-                    set_attr_if_changed(dom_el, "type", "text");
                 }
                 MappedHtmlAttr::ReadOnly(true) => set_attr_if_changed(dom_el, "readonly", ""),
                 MappedHtmlAttr::ReadOnly(false) => remove_attr_if_present(dom_el, "readonly"),

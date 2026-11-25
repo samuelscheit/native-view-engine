@@ -280,7 +280,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert!(t_status.mutation_count > 0);
     let html_after_status = session.backend().render_html();
     assert_valid_dom_html(&html_after_status);
-    assert!(html_after_status.contains("Status -> Done"));
+    assert!(html_after_status.contains("Status -&gt; Done"));
     assert!(html_after_status.contains("Done (2)"));
     assert!(html_after_status.contains("Snapshot 2 / 2"));
     assert_scene_view_matches_backend(&session);
@@ -310,7 +310,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert_scene_view_matches_backend(&session);
     let html_violet = session.backend().render_html();
     assert_valid_dom_html(&html_violet);
-    assert!(html_violet.contains("Accent -> Violet"));
+    assert!(html_violet.contains("Accent -&gt; Violet"));
     assert!(html_violet.contains("rgba(167,139,250,1)"));
     assert!(html_violet.contains("Snapshot 5 / 5"));
 
@@ -333,7 +333,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     let html_live = session.backend().render_html();
     assert_valid_dom_html(&html_live);
     assert!(html_live.contains("Snapshot 5 / 5"));
-    assert!(html_live.contains("Accent -> Violet"));
+    assert!(html_live.contains("Accent -&gt; Violet"));
     assert!(html_live.contains("Live Metrics"));
 }
 
@@ -456,7 +456,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(session.dispatch_keydown("ArrowDown", false, false).unwrap().is_some());
     assert!(session.dispatch_keydown("Enter", false, false).unwrap().is_some());
     assert!(find_node_by_test_id(session.backend(), "command-palette").is_none());
-    assert!(session.backend().render_html().contains("Accent -> Violet"));
+    assert!(session.backend().render_html().contains("Accent -&gt; Violet"));
 
     assert!(session.dispatch_keydown("k", false, true).unwrap().is_some());
     assert!(find_node_by_test_id(session.backend(), "command-palette").is_some());

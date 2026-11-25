@@ -1,13 +1,15 @@
 //! CSS Flexbox/style translation, Option 5 Hybrid compact formatting, semantic HTML5 tag
-//! resolution, raw CSS style properties (`RawStyleProps`), and [`MirrorElement`].
+//! resolution, and [`MirrorElement`].
+
+use crate::raw_style::RawStyleProps;
 
 use nve_abi::hash::HashMap;
-use nve_abi::num::{write_f32, write_f64, write_i64, write_u64};
+use nve_abi::num::{write_f32, write_i64, write_u64};
 use nve_abi::{
     ColorRgba, ComponentKind, Dimension, EdgeInsets, EventMask, FlexAlign, FlexDirection,
     FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
 };
-use nve_components::canvas_ir::{CanvasOp, ImageResizeMode};
+use nve_components::canvas_ir::CanvasOp;
 
 /// Static `.nve` base reset stylesheet emitted once on mount or SSR.
 ///
@@ -21,230 +23,6 @@ pub const NVE_BASE_RESET_CSS: &str = concat!(
     ".nve-p{cursor:pointer}",
     ".nve-tl{color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}"
 );
-
-/// Maps `resizeMode` / `resize_mode` / `objectFit` / `object-fit` raw prop values to CSS
-/// `object-fit` keywords.
-pub fn raw_prop_to_object_fit(value: &RawPropValue) -> Option<&'static str> {
-    match value {
-        RawPropValue::String(raw) => {
-            let trimmed = raw.trim();
-            if let Some(mode) = ImageResizeMode::parse(trimmed) {
-                return Some(match mode {
-                    ImageResizeMode::Cover => "cover",
-                    ImageResizeMode::Contain => "contain",
-                    ImageResizeMode::Stretch => "fill",
-                    ImageResizeMode::Center => "none",
-                });
-            }
-            match trimmed.to_ascii_lowercase().as_str() {
-                "fill" => Some("fill"),
-                "none" => Some("none"),
-                "scale-down" | "scaledown" => Some("scale-down"),
-                _ => None,
-            }
-        }
-        RawPropValue::I64(n) => {
-            let mode = u8::try_from(*n).ok().and_then(ImageResizeMode::from_u8)?;
-            Some(match mode {
-                ImageResizeMode::Cover => "cover",
-                ImageResizeMode::Contain => "contain",
-                ImageResizeMode::Stretch => "fill",
-                ImageResizeMode::Center => "none",
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Returns `true` if `key` names an image fit prop (`resizeMode`, `resize_mode`, `objectFit`,
-/// or `object-fit`).
-#[inline]
-pub fn is_image_fit_prop(key: &str) -> bool {
-    matches!(key, "resizeMode" | "resize_mode" | "objectFit" | "object-fit")
-}
-
-/// Returns `true` if `key` names a CSS style raw prop captured by [`RawStyleProps`] rather than
-/// an HTML attribute.
-#[inline]
-pub fn is_raw_style_prop(key: &str) -> bool {
-    matches!(
-        key,
-        "font-weight"
-            | "fontWeight"
-            | "font_weight"
-            | "text-align"
-            | "textAlign"
-            | "text_align"
-            | "box-shadow"
-            | "boxShadow"
-            | "box_shadow"
-            | "overflow"
-            | "resizeMode"
-            | "resize_mode"
-            | "objectFit"
-            | "object-fit"
-    )
-}
-
-/// Compact structured CSS properties routed from `Command::SetRawProp` instead of being written
-/// as invalid HTML attributes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RawStyleProps {
-    pub font_weight: Option<String>,
-    pub text_align: Option<String>,
-    pub box_shadow: Option<String>,
-    pub overflow: Option<String>,
-    pub flex_wrap: Option<String>,
-    pub object_fit: Option<&'static str>,
-}
-
-fn raw_prop_trimmed_string(value: &RawPropValue) -> Option<String> {
-    match value {
-        RawPropValue::String(s) => {
-            let trimmed = s.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_owned())
-        }
-        RawPropValue::I64(n) => {
-            let mut s = String::new();
-            write_i64(&mut s, *n);
-            Some(s)
-        }
-        RawPropValue::F64(n) if n.is_finite() => {
-            let mut s = String::new();
-            write_f64(&mut s, *n);
-            Some(s)
-        }
-        _ => None,
-    }
-}
-
-impl RawStyleProps {
-    /// Applies a raw prop if `key` is a recognized CSS style prop. Returns `true` when handled.
-    pub fn apply_prop(&mut self, key: &str, value: &RawPropValue) -> bool {
-        match key {
-            "font-weight" | "fontWeight" | "font_weight" => {
-                self.font_weight = if matches!(value, RawPropValue::Null) {
-                    None
-                } else {
-                    raw_prop_trimmed_string(value)
-                };
-                true
-            }
-            "text-align" | "textAlign" | "text_align" => {
-                self.text_align = if matches!(value, RawPropValue::Null) {
-                    None
-                } else {
-                    raw_prop_trimmed_string(value)
-                };
-                true
-            }
-            "box-shadow" | "boxShadow" | "box_shadow" => {
-                self.box_shadow = if matches!(value, RawPropValue::Null) {
-                    None
-                } else {
-                    raw_prop_trimmed_string(value)
-                };
-                true
-            }
-            "overflow" => {
-                self.overflow = if matches!(value, RawPropValue::Null) {
-                    None
-                } else {
-                    raw_prop_trimmed_string(value)
-                };
-                true
-            }
-            "flex-wrap" | "flexWrap" | "flex_wrap" => {
-                self.flex_wrap = if matches!(value, RawPropValue::Null) {
-                    None
-                } else {
-                    raw_prop_trimmed_string(value)
-                };
-                true
-            }
-            _ if is_image_fit_prop(key) => {
-                self.object_fit = if matches!(value, RawPropValue::Null) {
-                    None
-                } else {
-                    raw_prop_to_object_fit(value)
-                };
-                true
-            }
-            _ => false,
-        }
-    }
-
-    #[inline]
-    pub fn effective_font_weight(&self) -> Option<&str> {
-        self.font_weight
-            .as_deref()
-            .filter(|v| !v.eq_ignore_ascii_case("normal") && *v != "400")
-    }
-
-    #[inline]
-    pub fn effective_text_align(&self) -> Option<&str> {
-        self.text_align
-            .as_deref()
-            .filter(|v| !v.eq_ignore_ascii_case("left") && !v.eq_ignore_ascii_case("start"))
-    }
-
-    #[inline]
-    pub fn effective_box_shadow(&self) -> Option<&str> {
-        self.box_shadow
-            .as_deref()
-            .filter(|v| !v.eq_ignore_ascii_case("none"))
-    }
-
-    #[inline]
-    pub fn effective_overflow(&self) -> Option<&str> {
-        self.overflow
-            .as_deref()
-            .filter(|v| !v.eq_ignore_ascii_case("visible"))
-    }
-
-    #[inline]
-    pub fn effective_flex_wrap(&self) -> Option<&str> {
-        self.flex_wrap
-            .as_deref()
-            .filter(|v| !v.eq_ignore_ascii_case("nowrap"))
-    }
-
-    /// Appends non-default raw style declarations into `out`.
-    pub fn write_compact_into(&self, skip_typography: bool, out: &mut String) {
-        if !skip_typography {
-            if let Some(fw) = self.effective_font_weight() {
-                out.push_str("font-weight:");
-                out.push_str(fw);
-                out.push(';');
-            }
-            if let Some(ta) = self.effective_text_align() {
-                out.push_str("text-align:");
-                out.push_str(ta);
-                out.push(';');
-            }
-        }
-        if let Some(bs) = self.effective_box_shadow() {
-            out.push_str("box-shadow:");
-            out.push_str(bs);
-            out.push(';');
-        }
-        if let Some(ov) = self.effective_overflow() {
-            out.push_str("overflow:");
-            out.push_str(ov);
-            out.push(';');
-        }
-        if let Some(fw) = self.effective_flex_wrap() {
-            out.push_str("flex-wrap:");
-            out.push_str(fw);
-            out.push(';');
-        }
-        if let Some(fit) = self.object_fit {
-            out.push_str("object-fit:");
-            out.push_str(fit);
-            out.push(';');
-        }
-    }
-}
 
 /// Resolved semantic HTML5 tag metadata for a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,6 +384,13 @@ pub struct MirrorElement {
 }
 
 impl MirrorElement {
+    /// The `data-nve-draw-ops` value: the decoded op count of a canvas with a non-empty draw
+    /// list. One decision for the mirror, SSR and the live DOM, which removes the attribute when
+    /// this is `None`.
+    pub fn draw_ops_attr(&self) -> Option<usize> {
+        (self.kind == ComponentKind::SkiaCanvas && self.draw_op_count > 0).then_some(self.draw_op_count)
+    }
+
     pub(crate) fn new(kind: ComponentKind) -> Self {
         Self {
             kind,

@@ -6,9 +6,11 @@ use std::collections::BTreeMap;
 
 use nve_abi::{ComponentKind, NodeId, RawPropValue, ROOT_NODE_ID};
 
-use crate::css::{resolve_semantic_tag, MirrorElement, NVE_BASE_RESET_CSS};
+use crate::css::{resolve_semantic_tag, NVE_BASE_RESET_CSS};
 use crate::dom::is_truthy_raw_prop;
+use crate::html::{close_html_element, is_void_html_tag, push_attr_escaped, push_text_escaped, write_attr};
 use crate::stylesheet::{resolve_node_style, MAX_DYNAMIC_RULES};
+use crate::tree::Visit;
 use crate::WebBackend;
 
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -36,41 +38,6 @@ pub struct SsrDocumentOptions {
     pub body_scripts: Option<String>,
 }
 
-fn push_html_attr_escaped(val: &str, out: &mut String) {
-    for ch in val.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '"' => out.push_str("&quot;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            c => out.push(c),
-        }
-    }
-}
-
-fn push_html_text_escaped(val: &str, out: &mut String) {
-    for ch in val.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            c => out.push(c),
-        }
-    }
-}
-
-fn write_attr(name: &str, val: &str, out: &mut String) {
-    out.push(' ');
-    out.push_str(name);
-    out.push_str("=\"");
-    push_html_attr_escaped(val, out);
-    out.push('"');
-}
-
-#[inline]
-fn is_void_html_tag(tag: &str) -> bool {
-    matches!(tag, "img" | "input" | "br" | "hr" | "meta" | "link")
-}
 
 #[inline]
 fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
@@ -83,39 +50,43 @@ fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
 
 impl WebBackend {
     /// Computes a deterministic structural hash of the current tree for `data-nve-ssr-hash`.
-    fn compute_ssr_tree_hash(&self, id: NodeId, hash: &mut u64) {
-        let Some(el) = self.nodes.get(&id) else {
-            return;
-        };
-        let sem = resolve_semantic_tag(el.kind, &el.raw_props);
-        let tag = if el.kind == ComponentKind::Custom {
-            self.effective_html_tag(id, el)
-        } else {
-            sem.tag
-        };
-        *hash = fnv1a_step(*hash, &id.to_le_bytes());
-        *hash = fnv1a_step(*hash, tag.as_bytes());
-        *hash = fnv1a_step(*hash, &[u8::from(sem.wrap_code)]);
-        if let Some(t) = &el.text {
-            *hash = fnv1a_step(*hash, t.as_bytes());
-        }
-        for &cid in &el.children {
-            self.compute_ssr_tree_hash(cid, hash);
-        }
-        *hash = fnv1a_step(*hash, &[0xFF]);
+    fn compute_ssr_tree_hash(&self) -> u64 {
+        let mut hash = FNV1A_OFFSET_BASIS;
+        self.walk(ROOT_NODE_ID, |id, _, step| {
+            if step == Visit::Exit {
+                hash = fnv1a_step(hash, &[0xFF]);
+                return false;
+            }
+            let Some(el) = self.nodes.get(&id) else { return false };
+            let sem = resolve_semantic_tag(el.kind, &el.raw_props);
+            let tag = if el.kind == ComponentKind::Custom {
+                self.effective_html_tag(id, el)
+            } else {
+                sem.tag
+            };
+            hash = fnv1a_step(hash, &id.to_le_bytes());
+            hash = fnv1a_step(hash, tag.as_bytes());
+            hash = fnv1a_step(hash, &[u8::from(sem.wrap_code)]);
+            if let Some(t) = &el.text {
+                hash = fnv1a_step(hash, t.as_bytes());
+            }
+            true
+        });
+        hash
     }
 
-    fn fmt_ssr_node(
+    /// Writes the start tag, attributes, an open `<code>` wrapper and the text of a childless
+    /// node; `Some((tag, wrap_code))` when the element has content to close.
+    fn open_ssr_element(
         &self,
         id: NodeId,
-        parent: Option<&MirrorElement>,
+        parent: Option<NodeId>,
         root_hash: u64,
         rules: &mut BTreeMap<String, String>,
         out: &mut String,
-    ) {
-        let Some(el) = self.nodes.get(&id) else {
-            return;
-        };
+    ) -> Option<(&str, bool)> {
+        let el = self.nodes.get(&id)?;
+        let parent = parent.and_then(|pid| self.nodes.get(&pid));
         let sem = resolve_semantic_tag(el.kind, &el.raw_props);
         let tag = if el.kind == ComponentKind::Custom { self.effective_html_tag(id, el) } else { sem.tag };
         let allow_new = rules.len() < MAX_DYNAMIC_RULES;
@@ -190,8 +161,8 @@ impl WebBackend {
             if let Some(RawPropValue::String(alt)) = el.raw_props.get("alt") {
                 write_attr("alt", alt, out);
             }
-        } else if el.kind == ComponentKind::SkiaCanvas && el.draw_op_count > 0 {
-            let _ = write!(out, " data-nve-draw-ops=\"{}\"", el.draw_op_count);
+        } else if let Some(ops) = el.draw_ops_attr() {
+            let _ = write!(out, " data-nve-draw-ops=\"{ops}\"");
         }
 
         // Input attributes.
@@ -253,25 +224,34 @@ impl WebBackend {
         }
 
         out.push('>');
-        if is_void_html_tag(tag) { return; }
+        if is_void_html_tag(tag) { return None; }
 
         if sem.wrap_code { out.push_str("<code>"); }
-        if let Some(t) = &el.text { push_html_text_escaped(t, out); }
-        for &child in &el.children { self.fmt_ssr_node(child, Some(el), root_hash, rules, out); }
-        if sem.wrap_code { out.push_str("</code>"); }
-        out.push_str("</");
-        out.push_str(tag);
-        out.push('>');
+        // Text shows only while the node has no element children, as in the live DOM.
+        if let Some(t) = el.text.as_deref().filter(|_| el.children.is_empty()) { push_text_escaped(t, out); }
+        Some((tag, sem.wrap_code))
     }
 
     /// Emits Semantic HTML5 + deterministically sorted Option 5 Hybrid structural CSS rules.
     pub fn render_ssr(&self) -> SsrOutput {
-        let mut root_hash = FNV1A_OFFSET_BASIS;
-        self.compute_ssr_tree_hash(ROOT_NODE_ID, &mut root_hash);
-
+        let root_hash = self.compute_ssr_tree_hash();
         let mut rules: BTreeMap<String, String> = BTreeMap::new();
         let mut html = String::with_capacity(self.nodes.len().saturating_mul(96).max(64));
-        self.fmt_ssr_node(ROOT_NODE_ID, None, root_hash, &mut rules, &mut html);
+        let mut open: Vec<(&str, bool)> = Vec::new();
+        self.walk(ROOT_NODE_ID, |id, parent, step| match step {
+            Visit::Enter => self
+                .open_ssr_element(id, parent, root_hash, &mut rules, &mut html)
+                .map(|closing| open.push(closing))
+                .is_some(),
+            Visit::Exit => {
+                let (tag, wrap_code) = open.pop().unwrap_or(("div", false));
+                if wrap_code {
+                    html.push_str("</code>");
+                }
+                close_html_element(tag, &mut html);
+                false
+            }
+        });
 
         let mut style_css = String::with_capacity(rules.len().saturating_mul(64));
         let mut rule_hashes = Vec::with_capacity(rules.len());
@@ -303,33 +283,33 @@ impl WebBackend {
             ssr.base_css.len() + ssr.style_css.len() + ssr.html.len() + 512,
         );
         out.push_str("<!doctype html>\n<html lang=\"");
-        push_html_attr_escaped(lang, &mut out);
+        push_attr_escaped(lang, &mut out);
         out.push_str("\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>");
-        push_html_text_escaped(&opts.title, &mut out);
+        push_text_escaped(&opts.title, &mut out);
         out.push_str("</title>\n");
 
         if let Some(desc) = opts.description.as_deref().filter(|s| !s.is_empty()) {
             out.push_str("<meta name=\"description\" content=\"");
-            push_html_attr_escaped(desc, &mut out);
+            push_attr_escaped(desc, &mut out);
             out.push_str("\">\n<meta property=\"og:description\" content=\"");
-            push_html_attr_escaped(desc, &mut out);
+            push_attr_escaped(desc, &mut out);
             out.push_str("\">\n");
         }
         if !opts.title.is_empty() {
             out.push_str("<meta property=\"og:title\" content=\"");
-            push_html_attr_escaped(&opts.title, &mut out);
+            push_attr_escaped(&opts.title, &mut out);
             out.push_str("\">\n");
         }
         if let Some(canonical) = opts.canonical_url.as_deref().filter(|s| !s.is_empty()) {
             out.push_str("<link rel=\"canonical\" href=\"");
-            push_html_attr_escaped(canonical, &mut out);
+            push_attr_escaped(canonical, &mut out);
             out.push_str("\">\n<meta property=\"og:url\" content=\"");
-            push_html_attr_escaped(canonical, &mut out);
+            push_attr_escaped(canonical, &mut out);
             out.push_str("\">\n");
         }
         if let Some(og_img) = opts.og_image.as_deref().filter(|s| !s.is_empty()) {
             out.push_str("<meta property=\"og:image\" content=\"");
-            push_html_attr_escaped(og_img, &mut out);
+            push_attr_escaped(og_img, &mut out);
             out.push_str("\">\n");
         }
 
