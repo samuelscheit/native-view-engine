@@ -15,7 +15,7 @@ use nve_dioxus::DioxusSurface;
 use nve_engine::HotPatchMsg;
 #[cfg(any(feature = "app-studio", feature = "app-counter"))]
 use nve_engine::NveApp;
-use nve_engine::{fnv1a_64, BackendError, FrameTiming, RenderBackend, SurfaceRunner, Viewport};
+use nve_engine::{xxh64, BackendError, FrameTiming, RenderBackend, SurfaceRunner, Viewport};
 #[cfg(feature = "app-counter")]
 use nve_example_counter::{CounterModule, COUNTER_STATE_BIN_VERSION};
 #[cfg(feature = "app-studio")]
@@ -280,7 +280,7 @@ impl WebAppSession {
             buf.extend_from_slice(&idx.to_le_bytes());
             buf.extend_from_slice(&top.to_le_bytes());
         }
-        let hash = fnv1a_64(&buf);
+        let hash = xxh64(&buf, 0);
         Some((state_bytes, hash))
     }
 

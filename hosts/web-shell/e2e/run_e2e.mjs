@@ -1246,7 +1246,7 @@ async function main() {
           Boolean(document.querySelector('[testid="doc-tab-2"]')) &&
           hdr.includes("7 blocks | 1/2 checks") &&
           list.includes("RFC-042: Zero-Copy NveSceneView") &&
-          list.includes("Enable crash-safe NVE_SNAP + .nvewal local persistence in Studio")
+          list.includes("Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio")
         );
       }
     );
@@ -1376,7 +1376,7 @@ async function main() {
         return (
           md.includes("MARKDOWN EXPORT") &&
           md.includes("# RFC-042: Zero-Copy NveSceneView") &&
-          md.includes("- [x] Enable crash-safe NVE_SNAP + .nvewal local persistence in Studio") &&
+          md.includes("- [x] Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio") &&
           md.includes("Verified zero-JSON binary NVD1 WebSocket streaming")
         );
       }
@@ -1386,7 +1386,7 @@ async function main() {
       `document.querySelector('[testid="doc-markdown-preview"]')?.innerText || ''`
     );
     const editedPos = mdText.indexOf(editedBlockText);
-    const checkPos = mdText.indexOf("- [x] Enable crash-safe NVE_SNAP");
+    const checkPos = mdText.indexOf("- [x] Enable crash-safe NVERELOC");
     if (!(editedPos >= 0 && checkPos > editedPos)) {
       throw new Error(
         `Markdown export did not reflect block reorder (editedPos=${editedPos}, checkPos=${checkPos}):\n${mdText}`

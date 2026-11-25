@@ -243,7 +243,7 @@ class NativeHostSession {
     return true;
   }
 
-  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file on disk.
+  /// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` file on disk.
   bool replay_frame0_snapshot(
       std::string_view snapshot_path,
       uint32_t expected_schema_version,

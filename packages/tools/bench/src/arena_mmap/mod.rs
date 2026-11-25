@@ -2,9 +2,9 @@
 //! and per-frame UI tree allocation benchmarks.
 //!
 //! - **Workload A** (Studio Workspace app-state):
-//!   - [`baseline_codec`]: JSON (`serde_json`-style) & `NVE_SNAP` binary owned encode/decode.
+//!   - [`baseline_codec`]: JSON (`serde_json`-style) owned encode/decode baseline.
 //!   - [`reloc`]: `NVERELOC` / `RelocSlice<T>` aligned zero-copy buffer (`Full`, `HeaderOnly`,
-//!     and `Unchecked` mmap load modes).
+//!     and `Unchecked` mmap load modes) over production `nve_engine::reloc`.
 //!   - [`workspace_arena`]: Studio Workspace adapter directly over production
 //!     [`nve_engine::MmapOffsetArena`] with `TrustedUtf8Str`, double-buffered root commits,
 //!     and `msync`.
@@ -63,7 +63,7 @@ const VERBS: [&str; 8] = [
 const SUBSYSTEMS: [&str; 8] = [
     "Studio task timeline & inspector",
     "Skia surface command submission",
-    "NVE_SNAP state snapshot loader",
+    "NVERELOC scene snapshot loader",
     "WebAssembly DOM diff dispatcher",
     "Dioxus reactive signal store",
     "Cross-host scene view bridge",

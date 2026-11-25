@@ -84,7 +84,7 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
 /// Disconnect any active paired thin-client session.
 - (void)disconnectPaired;
 
-/// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` snapshot file before loading a dylib.
+/// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` snapshot file before loading a dylib.
 - (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
              expectedSchemaVersion:(uint32_t)expectedSchemaVersion
                      restoreTimeUs:(uint64_t * _Nullable)outRestoreUs;

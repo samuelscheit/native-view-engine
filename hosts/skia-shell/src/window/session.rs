@@ -18,7 +18,10 @@ use nve_backend_skia::gpu::GpuSurfaceConfig;
 #[cfg(feature = "skia")]
 use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use nve_backend_skia::{CursorKind, SkiaBackend};
-use nve_engine::{write_snapshot_atomic, HotPatchMsg, RenderBackend, SnapshotHeader, Viewport};
+use nve_engine::{
+    encode_reloc_bundle, write_reloc_atomic, HotPatchMsg, NativeInstantBootStore, RelocHeader,
+    RenderBackend, StateSaveOutcome, StateStoreConfig, VerifyMode, Viewport,
+};
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
 use super::hot_reload_client::resolve_dylib_path;
@@ -226,22 +229,37 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     /// Atomically persists the last rendered Frame-0 `CommandBuffer` and live app state into an
-    /// `NVE_SNAP` file on disk.
+    /// `NVERELOC` bundle file on disk.
     pub fn save_snapshot(
         &mut self,
         path: &Path,
         schema_version: u32,
-    ) -> Result<SnapshotHeader, DesktopHostError> {
+    ) -> Result<RelocHeader, DesktopHostError> {
         let state_bytes = self.app.snapshot_state();
-        let header = write_snapshot_atomic(
-            path,
-            schema_version,
-            0,
-            &self.last_frame_bytes,
-            state_bytes,
-            &[],
-        )?;
+        let bundle = encode_reloc_bundle(schema_version, 0, &self.last_frame_bytes, state_bytes, &[])?;
+        let header = *bundle.view(VerifyMode::HeaderOnly)?.header();
+        write_reloc_atomic(path, &bundle)?;
         Ok(header)
+    }
+
+    /// Exports the current pre-rendered scene (`user_frame0.nvereloc`) and live app state
+    /// (`state.nvemmap` via `MmapOffsetArena`) into `user_dir` via [`NativeInstantBootStore`].
+    pub fn save_instant_boot_checkpoint(
+        &mut self,
+        user_dir: &Path,
+        schema_version: u32,
+        app_tag: &str,
+    ) -> Result<StateSaveOutcome, DesktopHostError> {
+        let mut store =
+            NativeInstantBootStore::open(user_dir, schema_version, StateStoreConfig::default())?;
+        let scene_buf = self.backend.export_scene_reloc(
+            schema_version,
+            self.frame_counter.max(1),
+            app_tag,
+            self.clear_color,
+        )?;
+        let state_bytes = self.app.snapshot_state();
+        Ok(store.save_checkpoint(&scene_buf, state_bytes)?)
     }
 
     /// Dispatches a direct typed [`SkiaHostEvent`] into the mounted app with zero serialization.

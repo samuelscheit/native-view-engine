@@ -10,7 +10,6 @@ use crate_codecs::{
     write_serde_json,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use nve_bench::arena_mmap::baseline_codec::{read_tasks_nve_snap, write_tasks_nve_snap};
 use nve_bench::arena_mmap::frame_arena::{
     recommended_frame_arena_capacity, run_arena_frames, run_heap_frames,
 };
@@ -38,15 +37,6 @@ fn bench_workload_a_build_and_write(c: &mut Criterion) {
             BenchmarkId::new("serde_json_encode_write", label),
             &serde_tasks,
             |b, t| b.iter(|| black_box(write_serde_json(json_file.path(), black_box(t)))),
-        );
-
-        let snap_file = TempFileGuard::new(&format!("bw_snap_{label}"), "nvesnap");
-        group.bench_with_input(
-            BenchmarkId::new("nve_snap_encode_write", label),
-            &tasks,
-            |b, t| {
-                b.iter(|| black_box(write_tasks_nve_snap(snap_file.path(), black_box(t)).unwrap()))
-            },
         );
 
         let rkyv_file = TempFileGuard::new(&format!("bw_rkyv_{label}"), "rkyv");
@@ -107,9 +97,6 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
         let json_file = TempFileGuard::new(&format!("cl_serde_json_{label}"), "json");
         write_serde_json(json_file.path(), &serde_tasks);
 
-        let snap_file = TempFileGuard::new(&format!("cl_snap_{label}"), "nvesnap");
-        write_tasks_nve_snap(snap_file.path(), &tasks).unwrap();
-
         let rkyv_file = TempFileGuard::new(&format!("cl_rkyv_{label}"), "rkyv");
         write_rkyv_workspace(rkyv_file.path(), &rkyv_ws);
 
@@ -134,13 +121,6 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("serde_json_read_decode", label), |b| {
             b.iter(|| black_box(read_serde_json(black_box(json_file.path())).len()));
-        });
-
-        group.bench_function(BenchmarkId::new("nve_snap_read_decode", label), |b| {
-            b.iter(|| {
-                let loaded = read_tasks_nve_snap(black_box(snap_file.path())).unwrap();
-                black_box(loaded.len())
-            });
         });
 
         group.bench_function(BenchmarkId::new("rkyv_mmap_validated", label), |b| {

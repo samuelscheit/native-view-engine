@@ -15,6 +15,7 @@ mod hit_test;
 pub mod image_cache;
 mod interaction;
 pub mod raster;
+mod reloc_scene;
 mod scroll;
 pub mod text;
 mod text_cache;

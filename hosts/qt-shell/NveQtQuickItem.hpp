@@ -111,7 +111,7 @@ class NveQtQuickItem : public QQuickItem {
   bool isPaired() const noexcept;
   bool isPairedConnected() const noexcept;
 
-  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
+  /// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` file before any dylib loads.
   Q_INVOKABLE bool replaySnapshot(
       const QString& snapshotPath,
       uint32_t expectedSchemaVersion = 1,

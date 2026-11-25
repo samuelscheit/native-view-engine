@@ -5,13 +5,13 @@ pub mod app;
 pub mod frame_arena;
 pub mod hash;
 pub mod hotreload;
+pub mod instant_boot;
 pub mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
 pub mod mmap_arena;
 pub mod profiler;
-pub mod snapshot;
-pub mod snapshot_wal;
+pub mod reloc;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
@@ -20,6 +20,11 @@ pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp}
 pub use frame_arena::{FrameArena, FRAME_ARENA_BASE_ALIGN};
 pub use hash::{xxh64, Xxh64Hasher};
 pub use hotreload::HotPatchMsg;
+pub use instant_boot::{
+    InstantBootError, InstantFrame0, NativeInstantBootStore, NativeStateStore, StateBlobRoot,
+    StateRecoveryStats, StateSaveOutcome, StateStoreConfig, DEFAULT_STATE_ARENA_CAPACITY,
+    DEFAULT_STATE_ARENA_FILE, DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
+};
 pub use layout::{
     BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, LayoutEngine, TextMeasurer,
 };
@@ -28,15 +33,14 @@ pub use mmap_arena::{
     TrustedUtf8Str,
 };
 pub use profiler::{FrameProfiler, FrameTiming};
-pub use snapshot::{
-    encode_snapshot, write_snapshot_atomic, MmapSnapshot, RelocatableStateArena,
-    RelocatableTableView, RelocatableValue, SnapshotError, SnapshotHeader, NVE_SNAP_FORMAT_VERSION,
-    NVE_SNAP_MAGIC, SNAPSHOT_HEADER_SIZE,
-};
-pub use snapshot_wal::{
-    SnapshotWal, WalDurability, WalError, WalHeader, WalRecord, WalRecordKind, WalRecordRef,
-    NVE_WAL_FORMAT_VERSION, NVE_WAL_MAGIC, WAL_HEADER_SIZE, WAL_RECORD_CHECKSUM_SIZE,
-    WAL_RECORD_HEADER_SIZE, WAL_RECORD_OVERHEAD,
+pub use reloc::{
+    compute_reloc_checksum, encode_reloc_bundle, encode_scene_reloc, write_reloc_atomic, MmapReloc,
+    RelocBuf, RelocBundleRoot, RelocBundleView, RelocError, RelocHeader, RelocLayoutProps,
+    RelocPod, RelocPtr, RelocSceneNode, RelocSceneRoot, RelocSlice, RelocStr, RelocView,
+    RelocWriter, SceneRelocInput, SceneRelocNodeInput, SceneRelocView, VerifyMode, RELOC_BUF_ALIGN,
+    RELOC_HEADER_SIZE, RELOC_KIND_BUNDLE, RELOC_KIND_GENERIC, RELOC_KIND_SCENE,
+    RELOC_KIND_WORKSPACE, RELOC_MAGIC, RELOC_VERSION, SCENE_NODE_CLIP_CHILDREN,
+    SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN, SCENE_NODE_INTERACTIVE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

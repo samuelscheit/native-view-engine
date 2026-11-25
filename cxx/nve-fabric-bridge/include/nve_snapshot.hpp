@@ -31,32 +31,42 @@
 
 namespace nve {
 
-/// 8-byte file magic identifying an NVE instant-boot snapshot container (`*b"NVE_SNAP"`).
-inline constexpr uint8_t kSnapshotMagic[8] = {'N', 'V', 'E', '_', 'S', 'N', 'A', 'P'};
+/// 8-byte file magic identifying an `NVERELOC` zero-copy relocatable container (`*b"NVERELOC"`).
+inline constexpr uint8_t kRelocMagic[8] = {'N', 'V', 'E', 'R', 'E', 'L', 'O', 'C'};
+inline constexpr uint8_t kSnapshotMagic[8] = {'N', 'V', 'E', 'R', 'E', 'L', 'O', 'C'};
 
-/// Current snapshot container format version (matches `packages/core/engine/src/snapshot.rs`).
-inline constexpr uint32_t kSnapshotFormatVersion = 1u;
+/// Current `NVERELOC` container format version (matches `packages/core/engine/src/reloc/format.rs`).
+inline constexpr uint32_t kRelocFormatVersion = 1u;
+inline constexpr uint32_t kSnapshotFormatVersion = kRelocFormatVersion;
 
-/// Fixed byte length of the aligned `NVE_SNAP` header (32-byte prefix + 48-byte section table).
-inline constexpr size_t kSnapshotHeaderSize = 80u;
+/// Fixed byte length of the 64-byte cache-line `RelocHeader`.
+inline constexpr size_t kRelocHeaderSize = 64u;
+inline constexpr size_t kSnapshotHeaderSize = kRelocHeaderSize;
 
-/// Byte alignment enforced for every payload section offset.
+/// Fixed byte length of `RelocBundleRoot` at offset 64 (`frame0` + `state` + `meta` slices).
+inline constexpr size_t kRelocBundleRootSize = 32u;
+inline constexpr size_t kRelocBundleMinSize = kRelocHeaderSize + kRelocBundleRootSize;
+
+/// Byte alignment enforced for payload sections inside a bundle.
 inline constexpr size_t kSnapshotSectionAlign = 8u;
 
-/// Header offset of each fixed field in the 80-byte `NVE_SNAP` wire header.
+/// `RelocHeader::content_kind` discriminants matching Rust `nve_engine::reloc`.
+inline constexpr uint32_t kRelocKindGeneric = 0u;
+inline constexpr uint32_t kRelocKindScene = 1u;
+inline constexpr uint32_t kRelocKindBundle = 2u;
+inline constexpr uint32_t kRelocKindWorkspace = 3u;
+
+/// Header offset of each fixed field in the 64-byte `NVERELOC` wire header.
 inline constexpr size_t kSnapshotMagicOffset = 0u;
 inline constexpr size_t kSnapshotFormatVersionOffset = 8u;
-inline constexpr size_t kSnapshotSchemaVersionOffset = 12u;
-inline constexpr size_t kSnapshotFlagsOffset = 16u;
-inline constexpr size_t kSnapshotReservedOffset = 20u;
+inline constexpr size_t kSnapshotFlagsOffset = 12u;
+inline constexpr size_t kRelocPayloadLenOffset = 16u;
+inline constexpr size_t kRelocRootOffsetField = 20u;
 inline constexpr size_t kSnapshotChecksumOffset = 24u;
 inline constexpr size_t kSnapshotChecksumEnd = 32u;
-inline constexpr size_t kSnapshotFrame0OffsetField = 32u;
-inline constexpr size_t kSnapshotFrame0LenField = 40u;
-inline constexpr size_t kSnapshotStateOffsetField = 48u;
-inline constexpr size_t kSnapshotStateLenField = 56u;
-inline constexpr size_t kSnapshotMetaOffsetField = 64u;
-inline constexpr size_t kSnapshotMetaLenField = 72u;
+inline constexpr size_t kSnapshotSchemaVersionOffset = 32u;
+inline constexpr size_t kRelocContentKindOffset = 36u;
+inline constexpr size_t kSnapshotReservedOffset = 40u;
 
 /// Canonical XXH64 constants matching `packages/core/engine/src/hash.rs`.
 inline constexpr uint64_t kXxh64Prime1 = 0x9E3779B185EBCA87ULL;
@@ -65,7 +75,13 @@ inline constexpr uint64_t kXxh64Prime3 = 0x165667B19E3779F9ULL;
 inline constexpr uint64_t kXxh64Prime4 = 0x85EBCA77C2B2AE63ULL;
 inline constexpr uint64_t kXxh64Prime5 = 0x27D4EB2F165667C5ULL;
 
-/// Validation & I/O status codes for `MmapSnapshot` and `write_snapshot_atomic`.
+/// Validation mode for opening an `NVERELOC` container.
+enum class VerifyMode : uint8_t {
+  Full = 0,
+  HeaderOnly = 1,
+};
+
+/// Validation & I/O status codes for `MmapSnapshot` (`MmapReloc`) and `write_snapshot_atomic`.
 enum class SnapshotStatus : uint8_t {
   Ok = 0,
   IoError = 1,
@@ -78,39 +94,105 @@ enum class SnapshotStatus : uint8_t {
   UnalignedSection = 8,
   SectionOutOfBounds = 9,
   OverlappingSections = 10,
+  ContentKindMismatch = 11,
 };
 
-/// Decoded fixed 80-byte header of an `NVE_SNAP` binary container.
-struct SnapshotHeader {
+/// 8-byte buffer-base-relative `(offset, len)` slice descriptor inside `NVERELOC`.
+struct RelocSlice {
+  uint32_t offset{0};
+  uint32_t len{0};
+};
+
+/// 64-byte `NVERELOC` cache-line header matching Rust `nve_engine::reloc::RelocHeader`.
+struct RelocHeader {
   uint8_t magic[8]{0, 0, 0, 0, 0, 0, 0, 0};
   uint32_t format_version{0};
-  uint32_t app_schema_version{0};
   uint32_t flags{0};
+  uint32_t payload_len{0};
+  uint32_t root_offset{0};
   uint64_t checksum_xxh64{0};
-  uint64_t frame0_offset{0};
-  uint64_t frame0_len{0};
-  uint64_t state_offset{0};
-  uint64_t state_len{0};
-  uint64_t meta_offset{0};
-  uint64_t meta_len{0};
+  uint32_t app_schema_version{0};
+  uint32_t content_kind{0};
+  uint64_t reserved[3]{0, 0, 0};
 };
 
-// Compile-time layout & wire-offset verification for `NVE_SNAP` header.
-static_assert(sizeof(kSnapshotMagic) == 8u, "NVE_SNAP magic must be 8 bytes");
-static_assert(kSnapshotHeaderSize == 80u, "NVE_SNAP wire header must be 80 bytes");
-static_assert(kSnapshotChecksumEnd - kSnapshotChecksumOffset == 8u, "NVE_SNAP checksum must be 8 bytes");
-static_assert(offsetof(SnapshotHeader, magic) == kSnapshotMagicOffset, "SnapshotHeader::magic offset mismatch");
-static_assert(offsetof(SnapshotHeader, format_version) == kSnapshotFormatVersionOffset, "SnapshotHeader::format_version offset mismatch");
-static_assert(offsetof(SnapshotHeader, app_schema_version) == kSnapshotSchemaVersionOffset, "SnapshotHeader::app_schema_version offset mismatch");
-static_assert(offsetof(SnapshotHeader, flags) == kSnapshotFlagsOffset, "SnapshotHeader::flags offset mismatch");
-static_assert(alignof(uint64_t) != 8u || sizeof(SnapshotHeader) == kSnapshotHeaderSize, "SnapshotHeader size must be 80 bytes on 8-byte-aligned u64 targets");
-static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, checksum_xxh64) == kSnapshotChecksumOffset, "SnapshotHeader::checksum_xxh64 offset mismatch");
-static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, frame0_offset) == kSnapshotFrame0OffsetField, "SnapshotHeader::frame0_offset offset mismatch");
-static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, frame0_len) == kSnapshotFrame0LenField, "SnapshotHeader::frame0_len offset mismatch");
-static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, state_offset) == kSnapshotStateOffsetField, "SnapshotHeader::state_offset offset mismatch");
-static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, state_len) == kSnapshotStateLenField, "SnapshotHeader::state_len offset mismatch");
-static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, meta_offset) == kSnapshotMetaOffsetField, "SnapshotHeader::meta_offset offset mismatch");
-static_assert(alignof(uint64_t) != 8u || offsetof(SnapshotHeader, meta_len) == kSnapshotMetaLenField, "SnapshotHeader::meta_len offset mismatch");
+/// 32-byte bundle root at offset 64 matching Rust `nve_engine::reloc::RelocBundleRoot`.
+struct RelocBundleRoot {
+  RelocSlice frame0{};
+  RelocSlice state{};
+  RelocSlice meta{};
+  uint64_t reserved{0};
+};
+
+/// 64-byte pre-rendered scene root matching Rust `nve_engine::reloc::RelocSceneRoot`.
+struct RelocSceneRoot {
+  float viewport_width{0.0f};
+  float viewport_height{0.0f};
+  float scale_factor{1.0f};
+  uint32_t root_node_index{0};
+  uint32_t surface_id{0};
+  uint32_t clear_rgba{0};
+  uint64_t frame_id{0};
+  RelocSlice nodes{};
+  RelocSlice layouts{};
+  RelocSlice app_tag{};
+  uint64_t reserved{0};
+};
+
+/// 128-byte pre-rendered scene node matching Rust `nve_engine::reloc::RelocSceneNode`.
+struct RelocSceneNode {
+  uint32_t node_id{0};
+  int32_t parent_index{-1};
+  uint64_t event_mask{0};
+  float x{0.0f};
+  float y{0.0f};
+  float width{0.0f};
+  float height{0.0f};
+  uint32_t bg_rgba{0};
+  uint32_t text_rgba{0};
+  uint32_t border_rgba{0};
+  int32_t z_index{0};
+  float border_width{0.0f};
+  float border_radius{0.0f};
+  float opacity{1.0f};
+  float font_size{16.0f};
+  uint8_t kind{0};
+  uint8_t flags{0};
+  uint8_t text_align{0};
+  uint8_t image_resize_mode{0};
+  uint16_t font_weight{400};
+  uint16_t pad0{0};
+  RelocSlice text{};
+  RelocSlice tag{};
+  RelocSlice image_src{};
+  RelocSlice box_shadow{};
+  RelocSlice draw_list{};
+  RelocSlice children{};
+  uint64_t reserved{0};
+};
+
+using SnapshotHeader = RelocHeader;
+
+// Compile-time layout & wire-offset verification matching Rust `packages/core/engine/src/reloc/`.
+static_assert(sizeof(kRelocMagic) == 8u, "NVERELOC magic must be 8 bytes");
+static_assert(sizeof(RelocSlice) == 8u, "RelocSlice must be 8 bytes");
+static_assert(sizeof(RelocHeader) == kRelocHeaderSize, "RelocHeader must be 64 bytes");
+static_assert(offsetof(RelocHeader, magic) == kSnapshotMagicOffset);
+static_assert(offsetof(RelocHeader, format_version) == kSnapshotFormatVersionOffset);
+static_assert(offsetof(RelocHeader, flags) == kSnapshotFlagsOffset);
+static_assert(offsetof(RelocHeader, payload_len) == kRelocPayloadLenOffset);
+static_assert(offsetof(RelocHeader, root_offset) == kRelocRootOffsetField);
+static_assert(offsetof(RelocHeader, checksum_xxh64) == kSnapshotChecksumOffset);
+static_assert(offsetof(RelocHeader, app_schema_version) == kSnapshotSchemaVersionOffset);
+static_assert(offsetof(RelocHeader, content_kind) == kRelocContentKindOffset);
+static_assert(offsetof(RelocHeader, reserved) == kSnapshotReservedOffset);
+static_assert(sizeof(RelocBundleRoot) == kRelocBundleRootSize, "RelocBundleRoot must be 32 bytes");
+static_assert(offsetof(RelocBundleRoot, frame0) == 0u);
+static_assert(offsetof(RelocBundleRoot, state) == 8u);
+static_assert(offsetof(RelocBundleRoot, meta) == 16u);
+static_assert(offsetof(RelocBundleRoot, reserved) == 24u);
+static_assert(sizeof(RelocSceneRoot) == 64u, "RelocSceneRoot must be 64 bytes");
+static_assert(sizeof(RelocSceneNode) == 128u, "RelocSceneNode must be 128 bytes");
 
 namespace detail {
 
@@ -281,51 +363,77 @@ class Xxh64Hasher {
   size_t buf_len_;
 };
 
-inline uint64_t compute_snapshot_checksum(const uint8_t* data, size_t len) noexcept {
+inline uint64_t compute_reloc_checksum(const uint8_t* data, size_t len) noexcept {
   Xxh64Hasher h(0u);
   h.update(data, kSnapshotChecksumOffset);
   h.update(data + kSnapshotChecksumEnd, len - kSnapshotChecksumEnd);
   return h.finish();
 }
 
-inline SnapshotStatus decode_and_validate_header(
+inline SnapshotStatus decode_and_validate_reloc_bundle(
     const uint8_t* data,
     size_t len,
-    SnapshotHeader& out_header) noexcept {
-  if (data == nullptr || len < kSnapshotHeaderSize) {
+    bool verify_checksum,
+    RelocHeader& out_header,
+    RelocBundleRoot& out_bundle) noexcept {
+  if (data == nullptr || len < kRelocHeaderSize) {
     return SnapshotStatus::Truncated;
   }
-  if (std::memcmp(data, kSnapshotMagic, sizeof(kSnapshotMagic)) != 0) {
+  if (std::memcmp(data, kRelocMagic, sizeof(kRelocMagic)) != 0) {
     return SnapshotStatus::InvalidMagic;
   }
 
-  const uint32_t format_version = read_le32(data + 8u);
-  if (format_version != kSnapshotFormatVersion) {
+  const uint32_t format_version = read_le32(data + kSnapshotFormatVersionOffset);
+  if (format_version != kRelocFormatVersion) {
     return SnapshotStatus::UnsupportedFormatVersion;
   }
 
-  const uint32_t app_schema_version = read_le32(data + 12u);
-  const uint32_t flags = read_le32(data + 16u);
-  const uint32_t reserved = read_le32(data + 20u);
-  if (reserved != 0u) {
-    return SnapshotStatus::InvalidReservedHeader;
-  }
-
-  SnapshotHeader h{};
+  RelocHeader h{};
   std::memcpy(h.magic, data, sizeof(h.magic));
   h.format_version = format_version;
-  h.app_schema_version = app_schema_version;
-  h.flags = flags;
-  h.checksum_xxh64 = read_le64(data + 24u);
-  h.frame0_offset = read_le64(data + 32u);
-  h.frame0_len = read_le64(data + 40u);
-  h.state_offset = read_le64(data + 48u);
-  h.state_len = read_le64(data + 56u);
-  h.meta_offset = read_le64(data + 64u);
-  h.meta_len = read_le64(data + 72u);
+  h.flags = read_le32(data + kSnapshotFlagsOffset);
+  h.payload_len = read_le32(data + kRelocPayloadLenOffset);
+  h.root_offset = read_le32(data + kRelocRootOffsetField);
+  h.checksum_xxh64 = read_le64(data + kSnapshotChecksumOffset);
+  h.app_schema_version = read_le32(data + kSnapshotSchemaVersionOffset);
+  h.content_kind = read_le32(data + kRelocContentKindOffset);
+  h.reserved[0] = read_le64(data + 40u);
+  h.reserved[1] = read_le64(data + 48u);
+  h.reserved[2] = read_le64(data + 56u);
 
+  if (h.reserved[0] != 0u || h.reserved[1] != 0u || h.reserved[2] != 0u) {
+    return SnapshotStatus::InvalidReservedHeader;
+  }
+  if (static_cast<size_t>(h.payload_len) != (len - kRelocHeaderSize)) {
+    return SnapshotStatus::Truncated;
+  }
+  if (h.content_kind != kRelocKindBundle) {
+    return SnapshotStatus::ContentKindMismatch;
+  }
   const uint64_t file_len = static_cast<uint64_t>(len);
-  const uint64_t max_size_t = static_cast<uint64_t>(std::numeric_limits<size_t>::max());
+  const uint64_t root_off = static_cast<uint64_t>(h.root_offset);
+  if ((root_off % 8u) != 0u) {
+    return SnapshotStatus::UnalignedSection;
+  }
+  if (root_off < kRelocHeaderSize || root_off + kRelocBundleRootSize > file_len) {
+    return SnapshotStatus::SectionOutOfBounds;
+  }
+  if (verify_checksum && compute_reloc_checksum(data, len) != h.checksum_xxh64) {
+    return SnapshotStatus::ChecksumMismatch;
+  }
+
+  const uint8_t* rp = data + static_cast<size_t>(root_off);
+  RelocBundleRoot b{};
+  b.frame0.offset = read_le32(rp + 0u);
+  b.frame0.len = read_le32(rp + 4u);
+  b.state.offset = read_le32(rp + 8u);
+  b.state.len = read_le32(rp + 12u);
+  b.meta.offset = read_le32(rp + 16u);
+  b.meta.len = read_le32(rp + 20u);
+  b.reserved = read_le64(rp + 24u);
+  if (b.reserved != 0u) {
+    return SnapshotStatus::InvalidReservedHeader;
+  }
 
   struct Span {
     uint64_t offset;
@@ -333,36 +441,43 @@ inline SnapshotStatus decode_and_validate_header(
     uint64_t end;
   };
   Span spans[3] = {
-      {h.frame0_offset, h.frame0_len, 0u},
-      {h.state_offset, h.state_len, 0u},
-      {h.meta_offset, h.meta_len, 0u},
+      {b.frame0.offset, b.frame0.len, 0u},
+      {b.state.offset, b.state.len, 0u},
+      {b.meta.offset, b.meta.len, 0u},
   };
 
-  for (size_t i = 0; i < 3u; ++i) {
+  for (size_t i = 0u; i < 3u; ++i) {
     const uint64_t offset = spans[i].offset;
     const uint64_t slen = spans[i].len;
-    if ((offset % static_cast<uint64_t>(kSnapshotSectionAlign)) != 0u) {
+    if (slen == 0u) {
+      if (offset != 0u && ((offset % kSnapshotSectionAlign) != 0u)) {
+        return SnapshotStatus::UnalignedSection;
+      }
+      spans[i].end = offset;
+      continue;
+    }
+    if ((offset % kSnapshotSectionAlign) != 0u) {
       return SnapshotStatus::UnalignedSection;
     }
-    if (offset < static_cast<uint64_t>(kSnapshotHeaderSize)) {
+    if (offset < kRelocHeaderSize) {
       return SnapshotStatus::SectionOutOfBounds;
     }
     if (slen > (std::numeric_limits<uint64_t>::max() - offset)) {
       return SnapshotStatus::SectionOutOfBounds;
     }
     const uint64_t end = offset + slen;
-    if (end > file_len || end > max_size_t) {
+    if (end > file_len) {
       return SnapshotStatus::SectionOutOfBounds;
     }
     spans[i].end = end;
   }
 
-  for (size_t i = 0; i < 3u; ++i) {
-    if (spans[i].offset == spans[i].end) {
+  for (size_t i = 0u; i < 3u; ++i) {
+    if (spans[i].len == 0u) {
       continue;
     }
     for (size_t j = i + 1u; j < 3u; ++j) {
-      if (spans[j].offset == spans[j].end) {
+      if (spans[j].len == 0u) {
         continue;
       }
       if (spans[i].offset < spans[j].end && spans[j].offset < spans[i].end) {
@@ -372,6 +487,7 @@ inline SnapshotStatus decode_and_validate_header(
   }
 
   out_header = h;
+  out_bundle = b;
   return SnapshotStatus::Ok;
 }
 
@@ -406,8 +522,8 @@ inline uint64_t xxh64(const uint8_t* data, size_t len, uint64_t seed = 0u) noexc
   return h.finish();
 }
 
-/// Encodes a complete, 8-byte aligned `NVE_SNAP` binary container in memory.
-/// Matches `nve_engine::snapshot::encode_snapshot` byte-for-byte.
+/// Encodes a complete, 8-byte-aligned `NVERELOC` bundle (`RELOC_KIND_BUNDLE`) in memory.
+/// Matches Rust `nve_engine::reloc::encode_reloc_bundle` byte-for-byte.
 inline std::vector<uint8_t> encode_snapshot(
     uint32_t app_schema_version,
     uint32_t flags,
@@ -420,46 +536,62 @@ inline std::vector<uint8_t> encode_snapshot(
 
   std::vector<uint8_t> buf;
   buf.reserve(
-      kSnapshotHeaderSize + detail::align_up_8(f0_len) + detail::align_up_8(st_len) +
+      kRelocBundleMinSize + detail::align_up_8(f0_len) + detail::align_up_8(st_len) +
       detail::align_up_8(mt_len));
-  buf.resize(kSnapshotHeaderSize, 0u);
+  buf.resize(kRelocBundleMinSize, 0u);
 
-  const uint64_t frame0_offset = static_cast<uint64_t>(buf.size());
+  uint32_t frame0_offset = 0u;
   if (f0_len > 0u) {
+    detail::pad_to_8(buf);
+    frame0_offset = static_cast<uint32_t>(buf.size());
     buf.insert(buf.end(), frame0.ptr, frame0.ptr + f0_len);
   }
-  detail::pad_to_8(buf);
 
-  const uint64_t state_offset = static_cast<uint64_t>(buf.size());
+  uint32_t state_offset = 0u;
   if (st_len > 0u) {
+    detail::pad_to_8(buf);
+    state_offset = static_cast<uint32_t>(buf.size());
     buf.insert(buf.end(), state.ptr, state.ptr + st_len);
   }
-  detail::pad_to_8(buf);
 
-  const uint64_t meta_offset = static_cast<uint64_t>(buf.size());
+  uint32_t meta_offset = 0u;
   if (mt_len > 0u) {
+    detail::pad_to_8(buf);
+    meta_offset = static_cast<uint32_t>(buf.size());
     buf.insert(buf.end(), meta.ptr, meta.ptr + mt_len);
   }
+
   detail::pad_to_8(buf);
 
-  std::memcpy(buf.data(), kSnapshotMagic, sizeof(kSnapshotMagic));
-  detail::write_le32(buf.data() + 8u, kSnapshotFormatVersion);
-  detail::write_le32(buf.data() + 12u, app_schema_version);
-  detail::write_le32(buf.data() + 16u, flags);
-  detail::write_le32(buf.data() + 20u, 0u);
-  detail::write_le64(buf.data() + 32u, frame0_offset);
-  detail::write_le64(buf.data() + 40u, static_cast<uint64_t>(f0_len));
-  detail::write_le64(buf.data() + 48u, state_offset);
-  detail::write_le64(buf.data() + 56u, static_cast<uint64_t>(st_len));
-  detail::write_le64(buf.data() + 64u, meta_offset);
-  detail::write_le64(buf.data() + 72u, static_cast<uint64_t>(mt_len));
+  // Write RelocBundleRoot at offset 64.
+  uint8_t* rp = buf.data() + kRelocHeaderSize;
+  detail::write_le32(rp + 0u, frame0_offset);
+  detail::write_le32(rp + 4u, static_cast<uint32_t>(f0_len));
+  detail::write_le32(rp + 8u, state_offset);
+  detail::write_le32(rp + 12u, static_cast<uint32_t>(st_len));
+  detail::write_le32(rp + 16u, meta_offset);
+  detail::write_le32(rp + 20u, static_cast<uint32_t>(mt_len));
+  detail::write_le64(rp + 24u, 0u);
 
-  const uint64_t checksum = detail::compute_snapshot_checksum(buf.data(), buf.size());
+  // Write 64-byte RelocHeader at offset 0.
+  const uint32_t payload_len = static_cast<uint32_t>(buf.size() - kRelocHeaderSize);
+  std::memcpy(buf.data(), kRelocMagic, sizeof(kRelocMagic));
+  detail::write_le32(buf.data() + kSnapshotFormatVersionOffset, kRelocFormatVersion);
+  detail::write_le32(buf.data() + kSnapshotFlagsOffset, flags);
+  detail::write_le32(buf.data() + kRelocPayloadLenOffset, payload_len);
+  detail::write_le32(buf.data() + kRelocRootOffsetField, static_cast<uint32_t>(kRelocHeaderSize));
+  detail::write_le32(buf.data() + kSnapshotSchemaVersionOffset, app_schema_version);
+  detail::write_le32(buf.data() + kRelocContentKindOffset, kRelocKindBundle);
+  detail::write_le64(buf.data() + 40u, 0u);
+  detail::write_le64(buf.data() + 48u, 0u);
+  detail::write_le64(buf.data() + 56u, 0u);
+
+  const uint64_t checksum = detail::compute_reloc_checksum(buf.data(), buf.size());
   detail::write_le64(buf.data() + kSnapshotChecksumOffset, checksum);
   return buf;
 }
 
-/// Crash-safely writes an `NVE_SNAP` snapshot via sibling temp file + fsync/FlushFileBuffers +
+/// Crash-safely writes an `NVERELOC` bundle via sibling temp file + fsync/FlushFileBuffers +
 /// atomic rename (`rename` on POSIX, `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` on Win32).
 inline bool write_snapshot_atomic(
     std::string_view path,
@@ -609,7 +741,6 @@ inline bool write_snapshot_atomic(
     return false;
   }
 
-  // Best-effort parent directory fsync for durability across power loss.
   const std::string dir_path = parent.empty() ? std::string(".") : parent;
   int dir_flags = O_RDONLY;
 #if defined(O_CLOEXEC)
@@ -626,7 +757,7 @@ inline bool write_snapshot_atomic(
 #endif
 }
 
-/// Move-only RAII zero-copy memory-mapped `NVE_SNAP` snapshot handle.
+/// Move-only RAII zero-copy memory-mapped `NVERELOC` bundle handle.
 ///
 /// Section slices (`frame0_slice()`, `state_slice()`, `meta_slice()`) point directly inside the
 /// mapped virtual address range with zero heap allocations or payload copies.
@@ -643,7 +774,8 @@ class MmapSnapshot {
         size_(other.size_),
         is_mmap_(other.is_mmap_),
         owned_(std::move(other.owned_)),
-        header_(other.header_)
+        header_(other.header_),
+        bundle_(other.bundle_)
 #if defined(_WIN32)
         ,
         mapping_handle_(other.mapping_handle_)
@@ -655,7 +787,8 @@ class MmapSnapshot {
     other.data_ = nullptr;
     other.size_ = 0u;
     other.is_mmap_ = false;
-    other.header_ = SnapshotHeader{};
+    other.header_ = RelocHeader{};
+    other.bundle_ = RelocBundleRoot{};
 #if defined(_WIN32)
     other.mapping_handle_ = nullptr;
 #endif
@@ -669,6 +802,7 @@ class MmapSnapshot {
       is_mmap_ = other.is_mmap_;
       owned_ = std::move(other.owned_);
       header_ = other.header_;
+      bundle_ = other.bundle_;
 #if defined(_WIN32)
       mapping_handle_ = other.mapping_handle_;
       other.mapping_handle_ = nullptr;
@@ -679,7 +813,8 @@ class MmapSnapshot {
       other.data_ = nullptr;
       other.size_ = 0u;
       other.is_mmap_ = false;
-      other.header_ = SnapshotHeader{};
+      other.header_ = RelocHeader{};
+      other.bundle_ = RelocBundleRoot{};
     }
     return *this;
   }
@@ -702,10 +837,11 @@ class MmapSnapshot {
     size_ = 0u;
     is_mmap_ = false;
     owned_.clear();
-    header_ = SnapshotHeader{};
+    header_ = RelocHeader{};
+    bundle_ = RelocBundleRoot{};
   }
 
-  /// Opens and memory-maps a snapshot file, validating header, alignment, bounds, overlap,
+  /// Opens and memory-maps an `NVERELOC` file, validating header, alignment, bounds, overlap,
   /// and (when `verify_checksum` is true) the XXH64 checksum.
   static bool open(
       std::string_view path,
@@ -811,7 +947,6 @@ class MmapSnapshot {
 
     const uint64_t u64_len = static_cast<uint64_t>(st.st_size);
     if (u64_len == 0u) {
-      // Never pass len == 0 to mmap (POSIX returns EINVAL).
       (void)::close(fd);
       set_status(SnapshotStatus::Truncated);
       return false;
@@ -835,14 +970,10 @@ class MmapSnapshot {
     candidate.is_mmap_ = true;
 #endif
 
-    const SnapshotStatus st_code =
-        detail::decode_and_validate_header(candidate.data_, candidate.size_, candidate.header_);
+    const SnapshotStatus st_code = detail::decode_and_validate_reloc_bundle(
+        candidate.data_, candidate.size_, verify_checksum, candidate.header_, candidate.bundle_);
     if (st_code != SnapshotStatus::Ok) {
       set_status(st_code);
-      return false;
-    }
-    if (verify_checksum && !candidate.verify_checksum()) {
-      set_status(SnapshotStatus::ChecksumMismatch);
       return false;
     }
 
@@ -851,7 +982,7 @@ class MmapSnapshot {
     return true;
   }
 
-  /// Opens a snapshot file, validates integrity, and enforces
+  /// Opens an `NVERELOC` file, validates integrity, and enforces
   /// `app_schema_version == expected_schema_version`.
   static bool open_with_schema(
       std::string_view path,
@@ -878,8 +1009,8 @@ class MmapSnapshot {
     return true;
   }
 
-  /// Wraps an in-memory snapshot buffer with identical header, alignment, bounds, overlap,
-  /// and optional checksum validation.
+  /// Wraps an in-memory `NVERELOC` buffer with identical header, alignment, bounds, overlap,
+  /// and optional XXH64 checksum validation.
   static bool from_bytes(
       std::vector<uint8_t> bytes,
       MmapSnapshot& out,
@@ -898,14 +1029,10 @@ class MmapSnapshot {
     candidate.size_ = candidate.owned_.size();
     candidate.is_mmap_ = false;
 
-    const SnapshotStatus st_code =
-        detail::decode_and_validate_header(candidate.data_, candidate.size_, candidate.header_);
+    const SnapshotStatus st_code = detail::decode_and_validate_reloc_bundle(
+        candidate.data_, candidate.size_, verify_checksum, candidate.header_, candidate.bundle_);
     if (st_code != SnapshotStatus::Ok) {
       set_status(st_code);
-      return false;
-    }
-    if (verify_checksum && !candidate.verify_checksum()) {
-      set_status(SnapshotStatus::ChecksumMismatch);
       return false;
     }
 
@@ -914,7 +1041,7 @@ class MmapSnapshot {
     return true;
   }
 
-  bool is_open() const noexcept { return data_ != nullptr && size_ >= kSnapshotHeaderSize; }
+  bool is_open() const noexcept { return data_ != nullptr && size_ >= kRelocBundleMinSize; }
   explicit operator bool() const noexcept { return is_open(); }
 
   /// Verifies the stored XXH64 checksum against the mapped bytes.
@@ -922,10 +1049,11 @@ class MmapSnapshot {
     if (!is_open()) {
       return false;
     }
-    return detail::compute_snapshot_checksum(data_, size_) == header_.checksum_xxh64;
+    return detail::compute_reloc_checksum(data_, size_) == header_.checksum_xxh64;
   }
 
-  const SnapshotHeader& header() const noexcept { return header_; }
+  const RelocHeader& header() const noexcept { return header_; }
+  const RelocBundleRoot& bundle_root() const noexcept { return bundle_; }
   uint32_t format_version() const noexcept { return header_.format_version; }
   uint32_t app_schema_version() const noexcept { return header_.app_schema_version; }
   uint32_t flags() const noexcept { return header_.flags; }
@@ -940,34 +1068,34 @@ class MmapSnapshot {
 
   /// Zero-copy borrowed slice of the freeze-dried Frame-0 `CommandBuffer`.
   NveBufferSlice frame0_slice() const noexcept {
-    if (!is_open()) {
+    if (!is_open() || bundle_.frame0.len == 0u) {
       return NveBufferSlice{nullptr, 0u};
     }
     return NveBufferSlice{
-        data_ + static_cast<size_t>(header_.frame0_offset),
-        static_cast<size_t>(header_.frame0_len),
+        data_ + static_cast<size_t>(bundle_.frame0.offset),
+        static_cast<size_t>(bundle_.frame0.len),
     };
   }
 
   /// Zero-copy borrowed slice of the application state section.
   NveBufferSlice state_slice() const noexcept {
-    if (!is_open()) {
+    if (!is_open() || bundle_.state.len == 0u) {
       return NveBufferSlice{nullptr, 0u};
     }
     return NveBufferSlice{
-        data_ + static_cast<size_t>(header_.state_offset),
-        static_cast<size_t>(header_.state_len),
+        data_ + static_cast<size_t>(bundle_.state.offset),
+        static_cast<size_t>(bundle_.state.len),
     };
   }
 
   /// Zero-copy borrowed slice of the optional metadata/viewport section.
   NveBufferSlice meta_slice() const noexcept {
-    if (!is_open()) {
+    if (!is_open() || bundle_.meta.len == 0u) {
       return NveBufferSlice{nullptr, 0u};
     }
     return NveBufferSlice{
-        data_ + static_cast<size_t>(header_.meta_offset),
-        static_cast<size_t>(header_.meta_len),
+        data_ + static_cast<size_t>(bundle_.meta.offset),
+        static_cast<size_t>(bundle_.meta.len),
     };
   }
 
@@ -976,10 +1104,13 @@ class MmapSnapshot {
   size_t size_{0u};
   bool is_mmap_{false};
   std::vector<uint8_t> owned_;
-  SnapshotHeader header_{};
+  RelocHeader header_{};
+  RelocBundleRoot bundle_{};
 #if defined(_WIN32)
   HANDLE mapping_handle_{nullptr};
 #endif
 };
+
+using MmapReloc = MmapSnapshot;
 
 } // namespace nve

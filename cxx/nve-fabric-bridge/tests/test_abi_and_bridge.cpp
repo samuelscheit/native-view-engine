@@ -27,8 +27,8 @@ static_assert(sizeof(NveHostCallbacks) == 3u * sizeof(void*), "NveHostCallbacks 
 static_assert(offsetof(NveHostCallbacks, channel_publish) == 2u * sizeof(void*), "NveHostCallbacks::channel_publish offset mismatch");
 static_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE, "NveRenderNode size mismatch");
 static_assert(offsetof(NveSceneView, removed_ids) == 40u + 4u * sizeof(void*), "NveSceneView::removed_ids offset mismatch");
-static_assert(nve::kSnapshotHeaderSize == 80u, "NVE_SNAP header wire size mismatch");
-static_assert(offsetof(nve::SnapshotHeader, flags) == nve::kSnapshotFlagsOffset, "SnapshotHeader::flags offset mismatch");
+static_assert(nve::kRelocHeaderSize == 64u, "NVERELOC header wire size mismatch");
+static_assert(offsetof(nve::RelocHeader, flags) == nve::kSnapshotFlagsOffset, "RelocHeader::flags offset mismatch");
 static_assert(sizeof(nve::HelloPayload) == nve::kHelloPayloadWireSize, "HelloPayload size mismatch");
 static_assert(offsetof(nve::HelloPayload, token_proof) == 16u, "HelloPayload::token_proof offset mismatch");
 static_assert(offsetof(nve::HelloAckPayload, resync_required) == 16u, "HelloAckPayload::resync_required offset mismatch");
@@ -36,7 +36,7 @@ static_assert(offsetof(nve::DeltaPacketHeader, payload_len) == 16u, "DeltaPacket
 
 // 1. Test all 10 NveOpcode variants + custom component hooks + snapshot inspection.
 void test_all_opcodes_and_custom_components() {
-  // Verify NVE_SNAP and pair/NVD1 wire headers encode at their exact asserted offsets.
+  // Verify NVERELOC and pair/NVD1 wire headers encode at their exact asserted offsets.
   {
     const uint8_t f0[4] = {0x4E, 0x56, 0x45, 0x31};
     const auto snap = nve::encode_snapshot(
@@ -44,14 +44,14 @@ void test_all_opcodes_and_custom_components() {
         3u,
         NveBufferSlice{f0, sizeof(f0)},
         NveBufferSlice{nullptr, 0u});
-    assert(snap.size() >= nve::kSnapshotHeaderSize);
-    assert(std::memcmp(snap.data() + nve::kSnapshotMagicOffset, nve::kSnapshotMagic, 8u) == 0);
+    assert(snap.size() >= nve::kRelocBundleMinSize);
+    assert(std::memcmp(snap.data() + nve::kSnapshotMagicOffset, nve::kRelocMagic, 8u) == 0);
     nve::MmapSnapshot parsed;
     assert(nve::MmapSnapshot::from_bytes(snap, parsed));
     assert(parsed.header().app_schema_version == 7u);
     assert(parsed.header().flags == 3u);
-    assert(parsed.header().frame0_offset == nve::kSnapshotHeaderSize);
-    assert(parsed.header().frame0_len == sizeof(f0));
+    assert(parsed.bundle_root().frame0.offset == nve::kRelocBundleMinSize);
+    assert(parsed.bundle_root().frame0.len == sizeof(f0));
 
     nve::HelloPayload hello{};
     hello.schema_version = 2u;

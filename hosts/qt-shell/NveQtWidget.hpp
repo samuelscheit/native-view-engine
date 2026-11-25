@@ -120,7 +120,7 @@ class NveQtWidget : public QWidget {
   bool isPaired() const noexcept;
   bool isPairedConnected() const noexcept;
 
-  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
+  /// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` file before any dylib loads.
   /// Immediately reconciles retained Qt widgets from the mapped Frame-0 buffer and caches the
   /// snapshot state for seamless restoration on the subsequent `loadDylib()` / `attachInterface()`.
   bool replayFrame0Snapshot(

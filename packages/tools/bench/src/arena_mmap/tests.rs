@@ -91,39 +91,47 @@ fn reloc_handles_empty_workspace_and_rejects_corruption() {
     assert!(matches!(err, RelocError::Misaligned { .. }));
 
     // Bad magic and unsupported version.
-    let mut bad_magic = valid.clone();
+    let mut bad_magic = valid.as_slice().to_vec();
     bad_magic[0] ^= 0xFF;
+    let bad_magic_buf = nve_engine::RelocBuf::from_bytes(&bad_magic);
     assert!(matches!(
-        RelocWorkspaceView::from_bytes(&bad_magic, VerifyMode::HeaderOnly),
+        RelocWorkspaceView::from_bytes(&bad_magic_buf, VerifyMode::HeaderOnly),
         Err(RelocError::InvalidMagic)
     ));
 
-    let mut bad_ver = valid.clone();
+    let mut bad_ver = valid.as_slice().to_vec();
     bad_ver[8..12].copy_from_slice(&99u32.to_le_bytes());
+    let bad_ver_buf = nve_engine::RelocBuf::from_bytes(&bad_ver);
     assert!(matches!(
-        RelocWorkspaceView::from_bytes(&bad_ver, VerifyMode::HeaderOnly),
+        RelocWorkspaceView::from_bytes(&bad_ver_buf, VerifyMode::HeaderOnly),
         Err(RelocError::UnsupportedVersion(99))
     ));
 
     // Payload bit flip caught by Full checksum, skipped by HeaderOnly.
-    let mut flipped = valid.clone();
+    let mut flipped = valid.as_slice().to_vec();
     let last = flipped.len() - 1;
     flipped[last] ^= 0x5A;
-    assert!(RelocWorkspaceView::from_bytes(&flipped, VerifyMode::HeaderOnly).is_ok());
+    let flipped_buf = nve_engine::RelocBuf::from_bytes(&flipped);
+    assert!(RelocWorkspaceView::from_bytes(&flipped_buf, VerifyMode::HeaderOnly).is_ok());
     assert!(matches!(
-        RelocWorkspaceView::from_bytes(&flipped, VerifyMode::Full),
+        RelocWorkspaceView::from_bytes(&flipped_buf, VerifyMode::Full),
         Err(RelocError::ChecksumMismatch { .. })
     ));
 
     // Invalid UTF-8 inside string pool with recomputed checksum is still caught by Full.
-    let mut bad_utf8 = valid.clone();
-    let pool_off = u32::from_le_bytes(bad_utf8[40..44].try_into().unwrap()) as usize;
-    bad_utf8[pool_off] = 0xFF;
-    bad_utf8[pool_off + 1] = 0xFE;
+    let mut bad_utf8 = valid.as_slice().to_vec();
+    let title_off = RelocWorkspaceView::from_bytes(&valid, VerifyMode::Full)
+        .unwrap()
+        .tasks()[0]
+        .title
+        .offset as usize;
+    bad_utf8[title_off] = 0xFF;
+    bad_utf8[title_off + 1] = 0xFE;
     let new_ck = compute_reloc_checksum(&bad_utf8);
     bad_utf8[24..32].copy_from_slice(&new_ck.to_le_bytes());
+    let bad_utf8_buf = nve_engine::RelocBuf::from_bytes(&bad_utf8);
     assert!(matches!(
-        RelocWorkspaceView::from_bytes(&bad_utf8, VerifyMode::Full),
+        RelocWorkspaceView::from_bytes(&bad_utf8_buf, VerifyMode::Full),
         Err(RelocError::InvalidUtf8)
     ));
 }

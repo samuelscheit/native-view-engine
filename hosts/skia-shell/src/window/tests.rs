@@ -15,12 +15,12 @@ use nve_backend_skia::gpu::{
 };
 use nve_backend_skia::raster::PixelBuffer;
 use nve_engine::loader::LoaderError;
-use nve_engine::{HotPatchMsg, RenderBackend, SnapshotError, Viewport};
+use nve_engine::{HotPatchMsg, RelocError, RenderBackend, Viewport};
 use tungstenite::Message;
 
 use super::{
-    replay_snapshot_into_backend, write_pixel_buffer_ppm, DesktopApp, DesktopHostError,
-    DesktopSession, HotAppSlot, HotReloadClient,
+    replay_instant_boot_store_into_backend, replay_snapshot_into_backend, write_pixel_buffer_ppm,
+    DesktopApp, DesktopHostError, DesktopSession, HotAppSlot, HotReloadClient,
 };
 
 struct MockCounterApp {
@@ -441,23 +441,20 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
     assert!(session.handle_click_logical(cx, cy).unwrap());
 
     let snap_path = std::env::temp_dir().join(format!(
-        "nve_skia_shell_test_{}.nvesnap",
+        "nve_skia_shell_test_{}.nvereloc",
         std::process::id()
     ));
     let header = session.save_snapshot(&snap_path, 7).expect("atomic save");
-    assert_eq!(header.app_schema_version, 7);
-    assert!(header.frame0_len > 0);
-    assert!(header.state_len > 0);
+    assert_eq!(header.schema_version, 7);
+    assert!(header.payload_len > 0);
 
     let mismatch = replay_snapshot_into_backend(&snap_path, 8, 1, viewport, ColorRgba::BLACK);
     assert!(matches!(
         mismatch,
-        Err(DesktopHostError::Snapshot(
-            SnapshotError::SchemaVersionMismatch {
-                expected: 8,
-                actual: 7
-            }
-        ))
+        Err(DesktopHostError::Reloc(RelocError::SchemaVersionMismatch {
+            expected: 8,
+            actual: 7
+        }))
     ));
 
     let prewarmed = replay_snapshot_into_backend(&snap_path, 7, 1, viewport, ColorRgba::BLACK)
@@ -467,6 +464,34 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
         prewarmed.pixel_buffer.get_rgb(cx as u32, cy as u32),
         Some((16, 185, 129))
     );
+
+    // Also test full NativeInstantBootStore roundtrip (user_frame0.nvereloc + state.nvemmap).
+    let boot_dir = std::env::temp_dir().join(format!(
+        "nve_skia_shell_boot_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&boot_dir);
+    let outcome = session
+        .save_instant_boot_checkpoint(&boot_dir, 7, "mock-counter")
+        .expect("save instant boot checkpoint");
+    assert!(outcome.generation >= 2);
+
+    let replayed = replay_instant_boot_store_into_backend(
+        &boot_dir,
+        None,
+        7,
+        1,
+        viewport,
+        ColorRgba::BLACK,
+    )
+    .expect("replay instant boot store");
+    assert!(replayed.used_user_frame0);
+    assert_eq!(replayed.state_bytes, b"count=1;label=Counter");
+    assert_eq!(
+        replayed.pixel_buffer.get_rgb(cx as u32, cy as u32),
+        Some((16, 185, 129))
+    );
+    let _ = std::fs::remove_dir_all(&boot_dir);
 
     let ppm_path = std::env::temp_dir().join(format!(
         "nve_skia_shell_test_{}.ppm",

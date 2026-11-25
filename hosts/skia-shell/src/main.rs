@@ -44,8 +44,10 @@ Options:
   --pair-transport <mode>   Live pairing transport: udp, tcp, or ws (default: ws, or inferred from URL scheme)
   --ws <url>                Connect to nve dev WebSocket hot-reload server (default: ws://127.0.0.1:8089)
   --no-ws                   Disable WebSocket hot-reload client
-  --snapshot <path.nvesnap> Replay Frame-0 MmapSnapshot before dylib load & atomically save on exit
-  --schema <ver>            Expected snapshot app schema version (default: 1)
+  --snapshot <path.nvereloc>       Replay Frame-0 NVERELOC before dylib load & atomically save on exit
+  --instant-boot-dir <dir>         Per-user NativeInstantBootStore dir (user_frame0.nvereloc + state.nvemmap)
+  --default-frame0 <path.nvereloc> Bundled cold-start frame0.nvereloc for first launch with --instant-boot-dir
+  --schema <ver>                   Expected snapshot app schema version (default: 1)
   --screenshot <out.png|ppm> Render headlessly to a PNG or P6 PPM file and exit (no window opened)
   --width <px>              Logical window/viewport width (default: 420)
   --height <px>             Logical window/viewport height (default: 780)
@@ -125,6 +127,18 @@ where
                     .next()
                     .ok_or_else(|| "--snapshot requires a file path argument".to_string())?;
                 options.snapshot_path = Some(PathBuf::from(path));
+            }
+            "--instant-boot-dir" => {
+                let path = iter
+                    .next()
+                    .ok_or_else(|| "--instant-boot-dir requires a directory path argument".to_string())?;
+                options.instant_boot_dir = Some(PathBuf::from(path));
+            }
+            "--default-frame0" => {
+                let path = iter
+                    .next()
+                    .ok_or_else(|| "--default-frame0 requires a file path argument".to_string())?;
+                options.default_frame0_path = Some(PathBuf::from(path));
             }
             "--schema" => {
                 let raw = iter
