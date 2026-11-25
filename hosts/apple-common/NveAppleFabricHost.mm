@@ -56,20 +56,41 @@
 
 - (BOOL)_installModule:(NveModule)mod
            dylibHandle:(void *)dylibHandle
-         restoredState:(const std::vector<uint8_t> &)savedState {
+         restoredState:(const std::vector<uint8_t> &)savedState
+                 error:(NSError * _Nullable * _Nullable)error {
   if (!mod.surface || !mod.surface->create) {
     nve::apple::close_dylib(dylibHandle);
+    if (error) {
+      *error = [NSError errorWithDomain:_errorDomain
+                                   code:static_cast<NSInteger>(
+                                            nve::apple::DylibErrorCode::MissingSurfaceInterface)
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey : @"Missing NVE_IFACE_SURFACE interface"
+                               }];
+    }
     return NO;
   }
+
+  // Transactional swap: create the replacement app instance BEFORE tearing down the live app/dylib.
+  NveAppHandle nextApp = mod.surface->create(_config.surface_id);
+  if (!nextApp) {
+    nve::apple::close_dylib(dylibHandle);
+    if (error) {
+      *error = [NSError errorWithDomain:_errorDomain
+                                   code:static_cast<NSInteger>(
+                                            nve::apple::DylibErrorCode::MissingSurfaceInterface)
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey : @"Failed to initialize NVE app instance"
+                               }];
+    }
+    return NO;
+  }
+
   [self _teardownAppAndDylib];
 
   _dylibHandle = dylibHandle;
   _module = mod;
-  _appHandle = _module.surface->create(_config.surface_id);
-  if (!_appHandle) {
-    [self _teardownAppAndDylib];
-    return NO;
-  }
+  _appHandle = nextApp;
   if (!savedState.empty() && _module.dev && _module.dev->restore_state) {
     const NveBufferSlice slice = {savedState.data(), savedState.size()};
     _module.dev->restore_state(_appHandle, slice);
@@ -100,7 +121,7 @@
 
 - (BOOL)attachInterface:(NveGetInterfaceFn)getInterface {
   const NveModule mod = nve_resolve_module(getInterface);
-  return [self _installModule:mod dylibHandle:nullptr restoredState:{}];
+  return [self _installModule:mod dylibHandle:nullptr restoredState:{} error:nil];
 }
 
 - (BOOL)loadRustAppDylibAtPath:(NSString *)dylibPath
@@ -109,7 +130,10 @@
   if (!nve::apple::open_nve_dylib(dylibPath, _errorDomain, &loaded, error)) {
     return NO;
   }
-  return [self _installModule:loaded.module dylibHandle:loaded.handle restoredState:{}];
+  return [self _installModule:loaded.module
+                  dylibHandle:loaded.handle
+                restoredState:{}
+                        error:error];
 }
 
 - (BOOL)reloadRustAppDylibAtPath:(NSString *)dylibPath
@@ -128,7 +152,10 @@
       savedState.assign(s.ptr, s.ptr + s.len);
     }
   }
-  return [self _installModule:loaded.module dylibHandle:loaded.handle restoredState:savedState];
+  return [self _installModule:loaded.module
+                  dylibHandle:loaded.handle
+                restoredState:savedState
+                        error:error];
 }
 
 - (void)setSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor {

@@ -32,6 +32,8 @@ typedef void (^RCTNveMacEventHandler)(NSString *eventName, NSDictionary<NSString
 @property (nonatomic, copy, nullable) RCTNveMacEventHandler onNveEvent;
 @property (nonatomic, readonly) uint32_t nveSurfaceId;
 @property (nonatomic, readonly) uint32_t nveNodeCount;
+@property (nonatomic, readonly) uint32_t nveLastReconciledDirtyCount;
+@property (nonatomic, readonly) uint32_t nveLastReconciledRemovedCount;
 
 /// Attach an NVE Rust component interface resolver directly (for statically-linked Rust libraries).
 - (BOOL)attachNveInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId;

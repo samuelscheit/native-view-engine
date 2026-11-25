@@ -165,6 +165,41 @@ const void *nve_get_interface(uint32_t interface_id) {
   }
 }
 
+#elif defined(NVE_FIXTURE_CREATE_FAIL)
+
+static NveAppHandle fail_create(uint32_t surface_id) {
+  (void)surface_id;
+  return NULL;
+}
+
+static void fail_destroy(NveAppHandle h) {
+  (void)h;
+}
+
+static NveBufferSlice fail_render(NveAppHandle h, uint64_t frame_id) {
+  (void)h;
+  (void)frame_id;
+  NveBufferSlice empty = {NULL, 0};
+  return empty;
+}
+
+static uint32_t fail_dispatch_events(NveAppHandle h, NveBufferSlice events) {
+  (void)h;
+  (void)events;
+  return 0;
+}
+
+const void *nve_get_interface(uint32_t interface_id) {
+  static const NveSurfaceApi kSurface = {
+      .create = &fail_create,
+      .destroy = &fail_destroy,
+      .render = &fail_render,
+      .dispatch_events = &fail_dispatch_events,
+      .dispatch_events_direct = NULL,
+  };
+  return interface_id == NVE_IFACE_SURFACE ? &kSurface : NULL;
+}
+
 #else
-#error "Define one of NVE_FIXTURE_NO_ENTRY, NVE_FIXTURE_NO_SURFACE, or NVE_FIXTURE_STATEFUL"
+#error "Define one of NVE_FIXTURE_NO_ENTRY, NVE_FIXTURE_NO_SURFACE, NVE_FIXTURE_STATEFUL, or NVE_FIXTURE_CREATE_FAIL"
 #endif

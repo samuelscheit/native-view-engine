@@ -1,7 +1,15 @@
 #import "RCTNveComponentView.h"
 #import "NveAppleComponentHost.h"
+#import "NveAppleImageCache.h"
 
-@interface RCTNveComponentView () <NveAppleComponentViewAdapter, UITextFieldDelegate>
+@interface NveIosImageView : UIImageView
+@property (nonatomic, copy, nullable) NSString *nveImageSrc;
+@end
+
+@implementation NveIosImageView
+@end
+
+@interface RCTNveComponentView () <NveAppleComponentViewAdapter, UITextFieldDelegate, UIScrollViewDelegate>
 @end
 
 @implementation RCTNveComponentView {
@@ -162,22 +170,32 @@
   }
 }
 
-- (UIView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
+- (UIView *)nveCreateNativeViewForNode:(const NveRenderNode &)node
+                             semantics:(const nve::apple::NodeSemantics &)semantics {
+  (void)semantics;
   UIView *view = nil;
-  if (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) {
+  if (node.kind == NVE_NODE_KIND_TEXT && (node.flags & NVE_NODE_LEAF_TEXT) == 0u) {
     view = [[UIView alloc] initWithFrame:CGRectZero];
   } else {
-    switch (snap.kind) {
-      case NVE_COMP_TEXT: {
+    switch (node.kind) {
+      case NVE_NODE_KIND_TEXT: {
         UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
         label.numberOfLines = 0;
         view = label;
         break;
       }
-      case NVE_COMP_SCROLL_VIEW:
-        view = [[UIScrollView alloc] initWithFrame:CGRectZero];
+      case NVE_NODE_KIND_IMAGE: {
+        NveIosImageView *imgView = [[NveIosImageView alloc] initWithFrame:CGRectZero];
+        view = imgView;
         break;
-      case NVE_COMP_TEXT_INPUT: {
+      }
+      case NVE_NODE_KIND_SCROLL_VIEW: {
+        UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
+        scroll.delegate = self;
+        view = scroll;
+        break;
+      }
+      case NVE_NODE_KIND_TEXT_INPUT: {
         UITextField *field = [[UITextField alloc] initWithFrame:CGRectZero];
         field.delegate = self;
         [field addTarget:self
@@ -191,37 +209,66 @@
         break;
     }
   }
-  view.tag = static_cast<NSInteger>(snap.node_id);
+  view.tag = static_cast<NSInteger>(node.node_id);
   return view;
 }
 
-- (void)nveUpdateNativeView:(UIView *)view
-                forSnapshot:(const nve::RenderedNodeSnapshot &)snap
-                interactive:(BOOL)interactive {
-  view.backgroundColor = nve::apple::color_from_rgba(snap.background_rgba);
-  view.alpha = static_cast<CGFloat>(snap.opacity);
+- (void)nveWillDestroyNativeView:(UIView *)view forNodeId:(uint32_t)nodeId {
+  (void)nodeId;
+  if ([view isKindOfClass:[UIScrollView class]]) {
+    ((UIScrollView *)view).delegate = nil;
+  }
+}
 
-  if ([view isKindOfClass:[UILabel class]]) {
+- (void)nveUpdateNativeView:(UIView *)view
+                    forNode:(const NveRenderNode &)node
+                       text:(std::string_view)text
+                  semantics:(const nve::apple::NodeSemantics &)semantics
+                interactive:(BOOL)interactive {
+  view.backgroundColor = nve::apple::color_from_rgba(node.bg_rgba);
+  view.alpha = static_cast<CGFloat>(node.opacity_u8) / 255.0;
+
+  if ([view isKindOfClass:[NveIosImageView class]]) {
+    NveIosImageView *imgView = (NveIosImageView *)view;
+    NSString *nextSrc =
+        text.empty() ? nil
+                     : [[NSString alloc] initWithBytes:text.data()
+                                                length:text.size()
+                                              encoding:NSUTF8StringEncoding];
+    const BOOL sameSrc =
+        (nextSrc == nil && imgView.nveImageSrc == nil) ||
+        (nextSrc != nil && [nextSrc isEqualToString:imgView.nveImageSrc]);
+    if (!sameSrc) {
+      imgView.nveImageSrc = nextSrc;
+      imgView.image =
+          text.empty() ? nil : nve::apple::shared_image_cache().image_for_source(text);
+    }
+    nve::apple::apply_image_resize_mode(imgView, semantics.resize_mode, node.border_radius);
+  } else if ([view isKindOfClass:[UILabel class]]) {
     UILabel *label = (UILabel *)view;
-    NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+    NSString *nextText =
+        text.empty() ? @""
+                     : ([[NSString alloc] initWithBytes:text.data()
+                                                 length:text.size()
+                                               encoding:NSUTF8StringEncoding] ?: @"");
     if (![label.text isEqualToString:nextText]) {
       label.text = nextText;
     }
-    label.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
-    if (snap.font_size > 0.0f) {
-      label.font = [UIFont systemFontOfSize:static_cast<CGFloat>(snap.font_size)];
+    label.textColor = nve::apple::color_from_rgba(node.text_rgba);
+    if (node.font_size > 0.0f) {
+      label.font = [UIFont systemFontOfSize:static_cast<CGFloat>(node.font_size)];
     }
   } else if ([view isKindOfClass:[UITextField class]]) {
     UITextField *field = (UITextField *)view;
-    field.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
-    if (snap.font_size > 0.0f) {
-      field.font = [UIFont systemFontOfSize:static_cast<CGFloat>(snap.font_size)];
+    field.textColor = nve::apple::color_from_rgba(node.text_rgba);
+    if (node.font_size > 0.0f) {
+      field.font = [UIFont systemFontOfSize:static_cast<CGFloat>(node.font_size)];
     }
   }
 
   view.userInteractionEnabled =
-      (interactive || !snap.children.empty() || snap.kind == NVE_COMP_SCROLL_VIEW ||
-       snap.kind == NVE_COMP_TEXT_INPUT);
+      (interactive || node.child_count > 0u || node.kind == NVE_NODE_KIND_SCROLL_VIEW ||
+       node.kind == NVE_NODE_KIND_TEXT_INPUT);
   if (interactive) {
     if (view.gestureRecognizers.count == 0) {
       UITapGestureRecognizer *tap =
@@ -242,6 +289,18 @@
   if ([scrollView isKindOfClass:[UIScrollView class]]) {
     ((UIScrollView *)scrollView).contentSize = contentSize;
   }
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+  const uint32_t nodeId = static_cast<uint32_t>(scrollView.tag);
+  if (nodeId == 0u) return;
+  const CGPoint offset = scrollView.contentOffset;
+  const CGSize contentSize = scrollView.contentSize;
+  [_host dispatchScrollOnNodeId:nodeId
+                              x:static_cast<float>(offset.x)
+                              y:static_cast<float>(offset.y)
+                   contentWidth:static_cast<float>(contentSize.width)
+                  contentHeight:static_cast<float>(contentSize.height)];
 }
 
 - (void)_handleTextFieldChanged:(UITextField *)field {

@@ -1,39 +1,125 @@
 #include <jni.h>
 
 #include "nve_host_runtime.hpp"
-#include "nve_scene_builder.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace {
 
-struct AndroidSurfaceState {
-  nve::NativeHostSession session;
-  nve::SceneTableBuilder scene_builder;
-  NveSurfaceConfig config{};
-  uint64_t scene_frame_seq{0};
-  std::string last_error;
-  JavaVM* jvm{nullptr};
-  jclass activity_class{nullptr};
-  jmethodID measure_text_method{nullptr};
+enum SlabSlot : size_t {
+  kSlabNodes = 0,
+  kSlabText = 1,
+  kSlabChildren = 2,
+  kSlabDirtyIndices = 3,
+  kSlabRemovedIds = 4,
+  kSlabCount = 5,
 };
 
 // Non-null sentinel passed to `NewDirectByteBuffer` with capacity 0 when a slab is empty,
 // avoiding NULL address edge cases across JVMs / ART.
 uint8_t g_empty_slab_sentinel = 0;
 
-jobject make_direct_buffer(JNIEnv* env, const void* ptr, size_t byte_len) {
+struct CachedDirectBuffer {
+  const void* ptr{nullptr};
+  size_t byte_len{0};
+  jobject global_ref{nullptr};
+
+  void release(JNIEnv* env) noexcept {
+    if (global_ref != nullptr && env != nullptr) {
+      env->DeleteGlobalRef(global_ref);
+    }
+    global_ref = nullptr;
+    ptr = nullptr;
+    byte_len = 0u;
+  }
+
+  /// Replaces the cached `GlobalRef` `DirectByteBuffer` ONLY when `(ptr, byte_len)` actually changes.
+  /// Returns `true` if a new `DirectByteBuffer` was created.
+  bool sync(JNIEnv* env, const void* next_ptr, size_t next_len) {
+    const void* effective_ptr = (next_ptr != nullptr && next_len > 0u)
+                                    ? next_ptr
+                                    : static_cast<const void*>(&g_empty_slab_sentinel);
+    const size_t effective_len = (next_ptr != nullptr && next_len > 0u) ? next_len : 0u;
+
+    if (global_ref != nullptr && ptr == effective_ptr && byte_len == effective_len) {
+      return false;
+    }
+
+    if (global_ref != nullptr && env != nullptr) {
+      env->DeleteGlobalRef(global_ref);
+      global_ref = nullptr;
+    }
+    ptr = effective_ptr;
+    byte_len = effective_len;
+
+    if (env == nullptr) {
+      return true;
+    }
+    jobject local = env->NewDirectByteBuffer(
+        const_cast<void*>(effective_ptr), static_cast<jlong>(effective_len));
+    if (local != nullptr) {
+      global_ref = env->NewGlobalRef(local);
+      env->DeleteLocalRef(local);
+    }
+    return true;
+  }
+};
+
+struct AndroidSurfaceState {
+  nve::NativeHostSession session;
+  NveSurfaceConfig config{};
+  std::string last_error;
+  JavaVM* jvm{nullptr};
+  jclass activity_class{nullptr};
+  jmethodID measure_text_method{nullptr};
+  std::array<CachedDirectBuffer, kSlabCount> slab_buffers{};
+  uint32_t slab_epoch_mask{0u};
+  uint64_t image_props_cache_frame{0u};
+  bool image_props_cache_valid{false};
+  std::unordered_map<uint32_t, int32_t> image_resize_modes;
+};
+
+void release_all_slab_buffers(AndroidSurfaceState* state, JNIEnv* env) noexcept {
+  if (!state) return;
+  for (auto& slot : state->slab_buffers) {
+    slot.release(env);
+  }
+  state->slab_epoch_mask = 0u;
+  state->image_props_cache_valid = false;
+  state->image_resize_modes.clear();
+}
+
+jobject return_cached_slab(AndroidSurfaceState* state, JNIEnv* env, SlabSlot slot) {
   if (env == nullptr) {
     return nullptr;
   }
-  if (ptr == nullptr || byte_len == 0u) {
+  if (!state) {
     return env->NewDirectByteBuffer(&g_empty_slab_sentinel, 0);
   }
-  return env->NewDirectByteBuffer(const_cast<void*>(ptr), static_cast<jlong>(byte_len));
+  CachedDirectBuffer& cached = state->slab_buffers[slot];
+  if (cached.global_ref == nullptr) {
+    (void)cached.sync(env, nullptr, 0u);
+  }
+  return cached.global_ref != nullptr ? env->NewLocalRef(cached.global_ref) : nullptr;
+}
+
+int32_t parse_resize_mode_code(std::string_view raw) noexcept {
+  std::string lower;
+  lower.reserve(raw.size());
+  for (unsigned char c : raw) {
+    lower.push_back(static_cast<char>(std::tolower(c)));
+  }
+  if (lower == "contain") return 1;
+  if (lower == "stretch") return 2;
+  if (lower == "center") return 3;
+  return 0; // cover (default)
 }
 
 std::u16string utf8_to_utf16(std::string_view input) {
@@ -182,7 +268,7 @@ Java_dev_nve_android_NveMainActivity_nativeDestroySurface(
   if (!state) {
     return;
   }
-  state->scene_builder.clear();
+  release_all_slab_buffers(state, env);
   state->session.reset();
   if (state->activity_class != nullptr && env != nullptr) {
     env->DeleteGlobalRef(state->activity_class);
@@ -198,7 +284,7 @@ Java_dev_nve_android_NveMainActivity_nativeLoadDylib(
     jlong handle_ptr,
     jstring so_path) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state || !so_path) {
+  if (!state || !so_path || !env) {
     return JNI_FALSE;
   }
 
@@ -222,6 +308,9 @@ Java_dev_nve_android_NveMainActivity_nativeLoadDylib(
     return JNI_FALSE;
   }
 
+  // Invalidate cached slab DirectByteBuffers after successful load/reload so Java never observes
+  // a recycled heap address (ABA hazard) as an unchanged slab.
+  release_all_slab_buffers(state, env);
   state->last_error.clear();
   return JNI_TRUE;
 }
@@ -291,7 +380,7 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchTextChange(
   }
 
   std::string utf8;
-  if (text != nullptr) {
+  if (text != nullptr && env != nullptr) {
     const char* raw = env->GetStringUTFChars(text, nullptr);
     if (raw != nullptr) {
       utf8.assign(raw);
@@ -314,9 +403,39 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchTextChange(
   return static_cast<jint>(dirty);
 }
 
-/// Renders/snapshots the active surface directly into `SceneTableBuilder`'s zero-copy 64-byte
-/// `NveRenderNode` slabs and writes `[schema_hash, frame_id, node_count, dirty_count,
-/// removed_count, text_slab_len, children_slab_len]` into `out_meta`.
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_nve_android_NveMainActivity_nativeDispatchScroll(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle_ptr,
+    jint node_id,
+    jfloat scroll_x,
+    jfloat scroll_y) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state || !state->session.is_valid() || node_id <= 0) {
+    return 0;
+  }
+  NveDirectEvent ev{};
+  ev.surface_id = state->config.surface_id;
+  ev.node_id = static_cast<uint32_t>(node_id);
+  ev.timestamp_us = nve::current_timestamp_us();
+  ev.kind = static_cast<uint8_t>(nve::EventKind::Scroll);
+  ev.payload_tag = NVE_EVENT_PAYLOAD_SCROLL;
+  ev.x = sanitize_finite(scroll_x);
+  ev.y = sanitize_finite(scroll_y);
+  ev.width = 0.0f;
+  ev.height = 0.0f;
+  ev.value = nve::make_null_value();
+  const uint32_t dirty =
+      state->session.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
+  (void)state->session.drain_events();
+  return static_cast<jint>(dirty);
+}
+
+/// Reads the live zero-copy `NveSceneView` directly from `FabricHost` (zero snapshot copying),
+/// updates cached JNI `GlobalRef` `DirectByteBuffer` slabs ONLY when `(ptr, byte_len)` changes,
+/// and writes `[schema_hash, frame_id, node_count, dirty_count, removed_count, text_slab_len,
+/// children_slab_len]` into `out_meta`.
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
     JNIEnv* env,
@@ -330,13 +449,38 @@ Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
   if (state->session.bridge()->frame_count() == 0) {
     (void)state->session.render(nullptr);
   }
-  const auto snapshots = state->session.snapshot_nodes();
-  state->scene_builder.sync(++state->scene_frame_seq, snapshots);
-  const NveSceneView view = state->scene_builder.view();
-  if (!nve::SceneTableBuilder::verify_view_schema(view)) {
+  const NveSceneView view = state->session.scene_view();
+  if (view.schema_hash != NVE_SCENE_SCHEMA_HASH) {
     state->last_error = "NveSceneView schema hash verification failed";
     return -2;
   }
+
+  uint32_t mask = 0u;
+  if (state->slab_buffers[kSlabNodes].sync(
+          env, view.nodes, static_cast<size_t>(view.node_count) * sizeof(NveRenderNode))) {
+    mask |= (1u << kSlabNodes);
+  }
+  if (state->slab_buffers[kSlabText].sync(
+          env, view.text_slab, static_cast<size_t>(view.text_slab_len))) {
+    mask |= (1u << kSlabText);
+  }
+  if (state->slab_buffers[kSlabChildren].sync(
+          env, view.children_slab, static_cast<size_t>(view.children_slab_len) * sizeof(uint32_t))) {
+    mask |= (1u << kSlabChildren);
+  }
+  if (state->slab_buffers[kSlabDirtyIndices].sync(
+          env, view.dirty_indices, static_cast<size_t>(view.dirty_count) * sizeof(uint32_t))) {
+    mask |= (1u << kSlabDirtyIndices);
+  }
+  if (state->slab_buffers[kSlabRemovedIds].sync(
+          env, view.removed_ids, static_cast<size_t>(view.removed_count) * sizeof(uint32_t))) {
+    mask |= (1u << kSlabRemovedIds);
+  }
+  state->slab_epoch_mask = mask;
+  if (state->image_props_cache_frame != view.frame_id) {
+    state->image_props_cache_valid = false;
+  }
+
   if (env != nullptr && out_meta != nullptr && env->GetArrayLength(out_meta) >= 7) {
     const jlong meta[7] = {
         static_cast<jlong>(view.schema_hash),
@@ -352,18 +496,61 @@ Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
   return static_cast<jint>(view.node_count);
 }
 
+/// Bitmask indicating which of the 5 cached DirectByteBuffer slabs changed on the last
+/// `nativeRenderFrame` call:
+/// bit 0 = nodes, bit 1 = text_slab, bit 2 = children_slab, bit 3 = dirty_indices, bit 4 = removed_ids.
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetSlabEpochMask(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  return state ? static_cast<jint>(state->slab_epoch_mask) : 0;
+}
+
+/// Lazily resolves `resizeMode` (`0=cover, 1=contain, 2=stretch, 3=center`) for an `Image` node.
+/// Only invoked by Java when a `KIND_IMAGE` node is dirty, avoiding snapshot scans on normal frames.
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetImageResizeMode(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle_ptr,
+    jint node_id) {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state || !state->session.is_valid() || node_id <= 0) {
+    return 0;
+  }
+  const NveSceneView view = state->session.scene_view();
+  if (!state->image_props_cache_valid || state->image_props_cache_frame != view.frame_id) {
+    state->image_resize_modes.clear();
+    const auto snapshots = state->session.snapshot_nodes();
+    for (const auto& snap : snapshots) {
+      if (snap.kind != NVE_COMP_IMAGE || snap.raw_props.empty()) {
+        continue;
+      }
+      auto it = snap.raw_props.find("resizeMode");
+      if (it == snap.raw_props.end()) {
+        it = snap.raw_props.find("resize_mode");
+      }
+      if (it != snap.raw_props.end()) {
+        if (const auto* s = std::get_if<std::string>(&it->second)) {
+          state->image_resize_modes[snap.node_id] = parse_resize_mode_code(*s);
+        }
+      }
+    }
+    state->image_props_cache_frame = view.frame_id;
+    state->image_props_cache_valid = true;
+  }
+  const auto it = state->image_resize_modes.find(static_cast<uint32_t>(node_id));
+  return it != state->image_resize_modes.end() ? static_cast<jint>(it->second) : 0;
+}
+
 extern "C" JNIEXPORT jobject JNICALL
 Java_dev_nve_android_NveMainActivity_nativeGetNodesBuffer(
     JNIEnv* env,
     jclass /*clazz*/,
     jlong handle_ptr) {
-  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state) {
-    return make_direct_buffer(env, nullptr, 0);
-  }
-  const NveSceneView view = state->scene_builder.view();
-  return make_direct_buffer(
-      env, view.nodes, static_cast<size_t>(view.node_count) * sizeof(NveRenderNode));
+  return return_cached_slab(reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabNodes);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -371,12 +558,7 @@ Java_dev_nve_android_NveMainActivity_nativeGetTextSlabBuffer(
     JNIEnv* env,
     jclass /*clazz*/,
     jlong handle_ptr) {
-  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state) {
-    return make_direct_buffer(env, nullptr, 0);
-  }
-  const NveSceneView view = state->scene_builder.view();
-  return make_direct_buffer(env, view.text_slab, static_cast<size_t>(view.text_slab_len));
+  return return_cached_slab(reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabText);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -384,13 +566,7 @@ Java_dev_nve_android_NveMainActivity_nativeGetChildrenSlabBuffer(
     JNIEnv* env,
     jclass /*clazz*/,
     jlong handle_ptr) {
-  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state) {
-    return make_direct_buffer(env, nullptr, 0);
-  }
-  const NveSceneView view = state->scene_builder.view();
-  return make_direct_buffer(
-      env, view.children_slab, static_cast<size_t>(view.children_slab_len) * sizeof(uint32_t));
+  return return_cached_slab(reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabChildren);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -398,13 +574,8 @@ Java_dev_nve_android_NveMainActivity_nativeGetDirtyIndicesBuffer(
     JNIEnv* env,
     jclass /*clazz*/,
     jlong handle_ptr) {
-  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state) {
-    return make_direct_buffer(env, nullptr, 0);
-  }
-  const NveSceneView view = state->scene_builder.view();
-  return make_direct_buffer(
-      env, view.dirty_indices, static_cast<size_t>(view.dirty_count) * sizeof(uint32_t));
+  return return_cached_slab(
+      reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabDirtyIndices);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -412,11 +583,6 @@ Java_dev_nve_android_NveMainActivity_nativeGetRemovedIdsBuffer(
     JNIEnv* env,
     jclass /*clazz*/,
     jlong handle_ptr) {
-  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state) {
-    return make_direct_buffer(env, nullptr, 0);
-  }
-  const NveSceneView view = state->scene_builder.view();
-  return make_direct_buffer(
-      env, view.removed_ids, static_cast<size_t>(view.removed_count) * sizeof(uint32_t));
+  return return_cached_slab(
+      reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabRemovedIds);
 }

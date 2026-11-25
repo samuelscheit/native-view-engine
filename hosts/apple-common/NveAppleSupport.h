@@ -16,19 +16,21 @@ typedef UIColor NvePlatformColor;
 typedef UIFont NvePlatformFont;
 #endif
 
+#import "NveAppleImageCache.h"
+
 #include "nve_abi.h"
 #include "nve_rn_component.hpp"
+#include "nve_scene_abi.h"
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
-#include <vector>
+#include <string_view>
 
 namespace nve::apple {
 
 inline constexpr uint64_t kEventMaskPress = 1ULL << 0;
 
-/// Canonical cross-platform accessibility roles inferred from `RenderedNodeSnapshot` and raw props.
+/// Canonical cross-platform accessibility roles inferred from `NveRenderNode` and raw props.
 enum class A11yRole : uint8_t {
   None = 0,
   Group,
@@ -44,7 +46,7 @@ enum class A11yRole : uint8_t {
   Link,
 };
 
-/// Normalized accessibility & TextInput metadata extracted from `raw_props` + node kind/event_mask.
+/// Normalized accessibility, TextInput, and Image metadata extracted from `raw_props` + `NveRenderNode`.
 struct NodeSemantics {
   A11yRole role{A11yRole::Group};
   bool explicit_role{false};
@@ -58,6 +60,7 @@ struct NodeSemantics {
   std::string placeholder;
   bool secure_text_entry{false};
   bool multiline{false};
+  ImageResizeMode resize_mode{ImageResizeMode::Cover};
 };
 
 /// Uniform error codes emitted by `open_nve_dylib` under a caller-supplied NSError domain.
@@ -101,24 +104,20 @@ nve::TextMeasurerCallback make_native_text_measurer();
 /// Register `make_native_text_measurer()` on `host` (no-op if `host == nullptr`).
 void install_native_text_measurer(NveFabricHostHandle _Nullable host);
 
-/// Apply platform-agnostic `CALayer` border, corner radius, and z-index properties from a node snapshot.
-void apply_common_layer_style(CALayer * _Nullable layer, const nve::RenderedNodeSnapshot &snap);
+/// Apply platform-agnostic `CALayer` border, corner radius, and z-index properties from `NveRenderNode`.
+void apply_common_layer_style(CALayer * _Nullable layer, const NveRenderNode &node);
 
-/// Extract per-node raw props (`RawPropMap`) from snapshots (when `RenderedNodeSnapshot::raw_props`
-/// is present) or by scanning `NVE_OP_SET_RAW_PROP` from `fabric_host_serialize_frame0`.
-std::unordered_map<uint32_t, nve::RawPropMap> extract_raw_props_by_node(
-    NveFabricHostHandle _Nullable host,
-    const std::vector<nve::RenderedNodeSnapshot> &snapshots);
-
-/// Extract normalized accessibility and TextInput semantics from a node snapshot and its raw props.
+/// Extract normalized accessibility, TextInput, and Image semantics from an `NveRenderNode`
+/// and optional `raw_props` entry.
 NodeSemantics extract_node_semantics(
-    const nve::RenderedNodeSnapshot &snap,
+    const NveRenderNode &node,
+    std::string_view text,
     const nve::RawPropMap * _Nullable raw_props);
 
 /// Apply native AppKit (`NSAccessibility`) or UIKit (`UIAccessibility`) semantics to a mounted view.
 void apply_node_accessibility(
     NvePlatformView * _Nullable view,
-    const nve::RenderedNodeSnapshot &snap,
+    const NveRenderNode &node,
     const NodeSemantics &sem);
 
 /// Returns `YES` when a native text input currently has active IME marked text composition.
@@ -128,7 +127,7 @@ BOOL is_text_input_composing_ime(NvePlatformView * _Nullable view);
 /// and IME-safe text synchronization without clobbering active marked text.
 void apply_text_input_props(
     NvePlatformView * _Nullable view,
-    const nve::RenderedNodeSnapshot &snap,
+    std::string_view text,
     const NodeSemantics &sem);
 
 } // namespace nve::apple

@@ -6,9 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_subdirectory(../../cxx/nve-fabric-bridge nve-fabric-bridge-build)
 
 add_library(nve_android_shell SHARED
-  NveJniBridge.cpp
   NveAndroidSurfaceJni.cpp
 )
+
+if(NOT MSVC)
+  target_compile_options(nve_android_shell PRIVATE -Wall -Wextra -Werror)
+endif()
 
 target_link_libraries(nve_android_shell
   PRIVATE
@@ -34,28 +37,28 @@ if(NOT ANDROID)
     add_library(nve_mock_app_bad_iface SHARED tests/mock_app_bad_iface.cpp)
     target_link_libraries(nve_mock_app_bad_iface PRIVATE nve_fabric_bridge)
 
-    add_executable(nve_jni_bridge_test tests/jni_bridge_test.cpp)
-    target_include_directories(nve_jni_bridge_test PRIVATE ${JNI_INCLUDE_DIRS})
-    target_link_libraries(nve_jni_bridge_test PRIVATE nve_android_shell nve_jni_test_recorder)
-    add_test(
-      NAME android_jni_bridge_test
-      COMMAND nve_jni_bridge_test
-        $<TARGET_FILE:nve_mock_app_v1>
-        $<TARGET_FILE:nve_mock_app_v2>
-        $<TARGET_FILE:nve_mock_app_bad_iface>
-        $<TARGET_FILE:nve_jni_test_recorder>
-    )
-
     add_library(nve_mock_scene_app SHARED tests/mock_scene_app.cpp)
     target_link_libraries(nve_mock_scene_app PRIVATE nve_fabric_bridge)
 
     add_executable(nve_android_scene_test tests/android_scene_jni_test.cpp)
+    if(NOT MSVC)
+      target_compile_options(nve_android_scene_test PRIVATE -Wall -Wextra -Werror)
+    endif()
     target_include_directories(nve_android_scene_test PRIVATE ${JNI_INCLUDE_DIRS})
-    target_link_libraries(nve_android_scene_test PRIVATE nve_android_shell nve_fabric_bridge)
+    target_link_libraries(nve_android_scene_test
+      PRIVATE
+        nve_android_shell
+        nve_fabric_bridge
+        nve_jni_test_recorder
+    )
     add_test(
       NAME android_scene_jni_test
       COMMAND nve_android_scene_test
         $<TARGET_FILE:nve_mock_scene_app>
+        $<TARGET_FILE:nve_mock_app_v1>
+        $<TARGET_FILE:nve_mock_app_v2>
+        $<TARGET_FILE:nve_mock_app_bad_iface>
+        $<TARGET_FILE:nve_jni_test_recorder>
     )
   endif()
 endif()

@@ -2,6 +2,8 @@
 
 #import "NveAppleSupport.h"
 
+#include <string_view>
+
 NS_ASSUME_NONNULL_BEGIN
 
 /// Thin UIKit/AppKit view adapter protocol consumed by `NveAppleComponentHost`.
@@ -10,24 +12,27 @@ NS_ASSUME_NONNULL_BEGIN
 - (NvePlatformView *)nveHostRootView;
 - (NveSurfaceConfig)nveSurfaceConfigForSurfaceId:(uint32_t)surfaceId;
 - (void)nveEmitEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload;
-- (NvePlatformView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap;
+- (NvePlatformView *)nveCreateNativeViewForNode:(const NveRenderNode &)node
+                                      semantics:(const nve::apple::NodeSemantics &)semantics;
 - (void)nveApplyRootBackgroundRgba:(uint32_t)rgba;
 - (void)nveUpdateNativeView:(NvePlatformView *)view
-                forSnapshot:(const nve::RenderedNodeSnapshot &)snap
+                    forNode:(const NveRenderNode &)node
+                       text:(std::string_view)text
+                  semantics:(const nve::apple::NodeSemantics &)semantics
                 interactive:(BOOL)interactive;
 
 @optional
-/// Optional creation hook receiving extracted accessibility & TextInput semantics (e.g. `secureTextEntry`).
-- (NvePlatformView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap
-                                          semantics:(const nve::apple::NodeSemantics &)semantics;
+/// Optional hook invoked right before a managed native view is removed and released.
+- (void)nveWillDestroyNativeView:(NvePlatformView *)view forNodeId:(uint32_t)nodeId;
 /// Optional container override (e.g. AppKit `NSScrollView.documentView`) for mounting children.
 - (NvePlatformView *)nveChildContainerForParentView:(NvePlatformView *)parentView;
-/// Optional scroll content-size hook invoked after laying out `NVE_COMP_SCROLL_VIEW` children.
+/// Optional scroll content-size hook invoked after laying out `NVE_NODE_KIND_SCROLL_VIEW` children.
 - (void)nveUpdateScrollView:(NvePlatformView *)scrollView contentSize:(CGSize)contentSize;
 
 @end
 
-/// Shared Apple (iOS & macOS) component-view lifecycle controller and 3-pass view reconciler.
+/// Shared Apple (iOS & macOS) component-view lifecycle controller and incremental `O(changed)`
+/// `NveSceneView` reconciler.
 ///
 /// Owns `nve::NveRnComponentBridge`, the optional `dlopen` handle, and the mounted native view
 /// table while delegating UIKit/AppKit view creation, styling, and gesture wiring to its adapter.
@@ -35,6 +40,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly) uint32_t surfaceId;
 @property (nonatomic, readonly) uint32_t nodeCount;
+@property (nonatomic, readonly) uint32_t lastReconciledDirtyCount;
+@property (nonatomic, readonly) uint32_t lastReconciledRemovedCount;
 
 - (instancetype)initWithAdapter:(id<NveAppleComponentViewAdapter>)adapter
                     errorDomain:(NSString *)errorDomain NS_DESIGNATED_INITIALIZER;
@@ -69,6 +76,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text;
 - (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text;
 - (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused;
+- (void)dispatchScrollOnNodeId:(uint32_t)nodeId
+                             x:(float)x
+                             y:(float)y
+                  contentWidth:(float)contentWidth
+                 contentHeight:(float)contentHeight;
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor;
 - (BOOL)getRootLayoutSize:(CGSize *)outSize;

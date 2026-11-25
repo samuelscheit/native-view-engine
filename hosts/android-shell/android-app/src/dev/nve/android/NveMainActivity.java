@@ -2,17 +2,22 @@ package dev.nve.android;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextWatcher;
+import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.LruCache;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -22,6 +27,7 @@ import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -30,17 +36,29 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 /**
  * Standalone zero-Gradle Android Activity hosting any compiled NVE Rust app (`libnve_app.so`)
- * directly on native Android Views via zero-copy `DirectByteBuffer` `NveSceneBuffer` slabs
- * (zero JSON, `O(changed)` incremental reconciliation via `dirty_indices`).
+ * directly on native Android Views via cached zero-copy `DirectByteBuffer` `NveSceneBuffer` slabs
+ * (zero JSON, `O(changed)` incremental reconciliation via `dirty_indices` and `removed_ids`).
  */
 public final class NveMainActivity extends Activity {
     private static final String TAG = "NveMainActivity";
     private static final int ROOT_NODE_ID = 1;
+
+    private static final int SLAB_BIT_NODES = 1 << 0;
+    private static final int SLAB_BIT_TEXT = 1 << 1;
+    private static final int SLAB_BIT_CHILDREN = 1 << 2;
+    private static final int SLAB_BIT_DIRTY = 1 << 3;
+    private static final int SLAB_BIT_REMOVED = 1 << 4;
+
+    private static final int RESIZE_MODE_COVER = 0;
+    private static final int RESIZE_MODE_CONTAIN = 1;
+    private static final int RESIZE_MODE_STRETCH = 2;
+    private static final int RESIZE_MODE_CENTER = 3;
 
     static {
         System.loadLibrary("nve_android_shell");
@@ -75,7 +93,17 @@ public final class NveMainActivity extends Activity {
             int nodeId,
             String text);
 
+    private static native int nativeDispatchScroll(
+            long handle,
+            int nodeId,
+            float scrollX,
+            float scrollY);
+
     private static native int nativeRenderFrame(long handle, long[] outMeta);
+
+    private static native int nativeGetSlabEpochMask(long handle);
+
+    private static native int nativeGetImageResizeMode(long handle, int nodeId);
 
     private static native ByteBuffer nativeGetNodesBuffer(long handle);
 
@@ -91,17 +119,36 @@ public final class NveMainActivity extends Activity {
     private final Map<Integer, Integer> nodeTags = new HashMap<>();
     private final Map<Integer, FrameLayout> scrollInnerContainers = new HashMap<>();
     private final Map<Integer, Integer> nodeIndexById = new HashMap<>();
+    private final Map<Integer, String> boundImageSrcById = new HashMap<>();
     private final Set<Integer> scrollViewNodeIds = new HashSet<>();
     private final NveSceneBuffer sceneBuffer = new NveSceneBuffer();
     private final long[] sceneMeta = new long[7];
+    private final LruCache<String, Bitmap> imageCache = createImageCache();
+
+    private ByteBuffer cachedNodesBuf;
+    private ByteBuffer cachedTextBuf;
+    private ByteBuffer cachedChildrenBuf;
+    private ByteBuffer cachedDirtyBuf;
+    private ByteBuffer cachedRemovedBuf;
 
     private RootSurfaceLayout rootContainer;
     private long surfaceHandle = 0L;
     private float density = 1.0f;
     private int lastRootWidthPx = 0;
     private int lastRootHeightPx = 0;
+    private long lastSceneFrameId = -1L;
     private boolean appLoaded = false;
     private boolean suppressTextWatcher = false;
+
+    private static LruCache<String, Bitmap> createImageCache() {
+        int maxKb = (int) Math.min(8L * 1024L, Math.max(1024L, Runtime.getRuntime().maxMemory() / 1024L / 8L));
+        return new LruCache<String, Bitmap>(maxKb) {
+            @Override
+            protected int sizeOf(String key, Bitmap value) {
+                return Math.max(1, value.getByteCount() / 1024);
+            }
+        };
+    }
 
     private final class RootSurfaceLayout extends FrameLayout {
         RootSurfaceLayout(Context context) {
@@ -164,11 +211,18 @@ public final class NveMainActivity extends Activity {
             nativeDestroySurface(surfaceHandle);
             surfaceHandle = 0L;
         }
+        cachedNodesBuf = null;
+        cachedTextBuf = null;
+        cachedChildrenBuf = null;
+        cachedDirtyBuf = null;
+        cachedRemovedBuf = null;
         nodeViews.clear();
         nodeTags.clear();
         scrollInnerContainers.clear();
         nodeIndexById.clear();
+        boundImageSrcById.clear();
         scrollViewNodeIds.clear();
+        imageCache.evictAll();
         super.onDestroy();
     }
 
@@ -209,6 +263,24 @@ public final class NveMainActivity extends Activity {
             return;
         }
 
+        // Only re-fetch DirectByteBuffer references for slabs whose native `(ptr, byte_len)` changed.
+        int slabMask = nativeGetSlabEpochMask(surfaceHandle);
+        if (cachedNodesBuf == null || (slabMask & SLAB_BIT_NODES) != 0) {
+            cachedNodesBuf = nativeGetNodesBuffer(surfaceHandle);
+        }
+        if (cachedTextBuf == null || (slabMask & SLAB_BIT_TEXT) != 0) {
+            cachedTextBuf = nativeGetTextSlabBuffer(surfaceHandle);
+        }
+        if (cachedChildrenBuf == null || (slabMask & SLAB_BIT_CHILDREN) != 0) {
+            cachedChildrenBuf = nativeGetChildrenSlabBuffer(surfaceHandle);
+        }
+        if (cachedDirtyBuf == null || (slabMask & SLAB_BIT_DIRTY) != 0) {
+            cachedDirtyBuf = nativeGetDirtyIndicesBuffer(surfaceHandle);
+        }
+        if (cachedRemovedBuf == null || (slabMask & SLAB_BIT_REMOVED) != 0) {
+            cachedRemovedBuf = nativeGetRemovedIdsBuffer(surfaceHandle);
+        }
+
         sceneBuffer.attach(
                 sceneMeta[0],
                 sceneMeta[1],
@@ -217,15 +289,41 @@ public final class NveMainActivity extends Activity {
                 (int) sceneMeta[4],
                 (int) sceneMeta[5],
                 (int) sceneMeta[6],
-                nativeGetNodesBuffer(surfaceHandle),
-                nativeGetTextSlabBuffer(surfaceHandle),
-                nativeGetChildrenSlabBuffer(surfaceHandle),
-                nativeGetDirtyIndicesBuffer(surfaceHandle),
-                nativeGetRemovedIdsBuffer(surfaceHandle));
+                cachedNodesBuf,
+                cachedTextBuf,
+                cachedChildrenBuf,
+                cachedDirtyBuf,
+                cachedRemovedBuf);
 
+        final long frameId = sceneBuffer.frameId();
+        final boolean fullSync = (lastSceneFrameId < 0L || frameId < lastSceneFrameId);
+        final int nodeCount = sceneBuffer.nodeCount();
         final int dirtyCount = sceneBuffer.dirtyCount();
         final int removedCount = sceneBuffer.removedCount();
-        if (dirtyCount == 0 && removedCount == 0) {
+        if (!fullSync && dirtyCount == 0 && removedCount == 0) {
+            return;
+        }
+
+        if (fullSync) {
+            for (View old : nodeViews.values()) {
+                detachFromParent(old);
+            }
+            nodeViews.clear();
+            nodeTags.clear();
+            scrollInnerContainers.clear();
+            scrollViewNodeIds.clear();
+            nodeIndexById.clear();
+            boundImageSrcById.clear();
+
+            for (int idx = 0; idx < nodeCount; idx++) {
+                upsertNodeAtIndex(idx);
+            }
+            final Set<View> managedViews = new HashSet<>(nodeViews.values());
+            for (int idx = 0; idx < nodeCount; idx++) {
+                reconcileContainerAtIndex(idx, managedViews);
+            }
+            refreshScrollViewBounds(nodeCount);
+            lastSceneFrameId = frameId;
             return;
         }
 
@@ -240,89 +338,102 @@ public final class NveMainActivity extends Activity {
             scrollInnerContainers.remove(removedId);
             scrollViewNodeIds.remove(removedId);
             nodeIndexById.remove(removedId);
+            boundImageSrcById.remove(removedId);
         }
 
         // Pass 2: O(dirty) — update root and create/reuse/style only changed native Views.
-        final int nodeCount = sceneBuffer.nodeCount();
         for (int d = 0; d < dirtyCount; d++) {
             final int idx = sceneBuffer.dirtyIndex(d);
             if (idx < 0 || idx >= nodeCount) {
                 continue;
             }
-            final int id = sceneBuffer.nodeId(idx);
-            if (id <= 0) {
-                continue;
-            }
-            nodeIndexById.put(id, idx);
-
-            if (id == ROOT_NODE_ID) {
-                applyRootStyle(sceneBuffer, idx);
-                continue;
-            }
-
-            final int kind = sceneBuffer.kind(idx);
-            final boolean hasChildren = sceneBuffer.childCount(idx) > 0;
-            final int tag = (kind == NveSceneBuffer.KIND_TEXT && hasChildren) ? (kind | 0x10000) : kind;
-
-            View view = nodeViews.get(id);
-            Integer existingTag = nodeTags.get(id);
-            if (view == null || existingTag == null || existingTag.intValue() != tag) {
-                if (view != null) {
-                    detachFromParent(view);
-                    scrollInnerContainers.remove(id);
-                    scrollViewNodeIds.remove(id);
-                }
-                view = createViewForNode(id, kind, hasChildren);
-                nodeViews.put(id, view);
-                nodeTags.put(id, tag);
-                if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
-                    scrollViewNodeIds.add(id);
-                }
-            }
-
-            updateView(view, id, kind, hasChildren, sceneBuffer, idx);
+            upsertNodeAtIndex(idx);
         }
 
-        // Pass 3: O(dirty) — reconcile parent-child hierarchy for dirty containers + scroll bounds.
+        // Pass 3: O(dirty) — reconcile parent-child hierarchy for dirty containers.
         final Set<View> managedViews = new HashSet<>(nodeViews.values());
         for (int d = 0; d < dirtyCount; d++) {
             final int idx = sceneBuffer.dirtyIndex(d);
             if (idx < 0 || idx >= nodeCount) {
                 continue;
             }
-            final int id = sceneBuffer.nodeId(idx);
-            final int kind = sceneBuffer.kind(idx);
-
-            final ViewGroup parentGroup;
-            if (id == ROOT_NODE_ID) {
-                parentGroup = rootContainer;
-            } else if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
-                parentGroup = scrollInnerContainers.get(id);
-            } else {
-                View candidate = nodeViews.get(id);
-                parentGroup = (candidate instanceof ViewGroup) ? (ViewGroup) candidate : null;
-            }
-            if (parentGroup == null) {
-                continue;
-            }
-
-            final int childCount = sceneBuffer.childCount(idx);
-            final List<View> desiredChildren = new ArrayList<>(childCount);
-            final Set<View> desiredSet = new HashSet<>(childCount * 2);
-            for (int c = 0; c < childCount; c++) {
-                int childId = sceneBuffer.childId(idx, c);
-                View childView = nodeViews.get(childId);
-                if (childView == null) {
-                    continue;
-                }
-                desiredChildren.add(childView);
-                desiredSet.add(childView);
-            }
-
-            reconcileChildren(parentGroup, desiredChildren, desiredSet, managedViews);
+            reconcileContainerAtIndex(idx, managedViews);
         }
 
-        // Refresh ScrollView content container bounds whenever any node changed.
+        refreshScrollViewBounds(nodeCount);
+        lastSceneFrameId = frameId;
+    }
+
+    private void upsertNodeAtIndex(int idx) {
+        final int id = sceneBuffer.nodeId(idx);
+        if (id <= 0) {
+            return;
+        }
+        nodeIndexById.put(id, idx);
+
+        if (id == ROOT_NODE_ID) {
+            applyRootStyle(sceneBuffer, idx);
+            return;
+        }
+
+        final int kind = sceneBuffer.kind(idx);
+        final boolean hasChildren = sceneBuffer.childCount(idx) > 0;
+        final int tag = (kind == NveSceneBuffer.KIND_TEXT && hasChildren) ? (kind | 0x10000) : kind;
+
+        View view = nodeViews.get(id);
+        Integer existingTag = nodeTags.get(id);
+        if (view == null || existingTag == null || existingTag.intValue() != tag) {
+            if (view != null) {
+                detachFromParent(view);
+                scrollInnerContainers.remove(id);
+                scrollViewNodeIds.remove(id);
+                boundImageSrcById.remove(id);
+            }
+            view = createViewForNode(id, kind, hasChildren);
+            nodeViews.put(id, view);
+            nodeTags.put(id, tag);
+            if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
+                scrollViewNodeIds.add(id);
+            }
+        }
+
+        updateView(view, id, kind, hasChildren, sceneBuffer, idx);
+    }
+
+    private void reconcileContainerAtIndex(int idx, Set<View> managedViews) {
+        final int id = sceneBuffer.nodeId(idx);
+        final int kind = sceneBuffer.kind(idx);
+
+        final ViewGroup parentGroup;
+        if (id == ROOT_NODE_ID) {
+            parentGroup = rootContainer;
+        } else if (kind == NveSceneBuffer.KIND_SCROLL_VIEW) {
+            parentGroup = scrollInnerContainers.get(id);
+        } else {
+            View candidate = nodeViews.get(id);
+            parentGroup = (candidate instanceof ViewGroup) ? (ViewGroup) candidate : null;
+        }
+        if (parentGroup == null) {
+            return;
+        }
+
+        final int childCount = sceneBuffer.childCount(idx);
+        final List<View> desiredChildren = new ArrayList<>(childCount);
+        final Set<View> desiredSet = new HashSet<>(childCount * 2);
+        for (int c = 0; c < childCount; c++) {
+            int childId = sceneBuffer.childId(idx, c);
+            View childView = nodeViews.get(childId);
+            if (childView == null) {
+                continue;
+            }
+            desiredChildren.add(childView);
+            desiredSet.add(childView);
+        }
+
+        reconcileChildren(parentGroup, desiredChildren, desiredSet, managedViews);
+    }
+
+    private void refreshScrollViewBounds(int nodeCount) {
         for (int scrollId : scrollViewNodeIds) {
             Integer scrollIdxObj = nodeIndexById.get(scrollId);
             FrameLayout inner = scrollInnerContainers.get(scrollId);
@@ -330,8 +441,12 @@ public final class NveMainActivity extends Activity {
                 continue;
             }
             int scrollIdx = scrollIdxObj.intValue();
-            if (scrollIdx < 0 || scrollIdx >= nodeCount) {
-                continue;
+            if (scrollIdx < 0 || scrollIdx >= nodeCount || sceneBuffer.nodeId(scrollIdx) != scrollId) {
+                scrollIdx = findSceneIndexByNodeId(scrollId, nodeCount);
+                if (scrollIdx < 0) {
+                    continue;
+                }
+                nodeIndexById.put(scrollId, scrollIdx);
             }
             float contentMaxX = sceneBuffer.width(scrollIdx);
             float contentMaxY = sceneBuffer.height(scrollIdx);
@@ -339,10 +454,13 @@ public final class NveMainActivity extends Activity {
             for (int c = 0; c < childCount; c++) {
                 int childId = sceneBuffer.childId(scrollIdx, c);
                 Integer childIdxObj = nodeIndexById.get(childId);
-                if (childIdxObj == null) {
-                    continue;
+                int childIdx = childIdxObj != null ? childIdxObj.intValue() : -1;
+                if (childIdx < 0 || childIdx >= nodeCount || sceneBuffer.nodeId(childIdx) != childId) {
+                    childIdx = findSceneIndexByNodeId(childId, nodeCount);
+                    if (childIdx >= 0) {
+                        nodeIndexById.put(childId, childIdx);
+                    }
                 }
-                int childIdx = childIdxObj.intValue();
                 if (childIdx >= 0 && childIdx < nodeCount) {
                     contentMaxX = Math.max(contentMaxX, sceneBuffer.x(childIdx) + sceneBuffer.width(childIdx));
                     contentMaxY = Math.max(contentMaxY, sceneBuffer.y(childIdx) + sceneBuffer.height(childIdx));
@@ -355,6 +473,15 @@ public final class NveMainActivity extends Activity {
                 inner.setLayoutParams(new FrameLayout.LayoutParams(innerW, innerH));
             }
         }
+    }
+
+    private int findSceneIndexByNodeId(int nodeId, int nodeCount) {
+        for (int i = 0; i < nodeCount; i++) {
+            if (sceneBuffer.nodeId(i) == nodeId) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void applyRootStyle(NveSceneBuffer scene, int idx) {
@@ -378,8 +505,27 @@ public final class NveMainActivity extends Activity {
             scrollView.addView(inner, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT));
+            scrollView.setOnScrollChangeListener(new View.OnScrollChangeListener() {
+                @Override
+                public void onScrollChange(View v, int scrollX, int scrollY, int oldScrollX, int oldScrollY) {
+                    if (surfaceHandle == 0L || (scrollX == oldScrollX && scrollY == oldScrollY)) {
+                        return;
+                    }
+                    int dirty = nativeDispatchScroll(
+                            surfaceHandle, nodeId, scrollX / density, scrollY / density);
+                    if (dirty != 0) {
+                        syncViews();
+                    }
+                }
+            });
             scrollInnerContainers.put(nodeId, inner);
             return scrollView;
+        }
+
+        if (kind == NveSceneBuffer.KIND_IMAGE) {
+            ImageView imageView = new ImageView(this);
+            imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            return imageView;
         }
 
         if (kind == NveSceneBuffer.KIND_TEXT_INPUT) {
@@ -478,7 +624,17 @@ public final class NveMainActivity extends Activity {
             view.setClipToOutline(false);
         }
 
-        if (kind == NveSceneBuffer.KIND_TEXT_INPUT && view instanceof EditText) {
+        if (kind == NveSceneBuffer.KIND_IMAGE && view instanceof ImageView) {
+            ImageView imageView = (ImageView) view;
+            String src = scene.readText(idx);
+            String prevSrc = boundImageSrcById.get(nodeId);
+            if (!src.equals(prevSrc)) {
+                boundImageSrcById.put(nodeId, src);
+                imageView.setImageBitmap(resolveBitmap(src));
+            }
+            int resizeMode = nativeGetImageResizeMode(surfaceHandle, nodeId);
+            imageView.setScaleType(scaleTypeForResizeMode(resizeMode));
+        } else if (kind == NveSceneBuffer.KIND_TEXT_INPUT && view instanceof EditText) {
             EditText editText = (EditText) view;
             String text = scene.readText(idx);
             CharSequence current = editText.getText();
@@ -504,7 +660,7 @@ public final class NveMainActivity extends Activity {
         }
 
         final boolean interactive = scene.isInteractive(idx);
-        if (interactive) {
+        if (interactive && kind != NveSceneBuffer.KIND_TEXT_INPUT && kind != NveSceneBuffer.KIND_SCROLL_VIEW) {
             view.setClickable(true);
             view.setOnClickListener(new View.OnClickListener() {
                 @Override
@@ -519,6 +675,71 @@ public final class NveMainActivity extends Activity {
         } else if (kind != NveSceneBuffer.KIND_TEXT_INPUT && kind != NveSceneBuffer.KIND_SCROLL_VIEW) {
             view.setOnClickListener(null);
             view.setClickable(false);
+        }
+    }
+
+    private Bitmap resolveBitmap(String src) {
+        if (src == null || src.isEmpty()) {
+            return null;
+        }
+        Bitmap cached = imageCache.get(src);
+        if (cached != null && !cached.isRecycled()) {
+            return cached;
+        }
+        Bitmap decoded = decodeBitmapSource(src);
+        if (decoded != null) {
+            imageCache.put(src, decoded);
+        }
+        return decoded;
+    }
+
+    private static Bitmap decodeBitmapSource(String src) {
+        String lower = src.toLowerCase(Locale.US);
+        if (lower.startsWith("data:")) {
+            int comma = src.indexOf(',');
+            if (comma <= 0 || comma + 1 >= src.length()) {
+                return null;
+            }
+            String header = lower.substring(0, comma);
+            if (!header.startsWith("data:image/") || !header.contains(";base64")) {
+                return null;
+            }
+            try {
+                byte[] bytes = Base64.decode(src.substring(comma + 1), Base64.DEFAULT);
+                if (bytes == null || bytes.length == 0) {
+                    return null;
+                }
+                return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            } catch (IllegalArgumentException e) {
+                return null;
+            }
+        }
+        if (lower.startsWith("file://")) {
+            try {
+                Uri uri = Uri.parse(src);
+                String path = uri != null ? uri.getPath() : null;
+                if (path == null || path.isEmpty()) {
+                    path = src.substring(7);
+                }
+                return BitmapFactory.decodeFile(path);
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static ImageView.ScaleType scaleTypeForResizeMode(int resizeMode) {
+        switch (resizeMode) {
+            case RESIZE_MODE_CONTAIN:
+                return ImageView.ScaleType.FIT_CENTER;
+            case RESIZE_MODE_STRETCH:
+                return ImageView.ScaleType.FIT_XY;
+            case RESIZE_MODE_CENTER:
+                return ImageView.ScaleType.CENTER;
+            case RESIZE_MODE_COVER:
+            default:
+                return ImageView.ScaleType.CENTER_CROP;
         }
     }
 

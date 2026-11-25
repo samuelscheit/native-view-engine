@@ -1,5 +1,6 @@
 #import "RCTNveMacComponentView.h"
 #import "NveAppleComponentHost.h"
+#import "NveAppleImageCache.h"
 
 /// Flipped NSView container so Yoga's top-left origin maps 1:1 to AppKit `NSView.frame`.
 @interface NveFlippedContainerView : NSView
@@ -23,17 +24,30 @@
 }
 @end
 
+/// Image view that caches its last bound source string and passes clicks through when non-interactive.
+@interface NveMacImageView : NSImageView
+@property (nonatomic, copy, nullable) NSString *nveImageSrc;
+@end
+
+@implementation NveMacImageView
+- (NSView *)hitTest:(NSPoint)point {
+  return self.gestureRecognizers.count > 0 ? [super hitTest:point] : nil;
+}
+@end
+
 @interface RCTNveMacComponentView () <NveAppleComponentViewAdapter, NSTextFieldDelegate>
 @end
 
 @implementation RCTNveMacComponentView {
   NveAppleComponentHost *_host;
+  BOOL _updatingScrollFrame;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
     self.wantsLayer = YES;
+    _updatingScrollFrame = NO;
     _host = [[NveAppleComponentHost alloc] initWithAdapter:self
                                                errorDomain:@"nve.macos.rncomponent"];
     NveGetInterfaceFn defaultIface = [self defaultNveGetInterface];
@@ -42,6 +56,10 @@
     }
   }
   return self;
+}
+
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (BOOL)isFlipped {
@@ -54,6 +72,14 @@
 
 - (uint32_t)nveNodeCount {
   return _host.nodeCount;
+}
+
+- (uint32_t)nveLastReconciledDirtyCount {
+  return _host.lastReconciledDirtyCount;
+}
+
+- (uint32_t)nveLastReconciledRemovedCount {
+  return _host.lastReconciledRemovedCount;
 }
 
 - (CGFloat)_currentBackingScale {
@@ -200,22 +226,17 @@
   }
 }
 
-- (NSView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
-  nve::apple::NodeSemantics defaults{};
-  return [self nveCreateNativeViewForSnapshot:snap semantics:defaults];
-}
-
-- (NSView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap
-                                 semantics:(const nve::apple::NodeSemantics &)semantics {
-  if (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) {
+- (NSView *)nveCreateNativeViewForNode:(const NveRenderNode &)node
+                             semantics:(const nve::apple::NodeSemantics &)semantics {
+  if (node.kind == NVE_NODE_KIND_TEXT && (node.flags & NVE_NODE_LEAF_TEXT) == 0u) {
     NveFlippedContainerView *container =
         [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
-    container.nveNodeId = snap.node_id;
+    container.nveNodeId = node.node_id;
     container.wantsLayer = YES;
     return container;
   }
-  switch (snap.kind) {
-    case NVE_COMP_TEXT: {
+  switch (node.kind) {
+    case NVE_NODE_KIND_TEXT: {
       NveLabelTextField *label = [[NveLabelTextField alloc] initWithFrame:NSZeroRect];
       label.editable = NO;
       label.selectable = NO;
@@ -228,7 +249,14 @@
       label.wantsLayer = YES;
       return label;
     }
-    case NVE_COMP_TEXT_INPUT: {
+    case NVE_NODE_KIND_IMAGE: {
+      NveMacImageView *imgView = [[NveMacImageView alloc] initWithFrame:NSZeroRect];
+      imgView.imageFrameStyle = NSImageFrameNone;
+      imgView.imageAlignment = NSImageAlignCenter;
+      imgView.wantsLayer = YES;
+      return imgView;
+    }
+    case NVE_NODE_KIND_TEXT_INPUT: {
       NSTextField *input = semantics.secure_text_entry
                                ? [[NSSecureTextField alloc] initWithFrame:NSZeroRect]
                                : [[NSTextField alloc] initWithFrame:NSZeroRect];
@@ -238,45 +266,82 @@
       input.wantsLayer = YES;
       return input;
     }
-    case NVE_COMP_SCROLL_VIEW: {
+    case NVE_NODE_KIND_SCROLL_VIEW: {
       NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
       scroll.hasVerticalScroller = YES;
       scroll.drawsBackground = NO;
       scroll.wantsLayer = YES;
       NveFlippedContainerView *doc = [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
-      doc.nveNodeId = snap.node_id;
+      doc.nveNodeId = node.node_id;
       doc.wantsLayer = YES;
       scroll.documentView = doc;
+      scroll.contentView.postsBoundsChangedNotifications = YES;
+      [[NSNotificationCenter defaultCenter] addObserver:self
+                                               selector:@selector(_handleScrollViewBoundsChanged:)
+                                                   name:NSViewBoundsDidChangeNotification
+                                                 object:scroll.contentView];
       return scroll;
     }
     default: {
       NveFlippedContainerView *container =
           [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
-      container.nveNodeId = snap.node_id;
+      container.nveNodeId = node.node_id;
       container.wantsLayer = YES;
       return container;
     }
   }
 }
 
+- (void)nveWillDestroyNativeView:(NSView *)view forNodeId:(uint32_t)nodeId {
+  (void)nodeId;
+  if ([view isKindOfClass:[NSScrollView class]]) {
+    NSScrollView *scroll = (NSScrollView *)view;
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSViewBoundsDidChangeNotification
+                                                  object:scroll.contentView];
+  }
+}
+
 - (void)nveUpdateNativeView:(NSView *)view
-                forSnapshot:(const nve::RenderedNodeSnapshot &)snap
+                    forNode:(const NveRenderNode &)node
+                       text:(std::string_view)text
+                  semantics:(const nve::apple::NodeSemantics &)semantics
                 interactive:(BOOL)interactive {
   view.wantsLayer = YES;
-  view.alphaValue = static_cast<CGFloat>(snap.opacity);
-  view.layer.backgroundColor = nve::apple::color_from_rgba(snap.background_rgba).CGColor;
+  view.alphaValue = static_cast<CGFloat>(node.opacity_u8) / 255.0;
+  view.layer.backgroundColor = nve::apple::color_from_rgba(node.bg_rgba).CGColor;
 
-  if ([view isKindOfClass:[NSTextField class]]) {
+  if ([view isKindOfClass:[NveMacImageView class]]) {
+    NveMacImageView *imgView = (NveMacImageView *)view;
+    NSString *nextSrc =
+        text.empty() ? nil
+                     : [[NSString alloc] initWithBytes:text.data()
+                                                length:text.size()
+                                              encoding:NSUTF8StringEncoding];
+    const BOOL sameSrc =
+        (nextSrc == nil && imgView.nveImageSrc == nil) ||
+        (nextSrc != nil && [nextSrc isEqualToString:imgView.nveImageSrc]);
+    if (!sameSrc) {
+      imgView.nveImageSrc = nextSrc;
+      imgView.image =
+          text.empty() ? nil : nve::apple::shared_image_cache().image_for_source(text);
+    }
+    nve::apple::apply_image_resize_mode(imgView, semantics.resize_mode, node.border_radius);
+  } else if ([view isKindOfClass:[NSTextField class]]) {
     NSTextField *field = (NSTextField *)view;
-    if (snap.kind != NVE_COMP_TEXT_INPUT) {
-      NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+    if (node.kind != NVE_NODE_KIND_TEXT_INPUT) {
+      NSString *nextText =
+          text.empty() ? @""
+                       : ([[NSString alloc] initWithBytes:text.data()
+                                                   length:text.size()
+                                                 encoding:NSUTF8StringEncoding] ?: @"");
       if (![field.stringValue isEqualToString:nextText]) {
         field.stringValue = nextText;
       }
     }
-    field.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
-    if (snap.font_size > 0.0f) {
-      field.font = [NSFont systemFontOfSize:static_cast<CGFloat>(snap.font_size)];
+    field.textColor = nve::apple::color_from_rgba(node.text_rgba);
+    if (node.font_size > 0.0f) {
+      field.font = [NSFont systemFontOfSize:static_cast<CGFloat>(node.font_size)];
     }
   }
 
@@ -310,9 +375,31 @@
   if ([scrollView isKindOfClass:[NSScrollView class]]) {
     NSScrollView *scroll = (NSScrollView *)scrollView;
     if (scroll.documentView != nil) {
-      scroll.documentView.frame = NSMakeRect(0.0, 0.0, contentSize.width, contentSize.height);
+      const NSRect nextFrame = NSMakeRect(0.0, 0.0, contentSize.width, contentSize.height);
+      if (!NSEqualRects(scroll.documentView.frame, nextFrame)) {
+        _updatingScrollFrame = YES;
+        scroll.documentView.frame = nextFrame;
+        _updatingScrollFrame = NO;
+      }
     }
   }
+}
+
+- (void)_handleScrollViewBoundsChanged:(NSNotification *)note {
+  if (_updatingScrollFrame) return;
+  if (![note.object isKindOfClass:[NSClipView class]]) return;
+  NSClipView *clipView = (NSClipView *)note.object;
+  if (![clipView.superview isKindOfClass:[NSScrollView class]]) return;
+  NSScrollView *scroll = (NSScrollView *)clipView.superview;
+  const uint32_t nodeId = [_host nodeIdForNativeView:scroll];
+  if (nodeId == 0u) return;
+  const NSPoint origin = clipView.bounds.origin;
+  const NSSize docSize = scroll.documentView != nil ? scroll.documentView.frame.size : NSZeroSize;
+  [_host dispatchScrollOnNodeId:nodeId
+                              x:static_cast<float>(origin.x)
+                              y:static_cast<float>(origin.y)
+                   contentWidth:static_cast<float>(docSize.width)
+                  contentHeight:static_cast<float>(docSize.height)];
 }
 
 - (void)controlTextDidBeginEditing:(NSNotification *)obj {

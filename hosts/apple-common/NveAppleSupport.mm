@@ -6,7 +6,6 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cstring>
 #include <dlfcn.h>
 #include <string_view>
 
@@ -69,6 +68,190 @@ id _Nonnull objc_object_from_bin_value(const nve::BinValueView &view, uint32_t d
   }
   return [NSNull null];
 }
+
+NSString * _Nullable nsstring_from_std_string(const std::string &s) {
+  if (s.empty()) {
+    return nil;
+  }
+  return [[NSString alloc] initWithBytes:s.data()
+                                  length:s.size()
+                                encoding:NSUTF8StringEncoding];
+}
+
+std::string ascii_lower(std::string_view sv) {
+  std::string out;
+  out.reserve(sv.size());
+  for (unsigned char ch : sv) {
+    out.push_back(static_cast<char>(std::tolower(ch)));
+  }
+  return out;
+}
+
+bool read_raw_string(const nve::RawPropMap &props, const char *key, std::string &out) {
+  const auto it = props.find(key);
+  if (it == props.end()) return false;
+  if (const auto *s = std::get_if<std::string>(&it->second)) {
+    out = *s;
+    return true;
+  }
+  return false;
+}
+
+bool read_raw_value_as_string(const nve::RawPropMap &props, const char *key, std::string &out) {
+  const auto it = props.find(key);
+  if (it == props.end()) return false;
+  if (const auto *s = std::get_if<std::string>(&it->second)) {
+    out = *s;
+    return true;
+  }
+  if (const auto *i = std::get_if<int64_t>(&it->second)) {
+    out = std::to_string(*i);
+    return true;
+  }
+  if (const auto *d = std::get_if<double>(&it->second)) {
+    if (std::isfinite(*d)) {
+      out = std::to_string(*d);
+      return true;
+    }
+    return false;
+  }
+  if (const auto *b = std::get_if<bool>(&it->second)) {
+    out = *b ? "true" : "false";
+    return true;
+  }
+  return false;
+}
+
+bool read_raw_bool(const nve::RawPropMap &props, const char *key, bool &out) {
+  const auto it = props.find(key);
+  if (it == props.end()) return false;
+  if (const auto *b = std::get_if<bool>(&it->second)) {
+    out = *b;
+    return true;
+  }
+  if (const auto *i = std::get_if<int64_t>(&it->second)) {
+    out = (*i != 0);
+    return true;
+  }
+  if (const auto *s = std::get_if<std::string>(&it->second)) {
+    const std::string lower = ascii_lower(*s);
+    if (lower == "true" || lower == "1" || lower == "yes") {
+      out = true;
+      return true;
+    }
+    if (lower == "false" || lower == "0" || lower == "no") {
+      out = false;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool parse_a11y_role(std::string_view raw, A11yRole &out) {
+  const std::string lower = ascii_lower(raw);
+  if (lower == "button") {
+    out = A11yRole::Button;
+    return true;
+  }
+  if (lower == "text" || lower == "statictext" || lower == "label") {
+    out = A11yRole::Text;
+    return true;
+  }
+  if (lower == "header" || lower == "heading") {
+    out = A11yRole::Header;
+    return true;
+  }
+  if (lower == "textbox" || lower == "textinput" || lower == "search" || lower == "searchbox") {
+    out = A11yRole::TextBox;
+    return true;
+  }
+  if (lower == "scrollarea" || lower == "scrollview") {
+    out = A11yRole::ScrollArea;
+    return true;
+  }
+  if (lower == "image" || lower == "img") {
+    out = A11yRole::Image;
+    return true;
+  }
+  if (lower == "list") {
+    out = A11yRole::List;
+    return true;
+  }
+  if (lower == "listitem") {
+    out = A11yRole::ListItem;
+    return true;
+  }
+  if (lower == "checkbox" || lower == "switch") {
+    out = A11yRole::CheckBox;
+    return true;
+  }
+  if (lower == "link") {
+    out = A11yRole::Link;
+    return true;
+  }
+  if (lower == "group" || lower == "region") {
+    out = A11yRole::Group;
+    return true;
+  }
+  if (lower == "none" || lower == "presentation") {
+    out = A11yRole::None;
+    return true;
+  }
+  return false;
+}
+
+A11yRole infer_default_role(const NveRenderNode &node) noexcept {
+  switch (node.kind) {
+    case NVE_NODE_KIND_TEXT_INPUT:
+      return A11yRole::TextBox;
+    case NVE_NODE_KIND_SCROLL_VIEW:
+      return A11yRole::ScrollArea;
+    case NVE_NODE_KIND_IMAGE:
+      return A11yRole::Image;
+    case NVE_NODE_KIND_PRESSABLE:
+      return A11yRole::Button;
+    default:
+      break;
+  }
+  if ((node.flags & NVE_NODE_INTERACTIVE) != 0u) {
+    return A11yRole::Button;
+  }
+  if (node.kind == NVE_NODE_KIND_TEXT) {
+    return A11yRole::Text;
+  }
+  return A11yRole::Group;
+}
+
+#if TARGET_OS_OSX
+NSAccessibilityRole appkit_role_for(A11yRole role, bool multiline) {
+  switch (role) {
+    case A11yRole::Button:
+      return NSAccessibilityButtonRole;
+    case A11yRole::Text:
+    case A11yRole::Header:
+      return NSAccessibilityStaticTextRole;
+    case A11yRole::TextBox:
+      return multiline ? NSAccessibilityTextAreaRole : NSAccessibilityTextFieldRole;
+    case A11yRole::ScrollArea:
+      return NSAccessibilityScrollAreaRole;
+    case A11yRole::Image:
+      return NSAccessibilityImageRole;
+    case A11yRole::List:
+      return NSAccessibilityListRole;
+    case A11yRole::ListItem:
+      return NSAccessibilityRowRole;
+    case A11yRole::CheckBox:
+      return NSAccessibilityCheckBoxRole;
+    case A11yRole::Link:
+      return NSAccessibilityLinkRole;
+    case A11yRole::Group:
+      return NSAccessibilityGroupRole;
+    case A11yRole::None:
+      return NSAccessibilityUnknownRole;
+  }
+  return NSAccessibilityGroupRole;
+}
+#endif
 
 } // namespace
 
@@ -265,364 +448,23 @@ void install_native_text_measurer(NveFabricHostHandle _Nullable host) {
   }
 }
 
-void apply_common_layer_style(CALayer * _Nullable layer, const nve::RenderedNodeSnapshot &snap) {
+void apply_common_layer_style(CALayer * _Nullable layer, const NveRenderNode &node) {
   if (!layer) return;
-  layer.cornerRadius = static_cast<CGFloat>(snap.border_radius);
-  layer.borderWidth = static_cast<CGFloat>(snap.border_width);
-  layer.borderColor = color_from_rgba(snap.border_color_rgba).CGColor;
-  layer.zPosition = static_cast<CGFloat>(snap.z_index);
-}
-
-namespace {
-
-NSString * _Nullable nsstring_from_std_string(const std::string &s) {
-  if (s.empty()) {
-    return nil;
+  layer.cornerRadius = static_cast<CGFloat>(node.border_radius);
+  layer.borderWidth = static_cast<CGFloat>(node.border_width);
+  layer.borderColor = color_from_rgba(node.border_rgba).CGColor;
+  layer.zPosition = static_cast<CGFloat>(node.z_index);
+  if (node.border_radius > 0.0f) {
+    layer.masksToBounds = YES;
   }
-  return [[NSString alloc] initWithBytes:s.data()
-                                  length:s.size()
-                                encoding:NSUTF8StringEncoding];
-}
-
-std::string ascii_lower(std::string_view sv) {
-  std::string out;
-  out.reserve(sv.size());
-  for (unsigned char ch : sv) {
-    out.push_back(static_cast<char>(std::tolower(ch)));
-  }
-  return out;
-}
-
-bool read_raw_string(const nve::RawPropMap &props, const char *key, std::string &out) {
-  const auto it = props.find(key);
-  if (it == props.end()) return false;
-  if (const auto *s = std::get_if<std::string>(&it->second)) {
-    out = *s;
-    return true;
-  }
-  return false;
-}
-
-bool read_raw_value_as_string(const nve::RawPropMap &props, const char *key, std::string &out) {
-  const auto it = props.find(key);
-  if (it == props.end()) return false;
-  if (const auto *s = std::get_if<std::string>(&it->second)) {
-    out = *s;
-    return true;
-  }
-  if (const auto *i = std::get_if<int64_t>(&it->second)) {
-    out = std::to_string(*i);
-    return true;
-  }
-  if (const auto *d = std::get_if<double>(&it->second)) {
-    if (std::isfinite(*d)) {
-      out = std::to_string(*d);
-      return true;
-    }
-    return false;
-  }
-  if (const auto *b = std::get_if<bool>(&it->second)) {
-    out = *b ? "true" : "false";
-    return true;
-  }
-  return false;
-}
-
-bool read_raw_bool(const nve::RawPropMap &props, const char *key, bool &out) {
-  const auto it = props.find(key);
-  if (it == props.end()) return false;
-  if (const auto *b = std::get_if<bool>(&it->second)) {
-    out = *b;
-    return true;
-  }
-  if (const auto *i = std::get_if<int64_t>(&it->second)) {
-    out = (*i != 0);
-    return true;
-  }
-  if (const auto *s = std::get_if<std::string>(&it->second)) {
-    const std::string lower = ascii_lower(*s);
-    if (lower == "true" || lower == "1" || lower == "yes") {
-      out = true;
-      return true;
-    }
-    if (lower == "false" || lower == "0" || lower == "no") {
-      out = false;
-      return true;
-    }
-  }
-  return false;
-}
-
-bool parse_a11y_role(std::string_view raw, A11yRole &out) {
-  const std::string lower = ascii_lower(raw);
-  if (lower == "button") {
-    out = A11yRole::Button;
-    return true;
-  }
-  if (lower == "text" || lower == "statictext" || lower == "label") {
-    out = A11yRole::Text;
-    return true;
-  }
-  if (lower == "header" || lower == "heading") {
-    out = A11yRole::Header;
-    return true;
-  }
-  if (lower == "textbox" || lower == "textinput" || lower == "search" || lower == "searchbox") {
-    out = A11yRole::TextBox;
-    return true;
-  }
-  if (lower == "scrollarea" || lower == "scrollview") {
-    out = A11yRole::ScrollArea;
-    return true;
-  }
-  if (lower == "image" || lower == "img") {
-    out = A11yRole::Image;
-    return true;
-  }
-  if (lower == "list") {
-    out = A11yRole::List;
-    return true;
-  }
-  if (lower == "listitem") {
-    out = A11yRole::ListItem;
-    return true;
-  }
-  if (lower == "checkbox" || lower == "switch") {
-    out = A11yRole::CheckBox;
-    return true;
-  }
-  if (lower == "link") {
-    out = A11yRole::Link;
-    return true;
-  }
-  if (lower == "group" || lower == "region") {
-    out = A11yRole::Group;
-    return true;
-  }
-  if (lower == "none" || lower == "presentation") {
-    out = A11yRole::None;
-    return true;
-  }
-  return false;
-}
-
-A11yRole infer_default_role(const nve::RenderedNodeSnapshot &snap) noexcept {
-  if (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & kEventMaskPress) != 0u) {
-    return A11yRole::Button;
-  }
-  switch (snap.kind) {
-    case NVE_COMP_TEXT:
-      return A11yRole::Text;
-    case NVE_COMP_TEXT_INPUT:
-      return A11yRole::TextBox;
-    case NVE_COMP_SCROLL_VIEW:
-      return A11yRole::ScrollArea;
-    case NVE_COMP_IMAGE:
-      return A11yRole::Image;
-    default:
-      return A11yRole::Group;
-  }
-}
-
-void decode_raw_props_from_command_buffer(
-    const uint8_t *data,
-    size_t len,
-    std::unordered_map<uint32_t, nve::RawPropMap> &out) {
-  if (data == nullptr || len < 24u) {
-    return;
-  }
-  size_t pos = 0;
-  auto read_pod = [&](auto &v) -> bool {
-    if (sizeof(v) > len - pos) return false;
-    std::memcpy(&v, data + pos, sizeof(v));
-    pos += sizeof(v);
-    return true;
-  };
-  auto skip = [&](size_t n) -> bool {
-    if (n > len - pos) return false;
-    pos += n;
-    return true;
-  };
-
-  uint32_t magic = 0;
-  uint16_t version = 0;
-  uint16_t flags = 0;
-  uint32_t surface_id = 0;
-  uint64_t frame_id = 0;
-  uint32_t op_count = 0;
-  if (!read_pod(magic) || !read_pod(version) || !read_pod(flags) || !read_pod(surface_id) ||
-      !read_pod(frame_id) || !read_pod(op_count)) {
-    return;
-  }
-  if (magic != NVE_ABI_MAGIC || version != NVE_ABI_VERSION) {
-    return;
-  }
-
-  for (uint32_t i = 0; i < op_count; ++i) {
-    uint8_t op = 0;
-    if (!read_pod(op)) return;
-    switch (static_cast<NveOpcode>(op)) {
-      case NVE_OP_CREATE_NODE: {
-        uint16_t name_len = 0;
-        if (!skip(6u) || !read_pod(name_len) || !skip(name_len)) return;
-        break;
-      }
-      case NVE_OP_REMOVE_NODE:
-        if (!skip(4u)) return;
-        break;
-      case NVE_OP_SET_CHILDREN: {
-        uint32_t count = 0;
-        if (!skip(4u) || !read_pod(count)) return;
-        if (static_cast<size_t>(count) > (len - pos) / sizeof(uint32_t)) return;
-        pos += static_cast<size_t>(count) * sizeof(uint32_t);
-        break;
-      }
-      case NVE_OP_SET_TEXT: {
-        uint32_t tlen = 0;
-        if (!skip(4u) || !read_pod(tlen) || !skip(tlen)) return;
-        break;
-      }
-      case NVE_OP_SET_LAYOUT:
-        if (!skip(81u)) return;
-        break;
-      case NVE_OP_SET_STYLE:
-        if (!skip(36u)) return;
-        break;
-      case NVE_OP_SET_RAW_PROP: {
-        uint32_t node_id = 0;
-        uint16_t key_len = 0;
-        if (!read_pod(node_id) || !read_pod(key_len) || key_len > len - pos) return;
-        std::string key(reinterpret_cast<const char *>(data + pos), key_len);
-        pos += key_len;
-        uint8_t tag = 0;
-        if (!read_pod(tag)) return;
-        nve::RawPropValue val{nullptr};
-        switch (tag) {
-          case 0:
-            val = nullptr;
-            break;
-          case 1: {
-            uint8_t b = 0;
-            if (!read_pod(b)) return;
-            val = (b != 0);
-            break;
-          }
-          case 2: {
-            int64_t v = 0;
-            if (!read_pod(v)) return;
-            val = v;
-            break;
-          }
-          case 3: {
-            double v = 0.0;
-            if (!read_pod(v)) return;
-            val = v;
-            break;
-          }
-          case 4: {
-            uint32_t vlen = 0;
-            if (!read_pod(vlen) || vlen > len - pos) return;
-            val = std::string(reinterpret_cast<const char *>(data + pos), vlen);
-            pos += vlen;
-            break;
-          }
-          case 5: {
-            uint32_t vlen = 0;
-            if (!read_pod(vlen) || vlen > len - pos) return;
-            val = std::vector<uint8_t>(data + pos, data + pos + vlen);
-            pos += vlen;
-            break;
-          }
-          default:
-            return;
-        }
-        out[node_id][std::move(key)] = std::move(val);
-        break;
-      }
-      case NVE_OP_SET_EVENT_MASK:
-        if (!skip(12u)) return;
-        break;
-      case NVE_OP_DISPATCH_COMMAND: {
-        uint16_t nlen = 0;
-        uint32_t plen = 0;
-        if (!skip(4u) || !read_pod(nlen) || !skip(nlen) || !read_pod(plen) || !skip(plen)) return;
-        break;
-      }
-      case NVE_OP_COMMIT:
-        if (!skip(1u)) return;
-        break;
-      default:
-        return;
-    }
-  }
-}
-
-#if TARGET_OS_OSX
-NSAccessibilityRole appkit_role_for(A11yRole role, bool multiline) {
-  switch (role) {
-    case A11yRole::Button:
-      return NSAccessibilityButtonRole;
-    case A11yRole::Text:
-    case A11yRole::Header:
-      return NSAccessibilityStaticTextRole;
-    case A11yRole::TextBox:
-      return multiline ? NSAccessibilityTextAreaRole : NSAccessibilityTextFieldRole;
-    case A11yRole::ScrollArea:
-      return NSAccessibilityScrollAreaRole;
-    case A11yRole::Image:
-      return NSAccessibilityImageRole;
-    case A11yRole::List:
-      return NSAccessibilityListRole;
-    case A11yRole::ListItem:
-      return NSAccessibilityRowRole;
-    case A11yRole::CheckBox:
-      return NSAccessibilityCheckBoxRole;
-    case A11yRole::Link:
-      return NSAccessibilityLinkRole;
-    case A11yRole::Group:
-      return NSAccessibilityGroupRole;
-    case A11yRole::None:
-      return NSAccessibilityUnknownRole;
-  }
-  return NSAccessibilityGroupRole;
-}
-#endif
-
-template <typename Snap>
-std::unordered_map<uint32_t, nve::RawPropMap> extract_raw_props_impl(
-    NveFabricHostHandle _Nullable host,
-    const std::vector<Snap> &snapshots) {
-  std::unordered_map<uint32_t, nve::RawPropMap> result;
-  if constexpr (requires(const Snap &s) { s.raw_props; }) {
-    for (const auto &snap : snapshots) {
-      if (!snap.raw_props.empty()) {
-        result.emplace(snap.node_id, snap.raw_props);
-      }
-    }
-  } else {
-    (void)snapshots;
-    if (host == nullptr) {
-      return result;
-    }
-    const std::vector<uint8_t> frame0 = nve::fabric_host_serialize_frame0(host, 1u);
-    decode_raw_props_from_command_buffer(frame0.data(), frame0.size(), result);
-  }
-  return result;
-}
-
-} // namespace
-
-std::unordered_map<uint32_t, nve::RawPropMap> extract_raw_props_by_node(
-    NveFabricHostHandle _Nullable host,
-    const std::vector<nve::RenderedNodeSnapshot> &snapshots) {
-  return extract_raw_props_impl(host, snapshots);
 }
 
 NodeSemantics extract_node_semantics(
-    const nve::RenderedNodeSnapshot &snap,
+    const NveRenderNode &node,
+    std::string_view text,
     const nve::RawPropMap * _Nullable raw_props) {
   NodeSemantics sem{};
-  sem.role = infer_default_role(snap);
+  sem.role = infer_default_role(node);
 
   if (raw_props != nullptr) {
     std::string role_str;
@@ -657,11 +499,19 @@ NodeSemantics extract_node_semantics(
     (void)read_raw_string(*raw_props, "placeholder", sem.placeholder);
     (void)read_raw_bool(*raw_props, "secureTextEntry", sem.secure_text_entry);
     (void)read_raw_bool(*raw_props, "multiline", sem.multiline);
+
+    if (node.kind == NVE_NODE_KIND_IMAGE) {
+      std::string resize_str;
+      if (read_raw_string(*raw_props, "resizeMode", resize_str) ||
+          read_raw_string(*raw_props, "resize_mode", resize_str)) {
+        sem.resize_mode = parse_image_resize_mode(resize_str);
+      }
+    }
   }
 
-  if (!sem.has_explicit_label && snap.kind == NVE_COMP_TEXT && snap.children.empty() &&
-      !snap.text.empty()) {
-    sem.label = snap.text;
+  if (!sem.has_explicit_label && node.kind == NVE_NODE_KIND_TEXT &&
+      (node.flags & NVE_NODE_LEAF_TEXT) != 0u && !text.empty()) {
+    sem.label.assign(text.data(), text.size());
   }
 
   return sem;
@@ -669,7 +519,7 @@ NodeSemantics extract_node_semantics(
 
 void apply_node_accessibility(
     NvePlatformView * _Nullable view,
-    const nve::RenderedNodeSnapshot &snap,
+    const NveRenderNode &node,
     const NodeSemantics &sem) {
   if (!view) return;
 
@@ -696,11 +546,11 @@ void apply_node_accessibility(
   } else if (![view isKindOfClass:[NSTextField class]]) {
     view.accessibilityValue = nil;
   }
-  if (snap.kind == NVE_COMP_TEXT_INPUT && [view isKindOfClass:[NSControl class]]) {
+  if (node.kind == NVE_NODE_KIND_TEXT_INPUT && [view isKindOfClass:[NSControl class]]) {
     ((NSControl *)view).enabled = !sem.disabled;
   }
 #else
-  (void)snap;
+  (void)node;
   view.isAccessibilityElement = isElement;
   view.accessibilityLabel = labelStr;
   view.accessibilityHint = hintStr;
@@ -765,12 +615,12 @@ BOOL is_text_input_composing_ime(NvePlatformView * _Nullable view) {
 
 void apply_text_input_props(
     NvePlatformView * _Nullable view,
-    const nve::RenderedNodeSnapshot &snap,
+    std::string_view text,
     const NodeSemantics &sem) {
   if (!view) return;
   NSString *nextText =
-      [[NSString alloc] initWithBytes:snap.text.data()
-                               length:snap.text.size()
+      [[NSString alloc] initWithBytes:text.data()
+                               length:text.size()
                              encoding:NSUTF8StringEncoding] ?: @"";
   NSString *placeholderStr = nsstring_from_std_string(sem.placeholder);
 

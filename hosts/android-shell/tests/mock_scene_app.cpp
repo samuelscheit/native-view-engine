@@ -1,15 +1,25 @@
 #include "nve_abi.h"
+#include "nve_rn_component.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
 
+constexpr const char* kAvatarPng =
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
+
 struct MockSceneApp {
   uint32_t surface_id{1};
   uint32_t press_count{0};
+  uint32_t scroll_count{0};
+  float last_scroll_x{0.0f};
+  float last_scroll_y{0.0f};
   std::vector<uint8_t> frame;
 };
 
@@ -33,6 +43,20 @@ void push_set_text(std::vector<uint8_t>& buf, uint32_t id, const std::string& te
   buf.insert(buf.end(), text.begin(), text.end());
 }
 
+void push_set_raw_str(
+    std::vector<uint8_t>& buf,
+    uint32_t id,
+    std::string_view key,
+    std::string_view val) {
+  push_le<uint8_t>(buf, NVE_OP_SET_RAW_PROP);
+  push_le<uint32_t>(buf, id);
+  push_le<uint16_t>(buf, static_cast<uint16_t>(key.size()));
+  buf.insert(buf.end(), key.begin(), key.end());
+  push_le<uint8_t>(buf, 4); // string tag
+  push_le<uint32_t>(buf, static_cast<uint32_t>(val.size()));
+  buf.insert(buf.end(), val.begin(), val.end());
+}
+
 void push_set_children(std::vector<uint8_t>& buf, uint32_t id, const std::vector<uint32_t>& kids) {
   push_le<uint8_t>(buf, NVE_OP_SET_CHILDREN);
   push_le<uint32_t>(buf, id);
@@ -53,7 +77,13 @@ void push_set_event_mask(std::vector<uint8_t>& buf, uint32_t id, uint64_t mask) 
   push_le<uint64_t>(buf, mask);
 }
 
-std::vector<uint8_t> build_frame(uint32_t surface_id, uint64_t frame_id, uint32_t press_count) {
+std::vector<uint8_t> build_frame(
+    uint32_t surface_id,
+    uint64_t frame_id,
+    uint32_t press_count,
+    uint32_t scroll_count,
+    float scroll_x,
+    float scroll_y) {
   std::vector<uint8_t> ops;
   uint32_t op_count = 0;
 
@@ -72,7 +102,21 @@ std::vector<uint8_t> build_frame(uint32_t surface_id, uint64_t frame_id, uint32_
     ++op_count;
     push_set_text(ops, 4, "Temporary Banner");
     ++op_count;
-    push_set_children(ops, 1, {2, 3, 4});
+    push_create_node(ops, 5, NVE_COMP_IMAGE);
+    ++op_count;
+    push_set_raw_str(ops, 5, "src", kAvatarPng);
+    ++op_count;
+    push_set_raw_str(ops, 5, "resizeMode", "contain");
+    ++op_count;
+    push_create_node(ops, 6, NVE_COMP_SCROLL_VIEW);
+    ++op_count;
+    push_set_children(ops, 1, {2, 3, 4, 5, 6});
+    ++op_count;
+  } else if (scroll_count > 0) {
+    const std::string label =
+        "Scroll: " + std::to_string(static_cast<int>(std::lround(scroll_x))) + "," +
+        std::to_string(static_cast<int>(std::lround(scroll_y)));
+    push_set_text(ops, 2, label);
     ++op_count;
   } else if (press_count == 1) {
     push_set_text(ops, 2, "Count: 1 🚀");
@@ -80,7 +124,7 @@ std::vector<uint8_t> build_frame(uint32_t surface_id, uint64_t frame_id, uint32_
   } else {
     push_set_text(ops, 2, "Count: " + std::to_string(press_count));
     ++op_count;
-    push_set_children(ops, 1, {2, 3});
+    push_set_children(ops, 1, {2, 3, 5, 6});
     ++op_count;
     push_remove_node(ops, 4);
     ++op_count;
@@ -114,7 +158,13 @@ void scene_destroy(NveAppHandle handle) {
 
 NveBufferSlice scene_render(NveAppHandle handle, uint64_t frame_id) {
   auto* app = static_cast<MockSceneApp*>(handle);
-  app->frame = build_frame(app->surface_id, frame_id, app->press_count);
+  app->frame = build_frame(
+      app->surface_id,
+      frame_id,
+      app->press_count,
+      app->scroll_count,
+      app->last_scroll_x,
+      app->last_scroll_y);
   return NveBufferSlice{app->frame.data(), app->frame.size()};
 }
 
@@ -127,6 +177,27 @@ uint32_t scene_dispatch_events(NveAppHandle handle, NveBufferSlice slice) {
   return 0;
 }
 
+uint32_t scene_dispatch_events_direct(NveAppHandle handle, NveEventBatch batch) {
+  auto* app = static_cast<MockSceneApp*>(handle);
+  if (batch.ptr == nullptr || batch.len == 0) {
+    return 0;
+  }
+  uint32_t dirty = 0;
+  for (uint32_t i = 0; i < batch.len; ++i) {
+    const NveDirectEvent& ev = batch.ptr[i];
+    if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll) && ev.node_id == 6) {
+      app->scroll_count += 1;
+      app->last_scroll_x = ev.x;
+      app->last_scroll_y = ev.y;
+      dirty = 1;
+    } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press)) {
+      app->press_count += 1;
+      dirty = 1;
+    }
+  }
+  return dirty;
+}
+
 } // namespace
 
 extern "C" const void* nve_get_interface(uint32_t interface_id) {
@@ -135,7 +206,7 @@ extern "C" const void* nve_get_interface(uint32_t interface_id) {
       .destroy = &scene_destroy,
       .render = &scene_render,
       .dispatch_events = &scene_dispatch_events,
-      .dispatch_events_direct = nullptr,
+      .dispatch_events_direct = &scene_dispatch_events_direct,
   };
   return interface_id == NVE_IFACE_SURFACE ? &kSurface : nullptr;
 }

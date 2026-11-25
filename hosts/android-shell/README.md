@@ -3,7 +3,7 @@
 Built once against React Native Android Prefab (`ReactAndroid::fabricjni` + `nve_fabric_bridge`), or packaged as a standalone zero-Gradle native Android APK via `run-emulator.sh`.
 
 - **Tier 1 (<50 ms, Emulator & physical Android):** WebSocket `TemplatePatch` applied in-place.
-- **Tier 2 (150–400 ms, Emulator & physical Android):** `nve dev` compiles only the app crate for `aarch64-linux-android` (`lib<app>.so`), pushes it via `adb push` to the app's `filesDir`, and calls `NveNativeBridge.nativeHotSwapApp(handle, path)` — zero Gradle rebuilds.
+- **Tier 2 (150–400 ms, Emulator & physical Android):** `nve dev` compiles only the app crate for `aarch64-linux-android` (`lib<app>.so`), pushes it via `adb push` to the app's `filesDir`, and calls `NveMainActivity.nativeLoadDylib(handle, path)` — zero Gradle rebuilds.
 
 ## Standalone Zero-Gradle APK & Emulator Launcher (`run-emulator.sh`)
 

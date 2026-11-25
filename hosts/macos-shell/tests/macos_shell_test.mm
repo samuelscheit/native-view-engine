@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "NveAppleImageCache.h"
 #import "NveMacFabricHost.h"
 #import "RCTNveMacComponentView.h"
 
@@ -630,6 +631,196 @@ struct A11yImeMacApp {
   }
 };
 
+struct ImageScrollIncrementalApp {
+  uint32_t surface_id{1};
+  int stage{0};
+  std::string image_src;
+  std::string resize_mode{"cover"};
+  std::string counter_text{"Tick 0"};
+  int scroll_count{0};
+  float last_scroll_x{-1.0f};
+  float last_scroll_y{-1.0f};
+  float last_scroll_cw{0.0f};
+  float last_scroll_ch{0.0f};
+  std::vector<uint8_t> cmd_buf;
+  static inline ImageScrollIncrementalApp *last_instance = nullptr;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto *self = new ImageScrollIncrementalApp();
+    self->surface_id = sid;
+    self->image_src =
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto *self = static_cast<ImageScrollIncrementalApp *>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  template <typename T>
+  void push(T v) {
+    const auto *p = reinterpret_cast<const uint8_t *>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto *self = static_cast<ImageScrollIncrementalApp *>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0);
+      ++ops;
+    };
+    auto remove_node = [&](uint32_t id) {
+      self->push<uint8_t>(NVE_OP_REMOVE_NODE);
+      self->push<uint32_t>(id);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_text = [&](uint32_t id, const std::string &s) {
+      self->push<uint8_t>(NVE_OP_SET_TEXT);
+      self->push<uint32_t>(id);
+      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1); self->push<float>(w);
+      self->push<uint8_t>(1); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0); self->push<float>(0.0f); }
+      self->push<uint8_t>(0); self->push<uint8_t>(0); self->push<uint8_t>(0);
+      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+
+    if (frame_id == 1) {
+      create_node(2, NVE_COMP_IMAGE);
+      create_node(3, NVE_COMP_SCROLL_VIEW);
+      create_node(4, NVE_COMP_VIEW);
+      create_node(5, NVE_COMP_TEXT);
+      create_node(6, NVE_COMP_TEXT);
+      set_box(2, 32.0f, 32.0f);
+      set_raw_str(2, "src", self->image_src);
+      set_raw_str(2, "resizeMode", self->resize_mode);
+      set_box(3, 240.0f, 120.0f);
+      set_box(4, 300.0f, 400.0f);
+      set_box(5, 160.0f, 24.0f);
+      set_box(6, 160.0f, 24.0f);
+      set_text(5, self->counter_text);
+      set_text(6, "Removable");
+      set_children(NVE_ROOT_NODE_ID, {2, 3, 5, 6});
+      set_children(3, {4});
+    } else if (self->stage == 1) {
+      // Incremental frame: update ONLY text of node 5 (O(1) dirty!).
+      set_text(5, self->counter_text);
+    } else if (self->stage == 2) {
+      // Raw-prop-only update on existing Image node 2 (resizeMode / src).
+      set_raw_str(2, "src", self->image_src);
+      set_raw_str(2, "resizeMode", self->resize_mode);
+    } else if (self->stage == 3) {
+      // Incremental removal of node 6.
+      set_children(NVE_ROOT_NODE_ID, {2, 3, 5});
+      remove_node(6);
+    }
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto *self = static_cast<ImageScrollIncrementalApp *>(h);
+    if (batch.ptr == nullptr) return 0;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent &ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll) && ev.node_id == 3) {
+        ++self->scroll_count;
+        self->last_scroll_x = ev.x;
+        self->last_scroll_y = ev.y;
+        self->last_scroll_cw = ev.width;
+        self->last_scroll_ch = ev.height;
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto *self = static_cast<ImageScrollIncrementalApp *>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0;
+    for (const auto &ev : decoded) {
+      if (ev.kind == nve::EventKind::Scroll && ev.node_id == 3) {
+        ++self->scroll_count;
+        self->last_scroll_x = ev.x;
+        self->last_scroll_y = ev.y;
+        self->last_scroll_cw = ev.width;
+        self->last_scroll_ch = ev.height;
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+    auto *self = static_cast<ImageScrollIncrementalApp *>(h);
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto k = nve::str_slice_view(entries[i].key);
+      if (k == "stage" && entries[i].value.tag == NVE_VAL_I64) {
+        self->stage = static_cast<int>(entries[i].value.data.i64_val);
+      } else if (k == "resizeMode" && entries[i].value.tag == NVE_VAL_STR) {
+        self->resize_mode = std::string(nve::str_slice_view(entries[i].value.data.str_val));
+      } else if (k == "src" && entries[i].value.tag == NVE_VAL_STR) {
+        self->image_src = std::string(nve::str_slice_view(entries[i].value.data.str_val));
+      } else if (k == "counterText" && entries[i].value.tag == NVE_VAL_STR) {
+        self->counter_text = std::string(nve::str_slice_view(entries[i].value.data.str_val));
+      }
+    }
+    return 1;
+  }
+
+  static const void *get_interface(uint32_t interface_id) {
+    static const NveSurfaceApi kSurface{
+        &create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
+    static const NveComponentApi kComp{nullptr, nullptr, &set_props_direct};
+    if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
+    if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
 } // namespace
 
 @interface TestMacComponentDelegate : NSObject <RCTNveMacComponentViewDelegate>
@@ -730,6 +921,7 @@ int main() {
     NSString *noEntryPath = @NVE_TEST_NO_ENTRY_DYLIB;
     NSString *noSurfacePath = @NVE_TEST_NO_SURFACE_DYLIB;
     NSString *statefulPath = @NVE_TEST_STATEFUL_DYLIB;
+    NSString *createFailPath = @NVE_TEST_CREATE_FAIL_DYLIB;
 
     auto assertDylibError = [](NSError *err, NSString *expectedDomain, NSInteger expectedCode) {
       assert(err != nil);
@@ -843,19 +1035,37 @@ int main() {
     [reloadView simulatePressOnNodeId:3 atPoint:NSMakePoint(4.0, 4.0)];
     assert([stateLabel.stringValue isEqualToString:@"state=2"]);
 
-    // Failed reload leaves mounted views and state intact
+    // Failed reload leaves mounted views and state intact (missing surface + create() returns NULL)
     loadErr = nil;
     assert([reloadView reloadNveDylibAtPath:noSurfacePath error:&loadErr] == NO);
     assertDylibError(loadErr, @"nve.macos.rncomponent", 3);
     NSTextField *stillMounted = (NSTextField *)[reloadView nativeViewForNodeId:2];
     assert(stillMounted != nil && [stillMounted.stringValue isEqualToString:@"state=2"]);
 
-    // Warm reload preserves state=2
+    // Transactional rollback: valid dylib whose surface->create() returns NULL must keep live app intact!
+    loadErr = nil;
+    assert([reloadView reloadNveDylibAtPath:createFailPath error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.rncomponent", 3);
+    NSTextField *stillAliveAfterCreateFail = (NSTextField *)[reloadView nativeViewForNodeId:2];
+    assert(stillAliveAfterCreateFail == stillMounted);
+    assert([stillAliveAfterCreateFail.stringValue isEqualToString:@"state=2"]);
+    // Live bridge must still process events after failed transactional reload.
+    [reloadView simulatePressOnNodeId:3 atPoint:NSMakePoint(4.0, 4.0)];
+    assert([stillAliveAfterCreateFail.stringValue isEqualToString:@"state=3"]);
+
+    // Also verify transactional rollback on NveMacFabricHostController.
+    loadErr = nil;
+    assert([reloadCtrl reloadRustAppDylibAtPath:createFailPath error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.shell", 3);
+    assert(reloadCtrl.isAppLoaded == YES);
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=0");
+
+    // Warm reload preserves state=3
     loadErr = nil;
     assert([reloadView reloadNveDylibAtPath:statefulPath error:&loadErr] == YES);
     assert(loadErr == nil);
     NSTextField *reloadedLabel = (NSTextField *)[reloadView nativeViewForNodeId:2];
-    assert(reloadedLabel != nil && [reloadedLabel.stringValue isEqualToString:@"state=2"]);
+    assert(reloadedLabel != nil && [reloadedLabel.stringValue isEqualToString:@"state=3"]);
 
     // 6. Real Rust Dioxus cdylib test: verify nested Text->Text inheritance, visible colors,
     //    non-zero AppKit label frames, live reload state preservation, and optional PNG render.
@@ -1294,6 +1504,136 @@ int main() {
       assert([secureField isKindOfClass:[NSSecureTextField class]]);
       assert([((NSTextField *)secureField).placeholderString isEqualToString:@"Enter name..."]);
       assert([secureField.accessibilityIdentifier isEqualToString:@"name-input"]);
+    }
+
+    // 10. First-class Image (PNG data URI + file:// + bounded LRU + all 4 resizeModes),
+    //     NSScrollView bounds-change -> zero-copy EventKind::Scroll, and O(changed) incremental
+    //     NveSceneView reconciliation!
+    {
+      // 10a. Bounded-LRU cache eviction & invalid URI handling.
+      nve::apple::AppleImageCache smallCache(2u);
+      constexpr const char *kMayaPng =
+          "data:image/png;base64,"
+          "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
+      constexpr const char *kLiamPng =
+          "data:image/png;base64,"
+          "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAg9gVSsGEXB8u5fKHggFOB1JD4MAGcqfXUz+ORAAAAAAElFTkSuQmCC";
+      constexpr const char *kSaraPng =
+          "data:image/png;base64,"
+          "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAhWPTGsGEWB0tE4FDwQCvA6Eh8GAE5RZ/09pCRNAAAAAElFTkSuQmCC";
+      NSImage *imgA1 = smallCache.image_for_source(kMayaPng);
+      NSImage *imgA2 = smallCache.image_for_source(kMayaPng);
+      assert(imgA1 != nil && imgA1 == imgA2);
+      assert(approx_eq(imgA1.size.width, 8.0, 0.01));
+      assert(approx_eq(imgA1.size.height, 8.0, 0.01));
+      assert(smallCache.size() == 1u);
+      NSImage *imgB = smallCache.image_for_source(kLiamPng);
+      assert(imgB != nil && smallCache.size() == 2u);
+      // Touch Maya so Liam becomes LRU, then insert Sara -> evicts Liam, keeps capacity == 2.
+      assert(smallCache.image_for_source(kMayaPng) == imgA1);
+      NSImage *imgC = smallCache.image_for_source(kSaraPng);
+      assert(imgC != nil && smallCache.size() == 2u);
+      assert(smallCache.image_for_source(kMayaPng) == imgA1);
+      assert(smallCache.image_for_source("data:image/png;base64,!!!not-png!!!") == nil);
+      assert(smallCache.image_for_source("file:///nonexistent/nve_missing_avatar.png") == nil);
+
+      // Write real 8x8 PNG to temp file to verify file:// loading.
+      NSString *tmpPngPath =
+          [NSTemporaryDirectory() stringByAppendingPathComponent:
+                                      [NSString stringWithFormat:@"nve_avatar_%d.png", getpid()]];
+      NSData *rawPngBytes = [[NSData alloc]
+          initWithBase64EncodedString:
+              @"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC"
+                              options:0];
+      assert(rawPngBytes != nil && [rawPngBytes writeToFile:tmpPngPath atomically:YES]);
+      NSString *fileUrlStr = [NSURL fileURLWithPath:tmpPngPath].absoluteString;
+      NSImage *fileImg = smallCache.image_for_source(fileUrlStr.UTF8String);
+      assert(fileImg != nil);
+      assert(approx_eq(fileImg.size.width, 8.0, 0.01));
+      assert(approx_eq(fileImg.size.height, 8.0, 0.01));
+
+      // 10b. Live RCTNveMacComponentView test for Image + all 4 resizeModes + ScrollView + O(changed).
+      RCTNveMacComponentView *sceneView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 320, 260)];
+      assert([sceneView attachNveInterface:&ImageScrollIncrementalApp::get_interface surfaceId:55]);
+      assert(ImageScrollIncrementalApp::last_instance != nullptr);
+      ImageScrollIncrementalApp *app = ImageScrollIncrementalApp::last_instance;
+      assert(sceneView.nveLastReconciledDirtyCount == 6u); // initial full sync of all 6 nodes
+
+      NSView *imgRaw = [sceneView nativeViewForNodeId:2];
+      NSScrollView *scrollView = (NSScrollView *)[sceneView nativeViewForNodeId:3];
+      NSView *scrollContentChild = [sceneView nativeViewForNodeId:4];
+      NSTextField *tickLabel = (NSTextField *)[sceneView nativeViewForNodeId:5];
+      NSView *removableView = [sceneView nativeViewForNodeId:6];
+      assert(imgRaw != nil && [imgRaw isKindOfClass:[NSImageView class]]);
+      assert(scrollView != nil && [scrollView isKindOfClass:[NSScrollView class]]);
+      assert(scrollContentChild != nil && tickLabel != nil && removableView != nil);
+
+      NSImageView *imgView = (NSImageView *)imgRaw;
+      assert(imgView.image != nil);
+      assert(approx_eq(imgView.image.size.width, 8.0, 0.01));
+      assert(approx_eq(imgView.image.size.height, 8.0, 0.01));
+      // Default resizeMode = "cover"
+      assert(imgView.imageScaling == NSImageScaleProportionallyUpOrDown);
+      assert([imgView.layer.contentsGravity isEqualToString:kCAGravityResizeAspectFill]);
+      assert(imgView.layer.masksToBounds == YES);
+
+      // Verify all 4 resizeModes update NSImageView scaling & contentsGravity cleanly.
+      NSDictionary<NSString *, id> *containProps = @{@"stage" : @2, @"resizeMode" : @"contain"};
+      assert([sceneView applyPropsDictionary:containProps]);
+      assert(imgView.imageScaling == NSImageScaleProportionallyUpOrDown);
+      assert([imgView.layer.contentsGravity isEqualToString:kCAGravityResizeAspect]);
+
+      NSDictionary<NSString *, id> *stretchProps = @{@"stage" : @2, @"resizeMode" : @"stretch"};
+      assert([sceneView applyPropsDictionary:stretchProps]);
+      assert(imgView.imageScaling == NSImageScaleAxesIndependently);
+      assert([imgView.layer.contentsGravity isEqualToString:kCAGravityResize]);
+
+      NSDictionary<NSString *, id> *centerProps = @{@"stage" : @2, @"resizeMode" : @"center"};
+      assert([sceneView applyPropsDictionary:centerProps]);
+      assert(imgView.imageScaling == NSImageScaleNone);
+      assert([imgView.layer.contentsGravity isEqualToString:kCAGravityCenter]);
+      assert(imgView.layer.masksToBounds == YES);
+
+      NSDictionary<NSString *, id> *coverFileProps = @{
+        @"stage" : @2,
+        @"resizeMode" : @"cover",
+        @"src" : fileUrlStr,
+      };
+      assert([sceneView applyPropsDictionary:coverFileProps]);
+      assert(imgView.image != nil);
+      assert(approx_eq(imgView.image.size.width, 8.0, 0.01));
+      assert(approx_eq(imgView.image.size.height, 8.0, 0.01));
+      assert([imgView.layer.contentsGravity isEqualToString:kCAGravityResizeAspectFill]);
+      [[NSFileManager defaultManager] removeItemAtPath:tmpPngPath error:nil];
+
+      // 10c. NSScrollView bounds change dispatches zero-copy EventKind::Scroll with exact (x, y).
+      assert(scrollView.contentView.postsBoundsChangedNotifications == YES);
+      assert(app->scroll_count == 0);
+      [scrollView.contentView scrollToPoint:NSMakePoint(14.5, 62.25)];
+      [scrollView reflectScrolledClipView:scrollView.contentView];
+      assert(app->scroll_count >= 1);
+      assert(approx_eq(app->last_scroll_x, 14.5, 0.01));
+      assert(approx_eq(app->last_scroll_y, 62.25, 0.01));
+      assert(app->last_scroll_cw >= 300.0f);
+      assert(app->last_scroll_ch >= 400.0f);
+
+      // 10d. Incremental O(changed) NveSceneView reconciliation updates ONLY the 1 dirty node!
+      NSDictionary<NSString *, id> *tickProps = @{@"stage" : @1, @"counterText" : @"Tick 1"};
+      assert([sceneView applyPropsDictionary:tickProps]);
+      assert(sceneView.nveLastReconciledDirtyCount == 1u);
+      assert(sceneView.nveLastReconciledRemovedCount == 0u);
+      assert([tickLabel.stringValue isEqualToString:@"Tick 1"]);
+      assert([sceneView nativeViewForNodeId:2] == imgRaw);
+      assert([sceneView nativeViewForNodeId:3] == scrollView);
+      assert([sceneView nativeViewForNodeId:5] == tickLabel);
+
+      // Incremental removal destroys ONLY the 1 removed node!
+      assert([sceneView applyPropsDictionary:@{@"stage" : @3}]);
+      assert(sceneView.nveLastReconciledRemovedCount == 1u);
+      assert([sceneView nativeViewForNodeId:6] == nil);
+      assert(removableView.superview == nil);
+      assert([sceneView nativeViewForNodeId:5] == tickLabel);
     }
 
     std::cout << "nve_macos_shell_test passed ("

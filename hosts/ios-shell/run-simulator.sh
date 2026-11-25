@@ -159,6 +159,7 @@ HEADER_DEPS=(
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_decoder.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_encoder.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_recorder.hpp"
+  "$REPO_ROOT/hosts/apple-common/NveAppleImageCache.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleSupport.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleFabricHost.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.h"
@@ -214,6 +215,7 @@ for src in "${YOGA_SOURCES[@]+"${YOGA_SOURCES[@]}"}"; do
 done
 
 for src in \
+  "$REPO_ROOT/hosts/apple-common/NveAppleImageCache.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleSupport.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleFabricHost.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.mm" \
