@@ -13,7 +13,7 @@ pub mod snapshot_wal;
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
 
-pub use app::NveApp;
+pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
 pub use hotreload::HotPatchMsg;
 pub use layout::{
     BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, LayoutEngine, TextMeasurer,

@@ -130,12 +130,14 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
     assert!(host.render_ascii_tree().contains("Count: 2"));
 
     // Live Tier-2 dylib hot-swap to generation 2: count == 2 MUST survive!
-    let mut inst2 = inst.reload(&dylib_path, 1).expect("reload gen 2");
-    assert_eq!(inst2.generation(), 2);
+    let outcome = inst.reload(&dylib_path).expect("reload gen 2");
+    assert_eq!(outcome.previous_generation, 1);
+    assert_eq!(outcome.generation, 2);
+    assert_eq!(inst.generation(), 2);
 
     let mut host2 = HeadlessBackend::new();
     host2.set_viewport(1, Viewport::default());
-    let f4 = inst2.render(4);
+    let f4 = inst.render(4);
     host2.submit_frame(&f4).unwrap();
     assert!(
         host2.render_ascii_tree().contains("Count: 2"),

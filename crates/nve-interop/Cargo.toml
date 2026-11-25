@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

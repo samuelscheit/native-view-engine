@@ -1650,6 +1650,7 @@ version = "0.1.0"
 dependencies = [
  "libloading 0.9.1",
  "nve-abi",
+ "nve-engine",
  "serde",
  "serde_json",
 ]

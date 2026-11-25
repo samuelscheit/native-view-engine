@@ -691,29 +691,128 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert_eq!(inst.snapshot_state(), 16u32.to_le_bytes());
 
     // Hot-swap gen 1 -> gen 2 -> gen 3 preserving state across reloads and cleaning up old copies.
-    let mut inst2 = inst.reload(&dylib_path, 1).expect("reload gen 2");
+    let outcome2 = inst.reload(&dylib_path).expect("reload gen 2");
+    assert_eq!(outcome2.previous_generation, 1);
+    assert_eq!(outcome2.generation, 2);
+    assert_eq!(outcome2.preserved_state_bytes, 4);
     assert!(
         !gen1_copy.exists(),
         "gen 1 temp copy must be deleted on drop after unloading library"
     );
-    let gen2_copy = inst2.loaded_copy_path().to_path_buf();
+    let gen2_copy = inst.loaded_copy_path().to_path_buf();
+    assert_ne!(gen2_copy, gen1_copy);
     assert!(gen2_copy.exists(), "gen 2 temp copy must exist while loaded");
-    assert_eq!(inst2.generation(), 2);
-    assert_eq!(inst2.render(3), b"frame=3;counter=16");
-    assert!(inst2.dispatch_events(b"tap2"));
-    assert_eq!(inst2.render(4), b"frame=4;counter=17");
+    assert_eq!(inst.generation(), 2);
+    assert_eq!(inst.render(3), b"frame=3;counter=16");
+    assert!(inst.dispatch_events(b"tap2"));
+    assert_eq!(inst.render(4), b"frame=4;counter=17");
 
-    let mut inst3 = inst2.reload(&dylib_path, 1).expect("reload gen 3");
+    // Transactional failure safety: missing file, corrupt binary, missing symbol, missing
+    // NVE_IFACE_SURFACE, and null handle must ALL fail while keeping gen 2 live and untouched!
+    let missing_path = dir.path().join("missing_gen3.dylib");
+    assert!(matches!(
+        inst.reload(&missing_path),
+        Err(LoaderError::Io(_))
+    ));
+    assert_eq!(inst.generation(), 2);
+    assert!(gen2_copy.exists());
+    assert_eq!(inst.render(40), b"frame=40;counter=17");
+
+    let corrupt_path = dir.path().join("corrupt_gen3.dylib");
+    std::fs::write(&corrupt_path, b"not a valid shared object").unwrap();
+    assert!(matches!(
+        inst.reload(&corrupt_path),
+        Err(LoaderError::Load(_))
+    ));
+    assert_eq!(inst.generation(), 2);
+    assert_eq!(inst.render(41), b"frame=41;counter=17");
+
+    let no_sym_path = compile_test_cdylib(
+        dir.path(),
+        "reload_no_sym",
+        r#"
+        #[unsafe(no_mangle)]
+        pub extern "C" fn not_nve_get_interface() -> u32 { 1 }
+        "#,
+    );
+    assert!(matches!(
+        inst.reload(&no_sym_path),
+        Err(LoaderError::Load(_))
+    ));
+    assert_eq!(inst.generation(), 2);
+    assert_eq!(inst.render(42), b"frame=42;counter=17");
+
+    let no_surface_path = compile_test_cdylib(
+        dir.path(),
+        "reload_no_surface",
+        r#"
+        use std::ffi::c_void;
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn nve_get_interface(_id: u32) -> *const c_void {
+            std::ptr::null()
+        }
+        "#,
+    );
+    assert!(matches!(
+        inst.reload(&no_surface_path),
+        Err(LoaderError::MissingSurfaceInterface)
+    ));
+    assert_eq!(inst.generation(), 2);
+    assert_eq!(inst.render(43), b"frame=43;counter=17");
+
+    let null_handle_path = compile_test_cdylib(
+        dir.path(),
+        "reload_null_handle",
+        r#"
+        use std::ffi::c_void;
+        #[repr(C)]
+        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
+        #[repr(C)]
+        pub struct NveSurfaceApi {
+            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
+            pub destroy: unsafe extern "C" fn(*mut c_void),
+            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
+            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
+        }
+        unsafe extern "C" fn create(_: u32) -> *mut c_void { std::ptr::null_mut() }
+        unsafe extern "C" fn destroy(_: *mut c_void) {}
+        unsafe extern "C" fn render(_: *mut c_void, _: u64) -> NveBufferSlice {
+            NveBufferSlice { ptr: std::ptr::null(), len: 0 }
+        }
+        unsafe extern "C" fn dispatch(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
+        static SURFACE: NveSurfaceApi = NveSurfaceApi {
+            create, destroy, render, dispatch_events: dispatch, dispatch_events_direct: None
+        };
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
+            if id == 1 { &SURFACE as *const _ as *const c_void } else { std::ptr::null() }
+        }
+        "#,
+    );
+    assert!(matches!(
+        inst.reload(&null_handle_path),
+        Err(LoaderError::NullHandle)
+    ));
+    assert_eq!(inst.generation(), 2);
+    assert_eq!(inst.snapshot_state(), 17u32.to_le_bytes());
+    assert_eq!(inst.render(44), b"frame=44;counter=17");
+
+    // Subsequent valid reload to gen 3 still succeeds cleanly and preserves counter == 17!
+    let outcome3 = inst.reload(&dylib_path).expect("reload gen 3");
+    assert_eq!(outcome3.previous_generation, 2);
+    assert_eq!(outcome3.generation, 3);
+    assert_eq!(outcome3.preserved_state_bytes, 4);
     assert!(
         !gen2_copy.exists(),
         "gen 2 temp copy must be deleted on drop after unloading library"
     );
-    let gen3_copy = inst3.loaded_copy_path().to_path_buf();
+    let gen3_copy = inst.loaded_copy_path().to_path_buf();
     assert!(gen3_copy.exists(), "gen 3 temp copy must exist while loaded");
-    assert_eq!(inst3.generation(), 3);
-    assert_eq!(inst3.render(5), b"frame=5;counter=17");
+    assert_eq!(inst.generation(), 3);
+    assert_eq!(inst.render(5), b"frame=5;counter=17");
 
-    drop(inst3);
+    drop(inst);
     assert!(
         !gen3_copy.exists(),
         "gen 3 temp copy must be deleted when HotAppInstance is dropped"

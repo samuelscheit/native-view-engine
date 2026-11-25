@@ -5,6 +5,7 @@
 //! `NveDevApi`), and exposes direct zero-cost calls + state-preserving generation reloads.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use libloading::Library;
 use nve_abi::{
@@ -14,11 +15,14 @@ use nve_abi::{
     NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
+static STAGED_COPY_SEQ: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug)]
 pub enum LoaderError {
     Io(std::io::Error),
     Load(libloading::Error),
     MissingSurfaceInterface,
+    NullHandle,
 }
 
 impl std::fmt::Display for LoaderError {
@@ -29,6 +33,14 @@ impl std::fmt::Display for LoaderError {
 
 impl std::error::Error for LoaderError {}
 
+/// Summary returned after a successful transactional [`HotAppInstance::reload`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReloadOutcome {
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub preserved_state_bytes: usize,
+}
+
 pub struct HotAppInstance {
     _lib: Option<Library>,
     surface: NveSurfaceApi,
@@ -36,13 +48,15 @@ pub struct HotAppInstance {
     component: Option<NveComponentApi>,
     dev: Option<NveDevApi>,
     handle: NveAppHandle,
+    surface_id: SurfaceId,
     generation: u64,
     loaded_copy: PathBuf,
 }
 
 impl HotAppInstance {
-    /// Loads a compiled app `cdylib` via a unique generation filename so `dlopen` never returns
-    /// a stale cached image, resolves `nve_get_interface`, and optionally restores state.
+    /// Loads a compiled app `cdylib` via a unique staged filename so `dlopen` never returns
+    /// a stale cached image (and Windows never hits DLL lock collisions during hot-swap),
+    /// resolves `nve_get_interface`, and optionally restores state.
     pub fn load(
         dylib_path: &Path,
         surface_id: SurfaceId,
@@ -57,10 +71,11 @@ impl HotAppInstance {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("nve_app");
+        let seq = STAGED_COPY_SEQ.fetch_add(1, Ordering::Relaxed);
         let temp_dir = std::env::temp_dir().join("nve-hotswap");
         std::fs::create_dir_all(&temp_dir).map_err(LoaderError::Io)?;
         let loaded_copy = temp_dir.join(format!(
-            "{stem}_gen{generation}_{}.{ext}",
+            "{stem}_gen{generation}_{}_{seq}.{ext}",
             std::process::id()
         ));
         std::fs::copy(dylib_path, &loaded_copy).map_err(LoaderError::Io)?;
@@ -107,6 +122,11 @@ impl HotAppInstance {
         };
 
         let handle = unsafe { (surface.create)(surface_id) };
+        if handle.is_null() {
+            drop(lib);
+            let _ = std::fs::remove_file(&loaded_copy);
+            return Err(LoaderError::NullHandle);
+        }
         if let (Some(dev_api), Some(state)) = (dev, prior_state) {
             if !state.is_empty() {
                 unsafe { (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state)) };
@@ -120,9 +140,14 @@ impl HotAppInstance {
             component,
             dev,
             handle,
+            surface_id,
             generation,
             loaded_copy,
         })
+    }
+
+    pub fn surface_id(&self) -> SurfaceId {
+        self.surface_id
     }
 
     pub fn generation(&self) -> u64 {
@@ -218,16 +243,25 @@ impl HotAppInstance {
         }
     }
 
-    /// Performs an atomic hot-swap to a freshly compiled dylib while preserving app state.
-    pub fn reload(
-        mut self,
-        new_dylib_path: &Path,
-        surface_id: SurfaceId,
-    ) -> Result<Self, LoaderError> {
+    /// Transactionally hot-swaps this live instance to a freshly compiled dylib while preserving
+    /// app state.
+    ///
+    /// Snapshots state from the live app, then stages (under a unique filename to avoid Windows
+    /// DLL lock collisions), loads, validates (`nve_get_interface` + `NVE_IFACE_SURFACE`),
+    /// instantiates, and restores state on the candidate dylib BEFORE swapping out and unloading
+    /// the existing instance. If any step fails, `self` stays 100% alive and untouched.
+    pub fn reload(&mut self, new_dylib_path: &Path) -> Result<ReloadOutcome, LoaderError> {
         let saved = self.snapshot_state();
-        let next_gen = self.generation + 1;
-        drop(self);
-        Self::load(new_dylib_path, surface_id, next_gen, Some(&saved))
+        let previous_generation = self.generation;
+        let next_gen = previous_generation + 1;
+        let candidate = Self::load(new_dylib_path, self.surface_id, next_gen, Some(&saved))?;
+        let old = std::mem::replace(self, candidate);
+        drop(old);
+        Ok(ReloadOutcome {
+            previous_generation,
+            generation: next_gen,
+            preserved_state_bytes: saved.len(),
+        })
     }
 }
 

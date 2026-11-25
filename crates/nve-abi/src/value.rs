@@ -11,13 +11,41 @@
 //!    crossing non-shared boundaries (WASM, IPC, replay logs).
 
 use std::marker::PhantomData;
+use std::mem::{align_of, size_of};
 #[cfg(target_pointer_width = "64")]
-use std::mem::{align_of, offset_of, size_of};
+use std::mem::offset_of;
 
 use crate::{DecodeError, NativeEventKind, NveBufferSlice};
 
 /// Maximum permitted container nesting depth for `NveBinValue` encoding & decoding.
 pub const NVE_BIN_VALUE_MAX_DEPTH: usize = 64;
+
+/// Validates raw FFI slice preconditions before calling `std::slice::from_raw_parts`:
+/// - Non-null pointers must satisfy `ptr.is_aligned()` whenever `align_of::<T>() > 1`.
+/// - `len == 0` with a null or aligned pointer safely returns `Some(&[])`.
+/// - `len > 0` requires `!ptr.is_null()` and `len * size_of::<T>() <= isize::MAX as usize`
+///   without overflow.
+///
+/// # Safety
+/// When `len > 0` and structural preconditions hold, caller must guarantee `ptr` points to `len`
+/// valid, initialized, immutable `T` values for lifetime `'a`.
+#[inline]
+unsafe fn guarded_slice<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
+    if !ptr.is_null() && align_of::<T>() > 1 && !ptr.is_aligned() {
+        return None;
+    }
+    if len == 0 {
+        return Some(&[]);
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    let byte_len = len.checked_mul(size_of::<T>())?;
+    if byte_len > isize::MAX as usize {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
 
 /// Borrowed UTF-8 string slice matching `NveStrSlice` in `nve_abi.h`.
 #[repr(C)]
@@ -41,22 +69,27 @@ impl NveStrSlice {
         }
     }
 
+    /// Validated raw-slice view returning `None` on null pointer with `len > 0` or `len > isize::MAX`.
+    ///
+    /// # Safety
+    /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime when `len > 0`.
+    #[inline]
+    pub unsafe fn try_as_bytes<'a>(self) -> Option<&'a [u8]> {
+        unsafe { guarded_slice(self.ptr, self.len) }
+    }
+
     /// # Safety
     /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime.
     #[inline]
     pub unsafe fn as_bytes<'a>(self) -> &'a [u8] {
-        if self.ptr.is_null() || self.len == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-        }
+        unsafe { self.try_as_bytes() }.unwrap_or(&[])
     }
 
     /// # Safety
     /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime.
     #[inline]
     pub unsafe fn as_str<'a>(self) -> Result<&'a str, DecodeError> {
-        let bytes = unsafe { self.as_bytes() };
+        let bytes = unsafe { self.try_as_bytes() }.ok_or(DecodeError::Truncated)?;
         std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
     }
 }
@@ -387,15 +420,21 @@ impl NveEventBatch {
         }
     }
 
+    /// Validated slice view returning `None` on null pointer with `len > 0`, misaligned pointer,
+    /// or byte-size overflow (`> isize::MAX`).
+    ///
+    /// # Safety
+    /// Caller must ensure `ptr` is valid for `len` initialized `NveDirectEvent`s for `'a`.
+    #[inline]
+    pub unsafe fn try_as_slice<'a>(self) -> Option<&'a [NveDirectEvent]> {
+        unsafe { guarded_slice(self.ptr, self.len as usize) }
+    }
+
     /// # Safety
     /// Caller must ensure `ptr` is valid for `len` initialized `NveDirectEvent`s for `'a`.
     #[inline]
     pub unsafe fn as_slice<'a>(self) -> &'a [NveDirectEvent] {
-        if self.ptr.is_null() || self.len == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len as usize) }
-        }
+        unsafe { self.try_as_slice() }.unwrap_or(&[])
     }
 }
 
@@ -515,7 +554,7 @@ impl<'a> NveValueRef<'a> {
     pub fn as_bytes(&self) -> Option<&'a [u8]> {
         if self.raw.tag == NveValueTag::Bytes as u32 {
             let slice = unsafe { self.raw.data.bytes_val };
-            Some(unsafe { slice.as_slice() })
+            unsafe { guarded_slice(slice.ptr, slice.len) }
         } else {
             None
         }
@@ -525,11 +564,7 @@ impl<'a> NveValueRef<'a> {
     pub fn as_array(&self) -> Option<NveArrayRef<'a>> {
         if self.raw.tag == NveValueTag::Array as u32 {
             let arr = unsafe { self.raw.data.array_val };
-            let slice = if arr.ptr.is_null() || arr.len == 0 {
-                &[]
-            } else {
-                unsafe { std::slice::from_raw_parts(arr.ptr, arr.len) }
-            };
+            let slice = unsafe { guarded_slice(arr.ptr, arr.len) }?;
             Some(NveArrayRef { elems: slice })
         } else {
             None
@@ -540,11 +575,7 @@ impl<'a> NveValueRef<'a> {
     pub fn as_map(&self) -> Option<NveMapRef<'a>> {
         if self.raw.tag == NveValueTag::Map as u32 {
             let map = unsafe { self.raw.data.map_val };
-            let slice = if map.ptr.is_null() || map.len == 0 {
-                &[]
-            } else {
-                unsafe { std::slice::from_raw_parts(map.ptr, map.len) }
-            };
+            let slice = unsafe { guarded_slice(map.ptr, map.len) }?;
             Some(NveMapRef { entries: slice })
         } else {
             None
@@ -619,18 +650,24 @@ pub type NvePropsRef<'a> = NveMapRef<'a>;
 impl<'a> NveMapRef<'a> {
     pub const EMPTY: Self = Self { entries: &[] };
 
+    /// Validated map view returning `None` on null pointer with `count > 0`, misaligned pointer,
+    /// or byte-size overflow (`> isize::MAX`).
+    ///
+    /// # Safety
+    /// `ptr` must be valid for `count` initialized `NveMapEntry` items (and all nested pointers)
+    /// for lifetime `'a`.
+    #[inline]
+    pub unsafe fn try_from_raw_parts(ptr: *const NveMapEntry, count: u32) -> Option<Self> {
+        let entries = unsafe { guarded_slice(ptr, count as usize) }?;
+        Some(Self { entries })
+    }
+
     /// # Safety
     /// `ptr` must be valid for `count` initialized `NveMapEntry` items (and all nested pointers)
     /// for lifetime `'a`.
     #[inline]
     pub unsafe fn from_raw_parts(ptr: *const NveMapEntry, count: u32) -> Self {
-        if ptr.is_null() || count == 0 {
-            Self::EMPTY
-        } else {
-            Self {
-                entries: unsafe { std::slice::from_raw_parts(ptr, count as usize) },
-            }
-        }
+        unsafe { Self::try_from_raw_parts(ptr, count) }.unwrap_or(Self::EMPTY)
     }
 
     /// # Safety
@@ -654,7 +691,7 @@ impl<'a> NveMapRef<'a> {
     pub fn get(&self, key: &str) -> Option<NveValueRef<'a>> {
         let key_bytes = key.as_bytes();
         for entry in self.entries {
-            if unsafe { entry.key.as_bytes() } == key_bytes {
+            if unsafe { entry.key.try_as_bytes() } == Some(key_bytes) {
                 return Some(NveValueRef { raw: &entry.value });
             }
         }
@@ -771,13 +808,22 @@ pub struct NveEventBatchRef<'a> {
 impl<'a> NveEventBatchRef<'a> {
     pub const EMPTY: Self = Self { events: &[] };
 
+    /// Validated batch view returning `None` on null pointer with `len > 0`, misaligned pointer,
+    /// or byte-size overflow.
+    ///
+    /// # Safety
+    /// Caller must ensure `batch.ptr` and all nested pointers are valid for `'a`.
+    #[inline]
+    pub unsafe fn try_from_raw(batch: NveEventBatch) -> Option<Self> {
+        let events = unsafe { batch.try_as_slice() }?;
+        Some(Self { events })
+    }
+
     /// # Safety
     /// Caller must ensure `batch.ptr` and all nested pointers are valid for `'a`.
     #[inline]
     pub unsafe fn from_raw(batch: NveEventBatch) -> Self {
-        Self {
-            events: unsafe { batch.as_slice() },
-        }
+        unsafe { Self::try_from_raw(batch) }.unwrap_or(Self::EMPTY)
     }
 
     /// # Safety
@@ -871,7 +917,7 @@ fn encode_bin_value_depth(
             out.extend_from_slice(b);
         }
         NveValueTag::Bytes => {
-            let b = value.as_bytes().unwrap_or(&[]);
+            let b = value.as_bytes().ok_or(DecodeError::Truncated)?;
             let len = u32::try_from(b.len()).map_err(|_| DecodeError::Truncated)?;
             out.push(NveValueTag::Bytes as u8);
             out.extend_from_slice(&len.to_le_bytes());
@@ -881,7 +927,7 @@ fn encode_bin_value_depth(
             if depth >= NVE_BIN_VALUE_MAX_DEPTH {
                 return Err(DecodeError::MaxDepthExceeded);
             }
-            let arr = value.as_array().unwrap();
+            let arr = value.as_array().ok_or(DecodeError::Truncated)?;
             let count = u32::try_from(arr.len()).map_err(|_| DecodeError::Truncated)?;
             out.push(NveValueTag::Array as u8);
             let byte_len_pos = out.len();
@@ -899,7 +945,7 @@ fn encode_bin_value_depth(
             if depth >= NVE_BIN_VALUE_MAX_DEPTH {
                 return Err(DecodeError::MaxDepthExceeded);
             }
-            let map = value.as_map().unwrap();
+            let map = value.as_map().ok_or(DecodeError::Truncated)?;
             let count = u32::try_from(map.len()).map_err(|_| DecodeError::Truncated)?;
             out.push(NveValueTag::Map as u8);
             let byte_len_pos = out.len();
@@ -1283,3 +1329,200 @@ impl<'a> Iterator for BinMapIter<'a> {
 }
 
 impl ExactSizeIterator for BinMapIter<'_> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
+        let valid_u8 = [1u8, 2, 3, 4];
+        let valid_val = NveValue::i64(42);
+        let valid_entry = NveMapEntry::new("ok", NveValue::bool(true));
+        let valid_ev = NveDirectEvent::press(1, 2, 3, 4.0, 5.0);
+
+        // 1. NveStrSlice: EMPTY (null, 0) succeeds; (null, >0) and (>isize::MAX) rejected.
+        assert_eq!(unsafe { NveStrSlice::EMPTY.try_as_bytes() }, Some(&[][..]));
+        assert_eq!(unsafe { NveStrSlice::EMPTY.as_str() }, Ok(""));
+
+        let null_str = NveStrSlice {
+            ptr: std::ptr::null(),
+            len: 4,
+        };
+        assert_eq!(unsafe { null_str.try_as_bytes() }, None);
+        assert_eq!(unsafe { null_str.as_bytes() }, &[][..]);
+        assert_eq!(unsafe { null_str.as_str() }, Err(DecodeError::Truncated));
+
+        let huge_str = NveStrSlice {
+            ptr: valid_u8.as_ptr(),
+            len: usize::MAX,
+        };
+        assert_eq!(unsafe { huge_str.try_as_bytes() }, None);
+        assert_eq!(unsafe { huge_str.as_bytes() }, &[][..]);
+        assert_eq!(unsafe { huge_str.as_str() }, Err(DecodeError::Truncated));
+
+        let just_over_isize_str = NveStrSlice {
+            ptr: valid_u8.as_ptr(),
+            len: (isize::MAX as usize) + 1,
+        };
+        assert_eq!(unsafe { just_over_isize_str.try_as_bytes() }, None);
+
+        let v_bad_str = NveValue::str(null_str);
+        assert_eq!(unsafe { v_bad_str.as_ref() }.as_str(), None);
+        assert_eq!(
+            encode_bin_value_to_vec(unsafe { v_bad_str.as_ref() }),
+            Err(DecodeError::Truncated)
+        );
+
+        // 2. NveValue::Bytes: (null, 0) valid empty; (null, >0) and usize::MAX rejected.
+        let v_empty_bytes = NveValue::bytes(NveBufferSlice::EMPTY);
+        assert_eq!(unsafe { v_empty_bytes.as_ref() }.as_bytes(), Some(&[][..]));
+
+        let v_null_bytes = NveValue::bytes(NveBufferSlice {
+            ptr: std::ptr::null(),
+            len: 8,
+        });
+        assert_eq!(unsafe { v_null_bytes.as_ref() }.as_bytes(), None);
+        assert_eq!(
+            encode_bin_value_to_vec(unsafe { v_null_bytes.as_ref() }),
+            Err(DecodeError::Truncated)
+        );
+
+        let v_huge_bytes = NveValue::bytes(NveBufferSlice {
+            ptr: valid_u8.as_ptr(),
+            len: usize::MAX,
+        });
+        assert_eq!(unsafe { v_huge_bytes.as_ref() }.as_bytes(), None);
+        assert_eq!(
+            encode_bin_value_to_vec(unsafe { v_huge_bytes.as_ref() }),
+            Err(DecodeError::Truncated)
+        );
+
+        // 3. NveValue::Array: null+len>0, misaligned (0x1), and overflowing len rejected.
+        let v_empty_arr = NveValue {
+            tag: NveValueTag::Array as u32,
+            data: NveValueData {
+                array_val: NveValueArray {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+            },
+        };
+        assert_eq!(
+            unsafe { v_empty_arr.as_ref() }.as_array().map(|a| a.len()),
+            Some(0)
+        );
+
+        let hostile_arrays = [
+            NveValueArray {
+                ptr: std::ptr::null(),
+                len: 1,
+            },
+            NveValueArray {
+                ptr: 0x1usize as *const NveValue,
+                len: 1,
+            },
+            NveValueArray {
+                ptr: 0x1usize as *const NveValue,
+                len: 0,
+            },
+            NveValueArray {
+                ptr: &valid_val as *const NveValue,
+                len: usize::MAX,
+            },
+            NveValueArray {
+                ptr: &valid_val as *const NveValue,
+                len: (isize::MAX as usize) / size_of::<NveValue>() + 1,
+            },
+        ];
+        for arr in hostile_arrays {
+            let v = NveValue {
+                tag: NveValueTag::Array as u32,
+                data: NveValueData { array_val: arr },
+            };
+            assert!(unsafe { v.as_ref() }.as_array().is_none());
+            assert_eq!(
+                encode_bin_value_to_vec(unsafe { v.as_ref() }),
+                Err(DecodeError::Truncated)
+            );
+        }
+
+        // 4. NveValue::Map and NveMapRef::from_raw_parts: null+len>0, misaligned (0x1), overflow.
+        let hostile_maps = [
+            NveValueMap {
+                ptr: std::ptr::null(),
+                len: 1,
+            },
+            NveValueMap {
+                ptr: 0x1usize as *const NveMapEntry,
+                len: 1,
+            },
+            NveValueMap {
+                ptr: 0x1usize as *const NveMapEntry,
+                len: 0,
+            },
+            NveValueMap {
+                ptr: &valid_entry as *const NveMapEntry,
+                len: usize::MAX,
+            },
+            NveValueMap {
+                ptr: &valid_entry as *const NveMapEntry,
+                len: (isize::MAX as usize) / size_of::<NveMapEntry>() + 1,
+            },
+        ];
+        for map in hostile_maps {
+            let v = NveValue {
+                tag: NveValueTag::Map as u32,
+                data: NveValueData { map_val: map },
+            };
+            assert!(unsafe { v.as_ref() }.as_map().is_none());
+            assert_eq!(
+                encode_bin_value_to_vec(unsafe { v.as_ref() }),
+                Err(DecodeError::Truncated)
+            );
+        }
+
+        assert!(unsafe { NveMapRef::try_from_raw_parts(std::ptr::null(), 0) }.is_some());
+        assert!(unsafe { NveMapRef::try_from_raw_parts(std::ptr::null(), 1) }.is_none());
+        assert!(unsafe { NveMapRef::try_from_raw_parts(0x1usize as *const NveMapEntry, 1) }.is_none());
+        assert!(unsafe { NveMapRef::from_raw_parts(0x1usize as *const NveMapEntry, 1) }.is_empty());
+
+        // Corrupt map entry key (null ptr with len > 0) must not match empty key "".
+        let bad_key_entries = [NveMapEntry {
+            key: null_str,
+            value: NveValue::i64(99),
+        }];
+        let map_ref = unsafe { NveMapRef::from_slice(&bad_key_entries) };
+        assert!(map_ref.get("").is_none());
+        assert_eq!(map_ref.iter().count(), 0);
+
+        // 5. NveEventBatch / NveEventBatchRef: null+len>0 and misaligned (0x1) rejected cleanly.
+        assert_eq!(unsafe { NveEventBatch::EMPTY.try_as_slice() }.map(|s| s.len()), Some(0));
+        let null_batch = NveEventBatch {
+            ptr: std::ptr::null(),
+            len: 2,
+        };
+        assert!(unsafe { null_batch.try_as_slice() }.is_none());
+        assert!(unsafe { null_batch.as_slice() }.is_empty());
+        assert!(unsafe { NveEventBatchRef::try_from_raw(null_batch) }.is_none());
+        assert!(unsafe { NveEventBatchRef::from_raw(null_batch) }.is_empty());
+
+        let misaligned_batch = NveEventBatch {
+            ptr: 0x1usize as *const NveDirectEvent,
+            len: 1,
+        };
+        assert!(unsafe { misaligned_batch.try_as_slice() }.is_none());
+        assert!(unsafe { misaligned_batch.as_slice() }.is_empty());
+        assert!(unsafe { NveEventBatchRef::try_from_raw(misaligned_batch) }.is_none());
+        assert!(unsafe { NveEventBatchRef::from_raw(misaligned_batch) }.is_empty());
+
+        // Sanity: valid aligned event batch still works zero-copy.
+        let valid_batch = NveEventBatch {
+            ptr: &valid_ev as *const NveDirectEvent,
+            len: 1,
+        };
+        let batch_ref = unsafe { NveEventBatchRef::try_from_raw(valid_batch) }.expect("valid batch");
+        assert_eq!(batch_ref.len(), 1);
+        assert_eq!(batch_ref.get(0).unwrap().node_id(), 2);
+    }
+}

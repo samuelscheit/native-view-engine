@@ -206,20 +206,14 @@ impl DesktopApp for HotAppSlot {
         new_dylib_path: &Path,
         surface_id: SurfaceId,
     ) -> Result<u64, DesktopHostError> {
-        if let Some(mut inst) = self.instance.take() {
-            self.last_saved_state = inst.snapshot_state();
-            let next_gen = inst.generation() + 1;
-            match inst.reload(new_dylib_path, surface_id) {
-                Ok(reloaded) => {
-                    self.generation = reloaded.generation();
-                    self.instance = Some(reloaded);
-                    Ok(self.generation)
-                }
-                Err(err) => {
-                    self.generation = next_gen;
-                    Err(DesktopHostError::Loader(err))
-                }
+        if let Some(inst) = self.instance.as_mut() {
+            let state = inst.snapshot_state();
+            if !state.is_empty() {
+                self.last_saved_state = state;
             }
+            let outcome = inst.reload(new_dylib_path)?;
+            self.generation = outcome.generation;
+            Ok(self.generation)
         } else {
             let next_gen = self.generation + 1;
             let prior = if self.last_saved_state.is_empty() {
