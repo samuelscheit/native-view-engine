@@ -10,6 +10,7 @@ namespace nve::gtk {
 
 namespace {
 
+#if NVE_NV_ENABLE_WEBVIEW || NVE_NV_ENABLE_VIDEO
 std::string normalize_url_scheme(std::string_view raw) {
   std::string norm;
   norm.reserve(raw.size());
@@ -20,7 +21,9 @@ std::string normalize_url_scheme(std::string_view raw) {
   }
   return norm;
 }
+#endif
 
+#if NVE_NV_ENABLE_BLUR
 void load_css_provider(GtkCssProvider* provider, const std::string& css) {
   if (provider == nullptr) return;
 #if GTK_CHECK_VERSION(4, 12, 0)
@@ -58,14 +61,6 @@ bool is_blur_kind(std::string_view k) noexcept {
   return k == nve::kNativeKindBlurSurface || k == nve::kNativeKindBlurAlias;
 }
 
-bool is_webview_kind(std::string_view k) noexcept {
-  return k == nve::kNativeKindWebView || k == nve::kNativeKindWebViewAlias;
-}
-
-bool is_video_kind(std::string_view k) noexcept {
-  return k == nve::kNativeKindVideoPlayer || k == nve::kNativeKindVideoAlias;
-}
-
 nve::NativeViewAdapter make_blur_adapter() {
   nve::NativeViewAdapter adapter{};
   adapter.create = [](uint32_t node_id, std::string_view, const nve::NvnpDecoder*) -> void* {
@@ -85,6 +80,12 @@ nve::NativeViewAdapter make_blur_adapter() {
     delete surface;
   };
   return adapter;
+}
+#endif // NVE_NV_ENABLE_BLUR
+
+#if NVE_NV_ENABLE_WEBVIEW
+bool is_webview_kind(std::string_view k) noexcept {
+  return k == nve::kNativeKindWebView || k == nve::kNativeKindWebViewAlias;
 }
 
 nve::NativeViewAdapter make_webview_adapter(
@@ -118,6 +119,12 @@ nve::NativeViewAdapter make_webview_adapter(
   };
   return adapter;
 }
+#endif // NVE_NV_ENABLE_WEBVIEW
+
+#if NVE_NV_ENABLE_VIDEO
+bool is_video_kind(std::string_view k) noexcept {
+  return k == nve::kNativeKindVideoPlayer || k == nve::kNativeKindVideoAlias;
+}
 
 nve::NativeViewAdapter make_video_adapter(
     std::function<std::unique_ptr<NveGtkVideoBackend>(uint32_t)> factory) {
@@ -150,21 +157,11 @@ nve::NativeViewAdapter make_video_adapter(
   };
   return adapter;
 }
+#endif // NVE_NV_ENABLE_VIDEO
 
 } // namespace
 
-bool is_safe_gtk_webview_url(std::string_view url) noexcept {
-  const std::string norm = normalize_url_scheme(url);
-  if (norm.empty()) return false;
-  return norm.starts_with("https://") || norm.starts_with("http://") || norm == "about:blank";
-}
-
-bool is_safe_gtk_media_uri(std::string_view uri) noexcept {
-  const std::string norm = normalize_url_scheme(uri);
-  if (norm.empty()) return false;
-  return norm.starts_with("https://") || norm.starts_with("http://") || norm.starts_with("file://");
-}
-
+#if NVE_NV_ENABLE_BLUR
 GtkTintRgba unpack_gtk_tint_rrggbbaa(uint32_t rrggbbaa) noexcept {
   GtkTintRgba out{};
   out.r = static_cast<uint8_t>((rrggbbaa >> 24u) & 0xFFu);
@@ -272,6 +269,21 @@ void NveGtkBlurSurface::unmount() {
   }
 }
 
+NveGtkBlurSurface* blur_surface_for_node(
+    const nve::NativeViewRegistry& registry,
+    uint32_t node_id) noexcept {
+  if (!is_blur_kind(registry.kind_for(node_id))) return nullptr;
+  return static_cast<NveGtkBlurSurface*>(registry.instance_for(node_id));
+}
+#endif // NVE_NV_ENABLE_BLUR
+
+#if NVE_NV_ENABLE_WEBVIEW
+bool is_safe_gtk_webview_url(std::string_view url) noexcept {
+  const std::string norm = normalize_url_scheme(url);
+  if (norm.empty()) return false;
+  return norm.starts_with("https://") || norm.starts_with("http://") || norm == "about:blank";
+}
+
 NveGtkWebView::NveGtkWebView(std::unique_ptr<NveGtkWebViewBackend> backend)
     : backend_(std::move(backend)) {
   box_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -342,6 +354,21 @@ void NveGtkWebView::unmount() {
     g_object_unref(box_);
     box_ = nullptr;
   }
+}
+
+NveGtkWebView* web_view_for_node(
+    const nve::NativeViewRegistry& registry,
+    uint32_t node_id) noexcept {
+  if (!is_webview_kind(registry.kind_for(node_id))) return nullptr;
+  return static_cast<NveGtkWebView*>(registry.instance_for(node_id));
+}
+#endif // NVE_NV_ENABLE_WEBVIEW
+
+#if NVE_NV_ENABLE_VIDEO
+bool is_safe_gtk_media_uri(std::string_view uri) noexcept {
+  const std::string norm = normalize_url_scheme(uri);
+  if (norm.empty()) return false;
+  return norm.starts_with("https://") || norm.starts_with("http://") || norm.starts_with("file://");
 }
 
 NveGtkVideoPlayer::NveGtkVideoPlayer(std::unique_ptr<NveGtkVideoBackend> backend)
@@ -421,69 +448,78 @@ void NveGtkVideoPlayer::unmount() {
   }
 }
 
+NveGtkVideoPlayer* video_player_for_node(
+    const nve::NativeViewRegistry& registry,
+    uint32_t node_id) noexcept {
+  if (!is_video_kind(registry.kind_for(node_id))) return nullptr;
+  return static_cast<NveGtkVideoPlayer*>(registry.instance_for(node_id));
+}
+#endif // NVE_NV_ENABLE_VIDEO
+
 void register_gtk_native_views(nve::NativeViewRegistry& registry, NveGtkNativeViewHooks hooks) {
+  (void)registry;
+  (void)hooks;
+#if NVE_NV_ENABLE_BLUR
   registry.register_adapter(nve::kNativeKindBlurSurface, make_blur_adapter());
   registry.register_adapter(nve::kNativeKindBlurAlias, make_blur_adapter());
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
   registry.register_adapter(nve::kNativeKindWebView, make_webview_adapter(hooks.create_webview_backend));
   registry.register_adapter(
       nve::kNativeKindWebViewAlias,
       make_webview_adapter(std::move(hooks.create_webview_backend)));
+#endif
+#if NVE_NV_ENABLE_VIDEO
   registry.register_adapter(nve::kNativeKindVideoPlayer, make_video_adapter(hooks.create_video_backend));
   registry.register_adapter(
       nve::kNativeKindVideoAlias,
       make_video_adapter(std::move(hooks.create_video_backend)));
+#endif
 }
 
 void bind_gtk_native_views_to_fabric_host(
     NveFabricHostHandle host,
     nve::NativeViewRegistry& registry) {
+  (void)registry;
   if (host == nullptr) return;
+#if NVE_NV_ENABLE_BLUR
   registry.bind_to_fabric_host(host, nve::kNativeKindBlurSurface);
   registry.bind_to_fabric_host(host, nve::kNativeKindBlurAlias);
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
   registry.bind_to_fabric_host(host, nve::kNativeKindWebView);
   registry.bind_to_fabric_host(host, nve::kNativeKindWebViewAlias);
+#endif
+#if NVE_NV_ENABLE_VIDEO
   registry.bind_to_fabric_host(host, nve::kNativeKindVideoPlayer);
   registry.bind_to_fabric_host(host, nve::kNativeKindVideoAlias);
+#endif
 }
 
 GtkWidget* native_widget_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept {
   const std::string_view k = registry.kind_for(node_id);
+  (void)k;
+#if NVE_NV_ENABLE_BLUR
   if (is_blur_kind(k)) {
     auto* b = static_cast<NveGtkBlurSurface*>(registry.instance_for(node_id));
     return b != nullptr ? b->widget() : nullptr;
   }
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
   if (is_webview_kind(k)) {
     auto* w = static_cast<NveGtkWebView*>(registry.instance_for(node_id));
     return w != nullptr ? w->widget() : nullptr;
   }
+#endif
+#if NVE_NV_ENABLE_VIDEO
   if (is_video_kind(k)) {
     auto* v = static_cast<NveGtkVideoPlayer*>(registry.instance_for(node_id));
     return v != nullptr ? v->widget() : nullptr;
   }
+#endif
   return nullptr;
-}
-
-NveGtkBlurSurface* blur_surface_for_node(
-    const nve::NativeViewRegistry& registry,
-    uint32_t node_id) noexcept {
-  if (!is_blur_kind(registry.kind_for(node_id))) return nullptr;
-  return static_cast<NveGtkBlurSurface*>(registry.instance_for(node_id));
-}
-
-NveGtkWebView* web_view_for_node(
-    const nve::NativeViewRegistry& registry,
-    uint32_t node_id) noexcept {
-  if (!is_webview_kind(registry.kind_for(node_id))) return nullptr;
-  return static_cast<NveGtkWebView*>(registry.instance_for(node_id));
-}
-
-NveGtkVideoPlayer* video_player_for_node(
-    const nve::NativeViewRegistry& registry,
-    uint32_t node_id) noexcept {
-  if (!is_video_kind(registry.kind_for(node_id))) return nullptr;
-  return static_cast<NveGtkVideoPlayer*>(registry.instance_for(node_id));
 }
 
 } // namespace nve::gtk

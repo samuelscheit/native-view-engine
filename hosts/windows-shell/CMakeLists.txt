@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(NVE_WITH_RNW_FABRIC "Enable react-native-windows 0.83+/0.88+ Composition Fabric integration" OFF)
+option(NVE_ENABLE_NATIVE_VIEWS "Enable packages/modules/native-views" OFF)
 set(RNW_GENERATED_DIR "" CACHE PATH "Path to react-native-windows C++/WinRT generated headers (containing winrt/Microsoft.ReactNative.Composition.h)")
 set(NVE_RNW_EXTRA_INCLUDE_DIRS "" CACHE STRING "Optional extra include directories for react-native-windows / Windows App SDK")
 set(NVE_RNW_LIBS "" CACHE STRING "Optional libraries to link when NVE_WITH_RNW_FABRIC=ON")
@@ -16,7 +17,6 @@ endif()
 
 set(NVE_WIN_SHELL_SOURCES
   NveRnwComponentView.cpp
-  NveWinNativeViews.cpp
   NveWinWindowManager.cpp
 )
 if(WIN32)
@@ -44,6 +44,17 @@ target_link_libraries(nve_windows_shell_lib
   PUBLIC
     nve_fabric_bridge
 )
+
+if(NVE_ENABLE_NATIVE_VIEWS)
+  if(NOT TARGET nve_win_native_views)
+    add_subdirectory(
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../packages/modules/native-views/windows"
+      "${CMAKE_CURRENT_BINARY_DIR}/nve_win_native_views"
+    )
+  endif()
+  target_link_libraries(nve_windows_shell_lib PUBLIC nve_win_native_views)
+  target_compile_definitions(nve_windows_shell_lib PUBLIC NVE_ENABLE_NATIVE_VIEWS=1)
+endif()
 
 if(WIN32)
   target_link_libraries(nve_windows_shell_lib

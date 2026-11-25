@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nve_flutter/nve_flutter.dart';
+import 'package:nve_native_views/nve_native_views.dart';
 
 class _NvnpBuilder {
   final BytesBuilder _b = BytesBuilder()..add(<int>[0x4E, 0x56, 0x4E, 0x50, 1, 0, 0]);
@@ -189,6 +189,20 @@ void main() {
     expectCodecErr(() => NvncDecoder.parse(Uint8List.fromList(<int>[0x4E, 0x56, 0x4E, 0x43, 1, 2, 0, 0, 0x00])), NveNativeViewCodecErrorKind.trailingBytes);
     expectCodecErr(() => NvnpDecoder.parse(Uint8List.fromList(<int>[0x4E, 0x56, 0x4E, 0x50, 1, 0xFF, 0x7F])), NveNativeViewCodecErrorKind.tooManyFields);
     expectCodecErr(() => NvncDecoder.parse(Uint8List.fromList(<int>[0x4E, 0x56, 0x4E, 0x43, 1, 1, 0, 200])), NveNativeViewCodecErrorKind.tooManyFields);
+  });
+
+  test('Per-view registration toggles register only selected views', () {
+    final NveNativeViewRegistry blurOnly = NveNativeViewRegistry()
+      ..registerDefaultFlutterNativeViews(enableBlur: true, enableWebView: false, enableVideo: false);
+    expect(blurOnly.supports(NveNativeViewConstants.kindBlurSurface), isTrue);
+    expect(blurOnly.supports(NveNativeViewConstants.kindBlurAlias), isTrue);
+    expect(blurOnly.supports(NveNativeViewConstants.kindWebView), isFalse);
+    expect(blurOnly.supports(NveNativeViewConstants.kindVideoPlayer), isFalse);
+
+    final NveNativeViewRegistry webOnly = NveNativeViewRegistry()..registerWebView();
+    expect(webOnly.supports(NveNativeViewConstants.kindBlurSurface), isFalse);
+    expect(webOnly.supports(NveNativeViewConstants.kindWebView), isTrue);
+    expect(webOnly.supports(NveNativeViewConstants.kindVideoPlayer), isFalse);
   });
 
   testWidgets('Registry wildcards, URL safety, BlurSurface BackdropFilter, WebView & VideoPlayer', (WidgetTester tester) async {

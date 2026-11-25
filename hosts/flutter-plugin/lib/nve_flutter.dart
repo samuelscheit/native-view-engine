@@ -14,7 +14,6 @@ export 'nve_hybrid_runtime.dart';
 export 'src/app_instance.dart';
 export 'src/channel_client.dart';
 export 'src/event_codec.dart';
-export 'src/nve_native_view_registry.dart';
 export 'src/nve_pair_client.dart';
 export 'src/nve_pair_protocol.dart';
 export 'src/nve_paired_surface.dart';
