@@ -19,7 +19,9 @@ pub use environment::{TraitEnvironment, TraitOverrides};
 pub use resolver::TraitResolver;
 pub use store::{TraitStore, ViewportChangeMask};
 pub use types::{
-    CanHover, ColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard, HighContrast,
-    HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, SafeAreaInsets,
+    effective_bottom_inset, keyboard_insets_from_visual_viewport, CanHover, ColorScheme,
+    ContainerSize, DeviceFormFactor, HasHardwareKeyboard, HighContrast, HostToolkit,
+    KeyboardInsets, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, SafeAreaInsets,
     ScaleFactor, SizeClass, TextScale, UiDensity, VerticalSizeClass,
+    VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };

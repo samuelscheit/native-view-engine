@@ -43,4 +43,5 @@ web-sys = { workspace = true, features = [
     "NodeList",
     "Performance",
     "Storage",
+    "VisualViewport",
 ] }

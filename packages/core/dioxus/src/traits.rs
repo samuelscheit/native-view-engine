@@ -20,11 +20,12 @@ use dioxus_core_macro::{component, rsx, Props};
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 
 pub use nve_interop::traits::{
-    BuiltinTraitSlot, BuiltinTraits, CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard,
-    HighContrast, HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion,
-    SafeAreaInsets, ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides,
-    TraitResolver, TraitStore, UiDensity, VerticalSizeClass, ViewportChangeMask,
-    BUILTIN_TRAIT_COUNT,
+    effective_bottom_inset, keyboard_insets_from_visual_viewport, BuiltinTraitSlot, BuiltinTraits,
+    CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast, HostToolkit,
+    KeyboardInsets, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, SafeAreaInsets,
+    ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitResolver,
+    TraitStore, UiDensity, VerticalSizeClass, ViewportChangeMask, BUILTIN_TRAIT_COUNT,
+    VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 
 struct ReactiveStoreInner {

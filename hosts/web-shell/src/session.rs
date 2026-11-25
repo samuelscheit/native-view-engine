@@ -15,7 +15,7 @@ use nve_dioxus::DioxusSurface;
 use nve_engine::HotPatchMsg;
 #[cfg(any(feature = "app-studio", feature = "app-counter"))]
 use nve_engine::NveApp;
-use nve_engine::{fnv1a_64, BackendError, FrameTiming, RenderBackend, SurfaceRunner, Viewport};
+use nve_engine::{xxh64, BackendError, FrameTiming, RenderBackend, SurfaceRunner, Viewport};
 #[cfg(feature = "app-counter")]
 use nve_example_counter::{CounterModule, COUNTER_STATE_BIN_VERSION};
 #[cfg(feature = "app-studio")]
@@ -267,7 +267,7 @@ impl WebAppSession {
         self.app.try_restore_state(bytes)
     }
 
-    /// Computes a fast FNV-1a64 fingerprint of `(state_bytes, viewport, scroll_offsets)` so
+    /// Computes a fast XXH64 fingerprint of `(state_bytes, viewport, scroll_offsets)` so
     /// debounced & lifecycle snapshot hooks skip redundant work when state has not changed.
     pub fn snapshot_fingerprint(&mut self, scroll_offsets: &[(u32, u32)]) -> Option<(Vec<u8>, u64)> {
         let state_bytes = self.snapshot_state()?;
@@ -280,7 +280,7 @@ impl WebAppSession {
             buf.extend_from_slice(&idx.to_le_bytes());
             buf.extend_from_slice(&top.to_le_bytes());
         }
-        let hash = fnv1a_64(&buf);
+        let hash = xxh64(&buf, 0);
         Some((state_bytes, hash))
     }
 

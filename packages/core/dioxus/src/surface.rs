@@ -62,6 +62,13 @@ impl DioxusSurface {
         }
     }
 
+    /// Runs `f` inside `VirtualDom`'s `ScopeId::ROOT` runtime context (e.g. for host callbacks
+    /// updating a [`crate::ReactiveTraitStore`] or root signals).
+    #[inline]
+    pub fn in_root_scope<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        self.vdom.in_scope(dioxus_core::ScopeId::ROOT, f)
+    }
+
     pub fn signal_registry(&self) -> &SignalRegistry {
         &self.signal_registry
     }
@@ -133,6 +140,9 @@ impl DioxusSurface {
         self.writer.begin_frame(self.surface_id, frame_id);
         if !self.initialized {
             self.vdom.rebuild(&mut self.writer);
+            // Flush any scopes dirtied during initial mount (e.g. an ErrorBoundary catching a
+            // child's initial render error/panic) so frame 1 immediately emits the fallback UI.
+            self.vdom.render_immediate(&mut self.writer);
             self.initialized = true;
         } else {
             self.vdom.render_immediate(&mut self.writer);

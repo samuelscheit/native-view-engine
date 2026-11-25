@@ -232,6 +232,7 @@ impl WebBackend {
             {
                 out.push_str(" type=\"password\"");
             }
+            crate::input_attrs::write_input_hint_attrs_html(&el.raw_props, out);
         }
 
         // Canonical ARIA & boolean accessibility attributes.

@@ -156,6 +156,19 @@ pub mod elements {
         multiline => "multiline",
         secure_text_entry => "secureTextEntry",
         read_only => "readOnly",
+        autocomplete => "autocomplete",
+        input_mode => "inputmode",
+        inputmode => "inputmode",
+    });
+    define_element!(input, "input", {
+        placeholder => "placeholder",
+        value => "value",
+        multiline => "multiline",
+        secure_text_entry => "secureTextEntry",
+        read_only => "readOnly",
+        autocomplete => "autocomplete",
+        input_mode => "inputmode",
+        inputmode => "inputmode",
     });
     define_element!(skia_canvas, "skia-canvas", {
         draw_list => "drawList",

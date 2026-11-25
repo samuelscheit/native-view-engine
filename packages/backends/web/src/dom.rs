@@ -6,9 +6,9 @@
 use core::fmt::Write as _;
 use nve_abi::hash::HashSet;
 
-use nve_abi::{ComponentKind, NodeId, RawPropValue, ROOT_NODE_ID};
+use nve_abi::{NodeId, ROOT_NODE_ID};
 #[cfg(target_arch = "wasm32")]
-use nve_abi::Dimension;
+use nve_abi::{ComponentKind, Dimension, RawPropValue};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
@@ -20,25 +20,7 @@ use crate::reconcile::{plan_keyed_child_ops, ChildDiffOp};
 use crate::stylesheet::resolve_node_style;
 use crate::WebBackend;
 
-/// Evaluates whether a [`RawPropValue`] represents a boolean-true flag (e.g. `disabled`,
-/// `secureTextEntry`, `readOnly`).
-#[inline]
-pub fn is_truthy_raw_prop(value: &RawPropValue) -> bool {
-    match value {
-        RawPropValue::Bool(b) => *b,
-        RawPropValue::String(s) => {
-            let t = s.trim();
-            !t.is_empty()
-                && !matches!(
-                    t.to_ascii_lowercase().as_str(),
-                    "false" | "0" | "no" | "off"
-                )
-        }
-        RawPropValue::I64(n) => *n != 0,
-        RawPropValue::F64(n) => *n != 0.0,
-        RawPropValue::Null | RawPropValue::Bytes(_) => false,
-    }
-}
+pub use crate::input_attrs::{is_truthy_raw_prop, map_a11y_or_input_attr, MappedHtmlAttr};
 
 /// Where a `SetRawProp` lands. One decision for the mirror, SSR and the live DOM path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,52 +82,6 @@ pub fn raw_prop_route(key: &str) -> RawPropRoute {
     }
 }
 
-/// Canonical HTML / ARIA attribute mutation produced from an NVE raw prop.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MappedHtmlAttr<'a> {
-    Set(&'static str, &'a str),
-    Remove(&'static str),
-    Disabled(bool),
-    ReadOnly(bool),
-}
-
-/// Maps NVE accessibility and `<input>` semantics onto canonical HTML/ARIA attributes.
-pub fn map_a11y_or_input_attr<'a>(
-    kind: ComponentKind,
-    key: &str,
-    value: &'a RawPropValue,
-) -> Option<MappedHtmlAttr<'a>> {
-    match key {
-        "accessibilityLabel" | "accessibility_label" => match value {
-            RawPropValue::String(s) if !s.is_empty() => Some(MappedHtmlAttr::Set("aria-label", s)),
-            _ => Some(MappedHtmlAttr::Remove("aria-label")),
-        },
-        "accessibilityRole" | "accessibility_role" => match value {
-            RawPropValue::String(s) if !s.is_empty() => Some(MappedHtmlAttr::Set("role", s)),
-            _ => Some(MappedHtmlAttr::Remove("role")),
-        },
-        "accessibilityHint" | "accessibility_hint" => match value {
-            RawPropValue::String(s) if !s.is_empty() => {
-                Some(MappedHtmlAttr::Set("aria-description", s))
-            }
-            _ => Some(MappedHtmlAttr::Remove("aria-description")),
-        },
-        "disabled" => Some(MappedHtmlAttr::Disabled(is_truthy_raw_prop(value))),
-        // Only a secure input carries `type`; every other element (and a non-secure input, whose
-        // default type is text) has none, as in `render_html` and SSR.
-        "secureTextEntry" | "secure_text_entry" => Some(
-            if kind == ComponentKind::TextInput && is_truthy_raw_prop(value) {
-                MappedHtmlAttr::Set("type", "password")
-            } else {
-                MappedHtmlAttr::Remove("type")
-            },
-        ),
-        "readOnly" | "read_only" | "readonly" => {
-            Some(MappedHtmlAttr::ReadOnly(is_truthy_raw_prop(value)))
-        }
-        _ => None,
-    }
-}
 
 
 #[cfg(target_arch = "wasm32")]
@@ -205,10 +141,15 @@ impl WebBackend {
                     // Defer live DOM `.value` write to 3-way `StateReconciler` in `finalize_hydration`.
                     return;
                 }
+                self.input_sync.borrow_mut().on_backend_value_sync(node_id, text);
                 if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>()
                     && inp.value() != text
                 {
                     inp.set_value(text);
+                } else if let Some(ta) = dom_el.dyn_ref::<web_sys::HtmlTextAreaElement>()
+                    && ta.value() != text
+                {
+                    ta.set_value(text);
                 }
             } else if !has_children {
                 // Text shows only while the node has no element children (it returns when
@@ -487,9 +428,16 @@ impl WebBackend {
                         // Defer live DOM `.value` write to 3-way `StateReconciler` in `finalize_hydration`.
                         return;
                     }
+                    self.input_sync.borrow_mut().on_backend_value_sync(node_id, s);
                     if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>() {
                         if inp.value() != *s {
                             inp.set_value(s);
+                        }
+                        return;
+                    }
+                    if let Some(ta) = dom_el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+                        if ta.value() != *s {
+                            ta.set_value(s);
                         }
                         return;
                     }
