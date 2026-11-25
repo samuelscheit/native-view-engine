@@ -7,6 +7,7 @@ pub mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
 pub mod profiler;
+pub mod snapshot;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
@@ -17,6 +18,11 @@ pub use layout::{
     BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, LayoutEngine, TextMeasurer,
 };
 pub use profiler::{FrameProfiler, FrameTiming};
+pub use snapshot::{
+    encode_snapshot, fnv1a_64, write_snapshot_atomic, MmapSnapshot, RelocatableStateArena,
+    RelocatableTableView, RelocatableValue, SnapshotError, SnapshotHeader, NVE_SNAP_FORMAT_VERSION,
+    NVE_SNAP_MAGIC, SNAPSHOT_HEADER_SIZE,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {

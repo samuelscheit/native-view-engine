@@ -63,6 +63,13 @@ Prioritized roadmap for `native-view-engine`, ordered from immediate branch inte
 - [ ] **Continuous benchmark regression tracking**
   - Track Criterion (`cargo bench`) and `nve_fabric_bridge_bench --json` baselines to catch frame/layout/ABI regressions.
 
+- [ ] **Instant-Boot Frame-0 `CommandBuffer` + `mmap` Zero-Copy State Snapshot**
+  - [x] Land core `crates/nve-engine/src/snapshot.rs` prototype: aligned `NVE_SNAP` binary container with FNV-1a checksum, crash-safe atomic writer, zero-dependency POSIX/Win32 `mmap` reader (`wasm32` fallback), and pointer-free `RelocatableStateArena` / `RelocatableTableView` zero-copy state lookup.
+  - [ ] Integrate Dioxus signal table archiving into the relocatable state snapshot format.
+  - [ ] Add append-only WAL compaction for incremental state persistence between full snapshots.
+  - [ ] Wire native host Frame-0 early-paint hook to replay the mapped `CommandBuffer` before runtime cold-boot completes.
+  - [ ] Add WASM `wizer` pre-initialization pipeline for instant web snapshot hydration.
+
 ## Flagship / Vision
 
 - [ ] **NVE Studio (Meta Workbench)**
