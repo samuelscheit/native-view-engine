@@ -2,6 +2,7 @@
 #import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
 #import "NveAppleImageCache.h"
+#import "NveAppleNativeViews.h"
 #import "NveMacFabricHost.h"
 #import "RCTNveMacComponentView.h"
 
@@ -2173,6 +2174,125 @@ int main() {
       [pairHost disconnectPaired];
       assert(pairHost.isPaired == NO);
       srv.join();
+    }
+
+    // 13. NativeViewRegistry + real AppKit NSVisualEffectView (BlurSurface) & WKWebView (WebView)
+    //     driven by zero-JSON NVNP props and NVNC DispatchCommand frames through FabricHost.
+    {
+      auto push_u16 = [](std::vector<uint8_t> &b, uint16_t v) {
+        b.push_back(static_cast<uint8_t>(v & 0xFFu));
+        b.push_back(static_cast<uint8_t>((v >> 8u) & 0xFFu));
+      };
+      auto push_u32 = [](std::vector<uint8_t> &b, uint32_t v) {
+        for (int i = 0; i < 4; ++i) b.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFFu));
+      };
+      auto push_f32 = [](std::vector<uint8_t> &b, float v) {
+        uint32_t bits = 0u;
+        std::memcpy(&bits, &v, sizeof(bits));
+        for (int i = 0; i < 4; ++i) b.push_back(static_cast<uint8_t>((bits >> (i * 8)) & 0xFFu));
+      };
+      auto encode_blur_props = [&](nve::BlurMaterial mat, float intensity, std::optional<uint32_t> tint) {
+        std::vector<uint8_t> buf = {'N', 'V', 'N', 'P', 1u, 3u, 0u};
+        push_u16(buf, 1u); buf.push_back(2u); push_u32(buf, static_cast<uint32_t>(mat));
+        push_u16(buf, 2u); buf.push_back(5u); push_f32(buf, intensity);
+        push_u16(buf, 3u);
+        if (tint.has_value()) { buf.push_back(2u); push_u32(buf, *tint); } else { buf.push_back(0u); }
+        return buf;
+      };
+      auto encode_webview_props = [&](std::string_view url, bool allows_bf) {
+        std::vector<uint8_t> buf = {'N', 'V', 'N', 'P', 1u, 2u, 0u};
+        push_u16(buf, 1u); buf.push_back(7u); push_u32(buf, static_cast<uint32_t>(url.size()));
+        buf.insert(buf.end(), url.begin(), url.end());
+        push_u16(buf, 2u); buf.push_back(1u); buf.push_back(allows_bf ? 1u : 0u);
+        return buf;
+      };
+      auto encode_cmd_no_args = [&](uint16_t op) {
+        std::vector<uint8_t> buf = {'N', 'V', 'N', 'C', 1u};
+        push_u16(buf, op);
+        buf.push_back(0u);
+        return buf;
+      };
+      auto encode_cmd_str = [&](uint16_t op, std::string_view arg) {
+        std::vector<uint8_t> buf = {'N', 'V', 'N', 'C', 1u};
+        push_u16(buf, op);
+        buf.push_back(1u);
+        buf.push_back(7u);
+        push_u32(buf, static_cast<uint32_t>(arg.size()));
+        buf.insert(buf.end(), arg.begin(), arg.end());
+        return buf;
+      };
+
+      nve::NativeViewRegistry registry;
+      nve::apple::register_apple_native_views(registry);
+      assert(registry.supports(nve::kNativeKindBlurSurface));
+      assert(registry.supports(nve::kNativeKindBlurAlias));
+      assert(registry.supports(nve::kNativeKindWebView));
+      assert(registry.supports(nve::kNativeKindWebViewAlias));
+      assert(!nve::apple::is_safe_apple_webview_url("javascript:alert(1)"));
+      assert(nve::apple::is_safe_apple_webview_url("https://nve.dev/docs"));
+
+      NveSurfaceConfig cfg{.surface_id = 1u, .width = 480.0f, .height = 320.0f, .scale_factor = 2.0f};
+      NveFabricHostHandle host = nve_fabric_host_create(cfg);
+      assert(host != nullptr);
+      nve::apple::bind_apple_native_views_to_fabric_host(host, registry);
+
+      // Frame 1: mount BlurSurface (node 20) and WebView (node 21) via NVNP binary props.
+      const auto blur1 = encode_blur_props(nve::BlurMaterial::Thick, 0.75f, 0x204060CCu);
+      const auto wv1 = encode_webview_props("https://nve.dev/home", true);
+      nve::CommandBufferEncoder enc1(1u, 1u);
+      enc1.create_node(20u, NVE_COMP_CUSTOM, nve::kNativeKindBlurSurface);
+      enc1.set_raw_prop_string(20u, nve::kNativeViewKindPropKey, nve::kNativeKindBlurSurface);
+      enc1.set_raw_prop_bytes(20u, nve::kNativeViewPropsPropKey, blur1);
+      enc1.create_node(21u, NVE_COMP_CUSTOM, nve::kNativeKindWebView);
+      enc1.set_raw_prop_string(21u, nve::kNativeViewKindPropKey, nve::kNativeKindWebView);
+      enc1.set_raw_prop_bytes(21u, nve::kNativeViewPropsPropKey, wv1);
+      enc1.set_children(NVE_ROOT_NODE_ID, {20u, 21u});
+      enc1.commit(true);
+      assert(nve_fabric_host_submit_frame(host, enc1.finish(), nullptr) == 0);
+
+      NSView *blurRaw = nve::apple::native_view_for_node(registry, 20u);
+      assert(blurRaw != nil && [blurRaw isKindOfClass:[NSVisualEffectView class]]);
+      assert([blurRaw isKindOfClass:[NveAppleBlurSurfaceView class]]);
+      NveAppleBlurSurfaceView *blurView = (NveAppleBlurSurfaceView *)blurRaw;
+      assert(blurView.nveBlurMaterial == nve::BlurMaterial::Thick);
+      assert(blurView.material == NSVisualEffectMaterialHeaderView);
+      assert(std::fabs(blurView.nveBlurIntensity - 0.75f) < 1e-4f);
+      assert(blurView.nveHasTint == YES && blurView.nveTintRgba == 0x204060CCu);
+
+      NSView *wvRaw = nve::apple::native_view_for_node(registry, 21u);
+      assert(wvRaw != nil && [wvRaw isKindOfClass:[WKWebView class]]);
+      assert([wvRaw isKindOfClass:[NveAppleWebView class]]);
+      NveAppleWebView *webView = (NveAppleWebView *)wvRaw;
+      assert([webView.nveLastRequestedUrl isEqualToString:@"https://nve.dev/home"]);
+      assert(webView.nveAllowsBackForward == YES && webView.allowsBackForwardNavigationGestures == YES);
+      assert(webView.nveNavigationCount == 1u);
+
+      // Frame 2: update BlurSurface (clear tint, Chrome material) + dispatch NVNC WebView commands.
+      const auto blur2 = encode_blur_props(nve::BlurMaterial::Chrome, 0.9f, std::nullopt);
+      nve::CommandBufferEncoder enc2(1u, 2u);
+      enc2.set_raw_prop_bytes(20u, nve::kNativeViewPropsPropKey, blur2);
+      enc2.dispatch_command(21u, "navigate", encode_cmd_str(1u, "javascript:alert(1)"));
+      enc2.dispatch_command(21u, "navigate", encode_cmd_str(1u, "https://nve.dev/api"));
+      enc2.dispatch_command(21u, "reload", encode_cmd_no_args(2u));
+      enc2.dispatch_command(21u, "go_back", encode_cmd_no_args(3u));
+      enc2.dispatch_command(21u, "go_forward", encode_cmd_no_args(4u));
+      enc2.commit(true);
+      assert(nve_fabric_host_submit_frame(host, enc2.finish(), nullptr) == 0);
+
+      assert(blurView.nveBlurMaterial == nve::BlurMaterial::Chrome);
+      assert(blurView.material == NSVisualEffectMaterialTitlebar);
+      assert(blurView.nveHasTint == NO);
+      assert([webView.nveLastRequestedUrl isEqualToString:@"https://nve.dev/api"]);
+      assert(webView.nveNavigationCount == 2u);
+      assert(webView.nveReloadCount == 1u);
+      assert(webView.nveGoBackCount == 1u);
+      assert(webView.nveGoForwardCount == 1u);
+
+      // Clean unmount via registry
+      assert(registry.unmount(20u));
+      assert(registry.unmount(21u));
+      assert(registry.mounted_count() == 0u);
+      nve_fabric_host_destroy(host);
     }
 
     std::cout << "nve_macos_shell_test passed ("

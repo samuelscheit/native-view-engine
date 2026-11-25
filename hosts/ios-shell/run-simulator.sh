@@ -159,6 +159,7 @@ HEADER_DEPS=(
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/detail/host_runtime_dylib.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/detail/host_runtime_reconciler.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/detail/host_runtime_session.hpp"
+  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_native_view.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_pair_client.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_rn_component.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_value.hpp"
@@ -177,6 +178,7 @@ HEADER_DEPS=(
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHostInternal.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.h"
+  "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.h"
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.h"
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.h"
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.h"
@@ -239,6 +241,7 @@ for src in \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost+Session.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.mm" \
+  "$REPO_ROOT/hosts/apple-common/NveAppleNativeViews.mm" \
   "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.mm" \
   "$REPO_ROOT/hosts/ios-shell/NveFabricHost.mm" \
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.mm" \
@@ -256,6 +259,7 @@ done
   -framework Foundation \
   -framework QuartzCore \
   -framework CoreGraphics \
+  -framework WebKit \
   -o "$APP_BIN"
 
 echo "==> [3/4] Assembling and ad-hoc signing $APP_BUNDLE..."

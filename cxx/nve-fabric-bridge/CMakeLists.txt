@@ -161,6 +161,18 @@ endif()
 target_link_libraries(nve_pair_client_test PRIVATE nve_fabric_bridge)
 add_test(NAME pair_client_test COMMAND nve_pair_client_test)
 
+add_executable(nve_native_view_test
+  tests/test_native_view.cpp
+)
+target_include_directories(nve_native_view_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(MSVC)
+  target_compile_options(nve_native_view_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
+else()
+  target_compile_options(nve_native_view_test PRIVATE -Wall -Wextra -Werror)
+endif()
+target_link_libraries(nve_native_view_test PRIVATE nve_fabric_bridge)
+add_test(NAME native_view_test COMMAND nve_native_view_test)
+
 if(NVE_BUILD_BENCHMARKS)
   add_executable(nve_fabric_bridge_bench bench/bridge_bench.cpp)
   target_include_directories(nve_fabric_bridge_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
