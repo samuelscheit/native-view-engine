@@ -16,10 +16,7 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining host harden
 
 - [ ] **NVE Studio (Meta Workbench)**
   - Self-hosting live multi-host workbench rendering AppKit, WinUI, Qt 6, GTK4, iOS/Android Fabric, Flutter Canvas, and WASM surfaces side by side.
-  - Live Taffy/Yoga layout switcher in Studio UI.
-  - ~10 KB/s binary delta live pairing over QUIC/WebRTC.
+  - Wire the `NVD1` binary delta protocol (`crates/nve-interop/src/sync_delta.rs`) over live QUIC/WebRTC transport.
 
 - [ ] **Flagship Local-First Workspace & Messaging App**
-  - Full Linear × Notion × Slack suite in one ~15 MB binary (`<50 ms` cold start, `<40 MB` RAM).
-  - 100k-row virtualized 120fps views with real native OS text, IME, accessibility, and `<Island>` embeds.
-  - Native-speed user plugins loaded via `nve_get_interface`.
+  - Full Linear × Notion × Slack suite in one ~15 MB binary (`<50 ms` cold start, `<40 MB` RAM) with real native OS text, IME, accessibility, and `<Island>` embeds (100k-row virtualized 120fps stream, live Taffy/Yoga switcher, mobile portrait layout, and `nve_get_interface` plugin host are landed).
