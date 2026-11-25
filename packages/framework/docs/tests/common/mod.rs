@@ -13,8 +13,10 @@ use nve_docs::{
     DocsNavSection, DocsSiteConfig, DocsViewport, PlaygroundMeta, PlaygroundRegistry,
     create_docs_surface_with_viewport, default_component_registry,
 };
+use nve_clipboard::MemoryClipboard;
+use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_mdx::{CompileOptions, CompiledSite, SiteSource, compile_site_with_validation};
-use nve_sdk::MemoryHostServices;
+use nve_system_env::MemorySystemEnv;
 
 pub const RUST_SNIPPET: &str =
     "fn main() {\n    let surface = create_docs_surface();\n    println!(\"ready\");\n}";
@@ -196,7 +198,9 @@ pub struct DocsHarness {
 impl DocsHarness {
     pub fn mount(route: &str, viewport: DocsViewport) -> Self {
         let services = Arc::new(MemoryHostServices::new());
-        let host: Arc<dyn nve_sdk::HostServiceProvider> = services.clone();
+        services.register(MemoryClipboard::new());
+        services.register(MemorySystemEnv::new());
+        let host: Arc<dyn HostServiceProvider> = services.clone();
         let surface = create_docs_surface_with_viewport(
             1,
             route,

@@ -21,7 +21,9 @@ nve-engine = { workspace = true }
 nve-interop = { path = "../../packages/core/interop", default-features = false, features = ["crdt"] }
 nve-mdx = { workspace = true }
 nve-router = { workspace = true }
-nve-sdk = { path = "../../packages/framework/sdk", default-features = false }
+nve-host-services = { workspace = true }
+nve-clipboard = { workspace = true }
+nve-system-env = { workspace = true }
 nve-ui = { path = "../../packages/framework/ui", default-features = false, features = ["virtual-list"] }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }

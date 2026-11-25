@@ -3,6 +3,7 @@
 
 use std::mem::{offset_of, size_of};
 
+use crate::types::CameraFacing;
 use crate::wire::{CameraCodecError, CommandDecoder, CommandEncoder, NativeValueRef, PropDecoder, PropEncoder};
 
 pub const CAMERA_PREVIEW_KIND: &str = "nve.camera.preview";
@@ -11,34 +12,12 @@ pub const CAMERA_FRAME_VERSION: u8 = 1;
 pub const CAMERA_FRAME_DESCRIPTOR_SIZE: usize = 40;
 pub const MAX_CAMERA_FPS: u16 = 240;
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CameraPreviewFacing {
-    #[default]
-    Back = 1,
-    Front = 2,
-    External = 3,
-}
-
-impl CameraPreviewFacing {
-    #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            1 => Some(Self::Back),
-            2 => Some(Self::Front),
-            3 => Some(Self::External),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub fn from_u32(v: u32) -> Result<Self, CameraCodecError> {
-        u8::try_from(v)
-            .ok()
-            .and_then(Self::from_u8)
-            .ok_or(CameraCodecError::InvalidEnum("CameraPreviewFacing", v))
-    }
+#[inline]
+fn facing_from_preview_u32(v: u32) -> Result<CameraFacing, CameraCodecError> {
+    u8::try_from(v)
+        .ok()
+        .and_then(CameraFacing::from_preview_u8)
+        .ok_or(CameraCodecError::InvalidEnum("CameraFacing", v))
 }
 
 #[repr(u8)]
@@ -153,7 +132,7 @@ impl CameraPreview {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CameraPreviewProps {
     pub device_id: Option<String>,
-    pub facing: CameraPreviewFacing,
+    pub facing: CameraFacing,
     pub torch: TorchMode,
     pub zoom: f32,
     pub fps: u16,
@@ -168,7 +147,7 @@ impl Default for CameraPreviewProps {
     fn default() -> Self {
         Self {
             device_id: None,
-            facing: CameraPreviewFacing::Back,
+            facing: CameraFacing::Back,
             torch: TorchMode::Off,
             zoom: 1.0,
             fps: 30,
@@ -195,7 +174,7 @@ impl CameraPreviewProps {
 
     pub fn new() -> Self { Self::default() }
     pub fn with_device_id(mut self, id: impl Into<String>) -> Self { self.device_id = Some(id.into()); self }
-    pub const fn with_facing(mut self, facing: CameraPreviewFacing) -> Self { self.facing = facing; self }
+    pub const fn with_facing(mut self, facing: CameraFacing) -> Self { self.facing = facing; self }
     pub const fn with_torch(mut self, torch: TorchMode) -> Self { self.torch = torch; self }
     pub const fn with_zoom(mut self, zoom: f32) -> Self { self.zoom = zoom; self }
     pub const fn with_fps(mut self, fps: u16) -> Self { self.fps = fps; self }
@@ -206,6 +185,9 @@ impl CameraPreviewProps {
     pub const fn with_active(mut self, active: bool) -> Self { self.active = active; self }
 
     pub fn validate(&self) -> Result<(), CameraCodecError> {
+        if self.facing == CameraFacing::Unknown {
+            return Err(CameraCodecError::InvalidEnum("CameraFacing", 0));
+        }
         validate_zoom(self.zoom)?;
         validate_fps(u32::from(self.fps))?;
         Ok(())
@@ -237,7 +219,7 @@ impl CameraPreviewProps {
             NativeValueRef::Str(s) => Some(s.to_owned()),
             _ => return Err(CameraCodecError::TypeMismatch { expected: "Option<str>" }),
         };
-        let facing = CameraPreviewFacing::from_u32(dec.require(Self::FIELD_FACING)?.as_u32()?)?;
+        let facing = facing_from_preview_u32(dec.require(Self::FIELD_FACING)?.as_u32()?)?;
         let torch = TorchMode::from_u32(dec.require(Self::FIELD_TORCH)?.as_u32()?)?;
         let zoom = dec.require(Self::FIELD_ZOOM)?.as_f32()?;
         validate_zoom(zoom)?;
@@ -266,7 +248,7 @@ impl CameraPreviewProps {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CameraPreviewCommand {
-    SwitchFacing(CameraPreviewFacing),
+    SwitchFacing(CameraFacing),
     SetTorch(TorchMode),
     SetZoom(f32),
     FocusPoint { x: f32, y: f32 },
@@ -298,7 +280,13 @@ impl CameraPreviewCommand {
 
     pub fn validate(&self) -> Result<(), CameraCodecError> {
         match self {
-            Self::SwitchFacing(_) | Self::SetTorch(_) | Self::StartRecording { .. } | Self::StopRecording => Ok(()),
+            Self::SwitchFacing(CameraFacing::Unknown) => {
+                Err(CameraCodecError::InvalidEnum("CameraFacing", 0))
+            }
+            Self::SwitchFacing(_)
+            | Self::SetTorch(_)
+            | Self::StartRecording { .. }
+            | Self::StopRecording => Ok(()),
             Self::SetZoom(zoom) => validate_zoom(*zoom),
             Self::FocusPoint { x, y } => {
                 validate_unit_coord(*x, "focus_point.x in 0.0..=1.0")?;
@@ -355,7 +343,9 @@ impl CameraPreviewCommand {
         match dec.opcode() {
             Self::OP_SWITCH_FACING => {
                 dec.expect_arg_count(1)?;
-                Ok(Self::SwitchFacing(CameraPreviewFacing::from_u32(dec.require(0)?.as_u32()?)?))
+                Ok(Self::SwitchFacing(facing_from_preview_u32(
+                    dec.require(0)?.as_u32()?,
+                )?))
             }
             Self::OP_SET_TORCH => {
                 dec.expect_arg_count(1)?;

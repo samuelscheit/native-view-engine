@@ -1,5 +1,5 @@
 //! Reusable Fumadocs × Linear documentation framework (`nve-docs`) built 100% on
-//! `nve-ui`, `nve-router`, `nve-sdk`, and `nve-mdx`.
+//! `nve-ui`, `nve-router`, `nve-host-services`, `nve-clipboard`, `nve-system-env`, and `nve-mdx`.
 //!
 //! The exact same compiled docs application renders cleanly for Web SSR + Progressive Hydration
 //! as well as Native Desktop/Mobile hosts (`nve-skia-shell`, macOS, Windows, iOS, Android).
@@ -17,11 +17,13 @@ use std::sync::Arc;
 
 use dioxus_core::{provide_context, use_hook};
 use nve_abi::SurfaceId;
+use nve_clipboard::MemoryClipboard;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
+use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_mdx::{CompiledSite, NavTree, SearchIndex};
 use nve_router::{RouteRenderer, RouterProvider};
-use nve_sdk::{HostServiceProvider, MemoryHostServices};
+use nve_system_env::MemorySystemEnv;
 
 pub use config::{DocsNavSection, DocsSiteConfig};
 pub use registry::{
@@ -155,11 +157,14 @@ fn fallback_empty_state() -> DocsAppState {
         prev_next: BTreeMap::new(),
         search_index: SearchIndex::build(&[]),
     });
+    let services = MemoryHostServices::new();
+    services.register(MemoryClipboard::new());
+    services.register(MemorySystemEnv::new());
     DocsAppState::new(
         DocsSiteConfig::default(),
         empty_site,
         Arc::new(PlaygroundRegistry::new()),
-        Arc::new(MemoryHostServices::new()),
+        Arc::new(services),
         DocsRoute::root(),
         DocsViewport::desktop_default(),
     )

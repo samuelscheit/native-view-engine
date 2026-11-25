@@ -1,0 +1,11 @@
+[package]
+name = "nve-system-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE live system theme (NVT2) & locale (NVL1) capability module (SERVICE_SYSTEM_ENV = 0x0014)"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }
+nve-interop = { path = "../../core/interop", default-features = false, features = ["channel"] }

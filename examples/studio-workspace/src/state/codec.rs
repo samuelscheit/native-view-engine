@@ -3,7 +3,7 @@
 
 use nve_engine::fnv1a_64;
 use nve_router::Routable;
-use nve_sdk::system_env::{LocaleSnapshot, ThemeSnapshot, THEME_WIRE_LEN};
+use nve_system_env::{LocaleSnapshot, ThemeSnapshot, THEME_WIRE_LEN};
 
 use crate::routes::{StudioRoute, StudioRouter};
 use crate::sdk::StudioSystemEnv;

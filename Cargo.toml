@@ -8,19 +8,33 @@ members = [
     "packages/core/dioxus",
     "packages/core/codegen",
     "packages/core/interop",
+    "packages/core/host-services",
     "packages/backends/headless",
     "packages/backends/skia",
     "packages/backends/web",
-    "packages/framework/sdk",
     "packages/framework/ui",
     "packages/framework/router",
     "packages/framework/mdx",
     "packages/framework/docs",
     "packages/tools/cli",
     "packages/tools/bench",
+    "packages/modules/audio",
     "packages/modules/camera",
-    "packages/modules/tv",
+    "packages/modules/clipboard",
+    "packages/modules/filesystem",
+    "packages/modules/fonts",
+    "packages/modules/haptics",
+    "packages/modules/linking",
+    "packages/modules/location",
+    "packages/modules/notifications",
     "packages/modules/pair",
+    "packages/modules/secure-store",
+    "packages/modules/sensors",
+    "packages/modules/share",
+    "packages/modules/storage",
+    "packages/modules/system-env",
+    "packages/modules/tv",
+    "packages/modules/web-auth",
     "examples/counter",
     "examples/studio-workspace",
     "examples/nve-docs-site",
@@ -41,7 +55,7 @@ nve-layout-yoga = { path = "packages/core/layout-yoga" }
 nve-dioxus = { path = "packages/core/dioxus" }
 nve-codegen = { path = "packages/core/codegen" }
 nve-interop = { path = "packages/core/interop" }
-nve-sdk = { path = "packages/framework/sdk" }
+nve-host-services = { path = "packages/core/host-services" }
 nve-ui = { path = "packages/framework/ui" }
 nve-router = { path = "packages/framework/router" }
 nve-mdx = { path = "packages/framework/mdx" }
@@ -49,6 +63,13 @@ nve-docs = { path = "packages/framework/docs" }
 nve-backend-headless = { path = "packages/backends/headless" }
 nve-backend-skia = { path = "packages/backends/skia" }
 nve-backend-web = { path = "packages/backends/web" }
+nve-clipboard = { path = "packages/modules/clipboard" }
+nve-filesystem = { path = "packages/modules/filesystem" }
+nve-secure-store = { path = "packages/modules/secure-store" }
+nve-linking = { path = "packages/modules/linking" }
+nve-system-env = { path = "packages/modules/system-env" }
+nve-notifications = { path = "packages/modules/notifications" }
+nve-haptics = { path = "packages/modules/haptics" }
 nve-camera = { path = "packages/modules/camera" }
 nve-tv = { path = "packages/modules/tv" }
 nve-pair = { path = "packages/modules/pair" }

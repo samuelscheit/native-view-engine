@@ -1,0 +1,12 @@
+[package]
+name = "nve-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE audio playback & recording capability module (SERVICE_AUDIO = 0x0022)"
+
+[dependencies]
+nve-host-services = { workspace = true }
+
+[dev-dependencies]
+nve-abi = { workspace = true }

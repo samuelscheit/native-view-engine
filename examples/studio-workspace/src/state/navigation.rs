@@ -1,11 +1,11 @@
 //! Synchronized `nve-router` navigation, unified Environment `TraitStore` queries, and
-//! `nve-sdk` Clipboard / SystemEnv actions for [`WorkspaceState`].
+//! `nve-clipboard` / `nve-system-env` actions for [`WorkspaceState`].
 
+use nve_host_services::ServiceError;
 use nve_interop::traits::{
     ColorScheme, Locale, SizeClass, TraitEnvironment, TraitStore, ViewportChangeMask,
 };
 use nve_router::Routable;
-use nve_sdk::SdkError;
 
 use crate::routes::StudioRoute;
 use crate::sdk::{StudioHostServices, StudioSystemEnv};
@@ -210,7 +210,7 @@ impl WorkspaceState {
     }
 
     /// Pulls live theme (`NVT2`) and locale (`NVL1`) from [`StudioHostServices`] via
-    /// `nve_sdk::SystemEnvClient` and synchronizes them into [`TraitStore`].
+    /// `nve_system_env::SystemEnvClient` and synchronizes them into [`TraitStore`].
     pub fn sync_system_env(&mut self, services: &StudioHostServices) -> bool {
         let Ok(env) = services.fetch_system_env() else {
             return false;
@@ -218,12 +218,12 @@ impl WorkspaceState {
         self.apply_system_env(env)
     }
 
-    /// Copies the active document's Markdown export via `nve_sdk::ClipboardClient` and records a
+    /// Copies the active document's Markdown export via `nve_clipboard::ClipboardClient` and records a
     /// non-intrusive status notice without mutating time-travel history.
     pub fn copy_active_doc_markdown(
         &mut self,
         services: &StudioHostServices,
-    ) -> Result<String, SdkError> {
+    ) -> Result<String, ServiceError> {
         let md = self.active_doc_markdown();
         services.copy_text(&md)?;
         self.last_clipboard_notice = Some(format!("Copied MD ({}B)", md.len()));
@@ -231,11 +231,11 @@ impl WorkspaceState {
         Ok(md)
     }
 
-    /// Copies the active deep-link route URL (`aether://studio/...`) via `nve_sdk::ClipboardClient`.
+    /// Copies the active deep-link route URL (`aether://studio/...`) via `nve_clipboard::ClipboardClient`.
     pub fn copy_current_route_url(
         &mut self,
         services: &StudioHostServices,
-    ) -> Result<String, SdkError> {
+    ) -> Result<String, ServiceError> {
         let url = self.current_deep_link();
         services.copy_text(&url)?;
         self.last_clipboard_notice = Some(format!("Copied {}", self.current_route_path()));

@@ -1,10 +1,12 @@
 //! Zero-JSON `NVE_IFACE_HOST = 5` host-capability bridge for `hosts/skia-shell`.
 //!
-//! Combines `nve_sdk::NativeHostServices` (clipboard, filesystem, secure store, linking,
-//! system theme/locale, notifications, haptics, `NveChannelBus`) with `SERVICE_WINDOW = 0x0002`
-//! multi-window command interception (`NVW1`) and `NVH1` live lifecycle / theme (`NVT2`) /
+//! Combines `nve_host_services::NativeHostServices` with modular OS capability handlers
+//! (`nve-clipboard`, `nve-filesystem`, `nve-secure-store`, `nve-linking`, `nve-system-env`,
+//! `nve-notifications`, `nve-haptics`, `NveChannelBus`), `SERVICE_WINDOW = 0x0002`
+//! multi-window command interception (`NVW1`), and `NVH1` live lifecycle / theme (`NVT2`) /
 //! locale (`NVL1`) push encoding.
 
+use std::any::{Any, TypeId};
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
@@ -13,15 +15,23 @@ use nve_abi::{
     NveBufferSlice, NveHostCallbacks, NveHostEventBatch, NveHostStatus, NVE_CHANNEL_FLAG_RETAIN,
     SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
+use nve_clipboard::NativeClipboard;
+use nve_filesystem::NativeFilesystem;
+use nve_haptics::NativeHaptics;
+use nve_host_services::{
+    pack_typed, HostEvent, HostServiceProvider, InvokeResult, NativeHostServices, ServiceError,
+};
 use nve_interop::{
     decode_window_commands, encode_window_events, NveChannelBus, WindowCommand, WindowHandleId,
     WindowLifecycleEvent, CHANNEL_ID_LOCALE, CHANNEL_ID_THEME,
 };
-use nve_sdk::system_env::{
-    ColorScheme, LocaleSnapshot, SystemEnvBridge, SystemEnvClient, ThemeSnapshot, METHOD_GET_LOCALE,
-    METHOD_GET_THEME,
+use nve_linking::NativeLinking;
+use nve_notifications::NativeNotifications;
+use nve_secure_store::NativeSecureStore;
+use nve_system_env::{
+    ColorScheme, LocaleSnapshot, NativeSystemEnv, SystemEnvBackend, SystemEnvBridge,
+    SystemEnvClient, ThemeSnapshot, METHOD_GET_LOCALE, METHOD_GET_THEME,
 };
-use nve_sdk::{HostEvent, HostServiceProvider, InvokeResult, NativeHostServices, SdkError};
 use winit::event_loop::EventLoopProxy;
 use winit::window::Theme as WinitTheme;
 
@@ -37,7 +47,7 @@ pub const EVENT_WINDOW_LIFECYCLE: u32 = 1;
 /// Callback invoked whenever an app submits a decoded [`WindowCommand`] over `SERVICE_WINDOW`.
 pub type WindowCommandSink = Arc<dyn Fn(WindowCommand) + Send + Sync>;
 
-/// Maps a `winit::window::Theme` to `nve_sdk`'s `NVT2` [`ColorScheme`].
+/// Maps a `winit::window::Theme` to `nve_system_env`'s `NVT2` [`ColorScheme`].
 pub const fn winit_theme_to_color_scheme(theme: WinitTheme) -> ColorScheme {
     match theme {
         WinitTheme::Light => ColorScheme::Light,
@@ -102,6 +112,27 @@ fn scale_to_x100(scale_factor: f32) -> u16 {
     }
 }
 
+/// Direct in-process [`SystemEnvBackend`] serving `SkiaHostServices`'s live winit-cached theme
+/// and locale with zero wire serialization.
+struct SkiaSystemEnvBackend {
+    theme: Mutex<ThemeSnapshot>,
+    locale: Mutex<LocaleSnapshot>,
+}
+
+impl SystemEnvBackend for SkiaSystemEnvBackend {
+    fn get_theme(&self) -> Result<ThemeSnapshot, ServiceError> {
+        Ok(*self.theme.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    fn get_locale(&self) -> Result<LocaleSnapshot, ServiceError> {
+        Ok(self
+            .locale
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone())
+    }
+}
+
 /// Composite zero-JSON host-capability service bound to loaded NVE app modules via
 /// `NVE_IFACE_HOST = 5` (`NveHostApi::bind_host`).
 ///
@@ -113,21 +144,29 @@ pub struct SkiaHostServices {
     window_sink: Mutex<Option<WindowCommandSink>>,
     queued_commands: Mutex<VecDeque<WindowCommand>>,
     pending_close_responses: Mutex<BTreeSet<WindowHandleId>>,
-    current_theme: Mutex<ThemeSnapshot>,
-    current_locale: Mutex<LocaleSnapshot>,
+    cached_env: Arc<SkiaSystemEnvBackend>,
+    cached_env_typed: (TypeId, Arc<dyn Any + Send + Sync>),
 }
 
 impl SkiaHostServices {
-    /// Creates a host service backed by live OS [`NativeHostServices`], seeding retained
-    /// `NVT2` theme and `NVL1` locale snapshots onto the shared [`NveChannelBus`].
+    /// Creates a host service backed by live OS [`NativeHostServices`] with all Tier-1 native
+    /// capability modules registered, seeding retained `NVT2` theme and `NVL1` locale snapshots
+    /// onto the shared [`NveChannelBus`].
     pub fn new() -> Arc<Self> {
         let native = Arc::new(NativeHostServices::new());
+        native.register(NativeClipboard::new());
+        native.register(NativeFilesystem::new());
+        native.register(NativeSecureStore::new());
+        native.register(NativeLinking::new());
+        native.register(NativeSystemEnv::new());
+        native.register(NativeNotifications::new());
+        native.register(NativeHaptics::new());
         let bus = native.channel_bus();
         Self::with_provider(native, bus)
     }
 
     /// Creates a host service backed by a custom [`HostServiceProvider`] (such as
-    /// `nve_sdk::MemoryHostServices` in tests) and shared [`NveChannelBus`].
+    /// `nve_host_services::MemoryHostServices` in tests) and shared [`NveChannelBus`].
     pub fn with_provider(
         inner: Arc<dyn HostServiceProvider>,
         channel_bus: Arc<Mutex<NveChannelBus>>,
@@ -142,14 +181,20 @@ impl SkiaHostServices {
             let _ = SystemEnvBridge::publish_locale(&mut bus, &initial_locale);
         }
 
+        let cached_env = Arc::new(SkiaSystemEnvBackend {
+            theme: Mutex::new(initial_theme),
+            locale: Mutex::new(initial_locale),
+        });
+        let cached_env_typed = pack_typed::<dyn SystemEnvBackend>(cached_env.clone());
+
         Arc::new(Self {
             inner,
             channel_bus,
             window_sink: Mutex::new(None),
             queued_commands: Mutex::new(VecDeque::new()),
             pending_close_responses: Mutex::new(BTreeSet::new()),
-            current_theme: Mutex::new(initial_theme),
-            current_locale: Mutex::new(initial_locale),
+            cached_env,
+            cached_env_typed,
         })
     }
 
@@ -223,11 +268,16 @@ impl SkiaHostServices {
     }
 
     pub fn current_theme(&self) -> ThemeSnapshot {
-        *self.current_theme.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .cached_env
+            .theme
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn current_locale(&self) -> LocaleSnapshot {
-        self.current_locale
+        self.cached_env
+            .locale
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
@@ -248,7 +298,11 @@ impl SkiaHostServices {
         scale_factor: f32,
     ) -> (ThemeSnapshot, Vec<u8>) {
         let updated = {
-            let mut guard = self.current_theme.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .cached_env
+                .theme
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             guard.color_scheme = winit_theme_to_color_scheme(theme);
             guard.scale_factor_x100 = scale_to_x100(scale_factor);
             *guard
@@ -262,7 +316,11 @@ impl SkiaHostServices {
     pub fn update_scale_factor(&self, scale_factor: f32) -> Option<(ThemeSnapshot, Vec<u8>)> {
         let next_x100 = scale_to_x100(scale_factor);
         let updated = {
-            let mut guard = self.current_theme.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .cached_env
+                .theme
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if guard.scale_factor_x100 == next_x100 {
                 return None;
             }
@@ -277,7 +335,11 @@ impl SkiaHostServices {
     /// returns the encoded `NVH1` `ChannelMessage` batch.
     pub fn update_theme(&self, theme: ThemeSnapshot) -> Vec<u8> {
         {
-            let mut guard = self.current_theme.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .cached_env
+                .theme
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *guard = theme;
         }
         self.publish_theme_snapshot(&theme)
@@ -287,7 +349,11 @@ impl SkiaHostServices {
     /// returns the encoded `NVH1` `ChannelMessage` batch.
     pub fn update_locale(&self, locale: LocaleSnapshot) -> Vec<u8> {
         {
-            let mut guard = self.current_locale.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .cached_env
+                .locale
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *guard = locale.clone();
         }
         {
@@ -309,12 +375,12 @@ impl SkiaHostServices {
         &self,
         method_id: u32,
         request: &[u8],
-    ) -> Result<InvokeResult, SdkError> {
+    ) -> Result<InvokeResult, ServiceError> {
         if method_id != METHOD_WINDOW_DISPATCH_BATCH {
-            return Err(SdkError::Unsupported);
+            return Err(ServiceError::Unsupported);
         }
         let commands =
-            decode_window_commands(request).map_err(|e| SdkError::InvalidArg(e.to_string()))?;
+            decode_window_commands(request).map_err(|e| ServiceError::InvalidArg(e.to_string()))?;
         let count = commands.len() as u32;
         let sink = self
             .window_sink
@@ -348,7 +414,7 @@ impl HostServiceProvider for SkiaHostServices {
         service_id: u32,
         method_id: u32,
         request: &[u8],
-    ) -> Result<InvokeResult, SdkError> {
+    ) -> Result<InvokeResult, ServiceError> {
         if service_id == SERVICE_WINDOW {
             return self.dispatch_window_service(method_id, request);
         }
@@ -373,12 +439,28 @@ impl HostServiceProvider for SkiaHostServices {
         channel_id: u32,
         retain: bool,
         payload: &[u8],
-    ) -> Result<(), SdkError> {
+    ) -> Result<(), ServiceError> {
         self.inner.channel_publish(channel_id, retain, payload)
     }
 
     fn poll_host_events(&self) -> Vec<HostEvent> {
         self.inner.poll_host_events()
+    }
+
+    fn typed_service(
+        &self,
+        service_id: u32,
+        method_id: u32,
+        type_id: TypeId,
+    ) -> Option<Arc<dyn Any + Send + Sync>> {
+        if service_id == SERVICE_WINDOW {
+            return None;
+        }
+        if service_id == SERVICE_SYSTEM_ENV {
+            return (self.cached_env_typed.0 == type_id)
+                .then(|| Arc::clone(&self.cached_env_typed.1));
+        }
+        self.inner.typed_service(service_id, method_id, type_id)
     }
 }
 

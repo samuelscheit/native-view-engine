@@ -1,0 +1,9 @@
+[package]
+name = "nve-share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE native share sheet capability module (SERVICE_SHARE = 0x0026)"
+
+[dependencies]
+nve-host-services = { workspace = true }

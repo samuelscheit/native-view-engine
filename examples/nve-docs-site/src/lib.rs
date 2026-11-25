@@ -16,11 +16,13 @@ use std::sync::Arc;
 
 use nve_abi::SurfaceId;
 use nve_backend_web::{SsrOutput, WebBackend};
+use nve_clipboard::MemoryClipboard;
 use nve_dioxus::DioxusSurface;
 use nve_docs::{DocsViewport, PlaygroundRegistry, create_docs_surface_with_pages};
 use nve_engine::RenderBackend;
+use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_mdx::CompiledSite;
-use nve_sdk::{HostServiceProvider, MemoryHostServices};
+use nve_system_env::MemorySystemEnv;
 
 pub use landing::nve_site_custom_pages;
 pub use native_app::DocsSiteModule;
@@ -75,7 +77,10 @@ pub fn create_nve_docs_surface_full(
     let config = nve_docs_site_config_with_theme(base_path, default_dark);
     let playgrounds = nve_docs_playground_registry();
     let custom_pages = nve_site_custom_pages();
-    let host_services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
+    let services = MemoryHostServices::new();
+    services.register(MemoryClipboard::new());
+    services.register(MemorySystemEnv::new());
+    let host_services: Arc<dyn HostServiceProvider> = Arc::new(services);
     create_docs_surface_with_pages(
         surface_id,
         route,

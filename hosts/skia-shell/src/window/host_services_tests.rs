@@ -13,16 +13,24 @@ use nve_abi::{
     NveHostEventRecordRef, NveHostStatus, SurfaceId, NVE_CHANNEL_FLAG_RETAIN, ROOT_NODE_ID,
     SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
+use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_engine::Viewport;
+use nve_filesystem::{FilesystemClient, MemoryFilesystem, StandardPathKind};
+use nve_haptics::{HapticsClient, ImpactStyle, MemoryHaptics, NotificationHaptic};
+use nve_host_services::{FfiHostServices, HostServiceProvider, MemoryHostServices, ServiceError};
 use nve_interop::{
     decode_window_events, encode_window_commands, NveChannelBus, SurfacePresentation,
     WindowCommand, WindowDescriptor, WindowError, WindowLifecycleEvent, WindowLifecycleState,
     WindowRect, CHANNEL_ID_LOCALE, CHANNEL_ID_THEME,
 };
-use nve_sdk::{
-    ColorScheme, ContrastLevel, FfiHostServices, HostServiceProvider, ImpactStyle, LocaleSnapshot,
-    MemoryHostServices, NotificationHaptic, NotificationPermission, NotificationRequest, SdkClient,
-    SdkError, StandardPathKind, SystemEnvBridge, TextDirection, ThemeSnapshot,
+use nve_linking::{LinkingClient, MemoryLinking};
+use nve_notifications::{
+    MemoryNotifications, NotificationPermission, NotificationRequest, NotificationsClient,
+};
+use nve_secure_store::{MemorySecureStore, SecureStoreClient};
+use nve_system_env::{
+    ColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, SystemEnvBridge, SystemEnvClient,
+    TextDirection, ThemeSnapshot,
 };
 use winit::window::Theme as WinitTheme;
 
@@ -83,88 +91,124 @@ fn compile_test_cdylib(dir: &Path, name: &str, source: &str) -> PathBuf {
     out_path
 }
 
-fn make_memory_services() -> (Arc<MemoryHostServices>, Arc<SkiaHostServices>) {
+struct TestMemoryHandles {
+    linking: Arc<MemoryLinking>,
+    haptics: Arc<MemoryHaptics>,
+}
+
+fn make_memory_services() -> (TestMemoryHandles, Arc<SkiaHostServices>) {
     let mem = Arc::new(MemoryHostServices::new());
-    mem.set_standard_path(StandardPathKind::Cache, "/tmp/nve-test-cache");
-    mem.set_notification_permission(NotificationPermission::Authorized);
-    mem.set_theme(ThemeSnapshot {
-        color_scheme: ColorScheme::Light,
-        contrast: ContrastLevel::Standard,
-        reduced_motion: false,
-        reduced_transparency: false,
-        accent_rgba: 0x3B82_F6FF,
-        font_scale_x1000: 1000,
-        scale_factor_x100: 100,
-    });
-    mem.set_locale(LocaleSnapshot {
-        tag: "en-US".into(),
-        language: "en".into(),
-        region: "US".into(),
-        text_direction: TextDirection::Ltr,
-        uses_24h_clock: false,
-        timezone: "UTC".into(),
-    });
+    let fs = Arc::new(MemoryFilesystem::new());
+    fs.set_standard_path(StandardPathKind::Cache, "/tmp/nve-test-cache");
+    let linking = Arc::new(MemoryLinking::new());
+    let notifs = Arc::new(MemoryNotifications::new());
+    notifs.set_permission(NotificationPermission::Authorized);
+    let haptics = Arc::new(MemoryHaptics::new());
+    let sys_env = Arc::new(MemorySystemEnv::with_initial(
+        ThemeSnapshot {
+            color_scheme: ColorScheme::Light,
+            contrast: ContrastLevel::Standard,
+            reduced_motion: false,
+            reduced_transparency: false,
+            accent_rgba: 0x3B82_F6FF,
+            font_scale_x1000: 1000,
+            scale_factor_x100: 100,
+        },
+        LocaleSnapshot {
+            tag: "en-US".into(),
+            language: "en".into(),
+            region: "US".into(),
+            text_direction: TextDirection::Ltr,
+            uses_24h_clock: false,
+            timezone: "UTC".into(),
+        },
+    ));
+    mem.register(MemoryClipboard::new());
+    mem.register_arc(fs);
+    mem.register(MemorySecureStore::new());
+    mem.register_arc(linking.clone());
+    mem.register_arc(sys_env);
+    mem.register_arc(notifs);
+    mem.register_arc(haptics.clone());
+
     let bus = mem.channel_bus();
-    let svc = SkiaHostServices::with_provider(mem.clone(), bus);
-    (mem, svc)
+    let svc = SkiaHostServices::with_provider(mem, bus);
+    (TestMemoryHandles { linking, haptics }, svc)
 }
 
 #[test]
 fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_bus() {
-    let (mem, services) = make_memory_services();
+    let (handles, services) = make_memory_services();
     let ffi = FfiHostServices::with_callbacks(services.callbacks());
-    let sdk = SdkClient::new(&ffi);
+    let clipboard = ClipboardClient::new(&ffi);
+    let filesystem = FilesystemClient::new(&ffi);
+    let secure_store = SecureStoreClient::new(&ffi);
+    let linking = LinkingClient::new(&ffi);
+    let system_env = SystemEnvClient::new(&ffi);
+    let notifications = NotificationsClient::new(&ffi);
+    let haptics = HapticsClient::new(&ffi);
 
     // 1. Clipboard round-trip (including > 4 KiB payload forcing BufferTooSmall retry).
-    assert!(!sdk.clipboard().has_text().unwrap());
+    assert!(!clipboard.has_text().unwrap());
     let large_text = "NVE-ZERO-JSON-CLIPBOARD-".repeat(300); // > 4096 bytes
-    sdk.clipboard().write_text(&large_text).unwrap();
-    assert!(sdk.clipboard().has_text().unwrap());
-    assert_eq!(sdk.clipboard().read_text().unwrap().as_deref(), Some(large_text.as_str()));
-    sdk.clipboard().clear().unwrap();
-    assert!(!sdk.clipboard().has_text().unwrap());
+    clipboard.write_text(&large_text).unwrap();
+    assert!(clipboard.has_text().unwrap());
+    assert_eq!(
+        clipboard.read_text().unwrap().as_deref(),
+        Some(large_text.as_str())
+    );
+    clipboard.clear().unwrap();
+    assert!(!clipboard.has_text().unwrap());
 
     // 2. Filesystem standard path
     assert_eq!(
-        sdk.filesystem().standard_path(StandardPathKind::Cache).unwrap(),
+        filesystem.standard_path(StandardPathKind::Cache).unwrap(),
         "/tmp/nve-test-cache"
     );
 
     // 3. Secure store set/get/delete
-    sdk.secure_store().set("nve.studio", "token", b"top-secret-bytes").unwrap();
+    secure_store
+        .set("nve.studio", "token", b"top-secret-bytes")
+        .unwrap();
     assert_eq!(
-        sdk.secure_store().get("nve.studio", "token").unwrap().as_deref(),
+        secure_store
+            .get("nve.studio", "token")
+            .unwrap()
+            .as_deref(),
         Some(b"top-secret-bytes".as_slice())
     );
-    assert!(sdk.secure_store().delete("nve.studio", "token").unwrap());
-    assert_eq!(sdk.secure_store().get("nve.studio", "token").unwrap(), None);
+    assert!(secure_store.delete("nve.studio", "token").unwrap());
+    assert_eq!(secure_store.get("nve.studio", "token").unwrap(), None);
 
     // 4. Linking
-    assert!(sdk.linking().can_open_url("https://nve.dev").unwrap());
-    sdk.linking().open_url("https://nve.dev/docs").unwrap();
-    assert_eq!(mem.opened_urls(), vec!["https://nve.dev/docs".to_owned()]);
+    assert!(linking.can_open_url("https://nve.dev").unwrap());
+    linking.open_url("https://nve.dev/docs").unwrap();
+    assert_eq!(
+        handles.linking.opened_urls(),
+        vec!["https://nve.dev/docs".to_owned()]
+    );
 
     // 5. SystemEnv (NVT2 theme + NVL1 locale)
-    let theme = sdk.system_env().get_theme().unwrap();
+    let theme = system_env.get_theme().unwrap();
     assert_eq!(theme.color_scheme, ColorScheme::Light);
     assert_eq!(theme.accent_rgba, 0x3B82_F6FF);
-    let locale = sdk.system_env().get_locale().unwrap();
+    let locale = system_env.get_locale().unwrap();
     assert_eq!(locale.tag, "en-US");
     assert_eq!(locale.text_direction, TextDirection::Ltr);
 
     // 6. Notifications & Haptics
     assert_eq!(
-        sdk.notifications().request_permission().unwrap(),
+        notifications.request_permission().unwrap(),
         NotificationPermission::Authorized
     );
     let mut notif = NotificationRequest::new("n1", "Build Ready", "Hot swap completed");
     notif.badge = Some(1);
-    sdk.notifications().show(&notif).unwrap();
-    sdk.notifications().cancel("n1").unwrap();
-    sdk.haptics().impact(ImpactStyle::Medium).unwrap();
-    sdk.haptics().notification(NotificationHaptic::Success).unwrap();
-    sdk.haptics().selection().unwrap();
-    assert_eq!(mem.haptics_log().len(), 3);
+    notifications.show(&notif).unwrap();
+    notifications.cancel("n1").unwrap();
+    haptics.impact(ImpactStyle::Medium).unwrap();
+    haptics.notification(NotificationHaptic::Success).unwrap();
+    haptics.selection().unwrap();
+    assert_eq!(handles.haptics.log().len(), 3);
 
     // 7. NveChannelBus publish from app through C ABI callback
     let received = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
@@ -185,15 +229,15 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
     // 8. Corrupt / unsupported error paths
     assert!(matches!(
         ffi.invoke_sync(SERVICE_WINDOW, METHOD_WINDOW_DISPATCH_BATCH, b"BAD!"),
-        Err(SdkError::InvalidArg(_))
+        Err(ServiceError::InvalidArg(_))
     ));
     assert!(matches!(
         ffi.invoke_sync(SERVICE_WINDOW, 999, &[]),
-        Err(SdkError::Unsupported)
+        Err(ServiceError::Unsupported)
     ));
     assert!(matches!(
         ffi.invoke_sync(0x9999, 1, &[]),
-        Err(SdkError::Unsupported)
+        Err(ServiceError::Unsupported)
     ));
 
     // 9. Raw C-ABI null host_ctx / null out_buf safety checks
@@ -554,7 +598,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     assert_eq!(primary_themes.lock().unwrap().last().unwrap().color_scheme, ColorScheme::Dark);
     assert_eq!(primary_themes.lock().unwrap().last().unwrap().scale_factor_x100, 200);
     assert_eq!(
-        SdkClient::new(&*services).system_env().get_theme().unwrap().color_scheme,
+        SystemEnvClient::new(&*services).get_theme().unwrap().color_scheme,
         ColorScheme::Dark
     );
 
@@ -569,7 +613,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     let _ = host.simulate_locale_change(rtl_locale.clone());
     assert_eq!(primary_locales.lock().unwrap().last().unwrap(), &rtl_locale);
     assert_eq!(
-        SdkClient::new(&*services).system_env().get_locale().unwrap(),
+        SystemEnvClient::new(&*services).get_locale().unwrap(),
         rtl_locale
     );
 
@@ -836,13 +880,14 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
 fn native_skia_host_services_and_nvh1_helpers_encode_binary_without_json() {
     let services = SkiaHostServices::new();
     let ffi = FfiHostServices::with_callbacks(services.callbacks());
-    let sdk = SdkClient::new(&ffi);
+    let system_env = SystemEnvClient::new(&ffi);
+    let filesystem = FilesystemClient::new(&ffi);
 
     // Live NativeHostServices returns valid NVT2 theme, NVL1 locale, and OS cache path.
-    let theme = sdk.system_env().get_theme().expect("native theme");
-    let locale = sdk.system_env().get_locale().expect("native locale");
+    let theme = system_env.get_theme().expect("native theme");
+    let locale = system_env.get_locale().expect("native locale");
     assert!(!locale.tag.is_empty());
-    let cache = sdk.filesystem().standard_path(StandardPathKind::Cache).expect("native cache dir");
+    let cache = filesystem.standard_path(StandardPathKind::Cache).expect("native cache dir");
     assert!(!cache.is_empty());
 
     // Helper batches decode strictly as binary NVH1 with retained flags and zero JSON.

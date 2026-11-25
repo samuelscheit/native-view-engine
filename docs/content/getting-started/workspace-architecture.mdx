@@ -1,6 +1,6 @@
 ---
 title: "Workspace Architecture"
-description: "Complete map of the 25 Cargo workspace crates, the strict framework-agnostic engine boundary, C++20 shared host runtime, and 12 platform host shells."
+description: "Complete map of the 39 Cargo workspace crates, the strict framework-agnostic engine boundary, modular capability crates, C++20 shared host runtime, and 12 platform host shells."
 order: 3
 ---
 
@@ -25,11 +25,11 @@ The `native-view-engine` monorepo enforces a strict, layered dependency DAG. Low
            │                      │                      │
      ┌─────┴──────────┬───────────┼───────────┬──────────┴─────┐
      ▼                ▼           ▼           ▼                ▼
-┌──────────┐  ┌────────────┐ ┌─────────┐ ┌─────────┐   ┌──────────────┐
-│nve-dioxus│  │nve-layout- │ │nve-sdk  │ │nve-back-│   │nve-codegen   │
-│rsx!+sig  │  │yoga (C++20)│ │NVH1/NVT2│ │ends     │   │5-target + ABI│
-└────┬─────┘  └────────────┘ └────┬────┘ └────┬────┘   └──────────────┘
-     ├──────────────┬─────────────┤           │
+┌──────────┐  ┌────────────┐ ┌───────────┐ ┌─────────┐ ┌──────────────┐
+│nve-dioxus│  │nve-layout- │ │nve-host-  │ │nve-back-│ │nve-codegen   │
+│rsx!+sig  │  │yoga (C++20)│ │services + │ │ends     │ │5-target + ABI│
+└────┬─────┘  └────────────┘ │modules/*  │ └────┬────┘ └──────────────┘
+     ├──────────────┬────────┴─────┬─────┘      │
      ▼              ▼             ▼           ▼
 ┌──────────┐  ┌──────────┐  ┌──────────┐ ┌────────────────────────────┐
 │  nve-ui  │  │nve-router│  │ nve-mdx  │ │ Hosts & Shells             │
@@ -48,7 +48,7 @@ The `native-view-engine` monorepo enforces a strict, layered dependency DAG. Low
 
 ## Rust Workspace Packages (`packages/`)
 
-The root `Cargo.toml` defines 25 workspace members split into core runtime (`packages/core/`), backends (`packages/backends/`), application frameworks (`packages/framework/`), tooling (`packages/tools/`), opt-in modules (`packages/modules/`), host shells (`hosts/`), and runnable examples (`examples/`):
+The root `Cargo.toml` defines 39 workspace members split into core runtime (`packages/core/`), backends (`packages/backends/`), application frameworks (`packages/framework/`), tooling (`packages/tools/`), opt-in capability modules (`packages/modules/`), host shells (`hosts/`), and runnable examples (`examples/`):
 
 | Crate | Path | Responsibility |
 | :--- | :--- | :--- |
@@ -59,17 +59,18 @@ The root `Cargo.toml` defines 25 workspace members split into core runtime (`pac
 | `nve-dioxus` | `packages/core/dioxus` | Dioxus `0.7.10` `WriteMutations` adapter emitting `CommandBuffer`s, native-first `dioxus_elements` (`view`, `text`, `pressable`, `scrollview`, `image`, `textinput`, `skia_canvas`), 12 ARIA/`tabIndex` attributes, Tier-1 RSX hot-patcher, and `SignalArchive` (`NVE_SIG1`/`NVE_SGD1`). |
 | `nve-ui` | `packages/framework/ui` | 15 accessible, zero-external-CSS Dioxus UI components, `UiTheme` / `ThemeProvider`, zero-alloc `StyleBuf`, `FocusTrap` / `RovingFocus`, and 100k-row `FenwickHeightTree` `VirtualList`. |
 | `nve-router` | `packages/framework/router` | Zero-proc-macro `define_routes!`, stack/tab/modal/guard/deep-link state machines, `NVN1` channel bridge (`CHANNEL_ID_NAVIGATION = 4`), Dioxus `RouterProvider`/`Outlet`/`Link`, and `nve-router::web` History API adapter. |
-| `nve-sdk` | `packages/framework/sdk` | Zero-JSON Tier-1 host capabilities over `NVE_IFACE_HOST = 5`: Clipboard, Filesystem/File Picker, Secure Store, Linking, live Theme/Locale (`NVT2`/`NVL1`), Notifications, Haptics, native OS drivers, and deterministic `MemoryHostServices`. |
+| `nve-host-services` | `packages/core/host-services` | Minimal host-capability dispatch core: `HostServiceProvider`, `HostServiceHandler`, direct zero-serialization typed lookup (`resolve_typed`), `FfiHostServices` over `NVE_IFACE_HOST = 5`, `HostCallbackBridge`, `NativeHostServices`, and `MemoryHostServices`. |
 | `nve-interop` | `packages/core/interop` | `SurfaceOrchestrator`, `LayoutNegotiator`, `GestureArbitrator`, `NveChannelBus`, `<Island>` `RenderHandoff`, `WindowManager` (`NVW1`), panic-isolated `NvePluginHost`, `NVC1` binary CRDT engine, and `NVT1`/`NVD1` live delta transport. |
 | `nve-codegen` | `packages/core/codegen` | Single-source Core + Scene ABI generator (15 artifacts), Nitro-style `#[nve_hybrid_*]` 6-target codegen, React Native `import-rn`, and 5-target `NveExportSpec` exporters (RN, Flutter, SwiftUI, Compose, Web). |
 | `nve-mdx` | `packages/framework/mdx` | Zero-dependency pure-Rust `.md`/`.mdx` parser, Nextra-style `_meta.toml` nav builder, compile-time schema/link/anchor validator, multi-language syntax highlighter, and binary `NVS1` full-text search index. |
-| `nve-docs` | `packages/framework/docs` | Reusable Fumadocs × Linear documentation site framework built entirely on `nve-ui`, `nve-router`, `nve-sdk`, and `nve-mdx`. |
+| `nve-docs` | `packages/framework/docs` | Reusable Fumadocs × Linear documentation site framework built entirely on `nve-ui`, `nve-router`, `nve-host-services` (`nve-clipboard`, `nve-system-env`), and `nve-mdx`. |
 | `nve-backend-headless` | `packages/backends/headless` | Pure-Rust `taffy 0.16` Flexbox layout + mutation recorder + ASCII/JSON tree inspector for sub-millisecond unit/integration tests. |
 | `nve-backend-skia` | `packages/backends/skia` | Cross-platform retained display list, `cosmic-text 0.19` text shaping, `PixelBuffer` software rasterizer, and opt-in `skia-safe` GPU swapchains (`skia`, `skia-metal`, `skia-vulkan`, `skia-d3d`). |
 | `nve-backend-web` | `packages/backends/web` | `wasm32` DOM + CSS Flexbox backend, structural CSS class cache, `<canvas>` `NVE_DRAW1` renderer, semantic HTML5 SSR (`render_ssr`), and progressive DOM hydration (`hydrate_into`). |
 | `nve-cli` | `packages/tools/cli` | Developer CLI (`cargo nve`): `doctor`, `inspect`, `bench`, `dev`, `pair`, and `codegen`. |
 | `nve-bench` | `packages/tools/bench` | Criterion `0.8.2` statistical benchmark suite covering ABI, scene, value, layout, Skia, Web, Dioxus, and interop hot paths. |
-| `nve-camera` | `packages/modules/camera` | Opt-in unified camera module (`NVNP`/`NVNC`/`NVCF` binary codecs + Nitro bridge bindings and cross-platform native adapters). |
+| `nve-clipboard` .. `nve-web-auth` | `packages/modules/*` | 15 standalone capability modules (`clipboard`, `filesystem`, `secure-store`, `linking`, `system-env`, `notifications`, `haptics`, `storage`, `fonts`, `audio`, `camera`, `location`, `sensors`, `share`, `web-auth`) with direct typed in-process backends, OS drivers, and `NVE_IFACE_HOST = 5` cross-language codecs. |
+| `nve-camera` | `packages/modules/camera` | Unified camera module combining `NVNP`/`NVNC`/`NVCF` preview specs, `SERVICE_CAMERA = 0x0023` host service, Nitro bridge bindings, and cross-platform native adapters. |
 | `nve-tv` | `packages/modules/tv` | Opt-in TV spatial focus engine, remote action mapper, `NK1` binary keydown codec, and title-safe overscan calculator. |
 | `nve-pair` | `packages/modules/pair` | Shared zero-JSON `NVT1`/`NVD1` live pairing state machine and C ABI for native hosts. |
 

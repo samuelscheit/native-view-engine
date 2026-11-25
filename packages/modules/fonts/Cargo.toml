@@ -1,0 +1,9 @@
+[package]
+name = "nve-fonts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE custom font loader & registry capability module (SERVICE_FONTS = 0x0021)"
+
+[dependencies]
+nve-host-services = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "nve-secure-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE secure credential store capability module (SERVICE_SECURE_STORE = 0x0012)"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }

@@ -13,9 +13,11 @@ use nve_docs::{
     DocsAppState, DocsRoute, DocsTheme, DocsViewport, MOBILE_BREAKPOINT_PT, TOC_BREAKPOINT_PT,
     create_docs_surface, create_docs_surface_at_route,
 };
+use nve_clipboard::ClipboardClient;
+use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_mdx::TokenKind;
 use nve_router::Routable;
-use nve_sdk::{ClipboardClient, ColorScheme, MemoryHostServices, ThemeSnapshot};
+use nve_system_env::{ColorScheme, MemorySystemEnv, ThemeSnapshot};
 
 #[test]
 fn route_normalization_and_routable_roundtrip() {
@@ -87,19 +89,21 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
     assert_eq!(ui_dark.palette.accent.as_ref(), "#38bdf8");
 
     let mem = Arc::new(MemoryHostServices::new());
-    mem.set_theme(ThemeSnapshot {
+    let sys_env = Arc::new(MemorySystemEnv::new());
+    mem.register_arc(sys_env.clone());
+    sys_env.set_theme(ThemeSnapshot {
         color_scheme: ColorScheme::Light,
         ..ThemeSnapshot::default()
     });
     assert!(!DocsTheme::from_system_env(mem.as_ref(), true).is_dark);
 
-    mem.set_theme(ThemeSnapshot {
+    sys_env.set_theme(ThemeSnapshot {
         color_scheme: ColorScheme::Dark,
         ..ThemeSnapshot::default()
     });
     assert!(DocsTheme::from_system_env(mem.as_ref(), false).is_dark);
 
-    mem.set_theme(ThemeSnapshot {
+    sys_env.set_theme(ThemeSnapshot {
         color_scheme: ColorScheme::Unspecified,
         ..ThemeSnapshot::default()
     });
@@ -114,7 +118,7 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
         DocsViewport::desktop_default(),
     );
     assert!(app_state.dark_mode);
-    mem.set_theme(ThemeSnapshot {
+    sys_env.set_theme(ThemeSnapshot {
         color_scheme: ColorScheme::Light,
         ..ThemeSnapshot::default()
     });
@@ -360,7 +364,7 @@ fn interactive_tabs_and_live_demo_playground_work_in_page() {
 
 #[test]
 fn create_docs_surface_at_route_renders_target_page_for_ssr() {
-    let services: Arc<dyn nve_sdk::HostServiceProvider> = Arc::new(MemoryHostServices::new());
+    let services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
     let mut surface = create_docs_surface_at_route(
         1,
         "/guides/components",
@@ -444,7 +448,7 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
         }
     });
     let custom = Arc::new(custom);
-    let services: Arc<dyn nve_sdk::HostServiceProvider> = Arc::new(MemoryHostServices::new());
+    let services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
 
     // Render custom landing at "/"
     let mut landing_surface = create_docs_surface_with_pages(

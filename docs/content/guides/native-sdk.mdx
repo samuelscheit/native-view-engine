@@ -1,44 +1,56 @@
 ---
-title: "Native SDK (nve-sdk)"
-description: "Zero-JSON Tier-1 host capabilities over NVE_IFACE_HOST = 5: Clipboard, Filesystem, Secure Store, Linking, live Theme/Locale NVT2/NVL1, Notifications, Haptics, and MemoryHostServices."
+title: "Host Capabilities (packages/modules)"
+description: "Modular zero-serialization host capabilities on nve-host-services: Clipboard, Filesystem, Secure Store, Linking, live Theme/Locale NVT2/NVL1, Notifications, Haptics, Storage, Fonts, Audio, Camera, Location, Sensors, Share, and Web Auth."
 order: 4
 ---
 
-# Native SDK (`nve-sdk`)
+# Host Capabilities (`nve-host-services` + `packages/modules/*`)
 
-`packages/framework/sdk` exposes seven first-party Tier-1 native platform capabilities through one unified, zero-JSON binary C ABI (**`NVE_IFACE_HOST = 5`**) and `NveChannelBus`. Every capability is testable deterministically in sub-millisecond headless tests via `MemoryHostServices`.
+Native platform capabilities are decomposed into a tiny shared core (`packages/core/host-services`) plus standalone opt-in capability crates under `packages/modules/<name>/`. Apps depend only on the exact modules they use — zero umbrella bloat.
+
+- **In-process Rust-to-Rust (`NativeHostServices`, `MemoryHostServices`, `SkiaHostServices`)**: Clients resolve each module's typed `*Backend` trait directly via `nve_host_services::resolve_typed` — **zero serialization, zero wire encoding, zero extra allocations**.
+- **Cross-language FFI (`FfiHostServices` over `NVE_IFACE_HOST = 5`)**: When a Rust module runs inside a C++/Swift/Kotlin/Dart host, clients fall back seamlessly to the compact zero-JSON binary wire protocol over `NVE_IFACE_HOST = 5` and `NveChannelBus`.
 
 ## Capability Matrix & Service IDs
 
-| Client | Service ID | Operations | Native Drivers (`packages/framework/sdk/src/native/`) |
+| Crate | Client | Service ID | Operations |
 | :--- | :--- | :--- | :--- |
-| `ClipboardClient` | `0x0010` | `read_text()`, `write_text(&str)`, `clear()` | macOS `NSPasteboard`, Windows Win32 `OpenClipboard`/`CF_UNICODETEXT`, Linux Wayland/X11, Web Clipboard API |
-| `FilesystemClient` | `0x0011` | `pick_open_files(FilePickerOptions)`, `pick_save_file(SaveFileOptions)`, `standard_path(StandardPathKind)` | Native OS dialogs (`NSOpenPanel`, Win32 `IFileDialog`, GTK Portal) & standard app data/cache/config/docs dirs |
-| `SecureStoreClient` | `0x0012` | `get(service, key)`, `set(service, key, secret)`, `delete(service, key)` | macOS Keychain, Windows Credential Manager (`CredReadW`/`CredWriteW`), Linux Secret Service, Android Keystore |
-| `LinkingClient` | `0x0013` | `open_url(&str)`, `can_open_url(&str)`, `initial_url()`, push `LinkingEvent` | macOS `open` / `NSWorkspace`, Windows `ShellExecuteW`, Linux `xdg-open`, iOS/Android URL handlers |
-| `SystemEnvClient` | `0x0014` | `get_theme()` (`NVT2`), `get_locale()` (`NVL1`), live `SystemEnvBridge` pushes | macOS `NSAppearance` / `NSLocale`, Windows Registry + `GetUserDefaultLocaleName`, GTK/Qt/Web media queries |
-| `NotificationsClient` | `0x0015` | `request_permission()`, `schedule(NotificationRequest)`, `cancel(id)`, push `NotificationTapped` | UNUserNotificationCenter, Win32 Toast, libnotify, Android NotificationManager, Web Notifications |
-| `HapticsClient` | `0x0016` | `impact(ImpactStyle)`, `selection()`, `notification(NotificationHaptic)` | iOS `UIImpactFeedbackGenerator`, macOS `NSHapticFeedbackManager`, Android `VibrationEffect` |
+| `nve-clipboard` | `ClipboardClient` | `0x0010` | `read_text()`, `write_text(&str)`, `has_text()`, `clear()` |
+| `nve-filesystem` | `FilesystemClient` | `0x0011` | `pick_open_files(...)`, `pick_save_file(...)`, `standard_path(StandardPathKind)` |
+| `nve-secure-store` | `SecureStoreClient` | `0x0012` | `get(service, account)`, `set(...)`, `delete(...)` |
+| `nve-linking` | `LinkingClient` | `0x0013` | `open_url(&str)`, `can_open_url(&str)`, `initial_url()`, push `LinkingEvent` |
+| `nve-system-env` | `SystemEnvClient` | `0x0014` | `get_theme()` (`NVT2`), `get_locale()` (`NVL1`), live `SystemEnvBridge` pushes |
+| `nve-notifications` | `NotificationsClient` | `0x0015` | `request_permission()`, `show(NotificationRequest)`, `cancel(id)`, push `NotificationTapped` |
+| `nve-haptics` | `HapticsClient` | `0x0016` | `impact(ImpactStyle)`, `selection()`, `notification(NotificationHaptic)` |
+| `nve-storage` | `StorageClient` | `0x0020` | Crash-safe `NVK1` binary KV store (`open`, `get`, `put`, `delete`, `scan_prefix`, `commit_batch`, `compact`) |
+| `nve-fonts` | `FontClient` | `0x0021` | Custom TTF/OTF/WOFF/WOFF2/TTC magic-validated font registration & deduplication |
+| `nve-audio` | `AudioClient` | `0x0022` | Playback (`load_source`, `play`, `pause`, `stop`, `seek_ms`, `set_volume`, `set_looping`) & recording |
+| `nve-camera` | `CameraClient` | `0x0023` | Camera enumeration, still capture, preview sessions + `CameraPreview` native view (`NVNP`/`NVNC`/`NVCF`) |
+| `nve-location` | `LocationClient` | `0x0024` | Permissions, `current_position`, continuous `watch_position` / `stop_watch` |
+| `nve-sensors` | `SensorClient` | `0x0025` | Hardware inertial & environmental streams with zero-copy fixed `#[repr(C)]` `SensorSample` batches |
+| `nve-share` | `ShareClient` | `0x0026` | Native OS share sheet (`share_text`, `share_url`, `share_files`) |
+| `nve-web-auth` | `WebAuthClient` | `0x0027` | In-app browser (`open_in_app_browser`) & OAuth (`authenticate`) |
 
-## Ergonomic Facade (`SdkClient`)
+## Composing Only What You Need
 
-All seven clients share one borrowed `&dyn HostServiceProvider` — backed by `FfiHostServices` in production `NveApp` modules or `MemoryHostServices` in tests:
+Every module's client borrows `&dyn HostServiceProvider` — backed by `FfiHostServices` in hosted `NveApp` modules, `NativeHostServices` on desktop, or `MemoryHostServices` in tests:
 
-```rust title="Using SdkClient across Clipboard, SecureStore, Filesystem, and Haptics" highlight="5-16"
-use nve_sdk::{
-    FileFilter, FilePickerOptions, HostServiceProvider, ImpactStyle, SdkClient, StandardPathKind,
-};
+```rust title="Direct typed clients from standalone capability crates" highlight="1-5,8-18"
+use nve_clipboard::ClipboardClient;
+use nve_filesystem::{FileFilter, FilePickerOptions, FilesystemClient, StandardPathKind};
+use nve_haptics::{HapticsClient, ImpactStyle};
+use nve_host_services::{HostServiceProvider, ServiceError};
+use nve_secure_store::SecureStoreClient;
 
-pub fn export_workspace_token(host: &dyn HostServiceProvider) -> Result<(), nve_sdk::SdkError> {
-    let sdk = SdkClient::new(host);
-
-    if let Some(secret) = sdk.secure_store().get("nve.studio", "sync_token")? {
-        sdk.clipboard().write_text(&secret)?;
-        sdk.haptics().impact(ImpactStyle::Medium)?;
+pub fn export_workspace_token(host: &dyn HostServiceProvider) -> Result<(), ServiceError> {
+    if let Some(secret) = SecureStoreClient::new(host).get_string("nve.studio", "sync_token")? {
+        ClipboardClient::new(host).write_text(&secret)?;
+        HapticsClient::new(host).impact(ImpactStyle::Medium)?;
     }
 
-    let data_dir = sdk.filesystem().standard_path(StandardPathKind::AppData)?;
-    let _picked = sdk.filesystem().pick_open_files(&FilePickerOptions {
+    let fs = FilesystemClient::new(host);
+    let data_dir = fs.standard_path(StandardPathKind::AppData)?;
+    let _picked = fs.pick_open_files(&FilePickerOptions {
         title: Some("Import Snapshot".into()),
         multiple: false,
         filters: vec![FileFilter::new("NVE Snapshot", &["nvesnap", "nvewal"])],
@@ -53,7 +65,7 @@ pub fn export_workspace_token(host: &dyn HostServiceProvider) -> Result<(), nve_
 
 System appearance and locale snapshots bypass JSON completely and publish directly onto `NveChannelBus` (`CHANNEL_ID_THEME = 1`, `CHANNEL_ID_LOCALE = 2`) with `NVE_CHANNEL_FLAG_RETAIN` so late-mounting surfaces receive the latest state immediately.
 
-### Fixed 16-Byte `NVT2` Theme Snapshot
+### Fixed 16-Byte `NVT2` Theme Snapshot (`ThemeWireLayout`)
 
 | Bytes | Field | Encoding |
 | :--- | :--- | :--- |
@@ -66,8 +78,8 @@ System appearance and locale snapshots bypass JSON completely and publish direct
 | `12..14` | `font_scale_x1000` | `u16` LE (e.g. `1000` = `1.0x`, `1250` = `1.25x`) |
 | `14..16` | `scale_factor_x100` | `u16` LE (e.g. `200` = `2.0x` Retina) |
 
-`NVL1` encodes `LocaleSnapshot` (`b"NVL1"`, `version = 1`, BCP-47 language tag, script/region subtags, `TextDirection::Ltr | Rtl`, and 24-hour clock flag). `SystemEnvBridge` handles both initial pull (`get_theme`/`get_locale`) and live push updates (`EVENT_THEME_CHANGED = 1`, `EVENT_LOCALE_CHANGED = 2`).
+`NVL1` encodes `LocaleSnapshot` (`b"NVL1"`, `version = 1`, BCP-47 language tag, region subtag, `TextDirection::Ltr | Rtl`, and 24-hour clock flag). `SystemEnvBridge` handles both initial pull (`get_theme`/`get_locale`) and live push updates (`EVENT_THEME_CHANGED = 1`, `EVENT_LOCALE_CHANGED = 2`).
 
 ## Zero-Mock Testing With `MemoryHostServices`
 
-`MemoryHostServices` (`packages/framework/sdk/src/memory.rs`) implements the full `HostServiceProvider` contract in memory — including simulated file picker queues, secret storage, notification permission policies, haptic event capture (`RecordedHaptic`), and async `NVH1` push injection — so your entire capability logic runs deterministically in `cargo test` with zero OS dependencies.
+`MemoryHostServices` (`packages/core/host-services/src/registry.rs`) is an empty registry onto which tests register only the deterministic `Memory*` handlers they exercise (`MemoryClipboard`, `MemoryFilesystem`, `MemorySystemEnv`, `MemoryStorage`, etc.) — supporting fault injection and direct zero-serialization typed dispatch in sub-millisecond `cargo test` runs.

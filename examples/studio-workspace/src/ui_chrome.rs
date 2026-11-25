@@ -1,7 +1,7 @@
 //! Responsive navigation chrome for **Aether Studio Workspace**:
 //! - Mobile portrait compact top bar + collapsible navigation drawer (`SizeClass::Compact`)
 //! - Desktop fixed left sidebar (`SizeClass::Medium` / `SizeClass::Expanded`)
-//! - Synchronized `nve-router` Back/Forward route bar with `nve-sdk` deep-link URL copy
+//! - Synchronized `nve-router` Back/Forward route bar with `nve-clipboard` deep-link URL copy
 
 use std::sync::{Arc, Mutex};
 

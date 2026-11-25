@@ -2,8 +2,8 @@
 
 use nve_camera::{
     CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC, CAMERA_FRAME_VERSION, CAMERA_PREVIEW_KIND,
-    CameraCodecError, CameraFrameDescriptor, CameraPixelFormat, CameraPreview,
-    CameraPreviewCommand, CameraPreviewFacing, CameraPreviewProps, MAX_CAMERA_FPS,
+    CameraCodecError, CameraFacing, CameraFrameDescriptor, CameraPixelFormat, CameraPreview,
+    CameraPreviewCommand, CameraPreviewProps, MAX_CAMERA_FPS,
     NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC, StabilizationMode, TorchMode,
 };
 
@@ -75,7 +75,7 @@ fn golden_byte_vectors_match_cpp_apple_and_kotlin_codecs() {
 fn props_commands_and_frames_roundtrip_and_reject_invalid_values() {
     let custom = CameraPreviewProps::new()
         .with_device_id("back-ultra-wide")
-        .with_facing(CameraPreviewFacing::External)
+        .with_facing(CameraFacing::External)
         .with_torch(TorchMode::Auto)
         .with_zoom(0.5)
         .with_fps(MAX_CAMERA_FPS)
@@ -99,7 +99,7 @@ fn props_commands_and_frames_roundtrip_and_reject_invalid_values() {
     }
 
     let commands = [
-        CameraPreviewCommand::SwitchFacing(CameraPreviewFacing::Front),
+        CameraPreviewCommand::SwitchFacing(CameraFacing::Front),
         CameraPreviewCommand::SetTorch(TorchMode::On),
         CameraPreviewCommand::SetZoom(3.5),
         CameraPreviewCommand::FocusPoint { x: 0.0, y: 1.0 },

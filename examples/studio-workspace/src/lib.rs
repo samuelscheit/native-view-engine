@@ -113,7 +113,7 @@ pub fn create_surface_with_store(
 }
 
 /// Creates a `DioxusSurface` bound to both a caller-supplied `WorkspaceState` store and
-/// [`StudioHostServices`] (`nve-sdk` Clipboard + SystemEnv provider).
+/// [`StudioHostServices`] (`nve-clipboard` + `nve-system-env` provider).
 pub fn create_surface_with_services(
     surface_id: SurfaceId,
     store: Arc<Mutex<WorkspaceState>>,
@@ -174,7 +174,7 @@ impl StudioWorkspaceModule {
         })
     }
 
-    /// Returns the dual-mode `nve-sdk` host service handle (`FfiHostServices` + `MemoryHostServices`).
+    /// Returns the dual-mode host service handle (`FfiHostServices` + `MemoryHostServices`).
     pub fn host_services(&self) -> &Arc<StudioHostServices> {
         &self.host_services
     }

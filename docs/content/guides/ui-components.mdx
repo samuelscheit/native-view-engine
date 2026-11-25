@@ -27,7 +27,7 @@ Explore live `nve-ui` buttons, badges, inputs, switches, tabs, cards, and theme 
 
 ## Design Tokens: `UiTheme` & `ThemeProvider`
 
-`ThemeProvider` injects a reactive `UiTheme` signal into the Dioxus tree (`use_theme()` / `use_theme_signal()`), synchronized with live OS appearance changes via `nve-sdk::SystemEnvBridge` (`NVT2`):
+`ThemeProvider` injects a reactive `UiTheme` signal into the Dioxus tree (`use_theme()` / `use_theme_signal()`), synchronized with live OS appearance changes via `nve-system-env::SystemEnvBridge` (`NVT2`):
 
 - **`UiPalette`** — Semantic surface, elevated card, border, primary accent, destructive, muted foreground, and focus-ring RGBA colors (`rgba_to_hex` helper for inline styling).
 - **`SpacingScale` & `RadiiScale`** — Consistent numeric steps scaled automatically by `UiDensity` (`Compact`, `Comfortable`, `Spacious`).

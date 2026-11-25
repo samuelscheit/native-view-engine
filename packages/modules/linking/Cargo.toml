@@ -1,0 +1,10 @@
+[package]
+name = "nve-linking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone opt-in NVE deep linking & external URL capability module (SERVICE_LINKING = 0x0013)"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }

@@ -1,21 +1,24 @@
-//! Native platform capability integration (`packages/framework/sdk`) for **Aether Studio Workspace**.
+//! Native platform capability integration (`nve-host-services` + `nve-clipboard` +
+//! `nve-system-env`) for **Aether Studio Workspace**.
 //!
 //! Wires [`ClipboardClient`] (Markdown export + deep-link route URLs) and [`SystemEnvClient`]
 //! (theme + locale sync) across both:
 //! - Bound `NVE_IFACE_HOST = 5` native C ABI callbacks (`FfiHostServices`) when hosted, and
-//! - In-memory [`MemoryHostServices`] fallback for headless/WASM/standalone execution & tests.
+//! - Direct zero-serialization in-process [`MemoryHostServices`] fallback for headless/WASM/standalone
+//!   execution & tests.
 
+use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use nve_abi::{NveHostCallbacks, SERVICE_SYSTEM_ENV};
-use nve_interop::{CHANNEL_ID_LOCALE, CHANNEL_ID_THEME};
-use nve_sdk::system_env::{
-    ColorScheme as SdkColorScheme, LocaleSnapshot, ThemeSnapshot, EVENT_LOCALE_CHANGED,
-    EVENT_THEME_CHANGED,
+use nve_clipboard::{ClipboardClient, MemoryClipboard};
+use nve_host_services::{
+    FfiHostServices, HostEvent, HostServiceProvider, InvokeResult, MemoryHostServices, ServiceError,
 };
-use nve_sdk::{
-    ClipboardClient, FfiHostServices, HostEvent, HostServiceProvider, InvokeResult,
-    MemoryHostServices, SdkError, SystemEnvClient,
+use nve_interop::{CHANNEL_ID_LOCALE, CHANNEL_ID_THEME};
+use nve_system_env::{
+    ColorScheme as SdkColorScheme, LocaleSnapshot, MemorySystemEnv, SystemEnvClient, ThemeSnapshot,
+    EVENT_LOCALE_CHANGED, EVENT_THEME_CHANGED,
 };
 
 /// Synchronized host system environment snapshot (theme + locale) sourced via [`SystemEnvClient`].
@@ -51,11 +54,11 @@ impl HostEventSyncReport {
     }
 }
 
-/// Dual-mode `nve-sdk` host service facade for Aether Studio Workspace.
+/// Dual-mode host service facade for Aether Studio Workspace.
 ///
 /// Automatically routes every [`ClipboardClient`] and [`SystemEnvClient`] call through bound
 /// `NVE_IFACE_HOST = 5` callbacks (`FfiHostServices`) when hosted, and falls back seamlessly to
-/// [`MemoryHostServices`] in headless/WASM/standalone runs.
+/// direct zero-serialization [`MemoryHostServices`] in headless/WASM/standalone runs.
 pub struct StudioHostServices {
     ffi: FfiHostServices,
     fallback: Arc<dyn HostServiceProvider>,
@@ -74,8 +77,11 @@ impl StudioHostServices {
     pub fn new() -> Self {
         let mem = Arc::new(MemoryHostServices::new());
         let default_env = StudioSystemEnv::default();
-        mem.set_theme(default_env.theme);
-        mem.set_locale(default_env.locale);
+        mem.register(MemoryClipboard::new());
+        mem.register(MemorySystemEnv::with_initial(
+            default_env.theme,
+            default_env.locale,
+        ));
         Self::with_memory(mem)
     }
 
@@ -125,17 +131,17 @@ impl StudioHostServices {
     }
 
     /// Writes `text` to the active host or memory clipboard via [`ClipboardClient`].
-    pub fn copy_text(&self, text: &str) -> Result<(), SdkError> {
+    pub fn copy_text(&self, text: &str) -> Result<(), ServiceError> {
         self.clipboard().write_text(text)
     }
 
     /// Reads text back from the active host or memory clipboard via [`ClipboardClient`].
-    pub fn read_clipboard_text(&self) -> Result<Option<String>, SdkError> {
+    pub fn read_clipboard_text(&self) -> Result<Option<String>, ServiceError> {
         self.clipboard().read_text()
     }
 
     /// Queries the live system theme (`NVT2`) and locale (`NVL1`) via [`SystemEnvClient`].
-    pub fn fetch_system_env(&self) -> Result<StudioSystemEnv, SdkError> {
+    pub fn fetch_system_env(&self) -> Result<StudioSystemEnv, ServiceError> {
         let client = self.system_env();
         let theme = client.get_theme()?;
         let locale = client.get_locale()?;
@@ -144,7 +150,7 @@ impl StudioHostServices {
 
     /// Dispatches an inbound binary `NVH1` host-event batch over `FfiHostServices` and decodes any
     /// pushed `NVT2` theme or `NVL1` locale change events.
-    pub fn dispatch_host_events(&self, batch: &[u8]) -> Result<HostEventSyncReport, SdkError> {
+    pub fn dispatch_host_events(&self, batch: &[u8]) -> Result<HostEventSyncReport, ServiceError> {
         let decoded_records = self.ffi.dispatch_host_events(batch)?;
         let mut report = HostEventSyncReport {
             decoded_records,
@@ -190,7 +196,7 @@ impl HostServiceProvider for StudioHostServices {
         service_id: u32,
         method_id: u32,
         request: &[u8],
-    ) -> Result<InvokeResult, SdkError> {
+    ) -> Result<InvokeResult, ServiceError> {
         if self.ffi.is_bound() {
             self.ffi.invoke_raw(service_id, method_id, request)
         } else {
@@ -203,7 +209,7 @@ impl HostServiceProvider for StudioHostServices {
         channel_id: u32,
         retain: bool,
         payload: &[u8],
-    ) -> Result<(), SdkError> {
+    ) -> Result<(), ServiceError> {
         if self.ffi.is_bound() {
             self.ffi.channel_publish(channel_id, retain, payload)
         } else {
@@ -216,6 +222,19 @@ impl HostServiceProvider for StudioHostServices {
             self.ffi.poll_host_events()
         } else {
             self.fallback.poll_host_events()
+        }
+    }
+
+    fn typed_service(
+        &self,
+        service_id: u32,
+        method_id: u32,
+        type_id: TypeId,
+    ) -> Option<Arc<dyn Any + Send + Sync>> {
+        if self.ffi.is_bound() {
+            None
+        } else {
+            self.fallback.typed_service(service_id, method_id, type_id)
         }
     }
 }
