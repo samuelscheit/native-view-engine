@@ -31,10 +31,33 @@ impl Drop for HotReloadSocket {
     }
 }
 
+struct WindowResizeListener {
+    on_resize: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    resize_observer: Option<web_sys::ResizeObserver>,
+    _on_observe: Option<Closure<dyn FnMut(JsValue)>>,
+}
+
+impl Drop for WindowResizeListener {
+    fn drop(&mut self) {
+        if let Some(on_resize) = self.on_resize.take() {
+            if let Some(window) = web_sys::window() {
+                let _ = window.remove_event_listener_with_callback(
+                    "resize",
+                    on_resize.as_ref().unchecked_ref(),
+                );
+            }
+        }
+        if let Some(observer) = self.resize_observer.take() {
+            observer.disconnect();
+        }
+    }
+}
+
 struct ActiveShell {
     generation: u64,
     session: Rc<RefCell<WebAppSession>>,
     _hot_reload: Option<HotReloadSocket>,
+    _resize_listener: Option<WindowResizeListener>,
 }
 
 thread_local! {
@@ -96,6 +119,34 @@ impl WebAppController {
         self.session.borrow().scene_view_ptr() as usize
     }
 
+    /// Updates the mounted surface's viewport and dispatches `NativeEventKind::Layout` on
+    /// `ROOT_NODE_ID`, returning `true` when the app re-rendered a frame.
+    pub fn dispatch_viewport_resize(&self, width: f32, height: f32) -> Result<bool, JsValue> {
+        let scale_factor = web_sys::window()
+            .map(|w| w.device_pixel_ratio() as f32)
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(1.0);
+        self.session
+            .borrow_mut()
+            .resize_viewport(Viewport {
+                width,
+                height,
+                scale_factor,
+            })
+            .map(|timing| timing.is_some())
+            .map_err(|e| JsValue::from_str(&format!("viewport resize failed: {e}")))
+    }
+
+    /// Dispatches a synthetic `keydown` custom event (`Cmd+K`/`Ctrl+K`, `ArrowUp`, `ArrowDown`,
+    /// `Enter`, `Escape`) on `ROOT_NODE_ID`, returning `true` when the app re-rendered a frame.
+    pub fn dispatch_keydown(&self, key: &str, meta: bool, ctrl: bool) -> Result<bool, JsValue> {
+        self.session
+            .borrow_mut()
+            .dispatch_keydown(key, meta, ctrl)
+            .map(|timing| timing.is_some())
+            .map_err(|e| JsValue::from_str(&format!("keydown dispatch failed: {e}")))
+    }
+
     /// Detaches this app if it is still active, clearing its mount root and closing any WS.
     pub fn unmount(&self) {
         let removed = ACTIVE_SHELL.with(|slot| {
@@ -133,25 +184,31 @@ fn browser_viewport(container: &web_sys::Element) -> Viewport {
     let scale = window
         .as_ref()
         .map(|w| w.device_pixel_ratio() as f32)
+        .filter(|d| d.is_finite() && *d > 0.0)
         .unwrap_or(1.0);
     let rect = container.get_bounding_client_rect();
-    let width = if rect.width() > 0.0 {
-        rect.width() as f32
-    } else {
-        window
-            .as_ref()
-            .and_then(|w| w.inner_width().ok())
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1280.0) as f32
+    let win_w = window
+        .as_ref()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let rect_w = (rect.width().is_finite() && rect.width() > 0.0).then_some(rect.width());
+    let width = match (win_w, rect_w) {
+        (Some(w), Some(r)) => w.min(r) as f32,
+        (Some(w), None) => w as f32,
+        (None, Some(r)) => r as f32,
+        (None, None) => 1280.0,
     };
-    let height = if rect.height() > 0.0 {
-        rect.height() as f32
-    } else {
-        window
-            .as_ref()
-            .and_then(|w| w.inner_height().ok())
-            .and_then(|v| v.as_f64())
-            .unwrap_or(720.0) as f32
+    let win_h = window
+        .as_ref()
+        .and_then(|w| w.inner_height().ok())
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let rect_h = (rect.height().is_finite() && rect.height() > 0.0).then_some(rect.height());
+    let height = match (rect_h, win_h) {
+        (Some(r), _) => r as f32,
+        (None, Some(h)) => h as f32,
+        (None, None) => 720.0,
     };
     Viewport {
         width,
@@ -300,13 +357,14 @@ where
         .ok_or_else(|| JsValue::from_str(&format!("root element '#{mount_id}' not found")))?;
 
     let viewport = browser_viewport(&container);
+    let container_for_resize = container.clone();
     let backend = WebBackend::mount_into(container);
     let surface_id: SurfaceId = PREINIT_SURFACE_ID;
     let session_val = build_session(surface_id, backend, viewport);
     let used_preinit = session_val.has_preinit_frame0();
     let session = Rc::new(RefCell::new(session_val));
 
-    // Wire live DOM events -> DioxusSurface::dispatch_events -> incremental CommandBuffer -> live DOM patch.
+    // Wire live DOM events -> app dispatch -> incremental CommandBuffer -> live DOM patch.
     let session_for_events = Rc::clone(&session);
     session
         .borrow_mut()
@@ -334,6 +392,59 @@ where
         initial_timing.decode_us,
         initial_timing.mount_us
     )));
+
+    // Forward browser `window` resize events AND container `ResizeObserver` notifications into
+    // `WebBackend` + `ROOT_NODE_ID` Layout events so responsive layouts (e.g. Studio Workspace
+    // 620pt breakpoint) adapt live across desktop resizes, split panes, and mobile emulation.
+    let session_for_resize = Rc::clone(&session);
+    let container_for_win_resize = container_for_resize.clone();
+    let on_resize = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
+        let next_vp = browser_viewport(&container_for_win_resize);
+        let Ok(mut guard) = session_for_resize.try_borrow_mut() else {
+            return;
+        };
+        if let Err(err) = guard.resize_viewport(next_vp) {
+            web_sys::console::error_1(&JsValue::from_str(&format!(
+                "[NVE Web] Failed to handle viewport resize: {err}"
+            )));
+        }
+    });
+    let registered_win_resize = window
+        .add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref())
+        .is_ok()
+        .then_some(on_resize);
+
+    let session_for_observer = Rc::clone(&session);
+    let container_for_observer = container_for_resize.clone();
+    let on_observe = Closure::<dyn FnMut(JsValue)>::new(move |_entries: JsValue| {
+        let next_vp = browser_viewport(&container_for_observer);
+        let Ok(mut guard) = session_for_observer.try_borrow_mut() else {
+            return;
+        };
+        if let Err(err) = guard.resize_viewport(next_vp) {
+            web_sys::console::error_1(&JsValue::from_str(&format!(
+                "[NVE Web] Failed to handle container resize: {err}"
+            )));
+        }
+    });
+    let (resize_observer, registered_observe) =
+        match web_sys::ResizeObserver::new(on_observe.as_ref().unchecked_ref()) {
+            Ok(obs) => {
+                obs.observe(&container_for_resize);
+                (Some(obs), Some(on_observe))
+            }
+            Err(_) => (None, None),
+        };
+
+    let resize_listener = if registered_win_resize.is_some() || resize_observer.is_some() {
+        Some(WindowResizeListener {
+            on_resize: registered_win_resize,
+            resize_observer,
+            _on_observe: registered_observe,
+        })
+    } else {
+        None
+    };
 
     let hot_reload = match ws_url.filter(|u| !u.trim().is_empty()) {
         Some(url) => match connect_hot_reload(&url, Rc::clone(&session)) {
@@ -364,6 +475,7 @@ where
             generation,
             session: Rc::clone(&session),
             _hot_reload: hot_reload,
+            _resize_listener: resize_listener,
         });
     });
 

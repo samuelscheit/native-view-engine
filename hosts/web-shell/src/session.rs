@@ -4,13 +4,17 @@
 use std::cell::RefCell;
 
 use nve_abi::{
-    component_kind_to_scene_u8, ComponentKind, Dimension, EventMask, FrameId, NodeId,
-    NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneNodeInput, SurfaceId,
-    NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
+    component_kind_to_scene_u8, encode_events, ComponentKind, Dimension, EventMask, EventPayload,
+    FrameId, NativeEvent, NativeEventKind, NodeId, NveRenderNode, NveSceneRef, NveSceneTable,
+    NveSceneView, SceneNodeInput, SurfaceId, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE,
+    NVE_NODE_LEAF_TEXT, ROOT_NODE_ID,
 };
-use nve_backend_web::{MirrorElement, WebBackend};
+use nve_backend_web::{encode_keydown_payload, MirrorElement, WebBackend};
 use nve_dioxus::DioxusSurface;
-use nve_engine::{BackendError, FrameTiming, HotPatchMsg, RenderBackend, SurfaceRunner, Viewport};
+use nve_engine::{
+    BackendError, FrameTiming, HotPatchMsg, NveApp, RenderBackend, SurfaceRunner, Viewport,
+};
+use nve_studio_workspace::StudioWorkspaceModule;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -51,9 +55,8 @@ pub extern "C" fn wizer_initialize() {
     }
 
     let studio_frame0 = {
-        let mut studio = nve_studio_workspace::create_surface(PREINIT_SURFACE_ID);
-        let (_, _, bytes) = studio.render_frame(1);
-        bytes
+        let mut studio = StudioWorkspaceModule::create(PREINIT_SURFACE_ID);
+        studio.render(1).to_vec()
     };
 
     let counter_frame0 = {
@@ -165,12 +168,50 @@ fn mirror_to_scene_input<'a>(
     }
 }
 
-/// Cross-target session binding a `DioxusSurface` to a `SurfaceRunner<WebBackend>` and a
-/// zero-copy [`NveSceneTable`] snapshot mirror for direct WASM linear-memory inspection.
+enum SessionApp {
+    Dioxus(DioxusSurface),
+    Studio(StudioWorkspaceModule),
+}
+
+impl SessionApp {
+    fn render_frame(&mut self, frame_id: FrameId) -> (u64, u64, Vec<u8>) {
+        match self {
+            Self::Dioxus(surface) => surface.render_frame(frame_id),
+            Self::Studio(module) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                let t0 = std::time::Instant::now();
+                let bytes = module.render(frame_id).to_vec();
+                #[cfg(not(target_arch = "wasm32"))]
+                let elapsed = t0.elapsed().as_micros() as u64;
+                #[cfg(target_arch = "wasm32")]
+                let elapsed = 0u64;
+                (elapsed, 0, bytes)
+            }
+        }
+    }
+
+    fn dispatch_events(&mut self, events: &[NativeEvent]) -> bool {
+        match self {
+            Self::Dioxus(surface) => surface.dispatch_events(events),
+            Self::Studio(module) => module.dispatch_events(&encode_events(events)),
+        }
+    }
+
+    fn apply_hot_patch(&mut self, msg: &HotPatchMsg) -> bool {
+        match self {
+            Self::Dioxus(surface) => surface.apply_hot_patch(msg),
+            Self::Studio(module) => module.apply_hot_patch(&msg.to_json()),
+        }
+    }
+}
+
+/// Cross-target session binding an NVE app (`DioxusSurface` or `StudioWorkspaceModule`) to a
+/// `SurfaceRunner<WebBackend>` and a zero-copy [`NveSceneTable`] snapshot mirror for direct WASM
+/// linear-memory inspection.
 ///
 /// Runs identically in browser WASM (`web-dom-wasm`) and in host unit tests (`web-dom-mirror`).
 pub struct WebAppSession {
-    surface: DioxusSurface,
+    app: SessionApp,
     runner: SurfaceRunner<WebBackend>,
     preinit_frame0: Option<Vec<u8>>,
     needs_vdom_hydrate: bool,
@@ -187,12 +228,18 @@ impl WebAppSession {
         backend: WebBackend,
         viewport: Viewport,
     ) -> Self {
-        Self::new_with_preinit(surface_id, surface, None, backend, viewport)
+        Self::new_with_preinit_app(
+            surface_id,
+            SessionApp::Dioxus(surface),
+            None,
+            backend,
+            viewport,
+        )
     }
 
-    fn new_with_preinit(
+    fn new_with_preinit_app(
         surface_id: SurfaceId,
-        surface: DioxusSurface,
+        app: SessionApp,
         preinit_frame0: Option<Vec<u8>>,
         backend: WebBackend,
         viewport: Viewport,
@@ -200,7 +247,7 @@ impl WebAppSession {
         let scene_table = NveSceneTable::new();
         let scene_view_box = Box::new(scene_table.as_view());
         Self {
-            surface,
+            app,
             runner: SurfaceRunner::new(surface_id, viewport, backend),
             preinit_frame0,
             needs_vdom_hydrate: false,
@@ -211,24 +258,42 @@ impl WebAppSession {
         }
     }
 
-    /// Boots the flagship `nve-studio-workspace` (Aether Workspace + NVE Studio) Dioxus surface.
+    /// Boots the flagship `nve-studio-workspace` (Aether Workspace + NVE Studio) module.
     ///
-    /// When [`wizer_initialize`] pre-baked Frame 0 for `surface_id == PREINIT_SURFACE_ID`,
-    /// mounts the pre-baked Frame-0 `CommandBuffer` immediately (0 us reconcile/encode) and
-    /// defers VDOM hydration until the first interactive event.
+    /// When [`wizer_initialize`] pre-baked Frame 0 for `surface_id == PREINIT_SURFACE_ID` and the
+    /// initial viewport is desktop (`>= 620pt`), mounts the pre-baked Frame-0 `CommandBuffer`
+    /// immediately (0 us reconcile/encode) and defers VDOM hydration until the first event.
     pub fn new_studio_workspace(
         surface_id: SurfaceId,
         backend: WebBackend,
         viewport: Viewport,
     ) -> Self {
-        let preinit = if surface_id == PREINIT_SURFACE_ID {
+        let is_mobile_initial =
+            viewport.width > 0.0 && viewport.width < nve_studio_workspace::MOBILE_BREAKPOINT_PT;
+        let preinit = if !is_mobile_initial && surface_id == PREINIT_SURFACE_ID {
             take_preinit_frame0_command_buffer_for(PreinitApp::StudioWorkspace)
         } else {
             None
         };
-        Self::new_with_preinit(
+        let mut module = StudioWorkspaceModule::create(surface_id);
+        if preinit.is_none() && viewport.width > 0.0 && viewport.height > 0.0 {
+            let layout_bytes = encode_events(&[NativeEvent {
+                surface_id,
+                node_id: ROOT_NODE_ID,
+                timestamp_us: 0,
+                kind: NativeEventKind::Layout,
+                payload: EventPayload::Layout {
+                    x: 0.0,
+                    y: 0.0,
+                    width: viewport.width,
+                    height: viewport.height,
+                },
+            }]);
+            let _ = module.dispatch_events(&layout_bytes);
+        }
+        Self::new_with_preinit_app(
             surface_id,
-            nve_studio_workspace::create_surface(surface_id),
+            SessionApp::Studio(module),
             preinit,
             backend,
             viewport,
@@ -245,9 +310,9 @@ impl WebAppSession {
         } else {
             None
         };
-        Self::new_with_preinit(
+        Self::new_with_preinit_app(
             surface_id,
-            nve_example_counter::create_surface(surface_id),
+            SessionApp::Dioxus(nve_example_counter::create_surface(surface_id)),
             preinit,
             backend,
             viewport,
@@ -308,19 +373,84 @@ impl WebAppSession {
         if self.needs_vdom_hydrate {
             // Rebuilds the Dioxus VDOM once to populate the deterministic ElementId <-> NodeId
             // table matching the pre-baked Frame-0 DOM before dispatching live events.
-            let _ = self.surface.render_frame(1);
+            let _ = self.app.render_frame(1);
             self.needs_vdom_hydrate = false;
         }
     }
 
-    /// Drains pending DOM events, dispatches them to Dioxus, and commits an incremental frame if handled.
+    /// Updates `WebBackend`'s viewport and dispatches `NativeEventKind::Layout` on `ROOT_NODE_ID`,
+    /// re-rendering immediately if the application changed responsive layout.
+    pub fn resize_viewport(
+        &mut self,
+        viewport: Viewport,
+    ) -> Result<Option<FrameTiming>, BackendError> {
+        let surface_id = self.runner.surface_id();
+        self.runner.backend_mut().set_viewport(surface_id, viewport);
+        if !(viewport.width.is_finite()
+            && viewport.height.is_finite()
+            && viewport.width > 0.0
+            && viewport.height > 0.0)
+        {
+            return Ok(None);
+        }
+        self.ensure_vdom_hydrated();
+        let ev = NativeEvent {
+            surface_id,
+            node_id: ROOT_NODE_ID,
+            timestamp_us: 0,
+            kind: NativeEventKind::Layout,
+            payload: EventPayload::Layout {
+                x: 0.0,
+                y: 0.0,
+                width: viewport.width,
+                height: viewport.height,
+            },
+        };
+        let timing = if self.app.dispatch_events(&[ev]) {
+            Some(self.render_and_submit()?)
+        } else {
+            None
+        };
+        #[cfg(target_arch = "wasm32")]
+        self.runner.backend().repaint_all_canvases();
+        Ok(timing)
+    }
+
+    /// Dispatches a `keydown` custom event on `ROOT_NODE_ID` (e.g. `Cmd+K`/`Ctrl+K`, `ArrowUp`,
+    /// `ArrowDown`, `Enter`, `Escape`) and commits an incremental frame if handled.
+    pub fn dispatch_keydown(
+        &mut self,
+        key: &str,
+        meta: bool,
+        ctrl: bool,
+    ) -> Result<Option<FrameTiming>, BackendError> {
+        let surface_id = self.runner.surface_id();
+        let data = encode_keydown_payload(key, meta, ctrl, false, false);
+        self.ensure_vdom_hydrated();
+        let ev = NativeEvent {
+            surface_id,
+            node_id: ROOT_NODE_ID,
+            timestamp_us: 0,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "keydown".into(),
+                data,
+            },
+        };
+        if !self.app.dispatch_events(&[ev]) {
+            return Ok(None);
+        }
+        self.render_and_submit().map(Some)
+    }
+
+    /// Drains pending DOM events, dispatches them to the app, and commits an incremental frame if handled.
     pub fn pump_events(&mut self) -> Result<Option<FrameTiming>, BackendError> {
         let events = self.runner.backend_mut().drain_events();
         if events.is_empty() {
             return Ok(None);
         }
         self.ensure_vdom_hydrated();
-        if !self.surface.dispatch_events(&events) {
+        if !self.app.dispatch_events(&events) {
             return Ok(None);
         }
         self.render_and_submit().map(Some)
@@ -341,7 +471,7 @@ impl WebAppSession {
                 ..
             } => {
                 let template_id = template_id.clone();
-                let _ = self.surface.apply_hot_patch(msg);
+                let _ = self.app.apply_hot_patch(msg);
                 let mutations = self.runner.backend_mut().apply_template_patch(msg);
                 let next_frame = self.scene_frame_id.wrapping_add(1).max(1);
                 self.sync_scene_table(next_frame);
@@ -391,7 +521,7 @@ impl WebAppSession {
 
     fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
         let frame_id = self.runner.next_frame_id();
-        let (reconcile_us, encode_us, bytes) = self.surface.render_frame(frame_id);
+        let (reconcile_us, encode_us, bytes) = self.app.render_frame(frame_id);
         let timing = self
             .runner
             .submit_recorded_frame(frame_id, reconcile_us, encode_us, &bytes)?;
@@ -811,6 +941,177 @@ mod tests {
         let mounted_view = unsafe { *ptr_before };
         assert_eq!(mounted_view.frame_id, 1);
         assert_eq!(mounted_view.node_count as usize, session.backend().node_count());
+        assert_scene_view_matches_backend(&session);
+    }
+
+    #[test]
+    fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize() {
+        let desktop_vp = Viewport {
+            width: 1280.0,
+            height: 800.0,
+            scale_factor: 2.0,
+        };
+        let mut session = WebAppSession::new_studio_workspace(1, WebBackend::new(), desktop_vp);
+        session.render_initial().unwrap();
+        assert_scene_view_matches_backend(&session);
+
+        // 1. Image avatar `<img>` carries `object-fit:cover;`, `alt`, and PNG data-URI `src`.
+        let avatar_id = find_node_by_test_id(session.backend(), "task-avatar-1")
+            .expect("expected task-avatar-1 image node");
+        let avatar_el = session.backend().node(avatar_id).unwrap();
+        assert_eq!(avatar_el.kind, ComponentKind::Image);
+        assert_eq!(avatar_el.object_fit, Some("cover"));
+        assert!(avatar_el.combined_css().contains("object-fit:cover;"));
+        assert!(matches!(
+            avatar_el.raw_props.get("src"),
+            Some(RawPropValue::String(s)) if s.starts_with("data:image/png;base64,")
+        ));
+        assert!(matches!(
+            avatar_el.raw_props.get("alt"),
+            Some(RawPropValue::String(s)) if !s.is_empty()
+        ));
+
+        // 2. Board TextInput search + custom task create via `submit` (and empty submit is a safe no-op).
+        let search_id = find_node_by_test_id(session.backend(), "board-search-input").unwrap();
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: search_id,
+            timestamp_us: 1000,
+            kind: NativeEventKind::TextChange,
+            payload: EventPayload::Text("AppKit".into()),
+        });
+        session.pump_events().unwrap().expect("search filter frame");
+        let html_filtered = session.backend().render_html();
+        assert!(html_filtered.contains("AET-102"));
+        assert!(!html_filtered.contains("AET-101"));
+        press_test_id(&mut session, "board-search-clear", 1500);
+        assert!(session.backend().render_html().contains("AET-101"));
+
+        // Empty Enter submit must not panic or create a task.
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: ROOT_NODE_ID,
+            timestamp_us: 1600,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "submit".into(),
+                data: Vec::new(),
+            },
+        });
+        assert!(session.pump_events().unwrap().is_none());
+
+        let new_task_id = find_node_by_test_id(session.backend(), "board-new-task-input").unwrap();
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: new_task_id,
+            timestamp_us: 1700,
+            kind: NativeEventKind::TextChange,
+            payload: EventPayload::Text("Web Canvas Parity".into()),
+        });
+        session.pump_events().unwrap().expect("draft update");
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: ROOT_NODE_ID,
+            timestamp_us: 1800,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "submit".into(),
+                data: b"Web Canvas Parity".to_vec(),
+            },
+        });
+        session.pump_events().unwrap().expect("submit custom task");
+        assert!(session.backend().render_html().contains("Web Canvas Parity"));
+        assert_scene_view_matches_backend(&session);
+
+        // 3. Cmd+K palette open -> filter -> ArrowDown -> Enter -> Escape via `dispatch_keydown`.
+        assert!(session.dispatch_keydown("k", true, false).unwrap().is_some());
+        assert!(find_node_by_test_id(session.backend(), "command-palette").is_some());
+        let pal_in = find_node_by_test_id(session.backend(), "palette-input").unwrap();
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: pal_in,
+            timestamp_us: 2000,
+            kind: NativeEventKind::TextChange,
+            payload: EventPayload::Text("Accent:".into()),
+        });
+        session.pump_events().unwrap().expect("palette filter");
+        assert!(session.dispatch_keydown("ArrowDown", false, false).unwrap().is_some());
+        assert!(session.dispatch_keydown("Enter", false, false).unwrap().is_some());
+        assert!(find_node_by_test_id(session.backend(), "command-palette").is_none());
+        assert!(session.backend().render_html().contains("Accent -> Violet"));
+
+        // Re-open with Ctrl+K and close with Escape.
+        assert!(session.dispatch_keydown("k", false, true).unwrap().is_some());
+        assert!(find_node_by_test_id(session.backend(), "command-palette").is_some());
+        assert!(session.dispatch_keydown("Escape", false, false).unwrap().is_some());
+        assert!(find_node_by_test_id(session.backend(), "command-palette").is_none());
+
+        // 4. Islands view bus broadcast & gesture arbitration.
+        press_test_id(&mut session, "nav-islands", 3000);
+        press_test_id(&mut session, "island-bus-theme", 3100);
+        press_test_id(&mut session, "island-gesture-claim", 3200);
+        let html_islands = session.backend().render_html();
+        assert!(html_islands.contains("Bus: 1 tx"));
+        assert!(html_islands.contains("Claim | winner:"));
+
+        // 5. 100k Stream view jump #50k, #99,999, and NativeEventKind::Scroll.
+        press_test_id(&mut session, "nav-stream", 4000);
+        press_test_id(&mut session, "stream-jump-50k", 4100);
+        assert!(session.backend().render_html().contains("STR-50000"));
+        press_test_id(&mut session, "stream-jump-end", 4200);
+        assert!(session.backend().render_html().contains("STR-99999"));
+        let stream_vp = find_node_by_test_id(session.backend(), "stream-viewport").unwrap();
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: stream_vp,
+            timestamp_us: 4300,
+            kind: NativeEventKind::Scroll,
+            payload: EventPayload::Scroll {
+                x: 0.0,
+                y: 0.0,
+                content_width: 800.0,
+                content_height: 4_000_000.0,
+            },
+        });
+        session.pump_events().unwrap().expect("scroll frame");
+        let html_top = session.backend().render_html();
+        assert!(html_top.contains("Rows #0..") || html_top.contains("STR-00001"));
+
+        // 6. Metrics view `<canvas>` decodes `NVE_DRAW1` draw list into typed `CanvasOp`s.
+        press_test_id(&mut session, "nav-metrics", 5000);
+        let canvas_id = find_node_by_test_id(session.backend(), "metrics-sparkline-canvas")
+            .expect("expected metrics-sparkline-canvas");
+        let canvas_el = session.backend().node(canvas_id).unwrap();
+        assert_eq!(canvas_el.kind, ComponentKind::SkiaCanvas);
+        assert!(
+            canvas_el.draw_op_count > 3,
+            "expected decoded NVE_DRAW1 draw ops on metrics canvas, got {}",
+            canvas_el.draw_op_count
+        );
+        assert!(matches!(
+            canvas_el.raw_props.get("drawList"),
+            Some(RawPropValue::Bytes(_))
+        ));
+
+        // 7. Dynamic viewport resize across 620pt mobile breakpoint and back to desktop.
+        assert!(find_node_by_test_id(session.backend(), "desktop-sidebar").is_some());
+        assert!(find_node_by_test_id(session.backend(), "mobile-top-bar").is_none());
+
+        let mobile_vp = Viewport {
+            width: 393.0,
+            height: 852.0,
+            scale_factor: 3.0,
+        };
+        assert!(session.resize_viewport(mobile_vp).unwrap().is_some());
+        assert_eq!(session.backend().viewport(), mobile_vp);
+        assert!(find_node_by_test_id(session.backend(), "mobile-top-bar").is_some());
+        assert!(find_node_by_test_id(session.backend(), "desktop-sidebar").is_none());
+        assert!(find_node_by_test_id(session.backend(), "center-workspace").is_some());
+        assert_scene_view_matches_backend(&session);
+
+        assert!(session.resize_viewport(desktop_vp).unwrap().is_some());
+        assert!(find_node_by_test_id(session.backend(), "desktop-sidebar").is_some());
+        assert!(find_node_by_test_id(session.backend(), "mobile-top-bar").is_none());
         assert_scene_view_matches_backend(&session);
     }
 }

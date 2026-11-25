@@ -1550,6 +1550,7 @@ name = "nve-backend-web"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-components",
  "nve-engine",
  "wasm-bindgen",
  "web-sys",

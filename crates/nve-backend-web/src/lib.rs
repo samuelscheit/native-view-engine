@@ -1,13 +1,20 @@
 //! Web DOM / WASM RenderBackend consuming the exact same `nve-abi` `CommandBuffer`.
 //!
 //! - On `wasm32`: creates and patches real browser DOM elements + CSS Flexbox directly via `web-sys`,
-//!   attaching live `click` (`EventMask::PRESS`) and `input` (`EventMask::TEXT_CHANGE`) listeners.
-//! - On native targets: runs `WebDomMirror` so CSS translation, event masks, incremental patches,
-//!   and DOM mutations are unit-tested headlessly in `cargo test` in milliseconds.
+//!   attaching live `click` (`EventMask::PRESS`), `input` (`EventMask::TEXT_CHANGE`), `scroll`
+//!   (`ScrollView` / `EventMask::SCROLL`), `focus`/`blur` (`TextInput` / `EventMask::FOCUS|BLUR`),
+//!   `TextInput` `Enter` (`submit`), and global `window` `keydown` (`Cmd+K`/`Ctrl+K`, `ArrowUp`,
+//!   `ArrowDown`, `Enter`, `Escape`) listeners, plus `<img>` `object-fit` mapping and live `<canvas>`
+//!   `NVE_DRAW1` vector rendering via `CanvasRenderingContext2d`.
+//! - On native targets: runs `WebDomMirror` so CSS translation, event masks, `<img>` fit mapping,
+//!   `<canvas>` `NVE_DRAW1` draw-op decoding, incremental patches, and DOM mutations are unit-tested
+//!   headlessly in `cargo test` in milliseconds.
+
+pub mod canvas;
 
 use core::fmt::Write as _;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use nve_abi::{
@@ -15,6 +22,7 @@ use nve_abi::{
     FlexDirection, FlexJustify, LayoutProps, NativeEvent, NodeId, RawPropValue, StyleProps,
     SurfaceId, ROOT_NODE_ID,
 };
+use nve_components::canvas_ir::{CanvasOp, ImageResizeMode};
 use nve_engine::{BackendApplyStats, BackendError, LayoutRect, RenderBackend, Viewport};
 
 #[cfg(target_arch = "wasm32")]
@@ -25,6 +33,88 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 type RenderCallback = Rc<dyn Fn()>;
+
+/// Maps `resizeMode` / `resize_mode` / `objectFit` raw prop values to CSS `object-fit` keywords.
+pub fn raw_prop_to_object_fit(value: &RawPropValue) -> Option<&'static str> {
+    match value {
+        RawPropValue::String(raw) => {
+            let trimmed = raw.trim();
+            if let Some(mode) = ImageResizeMode::parse(trimmed) {
+                return Some(match mode {
+                    ImageResizeMode::Cover => "cover",
+                    ImageResizeMode::Contain => "contain",
+                    ImageResizeMode::Stretch => "fill",
+                    ImageResizeMode::Center => "none",
+                });
+            }
+            match trimmed.to_ascii_lowercase().as_str() {
+                "fill" => Some("fill"),
+                "none" => Some("none"),
+                "scale-down" | "scaledown" => Some("scale-down"),
+                _ => None,
+            }
+        }
+        RawPropValue::I64(n) => {
+            let mode = u8::try_from(*n).ok().and_then(ImageResizeMode::from_u8)?;
+            Some(match mode {
+                ImageResizeMode::Cover => "cover",
+                ImageResizeMode::Contain => "contain",
+                ImageResizeMode::Stretch => "fill",
+                ImageResizeMode::Center => "none",
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Returns `true` if `key` names an image fit prop (`resizeMode`, `resize_mode`, or `objectFit`).
+#[inline]
+pub fn is_image_fit_prop(key: &str) -> bool {
+    matches!(key, "resizeMode" | "resize_mode" | "objectFit")
+}
+
+/// Encodes a keyboard event into the canonical JSON payload consumed by `NativeEventKind::Custom`
+/// (`name: "keydown"`).
+pub fn encode_keydown_payload(
+    key: &str,
+    meta: bool,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Vec<u8> {
+    let mut out = String::with_capacity(key.len() + 64);
+    out.push_str("{\"key\":\"");
+    for ch in key.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(&mut out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    let _ = write!(
+        &mut out,
+        "\",\"meta\":{meta},\"ctrl\":{ctrl},\"shift\":{shift},\"alt\":{alt}}}"
+    );
+    out.into_bytes()
+}
+
+fn push_html_attr_escaped(val: &str, out: &mut String) {
+    for ch in val.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
+}
 
 pub fn component_to_html_tag(kind: ComponentKind) -> &'static str {
     match kind {
@@ -182,10 +272,13 @@ pub struct MirrorElement {
     pub layout_css: String,
     pub style_css: String,
     pub patch_css: String,
+    pub object_fit: Option<&'static str>,
     pub text: Option<String>,
     pub children: Vec<NodeId>,
     pub event_mask: u64,
     pub raw_props: HashMap<String, RawPropValue>,
+    pub draw_ops: Vec<CanvasOp>,
+    pub draw_op_count: usize,
 }
 
 impl MirrorElement {
@@ -198,10 +291,13 @@ impl MirrorElement {
             layout_css: String::new(),
             style_css: String::new(),
             patch_css: String::new(),
+            object_fit: None,
             text: None,
             children: Vec::new(),
             event_mask: EventMask::NONE,
             raw_props: HashMap::new(),
+            draw_ops: Vec::new(),
+            draw_op_count: 0,
         }
     }
 
@@ -211,14 +307,25 @@ impl MirrorElement {
         out.push_str(kind_default_css(self.kind, self.event_mask));
         out.push_str(&self.layout_css);
         out.push_str(&self.style_css);
+        if let Some(fit) = self.object_fit {
+            out.push_str("object-fit:");
+            out.push_str(fit);
+            out.push(';');
+        }
         out.push_str(&self.patch_css);
     }
 
-    /// Full inline `style` text combining kind defaults, typed layout, typed style, and Tier-1 patches.
+    /// Full inline `style` text combining kind defaults, typed layout, typed style, `object-fit`,
+    /// and Tier-1 patches.
     pub fn combined_css(&self) -> String {
         let base = kind_default_css(self.kind, self.event_mask);
+        let fit_len = self.object_fit.map_or(0, |f| f.len() + 12);
         let mut out = String::with_capacity(
-            base.len() + self.layout_css.len() + self.style_css.len() + self.patch_css.len(),
+            base.len()
+                + self.layout_css.len()
+                + self.style_css.len()
+                + fit_len
+                + self.patch_css.len(),
         );
         self.combined_css_into(&mut out);
         out
@@ -230,11 +337,16 @@ impl MirrorElement {
 struct NodeListeners {
     click: Option<Closure<dyn FnMut(web_sys::MouseEvent)>>,
     input: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    scroll: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    focus: Option<Closure<dyn FnMut(web_sys::FocusEvent)>>,
+    blur: Option<Closure<dyn FnMut(web_sys::FocusEvent)>>,
+    keydown: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
 }
 
 /// Native-testable Web DOM backend (mirrors exact DOM ops; mounts real `web_sys::Element`s on `wasm32`).
 pub struct WebBackend {
     surface_id: Rc<Cell<SurfaceId>>,
+    viewport: Viewport,
     nodes: HashMap<NodeId, MirrorElement>,
     events: Rc<RefCell<Vec<NativeEvent>>>,
     on_event: Rc<RefCell<Option<RenderCallback>>>,
@@ -244,6 +356,26 @@ pub struct WebBackend {
     dom_nodes: HashMap<NodeId, web_sys::Element>,
     #[cfg(target_arch = "wasm32")]
     listeners: HashMap<NodeId, NodeListeners>,
+    #[cfg(target_arch = "wasm32")]
+    window_keydown: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for WebBackend {
+    fn drop(&mut self) {
+        if let Some(window_keydown) = self.window_keydown.take() {
+            if let Some(window) = web_sys::window() {
+                let _ = window.remove_event_listener_with_callback(
+                    "keydown",
+                    window_keydown.as_ref().unchecked_ref(),
+                );
+            }
+        }
+        let dom_nodes = std::mem::take(&mut self.dom_nodes);
+        for (node_id, dom_el) in dom_nodes {
+            self.detach_listeners(node_id, &dom_el);
+        }
+    }
 }
 
 impl Default for WebBackend {
@@ -258,6 +390,7 @@ impl WebBackend {
         nodes.insert(ROOT_NODE_ID, MirrorElement::new(ComponentKind::Root));
         Self {
             surface_id: Rc::new(Cell::new(1)),
+            viewport: Viewport::default(),
             nodes,
             events: Rc::new(RefCell::new(Vec::new())),
             on_event: Rc::new(RefCell::new(None)),
@@ -267,10 +400,19 @@ impl WebBackend {
             dom_nodes: HashMap::new(),
             #[cfg(target_arch = "wasm32")]
             listeners: HashMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            window_keydown: None,
         }
     }
 
-    /// Mounts `ROOT_NODE_ID` into an existing browser DOM container (e.g. `#app`).
+    /// Returns the most recently configured [`Viewport`] for this backend.
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    /// Mounts `ROOT_NODE_ID` into an existing browser DOM container (e.g. `#app`),
+    /// and attaches a global `window` `keydown` listener for `Cmd+K`/`Ctrl+K`,
+    /// `ArrowUp`, `ArrowDown`, `Enter`, and `Escape`.
     #[cfg(target_arch = "wasm32")]
     pub fn mount_into(container: web_sys::Element) -> Self {
         let mut backend = Self::new();
@@ -288,7 +430,53 @@ impl WebBackend {
             html_el.style().set_css_text(root_css);
         }
         backend.dom_nodes.insert(ROOT_NODE_ID, container);
+        backend.attach_window_keydown_listener();
         backend
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn attach_window_keydown_listener(&mut self) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let events = Rc::clone(&self.events);
+        let on_event = Rc::clone(&self.on_event);
+        let surface_id = Rc::clone(&self.surface_id);
+        let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |ev: web_sys::KeyboardEvent| {
+                let key = ev.key();
+                let meta = ev.meta_key();
+                let ctrl = ev.ctrl_key();
+                let shift = ev.shift_key();
+                let alt = ev.alt_key();
+                let is_cmd_k = (meta || ctrl) && key.eq_ignore_ascii_case("k");
+                let is_nav = matches!(key.as_str(), "ArrowUp" | "ArrowDown" | "Enter" | "Escape");
+                if !is_cmd_k && !is_nav {
+                    return;
+                }
+                if is_cmd_k {
+                    ev.prevent_default();
+                }
+                let data = encode_keydown_payload(&key, meta, ctrl, shift, alt);
+                events.borrow_mut().push(NativeEvent {
+                    surface_id: surface_id.get(),
+                    node_id: ROOT_NODE_ID,
+                    timestamp_us: now_us(),
+                    kind: NativeEventKind::Custom,
+                    payload: EventPayload::Custom {
+                        name: "keydown".into(),
+                        data,
+                    },
+                });
+                let cb = on_event.borrow().clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
+            },
+        );
+        let _ =
+            window.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+        self.window_keydown = Some(closure);
     }
 
     /// Registers a callback invoked immediately whenever an interactive DOM event is queued.
@@ -540,7 +728,28 @@ impl WebBackend {
         out.push_str(el.tag);
         out.push_str(" data-nve-id=\"");
         let _ = write!(out, "{id}");
-        out.push_str("\" style=\"");
+        out.push('"');
+        if el.kind == ComponentKind::Image {
+            if let Some(RawPropValue::String(src)) = el
+                .raw_props
+                .get("src")
+                .or_else(|| el.raw_props.get("uri"))
+            {
+                out.push_str(" src=\"");
+                push_html_attr_escaped(src, out);
+                out.push('"');
+            }
+            if let Some(RawPropValue::String(alt)) = el.raw_props.get("alt") {
+                out.push_str(" alt=\"");
+                push_html_attr_escaped(alt, out);
+                out.push('"');
+            }
+        } else if el.kind == ComponentKind::SkiaCanvas && el.draw_op_count > 0 {
+            out.push_str(" data-nve-draw-ops=\"");
+            let _ = write!(out, "{}", el.draw_op_count);
+            out.push('"');
+        }
+        out.push_str(" style=\"");
         el.combined_css_into(out);
         out.push_str("\">");
         if let Some(t) = &el.text {
@@ -611,9 +820,16 @@ impl WebBackend {
         let Some(dom_el) = self.dom_nodes.get(&node_id) else {
             return;
         };
+        let is_image = self
+            .nodes
+            .get(&node_id)
+            .is_some_and(|n| n.kind == ComponentKind::Image);
         match value {
             RawPropValue::Null => {
                 let _ = dom_el.remove_attribute(key);
+                if is_image && key == "uri" {
+                    let _ = dom_el.remove_attribute("src");
+                }
             }
             RawPropValue::Bool(true) => {
                 let _ = dom_el.set_attribute(key, "");
@@ -629,6 +845,9 @@ impl WebBackend {
                         }
                         return;
                     }
+                }
+                if is_image && key == "uri" {
+                    let _ = dom_el.set_attribute("src", s);
                 }
                 let _ = dom_el.set_attribute(key, s);
             }
@@ -651,8 +870,18 @@ impl WebBackend {
         let Some(dom_el) = self.dom_nodes.get(&node_id).cloned() else {
             return;
         };
+        let kind = self
+            .nodes
+            .get(&node_id)
+            .map(|n| n.kind)
+            .unwrap_or(ComponentKind::View);
+
         let want_click = (mask & EventMask::PRESS) != 0;
         let want_input = (mask & EventMask::TEXT_CHANGE) != 0;
+        let want_scroll = kind == ComponentKind::ScrollView || (mask & EventMask::SCROLL) != 0;
+        let want_focus = kind == ComponentKind::TextInput || (mask & EventMask::FOCUS) != 0;
+        let want_blur = kind == ComponentKind::TextInput || (mask & EventMask::BLUR) != 0;
+        let want_keydown = kind == ComponentKind::TextInput;
 
         let entry = self.listeners.entry(node_id).or_default();
 
@@ -720,7 +949,150 @@ impl WebBackend {
             }
         }
 
-        if entry.click.is_none() && entry.input.is_none() {
+        if want_scroll && entry.scroll.is_none() {
+            let events = Rc::clone(&self.events);
+            let on_event = Rc::clone(&self.on_event);
+            let surface_id = Rc::clone(&self.surface_id);
+            let scroll_el = dom_el.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
+                events.borrow_mut().push(NativeEvent {
+                    surface_id: surface_id.get(),
+                    node_id,
+                    timestamp_us: now_us(),
+                    kind: NativeEventKind::Scroll,
+                    payload: EventPayload::Scroll {
+                        x: scroll_el.scroll_left() as f32,
+                        y: scroll_el.scroll_top() as f32,
+                        content_width: scroll_el.scroll_width() as f32,
+                        content_height: scroll_el.scroll_height() as f32,
+                    },
+                });
+                let cb = on_event.borrow().clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
+            });
+            let _ = dom_el
+                .add_event_listener_with_callback("scroll", closure.as_ref().unchecked_ref());
+            entry.scroll = Some(closure);
+        } else if !want_scroll {
+            if let Some(old) = entry.scroll.take() {
+                let _ = dom_el
+                    .remove_event_listener_with_callback("scroll", old.as_ref().unchecked_ref());
+            }
+        }
+
+        if want_focus && entry.focus.is_none() {
+            let events = Rc::clone(&self.events);
+            let on_event = Rc::clone(&self.on_event);
+            let surface_id = Rc::clone(&self.surface_id);
+            let closure = Closure::<dyn FnMut(web_sys::FocusEvent)>::new(
+                move |_ev: web_sys::FocusEvent| {
+                    events.borrow_mut().push(NativeEvent {
+                        surface_id: surface_id.get(),
+                        node_id,
+                        timestamp_us: now_us(),
+                        kind: NativeEventKind::Focus,
+                        payload: EventPayload::Empty,
+                    });
+                    let cb = on_event.borrow().clone();
+                    if let Some(cb) = cb {
+                        cb();
+                    }
+                },
+            );
+            let _ = dom_el
+                .add_event_listener_with_callback("focus", closure.as_ref().unchecked_ref());
+            entry.focus = Some(closure);
+        } else if !want_focus {
+            if let Some(old) = entry.focus.take() {
+                let _ = dom_el
+                    .remove_event_listener_with_callback("focus", old.as_ref().unchecked_ref());
+            }
+        }
+
+        if want_blur && entry.blur.is_none() {
+            let events = Rc::clone(&self.events);
+            let on_event = Rc::clone(&self.on_event);
+            let surface_id = Rc::clone(&self.surface_id);
+            let closure = Closure::<dyn FnMut(web_sys::FocusEvent)>::new(
+                move |_ev: web_sys::FocusEvent| {
+                    events.borrow_mut().push(NativeEvent {
+                        surface_id: surface_id.get(),
+                        node_id,
+                        timestamp_us: now_us(),
+                        kind: NativeEventKind::Blur,
+                        payload: EventPayload::Empty,
+                    });
+                    let cb = on_event.borrow().clone();
+                    if let Some(cb) = cb {
+                        cb();
+                    }
+                },
+            );
+            let _ = dom_el
+                .add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref());
+            entry.blur = Some(closure);
+        } else if !want_blur {
+            if let Some(old) = entry.blur.take() {
+                let _ = dom_el
+                    .remove_event_listener_with_callback("blur", old.as_ref().unchecked_ref());
+            }
+        }
+
+        if want_keydown && entry.keydown.is_none() {
+            let events = Rc::clone(&self.events);
+            let on_event = Rc::clone(&self.on_event);
+            let surface_id = Rc::clone(&self.surface_id);
+            let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+                move |ev: web_sys::KeyboardEvent| {
+                    if ev.key() == "Enter"
+                        && !ev.shift_key()
+                        && !ev.meta_key()
+                        && !ev.ctrl_key()
+                        && !ev.alt_key()
+                    {
+                        ev.prevent_default();
+                        ev.stop_propagation();
+                        let value = ev
+                            .target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                            .map(|inp| inp.value())
+                            .unwrap_or_default();
+                        events.borrow_mut().push(NativeEvent {
+                            surface_id: surface_id.get(),
+                            node_id: ROOT_NODE_ID,
+                            timestamp_us: now_us(),
+                            kind: NativeEventKind::Custom,
+                            payload: EventPayload::Custom {
+                                name: "submit".into(),
+                                data: value.into_bytes(),
+                            },
+                        });
+                        let cb = on_event.borrow().clone();
+                        if let Some(cb) = cb {
+                            cb();
+                        }
+                    }
+                },
+            );
+            let _ = dom_el
+                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+            entry.keydown = Some(closure);
+        } else if !want_keydown {
+            if let Some(old) = entry.keydown.take() {
+                let _ = dom_el
+                    .remove_event_listener_with_callback("keydown", old.as_ref().unchecked_ref());
+            }
+        }
+
+        if entry.click.is_none()
+            && entry.input.is_none()
+            && entry.scroll.is_none()
+            && entry.focus.is_none()
+            && entry.blur.is_none()
+            && entry.keydown.is_none()
+        {
             self.listeners.remove(&node_id);
         }
     }
@@ -735,6 +1107,85 @@ impl WebBackend {
             if let Some(input) = listeners.input {
                 let _ = dom_el
                     .remove_event_listener_with_callback("input", input.as_ref().unchecked_ref());
+            }
+            if let Some(scroll) = listeners.scroll {
+                let _ = dom_el
+                    .remove_event_listener_with_callback("scroll", scroll.as_ref().unchecked_ref());
+            }
+            if let Some(focus) = listeners.focus {
+                let _ = dom_el
+                    .remove_event_listener_with_callback("focus", focus.as_ref().unchecked_ref());
+            }
+            if let Some(blur) = listeners.blur {
+                let _ = dom_el
+                    .remove_event_listener_with_callback("blur", blur.as_ref().unchecked_ref());
+            }
+            if let Some(keydown) = listeners.keydown {
+                let _ = dom_el.remove_event_listener_with_callback(
+                    "keydown",
+                    keydown.as_ref().unchecked_ref(),
+                );
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn repaint_canvas_node(&self, node_id: NodeId) {
+        let Some(mirror) = self.nodes.get(&node_id) else {
+            return;
+        };
+        if mirror.kind != ComponentKind::SkiaCanvas {
+            return;
+        }
+        let Some(dom_el) = self.dom_nodes.get(&node_id) else {
+            return;
+        };
+        let fallback_w = match mirror.layout.width {
+            Dimension::Points(v) if v > 0.0 => v as f64,
+            _ => 320.0,
+        };
+        let fallback_h = match mirror.layout.height {
+            Dimension::Points(v) if v > 0.0 => v as f64,
+            _ => 72.0,
+        };
+        canvas::paint_canvas_element(dom_el, &mirror.draw_ops, fallback_w, fallback_h);
+    }
+
+    /// Repaints every mounted `<canvas>` node (e.g. after a browser window resize updates CSS widths).
+    #[cfg(target_arch = "wasm32")]
+    pub fn repaint_all_canvases(&self) {
+        for (&node_id, mirror) in &self.nodes {
+            if mirror.kind == ComponentKind::SkiaCanvas {
+                self.repaint_canvas_node(node_id);
+            }
+        }
+    }
+
+    /// Removes nodes no longer reachable from `ROOT_NODE_ID` after a full VDOM rebuild/reset.
+    fn prune_unreachable_nodes(&mut self) {
+        let mut reachable = HashSet::with_capacity(self.nodes.len());
+        let mut stack = vec![ROOT_NODE_ID];
+        while let Some(nid) = stack.pop() {
+            if reachable.insert(nid) {
+                if let Some(el) = self.nodes.get(&nid) {
+                    for &cid in &el.children {
+                        stack.push(cid);
+                    }
+                }
+            }
+        }
+        let dead_ids: Vec<NodeId> = self
+            .nodes
+            .keys()
+            .copied()
+            .filter(|id| !reachable.contains(id))
+            .collect();
+        for nid in dead_ids {
+            self.nodes.remove(&nid);
+            #[cfg(target_arch = "wasm32")]
+            if let Some(el) = self.dom_nodes.remove(&nid) {
+                self.detach_listeners(nid, &el);
+                el.remove();
             }
         }
     }
@@ -785,8 +1236,9 @@ impl RenderBackend for WebBackend {
         }
     }
 
-    fn set_viewport(&mut self, surface_id: SurfaceId, _viewport: Viewport) {
+    fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
         self.surface_id.set(surface_id);
+        self.viewport = viewport;
     }
 
     fn submit_frame(&mut self, command_bytes: &[u8]) -> Result<BackendApplyStats, BackendError> {
@@ -797,13 +1249,24 @@ impl RenderBackend for WebBackend {
 
         let t_mount = FrameTimer::start();
         let mut mutations = 0u32;
+        let mut replaced_existing = false;
+        #[cfg(target_arch = "wasm32")]
+        let mut dirty_canvases: Vec<NodeId> = Vec::new();
 
         for cmd in commands {
             match cmd {
                 Command::CreateNode { node_id, kind, .. } => {
+                    if self.nodes.contains_key(&node_id) {
+                        replaced_existing = true;
+                    }
                     let mirror = MirrorElement::new(kind);
                     let tag = mirror.tag;
                     self.nodes.insert(node_id, mirror);
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(old_el) = self.dom_nodes.remove(&node_id) {
+                        self.detach_listeners(node_id, &old_el);
+                        old_el.remove();
+                    }
                     #[cfg(target_arch = "wasm32")]
                     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                         if let Ok(el) = doc.create_element(tag) {
@@ -812,6 +1275,13 @@ impl RenderBackend for WebBackend {
                             let _ = el.set_attribute("data-nve-id", &self.css_scratch);
                             self.dom_nodes.insert(node_id, el);
                             self.sync_dom_style(node_id);
+                            if matches!(kind, ComponentKind::ScrollView | ComponentKind::TextInput)
+                            {
+                                self.sync_event_listeners(node_id, EventMask::NONE);
+                            }
+                            if kind == ComponentKind::SkiaCanvas {
+                                dirty_canvases.push(node_id);
+                            }
                         }
                     }
                     #[cfg(not(target_arch = "wasm32"))]
@@ -853,13 +1323,24 @@ impl RenderBackend for WebBackend {
                     mutations += 1;
                 }
                 Command::SetLayout { node_id, layout } => {
+                    #[cfg(target_arch = "wasm32")]
+                    let mut is_canvas = false;
                     if let Some(el) = self.nodes.get_mut(&node_id) {
                         el.layout = layout;
                         el.layout_css.clear();
                         layout_to_css_into(&layout, &mut el.layout_css);
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            is_canvas = el.kind == ComponentKind::SkiaCanvas;
+                        }
                     }
                     #[cfg(target_arch = "wasm32")]
-                    self.sync_dom_style(node_id);
+                    {
+                        self.sync_dom_style(node_id);
+                        if is_canvas {
+                            dirty_canvases.push(node_id);
+                        }
+                    }
                     mutations += 1;
                 }
                 Command::SetStyle { node_id, style } => {
@@ -877,10 +1358,42 @@ impl RenderBackend for WebBackend {
                     key,
                     value,
                 } => {
-                    #[cfg(target_arch = "wasm32")]
-                    self.sync_dom_raw_prop(node_id, &key, &value);
-                    if let Some(el) = self.nodes.get_mut(&node_id) {
-                        el.raw_props.insert(key, value);
+                    if canvas::is_draw_list_prop(&key) {
+                        let decoded_ops = canvas::decode_draw_list_prop(&value).unwrap_or_default();
+                        let op_count = decoded_ops.len();
+                        if let Some(el) = self.nodes.get_mut(&node_id) {
+                            el.draw_op_count = op_count;
+                            el.draw_ops = decoded_ops;
+                            el.raw_props.insert(key, value);
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            if let Some(dom_el) = self.dom_nodes.get(&node_id) {
+                                self.css_scratch.clear();
+                                let _ = write!(&mut self.css_scratch, "{op_count}");
+                                let _ =
+                                    dom_el.set_attribute("data-nve-draw-ops", &self.css_scratch);
+                            }
+                            dirty_canvases.push(node_id);
+                        }
+                    } else if is_image_fit_prop(&key) {
+                        let fit = if matches!(value, RawPropValue::Null) {
+                            None
+                        } else {
+                            raw_prop_to_object_fit(&value)
+                        };
+                        if let Some(el) = self.nodes.get_mut(&node_id) {
+                            el.object_fit = fit;
+                            el.raw_props.insert(key, value);
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        self.sync_dom_style(node_id);
+                    } else {
+                        #[cfg(target_arch = "wasm32")]
+                        self.sync_dom_raw_prop(node_id, &key, &value);
+                        if let Some(el) = self.nodes.get_mut(&node_id) {
+                            el.raw_props.insert(key, value);
+                        }
                     }
                     mutations += 1;
                 }
@@ -896,6 +1409,19 @@ impl RenderBackend for WebBackend {
                     mutations += 1;
                 }
                 Command::DispatchCommand { .. } | Command::Commit { .. } => {}
+            }
+        }
+
+        if replaced_existing {
+            self.prune_unreachable_nodes();
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if !dirty_canvases.is_empty() {
+            dirty_canvases.sort_unstable();
+            dirty_canvases.dedup();
+            for nid in dirty_canvases {
+                self.repaint_canvas_node(nid);
             }
         }
 
@@ -1262,5 +1788,169 @@ mod tests {
         assert_eq!(noop, 0);
         assert!(!web.node(2).unwrap().combined_css().contains("opacity:0.2;"));
         assert!(!web.node(4).unwrap().combined_css().contains("opacity:0.2;"));
+    }
+
+    #[test]
+    fn maps_image_resize_mode_alt_and_src_in_mirror_and_html() {
+        let mut web = WebBackend::new();
+        let mut b = CommandBufferBuilder::new(1, 1);
+        for (idx, (id, prop_key, prop_val, expected_fit)) in [
+            (2u32, "resizeMode", "cover", "object-fit:cover;"),
+            (3u32, "resize_mode", "contain", "object-fit:contain;"),
+            (4u32, "objectFit", "stretch", "object-fit:fill;"),
+            (5u32, "resizeMode", "center", "object-fit:none;"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            b.create_node(id, ComponentKind::Image, None);
+            b.set_raw_prop(
+                id,
+                if idx == 3 { "uri" } else { "src" },
+                &RawPropValue::String(format!("https://example.com/img{idx}.png")),
+            );
+            b.set_raw_prop(
+                id,
+                "alt",
+                &RawPropValue::String(format!("Avatar \"{idx}\"")),
+            );
+            b.set_raw_prop(id, prop_key, &RawPropValue::String(prop_val.into()));
+            let _ = expected_fit;
+        }
+        b.set_children(ROOT_NODE_ID, &[2, 3, 4, 5]);
+        b.commit(true);
+        web.submit_frame(b.finish()).unwrap();
+
+        assert_eq!(web.node(2).unwrap().object_fit, Some("cover"));
+        assert_eq!(web.node(3).unwrap().object_fit, Some("contain"));
+        assert_eq!(web.node(4).unwrap().object_fit, Some("fill"));
+        assert_eq!(web.node(5).unwrap().object_fit, Some("none"));
+
+        assert!(web.node(2).unwrap().combined_css().contains("object-fit:cover;"));
+        assert!(web.node(3).unwrap().combined_css().contains("object-fit:contain;"));
+        assert!(web.node(4).unwrap().combined_css().contains("object-fit:fill;"));
+        assert!(web.node(5).unwrap().combined_css().contains("object-fit:none;"));
+
+        let html = web.render_html();
+        assert!(html.contains("<img data-nve-id=\"2\" src=\"https://example.com/img0.png\" alt=\"Avatar &quot;0&quot;\""));
+        assert!(html.contains("<img data-nve-id=\"5\" src=\"https://example.com/img3.png\" alt=\"Avatar &quot;3&quot;\""));
+        assert!(html.contains("object-fit:cover;"));
+        assert!(html.contains("object-fit:contain;"));
+        assert!(html.contains("object-fit:fill;"));
+        assert!(html.contains("object-fit:none;"));
+
+        // Numeric ImageResizeMode and Null clearing work cleanly.
+        let mut b2 = CommandBufferBuilder::new(1, 2);
+        b2.set_raw_prop(2, "resizeMode", &RawPropValue::I64(ImageResizeMode::Contain.to_u8() as i64));
+        b2.set_raw_prop(3, "resizeMode", &RawPropValue::Null);
+        b2.commit(true);
+        web.submit_frame(b2.finish()).unwrap();
+        assert_eq!(web.node(2).unwrap().object_fit, Some("contain"));
+        assert_eq!(web.node(3).unwrap().object_fit, None);
+    }
+
+    #[test]
+    fn decodes_nve_draw1_canvas_ops_and_handles_corrupt_or_null_draw_lists() {
+        use nve_components::canvas_ir::DrawListBuilder;
+
+        let mut dl = DrawListBuilder::with_capacity(256);
+        dl.clear(ColorRgba::rgb(17, 24, 39))
+            .fill_rect(4.0, 4.0, 40.0, 20.0, ColorRgba::rgb(56, 189, 248))
+            .fill_rounded_rect(50.0, 4.0, 40.0, 20.0, 6.0, ColorRgba::rgb(167, 139, 250))
+            .fill_circle(110.0, 14.0, 8.0, ColorRgba::rgb(34, 197, 94))
+            .stroke_line(0.0, 36.0, 120.0, 36.0, 2.0, ColorRgba::WHITE)
+            .stroke_polyline(
+                &[(10.0, 60.0), (40.0, 45.0), (80.0, 55.0)],
+                2.5,
+                ColorRgba::rgb(245, 158, 11),
+            )
+            .clip_rect(0.0, 0.0, 120.0, 72.0)
+            .restore_clip();
+        let raw_bytes = dl.finish();
+
+        let mut spark = DrawListBuilder::with_capacity(256);
+        spark.sparkline(
+            &[120.0, 180.0, 150.0, 240.0],
+            320.0,
+            72.0,
+            ColorRgba::rgb(56, 189, 248),
+            ColorRgba::rgb(17, 24, 39),
+        );
+        let spark_attr = spark.to_attr_string();
+
+        let mut web = WebBackend::new();
+        let mut b = CommandBufferBuilder::new(1, 1);
+        b.create_node(2, ComponentKind::SkiaCanvas, None);
+        b.set_raw_prop(2, "drawList", &RawPropValue::Bytes(raw_bytes));
+        b.create_node(3, ComponentKind::SkiaCanvas, None);
+        b.set_raw_prop(3, "draw_list", &RawPropValue::String(spark_attr));
+        b.create_node(4, ComponentKind::SkiaCanvas, None);
+        b.set_raw_prop(4, "drawList", &RawPropValue::Bytes(b"CORRUPT".to_vec()));
+        b.set_children(ROOT_NODE_ID, &[2, 3, 4]);
+        b.commit(true);
+        web.submit_frame(b.finish()).unwrap();
+
+        let n2 = web.node(2).unwrap();
+        assert_eq!(n2.tag, "canvas");
+        assert_eq!(n2.draw_op_count, 8);
+        assert_eq!(n2.draw_ops.len(), 8);
+        assert!(matches!(n2.draw_ops[0], CanvasOp::Clear { .. }));
+        assert!(matches!(n2.draw_ops[7], CanvasOp::RestoreClip));
+
+        let n3 = web.node(3).unwrap();
+        assert!(n3.draw_op_count > 3, "sparkline should decode multiple draw ops");
+
+        // Corrupt buffer degrades safely to 0 ops without panicking.
+        assert_eq!(web.node(4).unwrap().draw_op_count, 0);
+
+        let html = web.render_html();
+        assert!(html.contains("<canvas data-nve-id=\"2\" data-nve-draw-ops=\"8\""));
+
+        // Clearing via Null resets op count to 0.
+        let mut b2 = CommandBufferBuilder::new(1, 2);
+        b2.set_raw_prop(2, "drawList", &RawPropValue::Null);
+        b2.commit(true);
+        web.submit_frame(b2.finish()).unwrap();
+        assert_eq!(web.node(2).unwrap().draw_op_count, 0);
+        assert!(web.node(2).unwrap().draw_ops.is_empty());
+    }
+
+    #[test]
+    fn encodes_keydown_payload_and_prunes_orphans_on_full_rebuild() {
+        let payload = encode_keydown_payload("k", true, false, false, false);
+        assert_eq!(
+            std::str::from_utf8(&payload).unwrap(),
+            r#"{"key":"k","meta":true,"ctrl":false,"shift":false,"alt":false}"#
+        );
+        let escaped = encode_keydown_payload("\"\\", false, true, true, false);
+        assert_eq!(
+            std::str::from_utf8(&escaped).unwrap(),
+            r#"{"key":"\"\\","meta":false,"ctrl":true,"shift":true,"alt":false}"#
+        );
+
+        let mut web = WebBackend::new();
+        let mut b1 = CommandBufferBuilder::new(1, 1);
+        b1.create_node(2, ComponentKind::View, None);
+        b1.create_node(3, ComponentKind::Text, None);
+        b1.create_node(4, ComponentKind::Text, None);
+        b1.set_children(2, &[3, 4]);
+        b1.set_children(ROOT_NODE_ID, &[2]);
+        b1.commit(true);
+        web.submit_frame(b1.finish()).unwrap();
+        assert_eq!(web.node_count(), 4);
+
+        // Simulated full VDOM reset reusing NodeId 2 with fewer children prunes dead NodeId 4.
+        let mut b2 = CommandBufferBuilder::new(1, 2);
+        b2.create_node(2, ComponentKind::View, None);
+        b2.create_node(3, ComponentKind::Text, None);
+        b2.set_text(3, "Mobile");
+        b2.set_children(2, &[3]);
+        b2.set_children(ROOT_NODE_ID, &[2]);
+        b2.commit(true);
+        web.submit_frame(b2.finish()).unwrap();
+
+        assert_eq!(web.node_count(), 3);
+        assert!(web.node(4).is_none());
+        assert_eq!(web.node(3).unwrap().text.as_deref(), Some("Mobile"));
     }
 }

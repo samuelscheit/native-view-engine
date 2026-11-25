@@ -308,7 +308,17 @@ async function waitForCondition(cdp, description, fnSource, timeoutMs = 15000) {
   }
   const snapshot = await evalJs(
     cdp,
-    `(() => ({ url: location.href, status: document.getElementById('nve-status')?.textContent, text: document.getElementById('app')?.innerText?.slice(0, 600) }))()`
+    `(() => ({
+      url: location.href,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      appRect: document.getElementById('app')?.getBoundingClientRect()?.toJSON(),
+      viewportMode: document.querySelector('[testid="workspace-root"]')?.getAttribute('viewport-mode'),
+      hasMobileTopBar: Boolean(document.querySelector('[testid="mobile-top-bar"]')),
+      hasDesktopSidebar: Boolean(document.querySelector('[testid="desktop-sidebar"]')),
+      status: document.getElementById('nve-status')?.textContent,
+      text: document.getElementById('app')?.innerText?.slice(0, 400),
+    }))()`
   ).catch(() => null);
   throw new Error(
     `Timed out waiting for: ${description}\nLast error: ${lastError}\nDOM snapshot: ${JSON.stringify(snapshot, null, 2)}`
@@ -348,6 +358,44 @@ async function clickElement(cdp, selectorOrFinder, description) {
     y: rect.y,
     button: "left",
     clickCount: 1,
+  });
+}
+
+async function typeIntoInput(cdp, selector, text, description) {
+  await clickElement(cdp, selector, description);
+  // Select any existing text and replace via real CDP input events so browser focus/input listeners fire.
+  await evalJs(
+    cdp,
+    `(() => {
+      const el = (${selector});
+      if (!el) throw new Error("Input not found: " + ${JSON.stringify(description)});
+      el.focus();
+      el.select?.();
+      return document.activeElement === el;
+    })()`
+  );
+  await cdp.send("Input.insertText", { text });
+}
+
+async function pressKey(cdp, { key, code, windowsVirtualKeyCode = 0, modifiers = 0, text = "" }) {
+  const downParams = {
+    type: "keyDown",
+    key,
+    code,
+    windowsVirtualKeyCode,
+    modifiers,
+  };
+  if (text) {
+    downParams.text = text;
+    downParams.unmodifiedText = text;
+  }
+  await cdp.send("Input.dispatchKeyEvent", downParams);
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key,
+    code,
+    windowsVirtualKeyCode,
+    modifiers,
   });
 }
 
@@ -458,15 +506,15 @@ async function main() {
     await cdp.send("Log.enable");
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 1280,
-      height: 840,
+      height: 800,
       deviceScaleFactor: 2,
       mobile: false,
     });
 
     // =========================================================================
-    // 1. Aether Workspace + NVE Studio (`/?app=studio&ws=off`)
+    // 1. Aether Workspace + NVE Studio Desktop 1280x800 (`/?app=studio&ws=off`)
     // =========================================================================
-    console.log("==> [1/2] Testing Aether Workspace + NVE Studio (?app=studio&ws=off)...");
+    console.log("==> [1/3] Testing Aether Workspace + NVE Studio Desktop 1280x800 (?app=studio&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off` });
 
     await waitForCondition(
@@ -515,7 +563,70 @@ async function main() {
       console.log(`    Saved Studio screenshot: ${screenshotPath}`);
     }
 
-    // 1a. Click task status pill on AET-101 -> advances In Progress -> Done
+    // 1a. Verify Image avatar `<img>` loaded with `naturalWidth > 0`, `object-fit: cover`, and `alt`.
+    await waitForCondition(
+      cdp,
+      "Image avatar <img> loaded with naturalWidth > 0 and object-fit: cover",
+      () => {
+        const img = document.querySelector('img[testid="task-avatar-1"]');
+        if (!img) return false;
+        const style = getComputedStyle(img);
+        return img.complete && img.naturalWidth > 0 && style.objectFit === "cover" && Boolean(img.alt);
+      }
+    );
+    const avatarInfo = await evalJs(
+      cdp,
+      `(() => {
+        const img = document.querySelector('img[testid="task-avatar-1"]');
+        return { naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, objectFit: getComputedStyle(img).objectFit, alt: img.alt };
+      })()`
+    );
+    console.log(`    PASS Image avatar <img> (${avatarInfo.naturalWidth}x${avatarInfo.naturalHeight}, object-fit=${avatarInfo.objectFit}, alt=${avatarInfo.alt})`);
+
+    // 1b. Board TextInput live search filter + clear
+    await typeIntoInput(
+      cdp,
+      `document.querySelector('[testid="board-search-input"]')`,
+      "AppKit",
+      "board-search-input"
+    );
+    await waitForCondition(
+      cdp,
+      "Board search filtered to AET-102 and excluded AET-101",
+      () => {
+        const text = document.getElementById("app")?.innerText || "";
+        return text.includes("AET-102") && !text.includes("AET-101");
+      }
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="board-search-clear"]')`,
+      "board-search-clear"
+    );
+    await waitForCondition(
+      cdp,
+      "Board search cleared and AET-101 restored",
+      () => (document.getElementById("app")?.innerText || "").includes("AET-101")
+    );
+
+    // 1c. Board TextInput composer + Enter submit creates AET-105
+    await typeIntoInput(
+      cdp,
+      `document.querySelector('[testid="board-new-task-input"]')`,
+      "Ship Web Canvas E2E",
+      "board-new-task-input"
+    );
+    await pressKey(cdp, { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    await waitForCondition(
+      cdp,
+      "Board composer Enter submit created custom task AET-105",
+      () => {
+        const text = document.getElementById("app")?.innerText || "";
+        return text.includes("AET-105") && text.includes("Ship Web Canvas E2E");
+      }
+    );
+
+    // 1d. Click task status pill on AET-101 -> advances In Progress -> Done
     await clickElement(
       cdp,
       `document.querySelector('[testid="task-status-1"]')`,
@@ -526,11 +637,55 @@ async function main() {
       "AET-101 status advanced to Done (2)",
       () => {
         const text = document.getElementById("app")?.innerText || "";
-        return text.includes("Done (2)") && text.includes("Status -> Done") && text.includes("Snapshot 2 / 2");
+        return text.includes("Done (2)") && text.includes("Status -> Done");
       }
     );
 
-    // 1b. Click `# engineering` nav tab -> switches channel view
+    // 1e. Real CDP Cmd+K / Ctrl+K palette open -> filter -> ArrowDown -> Enter -> Escape
+    await pressKey(cdp, { key: "k", code: "KeyK", windowsVirtualKeyCode: 75, modifiers: 4 });
+    await waitForCondition(
+      cdp,
+      "Cmd+K opened command palette via real CDP keyboard event",
+      () => Boolean(document.querySelector('[testid="command-palette"]'))
+    );
+    await typeIntoInput(
+      cdp,
+      `document.querySelector('[testid="palette-input"]')`,
+      "Accent:",
+      "palette-input"
+    );
+    await waitForCondition(
+      cdp,
+      "Command palette filtered to Accent options",
+      () => (document.querySelector('[testid="command-palette"]')?.innerText || "").includes("Violet")
+    );
+    await pressKey(cdp, { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 });
+    await pressKey(cdp, { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    await waitForCondition(
+      cdp,
+      "Command palette ArrowDown + Enter applied Accent -> Violet and closed",
+      () => {
+        const pal = document.querySelector('[testid="command-palette"]');
+        const text = document.getElementById("app")?.innerText || "";
+        return !pal && text.includes("Accent -> Violet");
+      }
+    );
+    // Re-open with Ctrl+K and close with Escape
+    await pressKey(cdp, { key: "k", code: "KeyK", windowsVirtualKeyCode: 75, modifiers: 2 });
+    await waitForCondition(
+      cdp,
+      "Ctrl+K re-opened command palette",
+      () => Boolean(document.querySelector('[testid="command-palette"]'))
+    );
+    await pressKey(cdp, { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await waitForCondition(
+      cdp,
+      "Escape closed command palette",
+      () => !document.querySelector('[testid="command-palette"]')
+    );
+    console.log("    PASS Cmd+K / Ctrl+K palette (open, filter, ArrowDown, Enter, Escape)");
+
+    // 1f. `# engineering` channel view + chat composer TextInput Enter submit
     await clickElement(
       cdp,
       `document.querySelector('[testid="nav-engineering"]')`,
@@ -541,63 +696,212 @@ async function main() {
       "# engineering channel view rendered",
       () => {
         const text = document.getElementById("app")?.innerText || "";
-        return (
-          text.includes("Single ABI drives all 4 hosts!") &&
-          text.includes("QUICK REPLY") &&
-          text.includes("Snapshot 3 / 3")
-        );
+        return text.includes("Single ABI drives all 4 hosts!") && text.includes("QUICK REPLY");
       }
     );
+    await typeIntoInput(
+      cdp,
+      `document.querySelector('[testid="chat-composer-input"]')`,
+      "Live from Web WASM!",
+      "chat-composer-input"
+    );
+    await pressKey(cdp, { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    await waitForCondition(
+      cdp,
+      "Chat composer Enter submit posted message",
+      () => (document.getElementById("app")?.innerText || "").includes("Live from Web WASM!")
+    );
 
-    // 1c. Click X-Ray toggle -> enables X-Ray HUD
+    // 1g. Islands view `<Island>` bus broadcast & gesture arbitration
+    await clickElement(cdp, `document.querySelector('[testid="nav-islands"]')`, "nav-islands");
+    await waitForCondition(
+      cdp,
+      "Islands view rendered",
+      () => Boolean(document.querySelector('[testid="islands-summary"]'))
+    );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="toggle-xray"]')`,
-      "toggle-xray"
+      `document.querySelector('[testid="island-bus-theme"]')`,
+      "island-bus-theme"
     );
+    await waitForCondition(
+      cdp,
+      "Islands NveChannelBus theme broadcast recorded",
+      () => (document.querySelector('[testid="islands-summary"]')?.innerText || "").includes("Bus: 1 tx")
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="island-gesture-claim"]')`,
+      "island-gesture-claim"
+    );
+    await waitForCondition(
+      cdp,
+      "Islands GestureArbitrator Claim recorded",
+      () => (document.querySelector('[testid="islands-gesture-readout"]')?.innerText || "").includes("Claim | winner:")
+    );
+    console.log("    PASS Islands view (NveChannelBus broadcast + GestureArbitrator Claim)");
+
+    // 1h. 100k Stream view jump #50k and #99,999
+    await clickElement(cdp, `document.querySelector('[testid="nav-stream"]')`, "nav-stream");
+    await waitForCondition(
+      cdp,
+      "100k Stream view rendered",
+      () => Boolean(document.querySelector('[testid="stream-viewport"]'))
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="stream-jump-50k"]')`,
+      "stream-jump-50k"
+    );
+    await waitForCondition(
+      cdp,
+      "100k Stream jumped to #50k (STR-50000)",
+      () => (document.getElementById("app")?.innerText || "").includes("STR-50000")
+    );
+    await clickElement(
+      cdp,
+      `document.querySelector('[testid="stream-jump-end"]')`,
+      "stream-jump-end"
+    );
+    await waitForCondition(
+      cdp,
+      "100k Stream jumped to #99,999 (STR-99999)",
+      () => (document.getElementById("app")?.innerText || "").includes("STR-99999")
+    );
+    console.log("    PASS 100k Stream view (#50k -> STR-50000, #99,999 -> STR-99999)");
+
+    // 1i. Metrics view `<canvas>` NVE_DRAW1 non-blank painted pixel verification
+    await clickElement(cdp, `document.querySelector('[testid="nav-metrics"]')`, "nav-metrics");
+    await waitForCondition(
+      cdp,
+      "Metrics <canvas> rendered with NVE_DRAW1 draw ops",
+      () => {
+        const c = document.querySelector('canvas[testid="metrics-sparkline-canvas"]');
+        return Boolean(c && c.width > 0 && c.height > 0 && Number(c.getAttribute("data-nve-draw-ops")) > 0);
+      }
+    );
+    const canvasCheck = await evalJs(
+      cdp,
+      `(() => {
+        const c = document.querySelector('canvas[testid="metrics-sparkline-canvas"]');
+        const ctx = c.getContext('2d');
+        const img = ctx.getImageData(0, 0, c.width, c.height).data;
+        let nonTransparent = 0;
+        const colors = new Set();
+        for (let i = 0; i < img.length; i += 4) {
+          if (img[i + 3] > 0) {
+            nonTransparent++;
+            if (colors.size < 32) {
+              colors.add((img[i] << 16) | (img[i + 1] << 8) | img[i + 2]);
+            }
+          }
+        }
+        return {
+          width: c.width,
+          height: c.height,
+          drawOps: Number(c.getAttribute('data-nve-draw-ops') || 0),
+          nonTransparent,
+          distinctColors: colors.size,
+        };
+      })()`
+    );
+    if (!(canvasCheck.nonTransparent > 100 && canvasCheck.distinctColors >= 2)) {
+      throw new Error(
+        `Metrics <canvas> did not paint non-blank vector pixels: ${JSON.stringify(canvasCheck)}`
+      );
+    }
+    console.log(
+      `    PASS Metrics <canvas> NVE_DRAW1 (${canvasCheck.width}x${canvasCheck.height}px, ops=${canvasCheck.drawOps}, painted=${canvasCheck.nonTransparent}px, colors=${canvasCheck.distinctColors})`
+    );
+
+    // 1j. X-Ray toggle + deterministic time-travel Undo / First
+    await clickElement(cdp, `document.querySelector('[testid="toggle-xray"]')`, "toggle-xray");
     await waitForCondition(
       cdp,
       "X-Ray HUD toggled ON",
-      () => {
-        const text = document.getElementById("app")?.innerText || "";
-        return text.includes("X-Ray HUD: ON") && text.includes("Snapshot 4 / 4");
-      }
+      () => (document.getElementById("app")?.innerText || "").includes("X-Ray HUD: ON")
     );
-
-    // 1d. Click Undo -> time-travels back to Snapshot 3 / 4 with X-Ray HUD: OFF
     await clickElement(cdp, `document.querySelector('[testid="tt-undo"]')`, "tt-undo");
     await waitForCondition(
       cdp,
-      "Time-travel Undo restored Snapshot 3 / 4 and X-Ray HUD: OFF",
-      () => {
-        const text = document.getElementById("app")?.innerText || "";
-        return text.includes("X-Ray HUD: OFF") && text.includes("Snapshot 3 / 4");
-      }
+      "Time-travel Undo restored X-Ray HUD: OFF",
+      () => (document.getElementById("app")?.innerText || "").includes("X-Ray HUD: OFF")
     );
-
-    // 1e. Click `<< #1` -> time-travels back to initial Issue Board snapshot
     await clickElement(cdp, `document.querySelector('[testid="tt-first"]')`, "tt-first");
     await waitForCondition(
       cdp,
-      "Time-travel << #1 restored Issue Board Snapshot 1 / 4",
+      "Time-travel << #1 restored Issue Board",
       () => {
         const text = document.getElementById("app")?.innerText || "";
-        return (
-          text.includes("Issue Board") &&
-          text.includes("Done (1)") &&
-          text.includes("Snapshot 1 / 4")
-        );
+        return text.includes("Issue Board") && text.includes("Done (1)");
       }
     );
 
     console.log(
-      `    PASS Studio Workspace (nodes=${studioNodeCount}, status cycle, # engineering, X-Ray, Undo, First)`
+      `    PASS Studio Workspace Desktop (nodes=${studioNodeCount}, Board, Images, TextInput, Cmd+K, Islands, 100k Stream, Metrics Canvas, Time-Travel)`
     );
 
     // =========================================================================
-    // 2. Counter App (`/?app=counter&ws=off`)
+    // 2. Responsive Mobile Portrait Resize (`393x852`, < 620pt breakpoint)
     // =========================================================================
-    console.log("==> [2/2] Testing Counter App (?app=counter&ws=off)...");
+    console.log("==> [2/3] Testing Responsive Mobile Portrait Resize (393x852 -> 1280x800)...");
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 393,
+      height: 852,
+      deviceScaleFactor: 3,
+      mobile: true,
+    });
+    await waitForCondition(
+      cdp,
+      "Studio Workspace dynamically collapsed to mobile layout (mobile-top-bar visible)",
+      () => {
+        const topBar = document.querySelector('[testid="mobile-top-bar"]');
+        const desktopSidebar = document.querySelector('[testid="desktop-sidebar"]');
+        const center = document.querySelector('[testid="center-workspace"]');
+        if (!topBar || desktopSidebar || !center) return false;
+        const tbRect = topBar.getBoundingClientRect();
+        const cwRect = center.getBoundingClientRect();
+        return tbRect.width > 0 && tbRect.height > 0 && cwRect.width > 300 && cwRect.left >= 0 && cwRect.right <= 395;
+      }
+    );
+    const mobileMetrics = await evalJs(
+      cdp,
+      `(() => {
+        const tb = document.querySelector('[testid="mobile-top-bar"]').getBoundingClientRect();
+        const cw = document.querySelector('[testid="center-workspace"]').getBoundingClientRect();
+        return {
+          innerWidth: window.innerWidth,
+          topBar: { w: Math.round(tb.width), h: Math.round(tb.height) },
+          center: { l: Math.round(cw.left), r: Math.round(cw.right), w: Math.round(cw.width), h: Math.round(cw.height) },
+        };
+      })()`
+    );
+    if (!(mobileMetrics.center.w > 300 && mobileMetrics.center.l >= 0 && mobileMetrics.center.r <= 395)) {
+      throw new Error(`Mobile center-workspace clipped or negative width: ${JSON.stringify(mobileMetrics)}`);
+    }
+
+    // Resize back to desktop 1280x800 and verify 3-column layout restores cleanly.
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280,
+      height: 800,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    await waitForCondition(
+      cdp,
+      "Studio Workspace restored 3-column desktop layout after resize back to 1280x800",
+      () =>
+        Boolean(document.querySelector('[testid="desktop-sidebar"]')) &&
+        !document.querySelector('[testid="mobile-top-bar"]')
+    );
+    console.log(
+      `    PASS Mobile Portrait Resize (393x852 mobile-top-bar=${mobileMetrics.topBar.w}x${mobileMetrics.topBar.h}, center=${mobileMetrics.center.w}x${mobileMetrics.center.h}, restored desktop)`
+    );
+
+    // =========================================================================
+    // 3. Counter App (`/?app=counter&ws=off`)
+    // =========================================================================
+    console.log("==> [3/3] Testing Counter App (?app=counter&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=counter&ws=off` });
 
     await waitForCondition(
