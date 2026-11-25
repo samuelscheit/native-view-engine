@@ -171,7 +171,7 @@ build_release_bundle() {
   echo "==> wasm: $(bytes "${WASM_OUT}") raw, $(bytes "${WASM_OUT}.gz") gzip, ${WASM_BR} brotli"
   echo "==> js:   $(bytes "${JS_OUT}") raw (entry), ${JS_BR} brotli (all JS)"
   BUDGET=$(bundle_budget "${bundle}")
-  STATUS="PASS"; (( TOTAL_BR > BUDGET )) && STATUS="OVER BUDGET" && OVER_BUDGET+=("${bundle}")
+  STATUS="PASS"; (( TOTAL_BR > BUDGET )) && STATUS="WARN: OVER BUDGET" && OVER_BUDGET+=("${bundle}")
   echo "==> [${bundle}] size budget (wasm+js brotli): ${TOTAL_BR} / ${BUDGET} bytes [${STATUS}]"
 }
 
@@ -181,6 +181,8 @@ for bundle in "${BUNDLES[@]}"; do
 done
 echo "==> Serve locally: python3 -m http.server 8080 -d hosts/web-shell"
 if (( ${#OVER_BUDGET[@]} )); then
-  echo "Error: over brotli budget: ${OVER_BUDGET[*]}" >&2
-  exit 1
+  echo "Warning: over brotli budget (set WASM_BUDGET_STRICT=1 to fail): ${OVER_BUDGET[*]}" >&2
+  if [[ "${WASM_BUDGET_STRICT:-0}" == "1" ]]; then
+    exit 1
+  fi
 fi

@@ -226,8 +226,22 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             }
                         }
                         view {
+                            style: "width: 100%; flex-direction: row; align-items: center; gap: 10px;",
+                            view { style: "width: 58px; flex-shrink: 0;" }
+                            view {
+                                style: "flex-grow: 1; flex-direction: row; justify-content: space-around; align-items: center; padding-horizontal: 14px;",
+                                for (bar_idx, (spec, _)) in filtered_bars.iter().enumerate() {
+                                    text {
+                                        key: "bar-tick-{spec.short_label}",
+                                        style: "font-size: 10px; font-family: monospace; color: {theme.muted};",
+                                        "#{bar_idx + 1}"
+                                    }
+                                }
+                            }
+                        }
+                        view {
                             test_id: "bench-bar-legend",
-                            style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px; padding-left: 68px;",
+                            style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px;",
                             for (bar_idx, (spec, entry)) in filtered_bars.iter().enumerate() {
                                 {
                                     let swatch = category_swatch_hex(spec.color_idx, theme.is_dark);
@@ -326,12 +340,16 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                         }
 
                                         view {
-                                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-left: 72px; padding-right: 12px;",
-                                            for pt in series.points {
-                                                text {
-                                                    key: "pt-{series.id}-{pt.label}",
-                                                    style: "font-size: 10px; font-family: monospace; color: {theme.muted};",
-                                                    "{pt.label}"
+                                            style: "width: 100%; flex-direction: row; align-items: center; gap: 8px;",
+                                            view { style: "width: 56px; flex-shrink: 0;" }
+                                            view {
+                                                style: "flex-grow: 1; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 14px;",
+                                                for pt in series.points {
+                                                    text {
+                                                        key: "pt-{series.id}-{pt.label}",
+                                                        style: "font-size: 10px; font-family: monospace; color: {theme.muted};",
+                                                        "{pt.label}"
+                                                    }
                                                 }
                                             }
                                         }
