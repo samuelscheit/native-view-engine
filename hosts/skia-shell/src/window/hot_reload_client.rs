@@ -60,7 +60,7 @@ impl HotReloadClient {
                             while !stop_flag.load(Ordering::Relaxed) {
                                 match ws.read() {
                                     Ok(Message::Text(text)) => {
-                                        if let Ok(msg) = HotPatchMsg::from_json(text.as_str()) {
+                                        if let Ok(msg) = HotPatchMsg::from_wire(text.as_bytes()) {
                                             if tx.send(msg).is_err() {
                                                 return;
                                             }
@@ -68,13 +68,11 @@ impl HotReloadClient {
                                         }
                                     }
                                     Ok(Message::Binary(bytes)) => {
-                                        if let Ok(text) = std::str::from_utf8(&bytes) {
-                                            if let Ok(msg) = HotPatchMsg::from_json(text) {
-                                                if tx.send(msg).is_err() {
-                                                    return;
-                                                }
-                                                on_wake();
+                                        if let Ok(msg) = HotPatchMsg::from_wire(&bytes) {
+                                            if tx.send(msg).is_err() {
+                                                return;
                                             }
+                                            on_wake();
                                         }
                                     }
                                     Ok(Message::Ping(payload)) => {

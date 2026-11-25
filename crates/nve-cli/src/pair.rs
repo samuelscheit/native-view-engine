@@ -5,11 +5,12 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use nve_abi::{
-    decode_events, encode_events, EventPayload, NativeEvent, NativeEventKind, ROOT_NODE_ID,
+    decode_events, encode_events, EventPayload, NativeEvent, NativeEventKind, NveMapEntry,
+    NveValue, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
@@ -42,6 +43,9 @@ pub(crate) enum PairControlMsg {
 pub(crate) trait PairedApp {
     fn render(&mut self, frame_id: u64) -> Vec<u8>;
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
+    fn set_props_direct(&mut self, _entries: &[NveMapEntry]) -> bool {
+        false
+    }
     fn apply_hot_patch(&mut self, _patch_json: &str) -> bool {
         false
     }
@@ -56,6 +60,9 @@ impl PairedApp for HotAppInstance {
     }
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
         HotAppInstance::dispatch_events(self, encoded_events)
+    }
+    fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
+        HotAppInstance::set_props_direct(self, entries)
     }
     fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
         HotAppInstance::apply_hot_patch(self, patch_json)
@@ -177,6 +184,93 @@ pub(crate) struct PairStepOutcome {
     pub shutdown_requested: bool,
 }
 
+/// Quantized snapshot of live `nve pair` transport metrics matching Studio's Live Sync card
+/// (`syncTransport`, `syncPeers`, `syncKbps`, `syncCompression`, `syncRttMs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SyncTelemetrySnapshot {
+    pub transport: &'static str,
+    pub peers: u16,
+    pub kbps_tenths: u32,
+    pub compression_tenths: u16,
+    pub rtt_ms_tenths: u32,
+}
+
+impl SyncTelemetrySnapshot {
+    fn from_metrics(
+        udp: &nve_interop::PairingMetrics,
+        tcp: &nve_interop::PairingMetrics,
+    ) -> Self {
+        let peers = udp
+            .connected_peers
+            .saturating_add(tcp.connected_peers)
+            .min(u16::MAX as usize) as u16;
+        let transport = if udp.connected_peers > 0 {
+            "lan-quic"
+        } else if tcp.connected_peers > 0 {
+            "relay-wss"
+        } else {
+            "offline"
+        };
+
+        let total_kbps = (udp.tx_kbps() + tcp.tx_kbps() + udp.rx_kbps() + tcp.rx_kbps()).max(0.0);
+        let kbps_tenths = if total_kbps.is_finite() {
+            (total_kbps * 10.0).round() as u32
+        } else {
+            0
+        };
+
+        let total_raw = udp.raw_bytes_sent.saturating_add(tcp.raw_bytes_sent);
+        let total_wire = udp.wire_bytes_sent.saturating_add(tcp.wire_bytes_sent);
+        let ratio = if total_wire == 0 {
+            1.0
+        } else {
+            (total_raw as f64 / total_wire as f64).max(0.1)
+        };
+        let compression_tenths = if ratio.is_finite() {
+            ((ratio * 10.0).round() as u32).min(u16::MAX as u32) as u16
+        } else {
+            10
+        };
+
+        let udp_rtt = udp.smoothed_rtt_us.or(udp.last_rtt_us);
+        let tcp_rtt = tcp.smoothed_rtt_us.or(tcp.last_rtt_us);
+        let avg_rtt_us = match (udp_rtt, tcp_rtt) {
+            (Some(a), Some(b)) => (a + b) / 2,
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => 0,
+        };
+        let rtt_ms_tenths = ((avg_rtt_us as f64 / 1000.0) * 10.0).round() as u32;
+
+        Self {
+            transport,
+            peers,
+            kbps_tenths,
+            compression_tenths,
+            rtt_ms_tenths,
+        }
+    }
+
+    fn as_prop_entries(&self) -> [NveMapEntry; 5] {
+        [
+            NveMapEntry::new("syncTransport", NveValue::from_str(self.transport)),
+            NveMapEntry::new("syncPeers", NveValue::i64(i64::from(self.peers))),
+            NveMapEntry::new("syncKbps", NveValue::f64(f64::from(self.kbps_tenths) / 10.0)),
+            NveMapEntry::new(
+                "syncCompression",
+                NveValue::f64(f64::from(self.compression_tenths) / 10.0),
+            ),
+            NveMapEntry::new(
+                "syncRttMs",
+                NveValue::f64(f64::from(self.rtt_ms_tenths) / 10.0),
+            ),
+        ]
+    }
+}
+
+/// Minimum interval between steady-state bandwidth/RTT prop refreshes (peer/transport changes
+/// always push immediately).
+const TELEMETRY_PUSH_INTERVAL: Duration = Duration::from_millis(250);
+
 /// Live dual-transport (`UdpDeltaServer` + `TcpDeltaServer`) pairing session owning a [`PairedApp`].
 pub(crate) struct PairSession<A: PairedApp> {
     app: A,
@@ -185,6 +279,8 @@ pub(crate) struct PairSession<A: PairedApp> {
     frame_id: u64,
     last_frame: Vec<u8>,
     token: String,
+    last_telemetry: Option<SyncTelemetrySnapshot>,
+    last_telemetry_push: Instant,
 }
 
 impl<A: PairedApp> PairSession<A> {
@@ -221,7 +317,10 @@ impl<A: PairedApp> PairSession<A> {
             frame_id: 0,
             last_frame: Vec::new(),
             token,
+            last_telemetry: None,
+            last_telemetry_push: Instant::now(),
         };
+        let _ = session.push_telemetry_if_needed(true);
         let _ = session.render_and_broadcast(true)?;
         Ok(session)
     }
@@ -230,6 +329,31 @@ impl<A: PairedApp> PairSession<A> {
     pub(crate) fn ws_addr(&self) -> SocketAddr { self.tcp.local_addr() }
     #[cfg(test)]
     pub(crate) fn token(&self) -> &str { &self.token }
+
+    /// Computes live combined UDP + TCP/WS pairing telemetry and pushes it via zero-copy
+    /// `set_props_direct` into the hosted app whenever peers/transport change or metrics drift.
+    pub(crate) fn push_telemetry_if_needed(&mut self, force: bool) -> bool {
+        let udp_m = self.udp.metrics();
+        let tcp_m = self.tcp.metrics();
+        let snapshot = SyncTelemetrySnapshot::from_metrics(&udp_m, &tcp_m);
+
+        let peer_or_transport_changed = self.last_telemetry.is_none_or(|prev| {
+            prev.peers != snapshot.peers || prev.transport != snapshot.transport
+        });
+        let metric_changed = self.last_telemetry != Some(snapshot);
+
+        if !force
+            && !peer_or_transport_changed
+            && (!metric_changed || self.last_telemetry_push.elapsed() < TELEMETRY_PUSH_INTERVAL)
+        {
+            return false;
+        }
+
+        self.last_telemetry = Some(snapshot);
+        self.last_telemetry_push = Instant::now();
+        let entries = snapshot.as_prop_entries();
+        self.app.set_props_direct(&entries)
+    }
 
     pub(crate) fn render_and_broadcast(&mut self, force: bool) -> Result<bool, String> {
         self.frame_id += 1;
@@ -281,6 +405,11 @@ impl<A: PairedApp> PairSession<A> {
             if self.render_and_broadcast(handled).unwrap_or(false) {
                 outcome.frames_broadcast += 1;
             }
+        }
+        if self.push_telemetry_if_needed(false)
+            && self.render_and_broadcast(true).unwrap_or(false)
+        {
+            outcome.frames_broadcast += 1;
         }
         outcome
     }
@@ -477,5 +606,159 @@ mod tests {
         tcp.shutdown();
         ws.shutdown();
         server_thread.join().expect("pair server thread exited cleanly");
+    }
+
+    #[test]
+    fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
+        #[derive(Debug, Clone, PartialEq)]
+        struct RecordedTelemetry {
+            transport: String,
+            peers: i64,
+            kbps: f64,
+            compression: f64,
+            rtt_ms: f64,
+        }
+
+        struct TelemetryMockApp {
+            updates: Vec<RecordedTelemetry>,
+            renders: u64,
+        }
+
+        impl PairedApp for TelemetryMockApp {
+            fn render(&mut self, frame_id: u64) -> Vec<u8> {
+                self.renders += 1;
+                let mut b = nve_abi::CommandBufferBuilder::new(1, frame_id);
+                b.create_node(2, nve_abi::ComponentKind::Text, None);
+                b.set_text(
+                    2,
+                    &format!(
+                        "peers={}",
+                        self.updates.last().map(|u| u.peers).unwrap_or(-1)
+                    ),
+                );
+                b.set_children(ROOT_NODE_ID, &[2]);
+                b.commit(true);
+                b.into_bytes()
+            }
+
+            fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+                false
+            }
+
+            fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
+                let mut transport = String::new();
+                let mut peers = -1i64;
+                let mut kbps = -1.0f64;
+                let mut compression = -1.0f64;
+                let mut rtt_ms = -1.0f64;
+                for entry in entries {
+                    let key = unsafe { entry.key.as_str() }.expect("valid utf8 prop key");
+                    let val = unsafe { entry.value.as_ref() };
+                    match key {
+                        "syncTransport" => {
+                            if let Some(s) = val.as_str() {
+                                transport = s.to_owned();
+                            }
+                        }
+                        "syncPeers" => {
+                            if let Some(n) = val.as_i64() {
+                                peers = n;
+                            }
+                        }
+                        "syncKbps" => {
+                            if let Some(v) = val.as_number() {
+                                kbps = v;
+                            }
+                        }
+                        "syncCompression" => {
+                            if let Some(v) = val.as_number() {
+                                compression = v;
+                            }
+                        }
+                        "syncRttMs" => {
+                            if let Some(v) = val.as_number() {
+                                rtt_ms = v;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let rec = RecordedTelemetry {
+                    transport,
+                    peers,
+                    kbps,
+                    compression,
+                    rtt_ms,
+                };
+                if self.updates.last() == Some(&rec) {
+                    return false;
+                }
+                self.updates.push(rec);
+                true
+            }
+        }
+
+        let app = TelemetryMockApp {
+            updates: Vec::new(),
+            renders: 0,
+        };
+        let mut session = PairSession::start(
+            app,
+            "127.0.0.1",
+            0,
+            0,
+            "telemetry-test-token".into(),
+            640.0,
+            480.0,
+        )
+        .expect("start telemetry PairSession");
+
+        // Initial startup push reports offline with 0 peers.
+        assert_eq!(session.app.updates.len(), 1);
+        assert_eq!(session.app.updates[0].transport, "offline");
+        assert_eq!(session.app.updates[0].peers, 0);
+        assert!(session.app.updates[0].compression >= 1.0);
+
+        let cfg = PairingConfig::new("telemetry-test-token");
+        let mut ws = TcpDeltaClient::connect_websocket(session.ws_addr(), "/ws/nvd", cfg.clone())
+            .expect("connect WS client");
+        assert!(session.tcp.wait_for_peers(1, Duration::from_secs(2)));
+
+        let step_ws = session.poll_once(None);
+        assert!(
+            step_ws.frames_broadcast >= 1,
+            "telemetry update on peer connect should re-render and broadcast"
+        );
+        let after_ws = session.app.updates.last().unwrap().clone();
+        assert_eq!(after_ws.transport, "relay-wss");
+        assert_eq!(after_ws.peers, 1);
+
+        let mut udp = UdpDeltaClient::connect(session.udp_addr(), cfg).expect("connect UDP client");
+        assert!(session.udp.wait_for_peers(1, Duration::from_secs(2)));
+
+        let step_udp = session.poll_once(None);
+        assert!(step_udp.frames_broadcast >= 1);
+        let after_udp = session.app.updates.last().unwrap().clone();
+        assert_eq!(after_udp.transport, "lan-quic");
+        assert_eq!(after_udp.peers, 2);
+        assert!(after_udp.kbps >= 0.0);
+        assert!(after_udp.rtt_ms >= 0.0);
+
+        udp.shutdown();
+        ws.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let _ = session.poll_once(None);
+            if session.app.updates.last().is_some_and(|u| u.peers == 0) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let after_drop = session.app.updates.last().unwrap();
+        assert_eq!(after_drop.peers, 0);
+        assert_eq!(after_drop.transport, "offline");
+
+        session.udp.shutdown();
+        session.tcp.shutdown();
     }
 }

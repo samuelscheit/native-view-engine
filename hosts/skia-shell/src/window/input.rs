@@ -1,6 +1,7 @@
 //! Interactive pointer, scroll, focus/blur, keyboard, UTF-8 text editing, IME, and zero-JSON
 //! compact keydown shorthand dispatch for [`DesktopSession`].
 
+use nve_abi::events::encode_keydown_bytes;
 use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId};
 use winit::event::Ime;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -334,9 +335,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(handled || visual_changed)
     }
 
-    /// Dispatches a keyboard shortcut/navigation event using zero-JSON compact modifier shorthand
-    /// (e.g. `"Cmd+k"`, `"Ctrl+Shift+Enter"`, `"ArrowDown"`, `"Escape"`) as
-    /// `NativeEventKind::Custom { name: "keydown", .. }` and re-renders when handled.
+    /// Dispatches a keyboard shortcut/navigation event using zero-JSON binary `NK1` framing
+    /// (`nve_abi::encode_keydown_bytes`) as `NativeEventKind::Custom { name: "keydown", .. }` and
+    /// re-renders when handled.
     pub fn handle_keydown(
         &mut self,
         key: &str,
@@ -348,7 +349,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         if key.is_empty() {
             return Ok(false);
         }
-        let shorthand = format_keydown_shorthand(key, meta, ctrl, shift, alt);
+        let payload = encode_keydown_bytes(key, meta, ctrl, shift, alt);
         let node_id = match self.backend.focused_node() {
             Some(focused) => self.backend.find_custom_event_target_from(focused),
             None => self.backend.find_custom_event_target(),
@@ -360,7 +361,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             kind: NativeEventKind::Custom,
             payload: EventPayload::Custom {
                 name: "keydown".to_string(),
-                data: shorthand.into_bytes(),
+                data: payload,
             },
         };
         let encoded = encode_events(&[event]);
@@ -544,7 +545,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     payload: EventPayload::Empty,
                 });
                 if has_custom {
-                    let shorthand = format_keydown_shorthand("Escape", meta, ctrl, shift, alt);
+                    let payload = encode_keydown_bytes("Escape", meta, ctrl, shift, alt);
                     events.push(NativeEvent {
                         surface_id: self.surface_id,
                         node_id: custom_target,
@@ -552,7 +553,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                         kind: NativeEventKind::Custom,
                         payload: EventPayload::Custom {
                             name: "keydown".to_string(),
-                            data: shorthand.into_bytes(),
+                            data: payload,
                         },
                     });
                 }

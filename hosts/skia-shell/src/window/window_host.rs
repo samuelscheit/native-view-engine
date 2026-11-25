@@ -20,6 +20,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 use super::hot_reload_client::HotReloadClient;
+use super::pair_client::{PairConnectConfig, PairedRemoteApp};
 use super::session::DesktopSession;
 use super::{
     replay_snapshot_into_backend, DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot,
@@ -28,6 +29,7 @@ use super::{
 #[derive(Debug, Clone, Copy)]
 enum HostWakeEvent {
     HotReload,
+    RemoteFrame,
 }
 
 enum WindowPresenter {
@@ -44,10 +46,10 @@ enum WindowPresenter {
 
 /// Live `winit` desktop preview host supporting direct hardware GPU swapchains (`skia-metal`,
 /// `skia-vulkan`, `skia-d3d`) with automatic graceful fallback to `softbuffer`, plus Frame-0
-/// `MmapSnapshot` instant boot and atomic persistence on exit.
-pub struct DesktopWindowHost {
+/// `MmapSnapshot` instant boot, atomic persistence on exit, and thin-client `NVD1` pairing.
+pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     options: DesktopPreviewOptions,
-    session: DesktopSession<HotAppSlot>,
+    session: DesktopSession<A>,
     window: Option<Arc<Window>>,
     presenter: Option<WindowPresenter>,
     hot_reload: Option<HotReloadClient>,
@@ -57,7 +59,7 @@ pub struct DesktopWindowHost {
     snapshot_saved: bool,
 }
 
-impl DesktopWindowHost {
+impl DesktopWindowHost<HotAppSlot> {
     pub fn new(
         dylib_path: PathBuf,
         options: DesktopPreviewOptions,
@@ -148,12 +150,63 @@ impl DesktopWindowHost {
             snapshot_saved: false,
         })
     }
+}
 
-    pub fn session(&self) -> &DesktopSession<HotAppSlot> {
+impl DesktopWindowHost<PairedRemoteApp> {
+    /// Connects to a remote `nve pair` server over `NVT1`/`NVD1` (UDP, TCP, or WebSocket) with no
+    /// local `cdylib`, sends the initial viewport `Layout` event, waits for Frame 1, and
+    /// rasterizes it into the session pixel buffer.
+    pub fn new_paired(
+        pair_config: PairConnectConfig,
+        options: DesktopPreviewOptions,
+    ) -> Result<Self, DesktopHostError> {
+        let scale = if options.scale_factor.is_finite() && options.scale_factor > 0.0 {
+            options.scale_factor
+        } else {
+            1.0
+        };
+        let initial_viewport = Viewport {
+            width: options.width,
+            height: options.height,
+            scale_factor: scale,
+        };
+
+        let initial_timeout = pair_config.initial_frame_timeout;
+        let app = PairedRemoteApp::connect(pair_config)?;
+        let mut session = DesktopSession::new(
+            app,
+            options.surface_id,
+            initial_viewport,
+            options.clear_color,
+            options.show_hud,
+        );
+        let _ = session.notify_viewport_resize();
+        session.app_mut().wait_for_frame(initial_timeout)?;
+        if let Some(banner) = session.app().remote_status_banner() {
+            session.set_status_banner(Some(banner));
+        }
+        session.render_and_rasterize()?;
+
+        Ok(Self {
+            options,
+            session,
+            window: None,
+            presenter: None,
+            hot_reload: None,
+            proxy: None,
+            last_telemetry: None,
+            modifiers: ModifiersState::empty(),
+            snapshot_saved: false,
+        })
+    }
+}
+
+impl<A: DesktopApp> DesktopWindowHost<A> {
+    pub fn session(&self) -> &DesktopSession<A> {
         &self.session
     }
 
-    pub fn session_mut(&mut self) -> &mut DesktopSession<HotAppSlot> {
+    pub fn session_mut(&mut self) -> &mut DesktopSession<A> {
         &mut self.session
     }
 
@@ -210,11 +263,18 @@ impl DesktopWindowHost {
         self.proxy = Some(proxy.clone());
 
         if let Some(ws_url) = self.options.ws_url.clone() {
-            let wake_proxy = proxy;
+            let wake_proxy = proxy.clone();
             self.hot_reload = Some(HotReloadClient::spawn(ws_url, move || {
                 let _ = wake_proxy.send_event(HostWakeEvent::HotReload);
             }));
         }
+
+        let remote_wake_proxy = proxy;
+        self.session
+            .app_mut()
+            .install_wake_callback(Arc::new(move || {
+                let _ = remote_wake_proxy.send_event(HostWakeEvent::RemoteFrame);
+            }));
 
         let res = event_loop
             .run_app(&mut self)
@@ -341,15 +401,32 @@ impl DesktopWindowHost {
             }
         }
     }
+
+    fn process_pending_remote_frames(&mut self) {
+        if !self.session.app().has_pending_remote_frame() {
+            return;
+        }
+        if let Some(banner) = self.session.app().remote_status_banner() {
+            self.session.set_status_banner(Some(banner));
+        }
+        if let Err(err) = self.session.render_and_rasterize() {
+            eprintln!("[nve-skia-shell] paired remote frame error: {err}");
+        }
+        self.sync_window_title();
+        self.sync_ime_state();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
 }
 
-impl Drop for DesktopWindowHost {
+impl<A: DesktopApp> Drop for DesktopWindowHost<A> {
     fn drop(&mut self) {
         self.save_snapshot_if_configured();
     }
 }
 
-impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
+impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -448,6 +525,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: HostWakeEvent) {
         match event {
             HostWakeEvent::HotReload => self.process_pending_hot_patches(),
+            HostWakeEvent::RemoteFrame => self.process_pending_remote_frames(),
         }
     }
 
@@ -588,6 +666,7 @@ impl ApplicationHandler<HostWakeEvent> for DesktopWindowHost {
             },
             WindowEvent::RedrawRequested => {
                 self.process_pending_hot_patches();
+                self.process_pending_remote_frames();
                 self.present_pixels();
             }
             _ => {}

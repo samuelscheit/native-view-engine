@@ -186,7 +186,19 @@ impl DesktopApp for MockTextInputApp {
                 (NativeEventKind::Custom, EventPayload::Custom { name, data })
                     if name == "keydown" =>
                 {
-                    let shorthand = String::from_utf8(data).expect("utf8 keydown");
+                    assert!(
+                        data.starts_with(&nve_abi::events::KEYDOWN_WIRE_MAGIC),
+                        "keydown payload must use zero-JSON NK1 binary framing, got {data:?}"
+                    );
+                    let decoded = nve_abi::events::decode_keydown_bytes(&data)
+                        .expect("valid NK1 keydown payload");
+                    let shorthand = format_keydown_shorthand(
+                        &decoded.key,
+                        decoded.meta,
+                        decoded.ctrl,
+                        decoded.shift,
+                        decoded.alt,
+                    );
                     self.keydowns.push((ev.node_id, shorthand));
                     handled = true;
                 }
@@ -536,10 +548,22 @@ impl DesktopApp for MockScrollAndKeyApp {
                     handled = true;
                 }
                 (NativeEventKind::Custom, EventPayload::Custom { name, data }) if name == "keydown" => {
-                    let shorthand = String::from_utf8(data).expect("utf8 keydown shorthand");
-                    if shorthand == "Cmd+k" {
+                    assert!(
+                        data.starts_with(&nve_abi::events::KEYDOWN_WIRE_MAGIC),
+                        "keydown payload must use zero-JSON NK1 binary framing, got {data:?}"
+                    );
+                    let decoded = nve_abi::events::decode_keydown_bytes(&data)
+                        .expect("valid NK1 keydown payload");
+                    let shorthand = format_keydown_shorthand(
+                        &decoded.key,
+                        decoded.meta,
+                        decoded.ctrl,
+                        decoded.shift,
+                        decoded.alt,
+                    );
+                    if decoded.meta && decoded.key == "k" {
                         self.palette_open = !self.palette_open;
-                    } else if shorthand == "Escape" {
+                    } else if decoded.key == "Escape" {
                         self.palette_open = false;
                     }
                     self.keydown_payloads.push((ev.node_id, shorthand));

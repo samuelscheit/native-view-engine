@@ -121,7 +121,7 @@ pub enum HotReloadAction {
     DevStatus { message: String, latency_ms: u64 },
 }
 
-fn mirror_to_scene_input<'a>(
+pub(crate) fn mirror_to_scene_input<'a>(
     backend: &WebBackend,
     node_id: NodeId,
     el: &'a MirrorElement,

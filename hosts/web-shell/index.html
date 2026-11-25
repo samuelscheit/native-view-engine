@@ -206,12 +206,18 @@
 			const params = new URLSearchParams(window.location.search);
 			const appParam = (params.get("app") || "studio").trim().toLowerCase();
 			const isCounter = appParam === "counter";
+			const pairParam = (params.get("pair") || "").trim();
+			const pairToken = (params.get("token") || params.get("pair_token") || "").trim();
+			const isPaired = pairParam.length > 0;
 			const wsParam = params.get("ws");
 			const hotReloadWsUrl = wsParam === "off" || wsParam === "none" ? null : wsParam || `ws://${window.location.hostname}:8089`;
 
 			// Preserve any `?ws=...` setting when switching apps via the topbar links.
 			const buildAppHref = (appName) => {
 				const next = new URLSearchParams(window.location.search);
+				next.delete("pair");
+				next.delete("token");
+				next.delete("pair_token");
 				if (appName === "studio") {
 					next.delete("app");
 				} else {
@@ -223,17 +229,93 @@
 
 			if (tabStudio) {
 				tabStudio.href = buildAppHref("studio");
-				tabStudio.dataset.active = String(!isCounter);
+				tabStudio.dataset.active = String(!isPaired && !isCounter);
 			}
 			if (tabCounter) {
 				tabCounter.href = buildAppHref("counter");
-				tabCounter.dataset.active = String(isCounter);
+				tabCounter.dataset.active = String(!isPaired && isCounter);
 			}
-			if (isCounter) {
+			if (isPaired) {
+				document.title = "Paired Live View · Native View Engine Web WASM";
+				if (brandTitleEl) {
+					brandTitleEl.textContent = "Native View Engine · Live Paired Client (NVD1/WS)";
+				}
+			} else if (isCounter) {
 				document.title = "Counter · Native View Engine Web WASM";
 				if (brandTitleEl) {
 					brandTitleEl.textContent = "Native View Engine · Counter (Web WASM)";
 				}
+			}
+
+			function normalizePairWsUrl(raw) {
+				if (/^wss?:\/\//i.test(raw)) {
+					return raw;
+				}
+				const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+				return `${proto}${raw}`;
+			}
+
+			function bootPairedClient(wasmMod, rawPairUrl, token) {
+				if (!token) {
+					throw new Error("Missing ?token=<pairing_token> query parameter for ?pair= live pairing mode.");
+				}
+				const wsUrl = normalizePairWsUrl(rawPairUrl);
+				const host = wasmMod.NveWebHost.create_paired("app", token);
+				const ws = new WebSocket(wsUrl);
+				ws.binaryType = "arraybuffer";
+				host.attach_pair_socket(ws);
+
+				const sendBinary = (bytes) => {
+					if (bytes && bytes.length > 0 && ws.readyState === WebSocket.OPEN) {
+						ws.send(bytes);
+					}
+				};
+
+				ws.addEventListener("open", () => {
+					if (statusEl) {
+						statusEl.textContent = "Pair: authenticating…";
+						statusEl.dataset.state = "connecting";
+					}
+					sendBinary(host.build_pair_hello());
+				});
+
+				ws.addEventListener("message", (ev) => {
+					if (!(ev.data instanceof ArrayBuffer)) {
+						return;
+					}
+					try {
+						const reply = host.on_pair_binary_message(new Uint8Array(ev.data));
+						sendBinary(reply);
+						let extra;
+						while ((extra = host.take_outbound_message()) && extra.length > 0) {
+							sendBinary(extra);
+						}
+					} catch (err) {
+						console.error("[NVE Pair] Binary frame error:", err);
+						if (statusEl) {
+							statusEl.textContent = `Pair error: ${err}`;
+							statusEl.dataset.state = "offline";
+						}
+					}
+				});
+
+				ws.addEventListener("error", () => {
+					if (statusEl) {
+						statusEl.textContent = "Pair: socket error";
+						statusEl.dataset.state = "offline";
+					}
+				});
+
+				ws.addEventListener("close", () => {
+					if (statusEl) {
+						statusEl.textContent = "Pair: disconnected";
+						statusEl.dataset.state = "offline";
+					}
+				});
+
+				window.__nvePairHost = host;
+				window.__nvePairSocket = ws;
+				return host;
 			}
 
 			async function boot() {
@@ -241,10 +323,14 @@
 					const bust = Date.now();
 					const wasmMod = await import(`./pkg/nve_web_shell.js?v=${bust}`);
 					await wasmMod.default(new URL(`./pkg/nve_web_shell_bg.wasm?v=${bust}`, window.location.href));
-					const controller = isCounter
-						? wasmMod.start_counter_app("app", hotReloadWsUrl)
-						: wasmMod.start_studio_workspace_app("app", hotReloadWsUrl);
-					window.__nveController = controller;
+					if (isPaired) {
+						bootPairedClient(wasmMod, pairParam, pairToken);
+					} else {
+						const controller = isCounter
+							? wasmMod.start_counter_app("app", hotReloadWsUrl)
+							: wasmMod.start_studio_workspace_app("app", hotReloadWsUrl);
+						window.__nveController = controller;
+					}
 				} catch (err) {
 					console.error("[NVE Web] Boot failed:", err);
 					if (statusEl) {

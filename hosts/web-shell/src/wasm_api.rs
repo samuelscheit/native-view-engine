@@ -12,6 +12,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::session::{HotReloadAction, WebAppSession, PREINIT_SURFACE_ID};
+use crate::wasm_pair::{active_paired_scene_view_ptr, nve_extract_binary_message};
 
 struct HotReloadSocket {
     socket: web_sys::WebSocket,
@@ -31,10 +32,54 @@ impl Drop for HotReloadSocket {
     }
 }
 
-struct WindowResizeListener {
+pub(crate) struct WindowResizeListener {
     on_resize: Option<Closure<dyn FnMut(web_sys::Event)>>,
     resize_observer: Option<web_sys::ResizeObserver>,
     _on_observe: Option<Closure<dyn FnMut(JsValue)>>,
+}
+
+pub(crate) fn install_resize_listener<F>(
+    window: &web_sys::Window,
+    container: web_sys::Element,
+    on_viewport: F,
+) -> Option<WindowResizeListener>
+where
+    F: Fn(Viewport) + 'static,
+{
+    let callback = Rc::new(on_viewport);
+    let cb_win = Rc::clone(&callback);
+    let container_win = container.clone();
+    let on_resize = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
+        cb_win(browser_viewport(&container_win));
+    });
+    let registered_win_resize = window
+        .add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref())
+        .is_ok()
+        .then_some(on_resize);
+
+    let cb_obs = callback;
+    let container_obs = container.clone();
+    let on_observe = Closure::<dyn FnMut(JsValue)>::new(move |_entries: JsValue| {
+        cb_obs(browser_viewport(&container_obs));
+    });
+    let (resize_observer, registered_observe) =
+        match web_sys::ResizeObserver::new(on_observe.as_ref().unchecked_ref()) {
+            Ok(obs) => {
+                obs.observe(&container);
+                (Some(obs), Some(on_observe))
+            }
+            Err(_) => (None, None),
+        };
+
+    if registered_win_resize.is_some() || resize_observer.is_some() {
+        Some(WindowResizeListener {
+            on_resize: registered_win_resize,
+            resize_observer,
+            _on_observe: registered_observe,
+        })
+    } else {
+        None
+    }
 }
 
 impl Drop for WindowResizeListener {
@@ -69,6 +114,9 @@ thread_local! {
 /// (or `0` when no surface is mounted), ready for `NveSceneViewReader.fromWasm32Pointer(...)`.
 #[wasm_bindgen]
 pub fn nve_web_scene_view_ptr() -> usize {
+    if let Some(ptr) = active_paired_scene_view_ptr() {
+        return ptr;
+    }
     ACTIVE_SHELL.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -179,7 +227,7 @@ fn browser_now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
-fn browser_viewport(container: &web_sys::Element) -> Viewport {
+pub(crate) fn browser_viewport(container: &web_sys::Element) -> Viewport {
     let window = web_sys::window();
     let scale = window
         .as_ref()
@@ -217,7 +265,7 @@ fn browser_viewport(container: &web_sys::Element) -> Viewport {
     }
 }
 
-fn set_hud_status(state: &str, text: &str) {
+pub(crate) fn set_hud_status(state: &str, text: &str) {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id("nve-status"))
@@ -232,6 +280,7 @@ fn connect_hot_reload(
     session: Rc<RefCell<WebAppSession>>,
 ) -> Result<HotReloadSocket, JsValue> {
     let socket = web_sys::WebSocket::new(ws_url)?;
+    socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
     set_hud_status("connecting", &format!("Hot reload: connecting ({ws_url})"));
 
     let url_open = ws_url.to_string();
@@ -244,11 +293,16 @@ fn connect_hot_reload(
 
     let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
         move |ev: web_sys::MessageEvent| {
-            let Some(raw) = ev.data().as_string() else {
-                return;
-            };
             let t0 = browser_now_ms();
-            let result = session.borrow_mut().handle_hot_patch_json(&raw);
+            let result = if let Some(raw) = ev.data().as_string() {
+                session.borrow_mut().handle_hot_patch_wire(raw.as_bytes())
+            } else {
+                let bytes = nve_extract_binary_message(&ev.data());
+                if bytes.is_empty() {
+                    return;
+                }
+                session.borrow_mut().handle_hot_patch_wire(&bytes)
+            };
             let elapsed_ms = (browser_now_ms() - t0).max(0.0);
 
             match result {
@@ -328,7 +382,7 @@ fn connect_hot_reload(
     })
 }
 
-fn install_panic_hook() {
+pub(crate) fn install_panic_hook() {
     use std::sync::Once;
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
@@ -397,54 +451,17 @@ where
     // `WebBackend` + `ROOT_NODE_ID` Layout events so responsive layouts (e.g. Studio Workspace
     // 620pt breakpoint) adapt live across desktop resizes, split panes, and mobile emulation.
     let session_for_resize = Rc::clone(&session);
-    let container_for_win_resize = container_for_resize.clone();
-    let on_resize = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-        let next_vp = browser_viewport(&container_for_win_resize);
-        let Ok(mut guard) = session_for_resize.try_borrow_mut() else {
-            return;
-        };
-        if let Err(err) = guard.resize_viewport(next_vp) {
-            web_sys::console::error_1(&JsValue::from_str(&format!(
-                "[NVE Web] Failed to handle viewport resize: {err}"
-            )));
-        }
-    });
-    let registered_win_resize = window
-        .add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref())
-        .is_ok()
-        .then_some(on_resize);
-
-    let session_for_observer = Rc::clone(&session);
-    let container_for_observer = container_for_resize.clone();
-    let on_observe = Closure::<dyn FnMut(JsValue)>::new(move |_entries: JsValue| {
-        let next_vp = browser_viewport(&container_for_observer);
-        let Ok(mut guard) = session_for_observer.try_borrow_mut() else {
-            return;
-        };
-        if let Err(err) = guard.resize_viewport(next_vp) {
-            web_sys::console::error_1(&JsValue::from_str(&format!(
-                "[NVE Web] Failed to handle container resize: {err}"
-            )));
-        }
-    });
-    let (resize_observer, registered_observe) =
-        match web_sys::ResizeObserver::new(on_observe.as_ref().unchecked_ref()) {
-            Ok(obs) => {
-                obs.observe(&container_for_resize);
-                (Some(obs), Some(on_observe))
+    let resize_listener =
+        install_resize_listener(&window, container_for_resize, move |next_vp| {
+            let Ok(mut guard) = session_for_resize.try_borrow_mut() else {
+                return;
+            };
+            if let Err(err) = guard.resize_viewport(next_vp) {
+                web_sys::console::error_1(&JsValue::from_str(&format!(
+                    "[NVE Web] Failed to handle viewport resize: {err}"
+                )));
             }
-            Err(_) => (None, None),
-        };
-
-    let resize_listener = if registered_win_resize.is_some() || resize_observer.is_some() {
-        Some(WindowResizeListener {
-            on_resize: registered_win_resize,
-            resize_observer,
-            _on_observe: registered_observe,
-        })
-    } else {
-        None
-    };
+        });
 
     let hot_reload = match ws_url.filter(|u| !u.trim().is_empty()) {
         Some(url) => match connect_hot_reload(&url, Rc::clone(&session)) {

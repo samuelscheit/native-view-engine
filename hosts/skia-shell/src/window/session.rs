@@ -123,6 +123,10 @@ impl<A: DesktopApp> DesktopSession<A> {
         &self.app
     }
 
+    pub fn app_mut(&mut self) -> &mut A {
+        &mut self.app
+    }
+
     pub fn backend(&self) -> &SkiaBackend {
         &self.backend
     }
@@ -141,6 +145,10 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn status_banner(&self) -> Option<&str> {
         self.status_banner.as_deref()
+    }
+
+    pub fn set_status_banner(&mut self, banner: Option<String>) {
+        self.status_banner = banner;
     }
 
     pub fn focused_node(&self) -> Option<NodeId> {

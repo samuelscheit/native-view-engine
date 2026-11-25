@@ -28,6 +28,7 @@ yoga = ["nve-backend-skia/yoga"]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }
 nve-backend-skia = { workspace = true }
+nve-interop = { workspace = true }
 winit = { workspace = true }
 softbuffer = { workspace = true }
 tungstenite = { workspace = true }

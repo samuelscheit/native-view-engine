@@ -5,16 +5,20 @@
 
 pub mod hot_reload_client;
 pub mod input;
+pub mod pair_client;
 pub mod session;
 pub mod window_host;
 
 #[cfg(test)]
 mod input_tests;
 #[cfg(test)]
+mod pair_tests;
+#[cfg(test)]
 mod tests;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{ColorRgba, FrameId, SurfaceId};
@@ -27,6 +31,7 @@ use nve_engine::{BackendError, MmapSnapshot, RenderBackend, SnapshotError, Viewp
 
 pub use hot_reload_client::HotReloadClient;
 pub use input::format_keydown_shorthand;
+pub use pair_client::{PairConnectConfig, PairTransport, PairedRemoteApp, DEFAULT_PAIR_WS_PATH};
 pub use session::DesktopSession;
 pub use window_host::DesktopWindowHost;
 
@@ -38,6 +43,7 @@ pub enum DesktopHostError {
     Backend(BackendError),
     Snapshot(SnapshotError),
     Io(std::io::Error),
+    Pairing(String),
     EventLoop(String),
     Window(String),
     Surface(String),
@@ -50,6 +56,7 @@ impl fmt::Display for DesktopHostError {
             Self::Backend(err) => write!(f, "render backend error: {err}"),
             Self::Snapshot(err) => write!(f, "snapshot error: {err}"),
             Self::Io(err) => write!(f, "I/O error: {err}"),
+            Self::Pairing(msg) => write!(f, "live pairing error: {msg}"),
             Self::EventLoop(msg) => write!(f, "event loop error: {msg}"),
             Self::Window(msg) => write!(f, "window error: {msg}"),
             Self::Surface(msg) => write!(f, "softbuffer surface error: {msg}"),
@@ -137,6 +144,20 @@ pub trait DesktopApp {
     /// Serializes the current app state for snapshot persistence or hot-swap preservation.
     fn snapshot_state(&mut self) -> Vec<u8> {
         Vec::new()
+    }
+
+    /// Registers an optional event-loop wake callback invoked when asynchronous remote frames
+    /// arrive (used by [`PairedRemoteApp`]).
+    fn install_wake_callback(&mut self, _wake: Arc<dyn Fn() + Send + Sync>) {}
+
+    /// Returns `true` when an asynchronous remote frame is queued and ready to be rendered.
+    fn has_pending_remote_frame(&self) -> bool {
+        false
+    }
+
+    /// Optional live status banner for remote/paired sessions (shown in HUD & window title).
+    fn remote_status_banner(&self) -> Option<String> {
+        None
     }
 }
 
@@ -354,5 +375,28 @@ pub fn render_headless_screenshot(
     let mut host = DesktopWindowHost::new(dylib_path, options)?;
     host.session().write_screenshot(&screenshot_path)?;
     host.save_snapshot_if_configured();
+    Ok(())
+}
+
+/// Opens a live thin-client desktop preview window paired directly to a remote `nve pair` server
+/// over UDP, TCP, or WebSocket (`NVT1`/`NVD1`), with zero local `cdylib` required.
+pub fn run_paired_desktop_preview(
+    pair_config: PairConnectConfig,
+    options: DesktopPreviewOptions,
+) -> Result<(), DesktopHostError> {
+    let host = DesktopWindowHost::new_paired(pair_config, options)?;
+    host.run()
+}
+
+/// Headlessly connects to a remote `nve pair` server, receives Frame 1 over `NVT1`/`NVD1`,
+/// rasterizes it to PNG or `P6` PPM, and disconnects cleanly.
+pub fn render_paired_headless_screenshot(
+    pair_config: PairConnectConfig,
+    options: DesktopPreviewOptions,
+    screenshot_path: PathBuf,
+) -> Result<(), DesktopHostError> {
+    let mut host = DesktopWindowHost::new_paired(pair_config, options)?;
+    host.session().write_screenshot(&screenshot_path)?;
+    host.session_mut().app_mut().disconnect();
     Ok(())
 }
