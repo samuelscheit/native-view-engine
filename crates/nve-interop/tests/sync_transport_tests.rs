@@ -493,14 +493,22 @@ fn udp_window_overflow_auto_keyframe_resync_and_graceful_reconnect() {
         "expected server keyframe_resyncs >= 1"
     );
 
-    // 4. Subsequent incremental delta applies cleanly after resync.
+    // 4. Subsequent incremental delta applies cleanly after resync (skip any duplicate in-flight f16 RTO keyframe).
     let f17 = make_studio_workspace_frame(17, ColorRgba::rgb(34, 197, 94), "Steady 17", 0);
     server.send_frame(&f17).unwrap();
-    let (_, rx17) = client
-        .recv_frame(Duration::from_secs(2))
-        .unwrap()
-        .expect("missing steady frame after resync");
-    assert_eq!(rx17, f17);
+    let steady_deadline = Instant::now() + Duration::from_secs(2);
+    let mut got_f17 = false;
+    while Instant::now() < steady_deadline {
+        if let Some((_, rx)) = client.recv_frame(Duration::from_millis(200)).unwrap() {
+            if rx == f16 {
+                continue;
+            }
+            assert_eq!(rx, f17, "unexpected frame after resync");
+            got_f17 = true;
+            break;
+        }
+    }
+    assert!(got_f17, "missing steady frame f17 after resync");
 
     // 5. Graceful disconnect, server advances while client offline, then reconnect -> auto keyframe resync!
     let old_sid = client.session_id();
@@ -523,11 +531,19 @@ fn udp_window_overflow_auto_keyframe_resync_and_graceful_reconnect() {
 
     let f21 = make_studio_workspace_frame(21, ColorRgba::rgb(251, 191, 36), "Resumed 21", 0);
     server.send_frame(&f21).unwrap();
-    let (_, rx21) = client
-        .recv_frame(Duration::from_secs(2))
-        .unwrap()
-        .expect("expected post-reconnect delta frame");
-    assert_eq!(rx21, f21);
+    let resumed_deadline = Instant::now() + Duration::from_secs(2);
+    let mut got_f21 = false;
+    while Instant::now() < resumed_deadline {
+        if let Some((_, rx)) = client.recv_frame(Duration::from_millis(200)).unwrap() {
+            if rx == f20 {
+                continue;
+            }
+            assert_eq!(rx, f21, "unexpected frame after reconnect");
+            got_f21 = true;
+            break;
+        }
+    }
+    assert!(got_f21, "expected post-reconnect delta frame f21");
 
     client.shutdown();
     server.shutdown();
