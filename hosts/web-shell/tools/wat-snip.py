@@ -12,19 +12,34 @@ Input must still have its `name` section (wasm-bindgen output without --remove-n
 Run wasm-opt afterwards: it removes the callees that became unreachable and strips the names
 (its pass list must not reorder functions).
 
-    wat-snip.py IN.wasm OUT.wasm [--no-sort] REGEX [REGEX...]
+`--keep REGEX` is a safety net: if a snip pattern matches a function whose name also matches a
+keep pattern, the tool fails instead of turning a live path (e.g. `Backtrace::capture`, which
+every `anyhow::Error` construction calls) into a trap.
+
+    wat-snip.py IN.wasm OUT.wasm [--no-sort] [--keep REGEX]... REGEX [REGEX...]
 """
 import re
 import subprocess
 import sys
 
 
+def alternation(patterns: list[str]) -> re.Pattern[str] | None:
+    return re.compile("|".join(f"(?:{p})" for p in patterns)) if patterns else None
+
+
 def main() -> None:
     args = sys.argv[1:]
-    src, dst = args[0], args[1]
-    sort = "--no-sort" not in args
-    patterns = [a for a in args[2:] if a != "--no-sort"]
-    rx = re.compile("|".join(f"(?:{p})" for p in patterns)) if patterns else None
+    src, dst, rest = args[0], args[1], args[2:]
+    sort, keep, patterns = True, [], []
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--no-sort":
+            sort = False
+        elif arg == "--keep":
+            keep.append(rest.pop(0))
+        else:
+            patterns.append(arg)
+    rx, keep_rx = alternation(patterns), alternation(keep)
     wat = subprocess.run(["wasm-tools", "print", src], check=True, capture_output=True, text=True).stdout
     lines = wat.split("\n")
     head = re.compile(r'^  \(func \$(?:"((?:[^"\\]|\\.)*)"|(\S+)) ')
@@ -42,7 +57,10 @@ def main() -> None:
             while lines[j] != "  )":
                 j += 1
         block = lines[i : j + 1]
-        if rx and rx.search(m.group(1) or m.group(2)):
+        name = m.group(1) or m.group(2)
+        if rx and rx.search(name):
+            if keep_rx and keep_rx.search(name):
+                sys.exit(f"wat-snip: refusing to snip live function {name}")
             block = [lines[i], "    unreachable", "  )"]
             snipped += 1
         funcs.append(block)

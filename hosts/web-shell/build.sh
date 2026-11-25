@@ -98,9 +98,17 @@ JS_OUT="${OUT_DIR}/nve_web_shell.js"
 # --- 3. Snip code that can never run on wasm32-unknown-unknown; order functions by size. ---------
 # std::backtrace is `unsupported` on this target (capture never yields frames), but anyhow's
 # Debug impl keeps Backtrace's Display -> rustc_demangle alive: ~17 KB raw / ~6 KB brotli.
+# Only the symbolize/print paths of a *captured* backtrace are snipped. `Backtrace::capture` and
+# Backtrace drop glue run on every anyhow::Error (dioxus-core CapturedError) and must stay live;
+# --keep makes the build fail if a pattern ever matches them.
 # Step 4 must not run --reorder-functions (or -O2+/-Os/-Oz, which include it) after this.
 python3 "${SCRIPT_DIR}/tools/wat-snip.py" "${WASM_OUT}" "${WASM_OUT}" \
-  'rustc_demangle\[' 'std\[[0-9a-f]+\]::backtrace'
+  --keep 'Backtrace>::(capture|force_capture|status|frames)$' \
+  --keep 'drop_glue::<(core\[[0-9a-f]+\]::option::Option<)?std\[[0-9a-f]+\]::backtrace::Backtrace>+$' \
+  '^<*&?rustc_demangle\[' \
+  '^<*std\[[0-9a-f]+\]::backtrace_rs::' \
+  'backtrace::Backtrace as core\[[0-9a-f]+\]::fmt::Display>::fmt::\{closure' \
+  'LazyLock<std\[[0-9a-f]+\]::backtrace::Capture'
 
 # --- 4. wasm-opt tuned for brotli size. -----------------------------------------------------------
 # -Oz/-Os/-O2+ shrink raw bytes but grow brotli bytes (inlining, local-cse, memory-packing,
