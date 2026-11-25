@@ -280,4 +280,92 @@ class NveSceneBufferTest {
         assertThrows(IndexOutOfBoundsException::class.java) { reader.dirtyIndex(1) }
         assertThrows(IndexOutOfBoundsException::class.java) { reader.removedId(0) }
     }
+
+    @Test
+    fun decodesMetadataSlabWithLittleEndianBufferAndReusableScratch() {
+        val label = "Save 🚀".toByteArray(Charsets.UTF_8)
+        val role = "button".toByteArray(Charsets.UTF_8)
+        val hint = "Persists state".toByteArray(Charsets.UTF_8)
+        val stateDesc = "ready".toByteArray(Charsets.UTF_8)
+        val placeholder = "Enter value".toByteArray(Charsets.UTF_8)
+        val testId = "btn-save".toByteArray(Charsets.UTF_8)
+        val totalBytes = NveNodeMetadataCodec.HEADER_SIZE +
+            NveNodeMetadataCodec.RECORD_HEADER_SIZE +
+            label.size + role.size + hint.size + stateDesc.size + placeholder.size + testId.size
+
+        val buf = ByteBuffer.allocateDirect(totalBytes).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put("NVE_MET1".toByteArray(Charsets.US_ASCII))
+        buf.putShort(NveNodeMetadataCodec.FORMAT_VERSION.toShort())
+        buf.putShort(0)
+        buf.putInt(1) // recordCount
+        buf.putLong(42L) // frameId
+        buf.putInt(totalBytes)
+        buf.putInt(0)
+
+        val flags = NveNodeMetadataCodec.FLAG_DISABLED or
+            NveNodeMetadataCodec.FLAG_MULTILINE or
+            (NveNodeMetadata.RESIZE_MODE_CONTAIN shl NveNodeMetadataCodec.RESIZE_MODE_SHIFT)
+        buf.putInt(7) // nodeId
+        buf.putInt(flags)
+        buf.putShort(label.size.toShort())
+        buf.putShort(role.size.toShort())
+        buf.putShort(hint.size.toShort())
+        buf.putShort(stateDesc.size.toShort())
+        buf.putShort(placeholder.size.toShort())
+        buf.putShort(testId.size.toShort())
+        buf.putInt(0) // drawListLen
+        buf.putInt(0) // reserved
+        buf.put(label)
+        buf.put(role)
+        buf.put(hint)
+        buf.put(stateDesc)
+        buf.put(placeholder)
+        buf.put(testId)
+        buf.flip()
+
+        val scratch = NveNodeMetadataCodec.Utf8Scratch(initialCapacity = 8)
+        val target = HashMap<Int, NveNodeMetadata>()
+
+        // Mismatched expectedFrameId is ignored cleanly.
+        val skipped = NveNodeMetadataCodec.decodeInto(
+            buf,
+            target,
+            declaredBytes = totalBytes,
+            expectedFrameId = 99L,
+            scratch = scratch,
+        )
+        assertEquals(0, skipped.size)
+        assertTrue(target.isEmpty())
+
+        // Truncated declaredBytes is rejected cleanly.
+        val truncated = NveNodeMetadataCodec.decodeInto(
+            buf,
+            target,
+            declaredBytes = totalBytes - 1,
+            expectedFrameId = 42L,
+            scratch = scratch,
+        )
+        assertEquals(0, truncated.size)
+
+        // Matching frameId and declaredBytes decodes all fields cleanly.
+        val updated = NveNodeMetadataCodec.decodeInto(
+            buf,
+            target,
+            declaredBytes = totalBytes,
+            expectedFrameId = 42L,
+            scratch = scratch,
+        )
+        assertArrayEquals(intArrayOf(7), updated)
+        val meta = target[7]!!
+        assertEquals("Save 🚀", meta.accessibilityLabel)
+        assertEquals("button", meta.accessibilityRole)
+        assertEquals("Persists state", meta.accessibilityHint)
+        assertEquals("ready", meta.accessibilityStateDescription)
+        assertEquals("Enter value", meta.placeholder)
+        assertEquals("btn-save", meta.testId)
+        assertTrue(meta.disabled)
+        assertTrue(meta.multiline)
+        assertFalse(meta.secureTextEntry)
+        assertEquals(NveNodeMetadata.RESIZE_MODE_CONTAIN, meta.resizeMode)
+    }
 }

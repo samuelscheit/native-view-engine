@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ffi' as ffi;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -33,6 +34,7 @@ class NveTextureHostWidget extends StatefulWidget {
     required this.componentName,
     this.vtableSymbol = 'nve_get_interface',
     this.libraryPath,
+    this.interfaceResolver,
     this.props = const <String, Object?>{},
     this.controller,
     this.onEvent,
@@ -45,6 +47,7 @@ class NveTextureHostWidget extends StatefulWidget {
   final String componentName;
   final String vtableSymbol;
   final String? libraryPath;
+  final ffi.Pointer<ffi.Void> Function(int)? interfaceResolver;
   final Map<String, Object?> props;
   final NveSurfaceController? controller;
   final NveEventCallback? onEvent;
@@ -109,7 +112,21 @@ class _NveTextureHostWidgetState extends State<NveTextureHostWidget> {
   }
 
   Future<void> _initSurface() async {
-    if (widget.libraryPath != null && widget.libraryPath!.isNotEmpty) {
+    final resolver = widget.interfaceResolver;
+    if (resolver != null) {
+      try {
+        final instance = NveAppInstance.fromInterfaceResolver(
+          surfaceId: _surfaceId,
+          getInterface: resolver,
+        );
+        instance.setPropsDirect(widget.props);
+        instance.renderNextFrame();
+        _ffiInstance = instance;
+        _drainFfiEvents();
+      } catch (_) {
+        // Fallback to MethodChannel-hosted texture registry.
+      }
+    } else if (widget.libraryPath != null && widget.libraryPath!.isNotEmpty) {
       try {
         final instance = NveAppInstance.open(
           surfaceId: _surfaceId,
@@ -159,6 +176,7 @@ class _NveTextureHostWidgetState extends State<NveTextureHostWidget> {
         ffiInst.renderNextFrame();
       }
       _drainFfiEvents();
+      return;
     }
     _textureChannel.invokeMethod<void>('setProps', <String, dynamic>{
       'surfaceId': _surfaceId,
@@ -179,6 +197,7 @@ class _NveTextureHostWidgetState extends State<NveTextureHostWidget> {
         ffiInst.renderNextFrame();
       }
       _drainFfiEvents();
+      return;
     }
     _textureChannel.invokeMethod<void>('dispatchCommand', <String, dynamic>{
       'surfaceId': _surfaceId,
@@ -188,7 +207,12 @@ class _NveTextureHostWidgetState extends State<NveTextureHostWidget> {
   }
 
   void _requestRender() {
-    _ffiInstance?.renderNextFrame();
+    final ffiInst = _ffiInstance;
+    if (ffiInst != null && !ffiInst.isDisposed) {
+      ffiInst.renderNextFrame();
+      _drainFfiEvents();
+      return;
+    }
     _textureChannel.invokeMethod<void>('requestRender', <String, dynamic>{
       'surfaceId': _surfaceId,
     }).catchError((_) {});

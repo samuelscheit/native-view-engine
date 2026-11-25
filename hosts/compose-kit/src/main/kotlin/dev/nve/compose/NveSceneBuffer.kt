@@ -19,206 +19,6 @@ data class NveSceneSlabs(
 )
 
 /**
- * Retained per-node accessibility, `TextInput`, `Image`, and `SkiaCanvas` metadata decoded from
- * one batched `NVE_MET1` binary slab per dirty frame (zero JSON, zero per-prop JNI chatter).
- */
-data class NveNodeMetadata(
-    val accessibilityLabel: String = "",
-    val accessibilityRole: String = "",
-    val accessibilityHint: String = "",
-    val accessibilityStateDescription: String = "",
-    val disabled: Boolean = false,
-    val accessibilityHidden: Boolean = false,
-    val placeholder: String = "",
-    val secureTextEntry: Boolean = false,
-    val multiline: Boolean = false,
-    val resizeMode: Int = RESIZE_MODE_COVER,
-    val testId: String = "",
-    val drawListBytes: ByteArray? = null,
-    val drawListCorrupt: Boolean = false,
-) {
-    companion object {
-        const val RESIZE_MODE_COVER: Int = 0
-        const val RESIZE_MODE_CONTAIN: Int = 1
-        const val RESIZE_MODE_STRETCH: Int = 2
-        const val RESIZE_MODE_CENTER: Int = 3
-
-        val EMPTY: NveNodeMetadata = NveNodeMetadata()
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is NveNodeMetadata) return false
-        return accessibilityLabel == other.accessibilityLabel &&
-            accessibilityRole == other.accessibilityRole &&
-            accessibilityHint == other.accessibilityHint &&
-            accessibilityStateDescription == other.accessibilityStateDescription &&
-            disabled == other.disabled &&
-            accessibilityHidden == other.accessibilityHidden &&
-            placeholder == other.placeholder &&
-            secureTextEntry == other.secureTextEntry &&
-            multiline == other.multiline &&
-            resizeMode == other.resizeMode &&
-            testId == other.testId &&
-            drawListCorrupt == other.drawListCorrupt &&
-            ((drawListBytes == null && other.drawListBytes == null) ||
-                (drawListBytes != null && other.drawListBytes != null &&
-                    drawListBytes.contentEquals(other.drawListBytes)))
-    }
-
-    override fun hashCode(): Int {
-        var result = accessibilityLabel.hashCode()
-        result = 31 * result + accessibilityRole.hashCode()
-        result = 31 * result + accessibilityHint.hashCode()
-        result = 31 * result + accessibilityStateDescription.hashCode()
-        result = 31 * result + disabled.hashCode()
-        result = 31 * result + accessibilityHidden.hashCode()
-        result = 31 * result + placeholder.hashCode()
-        result = 31 * result + secureTextEntry.hashCode()
-        result = 31 * result + multiline.hashCode()
-        result = 31 * result + resizeMode
-        result = 31 * result + testId.hashCode()
-        result = 31 * result + drawListCorrupt.hashCode()
-        result = 31 * result + (drawListBytes?.contentHashCode() ?: 0)
-        return result
-    }
-}
-
-/**
- * Zero-JSON decoder for the batched dirty-node `NVE_MET1` binary metadata slab produced by
- * `NveAndroidSurfaceJni.cpp`.
- */
-object NveNodeMetadataCodec {
-    const val HEADER_SIZE: Int = 32
-    const val RECORD_HEADER_SIZE: Int = 28
-    const val FORMAT_VERSION: Int = 1
-
-    const val FLAG_DISABLED: Int = 1 shl 0
-    const val FLAG_SECURE_TEXT_ENTRY: Int = 1 shl 1
-    const val FLAG_MULTILINE: Int = 1 shl 2
-    const val FLAG_HAS_DRAW_LIST: Int = 1 shl 3
-    const val FLAG_DRAW_LIST_CORRUPT: Int = 1 shl 4
-    const val FLAG_ACCESSIBILITY_HIDDEN: Int = 1 shl 5
-    const val RESIZE_MODE_SHIFT: Int = 8
-    const val RESIZE_MODE_MASK: Int = 0x3
-
-    private val MAGIC = byteArrayOf(
-        'N'.code.toByte(),
-        'V'.code.toByte(),
-        'E'.code.toByte(),
-        '_'.code.toByte(),
-        'M'.code.toByte(),
-        'E'.code.toByte(),
-        'T'.code.toByte(),
-        '1'.code.toByte(),
-    )
-
-    /**
-     * Decodes all dirty-node metadata records from [buffer] into [target], returning the list
-     * of updated node IDs (empty if the buffer is empty, invalid, or contains 0 records).
-     */
-    fun decodeInto(
-        buffer: ByteBuffer?,
-        target: MutableMap<Int, NveNodeMetadata>,
-    ): IntArray {
-        if (buffer == null || buffer.limit() < HEADER_SIZE) return IntArray(0)
-        for (i in MAGIC.indices) {
-            if (buffer.get(i) != MAGIC[i]) return IntArray(0)
-        }
-        val version = readU16Le(buffer, 8)
-        if (version != FORMAT_VERSION) return IntArray(0)
-        val recordCount = readI32Le(buffer, 12)
-        val totalBytes = readI32Le(buffer, 24)
-        if (recordCount <= 0 || totalBytes < HEADER_SIZE || totalBytes > buffer.limit()) {
-            return IntArray(0)
-        }
-        if (recordCount.toLong() * RECORD_HEADER_SIZE.toLong() > (totalBytes - HEADER_SIZE).toLong()) {
-            return IntArray(0)
-        }
-
-        val updatedIds = IntArray(recordCount)
-        var written = 0
-        var pos = HEADER_SIZE
-        for (i in 0 until recordCount) {
-            if (totalBytes - pos < RECORD_HEADER_SIZE) break
-            val nodeId = readI32Le(buffer, pos)
-            val flags = readI32Le(buffer, pos + 4)
-            val labelLen = readU16Le(buffer, pos + 8)
-            val roleLen = readU16Le(buffer, pos + 10)
-            val hintLen = readU16Le(buffer, pos + 12)
-            val stateDescLen = readU16Le(buffer, pos + 14)
-            val placeholderLen = readU16Le(buffer, pos + 16)
-            val testIdLen = readU16Le(buffer, pos + 18)
-            val drawListLen = readI32Le(buffer, pos + 20)
-            pos += RECORD_HEADER_SIZE
-
-            if (drawListLen < 0) break
-            val payloadBytes = labelLen.toLong() + roleLen + hintLen + stateDescLen +
-                placeholderLen + testIdLen + drawListLen
-            if (payloadBytes > (totalBytes - pos).toLong()) break
-
-            val label = readUtf8(buffer, pos, labelLen); pos += labelLen
-            val role = readUtf8(buffer, pos, roleLen); pos += roleLen
-            val hint = readUtf8(buffer, pos, hintLen); pos += hintLen
-            val stateDesc = readUtf8(buffer, pos, stateDescLen); pos += stateDescLen
-            val placeholder = readUtf8(buffer, pos, placeholderLen); pos += placeholderLen
-            val testId = readUtf8(buffer, pos, testIdLen); pos += testIdLen
-
-            var drawBytes: ByteArray? = null
-            var drawCorrupt = (flags and FLAG_DRAW_LIST_CORRUPT) != 0
-            if (drawListLen > 0) {
-                if (NveDrawListRenderer.validate(buffer, pos, drawListLen) == null) {
-                    val copy = ByteArray(drawListLen)
-                    for (b in 0 until drawListLen) {
-                        copy[b] = buffer.get(pos + b)
-                    }
-                    drawBytes = copy
-                } else {
-                    drawCorrupt = true
-                }
-                pos += drawListLen
-            }
-
-            target[nodeId] = NveNodeMetadata(
-                accessibilityLabel = label,
-                accessibilityRole = role,
-                accessibilityHint = hint,
-                accessibilityStateDescription = stateDesc,
-                disabled = (flags and FLAG_DISABLED) != 0,
-                accessibilityHidden = (flags and FLAG_ACCESSIBILITY_HIDDEN) != 0,
-                placeholder = placeholder,
-                secureTextEntry = (flags and FLAG_SECURE_TEXT_ENTRY) != 0,
-                multiline = (flags and FLAG_MULTILINE) != 0,
-                resizeMode = (flags ushr RESIZE_MODE_SHIFT) and RESIZE_MODE_MASK,
-                testId = testId,
-                drawListBytes = drawBytes,
-                drawListCorrupt = drawCorrupt,
-            )
-            updatedIds[written++] = nodeId
-        }
-        return if (written == updatedIds.size) updatedIds else updatedIds.copyOf(written)
-    }
-
-    private fun readU16Le(buf: ByteBuffer, pos: Int): Int =
-        (buf.get(pos).toInt() and 0xFF) or ((buf.get(pos + 1).toInt() and 0xFF) shl 8)
-
-    private fun readI32Le(buf: ByteBuffer, pos: Int): Int =
-        (buf.get(pos).toInt() and 0xFF) or
-            ((buf.get(pos + 1).toInt() and 0xFF) shl 8) or
-            ((buf.get(pos + 2).toInt() and 0xFF) shl 16) or
-            ((buf.get(pos + 3).toInt() and 0xFF) shl 24)
-
-    private fun readUtf8(buf: ByteBuffer, pos: Int, len: Int): String {
-        if (len <= 0) return ""
-        val bytes = ByteArray(len)
-        for (i in 0 until len) {
-            bytes[i] = buf.get(pos + i)
-        }
-        return String(bytes, StandardCharsets.UTF_8)
-    }
-}
-
-/**
  * Strict validation errors thrown when attaching a malformed or incompatible `NveSceneView` frame.
  */
 sealed class NveSceneValidationException(message: String) : IllegalArgumentException(message) {
@@ -433,6 +233,7 @@ class NveSceneBuffer {
     private var dirtyIndicesBuf: ByteBuffer? = null
     private var removedIdsBuf: ByteBuffer? = null
     private var textScratch: ByteArray = ByteArray(256)
+    private val metadataScratch = NveNodeMetadataCodec.Utf8Scratch()
 
     /**
      * Rebinds this reusable reader from the 7-element metadata array returned by JNI
@@ -720,7 +521,7 @@ class NveSceneBuffer {
             id
         }
         val metaUpdatedIds = if (metadataSlab != null && metadataById != null) {
-            NveNodeMetadataCodec.decodeInto(metadataSlab, metadataById)
+            NveNodeMetadataCodec.decodeInto(metadataSlab, metadataById, scratch = metadataScratch)
         } else {
             IntArray(0)
         }
