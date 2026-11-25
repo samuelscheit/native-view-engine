@@ -15,6 +15,7 @@
 //! - [`HybridTarget::TypeScript`]: typed TS interfaces, enums, and direct `DataView`/`Uint8Array`
 //!   WASM linear-memory client (zero JSON)
 
+pub mod core_abi;
 pub mod emit_cpp;
 pub mod emit_dart;
 pub mod emit_kotlin;
@@ -29,6 +30,14 @@ use std::path::{Path, PathBuf};
 use crate::error::CodegenError;
 use crate::ir::{write_generated_files, GeneratedFile};
 
+pub use core_abi::{
+    compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec, generate_all_abi_files,
+    generate_all_core_abi_files, generate_all_scene_abi_files, generate_c_core_abi_h,
+    generate_c_scene_abi_h, generate_dart_core_abi, generate_dart_scene_abi,
+    generate_java_core_abi, generate_java_scene_buffer, generate_ts_core_abi,
+    generate_ts_scene_view, scene_abi_spec, NVE_CORE_ABI_SCHEMA_HASH, NVE_CORE_ABI_SPEC_SOURCE,
+    NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE, NVE_SCENE_ABI_SPEC_SOURCE, NVE_SCENE_SCHEMA_HASH,
+};
 pub use emit_cpp::generate_hybrid_cpp;
 pub use emit_dart::generate_hybrid_dart;
 pub use emit_kotlin::generate_hybrid_kotlin;
@@ -36,11 +45,11 @@ pub use emit_rust::generate_hybrid_rust;
 pub use emit_swift::generate_hybrid_swift;
 pub use emit_ts::generate_hybrid_ts;
 pub use ir::{
-    compute_hybrid_interface_id, fnv1a_64, fnv1a_64_update, HybridDefaultValue, HybridEnumSpec,
-    HybridEnumVariant, HybridEventSpec, HybridFieldSpec, HybridFileSpec, HybridMethodSpec,
-    HybridModuleSpec, HybridParamSpec, HybridPropSpec, HybridStructSpec, HybridTarget, HybridType,
-    HybridViewSpec, FNV1A_64_OFFSET_BASIS, NVE_HYBRID_ABI_VERSION, NVE_HYBRID_INTERFACE_ID_BASE,
-    NVE_HYBRID_INTERFACE_ID_MASK,
+    compute_hybrid_interface_id, fnv1a_64, fnv1a_64_update, HybridAliasSpec, HybridConstSpec,
+    HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec,
+    HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec,
+    HybridStructSpec, HybridTarget, HybridType, HybridViewSpec, FNV1A_64_OFFSET_BASIS,
+    NVE_HYBRID_ABI_VERSION, NVE_HYBRID_INTERFACE_ID_BASE, NVE_HYBRID_INTERFACE_ID_MASK,
 };
 pub use parser::{parse_hybrid_rust_spec, parse_hybrid_rust_spec_file};
 

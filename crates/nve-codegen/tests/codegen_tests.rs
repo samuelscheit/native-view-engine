@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use nve_codegen::{
-    export_all_targets, export_compose, export_flutter, export_rn_json, export_rn_spec,
-    export_swiftui, export_target, export_web_component, generate_all_scene_abi_files,
-    import_rn_file, import_rn_source, parse_rn_spec, parse_rn_spec_file, CommandSpec, DefaultValue,
-    EventBubbling, EventSpec, ExportBackend, ExportTarget, NveExportSpec, ObjectField, ParamSpec,
-    ParsedRnSpec, PropSpec, PropType, NVE_SCENE_SCHEMA_HASH,
+    compute_scene_schema_hash, core_abi_schema_hash, export_all_targets, export_compose,
+    export_flutter, export_rn_json, export_rn_spec, export_swiftui, export_target,
+    export_web_component, generate_all_abi_files, generate_all_core_abi_files,
+    generate_all_scene_abi_files, import_rn_file, import_rn_source, parse_rn_spec,
+    parse_rn_spec_file, scene_abi_spec, CommandSpec, DefaultValue, EventBubbling, EventSpec,
+    ExportBackend, ExportTarget, NveExportSpec, ObjectField, ParamSpec, ParsedRnSpec, PropSpec,
+    PropType, NVE_CORE_ABI_SCHEMA_HASH, NVE_SCENE_SCHEMA_HASH,
 };
 
 const RN_LIBRARIES_DIR: &str =
@@ -881,30 +883,48 @@ fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
 }
 
 #[test]
-fn scene_abi_generated_files_match_checked_in_artifacts_byte_for_byte() {
+fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_for_byte() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let generated = generate_all_scene_abi_files();
-    assert_eq!(generated.len(), 5);
-    assert_ne!(NVE_SCENE_SCHEMA_HASH, 0);
+    let core_files = generate_all_core_abi_files();
+    let scene_files = generate_all_scene_abi_files();
+    let all_files = generate_all_abi_files();
 
-    let update_mode = std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
-    for file in &generated {
+    assert_eq!(core_files.len(), 5);
+    assert_eq!(scene_files.len(), 5);
+    assert_eq!(all_files.len(), 10);
+
+    // Cross-check both deterministic FNV-1a schema hashes against `crates/nve-abi`.
+    assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
+    assert_eq!(core_abi_schema_hash(), NVE_CORE_ABI_SCHEMA_HASH);
+    assert_eq!(NVE_CORE_ABI_SCHEMA_HASH, nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
+
+    assert_ne!(NVE_SCENE_SCHEMA_HASH, 0);
+    assert_eq!(compute_scene_schema_hash(&scene_abi_spec()), NVE_SCENE_SCHEMA_HASH);
+    assert_eq!(NVE_SCENE_SCHEMA_HASH, nve_abi::NVE_SCENE_SCHEMA_HASH);
+
+    // C and Swift headers must be byte-for-byte identical copies.
+    assert_eq!(core_files[0].content, core_files[1].content);
+    assert_eq!(scene_files[0].content, scene_files[1].content);
+
+    let update_mode =
+        std::env::var("NVE_UPDATE_ABI").is_ok() || std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
+    for file in &all_files {
         let full_path = repo_root.join(&file.relative_path);
         if update_mode {
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent).expect("create parent dirs");
             }
-            std::fs::write(&full_path, &file.content).expect("write generated scene ABI file");
+            std::fs::write(&full_path, &file.content).expect("write generated ABI file");
         }
         let on_disk = std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
             panic!(
-                "missing generated scene ABI file {}: {e}",
+                "missing generated ABI file {}: {e}",
                 full_path.display()
             )
         });
         assert_eq!(
             on_disk, file.content,
-            "Scene ABI schema drift detected in {}! Re-run with NVE_UPDATE_SCENE_ABI=1 to regenerate.",
+            "ABI schema drift detected in {}! Re-run with NVE_UPDATE_ABI=1 or `cargo nve codegen abi` to regenerate.",
             file.relative_path
         );
     }

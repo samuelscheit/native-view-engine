@@ -806,6 +806,9 @@ fn emit_swift_client_method(out: &mut String, method: &HybridMethodSpec, spec: &
         let pname = swift_ident(&p.name);
         match &p.ty {
             HybridType::Bool
+            | HybridType::U8
+            | HybridType::U16
+            | HybridType::Usize
             | HybridType::I32
             | HybridType::U32
             | HybridType::I64
@@ -957,6 +960,9 @@ fn emit_swift_return_decode(
     match ty {
         HybridType::Void => {}
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1041,6 +1047,9 @@ fn swift_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "Void".to_string(),
         HybridType::Bool => "Bool".to_string(),
+        HybridType::U8 => "UInt8".to_string(),
+        HybridType::U16 => "UInt16".to_string(),
+        HybridType::Usize => "Int".to_string(),
         HybridType::I32 => "Int32".to_string(),
         HybridType::U32 => "UInt32".to_string(),
         HybridType::I64 => "Int64".to_string(),
@@ -1052,8 +1061,24 @@ fn swift_type(ty: &HybridType) -> String {
         HybridType::Optional(inner) => format!("{}?", swift_type(inner)),
         HybridType::Vec(inner) => format!("[{}]", swift_type(inner)),
         HybridType::Result { ok, .. } => swift_type(ok),
-        HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
+        HybridType::Struct(name) | HybridType::Enum(name) | HybridType::Handle(name) => {
+            name.clone()
+        }
         HybridType::Value => "NveHybridDynamicValue".to_string(),
+        HybridType::ConstPtr(inner) => {
+            if matches!(inner.as_ref(), HybridType::Void) {
+                "UnsafeRawPointer?".to_string()
+            } else {
+                format!("UnsafePointer<{}>?", swift_type(inner))
+            }
+        }
+        HybridType::MutPtr(inner) => {
+            if matches!(inner.as_ref(), HybridType::Void) {
+                "UnsafeMutableRawPointer?".to_string()
+            } else {
+                format!("UnsafeMutablePointer<{}>?", swift_type(inner))
+            }
+        }
     }
 }
 
@@ -1093,11 +1118,20 @@ fn swift_default_value(
 
     match ty {
         HybridType::Bool => "false".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => "0".to_string(),
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::String => "\"\"".to_string(),
         HybridType::Bytes | HybridType::Vec(_) => "[]".to_string(),
-        HybridType::Optional(_) => "nil".to_string(),
+        HybridType::Optional(_)
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => "nil".to_string(),
         HybridType::Struct(name) => format!("{name}()"),
         HybridType::Enum(name) => {
             if let Some(e) = spec.find_enum(name) {
@@ -1114,9 +1148,14 @@ fn swift_default_value(
 fn swift_c_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool => "false".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 | HybridType::Enum(_) => {
-            "0".to_string()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::Enum(_) => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::Struct(name) if ty.is_pod(spec) => format!("{name}().toAbi()"),
         _ => "NveHybridOwnedBytes(ptr: nil, len: 0, cap: 0)".to_string(),
@@ -1139,7 +1178,12 @@ fn swift_c_return_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
 fn emit_swift_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr})").unwrap(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 => {
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64 => {
             writeln!(out, "{indent}{w}.writeInt64(Int64({expr}))").unwrap();
         }
         HybridType::U64 => {
@@ -1169,7 +1213,11 @@ fn emit_swift_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty:
             writeln!(out, "{indent}    }}").unwrap();
             writeln!(out, "{indent}}}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {
             writeln!(out, "{indent}{w}.writeNull()").unwrap();
         }
     }
@@ -1178,6 +1226,9 @@ fn emit_swift_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty:
 fn emit_swift_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = try {r}.readBool()").unwrap(),
+        HybridType::U8 => writeln!(out, "{indent}{dst} = UInt8(truncatingIfNeeded: try {r}.readInt64())").unwrap(),
+        HybridType::U16 => writeln!(out, "{indent}{dst} = UInt16(truncatingIfNeeded: try {r}.readInt64())").unwrap(),
+        HybridType::Usize => writeln!(out, "{indent}{dst} = Int(truncatingIfNeeded: try {r}.readInt64())").unwrap(),
         HybridType::I32 => writeln!(out, "{indent}{dst} = Int32(truncatingIfNeeded: try {r}.readInt64())").unwrap(),
         HybridType::U32 => writeln!(out, "{indent}{dst} = UInt32(truncatingIfNeeded: try {r}.readInt64())").unwrap(),
         HybridType::I64 => writeln!(out, "{indent}{dst} = try {r}.readInt64()").unwrap(),
@@ -1216,7 +1267,11 @@ fn emit_swift_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &
             writeln!(out, "{indent}    {dst} = _arr").unwrap();
             writeln!(out, "{indent}}}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }
 

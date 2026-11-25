@@ -633,9 +633,16 @@ fn ts_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "void".to_string(),
         HybridType::Bool => "boolean".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::F32 | HybridType::F64 => {
-            "number".to_string()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::F32
+        | HybridType::F64
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => "number".to_string(),
         HybridType::I64 | HybridType::U64 => "bigint".to_string(),
         HybridType::String => "string".to_string(),
         HybridType::Bytes => "Uint8Array".to_string(),
@@ -650,7 +657,12 @@ fn ts_type(ty: &HybridType) -> String {
 fn emit_ts_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr});").unwrap(),
-        HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => {
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::Enum(_) => {
             writeln!(out, "{indent}{w}.writeI64(BigInt({expr}));").unwrap()
         }
         HybridType::I64 | HybridType::U64 => writeln!(out, "{indent}{w}.writeI64({expr});").unwrap(),
@@ -671,14 +683,22 @@ fn emit_ts_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &H
             writeln!(out, "{indent}  }}").unwrap();
             writeln!(out, "{indent}}});").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }
 
 fn emit_ts_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool();").unwrap(),
-        HybridType::I32 | HybridType::U32 => {
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32 => {
             writeln!(out, "{indent}{dst} = Number({r}.readI64());").unwrap()
         }
         HybridType::I64 | HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readI64();").unwrap(),
@@ -713,6 +733,10 @@ fn emit_ts_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &Hyb
             writeln!(out, "{indent}  {dst} = _arr;").unwrap();
             writeln!(out, "{indent}}}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }

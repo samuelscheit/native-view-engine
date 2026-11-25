@@ -19,7 +19,6 @@
 //! - **Web Components** (`export_web_component`): typed Custom Element `<nve-...>` `.js` + `.d.ts`
 //!   wrapping `wasm-bindgen`
 
-pub mod abi_schema;
 pub mod error;
 pub mod export_compose;
 pub mod export_flutter;
@@ -35,11 +34,6 @@ pub mod parser;
 
 use std::path::Path;
 
-pub use abi_schema::{
-    generate_all_scene_abi_files, generate_c_scene_abi_h, generate_dart_scene_abi,
-    generate_java_scene_buffer, generate_ts_scene_view, SceneFieldDesc, SceneFieldType,
-    NVE_RENDER_NODE_FIELDS, NVE_SCENE_SCHEMA_HASH, NVE_SCENE_VIEW_FIELDS,
-};
 pub use error::CodegenError;
 pub use export_compose::generate_export_compose;
 pub use export_flutter::generate_export_flutter;
@@ -47,13 +41,19 @@ pub use export_rn::generate_export_rn;
 pub use export_swiftui::generate_export_swiftui;
 pub use export_web::generate_export_web_component;
 pub use hybrid::{
-    compute_hybrid_interface_id, generate_hybrid_all, generate_hybrid_cpp, generate_hybrid_dart,
-    generate_hybrid_kotlin, generate_hybrid_rust, generate_hybrid_swift, generate_hybrid_target,
-    generate_hybrid_ts, parse_hybrid_rust_spec, parse_hybrid_rust_spec_file, HybridDefaultValue,
-    HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec, HybridFileSpec,
-    HybridGenerateOutput, HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec,
-    HybridStructSpec, HybridTarget, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION,
-    NVE_HYBRID_INTERFACE_ID_BASE,
+    compute_hybrid_interface_id, compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec,
+    generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
+    generate_c_core_abi_h, generate_c_scene_abi_h, generate_dart_core_abi, generate_dart_scene_abi,
+    generate_hybrid_all, generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin,
+    generate_hybrid_rust, generate_hybrid_swift, generate_hybrid_target, generate_hybrid_ts,
+    generate_java_core_abi, generate_java_scene_buffer, generate_ts_core_abi,
+    generate_ts_scene_view, parse_hybrid_rust_spec, parse_hybrid_rust_spec_file, scene_abi_spec,
+    HybridAliasSpec, HybridConstSpec, HybridDefaultValue, HybridEnumSpec, HybridEnumVariant,
+    HybridEventSpec, HybridFieldSpec, HybridFileSpec, HybridGenerateOutput, HybridMethodSpec,
+    HybridModuleSpec, HybridParamSpec, HybridPropSpec, HybridStructSpec, HybridTarget, HybridType,
+    HybridViewSpec, NVE_CORE_ABI_SCHEMA_HASH, NVE_CORE_ABI_SPEC_SOURCE, NVE_HYBRID_ABI_VERSION,
+    NVE_HYBRID_INTERFACE_ID_BASE, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
+    NVE_SCENE_ABI_SPEC_SOURCE, NVE_SCENE_SCHEMA_HASH,
 };
 pub use import_rn::generate_import_rn;
 pub use ir::{

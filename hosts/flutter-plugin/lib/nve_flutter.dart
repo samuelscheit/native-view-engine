@@ -23,155 +23,15 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import 'src/nve_core_abi_gen.dart';
+
+export 'src/nve_core_abi_gen.dart';
+
 // ============================================================================
-// 1. Direct dart:ffi bindings to modular `nve_get_interface` C ABI (`nve_abi.h`)
+// 1. Direct dart:ffi allocator helper (`_NativeMem`)
 // ============================================================================
-
-/// Modular interface IDs passed to `nve_get_interface(uint32_t)`.
-const int nveIfaceSurface = 1;
-const int nveIfaceLayout = 2;
-const int nveIfaceComponent = 3;
-const int nveIfaceDev = 4;
-
-/// C ABI byte slice (`NveBufferSlice` in `nve_abi.h`).
-final class NveBufferSlice extends ffi.Struct {
-  external ffi.Pointer<ffi.Uint8> ptr;
-
-  @ffi.Size()
-  external int len;
-}
-
-/// C ABI surface creation config (`NveSurfaceConfig` in `nve_abi.h`).
-final class NveSurfaceConfig extends ffi.Struct {
-  @ffi.Uint32()
-  external int surfaceId;
-
-  @ffi.Float()
-  external double width;
-
-  @ffi.Float()
-  external double height;
-
-  @ffi.Float()
-  external double scaleFactor;
-}
-
-/// C ABI frame performance counters (`NveFrameStats` in `nve_abi.h`).
-final class NveFrameStats extends ffi.Struct {
-  @ffi.Uint32()
-  external int opCount;
-
-  @ffi.Uint32()
-  external int mutationCount;
-
-  @ffi.Uint64()
-  external int decodeUs;
-
-  @ffi.Uint64()
-  external int layoutUs;
-
-  @ffi.Uint64()
-  external int diffUs;
-
-  @ffi.Uint64()
-  external int mountUs;
-}
-
-/// Planned ABI v2 C-compatible box constraints (`SizeConstraints` in `crates/nve-interop`).
-final class NveSizeConstraints extends ffi.Struct {
-  @ffi.Float()
-  external double minW;
-
-  @ffi.Float()
-  external double minH;
-
-  @ffi.Float()
-  external double maxW;
-
-  @ffi.Float()
-  external double maxH;
-}
-
-/// Planned ABI v2 C-compatible intrinsic dimensions (`IntrinsicSize` in `crates/nve-interop`).
-final class NveIntrinsicSize extends ffi.Struct {
-  @ffi.Float()
-  external double width;
-
-  @ffi.Float()
-  external double height;
-}
-
-// Native function typedefs matching modular `nve_get_interface` tables in `crates/nve-abi/src/ffi.rs`.
-typedef NveCreateNative = ffi.Pointer<ffi.Void> Function(ffi.Uint32 surfaceId);
-typedef NveDestroyNative = ffi.Void Function(ffi.Pointer<ffi.Void> handle);
-typedef NveRenderNative = NveBufferSlice Function(
-  ffi.Pointer<ffi.Void> handle,
-  ffi.Uint64 frameId,
-);
-typedef NveDispatchEventsNative = ffi.Uint32 Function(
-  ffi.Pointer<ffi.Void> handle,
-  NveBufferSlice events,
-);
-typedef NveApplyHotPatchNative = ffi.Uint32 Function(
-  ffi.Pointer<ffi.Void> handle,
-  NveBufferSlice patchJson,
-);
-typedef NveSnapshotStateNative = NveBufferSlice Function(ffi.Pointer<ffi.Void> handle);
-typedef NveRestoreStateNative = ffi.Void Function(
-  ffi.Pointer<ffi.Void> handle,
-  NveBufferSlice state,
-);
-typedef NveSetPropsNative = ffi.Uint32 Function(
-  ffi.Pointer<ffi.Void> handle,
-  NveBufferSlice props,
-);
-typedef NveDrainEmittedEventsNative = NveBufferSlice Function(ffi.Pointer<ffi.Void> handle);
-
-// Planned ABI v2 vtable extensions (negotiated when `abiVersion >= 2`):
-//   NveIntrinsicSize (*measure)(NveAppHandle handle, NveSizeConstraints constraints);
-//   uint8_t (*hit_test)(NveAppHandle handle, float x, float y, uint8_t pointer_phase);
-typedef NveMeasureNative = NveIntrinsicSize Function(
-  ffi.Pointer<ffi.Void> handle,
-  NveSizeConstraints constraints,
-);
-typedef NveHitTestNative = ffi.Uint8 Function(
-  ffi.Pointer<ffi.Void> handle,
-  ffi.Float x,
-  ffi.Float y,
-  ffi.Uint8 pointerPhase,
-);
-
-/// Single exported entry point (`nve_get_interface`).
-typedef NveGetInterfaceNative = ffi.Pointer<ffi.Void> Function(ffi.Uint32 interfaceId);
-
-/// Required core surface interface (`NVE_IFACE_SURFACE = 1`).
-final class NveSurfaceApi extends ffi.Struct {
-  external ffi.Pointer<ffi.NativeFunction<NveCreateNative>> create;
-  external ffi.Pointer<ffi.NativeFunction<NveDestroyNative>> destroy;
-  external ffi.Pointer<ffi.NativeFunction<NveRenderNative>> render;
-  external ffi.Pointer<ffi.NativeFunction<NveDispatchEventsNative>> dispatchEvents;
-  external ffi.Pointer<ffi.Void> dispatchEventsDirect;
-}
-
-/// Optional layout & gesture interface (`NVE_IFACE_LAYOUT = 2`).
-final class NveLayoutApi extends ffi.Struct {
-  external ffi.Pointer<ffi.NativeFunction<NveMeasureNative>> measure;
-  external ffi.Pointer<ffi.NativeFunction<NveHitTestNative>> hitTest;
-}
-
-/// Optional component props & outbound event interface (`NVE_IFACE_COMPONENT = 3`).
-final class NveComponentApi extends ffi.Struct {
-  external ffi.Pointer<ffi.NativeFunction<NveSetPropsNative>> setProps;
-  external ffi.Pointer<ffi.NativeFunction<NveDrainEmittedEventsNative>> drainEmittedEvents;
-  external ffi.Pointer<ffi.Void> setPropsDirect;
-}
-
-/// Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds).
-final class NveDevApi extends ffi.Struct {
-  external ffi.Pointer<ffi.NativeFunction<NveApplyHotPatchNative>> applyHotPatch;
-  external ffi.Pointer<ffi.NativeFunction<NveSnapshotStateNative>> snapshotState;
-  external ffi.Pointer<ffi.NativeFunction<NveRestoreStateNative>> restoreState;
-}
+// Core ABI structs, interface IDs, enums, and native typedefs are generated
+// by `nve-codegen` in `lib/src/nve_core_abi_gen.dart` and re-exported above.
 
 /// Self-contained C heap allocator so `nve_flutter` requires zero external pub packages.
 class _NativeMem {
@@ -220,52 +80,6 @@ class _NativeMem {
 // ============================================================================
 // 2. EventRing Binary Codec & Event Types (mirrors `crates/nve-abi/src/events.rs`)
 // ============================================================================
-
-/// Gesture disposition returned by planned ABI v2 `hit_test` and `GestureArbitrator`.
-enum NveGestureDisposition {
-  claim(1),
-  passThrough(2),
-  deferToParent(3);
-
-  const NveGestureDisposition(this.code);
-  final int code;
-
-  static NveGestureDisposition fromCode(int code) {
-    return switch (code) {
-      1 => NveGestureDisposition.claim,
-      3 => NveGestureDisposition.deferToParent,
-      _ => NveGestureDisposition.passThrough,
-    };
-  }
-}
-
-/// Native event discriminator matching `NativeEventKind` in `crates/nve-abi/src/events.rs`.
-enum NveEventKind {
-  press(1),
-  longPress(2),
-  scroll(3),
-  textChange(4),
-  focus(5),
-  blur(6),
-  layout(7),
-  custom(8);
-
-  const NveEventKind(this.code);
-  final int code;
-
-  static NveEventKind fromCode(int code) {
-    return switch (code) {
-      1 => NveEventKind.press,
-      2 => NveEventKind.longPress,
-      3 => NveEventKind.scroll,
-      4 => NveEventKind.textChange,
-      5 => NveEventKind.focus,
-      6 => NveEventKind.blur,
-      7 => NveEventKind.layout,
-      _ => NveEventKind.custom,
-    };
-  }
-}
 
 /// Decoded outbound or inbound NVE event.
 class NveEvent {

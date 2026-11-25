@@ -270,6 +270,7 @@ fn programmatic_rust_dsl_spec_matches_parsed_spec() {
                 },
             ],
             doc: None,
+            ..Default::default()
         }],
         structs: vec![HybridStructSpec {
             name: "Vec2".to_string(),
@@ -278,14 +279,19 @@ fn programmatic_rust_dsl_spec_matches_parsed_spec() {
                     name: "x".to_string(),
                     ty: HybridType::F64,
                     doc: None,
+                    offset: None,
+                    offset_64: None,
                 },
                 HybridFieldSpec {
                     name: "y".to_string(),
                     ty: HybridType::F64,
                     doc: None,
+                    offset: None,
+                    offset_64: None,
                 },
             ],
             doc: None,
+            ..Default::default()
         }],
         modules: vec![HybridModuleSpec {
             name: "Math".to_string(),
@@ -304,8 +310,11 @@ fn programmatic_rust_dsl_spec_matches_parsed_spec() {
                 ],
                 return_type: HybridType::Struct("Vec2".to_string()),
                 doc: None,
+                has_self: true,
+                optional: false,
             }],
             doc: None,
+            ..Default::default()
         }],
         views: vec![HybridViewSpec {
             name: "PlotView".to_string(),
@@ -326,7 +335,9 @@ fn programmatic_rust_dsl_spec_matches_parsed_spec() {
             }],
             methods: vec![],
             doc: None,
+            ..Default::default()
         }],
+        ..Default::default()
     };
 
     dsl.validate().expect("programmatic spec should validate");
@@ -450,6 +461,7 @@ fn rejects_negative_and_malformed_specs() {
             doc: None,
         }],
         doc: None,
+        ..Default::default()
     });
     assert!(matches!(
         bad_ident.validate(),
@@ -1205,4 +1217,110 @@ int main() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_interface_id_and_fixed_layout_static_asserts_work_in_hybrid_pipeline() {
+    let spec_src = r#"
+#[repr(C, align(16))]
+#[nve_hybrid_struct(size = 16)]
+pub struct AlignedRect {
+    #[offset(0)]
+    pub x: f32,
+    #[offset(4)]
+    pub y: f32,
+    #[offset(8)]
+    pub w: f32,
+    #[offset(12)]
+    pub h: f32,
+}
+
+#[nve_hybrid_module(name = "FixedSurface", interface_id = 1)]
+pub trait FixedSurfaceSpec {
+    fn bounds(&self) -> AlignedRect;
+}
+
+#[nve_hybrid_module(name = "UserAnalytics")]
+pub trait UserAnalyticsSpec {
+    fn track(&self, code: u32) -> bool;
+}
+"#;
+
+    let spec = parse_hybrid_rust_spec(spec_src).expect("parse fixed interface_id + layout spec");
+    assert_eq!(spec.modules[0].interface_id(), 1);
+    assert!(spec.modules[1].interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
+    assert_eq!(spec.structs[0].align, Some(16));
+    assert_eq!(spec.structs[0].expected_size, Some(16));
+    assert_eq!(spec.structs[0].fields[3].offset, Some(12));
+
+    let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
+    let abi_h = &cpp_out.files[0].content;
+    assert!(abi_h.contains("#define NVE_HYBRID_FIXED_SURFACE_INTERFACE_ID UINT32_C(0x00000001)"));
+    assert!(abi_h.contains("NVE_STATIC_ASSERT(sizeof(NveHybridAlignedRect) == 16u"));
+    assert!(abi_h.contains("NVE_STATIC_ASSERT(offsetof(NveHybridAlignedRect, h) == 12u"));
+
+    // Explicit interface_id = 0 must be rejected.
+    let zero_id = parse_hybrid_rust_spec(
+        r#"
+#[nve_hybrid_module(name = "InvalidZero", interface_id = 0)]
+pub trait InvalidZeroSpec {
+    fn ping(&self) -> u32;
+}
+"#,
+    );
+    assert!(matches!(zero_id, Err(CodegenError::Validation(_))));
+
+    // Duplicate explicit interface_id must be rejected.
+    let dup_id = parse_hybrid_rust_spec(
+        r#"
+#[nve_hybrid_module(name = "ModA", interface_id = 7)]
+pub trait ModASpec {
+    fn a(&self) -> u32;
+}
+#[nve_hybrid_module(name = "ModB", interface_id = 7)]
+pub trait ModBSpec {
+    fn b(&self) -> u32;
+}
+"#,
+    );
+    assert!(matches!(dup_id, Err(CodegenError::Validation(_))));
+}
+
+#[test]
+fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
+    let root = workspace_root();
+    let core_path = root.join("crates/nve-codegen/specs/nve_core_abi.nve.rs");
+    let scene_path = root.join("crates/nve-codegen/specs/nve_scene_abi.nve.rs");
+
+    let core = nve_codegen::parse_hybrid_rust_spec_file(&core_path).expect("parse nve_core_abi.nve.rs");
+    let scene = nve_codegen::parse_hybrid_rust_spec_file(&scene_path).expect("parse nve_scene_abi.nve.rs");
+
+    // Verify core modular interfaces keep exact fixed IDs 1..=4
+    assert_eq!(core.modules.len(), 4);
+    assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE);
+    assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT);
+    assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT);
+    assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV);
+
+    // Verify scene node layout descriptors
+    let render_node = scene.find_struct("NveRenderNode").expect("NveRenderNode");
+    assert_eq!(render_node.align, Some(nve_abi::NVE_RENDER_NODE_ALIGN));
+    assert_eq!(render_node.expected_size, Some(nve_abi::NVE_RENDER_NODE_SIZE));
+    assert_eq!(render_node.fields.len(), 20);
+
+    // Cross-check both deterministic schema hashes against `crates/nve-abi`
+    assert_eq!(core.file_schema_hash(), nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
+    assert_eq!(
+        nve_codegen::compute_scene_schema_hash(&scene),
+        nve_abi::NVE_SCENE_SCHEMA_HASH
+    );
+
+    // Verify all 10 checked-in ABI files match byte-for-byte
+    let all = nve_codegen::generate_all_abi_files();
+    assert_eq!(all.len(), 10);
+    for file in &all {
+        let on_disk = std::fs::read_to_string(root.join(&file.relative_path))
+            .unwrap_or_else(|e| panic!("missing {}: {e}", file.relative_path));
+        assert_eq!(on_disk, file.content, "drift in {}", file.relative_path);
+    }
 }

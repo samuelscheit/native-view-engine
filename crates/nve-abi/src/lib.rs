@@ -19,7 +19,8 @@ pub use events::{
 pub use ffi::{
     NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
     NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
-    NveSurfaceConfig, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 pub use scene::{
     component_kind_to_scene_u8, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView,

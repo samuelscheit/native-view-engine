@@ -541,6 +541,9 @@ fn emit_kotlin_client(
             let pname = kotlin_ident(&p.name);
             match &p.ty {
                 HybridType::Bool
+                | HybridType::U8
+                | HybridType::U16
+                | HybridType::Usize
                 | HybridType::I32
                 | HybridType::U32
                 | HybridType::I64
@@ -576,6 +579,9 @@ fn emit_kotlin_client(
         match effective_ret {
             HybridType::Void => writeln!(out, "        {call}").unwrap(),
             HybridType::Bool
+            | HybridType::U8
+            | HybridType::U16
+            | HybridType::Usize
             | HybridType::I32
             | HybridType::U32
             | HybridType::I64
@@ -767,6 +773,9 @@ fn emit_jni_cpp_target(
             let pname = cpp_ident(&p.name);
             match &p.ty {
                 HybridType::Bool => call_args.push(format!("{pname} != JNI_FALSE")),
+                HybridType::U8 => call_args.push(format!("static_cast<uint8_t>({pname})")),
+                HybridType::U16 => call_args.push(format!("static_cast<uint16_t>({pname})")),
+                HybridType::Usize => call_args.push(format!("static_cast<size_t>({pname})")),
                 HybridType::I32 => call_args.push(format!("static_cast<int32_t>({pname})")),
                 HybridType::U32 => call_args.push(format!("static_cast<uint32_t>({pname})")),
                 HybridType::I64 => call_args.push(format!("static_cast<int64_t>({pname})")),
@@ -809,8 +818,12 @@ fn emit_jni_cpp_target(
         match effective_ret {
             HybridType::Void => writeln!(out, "    {call_expr};").unwrap(),
             HybridType::Bool => writeln!(out, "    return {call_expr} ? JNI_TRUE : JNI_FALSE;").unwrap(),
-            HybridType::I32 | HybridType::U32 => writeln!(out, "    return static_cast<jint>({call_expr});").unwrap(),
-            HybridType::I64 | HybridType::U64 => writeln!(out, "    return static_cast<jlong>({call_expr});").unwrap(),
+            HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
+                writeln!(out, "    return static_cast<jint>({call_expr});").unwrap()
+            }
+            HybridType::Usize | HybridType::I64 | HybridType::U64 => {
+                writeln!(out, "    return static_cast<jlong>({call_expr});").unwrap()
+            }
             HybridType::F32 => writeln!(out, "    return static_cast<jfloat>({call_expr});").unwrap(),
             HybridType::F64 => writeln!(out, "    return static_cast<jdouble>({call_expr});").unwrap(),
             HybridType::Enum(_) => writeln!(out, "    return static_cast<jint>(static_cast<uint32_t>({call_expr}));").unwrap(),
@@ -868,8 +881,13 @@ fn kotlin_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "Unit".to_string(),
         HybridType::Bool => "Boolean".to_string(),
-        HybridType::I32 | HybridType::U32 => "Int".to_string(),
-        HybridType::I64 | HybridType::U64 => "Long".to_string(),
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => "Int".to_string(),
+        HybridType::Usize
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => "Long".to_string(),
         HybridType::F32 => "Float".to_string(),
         HybridType::F64 => "Double".to_string(),
         HybridType::String => "String".to_string(),
@@ -885,8 +903,8 @@ fn kotlin_type(ty: &HybridType) -> String {
 fn kotlin_jni_param_type(ty: &HybridType) -> &'static str {
     match ty {
         HybridType::Bool => "Boolean",
-        HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "Int",
-        HybridType::I64 | HybridType::U64 => "Long",
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "Int",
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => "Long",
         HybridType::F32 => "Float",
         HybridType::F64 => "Double",
         HybridType::String => "String",
@@ -902,8 +920,8 @@ fn kotlin_jni_return_type(ty: &HybridType) -> &'static str {
     match eff {
         HybridType::Void => "Unit",
         HybridType::Bool => "Boolean",
-        HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "Int",
-        HybridType::I64 | HybridType::U64 => "Long",
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "Int",
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => "Long",
         HybridType::F32 => "Float",
         HybridType::F64 => "Double",
         HybridType::String => "String",
@@ -914,8 +932,8 @@ fn kotlin_jni_return_type(ty: &HybridType) -> &'static str {
 fn jni_cpp_param_type(ty: &HybridType) -> &'static str {
     match ty {
         HybridType::Bool => "jboolean",
-        HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "jint",
-        HybridType::I64 | HybridType::U64 => "jlong",
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "jint",
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => "jlong",
         HybridType::F32 => "jfloat",
         HybridType::F64 => "jdouble",
         HybridType::String => "jstring",
@@ -931,8 +949,8 @@ fn jni_cpp_return_type(ty: &HybridType) -> &'static str {
     match eff {
         HybridType::Void => "void",
         HybridType::Bool => "jboolean",
-        HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "jint",
-        HybridType::I64 | HybridType::U64 => "jlong",
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "jint",
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => "jlong",
         HybridType::F32 => "jfloat",
         HybridType::F64 => "jdouble",
         HybridType::String => "jstring",
@@ -948,7 +966,14 @@ fn jni_cpp_zero_return(ty: &HybridType) -> &'static str {
     match eff {
         HybridType::Void => "",
         HybridType::Bool => " JNI_FALSE",
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 | HybridType::Enum(_) => " 0",
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::Enum(_) => " 0",
         HybridType::F32 | HybridType::F64 => " 0.0",
         _ => " nullptr",
     }
@@ -957,6 +982,9 @@ fn jni_cpp_zero_return(ty: &HybridType) -> &'static str {
 fn jni_cpp_owned_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Bool => "bool".to_string(),
+        HybridType::U8 => "uint8_t".to_string(),
+        HybridType::U16 => "uint16_t".to_string(),
+        HybridType::Usize => "size_t".to_string(),
         HybridType::I32 => "int32_t".to_string(),
         HybridType::U32 => "uint32_t".to_string(),
         HybridType::I64 => "int64_t".to_string(),
@@ -969,7 +997,11 @@ fn jni_cpp_owned_type(ty: &HybridType) -> String {
         HybridType::Vec(inner) => format!("std::vector<{}>", jni_cpp_owned_type(inner)),
         HybridType::Struct(s) | HybridType::Enum(s) => format!("nve::hybrid::{s}"),
         HybridType::Value => "nve::hybrid::DynamicValue".to_string(),
-        HybridType::Void | HybridType::Result { .. } => "void".to_string(),
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => "void".to_string(),
     }
 }
 
@@ -983,7 +1015,13 @@ fn emit_jni_cpp_bin_write(
 ) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});").unwrap(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => {
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => {
             writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>({expr}));").unwrap();
         }
         HybridType::F32 | HybridType::F64 => {
@@ -1008,13 +1046,20 @@ fn emit_jni_cpp_bin_write(
             writeln!(out, "{indent}  }}").unwrap();
             writeln!(out, "{indent}}});").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }
 
 fn emit_jni_cpp_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.read_bool();").unwrap(),
+        HybridType::U8 => writeln!(out, "{indent}{dst} = static_cast<uint8_t>({r}.read_i64());").unwrap(),
+        HybridType::U16 => writeln!(out, "{indent}{dst} = static_cast<uint16_t>({r}.read_i64());").unwrap(),
+        HybridType::Usize => writeln!(out, "{indent}{dst} = static_cast<size_t>({r}.read_i64());").unwrap(),
         HybridType::I32 => writeln!(out, "{indent}{dst} = static_cast<int32_t>({r}.read_i64());").unwrap(),
         HybridType::U32 => writeln!(out, "{indent}{dst} = static_cast<uint32_t>({r}.read_i64());").unwrap(),
         HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.read_i64();").unwrap(),
@@ -1042,7 +1087,11 @@ fn emit_jni_cpp_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty:
             writeln!(out, "{indent}  {dst}.push_back(std::move(_el));").unwrap();
             writeln!(out, "{indent}}} }}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }
 
@@ -1082,8 +1131,13 @@ fn kotlin_default_value(
 
     match ty {
         HybridType::Bool => "false".to_string(),
-        HybridType::I32 | HybridType::U32 => "0".to_string(),
-        HybridType::I64 | HybridType::U64 => "0L".to_string(),
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => "0".to_string(),
+        HybridType::Usize
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => "0L".to_string(),
         HybridType::F32 => "0.0f".to_string(),
         HybridType::F64 => "0.0".to_string(),
         HybridType::String => "\"\"".to_string(),
@@ -1106,8 +1160,12 @@ fn kotlin_default_value(
 fn emit_kotlin_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr})").unwrap(),
-        HybridType::I32 | HybridType::U32 => writeln!(out, "{indent}{w}.writeLong({expr}.toLong())").unwrap(),
-        HybridType::I64 | HybridType::U64 => writeln!(out, "{indent}{w}.writeLong({expr})").unwrap(),
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
+            writeln!(out, "{indent}{w}.writeLong({expr}.toLong())").unwrap()
+        }
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => {
+            writeln!(out, "{indent}{w}.writeLong({expr})").unwrap()
+        }
         HybridType::F32 => writeln!(out, "{indent}{w}.writeDouble({expr}.toDouble())").unwrap(),
         HybridType::F64 => writeln!(out, "{indent}{w}.writeDouble({expr})").unwrap(),
         HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeLong({expr}.rawValue.toLong())").unwrap(),
@@ -1127,15 +1185,23 @@ fn emit_kotlin_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty
             writeln!(out, "{indent}    }}").unwrap();
             writeln!(out, "{indent}}}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }
 
 fn emit_kotlin_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool()").unwrap(),
-        HybridType::I32 | HybridType::U32 => writeln!(out, "{indent}{dst} = {r}.readLong().toInt()").unwrap(),
-        HybridType::I64 | HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readLong()").unwrap(),
+        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
+            writeln!(out, "{indent}{dst} = {r}.readLong().toInt()").unwrap()
+        }
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => {
+            writeln!(out, "{indent}{dst} = {r}.readLong()").unwrap()
+        }
         HybridType::F32 => writeln!(out, "{indent}{dst} = {r}.readDouble().toFloat()").unwrap(),
         HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.readDouble()").unwrap(),
         HybridType::Enum(e) => writeln!(out, "{indent}{dst} = {e}.fromRaw({r}.readLong().toInt())").unwrap(),
@@ -1162,6 +1228,10 @@ fn emit_kotlin_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: 
             writeln!(out, "{indent}    {dst} = _list").unwrap();
             writeln!(out, "{indent}}}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }

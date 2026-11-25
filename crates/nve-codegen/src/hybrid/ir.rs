@@ -101,6 +101,9 @@ impl HybridTarget {
 pub enum HybridType {
     Void,
     Bool,
+    U8,
+    U16,
+    Usize,
     I32,
     U32,
     I64,
@@ -118,6 +121,9 @@ pub enum HybridType {
     Struct(String),
     Enum(String),
     Value,
+    ConstPtr(Box<HybridType>),
+    MutPtr(Box<HybridType>),
+    Handle(String),
 }
 
 impl HybridType {
@@ -126,6 +132,9 @@ impl HybridType {
         match self {
             Self::Void => "void".to_string(),
             Self::Bool => "bool".to_string(),
+            Self::U8 => "u8".to_string(),
+            Self::U16 => "u16".to_string(),
+            Self::Usize => "usize".to_string(),
             Self::I32 => "i32".to_string(),
             Self::U32 => "u32".to_string(),
             Self::I64 => "i64".to_string(),
@@ -146,6 +155,9 @@ impl HybridType {
             Self::Struct(name) => format!("struct:{name}"),
             Self::Enum(name) => format!("enum:{name}"),
             Self::Value => "nve_value".to_string(),
+            Self::ConstPtr(inner) => format!("*const {}", inner.canonical_signature()),
+            Self::MutPtr(inner) => format!("*mut {}", inner.canonical_signature()),
+            Self::Handle(name) => format!("handle:{name}"),
         }
     }
 
@@ -154,6 +166,9 @@ impl HybridType {
     pub fn is_pod(&self, file: &HybridFileSpec) -> bool {
         match self {
             Self::Bool
+            | Self::U8
+            | Self::U16
+            | Self::Usize
             | Self::I32
             | Self::U32
             | Self::I64
@@ -170,7 +185,10 @@ impl HybridType {
             | Self::Optional(_)
             | Self::Vec(_)
             | Self::Result { .. }
-            | Self::Value => false,
+            | Self::Value
+            | Self::ConstPtr(_)
+            | Self::MutPtr(_)
+            | Self::Handle(_) => false,
         }
     }
 
@@ -188,7 +206,10 @@ impl HybridType {
             Self::Enum(name) => {
                 enums.insert(name.clone());
             }
-            Self::Optional(inner) | Self::Vec(inner) => inner.collect_refs(structs, enums),
+            Self::Optional(inner)
+            | Self::Vec(inner)
+            | Self::ConstPtr(inner)
+            | Self::MutPtr(inner) => inner.collect_refs(structs, enums),
             Self::Result { ok, err } => {
                 ok.collect_refs(structs, enums);
                 err.collect_refs(structs, enums);
@@ -202,6 +223,9 @@ impl HybridType {
     pub fn pod_opt_suffix(&self) -> Option<String> {
         match self {
             Self::Bool => Some("Bool".to_string()),
+            Self::U8 => Some("U8".to_string()),
+            Self::U16 => Some("U16".to_string()),
+            Self::Usize => Some("Usize".to_string()),
             Self::I32 => Some("I32".to_string()),
             Self::U32 => Some("U32".to_string()),
             Self::I64 => Some("I64".to_string()),
@@ -241,6 +265,31 @@ impl HybridDefaultValue {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Named constant declared with `#[nve_hybrid_const] pub const ...`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HybridConstSpec {
+    pub name: String,
+    pub ty: HybridType,
+    pub value: u64,
+    #[serde(default)]
+    pub hex: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+}
+
+/// Opaque handle or typedef alias declared with `#[nve_hybrid_alias] pub type ... = ...;`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HybridAliasSpec {
+    pub name: String,
+    pub target: HybridType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+}
+
 /// One variant of a `#[repr(u32)] #[nve_hybrid_enum]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HybridEnumVariant {
@@ -250,47 +299,80 @@ pub struct HybridEnumVariant {
     pub doc: Option<String>,
 }
 
-/// C-ABI `#[repr(u32)]` enum declared with `#[nve_hybrid_enum]`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// C-ABI enum declared with `#[nve_hybrid_enum]`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HybridEnumSpec {
     pub name: String,
     pub variants: Vec<HybridEnumVariant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// Optional explicit C enumerator prefix (e.g. `"NVE_OP_"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c_prefix: Option<String>,
+    /// Optional explicit Rust `#[repr(...)]` width (e.g. `"u8"`, `"u16"`, `"u32"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repr: Option<String>,
+    /// Optional fallback variant name for non-nullable Dart `fromCode(int)` decoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dart_fallback: Option<String>,
 }
 
-/// Named field of a `#[nve_hybrid_struct]`.
+/// Named field of a `#[nve_hybrid_struct]` or `#[nve_hybrid_union]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HybridFieldSpec {
     pub name: String,
     pub ty: HybridType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// Optional fixed byte offset across all targets (`#[offset(N)]` -> `NVE_STATIC_ASSERT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    /// Optional fixed byte offset on 64-bit targets (`#[offset64(N)]` -> `sizeof(void*) != 8 || offsetof(...) == N`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_64: Option<usize>,
 }
 
-/// Structured record declared with `#[nve_hybrid_struct]`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Structured record declared with `#[nve_hybrid_struct]` or `#[nve_hybrid_union]`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HybridStructSpec {
     pub name: String,
     pub fields: Vec<HybridFieldSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// True when declared as `#[nve_hybrid_union] pub union ...`.
+    #[serde(default)]
+    pub is_union: bool,
+    /// Optional explicit `#[repr(C, align(N))]` alignment descriptor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<usize>,
+    /// Optional exact target-independent byte size (`#[nve_hybrid_struct(size = N)]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_size: Option<usize>,
+    /// Optional exact 64-bit byte size (`#[nve_hybrid_struct(size_64 = N)]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_size_64: Option<usize>,
 }
 
 impl HybridStructSpec {
     /// Returns true if all fields (transitively) are fixed-size C-ABI scalars/enums/POD structs.
     pub fn is_pod(&self, file: &HybridFileSpec) -> bool {
+        if self.is_union {
+            return false;
+        }
         let mut visited = BTreeSet::new();
         self.is_pod_inner(file, &mut visited)
     }
 
     fn is_pod_inner(&self, file: &HybridFileSpec, visited: &mut BTreeSet<String>) -> bool {
-        if !visited.insert(self.name.clone()) {
+        if self.is_union || !visited.insert(self.name.clone()) {
             return false;
         }
         let ok = !self.fields.is_empty()
             && self.fields.iter().all(|f| match &f.ty {
                 HybridType::Bool
+                | HybridType::U8
+                | HybridType::U16
+                | HybridType::Usize
                 | HybridType::I32
                 | HybridType::U32
                 | HybridType::I64
@@ -315,7 +397,7 @@ pub struct HybridParamSpec {
     pub ty: HybridType,
 }
 
-/// Method declared on a `HybridModuleSpec` or imperative `#[method]` on a `HybridViewSpec`.
+/// Method declared on a `HybridModuleSpec`, imperative `#[method]` on a `HybridViewSpec`, or C API function.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HybridMethodSpec {
     pub name: String,
@@ -324,6 +406,12 @@ pub struct HybridMethodSpec {
     pub return_type: HybridType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// Whether the trait method takes a `self` receiver (`true` for instance methods, `false` for static/create fns).
+    #[serde(default = "default_true")]
+    pub has_self: bool,
+    /// Whether this vtable slot may be NULL (`#[optional]`).
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// Typed prop declared with `#[prop]` on a `HybridViewSpec`.
@@ -348,7 +436,7 @@ pub struct HybridEventSpec {
 }
 
 /// Nitro-style stateful native module declared with `#[nve_hybrid_module(name = "...")]`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HybridModuleSpec {
     pub name: String,
     pub trait_name: String,
@@ -356,12 +444,22 @@ pub struct HybridModuleSpec {
     pub methods: Vec<HybridMethodSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// Optional explicit fixed interface ID override (e.g. `interface_id = 1` for core engine
+    /// interfaces `NVE_IFACE_SURFACE..NVE_IFACE_DEV`). When `None`, defaults to deterministic
+    /// FNV-1a ID `>= 0x1000_0000`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_interface_id: Option<u32>,
+    /// Optional explicit C vtable struct name (e.g. `"NveSurfaceApi"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c_name: Option<String>,
 }
 
 impl HybridModuleSpec {
-    /// Deterministic interface ID in the reserved hybrid range (`>= 0x1000_0000`).
+    /// Interface ID: returns `explicit_interface_id` when set, otherwise a deterministic ID
+    /// in the reserved hybrid range (`>= 0x1000_0000`).
     pub fn interface_id(&self) -> u32 {
-        compute_hybrid_interface_id("module", &self.name)
+        self.explicit_interface_id
+            .unwrap_or_else(|| compute_hybrid_interface_id("module", &self.name))
     }
 
     /// Deterministic 64-bit FNV-1a schema hash covering this module's methods and all
@@ -370,6 +468,10 @@ impl HybridModuleSpec {
         let mut h = FNV1A_64_OFFSET_BASIS;
         h = hash_str(h, "nve.hybrid.module.v1");
         h = hash_str(h, &self.name);
+        if let Some(id) = self.explicit_interface_id {
+            h = hash_str(h, "iface_id");
+            h = fnv1a_64_update(h, &id.to_le_bytes());
+        }
         let mut ref_structs = BTreeSet::new();
         let mut ref_enums = BTreeSet::new();
         for m in &self.methods {
@@ -380,7 +482,7 @@ impl HybridModuleSpec {
 }
 
 /// Nitro-style native view component declared with `#[nve_hybrid_view(name = "...")]`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct HybridViewSpec {
     pub name: String,
     pub trait_name: String,
@@ -392,12 +494,18 @@ pub struct HybridViewSpec {
     pub methods: Vec<HybridMethodSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// Optional explicit fixed interface ID override. Defaults to deterministic FNV-1a ID
+    /// `>= 0x1000_0000` when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_interface_id: Option<u32>,
 }
 
 impl HybridViewSpec {
-    /// Deterministic interface ID in the reserved hybrid range (`>= 0x1000_0000`).
+    /// Interface ID: returns `explicit_interface_id` when set, otherwise a deterministic ID
+    /// in the reserved hybrid range (`>= 0x1000_0000`).
     pub fn interface_id(&self) -> u32 {
-        compute_hybrid_interface_id("view", &self.name)
+        self.explicit_interface_id
+            .unwrap_or_else(|| compute_hybrid_interface_id("view", &self.name))
     }
 
     /// Deterministic 64-bit FNV-1a schema hash covering this view's props, events, methods,
@@ -406,6 +514,10 @@ impl HybridViewSpec {
         let mut h = FNV1A_64_OFFSET_BASIS;
         h = hash_str(h, "nve.hybrid.view.v1");
         h = hash_str(h, &self.name);
+        if let Some(id) = self.explicit_interface_id {
+            h = hash_str(h, "iface_id");
+            h = fnv1a_64_update(h, &id.to_le_bytes());
+        }
         let mut ref_structs = BTreeSet::new();
         let mut ref_enums = BTreeSet::new();
         for p in &self.props {
@@ -439,6 +551,10 @@ pub struct HybridFileSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     #[serde(default)]
+    pub consts: Vec<HybridConstSpec>,
+    #[serde(default)]
+    pub aliases: Vec<HybridAliasSpec>,
+    #[serde(default)]
     pub enums: Vec<HybridEnumSpec>,
     #[serde(default)]
     pub structs: Vec<HybridStructSpec>,
@@ -446,6 +562,8 @@ pub struct HybridFileSpec {
     pub modules: Vec<HybridModuleSpec>,
     #[serde(default)]
     pub views: Vec<HybridViewSpec>,
+    #[serde(default)]
+    pub c_functions: Vec<HybridMethodSpec>,
 }
 
 impl HybridFileSpec {
@@ -488,6 +606,17 @@ impl HybridFileSpec {
     pub fn file_schema_hash(&self) -> u64 {
         let mut h = FNV1A_64_OFFSET_BASIS;
         h = hash_str(h, "nve.hybrid.file.v1");
+        for c in &self.consts {
+            h = hash_str(h, "const");
+            h = hash_str(h, &c.name);
+            h = hash_str(h, &c.ty.canonical_signature());
+            h = fnv1a_64_update(h, &c.value.to_le_bytes());
+        }
+        for a in &self.aliases {
+            h = hash_str(h, "alias");
+            h = hash_str(h, &a.name);
+            h = hash_str(h, &a.target.canonical_signature());
+        }
         for e in &self.enums {
             h = hash_enum(h, e);
         }
@@ -499,6 +628,11 @@ impl HybridFileSpec {
         }
         for v in &self.views {
             h = fnv1a_64_update(h, &v.schema_hash(self).to_le_bytes());
+        }
+        for f in &self.c_functions {
+            let mut rs = BTreeSet::new();
+            let mut re = BTreeSet::new();
+            h = hash_method(h, f, &mut rs, &mut re);
         }
         h
     }
@@ -561,10 +695,13 @@ impl HybridFileSpec {
 
     /// Strict semantic validation of the entire Hybrid FFI specification.
     pub fn validate(&self) -> Result<(), CodegenError> {
-        if self.enums.is_empty()
+        if self.consts.is_empty()
+            && self.aliases.is_empty()
+            && self.enums.is_empty()
             && self.structs.is_empty()
             && self.modules.is_empty()
             && self.views.is_empty()
+            && self.c_functions.is_empty()
         {
             return Err(CodegenError::validation(
                 "hybrid spec must declare at least one enum, struct, module, or view",
@@ -576,8 +713,31 @@ impl HybridFileSpec {
         }
 
         let mut type_names = BTreeSet::new();
+        let mut const_names = BTreeSet::new();
+        let mut alias_names = BTreeSet::new();
         let mut enum_map: BTreeMap<&str, &HybridEnumSpec> = BTreeMap::new();
         let mut struct_map: BTreeMap<&str, &HybridStructSpec> = BTreeMap::new();
+
+        for c in &self.consts {
+            validate_ident("const", &c.name)?;
+            if !const_names.insert(c.name.as_str()) {
+                return Err(CodegenError::validation(format!(
+                    "duplicate const name '{}'",
+                    c.name
+                )));
+            }
+        }
+
+        for a in &self.aliases {
+            validate_ident("type alias", &a.name)?;
+            if !type_names.insert(a.name.as_str()) {
+                return Err(CodegenError::validation(format!(
+                    "duplicate type name '{}'",
+                    a.name
+                )));
+            }
+            alias_names.insert(a.name.as_str());
+        }
 
         for e in &self.enums {
             validate_ident("enum", &e.name)?;
@@ -621,6 +781,14 @@ impl HybridFileSpec {
                     s.name
                 )));
             }
+            if let Some(align) = s.align {
+                if align == 0 || !align.is_power_of_two() {
+                    return Err(CodegenError::validation(format!(
+                        "struct '{}' align {} must be a power of two",
+                        s.name, align
+                    )));
+                }
+            }
             if s.fields.is_empty() {
                 return Err(CodegenError::validation(format!(
                     "struct '{}' must declare at least one field",
@@ -640,6 +808,17 @@ impl HybridFileSpec {
             struct_map.insert(s.name.as_str(), s);
         }
 
+        for a in &self.aliases {
+            validate_type(
+                &a.target,
+                true,
+                &enum_map,
+                &struct_map,
+                &alias_names,
+                &format!("type alias '{}'", a.name),
+            )?;
+        }
+
         // Validate all struct field types and check for infinite-size recursive cycles.
         for s in &self.structs {
             for f in &s.fields {
@@ -648,6 +827,7 @@ impl HybridFileSpec {
                     false,
                     &enum_map,
                     &struct_map,
+                    &alias_names,
                     &format!("struct '{}' field '{}'", s.name, f.name),
                 )?;
             }
@@ -673,14 +853,29 @@ impl HybridFileSpec {
                 )));
             }
             let iface_id = m.interface_id();
-            assert!(iface_id >= NVE_HYBRID_INTERFACE_ID_BASE);
+            if let Some(explicit) = m.explicit_interface_id {
+                if explicit == 0 {
+                    return Err(CodegenError::validation(format!(
+                        "module '{}' explicit interface_id cannot be 0",
+                        m.name
+                    )));
+                }
+            } else {
+                assert!(iface_id >= NVE_HYBRID_INTERFACE_ID_BASE);
+            }
             if let Some(prev) = iface_ids.insert(iface_id, format!("module '{}'", m.name)) {
                 return Err(CodegenError::validation(format!(
                     "hybrid interface_id collision 0x{iface_id:08X} between {prev} and module '{}'",
                     m.name
                 )));
             }
-            validate_methods(&m.methods, &enum_map, &struct_map, &format!("module '{}'", m.name))?;
+            validate_methods(
+                &m.methods,
+                &enum_map,
+                &struct_map,
+                &alias_names,
+                &format!("module '{}'", m.name),
+            )?;
         }
 
         for v in &self.views {
@@ -699,7 +894,16 @@ impl HybridFileSpec {
                 )));
             }
             let iface_id = v.interface_id();
-            assert!(iface_id >= NVE_HYBRID_INTERFACE_ID_BASE);
+            if let Some(explicit) = v.explicit_interface_id {
+                if explicit == 0 {
+                    return Err(CodegenError::validation(format!(
+                        "view '{}' explicit interface_id cannot be 0",
+                        v.name
+                    )));
+                }
+            } else {
+                assert!(iface_id >= NVE_HYBRID_INTERFACE_ID_BASE);
+            }
             if let Some(prev) = iface_ids.insert(iface_id, format!("view '{}'", v.name)) {
                 return Err(CodegenError::validation(format!(
                     "hybrid interface_id collision 0x{iface_id:08X} between {prev} and view '{}'",
@@ -721,6 +925,7 @@ impl HybridFileSpec {
                     false,
                     &enum_map,
                     &struct_map,
+                    &alias_names,
                     &format!("view '{}' prop '{}'", v.name, p.name),
                 )?;
                 if let Some(def) = &p.default_value {
@@ -749,6 +954,7 @@ impl HybridFileSpec {
                         false,
                         &enum_map,
                         &struct_map,
+                        &alias_names,
                         &format!("view '{}' event '{}' param '{}'", v.name, ev.name, param.name),
                     )?;
                 }
@@ -762,7 +968,23 @@ impl HybridFileSpec {
                     )));
                 }
             }
-            validate_methods(&v.methods, &enum_map, &struct_map, &format!("view '{}'", v.name))?;
+            validate_methods(
+                &v.methods,
+                &enum_map,
+                &struct_map,
+                &alias_names,
+                &format!("view '{}'", v.name),
+            )?;
+        }
+
+        if !self.c_functions.is_empty() {
+            validate_methods(
+                &self.c_functions,
+                &enum_map,
+                &struct_map,
+                &alias_names,
+                "c_functions",
+            )?;
         }
 
         Ok(())
@@ -808,6 +1030,7 @@ fn validate_methods(
     methods: &[HybridMethodSpec],
     enum_map: &BTreeMap<&str, &HybridEnumSpec>,
     struct_map: &BTreeMap<&str, &HybridStructSpec>,
+    alias_names: &BTreeSet<&str>,
     owner: &str,
 ) -> Result<(), CodegenError> {
     let mut names = BTreeSet::new();
@@ -833,6 +1056,7 @@ fn validate_methods(
                 false,
                 enum_map,
                 struct_map,
+                alias_names,
                 &format!("{owner} method '{}' param '{}'", m.name, p.name),
             )?;
             if p.ty.is_result() {
@@ -847,6 +1071,7 @@ fn validate_methods(
             true,
             enum_map,
             struct_map,
+            alias_names,
             &format!("{owner} method '{}' return type", m.name),
         )?;
     }
@@ -858,6 +1083,7 @@ fn validate_type(
     allow_void: bool,
     enum_map: &BTreeMap<&str, &HybridEnumSpec>,
     struct_map: &BTreeMap<&str, &HybridStructSpec>,
+    alias_names: &BTreeSet<&str>,
     ctx: &str,
 ) -> Result<(), CodegenError> {
     match ty {
@@ -870,6 +1096,9 @@ fn validate_type(
             Ok(())
         }
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -879,13 +1108,24 @@ fn validate_type(
         | HybridType::String
         | HybridType::Bytes
         | HybridType::Value => Ok(()),
+        HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
+            validate_type(inner, true, enum_map, struct_map, alias_names, ctx)
+        }
+        HybridType::Handle(name) => {
+            if !alias_names.contains(name.as_str()) {
+                return Err(CodegenError::validation(format!(
+                    "{ctx}: unknown handle alias '{name}'"
+                )));
+            }
+            Ok(())
+        }
         HybridType::Optional(inner) => {
             if matches!(inner.as_ref(), HybridType::Result { .. }) {
                 return Err(CodegenError::validation(format!(
                     "{ctx}: Option<Result<...>> is not supported across FFI"
                 )));
             }
-            validate_type(inner, false, enum_map, struct_map, ctx)
+            validate_type(inner, false, enum_map, struct_map, alias_names, ctx)
         }
         HybridType::Vec(inner) => {
             if matches!(inner.as_ref(), HybridType::Result { .. }) {
@@ -893,7 +1133,7 @@ fn validate_type(
                     "{ctx}: Vec<Result<...>> is not supported across FFI"
                 )));
             }
-            validate_type(inner, false, enum_map, struct_map, ctx)
+            validate_type(inner, false, enum_map, struct_map, alias_names, ctx)
         }
         HybridType::Result { ok, err } => {
             if !allow_void {
@@ -912,7 +1152,7 @@ fn validate_type(
                     err.canonical_signature()
                 )));
             }
-            validate_type(ok, true, enum_map, struct_map, ctx)
+            validate_type(ok, true, enum_map, struct_map, alias_names, ctx)
         }
         HybridType::Struct(name) => {
             if !struct_map.contains_key(name.as_str()) {
@@ -1077,11 +1317,31 @@ fn hash_enum(mut h: u64, e: &HybridEnumSpec) -> u64 {
 }
 
 fn hash_struct(mut h: u64, s: &HybridStructSpec) -> u64 {
-    h = hash_str(h, "struct");
+    h = hash_str(h, if s.is_union { "union" } else { "struct" });
     h = hash_str(h, &s.name);
+    if let Some(align) = s.align {
+        h = hash_str(h, "align");
+        h = fnv1a_64_update(h, &(align as u64).to_le_bytes());
+    }
+    if let Some(sz) = s.expected_size {
+        h = hash_str(h, "size");
+        h = fnv1a_64_update(h, &(sz as u64).to_le_bytes());
+    }
+    if let Some(sz64) = s.expected_size_64 {
+        h = hash_str(h, "size64");
+        h = fnv1a_64_update(h, &(sz64 as u64).to_le_bytes());
+    }
     for f in &s.fields {
         h = hash_str(h, &f.name);
         h = hash_str(h, &f.ty.canonical_signature());
+        if let Some(off) = f.offset {
+            h = hash_str(h, "offset");
+            h = fnv1a_64_update(h, &(off as u64).to_le_bytes());
+        }
+        if let Some(off64) = f.offset_64 {
+            h = hash_str(h, "offset64");
+            h = fnv1a_64_update(h, &(off64 as u64).to_le_bytes());
+        }
     }
     h
 }

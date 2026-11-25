@@ -941,6 +941,9 @@ fn emit_dart_client_method(
         let pname = dart_ident(&p.name);
         match &p.ty {
             HybridType::Bool
+            | HybridType::U8
+            | HybridType::U16
+            | HybridType::Usize
             | HybridType::I32
             | HybridType::U32
             | HybridType::I64
@@ -1039,6 +1042,9 @@ fn emit_dart_client_method(
 fn dart_read_ptr_expr(ptr: &str, ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1062,6 +1068,9 @@ fn emit_dart_return_decode(
     match ty {
         HybridType::Void => {}
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1116,7 +1125,13 @@ fn dart_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "void".to_string(),
         HybridType::Bool => "bool".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => "int".to_string(),
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => "int".to_string(),
         HybridType::F32 | HybridType::F64 => "double".to_string(),
         HybridType::String => "String".to_string(),
         HybridType::Bytes => "Uint8List".to_string(),
@@ -1125,6 +1140,9 @@ fn dart_type(ty: &HybridType) -> String {
         HybridType::Result { ok, .. } => dart_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
         HybridType::Value => "NveHybridDynamicValue".to_string(),
+        HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
+            "ffi.Pointer<ffi.Void>".to_string()
+        }
     }
 }
 
@@ -1138,6 +1156,9 @@ fn dart_type_non_nullable(ty: &HybridType) -> String {
 fn dart_ffi_field_annotation(ty: &HybridType) -> Option<&'static str> {
     match ty {
         HybridType::Bool => Some("@ffi.Bool()"),
+        HybridType::U8 => Some("@ffi.Uint8()"),
+        HybridType::U16 => Some("@ffi.Uint16()"),
+        HybridType::Usize => Some("@ffi.Size()"),
         HybridType::I32 => Some("@ffi.Int32()"),
         HybridType::U32 | HybridType::Enum(_) => Some("@ffi.Uint32()"),
         HybridType::I64 => Some("@ffi.Int64()"),
@@ -1151,9 +1172,14 @@ fn dart_ffi_field_annotation(ty: &HybridType) -> Option<&'static str> {
 fn dart_ffi_struct_field_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Bool => "bool".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 | HybridType::Enum(_) => {
-            "int".to_string()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::Enum(_) => "int".to_string(),
         HybridType::F32 | HybridType::F64 => "double".to_string(),
         HybridType::Struct(name) => format!("NveHybrid{name}"),
         _ => unreachable!("non-POD field in dart_ffi_struct_field_type"),
@@ -1164,6 +1190,9 @@ fn dart_native_value_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Void => "ffi.Void".to_string(),
         HybridType::Bool => "ffi.Bool".to_string(),
+        HybridType::U8 => "ffi.Uint8".to_string(),
+        HybridType::U16 => "ffi.Uint16".to_string(),
+        HybridType::Usize => "ffi.Size".to_string(),
         HybridType::I32 => "ffi.Int32".to_string(),
         HybridType::U32 | HybridType::Enum(_) => "ffi.Uint32".to_string(),
         HybridType::I64 => "ffi.Int64".to_string(),
@@ -1184,6 +1213,9 @@ fn dart_native_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         HybridType::Bytes => "NveBufferSlice".to_string(),
         HybridType::Value => "NveValue".to_string(),
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1200,9 +1232,14 @@ fn dart_native_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
 fn dart_ffi_call_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool => "bool".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 | HybridType::Enum(_) => {
-            "int".to_string()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::Enum(_) => "int".to_string(),
         HybridType::F32 | HybridType::F64 => "double".to_string(),
         other => dart_native_param_type(other, spec),
     }
@@ -1220,9 +1257,14 @@ fn dart_ffi_call_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         HybridType::Result { .. } => "int".to_string(),
         HybridType::Void => "void".to_string(),
         HybridType::Bool => "bool".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 | HybridType::Enum(_) => {
-            "int".to_string()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::Enum(_) => "int".to_string(),
         HybridType::F32 | HybridType::F64 => "double".to_string(),
         other => dart_native_value_type(other, spec),
     }
@@ -1291,7 +1333,13 @@ fn dart_default_value(
 
     match ty {
         HybridType::Bool => "false".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => "0".to_string(),
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::String => "''".to_string(),
         HybridType::Bytes => "Uint8List(0)".to_string(),
@@ -1323,6 +1371,9 @@ fn dart_default_value(
             }
         }
         HybridType::Value => "NveHybridDynamicValue()".to_string(),
+        HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
+            "ffi.nullptr".to_string()
+        }
         HybridType::Void | HybridType::Result { .. } => "null".to_string(),
     }
 }
@@ -1330,9 +1381,13 @@ fn dart_default_value(
 fn emit_dart_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr});").unwrap(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => {
-            writeln!(out, "{indent}{w}.writeInt64({expr});").unwrap()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => writeln!(out, "{indent}{w}.writeInt64({expr});").unwrap(),
         HybridType::F32 | HybridType::F64 => {
             writeln!(out, "{indent}{w}.writeDouble({expr});").unwrap()
         }
@@ -1354,16 +1409,24 @@ fn emit_dart_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: 
             writeln!(out, "{indent}  }}").unwrap();
             writeln!(out, "{indent}}});").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }
 
 fn emit_dart_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool();").unwrap(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => {
-            writeln!(out, "{indent}{dst} = {r}.readInt64();").unwrap()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readInt64();").unwrap(),
         HybridType::F32 | HybridType::F64 => {
             writeln!(out, "{indent}{dst} = {r}.readDouble();").unwrap()
         }
@@ -1397,6 +1460,10 @@ fn emit_dart_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &H
             writeln!(out, "{indent}  {dst} = _list;").unwrap();
             writeln!(out, "{indent}}}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }

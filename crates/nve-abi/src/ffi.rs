@@ -13,6 +13,10 @@ use std::ffi::c_void;
 
 use crate::value::{NveEventBatch, NveMapEntry};
 
+/// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
+/// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.h`).
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x9DDA_1760_DEC9_6BD1;
+
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
 pub const NVE_IFACE_COMPONENT: u32 = 3;
@@ -173,4 +177,25 @@ pub struct NveDevApi {
         unsafe extern "C" fn(handle: NveAppHandle, patch_json: NveBufferSlice) -> u32,
     pub snapshot_state: unsafe extern "C" fn(handle: NveAppHandle) -> NveBufferSlice,
     pub restore_state: unsafe extern "C" fn(handle: NveAppHandle, state: NveBufferSlice),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn checked_in_core_c_header_matches_compile_time_schema_hash() {
+        let header_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cxx/nve-fabric-bridge/include/nve_abi.h");
+        let content = std::fs::read_to_string(&header_path)
+            .expect("read generated cxx/nve-fabric-bridge/include/nve_abi.h");
+        let expected_macro = format!("0x{NVE_CORE_ABI_SCHEMA_HASH:016X}ULL");
+        assert!(
+            content.contains(&expected_macro),
+            "nve_abi.h schema hash drift! Expected {expected_macro} in {}",
+            header_path.display()
+        );
+    }
 }

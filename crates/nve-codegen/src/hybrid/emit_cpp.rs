@@ -112,6 +112,41 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
             writeln!(out, "  {} {fname};", c_pod_type(&f.ty)).unwrap();
         }
         writeln!(out, "}} NveHybrid{};", s.name).unwrap();
+        if let Some(sz) = s.expected_size {
+            writeln!(
+                out,
+                "NVE_STATIC_ASSERT(sizeof(NveHybrid{}) == {sz}u, \"NveHybrid{} size must be {sz}\");",
+                s.name, s.name
+            )
+            .unwrap();
+        }
+        if let Some(sz64) = s.expected_size_64 {
+            writeln!(
+                out,
+                "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveHybrid{}) == {sz64}u, \"NveHybrid{} size must be {sz64} on 64-bit\");",
+                s.name, s.name
+            )
+            .unwrap();
+        }
+        for f in &s.fields {
+            let fname = c_field_ident(&f.name);
+            if let Some(off) = f.offset {
+                writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(offsetof(NveHybrid{}, {fname}) == {off}u, \"NveHybrid{}::{fname} offset must be {off}\");",
+                    s.name, s.name
+                )
+                .unwrap();
+            }
+            if let Some(off64) = f.offset_64 {
+                writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveHybrid{}, {fname}) == {off64}u, \"NveHybrid{}::{fname} offset must be {off64} on 64-bit\");",
+                    s.name, s.name
+                )
+                .unwrap();
+            }
+        }
         writeln!(out).unwrap();
     }
 
@@ -856,6 +891,9 @@ fn emit_cpp_client_method(out: &mut String, method: &HybridMethodSpec, spec: &Hy
         let pname = cpp_ident(&p.name);
         match &p.ty {
             HybridType::Bool
+            | HybridType::U8
+            | HybridType::U16
+            | HybridType::Usize
             | HybridType::I32
             | HybridType::U32
             | HybridType::I64
@@ -965,6 +1003,9 @@ fn emit_cpp_return_decode(
     match ty {
         HybridType::Void => {}
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1030,6 +1071,9 @@ fn cpp_owned_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "void".to_string(),
         HybridType::Bool => "bool".to_string(),
+        HybridType::U8 => "uint8_t".to_string(),
+        HybridType::U16 => "uint16_t".to_string(),
+        HybridType::Usize => "size_t".to_string(),
         HybridType::I32 => "int32_t".to_string(),
         HybridType::U32 => "uint32_t".to_string(),
         HybridType::I64 => "int64_t".to_string(),
@@ -1041,8 +1085,12 @@ fn cpp_owned_type(ty: &HybridType) -> String {
         HybridType::Optional(inner) => format!("std::optional<{}>", cpp_owned_type(inner)),
         HybridType::Vec(inner) => format!("std::vector<{}>", cpp_owned_type(inner)),
         HybridType::Result { ok, .. } => cpp_owned_type(ok),
-        HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
+        HybridType::Struct(name) | HybridType::Enum(name) | HybridType::Handle(name) => {
+            name.clone()
+        }
         HybridType::Value => "DynamicValue".to_string(),
+        HybridType::ConstPtr(inner) => format!("const {}*", cpp_owned_type(inner)),
+        HybridType::MutPtr(inner) => format!("{}*", cpp_owned_type(inner)),
     }
 }
 
@@ -1075,6 +1123,9 @@ fn c_field_ident(raw: &str) -> String {
 fn c_pod_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Bool => "bool".to_string(),
+        HybridType::U8 => "uint8_t".to_string(),
+        HybridType::U16 => "uint16_t".to_string(),
+        HybridType::Usize => "size_t".to_string(),
         HybridType::I32 => "int32_t".to_string(),
         HybridType::U32 => "uint32_t".to_string(),
         HybridType::I64 => "int64_t".to_string(),
@@ -1089,6 +1140,9 @@ fn c_pod_type(ty: &HybridType) -> String {
 fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1111,6 +1165,9 @@ fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Void => "void".to_string(),
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1129,7 +1186,13 @@ fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
 fn emit_cpp_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});").unwrap(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => {
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => {
             writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>({expr}));").unwrap();
         }
         HybridType::F32 | HybridType::F64 => {
@@ -1156,7 +1219,11 @@ fn emit_cpp_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &
             writeln!(out, "{indent}  }}").unwrap();
             writeln!(out, "{indent}}});").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {
             writeln!(out, "{indent}{w}.write_null();").unwrap();
         }
     }
@@ -1165,6 +1232,9 @@ fn emit_cpp_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &
 fn emit_cpp_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.read_bool();").unwrap(),
+        HybridType::U8 => writeln!(out, "{indent}{dst} = static_cast<uint8_t>({r}.read_i64());").unwrap(),
+        HybridType::U16 => writeln!(out, "{indent}{dst} = static_cast<uint16_t>({r}.read_i64());").unwrap(),
+        HybridType::Usize => writeln!(out, "{indent}{dst} = static_cast<size_t>({r}.read_i64());").unwrap(),
         HybridType::I32 => writeln!(out, "{indent}{dst} = static_cast<int32_t>({r}.read_i64());").unwrap(),
         HybridType::U32 => writeln!(out, "{indent}{dst} = static_cast<uint32_t>({r}.read_i64());").unwrap(),
         HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.read_i64();").unwrap(),
@@ -1199,13 +1269,20 @@ fn emit_cpp_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &Hy
             writeln!(out, "{indent}  }}").unwrap();
             writeln!(out, "{indent}}}").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {}
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {}
     }
 }
 
 fn cpp_prop_is_direct_nve_value(ty: &HybridType) -> bool {
     match ty {
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1240,7 +1317,13 @@ fn emit_cpp_fill_nve_value(
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_BOOL;").unwrap();
             writeln!(out, "{indent}{dst}.data.bool_val = {expr} ? 1u : 0u;").unwrap();
         }
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => {
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => {
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_I64;").unwrap();
             writeln!(out, "{indent}{dst}.data.i64_val = static_cast<int64_t>({expr});").unwrap();
         }

@@ -13,15 +13,15 @@ use std::path::Path;
 
 use crate::error::CodegenError;
 use crate::hybrid::ir::{
-    HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec,
-    HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec,
-    HybridStructSpec, HybridType, HybridViewSpec,
+    HybridAliasSpec, HybridConstSpec, HybridDefaultValue, HybridEnumSpec, HybridEnumVariant,
+    HybridEventSpec, HybridFieldSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec,
+    HybridParamSpec, HybridPropSpec, HybridStructSpec, HybridType, HybridViewSpec,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 enum TokKind {
     Ident(String),
-    Int(u64),
+    Int(u64, bool),
     Float(f64),
     Str(String),
     DocComment(String),
@@ -218,7 +218,7 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CodegenError> {
                     )
                 })?;
                 tokens.push(Tok {
-                    kind: TokKind::Int(val),
+                    kind: TokKind::Int(val, true),
                     line: start_line,
                     col: start_col,
                 });
@@ -283,7 +283,7 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CodegenError> {
                     )
                 })?;
                 tokens.push(Tok {
-                    kind: TokKind::Int(val),
+                    kind: TokKind::Int(val, false),
                     line: start_line,
                     col: start_col,
                 });
@@ -512,23 +512,34 @@ impl Parser {
         let mut args = Vec::new();
         if self.eat(&TokKind::LParen) {
             while !matches!(self.peek().kind, TokKind::RParen | TokKind::Eof) {
-                let key = self.expect_ident("attribute argument")?;
-                if self.eat(&TokKind::Eq) {
-                    let val = self.parse_attr_value()?;
-                    args.push((key, val));
-                } else if self.eat(&TokKind::LParen) {
-                    // Skip nested attribute parens like `cfg(not(test))`
-                    let mut depth = 1usize;
-                    while depth > 0 && self.peek().kind != TokKind::Eof {
-                        match self.bump().kind {
-                            TokKind::LParen => depth += 1,
-                            TokKind::RParen => depth -= 1,
-                            _ => {}
-                        }
-                    }
-                    args.push((key, AttrValue::Flag));
+                if let TokKind::Int(u, _) = self.peek().kind {
+                    self.bump();
+                    args.push(("value".to_string(), AttrValue::UInt(u)));
                 } else {
-                    args.push((key, AttrValue::Flag));
+                    let key = self.expect_ident("attribute argument")?;
+                    if self.eat(&TokKind::Eq) {
+                        let val = self.parse_attr_value()?;
+                        args.push((key, val));
+                    } else if self.eat(&TokKind::LParen) {
+                        if let TokKind::Int(u, _) = self.peek().kind {
+                            self.bump();
+                            self.expect(&TokKind::RParen, "')'")?;
+                            args.push((key, AttrValue::UInt(u)));
+                        } else {
+                            // Skip nested attribute parens like `cfg(not(test))`
+                            let mut depth = 1usize;
+                            while depth > 0 && self.peek().kind != TokKind::Eof {
+                                match self.bump().kind {
+                                    TokKind::LParen => depth += 1,
+                                    TokKind::RParen => depth -= 1,
+                                    _ => {}
+                                }
+                            }
+                            args.push((key, AttrValue::Flag));
+                        }
+                    } else {
+                        args.push((key, AttrValue::Flag));
+                    }
                 }
                 if !self.eat(&TokKind::Comma) {
                     break;
@@ -560,7 +571,7 @@ impl Parser {
                 self.bump();
                 let next = self.bump();
                 match next.kind {
-                    TokKind::Int(u) => {
+                    TokKind::Int(u, _) => {
                         let signed = i64::try_from(u).map_err(|_| {
                             CodegenError::parse(next.line, next.col, "integer literal out of i64 range")
                         })?;
@@ -574,7 +585,7 @@ impl Parser {
                     )),
                 }
             }
-            TokKind::Int(u) => {
+            TokKind::Int(u, _) => {
                 self.bump();
                 Ok(AttrValue::UInt(u))
             }
@@ -650,22 +661,89 @@ impl Parser {
                 continue;
             }
 
-            if self.eat_ident("enum") {
-                let is_hybrid = attrs.iter().any(|a| attr_matches(&a.name, "nve_hybrid_enum"));
-                let enum_spec = self.parse_enum(doc)?;
+            if self.eat_ident("const") {
+                let is_hybrid = attrs
+                    .iter()
+                    .any(|a| attr_matches(&a.name, "nve_hybrid_const"));
+                let const_spec = self.parse_const(doc)?;
                 if is_hybrid {
+                    file.consts.push(const_spec);
+                }
+                continue;
+            }
+
+            if self.eat_ident("type") {
+                let is_hybrid = attrs
+                    .iter()
+                    .any(|a| attr_matches(&a.name, "nve_hybrid_alias"));
+                let alias_spec = self.parse_alias(doc)?;
+                if is_hybrid {
+                    file.aliases.push(alias_spec);
+                }
+                continue;
+            }
+
+            if self.eat_ident("extern") {
+                let is_hybrid = attrs
+                    .iter()
+                    .any(|a| attr_matches(&a.name, "nve_hybrid_c_fn"));
+                // Optional ABI string `"C"`
+                if matches!(self.peek().kind, TokKind::Str(_)) {
+                    self.bump();
+                }
+                let mut fn_spec = self.parse_fn_signature(doc)?;
+                fn_spec.has_self = false;
+                if is_hybrid {
+                    file.c_functions.push(fn_spec);
+                }
+                continue;
+            }
+
+            if self.eat_ident("enum") {
+                let enum_attr = attrs.iter().find(|a| attr_matches(&a.name, "nve_hybrid_enum"));
+                let repr_attr = attrs.iter().find(|a| attr_matches(&a.name, "repr"));
+                let mut enum_spec = self.parse_enum(doc)?;
+                if let Some(attr) = enum_attr {
+                    enum_spec.c_prefix = attr_string_arg(attr, "c_prefix");
+                    enum_spec.dart_fallback = attr_string_arg(attr, "dart_fallback");
+                    if let Some(ra) = repr_attr {
+                        enum_spec.repr = ra.args.iter().find_map(|(k, v)| {
+                            if matches!(v, AttrValue::Flag)
+                                && matches!(k.as_str(), "u8" | "u16" | "u32" | "i32")
+                            {
+                                Some(k.clone())
+                            } else {
+                                None
+                            }
+                        });
+                    }
                     file.enums.push(enum_spec);
                 }
                 continue;
             }
 
             if self.eat_ident("struct") {
-                let is_hybrid = attrs
+                let struct_attr = attrs
                     .iter()
-                    .any(|a| attr_matches(&a.name, "nve_hybrid_struct"));
-                let struct_spec = self.parse_struct(doc)?;
-                if is_hybrid {
+                    .find(|a| attr_matches(&a.name, "nve_hybrid_struct"));
+                let repr_attr = attrs.iter().find(|a| attr_matches(&a.name, "repr"));
+                let mut struct_spec = self.parse_struct(doc, false)?;
+                if let Some(attr) = struct_attr {
+                    apply_struct_layout_attrs(&mut struct_spec, attr, repr_attr)?;
                     file.structs.push(struct_spec);
+                }
+                continue;
+            }
+
+            if self.eat_ident("union") {
+                let union_attr = attrs
+                    .iter()
+                    .find(|a| attr_matches(&a.name, "nve_hybrid_union"));
+                let repr_attr = attrs.iter().find(|a| attr_matches(&a.name, "repr"));
+                let mut union_spec = self.parse_struct(doc, true)?;
+                if let Some(attr) = union_attr {
+                    apply_struct_layout_attrs(&mut union_spec, attr, repr_attr)?;
+                    file.structs.push(union_spec);
                 }
                 continue;
             }
@@ -687,11 +765,22 @@ impl Parser {
                 }
                 if let Some(attr) = mod_attr {
                     let explicit_name = attr_string_arg(attr, "name");
-                    file.modules
-                        .push(self.parse_module_trait(explicit_name, doc)?);
+                    let explicit_interface_id = attr_u32_arg(attr, "interface_id")?;
+                    let c_name = attr_string_arg(attr, "c_name");
+                    file.modules.push(self.parse_module_trait(
+                        explicit_name,
+                        explicit_interface_id,
+                        c_name,
+                        doc,
+                    )?);
                 } else if let Some(attr) = view_attr {
                     let explicit_name = attr_string_arg(attr, "name");
-                    file.views.push(self.parse_view_trait(explicit_name, doc)?);
+                    let explicit_interface_id = attr_u32_arg(attr, "interface_id")?;
+                    file.views.push(self.parse_view_trait(
+                        explicit_name,
+                        explicit_interface_id,
+                        doc,
+                    )?);
                 } else {
                     let tok = self.peek().clone();
                     return Err(CodegenError::parse(
@@ -708,16 +797,50 @@ impl Parser {
                 tok.line,
                 tok.col,
                 format!(
-                    "unexpected token {:?} at top level (expected enum, struct, trait, or use)",
+                    "unexpected token {:?} at top level (expected enum, struct, union, trait, const, type, extern, or use)",
                     tok.kind
                 ),
             ));
         }
 
-        // Resolve named type references against declared enums (parsed initially as Struct(name)).
-        resolve_enum_types(&mut file);
+        // Resolve named type references against declared enums and handle aliases.
+        resolve_named_types(&mut file);
         file.validate()?;
         Ok(file)
+    }
+
+    fn parse_const(&mut self, doc: Option<String>) -> Result<HybridConstSpec, CodegenError> {
+        let name = self.expect_ident("const")?;
+        self.expect(&TokKind::Colon, "':'")?;
+        let ty = self.parse_type()?;
+        self.expect(&TokKind::Eq, "'='")?;
+        let tok = self.bump();
+        let (value, hex) = match tok.kind {
+            TokKind::Int(v, hex) => (v, hex),
+            _ => {
+                return Err(CodegenError::parse(
+                    tok.line,
+                    tok.col,
+                    "expected integer literal for const value",
+                ));
+            }
+        };
+        self.expect(&TokKind::Semi, "';'")?;
+        Ok(HybridConstSpec {
+            name,
+            ty,
+            value,
+            hex,
+            doc,
+        })
+    }
+
+    fn parse_alias(&mut self, doc: Option<String>) -> Result<HybridAliasSpec, CodegenError> {
+        let name = self.expect_ident("type alias")?;
+        self.expect(&TokKind::Eq, "'='")?;
+        let target = self.parse_type()?;
+        self.expect(&TokKind::Semi, "';'")?;
+        Ok(HybridAliasSpec { name, target, doc })
     }
 
     fn parse_enum(&mut self, doc: Option<String>) -> Result<HybridEnumSpec, CodegenError> {
@@ -735,7 +858,7 @@ impl Parser {
             let value = if self.eat(&TokKind::Eq) {
                 let tok = self.bump();
                 match tok.kind {
-                    TokKind::Int(v) => u32::try_from(v).map_err(|_| {
+                    TokKind::Int(v, _) => u32::try_from(v).map_err(|_| {
                         CodegenError::parse(
                             tok.line,
                             tok.col,
@@ -770,16 +893,23 @@ impl Parser {
             name,
             variants,
             doc,
+            c_prefix: None,
+            repr: None,
+            dart_fallback: None,
         })
     }
 
-    fn parse_struct(&mut self, doc: Option<String>) -> Result<HybridStructSpec, CodegenError> {
-        let name = self.expect_ident("struct")?;
+    fn parse_struct(
+        &mut self,
+        doc: Option<String>,
+        is_union: bool,
+    ) -> Result<HybridStructSpec, CodegenError> {
+        let name = self.expect_ident(if is_union { "union" } else { "struct" })?;
         self.expect(&TokKind::LBrace, "'{'")?;
         let mut fields = Vec::new();
 
         while !matches!(self.peek().kind, TokKind::RBrace | TokKind::Eof) {
-            let (fdoc, _fattrs) = self.parse_docs_and_attrs()?;
+            let (fdoc, fattrs) = self.parse_docs_and_attrs()?;
             if self.peek().kind == TokKind::RBrace {
                 break;
             }
@@ -787,22 +917,43 @@ impl Parser {
             let fname = self.expect_ident("struct field")?;
             self.expect(&TokKind::Colon, "':'")?;
             let ty = self.parse_type()?;
+            let mut offset = None;
+            let mut offset_64 = None;
+            for a in &fattrs {
+                if attr_matches(&a.name, "offset") {
+                    offset = attr_usize_arg(a, "value")?;
+                } else if attr_matches(&a.name, "offset64") {
+                    offset_64 = attr_usize_arg(a, "value")?;
+                }
+            }
             fields.push(HybridFieldSpec {
                 name: fname,
                 ty,
                 doc: fdoc,
+                offset,
+                offset_64,
             });
             if !self.eat(&TokKind::Comma) {
                 break;
             }
         }
         self.expect(&TokKind::RBrace, "'}'")?;
-        Ok(HybridStructSpec { name, fields, doc })
+        Ok(HybridStructSpec {
+            name,
+            fields,
+            doc,
+            is_union,
+            align: None,
+            expected_size: None,
+            expected_size_64: None,
+        })
     }
 
     fn parse_module_trait(
         &mut self,
         explicit_name: Option<String>,
+        explicit_interface_id: Option<u32>,
+        c_name: Option<String>,
         doc: Option<String>,
     ) -> Result<HybridModuleSpec, CodegenError> {
         let trait_name = self.expect_ident("trait")?;
@@ -815,6 +966,7 @@ impl Parser {
             if self.peek().kind == TokKind::RBrace {
                 break;
             }
+            let mut optional = false;
             for attr in &mattrs {
                 if attr_matches(&attr.name, "prop") || attr_matches(&attr.name, "event") {
                     return Err(CodegenError::parse(
@@ -826,8 +978,13 @@ impl Parser {
                         ),
                     ));
                 }
+                if attr_matches(&attr.name, "optional") {
+                    optional = true;
+                }
             }
-            methods.push(self.parse_fn_signature(mdoc)?);
+            let mut sig = self.parse_fn_signature(mdoc)?;
+            sig.optional = optional;
+            methods.push(sig);
         }
         self.expect(&TokKind::RBrace, "'}'")?;
 
@@ -836,12 +993,15 @@ impl Parser {
             trait_name,
             methods,
             doc,
+            explicit_interface_id,
+            c_name,
         })
     }
 
     fn parse_view_trait(
         &mut self,
         explicit_name: Option<String>,
+        explicit_interface_id: Option<u32>,
         doc: Option<String>,
     ) -> Result<HybridViewSpec, CodegenError> {
         let trait_name = self.expect_ident("trait")?;
@@ -918,6 +1078,7 @@ impl Parser {
             events,
             methods,
             doc,
+            explicit_interface_id,
         })
     }
 
@@ -934,6 +1095,7 @@ impl Parser {
         self.expect(&TokKind::LParen, "'('")?;
 
         let mut params = Vec::new();
+        let mut has_self = false;
         while !matches!(self.peek().kind, TokKind::RParen | TokKind::Eof) {
             // Handle `&self`, `&mut self`, `self`, `mut self`
             if self.peek().kind == TokKind::Amp {
@@ -952,6 +1114,7 @@ impl Parser {
                             "expected 'self' receiver",
                         ));
                     }
+                    has_self = true;
                     if !self.eat(&TokKind::Comma) {
                         break;
                     }
@@ -959,6 +1122,7 @@ impl Parser {
                 }
             }
             if self.eat_ident("self") {
+                has_self = true;
                 if !self.eat(&TokKind::Comma) {
                     break;
                 }
@@ -967,6 +1131,7 @@ impl Parser {
             if self.is_ident("mut") && matches!(&self.peek_next().kind, TokKind::Ident(s) if s == "self") {
                 self.bump();
                 self.bump();
+                has_self = true;
                 if !self.eat(&TokKind::Comma) {
                     break;
                 }
@@ -995,6 +1160,8 @@ impl Parser {
             params,
             return_type,
             doc,
+            has_self,
+            optional: false,
         })
     }
 
@@ -1006,6 +1173,24 @@ impl Parser {
             return Ok(HybridType::Void);
         }
 
+        // Raw pointers: `*const T`, `*mut T`
+        if self.eat(&TokKind::Star) {
+            if self.eat_ident("const") {
+                let inner = self.parse_type()?;
+                return Ok(HybridType::ConstPtr(Box::new(inner)));
+            } else if self.eat_ident("mut") {
+                let inner = self.parse_type()?;
+                return Ok(HybridType::MutPtr(Box::new(inner)));
+            } else {
+                let ptok = self.peek().clone();
+                return Err(CodegenError::parse(
+                    ptok.line,
+                    ptok.col,
+                    "expected 'const' or 'mut' after '*'",
+                ));
+            }
+        }
+
         // Reference types: `&str`, `&[u8]`, `&[T]`, `&T`
         if self.eat(&TokKind::Amp) {
             self.eat_ident("mut");
@@ -1013,7 +1198,7 @@ impl Parser {
                 let elem = self.parse_type()?;
                 self.expect(&TokKind::RBracket, "']'")?;
                 return match elem {
-                    HybridType::Struct(ref s) if s == "u8" => Ok(HybridType::Bytes),
+                    HybridType::U8 => Ok(HybridType::Bytes),
                     other => Ok(HybridType::Vec(Box::new(other))),
                 };
             }
@@ -1029,7 +1214,11 @@ impl Parser {
         let last = path.last().unwrap().as_str();
 
         match last {
+            "c_void" => Ok(HybridType::Void),
             "bool" => Ok(HybridType::Bool),
+            "u8" => Ok(HybridType::U8),
+            "u16" => Ok(HybridType::U16),
+            "usize" => Ok(HybridType::Usize),
             "i32" => Ok(HybridType::I32),
             "u32" => Ok(HybridType::U32),
             "i64" => Ok(HybridType::I64),
@@ -1038,7 +1227,6 @@ impl Parser {
             "f64" => Ok(HybridType::F64),
             "String" | "str" => Ok(HybridType::String),
             "NveValue" => Ok(HybridType::Value),
-            "u8" => Ok(HybridType::Struct("u8".to_string())), // resolved inside Vec<u8> / &[u8]
             "Option" => {
                 self.expect(&TokKind::LAngle, "'<'")?;
                 let inner = self.parse_type()?;
@@ -1050,7 +1238,7 @@ impl Parser {
                 let inner = self.parse_type()?;
                 self.expect(&TokKind::RAngle, "'>'")?;
                 match inner {
-                    HybridType::Struct(ref s) if s == "u8" => Ok(HybridType::Bytes),
+                    HybridType::U8 => Ok(HybridType::Bytes),
                     other => Ok(HybridType::Vec(Box::new(other))),
                 }
             }
@@ -1094,6 +1282,58 @@ fn attr_string_arg(attr: &ParsedAttr, key: &str) -> Option<String> {
     })
 }
 
+fn attr_u32_arg(attr: &ParsedAttr, key: &str) -> Result<Option<u32>, CodegenError> {
+    for (k, v) in &attr.args {
+        if k == key {
+            return match v {
+                AttrValue::UInt(u) => u32::try_from(*u).map(Some).map_err(|_| {
+                    CodegenError::parse(attr.line, attr.col, format!("attribute '{key}' value {u} exceeds u32::MAX"))
+                }),
+                other => Err(CodegenError::parse(
+                    attr.line,
+                    attr.col,
+                    format!("expected unsigned integer for attribute '{key}', found {other:?}"),
+                )),
+            };
+        }
+    }
+    Ok(None)
+}
+
+fn attr_usize_arg(attr: &ParsedAttr, key: &str) -> Result<Option<usize>, CodegenError> {
+    for (k, v) in &attr.args {
+        if k == key {
+            return match v {
+                AttrValue::UInt(u) => usize::try_from(*u).map(Some).map_err(|_| {
+                    CodegenError::parse(attr.line, attr.col, format!("attribute '{key}' value {u} exceeds usize::MAX"))
+                }),
+                other => Err(CodegenError::parse(
+                    attr.line,
+                    attr.col,
+                    format!("expected unsigned integer for attribute '{key}', found {other:?}"),
+                )),
+            };
+        }
+    }
+    Ok(None)
+}
+
+fn apply_struct_layout_attrs(
+    spec: &mut HybridStructSpec,
+    attr: &ParsedAttr,
+    repr_attr: Option<&ParsedAttr>,
+) -> Result<(), CodegenError> {
+    spec.expected_size = attr_usize_arg(attr, "size")?;
+    spec.expected_size_64 = attr_usize_arg(attr, "size_64")?;
+    spec.align = attr_usize_arg(attr, "align")?;
+    if spec.align.is_none() {
+        if let Some(ra) = repr_attr {
+            spec.align = attr_usize_arg(ra, "align")?;
+        }
+    }
+    Ok(())
+}
+
 fn parse_prop_default(attr: &ParsedAttr) -> Result<Option<HybridDefaultValue>, CodegenError> {
     for (k, v) in &attr.args {
         if k == "default" {
@@ -1130,9 +1370,16 @@ fn strip_spec_suffix(trait_name: &str) -> String {
         .to_string()
 }
 
-fn resolve_enum_types(file: &mut HybridFileSpec) {
+fn resolve_named_types(file: &mut HybridFileSpec) {
     let enum_names: BTreeSet<String> = file.enums.iter().map(|e| e.name.clone()).collect();
-    let rewrite = |ty: &mut HybridType| rewrite_type_enums(ty, &enum_names);
+    let alias_names: BTreeSet<String> = file.aliases.iter().map(|a| a.name.clone()).collect();
+    let rewrite = |ty: &mut HybridType| rewrite_named_type(ty, &enum_names, &alias_names);
+    for c in &mut file.consts {
+        rewrite(&mut c.ty);
+    }
+    for a in &mut file.aliases {
+        rewrite(&mut a.target);
+    }
     for s in &mut file.structs {
         for f in &mut s.fields {
             rewrite(&mut f.ty);
@@ -1162,21 +1409,36 @@ fn resolve_enum_types(file: &mut HybridFileSpec) {
             rewrite(&mut method.return_type);
         }
     }
+    for f in &mut file.c_functions {
+        for p in &mut f.params {
+            rewrite(&mut p.ty);
+        }
+        rewrite(&mut f.return_type);
+    }
 }
 
-fn rewrite_type_enums(ty: &mut HybridType, enum_names: &BTreeSet<String>) {
+fn rewrite_named_type(
+    ty: &mut HybridType,
+    enum_names: &BTreeSet<String>,
+    alias_names: &BTreeSet<String>,
+) {
     match ty {
         HybridType::Struct(name) => {
             if enum_names.contains(name) {
                 *ty = HybridType::Enum(name.clone());
+            } else if alias_names.contains(name) {
+                *ty = HybridType::Handle(name.clone());
             }
         }
-        HybridType::Optional(inner) | HybridType::Vec(inner) => {
-            rewrite_type_enums(inner, enum_names);
+        HybridType::Optional(inner)
+        | HybridType::Vec(inner)
+        | HybridType::ConstPtr(inner)
+        | HybridType::MutPtr(inner) => {
+            rewrite_named_type(inner, enum_names, alias_names);
         }
         HybridType::Result { ok, err } => {
-            rewrite_type_enums(ok, enum_names);
-            rewrite_type_enums(err, enum_names);
+            rewrite_named_type(ok, enum_names, alias_names);
+            rewrite_named_type(err, enum_names, alias_names);
         }
         _ => {}
     }

@@ -3,8 +3,9 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-/// Maximum nesting depth permitted by `NveBinValue` (`NVE_BIN_VALUE_MAX_DEPTH`).
-const int nveBinValueMaxDepth = 64;
+import 'nve_core_abi_gen.dart';
+
+export 'nve_core_abi_gen.dart' show nveBinValueMaxDepth;
 
 /// Binary `NveBinValue` wire tags `0..7`.
 enum NveBinValueTag {

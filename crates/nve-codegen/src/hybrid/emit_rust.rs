@@ -917,6 +917,9 @@ fn emit_rust_param_decode(
 
     match ty {
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -992,6 +995,9 @@ fn emit_rust_param_decode(
 fn rust_return_encode_expr(expr: &str, ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1030,6 +1036,9 @@ fn rust_owned_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "()".to_string(),
         HybridType::Bool => "bool".to_string(),
+        HybridType::U8 => "u8".to_string(),
+        HybridType::U16 => "u16".to_string(),
+        HybridType::Usize => "usize".to_string(),
         HybridType::I32 => "i32".to_string(),
         HybridType::U32 => "u32".to_string(),
         HybridType::I64 => "i64".to_string(),
@@ -1043,8 +1052,26 @@ fn rust_owned_type(ty: &HybridType) -> String {
         HybridType::Result { ok, err } => {
             format!("Result<{}, {}>", rust_owned_type(ok), rust_owned_type(err))
         }
-        HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
+        HybridType::Struct(name) | HybridType::Enum(name) | HybridType::Handle(name) => {
+            name.clone()
+        }
         HybridType::Value => "NveHybridValue".to_string(),
+        HybridType::ConstPtr(inner) => format!(
+            "*const {}",
+            if matches!(inner.as_ref(), HybridType::Void) {
+                "std::ffi::c_void".to_string()
+            } else {
+                rust_owned_type(inner)
+            }
+        ),
+        HybridType::MutPtr(inner) => format!(
+            "*mut {}",
+            if matches!(inner.as_ref(), HybridType::Void) {
+                "std::ffi::c_void".to_string()
+            } else {
+                rust_owned_type(inner)
+            }
+        ),
     }
 }
 
@@ -1063,6 +1090,9 @@ fn rust_return_type(ty: &HybridType) -> String {
 fn rust_c_abi_pod_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Bool => "bool".to_string(),
+        HybridType::U8 => "u8".to_string(),
+        HybridType::U16 => "u16".to_string(),
+        HybridType::Usize => "usize".to_string(),
         HybridType::I32 => "i32".to_string(),
         HybridType::U32 => "u32".to_string(),
         HybridType::I64 => "i64".to_string(),
@@ -1078,6 +1108,9 @@ fn rust_c_abi_pod_type(ty: &HybridType) -> String {
 fn rust_c_abi_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1100,6 +1133,9 @@ fn rust_c_abi_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Void => "()".to_string(),
         HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
@@ -1118,9 +1154,14 @@ fn rust_c_abi_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
 fn rust_c_abi_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
         HybridType::Bool => "false".to_string(),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 | HybridType::Enum(_) => {
-            "0".to_string()
-        }
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::Enum(_) => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::Struct(name) if ty.is_pod(spec) => format!("{name}::default()"),
         HybridType::Optional(inner) if inner.is_pod(spec) => {
@@ -1135,10 +1176,10 @@ fn rust_c_abi_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
 fn emit_bin_write_expr(out: &mut String, indent: &str, buf: &str, expr: &str, ty: &HybridType) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}nve_bin_codec::write_bool({buf}, *{expr});").unwrap(),
-        HybridType::I32 => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, (*{expr}) as i64);").unwrap(),
-        HybridType::U32 => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, (*{expr}) as i64);").unwrap(),
+        HybridType::U8 | HybridType::U16 | HybridType::Usize | HybridType::I32 | HybridType::U32 | HybridType::U64 => {
+            writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, (*{expr}) as i64);").unwrap()
+        }
         HybridType::I64 => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, *{expr});").unwrap(),
-        HybridType::U64 => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, (*{expr}) as i64);").unwrap(),
         HybridType::F32 => writeln!(out, "{indent}nve_bin_codec::write_f64({buf}, (*{expr}) as f64);").unwrap(),
         HybridType::F64 => writeln!(out, "{indent}nve_bin_codec::write_f64({buf}, *{expr});").unwrap(),
         HybridType::Enum(_) => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, ({expr}).to_u32() as i64);").unwrap(),
@@ -1161,7 +1202,11 @@ fn emit_bin_write_expr(out: &mut String, indent: &str, buf: &str, expr: &str, ty
             writeln!(out, "{indent}    }}").unwrap();
             writeln!(out, "{indent}}});").unwrap();
         }
-        HybridType::Void | HybridType::Result { .. } => {
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => {
             writeln!(out, "{indent}nve_bin_codec::write_null({buf});").unwrap();
         }
     }
@@ -1170,6 +1215,9 @@ fn emit_bin_write_expr(out: &mut String, indent: &str, buf: &str, expr: &str, ty
 fn bin_view_decode_expr(var: &str, ty: &HybridType) -> String {
     match ty {
         HybridType::Bool => format!("{var}.as_bool().ok_or(DecodeError::Truncated)?"),
+        HybridType::U8 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as u8"),
+        HybridType::U16 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as u16"),
+        HybridType::Usize => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as usize"),
         HybridType::I32 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as i32"),
         HybridType::U32 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as u32"),
         HybridType::I64 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)?"),
@@ -1193,13 +1241,20 @@ fn bin_view_decode_expr(var: &str, ty: &HybridType) -> String {
                 "{{ let mut _vec = Vec::new(); for _item in {var}.as_array().ok_or(DecodeError::Truncated)? {{ _vec.push({elem_expr}); }} _vec }}"
             )
         }
-        HybridType::Void | HybridType::Result { .. } => "()".to_string(),
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => "()".to_string(),
     }
 }
 
 fn value_ref_decode_expr(var: &str, ty: &HybridType) -> String {
     match ty {
         HybridType::Bool => format!("{var}.as_bool().ok_or(DecodeError::Truncated)?"),
+        HybridType::U8 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as u8"),
+        HybridType::U16 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as u16"),
+        HybridType::Usize => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as usize"),
         HybridType::I32 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as i32"),
         HybridType::U32 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)? as u32"),
         HybridType::I64 => format!("{var}.as_i64().ok_or(DecodeError::Truncated)?"),
@@ -1226,7 +1281,11 @@ fn value_ref_decode_expr(var: &str, ty: &HybridType) -> String {
                 "if let Some(_raw) = {var}.as_bytes() {{ let _bv = nve_bin_codec::parse_view(_raw)?; let mut _vec = Vec::new(); for _item in _bv.as_array().ok_or(DecodeError::Truncated)? {{ _vec.push({elem_bin_expr}); }} _vec }} else {{ let mut _vec = Vec::new(); for _item in {var}.as_array().ok_or(DecodeError::Truncated)?.iter() {{ _vec.push({elem_ref_expr}); }} _vec }}"
             )
         }
-        HybridType::Void | HybridType::Result { .. } => "()".to_string(),
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_) => "()".to_string(),
     }
 }
 
@@ -1234,6 +1293,9 @@ fn is_direct_nve_value_scalar_or_slice(ty: &HybridType) -> bool {
     matches!(
         ty,
         HybridType::Bool
+            | HybridType::U8
+            | HybridType::U16
+            | HybridType::Usize
             | HybridType::I32
             | HybridType::U32
             | HybridType::I64
@@ -1249,7 +1311,13 @@ fn is_direct_nve_value_scalar_or_slice(ty: &HybridType) -> bool {
 fn direct_nve_value_expr(expr: &str, ty: &HybridType, idx: usize) -> String {
     match ty {
         HybridType::Bool => format!("NveValue::bool({expr})"),
-        HybridType::I32 | HybridType::U32 | HybridType::I64 | HybridType::U64 => {
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64 => {
             format!("NveValue::i64({expr} as i64)")
         }
         HybridType::F32 | HybridType::F64 => format!("NveValue::f64({expr} as f64)"),

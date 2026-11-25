@@ -2,17 +2,13 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' show Color, Rect;
 
-/// Wire magic bytes (`"NVE1"` in little-endian: `0x3145564E`).
-const int nveAbiMagic = 0x3145564E;
+import 'nve_core_abi_gen.dart';
 
-/// Supported binary `CommandBuffer` ABI version (`crates/nve-abi/src/codec.rs`).
-const int nveAbiVersion = 1;
+export 'nve_core_abi_gen.dart'
+    show NveComponentKind, NveOpcode, nveAbiMagic, nveAbiVersion, nveRootNodeId;
 
 /// Fixed 24-byte `CommandBufferHeader` size.
 const int nveHeaderSize = 24;
-
-/// Reserved root node ID for every NVE surface (`ROOT_NODE_ID` in `crates/nve-abi/src/lib.rs`).
-const int nveRootNodeId = 1;
 
 /// Safety cap for incoming binary command buffers (64 MiB).
 const int nveMaxBufferBytes = 64 * 1024 * 1024;
@@ -34,70 +30,6 @@ abstract final class NveEventMask {
   static const int blur = 1 << 5;
   static const int layout = 1 << 6;
   static const int custom = 1 << 7;
-}
-
-/// Wire opcodes matching `Opcode` in `crates/nve-abi/src/codec.rs`.
-enum NveOpcode {
-  createNode(1),
-  removeNode(2),
-  setChildren(3),
-  setText(4),
-  setLayout(5),
-  setStyle(6),
-  setRawProp(7),
-  setEventMask(8),
-  dispatchCommand(9),
-  commit(10);
-
-  const NveOpcode(this.code);
-  final int code;
-
-  static NveOpcode? fromCode(int code) {
-    return switch (code) {
-      1 => NveOpcode.createNode,
-      2 => NveOpcode.removeNode,
-      3 => NveOpcode.setChildren,
-      4 => NveOpcode.setText,
-      5 => NveOpcode.setLayout,
-      6 => NveOpcode.setStyle,
-      7 => NveOpcode.setRawProp,
-      8 => NveOpcode.setEventMask,
-      9 => NveOpcode.dispatchCommand,
-      10 => NveOpcode.commit,
-      _ => null,
-    };
-  }
-}
-
-/// Component kinds matching `ComponentKind` in `crates/nve-abi/src/codec.rs`.
-enum NveComponentKind {
-  root(0),
-  view(1),
-  text(2),
-  scrollView(3),
-  image(4),
-  textInput(5),
-  pressable(6),
-  skiaCanvas(7),
-  custom(0xFFFF);
-
-  const NveComponentKind(this.code);
-  final int code;
-
-  static NveComponentKind? fromCode(int code) {
-    return switch (code) {
-      0 => NveComponentKind.root,
-      1 => NveComponentKind.view,
-      2 => NveComponentKind.text,
-      3 => NveComponentKind.scrollView,
-      4 => NveComponentKind.image,
-      5 => NveComponentKind.textInput,
-      6 => NveComponentKind.pressable,
-      7 => NveComponentKind.skiaCanvas,
-      0xFFFF => NveComponentKind.custom,
-      _ => null,
-    };
-  }
 }
 
 /// Dimension unit tag matching `Dimension` in `crates/nve-abi/src/codec.rs`.

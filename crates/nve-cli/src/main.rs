@@ -21,7 +21,7 @@ use nve_abi::{
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
-use nve_codegen::ExportTarget;
+use nve_codegen::{ExportTarget, HybridTarget};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, RenderBackend, SurfaceRunner, Viewport};
@@ -84,6 +84,26 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum CodegenAction {
+    /// Regenerate (or check for drift in) all 10 Core + Scene ABI artifacts from the unified `hybrid` generator.
+    Abi {
+        /// Verify checked-in ABI artifacts match generated output byte-for-byte without writing files.
+        #[arg(long, default_value_t = false)]
+        check: bool,
+        /// Workspace root directory where relative ABI artifact paths are resolved.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Parse a declarative Rust `#[nve_hybrid_*]` spec file and emit zero-JSON FFI bindings.
+    Hybrid {
+        /// Path to the declarative Rust hybrid spec file (`.rs` or `.nve.rs`).
+        spec: PathBuf,
+        /// Target language(s): `rust`, `cpp`, `swift`, `kotlin`, `dart`, `ts`, or `all` (comma-separated allowed).
+        #[arg(long, default_value = "all")]
+        target: String,
+        /// Output root directory (each target writes into `<out>/<target>/`).
+        #[arg(long, default_value = "generated/hybrid")]
+        out: PathBuf,
+    },
     /// Parse a React Native `*NativeComponent.{ts,js}` or `Native*.{ts,js}` spec and emit zero-JS Rust + C++20 bindings.
     ImportRn {
         /// Path to the React Native TypeScript/Flow spec file.
@@ -470,6 +490,89 @@ fn parse_export_targets(target: &str) -> Result<Vec<ExportTarget>, String> {
     Ok(out)
 }
 
+fn parse_hybrid_targets(target: &str) -> Result<Vec<HybridTarget>, String> {
+    if target.trim().eq_ignore_ascii_case("all") {
+        return Ok(HybridTarget::ALL.to_vec());
+    }
+    let mut out = Vec::new();
+    for part in target.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            return Err("empty hybrid target name in comma-separated list".into());
+        }
+        let parsed = HybridTarget::from_name(trimmed).ok_or_else(|| {
+            format!(
+                "invalid hybrid target '{trimmed}' (expected rust, cpp, swift, kotlin, dart, ts, or all)"
+            )
+        })?;
+        out.push(parsed);
+    }
+    Ok(out)
+}
+
+fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
+    let files = nve_codegen::generate_all_abi_files();
+    let mut drifted = Vec::new();
+    let mut touched = Vec::with_capacity(files.len());
+
+    for file in &files {
+        let full_path = out_root.join(&file.relative_path);
+        if check {
+            match std::fs::read_to_string(&full_path) {
+                Ok(existing) if existing == file.content => {
+                    touched.push(full_path);
+                }
+                Ok(_) => {
+                    drifted.push(format!("{} (content drifted)", file.relative_path));
+                }
+                Err(e) => {
+                    drifted.push(format!("{} ({e})", file.relative_path));
+                }
+            }
+        } else {
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("create dir {}: {e}", parent.display()))?;
+            }
+            std::fs::write(&full_path, &file.content)
+                .map_err(|e| format!("write {}: {e}", full_path.display()))?;
+            touched.push(full_path);
+        }
+    }
+
+    if !drifted.is_empty() {
+        return Err(format!(
+            "ABI drift detected in {} file(s):\n  - {}\nRun `cargo nve codegen abi` to regenerate.",
+            drifted.len(),
+            drifted.join("\n  - ")
+        ));
+    }
+
+    Ok(touched)
+}
+
+fn run_codegen_hybrid(
+    spec_path: &Path,
+    target: &str,
+    out_root: &Path,
+) -> Result<Vec<(HybridTarget, PathBuf, Vec<PathBuf>)>, String> {
+    let targets = parse_hybrid_targets(target)?;
+    let spec = nve_codegen::parse_hybrid_rust_spec_file(spec_path)
+        .map_err(|e| format!("hybrid spec parse failed for {}: {e}", spec_path.display()))?;
+    let outputs = nve_codegen::generate_hybrid_all(&spec, &targets)
+        .map_err(|e| format!("hybrid codegen failed for {}: {e}", spec_path.display()))?;
+
+    let mut summary = Vec::with_capacity(outputs.len());
+    for bundle in outputs {
+        let target_dir = out_root.join(bundle.target.dir_name());
+        let written = bundle
+            .write_to_dir(&target_dir)
+            .map_err(|e| format!("failed writing {} output: {e}", bundle.target.dir_name()))?;
+        summary.push((bundle.target, target_dir, written));
+    }
+    Ok(summary)
+}
+
 fn cmd_dev(
     package: &str,
     watch_dir: &Path,
@@ -610,6 +713,51 @@ fn cmd_dev(
 
 fn cmd_codegen(action: CodegenAction) {
     match action {
+        CodegenAction::Abi { check, out } => match run_codegen_abi(&out, check) {
+            Ok(paths) => {
+                if check {
+                    println!(
+                        "Verified {} Core + Scene ABI file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}).",
+                        paths.len(),
+                        out.display(),
+                        nve_codegen::core_abi_schema_hash(),
+                        nve_codegen::NVE_SCENE_SCHEMA_HASH
+                    );
+                } else {
+                    println!(
+                        "Generated {} Core + Scene ABI file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}):",
+                        paths.len(),
+                        out.display(),
+                        nve_codegen::core_abi_schema_hash(),
+                        nve_codegen::NVE_SCENE_SCHEMA_HASH
+                    );
+                    for path in paths {
+                        println!("  - {}", path.display());
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        },
+        CodegenAction::Hybrid { spec, target, out } => {
+            let summary = run_codegen_hybrid(&spec, &target, &out).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
+            for (tgt, target_dir, written) in summary {
+                println!(
+                    "[{}] wrote {} file(s) -> {}",
+                    tgt.dir_name(),
+                    written.len(),
+                    target_dir.display()
+                );
+                for path in written {
+                    println!("  - {}", path.display());
+                }
+            }
+        }
         CodegenAction::ImportRn { spec, out } => {
             let generated = nve_codegen::import_rn_file(&spec).unwrap_or_else(|e| {
                 eprintln!("import-rn failed for {}: {e}", spec.display());
@@ -785,12 +933,73 @@ mod tests {
             _ => panic!("expected Codegen Export"),
         }
 
+        match Cli::try_parse_from(["nve", "codegen", "abi"]).unwrap().command {
+            Commands::Codegen {
+                action: CodegenAction::Abi { check, out },
+            } => {
+                assert!(!check);
+                assert_eq!(out, PathBuf::from("."));
+            }
+            _ => panic!("expected Codegen Abi"),
+        }
+
+        match Cli::try_parse_from(["nve", "codegen", "abi", "--check", "--out", "/tmp/abi"])
+            .unwrap()
+            .command
+        {
+            Commands::Codegen {
+                action: CodegenAction::Abi { check, out },
+            } => {
+                assert!(check);
+                assert_eq!(out, PathBuf::from("/tmp/abi"));
+            }
+            _ => panic!("expected Codegen Abi --check"),
+        }
+
+        match Cli::try_parse_from([
+            "nve",
+            "codegen",
+            "hybrid",
+            "specs/crypto.nve.rs",
+            "--target",
+            "rust,cpp,swift",
+            "--out",
+            "gen/hybrid",
+        ])
+        .unwrap()
+        .command
+        {
+            Commands::Codegen {
+                action: CodegenAction::Hybrid { spec, target, out },
+            } => {
+                assert_eq!(spec, PathBuf::from("specs/crypto.nve.rs"));
+                assert_eq!(target, "rust,cpp,swift");
+                assert_eq!(out, PathBuf::from("gen/hybrid"));
+            }
+            _ => panic!("expected Codegen Hybrid"),
+        }
+
+        match Cli::try_parse_from(["nve", "codegen", "hybrid", "specs/crypto.nve.rs"])
+            .unwrap()
+            .command
+        {
+            Commands::Codegen {
+                action: CodegenAction::Hybrid { spec, target, out },
+            } => {
+                assert_eq!(spec, PathBuf::from("specs/crypto.nve.rs"));
+                assert_eq!(target, "all");
+                assert_eq!(out, PathBuf::from("generated/hybrid"));
+            }
+            _ => panic!("expected Codegen Hybrid defaults"),
+        }
+
         // Invalid invocations must be rejected cleanly.
         assert!(Cli::try_parse_from(["nve"]).is_err());
         assert!(Cli::try_parse_from(["nve", "unknown"]).is_err());
         assert!(Cli::try_parse_from(["nve", "bench", "--rows", "not_a_num"]).is_err());
         assert!(Cli::try_parse_from(["nve", "dev", "--port", "99999"]).is_err());
         assert!(Cli::try_parse_from(["nve", "codegen", "import-rn"]).is_err());
+        assert!(Cli::try_parse_from(["nve", "codegen", "hybrid"]).is_err());
     }
 
     #[test]
@@ -915,6 +1124,63 @@ mod tests {
         );
         assert!(parse_export_targets("unknown-framework").is_err());
         assert!(parse_export_targets("rn,").is_err());
+
+        assert_eq!(parse_hybrid_targets("all").unwrap(), HybridTarget::ALL);
+        assert_eq!(parse_hybrid_targets(" ALL ").unwrap(), HybridTarget::ALL);
+        assert_eq!(
+            parse_hybrid_targets("rust,cpp,swift,kotlin,dart,ts").unwrap(),
+            HybridTarget::ALL
+        );
+        assert!(parse_hybrid_targets("unknown-target").is_err());
+        assert!(parse_hybrid_targets("rust,").is_err());
+    }
+
+    #[test]
+    fn codegen_abi_and_hybrid_end_to_end_write_and_check_drift() {
+        let tmp = std::env::temp_dir().join(format!(
+            "nve_cli_codegen_e2e_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // 1. `codegen abi --check` fails on empty dir
+        assert!(run_codegen_abi(&tmp, true).is_err());
+
+        // 2. `codegen abi` writes all 10 Core + Scene ABI files, then `--check` passes
+        let written = run_codegen_abi(&tmp, false).expect("write all 10 ABI files");
+        assert_eq!(written.len(), 10);
+        assert!(run_codegen_abi(&tmp, true).is_ok());
+
+        // 3. Mutating one generated file triggers non-zero drift error in `--check`
+        let target_file = tmp.join("hosts/web-shell/nve_core_abi.ts");
+        std::fs::write(&target_file, "// drifted\n").unwrap();
+        let drift_err = run_codegen_abi(&tmp, true).unwrap_err();
+        assert!(drift_err.contains("hosts/web-shell/nve_core_abi.ts"));
+
+        // 4. `codegen hybrid <spec.rs>` writes all 6 targets cleanly
+        let spec_file = tmp.join("greeter.nve.rs");
+        std::fs::write(
+            &spec_file,
+            r#"
+#[nve_hybrid_module(name = "Greeter")]
+pub trait GreeterSpec {
+    fn hello(&self, name: &str) -> String;
+}
+"#,
+        )
+        .unwrap();
+        let hybrid_out = tmp.join("hybrid_out");
+        let summary = run_codegen_hybrid(&spec_file, "all", &hybrid_out).expect("hybrid gen");
+        assert_eq!(summary.len(), 6);
+        assert!(hybrid_out.join("rust/greeter_hybrid.rs").exists());
+        assert!(hybrid_out.join("cpp/GreeterHybridAbi.h").exists());
+        assert!(hybrid_out.join("cpp/GreeterHybridSpec.hpp").exists());
+        assert!(hybrid_out.join("swift/GreeterHybridSpec.swift").exists());
+        assert!(hybrid_out.join("dart/greeter_hybrid.dart").exists());
+        assert!(hybrid_out.join("ts/greeter_hybrid.ts").exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

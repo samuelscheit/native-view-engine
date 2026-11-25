@@ -233,8 +233,9 @@ DEX_DIR="$BUILD_DIR/dex"
 rm -rf "$CLASSES_DIR" "$DEX_DIR"
 mkdir -p "$CLASSES_DIR" "$DEX_DIR"
 
-echo "==> [3/5] Compiling NveSceneBuffer.java + NveMainActivity.java (javac --release 11) and dexing (d8)..."
+echo "==> [3/5] Compiling NveCoreAbi.java + NveSceneBuffer.java + NveMainActivity.java (javac --release 11) and dexing (d8)..."
 javac --release 11 -Xlint:deprecation -cp "$ANDROID_JAR" -d "$CLASSES_DIR" \
+  "$SCRIPT_DIR/android-app/src/dev/nve/android/NveCoreAbi.java" \
   "$SCRIPT_DIR/android-app/src/dev/nve/android/NveSceneBuffer.java" \
   "$SCRIPT_DIR/android-app/src/dev/nve/android/NveMainActivity.java"
 
