@@ -137,6 +137,10 @@ class NveQtWidget : public QWidget {
   /// and drain outbound events.
   bool applyPropsJson(std::string_view propsJson);
 
+  /// Forward structured zero-copy props to `NveComponentApi::set_props_direct`, re-render if
+  /// dirty, sync Qt views, and drain outbound events.
+  bool applyPropsDirect(const NveMapEntry* entries, uint32_t count);
+
   /// Apply one binary `NVP1` Tier-1 hot-patch frame (`NveDevApi::apply_hot_patch`) and sync Qt views.
   bool applyHotPatch(std::span<const uint8_t> patchNvp1);
 

@@ -699,7 +699,10 @@ void test_real_counter_dylib() {
   QCoreApplication::processEvents();
   NVE_CHECK(find_label(QStringLiteral("Count: 0")) != nullptr);
   // Reset CounterModule's process-global INITIAL_COUNT to 0 so cold load proves restore_state works!
-  NVE_CHECK(widget.applyPropsJson(R"({"initialCount":0})"));
+  const NveMapEntry reset_initial[1] = {
+      NveMapEntry{nve::make_str_slice("initialCount"), nve::make_i64_value(0)},
+  };
+  NVE_CHECK(widget.applyPropsDirect(reset_initial, 1u));
 
   nve::qt::NveQtWidget cold_counter;
   cold_counter.resize(640, 420);
@@ -790,7 +793,11 @@ void test_frame0_mmap_snapshot_roundtrip() {
       nve::qt::NveQtWidget studio_writer;
       studio_writer.resize(960, 640);
       NVE_CHECK(studio_writer.loadDylib(studio_path, 1));
-      NVE_CHECK(studio_writer.applyPropsJson(R"({"accent":"violet","view":"metrics"})"));
+      const NveMapEntry studio_props[2] = {
+          NveMapEntry{nve::make_str_slice("accent"), nve::make_str_value("violet")},
+          NveMapEntry{nve::make_str_slice("view"), nve::make_str_value("metrics")},
+      };
+      NVE_CHECK(studio_writer.applyPropsDirect(studio_props, 2u));
       NVE_CHECK(has_text(studio_writer, QStringLiteral("Live Metrics")));
       NVE_CHECK(studio_writer.saveSnapshot(studio_snap, 1));
     }

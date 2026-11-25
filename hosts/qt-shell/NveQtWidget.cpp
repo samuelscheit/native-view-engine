@@ -361,6 +361,18 @@ bool NveQtWidget::applyPropsJson(std::string_view propsJson) {
   return dirty;
 }
 
+bool NveQtWidget::applyPropsDirect(const NveMapEntry* entries, uint32_t count) {
+  if (!impl_->session_.is_valid()) {
+    return false;
+  }
+  const bool dirty = impl_->session_.update_props_direct(entries, count, /*auto_render=*/true);
+  if (dirty) {
+    impl_->syncViews(/*check_raw_props=*/true);
+  }
+  (void)impl_->session_.drain_events();
+  return dirty;
+}
+
 bool NveQtWidget::applyHotPatch(std::span<const uint8_t> patchNvp1) {
   if (!impl_->session_.is_valid() || impl_->session_.bridge() == nullptr) {
     return false;

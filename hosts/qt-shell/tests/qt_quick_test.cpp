@@ -1067,7 +1067,10 @@ void test_live_counter_and_studio_dylibs() {
         QStringLiteral("nve_qt_quick_counter_%1.nvesnap").arg(QCoreApplication::applicationPid()));
     QFile::remove(counter_snap);
     NVE_CHECK(item->saveSnapshot(counter_snap, 1));
-    NVE_CHECK(item->applyPropsJson(R"({"initialCount":0})"));
+    const NveMapEntry reset_initial[1] = {
+        NveMapEntry{nve::make_str_slice("initialCount"), nve::make_i64_value(0)},
+    };
+    NVE_CHECK(item->applyPropsDirect(reset_initial, 1u));
 
     nve::NveQtQuickItem cold_counter;
     cold_counter.setSize(QSizeF(640, 420));
@@ -1103,7 +1106,11 @@ void test_live_counter_and_studio_dylibs() {
     const QString studio_path = QString::fromUtf8(studio_env);
     NVE_CHECK(studio->loadDylib(studio_path, 1));
     NVE_CHECK(studio->nodeCount() > 10u);
-    NVE_CHECK(studio->applyPropsJson(R"({"accent":"violet","view":"metrics"})"));
+    const NveMapEntry studio_props[2] = {
+        NveMapEntry{nve::make_str_slice("accent"), nve::make_str_value("violet")},
+        NveMapEntry{nve::make_str_slice("view"), nve::make_str_value("metrics")},
+    };
+    NVE_CHECK(studio->applyPropsDirect(studio_props, 2u));
 
     auto has_substr = [](const nve::NveQtQuickItem& it, std::string_view needle) {
       const NveSceneView view = it.sceneView();

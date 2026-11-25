@@ -162,8 +162,35 @@ fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
             })
     };
 
+    let rlib_has_wire_feature = |path: &Path| -> bool {
+        const NEEDLE: &[u8] = b"encode_bin_value_to_vec";
+        std::fs::read(path)
+            .map(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
+            .unwrap_or(false)
+    };
+    let find_best_nve_abi_in = |dir: &Path| -> Option<PathBuf> {
+        let mut matches: Vec<(bool, std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
+            })
+            .map(|p| {
+                let mtime = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                (rlib_has_wire_feature(&p), mtime, p)
+            })
+            .collect();
+        matches.sort_by_key(|(has_wire, mtime, _)| (*has_wire, *mtime));
+        matches.pop().map(|(_, _, path)| path)
+    };
+
     // 1. Classic Cargo layout (`target/<profile>/deps/`).
-    if let Some(rlib) = find_nve_abi_in(exe_dir) {
+    if let Some(rlib) = find_best_nve_abi_in(exe_dir) {
         return (rlib, vec![exe_dir.to_path_buf()]);
     }
 
@@ -212,7 +239,7 @@ fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
         }
     }
 
-    nve_abi_candidates.sort_by_key(|(mtime, _)| *mtime);
+    nve_abi_candidates.sort_by_key(|(mtime, path)| (rlib_has_wire_feature(path), *mtime));
     let nve_abi_rlib = nve_abi_candidates
         .pop()
         .map(|(_, path)| path)
