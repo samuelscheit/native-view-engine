@@ -2,19 +2,17 @@
 //!
 //! Uses a 4 KiB stack buffer fast-path on every `NveHostCallbacks::invoke` call, automatically
 //! retries once with an exact-sized heap buffer on `NVE_HOST_BUFFER_TOO_SMALL`, and resolves
-//! `NVE_HOST_PENDING` requests via an async `RequestTable` fed by `NVH1` batches.
+//! async requests and host events directly via [`RequestTable`] and [`TypedEventBus`].
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use nve_abi::{
-    NveBufferSlice, NveHostCallbacks, NveHostEventBatch, NveHostEventRecordRef, NveHostStatus,
-    NVE_CHANNEL_FLAG_RETAIN,
-};
+use nve_abi::{NveBufferSlice, NveHostCallbacks, NveHostStatus, NVE_CHANNEL_FLAG_RETAIN};
 use nve_interop::{ChannelPayload, NveChannelBus, PayloadEncoding};
 
 use crate::error::ServiceError;
+use crate::events::TypedEventBus;
 use crate::provider::{
     HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider, InvokeResult,
 };
@@ -48,7 +46,7 @@ impl RequestTable {
             .insert(request_id, RequestSlot::Pending { callback });
     }
 
-    /// Resolves `request_id` from an inbound `NVH1` `AsyncResponse`.
+    /// Resolves `request_id` from a completed async host response.
     /// Returns any registered callback so the caller can invoke it outside the mutex lock.
     pub fn resolve(
         &mut self,
@@ -91,9 +89,11 @@ struct FfiClientState {
     channel_bus: Option<Arc<Mutex<NveChannelBus>>>,
 }
 
-/// C-ABI host capability client wrapping [`NveHostCallbacks`] and decoding `NVH1` batches.
+/// C-ABI host capability client wrapping [`NveHostCallbacks`] with an optional in-process
+/// [`TypedEventBus`] and `NveHostApi::dispatch_host_events` bridge.
 pub struct FfiHostServices {
     next_request_id: AtomicU64,
+    typed_events: Arc<TypedEventBus>,
     state: Mutex<FfiClientState>,
 }
 
@@ -107,6 +107,7 @@ impl FfiHostServices {
     pub fn new() -> Self {
         Self {
             next_request_id: AtomicU64::new(1),
+            typed_events: Arc::new(TypedEventBus::new()),
             state: Mutex::new(FfiClientState {
                 callbacks: None,
                 requests: RequestTable::new(),
@@ -114,6 +115,10 @@ impl FfiHostServices {
                 channel_bus: None,
             }),
         }
+    }
+
+    pub fn typed_events(&self) -> &Arc<TypedEventBus> {
+        &self.typed_events
     }
 
     pub fn with_callbacks(callbacks: NveHostCallbacks) -> Self {
@@ -134,8 +139,8 @@ impl FfiHostServices {
         guard.callbacks.is_some()
     }
 
-    /// Attaches an [`NveChannelBus`] that automatically receives inbound `NVH1` `ChannelMessage`
-    /// records during [`Self::dispatch_host_events`].
+    /// Attaches an [`NveChannelBus`] that receives channel messages forwarded via
+    /// [`Self::push_channel_message`].
     pub fn attach_channel_bus(&self, bus: Arc<Mutex<NveChannelBus>>) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.channel_bus = Some(bus);
@@ -190,86 +195,58 @@ impl FfiHostServices {
         }
     }
 
-    /// Decodes an inbound binary `NVH1` batch (from `NveHostApi::dispatch_host_events`),
-    /// resolves pending async requests, queues push/channel events, and forwards channel
-    /// messages to any attached [`NveChannelBus`].
-    pub fn dispatch_host_events(&self, batch_bytes: &[u8]) -> Result<usize, ServiceError> {
-        let records = NveHostEventBatch::decode_refs(batch_bytes)?;
-        let count = records.len();
-        let mut callbacks_to_run: Vec<(AsyncCallback, Result<Vec<u8>, ServiceError>)> = Vec::new();
-        let mut channel_forwards: Vec<(u32, bool, Vec<u8>)> = Vec::new();
-        let attached_bus: Option<Arc<Mutex<NveChannelBus>>>;
-
-        {
+    /// Resolves a pending async request directly without intermediate batch encoding.
+    pub fn resolve_async_response(
+        &self,
+        request_id: u64,
+        status: NveHostStatus,
+        payload: Vec<u8>,
+    ) {
+        let outcome = if status.is_ok() {
+            Ok(payload)
+        } else {
+            Err(ServiceError::from_status(status))
+        };
+        let cb_pair = {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            attached_bus = guard.channel_bus.clone();
-            for rec in records {
-                match rec {
-                    NveHostEventRecordRef::AsyncResponse {
-                        request_id,
-                        status,
-                        payload,
-                    } => {
-                        let outcome = if status.is_ok() {
-                            Ok(payload.to_vec())
-                        } else {
-                            Err(ServiceError::from_status(status))
-                        };
-                        if let Some(cb_pair) = guard.requests.resolve(request_id, outcome) {
-                            callbacks_to_run.push(cb_pair);
-                        }
-                    }
-                    NveHostEventRecordRef::HostPushEvent {
-                        service_id,
-                        event_id,
-                        payload,
-                    } => {
-                        guard.events.push_back(HostEvent::Push(HostPushEvent {
-                            service_id,
-                            event_id,
-                            payload: payload.to_vec(),
-                        }));
-                    }
-                    NveHostEventRecordRef::ChannelMessage {
-                        channel_id,
-                        flags,
-                        payload,
-                    } => {
-                        let retain = (flags & NVE_CHANNEL_FLAG_RETAIN) != 0;
-                        let owned = payload.to_vec();
-                        if attached_bus.is_some() {
-                            channel_forwards.push((channel_id, retain, owned.clone()));
-                        }
-                        guard.events.push_back(HostEvent::Channel(HostChannelEvent {
-                            channel_id,
-                            retain,
-                            payload: owned,
-                        }));
-                    }
-                }
-            }
-        }
-
-        if let Some(bus_arc) = attached_bus
-            && !channel_forwards.is_empty()
-        {
-            let mut bus = bus_arc.lock().unwrap_or_else(|e| e.into_inner());
-            for (channel_id, retain, payload) in channel_forwards {
-                let _ = bus.publish_by_id(
-                    channel_id,
-                    None,
-                    PayloadEncoding::Binary,
-                    ChannelPayload::from_vec(payload),
-                    retain,
-                );
-            }
-        }
-
-        for (cb, res) in callbacks_to_run {
+            guard.requests.resolve(request_id, outcome)
+        };
+        if let Some((cb, res)) = cb_pair {
             cb(res);
         }
+    }
 
-        Ok(count)
+    /// Enqueues a host push event directly without intermediate batch encoding.
+    pub fn push_host_event(&self, service_id: u32, event_id: u32, payload: Vec<u8>) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.events.push_back(HostEvent::Push(HostPushEvent {
+            service_id,
+            event_id,
+            payload,
+        }));
+    }
+
+    /// Enqueues a channel message and forwards it to any attached [`NveChannelBus`].
+    pub fn push_channel_message(&self, channel_id: u32, retain: bool, payload: Vec<u8>) {
+        let attached_bus = {
+            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            guard.events.push_back(HostEvent::Channel(HostChannelEvent {
+                channel_id,
+                retain,
+                payload: payload.clone(),
+            }));
+            guard.channel_bus.clone()
+        };
+        if let Some(bus_arc) = attached_bus {
+            let mut bus = bus_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = bus.publish_by_id(
+                channel_id,
+                None,
+                PayloadEncoding::Binary,
+                ChannelPayload::from_vec(payload),
+                retain,
+            );
+        }
     }
 
     fn prepare_invoke(&self) -> Result<(NveHostCallbacks, u64), ServiceError> {
@@ -418,6 +395,10 @@ impl HostServiceProvider for FfiHostServices {
     fn poll_host_events(&self) -> Vec<HostEvent> {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.events.drain(..).collect()
+    }
+
+    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
+        Some(&self.typed_events)
     }
 
     fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {

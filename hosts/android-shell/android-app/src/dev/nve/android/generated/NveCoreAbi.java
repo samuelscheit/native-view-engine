@@ -8,15 +8,13 @@ package dev.nve.android.generated;
 public final class NveCoreAbi {
     private NveCoreAbi() {}
 
-    public static final long CORE_ABI_SCHEMA_HASH = 0x8AE89F103A70D669L;
-    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x8AE89F103A70D669";
+    public static final long CORE_ABI_SCHEMA_HASH = 0x154F92A395F33D12L;
+    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x154F92A395F33D12";
 
     public static final int ABI_MAGIC = 0x3145564E;
     public static final int ABI_VERSION = 1;
     public static final int ROOT_NODE_ID = 1;
     public static final int BIN_VALUE_MAX_DEPTH = 64;
-    public static final int HOST_EVENT_MAGIC = 0x3148564E;
-    public static final int HOST_EVENT_VERSION = 1;
     public static final int CHANNEL_FLAG_RETAIN = 1;
 
     // Modular interface IDs (`nve_get_interface`)

@@ -1,25 +1,17 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use nve_abi::NveHostEventBatch;
 use nve_audio::{
-    decode_clip_meta, decode_level_event, decode_load_source_request, decode_playback_event,
-    decode_record_config, encode_level_event, encode_playback_event, AudioClient, AudioClipMeta,
-    AudioEncoding, AudioEvent, AudioLevelEvent, AudioPlaybackEvent, AudioPlaybackState,
-    AudioRecordConfig, AudioSource, MemoryAudio, NativeAudio, EVENT_LEVEL_METER,
-    EVENT_PLAYBACK_STATE, SERVICE_AUDIO,
+    decode_clip_meta, decode_load_source_request, decode_record_config, emit_audio_event,
+    AudioClient, AudioClipMeta, AudioEncoding, AudioEvent, AudioLevelEvent, AudioPlaybackEvent,
+    AudioPlaybackState, AudioRecordConfig, AudioSource, MemoryAudio, NativeAudio,
 };
-use nve_host_services::{
-    FfiHostServices, HostCallbackBridge, HostEvent, HostServiceProvider, MemoryHostServices,
-    NativeHostServices, ServiceError,
-};
+use nve_host_services::{MemoryHostServices, NativeHostServices, ServiceError};
 
 #[test]
-fn audio_playback_recording_nvh1_push_native_safety_and_fuzz() {
+fn audio_playback_recording_typed_events_and_native_safety() {
     let audio_mem = Arc::new(MemoryAudio::new());
     let mem = MemoryHostServices::new().with_handler_arc(audio_mem.clone());
-    let bridge = HostCallbackBridge::new(mem);
-    let ffi = FfiHostServices::with_callbacks(bridge.callbacks());
-    let client = AudioClient::new(&ffi);
+    let client = AudioClient::new(&mem);
 
     let h_uri = client
         .load_source(&AudioSource::Uri("https://cdn.nve.dev/track.opus".into()))
@@ -71,7 +63,15 @@ fn audio_playback_recording_nvh1_push_native_safety_and_fuzz() {
     assert_eq!(clip.path.as_deref(), Some("/mem/tmp/note.opus"));
     assert_eq!(client.stop_recording(), Err(ServiceError::NotFound));
 
-    // Push events via NVH1
+    // Direct typed AudioEvent delivery via TypedEventBus (zero serialization).
+    let seen = Arc::new(Mutex::new(Vec::<AudioEvent>::new()));
+    let seen_clone = Arc::clone(&seen);
+    let _sub = client
+        .subscribe_events(move |ev| {
+            seen_clone.lock().unwrap().push(*ev);
+        })
+        .unwrap();
+
     let playback_ev = AudioPlaybackEvent {
         handle: h_uri,
         state: AudioPlaybackState::Playing,
@@ -84,41 +84,34 @@ fn audio_playback_recording_nvh1_push_native_safety_and_fuzz() {
         peak_db: -6.2,
         timestamp_ms: 99_001,
     };
-    assert!(encode_level_event(&AudioLevelEvent {
-        handle: None,
-        rms_db: f32::NEG_INFINITY,
-        peak_db: -1.0,
-        timestamp_ms: 1,
-    })
+    assert!(emit_audio_event(
+        mem.typed_events(),
+        AudioEvent::Level(AudioLevelEvent {
+            handle: None,
+            rms_db: f32::NEG_INFINITY,
+            peak_db: -1.0,
+            timestamp_ms: 1,
+        }),
+    )
     .is_err());
 
-    let mut batch = NveHostEventBatch::new();
-    batch.push_host_event(
-        SERVICE_AUDIO,
-        EVENT_PLAYBACK_STATE,
-        encode_playback_event(&playback_ev).unwrap(),
-    );
-    batch.push_host_event(
-        SERVICE_AUDIO,
-        EVENT_LEVEL_METER,
-        encode_level_event(&level_ev).unwrap(),
-    );
-    assert_eq!(ffi.dispatch_host_events(&batch.encode()).unwrap(), 2);
-    let events = ffi.poll_host_events();
-    let HostEvent::Push(p0) = &events[0] else {
-        panic!("expected push");
-    };
     assert_eq!(
-        AudioClient::<FfiHostServices>::decode_push_event(p0).unwrap(),
-        Some(AudioEvent::Playback(playback_ev))
+        emit_audio_event(mem.typed_events(), AudioEvent::Playback(playback_ev)).unwrap(),
+        1
     );
-    let HostEvent::Push(p1) = &events[1] else {
-        panic!("expected push");
-    };
     assert_eq!(
-        AudioClient::<FfiHostServices>::decode_push_event(p1).unwrap(),
-        Some(AudioEvent::Level(level_ev))
+        emit_audio_event(mem.typed_events(), AudioEvent::Level(level_ev)).unwrap(),
+        1
     );
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![AudioEvent::Playback(playback_ev), AudioEvent::Level(level_ev)]
+    );
+    let drained = client.drain_events();
+    assert_eq!(drained.len(), 2);
+    assert_eq!(*drained[0], AudioEvent::Playback(playback_ev));
+    assert_eq!(*drained[1], AudioEvent::Level(level_ev));
 
     // Native headless safety
     let native = NativeHostServices::new().with_handler(NativeAudio::new());
@@ -140,7 +133,5 @@ fn audio_playback_recording_nvh1_push_native_safety_and_fuzz() {
         let _ = decode_load_source_request(&buf);
         let _ = decode_record_config(&buf);
         let _ = decode_clip_meta(&buf);
-        let _ = decode_playback_event(&buf);
-        let _ = decode_level_event(&buf);
     }
 }

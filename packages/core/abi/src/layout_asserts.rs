@@ -12,7 +12,7 @@ use crate::ffi::{
     NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
     NveSurfaceConfig,
 };
-use crate::host::{NveHostApi, NveHostCallbacks, NveHostEventKind, NveHostStatus};
+use crate::host::{NveHostApi, NveHostCallbacks, NveHostStatus};
 use crate::scene::{NveRenderNode, NveSceneView, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE};
 use crate::value::{
     NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry, NvePropSlice,
@@ -35,8 +35,6 @@ const _: () = {
     assert!(align_of::<NativeEventKind>() == 1);
     assert!(size_of::<NveHostStatus>() == 4);
     assert!(align_of::<NveHostStatus>() == 4);
-    assert!(size_of::<NveHostEventKind>() == 1);
-    assert!(align_of::<NveHostEventKind>() == 1);
     assert!(size_of::<NveValueTag>() == 4);
     assert!(align_of::<NveValueTag>() == 4);
 

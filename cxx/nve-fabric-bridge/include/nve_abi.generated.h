@@ -23,12 +23,10 @@ extern "C" {
 #endif
 #endif
 
-#define NVE_CORE_ABI_SCHEMA_HASH 0x8AE89F103A70D669ULL
+#define NVE_CORE_ABI_SCHEMA_HASH 0x154F92A395F33D12ULL
 #define NVE_ABI_MAGIC 0x3145564Eu
 #define NVE_ABI_VERSION 1u
 #define NVE_ROOT_NODE_ID 1u
-#define NVE_HOST_EVENT_MAGIC 0x3148564Eu
-#define NVE_HOST_EVENT_VERSION 1u
 #define NVE_CHANNEL_FLAG_RETAIN 1u
 
 /* Modular interface IDs resolved once via `nve_get_interface(uint32_t)`. */

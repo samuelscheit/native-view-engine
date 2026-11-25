@@ -7,7 +7,7 @@ use std::sync::Arc;
 use nve_abi::SERVICE_SYSTEM_ENV;
 use nve_host_services::{pack_typed, HostServiceHandler, ServiceError};
 
-use crate::{dispatch_system_env_wire, LocaleSnapshot, SystemEnvBackend, TextDirection, ThemeSnapshot};
+use crate::{dispatch_system_env_ffi, LocaleSnapshot, SystemEnvBackend, TextDirection, ThemeSnapshot};
 
 /// Parses a POSIX (`en_US.UTF-8`, `ar_EG@euro`) or BCP-47 (`en-US`, `he-IL`) locale string
 /// into a normalized [`LocaleSnapshot`].
@@ -101,7 +101,7 @@ impl HostServiceHandler for NativeSystemEnv {
     }
 
     fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_system_env_wire(self, method_id, request)
+        dispatch_system_env_ffi(self, method_id, request)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

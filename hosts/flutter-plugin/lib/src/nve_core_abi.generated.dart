@@ -3,16 +3,14 @@
 
 import 'dart:ffi' as ffi;
 
-/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x8AE89F103A70D669`).
-const int nveCoreAbiSchemaHash = -8437319009829857687;
-const String nveCoreAbiSchemaHashHex = '0x8AE89F103A70D669';
+/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x154F92A395F33D12`).
+const int nveCoreAbiSchemaHash = 1535607229249699090;
+const String nveCoreAbiSchemaHashHex = '0x154F92A395F33D12';
 
 const int nveAbiMagic = 0x3145564E;
 const int nveAbiVersion = 1;
 const int nveRootNodeId = 1;
 const int nveBinValueMaxDepth = 64;
-const int nveHostEventMagic = 0x3148564E;
-const int nveHostEventVersion = 1;
 const int nveChannelFlagRetain = 1;
 
 /// Modular interface IDs passed to `nve_get_interface(uint32_t)`.

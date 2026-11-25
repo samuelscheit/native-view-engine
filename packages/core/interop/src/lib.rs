@@ -74,10 +74,8 @@ pub use surface::{
 };
 #[cfg(feature = "window")]
 pub use window::{
-    ManagedWindow, NVW1_HEADER_SIZE, NVW1_MAGIC, NVW1_VERSION, WindowCodecError, WindowCommand,
-    WindowDescriptor, WindowError, WindowFlags, WindowHandleId, WindowLifecycleEvent,
-    WindowLifecycleState, WindowManager, WindowRect, WindowState, decode_window_commands,
-    decode_window_events, encode_window_commands, encode_window_events,
+    ManagedWindow, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
+    WindowLifecycleEvent, WindowLifecycleState, WindowManager, WindowRect, WindowState,
 };
 #[cfg(feature = "sync")]
 pub use sync_delta::{

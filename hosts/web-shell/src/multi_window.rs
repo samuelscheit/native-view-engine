@@ -2,21 +2,20 @@
 //!
 //! Coordinates multiple independent [`WebAppSession`] surfaces alongside [`WindowManager`]
 //! lifecycle rules, popup window feature formatting, graceful popup-blocker errors, and
-//! zero-JSON binary `NVW1` command/event payloads for `BroadcastChannel` synchronization.
+//! direct typed [`WindowCommand`] / [`WindowLifecycleEvent`] synchronization.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use nve_abi::SurfaceId;
 use nve_interop::{
-    decode_window_commands, decode_window_events, encode_window_commands, encode_window_events,
-    SurfacePresentation, WindowCodecError, WindowCommand, WindowDescriptor, WindowError,
-    WindowHandleId, WindowLifecycleEvent, WindowManager,
+    SurfacePresentation, WindowCommand, WindowDescriptor, WindowError, WindowHandleId,
+    WindowLifecycleEvent, WindowManager,
 };
 
 use crate::session::WebAppSession;
 
-/// Default `BroadcastChannel` name used to synchronize binary `NVW1` window state across browser windows.
+/// Default `BroadcastChannel` name used to synchronize window state across browser windows.
 pub const DEFAULT_WINDOW_SYNC_CHANNEL: &str = "nve-window-sync-v1";
 
 /// Validated specification for opening a secondary browser popup window.
@@ -88,7 +87,6 @@ pub enum PopupWindowError {
     PopupBlocked { surface_id: SurfaceId, title: String },
     BroadcastChannelUnavailable(String),
     WindowManager(WindowError),
-    Codec(WindowCodecError),
 }
 
 impl fmt::Display for PopupWindowError {
@@ -107,7 +105,6 @@ impl fmt::Display for PopupWindowError {
                 write!(f, "BroadcastChannel unavailable: {msg}")
             }
             Self::WindowManager(err) => write!(f, "window manager error: {err}"),
-            Self::Codec(err) => write!(f, "NVW1 sync codec error: {err}"),
         }
     }
 }
@@ -115,22 +112,22 @@ impl fmt::Display for PopupWindowError {
 impl std::error::Error for PopupWindowError {}
 
 impl From<WindowError> for PopupWindowError {
-    fn from(value: WindowError) -> Self { Self::WindowManager(value) }
-}
-
-impl From<WindowCodecError> for PopupWindowError {
-    fn from(value: WindowCodecError) -> Self { Self::Codec(value) }
+    fn from(value: WindowError) -> Self {
+        Self::WindowManager(value)
+    }
 }
 
 /// Cross-target multi-surface web host pairing independent [`WebAppSession`]s with [`WindowManager`]
-/// lifecycle state and zero-JSON `NVW1` `BroadcastChannel` synchronization frames.
+/// lifecycle state and direct typed [`WindowCommand`] / [`WindowLifecycleEvent`] APIs.
 pub struct WebMultiWindowHost {
     sessions: BTreeMap<SurfaceId, WebAppSession>,
     window_manager: WindowManager,
 }
 
 impl Default for WebMultiWindowHost {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WebMultiWindowHost {
@@ -207,34 +204,26 @@ impl WebMultiWindowHost {
         &mut self.window_manager
     }
 
-    /// Encodes a batch of [`WindowCommand`]s for `BroadcastChannel` transmission (zero JSON).
-    pub fn encode_sync_commands(commands: &[WindowCommand]) -> Vec<u8> {
-        encode_window_commands(commands)
+    /// Applies a single typed [`WindowCommand`] directly with zero serialization.
+    pub fn apply_window_command(
+        &mut self,
+        command: WindowCommand,
+    ) -> Result<Option<WindowHandleId>, PopupWindowError> {
+        Ok(self.window_manager.apply_command(command)?)
     }
 
-    /// Decodes and applies an inbound `NVW1` command buffer received over `BroadcastChannel`.
-    pub fn apply_sync_command_frame(&mut self, bytes: &[u8]) -> Result<usize, PopupWindowError> {
-        let commands = decode_window_commands(bytes)?;
-        let count = commands.len();
-        for cmd in commands {
-            let _ = self.window_manager.apply_command(cmd)?;
-        }
-        Ok(count)
+    /// Applies a slice of typed [`WindowCommand`]s directly in FIFO order.
+    pub fn apply_window_commands(
+        &mut self,
+        commands: &[WindowCommand],
+    ) -> Result<usize, PopupWindowError> {
+        self.window_manager.apply_commands(commands)?;
+        Ok(commands.len())
     }
 
-    /// Drains pending [`WindowLifecycleEvent`]s and encodes them into a binary `NVW1` sync frame.
-    pub fn drain_sync_event_frame(&mut self) -> Option<Vec<u8>> {
-        let events = self.window_manager.drain_events();
-        if events.is_empty() {
-            None
-        } else {
-            Some(encode_window_events(&events))
-        }
-    }
-
-    /// Decodes an inbound `NVW1` event buffer received over `BroadcastChannel`.
-    pub fn decode_sync_events(bytes: &[u8]) -> Result<Vec<WindowLifecycleEvent>, PopupWindowError> {
-        Ok(decode_window_events(bytes)?)
+    /// Drains all pending typed [`WindowLifecycleEvent`]s with zero serialization.
+    pub fn drain_lifecycle_events(&mut self) -> Vec<WindowLifecycleEvent> {
+        self.window_manager.drain_events()
     }
 }
 
@@ -249,7 +238,10 @@ mod tests {
 
     #[test]
     fn popup_spec_validates_inputs_and_formats_features_and_blocker_error() {
-        assert_eq!(PopupWindowSpec::new(0, "Bad", 400, 300), Err(PopupWindowError::InvalidSurfaceId));
+        assert_eq!(
+            PopupWindowSpec::new(0, "Bad", 400, 300),
+            Err(PopupWindowError::InvalidSurfaceId)
+        );
         assert_eq!(
             PopupWindowSpec::new(2, "Bad", 0, 300),
             Err(PopupWindowError::InvalidDimensions { width: 0, height: 300 })
@@ -274,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_surface_web_host_isolates_sessions_cascades_popovers_and_syncs_nvw1() {
+    fn multi_surface_web_host_isolates_sessions_cascades_popovers_and_applies_typed_commands() {
         let mut host = WebMultiWindowHost::new();
 
         let mut studio = WebAppSession::new_studio_workspace(1, WebBackend::new(), Viewport::default());
@@ -334,18 +326,25 @@ mod tests {
         assert!(host.session(2).unwrap().backend().render_html().contains("Count: 1"));
         assert!(host.session(3).unwrap().backend().render_html().contains("Count: 0"));
 
-        // BroadcastChannel binary NVW1 command sync updates title & focus cleanly.
-        let cmd_frame = WebMultiWindowHost::encode_sync_commands(&[
-            WindowCommand::SetTitle { handle: h2, title: "Counter Synced".into() },
-            WindowCommand::FocusWindow { handle: h1 },
-        ]);
-        assert_eq!(host.apply_sync_command_frame(&cmd_frame).unwrap(), 2);
+        // Direct typed WindowCommand dispatch updates title & focus cleanly.
+        assert_eq!(
+            host.apply_window_commands(&[
+                WindowCommand::SetTitle {
+                    handle: h2,
+                    title: "Counter Synced".into(),
+                },
+                WindowCommand::FocusWindow { handle: h1 },
+            ])
+            .unwrap(),
+            2
+        );
         assert_eq!(host.window_manager().get(h2).unwrap().descriptor.title, "Counter Synced");
         assert_eq!(host.window_manager().focused_window(), Some(h1));
 
-        let ev_frame = host.drain_sync_event_frame().expect("accumulated NVW1 events");
-        let decoded_events = WebMultiWindowHost::decode_sync_events(&ev_frame).unwrap();
-        assert!(decoded_events.iter().any(|e| matches!(e, WindowLifecycleEvent::Opened { surface_id: 2, .. })));
+        let events = host.drain_lifecycle_events();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WindowLifecycleEvent::Opened { surface_id: 2, .. })));
 
         // Unmounting primary surface 1 cascades popover 3 while leaving popup 2 mounted.
         let removed = host.unmount_surface(1);

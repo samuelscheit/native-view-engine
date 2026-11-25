@@ -206,8 +206,6 @@ const _: () = {
     assert!(crate::codec::NVE_ABI_MAGIC == 0x3145_564E);
     assert!(crate::codec::NVE_ABI_VERSION == 1);
     assert!(crate::value::NVE_BIN_VALUE_MAX_DEPTH == 64);
-    assert!(u32::from_le_bytes(crate::host::NVE_HOST_EVENT_MAGIC) == 0x3148_564E);
-    assert!(crate::host::NVE_HOST_EVENT_VERSION == 1);
 };
 
 const fn abi_const(name: &'static str, value: u64, hex: bool, doc: Option<&'static str>) -> AbiConstDescriptor {
@@ -234,8 +232,6 @@ const CORE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_ABI_VERSION", 1, false, Some("Binary `CommandBuffer` ABI version.")),
     abi_const("NVE_ROOT_NODE_ID", ROOT_NODE_ID as u64, false, Some("Reserved root node ID for every surface.")),
     abi_const("NVE_BIN_VALUE_MAX_DEPTH", 64, false, Some("Maximum permitted container nesting depth for `NveBinValue`.")),
-    abi_const("NVE_HOST_EVENT_MAGIC", u32::from_le_bytes(*b"NVH1") as u64, true, Some("Binary `NveHostEventBatch` wire magic (`\"NVH1\"` little-endian).")),
-    abi_const("NVE_HOST_EVENT_VERSION", 1, false, Some("Binary `NveHostEventBatch` wire version.")),
     abi_const("NVE_CHANNEL_FLAG_RETAIN", NVE_CHANNEL_FLAG_RETAIN as u64, false, Some("Flag bit on `channel_publish` / `ChannelMessage` requesting retained channel state.")),
 ];
 

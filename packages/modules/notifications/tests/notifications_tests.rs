@@ -1,17 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use nve_host_services::{
-    HostEvent, HostServiceProvider, MemoryHostServices, NativeHostServices, ServiceError,
-};
+use nve_host_services::{MemoryHostServices, NativeHostServices, ServiceError};
 use nve_notifications::{
-    decode_cancel_request, decode_permission_response, decode_show_request, decode_tapped_event,
-    encode_show_request, encode_tapped_event, MemoryNotifications, NativeNotifications,
+    emit_notification_event, MemoryNotifications, NativeNotifications, NotificationEvent,
     NotificationPermission, NotificationRequest, NotificationTapped, NotificationsClient,
-    EVENT_NOTIFICATION_TAPPED, SERVICE_NOTIFICATIONS,
 };
 
 #[test]
-fn notifications_memory_push_native_unbundled_safety_and_fuzz() {
+fn notifications_direct_typed_memory_events_validation_and_native_unbundled_safety() {
     let notif_mem = Arc::new(MemoryNotifications::new());
     let host = MemoryHostServices::new().with_handler_arc(notif_mem.clone());
     let client = NotificationsClient::new(&host);
@@ -33,29 +29,54 @@ fn notifications_memory_push_native_unbundled_safety_and_fuzz() {
         vec!["build-1".to_string()]
     );
 
+    // Validation rejects empty id/title cleanly.
+    assert!(matches!(
+        client.show(&NotificationRequest::new("", "Title", "Body")),
+        Err(ServiceError::InvalidArg(_))
+    ));
+    assert!(matches!(
+        client.show(&NotificationRequest::new("id", "", "Body")),
+        Err(ServiceError::InvalidArg(_))
+    ));
+    assert!(matches!(client.cancel(""), Err(ServiceError::InvalidArg(_))));
+
     notif_mem.set_permission(NotificationPermission::Denied);
     assert_eq!(
         client.show(&NotificationRequest::new("n2", "Blocked", "Denied")),
         Err(ServiceError::PermissionDenied)
     );
 
+    // Direct typed NotificationEvent delivery via TypedEventBus (zero serialization).
+    let seen = Arc::new(Mutex::new(Vec::<NotificationEvent>::new()));
+    let seen_clone = Arc::clone(&seen);
+    let _sub = client
+        .subscribe_events(move |ev| {
+            seen_clone.lock().unwrap().push(ev.clone());
+        })
+        .unwrap();
+
     let tapped = NotificationTapped {
         id: "build-1".into(),
         action_url: Some("nve://builds/1".into()),
     };
-    host.push_host_event(
-        SERVICE_NOTIFICATIONS,
-        EVENT_NOTIFICATION_TAPPED,
-        encode_tapped_event(&tapped).unwrap(),
-    );
-    let events = host.poll_host_events();
-    let HostEvent::Push(ref push) = events[0] else {
-        panic!("expected push");
-    };
     assert_eq!(
-        NotificationsClient::<MemoryHostServices>::decode_push_event(push).unwrap(),
-        Some(tapped)
+        notif_mem.emit_tapped(host.typed_events(), tapped.clone()).unwrap(),
+        1
     );
+    assert!(matches!(
+        emit_notification_event(
+            host.typed_events(),
+            NotificationEvent::Tapped(NotificationTapped {
+                id: String::new(),
+                action_url: None,
+            })
+        ),
+        Err(ServiceError::InvalidArg(_))
+    ));
+
+    let expected = NotificationEvent::Tapped(tapped);
+    assert_eq!(*seen.lock().unwrap(), vec![expected.clone()]);
+    assert_eq!(client.drain_events(), vec![Arc::new(expected)]);
 
     // Unbundled `cargo test` binary must NEVER crash via ObjC `UNUserNotificationCenter` exception!
     let native = NativeHostServices::new().with_handler(NativeNotifications::new());
@@ -68,25 +89,4 @@ fn notifications_memory_push_native_unbundled_safety_and_fuzz() {
         native_client.show(&NotificationRequest::new("t", "Title", "Body")),
         Err(ServiceError::Unsupported)
     );
-
-    // Prefix truncation + PRNG fuzz.
-    let valid_show = encode_show_request(&notif).unwrap();
-    for len in 0..valid_show.len() {
-        assert!(decode_show_request(&valid_show[..len]).is_err());
-    }
-    let mut seed: u64 = 0x4071_F100_5EED_0006;
-    let mut next_u8 = || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        (seed & 0xFF) as u8
-    };
-    for i in 0..512 {
-        let len = i % 64;
-        let buf: Vec<u8> = (0..len).map(|_| next_u8()).collect();
-        let _ = decode_permission_response(&buf);
-        let _ = decode_show_request(&buf);
-        let _ = decode_cancel_request(&buf);
-        let _ = decode_tapped_event(&buf);
-    }
 }

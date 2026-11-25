@@ -3,7 +3,7 @@
 
 use core::mem::{align_of, offset_of, size_of};
 
-use nve_abi::host::{NveHostEventKind, NveHostStatus};
+use nve_abi::host::NveHostStatus;
 use nve_abi::schema::{
     core_abi_descriptor, scene_abi_descriptor, AbiItemDescriptor, AbiRecordDescriptor,
     NveEnumSchema, NveSchema, NveStructSchema, NveUnionSchema,
@@ -89,7 +89,7 @@ fn derive_nve_abi_handles_downstream_struct_union_and_signed_enum() {
 fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     let core = core_abi_descriptor();
     assert_eq!(core.namespace, Some("NveCoreAbi"));
-    assert_eq!(core.consts.len(), 7);
+    assert_eq!(core.consts.len(), 5);
     assert_eq!(core.aliases.len(), 4);
     assert_eq!(core.enums.len(), 6);
     assert_eq!(core.records.len(), 17);
@@ -132,10 +132,6 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     assert_eq!(status.variants[0].value, 0);
     assert_eq!(status.variants[2].value, -1);
     assert_eq!(status.variants[9].value, -8);
-
-    let host_ev = <NveHostEventKind as NveEnumSchema>::SCHEMA;
-    assert_eq!(host_ev.variants.len(), 3);
-    assert_eq!(host_ev.variants[2].value, 3);
 
     assert_eq!(
         <NveBufferSlice as NveSchema>::ITEM,

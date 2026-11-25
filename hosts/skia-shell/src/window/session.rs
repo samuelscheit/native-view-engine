@@ -25,6 +25,7 @@ use super::hot_reload_client::resolve_dylib_path;
 use super::{
     write_pixel_buffer_ppm, write_pixel_buffer_screenshot, DesktopApp, DesktopHostError,
 };
+use crate::host_services::SkiaHostEvent;
 
 #[inline]
 pub(super) fn now_us() -> u64 {
@@ -235,9 +236,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(header)
     }
 
-    /// Dispatches a binary `NVH1` host-event batch into the mounted app.
-    pub fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        self.app.dispatch_host_events(batch)
+    /// Dispatches a direct typed [`SkiaHostEvent`] into the mounted app with zero serialization.
+    pub fn dispatch_host_event(&mut self, event: &SkiaHostEvent) -> bool {
+        self.app.dispatch_host_event(event)
     }
 
     /// Writes the current rasterized [`PixelBuffer`] to a binary `P6` PPM file.

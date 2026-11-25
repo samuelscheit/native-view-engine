@@ -367,7 +367,7 @@ fn export_nve_app_catches_panics_across_all_13_shims_and_null_handles() {
 
     set_panic_target(PanicTarget::DispatchHostEvents);
     assert_eq!(
-        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"NVH1")) },
+        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"host")) },
         0
     );
     let msg = take_last_ffi_panic().unwrap();

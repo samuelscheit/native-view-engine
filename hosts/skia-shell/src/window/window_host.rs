@@ -28,7 +28,7 @@ use super::session::DesktopSession;
 use super::{
     replay_snapshot_into_backend, DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot,
 };
-use crate::host_services::{encode_window_lifecycle_batch, SkiaHostServices};
+use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 /// Live multi-window `winit` desktop host supporting direct hardware GPU swapchains (`skia-metal`,
 /// `skia-vulkan`, `skia-d3d`) with `softbuffer` fallback, Frame-0 `MmapSnapshot` instant boot,
@@ -407,9 +407,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         }
         apply_window_state(&window, desc.state);
 
-        let initial_theme_batch = window
+        let initial_theme = window
             .theme()
-            .map(|t| self.host_services.update_theme_from_winit(t, scale).1);
+            .map(|t| self.host_services.update_theme_from_winit(t, scale));
         let window_id = window.id();
         let mut sw = SurfaceWindow {
             window: window.clone(),
@@ -422,8 +422,8 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             ime_allowed: false,
             last_telemetry: None,
         };
-        if let Some(batch) = initial_theme_batch
-            && sw.session.dispatch_host_events(&batch)
+        if let Some(theme) = initial_theme
+            && sw.session.dispatch_host_event(&SkiaHostEvent::ThemeChanged(theme))
         {
             let _ = sw.session.render_and_rasterize();
         }
@@ -440,10 +440,10 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         Ok(window_id)
     }
 
-    pub(crate) fn broadcast_host_event_batch(&mut self, batch: &[u8]) -> bool {
+    pub(crate) fn broadcast_host_event(&mut self, event: &SkiaHostEvent) -> bool {
         let mut any_handled = false;
         for sw in self.windows.values_mut() {
-            if sw.session.dispatch_host_events(batch) {
+            if sw.session.dispatch_host_event(event) {
                 any_handled = true;
                 if let Err(err) = sw.session.render_and_rasterize() {
                     eprintln!("[nve-skia-shell] host event render error: {err}");
@@ -453,7 +453,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             }
         }
         if let Some(primary) = self.primary_session.as_mut()
-            && primary.dispatch_host_events(batch)
+            && primary.dispatch_host_event(event)
         {
             any_handled = true;
             let _ = primary.render_and_rasterize();
@@ -466,8 +466,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         if events.is_empty() {
             return false;
         }
-        let batch = encode_window_lifecycle_batch(&events);
-        self.broadcast_host_event_batch(&batch)
+        self.broadcast_host_event(&SkiaHostEvent::WindowLifecycle(events))
     }
 
     pub(crate) fn finalize_closed_handles(

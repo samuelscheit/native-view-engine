@@ -274,7 +274,7 @@ impl HotAppInstance {
         }
     }
 
-    /// Dispatches a binary `NVH1` host-event batch via `NveHostApi::dispatch_host_events`.
+    /// Dispatches a host-event payload buffer via `NveHostApi::dispatch_host_events`.
     pub fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
         match self.host {
             Some(api) => unsafe {

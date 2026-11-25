@@ -28,7 +28,7 @@ use winit::window::{Fullscreen, Theme as WinitTheme, Window, WindowAttributes, W
 
 use super::session::DesktopSession;
 use super::{DesktopApp, DesktopHostError};
-use crate::host_services::{encode_window_lifecycle_batch, SkiaHostServices};
+use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 /// Cross-thread event loop wake signals for [`super::DesktopWindowHost`].
 #[derive(Debug, Clone)]
@@ -539,13 +539,13 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
     }
 
     pub fn simulate_theme_change(&mut self, theme: WinitTheme, scale_factor: f32) -> bool {
-        let (_snap, batch) = self.host_services.update_theme_from_winit(theme, scale_factor);
-        self.broadcast_host_event_batch(&batch)
+        let snap = self.host_services.update_theme_from_winit(theme, scale_factor);
+        self.broadcast_host_event(&SkiaHostEvent::ThemeChanged(snap))
     }
 
     pub fn simulate_locale_change(&mut self, locale: LocaleSnapshot) -> bool {
-        let batch = self.host_services.update_locale(locale);
-        self.broadcast_host_event_batch(&batch)
+        let updated = self.host_services.update_locale(locale);
+        self.broadcast_host_event(&SkiaHostEvent::LocaleChanged(updated))
     }
 
     pub fn flush_window_lifecycle_events(&mut self) -> bool {
@@ -553,14 +553,13 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
         if events.is_empty() {
             return false;
         }
-        let batch = encode_window_lifecycle_batch(&events);
-        self.broadcast_host_event_batch(&batch)
+        self.broadcast_host_event(&SkiaHostEvent::WindowLifecycle(events))
     }
 
-    fn broadcast_host_event_batch(&mut self, batch: &[u8]) -> bool {
+    fn broadcast_host_event(&mut self, event: &SkiaHostEvent) -> bool {
         let mut any_handled = false;
         for win in self.windows.values_mut() {
-            if win.session.dispatch_host_events(batch) {
+            if win.session.dispatch_host_event(event) {
                 any_handled = true;
                 let _ = win.session.render_and_rasterize();
             }

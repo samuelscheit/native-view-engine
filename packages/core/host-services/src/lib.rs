@@ -11,6 +11,7 @@ pub mod apple_objc;
 pub mod bridge;
 pub mod codec;
 pub mod error;
+pub mod events;
 pub mod ffi_client;
 pub mod provider;
 pub mod registry;
@@ -23,6 +24,7 @@ pub use codec::{
     MAX_SEQ_ITEMS,
 };
 pub use error::ServiceError;
+pub use events::{TypedAsyncTable, TypedEventBus, TypedEventSubscription, TypedHostEvent};
 pub use ffi_client::{FfiHostServices, RequestTable, FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE};
 pub use provider::{
     pack_typed, resolve_typed, HostChannelEvent, HostEvent, HostPushEvent, HostServiceHandler,

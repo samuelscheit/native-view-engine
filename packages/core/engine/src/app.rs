@@ -210,7 +210,7 @@ pub trait NveApp: Sized + 'static {
     /// Passing `None` unbinds any previously attached host callbacks.
     fn bind_host(&mut self, _callbacks: Option<NveHostCallbacks>) {}
 
-    /// Dispatches a binary `NVH1` host-event batch (async completions, push events, channel messages).
+    /// Dispatches a host-event payload buffer across `NVE_IFACE_HOST = 5`.
     /// Returns `true` if the surface should re-render.
     fn dispatch_host_events(&mut self, _batch: &[u8]) -> bool {
         false

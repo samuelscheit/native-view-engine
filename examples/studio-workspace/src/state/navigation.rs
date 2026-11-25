@@ -209,7 +209,7 @@ impl WorkspaceState {
         true
     }
 
-    /// Pulls live theme (`NVT2`) and locale (`NVL1`) from [`StudioHostServices`] via
+    /// Pulls live theme and locale snapshots from [`StudioHostServices`] via
     /// `nve_system_env::SystemEnvClient` and synchronizes them into [`TraitStore`].
     pub fn sync_system_env(&mut self, services: &StudioHostServices) -> bool {
         let Ok(env) = services.fetch_system_env() else {

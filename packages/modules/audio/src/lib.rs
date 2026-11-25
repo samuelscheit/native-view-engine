@@ -1,11 +1,14 @@
 //! Audio playback & recording capability (`SERVICE_AUDIO = 0x0022`) with direct
-//! zero-serialization in-process dispatch ([`AudioBackend`]), cross-language `NVE_IFACE_HOST`
-//! binary codecs, playback/level meter push-event decoding, [`MemoryAudio`], and [`NativeAudio`].
+//! zero-serialization in-process dispatch ([`AudioBackend`]), direct typed playback/level
+//! meter events ([`AudioEvent`] over [`TypedEventBus`]), [`MemoryAudio`], and [`NativeAudio`].
 
 pub mod handler;
 
+use std::sync::Arc;
+
 use nve_host_services::{
-    resolve_typed, BinReader, BinWriter, HostPushEvent, HostServiceProvider, ServiceError,
+    resolve_typed, BinReader, BinWriter, HostServiceProvider, ServiceError, TypedEventBus,
+    TypedEventSubscription,
 };
 
 pub use handler::{dispatch_audio_wire, AudioBackend, MemoryAudio, MockAudioTrack, NativeAudio};
@@ -397,72 +400,28 @@ pub fn decode_clip_meta(bytes: &[u8]) -> Result<AudioClipMeta, ServiceError> {
     })
 }
 
-pub fn encode_playback_event(ev: &AudioPlaybackEvent) -> Result<Vec<u8>, ServiceError> {
-    validate_handle(ev.handle)?;
-    let mut w = BinWriter::with_capacity(25);
-    w.write_u64(ev.handle.0);
-    w.write_u8(ev.state as u8);
-    w.write_u64(ev.position_ms);
-    w.write_u64(ev.duration_ms);
-    Ok(w.into_bytes())
+/// Validates an [`AudioEvent`] (non-zero handle and finite dB readings).
+pub fn validate_audio_event(ev: &AudioEvent) -> Result<(), ServiceError> {
+    match ev {
+        AudioEvent::Playback(p) => validate_handle(p.handle),
+        AudioEvent::Level(l) => {
+            if !l.rms_db.is_finite() || !l.peak_db.is_finite() {
+                return Err(ServiceError::InvalidArg(
+                    "audio level rms_db and peak_db must be finite".into(),
+                ));
+            }
+            if let Some(h) = l.handle {
+                validate_handle(h)?;
+            }
+            Ok(())
+        }
+    }
 }
 
-pub fn decode_playback_event(bytes: &[u8]) -> Result<AudioPlaybackEvent, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let handle = AudioHandle(r.read_u64()?);
-    let state_raw = r.read_u8()?;
-    let state = AudioPlaybackState::from_u8(state_raw)
-        .ok_or_else(|| ServiceError::Codec(format!("invalid AudioPlaybackState {state_raw}")))?;
-    let position_ms = r.read_u64()?;
-    let duration_ms = r.read_u64()?;
-    r.finish()?;
-    validate_handle(handle)?;
-    Ok(AudioPlaybackEvent {
-        handle,
-        state,
-        position_ms,
-        duration_ms,
-    })
-}
-
-pub fn encode_level_event(ev: &AudioLevelEvent) -> Result<Vec<u8>, ServiceError> {
-    if !ev.rms_db.is_finite() || !ev.peak_db.is_finite() {
-        return Err(ServiceError::InvalidArg(
-            "audio level rms_db and peak_db must be finite".into(),
-        ));
-    }
-    if let Some(h) = ev.handle {
-        validate_handle(h)?;
-    }
-    let mut w = BinWriter::with_capacity(25);
-    w.write_opt_u64(ev.handle.map(|h| h.0));
-    w.write_f32(ev.rms_db);
-    w.write_f32(ev.peak_db);
-    w.write_u64(ev.timestamp_ms);
-    Ok(w.into_bytes())
-}
-
-pub fn decode_level_event(bytes: &[u8]) -> Result<AudioLevelEvent, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let handle = r.read_opt_u64()?.map(AudioHandle);
-    let rms_db = r.read_f32()?;
-    let peak_db = r.read_f32()?;
-    let timestamp_ms = r.read_u64()?;
-    r.finish()?;
-    if let Some(h) = handle {
-        validate_handle(h)?;
-    }
-    if !rms_db.is_finite() || !peak_db.is_finite() {
-        return Err(ServiceError::Codec(
-            "audio level event contains non-finite dB values".into(),
-        ));
-    }
-    Ok(AudioLevelEvent {
-        handle,
-        rms_db,
-        peak_db,
-        timestamp_ms,
-    })
+/// Validates and publishes a typed [`AudioEvent`] directly onto `bus` with zero serialization.
+pub fn emit_audio_event(bus: &TypedEventBus, ev: AudioEvent) -> Result<usize, ServiceError> {
+    validate_audio_event(&ev)?;
+    Ok(bus.publish(ev))
 }
 
 fn validate_source(source: &AudioSource) -> Result<(), ServiceError> {
@@ -601,21 +560,24 @@ impl<'a, P: HostServiceProvider + ?Sized> AudioClient<'a, P> {
         decode_clip_meta(&resp)
     }
 
-    pub fn decode_push_event(event: &HostPushEvent) -> Result<Option<AudioEvent>, ServiceError> {
-        if event.service_id != SERVICE_AUDIO {
-            return Ok(None);
-        }
-        match event.event_id {
-            EVENT_PLAYBACK_STATE => Ok(Some(AudioEvent::Playback(decode_playback_event(
-                &event.payload,
-            )?))),
-            EVENT_LEVEL_METER => Ok(Some(AudioEvent::Level(decode_level_event(
-                &event.payload,
-            )?))),
-            other => Err(ServiceError::Codec(format!(
-                "unknown audio event_id {other}"
-            ))),
-        }
+    /// Subscribes directly to typed [`AudioEvent`]s on the provider's [`TypedEventBus`].
+    pub fn subscribe_events<F>(&self, handler: F) -> Result<TypedEventSubscription, ServiceError>
+    where
+        F: Fn(&AudioEvent) + Send + Sync + 'static,
+    {
+        let bus = self
+            .provider
+            .typed_event_bus()
+            .ok_or(ServiceError::Unsupported)?;
+        Ok(bus.subscribe::<AudioEvent, F>(false, handler))
+    }
+
+    /// Drains queued typed [`AudioEvent`]s directly from the provider's [`TypedEventBus`].
+    pub fn drain_events(&self) -> Vec<Arc<AudioEvent>> {
+        self.provider
+            .typed_event_bus()
+            .map(|bus| bus.drain_typed::<AudioEvent>())
+            .unwrap_or_default()
     }
 
     fn invoke_void(&self, method_id: u32, req: &[u8], label: &str) -> Result<(), ServiceError> {

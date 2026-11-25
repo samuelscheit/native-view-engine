@@ -1,12 +1,15 @@
 //! Hardware inertial & environmental sensors capability (`SERVICE_SENSORS = 0x0025`) with
-//! direct zero-serialization in-process dispatch ([`SensorsBackend`]), zero-copy fixed-layout
-//! `#[repr(C)]` [`SensorSample`] decoding, [`MemorySensors`], and [`NativeSensors`].
+//! direct zero-serialization in-process dispatch ([`SensorsBackend`]), fixed-layout
+//! `#[repr(C)]` [`SensorSample`] events over [`TypedEventBus`], [`MemorySensors`], and
+//! [`NativeSensors`].
 
 pub mod handler;
 
+use std::sync::Arc;
+
 use nve_host_services::{
-    resolve_typed, BinReader, BinWriter, HostPushEvent, HostServiceProvider, ServiceError,
-    MAX_SEQ_ITEMS,
+    resolve_typed, BinReader, BinWriter, HostServiceProvider, ServiceError, TypedEventBus,
+    TypedEventSubscription, MAX_SEQ_ITEMS,
 };
 
 pub use handler::{dispatch_sensors_wire, MemorySensors, NativeSensors, SensorsBackend};
@@ -17,14 +20,6 @@ pub const SERVICE_SENSORS: u32 = 0x0025;
 pub const METHOD_SENSOR_IS_AVAILABLE: u32 = 1;
 pub const METHOD_SENSOR_SUBSCRIBE: u32 = 2;
 pub const METHOD_SENSOR_UNSUBSCRIBE: u32 = 3;
-
-/// Host push event ID carrying a single fixed-layout 20-byte [`SensorSample`].
-pub const EVENT_SENSOR_SAMPLE: u32 = 1;
-/// Host push event ID carrying a packed batch of zero-copy 20-byte [`SensorSample`] records.
-pub const EVENT_SENSOR_BATCH: u32 = 2;
-
-/// Fixed wire size in bytes of one little-endian [`SensorSample`] (`3 * f32 + u64`).
-pub const SENSOR_SAMPLE_WIRE_LEN: usize = 20;
 
 /// Maximum supported sensor sampling frequency (Hz).
 pub const MAX_SENSOR_RATE_HZ: u16 = 1000;
@@ -76,111 +71,71 @@ const _: () = {
 };
 
 impl SensorSample {
-    pub fn encode(&self) -> Result<[u8; SENSOR_SAMPLE_WIRE_LEN], ServiceError> {
+    /// Validates that all three sample axes are finite numbers.
+    pub fn validate(&self) -> Result<(), ServiceError> {
         if !self.x.is_finite() || !self.y.is_finite() || !self.z.is_finite() {
             return Err(ServiceError::InvalidArg(
                 "SensorSample axes x/y/z must be finite".into(),
             ));
         }
-        let mut out = [0u8; SENSOR_SAMPLE_WIRE_LEN];
-        out[0..4].copy_from_slice(&self.x.to_le_bytes());
-        out[4..8].copy_from_slice(&self.y.to_le_bytes());
-        out[8..12].copy_from_slice(&self.z.to_le_bytes());
-        out[12..20].copy_from_slice(&self.timestamp_ns.to_le_bytes());
-        Ok(out)
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, ServiceError> {
-        if bytes.len() != SENSOR_SAMPLE_WIRE_LEN {
-            return Err(ServiceError::Codec(format!(
-                "invalid SensorSample byte length {}: expected {SENSOR_SAMPLE_WIRE_LEN}",
-                bytes.len()
-            )));
-        }
-        let x = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let y = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        let z = f32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-            return Err(ServiceError::Codec(
-                "SensorSample contains non-finite float axis".into(),
-            ));
-        }
-        let timestamp_ns = u64::from_le_bytes([
-            bytes[12], bytes[13], bytes[14], bytes[15], bytes[16], bytes[17], bytes[18], bytes[19],
-        ]);
-        Ok(Self {
-            x,
-            y,
-            z,
-            timestamp_ns,
-        })
+        Ok(())
     }
 }
 
-/// Zero-copy borrowed view over packed 20-byte [`SensorSample`] records.
-#[derive(Debug, Clone, Copy)]
-pub struct SensorSampleSlice<'a> {
-    raw: &'a [u8],
-}
-
-impl<'a> SensorSampleSlice<'a> {
-    pub fn from_bytes(raw: &'a [u8]) -> Result<Self, ServiceError> {
-        if !raw.len().is_multiple_of(SENSOR_SAMPLE_WIRE_LEN) {
-            return Err(ServiceError::Codec(format!(
-                "sensor sample buffer length {} is not a multiple of {SENSOR_SAMPLE_WIRE_LEN}",
-                raw.len()
-            )));
-        }
-        let count = raw.len() / SENSOR_SAMPLE_WIRE_LEN;
-        if count > MAX_SEQ_ITEMS {
-            return Err(ServiceError::Codec(format!(
-                "sensor sample batch count {count} exceeds limit {MAX_SEQ_ITEMS}"
-            )));
-        }
-        for i in 0..count {
-            let off = i * SENSOR_SAMPLE_WIRE_LEN;
-            let _ = SensorSample::decode(&raw[off..off + SENSOR_SAMPLE_WIRE_LEN])?;
-        }
-        Ok(Self { raw })
-    }
-
-    pub fn len(&self) -> usize {
-        self.raw.len() / SENSOR_SAMPLE_WIRE_LEN
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.raw.is_empty()
-    }
-
-    pub fn get(&self, index: usize) -> Option<SensorSample> {
-        let off = index.checked_mul(SENSOR_SAMPLE_WIRE_LEN)?;
-        let slice = self.raw.get(off..off + SENSOR_SAMPLE_WIRE_LEN)?;
-        SensorSample::decode(slice).ok()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = SensorSample> + 'a {
-        self.raw
-            .as_chunks::<SENSOR_SAMPLE_WIRE_LEN>()
-            .0
-            .iter()
-            .map(|chunk| SensorSample::decode(chunk).expect("validated on construction"))
-    }
-}
-
-/// Zero-copy decoded sensor batch push event.
-#[derive(Debug, Clone, Copy)]
-pub struct SensorBatchEventRef<'a> {
-    pub subscription_id: SensorSubscriptionId,
-    pub kind: SensorKind,
-    pub samples: SensorSampleSlice<'a>,
-}
-
-/// Owned decoded sensor push event.
+/// Direct typed sensor batch event delivered over [`TypedEventBus`] with zero serialization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SensorBatchEvent {
     pub subscription_id: SensorSubscriptionId,
     pub kind: SensorKind,
     pub samples: Vec<SensorSample>,
+}
+
+impl SensorBatchEvent {
+    pub fn new(
+        subscription_id: SensorSubscriptionId,
+        kind: SensorKind,
+        samples: Vec<SensorSample>,
+    ) -> Result<Self, ServiceError> {
+        if subscription_id.0 == 0 {
+            return Err(ServiceError::InvalidArg(
+                "sensor subscription id must be non-zero".into(),
+            ));
+        }
+        if samples.len() > MAX_SEQ_ITEMS {
+            return Err(ServiceError::InvalidArg(
+                "sensor sample batch exceeds MAX_SEQ_ITEMS".into(),
+            ));
+        }
+        for sample in &samples {
+            sample.validate()?;
+        }
+        Ok(Self {
+            subscription_id,
+            kind,
+            samples,
+        })
+    }
+}
+
+/// Validates and publishes a typed [`SensorBatchEvent`] directly onto `bus` with zero serialization.
+pub fn emit_sensor_batch(
+    bus: &TypedEventBus,
+    batch: SensorBatchEvent,
+) -> Result<usize, ServiceError> {
+    if batch.subscription_id.0 == 0 {
+        return Err(ServiceError::InvalidArg(
+            "sensor subscription id must be non-zero".into(),
+        ));
+    }
+    if batch.samples.len() > MAX_SEQ_ITEMS {
+        return Err(ServiceError::InvalidArg(
+            "sensor sample batch exceeds MAX_SEQ_ITEMS".into(),
+        ));
+    }
+    for sample in &batch.samples {
+        sample.validate()?;
+    }
+    Ok(bus.publish(batch))
 }
 
 pub fn encode_sensor_kind(kind: SensorKind) -> Vec<u8> {
@@ -259,56 +214,6 @@ pub fn decode_sensor_subscription_id(bytes: &[u8]) -> Result<SensorSubscriptionI
     Ok(SensorSubscriptionId(id))
 }
 
-pub fn encode_sensor_batch_event(
-    subscription_id: SensorSubscriptionId,
-    kind: SensorKind,
-    samples: &[SensorSample],
-) -> Result<Vec<u8>, ServiceError> {
-    if subscription_id.0 == 0 {
-        return Err(ServiceError::InvalidArg(
-            "sensor subscription id must be non-zero".into(),
-        ));
-    }
-    if samples.len() > MAX_SEQ_ITEMS {
-        return Err(ServiceError::InvalidArg(
-            "sensor sample batch exceeds MAX_SEQ_ITEMS".into(),
-        ));
-    }
-    let mut w = BinWriter::with_capacity(13 + samples.len() * SENSOR_SAMPLE_WIRE_LEN);
-    w.write_u64(subscription_id.0);
-    w.write_u8(kind as u8);
-    w.write_u32(samples.len() as u32);
-    for sample in samples {
-        w.write_raw(&sample.encode()?);
-    }
-    Ok(w.into_bytes())
-}
-
-pub fn decode_sensor_batch_event_ref(bytes: &[u8]) -> Result<SensorBatchEventRef<'_>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let sub_id = r.read_u64()?;
-    if sub_id == 0 {
-        return Err(ServiceError::Codec(
-            "sensor subscription id must be non-zero".into(),
-        ));
-    }
-    let kind_raw = r.read_u8()?;
-    let kind = SensorKind::from_u8(kind_raw)
-        .ok_or_else(|| ServiceError::Codec(format!("invalid SensorKind {kind_raw}")))?;
-    let count = r.read_seq_len(SENSOR_SAMPLE_WIRE_LEN)?;
-    let byte_len = count
-        .checked_mul(SENSOR_SAMPLE_WIRE_LEN)
-        .ok_or_else(|| ServiceError::Codec("sensor sample byte length overflow".into()))?;
-    let raw = r.read_exact(byte_len)?;
-    r.finish()?;
-    let samples = SensorSampleSlice::from_bytes(raw)?;
-    Ok(SensorBatchEventRef {
-        subscription_id: SensorSubscriptionId(sub_id),
-        kind,
-        samples,
-    })
-}
-
 /// Typed ergonomic client for hardware inertial and environmental sensors.
 #[derive(Debug, Clone, Copy)]
 pub struct SensorClient<'a, P: HostServiceProvider + ?Sized> {
@@ -384,29 +289,23 @@ impl<'a, P: HostServiceProvider + ?Sized> SensorClient<'a, P> {
         Ok(())
     }
 
-    pub fn decode_push_event_ref(
-        event: &HostPushEvent,
-    ) -> Result<Option<SensorBatchEventRef<'_>>, ServiceError> {
-        if event.service_id != SERVICE_SENSORS {
-            return Ok(None);
-        }
-        match event.event_id {
-            EVENT_SENSOR_SAMPLE | EVENT_SENSOR_BATCH => {
-                Ok(Some(decode_sensor_batch_event_ref(&event.payload)?))
-            }
-            other => Err(ServiceError::Codec(format!(
-                "unknown sensors event_id {other}"
-            ))),
-        }
+    /// Subscribes directly to typed [`SensorBatchEvent`]s on the provider's [`TypedEventBus`].
+    pub fn subscribe_events<F>(&self, handler: F) -> Result<TypedEventSubscription, ServiceError>
+    where
+        F: Fn(&SensorBatchEvent) + Send + Sync + 'static,
+    {
+        let bus = self
+            .provider
+            .typed_event_bus()
+            .ok_or(ServiceError::Unsupported)?;
+        Ok(bus.subscribe::<SensorBatchEvent, F>(false, handler))
     }
 
-    pub fn decode_push_event(
-        event: &HostPushEvent,
-    ) -> Result<Option<SensorBatchEvent>, ServiceError> {
-        Ok(Self::decode_push_event_ref(event)?.map(|ev| SensorBatchEvent {
-            subscription_id: ev.subscription_id,
-            kind: ev.kind,
-            samples: ev.samples.iter().collect(),
-        }))
+    /// Drains queued typed [`SensorBatchEvent`]s directly from the provider's [`TypedEventBus`].
+    pub fn drain_events(&self) -> Vec<Arc<SensorBatchEvent>> {
+        self.provider
+            .typed_event_bus()
+            .map(|bus| bus.drain_typed::<SensorBatchEvent>())
+            .unwrap_or_default()
     }
 }

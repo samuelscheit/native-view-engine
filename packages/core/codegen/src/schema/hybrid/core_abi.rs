@@ -102,7 +102,7 @@ fn scene_canonical_type_name(ty: &HybridType) -> String {
     }
 }
 
-/// Signed status codes shared by `NveHostCallbacks::invoke`, `channel_publish`, and `NVH1`.
+/// Signed status codes shared by `NveHostCallbacks::invoke` and `channel_publish`.
 pub(crate) const HOST_STATUS_VARIANTS: &[(&str, i32)] = &[
     ("Ok", 0),
     ("Pending", 1),
