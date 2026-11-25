@@ -13,21 +13,13 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
 
 ---
 
-## P1 — Unified Environment/Trait System, Native Primitive Escape Hatches & Host Glue
+## P1 — Host `<NativeView>` Registries & Host Glue
 
 - [ ] **Post-Wave-13 Host Services & Multi-Window Integration Glue (`hosts/skia-shell`)** *(in flight)*
   - Wire `SERVICE_WINDOW = 0x0002` into `DesktopWindowHost` (`NveHostCallbacks::invoke` → `WindowManager` + `HostWakeEvent::WindowCommand` + `NVH1` lifecycle pushes) and bind `NativeHostServices` (`NveHostApi::bind_host` + live OS theme/locale pushes on `CHANNEL_ID_THEME`/`CHANNEL_ID_LOCALE`).
 
-- [ ] **Unified Extensible Environment / Trait System (`crates/nve-interop`, `crates/nve-dioxus`, `crates/nve-ui`)**
-  - Generalize `SurfaceEnvironment` into a typed, zero-string-lookup `TraitKey` / `Environment` system (SwiftUI `EnvironmentValues` × Compose `CompositionLocal` × CSS `@media`/`@container`):
-    - Built-in traits: `PlatformOs`, `HostToolkit`, `SizeClass` (`Compact | Medium | Expanded`), scoped `ContainerSize` (`@container` queries on Skia/Fabric/Web), `Orientation`, `SafeAreaInsets`, `ScaleFactor`, `PointerKind` (`Fine | Coarse | None`), `CanHover`, `HasHardwareKeyboard`, `ColorScheme`, `ReducedMotion`, `HighContrast`, `TextScale`, `UiDensity`, `Locale`.
-    - User-defined custom `TraitKey`s + `<TraitScope>` subtree overrides.
-    - Breakpoint-only fine-grained subscriptions (`use_trait::<SizeClass>()` avoids 60fps re-renders on 1px window drags) + zero-alloc `env.resolve().when(...).default(...)` & `<PlatformOnly>` / `<TraitSwitch>`.
-
-- [ ] **First-Class Native Platform Primitive Escape Hatches (`<NativeView>`, `NativeViewRegistry`)**
-  - Typed `NativeView<P: NativeViewSpec>` + `NativeViewHandle` (imperative zero-JSON calls via `Command::DispatchCommand`) with graceful cross-platform fallback RSX slot when unregistered on a host.
-  - Host-side `NativeViewRegistry` across Apple (`apple-common`), Windows, Android, Qt 6, GTK4, SwiftUI, Flutter, and Web (`"web.<tag>"` passthrough mounting real `<video>`, `<audio>`, `<svg>`, `<iframe>`, `<canvas>`, `<input type="date">`, Web Components directly inside Flex layout).
-  - Starter native primitives: `BlurSurface` (`NSVisualEffectView` / `UIBlurEffect` / Win32 Mica / CSS `backdrop-filter`), `WebView` (`WKWebView` / `WebView2` / Android `WebView` / `<iframe>`), `VideoPlayer`, and `WebElement`.
+- [ ] **Host-Side `NativeViewRegistry` Mount Adapters (`hosts/*`, `crates/nve-backend-web`)**
+  - Mount registered `NVNP`/`NVNC` `<NativeView>` specs (`BlurSurface`, `WebView`, `VideoPlayer`, `WebElement`) across Apple (`apple-common`: `NSVisualEffectView` / `UIBlurEffect` / `WKWebView`), Windows (`Mica` / `WebView2`), Android, Qt 6, GTK4, SwiftUI, Flutter, and Web (`"web.<tag>"` passthrough for `<video>`, `<audio>`, `<svg>`, `<iframe>`, `<canvas>`, `<input>`, Web Components inside Flex layout).
 
 ---
 
