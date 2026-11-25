@@ -14,6 +14,7 @@ use nve_dioxus::elements::backend::RenderBackend;
 use nve_dioxus::prelude::*;
 use nve_interop::{ColorScheme, ThemeContext};
 use nve_ui::prelude::*;
+use nve_ui::{Orientation, UiDensity};
 
 #[component]
 fn LayoutActionsThemeApp() -> Element {

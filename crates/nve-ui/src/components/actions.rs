@@ -2,10 +2,11 @@
 
 use dioxus_core::EventHandler;
 use dioxus_core_macro::Props;
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{StyleBuf, SurfaceStyle, TextStyle};
-use crate::theme::{use_theme, UiTheme};
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::theme::{use_theme_rgba, UiPaletteRgba, UiTheme};
 
 /// Visual hierarchy variants for [`Button`] and [`IconButton`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,53 +41,49 @@ pub enum BadgeVariant {
 
 fn button_colors(
     theme: &UiTheme,
+    colors: &UiPaletteRgba,
     variant: ButtonVariant,
     focused: bool,
     disabled: bool,
-) -> (&str, &str, f32, &str) {
+) -> (ColorRgba, ColorRgba, f32, ColorRgba) {
     let (bg, fg, base_bw, base_bc) = match variant {
         ButtonVariant::Primary => (
-            theme.palette.accent.as_ref(),
-            theme.palette.accent_fg.as_ref(),
+            colors.accent,
+            colors.accent_fg,
             if theme.is_high_contrast() { 2.0 } else { 0.0 },
             if theme.is_high_contrast() {
-                theme.palette.border.as_ref()
+                colors.border
             } else {
-                "transparent"
+                ColorRgba::TRANSPARENT
             },
         ),
-        ButtonVariant::Secondary => (
-            theme.palette.surface_subtle.as_ref(),
-            theme.palette.text_primary.as_ref(),
-            1.0,
-            theme.palette.border.as_ref(),
-        ),
+        ButtonVariant::Secondary => (colors.surface_subtle, colors.text_primary, 1.0, colors.border),
         ButtonVariant::Ghost => (
-            "transparent",
-            theme.palette.text_primary.as_ref(),
+            ColorRgba::TRANSPARENT,
+            colors.text_primary,
             0.0,
-            "transparent",
+            ColorRgba::TRANSPARENT,
         ),
         ButtonVariant::Destructive => (
-            theme.palette.danger.as_ref(),
-            theme.palette.danger_fg.as_ref(),
+            colors.danger,
+            colors.danger_fg,
             if theme.is_high_contrast() { 2.0 } else { 0.0 },
             if theme.is_high_contrast() {
-                theme.palette.border.as_ref()
+                colors.border
             } else {
-                "transparent"
+                ColorRgba::TRANSPARENT
             },
         ),
         ButtonVariant::Outline => (
-            theme.palette.surface.as_ref(),
-            theme.palette.text_primary.as_ref(),
+            colors.surface,
+            colors.text_primary,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            theme.palette.border.as_ref(),
+            colors.border,
         ),
     };
 
     if focused && !disabled {
-        (bg, fg, 2.0, theme.palette.border_focus.as_ref())
+        (bg, fg, 2.0, colors.border_focus)
     } else {
         (bg, fg, base_bw, base_bc)
     }
@@ -136,42 +133,39 @@ pub fn Button(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut focused = use_signal(|| false);
     let blocked = disabled || loading;
 
-    let (bg, fg, bw, bc) = button_colors(&theme, variant, focused(), blocked);
+    let (bg, fg, bw, bc) = button_colors(&theme, &colors, variant, focused(), blocked);
     let (min_h, pad_x, pad_y, font_size) = button_metrics(&theme, size);
 
-    let mut sb = StyleBuf::new();
-    sb.flex_direction("row")
-        .justify_content("center")
-        .align_items("center")
+    let btn_style = TypedStyleBuilder::new()
+        .flex_row()
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
         .gap(theme.spacing.xs)
         .min_height_px(min_h)
         .padding_xy(pad_x, pad_y)
-        .surface(SurfaceStyle {
+        .surface(TypedSurfaceStyle {
             background: bg,
             border_width: bw,
             border_color: bc,
             border_radius: theme.radii.md,
             opacity: if blocked { 0.5 } else { 1.0 },
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
-    let btn_style = sb.finish();
+        })
+        .finish();
 
-    let mut ts = StyleBuf::new();
-    ts.text_style(TextStyle {
-        color: fg,
-        font_size,
-        font_weight: "600",
-        text_align: "center",
-        opacity: 1.0,
-    });
-    let text_style = ts.finish();
+    let text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: fg,
+            font_size,
+            font_weight: "600",
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
     let tab_index = if blocked { -1 } else { 0 };
     let on_press_click = on_press;
@@ -187,7 +181,8 @@ pub fn Button(
             aria_controls: aria_controls,
             disabled: blocked,
             tab_index: tab_index,
-            style: "{btn_style}",
+            nve_style: btn_style,
+            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -206,12 +201,12 @@ pub fn Button(
             },
             if loading {
                 text {
-                    style: "{text_style}",
+                    nve_style: text_style.clone(),
                     "..."
                 }
             }
             text {
-                style: "{text_style}",
+                nve_style: text_style,
                 {children}
             }
         }
@@ -235,11 +230,11 @@ pub fn IconButton(
     #[props(default)] style: Option<String>,
     #[props(default)] children: Option<Element>,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut focused = use_signal(|| false);
     let blocked = disabled || loading;
 
-    let (bg, fg, bw, bc) = button_colors(&theme, variant, focused(), blocked);
+    let (bg, fg, bw, bc) = button_colors(&theme, &colors, variant, focused(), blocked);
     let dim = match size {
         ButtonSize::Sm => 28.0,
         ButtonSize::Md => 36.0,
@@ -251,33 +246,30 @@ pub fn IconButton(
         ButtonSize::Lg => theme.typography.lg,
     };
 
-    let mut sb = StyleBuf::new();
-    sb.width_px(dim)
+    let btn_style = TypedStyleBuilder::new()
+        .width_px(dim)
         .height_px(dim)
-        .justify_content("center")
-        .align_items("center")
-        .surface(SurfaceStyle {
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
+        .surface(TypedSurfaceStyle {
             background: bg,
             border_width: bw,
             border_color: bc,
             border_radius: theme.radii.md,
             opacity: if blocked { 0.5 } else { 1.0 },
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
-    let btn_style = sb.finish();
+        })
+        .finish();
 
-    let mut ts = StyleBuf::new();
-    ts.text_style(TextStyle {
-        color: fg,
-        font_size,
-        font_weight: "600",
-        text_align: "center",
-        opacity: 1.0,
-    });
-    let text_style = ts.finish();
+    let text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: fg,
+            font_size,
+            font_weight: "600",
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
     let tab_index = if blocked { -1 } else { 0 };
     let on_press_click = on_press;
@@ -293,7 +285,8 @@ pub fn IconButton(
             aria_controls: aria_controls,
             disabled: blocked,
             tab_index: tab_index,
-            style: "{btn_style}",
+            nve_style: btn_style,
+            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -311,11 +304,11 @@ pub fn IconButton(
                 }
             },
             if loading {
-                text { style: "{text_style}", "..." }
+                text { nve_style: text_style, "..." }
             } else if let Some(child) = children {
                 {child}
             } else {
-                text { style: "{text_style}", "{icon}" }
+                text { nve_style: text_style, "{icon}" }
             }
         }
     }
@@ -330,75 +323,57 @@ pub fn Badge(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let (bg, fg, border_color) = match variant {
-        BadgeVariant::Neutral => (
-            theme.palette.surface_subtle.as_ref(),
-            theme.palette.text_secondary.as_ref(),
-            theme.palette.border.as_ref(),
-        ),
-        BadgeVariant::Accent => (
-            theme.palette.accent.as_ref(),
-            theme.palette.accent_fg.as_ref(),
-            theme.palette.accent.as_ref(),
-        ),
-        BadgeVariant::Success => (
-            theme.palette.success.as_ref(),
-            theme.palette.accent_fg.as_ref(),
-            theme.palette.success.as_ref(),
-        ),
+        BadgeVariant::Neutral => (colors.surface_subtle, colors.text_secondary, colors.border),
+        BadgeVariant::Accent => (colors.accent, colors.accent_fg, colors.accent),
+        BadgeVariant::Success => (colors.success, colors.accent_fg, colors.success),
         BadgeVariant::Warning => (
-            theme.palette.warning.as_ref(),
+            colors.warning,
             if theme.is_high_contrast() {
-                "#000000"
+                ColorRgba::BLACK
             } else {
-                "#ffffff"
+                ColorRgba::WHITE
             },
-            theme.palette.warning.as_ref(),
+            colors.warning,
         ),
-        BadgeVariant::Danger => (
-            theme.palette.danger.as_ref(),
-            theme.palette.danger_fg.as_ref(),
-            theme.palette.danger.as_ref(),
-        ),
+        BadgeVariant::Danger => (colors.danger, colors.danger_fg, colors.danger),
     };
 
-    let mut sb = StyleBuf::new();
-    sb.flex_direction("row")
-        .align_items("center")
-        .justify_content("center")
+    let pill_style = TypedStyleBuilder::new()
+        .flex_row()
+        .align_items(FlexAlign::Center)
+        .justify_content(FlexJustify::Center)
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
-        .surface(SurfaceStyle {
+        .surface(TypedSurfaceStyle {
             background: bg,
             border_width: 1.0,
             border_color,
             border_radius: theme.radii.full,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
-    let pill_style = sb.finish();
+        })
+        .finish();
 
-    let mut ts = StyleBuf::new();
-    ts.text_style(TextStyle {
-        color: fg,
-        font_size: theme.typography.xs,
-        font_weight: "600",
-        text_align: "center",
-        opacity: 1.0,
-    });
-    let text_style = ts.finish();
+    let text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: fg,
+            font_size: theme.typography.xs,
+            font_weight: "600",
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
     rsx! {
         view {
             test_id: test_id,
             accessibility_role: "status",
             accessibility_label: accessibility_label,
-            style: "{pill_style}",
+            nve_style: pill_style,
+            style: style,
             text {
-                style: "{text_style}",
+                nve_style: text_style,
                 "{label}"
             }
         }

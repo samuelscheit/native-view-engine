@@ -4,11 +4,12 @@
 
 use dioxus_core::EventHandler;
 use dioxus_core_macro::Props;
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
-use crate::style_buf::{StyleBuf, SurfaceStyle, TextStyle};
-use crate::theme::use_theme;
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::theme::use_theme_rgba;
 
 /// Item entry rendered inside [`DropdownMenu`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +82,7 @@ pub fn DropdownMenu(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut trigger_focused = use_signal(|| false);
 
     let entries: Vec<FocusableEntry> = items
@@ -113,58 +114,54 @@ pub fn DropdownMenu(
     let trigger_id = format!("{base_id}-trigger");
     let menu_id = format!("{base_id}-menu");
 
-    let mut wrap_sb = StyleBuf::new();
-    wrap_sb.flex_direction("column").gap(theme.spacing.xs);
-    if let Some(ref extra) = style {
-        wrap_sb.raw(extra);
-    }
-    let wrap_style = wrap_sb.finish();
+    let wrap_style = TypedStyleBuilder::new()
+        .flex_col()
+        .gap(theme.spacing.xs)
+        .finish();
 
-    let mut trig_sb = StyleBuf::new();
-    trig_sb
+    let trigger_style = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
-        .justify_content("center")
-        .align_items("center")
-        .surface(SurfaceStyle {
-            background: theme.palette.surface.as_ref(),
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
+        .surface(TypedSurfaceStyle {
+            background: colors.surface,
             border_width: if trigger_focused() { 2.0 } else { 1.0 },
             border_color: if trigger_focused() {
-                theme.palette.border_focus.as_ref()
+                colors.border_focus
             } else {
-                theme.palette.border.as_ref()
+                colors.border
             },
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: "none",
-        });
-    let trigger_style = trig_sb.finish();
+        })
+        .finish();
 
-    let mut trig_ts = StyleBuf::new();
-    trig_ts.text_style(TextStyle {
-        color: theme.palette.text_primary.as_ref(),
-        font_size: theme.typography.md,
-        font_weight: "500",
-        text_align: "center",
-        opacity: 1.0,
-    });
-    let trigger_text_style = trig_ts.finish();
+    let trigger_text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.md,
+            font_weight: "500",
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
-    let mut menu_sb = StyleBuf::new();
-    menu_sb
-        .flex_direction("column")
+    let menu_style = TypedStyleBuilder::new()
+        .flex_col()
         .min_width_px(180.0)
         .padding(theme.spacing.xs)
         .gap(2.0)
         .z_index(920)
-        .surface(SurfaceStyle {
-            background: theme.palette.surface_elevated.as_ref(),
+        .surface(TypedSurfaceStyle {
+            background: colors.surface_elevated,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: theme.palette.border.as_ref(),
+            border_color: colors.border,
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: theme.elevation_shadow(),
-        });
-    let menu_style = menu_sb.finish();
+        })
+        .finish();
 
     let aria_expanded = if open { "true" } else { "false" };
     let active_idx = roving.read().active_index();
@@ -176,46 +173,45 @@ pub fn DropdownMenu(
         let item_test_id = format!("{base_id}-item-{}", item.id);
 
         let bg = if is_active {
-            theme.palette.surface_subtle.as_ref()
+            colors.surface_subtle
         } else {
-            "transparent"
+            ColorRgba::TRANSPARENT
         };
         let bc = if is_active {
-            theme.palette.border_focus.as_ref()
+            colors.border_focus
         } else {
-            "transparent"
+            ColorRgba::TRANSPARENT
         };
         let fg = if item.destructive {
-            theme.palette.danger.as_ref()
+            colors.danger
         } else {
-            theme.palette.text_primary.as_ref()
+            colors.text_primary
         };
 
-        let mut item_sb = StyleBuf::new();
-        item_sb
+        let item_style = TypedStyleBuilder::new()
             .padding_xy(theme.spacing.md, theme.spacing.sm)
-            .justify_content("flex-start")
-            .align_items("center")
-            .flex_direction("row")
-            .surface(SurfaceStyle {
+            .justify_content(FlexJustify::FlexStart)
+            .align_items(FlexAlign::Center)
+            .flex_row()
+            .surface(TypedSurfaceStyle {
                 background: bg,
                 border_width: if is_active { 1.0 } else { 0.0 },
                 border_color: bc,
                 border_radius: theme.radii.sm,
                 opacity: if item.disabled { 0.45 } else { 1.0 },
                 box_shadow: "none",
-            });
-        let item_style = item_sb.finish();
+            })
+            .finish();
 
-        let mut item_ts = StyleBuf::new();
-        item_ts.text_style(TextStyle {
-            color: fg,
-            font_size: theme.typography.sm,
-            font_weight: if is_active { "600" } else { "400" },
-            text_align: "left",
-            opacity: 1.0,
-        });
-        let item_text_style = item_ts.finish();
+        let item_text_style = TypedStyleBuilder::new()
+            .text_style(TypedTextStyle {
+                color: fg,
+                font_size: theme.typography.sm,
+                font_weight: if is_active { "600" } else { "400" },
+                text_align: "left",
+                opacity: 1.0,
+            })
+            .finish();
 
         let item_id = item.id.clone();
         let item_label = item.label.clone();
@@ -228,7 +224,7 @@ pub fn DropdownMenu(
                 accessibility_role: "menuitem",
                 disabled: item_disabled,
                 tab_index: item_tab_index,
-                style: "{item_style}",
+                nve_style: item_style,
                 onpress: move |_| {
                     if !item_disabled {
                         let _ = roving.write().set_active_index(idx);
@@ -245,7 +241,7 @@ pub fn DropdownMenu(
                     dispatch_menu_key(data.key.as_str(), roving, on_select, on_open_change);
                 },
                 text {
-                    style: "{item_text_style}",
+                    nve_style: item_text_style,
                     "{item_label}"
                 }
             }
@@ -255,14 +251,15 @@ pub fn DropdownMenu(
     rsx! {
         view {
             test_id: "{base_id}",
-            style: "{wrap_style}",
+            nve_style: wrap_style,
+            style: style,
             pressable {
                 test_id: "{trigger_id}",
                 accessibility_role: "button",
                 aria_expanded: "{aria_expanded}",
                 aria_controls: "{menu_id}",
                 tab_index: 0,
-                style: "{trigger_style}",
+                nve_style: trigger_style,
                 onfocus: move |_| trigger_focused.set(true),
                 onblur: move |_| trigger_focused.set(false),
                 onpress: move |_| {
@@ -283,7 +280,7 @@ pub fn DropdownMenu(
                     }
                 },
                 text {
-                    style: "{trigger_text_style}",
+                    nve_style: trigger_text_style,
                     "{trigger_label}"
                 }
             }
@@ -292,7 +289,7 @@ pub fn DropdownMenu(
                     test_id: "{menu_id}",
                     accessibility_role: "menu",
                     tab_index: -1,
-                    style: "{menu_style}",
+                    nve_style: menu_style,
                     onkeydown: move |ev: KeyEvent| {
                         let data = ev.data();
                         dispatch_menu_key(data.key.as_str(), roving, on_select, on_open_change);

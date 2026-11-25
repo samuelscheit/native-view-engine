@@ -1,11 +1,12 @@
 //! Layout primitives: [`Stack`], [`Row`], [`Col`], [`Separator`], and [`Card`].
 
 use dioxus_core_macro::Props;
+use nve_abi::{ColorRgba, FlexAlign, FlexDirection};
 use nve_dioxus::prelude::*;
 
 use crate::focus::Orientation;
-use crate::style_buf::{StyleBuf, SurfaceStyle};
-use crate::theme::use_theme;
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
+use crate::theme::{use_theme, use_theme_rgba};
 
 /// Visual elevation and border style for [`Card`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -29,31 +30,28 @@ pub fn Stack(
     children: Element,
 ) -> Element {
     let theme = use_theme();
-    let mut sb = StyleBuf::new();
-    sb.flex_direction(match direction {
-        Orientation::Horizontal => "row",
-        Orientation::Vertical => "column",
-    })
-    .gap(gap.unwrap_or(theme.spacing.sm));
+    let mut sb = TypedStyleBuilder::new()
+        .flex_direction(match direction {
+            Orientation::Horizontal => FlexDirection::Row,
+            Orientation::Vertical => FlexDirection::Column,
+        })
+        .gap(gap.unwrap_or(theme.spacing.sm));
 
     if let Some(p) = padding {
-        sb.padding(p);
+        sb = sb.padding(p);
     }
     if let Some(ref a) = align {
-        sb.align_items(a);
+        sb = sb.align_items_str(a);
     }
     if let Some(ref j) = justify {
-        sb.justify_content(j);
-    }
-    if let Some(ref extra) = style {
-        sb.raw(extra);
+        sb = sb.justify_content_str(j);
     }
 
-    let style_str = sb.finish();
     rsx! {
         view {
             test_id: test_id,
-            style: "{style_str}",
+            nve_style: sb.finish(),
+            style: style,
             {children}
         }
     }
@@ -71,26 +69,26 @@ pub fn Row(
     children: Element,
 ) -> Element {
     let theme = use_theme();
-    let mut sb = StyleBuf::new();
-    sb.flex_direction("row")
-        .align_items(align.as_deref().unwrap_or("center"))
+    let mut sb = TypedStyleBuilder::new()
+        .flex_row()
         .gap(gap.unwrap_or(theme.spacing.sm));
+    sb = match align.as_deref() {
+        Some(a) => sb.align_items_str(a),
+        None => sb.align_items(FlexAlign::Center),
+    };
 
     if let Some(p) = padding {
-        sb.padding(p);
+        sb = sb.padding(p);
     }
     if let Some(ref j) = justify {
-        sb.justify_content(j);
-    }
-    if let Some(ref extra) = style {
-        sb.raw(extra);
+        sb = sb.justify_content_str(j);
     }
 
-    let style_str = sb.finish();
     rsx! {
         view {
             test_id: test_id,
-            style: "{style_str}",
+            nve_style: sb.finish(),
+            style: style,
             {children}
         }
     }
@@ -108,28 +106,25 @@ pub fn Col(
     children: Element,
 ) -> Element {
     let theme = use_theme();
-    let mut sb = StyleBuf::new();
-    sb.flex_direction("column")
+    let mut sb = TypedStyleBuilder::new()
+        .flex_col()
         .gap(gap.unwrap_or(theme.spacing.sm));
 
     if let Some(p) = padding {
-        sb.padding(p);
+        sb = sb.padding(p);
     }
     if let Some(ref a) = align {
-        sb.align_items(a);
+        sb = sb.align_items_str(a);
     }
     if let Some(ref j) = justify {
-        sb.justify_content(j);
-    }
-    if let Some(ref extra) = style {
-        sb.raw(extra);
+        sb = sb.justify_content_str(j);
     }
 
-    let style_str = sb.finish();
     rsx! {
         view {
             test_id: test_id,
-            style: "{style_str}",
+            nve_style: sb.finish(),
+            style: style,
             {children}
         }
     }
@@ -143,37 +138,31 @@ pub fn Separator(
     #[props(default)] style: Option<String>,
     #[props(default)] test_id: Option<String>,
 ) -> Element {
-    let theme = use_theme();
-    let mut sb = StyleBuf::new();
-    match orientation {
-        Orientation::Horizontal => {
-            sb.width_pct(100.0).height_px(1.0);
-        }
-        Orientation::Vertical => {
-            sb.width_px(1.0).height_pct(100.0);
-        }
-    }
+    let (_theme, colors) = use_theme_rgba();
+    let mut sb = match orientation {
+        Orientation::Horizontal => TypedStyleBuilder::new().width_pct(100.0).height_px(1.0),
+        Orientation::Vertical => TypedStyleBuilder::new().width_px(1.0).height_pct(100.0),
+    };
     if let Some(m) = margin {
-        sb.margin(m);
+        sb = sb.margin(m);
     }
-    sb.surface(SurfaceStyle {
-        background: theme.palette.border.as_ref(),
-        border_width: 0.0,
-        border_color: "transparent",
-        border_radius: 0.0,
-        opacity: 1.0,
-        box_shadow: "none",
-    });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
+    let sep_style = sb
+        .surface(TypedSurfaceStyle {
+            background: colors.border,
+            border_width: 0.0,
+            border_color: ColorRgba::TRANSPARENT,
+            border_radius: 0.0,
+            opacity: 1.0,
+            box_shadow: "none",
+        })
+        .finish();
 
-    let style_str = sb.finish();
     rsx! {
         view {
             test_id: test_id,
             accessibility_role: "separator",
-            style: "{style_str}",
+            nve_style: sep_style,
+            style: style,
         }
     }
 }
@@ -188,53 +177,51 @@ pub fn Card(
     #[props(default)] test_id: Option<String>,
     children: Element,
 ) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let (bg, border_width, border_color, shadow) = match variant {
         CardVariant::Elevated => (
-            theme.palette.surface_elevated.as_ref(),
+            colors.surface_elevated,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            theme.palette.border.as_ref(),
+            colors.border,
             theme.elevation_shadow(),
         ),
         CardVariant::Outlined => (
-            theme.palette.surface.as_ref(),
+            colors.surface,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            theme.palette.border.as_ref(),
+            colors.border,
             "none",
         ),
         CardVariant::Subtle => (
-            theme.palette.surface_subtle.as_ref(),
+            colors.surface_subtle,
             if theme.is_high_contrast() { 1.0 } else { 0.0 },
             if theme.is_high_contrast() {
-                theme.palette.border.as_ref()
+                colors.border
             } else {
-                "transparent"
+                ColorRgba::TRANSPARENT
             },
             "none",
         ),
     };
 
-    let mut sb = StyleBuf::new();
-    sb.flex_direction("column")
+    let card_style = TypedStyleBuilder::new()
+        .flex_col()
         .padding(padding.unwrap_or(theme.spacing.lg))
         .gap(gap.unwrap_or(theme.spacing.sm))
-        .surface(SurfaceStyle {
+        .surface(TypedSurfaceStyle {
             background: bg,
             border_width,
             border_color,
             border_radius: theme.radii.lg,
             opacity: 1.0,
             box_shadow: shadow,
-        });
-    if let Some(ref extra) = style {
-        sb.raw(extra);
-    }
+        })
+        .finish();
 
-    let style_str = sb.finish();
     rsx! {
         view {
             test_id: test_id,
-            style: "{style_str}",
+            nve_style: card_style,
+            style: style,
             {children}
         }
     }

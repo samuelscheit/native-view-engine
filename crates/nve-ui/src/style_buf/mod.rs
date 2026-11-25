@@ -1,13 +1,24 @@
-//! Zero-external-CSS inline style builder guaranteeing **explicit full-property emission**.
+//! Zero-external-CSS style builders guaranteeing **explicit full-property emission**.
 //!
-//! Incremental `CommandBuffer` style patches merge updated properties onto retained host nodes.
+//! Provides both:
+//! - [`TypedStyleBuilder`] / [`TypedSurfaceStyle`] / [`TypedTextStyle`] for **zero-string-format,
+//!   zero-CSS-parse** emission straight into `nve_dioxus::TypedStyle` (`nve_style` attribute).
+//! - [`StyleBuf`] / [`SurfaceStyle`] / [`TextStyle`] for string-based callers (with
+//!   [`StyleBuf::to_typed`] / [`StyleBuf::into_typed`] bridge helpers).
+//!
 //! By always emitting the full property set for visual surfaces (`background-color`,
 //! `border-width`, `border-color`, `border-radius`, `opacity`, `box-shadow`) and text
 //! (`color`, `font-size`, `font-weight`, `text-align`, `opacity`), state transitions such as
 //! `disabled -> enabled`, `focused -> blurred`, `checked -> unchecked`, or `error -> valid`
 //! deterministically reset every prior property with zero stale styles.
 
+mod typed;
+
 use std::fmt::Write as _;
+
+use nve_dioxus::TypedStyle;
+
+pub use typed::{parse_color_rgba, TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 
 /// Full visual surface specification emitted atomically by [`StyleBuf::surface`].
 #[derive(Debug, Clone, Copy)]
@@ -56,7 +67,8 @@ impl<'a> Default for TextStyle<'a> {
 }
 
 /// Pre-allocated inline style builder producing canonical CSS/RN declarations accepted directly
-/// by `nve-components::apply_typed_attr_with_raw`.
+/// by `nve-components::apply_typed_attr_with_raw`, or convertible to [`TypedStyle`] via
+/// [`StyleBuf::into_typed`].
 #[derive(Debug, Clone, Default)]
 pub struct StyleBuf {
     buf: String,
@@ -276,5 +288,15 @@ impl StyleBuf {
             self.buf.pop();
         }
         self.buf
+    }
+
+    /// Converts accumulated declarations into a [`TypedStyle`] for direct `nve_style` binding.
+    pub fn to_typed(&self) -> TypedStyle {
+        typed::parse_inline_css_to_typed(&self.buf)
+    }
+
+    /// Consumes this buffer and converts its declarations into a [`TypedStyle`].
+    pub fn into_typed(self) -> TypedStyle {
+        self.to_typed()
     }
 }

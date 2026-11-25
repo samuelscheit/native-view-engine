@@ -3,10 +3,11 @@
 
 use dioxus_core::{provide_context, try_consume_context, use_hook};
 use dioxus_core_macro::Props;
+use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{StyleBuf, SurfaceStyle, TextStyle};
-use crate::theme::use_theme;
+use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::theme::use_theme_rgba;
 
 /// Visual severity for a toast item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -265,7 +266,7 @@ pub fn use_toast() -> ToastController {
 /// Renders active toasts from the nearest [`ToastProvider`] with live-region semantics.
 #[component]
 pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
-    let theme = use_theme();
+    let (theme, colors) = use_theme_rgba();
     let mut ctrl = use_toast();
     let items = ctrl.items();
 
@@ -275,82 +276,77 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
 
     let base_id = test_id.as_deref().unwrap_or("nve-toast-viewport");
 
-    let mut stack_sb = StyleBuf::new();
-    stack_sb
-        .flex_direction("column")
+    let stack_style = TypedStyleBuilder::new()
+        .flex_col()
         .gap(theme.spacing.sm)
         .padding(theme.spacing.md)
-        .z_index(1100);
-    let stack_style = stack_sb.finish();
+        .z_index(1100)
+        .finish();
+
+    let body_col_style = TypedStyle::new().flex_col().gap(2.0);
+    let title_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.sm,
+            font_weight: "600",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
+    let desc_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_secondary,
+            font_size: theme.typography.xs,
+            font_weight: "400",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
+    let dismiss_style = TypedStyleBuilder::new()
+        .padding_xy(theme.spacing.sm, theme.spacing.xs)
+        .surface(TypedSurfaceStyle {
+            background: colors.surface_subtle,
+            border_width: 1.0,
+            border_color: colors.border,
+            border_radius: theme.radii.sm,
+            opacity: 1.0,
+            box_shadow: "none",
+        })
+        .finish();
+    let dismiss_text_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.text_primary,
+            font_size: theme.typography.xs,
+            font_weight: "600",
+            text_align: "center",
+            opacity: 1.0,
+        })
+        .finish();
 
     let mut rendered = Vec::with_capacity(items.len());
     for item in items {
         let accent = match item.variant {
-            ToastVariant::Info => theme.palette.accent.as_ref(),
-            ToastVariant::Success => theme.palette.success.as_ref(),
-            ToastVariant::Warning => theme.palette.warning.as_ref(),
-            ToastVariant::Danger => theme.palette.danger.as_ref(),
+            ToastVariant::Info => colors.accent,
+            ToastVariant::Success => colors.success,
+            ToastVariant::Warning => colors.warning,
+            ToastVariant::Danger => colors.danger,
         };
 
-        let mut card_sb = StyleBuf::new();
-        card_sb
-            .flex_direction("row")
-            .justify_content("space-between")
-            .align_items("center")
+        let card_style = TypedStyleBuilder::new()
+            .flex_row()
+            .justify_content(FlexJustify::SpaceBetween)
+            .align_items(FlexAlign::Center)
             .padding(theme.spacing.md)
             .gap(theme.spacing.md)
-            .surface(SurfaceStyle {
-                background: theme.palette.surface_elevated.as_ref(),
+            .surface(TypedSurfaceStyle {
+                background: colors.surface_elevated,
                 border_width: 2.0,
                 border_color: accent,
                 border_radius: theme.radii.md,
                 opacity: 1.0,
                 box_shadow: theme.elevation_shadow(),
-            });
-        let card_style = card_sb.finish();
-
-        let mut title_sb = StyleBuf::new();
-        title_sb.text_style(TextStyle {
-            color: theme.palette.text_primary.as_ref(),
-            font_size: theme.typography.sm,
-            font_weight: "600",
-            text_align: "left",
-            opacity: 1.0,
-        });
-        let title_style = title_sb.finish();
-
-        let mut desc_sb = StyleBuf::new();
-        desc_sb.text_style(TextStyle {
-            color: theme.palette.text_secondary.as_ref(),
-            font_size: theme.typography.xs,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        });
-        let desc_style = desc_sb.finish();
-
-        let mut dismiss_sb = StyleBuf::new();
-        dismiss_sb
-            .padding_xy(theme.spacing.sm, theme.spacing.xs)
-            .surface(SurfaceStyle {
-                background: theme.palette.surface_subtle.as_ref(),
-                border_width: 1.0,
-                border_color: theme.palette.border.as_ref(),
-                border_radius: theme.radii.sm,
-                opacity: 1.0,
-                box_shadow: "none",
-            });
-        let dismiss_style = dismiss_sb.finish();
-
-        let mut dismiss_ts = StyleBuf::new();
-        dismiss_ts.text_style(TextStyle {
-            color: theme.palette.text_primary.as_ref(),
-            font_size: theme.typography.xs,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        });
-        let dismiss_text_style = dismiss_ts.finish();
+            })
+            .finish();
 
         let id = item.id;
         let live_str = item.live.as_str();
@@ -365,16 +361,16 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
                 test_id: "{toast_tid}",
                 accessibility_role: "status",
                 aria_live: "{live_str}",
-                style: "{card_style}",
+                nve_style: card_style,
                 view {
-                    style: "flex-direction: column; gap: 2px;",
+                    nve_style: body_col_style.clone(),
                     text {
-                        style: "{title_style}",
+                        nve_style: title_style.clone(),
                         "{title}"
                     }
                     if let Some(d) = desc {
                         text {
-                            style: "{desc_style}",
+                            nve_style: desc_style.clone(),
                             "{d}"
                         }
                     }
@@ -384,12 +380,12 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
                     accessibility_role: "button",
                     accessibility_label: "Dismiss notification",
                     tab_index: 0,
-                    style: "{dismiss_style}",
+                    nve_style: dismiss_style.clone(),
                     onpress: move |_| {
                         ctrl.dismiss(id);
                     },
                     text {
-                        style: "{dismiss_text_style}",
+                        nve_style: dismiss_text_style.clone(),
                         "Dismiss"
                     }
                 }
@@ -400,7 +396,7 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
     rsx! {
         view {
             test_id: "{base_id}",
-            style: "{stack_style}",
+            nve_style: stack_style,
             {rendered.into_iter()}
         }
     }
