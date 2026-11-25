@@ -1,6 +1,6 @@
 # Backlog
 
-Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 architecture & ergonomics and P2/flagship work. Completed milestones live in [docs/CHANGELOG_LOG.md](./CHANGELOG_LOG.md).
+Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 architecture & ergonomics and P2/flagship work. Completed milestones live in [docs/CHANGELOG.md](./CHANGELOG.md).
 
 ---
 

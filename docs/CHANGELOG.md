@@ -1,4 +1,4 @@
-# Engineering Completion Log (`docs/CHANGELOG_LOG.md`)
+# Changelog (`docs/CHANGELOG.md`)
 
 Chronological log of completed, verified milestones in `native-view-engine`.
 
