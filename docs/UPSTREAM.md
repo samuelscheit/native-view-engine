@@ -51,3 +51,21 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **Fatal `SIGTRAP` at launch without `UIScene` lifecycle adoption**
   - **Observed**: Apps linked against `iPhoneSimulator27.0.sdk` that still create a `UIWindow` in `UIApplicationDelegate` without `UIApplicationSceneManifest` / `UIWindowSceneDelegate` trap immediately on launch inside `UIKitCore`'s `___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_invoke` (`EXC_BREAKPOINT` / `SIGTRAP`).
   - **Mitigation**: `hosts/ios-shell/Info.plist` declares `UIApplicationSceneManifest` (`NveIosSceneDelegate`) and `hosts/ios-shell/main.mm` creates the `UIWindow` via `initWithWindowScene:` inside `UIWindowSceneDelegate`'s `scene:willConnectToSession:options:`.
+
+### Windows 11 (`afd.sys`) + MSVC `19.51` + Cargo `1.100.0`
+
+- **`afd.sys` `SO_RCVTIMEO` UDP datagram drops & `WSAECONNRESET` bounces**
+  - **Observed**: On Windows 11 (`10.0.26200`), calling blocking `recv_from` on a `UdpSocket` with a short `SO_RCVTIMEO` (e.g., 5 ms) cancels pending `IOCTL_AFD_RECV_DATAGRAM` IRPs on each 15.625 ms timer tick, silently dropping incoming loopback datagrams (~75% test flake). Unreachable UDP replies also surface `WSAECONNRESET` (`ErrorKind::ConnectionReset`) on subsequent `recv_from` calls.
+  - **Mitigation**: `crates/nve-interop/src/sync_transport/udp.rs` uses `set_nonblocking(true)` with a short sleep on `WouldBlock` and ignores `ErrorKind::ConnectionReset` on `recv_from`.
+- **Cargo `1.100.0` per-unit `build-dir` layout + Windows 32 KiB `CreateProcessW` limit (`OS error 206`)**
+  - **Observed**: Cargo `1.100.0` places `.rlib`s under `target/<profile>/build/<pkg>/<hash>/out/` instead of flat `target/<profile>/deps/`. Passing every `-L dependency=...` directory on the `rustc` command line exceeds Windows' 32,767-char `CreateProcessW` limit (`ERROR_FILENAME_EXCED_RANGE`).
+  - **Mitigation**: `crates/nve-codegen/tests/hybrid_codegen_tests.rs` scans both layouts and passes dependency flags via a `rustc @response_file`.
+- **MSVC `link.exe` `LNK2005` duplicate `nve_get_interface` under workspace feature unification**
+  - **Observed**: In `cargo test --workspace`, Cargo unifies `default = ["cdylib-export"]` across `examples/counter` and `examples/studio-workspace`. When `nve-web-shell` links both `rlib`s, MSVC `link.exe` rejects duplicate `nve_get_interface` definitions if the export shares the root-module CGU with normal library functions.
+  - **Mitigation**: Wrap `export_nve_app!` inside a private `mod cdylib_export` so `rustc` places `nve_get_interface` in its own CGU (`cdylib` DLLs still export it cleanly while multi-app `rlib` test binaries avoid pulling duplicate symbols).
+- **MSVC `mspdbsrv.exe` `C1090` RPC failure on concurrent Ninja `/Zi /FS` builds**
+  - **Observed**: Running two independent Ninja MSVC builds concurrently in the same session can fail with `C1090` (`0x0000071A` / `0x000006BA`) when one build exits while another writes PDBs.
+  - **Mitigation**: Serialize MSVC Ninja builds or use `/Z7` / `Release` without shared PDBs.
+- **Windows `core.autocrlf = true` vs LF-only generated ABI drift checks**
+  - **Observed**: Checking out generated `.h`/`.dart`/`.java`/`.ts` ABI bindings with CRLF on Windows trips byte-for-byte drift checks against LF generator output.
+  - **Mitigation**: `crates/nve-codegen/tests/{codegen_tests,hybrid_codegen_tests}.rs` and `crates/nve-cli/src/codegen.rs` normalize `\r\n` to `\n` before comparison.
