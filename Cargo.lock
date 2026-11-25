@@ -1691,6 +1691,7 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-skia",
  "nve-backend-web",
+ "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-interop",

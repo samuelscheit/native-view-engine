@@ -3,13 +3,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{
-    decode_events, encode_events, ColorRgba, ComponentKind, EventPayload, LayoutProps, NativeEvent,
-    NativeEventKind, NodeId, NveGestureDisposition, NveSizeConstraints, RawPropValue, StyleProps,
-    ROOT_NODE_ID,
+    decode_events, encode_events, ColorRgba, Command, CommandDecoder, ComponentKind, EventMask,
+    EventPayload, LayoutProps, NativeEvent, NativeEventKind, NodeId, NveGestureDisposition,
+    NveSizeConstraints, RawPropValue, StyleProps, ROOT_NODE_ID,
 };
 use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
+use nve_components::{CanvasOp, DrawListDecoder, ImageResizeMode, NVE_DRAW_MAGIC};
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::snapshot::{write_snapshot_atomic, MmapSnapshot};
@@ -22,9 +23,9 @@ use nve_interop::{
 };
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
-    create_surface_for_viewport, AccentTheme, ActiveView, ChannelKind, CornerRadiusMode,
-    DensityMode, LayoutEngineMode, StudioWorkspaceModule, WorkspaceState, MAX_HISTORY,
-    MOBILE_BREAKPOINT_PT,
+    create_surface_for_viewport, fuzzy_score, AccentTheme, ActiveView, ChannelKind,
+    CornerRadiusMode, DensityMode, LayoutEngineMode, StudioWorkspaceModule, WorkspaceState,
+    MAX_HISTORY, MOBILE_BREAKPOINT_PT,
 };
 
 struct MultiBackendHarness {
@@ -116,6 +117,21 @@ impl MultiBackendHarness {
             payload: EventPayload::Point { x: cx, y: cy },
         }]);
         assert!(handled, "press on '{test_id}' was not handled");
+        self.render_next();
+    }
+
+    fn type_text(&mut self, test_id: &str, text: &str) {
+        let node_id = self
+            .find_by_test_id(test_id)
+            .unwrap_or_else(|| panic!("expected textinput with testID='{test_id}'\n{}", self.ascii()));
+        let handled = self.surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id,
+            timestamp_us: self.next_frame * 16_000,
+            kind: NativeEventKind::TextChange,
+            payload: EventPayload::Text(text.to_owned()),
+        }]);
+        assert!(handled, "text change on '{test_id}' was not handled");
         self.render_next();
     }
 
@@ -1340,3 +1356,453 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     assert!(tree.contains("100k Stream"));
     assert!(tree.contains("Active: Yoga (C++20)"));
 }
+
+#[test]
+fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
+    // 1. Unit assertions on deterministic fuzzy scoring.
+    assert!(fuzzy_score("isld", "View: Islands").is_some());
+    assert!(fuzzy_score("yga", "Layout Engine: Yoga").is_some());
+    assert!(fuzzy_score("vlt", "Accent: Violet").is_some());
+    assert!(fuzzy_score("zzzz", "View: Board").is_none());
+    assert!(
+        fuzzy_score("islands", "View: Islands").unwrap()
+            > fuzzy_score("isld", "View: Islands").unwrap()
+    );
+
+    // 2. Drive full keyboard lifecycle (Cmd+K -> filter -> ArrowDown -> Enter / Escape)
+    // through StudioWorkspaceModule's NveApp C-ABI event stream!
+    let vp = Viewport {
+        width: 960.0,
+        height: 640.0,
+        scale_factor: 1.0,
+    };
+    let mut app = StudioWorkspaceModule::create(1);
+    let mut host = HeadlessBackend::new();
+    host.set_viewport(1, vp);
+    let f1 = app.render(1).to_vec();
+    host.submit_frame(&f1).unwrap();
+    assert!(!app.state_snapshot().palette.open);
+
+    let send_keydown = |app: &mut StudioWorkspaceModule,
+                        host: &mut HeadlessBackend,
+                        payload: &[u8],
+                        fid: u64| {
+        let ev = encode_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: ROOT_NODE_ID,
+            timestamp_us: fid * 16_000,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "keydown".into(),
+                data: payload.to_vec(),
+            },
+        }]);
+        assert!(app.dispatch_events(&ev), "keydown {:?} not handled", std::str::from_utf8(payload));
+        let frame = app.render(fid).to_vec();
+        host.submit_frame(&frame).unwrap();
+    };
+
+    let type_in = |app: &mut StudioWorkspaceModule,
+                   host: &mut HeadlessBackend,
+                   tid: &str,
+                   text: &str,
+                   fid: u64| {
+        let nid = host
+            .nodes()
+            .values()
+            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"))
+            .id;
+        let ev = encode_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: nid,
+            timestamp_us: fid * 16_000,
+            kind: NativeEventKind::TextChange,
+            payload: EventPayload::Text(text.to_owned()),
+        }]);
+        assert!(app.dispatch_events(&ev), "text change on '{tid}' not handled");
+        let frame = app.render(fid).to_vec();
+        host.submit_frame(&frame).unwrap();
+    };
+
+    // Open via JSON keydown Cmd+k.
+    send_keydown(&mut app, &mut host, br#"{"key":"k","meta":true}"#, 2);
+    assert!(app.state_snapshot().palette.open);
+    assert!(host.render_ascii_tree().contains("CMD+K PALETTE"));
+
+    // Escape closes palette cleanly.
+    send_keydown(&mut app, &mut host, b"Escape", 3);
+    assert!(!app.state_snapshot().palette.open);
+
+    // Re-open via Ctrl+k shorthand, fuzzy-filter for "Accent:", press ArrowDown -> Violet, press Enter!
+    send_keydown(&mut app, &mut host, b"Ctrl+k", 4);
+    assert!(app.state_snapshot().palette.open);
+    type_in(&mut app, &mut host, "palette-input", "Accent:", 5);
+    assert_eq!(app.state_snapshot().palette.selected, 0);
+
+    // ArrowDown moves selection from Cyan (0) -> Violet (1).
+    send_keydown(&mut app, &mut host, b"ArrowDown", 6);
+    assert_eq!(app.state_snapshot().palette.selected, 1);
+
+    // ArrowUp moves back to 0, then ArrowDown back to 1 (Violet).
+    send_keydown(&mut app, &mut host, b"ArrowUp", 7);
+    assert_eq!(app.state_snapshot().palette.selected, 0);
+    send_keydown(&mut app, &mut host, b"ArrowDown", 8);
+    assert_eq!(app.state_snapshot().palette.selected, 1);
+
+    // Enter executes Accent: Violet and closes palette.
+    send_keydown(&mut app, &mut host, b"Enter", 9);
+    assert!(!app.state_snapshot().palette.open);
+    assert_eq!(
+        app.state_snapshot().current.studio.accent,
+        AccentTheme::Violet
+    );
+
+    // Open again, fuzzy-filter "yga" -> Layout Engine: Yoga -> Enter!
+    send_keydown(&mut app, &mut host, b"Cmd+k", 10);
+    type_in(&mut app, &mut host, "palette-input", "yga", 11);
+    send_keydown(&mut app, &mut host, b"Enter", 12);
+    assert_eq!(
+        app.state_snapshot().current.studio.layout_engine,
+        LayoutEngineMode::Yoga
+    );
+
+    // Open again, fuzzy-filter "isld" -> View: Islands -> Enter!
+    send_keydown(&mut app, &mut host, b"Cmd+k", 13);
+    type_in(&mut app, &mut host, "palette-input", "isld", 14);
+    send_keydown(&mut app, &mut host, b"Enter", 15);
+    assert_eq!(app.state_snapshot().current.active_view, ActiveView::Islands);
+
+    // Open via header button in MultiBackendHarness and execute a time-travel snapshot jump by click.
+    let mut h = MultiBackendHarness::new(960.0, 640.0);
+    h.press("accent-amber");
+    h.press("btn-command-palette");
+    assert!(h.find_by_test_id("command-palette").is_some());
+    h.assert_no_horizontal_overflow("960x640-palette-open");
+    h.type_text("palette-input", "Workspace Boot");
+    h.press("palette-item-0");
+    assert!(h.find_by_test_id("command-palette").is_none());
+    assert!(h.ascii().contains("Snapshot 1 / 2"));
+}
+
+#[test]
+fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtrip() {
+    let mut h = MultiBackendHarness::new(960.0, 640.0);
+
+    // 1. Live Board search filters cards dynamically.
+    h.type_text("board-search-input", "AppKit");
+    assert!(h.ascii().contains("AET-102"));
+    assert!(!h.ascii().contains("AET-101"));
+    h.press("board-search-clear");
+    assert!(h.ascii().contains("AET-101"));
+
+    // 2. Live Board custom task create via TextInput + Add button.
+    h.type_text("board-new-task-input", "Ship NVE_DRAW1 binary vector IR");
+    h.press("board-new-task-submit");
+    assert!(h.ascii().contains("AET-105"));
+    assert!(h.ascii().contains("Ship NVE_DRAW1 binary vector IR"));
+
+    // Time-travel Undo removes the custom task; Redo brings it right back!
+    h.press("tt-undo");
+    assert!(!h.ascii().contains("Ship NVE_DRAW1 binary vector IR"));
+    h.press("tt-redo");
+    assert!(h.ascii().contains("Ship NVE_DRAW1 binary vector IR"));
+
+    // 3. Live TextInput chat composer in #engineering and #design-sync + Time-Travel Undo/Redo.
+    h.press("nav-engineering");
+    h.type_text("chat-composer-input", "Zero-JSON NVE_DRAW1 sparkline is live!");
+    h.press("chat-composer-send");
+    assert!(h.ascii().contains("Zero-JSON NVE_DRAW1 sparkline is live!"));
+
+    h.press("tt-undo");
+    assert!(!h.ascii().contains("Zero-JSON NVE_DRAW1 sparkline is live!"));
+    h.press("tt-redo");
+    assert!(h.ascii().contains("Zero-JSON NVE_DRAW1 sparkline is live!"));
+
+    h.press("nav-design");
+    h.type_text("chat-composer-input", "PNG avatars + Cmd+K contrast look crisp.");
+    h.press("chat-composer-send");
+    assert!(h.ascii().contains("PNG avatars + Cmd+K contrast look crisp."));
+
+    // 4. Tier-2 snapshot_state / restore_state roundtrip preserves composed messages & custom tasks.
+    let mut app = StudioWorkspaceModule::create(1);
+    let mut host = HeadlessBackend::new();
+    host.set_viewport(
+        1,
+        Viewport {
+            width: 960.0,
+            height: 640.0,
+            scale_factor: 1.0,
+        },
+    );
+    let f1 = app.render(1).to_vec();
+    host.submit_frame(&f1).unwrap();
+
+    // Type and submit custom task via TextChange + custom "submit" event.
+    let new_task_nid = host
+        .nodes()
+        .values()
+        .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == "board-new-task-input"))
+        .unwrap()
+        .id;
+    let ev_type = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: new_task_nid,
+        timestamp_us: 16_000,
+        kind: NativeEventKind::TextChange,
+        payload: EventPayload::Text("Persist across hot-swap".into()),
+    }]);
+    assert!(app.dispatch_events(&ev_type));
+    let f2 = app.render(2).to_vec();
+    host.submit_frame(&f2).unwrap();
+
+    let ev_submit = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: new_task_nid,
+        timestamp_us: 32_000,
+        kind: NativeEventKind::Custom,
+        payload: EventPayload::Custom {
+            name: "submit".into(),
+            data: Vec::new(),
+        },
+    }]);
+    assert!(app.dispatch_events(&ev_submit));
+    let _ = app.render(3);
+
+    // Switch to #engineering, type + submit chat message.
+    assert!(app.set_props(br#"{"view":"engineering"}"#));
+    let f4 = app.render(4).to_vec();
+    host.submit_frame(&f4).unwrap();
+    let chat_nid = host
+        .nodes()
+        .values()
+        .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == "chat-composer-input"))
+        .unwrap()
+        .id;
+    let ev_chat = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: chat_nid,
+        timestamp_us: 48_000,
+        kind: NativeEventKind::TextChange,
+        payload: EventPayload::Text("Live typed message survives reload".into()),
+    }]);
+    assert!(app.dispatch_events(&ev_chat));
+    let _ = app.render(5);
+    assert!(app.dispatch_events(&encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: chat_nid,
+        timestamp_us: 64_000,
+        kind: NativeEventKind::Custom,
+        payload: EventPayload::Custom {
+            name: "submit".into(),
+            data: Vec::new(),
+        },
+    }])));
+    let _ = app.render(6);
+
+    let saved = app.snapshot_state().to_vec();
+    let mut restored = StudioWorkspaceModule::create(1);
+    restored.restore_state(&saved);
+    let snap = restored.state_snapshot();
+    assert!(snap
+        .current
+        .tasks
+        .iter()
+        .any(|t| t.title == "Persist across hot-swap"));
+    assert!(snap
+        .current
+        .eng_messages
+        .iter()
+        .any(|m| m.body == "Live typed message survives reload"));
+}
+
+#[test]
+fn islands_multi_host_sandbox_orchestrator_bus_and_gesture_arbitration() {
+    let mut h = MultiBackendHarness::new(960.0, 640.0);
+
+    // Navigate to ActiveView::Islands and verify all 4 frameworks mount cleanly.
+    h.press("nav-islands");
+    let tree = h.ascii();
+    for expected in [
+        "Multi-Host Islands",
+        "React Native",
+        "RNLiveMapView",
+        "Flutter",
+        "RevenueSparkChart",
+        "SwiftUI",
+        "ApplePayCheckoutCard",
+        "Compose",
+        "MediaPlayerSheet",
+    ] {
+        assert!(tree.contains(expected), "Islands view missing '{expected}'");
+    }
+    h.assert_no_horizontal_overflow("960x640-islands");
+
+    // 1. Toggle RN island lifecycle via real SurfaceOrchestrator: Mounted -> Resumed -> Paused.
+    assert!(h.ascii().contains("LazyOnVisible | Mounted"));
+    h.press("island-toggle-rn");
+    assert!(h.ascii().contains("Island rn -> Resumed"));
+    assert!(h.ascii().contains("LazyOnVisible | Resumed"));
+    h.press("island-toggle-rn");
+    assert!(h.ascii().contains("Island rn -> Paused"));
+    assert!(h.ascii().contains("LazyOnVisible | Paused"));
+
+    // 2. Broadcast live NveChannelBus theme & binary sync packets to all 4 subscribed islands.
+    h.press("island-bus-theme");
+    assert!(h.ascii().contains("Bus: 1 tx (4 deliv)"));
+    assert!(h.ascii().contains("Bus rx: 1"));
+
+    h.press("island-bus-sync");
+    assert!(h.ascii().contains("Bus: 2 tx (8 deliv)"));
+    assert!(h.ascii().contains("Bus rx: 2"));
+
+    // 3. Exercise all 3 real GestureArbitrator outcomes: Claim, PassThrough, DeferToParent!
+    h.press("island-gesture-claim");
+    assert!(h.ascii().contains("ScrollAxisClaimed"));
+    assert!(h.ascii().contains("Gesture -> Claim"));
+
+    h.press("island-gesture-passthrough");
+    assert!(h.ascii().contains("OrthogonalAxisPassThrough"));
+    assert!(h.ascii().contains("Gesture -> PassThrough"));
+
+    h.press("island-gesture-defer");
+    assert!(h.ascii().contains("ScrollBoundaryDeferredToParent"));
+    assert!(h.ascii().contains("cancelled: 1"));
+    assert!(h.ascii().contains("Gesture -> DeferToParent"));
+
+    // Time-travel Undo steps cleanly back to PassThrough!
+    h.press("tt-undo");
+    assert!(h.ascii().contains("OrthogonalAxisPassThrough"));
+
+    // Also verify compact 640x420 and mobile 393x852 layouts fit Islands with zero overflow!
+    let mut h640 = MultiBackendHarness::new(640.0, 420.0);
+    h640.press("nav-islands");
+    h640.assert_no_horizontal_overflow("640x420-islands");
+
+    let mut h393 = MultiBackendHarness::new(393.0, 852.0);
+    h393.press("mobile-toggle-nav");
+    h393.press("nav-islands");
+    h393.assert_no_horizontal_overflow("393x852-islands");
+}
+
+#[test]
+fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_bytes() {
+    // 1. Inspect Board + Engineering CommandBuffers for real Image and TextInput primitives.
+    let mut h = MultiBackendHarness::new(960.0, 640.0);
+
+    let board_images: Vec<_> = h
+        .headless
+        .nodes()
+        .values()
+        .filter(|n| n.kind == ComponentKind::Image)
+        .collect();
+    assert!(
+        board_images.len() >= 4,
+        "expected PNG Image avatars on every issue card, got {}",
+        board_images.len()
+    );
+    for img in &board_images {
+        match img.raw_props.get("src") {
+            Some(RawPropValue::String(src)) => {
+                assert!(
+                    src.starts_with("data:image/png;base64,"),
+                    "expected PNG data URI src, got {src}"
+                );
+            }
+            other => panic!("missing Image src prop: {other:?}"),
+        }
+        assert_eq!(
+            img.raw_props.get("resizeMode"),
+            Some(&RawPropValue::String(ImageResizeMode::Cover.as_str().into()))
+        );
+    }
+
+    let board_inputs: Vec<_> = h
+        .headless
+        .nodes()
+        .values()
+        .filter(|n| n.kind == ComponentKind::TextInput)
+        .collect();
+    assert!(
+        board_inputs.len() >= 2,
+        "expected search + custom task TextInputs on Board, got {}",
+        board_inputs.len()
+    );
+    for inp in &board_inputs {
+        assert_ne!(
+            inp.event_mask & EventMask::TEXT_CHANGE,
+            0,
+            "TextInput must subscribe to EventMask::TEXT_CHANGE"
+        );
+        assert!(matches!(
+            inp.raw_props.get("placeholder"),
+            Some(RawPropValue::String(p)) if !p.is_empty()
+        ));
+    }
+
+    // Also verify WebBackend renders real <img> and <input> HTML tags!
+    let html_board = h.html();
+    assert!(html_board.contains("<img "));
+    assert!(html_board.contains("<input "));
+
+    // 2. Switch to Metrics view and verify real SkiaCanvas + valid NVE_DRAW1 draw-list bytes
+    // in BOTH DioxusSurface AND StudioWorkspaceModule (as RawPropValue::Bytes)!
+    h.press("nav-metrics");
+    let canvas_id = h
+        .find_by_test_id("metrics-sparkline-canvas")
+        .expect("SkiaCanvas node in Metrics view");
+    let canvas_node = h.headless.node(canvas_id).unwrap();
+    assert_eq!(canvas_node.kind, ComponentKind::SkiaCanvas);
+    let draw_prop = canvas_node
+        .raw_props
+        .get("drawList")
+        .expect("SkiaCanvas must emit drawList prop");
+    let ops = DrawListDecoder::decode_raw_prop(draw_prop)
+        .expect("SkiaCanvas drawList must decode as valid NVE_DRAW1");
+    assert!(
+        ops.iter().any(|op| matches!(op, CanvasOp::StrokePolyline { points, .. } if points.len() >= 8)),
+        "expected telemetry StrokePolyline op in SkiaCanvas draw list, got {ops:?}"
+    );
+    assert!(h.html().contains("<canvas "));
+
+    // 3. Verify StudioWorkspaceModule::render emits true binary RawPropValue::Bytes starting with NVE_DRAW1!
+    let mut app = StudioWorkspaceModule::create(1);
+    assert!(app.set_props(br#"{"view":"metrics"}"#));
+    let cmd_bytes = app.render(1).to_vec();
+    let (_, commands) = CommandDecoder::new(&cmd_bytes)
+        .and_then(CommandDecoder::decode_all)
+        .expect("decode metrics CommandBuffer");
+
+    let mut saw_canvas_create = false;
+    let mut saw_nve_draw1_bytes = false;
+    for cmd in &commands {
+        match cmd {
+            Command::CreateNode {
+                kind: ComponentKind::SkiaCanvas,
+                ..
+            } => {
+                saw_canvas_create = true;
+            }
+            Command::SetRawProp {
+                key,
+                value: RawPropValue::Bytes(bytes),
+                ..
+            } if key == "drawList" => {
+                assert!(
+                    bytes.starts_with(&NVE_DRAW_MAGIC),
+                    "drawList RawPropValue::Bytes must start with NVE_DRAW1 magic"
+                );
+                let decoded = DrawListDecoder::decode(bytes).expect("decode binary NVE_DRAW1");
+                assert!(decoded.len() >= 7);
+                saw_nve_draw1_bytes = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_canvas_create, "expected CreateNode(SkiaCanvas) in CommandBuffer");
+    assert!(
+        saw_nve_draw1_bytes,
+        "expected SetRawProp('drawList', RawPropValue::Bytes(NVE_DRAW1...)) in CommandBuffer"
+    );
+}
+

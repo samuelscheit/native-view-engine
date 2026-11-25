@@ -1,13 +1,18 @@
 //! **Aether Workspace** + **NVE Studio** — flagship local-first workspace, messaging, and
 //! live self-editing meta-workbench built on `native-view-engine`.
 //!
-//! Exports the modular `nve_get_interface` C ABI via `nve_engine::export_nve_app!` with zero
-//! `unsafe`, full Tier-1 hot-patching, and Tier-2 `cdylib` hot-swap state preservation
-//! (preserving every task, message, theme, X-Ray setting, and deterministic time-travel snapshot).
+//! Exercises every single NVE primitive (`View`, `Text`, `Pressable`, `ScrollView`, `TextInput`,
+//! `Image`, `SkiaCanvas`) and exports the modular `nve_get_interface` C ABI via
+//! `nve_engine::export_nve_app!` with zero `unsafe`, full Tier-1 hot-patching, and Tier-2 `cdylib`
+//! hot-swap state preservation (preserving every task, message, theme, X-Ray setting, `<Island>`
+//! sandbox state, and deterministic time-travel snapshot).
 
+pub mod assets;
 pub mod state;
 pub mod theme;
 pub mod ui;
+pub mod ui_islands;
+pub mod ui_palette;
 pub mod ui_stream;
 pub mod ui_studio;
 pub mod virtual_list;
@@ -15,18 +20,30 @@ pub mod virtual_list;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    decode_events, encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind,
-    NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId, ROOT_NODE_ID,
+    decode_events, encode_events, Command, CommandBufferBuilder, CommandDecoder, EventPayload,
+    FrameId, NativeEvent, NativeEventKind, NveGestureDisposition, NveIntrinsicSize,
+    NveSizeConstraints, RawPropValue, SurfaceId, ROOT_NODE_ID,
 };
+use nve_components::{DrawListDecoder, DRAW_LIST_ATTR_PREFIX};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
 
+pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use state::{
     AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
     LayoutEngineMode, Priority, Stream100kState, StudioConfig, TaskItem, TaskStatus,
-    WorkspaceSnapshot, WorkspaceState, MAX_HISTORY, MOBILE_BREAKPOINT_PT,
+    WorkspaceSnapshot, WorkspaceState, MAX_HISTORY, MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
 };
 pub use ui::StudioWorkspaceApp;
+pub use ui_islands::{
+    GestureSimMode, IslandCardState, IslandHostKind, IslandSandboxRuntime, IslandsSnapshot,
+    TOPIC_WORKSPACE_SYNC,
+};
+pub use ui_palette::{
+    build_palette_items, dispatch_keydown, filter_palette_items, fuzzy_score,
+    parse_keydown_payload, CommandPaletteAction, CommandPaletteItem, CommandPaletteState,
+    KeyDownEvent,
+};
 pub use virtual_list::{
     FenwickHeightTree, StreamVirtualEngine, VirtualListIndex, VirtualRowMeta, VirtualWindow,
     DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT,
@@ -59,6 +76,67 @@ pub fn create_surface_with_store(
     // Do not force render yet; caller invokes `render_frame(1)` which consumes `PENDING_STORE`.
     let _ = &mut surface;
     surface
+}
+
+/// Upgrades any `drawList` string prop carrying `nve-draw1;b64,...` inside a `CommandBuffer`
+/// into a zero-JSON binary [`RawPropValue::Bytes`] payload (`NVE_DRAW1...`).
+///
+/// Fast-paths with zero decode/re-encode overhead whenever the frame contains no draw-list prop.
+pub fn upgrade_draw_list_props_to_bytes(frame_bytes: Vec<u8>) -> Vec<u8> {
+    let needle = DRAW_LIST_ATTR_PREFIX.as_bytes();
+    if !frame_bytes.windows(needle.len()).any(|w| w == needle) {
+        return frame_bytes;
+    }
+    let Ok((header, commands)) =
+        CommandDecoder::new(&frame_bytes).and_then(CommandDecoder::decode_all)
+    else {
+        return frame_bytes;
+    };
+    let mut builder = CommandBufferBuilder::new(header.surface_id, header.frame_id);
+    for cmd in commands {
+        match cmd {
+            Command::CreateNode {
+                node_id,
+                kind,
+                custom_name,
+            } => builder.create_node(node_id, kind, custom_name.as_deref()),
+            Command::RemoveNode { node_id } => builder.remove_node(node_id),
+            Command::SetChildren {
+                parent_id,
+                children,
+            } => builder.set_children(parent_id, &children),
+            Command::SetText { node_id, text } => builder.set_text(node_id, &text),
+            Command::SetLayout { node_id, layout } => builder.set_layout(node_id, &layout),
+            Command::SetStyle { node_id, style } => builder.set_style(node_id, &style),
+            Command::SetRawProp {
+                node_id,
+                key,
+                value,
+            } => {
+                if key == "drawList" {
+                    if let RawPropValue::String(ref s) = value {
+                        if let Ok(raw_draw_bytes) = DrawListDecoder::decode_attr_bytes(s) {
+                            builder.set_raw_prop(
+                                node_id,
+                                &key,
+                                &RawPropValue::Bytes(raw_draw_bytes),
+                            );
+                            continue;
+                        }
+                    }
+                }
+                builder.set_raw_prop(node_id, &key, &value);
+            }
+            Command::SetEventMask { node_id, mask } => builder.set_event_mask(node_id, mask),
+            Command::DispatchCommand {
+                node_id,
+                command_name,
+                payload,
+            } => builder.dispatch_command(node_id, &command_name, &payload),
+            Command::Commit { sync_mount } => builder.commit(sync_mount),
+        }
+    }
+    builder.into_bytes()
 }
 
 /// Safe `NveApp` wrapper exported via `nve_get_interface` for native shells & Tier-2 hot-swap.
@@ -103,16 +181,17 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        if !self.mounted {
+        let bytes = if !self.mounted {
             ui::set_pending_store(Arc::clone(&self.store));
             let (_, _, bytes) = self.surface.render_frame(frame_id);
             ui::clear_pending_store();
             self.mounted = true;
-            self.last_frame_buf = bytes;
+            bytes
         } else {
             let (_, _, bytes) = self.surface.render_frame(frame_id);
-            self.last_frame_buf = bytes;
-        }
+            bytes
+        };
+        self.last_frame_buf = upgrade_draw_list_props_to_bytes(bytes);
         &self.last_frame_buf
     }
 
@@ -145,6 +224,40 @@ impl NveApp for StudioWorkspaceModule {
                         }
                     }
                 }
+                (NativeEventKind::Custom, EventPayload::Custom { name, data })
+                    if name == "keydown" =>
+                {
+                    if let Some(kd) = parse_keydown_payload(data) {
+                        if let Ok(mut guard) = self.store.lock() {
+                            if dispatch_keydown(&mut guard, &kd.key, kd.has_primary_modifier()) {
+                                handled_host_event = true;
+                            }
+                        }
+                    }
+                }
+                (NativeEventKind::Custom, EventPayload::Custom { name, .. })
+                    if name == "submit" =>
+                {
+                    if let Ok(mut guard) = self.store.lock() {
+                        let submitted = if guard.palette.open {
+                            guard.execute_palette_selected()
+                        } else {
+                            match guard.current.active_view {
+                                ActiveView::Board => guard.submit_new_task_draft(),
+                                ActiveView::ChannelEngineering => {
+                                    guard.submit_channel_draft(ChannelKind::Engineering)
+                                }
+                                ActiveView::ChannelDesign => {
+                                    guard.submit_channel_draft(ChannelKind::Design)
+                                }
+                                _ => false,
+                            }
+                        };
+                        if submitted {
+                            handled_host_event = true;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -162,7 +275,11 @@ impl NveApp for StudioWorkspaceModule {
         } else {
             960.0
         };
-        let w = if max_w < min_w { max_w } else { max_w.clamp(min_w, 1280.0) };
+        let w = if max_w < min_w {
+            max_w
+        } else {
+            max_w.clamp(min_w, 1280.0)
+        };
 
         let min_h = constraints.min_h.max(240.0).min(840.0);
         let max_h = if constraints.max_h.is_finite() && constraints.max_h > 0.0 {
@@ -170,7 +287,11 @@ impl NveApp for StudioWorkspaceModule {
         } else {
             640.0
         };
-        let h = if max_h < min_h { max_h } else { max_h.clamp(min_h, 840.0) };
+        let h = if max_h < min_h {
+            max_h
+        } else {
+            max_h.clamp(min_h, 840.0)
+        };
 
         NveIntrinsicSize {
             width: w,
@@ -224,6 +345,7 @@ impl NveApp for StudioWorkspaceModule {
                     "engineering" => Some(ActiveView::ChannelEngineering),
                     "design" => Some(ActiveView::ChannelDesign),
                     "stream" | "stream100k" | "100k" => Some(ActiveView::Stream100k),
+                    "islands" | "island" => Some(ActiveView::Islands),
                     "metrics" => Some(ActiveView::Metrics),
                     _ => None,
                 };
@@ -235,7 +357,9 @@ impl NveApp for StudioWorkspaceModule {
             let vp_w = val.get("viewportWidth").and_then(|v| v.as_f64());
             let vp_h = val.get("viewportHeight").and_then(|v| v.as_f64());
             if vp_w.is_some() || vp_h.is_some() {
-                let next_w = vp_w.map(|v| v as f32).unwrap_or(guard.current.viewport_width as f32);
+                let next_w = vp_w
+                    .map(|v| v as f32)
+                    .unwrap_or(guard.current.viewport_width as f32);
                 let next_h = vp_h
                     .map(|v| v as f32)
                     .unwrap_or(guard.current.viewport_height as f32);

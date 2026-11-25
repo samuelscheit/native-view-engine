@@ -1,8 +1,9 @@
 //! Dioxus 0.7 `rsx!` UI for **Aether Workspace** + docked **NVE Studio** meta-workbench.
 //!
-//! Uses exclusively the typed CSS subset parsed by `nve-components` so the emitted single
-//! `nve-abi` binary `CommandBuffer` lays out and renders identically across macOS AppKit,
-//! Qt 6, Skia Desktop, Web WASM, and Headless Taffy/Yoga backends.
+//! Exercises every NVE primitive (`View`, `Text`, `Pressable`, `ScrollView`, `TextInput`,
+//! `Image`, `SkiaCanvas`) using the typed CSS/attribute subset so the emitted single `nve-abi`
+//! binary `CommandBuffer` lays out and renders identically across macOS AppKit, Qt 6, Skia
+//! Desktop, Web WASM, and Headless Taffy/Yoga backends.
 //!
 //! Automatically adapts between the desktop 3-column workspace (`>= 620pt`) and a responsive
 //! single-column mobile portrait shell (`< 620pt`, e.g. iPhone 17 393pt) with collapsible top
@@ -13,11 +14,15 @@ use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
 
+use crate::assets::{avatar_for_author, build_metrics_sparkline};
 use crate::state::{ActiveView, BoardFilter, ChannelKind, WorkspaceState};
 use crate::theme::{
-    card_border, control_border, panel_border, row_border, LayoutMetrics, CANVAS_BG, CARD_ALT_BG,
-    CARD_BG, CONTROL_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, XRAY_ROW,
+    card_border, control_border, panel_border, row_border, LayoutMetrics, BORDER_DEFAULT,
+    CANVAS_BG, CARD_ALT_BG, CARD_BG, CONTROL_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY,
+    TEXT_SECONDARY, XRAY_ROW,
 };
+use crate::ui_islands::render_islands_view;
+use crate::ui_palette::{filter_palette_items, render_command_palette};
 use crate::ui_stream::{SharedStore, Stream100kPanel};
 use crate::ui_studio::render_studio_panel;
 
@@ -63,8 +68,22 @@ pub fn StudioWorkspaceApp() -> Element {
     let version = use_signal(|| 0u64);
     let rev = version();
 
-    // Clone only the active snapshot + lightweight history metadata (never the full 64-entry history vec!).
-    let (current, is_mobile, frame_num, snap_idx, hist_len, can_undo, can_redo, active_tasks, done_tasks, total_msgs, filtered_tasks) = {
+    // Clone only the active snapshot + lightweight metadata (never the full 64-entry history vec!).
+    let (
+        current,
+        palette,
+        palette_matches,
+        is_mobile,
+        frame_num,
+        snap_idx,
+        hist_len,
+        can_undo,
+        can_redo,
+        active_tasks,
+        done_tasks,
+        total_msgs,
+        filtered_tasks,
+    ) = {
         let guard = store.lock().unwrap_or_else(|e| e.into_inner());
         let active_view = guard.current.active_view;
         let filtered = if active_view == ActiveView::Board {
@@ -72,8 +91,15 @@ pub fn StudioWorkspaceApp() -> Element {
         } else {
             Vec::new()
         };
+        let pal_matches = if guard.palette.open {
+            filter_palette_items(&guard)
+        } else {
+            Vec::new()
+        };
         (
             guard.current.clone(),
+            guard.palette.clone(),
+            pal_matches,
             guard.is_mobile_portrait(),
             guard.frame_count,
             guard.snapshot_index_1based(),
@@ -108,6 +134,7 @@ pub fn StudioWorkspaceApp() -> Element {
     let total_tasks = current.tasks.len();
     let eng_count = current.eng_messages.len();
     let design_count = current.design_messages.len();
+    let islands_count = current.islands.cards.len();
     let stress_rows = current.stress_rows;
 
     let nav_items: &[(ActiveView, &str, &str, String)] = &[
@@ -134,6 +161,12 @@ pub fn StudioWorkspaceApp() -> Element {
             "nav-stream",
             "100k Stream",
             "100k".into(),
+        ),
+        (
+            ActiveView::Islands,
+            "nav-islands",
+            "Islands",
+            islands_count.to_string(),
         ),
         (
             ActiveView::Metrics,
@@ -200,15 +233,27 @@ pub fn StudioWorkspaceApp() -> Element {
     };
 
     let header_bar_style = format!(
-        "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 10px; padding-vertical: 7px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+        "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 8px; padding-vertical: 6px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
         m.button_radius
     );
 
     let status_pill_style = format!(
-        "height: 22px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 8px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
+        "height: 22px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 6px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
         m.pill_radius
     );
-    let status_pill_label = format!("Frame #{frame_num} | {snap_idx}/{hist_len}");
+    let compact_header = current.viewport_width < 760;
+    let status_pill_label = if compact_header {
+        format!("F#{frame_num} {snap_idx}/{hist_len}")
+    } else {
+        format!("Frame #{frame_num} | {snap_idx}/{hist_len}")
+    };
+    let (cmdk_bw, cmdk_bc) = control_border(xray, palette.open, accent_hex);
+    let cmdk_bg = if palette.open { accent_tint } else { CONTROL_BG };
+    let cmdk_fg = if palette.open {
+        accent_hex
+    } else {
+        TEXT_SECONDARY
+    };
 
     let active_channel = match active_view {
         ActiveView::ChannelDesign => Some(ChannelKind::Design),
@@ -220,6 +265,18 @@ pub fn StudioWorkspaceApp() -> Element {
         Some(ChannelKind::Design) => current.design_messages.as_slice(),
         None => &[],
     };
+    let channel_draft = match active_channel {
+        Some(ChannelKind::Engineering) => current.eng_draft.as_str(),
+        Some(ChannelKind::Design) => current.design_draft.as_str(),
+        None => "",
+    };
+
+    let sparkline_attr = if active_view == ActiveView::Metrics {
+        build_metrics_sparkline(&current.telemetry_samples_us, hist_len, accent_hex)
+            .to_attr_string()
+    } else {
+        String::new()
+    };
 
     let root_flex_dir = if is_mobile { "column" } else { "row" };
 
@@ -228,6 +285,12 @@ pub fn StudioWorkspaceApp() -> Element {
     let s_toggle_studio = Arc::clone(&store);
     let s_toggle_studio_mobile = Arc::clone(&store);
     let s_toggle_nav_mobile = Arc::clone(&store);
+    let s_toggle_palette = Arc::clone(&store);
+    let s_board_search = Arc::clone(&store);
+    let s_board_search_clear = Arc::clone(&store);
+    let s_board_draft = Arc::clone(&store);
+    let s_board_draft_submit = Arc::clone(&store);
+    let s_board_draft_btn = Arc::clone(&store);
     let s_stress8 = Arc::clone(&store);
     let s_stress24 = Arc::clone(&store);
     let s_stress_rst = Arc::clone(&store);
@@ -247,6 +310,7 @@ pub fn StudioWorkspaceApp() -> Element {
     rsx! {
         view {
             test_id: "workspace-root",
+            accessibility_label: "Aether Studio Workspace",
             "layout-engine": "{layout_engine_str}",
             "viewport-mode": "{viewport_mode_str}",
             style: "width: 100%; height: 100%; flex-direction: {root_flex_dir}; background-color: {CANVAS_BG};",
@@ -359,7 +423,7 @@ pub fn StudioWorkspaceApp() -> Element {
                                 let count_bg = if is_active { accent_hex } else { "#334155" };
                                 let count_fg = if is_active { accent.on_accent_fg() } else { TEXT_SECONDARY };
                                 let tab_style = format!(
-                                    "width: 100%; height: 30px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 9px; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
+                                    "width: 100%; height: 28px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 9px; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
                                     m.button_radius
                                 );
                                 let badge_style = format!(
@@ -434,20 +498,36 @@ pub fn StudioWorkspaceApp() -> Element {
                 test_id: "center-workspace",
                 style: "{center_style}",
 
-                // Top Header Bar
+                // Top Header Bar with Cmd+K Command Palette trigger + Status Pill
                 view {
                     style: "{header_bar_style}",
                     text {
-                        style: "color: {TEXT_PRIMARY}; font-size: 13px;",
+                        style: "color: {TEXT_PRIMARY}; font-size: 12px;",
                         "{active_view.title()}"
                     }
                     view {
-                        style: "{status_pill_style}",
-                        text {
-                            style: "color: {accent_hex}; font-size: 10px;",
-                            "{status_pill_label}"
+                        style: "flex-direction: row; align-items: center; gap: 5px; flex-shrink: 0;",
+                        pressable {
+                            test_id: "btn-command-palette",
+                            accessibility_label: "Open Cmd+K Command Palette",
+                            accessibility_role: "button",
+                            style: "width: 46px; height: 22px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {cmdk_bg}; border-radius: {m.pill_radius}px; border-width: {cmdk_bw}px; border-color: {cmdk_bc};",
+                            onpress: move |_| mutate_state(&s_toggle_palette, version, |st| st.toggle_palette()),
+                            text { style: "color: {cmdk_fg}; font-size: 9px;", "Cmd+K" }
+                        }
+                        view {
+                            style: "{status_pill_style}",
+                            text {
+                                style: "color: {accent_hex}; font-size: 10px;",
+                                "{status_pill_label}"
+                            }
                         }
                     }
+                }
+
+                // ---- CMD+K COMMAND PALETTE OVERLAY ----
+                if palette.open {
+                    {render_command_palette(&store, version, &palette, &palette_matches, accent_hex, accent_tint, xray, m)}
                 }
 
                 // ---- BOARD VIEW ----
@@ -487,13 +567,72 @@ pub fn StudioWorkspaceApp() -> Element {
                         }
                     }
 
-                    // Scrollable Task Card List
+                    // Live Board Search & Custom Task Create Bar (real TextInput primitives)
+                    view {
+                        style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; border-width: {row_bw}px; border-color: {row_bc};",
+                        view {
+                            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
+                            textinput {
+                                test_id: "board-search-input",
+                                placeholder: "Filter issues...",
+                                value: "{current.board_search_query}",
+                                multiline: false,
+                                accessibility_label: "Filter board issues",
+                                accessibility_role: "searchbox",
+                                style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {PANEL_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                                onchange: move |ev| {
+                                    let q = ev.data().value.clone();
+                                    mutate_state(&s_board_search, version, |st| st.set_board_search_query(q));
+                                },
+                            }
+                            if !current.board_search_query.is_empty() {
+                                pressable {
+                                    test_id: "board-search-clear",
+                                    style: "width: 40px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                                    onpress: move |_| mutate_state(&s_board_search_clear, version, |st| st.set_board_search_query("")),
+                                    text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "Clear" }
+                                }
+                            }
+                        }
+                        view {
+                            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
+                            textinput {
+                                test_id: "board-new-task-input",
+                                placeholder: "New custom issue title...",
+                                value: "{current.new_task_draft}",
+                                multiline: false,
+                                accessibility_label: "New issue title",
+                                style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {PANEL_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                                onchange: move |ev| {
+                                    let txt = ev.data().value.clone();
+                                    mutate_state(&s_board_draft, version, |st| st.set_new_task_draft(txt));
+                                },
+                                onsubmit: move |_| {
+                                    mutate_state(&s_board_draft_submit, version, |st| {
+                                        let _ = st.submit_new_task_draft();
+                                    });
+                                },
+                            }
+                            pressable {
+                                test_id: "board-new-task-submit",
+                                style: "width: 50px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_tint}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
+                                onpress: move |_| mutate_state(&s_board_draft_btn, version, |st| {
+                                    let _ = st.submit_new_task_draft();
+                                }),
+                                text { style: "color: {accent_hex}; font-size: 10px;", "+ Add" }
+                            }
+                        }
+                    }
+
+                    // Scrollable Task Card List (with real PNG Image avatars)
                     scrollview {
                         style: "width: 100%; flex: 1; flex-direction: column; gap: {m.list_gap}px; border-width: {row_bw}px; border-color: {row_bc};",
                         for task in filtered_tasks.iter() {
                             {
                                 let tid = task.id;
                                 let status_tid = format!("task-status-{tid}");
+                                let avatar_tid = format!("task-avatar-{tid}");
+                                let avatar_src = avatar_for_author(&task.assignee);
                                 let card_style = format!(
                                     "width: 100%; flex-shrink: 0; flex-direction: column; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
                                     m.card_pad, m.card_gap, m.card_radius
@@ -544,10 +683,21 @@ pub fn StudioWorkspaceApp() -> Element {
                                             style: "color: {TEXT_PRIMARY}; font-size: 12px;",
                                             "{task.title}"
                                         }
-                                        // Assignee & Tag row
-                                        text {
-                                            style: "color: {TEXT_MUTED}; font-size: 11px;",
-                                            "{meta_line}"
+                                        // Assignee Avatar Image & Tag row
+                                        view {
+                                            style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 6px;",
+                                            image {
+                                                test_id: "{avatar_tid}",
+                                                src: "{avatar_src}",
+                                                alt: "{task.assignee}",
+                                                resize_mode: "cover",
+                                                accessibility_label: "Assignee avatar {task.assignee}",
+                                                style: "width: 18px; height: 18px; flex-shrink: 0; border-radius: 9px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                                            }
+                                            text {
+                                                style: "color: {TEXT_MUTED}; font-size: 11px;",
+                                                "{meta_line}"
+                                            }
                                         }
                                     }
                                 }
@@ -564,6 +714,8 @@ pub fn StudioWorkspaceApp() -> Element {
                             {
                                 let mid = msg.id;
                                 let react_tid = format!("msg-react-{mid}");
+                                let avatar_tid = format!("msg-avatar-{mid}");
+                                let avatar_src = avatar_for_author(&msg.author);
                                 let card_style = format!(
                                     "width: 100%; flex-shrink: 0; flex-direction: column; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
                                     m.card_pad, m.card_gap, m.card_radius
@@ -578,7 +730,15 @@ pub fn StudioWorkspaceApp() -> Element {
                                         view {
                                             style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; border-width: {row_bw}px; border-color: {row_bc};",
                                             view {
-                                                style: "flex-direction: row; align-items: center; gap: 7px;",
+                                                style: "flex-direction: row; align-items: center; gap: 6px;",
+                                                image {
+                                                    test_id: "{avatar_tid}",
+                                                    src: "{avatar_src}",
+                                                    alt: "{msg.author}",
+                                                    resize_mode: "cover",
+                                                    accessibility_label: "Author avatar {msg.author}",
+                                                    style: "width: 18px; height: 18px; flex-shrink: 0; border-radius: 9px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                                                }
                                                 view {
                                                     style: "height: 20px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 7px; background-color: {msg.badge_bg}; border-radius: {m.pill_radius}px;",
                                                     text {
@@ -611,36 +771,72 @@ pub fn StudioWorkspaceApp() -> Element {
                         }
                     }
 
-                    // Quick-Composer Bar
-                    view {
-                        style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 9px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                        text {
-                            style: "color: {TEXT_MUTED}; font-size: 10px;",
-                            "QUICK REPLY"
-                        }
-                        view {
-                            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px;",
-                            for &(tid, chip_label, reply_body) in [
-                                ("reply-ship", "Ship It", "Ship It - all checks green!"),
-                                ("reply-bench", "Run Benches", "Run Benches - checking p99."),
-                                ("reply-lgtm", "LGTM", "LGTM - clean single-ABI PR."),
-                            ].iter() {
-                                {
-                                    let (bw, bc) = control_border(xray, false, accent_hex);
-                                    let chip_style = format!(
-                                        "flex: 1; height: 28px; justify-content: center; align-items: center; background-color: {CARD_BG}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
-                                        m.button_radius
-                                    );
-                                    let s_rep = Arc::clone(&store);
-                                    rsx! {
-                                        pressable {
-                                            key: "{tid}",
-                                            test_id: "{tid}",
-                                            style: "{chip_style}",
-                                            onpress: move |_| mutate_state(&s_rep, version, |st| st.send_quick_reply(ch, reply_body)),
-                                            text {
-                                                style: "color: {TEXT_PRIMARY}; font-size: 10px;",
-                                                "{chip_label}"
+                    // Live TextInput Chat Composer + Quick-Reply Chips
+                    {
+                        let composer_placeholder = format!("Message {}...", ch.tag());
+                        let s_chat_input = Arc::clone(&store);
+                        let s_chat_submit = Arc::clone(&store);
+                        let s_chat_send = Arc::clone(&store);
+                        rsx! {
+                            view {
+                                style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 9px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+                                view {
+                                    style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; align-items: center;",
+                                    textinput {
+                                        test_id: "chat-composer-input",
+                                        placeholder: "{composer_placeholder}",
+                                        value: "{channel_draft}",
+                                        multiline: false,
+                                        accessibility_label: "Channel message input",
+                                        style: "flex: 1; height: 28px; padding-horizontal: 8px; background-color: {CARD_ALT_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+                                        onchange: move |ev| {
+                                            let txt = ev.data().value.clone();
+                                            mutate_state(&s_chat_input, version, |st| st.set_channel_draft(ch, txt));
+                                        },
+                                        onsubmit: move |_| {
+                                            mutate_state(&s_chat_submit, version, |st| {
+                                                let _ = st.submit_channel_draft(ch);
+                                            });
+                                        },
+                                    }
+                                    pressable {
+                                        test_id: "chat-composer-send",
+                                        style: "width: 48px; height: 28px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_hex}; border-radius: {m.button_radius}px;",
+                                        onpress: move |_| mutate_state(&s_chat_send, version, |st| {
+                                            let _ = st.submit_channel_draft(ch);
+                                        }),
+                                        text { style: "color: #0b1120; font-size: 10px;", "Send" }
+                                    }
+                                }
+                                text {
+                                    style: "color: {TEXT_MUTED}; font-size: 10px;",
+                                    "QUICK REPLY"
+                                }
+                                view {
+                                    style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px;",
+                                    for &(tid, chip_label, reply_body) in [
+                                        ("reply-ship", "Ship It", "Ship It - all checks green!"),
+                                        ("reply-bench", "Run Benches", "Run Benches - checking p99."),
+                                        ("reply-lgtm", "LGTM", "LGTM - clean single-ABI PR."),
+                                    ].iter() {
+                                        {
+                                            let (bw, bc) = control_border(xray, false, accent_hex);
+                                            let chip_style = format!(
+                                                "flex: 1; height: 26px; justify-content: center; align-items: center; background-color: {CARD_BG}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
+                                                m.button_radius
+                                            );
+                                            let s_rep = Arc::clone(&store);
+                                            rsx! {
+                                                pressable {
+                                                    key: "{tid}",
+                                                    test_id: "{tid}",
+                                                    style: "{chip_style}",
+                                                    onpress: move |_| mutate_state(&s_rep, version, |st| st.send_quick_reply(ch, reply_body)),
+                                                    text {
+                                                        style: "color: {TEXT_PRIMARY}; font-size: 10px;",
+                                                        "{chip_label}"
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -662,6 +858,11 @@ pub fn StudioWorkspaceApp() -> Element {
                         is_mobile,
                         parent_rev: rev,
                     }
+                }
+
+                // ---- MULTI-HOST <ISLAND> SANDBOX VIEW ----
+                if active_view == ActiveView::Islands {
+                    {render_islands_view(&store, version, &current.islands, accent_hex, accent_tint, xray, m)}
                 }
 
                 // ---- METRICS VIEW ----
@@ -694,6 +895,23 @@ pub fn StudioWorkspaceApp() -> Element {
                                 text { style: "color: {TEXT_MUTED}; font-size: 10px;", "MESSAGES" }
                                 text { style: "color: #f59e0b; font-size: 18px;", "{total_msgs}" }
                             }
+                        }
+                    }
+
+                    // Live SkiaCanvas Telemetry Sparkline emitting NVE_DRAW1 binary draw-list IR
+                    view {
+                        style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 4px; padding: 8px; background-color: {PANEL_BG}; border-radius: {m.card_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
+                        view {
+                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
+                            text { style: "color: {TEXT_MUTED}; font-size: 10px;", "SKIA SPARKLINE (NVE_DRAW1)" }
+                            text { style: "color: {accent_hex}; font-size: 10px;", "{current.telemetry_samples_us.len()} pts" }
+                        }
+                        canvas {
+                            test_id: "metrics-sparkline-canvas",
+                            draw_list: "{sparkline_attr}",
+                            accessibility_label: "Live telemetry frame timing sparkline",
+                            accessibility_role: "image",
+                            style: "width: 100%; height: 72px; flex-shrink: 0; background-color: {CARD_ALT_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
                         }
                     }
 

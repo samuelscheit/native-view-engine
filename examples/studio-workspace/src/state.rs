@@ -4,11 +4,21 @@
 use nve_engine::BuiltinLayout;
 use serde::{Deserialize, Serialize};
 
+use crate::ui_islands::{
+    format_disposition, format_lifecycle, GestureSimMode, IslandSandboxRuntime, IslandsSnapshot,
+};
+use crate::ui_palette::{
+    execute_palette_action, filter_palette_items, fuzzy_score, CommandPaletteState,
+};
+
 /// Maximum number of retained deterministic snapshots in the time-travel ring.
 pub const MAX_HISTORY: usize = 64;
 
 /// Maximum stress rows rendered in the Metrics view to keep frame sizes snappy.
 pub const MAX_STRESS_ROWS: usize = 96;
+
+/// Maximum number of telemetry samples plotted by the live `SkiaCanvas` sparkline.
+pub const MAX_TELEMETRY_SAMPLES: usize = 24;
 
 /// Responsive breakpoint (in logical points) below which the desktop 3-column layout
 /// collapses into a single-column mobile portrait layout with collapsible drawers.
@@ -20,6 +30,7 @@ pub enum ActiveView {
     ChannelEngineering,
     ChannelDesign,
     Stream100k,
+    Islands,
     Metrics,
 }
 
@@ -30,6 +41,7 @@ impl ActiveView {
             Self::ChannelEngineering => "# engineering",
             Self::ChannelDesign => "# design-sync",
             Self::Stream100k => "100k Stream",
+            Self::Islands => "Multi-Host Islands",
             Self::Metrics => "Live Metrics",
         }
     }
@@ -325,6 +337,10 @@ fn default_viewport_height() -> u32 {
     640
 }
 
+fn default_telemetry_samples() -> Vec<u32> {
+    vec![195, 224, 188, 262, 210, 176, 238, 192]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StudioConfig {
     pub panel_open: bool,
@@ -354,14 +370,26 @@ impl Default for StudioConfig {
 pub struct WorkspaceSnapshot {
     pub active_view: ActiveView,
     pub board_filter: BoardFilter,
+    #[serde(default)]
+    pub board_search_query: String,
+    #[serde(default)]
+    pub new_task_draft: String,
     pub tasks: Vec<TaskItem>,
     pub next_task_id: u32,
     pub eng_messages: Vec<ChatMessage>,
     pub design_messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub eng_draft: String,
+    #[serde(default)]
+    pub design_draft: String,
     pub next_msg_id: u32,
     pub stress_rows: usize,
+    #[serde(default = "default_telemetry_samples")]
+    pub telemetry_samples_us: Vec<u32>,
     #[serde(default)]
     pub stream: Stream100kState,
+    #[serde(default)]
+    pub islands: IslandsSnapshot,
     pub studio: StudioConfig,
     pub action_label: String,
     #[serde(default = "default_viewport_width")]
@@ -379,6 +407,8 @@ impl Default for WorkspaceSnapshot {
         Self {
             active_view: ActiveView::Board,
             board_filter: BoardFilter::All,
+            board_search_query: String::new(),
+            new_task_draft: String::new(),
             tasks: vec![
                 TaskItem {
                     id: 1,
@@ -467,9 +497,13 @@ impl Default for WorkspaceSnapshot {
                     reactions: 3,
                 },
             ],
+            eng_draft: String::new(),
+            design_draft: String::new(),
             next_msg_id: 200,
             stress_rows: 4,
+            telemetry_samples_us: default_telemetry_samples(),
             stream: Stream100kState::default(),
+            islands: IslandsSnapshot::default(),
             studio: StudioConfig::default(),
             action_label: "Workspace Boot".into(),
             viewport_width: default_viewport_width(),
@@ -487,6 +521,8 @@ pub struct WorkspaceState {
     pub history: Vec<WorkspaceSnapshot>,
     pub cursor: usize,
     pub frame_count: u64,
+    #[serde(default)]
+    pub palette: CommandPaletteState,
 }
 
 impl Default for WorkspaceState {
@@ -497,6 +533,7 @@ impl Default for WorkspaceState {
             current: initial,
             cursor: 0,
             frame_count: 1,
+            palette: CommandPaletteState::default(),
         }
     }
 }
@@ -521,6 +558,17 @@ impl WorkspaceState {
         }
         mutate(&mut self.current);
         self.current.action_label = label.into();
+        // Record a deterministic mutation-cost timing sample for the live SkiaCanvas sparkline.
+        let sample_us = 155u32
+            + ((self.current.tasks.len() as u32) * 11
+                + (self.current.stress_rows as u32) * 7
+                + (self.frame_count as u32 % 9) * 19)
+                % 220;
+        self.current.telemetry_samples_us.push(sample_us);
+        if self.current.telemetry_samples_us.len() > MAX_TELEMETRY_SAMPLES {
+            let extra = self.current.telemetry_samples_us.len() - MAX_TELEMETRY_SAMPLES;
+            self.current.telemetry_samples_us.drain(0..extra);
+        }
         self.history.push(self.current.clone());
         if self.history.len() > MAX_HISTORY {
             let overflow = self.history.len() - MAX_HISTORY;
@@ -850,6 +898,274 @@ impl WorkspaceState {
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
+    pub fn scrub_to(&mut self, index: usize) {
+        if self.history.is_empty() {
+            return;
+        }
+        let target = index.min(self.history.len() - 1);
+        if self.cursor == target {
+            return;
+        }
+        self.cursor = target;
+        self.current = self.history[target].clone();
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn set_board_search_query(&mut self, query: impl Into<String>) {
+        let next = query.into();
+        if self.current.board_search_query == next {
+            return;
+        }
+        self.current.board_search_query = next;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn set_new_task_draft(&mut self, draft: impl Into<String>) {
+        let next = draft.into();
+        if self.current.new_task_draft == next {
+            return;
+        }
+        self.current.new_task_draft = next;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn create_custom_task(&mut self, title: &str) -> bool {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let id = self.current.next_task_id;
+        let key = format!("AET-{}", 100 + id);
+        let label = format!("New {key}");
+        let owned_title = trimmed.to_owned();
+        self.commit_action(label, |s| {
+            s.tasks.insert(
+                0,
+                TaskItem {
+                    id,
+                    key,
+                    title: owned_title,
+                    assignee: "@you".into(),
+                    tag: "Custom".into(),
+                    priority: Priority::P1,
+                    status: TaskStatus::Todo,
+                },
+            );
+            s.next_task_id = id.saturating_add(1);
+            s.new_task_draft.clear();
+            s.active_view = ActiveView::Board;
+            if s.board_filter == BoardFilter::Done {
+                s.board_filter = BoardFilter::All;
+            }
+        });
+        true
+    }
+
+    pub fn submit_new_task_draft(&mut self) -> bool {
+        let draft = self.current.new_task_draft.clone();
+        self.create_custom_task(&draft)
+    }
+
+    pub fn draft_for_channel(&self, channel: ChannelKind) -> &str {
+        match channel {
+            ChannelKind::Engineering => &self.current.eng_draft,
+            ChannelKind::Design => &self.current.design_draft,
+        }
+    }
+
+    pub fn set_channel_draft(&mut self, channel: ChannelKind, draft: impl Into<String>) {
+        let next = draft.into();
+        let slot = match channel {
+            ChannelKind::Engineering => &mut self.current.eng_draft,
+            ChannelKind::Design => &mut self.current.design_draft,
+        };
+        if *slot == next {
+            return;
+        }
+        *slot = next;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn submit_channel_draft(&mut self, channel: ChannelKind) -> bool {
+        let body = self.draft_for_channel(channel).trim().to_owned();
+        if body.is_empty() {
+            return false;
+        }
+        let msg_id = self.current.next_msg_id;
+        let label = format!("Sent {}", channel.tag());
+        let minute = 50 + (msg_id % 10);
+        self.commit_action(label, |s| {
+            let msg = ChatMessage {
+                id: msg_id,
+                author: "you".into(),
+                badge_bg: "#1e293b".into(),
+                badge_fg: "#f8fafc".into(),
+                timestamp: format!("10:{minute:02}"),
+                body,
+                reactions: 1,
+            };
+            match channel {
+                ChannelKind::Engineering => {
+                    s.eng_messages.push(msg);
+                    s.eng_draft.clear();
+                }
+                ChannelKind::Design => {
+                    s.design_messages.push(msg);
+                    s.design_draft.clear();
+                }
+            }
+            s.next_msg_id = msg_id.saturating_add(1);
+        });
+        true
+    }
+
+    pub fn record_telemetry_sample(&mut self, sample_us: u32) {
+        self.current.telemetry_samples_us.push(sample_us);
+        if self.current.telemetry_samples_us.len() > MAX_TELEMETRY_SAMPLES {
+            let extra = self.current.telemetry_samples_us.len() - MAX_TELEMETRY_SAMPLES;
+            self.current.telemetry_samples_us.drain(0..extra);
+        }
+    }
+
+    // ---- Cmd+K Command Palette ----
+
+    pub fn open_palette(&mut self) {
+        self.palette.open = true;
+        self.palette.selected = 0;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn close_palette(&mut self) {
+        if !self.palette.open {
+            return;
+        }
+        self.palette.open = false;
+        self.palette.query.clear();
+        self.palette.selected = 0;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn toggle_palette(&mut self) {
+        if self.palette.open {
+            self.close_palette();
+        } else {
+            self.open_palette();
+        }
+    }
+
+    pub fn set_palette_query(&mut self, query: impl Into<String>) {
+        self.palette.query = query.into();
+        self.palette.selected = 0;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn move_palette_selection(&mut self, delta: isize) {
+        let len = filter_palette_items(self)
+            .len()
+            .min(crate::ui_palette::MAX_VISIBLE_PALETTE_ITEMS);
+        if len == 0 {
+            self.palette.selected = 0;
+            return;
+        }
+        let cur = self.palette.selected.min(len - 1) as isize;
+        let next = (cur + delta).rem_euclid(len as isize) as usize;
+        self.palette.selected = next;
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn execute_palette_at(&mut self, index: usize) -> bool {
+        let matches = filter_palette_items(self);
+        let Some(item) = matches.get(index) else {
+            return false;
+        };
+        let action = item.action.clone();
+        execute_palette_action(self, action);
+        true
+    }
+
+    pub fn execute_palette_selected(&mut self) -> bool {
+        let idx = self.palette.selected;
+        self.execute_palette_at(idx)
+    }
+
+    // ---- Multi-Host <Island> Sandbox (real nve_interop orchestrator, bus, arbitrator) ----
+
+    pub fn toggle_island_lifecycle(&mut self, slug: &str) {
+        let mut rt = IslandSandboxRuntime::from_snapshot(&self.current.islands);
+        let Some((sid, next_state)) = rt.toggle_island_lifecycle(slug) else {
+            return;
+        };
+        let state_str = format_lifecycle(next_state);
+        let label = format!("Island {slug} -> {state_str}");
+        self.commit_action(label, |s| {
+            if let Some(card) = s.islands.cards.iter_mut().find(|c| c.surface_id == sid) {
+                card.lifecycle = state_str.into();
+            }
+            s.islands.active_surface_count = rt.orchestrator.active_count();
+        });
+    }
+
+    pub fn broadcast_island_theme(&mut self) {
+        let accent = self.current.studio.accent;
+        let mut rt = IslandSandboxRuntime::from_snapshot(&self.current.islands);
+        let delivered = rt.broadcast_theme(accent);
+        let label = format!("Bus theme -> {delivered} islands");
+        self.commit_action(label, |s| {
+            s.islands.bus_broadcast_count = s.islands.bus_broadcast_count.saturating_add(1);
+            s.islands.bus_total_deliveries = s
+                .islands
+                .bus_total_deliveries
+                .saturating_add(delivered as u32);
+            s.islands.last_bus_summary = format!(
+                "TX #{} topic='theme' accent={} -> {} islands",
+                s.islands.bus_broadcast_count,
+                accent.label(),
+                delivered
+            );
+            for card in &mut s.islands.cards {
+                let rx = rt.delivery_count_for(card.surface_id) as u32;
+                card.received_messages = card.received_messages.saturating_add(rx);
+            }
+        });
+    }
+
+    pub fn broadcast_island_sync(&mut self) {
+        let frame_count = self.frame_count;
+        let task_count = self.current.tasks.len();
+        let mut rt = IslandSandboxRuntime::from_snapshot(&self.current.islands);
+        let delivered = rt.broadcast_sync(frame_count, task_count);
+        let label = format!("Bus sync -> {delivered} islands");
+        self.commit_action(label, |s| {
+            s.islands.bus_broadcast_count = s.islands.bus_broadcast_count.saturating_add(1);
+            s.islands.bus_total_deliveries = s
+                .islands
+                .bus_total_deliveries
+                .saturating_add(delivered as u32);
+            s.islands.last_bus_summary = format!(
+                "TX #{} topic='workspace.sync' (12B bin) -> {} islands",
+                s.islands.bus_broadcast_count, delivered
+            );
+            for card in &mut s.islands.cards {
+                let rx = rt.delivery_count_for(card.surface_id) as u32;
+                card.received_messages = card.received_messages.saturating_add(rx);
+            }
+        });
+    }
+
+    pub fn simulate_island_gesture(&mut self, mode: GestureSimMode) {
+        let mut rt = IslandSandboxRuntime::from_snapshot(&self.current.islands);
+        let decision = rt.simulate_gesture(mode);
+        let disp_str = format_disposition(decision.innermost_disposition);
+        let reason_str = format!("{:?}", decision.reason);
+        let label = format!("Gesture -> {disp_str}");
+        self.commit_action(label, |s| {
+            s.islands.last_gesture_disposition = disp_str.into();
+            s.islands.last_gesture_winner = decision.winner;
+            s.islands.last_gesture_reason = reason_str;
+            s.islands.last_gesture_cancelled_count = decision.cancelled_surfaces.len();
+        });
+    }
+
     pub fn can_undo(&self) -> bool {
         self.cursor > 0
     }
@@ -887,13 +1203,24 @@ impl WorkspaceState {
     }
 
     pub fn filtered_tasks(&self) -> Vec<TaskItem> {
+        let search = self.current.board_search_query.trim();
         self.current
             .tasks
             .iter()
-            .filter(|t| match self.current.board_filter {
-                BoardFilter::All => true,
-                BoardFilter::Active => t.status != TaskStatus::Done,
-                BoardFilter::Done => t.status == TaskStatus::Done,
+            .filter(|t| {
+                let status_ok = match self.current.board_filter {
+                    BoardFilter::All => true,
+                    BoardFilter::Active => t.status != TaskStatus::Done,
+                    BoardFilter::Done => t.status == TaskStatus::Done,
+                };
+                if !status_ok {
+                    return false;
+                }
+                if search.is_empty() {
+                    return true;
+                }
+                let hay = format!("{} {} {} {}", t.key, t.title, t.assignee, t.tag);
+                fuzzy_score(search, &hay).is_some()
             })
             .cloned()
             .collect()

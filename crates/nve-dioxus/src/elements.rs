@@ -1,7 +1,8 @@
 //! Native-first `dioxus_elements` schema for Dioxus 0.7 `rsx!{}` without `dioxus-html` bloat.
 //!
-//! Supports both native names (`view`, `text`, `pressable`, `scrollview`, `skia_canvas`) and
-//! familiar HTML aliases (`div`, `span`, `button`) with typed layout/style attributes and events.
+//! Supports both native names (`view`, `text`, `pressable`, `scrollview`, `image`, `textinput`,
+//! `skia_canvas`) and familiar HTML aliases (`div`, `span`, `button`) with typed layout/style
+//! attributes, component props, accessibility attributes, and native event bindings.
 
 #![allow(non_upper_case_globals, non_snake_case, non_camel_case_types)]
 
@@ -20,8 +21,37 @@ pub struct TextEventData {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScrollEventData {
+    pub x: f32,
+    pub y: f32,
+    pub content_width: f32,
+    pub content_height: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FocusEventData;
+
+#[derive(Debug, Clone, Default)]
+pub struct KeyEventData {
+    pub key: String,
+    pub meta: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SubmitEventData {
+    pub value: String,
+}
+
 pub type PressEvent = Event<PressEventData>;
 pub type TextEvent = Event<TextEventData>;
+pub type ScrollEvent = Event<ScrollEventData>;
+pub type FocusEvent = Event<FocusEventData>;
+pub type KeyEvent = Event<KeyEventData>;
+pub type SubmitEvent = Event<SubmitEventData>;
 
 macro_rules! define_attrs {
     ($($ident:ident => $name:literal),* $(,)?) => {
@@ -32,7 +62,7 @@ macro_rules! define_attrs {
 }
 
 macro_rules! define_element {
-    ($mod_name:ident, $tag:literal) => {
+    ($mod_name:ident, $tag:literal $(, { $($extra_ident:ident => $extra_name:literal),* $(,)? })?) => {
         pub mod $mod_name {
             use super::AttributeDescription;
             pub const TAG_NAME: &'static str = $tag;
@@ -67,6 +97,9 @@ macro_rules! define_element {
                 font_size => "font-size",
                 z_index => "z-index",
                 test_id => "testID",
+                accessibility_label => "accessibilityLabel",
+                accessibility_role => "accessibilityRole",
+                $($( $extra_ident => $extra_name, )*)?
             }
         }
     };
@@ -83,9 +116,23 @@ pub mod elements {
     define_element!(pressable, "pressable");
     define_element!(button, "button");
     define_element!(scrollview, "scrollview");
-    define_element!(image, "image");
-    define_element!(textinput, "textinput");
-    define_element!(skia_canvas, "skia-canvas");
+    define_element!(image, "image", {
+        src => "src",
+        alt => "alt",
+        resize_mode => "resizeMode",
+    });
+    define_element!(textinput, "textinput", {
+        placeholder => "placeholder",
+        value => "value",
+        multiline => "multiline",
+        secure_text_entry => "secureTextEntry",
+    });
+    define_element!(skia_canvas, "skia-canvas", {
+        draw_list => "drawList",
+    });
+    define_element!(canvas, "skia-canvas", {
+        draw_list => "drawList",
+    });
 
     pub mod completions {
         pub mod CompleteWithBraces {}
@@ -117,6 +164,11 @@ pub mod events {
     define_event!(onpress, "onpress", PressEvent);
     define_event!(onclick, "onpress", PressEvent);
     define_event!(onchange, "onchange", TextEvent);
+    define_event!(onscroll, "onscroll", ScrollEvent);
+    define_event!(onfocus, "onfocus", FocusEvent);
+    define_event!(onblur, "onblur", FocusEvent);
+    define_event!(onkeydown, "onkeydown", KeyEvent);
+    define_event!(onsubmit, "onsubmit", SubmitEvent);
 }
 
 pub mod GlobalAttributes {
@@ -124,5 +176,7 @@ pub mod GlobalAttributes {
     define_attrs! {
         style => "style",
         test_id => "testID",
+        accessibility_label => "accessibilityLabel",
+        accessibility_role => "accessibilityRole",
     }
 }

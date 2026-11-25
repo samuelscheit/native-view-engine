@@ -1,5 +1,14 @@
 //! Typed cross-platform UI primitives (`View`, `Text`, `ScrollView`, `Pressable`, `SkiaCanvas`,
-//! and RN Codegen custom components) plus ergonomic style/layout builders.
+//! and RN Codegen custom components) plus ergonomic style/layout builders and zero-JSON vector
+//! draw-list IR (`NVE_DRAW1`).
+
+pub mod canvas_ir;
+
+pub use canvas_ir::{
+    CanvasOp, DrawListBuilder, DrawListDecoder, DrawListError, DrawListHeader, ImageResizeMode,
+    DRAW_LIST_ATTR_PREFIX, MAX_DRAW_OPS, MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC,
+    NVE_DRAW_VERSION,
+};
 
 use nve_abi::{
     ColorRgba, ComponentKind, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify,
