@@ -18,6 +18,7 @@
 
 #include "NveRnwComponentView.hpp"
 #include "NveWinHostWindow.hpp"
+#include "NveWinNativeViews.hpp"
 #include "NveWinWindowManager.hpp"
 #include "NveWinTextMeasurer.hpp"
 #include "command_encoder.hpp"
@@ -1660,6 +1661,232 @@ void test_multi_window_manager_lifecycle_modal_veto_and_cascade() {
   NVE_CHECK(mgr.quit_posted() && all_closed_calls == 1);
 }
 
+template <typename T>
+void win_nv_push_le(std::vector<uint8_t>& buf, T v) {
+  const auto* p = reinterpret_cast<const uint8_t*>(&v);
+  buf.insert(buf.end(), p, p + sizeof(T));
+}
+
+struct WinNvnpBuilder {
+  std::vector<uint8_t> buf;
+  uint16_t count{0u};
+  WinNvnpBuilder() {
+    buf.insert(buf.end(), nve::kNativePropsMagic.begin(), nve::kNativePropsMagic.end());
+    buf.push_back(nve::kNativePropsVersion);
+    win_nv_push_le<uint16_t>(buf, 0u);
+  }
+  void add_null(uint16_t id) { win_nv_push_le<uint16_t>(buf, id); buf.push_back(0u); ++count; }
+  void add_bool(uint16_t id, bool v) {
+    win_nv_push_le<uint16_t>(buf, id); buf.push_back(1u); buf.push_back(v ? 1u : 0u); ++count;
+  }
+  void add_u32(uint16_t id, uint32_t v) {
+    win_nv_push_le<uint16_t>(buf, id); buf.push_back(2u); win_nv_push_le<uint32_t>(buf, v); ++count;
+  }
+  void add_f32(uint16_t id, float v) {
+    win_nv_push_le<uint16_t>(buf, id); buf.push_back(5u); win_nv_push_le<float>(buf, v); ++count;
+  }
+  void add_str(uint16_t id, std::string_view s) {
+    win_nv_push_le<uint16_t>(buf, id); buf.push_back(7u);
+    win_nv_push_le<uint32_t>(buf, static_cast<uint32_t>(s.size()));
+    buf.insert(buf.end(), s.begin(), s.end()); ++count;
+  }
+  std::vector<uint8_t> finish() {
+    buf[5] = static_cast<uint8_t>(count & 0xFFu);
+    buf[6] = static_cast<uint8_t>((count >> 8u) & 0xFFu);
+    return buf;
+  }
+};
+
+struct WinNvncBuilder {
+  std::vector<uint8_t> buf;
+  uint8_t count{0u};
+  explicit WinNvncBuilder(uint16_t op) {
+    buf.insert(buf.end(), nve::kNativeCmdMagic.begin(), nve::kNativeCmdMagic.end());
+    buf.push_back(nve::kNativeCmdVersion);
+    win_nv_push_le<uint16_t>(buf, op);
+    buf.push_back(0u);
+  }
+  void arg_u64(uint64_t v) { buf.push_back(4u); win_nv_push_le<uint64_t>(buf, v); ++count; }
+  void arg_f32(float v) { buf.push_back(5u); win_nv_push_le<float>(buf, v); ++count; }
+  void arg_str(std::string_view s) {
+    buf.push_back(7u); win_nv_push_le<uint32_t>(buf, static_cast<uint32_t>(s.size()));
+    buf.insert(buf.end(), s.begin(), s.end()); ++count;
+  }
+  std::vector<uint8_t> finish() { buf[7] = count; return buf; }
+};
+
+void test_windows_native_views_registry_and_fabric_host() {
+  // 1. URL safety verification
+  NVE_CHECK(nve::win::is_safe_win_webview_url("https://nve.dev/docs"));
+  NVE_CHECK(nve::win::is_safe_win_webview_url("http://localhost:8080"));
+  NVE_CHECK(nve::win::is_safe_win_webview_url("  ABOUT:BLANK \r\n"));
+  NVE_CHECK(!nve::win::is_safe_win_webview_url("javascript:alert(1)"));
+  NVE_CHECK(!nve::win::is_safe_win_webview_url("  JaVa\tScRiPt:alert(1)"));
+  NVE_CHECK(!nve::win::is_safe_win_webview_url("vbscript:msgbox(1)"));
+  NVE_CHECK(!nve::win::is_safe_win_webview_url("data:text/html,<script>alert(1)</script>"));
+  NVE_CHECK(!nve::win::is_safe_win_webview_url(""));
+
+  struct SpyWebBackend : nve::win::NveWinWebViewBackend {
+    std::string last_url;
+    std::string last_script;
+    int reloads{0};
+    int backs{0};
+    int forwards{0};
+    bool allows_bf{true};
+    bool* closed_flag{nullptr};
+    void set_allows_back_forward(bool a) override { allows_bf = a; }
+    bool navigate(std::string_view u) override { last_url.assign(u); return true; }
+    void reload() override { ++reloads; }
+    bool go_back() override { ++backs; return true; }
+    bool go_forward() override { ++forwards; return true; }
+    void evaluate_script(std::string_view js) override { last_script.assign(js); }
+    void close() override { if (closed_flag) *closed_flag = true; }
+  };
+
+  struct SpyVideoBackend : nve::win::NveWinVideoBackend {
+    std::string uri;
+    bool muted{false};
+    bool looping{false};
+    bool controls{true};
+    bool playing{false};
+    uint64_t seek_target{0u};
+    float vol{1.0f};
+    bool* closed_flag{nullptr};
+    void set_source_uri(std::string_view u) override { uri.assign(u); }
+    void set_muted(bool m) override { muted = m; }
+    void set_looping(bool l) override { looping = l; }
+    void set_controls(bool c) override { controls = c; }
+    void play() override { playing = true; }
+    void pause() override { playing = false; }
+    void seek_ms(uint64_t ms) override { seek_target = ms; }
+    void set_volume(float v) override { vol = v; }
+    void close() override { if (closed_flag) *closed_flag = true; }
+  };
+
+  bool web_closed = false;
+  bool video_closed = false;
+  nve::NativeViewRegistry registry;
+  nve::win::NveWinNativeViewHooks hooks{};
+  hooks.create_webview_backend = [&](uint32_t) {
+    auto b = std::make_unique<SpyWebBackend>();
+    b->closed_flag = &web_closed;
+    return b;
+  };
+  hooks.create_video_backend = [&](uint32_t) {
+    auto b = std::make_unique<SpyVideoBackend>();
+    b->closed_flag = &video_closed;
+    return b;
+  };
+  nve::win::register_win_native_views(registry, std::move(hooks));
+
+  NVE_CHECK(registry.supports(nve::kNativeKindBlurSurface));
+  NVE_CHECK(registry.supports(nve::kNativeKindBlurAlias));
+  NVE_CHECK(registry.supports(nve::kNativeKindWebView));
+  NVE_CHECK(registry.supports(nve::kNativeKindWebViewAlias));
+  NVE_CHECK(registry.supports(nve::kNativeKindVideoPlayer));
+  NVE_CHECK(registry.supports(nve::kNativeKindVideoAlias));
+
+  // 2. Drive BlurSurface + WebView + VideoPlayer via live FabricHost binary CommandBuffer
+  NveSurfaceConfig cfg{.surface_id = 1u, .width = 640.0f, .height = 420.0f, .scale_factor = 1.0f};
+  NveFabricHostHandle host = nve_fabric_host_create(cfg);
+  NVE_CHECK(host != nullptr);
+  nve::win::bind_win_native_views_to_fabric_host(host, registry);
+
+  WinNvnpBuilder blur_props;
+  blur_props.add_u32(1u, static_cast<uint32_t>(nve::BlurMaterial::Thin));
+  blur_props.add_f32(2u, 0.8f);
+  blur_props.add_u32(3u, 0x10203080u);
+  const auto blur_bytes = blur_props.finish();
+
+  WinNvnpBuilder wv_props;
+  wv_props.add_str(1u, "https://initial.nve.dev");
+  wv_props.add_bool(2u, true);
+  const auto wv_bytes = wv_props.finish();
+
+  WinNvnpBuilder vid_props;
+  vid_props.add_str(1u, "https://cdn.nve.dev/demo.mp4");
+  vid_props.add_bool(2u, true);
+  vid_props.add_bool(3u, true);
+  vid_props.add_bool(4u, true);
+  vid_props.add_bool(5u, false);
+  const auto vid_bytes = vid_props.finish();
+
+  nve::CommandBufferEncoder enc(1u, 1u);
+  enc.create_node(10u, NVE_COMP_CUSTOM, nve::kNativeKindBlurSurface);
+  enc.create_node(11u, NVE_COMP_CUSTOM, nve::kNativeKindWebView);
+  enc.create_node(12u, NVE_COMP_CUSTOM, nve::kNativeKindVideoAlias);
+  enc.set_children(NVE_ROOT_NODE_ID, {10u, 11u, 12u});
+  enc.set_raw_prop_string(10u, nve::kNativeViewKindPropKey, nve::kNativeKindBlurSurface);
+  enc.set_raw_prop_bytes(10u, nve::kNativeViewPropsPropKey, blur_bytes);
+  enc.set_raw_prop_string(11u, nve::kNativeViewKindPropKey, nve::kNativeKindWebView);
+  enc.set_raw_prop_bytes(11u, nve::kNativeViewPropsPropKey, wv_bytes);
+  enc.set_raw_prop_string(12u, nve::kNativeViewKindPropKey, nve::kNativeKindVideoAlias);
+  enc.set_raw_prop_bytes(12u, nve::kNativeViewPropsPropKey, vid_bytes);
+  enc.commit(true);
+  NVE_CHECK(nve_fabric_host_submit_frame(host, enc.finish(), nullptr) == 0);
+
+  auto* blur = nve::win::blur_surface_for_node(registry, 10u);
+  NVE_CHECK(blur != nullptr);
+  NVE_CHECK(blur->material() == nve::BlurMaterial::Thin);
+  NVE_CHECK(blur->backdrop_type() == nve::win::WinSystemBackdropType::TransientWindow);
+  NVE_CHECK(std::fabs(blur->intensity() - 0.8f) < 1e-5f);
+  NVE_CHECK(blur->has_tint() && blur->tint_rgba() == 0x10203080u);
+  NVE_CHECK(blur->tint_color().r8 == 0x10u && blur->tint_color().a8 == 0x80u);
+
+  auto* wv = nve::win::web_view_for_node(registry, 11u);
+  NVE_CHECK(wv != nullptr && wv->last_requested_url() == "https://initial.nve.dev");
+  NVE_CHECK(wv->navigation_count() == 1u && wv->allows_back_forward());
+
+  auto* vid = nve::win::video_player_for_node(registry, 12u);
+  NVE_CHECK(vid != nullptr && vid->source_uri() == "https://cdn.nve.dev/demo.mp4");
+  NVE_CHECK(vid->is_playing() && vid->muted() && vid->looping() && !vid->controls());
+
+  // 3. Dispatch NVNC commands (including unsafe URL rejection)
+  WinNvncBuilder nav_bad(1u); nav_bad.arg_str("javascript:evil()");
+  WinNvncBuilder nav_ok(1u); nav_ok.arg_str("https://docs.nve.dev");
+  WinNvncBuilder rel(2u);
+  WinNvncBuilder back(3u);
+  WinNvncBuilder fwd(4u);
+  WinNvncBuilder eval(5u); eval.arg_str("window.__nveReady = true;");
+  WinNvncBuilder pause_cmd(2u);
+  WinNvncBuilder seek_cmd(3u); seek_cmd.arg_u64(12345ULL);
+  WinNvncBuilder vol_cmd(4u); vol_cmd.arg_f32(0.35f);
+
+  NVE_CHECK(!registry.dispatch_command(11u, "navigate", nav_bad.finish()));
+  NVE_CHECK(wv->last_requested_url() == "https://initial.nve.dev");
+
+  nve::CommandBufferEncoder enc2(1u, 2u);
+  enc2.dispatch_command(11u, "navigate", nav_ok.finish());
+  enc2.dispatch_command(11u, "reload", rel.finish());
+  enc2.dispatch_command(11u, "go_back", back.finish());
+  enc2.dispatch_command(11u, "go_forward", fwd.finish());
+  enc2.dispatch_command(11u, "evaluate_script", eval.finish());
+  enc2.dispatch_command(12u, "pause", pause_cmd.finish());
+  enc2.dispatch_command(12u, "seek_ms", seek_cmd.finish());
+  enc2.dispatch_command(12u, "set_volume", vol_cmd.finish());
+  enc2.commit(false);
+  NVE_CHECK(nve_fabric_host_submit_frame(host, enc2.finish(), nullptr) == 0);
+
+  NVE_CHECK(wv->last_requested_url() == "https://docs.nve.dev" && wv->navigation_count() == 2u);
+  NVE_CHECK(wv->reload_count() == 1u && wv->go_back_count() == 1u && wv->go_forward_count() == 1u);
+  NVE_CHECK(wv->last_evaluated_script() == "window.__nveReady = true;");
+  NVE_CHECK(!vid->is_playing() && vid->pause_count() == 1u);
+  NVE_CHECK(vid->position_ms() == 12345ULL && std::fabs(vid->volume() - 0.35f) < 1e-5f);
+
+  // Disabling back/forward blocks GoBack/GoForward commands
+  WinNvnpBuilder wv_no_bf;
+  wv_no_bf.add_str(1u, "https://docs.nve.dev");
+  wv_no_bf.add_bool(2u, false);
+  NVE_CHECK(registry.mount_or_update(11u, nve::kNativeKindWebView, wv_no_bf.finish()) != nullptr);
+  NVE_CHECK(!registry.dispatch_command(11u, "go_back", back.finish()));
+  NVE_CHECK(!registry.dispatch_command(11u, "go_forward", fwd.finish()));
+
+  // Unmount triggers backend close callbacks cleanly
+  registry.unmount_all();
+  NVE_CHECK(registry.mounted_count() == 0u && web_closed && video_closed);
+  nve_fabric_host_destroy(host);
+}
+
 } // namespace
 
 int main() {
@@ -1672,6 +1899,7 @@ int main() {
   test_draw_list_visual_tree_extraction_and_corrupt_survival();
   test_paired_thin_client_loopback_roundtrip();
   test_multi_window_manager_lifecycle_modal_veto_and_cascade();
+  test_windows_native_views_registry_and_fabric_host();
 
   std::cout << "nve_windows_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI" : "Standalone") << "+"

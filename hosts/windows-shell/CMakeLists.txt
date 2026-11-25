@@ -16,6 +16,7 @@ endif()
 
 set(NVE_WIN_SHELL_SOURCES
   NveRnwComponentView.cpp
+  NveWinNativeViews.cpp
   NveWinWindowManager.cpp
 )
 if(WIN32)

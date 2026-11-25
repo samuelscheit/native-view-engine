@@ -1,4 +1,5 @@
 #include "NveGtkHost.hpp"
+#include "NveGtkNativeViews.hpp"
 #include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
 #include "nve_pair_client.hpp"
@@ -890,6 +891,27 @@ struct MockGtkA11yImeComponent {
     return 0u;
   }
 
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
+    if (batch.ptr == nullptr) return 0u;
+    uint32_t dirty = 0u;
+    for (uint32_t i = 0u; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
+        ++self->text_change_calls;
+        const auto sv = nve::str_slice_view(ev.text);
+        self->last_text.assign(sv.data(), sv.size());
+        dirty = 1u;
+      } else if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) &&
+                 nve::str_slice_view(ev.name) == "onSubmit") {
+        ++self->submit_calls;
+        const auto sv = nve::str_slice_view(ev.text);
+        self->last_submit.assign(sv.data(), sv.size());
+      }
+    }
+    return dirty;
+  }
+
   static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
     auto* self = static_cast<MockGtkA11yImeComponent*>(h);
     const std::string json(reinterpret_cast<const char*>(props.ptr), props.len);
@@ -900,7 +922,7 @@ struct MockGtkA11yImeComponent {
   }
 
   static const void* get_interface(uint32_t iface) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
     static const NveComponentApi kComp{&set_props, nullptr, nullptr};
     if (iface == NVE_IFACE_SURFACE) return &kSurface;
     if (iface == NVE_IFACE_COMPONENT) return &kComp;
@@ -1666,6 +1688,206 @@ void test_paired_thin_client_gtk_host() {
   srv.join();
 }
 
+template <typename T>
+void gtk_nv_push_le(std::vector<uint8_t>& buf, T v) {
+  const auto* p = reinterpret_cast<const uint8_t*>(&v);
+  buf.insert(buf.end(), p, p + sizeof(T));
+}
+
+struct GtkNvnpBuilder {
+  std::vector<uint8_t> buf;
+  uint16_t count{0u};
+  GtkNvnpBuilder() {
+    buf.insert(buf.end(), nve::kNativePropsMagic.begin(), nve::kNativePropsMagic.end());
+    buf.push_back(nve::kNativePropsVersion);
+    gtk_nv_push_le<uint16_t>(buf, 0u);
+  }
+  void add_bool(uint16_t id, bool v) {
+    gtk_nv_push_le<uint16_t>(buf, id); buf.push_back(1u); buf.push_back(v ? 1u : 0u); ++count;
+  }
+  void add_u32(uint16_t id, uint32_t v) {
+    gtk_nv_push_le<uint16_t>(buf, id); buf.push_back(2u); gtk_nv_push_le<uint32_t>(buf, v); ++count;
+  }
+  void add_f32(uint16_t id, float v) {
+    gtk_nv_push_le<uint16_t>(buf, id); buf.push_back(5u); gtk_nv_push_le<float>(buf, v); ++count;
+  }
+  void add_str(uint16_t id, std::string_view s) {
+    gtk_nv_push_le<uint16_t>(buf, id); buf.push_back(7u);
+    gtk_nv_push_le<uint32_t>(buf, static_cast<uint32_t>(s.size()));
+    buf.insert(buf.end(), s.begin(), s.end()); ++count;
+  }
+  std::vector<uint8_t> finish() {
+    buf[5] = static_cast<uint8_t>(count & 0xFFu);
+    buf[6] = static_cast<uint8_t>((count >> 8u) & 0xFFu);
+    return buf;
+  }
+};
+
+struct GtkNvncBuilder {
+  std::vector<uint8_t> buf;
+  uint8_t count{0u};
+  explicit GtkNvncBuilder(uint16_t op) {
+    buf.insert(buf.end(), nve::kNativeCmdMagic.begin(), nve::kNativeCmdMagic.end());
+    buf.push_back(nve::kNativeCmdVersion);
+    gtk_nv_push_le<uint16_t>(buf, op);
+    buf.push_back(0u);
+  }
+  void arg_u64(uint64_t v) { buf.push_back(4u); gtk_nv_push_le<uint64_t>(buf, v); ++count; }
+  void arg_f32(float v) { buf.push_back(5u); gtk_nv_push_le<float>(buf, v); ++count; }
+  void arg_str(std::string_view s) {
+    buf.push_back(7u); gtk_nv_push_le<uint32_t>(buf, static_cast<uint32_t>(s.size()));
+    buf.insert(buf.end(), s.begin(), s.end()); ++count;
+  }
+  std::vector<uint8_t> finish() { buf[7] = count; return buf; }
+};
+
+void test_gtk_native_views_registry_and_fabric_host() {
+  NVE_CHECK(nve::gtk::is_safe_gtk_webview_url("https://gtk.nve.dev"));
+  NVE_CHECK(nve::gtk::is_safe_gtk_webview_url("http://localhost:9000"));
+  NVE_CHECK(nve::gtk::is_safe_gtk_webview_url("about:blank"));
+  NVE_CHECK(!nve::gtk::is_safe_gtk_webview_url("javascript:alert(1)"));
+  NVE_CHECK(!nve::gtk::is_safe_gtk_webview_url("vbscript:msgbox(1)"));
+  NVE_CHECK(!nve::gtk::is_safe_gtk_webview_url("data:text/html,hi"));
+
+  struct SpyGtkWebBackend : nve::gtk::NveGtkWebViewBackend {
+    GtkWidget* inner{gtk_label_new("webview")};
+    std::string url;
+    std::string script;
+    int reloads{0};
+    bool* closed{nullptr};
+    GtkWidget* widget() override { return inner; }
+    void set_allows_back_forward(bool) override {}
+    bool navigate(std::string_view u) override { url.assign(u); return true; }
+    void reload() override { ++reloads; }
+    bool go_back() override { return true; }
+    bool go_forward() override { return true; }
+    void evaluate_script(std::string_view js) override { script.assign(js); }
+    void stop_and_close() override { if (closed) *closed = true; }
+  };
+
+  struct SpyGtkVideoBackend : nve::gtk::NveGtkVideoBackend {
+    GtkWidget* inner{gtk_label_new("video")};
+    std::string uri;
+    uint64_t seek{0u};
+    float vol{1.0f};
+    bool playing{false};
+    bool* closed{nullptr};
+    GtkWidget* widget() override { return inner; }
+    void set_source_uri(std::string_view u) override { uri.assign(u); }
+    void set_muted(bool) override {}
+    void set_looping(bool) override {}
+    void set_controls(bool) override {}
+    void play() override { playing = true; }
+    void pause() override { playing = false; }
+    void seek_ms(uint64_t ms) override { seek = ms; }
+    void set_volume(float v) override { vol = v; }
+    void stop_and_close() override { if (closed) *closed = true; }
+  };
+
+  bool web_closed = false;
+  bool vid_closed = false;
+  nve::NativeViewRegistry registry;
+  nve::gtk::NveGtkNativeViewHooks hooks{};
+  hooks.create_webview_backend = [&](uint32_t) {
+    auto b = std::make_unique<SpyGtkWebBackend>();
+    b->closed = &web_closed;
+    return b;
+  };
+  hooks.create_video_backend = [&](uint32_t) {
+    auto b = std::make_unique<SpyGtkVideoBackend>();
+    b->closed = &vid_closed;
+    return b;
+  };
+  nve::gtk::register_gtk_native_views(registry, std::move(hooks));
+
+  NVE_CHECK(registry.supports(nve::kNativeKindBlurSurface));
+  NVE_CHECK(registry.supports(nve::kNativeKindBlurAlias));
+  NVE_CHECK(registry.supports(nve::kNativeKindWebView));
+  NVE_CHECK(registry.supports(nve::kNativeKindWebViewAlias));
+  NVE_CHECK(registry.supports(nve::kNativeKindVideoPlayer));
+  NVE_CHECK(registry.supports(nve::kNativeKindVideoAlias));
+
+  NveSurfaceConfig cfg{.surface_id = 1u, .width = 640.0f, .height = 420.0f, .scale_factor = 1.0f};
+  NveFabricHostHandle host = nve_fabric_host_create(cfg);
+  NVE_CHECK(host != nullptr);
+  nve::gtk::bind_gtk_native_views_to_fabric_host(host, registry);
+
+  GtkNvnpBuilder blur_p;
+  blur_p.add_u32(1u, static_cast<uint32_t>(nve::BlurMaterial::Chrome));
+  blur_p.add_f32(2u, 0.75f);
+  blur_p.add_u32(3u, 0x336699AAu);
+
+  GtkNvnpBuilder web_p;
+  web_p.add_str(1u, "https://gtk-init.nve.dev");
+  web_p.add_bool(2u, true);
+
+  GtkNvnpBuilder vid_p;
+  vid_p.add_str(1u, "https://cdn.nve.dev/gtk.mp4");
+  vid_p.add_bool(2u, true);
+  vid_p.add_bool(3u, false);
+  vid_p.add_bool(4u, true);
+  vid_p.add_bool(5u, true);
+
+  nve::CommandBufferEncoder enc(1u, 1u);
+  enc.create_node(30u, NVE_COMP_CUSTOM, nve::kNativeKindBlurSurface);
+  enc.create_node(31u, NVE_COMP_CUSTOM, nve::kNativeKindWebViewAlias);
+  enc.create_node(32u, NVE_COMP_CUSTOM, nve::kNativeKindVideoPlayer);
+  enc.set_children(NVE_ROOT_NODE_ID, {30u, 31u, 32u});
+  enc.set_raw_prop_string(30u, nve::kNativeViewKindPropKey, nve::kNativeKindBlurSurface);
+  enc.set_raw_prop_bytes(30u, nve::kNativeViewPropsPropKey, blur_p.finish());
+  enc.set_raw_prop_string(31u, nve::kNativeViewKindPropKey, nve::kNativeKindWebViewAlias);
+  enc.set_raw_prop_bytes(31u, nve::kNativeViewPropsPropKey, web_p.finish());
+  enc.set_raw_prop_string(32u, nve::kNativeViewKindPropKey, nve::kNativeKindVideoPlayer);
+  enc.set_raw_prop_bytes(32u, nve::kNativeViewPropsPropKey, vid_p.finish());
+  enc.commit(true);
+  NVE_CHECK(nve_fabric_host_submit_frame(host, enc.finish(), nullptr) == 0);
+
+  auto* blur = nve::gtk::blur_surface_for_node(registry, 30u);
+  NVE_CHECK(blur != nullptr && blur->widget() != nullptr && GTK_IS_BOX(blur->widget()));
+  NVE_CHECK(nve::gtk::native_widget_for_node(registry, 30u) == blur->widget());
+  NVE_CHECK(blur->material() == nve::BlurMaterial::Chrome);
+  NVE_CHECK(approx_eq(blur->blur_radius(), 18.0, 0.1));
+  NVE_CHECK(blur->active_css().find("rgba(51, 102, 153,") != std::string::npos);
+  NVE_CHECK(blur->backdrop_filter_spec().find("backdrop-filter: blur(18.00px);") != std::string::npos);
+
+  auto* wv = nve::gtk::web_view_for_node(registry, 31u);
+  NVE_CHECK(wv != nullptr && wv->widget() != nullptr && GTK_IS_BOX(wv->widget()));
+  NVE_CHECK(wv->last_requested_url() == "https://gtk-init.nve.dev");
+
+  auto* vid = nve::gtk::video_player_for_node(registry, 32u);
+  NVE_CHECK(vid != nullptr && vid->widget() != nullptr && GTK_IS_BOX(vid->widget()));
+  NVE_CHECK(vid->source_uri() == "https://cdn.nve.dev/gtk.mp4" && vid->is_playing());
+
+  // Unsafe URL rejected; valid NVNC commands applied
+  GtkNvncBuilder bad_nav(1u); bad_nav.arg_str("data:text/html,<svg>");
+  NVE_CHECK(!registry.dispatch_command(31u, "navigate", bad_nav.finish()));
+
+  GtkNvncBuilder ok_nav(1u); ok_nav.arg_str("https://gtk-next.nve.dev");
+  GtkNvncBuilder rel_c(2u);
+  GtkNvncBuilder eval_c(5u); eval_c.arg_str("window.ok = 1");
+  GtkNvncBuilder pause_c(2u);
+  GtkNvncBuilder seek_c(3u); seek_c.arg_u64(7777ULL);
+  GtkNvncBuilder vol_c(4u); vol_c.arg_f32(0.6f);
+
+  nve::CommandBufferEncoder enc2(1u, 2u);
+  enc2.dispatch_command(31u, "navigate", ok_nav.finish());
+  enc2.dispatch_command(31u, "reload", rel_c.finish());
+  enc2.dispatch_command(31u, "evaluate_script", eval_c.finish());
+  enc2.dispatch_command(32u, "pause", pause_c.finish());
+  enc2.dispatch_command(32u, "seek_ms", seek_c.finish());
+  enc2.dispatch_command(32u, "set_volume", vol_c.finish());
+  enc2.commit(false);
+  NVE_CHECK(nve_fabric_host_submit_frame(host, enc2.finish(), nullptr) == 0);
+
+  NVE_CHECK(wv->last_requested_url() == "https://gtk-next.nve.dev" && wv->reload_count() == 1u);
+  NVE_CHECK(wv->last_evaluated_script() == "window.ok = 1");
+  NVE_CHECK(!vid->is_playing() && vid->position_ms() == 7777ULL && approx_eq(vid->volume(), 0.6, 1e-4));
+
+  registry.unmount_all();
+  NVE_CHECK(registry.mounted_count() == 0u && web_closed && vid_closed);
+  nve_fabric_host_destroy(host);
+}
+
 } // namespace
 
 void nve_test_gtk_window_manager();
@@ -1685,6 +1907,7 @@ int main() {
   test_image_picture_scroll_and_incremental_reconcile();
   test_cairo_draw_list_sparkline_and_drawing_area();
   test_paired_thin_client_gtk_host();
+  test_gtk_native_views_registry_and_fabric_host();
   nve_test_gtk_window_manager();
 
   std::cout << "nve_gtk_shell_test passed ("
