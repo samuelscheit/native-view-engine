@@ -364,10 +364,14 @@ void test_direct_scene_view_cached_buffers_metadata_draw1_and_events(
   NVE_CHECK(child_buf1->capacity == 7 * static_cast<jlong>(sizeof(uint32_t)));
   NVE_CHECK(removed_buf1->capacity == 0);
 
-  // Verify batched dirty-node NVE_MET1 metadata slab packs ONLY nodes with metadata (3, 5, 7, 8).
+  // Verify batched dirty-node NVE_MET1 metadata slab packs ONLY nodes with metadata (3, 5, 7);
+  // node 8's valid NVE_DRAW1 drawList is already delivered zero-copy via `NveSceneView::text_slab`
+  // by FabricHost/ScenePublisher, so NVE_MET1 intentionally avoids duplicating it!
   const auto meta1 = parse_metadata_slab(meta_buf1, 1u, static_cast<uint32_t>(meta.data[7]));
-  NVE_CHECK(meta1.size() == 4u);
-  NVE_CHECK(meta1.count(1) == 0 && meta1.count(2) == 0 && meta1.count(4) == 0 && meta1.count(6) == 0);
+  NVE_CHECK(meta1.size() == 3u);
+  NVE_CHECK(
+      meta1.count(1) == 0 && meta1.count(2) == 0 && meta1.count(4) == 0 && meta1.count(6) == 0 &&
+      meta1.count(8) == 0);
 
   const auto& m3 = meta1.at(3);
   NVE_CHECK(m3.label == "Increment counter");
@@ -382,13 +386,6 @@ void test_direct_scene_view_cached_buffers_metadata_draw1_and_events(
   NVE_CHECK(m7.placeholder == "Enter secret");
   NVE_CHECK((m7.flags & (1u << 1)) != 0u); // secureTextEntry == true
   NVE_CHECK(m7.label == "Secret input");
-
-  const auto& m8 = meta1.at(8);
-  NVE_CHECK((m8.flags & (1u << 3)) != 0u); // FLAG_HAS_DRAW_LIST
-  NVE_CHECK((m8.flags & (1u << 4)) == 0u); // not corrupt
-  NVE_CHECK(m8.draw_list.size() > 15u);
-  NVE_CHECK(std::memcmp(m8.draw_list.data(), "NVE_DRAW1", 9) == 0);
-  NVE_CHECK(read_u32_le(m8.draw_list.data() + 11) == 8u); // all 8 opcodes!
 
   const auto* nodes = reinterpret_cast<const NveRenderNode*>(nodes_buf1->address);
   const auto* text_slab = reinterpret_cast<const char*>(text_buf1->address);
@@ -429,6 +426,10 @@ void test_direct_scene_view_cached_buffers_metadata_draw1_and_events(
     } else if (nodes[i].node_id == 8) {
       saw_canvas = true;
       NVE_CHECK(nodes[i].kind == NVE_NODE_KIND_SKIA_CANVAS);
+      NVE_CHECK(nodes[i].text_len > 15u);
+      const auto* dl = reinterpret_cast<const uint8_t*>(text_slab + nodes[i].text_offset);
+      NVE_CHECK(std::memcmp(dl, "NVE_DRAW1", 9) == 0);
+      NVE_CHECK(read_u32_le(dl + 11) == 8u); // all 8 opcodes zero-copy in text_slab!
     }
   }
   NVE_CHECK(saw_root && saw_label && saw_pressable && saw_image && saw_scroll && saw_input && saw_canvas);
@@ -575,6 +576,7 @@ void test_direct_scene_view_cached_buffers_metadata_draw1_and_events(
   NVE_CHECK(meta_corrupt.at(8).draw_list.empty());
 
   // Custom "keydown" event ("Escape") -> valid `nve-draw1;b64,...` base64 recovery on node 8!
+  // FabricHost decodes `nve-draw1;b64,...` directly into `NveSceneView::text_slab` (zero duplication).
   FakeJString esc_key{"Escape"};
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
@@ -587,14 +589,31 @@ void test_direct_scene_view_cached_buffers_metadata_draw1_and_events(
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
           &env, nullptr, handle, reinterpret_cast<jlongArray>(&meta)) == 7);
+  auto* nodes_buf_rec = reinterpret_cast<FakeDirectBuffer*>(
+      Java_dev_nve_android_NveMainActivity_nativeGetNodesBuffer(&env, nullptr, handle));
+  auto* text_buf_rec = reinterpret_cast<FakeDirectBuffer*>(
+      Java_dev_nve_android_NveMainActivity_nativeGetTextSlabBuffer(&env, nullptr, handle));
+  const auto* rec_nodes = reinterpret_cast<const NveRenderNode*>(nodes_buf_rec->address);
+  const auto* rec_text = reinterpret_cast<const uint8_t*>(text_buf_rec->address);
+  bool saw_recovered_canvas = false;
+  for (int i = 0; i < 7; ++i) {
+    if (rec_nodes[i].node_id == 8) {
+      saw_recovered_canvas = true;
+      NVE_CHECK(rec_nodes[i].kind == NVE_NODE_KIND_SKIA_CANVAS);
+      NVE_CHECK(rec_nodes[i].text_len > 15u);
+      const uint8_t* dl = rec_text + rec_nodes[i].text_offset;
+      NVE_CHECK(std::memcmp(dl, "NVE_DRAW1", 9) == 0);
+      NVE_CHECK(read_u32_le(dl + 11) == 8u);
+    }
+  }
+  NVE_CHECK(saw_recovered_canvas);
   const auto meta_recovered = parse_metadata_slab(
       meta_buf1, static_cast<uint64_t>(meta.data[1]), static_cast<uint32_t>(meta.data[7]));
+  // Emits a default reset entry to clear the prior frame's FLAG_DRAW_LIST_CORRUPT with zero drawList duplication!
   NVE_CHECK(meta_recovered.size() == 1u);
   NVE_CHECK(meta_recovered.count(8) == 1u);
-  NVE_CHECK((meta_recovered.at(8).flags & (1u << 3)) != 0u); // FLAG_HAS_DRAW_LIST restored
   NVE_CHECK((meta_recovered.at(8).flags & (1u << 4)) == 0u); // FLAG_DRAW_LIST_CORRUPT cleared
-  NVE_CHECK(std::memcmp(meta_recovered.at(8).draw_list.data(), "NVE_DRAW1", 9) == 0);
-  NVE_CHECK(read_u32_le(meta_recovered.at(8).draw_list.data() + 11) == 8u);
+  NVE_CHECK(meta_recovered.at(8).draw_list.empty());         // zero-copy via text_slab!
 
   // Destroying surface MUST release all 6 GlobalRefs with zero leaks!
   Java_dev_nve_android_NveMainActivity_nativeDestroySurface(&env, nullptr, handle);

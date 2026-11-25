@@ -408,7 +408,7 @@ bool text_slab_has_draw_list_for_node(const NveSceneView& view, uint32_t node_id
     const size_t off = static_cast<size_t>(n.text_offset);
     const size_t len = static_cast<size_t>(n.text_len);
     if (off > view.text_slab_len || len > view.text_slab_len - off) return false;
-    return std::memcmp(view.text_slab + off, kDrawMagic.data(), kDrawMagic.size()) == 0;
+    return validate_nve_draw1(view.text_slab + off, len);
   }
   return false;
 }

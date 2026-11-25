@@ -751,27 +751,27 @@ void main() {
 
         // Heading
         final headingSem = childSemData.firstWhere((d) => d.label == 'Dashboard');
-        expect(headingSem.hasFlag(SemanticsFlag.isHeader), isTrue);
+        expect(headingSem.flagsCollection.isHeader, isTrue);
 
         // Interactive button with SemanticsAction.tap
         final buttonSem = childSemData.firstWhere((d) => d.label == 'Deploy');
-        expect(buttonSem.hasFlag(SemanticsFlag.isButton), isTrue);
+        expect(buttonSem.flagsCollection.isButton, isTrue);
         expect(buttonSem.hasAction(SemanticsAction.tap), isTrue);
 
         // Secure TextInput exposes masked value + isTextField + isObscured
         final passSem = childSemData.firstWhere((d) => d.label == 'Password');
-        expect(passSem.hasFlag(SemanticsFlag.isTextField), isTrue);
-        expect(passSem.hasFlag(SemanticsFlag.isObscured), isTrue);
+        expect(passSem.flagsCollection.isTextField, isTrue);
+        expect(passSem.flagsCollection.isObscured, isTrue);
         expect(passSem.value, '\u2022' * 9);
 
         // Placeholder TextInput exposes placeholder as label
         final searchSem = childSemData.firstWhere((d) => d.label == 'Search files...');
-        expect(searchSem.hasFlag(SemanticsFlag.isTextField), isTrue);
-        expect(searchSem.hasFlag(SemanticsFlag.isObscured), isFalse);
+        expect(searchSem.flagsCollection.isTextField, isTrue);
+        expect(searchSem.flagsCollection.isObscured, isFalse);
 
         // Image with accessibility label exposes isImage
         final imageSem = childSemData.firstWhere((d) => d.label == 'Status Avatar');
-        expect(imageSem.hasFlag(SemanticsFlag.isImage), isTrue);
+        expect(imageSem.flagsCollection.isImage, isTrue);
 
         // Performing semantic tap action on Deploy button triggers press event on node 3!
         final deployNode = <SemanticsNode>[];
@@ -782,7 +782,7 @@ void main() {
           return true;
         });
         expect(deployNode, hasLength(1));
-        tester.binding.pipelineOwner.semanticsOwner!.performAction(
+        renderBox.owner!.semanticsOwner!.performAction(
           deployNode.single.id,
           SemanticsAction.tap,
         );
