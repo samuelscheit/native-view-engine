@@ -9,7 +9,6 @@ default = [
     "crdt",
     "sync",
     "native-view",
-    "camera",
     "traits",
     "window",
     "plugin-host",
@@ -21,7 +20,6 @@ default = [
 crdt = []
 sync = []
 native-view = []
-camera = ["native-view"]
 traits = []
 window = []
 plugin-host = []
@@ -39,10 +37,6 @@ serde_json = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libloading = { workspace = true }
-
-[[test]]
-name = "camera_preview_tests"
-required-features = ["camera"]
 
 [[test]]
 name = "crdt_property_tests"

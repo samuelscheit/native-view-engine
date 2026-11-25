@@ -98,12 +98,6 @@ pub use sync_transport::{
     decode_ws_frame_slice, derive_session_id, derive_token_proof, encode_ws_frame,
     packetize_udp_datagrams,
 };
-#[cfg(feature = "camera")]
-pub use native_view::{
-    CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC, CAMERA_FRAME_VERSION, CAMERA_PREVIEW_KIND,
-    CameraFrameDescriptor, CameraPixelFormat, CameraPreview, CameraPreviewCommand,
-    CameraPreviewFacing, CameraPreviewProps, MAX_CAMERA_FPS, StabilizationMode, TorchMode,
-};
 #[cfg(feature = "native-view")]
 pub use native_view::{
     BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
