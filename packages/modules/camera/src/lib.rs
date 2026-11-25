@@ -4,6 +4,8 @@
 //! - Unified [`CameraFacing`] enum shared across all camera surfaces,
 //! - Zero-JSON `NVNP` (`CameraPreviewProps`), `NVNC` (`CameraPreviewCommand`), and 40-byte
 //!   `#[repr(C)]` `NVCF` (`CameraFrameDescriptor`) codecs (`feature = "spec"`),
+//! - Optional `nve-interop` [`nve_interop::native_view::NativeViewSpec`] trait bindings
+//!   (`feature = "interop"`),
 //! - `SERVICE_CAMERA = 0x0023` host-service client, codecs, [`MemoryCamera`], and
 //!   [`NativeCamera`] handlers (`feature = "host-service"`),
 //! - Optional zero-JS-VM Nitro bridge bindings (`feature = "nitro"`).
@@ -12,6 +14,8 @@ pub mod types;
 
 #[cfg(feature = "host-service")]
 pub mod host_service;
+#[cfg(feature = "interop")]
+pub mod interop;
 #[cfg(feature = "nitro")]
 pub mod nitro;
 #[cfg(feature = "spec")]

@@ -15,11 +15,12 @@ nv-blur = []
 nv-webview = []
 nv-video = []
 nv-web-element = []
-camera = []
+camera = ["dep:nve-camera"]
 nv-camera = ["camera"]
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-camera = { path = "../../modules/camera", optional = true, default-features = false, features = ["spec"] }
 nve-components = { workspace = true }
 nve-engine = { workspace = true }
 

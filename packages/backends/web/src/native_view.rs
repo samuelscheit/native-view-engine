@@ -186,10 +186,21 @@ fn resolve_kind_defaults(state: &mut NativeViewNodeState) {
 }
 
 fn apply_nvnp_to_state(state: &mut NativeViewNodeState, bytes: &[u8]) -> bool {
+    let prev_tag = state.resolved_tag.clone();
+    #[cfg(feature = "camera")]
+    if matches!(state.kind.as_str(), KIND_CAMERA_PREVIEW | KIND_CAMERA_ALIAS) {
+        if let Ok(p) = decode_camera_preview_props(bytes) {
+            state.camera.props = p.clone();
+            state.decoded = Some(DecodedNativeView::CameraPreview(p));
+            state.set_tag("video".to_owned(), Some("video"));
+            state.extra_css.clear();
+        }
+        return state.resolved_tag != prev_tag;
+    }
     let Ok(dec) = NativePropDecoder::decode(bytes) else {
         return false;
     };
-    let prev_tag = state.resolved_tag.clone();
+    let _ = &dec;
     match state.kind.as_str() {
         #[cfg(feature = "nv-blur")]
         KIND_BLUR_SURFACE | KIND_BLUR_ALIAS => {
@@ -213,15 +224,6 @@ fn apply_nvnp_to_state(state: &mut NativeViewNodeState, bytes: &[u8]) -> bool {
             if let Ok(p) = decode_video_player_props(&dec) {
                 state.playing = p.autoplay;
                 state.decoded = Some(DecodedNativeView::VideoPlayer(p));
-                state.set_tag("video".to_owned(), Some("video"));
-                state.extra_css.clear();
-            }
-        }
-        #[cfg(feature = "camera")]
-        KIND_CAMERA_PREVIEW | KIND_CAMERA_ALIAS => {
-            if let Ok(p) = decode_camera_preview_props(&dec) {
-                state.camera.props = p.clone();
-                state.decoded = Some(DecodedNativeView::CameraPreview(p));
                 state.set_tag("video".to_owned(), Some("video"));
                 state.extra_css.clear();
             }

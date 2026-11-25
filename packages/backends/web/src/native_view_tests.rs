@@ -366,8 +366,8 @@ fn native_view_web_element_blur_webview_and_video_ssr_hydration_and_commands() {
 #[test]
 fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     use crate::native_view::{
-        decode_camera_preview_command, decode_camera_preview_props, CameraPreviewCommand,
-        CameraPreviewFacing, NativePropDecoder, NativeViewCodecError, StabilizationMode, TorchMode,
+        decode_camera_preview_command, decode_camera_preview_props, CameraFacing,
+        CameraPreviewCommand, NativeViewCodecError, StabilizationMode, TorchMode,
         KIND_CAMERA_ALIAS, KIND_CAMERA_PREVIEW, NATIVE_VIEW_KIND_PROP_KEY,
         NATIVE_VIEW_PROPS_PROP_KEY,
     };
@@ -451,7 +451,7 @@ fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     backend.submit_frame(b2.finish()).unwrap();
 
     let cam = &backend.native_view(2).unwrap().camera;
-    assert_eq!(cam.facing, CameraPreviewFacing::External);
+    assert_eq!(cam.facing, CameraFacing::External);
     assert_eq!(cam.torch, TorchMode::Auto);
     assert!((cam.zoom - 3.25).abs() < 1e-6);
     assert_eq!(cam.last_focus_point, Some((0.25, 0.75)));
@@ -486,22 +486,22 @@ fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     // 4. Corrupt buffer, out-of-range enum, and invalid numeric argument resilience.
     let bad_facing = encode_cam_props(None, 0, 0, 1.0, 30, false, 0, false, false, true);
     assert!(matches!(
-        decode_camera_preview_props(&NativePropDecoder::decode(&bad_facing).unwrap()),
-        Err(NativeViewCodecError::InvalidEnum("CameraPreviewFacing", 0))
+        decode_camera_preview_props(&bad_facing),
+        Err(NativeViewCodecError::InvalidEnum("CameraFacing", 0))
     ));
     let bad_torch = encode_cam_props(None, 1, 3, 1.0, 30, false, 0, false, false, true);
     assert!(matches!(
-        decode_camera_preview_props(&NativePropDecoder::decode(&bad_torch).unwrap()),
+        decode_camera_preview_props(&bad_torch),
         Err(NativeViewCodecError::InvalidEnum("TorchMode", 3))
     ));
     let bad_zoom = encode_cam_props(None, 1, 0, f32::NAN, 30, false, 0, false, false, true);
     assert!(matches!(
-        decode_camera_preview_props(&NativePropDecoder::decode(&bad_zoom).unwrap()),
+        decode_camera_preview_props(&bad_zoom),
         Err(NativeViewCodecError::TypeMismatch(_))
     ));
     let bad_fps = encode_cam_props(None, 1, 0, 1.0, 241, false, 0, false, false, true);
     assert!(matches!(
-        decode_camera_preview_props(&NativePropDecoder::decode(&bad_fps).unwrap()),
+        decode_camera_preview_props(&bad_fps),
         Err(NativeViewCodecError::InvalidEnum("CameraFps", 241))
     ));
     assert!(matches!(
@@ -536,6 +536,6 @@ fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     b4.dispatch_command(2, "switch_facing", &nvnc_encode(1, &[NativeValueRef::U32(99)]));
     b4.commit(false);
     backend.submit_frame(b4.finish()).unwrap();
-    assert_eq!(backend.native_view(2).unwrap().camera.facing, CameraPreviewFacing::Back);
+    assert_eq!(backend.native_view(2).unwrap().camera.facing, CameraFacing::Back);
     assert!((backend.native_view(2).unwrap().camera.zoom - 1.0).abs() < 1e-6);
 }

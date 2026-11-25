@@ -201,6 +201,15 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
     }
 }
 
+/// Shared flex sizing for table header and body cells.
+///
+/// `nve-abi::LayoutProps` has `width`, `min_width`, `flex_grow`, and `flex_shrink` (with
+/// `flex-basis: auto`), so setting `width: 0px; min-width: 0px;` gives every cell a `0px`
+/// flex base size across CSS Flexbox (§9.2), Taffy/Skia, and Yoga — preventing columns with
+/// different text lengths from misaligning horizontally between header and body rows.
+const TABLE_CELL_FLEX_STYLE: &str =
+    "flex-grow: 1; flex-shrink: 1; width: 0px; min-width: 0px;";
+
 #[component]
 fn TableView(
     alignments: Vec<TableAlign>,
@@ -245,7 +254,7 @@ fn TableView(
                                 view {
                                     key: "{scope_key}-th-{col_idx}",
                                     accessibility_role: "columnheader",
-                                    style: "flex-grow: 1; flex-shrink: 1; padding-horizontal: 12px; padding-vertical: 9px; align-items: {af}; text-align: {ta};",
+                                    style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 9px; align-items: {af}; text-align: {ta};",
                                     InlinesView {
                                         inlines: cell,
                                         font_size: 13,
@@ -279,7 +288,7 @@ fn TableView(
                                         view {
                                             key: "{scope_key}-td-{row_idx}-{col_idx}",
                                             accessibility_role: "cell",
-                                            style: "flex-grow: 1; flex-shrink: 1; padding-horizontal: 12px; padding-vertical: 8px; align-items: {af}; text-align: {ta};",
+                                            style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 8px; align-items: {af}; text-align: {ta};",
                                             InlinesView {
                                                 inlines: cell,
                                                 font_size: 13,
@@ -292,6 +301,134 @@ fn TableView(
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nve_abi::{Dimension, RawPropValue};
+    use nve_backend_headless::HeadlessBackend;
+    use nve_backend_web::WebBackend;
+    use nve_dioxus::dioxus_elements::backend::{RenderBackend, Viewport};
+    use nve_host_services::{HostServiceProvider, MemoryHostServices};
+    use nve_mdx::{CompileOptions, SiteSource, compile_site_with_validation};
+
+    use crate::{
+        DocsSiteConfig, DocsViewport, PlaygroundRegistry, create_docs_surface_with_viewport,
+        default_component_registry,
+    };
+
+    #[test]
+    fn table_view_aligns_header_and_body_columns_with_zero_base_and_min_width() {
+        let mut src = SiteSource::new();
+        src.insert("_meta.toml", "index = \"Benchmarks\"\n");
+        src.insert(
+            "index.mdx",
+            r#"---
+title: "Benchmarks"
+description: "Table column alignment verification."
+---
+
+| Benchmark | Median | Mean | Notes |
+| :--- | :---: | ---: | :--- |
+| Encode 10k nodes with deeply nested flexbox children | 1.2ms | 1.3ms | X |
+| A | 999.999ms | 1000.001ms | Very long explanatory benchmark note spanning multiple words |
+"#,
+        );
+        let registry = default_component_registry();
+        let (site, diags) =
+            compile_site_with_validation(&src, &CompileOptions::default(), &registry);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:#?}");
+
+        for (vw, vh) in [(1280.0_f32, 800.0_f32), (390.0_f32, 844.0_f32)] {
+            let services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
+            let mut surface = create_docs_surface_with_viewport(
+                1,
+                "/",
+                DocsViewport::new(vw, vh),
+                DocsSiteConfig::new("Test Docs"),
+                Arc::new(site.clone()),
+                Arc::new(PlaygroundRegistry::new()),
+                services,
+            );
+            let (_, _, frame_bytes) = surface.render_frame(1);
+
+            // 1. Verify typed LayoutProps + Taffy computed column rects in HeadlessBackend.
+            let mut headless = HeadlessBackend::new();
+            headless.set_viewport(
+                1,
+                Viewport {
+                    width: vw,
+                    height: vh,
+                    scale_factor: 1.0,
+                },
+            );
+            headless
+                .submit_frame(&frame_bytes)
+                .expect("headless submit_frame");
+
+            let table_id = headless
+                .nodes()
+                .values()
+                .find_map(|n| match n.raw_props.get("testID") {
+                    Some(RawPropValue::String(s)) if s.starts_with("docs-table-") => Some(n.id),
+                    _ => None,
+                })
+                .expect("rendered docs-table node");
+
+            let rows = &headless.node(table_id).expect("table node").children;
+            assert_eq!(rows.len(), 3, "expected 1 header row + 2 body rows");
+
+            let header_cells = &headless.node(rows[0]).expect("header row").children;
+            assert_eq!(header_cells.len(), 4);
+
+            for &row_id in rows {
+                let cells = &headless.node(row_id).expect("row node").children;
+                assert_eq!(cells.len(), 4);
+                for (col_idx, &cell_id) in cells.iter().enumerate() {
+                    let cell = headless.node(cell_id).expect("cell node");
+                    assert_eq!(cell.layout.flex_grow, 1.0);
+                    assert_eq!(cell.layout.flex_shrink, 1.0);
+                    assert_eq!(cell.layout.width, Dimension::Points(0.0));
+                    assert_eq!(cell.layout.min_width, Dimension::Points(0.0));
+
+                    let header_rect = headless
+                        .layout_of(header_cells[col_idx])
+                        .expect("header rect");
+                    let cell_rect = headless.layout_of(cell_id).expect("cell rect");
+                    assert!(
+                        (header_rect.x - cell_rect.x).abs() < 0.01,
+                        "viewport {vw}x{vh} col {col_idx} x mismatch: header={} body={}",
+                        header_rect.x,
+                        cell_rect.x
+                    );
+                    assert!(
+                        (header_rect.width - cell_rect.width).abs() < 0.01,
+                        "viewport {vw}x{vh} col {col_idx} width mismatch: header={} body={}",
+                        header_rect.width,
+                        cell_rect.width
+                    );
+                }
+            }
+
+            // 2. Verify WebBackend emits consistent `width:0;min-width:0;flex-grow:1;` CSS.
+            let mut web = WebBackend::new();
+            web.submit_frame(&frame_bytes).expect("web submit_frame");
+            let ssr = web.render_ssr();
+            assert!(
+                ssr.style_css.contains("flex-grow:1;width:0;min-width:0;"),
+                "expected zero-basis flex cell rule in SSR CSS:\n{}",
+                ssr.style_css
+            );
+            let html = web.render_html();
+            assert!(html.contains("role=\"columnheader\""));
+            assert!(html.contains("role=\"cell\""));
+            assert!(html.contains("flex-grow:1;flex-shrink:1;"));
+            assert!(html.contains("width:0px;"));
+            assert!(html.contains("min-width:0px;"));
         }
     }
 }
