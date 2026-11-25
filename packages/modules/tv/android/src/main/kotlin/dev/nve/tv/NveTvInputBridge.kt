@@ -1,11 +1,9 @@
-package dev.nve.compose.tv
+package dev.nve.tv
 
 import android.content.Context
-import dev.nve.compose.NveEvent
-import dev.nve.compose.NveEventKind
-import dev.nve.compose.NveEventPayload
-import dev.nve.compose.NveEventRingCodec
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
@@ -94,20 +92,135 @@ object NveNk1Codec {
 }
 
 /**
+ * Standalone TV keydown event envelope serialized directly into the NVE `EventRing` binary wire
+ * format (`NativeEventKind::Custom = 8`, `PayloadTag::Custom = 5`, name `"keydown"`).
+ */
+data class NveTvCustomEvent(
+    val surfaceId: Int,
+    val nodeId: Int,
+    val timestampUs: Long,
+    val name: String,
+    val data: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is NveTvCustomEvent) return false
+        return surfaceId == other.surfaceId &&
+            nodeId == other.nodeId &&
+            timestampUs == other.timestampUs &&
+            name == other.name &&
+            data.contentEquals(other.data)
+    }
+
+    override fun hashCode(): Int {
+        var result = surfaceId
+        result = 31 * result + nodeId
+        result = 31 * result + timestampUs.hashCode()
+        result = 31 * result + name.hashCode()
+        result = 31 * result + data.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * Minimal standalone `EventRing` custom-event wire encoder/decoder matching
+ * `crates/nve-abi/src/events.rs` byte-for-byte without depending on `hosts/compose-kit`.
+ */
+object NveTvEventRingWire {
+    const val EVENT_KIND_CUSTOM: Int = 8
+    const val PAYLOAD_TAG_CUSTOM: Int = 5
+    private const val EVENT_HEADER_BYTES: Int = 18
+
+    fun encodeSingle(event: NveTvCustomEvent): ByteArray = encode(listOf(event))
+
+    fun encode(events: List<NveTvCustomEvent>): ByteArray {
+        val out = ByteArrayOutputStream(4 + events.size * 36)
+        writeI32Le(out, events.size)
+        for (event in events) {
+            writeI32Le(out, event.surfaceId)
+            writeI32Le(out, event.nodeId)
+            writeI64Le(out, event.timestampUs)
+            out.write(EVENT_KIND_CUSTOM)
+            out.write(PAYLOAD_TAG_CUSTOM)
+            val nameBytes = event.name.toByteArray(StandardCharsets.UTF_8)
+            require(nameBytes.size <= 0xFFFF) { "Custom event name exceeds uint16 limit" }
+            writeU16Le(out, nameBytes.size)
+            out.write(nameBytes)
+            writeI32Le(out, event.data.size)
+            out.write(event.data)
+        }
+        return out.toByteArray()
+    }
+
+    fun decode(bytes: ByteArray): List<NveTvCustomEvent> {
+        if (bytes.isEmpty()) return emptyList()
+        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        require(buf.remaining() >= 4) { "Truncated EventRing header" }
+        val count = buf.int
+        require(count >= 0 && count.toLong() * EVENT_HEADER_BYTES <= buf.remaining().toLong()) {
+            "Truncated EventRing body for $count events"
+        }
+        val out = ArrayList<NveTvCustomEvent>(count)
+        repeat(count) {
+            require(buf.remaining() >= EVENT_HEADER_BYTES) { "Truncated EventRing event header" }
+            val surfaceId = buf.int
+            val nodeId = buf.int
+            val timestampUs = buf.long
+            val kind = buf.get().toInt() and 0xFF
+            val tag = buf.get().toInt() and 0xFF
+            require(kind == EVENT_KIND_CUSTOM && tag == PAYLOAD_TAG_CUSTOM) {
+                "Unexpected EventRing kind=$kind tag=$tag in TV custom ring"
+            }
+            require(buf.remaining() >= 2) { "Truncated custom name length" }
+            val nameLen = buf.short.toInt() and 0xFFFF
+            require(buf.remaining() >= nameLen) { "Truncated custom name bytes" }
+            val nameBytes = ByteArray(nameLen)
+            buf.get(nameBytes)
+            val name = String(nameBytes, StandardCharsets.UTF_8)
+            require(buf.remaining() >= 4) { "Truncated custom data length" }
+            val dataLen = buf.int
+            require(dataLen >= 0 && buf.remaining() >= dataLen) { "Truncated custom data bytes" }
+            val data = ByteArray(dataLen)
+            buf.get(data)
+            out.add(NveTvCustomEvent(surfaceId, nodeId, timestampUs, name, data))
+        }
+        require(!buf.hasRemaining()) { "Trailing bytes in EventRing: ${buf.remaining()}" }
+        return out
+    }
+
+    private fun writeU16Le(out: ByteArrayOutputStream, v: Int) {
+        out.write(v and 0xFF)
+        out.write((v ushr 8) and 0xFF)
+    }
+
+    private fun writeI32Le(out: ByteArrayOutputStream, v: Int) {
+        out.write(v and 0xFF)
+        out.write((v ushr 8) and 0xFF)
+        out.write((v ushr 16) and 0xFF)
+        out.write((v ushr 24) and 0xFF)
+    }
+
+    private fun writeI64Le(out: ByteArrayOutputStream, v: Long) {
+        out.write((v and 0xFF).toInt())
+        out.write(((v ushr 8) and 0xFF).toInt())
+        out.write(((v ushr 16) and 0xFF).toInt())
+        out.write(((v ushr 24) and 0xFF).toInt())
+        out.write(((v ushr 32) and 0xFF).toInt())
+        out.write(((v ushr 40) and 0xFF).toInt())
+        out.write(((v ushr 48) and 0xFF).toInt())
+        out.write(((v ushr 56) and 0xFF).toInt())
+    }
+}
+
+/**
  * Android TV / Fire TV D-Pad & Leanback input bridge converting remote key events directly into
- * zero-JSON `NK1` binary payloads wrapped inside `NveEventKind.CUSTOM` (`"keydown"`) events for
- * submission via [NveEventRingCodec].
+ * zero-JSON `NK1` binary payloads wrapped inside `EventRing` `CUSTOM` (`"keydown"`) events.
  */
 class NveTvInputBridge(
     private val repeatThrottleUs: Long = DEFAULT_REPEAT_THROTTLE_US,
 ) {
     private val lastDispatchByAction = HashMap<NveTvAction, Long>()
 
-    /**
-     * Translates a raw Android `KeyEvent` keycode into an [NveEvent] carrying an `NK1` payload,
-     * applying repeat-key throttling when [repeatCount] > 0. Returns `null` if the keycode is
-     * unmapped or throttled.
-     */
     fun onKeyDown(
         surfaceId: Int,
         nodeId: Int,
@@ -118,7 +231,7 @@ class NveTvInputBridge(
         ctrl: Boolean = false,
         shift: Boolean = false,
         alt: Boolean = false,
-    ): NveEvent? {
+    ): NveTvCustomEvent? {
         val action = NveTvKeyMapper.mapKeyCode(keyCode) ?: return null
         if (repeatCount > 0 && repeatThrottleUs > 0L) {
             val prevUs = lastDispatchByAction[action]
@@ -139,9 +252,6 @@ class NveTvInputBridge(
         )
     }
 
-    /**
-     * Wraps a typed [NveTvAction] in an [NveEvent] with an `NK1` binary payload.
-     */
     fun encodeAction(
         surfaceId: Int,
         nodeId: Int,
@@ -151,7 +261,7 @@ class NveTvInputBridge(
         ctrl: Boolean = false,
         shift: Boolean = false,
         alt: Boolean = false,
-    ): NveEvent {
+    ): NveTvCustomEvent {
         val nk1 = NveNk1Codec.encode(
             key = action.keyName,
             meta = meta,
@@ -159,21 +269,15 @@ class NveTvInputBridge(
             shift = shift,
             alt = alt,
         )
-        return NveEvent(
+        return NveTvCustomEvent(
             surfaceId = surfaceId,
             nodeId = nodeId,
             timestampUs = timestampUs,
-            kind = NveEventKind.CUSTOM,
-            payload = NveEventPayload.Custom(
-                name = NveNk1Codec.KEYDOWN_EVENT_NAME,
-                data = nk1,
-            ),
+            name = NveNk1Codec.KEYDOWN_EVENT_NAME,
+            data = nk1,
         )
     }
 
-    /**
-     * Translates a keydown event and encodes it directly into an `EventRing` binary buffer.
-     */
     fun encodeKeyDownToRing(
         surfaceId: Int,
         nodeId: Int,
@@ -196,10 +300,11 @@ class NveTvInputBridge(
             shift = shift,
             alt = alt,
         ) ?: return null
-        return NveEventRingCodec.encodeSingle(event)
+        return NveTvEventRingWire.encodeSingle(event)
     }
 
-    fun encodeBatchToRing(events: List<NveEvent>): ByteArray = NveEventRingCodec.encode(events)
+    fun encodeBatchToRing(events: List<NveTvCustomEvent>): ByteArray =
+        NveTvEventRingWire.encode(events)
 
     fun resetThrottle() {
         lastDispatchByAction.clear()
@@ -229,7 +334,6 @@ data class NveTvOverscanInsets(
     companion object {
         const val DEFAULT_OVERSCAN_RATIO: Float = 0.05f
 
-        /** Standard Android TV 1080p (`960dp x 540dp` at 2.0x density) 5% overscan insets. */
         val STANDARD_1080P: NveTvOverscanInsets = NveTvOverscanInsets(
             topDp = 27f,
             rightDp = 48f,

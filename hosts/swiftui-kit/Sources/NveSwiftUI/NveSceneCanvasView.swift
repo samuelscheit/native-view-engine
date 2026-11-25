@@ -314,72 +314,7 @@ public struct NveSceneCanvasView: View {
 
     public var body: some View {
         ZStack(alignment: .topLeading) {
-            Canvas { context, size in
-                if let backgroundColor {
-                    context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(backgroundColor))
-                }
-                NveSceneRenderer.draw(
-                    store: store,
-                    into: &context,
-                    size: size,
-                    imageCache: imageCache
-                )
-            }
-            .accessibilityHidden(true)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let start = value.startLocation
-                        let current = value.location
-                        let dx = current.x - start.x
-                        let dy = current.y - start.y
-                        let movedEnough = (dx * dx + dy * dy) >= 16.0
-
-                        if activeScrollNodeId == nil && movedEnough {
-                            activeScrollNodeId = store.hitTestScrollable(at: start)
-                            lastDragLocation = start
-                        }
-                        if let scrollId = activeScrollNodeId {
-                            let prev = lastDragLocation ?? start
-                            let stepX = -(current.x - prev.x)
-                            let stepY = -(current.y - prev.y)
-                            lastDragLocation = current
-                            if let updated = store.scrollBy(
-                                nodeId: scrollId,
-                                deltaX: stepX,
-                                deltaY: stepY
-                            ) {
-                                emit(
-                                    NveEvent(
-                                        surfaceId: controller?.surfaceId ?? surfaceId,
-                                        nodeId: scrollId,
-                                        timestampUs: UInt64(Date().timeIntervalSince1970 * 1_000_000),
-                                        kind: .scroll,
-                                        payload: .scroll(
-                                            x: Float(updated.offset.x),
-                                            y: Float(updated.offset.y),
-                                            contentWidth: Float(updated.contentSize.width),
-                                            contentHeight: Float(updated.contentSize.height)
-                                        )
-                                    )
-                                )
-                            }
-                        }
-                    }
-                    .onEnded { value in
-                        defer {
-                            activeScrollNodeId = nil
-                            lastDragLocation = nil
-                        }
-                        if activeScrollNodeId != nil {
-                            return
-                        }
-                        if let hitId = store.hitTest(at: value.location, interactiveOnly: true) {
-                            emitPress(nodeId: hitId, location: value.location)
-                        }
-                    }
-            )
+            interactiveCanvas
 
             // VoiceOver accessibility overlay (non-hit-testing so pointer gestures hit Canvas directly).
             ForEach(store.accessibilityElements()) { elem in
@@ -387,6 +322,7 @@ public struct NveSceneCanvasView: View {
                     .frame(width: elem.frame.width, height: elem.frame.height)
                     .position(x: elem.frame.midX, y: elem.frame.midY)
                     .allowsHitTesting(false)
+                    .nveSpatialHoverEffect()
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(Text(elem.label))
                     .accessibilityValue(Text(elem.value ?? ""))
@@ -402,7 +338,94 @@ public struct NveSceneCanvasView: View {
                     }
             }
         }
+        .nveTvRemoteControls(surfaceId: controller?.surfaceId ?? surfaceId, onEvent: emit)
+        .nveWatchCrownScroll { deltaY in
+            handleWatchCrownScroll(deltaY: deltaY)
+        }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var interactiveCanvas: some View {
+        let baseCanvas = Canvas { context, size in
+            if let backgroundColor {
+                context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(backgroundColor))
+            }
+            NveSceneRenderer.draw(
+                store: store,
+                into: &context,
+                size: size,
+                imageCache: imageCache
+            )
+        }
+        .accessibilityHidden(true)
+        .contentShape(Rectangle())
+
+        #if os(tvOS)
+        baseCanvas.onTapGesture {
+            emit(NveTvRemoteCommand.select.makeKeyDownEvent(surfaceId: controller?.surfaceId ?? surfaceId))
+        }
+        #else
+        baseCanvas.gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let start = value.startLocation
+                    let current = value.location
+                    let dx = current.x - start.x
+                    let dy = current.y - start.y
+                    let movedEnough = (dx * dx + dy * dy) >= 16.0
+
+                    if activeScrollNodeId == nil && movedEnough {
+                        activeScrollNodeId = store.hitTestScrollable(at: start)
+                        lastDragLocation = start
+                    }
+                    if let scrollId = activeScrollNodeId {
+                        let prev = lastDragLocation ?? start
+                        let stepX = -(current.x - prev.x)
+                        let stepY = -(current.y - prev.y)
+                        lastDragLocation = current
+                        emitScrollDelta(nodeId: scrollId, deltaX: stepX, deltaY: stepY)
+                    }
+                }
+                .onEnded { value in
+                    defer {
+                        activeScrollNodeId = nil
+                        lastDragLocation = nil
+                    }
+                    if activeScrollNodeId != nil {
+                        return
+                    }
+                    if let hitId = store.hitTest(at: value.location, interactiveOnly: true) {
+                        emitPress(nodeId: hitId, location: value.location)
+                    }
+                }
+        )
+        #endif
+    }
+
+    private func handleWatchCrownScroll(deltaY: CGFloat) {
+        if let scrollId = store.hitTestScrollable(at: CGPoint(x: 1, y: 1)) {
+            emitScrollDelta(nodeId: scrollId, deltaX: 0, deltaY: deltaY)
+        }
+    }
+
+    private func emitScrollDelta(nodeId: UInt32, deltaX: CGFloat, deltaY: CGFloat) {
+        if let updated = store.scrollBy(nodeId: nodeId, deltaX: deltaX, deltaY: deltaY) {
+            emit(
+                NveEvent(
+                    surfaceId: controller?.surfaceId ?? surfaceId,
+                    nodeId: nodeId,
+                    timestampUs: UInt64(Date().timeIntervalSince1970 * 1_000_000),
+                    kind: .scroll,
+                    payload: .scroll(
+                        x: Float(updated.offset.x),
+                        y: Float(updated.offset.y),
+                        contentWidth: Float(updated.contentSize.width),
+                        contentHeight: Float(updated.contentSize.height)
+                    )
+                )
+            )
+        }
     }
 
     private func traits(for element: NveSceneAccessibilityElement) -> AccessibilityTraits {

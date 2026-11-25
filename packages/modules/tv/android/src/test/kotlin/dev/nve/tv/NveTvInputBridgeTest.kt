@@ -1,8 +1,5 @@
-package dev.nve.compose.tv
+package dev.nve.tv
 
-import dev.nve.compose.NveEventKind
-import dev.nve.compose.NveEventPayload
-import dev.nve.compose.NveEventRingCodec
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -82,16 +79,14 @@ class NveTvInputBridgeTest {
             (NveNk1Codec.FLAG_META or NveNk1Codec.FLAG_SHIFT or NveNk1Codec.FLAG_ALT).toByte(),
         ) + "ArrowRight".toByteArray(StandardCharsets.UTF_8)
 
-        val decodedEvents = NveEventRingCodec.decode(encoded)
+        val decodedEvents = NveTvEventRingWire.decode(encoded)
         assertEquals(1, decodedEvents.size)
         val evt = decodedEvents[0]
         assertEquals(3, evt.surfaceId)
         assertEquals(42, evt.nodeId)
         assertEquals(0x0011223344556677L, evt.timestampUs)
-        assertEquals(NveEventKind.CUSTOM, evt.kind)
-        val custom = evt.payload as NveEventPayload.Custom
-        assertEquals("keydown", custom.name)
-        assertArrayEquals(expectedNk1, custom.data)
+        assertEquals("keydown", evt.name)
+        assertArrayEquals(expectedNk1, evt.data)
 
         // Verify little-endian EventRing envelope bytes directly
         val buf = ByteBuffer.wrap(encoded).order(ByteOrder.LITTLE_ENDIAN)
@@ -99,11 +94,11 @@ class NveTvInputBridgeTest {
         assertEquals(3, buf.int) // surface_id
         assertEquals(42, buf.int) // node_id
         assertEquals(0x0011223344556677L, buf.long) // timestamp_us
-        assertEquals(NveEventKind.CUSTOM.code, buf.get().toInt() and 0xFF)
-        assertEquals(5, buf.get().toInt() and 0xFF) // Custom payload tag
+        assertEquals(NveTvEventRingWire.EVENT_KIND_CUSTOM, buf.get().toInt() and 0xFF)
+        assertEquals(NveTvEventRingWire.PAYLOAD_TAG_CUSTOM, buf.get().toInt() and 0xFF)
 
         // Decode NK1 payload back into typed struct
-        val nk1 = NveNk1Codec.decode(custom.data)
+        val nk1 = NveNk1Codec.decode(evt.data)
         assertEquals(
             NveNk1KeyDown(key = "ArrowRight", meta = true, ctrl = false, shift = true, alt = true),
             nk1,
@@ -112,9 +107,15 @@ class NveTvInputBridgeTest {
         // Malformed NK1 payloads rejected strictly
         assertThrows(IllegalArgumentException::class.java) { NveNk1Codec.encode("") }
         assertNull(NveNk1Codec.decode(ByteArray(0)))
-        assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x31, 0x00))) // missing key byte
-        assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x32, 0x00, 0x41))) // wrong magic
+        assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x31, 0x00)))
+        assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x32, 0x00, 0x41)))
         assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x31, 0x00, 0xFF.toByte(), 0xFE.toByte())))
+
+        // Malformed EventRing rejected strictly
+        assertThrows(IllegalArgumentException::class.java) { NveTvEventRingWire.decode(byteArrayOf(1, 0)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            NveTvEventRingWire.decode(encoded + byteArrayOf(0x00))
+        }
     }
 
     @Test
@@ -154,11 +155,11 @@ class NveTvInputBridgeTest {
                 bridge.encodeAction(1, 5, NveTvAction.PLAY_PAUSE, timestampUs = 30L),
             ),
         )
-        val decoded = NveEventRingCodec.decode(batch)
+        val decoded = NveTvEventRingWire.decode(batch)
         assertEquals(3, decoded.size)
-        assertEquals("Select", NveNk1Codec.decode((decoded[0].payload as NveEventPayload.Custom).data)?.key)
-        assertEquals("Back", NveNk1Codec.decode((decoded[1].payload as NveEventPayload.Custom).data)?.key)
-        assertEquals("MediaPlayPause", NveNk1Codec.decode((decoded[2].payload as NveEventPayload.Custom).data)?.key)
+        assertEquals("Select", NveNk1Codec.decode(decoded[0].data)?.key)
+        assertEquals("Back", NveNk1Codec.decode(decoded[1].data)?.key)
+        assertEquals("MediaPlayPause", NveNk1Codec.decode(decoded[2].data)?.key)
     }
 
     @Test
@@ -171,15 +172,12 @@ class NveTvInputBridgeTest {
         assertEquals(864f, standard.safeWidthDp(960f), 1e-4f)
         assertEquals(486f, standard.safeHeightDp(540f), 1e-4f)
 
-        // 1920x1080 at 2.0x density (standard Android TV xhdpi) => 960x540dp => 48dp / 27dp
         val from1080p = NveTvOverscanInsets.forViewportPx(1920, 1080, density = 2.0f)
         assertEquals(standard, from1080p)
 
-        // 3840x2160 at 4.0x density => 960x540dp => 48dp / 27dp
         val from4k = NveTvOverscanInsets.forViewportPx(3840, 2160, density = 4.0f)
         assertEquals(standard, from4k)
 
-        // Invalid / non-finite dimensions clamp safely to 0
         val invalid = NveTvOverscanInsets.forViewportDp(Float.NaN, -100f)
         assertEquals(0f, invalid.leftDp, 1e-4f)
         assertEquals(0f, invalid.topDp, 1e-4f)
@@ -199,21 +197,18 @@ class NveTvInputBridgeTest {
                 NveTvEnvironmentSignals(hasLeanbackOnlyFeature = true),
             ),
         )
-        // UI_MODE_TYPE_TELEVISION (0x04) combined with UI_MODE_NIGHT_YES (0x20)
         assertTrue(NveTvEnvironmentDetector.isTelevisionUiMode(0x20 or 0x04))
-        assertFalse(NveTvEnvironmentDetector.isTelevisionUiMode(0x20 or 0x01)) // UI_MODE_TYPE_NORMAL
+        assertFalse(NveTvEnvironmentDetector.isTelevisionUiMode(0x20 or 0x01))
         assertTrue(
             NveTvEnvironmentDetector.isTvEnvironment(
                 NveTvEnvironmentSignals(uiMode = 0x24),
             ),
         )
-        // Amazon Fire TV Stick 4K Max (AFTKA)
         assertTrue(
             NveTvEnvironmentDetector.isTvEnvironment(
                 NveTvEnvironmentSignals(manufacturer = "Amazon", model = "AFTKA"),
             ),
         )
-        // Amazon Fire tablet (non-AFT model) must not misclassify as TV
         assertFalse(
             NveTvEnvironmentDetector.isTvEnvironment(
                 NveTvEnvironmentSignals(manufacturer = "Amazon", model = "KFTRWI"),

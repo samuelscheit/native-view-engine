@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-#if canImport(UIKit)
+#if canImport(UIKit) && !os(watchOS)
 import UIKit
 public typealias NvePlatformView = UIView
 #elseif canImport(AppKit)
@@ -11,6 +11,7 @@ public typealias NvePlatformView = NSView
 
 // MARK: - Native Host Container View
 
+#if (canImport(UIKit) && !os(watchOS)) || canImport(AppKit)
 public final class NveHostContainerView: NvePlatformView {
     public var controller: NveSurfaceController?
 
@@ -23,8 +24,9 @@ public final class NveHostContainerView: NvePlatformView {
         fatalError("init(coder:) is not supported")
     }
 }
+#endif
 
-// MARK: - SwiftUI Representable (`UIViewRepresentable` / `NSViewRepresentable`)
+// MARK: - SwiftUI Representable (`UIViewRepresentable` / `NSViewRepresentable` / Pure-SwiftUI watchOS)
 
 /// Cross-platform SwiftUI `View` hosting an NVE Rust component backed by `nve_get_interface`.
 ///
@@ -120,10 +122,8 @@ public struct NveSurfaceRepresentable {
         )
     }
 
-    private func sync(view: NveHostContainerView, coordinator: Coordinator) {
-        let active = coordinator.controller
+    private func applyProps(to active: NveSurfaceController) {
         active.onEvent = onEvent
-        view.controller = active
         switch propsPayload {
         case let .dynamic(dict):
             _ = active.setProps(dict)
@@ -131,6 +131,14 @@ public struct NveSurfaceRepresentable {
             _ = apply(active)
         }
     }
+
+    #if (canImport(UIKit) && !os(watchOS)) || canImport(AppKit)
+    private func sync(view: NveHostContainerView, coordinator: Coordinator) {
+        let active = coordinator.controller
+        view.controller = active
+        applyProps(to: active)
+    }
+    #endif
 
     private func computeSizeThatFits(
         _ proposal: ProposedViewSize,
@@ -147,7 +155,7 @@ public struct NveSurfaceRepresentable {
     }
 }
 
-#if canImport(UIKit)
+#if canImport(UIKit) && !os(watchOS)
 extension NveSurfaceRepresentable: UIViewRepresentable {
     public func makeUIView(context: Context) -> NveHostContainerView {
         let view = NveHostContainerView(frame: .zero)
@@ -198,6 +206,57 @@ extension NveSurfaceRepresentable: NSViewRepresentable {
         nsView.controller = nil
         if coordinator.ownsController {
             coordinator.controller.destroy()
+        }
+    }
+}
+#elseif os(watchOS)
+/// Pure-SwiftUI watchOS fallback avoiding `UIViewRepresentable` (unavailable on watchOS).
+extension NveSurfaceRepresentable: View {
+    public var body: some View {
+        NveWatchSurfaceHostView(
+            componentName: componentName,
+            vtableSymbol: vtableSymbol,
+            backend: backend,
+            externalController: controller,
+            syncProps: { active in applyProps(to: active) }
+        )
+    }
+}
+
+private struct NveWatchSurfaceHostView: View {
+    let componentName: String
+    let vtableSymbol: String
+    let backend: NveRenderBackend
+    let externalController: NveSurfaceController?
+    let syncProps: (NveSurfaceController) -> Void
+
+    @Environment(\.displayScale) private var displayScale
+    @StateObject private var store = NveSceneStore()
+    @State private var ownedController: NveSurfaceController?
+
+    private var activeController: NveSurfaceController? {
+        externalController ?? ownedController
+    }
+
+    var body: some View {
+        NveSceneCanvasView(
+            store: store,
+            surfaceId: activeController?.surfaceId ?? 1,
+            controller: activeController
+        )
+        .accessibilityLabel(Text(componentName))
+        .onAppear {
+            if externalController == nil && ownedController == nil {
+                ownedController = NveSurfaceController(vtableSymbol: vtableSymbol, backend: backend)
+            }
+            if let active = activeController {
+                syncProps(active)
+                _ = displayScale
+            }
+        }
+        .onDisappear {
+            ownedController?.destroy()
+            ownedController = nil
         }
     }
 }
