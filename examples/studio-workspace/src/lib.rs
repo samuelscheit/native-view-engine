@@ -42,13 +42,18 @@ pub use persist::{
     STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION, WAL_FILE_NAME,
 };
 pub use state::{
-    default_seed_docs, AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage,
-    CornerRadiusMode, DensityMode, DocBlock, DocBlockKind, HostSurfaceSpec, LayoutEngineMode,
-    Priority, Stream100kState, StudioConfig, SyncTelemetryState, SyncTransportMode, TaskItem,
-    TaskStatus, WorkbenchPreset, WorkbenchState, WorkspaceDoc, WorkspaceSnapshot, WorkspaceState,
-    HOST_SURFACES, MAX_HISTORY, MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
-    WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION,
+    default_seed_docs, version_vector_has_unseen_ops, AccentTheme, ActiveView, BoardFilter,
+    ChannelKind, ChatMessage, CornerRadiusMode, CrdtMergeSummary, CrdtPeerNode, CrdtPeerTransport,
+    CrdtPumpReport, CrdtSyncMetrics, CrdtTransportError, CrdtWireFrame, DensityMode, DocBlock,
+    DocBlockKind, HostSurfaceSpec, InMemoryMeshHub, InMemoryMeshTransport, LayoutEngineMode,
+    MeshFaultConfig, Priority, Stream100kState, StudioConfig, StudioCrdtDoc, SyncTelemetryState,
+    SyncTransportMode, TaskItem, TaskStatus, WorkbenchPreset, WorkbenchState, WorkspaceDoc,
+    WorkspaceSnapshot, WorkspaceState, CRDT_DIGEST_MAGIC, CRDT_DIGEST_MIN_LEN,
+    CRDT_DIGEST_VERSION, HOST_SURFACES, MAX_HISTORY, MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
+    TOPIC_CRDT_NVC1, WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use state::{LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport};
 pub use ui::StudioWorkspaceApp;
 pub use ui_islands::{
     GestureSimMode, IslandCardState, IslandHostKind, IslandSandboxRuntime, IslandsSnapshot,

@@ -322,6 +322,11 @@ impl WorkspaceState {
         w.push_u32(self.sync_telemetry.kbps_tenths);
         w.push_u16(self.sync_telemetry.compression_tenths);
         w.push_u32(self.sync_telemetry.rtt_ms_tenths);
+        w.push_u64(self.sync_telemetry.crdt_deltas_sent);
+        w.push_u64(self.sync_telemetry.crdt_deltas_received);
+        w.push_u64(self.sync_telemetry.crdt_bytes_synced);
+        w.push_bool(self.sync_telemetry.crdt_partitioned);
+        w.push_u32(self.sync_telemetry.crdt_pending_remote_ops);
 
         let checksum = fnv1a_64(&w.buf);
         w.push_u64(checksum);
@@ -376,6 +381,11 @@ impl WorkspaceState {
             kbps_tenths: r.read_u32()?,
             compression_tenths: r.read_u16()?,
             rtt_ms_tenths: r.read_u32()?,
+            crdt_deltas_sent: r.read_u64()?,
+            crdt_deltas_received: r.read_u64()?,
+            crdt_bytes_synced: r.read_u64()?,
+            crdt_partitioned: r.read_bool()?,
+            crdt_pending_remote_ops: r.read_u32()?,
         };
 
         r.finish()?;

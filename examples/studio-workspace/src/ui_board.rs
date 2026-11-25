@@ -1,17 +1,46 @@
-//! Issue Board view (`ActiveView::Board`) with filter pills, live search `TextInput`,
-//! custom issue composer, and scrollable task cards with PNG avatar `Image`s.
+//! Issue Board view (`ActiveView::Board`) built on shared `nve-ui` primitives (`TabsRoot`,
+//! `TabList`, `TabTrigger`, `Input`, `Button`, `Card`, `Badge`) with live search, custom issue
+//! composer, and scrollable task cards with PNG avatar `Image`s.
 
 use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
+use nve_ui::{
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Input, TabList,
+    TabTrigger, TabsRoot,
+};
 
 use crate::assets::avatar_for_author;
-use crate::state::{BoardFilter, TaskItem, WorkspaceSnapshot, WorkspaceState};
+use crate::state::{BoardFilter, Priority, TaskItem, WorkspaceSnapshot, WorkspaceState};
 use crate::theme::{
     card_border, control_border, row_border, LayoutMetrics, BORDER_DEFAULT, CARD_BG, CONTROL_BG,
-    PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, XRAY_ROW,
+    PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY, XRAY_ROW,
 };
 use crate::ui::mutate_state;
+
+fn filter_key(filter: BoardFilter) -> &'static str {
+    match filter {
+        BoardFilter::All => "all",
+        BoardFilter::Active => "active",
+        BoardFilter::Done => "done",
+    }
+}
+
+fn parse_filter(val: &str) -> BoardFilter {
+    match val {
+        "active" => BoardFilter::Active,
+        "done" => BoardFilter::Done,
+        _ => BoardFilter::All,
+    }
+}
+
+fn priority_badge_variant(priority: Priority) -> BadgeVariant {
+    match priority {
+        Priority::P0 => BadgeVariant::Danger,
+        Priority::P1 => BadgeVariant::Warning,
+        Priority::P2 => BadgeVariant::Accent,
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_board_view(
@@ -30,41 +59,64 @@ pub(crate) fn render_board_view(
     let (card_bw, card_bc) = card_border(xray);
     let (row_bw, row_bc) = row_border(xray);
 
+    let s_filter = Arc::clone(store);
     let s_board_search = Arc::clone(store);
     let s_board_search_clear = Arc::clone(store);
     let s_board_draft = Arc::clone(store);
     let s_board_draft_submit = Arc::clone(store);
     let s_board_draft_btn = Arc::clone(store);
 
+    let active_filter_val = filter_key(current.board_filter).to_string();
+    let all_lbl = format!("All ({total_tasks})");
+    let active_lbl = format!("Active ({active_tasks})");
+    let done_lbl = format!("Done ({done_tasks})");
+
+    let tab_list_style = format!(
+        "width: 100%; flex-shrink: 0; gap: 6px; padding: 0px; background-color: transparent; border-width: {row_bw}px; border-color: {row_bc}; border-radius: 0px;"
+    );
+    let clear_btn_style = format!(
+        "width: 48px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: {}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+        m.button_radius
+    );
+    let add_btn_style = format!(
+        "width: 56px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
+        m.button_radius
+    );
+
     rsx! {
-        // Filter Pills Row
-        view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; border-width: {row_bw}px; border-color: {row_bc};",
-            for &(flt, tid, label, cnt, pill_w) in [
-                (BoardFilter::All, "filter-all", "All", total_tasks, 64u32),
-                (BoardFilter::Active, "filter-active", "Active", active_tasks, 78u32),
-                (BoardFilter::Done, "filter-done", "Done", done_tasks, 68u32),
-            ].iter() {
-                {
-                    let is_sel = current.board_filter == flt;
-                    let (bw, bc) = control_border(xray, is_sel, accent_hex);
-                    let bg = if is_sel { accent_tint } else { PANEL_BG };
-                    let fg = if is_sel { accent_hex } else { TEXT_SECONDARY };
-                    let flt_style = format!(
-                        "width: {pill_w}px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
-                        m.pill_radius
-                    );
-                    let text_val = format!("{label} ({cnt})");
-                    let s_flt = Arc::clone(store);
-                    rsx! {
-                        pressable {
-                            key: "{tid}",
-                            test_id: "{tid}",
-                            style: "{flt_style}",
-                            onpress: move |_| mutate_state(&s_flt, version, |st| st.set_board_filter(flt)),
-                            text {
-                                style: "color: {fg}; font-size: 10px;",
-                                "{text_val}"
+        // Filter Tabs Row (`nve-ui` TabsRoot / TabList / TabTrigger)
+        TabsRoot {
+            value: Some(active_filter_val),
+            id_prefix: Some("board-filter".into()),
+            style: Some("width: 100%; flex-shrink: 0; gap: 0px;".into()),
+            on_change: move |next: String| {
+                let flt = parse_filter(&next);
+                mutate_state(&s_filter, version, |st| st.set_board_filter(flt));
+            },
+            TabList {
+                accessibility_label: Some("Board issue filter".into()),
+                style: Some(tab_list_style),
+                for &(flt, tid, ref lbl, pill_w) in [
+                    (BoardFilter::All, "filter-all", all_lbl, 68u32),
+                    (BoardFilter::Active, "filter-active", active_lbl, 78u32),
+                    (BoardFilter::Done, "filter-done", done_lbl, 70u32),
+                ].iter() {
+                    {
+                        let is_sel = current.board_filter == flt;
+                        let (bw, bc) = control_border(xray, is_sel, accent_hex);
+                        let bg = if is_sel { accent_tint } else { PANEL_BG };
+                        let trig_style = format!(
+                            "width: {pill_w}px; height: 26px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
+                            m.pill_radius
+                        );
+                        let val_str = filter_key(flt).to_string();
+                        rsx! {
+                            TabTrigger {
+                                key: "{tid}",
+                                value: val_str,
+                                test_id: Some(tid.into()),
+                                style: Some(trig_style),
+                                "{lbl}"
                             }
                         }
                     }
@@ -72,64 +124,67 @@ pub(crate) fn render_board_view(
             }
         }
 
-        // Live Board Search & Custom Task Create Bar (real TextInput primitives)
+        // Live Board Search & Custom Task Create Bar (`nve-ui` Input + Button)
         view {
             style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; border-width: {row_bw}px; border-color: {row_bc};",
             view {
                 style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
-                textinput {
-                    test_id: "board-search-input",
-                    placeholder: "Filter issues...",
-                    value: "{current.board_search_query}",
-                    multiline: false,
-                    accessibility_label: "Filter board issues",
-                    accessibility_role: "searchbox",
-                    style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {PANEL_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                    onchange: move |ev| {
-                        let q = ev.data().value.clone();
-                        mutate_state(&s_board_search, version, |st| st.set_board_search_query(q));
-                    },
+                view {
+                    style: "flex: 1;",
+                    Input {
+                        test_id: Some("board-search-input".into()),
+                        placeholder: Some("Filter issues...".into()),
+                        value: current.board_search_query.clone(),
+                        accessibility_label: Some("Filter board issues".into()),
+                        on_change: move |q: String| {
+                            mutate_state(&s_board_search, version, |st| st.set_board_search_query(q));
+                        },
+                    }
                 }
                 if !current.board_search_query.is_empty() {
-                    pressable {
-                        test_id: "board-search-clear",
-                        style: "width: 40px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                        onpress: move |_| mutate_state(&s_board_search_clear, version, |st| st.set_board_search_query("")),
-                        text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "Clear" }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Sm,
+                        test_id: Some("board-search-clear".into()),
+                        style: Some(clear_btn_style),
+                        on_press: move |_| mutate_state(&s_board_search_clear, version, |st| st.set_board_search_query("")),
+                        "Clear"
                     }
                 }
             }
             view {
                 style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
-                textinput {
-                    test_id: "board-new-task-input",
-                    placeholder: "New custom issue title...",
-                    value: "{current.new_task_draft}",
-                    multiline: false,
-                    accessibility_label: "New issue title",
-                    style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {PANEL_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                    onchange: move |ev| {
-                        let txt = ev.data().value.clone();
-                        mutate_state(&s_board_draft, version, |st| st.set_new_task_draft(txt));
-                    },
-                    onsubmit: move |_| {
-                        mutate_state(&s_board_draft_submit, version, |st| {
-                            let _ = st.submit_new_task_draft();
-                        });
-                    },
+                view {
+                    style: "flex: 1;",
+                    Input {
+                        test_id: Some("board-new-task-input".into()),
+                        placeholder: Some("New custom issue title...".into()),
+                        value: current.new_task_draft.clone(),
+                        accessibility_label: Some("New issue title".into()),
+                        on_change: move |txt: String| {
+                            mutate_state(&s_board_draft, version, |st| st.set_new_task_draft(txt));
+                        },
+                        on_submit: move |_| {
+                            mutate_state(&s_board_draft_submit, version, |st| {
+                                let _ = st.submit_new_task_draft();
+                            });
+                        },
+                    }
                 }
-                pressable {
-                    test_id: "board-new-task-submit",
-                    style: "width: 50px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_tint}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
-                    onpress: move |_| mutate_state(&s_board_draft_btn, version, |st| {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    size: ButtonSize::Sm,
+                    test_id: Some("board-new-task-submit".into()),
+                    style: Some(add_btn_style),
+                    on_press: move |_| mutate_state(&s_board_draft_btn, version, |st| {
                         let _ = st.submit_new_task_draft();
                     }),
-                    text { style: "color: {accent_hex}; font-size: 10px;", "+ Add" }
+                    "+ Add"
                 }
             }
         }
 
-        // Scrollable Task Card List (with real PNG Image avatars)
+        // Scrollable Task Card List (`nve-ui` Card + Badge + Button + PNG Image avatars)
         scrollview {
             style: "width: 100%; flex: 1; flex-direction: column; gap: {m.list_gap}px; border-width: {row_bw}px; border-color: {row_bc};",
             for task in filtered_tasks.iter() {
@@ -139,48 +194,54 @@ pub(crate) fn render_board_view(
                     let avatar_tid = format!("task-avatar-{tid}");
                     let avatar_src = avatar_for_author(&task.assignee);
                     let card_style = format!(
-                        "width: 100%; flex-shrink: 0; flex-direction: column; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
+                        "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
                         m.card_pad, m.card_gap, m.card_radius
                     );
                     let p_bg = task.priority.badge_bg();
-                    let p_fg = task.priority.badge_fg();
                     let p_bc = task.priority.badge_border();
                     let p_lbl = task.priority.label();
+                    let p_style = format!(
+                        "width: 30px; height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {p_bg}; border-radius: {}px; border-width: 1px; border-color: {p_bc};",
+                        m.pill_radius
+                    );
                     let st_bg = task.status.pill_bg();
-                    let st_fg = task.status.pill_fg();
                     let st_bc = if xray { XRAY_ROW } else { task.status.pill_border() };
                     let st_lbl = task.status.label();
+                    let st_btn_style = format!(
+                        "width: 92px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {st_bg}; border-radius: {}px; border-width: 1px; border-color: {st_bc};",
+                        m.pill_radius
+                    );
                     let meta_line = format!("{} | {}", task.assignee, task.tag);
                     let s_cyc = Arc::clone(store);
                     rsx! {
-                        view {
+                        Card {
                             key: "task-{tid}",
-                            style: "{card_style}",
-                            // Top row: Key + Priority pill | Clickable Status pill
+                            variant: CardVariant::Elevated,
+                            padding: Some(m.card_pad as f32),
+                            gap: Some(m.card_gap as f32),
+                            style: Some(card_style),
+                            // Top row: Key + Priority Badge | Clickable Status Button
                             view {
                                 style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; border-width: {row_bw}px; border-color: {row_bc};",
                                 view {
                                     style: "flex-direction: row; align-items: center; gap: 6px;",
-                                    view {
-                                        style: "width: 28px; height: 20px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {p_bg}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {p_bc};",
-                                        text {
-                                            style: "color: {p_fg}; font-size: 10px;",
-                                            "{p_lbl}"
-                                        }
+                                    Badge {
+                                        label: p_lbl.to_string(),
+                                        variant: priority_badge_variant(task.priority),
+                                        style: Some(p_style),
                                     }
                                     text {
                                         style: "color: {TEXT_MUTED}; font-size: 11px;",
                                         "{task.key}"
                                     }
                                 }
-                                pressable {
-                                    test_id: "{status_tid}",
-                                    style: "width: 88px; height: 24px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {st_bg}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {st_bc};",
-                                    onpress: move |_| mutate_state(&s_cyc, version, |st| st.cycle_task_status(tid)),
-                                    text {
-                                        style: "color: {st_fg}; font-size: 11px;",
-                                        "{st_lbl}"
-                                    }
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    size: ButtonSize::Sm,
+                                    test_id: Some(status_tid),
+                                    style: Some(st_btn_style),
+                                    on_press: move |_| mutate_state(&s_cyc, version, |st| st.cycle_task_status(tid)),
+                                    "{st_lbl}"
                                 }
                             }
                             // Task Title
