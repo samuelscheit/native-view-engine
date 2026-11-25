@@ -46,6 +46,7 @@ pub fn InlinesView(
 
     rsx! {
         view {
+            test_id: "docs-inlines",
             style: "flex-direction: row; align-items: center; gap: 2px; flex-wrap: wrap;",
             for (idx, inline) in inlines.into_iter().enumerate() {
                 InlineNodeView {
@@ -110,6 +111,7 @@ fn InlineNodeView(
             let code_size = font_size.saturating_sub(1).max(11);
             rsx! {
                 view {
+                    test_id: "docs-inline-code",
                     accessibility_role: "code",
                     style: "padding-horizontal: 5px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                     text {

@@ -96,9 +96,11 @@ pub fn DocsNavbar() -> Element {
                             "{brand_mark}"
                         }
                     }
-                    text {
-                        style: "font-size: 15px; font-weight: 700; color: {theme.text};",
-                        "{site_title}"
+                    if !is_mobile {
+                        text {
+                            style: "font-size: 15px; font-weight: 700; color: {theme.text};",
+                            "{site_title}"
+                        }
                     }
                 }
 
@@ -163,11 +165,13 @@ pub fn DocsNavbar() -> Element {
                         style: "font-size: 13px; color: {theme.muted};",
                         if is_mobile { "Search" } else { "Search docs..." }
                     }
-                    view {
-                        style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
-                        text {
-                            style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
-                            "⌘K"
+                    if !is_mobile {
+                        view {
+                            style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                            text {
+                                style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
+                                "⌘K"
+                            }
                         }
                     }
                 }
@@ -186,7 +190,7 @@ pub fn DocsNavbar() -> Element {
                     }
                 }
 
-                if let Some(repo_url) = github_url {
+                if !is_mobile && let Some(repo_url) = github_url {
                     pressable {
                         test_id: "docs-github-link",
                         accessibility_role: "link",

@@ -157,6 +157,7 @@ pub fn HighlightedCodeView(
                                     }
 
                                     view {
+                                        test_id: "docs-code-tokens",
                                         style: "flex-direction: row; flex-grow: 1;",
                                         if line.tokens.is_empty() {
                                             text {
