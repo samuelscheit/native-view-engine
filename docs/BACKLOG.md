@@ -29,9 +29,6 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Interactive Pseudo-States (`:hover`, `:active`, `:focus`, `:focus-visible`, `:disabled`) & `CursorKind`** *(in flight)*
   - Shared `StylePatch` + `InteractionState` bitflags + `CursorKind` + `InteractionTracker` in `packages/core/components`, direct `TypedStyle` `.on_hover()`/`.on_active()`/`.on_focus_visible()`/`.on_disabled()`/`.cursor()` in `packages/core/dioxus`, zero-JS native CSS pseudo-classes on `WebBackend`, and O(1) live state/cursor resolution in `HeadlessBackend` & `SkiaBackend`.
 
-- [ ] **Anchored Overlay Collision-Flipping, Headless `Form`, `UndoRedoStack`, `Combobox`, `SplitPane` & `BottomSheet`** *(in flight)*
-  - Pure-Rust viewport collision-flipping/shifting positioning engine wired into `Popover`/`Tooltip`/`DropdownMenu`, typed `Form` validation & dirty-tracking, transactional `UndoRedoStack<T>`, plus production `Combobox`, `SplitPane`, and multi-snap-point `BottomSheet` in `packages/framework/ui`.
-
 - [ ] **Layout & RTL Parity (`flex-basis`, CSS Grid, `position: sticky`, `aspect-ratio`, RTL Logical Props)**
   - Expose Taffy's CSS Grid (`display: grid`, `grid-template-columns`, `minmax`, spanning), `flex-basis`, `aspect-ratio`, `position: sticky`, and RTL logical layout mirroring (`padding-inline-start`, selective icon mirroring) cleanly alongside Wave C1's `nve-abi` schema update.
 
