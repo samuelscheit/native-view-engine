@@ -12,6 +12,7 @@ pub mod route;
 mod route_macro;
 pub mod stack;
 pub mod tabs;
+pub mod web;
 
 pub use channel::{
     decode_nav_packet, decode_nav_packet_ref, encode_nav_packet, encode_nav_packet_into,
@@ -38,6 +39,12 @@ pub use stack::{
     NavigationAction, NavigationError, NavigationTransition, RouteEntry, RouterState,
 };
 pub use tabs::{TabRouterState, TabSpec};
+#[cfg(target_arch = "wasm32")]
+pub use web::BrowserHistoryBackend;
+pub use web::{
+    normalize_base_path, HistoryBackend, MemoryHistoryBackend, ScrollTarget, WebHistoryAdapter,
+    WebHistoryError,
+};
 
 pub mod prelude {
     pub use crate::channel::{NavPacket, RouterChannelBridge};
@@ -53,4 +60,10 @@ pub mod prelude {
     pub use crate::route::Routable;
     pub use crate::stack::{NavigationAction, NavigationError, NavigationTransition, RouterState};
     pub use crate::tabs::{TabRouterState, TabSpec};
+    #[cfg(target_arch = "wasm32")]
+    pub use crate::web::BrowserHistoryBackend;
+    pub use crate::web::{
+        normalize_base_path, HistoryBackend, MemoryHistoryBackend, ScrollTarget, WebHistoryAdapter,
+        WebHistoryError,
+    };
 }
