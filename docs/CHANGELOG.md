@@ -6,6 +6,10 @@ Chronological log of completed, verified milestones in `native-view-engine`.
 
 ## Docs, Web Foundations & Codegen Hygiene
 
+- **Option 5 Hybrid Web CSS, Keyed `SetChildren`, Semantic HTML5 SSR & Zero-Flicker Progressive Hydration** (`36a6e5a`)
+  - Replaced inline `cssText` thrashing with deferred end-of-frame style flushing, static `NVE_BASE_RESET_CSS`, deterministic FNV-1a64 `.s<base36>` structural stylesheet cache (`MAX_DYNAMIC_RULES = 4096`, batched `adoptedStyleSheets`), volatile/continuous inline escape hatch, `.nve-tl` leaf-text inheritance, and structured `RawStyleProps` (`font-weight`, `text-align`, `box-shadow`, `overflow`, `object-fit`). Cut Studio Frame 0 HTML+CSS payload by **-77.2%** (`112,281 B -> 25,637 B`).
+  - Added O(N) head/tail + LIS keyed `SetChildren` DOM reconciliation preserving `<input>` focus/IME and scroll state, Semantic HTML5 `render_ssr`/`render_ssr_document`, single-root `RootEventDelegator`, in-place `hydrate_into` with mismatch recovery, and `ProgressiveIslandHost` (`Load` / `Visible` / `Interaction` with replay / `Idle`).
+  - Verified: 37/37 unit tests, 0 native/`wasm32` Clippy warnings, 7/7 live headless Chrome E2E suites (`adopted=270, mismatches=0, elBefore === elAfter`), and 18/18 `nve-studio-workspace` tests.
 - **Enforce `.generated.<ext>` & Java `generated/` Package Convention** (`b305607`)
   - Renamed all 8 non-Java checked-in ABI artifacts to `*.generated.{h,dart,ts}`, moved `NveCoreAbi.java` and `NveSceneBuffer.java` into `package dev.nve.android.generated;`, updated all `nve-codegen` emitters, `cargo nve codegen abi --check` (10/10 artifacts), host builds, and docs with zero legacy shims.
 - **`crates/nve-mdx` Pure-Rust `.md`/`.mdx` Compiler & `NVS1` Search Index** (`47e793b`)

@@ -4,13 +4,7 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
 
 ---
 
-## P0 — Web SSR/Progressive Hydration, `nve-docs` Framework & Generated-File Hygiene (In Flight)
-
-- [ ] **Web Engine CSS Optimization, Keyed Diffing, Semantic HTML5 SSR & Progressive Hydration (`crates/nve-backend-web`, `hosts/web-shell`)** *(in flight — Docs Phase 1A)*
-  - **Option 5 Hybrid CSS Architecture** (`-86.3%` CSS bytes on Studio Frame 0, `723 -> 269` flush crossings, `~95%+` Blink MPC / Stylo sharing): deferred end-of-frame `dirty_styles` flush, static `.nve` base reset (`font-family:inherit` replacing `font:inherit`), bounded content-addressed `.s<base36(fnv1a64)>` structural class cache via batched `CSSStyleSheet::replaceSync`/`insertRule`, volatile/continuous inline escape hatch (`> 2048px` `VirtualList` spacers, fractional px, animated opacity, `MAX_DYNAMIC_RULES = 4096`), `.nve-tl` text-leaf inheritance, and fix bogus HTML attributes for `font-weight`/`text-align`/`box-shadow`/`overflow`.
-  - **Keyed minimal-diff `SetChildren`**: replace `set_text_content(None)` child wipe with O(N) head/tail-trimmed DOM reconciliation preserving focus, IME, and scroll offsets.
-  - **Semantic HTML5 SSR (`render_ssr`)**: map roles/levels/`href` to `<h1>..<h6>`, `<nav>`, `<main>`, `<article>`, `<a href>`, `<pre><code>`, plus deterministic `<style data-nve-base>` + `<style data-nve-ssr data-nve-hashes="...">`, Open Graph `<meta>`, and `sitemap.xml`.
-  - **True zero-flicker progressive/island DOM hydration (`hydrate_into`)**: adopt existing `[data-nve-id]` DOM nodes without wiping `innerHTML`, root event delegation replacing per-node `Closure` fan-out, mismatch diagnostics + subtree recovery, and island triggers (`load` / `visible` via `IntersectionObserver` / `interaction` with event capture & replay / `idle`).
+## P0 — Web SSR/Progressive Hydration & `nve-docs` Framework (In Flight)
 
 - [ ] **Reusable `crates/nve-docs` Framework (`crates/nve-docs`)** *(in flight — Docs Phase 2A)*
   - Fumadocs × Linear dark/light 3-column shell built 100% on `nve-ui` + `nve-router` + `nve-sdk` + `nve-mdx` (sidebar, sticky TOC, `⌘K` `NVS1` search dialog, syntax-highlighted code blocks with Clipboard copy, `<LiveDemo>` `PlaygroundRegistry`, responsive `< 960pt` mobile drawer).
