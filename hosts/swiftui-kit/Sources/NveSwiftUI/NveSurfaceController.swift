@@ -18,6 +18,7 @@ public final class NveSurfaceController: ObservableObject {
     private var module: NveModule = NveModule(surface: nil, layout: nil, component: nil, dev: nil, host: nil)
     private var handle: NveAppHandle?
     private var dylibHandle: UnsafeMutableRawPointer?
+    public private(set) var resolutionSource: NveInterfaceResolutionSource?
     private var frameCounter: UInt64 = 0
     private var lastPropsValue: NveBinValue?
     private var lastDirectProps: Any?
@@ -31,7 +32,8 @@ public final class NveSurfaceController: ObservableObject {
         vtableSymbol: String = "nve_get_interface",
         backend: NveRenderBackend = .fabric,
         getInterface: NveGetInterfaceFn? = nil,
-        dylibPath: String? = nil
+        dylibPath: String? = nil,
+        staticTable: NveStaticInterfaceTable = .shared
     ) {
         if let surfaceId {
             self.surfaceId = surfaceId
@@ -45,10 +47,13 @@ public final class NveSurfaceController: ObservableObject {
         self.vtableSymbol = vtableSymbol
         self.backend = backend
 
-        if let getInterface {
-            attach(getInterface: getInterface)
-        } else {
-            resolveAndAttach(symbol: vtableSymbol, dylibPath: dylibPath)
+        if let resolved = NveInterfaceResolver.resolve(
+            symbol: vtableSymbol,
+            getInterface: getInterface,
+            dylibPath: dylibPath,
+            staticTable: staticTable
+        ) {
+            attach(resolved: resolved)
         }
     }
 
@@ -60,28 +65,35 @@ public final class NveSurfaceController: ObservableObject {
         handle != nil && module.surface != nil
     }
 
-    private func resolveAndAttach(symbol: String, dylibPath: String?) {
-        let lib: UnsafeMutableRawPointer?
-        if let dylibPath, !dylibPath.isEmpty {
-            lib = dlopen(dylibPath, RTLD_NOW | RTLD_LOCAL)
-            dylibHandle = lib
-        } else {
-            lib = dlopen(nil, RTLD_NOW)
-        }
-        guard let lib, let sym = dlsym(lib, symbol) else {
-            return
-        }
-        let getIface = unsafeBitCast(sym, to: NveGetInterfaceFn.self)
-        attach(getInterface: getIface)
+    public func attach(getInterface: NveGetInterfaceFn) {
+        attach(
+            resolved: NveResolvedInterface(
+                module: nve_resolve_module(getInterface),
+                dylibHandle: nil,
+                source: .explicit
+            )
+        )
     }
 
-    public func attach(getInterface: NveGetInterfaceFn) {
+    /// Attaches a pre-resolved static or dynamic `NveResolvedInterface`.
+    public func attach(resolved: NveResolvedInterface) {
         destroy()
-        let resolved = nve_resolve_module(getInterface)
-        guard let surface = resolved.surface, let createFn = surface.pointee.create else { return }
-        guard let created = createFn(surfaceId) else { return }
-        self.module = resolved
+        guard let surface = resolved.module.surface, let createFn = surface.pointee.create else {
+            if let lib = resolved.dylibHandle {
+                dlclose(lib)
+            }
+            return
+        }
+        guard let created = createFn(surfaceId) else {
+            if let lib = resolved.dylibHandle {
+                dlclose(lib)
+            }
+            return
+        }
+        self.module = resolved.module
         self.handle = created
+        self.dylibHandle = resolved.dylibHandle
+        self.resolutionSource = resolved.source
         self.lastPropsValue = nil
         self.lastDirectProps = nil
         self.lastDirectPropsEqual = nil
@@ -300,6 +312,7 @@ public final class NveSurfaceController: ObservableObject {
             destroyFn(handle)
         }
         handle = nil
+        resolutionSource = nil
         lastPropsValue = nil
         lastDirectProps = nil
         lastDirectPropsEqual = nil

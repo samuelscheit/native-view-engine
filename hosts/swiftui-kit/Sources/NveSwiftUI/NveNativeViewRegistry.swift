@@ -1,11 +1,11 @@
 import Foundation
 import SwiftUI
-#if canImport(WebKit)
+#if canImport(WebKit) && !os(tvOS) && !os(watchOS)
 import WebKit
 #endif
 #if canImport(AppKit)
 import AppKit
-#elseif canImport(UIKit)
+#elseif canImport(UIKit) && !os(watchOS)
 import UIKit
 #endif
 
@@ -192,10 +192,17 @@ public func nveColorFromRRGGBBAA(_ rgba: UInt32) -> Color {
 
 public enum NveBlurMaterial: UInt32, Equatable, Sendable {
     case ultraThin = 0, thin = 1, regular = 2, thick = 3, chrome = 4, systemMaterial = 5
+    @available(watchOS 10.0, *)
     public var swiftUIMaterial: Material {
         switch self {
         case .ultraThin: return .ultraThinMaterial; case .thin: return .thinMaterial
-        case .regular, .systemMaterial: return .regularMaterial; case .thick: return .thickMaterial; case .chrome: return .bar
+        case .regular, .systemMaterial: return .regularMaterial; case .thick: return .thickMaterial
+        case .chrome:
+            #if os(tvOS) || os(watchOS)
+            return .thickMaterial
+            #else
+            return .bar
+            #endif
         }
     }
 }
@@ -373,9 +380,14 @@ public struct NveSwiftUIBlurSurfaceView: View {
     public init(state: NveSwiftUIBlurSurfaceState) { self.state = state }
     public var body: some View {
         ZStack {
-            Rectangle().fill(state.props.material.swiftUIMaterial).opacity(Double(state.props.clampedIntensity))
+            if #available(watchOS 10.0, *) {
+                Rectangle().fill(state.props.material.swiftUIMaterial).opacity(Double(state.props.clampedIntensity))
+            } else {
+                Rectangle().fill(Color.secondary.opacity(0.35 * Double(state.props.clampedIntensity)))
+            }
             if let tint = state.props.tint { nveColorFromRRGGBBAA(tint) }
         }
+        .nveSpatialGlassSurface()
     }
 }
 
@@ -384,7 +396,7 @@ public final class NveSwiftUIWebViewState: ObservableObject {
     @Published public private(set) var allowsBackForward = true
     public private(set) var navigationCount = 0, reloadCount = 0, goBackCount = 0, goForwardCount = 0
     public private(set) var lastEvaluatedScript = ""; public private(set) var unmounted = false
-    #if canImport(WebKit)
+    #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
     public weak var attachedWebView: WKWebView?
     #endif
     public init() {}
@@ -392,7 +404,7 @@ public final class NveSwiftUIWebViewState: ObservableObject {
     @discardableResult private func loadSafeUrl(_ url: String) -> Bool {
         guard isSafeNveWebViewURL(url), let u = URL(string: url) else { return false }
         lastRequestedUrl = url; navigationCount += 1
-        #if canImport(WebKit)
+        #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
         attachedWebView?.load(URLRequest(url: u))
         #else
         _ = u
@@ -401,7 +413,7 @@ public final class NveSwiftUIWebViewState: ObservableObject {
     }
     public func apply(_ p: NveWebViewProps) {
         allowsBackForward = p.allowsBackForward
-        #if canImport(WebKit)
+        #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
         attachedWebView?.allowsBackForwardNavigationGestures = allowsBackForward
         #endif
         if lastRequestedUrl != p.url { _ = loadSafeUrl(p.url) }
@@ -410,22 +422,22 @@ public final class NveSwiftUIWebViewState: ObservableObject {
         switch cmd {
         case let .navigate(u): return loadSafeUrl(u)
         case .reload: reloadCount += 1; _ = { () in
-            #if canImport(WebKit)
+            #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
             attachedWebView?.reload()
             #endif
         }(); return true
         case .goBack: guard allowsBackForward else { return false }; goBackCount += 1; _ = { () in
-            #if canImport(WebKit)
+            #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
             if attachedWebView?.canGoBack == true { attachedWebView?.goBack() }
             #endif
         }(); return true
         case .goForward: guard allowsBackForward else { return false }; goForwardCount += 1; _ = { () in
-            #if canImport(WebKit)
+            #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
             if attachedWebView?.canGoForward == true { attachedWebView?.goForward() }
             #endif
         }(); return true
         case let .evaluateScript(js): lastEvaluatedScript = js; _ = { () in
-            #if canImport(WebKit)
+            #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
             attachedWebView?.evaluateJavaScript(js, completionHandler: nil)
             #endif
         }(); return true
@@ -433,13 +445,13 @@ public final class NveSwiftUIWebViewState: ObservableObject {
     }
     public func markUnmounted() {
         unmounted = true
-        #if canImport(WebKit)
+        #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
         attachedWebView?.stopLoading()
         #endif
     }
 }
 
-#if canImport(WebKit) && (canImport(AppKit) || canImport(UIKit))
+#if canImport(WebKit) && !os(tvOS) && !os(watchOS) && (canImport(AppKit) || canImport(UIKit))
 private func makeConfiguredWKWebView(for state: NveSwiftUIWebViewState) -> WKWebView {
     let wv = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
     wv.allowsBackForwardNavigationGestures = state.allowsBackForward; state.attachedWebView = wv
@@ -508,10 +520,10 @@ public extension NveNativeViewRegistry {
             dispatchCommand: { i, _, _, d in (i as? NveSwiftUIWebViewState).flatMap { s in (try? NveWebViewCommand.decode(from: d)).map(s.dispatch) } ?? false },
             unmount: { i, _ in (i as? NveSwiftUIWebViewState)?.markUnmounted() },
             makeView: { i in
-                #if canImport(WebKit) && (canImport(AppKit) || canImport(UIKit))
+                #if canImport(WebKit) && !os(tvOS) && !os(watchOS) && (canImport(AppKit) || canImport(UIKit))
                 return (i as? NveSwiftUIWebViewState).map { AnyView(NveSwiftUIWebViewRepresentable(state: $0)) } ?? AnyView(EmptyView())
                 #else
-                return AnyView(EmptyView())
+                return (i as? NveSwiftUIWebViewState).map { AnyView(NveWebViewUnavailablePlaceholder(state: $0)) } ?? AnyView(EmptyView())
                 #endif
             }
         )

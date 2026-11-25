@@ -61,26 +61,26 @@ public struct NvePairedSurfaceView<Content: View>: View {
                         client.requestKeyframe()
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .nveAdaptiveSmallControl()
                 }
                 Button(isActiveConnection ? "Disconnect" : "Connect") {
                     toggleConnection()
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .nveAdaptiveSmallControl()
             }
 
             HStack(spacing: 8) {
                 TextField("nve://pair?host=127.0.0.1&ws=8092&token=...", text: $uriInput)
-                    .textFieldStyle(.roundedBorder)
+                    .nveAdaptiveTextFieldStyle()
                     .font(.system(.caption, design: .monospaced))
-                    .disableAutocorrection(true)
+                    .autocorrectionDisabled(true)
 
                 TextField("Token (optional)", text: $tokenInput)
-                    .textFieldStyle(.roundedBorder)
+                    .nveAdaptiveTextFieldStyle()
                     .font(.system(.caption, design: .monospaced))
                     .frame(maxWidth: 150)
-                    .disableAutocorrection(true)
+                    .autocorrectionDisabled(true)
             }
         }
     }
@@ -166,19 +166,16 @@ public struct NvePairedSurfaceView<Content: View>: View {
                 )
         )
         .contentShape(Rectangle())
-        .gesture(
-            SpatialTapGesture()
-                .onEnded { value in
-                    let event = NveEvent(
-                        surfaceId: summary?.surfaceId ?? surfaceId,
-                        nodeId: 1,
-                        timestampUs: UInt64(Date().timeIntervalSince1970 * 1_000_000),
-                        kind: .press,
-                        payload: .point(x: Float(value.location.x), y: Float(value.location.y))
-                    )
-                    _ = try? client.sendInputEvents([event])
-                }
-        )
+        .modifier(NvePairedTapModifier(surfaceId: summary?.surfaceId ?? surfaceId) { x, y in
+            let event = NveEvent(
+                surfaceId: summary?.surfaceId ?? surfaceId,
+                nodeId: 1,
+                timestampUs: UInt64(Date().timeIntervalSince1970 * 1_000_000),
+                kind: .press,
+                payload: .point(x: x, y: y)
+            )
+            _ = try? client.sendInputEvents([event])
+        })
     }
 
     private func metricLabel(_ title: String, value: String) -> some View {
@@ -248,5 +245,25 @@ public extension NvePairedSurfaceView where Content == EmptyView {
         self._tokenInput = State(initialValue: initialToken)
         self.surfaceId = surfaceId
         self.frameBuilder = nil
+    }
+}
+
+private struct NvePairedTapModifier: ViewModifier {
+    let surfaceId: UInt32
+    let onTap: (Float, Float) -> Void
+
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        content.onTapGesture {
+            onTap(0, 0)
+        }
+        #else
+        content.gesture(
+            SpatialTapGesture()
+                .onEnded { value in
+                    onTap(Float(value.location.x), Float(value.location.y))
+                }
+        )
+        #endif
     }
 }

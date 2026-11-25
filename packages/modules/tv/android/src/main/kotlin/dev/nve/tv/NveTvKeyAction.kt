@@ -1,4 +1,4 @@
-package dev.nve.compose.tv
+package dev.nve.tv
 
 /**
  * Typed TV remote & D-Pad action with stable numeric code and W3C/NVE `NK1` key name.
