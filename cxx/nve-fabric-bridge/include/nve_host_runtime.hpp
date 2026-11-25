@@ -2,6 +2,7 @@
 
 #include "nve_abi.h"
 #include "nve_rn_component.hpp"
+#include "nve_snapshot.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -394,9 +395,13 @@ class NativeHostSession {
   NativeHostSession(NativeHostSession&& other) noexcept
       : lib_(std::move(other.lib_)),
         bridge_(std::move(other.bridge_)),
+        frame0_host_(other.frame0_host_),
+        pending_snapshot_state_(std::move(other.pending_snapshot_state_)),
         text_measurer_(std::move(other.text_measurer_)),
         event_callback_(std::move(other.event_callback_)),
-        config_(other.config_) {}
+        config_(other.config_) {
+    other.frame0_host_ = nullptr;
+  }
 
   NativeHostSession& operator=(NativeHostSession&& other) noexcept {
     if (this != &other) {
@@ -404,6 +409,9 @@ class NativeHostSession {
       reset();
       lib_ = std::move(other.lib_);
       bridge_ = std::move(other.bridge_);
+      frame0_host_ = other.frame0_host_;
+      other.frame0_host_ = nullptr;
+      pending_snapshot_state_ = std::move(other.pending_snapshot_state_);
       text_measurer_ = std::move(other.text_measurer_);
       event_callback_ = std::move(other.event_callback_);
       config_ = other.config_;
@@ -413,19 +421,25 @@ class NativeHostSession {
 
   void reset() noexcept {
     bridge_.reset();
+    destroy_frame0_host();
+    pending_snapshot_state_.clear();
     lib_.close();
   }
 
   /// Attach an in-process `nve_get_interface` function pointer directly (no dylib owned).
+  /// If a Frame-0 snapshot was replayed prior to attach, its cached state is restored into the
+  /// newly created app instance before the first live render.
   bool attach_interface(NveGetInterfaceFn get_interface, NveSurfaceConfig config) {
     const NveModule mod = nve_resolve_module(get_interface);
     if (mod.surface == nullptr || mod.surface->create == nullptr) {
       return false;
     }
-    return install_module(mod, DynamicLibrary{}, config, {});
+    return install_module(mod, DynamicLibrary{}, config, pending_snapshot_state_);
   }
 
   /// Open an NVE `cdylib`, mount the surface, and perform an initial render.
+  /// If a Frame-0 snapshot was replayed prior to loading, its cached state is restored into the
+  /// newly loaded dylib before its initial live render.
   bool load_dylib(
       std::string_view path,
       NveSurfaceConfig config,
@@ -441,7 +455,7 @@ class NativeHostSession {
       }
       return false;
     }
-    if (!install_module(loaded.module, std::move(loaded.lib), config, {})) {
+    if (!install_module(loaded.module, std::move(loaded.lib), config, pending_snapshot_state_)) {
       if (out_err_code != nullptr) {
         *out_err_code = 3;
       }
@@ -480,6 +494,8 @@ class NativeHostSession {
     std::vector<uint8_t> saved_state;
     if (is_valid()) {
       saved_state = bridge_->snapshot_state();
+    } else if (!pending_snapshot_state_.empty()) {
+      saved_state = pending_snapshot_state_;
     }
 
     if (!install_module(loaded.module, std::move(loaded.lib), config_, saved_state)) {
@@ -501,10 +517,124 @@ class NativeHostSession {
     return true;
   }
 
+  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file on disk.
+  ///
+  /// Memory-maps `snapshot_path`, verifies its header, alignment, bounds, FNV-1a checksum, and
+  /// `expected_schema_version`, then submits `frame0_slice()` directly from the mapped pages to
+  /// `FabricHost` **before** any app dylib or Rust runtime renders. The `state_slice()` payload
+  /// is cached (or immediately restored into a live bridge) so the next `load_dylib()` /
+  /// `attach_interface()` seamlessly resumes the saved app state.
+  bool replay_frame0_snapshot(
+      std::string_view snapshot_path,
+      uint32_t expected_schema_version,
+      NveFrameStats* out_stats = nullptr,
+      SnapshotStatus* out_status = nullptr) {
+    MmapSnapshot snap;
+    if (!MmapSnapshot::open_with_schema(
+            snapshot_path, expected_schema_version, snap, /*verify_checksum=*/true, out_status)) {
+      return false;
+    }
+
+    const NveBufferSlice frame0 = snap.frame0_slice();
+    if (frame0.ptr == nullptr || frame0.len == 0u) {
+      if (out_status != nullptr) {
+        *out_status = SnapshotStatus::Truncated;
+      }
+      return false;
+    }
+
+    const NveBufferSlice state = snap.state_slice();
+    if (is_valid()) {
+      if (nve_fabric_host_submit_frame(bridge_->fabric_host(), frame0, out_stats) != 0) {
+        if (out_status != nullptr) {
+          *out_status = SnapshotStatus::IoError;
+        }
+        return false;
+      }
+      if (state.ptr != nullptr && state.len > 0u) {
+        bridge_->restore_state(state, /*auto_render=*/false);
+      }
+      return true;
+    }
+
+    NveSurfaceConfig cfg = effective_config();
+    NveFabricHostHandle next_host = nve_fabric_host_create(cfg);
+    if (next_host == nullptr) {
+      if (out_status != nullptr) {
+        *out_status = SnapshotStatus::IoError;
+      }
+      return false;
+    }
+    if (text_measurer_) {
+      fabric_host_set_text_measurer(next_host, text_measurer_);
+    }
+
+    if (nve_fabric_host_submit_frame(next_host, frame0, out_stats) != 0) {
+      nve_fabric_host_destroy(next_host);
+      if (out_status != nullptr) {
+        *out_status = SnapshotStatus::IoError;
+      }
+      return false;
+    }
+
+    destroy_frame0_host();
+    frame0_host_ = next_host;
+    config_ = cfg;
+    if (state.ptr != nullptr && state.len > 0u) {
+      pending_snapshot_state_.assign(state.ptr, state.ptr + state.len);
+    } else {
+      pending_snapshot_state_.clear();
+    }
+    return true;
+  }
+
+  /// Captures a complete, self-contained Frame-0 `CommandBuffer` of the live shadow tree plus
+  /// `NveDevApi::snapshot_state()` and atomically persists them to `snapshot_path`.
+  bool save_snapshot(
+      std::string_view snapshot_path,
+      uint32_t schema_version,
+      std::string_view meta = {},
+      SnapshotStatus* out_status = nullptr) const {
+    NveFabricHostHandle host = active_fabric_host();
+    if (host == nullptr) {
+      if (out_status != nullptr) {
+        *out_status = SnapshotStatus::IoError;
+      }
+      return false;
+    }
+
+    const uint64_t frame_id = (is_valid() && bridge_->frame_count() > 0u) ? bridge_->frame_count() : 1u;
+    const std::vector<uint8_t> frame0 = fabric_host_serialize_frame0(host, frame_id);
+    if (frame0.empty()) {
+      if (out_status != nullptr) {
+        *out_status = SnapshotStatus::IoError;
+      }
+      return false;
+    }
+
+    std::vector<uint8_t> state;
+    if (is_valid()) {
+      state = bridge_->snapshot_state();
+    } else {
+      state = pending_snapshot_state_;
+    }
+
+    const NveBufferSlice frame0_slice{frame0.data(), frame0.size()};
+    const NveBufferSlice state_slice{state.empty() ? nullptr : state.data(), state.size()};
+    const NveBufferSlice meta_slice{
+        meta.empty() ? nullptr : reinterpret_cast<const uint8_t*>(meta.data()),
+        meta.size(),
+    };
+    return write_snapshot_atomic(
+        snapshot_path, schema_version, frame0_slice, state_slice, meta_slice, 0u, out_status);
+  }
+
   void set_text_measurer(TextMeasurerCallback cb) {
     text_measurer_ = std::move(cb);
     if (is_valid()) {
       fabric_host_set_text_measurer(bridge_->fabric_host(), text_measurer_);
+    } else if (frame0_host_ != nullptr) {
+      fabric_host_set_text_measurer(frame0_host_, text_measurer_);
     }
   }
 
@@ -512,6 +642,15 @@ class NativeHostSession {
     event_callback_ = std::move(cb);
     if (bridge_ != nullptr) {
       bridge_->set_event_callback(event_callback_);
+    }
+  }
+
+  void set_surface_config(NveSurfaceConfig config) {
+    config_ = config;
+    if (bridge_ != nullptr) {
+      bridge_->set_surface_size(config.width, config.height, config.scale_factor);
+    } else if (frame0_host_ != nullptr) {
+      fabric_host_set_surface_size(frame0_host_, config.width, config.height, config.scale_factor);
     }
   }
 
@@ -523,6 +662,9 @@ class NativeHostSession {
     }
     if (bridge_ != nullptr) {
       bridge_->set_surface_size(width, height, scale_factor);
+    } else if (frame0_host_ != nullptr) {
+      fabric_host_set_surface_size(
+          frame0_host_, config_.width, config_.height, config_.scale_factor);
     }
   }
 
@@ -571,18 +713,61 @@ class NativeHostSession {
   }
 
   std::vector<RenderedNodeSnapshot> snapshot_nodes() const {
-    if (!is_valid()) {
+    NveFabricHostHandle host = active_fabric_host();
+    if (host == nullptr) {
       return {};
     }
-    return fabric_host_snapshot_nodes(bridge_->fabric_host());
+    return fabric_host_snapshot_nodes(host);
+  }
+
+  NveFabricHostHandle active_fabric_host() const noexcept {
+    if (is_valid()) {
+      return bridge_->fabric_host();
+    }
+    return frame0_host_;
+  }
+
+  uint32_t node_count() const noexcept {
+    NveFabricHostHandle host = active_fabric_host();
+    return host != nullptr ? nve_fabric_host_node_count(host) : 0u;
   }
 
   NveRnComponentBridge* bridge() noexcept { return bridge_.get(); }
   const NveRnComponentBridge* bridge() const noexcept { return bridge_.get(); }
   const NveSurfaceConfig& surface_config() const noexcept { return config_; }
   bool is_valid() const noexcept { return bridge_ != nullptr && bridge_->is_valid(); }
+  bool has_replayed_frame0() const noexcept { return frame0_host_ != nullptr; }
+  bool has_pending_snapshot_state() const noexcept { return !pending_snapshot_state_.empty(); }
+  const std::vector<uint8_t>& pending_snapshot_state() const noexcept {
+    return pending_snapshot_state_;
+  }
+  void clear_pending_snapshot_state() noexcept { pending_snapshot_state_.clear(); }
 
  private:
+  void destroy_frame0_host() noexcept {
+    if (frame0_host_ != nullptr) {
+      nve_fabric_host_destroy(frame0_host_);
+      frame0_host_ = nullptr;
+    }
+  }
+
+  NveSurfaceConfig effective_config() const noexcept {
+    NveSurfaceConfig cfg = config_;
+    if (cfg.surface_id == 0u) {
+      cfg.surface_id = 1u;
+    }
+    if (cfg.width <= 0.0f) {
+      cfg.width = 640.0f;
+    }
+    if (cfg.height <= 0.0f) {
+      cfg.height = 420.0f;
+    }
+    if (cfg.scale_factor <= 0.0f) {
+      cfg.scale_factor = 1.0f;
+    }
+    return cfg;
+  }
+
   bool install_module(
       NveModule mod,
       DynamicLibrary new_lib,
@@ -600,8 +785,10 @@ class NativeHostSession {
           NveBufferSlice{saved_state.data(), saved_state.size()}, /*auto_render=*/false);
     }
 
-    // Tear down old bridge before unloading old dylib, then commit the replacement atomically.
+    // Tear down old bridge & Frame-0 preview before unloading old dylib, then commit atomically.
     bridge_.reset();
+    destroy_frame0_host();
+    pending_snapshot_state_.clear();
     lib_.close();
     lib_ = std::move(new_lib);
     config_ = config;
@@ -613,6 +800,8 @@ class NativeHostSession {
   // Declaration order matters: `bridge_` is destroyed before `lib_` is closed.
   DynamicLibrary lib_;
   std::unique_ptr<NveRnComponentBridge> bridge_;
+  NveFabricHostHandle frame0_host_{nullptr};
+  std::vector<uint8_t> pending_snapshot_state_;
   TextMeasurerCallback text_measurer_;
   EventCallback event_callback_;
   NveSurfaceConfig config_{};

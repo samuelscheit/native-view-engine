@@ -16,6 +16,7 @@
 #include <QScrollArea>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <string>
@@ -213,7 +214,7 @@ class NveQtWidget::Impl {
   }
 
   void syncViews() {
-    if (!session_.is_valid()) {
+    if (session_.active_fabric_host() == nullptr) {
       return;
     }
     const auto snapshots = session_.snapshot_nodes();
@@ -594,6 +595,40 @@ bool NveQtWidget::reloadDylib(
   return true;
 }
 
+bool NveQtWidget::replayFrame0Snapshot(
+    const QString& snapshotPath,
+    uint32_t expectedSchemaVersion,
+    uint32_t surfaceId,
+    uint64_t* outRestoreUs) {
+  const QByteArray utf8 = snapshotPath.toUtf8();
+  const NveSurfaceConfig cfg = impl_->currentSurfaceConfig(surfaceId);
+  impl_->session_.set_surface_config(cfg);
+
+  using Clock = std::chrono::steady_clock;
+  const auto t0 = Clock::now();
+  const bool ok = impl_->session_.replay_frame0_snapshot(
+      std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())),
+      expectedSchemaVersion);
+  if (!ok) {
+    return false;
+  }
+  impl_->surface_id_ = surfaceId;
+  impl_->clearViews();
+  impl_->syncViews();
+  const auto t1 = Clock::now();
+  if (outRestoreUs != nullptr) {
+    *outRestoreUs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+  }
+  return true;
+}
+
+bool NveQtWidget::saveSnapshot(const QString& snapshotPath, uint32_t schemaVersion) const {
+  const QByteArray utf8 = snapshotPath.toUtf8();
+  return impl_->session_.save_snapshot(
+      std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), schemaVersion);
+}
+
 bool NveQtWidget::applyPropsJson(std::string_view propsJson) {
   if (!impl_->session_.is_valid()) {
     return false;
@@ -659,7 +694,7 @@ uint32_t NveQtWidget::nodeIdForNativeWidget(const QWidget* widget) const {
 }
 
 uint32_t NveQtWidget::nodeCount() const {
-  return impl_->session_.is_valid() ? impl_->session_.bridge()->node_count() : 0;
+  return impl_->session_.node_count();
 }
 
 uint32_t NveQtWidget::surfaceId() const noexcept {
@@ -676,7 +711,7 @@ void NveQtWidget::setOnNveEvent(nve::EventCallback callback) {
 
 void NveQtWidget::setTextMeasurer(nve::TextMeasurerCallback measurer) {
   impl_->session_.set_text_measurer(std::move(measurer));
-  if (impl_->session_.is_valid()) {
+  if (impl_->session_.active_fabric_host() != nullptr) {
     const NveSurfaceConfig cfg = impl_->currentSurfaceConfig(impl_->surface_id_);
     impl_->session_.set_surface_size(cfg.width, cfg.height, cfg.scale_factor);
     impl_->syncViews();
@@ -692,12 +727,13 @@ const nve::NativeHostSession& NveQtWidget::session() const noexcept {
 }
 
 QSize NveQtWidget::sizeHint() const {
-  if (impl_->session_.is_valid()) {
-    const auto root_rect = impl_->session_.bridge()->node_layout(NVE_ROOT_NODE_ID);
-    if (root_rect.has_value() && root_rect->width > 0.0f && root_rect->height > 0.0f) {
+  if (NveFabricHostHandle host = impl_->session_.active_fabric_host()) {
+    nve::LayoutRect root_rect{};
+    if (nve::fabric_host_get_node_layout(host, NVE_ROOT_NODE_ID, &root_rect) &&
+        root_rect.width > 0.0f && root_rect.height > 0.0f) {
       return QSize(
-          static_cast<int>(std::lround(root_rect->width)),
-          static_cast<int>(std::lround(root_rect->height)));
+          static_cast<int>(std::lround(root_rect.width)),
+          static_cast<int>(std::lround(root_rect.height)));
     }
   }
   return QSize(640, 420);
@@ -712,7 +748,7 @@ void NveQtWidget::resizeEvent(QResizeEvent* event) {
         static_cast<float>(sz.width()),
         static_cast<float>(sz.height()),
         static_cast<float>(dpr > 0.0 ? dpr : 1.0));
-    if (impl_->session_.is_valid()) {
+    if (impl_->session_.active_fabric_host() != nullptr) {
       impl_->syncViews();
     }
   }

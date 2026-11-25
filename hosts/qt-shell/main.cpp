@@ -1,8 +1,12 @@
 #include "NveQtWidget.hpp"
 
 #include <QApplication>
+#include <QFileInfo>
+#include <QObject>
 #include <QString>
 
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
@@ -40,6 +44,24 @@ class BuiltinQtDemoApp {
     return 0;
   }
 
+  static NveBufferSlice snapshot_state(NveAppHandle h) {
+    auto* self = static_cast<BuiltinQtDemoApp*>(h);
+    self->state_buf_ = std::to_string(self->count_);
+    return NveBufferSlice{
+        reinterpret_cast<const uint8_t*>(self->state_buf_.data()),
+        self->state_buf_.size(),
+    };
+  }
+
+  static void restore_state(NveAppHandle h, NveBufferSlice state) {
+    auto* self = static_cast<BuiltinQtDemoApp*>(h);
+    if (state.ptr == nullptr || state.len == 0u) {
+      return;
+    }
+    const std::string raw(reinterpret_cast<const char*>(state.ptr), state.len);
+    self->count_ = std::atoi(raw.c_str());
+  }
+
   static const void* get_interface(uint32_t interface_id) {
     static const NveSurfaceApi kSurface{
         .create = &create,
@@ -48,7 +70,18 @@ class BuiltinQtDemoApp {
         .dispatch_events = &dispatch_events,
         .dispatch_events_direct = nullptr,
     };
-    return (interface_id == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
+    static const NveDevApi kDev{
+        .apply_hot_patch = nullptr,
+        .snapshot_state = &snapshot_state,
+        .restore_state = &restore_state,
+    };
+    if (interface_id == NVE_IFACE_SURFACE) {
+      return &kSurface;
+    }
+    if (interface_id == NVE_IFACE_DEV) {
+      return &kDev;
+    }
+    return nullptr;
   }
 
  private:
@@ -173,6 +206,7 @@ class BuiltinQtDemoApp {
   uint32_t surface_id_{1};
   int count_{0};
   std::vector<uint8_t> cmd_buf_;
+  std::string state_buf_;
 };
 
 } // namespace
@@ -181,11 +215,22 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
 
   QString dylib_path;
+  QString snapshot_path;
+  uint32_t schema_version = 1u;
   int width = 640;
   int height = 420;
   for (int i = 1; i + 1 < argc; ++i) {
     if (std::strcmp(argv[i], "--dylib") == 0) {
       dylib_path = QString::fromUtf8(argv[i + 1]);
+      ++i;
+    } else if (std::strcmp(argv[i], "--snapshot") == 0) {
+      snapshot_path = QString::fromUtf8(argv[i + 1]);
+      ++i;
+    } else if (std::strcmp(argv[i], "--schema") == 0) {
+      const long parsed = std::strtol(argv[i + 1], nullptr, 10);
+      if (parsed >= 0) {
+        schema_version = static_cast<uint32_t>(parsed);
+      }
       ++i;
     } else if (std::strcmp(argv[i], "--width") == 0) {
       width = std::max(120, std::atoi(argv[i + 1]));
@@ -199,6 +244,16 @@ int main(int argc, char* argv[]) {
   nve::qt::NveQtWidget window;
   window.setWindowTitle(QStringLiteral("NVE Qt 6 Host Shell"));
   window.resize(width, height);
+
+  if (!snapshot_path.isEmpty() && QFileInfo::exists(snapshot_path)) {
+    uint64_t restore_us = 0u;
+    if (window.replayFrame0Snapshot(snapshot_path, schema_version, 1u, &restore_us)) {
+      std::cout << "[nve-qt-shell] Instant-boot Frame-0 mmap restore from '"
+                << snapshot_path.toStdString() << "' in " << restore_us << " us\n";
+    }
+  }
+
+  window.show();
 
   if (!dylib_path.isEmpty()) {
     int err_code = 0;
@@ -215,6 +270,17 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  window.show();
+  if (!snapshot_path.isEmpty()) {
+    QObject::connect(&app, &QApplication::aboutToQuit, &window, [&window, snapshot_path, schema_version]() {
+      if (window.saveSnapshot(snapshot_path, schema_version)) {
+        std::cout << "[nve-qt-shell] Saved Frame-0 + state snapshot to '"
+                  << snapshot_path.toStdString() << "' (schema v" << schema_version << ")\n";
+      } else {
+        std::cerr << "[nve-qt-shell] Warning: failed to save snapshot to '"
+                  << snapshot_path.toStdString() << "'\n";
+      }
+    });
+  }
+
   return app.exec();
 }

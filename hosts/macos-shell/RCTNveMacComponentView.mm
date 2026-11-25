@@ -85,6 +85,19 @@
   return [_host reloadDylibAtPath:dylibPath error:error];
 }
 
+- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
+             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
+                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs {
+  return [_host replayFrame0SnapshotAtPath:snapshotPath
+                     expectedSchemaVersion:expectedSchemaVersion
+                             restoreTimeUs:outRestoreUs];
+}
+
+- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
+             schemaVersion:(uint32_t)schemaVersion {
+  return [_host saveSnapshotAtPath:snapshotPath schemaVersion:schemaVersion];
+}
+
 - (BOOL)applyPropsJson:(NSString *)propsJson {
   return [_host applyPropsJson:propsJson];
 }

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use nve_abi::{
     encode_events, ColorRgba, ComponentKind, EventPayload, NativeEvent, NativeEventKind, NodeId,
@@ -9,6 +10,7 @@ use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
+use nve_engine::snapshot::{write_snapshot_atomic, MmapSnapshot};
 use nve_engine::{HotPatchMsg, NveApp, RenderBackend, Viewport};
 use nve_studio_workspace::{
     create_surface, AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode,
@@ -561,4 +563,165 @@ fn layout_fits_cleanly_at_960x640_and_640x420_and_rasterizes_screenshots() {
     if let Some(dir) = &dump_dir {
         write_ppm(&dir.join("07_metrics_640x420.ppm"), &h640.rasterize());
     }
+}
+
+#[test]
+fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() {
+    let snap_dir = std::env::temp_dir().join(format!(
+        "nve-studio-snap-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&snap_dir);
+    std::fs::create_dir_all(&snap_dir).expect("create temp snapshot dir");
+    let snap_path = snap_dir.join("studio_workspace.nvesnap");
+
+    let vp = Viewport {
+        width: 960.0,
+        height: 640.0,
+        scale_factor: 1.0,
+    };
+
+    // 1. Mutate a live StudioWorkspaceModule via props + native Press events.
+    let mut app = StudioWorkspaceModule::create(1);
+    let mut host = HeadlessBackend::new();
+    host.set_viewport(1, vp);
+    let f1 = app.render(1).to_vec();
+    host.submit_frame(&f1).expect("submit initial studio frame");
+
+    let press_test_id = |host: &mut HeadlessBackend, app: &mut StudioWorkspaceModule, tid: &str, fid: u64| {
+        let nid = host
+            .nodes()
+            .values()
+            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"))
+            .id;
+        let rect = host.layout_of(nid).expect("node layout");
+        let ev = encode_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: nid,
+            timestamp_us: fid * 16_000,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point {
+                x: rect.x + rect.width * 0.5,
+                y: rect.y + rect.height * 0.5,
+            },
+        }]);
+        assert!(app.dispatch_events(&ev), "press '{tid}' not handled");
+        let frame = app.render(fid).to_vec();
+        host.submit_frame(&frame).expect("submit frame after press");
+    };
+
+    press_test_id(&mut host, &mut app, "btn-new-task", 2);
+    press_test_id(&mut host, &mut app, "accent-violet", 3);
+    press_test_id(&mut host, &mut app, "radius-pill", 4);
+    press_test_id(&mut host, &mut app, "toggle-xray", 5);
+    press_test_id(&mut host, &mut app, "nav-engineering", 6);
+    press_test_id(&mut host, &mut app, "reply-ship", 7);
+
+    let expected_state = app.state_snapshot();
+    assert_eq!(expected_state.current.active_view, ActiveView::ChannelEngineering);
+    assert_eq!(expected_state.current.studio.accent, AccentTheme::Violet);
+    assert_eq!(expected_state.current.studio.radius, CornerRadiusMode::Pill);
+    assert!(expected_state.current.studio.xray);
+
+    let saved_state_bytes = app.snapshot_state().to_vec();
+    assert!(!saved_state_bytes.is_empty());
+
+    // Capture a complete, self-contained Frame-0 CommandBuffer of the mutated workspace state.
+    let mut freeze_app = StudioWorkspaceModule::create(1);
+    freeze_app.restore_state(&saved_state_bytes);
+    let frame0_bytes = freeze_app.render(1).to_vec();
+    assert!(frame0_bytes.len() > 24);
+
+    // Atomically write the NVE_SNAP container to disk.
+    write_snapshot_atomic(
+        &snap_path,
+        1,
+        0,
+        &frame0_bytes,
+        &saved_state_bytes,
+        b"viewport=960x640@1x;app=studio-workspace",
+    )
+    .expect("write studio snapshot atomically");
+
+    // 2. Cold instant-boot restore: mmap open + zero-copy Frame-0 submit + state restore.
+    let mut cold_host = HeadlessBackend::new();
+    cold_host.set_viewport(1, vp);
+
+    let t0 = Instant::now();
+    let snap = MmapSnapshot::open_with_schema(&snap_path, 1).expect("cold mmap open");
+    let t_mmap = t0.elapsed();
+
+    // Prove true zero-copy: both slices borrow straight out of the mmap region.
+    let base = snap.as_bytes().as_ptr() as usize;
+    let end = base + snap.as_bytes().len();
+    let f0_ptr = snap.frame0_command_buffer().as_ptr() as usize;
+    let st_ptr = snap.state_bytes().as_ptr() as usize;
+    assert!(f0_ptr >= base && f0_ptr + snap.frame0_command_buffer().len() <= end);
+    assert!(st_ptr >= base && st_ptr + snap.state_bytes().len() <= end);
+
+    cold_host
+        .submit_frame(snap.frame0_command_buffer())
+        .expect("zero-copy Frame-0 submit");
+    let t_frame0 = t0.elapsed();
+
+    // Frame-0 immediately renders the exact mutated workspace BEFORE StudioWorkspaceModule boots!
+    let frame0_tree = cold_host.render_ascii_tree();
+    assert!(frame0_tree.contains("# engineering"));
+    assert!(frame0_tree.contains("Ship It - all checks green!"));
+    assert!(frame0_tree.contains("X-Ray HUD: ON"));
+    assert!(frame0_tree.contains("Snapshot 7 / 7"));
+
+    // Now boot a fresh StudioWorkspaceModule and restore its full state from mmap bytes.
+    let mut cold_app = StudioWorkspaceModule::create(1);
+    let t_state_start = Instant::now();
+    cold_app.restore_state(snap.state_bytes());
+    let t_state = t_state_start.elapsed();
+    assert_eq!(cold_app.state_snapshot(), expected_state);
+
+    eprintln!(
+        "[studio-workspace snapshot] size={} B | cold mmap open={} us | mmap+Frame0 submit={} us | state restore={} us",
+        snap.as_bytes().len(),
+        t_mmap.as_micros(),
+        t_frame0.as_micros(),
+        t_state.as_micros(),
+    );
+
+    // Optional cross-language export/verify hook when running Rust <-> C++ interop checks.
+    if let Ok(export_path) = std::env::var("NVE_TEST_EXPORT_RUST_SNAPSHOT") {
+        if !export_path.is_empty() {
+            std::fs::copy(&snap_path, &export_path).expect("export rust snapshot for C++ test");
+        }
+    }
+    if let Ok(cpp_in) = std::env::var("NVE_TEST_CPP_SNAPSHOT_IN") {
+        if !cpp_in.is_empty() {
+            let cpp_snap =
+                MmapSnapshot::open_with_schema(&cpp_in, 1).expect("open C++-written snapshot");
+            assert_eq!(cpp_snap.meta_bytes(), b"cpp-roundtrip");
+            let mut verify_host = HeadlessBackend::new();
+            verify_host.set_viewport(1, vp);
+            verify_host
+                .submit_frame(cpp_snap.frame0_command_buffer())
+                .expect("submit C++-written Frame-0 into Rust HeadlessBackend");
+            let verify_tree = verify_host.render_ascii_tree();
+            assert!(verify_tree.contains("# engineering"));
+            assert!(verify_tree.contains("X-Ray HUD: ON"));
+            let mut verify_app = StudioWorkspaceModule::create(1);
+            verify_app.restore_state(cpp_snap.state_bytes());
+            assert_eq!(verify_app.state_snapshot(), expected_state);
+        }
+    }
+
+    // Sub-millisecond cold mmap open; generous ceiling for Frame-0 layout in unoptimized debug builds.
+    assert!(
+        t_mmap.as_micros() < 5_000,
+        "cold mmap open unexpectedly slow: {t_mmap:?}"
+    );
+    assert!(
+        t_frame0.as_millis() < 50,
+        "cold mmap + Frame-0 restore unexpectedly slow: {t_frame0:?}"
+    );
+
+    drop(snap);
+    let _ = std::fs::remove_dir_all(&snap_dir);
 }

@@ -1,6 +1,7 @@
 #include "NveRnwComponentView.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 
@@ -230,6 +231,32 @@ bool NveRnwComponentHost::reload_dylib(
   return true;
 }
 
+bool NveRnwComponentHost::replay_frame0_snapshot(
+    std::string_view snapshot_path,
+    uint32_t expected_schema_version,
+    NveSurfaceConfig config,
+    uint64_t* out_restore_us) {
+  session_.set_surface_config(config);
+  using Clock = std::chrono::steady_clock;
+  const auto t0 = Clock::now();
+  if (!session_.replay_frame0_snapshot(snapshot_path, expected_schema_version)) {
+    return false;
+  }
+  sync_visuals_and_notify();
+  const auto t1 = Clock::now();
+  if (out_restore_us != nullptr) {
+    *out_restore_us = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+  }
+  return true;
+}
+
+bool NveRnwComponentHost::save_snapshot(
+    std::string_view snapshot_path,
+    uint32_t schema_version) const {
+  return session_.save_snapshot(snapshot_path, schema_version);
+}
+
 void NveRnwComponentHost::reset() noexcept {
   visual_tree_.clear();
   session_.reset();
@@ -248,7 +275,7 @@ void NveRnwComponentHost::set_surface_size(float width, float height, float scal
     return;
   }
   session_.set_surface_size(width, height, scale_factor);
-  if (session_.is_valid()) {
+  if (session_.active_fabric_host() != nullptr) {
     sync_visuals_and_notify();
   }
 }

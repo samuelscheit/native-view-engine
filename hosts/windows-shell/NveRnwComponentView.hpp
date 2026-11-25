@@ -172,6 +172,18 @@ class NveRnwComponentHost {
       int* out_err_code = nullptr,
       std::string* out_err_msg = nullptr);
 
+  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
+  /// Reconciles `visual_tree()` immediately and caches state for the next `load_dylib()` /
+  /// `attach_interface()`.
+  bool replay_frame0_snapshot(
+      std::string_view snapshot_path,
+      uint32_t expected_schema_version,
+      NveSurfaceConfig config,
+      uint64_t* out_restore_us = nullptr);
+
+  /// Captures a complete Frame-0 `CommandBuffer` + `snapshot_state()` and persists it atomically.
+  bool save_snapshot(std::string_view snapshot_path, uint32_t schema_version) const;
+
   /// Tear down the active session and clear all retained visuals.
   void reset() noexcept;
 
@@ -209,9 +221,8 @@ class NveRnwComponentHost {
   std::vector<nve::DecodedEvent> drain_events();
 
   bool is_valid() const noexcept { return session_.is_valid(); }
-  uint32_t node_count() const noexcept {
-    return session_.is_valid() ? session_.bridge()->node_count() : 0u;
-  }
+  bool has_replayed_frame0() const noexcept { return session_.has_replayed_frame0(); }
+  uint32_t node_count() const noexcept { return session_.node_count(); }
   uint32_t surface_id() const noexcept { return session_.surface_config().surface_id; }
   const NveSurfaceConfig& surface_config() const noexcept { return session_.surface_config(); }
 

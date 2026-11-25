@@ -51,6 +51,19 @@ class NveQtWidget : public QWidget {
       int* outErrorCode = nullptr,
       QString* outErrorMessage = nullptr);
 
+  /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` file before any dylib loads.
+  /// Immediately reconciles retained Qt widgets from the mapped Frame-0 buffer and caches the
+  /// snapshot state for seamless restoration on the subsequent `loadDylib()` / `attachInterface()`.
+  bool replayFrame0Snapshot(
+      const QString& snapshotPath,
+      uint32_t expectedSchemaVersion = 1,
+      uint32_t surfaceId = 1,
+      uint64_t* outRestoreUs = nullptr);
+
+  /// Freeze-dries the live shadow tree into a complete Frame-0 `CommandBuffer` + `snapshot_state()`
+  /// and writes it atomically to `snapshotPath`.
+  bool saveSnapshot(const QString& snapshotPath, uint32_t schemaVersion = 1) const;
+
   /// Forward UTF-8 JSON props to `NveComponentApi::set_props`, re-render if dirty, sync Qt views,
   /// and drain outbound events.
   bool applyPropsJson(std::string_view propsJson);

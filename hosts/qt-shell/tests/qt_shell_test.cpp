@@ -5,6 +5,8 @@
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QFont>
 #include <QLabel>
 #include <QLineEdit>
@@ -644,9 +646,126 @@ void test_real_counter_dylib() {
     }
   }
   NVE_CHECK(reset_after_reload != 0);
+
+  // Instant-boot Frame-0 snapshot save at Count: 2 -> reset static -> cold replay BEFORE loadDylib!
+  const QString counter_snap =
+      QDir::temp().filePath(QStringLiteral("nve_qt_counter_%1.nvesnap").arg(QCoreApplication::applicationPid()));
+  QFile::remove(counter_snap);
+  NVE_CHECK(widget.saveSnapshot(counter_snap, 1));
+
   widget.simulatePressOnNodeId(reset_after_reload, 20.0f, 20.0f);
   QCoreApplication::processEvents();
   NVE_CHECK(find_label(QStringLiteral("Count: 0")) != nullptr);
+  // Reset CounterModule's process-global INITIAL_COUNT to 0 so cold load proves restore_state works!
+  NVE_CHECK(widget.applyPropsJson(R"({"initialCount":0})"));
+
+  nve::qt::NveQtWidget cold_counter;
+  cold_counter.resize(640, 420);
+  uint64_t counter_restore_us = 0;
+  NVE_CHECK(cold_counter.replayFrame0Snapshot(counter_snap, 1, 1, &counter_restore_us));
+  std::cout << "[qt_shell_test] Cold mmap Frame-0 restore (counter dylib): "
+            << counter_restore_us << " us\n";
+
+  // Frame-0 QLabel MUST immediately display Count: 2 before loadDylib even runs!
+  bool saw_f0_count2 = false;
+  for (QLabel* lbl : cold_counter.findChildren<QLabel*>()) {
+    if (lbl->text() == QStringLiteral("Count: 2")) {
+      saw_f0_count2 = true;
+    }
+  }
+  NVE_CHECK(saw_f0_count2);
+  NVE_CHECK(!cold_counter.isAppLoaded());
+
+  err_code = -1;
+  err_msg.clear();
+  NVE_CHECK(cold_counter.loadDylib(counter_path, 1, &err_code, &err_msg));
+  NVE_CHECK(err_code == 0);
+  bool saw_live_count2 = false;
+  for (QLabel* lbl : cold_counter.findChildren<QLabel*>()) {
+    if (lbl->text() == QStringLiteral("Count: 2")) {
+      saw_live_count2 = true;
+    }
+  }
+  NVE_CHECK(saw_live_count2);
+  QFile::remove(counter_snap);
+}
+
+void test_frame0_mmap_snapshot_roundtrip() {
+  const QString fixture_snap = QDir::temp().filePath(
+      QStringLiteral("nve_qt_fixture_%1.nvesnap").arg(QCoreApplication::applicationPid()));
+  QFile::remove(fixture_snap);
+
+  {
+    nve::qt::NveQtWidget writer;
+    writer.resize(400, 240);
+    NVE_CHECK(writer.loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 1));
+    writer.simulatePressOnNodeId(2, 5.0f, 5.0f);
+    writer.simulatePressOnNodeId(2, 5.0f, 5.0f);
+    writer.simulatePressOnNodeId(2, 5.0f, 5.0f);
+    auto* lbl = qobject_cast<QLabel*>(writer.nativeWidgetForNodeId(3));
+    NVE_CHECK(lbl != nullptr && lbl->text() == QStringLiteral("Fixture:3"));
+    NVE_CHECK(writer.saveSnapshot(fixture_snap, 2));
+  }
+
+  nve::qt::NveQtWidget cold;
+  cold.resize(400, 240);
+  uint64_t restore_us = 0;
+  NVE_CHECK(!cold.replayFrame0Snapshot(fixture_snap, 99, 1, &restore_us));
+  NVE_CHECK(cold.replayFrame0Snapshot(fixture_snap, 2, 1, &restore_us));
+  std::cout << "[qt_shell_test] Cold mmap Frame-0 restore (fixture dylib): "
+            << restore_us << " us\n";
+
+  // Frame 0 mounts exact mutated QLabel BEFORE loadDylib runs!
+  NVE_CHECK(!cold.isAppLoaded());
+  NVE_CHECK(cold.nodeCount() == 3);
+  auto* f0_lbl = qobject_cast<QLabel*>(cold.nativeWidgetForNodeId(3));
+  NVE_CHECK(f0_lbl != nullptr && f0_lbl->text() == QStringLiteral("Fixture:3"));
+
+  // Loading dylib seamlessly restores Fixture:3 via restore_state!
+  NVE_CHECK(cold.loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 1));
+  NVE_CHECK(cold.isAppLoaded());
+  auto* live_lbl = qobject_cast<QLabel*>(cold.nativeWidgetForNodeId(3));
+  NVE_CHECK(live_lbl != nullptr && live_lbl->text() == QStringLiteral("Fixture:3"));
+  QFile::remove(fixture_snap);
+
+  const char* studio_env = std::getenv("NVE_TEST_STUDIO_DYLIB");
+  if (studio_env != nullptr && studio_env[0] != '\0') {
+    const QString studio_path = QString::fromUtf8(studio_env);
+    const QString studio_snap = QDir::temp().filePath(
+        QStringLiteral("nve_qt_studio_%1.nvesnap").arg(QCoreApplication::applicationPid()));
+    QFile::remove(studio_snap);
+
+    auto has_text = [](nve::qt::NveQtWidget& w, const QString& needle) {
+      for (QLabel* l : w.findChildren<QLabel*>()) {
+        if (l->text().contains(needle)) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    {
+      nve::qt::NveQtWidget studio_writer;
+      studio_writer.resize(960, 640);
+      NVE_CHECK(studio_writer.loadDylib(studio_path, 1));
+      NVE_CHECK(studio_writer.applyPropsJson(R"({"accent":"violet","view":"metrics"})"));
+      NVE_CHECK(has_text(studio_writer, QStringLiteral("Live Metrics")));
+      NVE_CHECK(studio_writer.saveSnapshot(studio_snap, 1));
+    }
+
+    nve::qt::NveQtWidget studio_cold;
+    studio_cold.resize(960, 640);
+    uint64_t studio_restore_us = 0;
+    NVE_CHECK(studio_cold.replayFrame0Snapshot(studio_snap, 1, 1, &studio_restore_us));
+    std::cout << "[qt_shell_test] Cold mmap Frame-0 restore (studio-workspace): "
+              << studio_restore_us << " us\n";
+    NVE_CHECK(!studio_cold.isAppLoaded());
+    NVE_CHECK(has_text(studio_cold, QStringLiteral("Live Metrics")));
+
+    NVE_CHECK(studio_cold.loadDylib(studio_path, 1));
+    NVE_CHECK(has_text(studio_cold, QStringLiteral("Live Metrics")));
+    QFile::remove(studio_snap);
+  }
 }
 
 } // namespace
@@ -657,6 +776,7 @@ int main(int argc, char* argv[]) {
   test_error_codes_and_stateful_fixture();
   test_attach_props_events_morph_and_measurer();
   test_real_counter_dylib();
+  test_frame0_mmap_snapshot_roundtrip();
 
   std::cout << "nve_qt_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6" : "Standalone+Qt6") << ")\n";

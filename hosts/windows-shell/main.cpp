@@ -44,6 +44,24 @@ class BuiltinWinDemoApp {
     return 0;
   }
 
+  static NveBufferSlice snapshot_state(NveAppHandle h) {
+    auto* self = static_cast<BuiltinWinDemoApp*>(h);
+    self->state_buf_ = std::to_string(self->count_);
+    return NveBufferSlice{
+        reinterpret_cast<const uint8_t*>(self->state_buf_.data()),
+        self->state_buf_.size(),
+    };
+  }
+
+  static void restore_state(NveAppHandle h, NveBufferSlice state) {
+    auto* self = static_cast<BuiltinWinDemoApp*>(h);
+    if (state.ptr == nullptr || state.len == 0u) {
+      return;
+    }
+    const std::string raw(reinterpret_cast<const char*>(state.ptr), state.len);
+    self->count_ = std::atoi(raw.c_str());
+  }
+
   static const void* get_interface(uint32_t interface_id) {
     static const NveSurfaceApi kSurface{
         .create = &create,
@@ -52,8 +70,16 @@ class BuiltinWinDemoApp {
         .dispatch_events = &dispatch_events,
         .dispatch_events_direct = nullptr,
     };
+    static const NveDevApi kDev{
+        .apply_hot_patch = nullptr,
+        .snapshot_state = &snapshot_state,
+        .restore_state = &restore_state,
+    };
     if (interface_id == NVE_IFACE_SURFACE) {
       return &kSurface;
+    }
+    if (interface_id == NVE_IFACE_DEV) {
+      return &kDev;
     }
     return nullptr;
   }
@@ -208,11 +234,14 @@ class BuiltinWinDemoApp {
   uint32_t surface_id_{1};
   int count_{0};
   std::vector<uint8_t> cmd_buf_;
+  std::string state_buf_;
 };
 
 struct CliOptions {
   std::string dylib_path;
+  std::string snapshot_path;
   std::string screenshot_path;
+  uint32_t schema_version{1u};
   int width{640};
   int height{420};
   float scale{1.0f};
@@ -223,6 +252,11 @@ CliOptions parse_cli(int argc, char** argv) {
   for (int i = 1; i + 1 < argc; ++i) {
     if (std::strcmp(argv[i], "--dylib") == 0) {
       opts.dylib_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--snapshot") == 0) {
+      opts.snapshot_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--schema") == 0) {
+      const long parsed = std::strtol(argv[++i], nullptr, 10);
+      if (parsed >= 0) opts.schema_version = static_cast<uint32_t>(parsed);
     } else if (std::strcmp(argv[i], "--screenshot") == 0) {
       opts.screenshot_path = argv[++i];
     } else if (std::strcmp(argv[i], "--width") == 0) {
@@ -237,6 +271,33 @@ CliOptions parse_cli(int argc, char** argv) {
     }
   }
   return opts;
+}
+
+void maybe_replay_snapshot(
+    nve::win::NveRnwComponentHost& host,
+    const CliOptions& opts,
+    NveSurfaceConfig cfg) {
+  if (opts.snapshot_path.empty()) {
+    return;
+  }
+  uint64_t restore_us = 0u;
+  if (host.replay_frame0_snapshot(opts.snapshot_path, opts.schema_version, cfg, &restore_us)) {
+    std::cout << "[nve-windows-shell] Instant-boot Frame-0 mmap restore from '"
+              << opts.snapshot_path << "' in " << restore_us << " us\n";
+  }
+}
+
+void maybe_save_snapshot(const nve::win::NveRnwComponentHost& host, const CliOptions& opts) {
+  if (opts.snapshot_path.empty()) {
+    return;
+  }
+  if (host.save_snapshot(opts.snapshot_path, opts.schema_version)) {
+    std::cout << "[nve-windows-shell] Saved Frame-0 + state snapshot to '" << opts.snapshot_path
+              << "' (schema v" << opts.schema_version << ")\n";
+  } else {
+    std::cerr << "[nve-windows-shell] Warning: failed to save snapshot to '" << opts.snapshot_path
+              << "'\n";
+  }
 }
 
 } // namespace
@@ -256,6 +317,8 @@ int main(int argc, char** argv) {
         .height = static_cast<float>(opts.height),
         .scale_factor = opts.scale,
     };
+
+    maybe_replay_snapshot(host, opts, cfg);
 
     if (!opts.dylib_path.empty()) {
       int err_code = 0;
@@ -289,6 +352,7 @@ int main(int argc, char** argv) {
                 << "\n";
       return 1;
     }
+    maybe_save_snapshot(host, opts);
     std::cout << "Rendered " << px_w << "x" << px_h << " screenshot to " << opts.screenshot_path
               << "\n";
     return 0;
@@ -306,6 +370,15 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  const NveSurfaceConfig win_cfg{
+      .surface_id = win_opts.surface_id,
+      .width = static_cast<float>(opts.width),
+      .height = static_cast<float>(opts.height),
+      .scale_factor = window.dpi_scale(),
+  };
+  maybe_replay_snapshot(window.host(), opts, win_cfg);
+  window.show(SW_SHOWDEFAULT);
+
   if (!opts.dylib_path.empty()) {
     int err_code = 0;
     std::string err_msg;
@@ -321,8 +394,9 @@ int main(int argc, char** argv) {
     }
   }
 
-  window.show(SW_SHOWDEFAULT);
-  return window.run_message_loop();
+  const int exit_code = window.run_message_loop();
+  maybe_save_snapshot(window.host(), opts);
+  return exit_code;
 #else
   // Non-Windows headless smoke check for portable host controller verification.
   nve::win::NveRnwComponentHost host;
@@ -332,6 +406,7 @@ int main(int argc, char** argv) {
       .height = static_cast<float>(opts.height),
       .scale_factor = opts.scale,
   };
+  maybe_replay_snapshot(host, opts, cfg);
   if (!opts.dylib_path.empty()) {
     int err_code = 0;
     std::string err_msg;
@@ -344,6 +419,7 @@ int main(int argc, char** argv) {
     std::cerr << "Failed to attach built-in demo interface\n";
     return 1;
   }
+  maybe_save_snapshot(host, opts);
   std::cout << "nve_windows_shell headless host ready (nodes=" << host.node_count()
             << "; Win32/Direct2D window requires Windows)\n";
   return 0;

@@ -2,9 +2,11 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 
+#include "nve_snapshot.hpp"
 #include "nve_value.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -76,6 +78,8 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   __weak id<NveAppleComponentViewAdapter> _adapter;
   NSString *_errorDomain;
   std::unique_ptr<nve::NveRnComponentBridge> _bridge;
+  NveFabricHostHandle _frame0Host;
+  std::vector<uint8_t> _pendingSnapshotState;
   void *_dylibHandle;
   uint32_t _surfaceId;
   std::unordered_map<uint32_t, NvePlatformView *> _nodeViews;
@@ -89,6 +93,7 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   if (self) {
     _adapter = adapter;
     _errorDomain = [errorDomain copy];
+    _frame0Host = nullptr;
     _dylibHandle = nullptr;
     _surfaceId = 1;
   }
@@ -98,6 +103,10 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
 - (void)dealloc {
   // Destroy the bridge (which calls `surface->destroy`) before closing the dylib handle.
   _bridge.reset();
+  if (_frame0Host != nullptr) {
+    nve_fabric_host_destroy(_frame0Host);
+    _frame0Host = nullptr;
+  }
   nve::apple::close_dylib(_dylibHandle);
 }
 
@@ -105,8 +114,20 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   return _surfaceId;
 }
 
+- (NveFabricHostHandle)_activeFabricHost {
+  if (_bridge) {
+    return _bridge->fabric_host();
+  }
+  return _frame0Host;
+}
+
 - (uint32_t)nodeCount {
-  return _bridge ? _bridge->node_count() : 0;
+  NveFabricHostHandle host = [self _activeFabricHost];
+  return host ? nve_fabric_host_node_count(host) : 0;
+}
+
+- (BOOL)hasReplayedFrame0 {
+  return _frame0Host != nullptr ? YES : NO;
 }
 
 - (BOOL)_installModule:(NveModule)mod
@@ -119,7 +140,15 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
     return NO;
   }
 
+  std::vector<uint8_t> effectiveState =
+      !savedState.empty() ? savedState : _pendingSnapshotState;
+
   _bridge.reset();
+  if (_frame0Host != nullptr) {
+    nve_fabric_host_destroy(_frame0Host);
+    _frame0Host = nullptr;
+  }
+  _pendingSnapshotState.clear();
   nve::apple::close_dylib(_dylibHandle);
   [self clearNativeNodeViews];
 
@@ -147,9 +176,9 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
 
   nve::apple::install_native_text_measurer(bridge->fabric_host());
   _bridge = std::move(bridge);
-  if (!savedState.empty()) {
+  if (!effectiveState.empty()) {
     _bridge->restore_state(
-        NveBufferSlice{savedState.data(), savedState.size()}, /*auto_render=*/false);
+        NveBufferSlice{effectiveState.data(), effectiveState.size()}, /*auto_render=*/false);
   }
   [self renderFrame];
   return YES;
@@ -189,6 +218,101 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
                   dylibHandle:loaded.handle
                     surfaceId:_surfaceId
                 restoredState:saved];
+}
+
+- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
+             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
+                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs {
+  id<NveAppleComponentViewAdapter> adapter = _adapter;
+  if (!adapter || snapshotPath.length == 0) {
+    return NO;
+  }
+  const char *utf8 = snapshotPath.UTF8String;
+  if (utf8 == nullptr) {
+    return NO;
+  }
+
+  using Clock = std::chrono::steady_clock;
+  const auto t0 = Clock::now();
+
+  nve::MmapSnapshot snap;
+  if (!nve::MmapSnapshot::open_with_schema(
+          std::string_view(utf8), expectedSchemaVersion, snap, /*verify_checksum=*/true)) {
+    return NO;
+  }
+
+  const NveBufferSlice frame0 = snap.frame0_slice();
+  if (frame0.ptr == nullptr || frame0.len == 0u) {
+    return NO;
+  }
+  const NveBufferSlice state = snap.state_slice();
+
+  if (_bridge) {
+    if (nve_fabric_host_submit_frame(_bridge->fabric_host(), frame0, nullptr) != 0) {
+      return NO;
+    }
+    if (state.ptr != nullptr && state.len > 0u) {
+      _bridge->restore_state(state, /*auto_render=*/false);
+    }
+  } else {
+    const NveSurfaceConfig cfg = [adapter nveSurfaceConfigForSurfaceId:_surfaceId];
+    NveFabricHostHandle nextHost = nve_fabric_host_create(cfg);
+    if (nextHost == nullptr) {
+      return NO;
+    }
+    nve::apple::install_native_text_measurer(nextHost);
+    if (nve_fabric_host_submit_frame(nextHost, frame0, nullptr) != 0) {
+      nve_fabric_host_destroy(nextHost);
+      return NO;
+    }
+    if (_frame0Host != nullptr) {
+      nve_fabric_host_destroy(_frame0Host);
+    }
+    _frame0Host = nextHost;
+    if (state.ptr != nullptr && state.len > 0u) {
+      _pendingSnapshotState.assign(state.ptr, state.ptr + state.len);
+    } else {
+      _pendingSnapshotState.clear();
+    }
+  }
+
+  [self clearNativeNodeViews];
+  [self syncNativeViewsFromHost];
+
+  const auto t1 = Clock::now();
+  if (outRestoreUs != nullptr) {
+    *outRestoreUs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+  }
+  return YES;
+}
+
+- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
+             schemaVersion:(uint32_t)schemaVersion {
+  if (snapshotPath.length == 0) {
+    return NO;
+  }
+  const char *utf8 = snapshotPath.UTF8String;
+  if (utf8 == nullptr) {
+    return NO;
+  }
+  NveFabricHostHandle host = [self _activeFabricHost];
+  if (host == nullptr) {
+    return NO;
+  }
+  const uint64_t frameId = (_bridge && _bridge->frame_count() > 0u) ? _bridge->frame_count() : 1u;
+  const std::vector<uint8_t> frame0 = nve::fabric_host_serialize_frame0(host, frameId);
+  if (frame0.empty()) {
+    return NO;
+  }
+  const std::vector<uint8_t> state = _bridge ? _bridge->snapshot_state() : _pendingSnapshotState;
+  return nve::write_snapshot_atomic(
+             std::string_view(utf8),
+             schemaVersion,
+             NveBufferSlice{frame0.data(), frame0.size()},
+             NveBufferSlice{state.empty() ? nullptr : state.data(), state.size()})
+             ? YES
+             : NO;
 }
 
 - (BOOL)applyPropsJson:(NSString *)propsJson {
@@ -265,18 +389,25 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
 }
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor {
-  if (!_bridge) return;
+  NveFabricHostHandle host = [self _activeFabricHost];
+  if (!host) return;
   if (width > 0.0f && height > 0.0f) {
-    _bridge->set_surface_size(width, height, scaleFactor);
+    if (_bridge) {
+      _bridge->set_surface_size(width, height, scaleFactor);
+    } else {
+      nve::fabric_host_set_surface_size(host, width, height, scaleFactor);
+    }
     [self syncNativeViewsFromHost];
   }
 }
 
 - (BOOL)getRootLayoutSize:(CGSize *)outSize {
-  if (!_bridge || !outSize) return NO;
-  const auto rootRect = _bridge->node_layout(NVE_ROOT_NODE_ID);
-  if (rootRect.has_value() && rootRect->width > 0.0f && rootRect->height > 0.0f) {
-    *outSize = CGSizeMake(rootRect->width, rootRect->height);
+  NveFabricHostHandle host = [self _activeFabricHost];
+  if (!host || !outSize) return NO;
+  nve::LayoutRect rootRect{};
+  if (nve::fabric_host_get_node_layout(host, NVE_ROOT_NODE_ID, &rootRect) &&
+      rootRect.width > 0.0f && rootRect.height > 0.0f) {
+    *outSize = CGSizeMake(rootRect.width, rootRect.height);
     return YES;
   }
   return NO;
@@ -316,8 +447,9 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
 
 - (void)syncNativeViewsFromHost {
   id<NveAppleComponentViewAdapter> adapter = _adapter;
-  if (!_bridge || !adapter) return;
-  const auto snapshots = nve::fabric_host_snapshot_nodes(_bridge->fabric_host());
+  NveFabricHostHandle host = [self _activeFabricHost];
+  if (!host || !adapter) return;
+  const auto snapshots = nve::fabric_host_snapshot_nodes(host);
 
   // Pass 1: Prune removed nodes.
   std::unordered_set<uint32_t> liveIds;

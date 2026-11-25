@@ -1,6 +1,7 @@
 #include "nve_abi.h"
 #include "nve_rn_component.hpp"
 #include "command_decoder.hpp"
+#include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
 
 #include <algorithm>
@@ -375,6 +376,85 @@ class FabricHost {
       out.push_back(std::move(snap));
     }
     return out;
+  }
+
+  std::vector<uint8_t> serialize_frame0(uint64_t frame_id) const {
+    std::vector<uint32_t> ids;
+    ids.reserve(nodes_.size());
+    for (const auto& [id, _] : nodes_) {
+      ids.push_back(id);
+    }
+    std::sort(ids.begin(), ids.end());
+
+    CommandBufferEncoder enc(config_.surface_id, frame_id);
+    enc.reserve(ids.size() * 160u + 64u);
+
+    // 1. Create all non-root nodes in deterministic ID order.
+    for (uint32_t id : ids) {
+      if (id == NVE_ROOT_NODE_ID) {
+        continue;
+      }
+      const ShadowNodeEntry& entry = nodes_.at(id);
+      enc.create_node(entry.node_id, entry.kind, entry.custom_name);
+    }
+
+    // 2. Emit hierarchy (`SET_CHILDREN`) for root and all parent nodes.
+    for (uint32_t id : ids) {
+      const ShadowNodeEntry& entry = nodes_.at(id);
+      if (!entry.children.empty()) {
+        enc.set_children(entry.node_id, entry.children);
+      }
+    }
+
+    // 3. Emit layout, explicit style, text, event masks, and raw props.
+    for (uint32_t id : ids) {
+      const ShadowNodeEntry& entry = nodes_.at(id);
+      if (id != NVE_ROOT_NODE_ID) {
+        enc.set_layout(entry.node_id, entry.layout);
+      }
+      if (entry.has_explicit_style) {
+        enc.set_style(entry.node_id, entry.style);
+      }
+      if (!entry.text.empty()) {
+        enc.set_text(entry.node_id, entry.text);
+      }
+      if (entry.event_mask != 0u) {
+        enc.set_event_mask(entry.node_id, entry.event_mask);
+      }
+      if (!entry.raw_props.empty()) {
+        std::vector<std::string_view> keys;
+        keys.reserve(entry.raw_props.size());
+        for (const auto& [k, _] : entry.raw_props) {
+          keys.push_back(k);
+        }
+        std::sort(keys.begin(), keys.end());
+        for (std::string_view key : keys) {
+          const RawPropValue& val = entry.raw_props.at(std::string(key));
+          std::visit(
+              [&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::nullptr_t>) {
+                  enc.set_raw_prop_null(entry.node_id, key);
+                } else if constexpr (std::is_same_v<T, bool>) {
+                  enc.set_raw_prop_bool(entry.node_id, key, v);
+                } else if constexpr (std::is_same_v<T, int64_t>) {
+                  enc.set_raw_prop_i64(entry.node_id, key, v);
+                } else if constexpr (std::is_same_v<T, double>) {
+                  enc.set_raw_prop_f64(entry.node_id, key, v);
+                } else if constexpr (std::is_same_v<T, std::string>) {
+                  enc.set_raw_prop_string(entry.node_id, key, v);
+                } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
+                  enc.set_raw_prop_bytes(entry.node_id, key, v);
+                }
+              },
+              val);
+        }
+      }
+    }
+
+    enc.commit(true);
+    (void)enc.finish();
+    return std::move(enc.raw());
   }
 
 #if defined(NVE_WITH_RN_FABRIC) && NVE_WITH_RN_FABRIC
@@ -1511,6 +1591,11 @@ void fabric_host_register_custom_component(
 std::vector<RenderedNodeSnapshot> fabric_host_snapshot_nodes(NveFabricHostHandle host) {
   if (!host) return {};
   return static_cast<FabricHost*>(host)->snapshot_nodes();
+}
+
+std::vector<uint8_t> fabric_host_serialize_frame0(NveFabricHostHandle host, uint64_t frame_id) {
+  if (!host) return {};
+  return static_cast<FabricHost*>(host)->serialize_frame0(frame_id);
 }
 
 #if defined(NVE_WITH_RN_FABRIC) && NVE_WITH_RN_FABRIC

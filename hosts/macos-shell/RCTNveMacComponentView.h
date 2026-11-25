@@ -45,6 +45,15 @@ typedef void (^RCTNveMacEventHandler)(NSString *eventName, NSDictionary<NSString
 - (BOOL)reloadNveDylibAtPath:(NSString *)dylibPath
                        error:(NSError * _Nullable * _Nullable)error;
 
+/// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` snapshot file before loading a dylib.
+- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
+             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
+                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs;
+
+/// Atomically persist the current rendered Frame-0 tree and app state to `snapshotPath`.
+- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
+             schemaVersion:(uint32_t)schemaVersion;
+
 /// Update component props from a UTF-8 JSON object string and re-render if needed.
 - (BOOL)applyPropsJson:(NSString *)propsJson;
 

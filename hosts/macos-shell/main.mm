@@ -3,6 +3,9 @@
 
 #include "nve_rn_component.hpp"
 
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -36,6 +39,22 @@ class BuiltinMacDemoApp {
     return 0;
   }
 
+  static NveBufferSlice snapshot_state(NveAppHandle h) {
+    auto *self = static_cast<BuiltinMacDemoApp *>(h);
+    self->state_buf_ = std::to_string(self->count_);
+    return NveBufferSlice{
+        reinterpret_cast<const uint8_t *>(self->state_buf_.data()),
+        self->state_buf_.size(),
+    };
+  }
+
+  static void restore_state(NveAppHandle h, NveBufferSlice state) {
+    auto *self = static_cast<BuiltinMacDemoApp *>(h);
+    if (state.ptr == nullptr || state.len == 0u) return;
+    const std::string raw(reinterpret_cast<const char *>(state.ptr), state.len);
+    self->count_ = std::atoi(raw.c_str());
+  }
+
   static const void *get_interface(uint32_t interface_id) {
     static const NveSurfaceApi kSurface{
         .create = &create,
@@ -44,7 +63,13 @@ class BuiltinMacDemoApp {
         .dispatch_events = &dispatch_events,
         .dispatch_events_direct = nullptr,
     };
+    static const NveDevApi kDev{
+        .apply_hot_patch = nullptr,
+        .snapshot_state = &snapshot_state,
+        .restore_state = &restore_state,
+    };
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
+    if (interface_id == NVE_IFACE_DEV) return &kDev;
     return nullptr;
   }
 
@@ -170,17 +195,40 @@ class BuiltinMacDemoApp {
   uint32_t surface_id_{1};
   int count_{0};
   std::vector<uint8_t> cmd_buf_;
+  std::string state_buf_;
 };
 
 } // namespace
 
-@interface NveMacAppDelegate : NSObject <NSApplicationDelegate>
+@interface NveMacAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (nonatomic, copy, nullable) NSString *dylibPath;
+@property (nonatomic, copy, nullable) NSString *snapshotPath;
+@property (nonatomic, assign) uint32_t schemaVersion;
+@property (nonatomic, assign) BOOL snapshotSaved;
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) RCTNveMacComponentView *rootView;
 @end
 
 @implementation NveMacAppDelegate
+
+- (void)_persistSnapshotIfConfigured {
+  if (self.snapshotSaved || self.snapshotPath.length == 0 || self.rootView == nil) {
+    return;
+  }
+  self.snapshotSaved = YES;
+  if ([self.rootView saveSnapshotAtPath:self.snapshotPath schemaVersion:self.schemaVersion]) {
+    std::fprintf(
+        stderr,
+        "[nve-macos-shell] Saved Frame-0 + state snapshot to %s (schema v%u)\n",
+        self.snapshotPath.UTF8String,
+        self.schemaVersion);
+  } else {
+    std::fprintf(
+        stderr,
+        "[nve-macos-shell] Warning: failed to save snapshot to %s\n",
+        self.snapshotPath.UTF8String);
+  }
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   (void)notification;
@@ -192,9 +240,30 @@ class BuiltinMacDemoApp {
                                               backing:NSBackingStoreBuffered
                                                 defer:NO];
   self.window.title = @"NVE macOS Host Shell";
+  self.window.delegate = self;
 
   self.rootView = [[RCTNveMacComponentView alloc] initWithFrame:frame];
   self.rootView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+  self.window.contentView = self.rootView;
+  [self.window center];
+
+  if (self.snapshotPath.length > 0 &&
+      [[NSFileManager defaultManager] fileExistsAtPath:self.snapshotPath]) {
+    uint64_t restoreUs = 0;
+    if ([self.rootView replayFrame0SnapshotAtPath:self.snapshotPath
+                            expectedSchemaVersion:self.schemaVersion
+                                    restoreTimeUs:&restoreUs]) {
+      std::fprintf(
+          stderr,
+          "[nve-macos-shell] Instant-boot Frame-0 mmap restore from %s in %llu us\n",
+          self.snapshotPath.UTF8String,
+          static_cast<unsigned long long>(restoreUs));
+    }
+  }
+
+  [self.window makeKeyAndOrderFront:nil];
+  [NSApp activateIgnoringOtherApps:YES];
 
   if (self.dylibPath.length > 0) {
     NSError *err = nil;
@@ -204,11 +273,16 @@ class BuiltinMacDemoApp {
   } else {
     [self.rootView attachNveInterface:&BuiltinMacDemoApp::get_interface surfaceId:1];
   }
+}
 
-  self.window.contentView = self.rootView;
-  [self.window center];
-  [self.window makeKeyAndOrderFront:nil];
-  [NSApp activateIgnoringOtherApps:YES];
+- (void)windowWillClose:(NSNotification *)notification {
+  (void)notification;
+  [self _persistSnapshotIfConfigured];
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+  (void)notification;
+  [self _persistSnapshotIfConfigured];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
@@ -221,15 +295,26 @@ class BuiltinMacDemoApp {
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     NSString *dylibPath = nil;
+    NSString *snapshotPath = nil;
+    uint32_t schemaVersion = 1u;
     for (int i = 1; i + 1 < argc; ++i) {
       if (std::strcmp(argv[i], "--dylib") == 0) {
-        dylibPath = [NSString stringWithUTF8String:argv[i + 1]];
+        dylibPath = [NSString stringWithUTF8String:argv[++i]];
+      } else if (std::strcmp(argv[i], "--snapshot") == 0) {
+        snapshotPath = [NSString stringWithUTF8String:argv[++i]];
+      } else if (std::strcmp(argv[i], "--schema") == 0) {
+        const long parsed = std::strtol(argv[++i], nullptr, 10);
+        if (parsed >= 0) {
+          schemaVersion = static_cast<uint32_t>(parsed);
+        }
       }
     }
     NSApplication *app = [NSApplication sharedApplication];
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
     NveMacAppDelegate *delegate = [[NveMacAppDelegate alloc] init];
     delegate.dylibPath = dylibPath;
+    delegate.snapshotPath = snapshotPath;
+    delegate.schemaVersion = schemaVersion;
     app.delegate = delegate;
     [app run];
   }

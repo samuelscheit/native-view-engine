@@ -146,6 +146,12 @@ void fabric_host_register_custom_component(
     CustomComponentDescriptor descriptor);
 std::vector<RenderedNodeSnapshot> fabric_host_snapshot_nodes(NveFabricHostHandle host);
 
+/// Freeze-dry the live shadow tree inside `host` into a complete, self-contained Frame-0
+/// `CommandBuffer` suitable for zero-copy instant-boot `MmapSnapshot` persistence.
+std::vector<uint8_t> fabric_host_serialize_frame0(
+    NveFabricHostHandle host,
+    uint64_t frame_id = 1u);
+
 /// Embeds any NVE Rust component (`nve_get_interface` / `NveModule`) inside a React Native Fabric
 /// component (iOS/macOS `RCTViewComponentView`, Android `ViewGroupManager`, or headless C++ host).
 ///
