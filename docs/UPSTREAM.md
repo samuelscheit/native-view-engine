@@ -28,6 +28,12 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
   - **Observed**: Calling `std::time::Instant::now()` inside `DioxusSurface::render_frame` causes an immediate runtime panic when booted in browser WASM (`hosts/web-shell`).
   - **Mitigation**: Target-gated `FrameTimer` in `crates/nve-dioxus/src/lib.rs` (real `Instant` on native, no-op on `wasm32`).
 
+### Xcode 27 / CoreSimulator
+
+- **`Simulator.app` replaced by `DeviceHub.app`**
+  - **Observed**: In Xcode 27, `/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app` is absent (`open -a Simulator` fails with `Unable to find application named 'Simulator'`); the Simulator GUI lives at `/Applications/Xcode.app/Contents/Applications/DeviceHub.app`.
+  - **Mitigation**: `hosts/ios-shell/run-simulator.sh` checks `$DEV_DIR/Applications/Simulator.app` first, falls back to `$DEV_DIR/../Applications/DeviceHub.app`, and keeps GUI launch non-fatal so `xcrun simctl install` and `launch` always succeed.
+
 ### GTK 4 (`gtk4 4.24.2`)
 
 - **`gtk_fixed_get_child_position` returns `(0, 0)` on unmapped widgets**

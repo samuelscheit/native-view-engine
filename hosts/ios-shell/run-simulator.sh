@@ -306,7 +306,15 @@ fi
 xcrun simctl bootstatus "$SIM_UDID" -b
 
 if [[ "$HEADLESS" -eq 0 ]]; then
-  open -a Simulator --args -CurrentDeviceUDID "$SIM_UDID"
+  DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+  if [[ -n "$DEV_DIR" && -d "$DEV_DIR/Applications/Simulator.app" ]]; then
+    open "$DEV_DIR/Applications/Simulator.app" --args -CurrentDeviceUDID "$SIM_UDID" || true
+  elif [[ -n "$DEV_DIR" && -d "$DEV_DIR/../Applications/DeviceHub.app" ]]; then
+    open "$DEV_DIR/../Applications/DeviceHub.app" || true
+  else
+    open -a Simulator --args -CurrentDeviceUDID "$SIM_UDID" 2>/dev/null || \
+      echo "note: Simulator GUI app not found; continuing install/launch on booted device $SIM_UDID"
+  fi
 fi
 
 xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
