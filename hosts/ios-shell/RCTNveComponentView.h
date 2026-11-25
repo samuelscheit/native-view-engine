@@ -47,6 +47,19 @@ typedef void (^RCTNveEventHandler)(NSString *eventName, NSDictionary<NSString *,
 - (BOOL)reloadNveDylibAtPath:(NSString *)dylibPath
                        error:(NSError * _Nullable * _Nullable)error;
 
+/// Connect in zero-cdylib paired thin-client mode using `NVT1`/`NVD1` over UDP/TCP/WebSocket.
+- (BOOL)connectPairedEndpoint:(NSString *)endpoint
+                        token:(NSString *)token
+                    transport:(nullable NSString *)transport
+                    surfaceId:(uint32_t)surfaceId
+                        error:(NSError * _Nullable * _Nullable)error;
+
+/// Disconnect any active paired thin-client session.
+- (void)disconnectPaired;
+
+@property (nonatomic, readonly) BOOL isPaired;
+@property (nonatomic, readonly) BOOL isPairedConnected;
+
 /// Zero-copy instant-boot Frame-0 replay from an `NVE_SNAP` snapshot file before loading a dylib.
 - (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
              expectedSchemaVersion:(uint32_t)expectedSchemaVersion

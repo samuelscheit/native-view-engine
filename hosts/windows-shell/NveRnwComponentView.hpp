@@ -218,6 +218,28 @@ class NveRnwComponentHost {
       int* out_err_code = nullptr,
       std::string* out_err_msg = nullptr);
 
+  /// Connect in zero-cdylib paired thin-client mode using a parsed `PairClientConfig`.
+  bool connect_paired(
+      const nve::PairClientConfig& pair_config,
+      NveSurfaceConfig surface_config,
+      nve::PairClient::WakeCallback on_frame_ready = {},
+      std::string* out_error = nullptr);
+
+  /// Connect in zero-cdylib paired thin-client mode from `--pair-connect` endpoint/token/transport.
+  bool connect_paired(
+      std::string_view endpoint,
+      std::string_view token,
+      std::string_view transport_override,
+      NveSurfaceConfig surface_config,
+      nve::PairClient::WakeCallback on_frame_ready = {},
+      std::string* out_error = nullptr);
+
+  /// Drain queued paired `NVD1` frames, apply them into `FabricHost`, and sync the visual tree.
+  size_t poll_paired_frames(NveFrameStats* out_last_stats = nullptr);
+
+  /// Disconnect any active paired thin-client session and clear the visual tree.
+  void disconnect_paired() noexcept;
+
   bool replay_frame0_snapshot(
       std::string_view snapshot_path,
       uint32_t expected_schema_version,
@@ -254,6 +276,9 @@ class NveRnwComponentHost {
   std::vector<nve::DecodedEvent> drain_events();
 
   bool is_valid() const noexcept { return session_.is_valid(); }
+  bool is_paired() const noexcept { return session_.is_paired(); }
+  bool is_paired_connected() const noexcept { return session_.is_paired_connected(); }
+  uint64_t paired_frame_count() const noexcept { return session_.paired_frame_count(); }
   bool has_replayed_frame0() const noexcept { return session_.has_replayed_frame0(); }
   uint32_t node_count() const noexcept { return session_.node_count(); }
   uint32_t surface_id() const noexcept { return session_.surface_config().surface_id; }

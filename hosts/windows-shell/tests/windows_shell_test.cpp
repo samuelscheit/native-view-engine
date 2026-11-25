@@ -1,9 +1,31 @@
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include "NveRnwComponentView.hpp"
 #include "NveWinHostWindow.hpp"
 #include "NveWinTextMeasurer.hpp"
+#include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
+#include "nve_pair_client.hpp"
 #include "nve_scene_builder.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -12,7 +34,9 @@
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define NVE_CHECK(expr)                                                                         \
@@ -1312,6 +1336,265 @@ void test_draw_list_visual_tree_extraction_and_corrupt_survival() {
             nve::DrawListError::TrailingBytes);
 }
 
+#if defined(_WIN32)
+using WinTestSock = SOCKET;
+using WinTestSockLen = int;
+inline bool win_test_sock_valid(WinTestSock s) noexcept { return s != INVALID_SOCKET; }
+inline void win_test_close(WinTestSock s) noexcept { if (win_test_sock_valid(s)) ::closesocket(s); }
+inline int win_test_poll_read(WinTestSock s, int ms) noexcept {
+  WSAPOLLFD pfd{};
+  pfd.fd = s;
+  pfd.events = POLLIN;
+  return ::WSAPoll(&pfd, 1u, ms);
+}
+inline ptrdiff_t win_test_send(WinTestSock s, const uint8_t* p, size_t n) noexcept {
+  return static_cast<ptrdiff_t>(::send(s, reinterpret_cast<const char*>(p), static_cast<int>(n), 0));
+}
+inline ptrdiff_t win_test_recv(WinTestSock s, uint8_t* p, size_t n) noexcept {
+  return static_cast<ptrdiff_t>(::recv(s, reinterpret_cast<char*>(p), static_cast<int>(n), 0));
+}
+#else
+using WinTestSock = int;
+using WinTestSockLen = socklen_t;
+inline bool win_test_sock_valid(WinTestSock s) noexcept { return s >= 0; }
+inline void win_test_close(WinTestSock s) noexcept { if (win_test_sock_valid(s)) ::close(s); }
+inline int win_test_poll_read(WinTestSock s, int ms) noexcept {
+  pollfd pfd{s, POLLIN, 0};
+  return ::poll(&pfd, 1u, ms);
+}
+inline ptrdiff_t win_test_send(WinTestSock s, const uint8_t* p, size_t n) noexcept {
+  return static_cast<ptrdiff_t>(::send(s, p, n, 0));
+}
+inline ptrdiff_t win_test_recv(WinTestSock s, uint8_t* p, size_t n) noexcept {
+  return static_cast<ptrdiff_t>(::recv(s, p, n, 0));
+}
+#endif
+
+bool win_pair_send_all(WinTestSock fd, const uint8_t* p, size_t n) {
+  size_t off = 0u;
+  while (off < n) {
+    const ptrdiff_t rc = win_test_send(fd, p + off, n - off);
+    if (rc <= 0) return false;
+    off += static_cast<size_t>(rc);
+  }
+  return true;
+}
+
+bool win_pair_recv_exact(WinTestSock fd, uint8_t* p, size_t n, int timeout_ms = 2000) {
+  size_t off = 0u;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (off < n) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return false;
+    const int rem = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+    if (win_test_poll_read(fd, std::max(1, std::min(rem, 50))) <= 0) continue;
+    const ptrdiff_t rc = win_test_recv(fd, p + off, n - off);
+    if (rc <= 0) return false;
+    off += static_cast<size_t>(rc);
+  }
+  return true;
+}
+
+bool win_pair_write_tcp(WinTestSock fd, std::span<const uint8_t> payload) {
+  uint8_t hdr[4]{
+      static_cast<uint8_t>(payload.size() & 0xFFu),
+      static_cast<uint8_t>((payload.size() >> 8u) & 0xFFu),
+      static_cast<uint8_t>((payload.size() >> 16u) & 0xFFu),
+      static_cast<uint8_t>((payload.size() >> 24u) & 0xFFu),
+  };
+  return win_pair_send_all(fd, hdr, 4u) && win_pair_send_all(fd, payload.data(), payload.size());
+}
+
+bool win_pair_read_tcp(WinTestSock fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
+  uint8_t hdr[4]{};
+  if (!win_pair_recv_exact(fd, hdr, 4u, timeout_ms)) return false;
+  const uint32_t len = static_cast<uint32_t>(hdr[0]) | (static_cast<uint32_t>(hdr[1]) << 8u) |
+                       (static_cast<uint32_t>(hdr[2]) << 16u) |
+                       (static_cast<uint32_t>(hdr[3]) << 24u);
+  if (len == 0u || len > 4u * 1024u * 1024u) return false;
+  out.resize(len);
+  return win_pair_recv_exact(fd, out.data(), len, timeout_ms);
+}
+
+std::vector<uint8_t> build_win_pair_frame(uint64_t frame_id, const std::string& label_text) {
+  nve::CommandBufferEncoder enc(1u, frame_id);
+  enc.create_node(2u, NVE_COMP_VIEW);
+  enc.create_node(3u, NVE_COMP_TEXT);
+  enc.create_node(4u, NVE_COMP_PRESSABLE);
+  enc.create_node(5u, NVE_COMP_TEXT);
+  enc.set_children(NVE_ROOT_NODE_ID, {2u});
+  enc.set_children(2u, {3u, 4u});
+  enc.set_children(4u, {5u});
+
+  nve::LayoutProps root_box{};
+  root_box.width = {1u, 360.0f};
+  root_box.height = {1u, 220.0f};
+  root_box.padding = {12.0f, 12.0f, 12.0f, 12.0f};
+  root_box.gap = 8.0f;
+  enc.set_layout(2u, root_box);
+
+  nve::LayoutProps btn{};
+  btn.width = {1u, 180.0f};
+  btn.height = {1u, 48.0f};
+  enc.set_layout(4u, btn);
+
+  enc.set_text(3u, label_text);
+  enc.set_text(5u, "Paired Button");
+
+  nve::StyleProps st{};
+  st.background_rgba = 0xFF1E293Bu;
+  st.text_color_rgba = 0xFFFFFFFFu;
+  st.font_size = 18.0f;
+  enc.set_style(2u, st);
+  enc.set_style(4u, st);
+  enc.set_event_mask(4u, nve::kEventMaskPress);
+  enc.commit(true);
+  const NveBufferSlice slice = enc.finish();
+  return std::vector<uint8_t>(slice.ptr, slice.ptr + slice.len);
+}
+
+void test_paired_thin_client_loopback_roundtrip() {
+#if defined(_WIN32)
+  WSADATA wsa_data{};
+  NVE_CHECK(::WSAStartup(MAKEWORD(2, 2), &wsa_data) == 0);
+#endif
+  const std::string token = "nve-win-pair-token";
+  const auto expected_proof = nve::pair_wire::derive_token_proof(token, 1u);
+  const auto frame1 = build_win_pair_frame(1u, "Windows Paired Frame 1");
+  const auto frame2 = build_win_pair_frame(2u, "Windows Paired Frame 2");
+
+  WinTestSock listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  NVE_CHECK(win_test_sock_valid(listen_fd));
+  const int reuse = 1;
+#if defined(_WIN32)
+  (void)::setsockopt(
+      listen_fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#else
+  (void)::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  NVE_CHECK(::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+  WinTestSockLen alen = static_cast<WinTestSockLen>(sizeof(addr));
+  NVE_CHECK(::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
+  const uint16_t port = ntohs(addr.sin_port);
+  NVE_CHECK(::listen(listen_fd, 2) == 0);
+
+  std::atomic<bool> saw_input{false};
+  std::vector<uint8_t> rx_ev;
+  std::mutex ev_mtx;
+
+  std::thread srv([&]() {
+    WinTestSock cfd = ::accept(listen_fd, nullptr, nullptr);
+    NVE_CHECK(win_test_sock_valid(cfd));
+    std::vector<uint8_t> msg;
+    NVE_CHECK(win_pair_read_tcp(cfd, msg));
+    nve::TransportEnvelopeView env{};
+    NVE_CHECK(nve::pair_wire::parse_envelope(msg, env) &&
+              env.kind == nve::TransportMsgKind::Hello);
+    nve::HelloPayload hp{};
+    NVE_CHECK(nve::pair_wire::decode_hello_payload(env.payload, hp));
+    NVE_CHECK(nve::pair_wire::ct_eq_16(hp.token_proof, expected_proof));
+
+    const uint64_t sn = 0x13579BDF2468ACE0ULL;
+    const uint32_t sid = nve::pair_wire::derive_session_id(token, 1u, hp.client_nonce, sn);
+    nve::HelloAckPayload ack{};
+    ack.schema_version = 1u;
+    ack.server_max_window = 64u;
+    ack.server_nonce = sn;
+    ack.resync_required = true;
+    const auto ack_env = nve::pair_wire::encode_envelope(
+        nve::TransportMsgKind::HelloAck, sid, nve::pair_wire::encode_hello_ack_payload(ack));
+    NVE_CHECK(win_pair_write_tcp(cfd, ack_env));
+
+    const auto kf1 = nve::pair_wire::encode_nvd_packet(
+        nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, frame1);
+    NVE_CHECK(win_pair_write_tcp(
+        cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, kf1)));
+
+    const auto delta2 = nve::pair_wire::encode_command_op_delta(frame1, frame2);
+    NVE_CHECK(delta2.has_value());
+    const auto pkt2 = nve::pair_wire::encode_nvd_packet(
+        nve::DeltaPacketKind::CommandOpDelta, 0u, 2u, 1u, 0u, *delta2);
+    NVE_CHECK(win_pair_write_tcp(
+        cfd, nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, pkt2)));
+
+    while (win_pair_read_tcp(cfd, msg, 3000)) {
+      nve::TransportEnvelopeView in{};
+      if (!nve::pair_wire::parse_envelope(msg, in) || in.session_id != sid) continue;
+      if (in.kind == nve::TransportMsgKind::InputEvents) {
+        std::lock_guard<std::mutex> lock(ev_mtx);
+        rx_ev.assign(in.payload.begin(), in.payload.end());
+        saw_input.store(true);
+        break;
+      }
+      if (in.kind == nve::TransportMsgKind::Bye) break;
+    }
+    win_test_close(cfd);
+    win_test_close(listen_fd);
+  });
+
+  nve::win::NveRnwComponentHost host;
+  std::atomic<uint32_t> wake_hits{0u};
+  std::atomic<uint32_t> tree_changes{0u};
+  host.set_on_visual_tree_changed([&]() { tree_changes.fetch_add(1u, std::memory_order_relaxed); });
+
+  const NveSurfaceConfig scfg{.surface_id = 1u, .width = 400.0f, .height = 280.0f, .scale_factor = 1.0f};
+  std::string err;
+  const std::string endpoint = "127.0.0.1:" + std::to_string(port);
+  NVE_CHECK(host.connect_paired(
+      endpoint,
+      token,
+      "auto",
+      scfg,
+      [&]() { wake_hits.fetch_add(1u, std::memory_order_relaxed); },
+      &err));
+  NVE_CHECK(host.is_paired() && host.is_paired_connected());
+  NVE_CHECK(!host.is_valid()); // Zero local dylib!
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (host.paired_frame_count() < 2u && std::chrono::steady_clock::now() < deadline) {
+    (void)host.poll_paired_frames();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  NVE_CHECK(host.paired_frame_count() == 2u);
+  NVE_CHECK(wake_hits.load() >= 1u);
+  NVE_CHECK(tree_changes.load() >= 1u);
+
+  const auto* label = host.visual_tree().find(3u);
+  NVE_CHECK(label != nullptr && label->text == "Windows Paired Frame 2");
+  const auto btn_rect = host.visual_tree().absolute_rect(4u);
+  NVE_CHECK(btn_rect.has_value() && btn_rect->width > 10.0f && btn_rect->height > 10.0f);
+
+  NVE_CHECK(host.dispatch_click_at(
+                btn_rect->x + btn_rect->width * 0.5f, btn_rect->y + btn_rect->height * 0.5f) == 1u);
+
+  const auto ev_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!saw_input.load() && std::chrono::steady_clock::now() < ev_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  NVE_CHECK(saw_input.load());
+
+  std::vector<nve::DecodedEvent> decoded;
+  {
+    std::lock_guard<std::mutex> lock(ev_mtx);
+    NVE_CHECK(nve::decode_event_ring(NveBufferSlice{rx_ev.data(), rx_ev.size()}, decoded));
+  }
+  NVE_CHECK(decoded.size() == 1u);
+  NVE_CHECK(decoded[0].kind == nve::EventKind::Press && decoded[0].node_id == 4u);
+
+  host.disconnect_paired();
+  NVE_CHECK(!host.is_paired());
+  NVE_CHECK(host.visual_tree().empty());
+  srv.join();
+#if defined(_WIN32)
+  ::WSACleanup();
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -1322,6 +1605,7 @@ int main() {
   test_frame0_mmap_snapshot_roundtrip();
   test_image_scroll_and_incremental_scene_view();
   test_draw_list_visual_tree_extraction_and_corrupt_survival();
+  test_paired_thin_client_loopback_roundtrip();
 
   std::cout << "nve_windows_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI" : "Standalone") << "+"

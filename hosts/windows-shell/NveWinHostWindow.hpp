@@ -3,6 +3,7 @@
 #include "NveRnwComponentView.hpp"
 #include "nve_draw_list.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -20,6 +21,10 @@
 #endif
 
 namespace nve::win {
+
+#if defined(_WIN32)
+inline constexpr UINT WM_APP_PAIR_FRAME = WM_APP + 1u;
+#endif
 
 /// Options for creating a standalone Win32 + Direct2D/DirectWrite NVE host window.
 struct WinHostWindowOptions {
@@ -93,6 +98,20 @@ class NveWinHostWindow {
       int* out_err_code = nullptr,
       std::string* out_err_msg = nullptr);
 
+  /// Connect in zero-cdylib paired thin-client mode and wake via `PostMessageW(WM_APP_PAIR_FRAME)`.
+  bool connect_paired(
+      std::string_view endpoint,
+      std::string_view token = {},
+      std::string_view transport_override = {},
+      std::string* out_error = nullptr);
+
+  bool connect_paired(
+      const nve::PairClientConfig& pair_config,
+      std::string* out_error = nullptr);
+
+  /// Disconnect any active paired thin-client session.
+  void disconnect_paired() noexcept;
+
   /// Render the current visual tree to a `.bmp` file via the shared Direct2D/DirectWrite painter.
   bool save_screenshot_bmp(std::string_view out_bmp_path, std::string* out_error = nullptr) const;
 
@@ -116,6 +135,7 @@ class NveWinHostWindow {
 
   WinHostWindowOptions options_{};
   HWND hwnd_{nullptr};
+  std::atomic<HWND> wake_hwnd_{nullptr};
   ID2D1Factory* d2d_factory_{nullptr};
   ID2D1HwndRenderTarget* render_target_{nullptr};
   NveRnwComponentHost host_{};

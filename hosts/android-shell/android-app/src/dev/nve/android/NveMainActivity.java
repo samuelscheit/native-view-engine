@@ -191,6 +191,7 @@ public final class NveMainActivity extends Activity {
     private ByteBuffer cachedMetadataBuf;
 
     private RootSurfaceLayout rootContainer;
+    private NvePairController pairController;
     private long surfaceHandle = 0L;
     private float density = 1.0f;
     private int lastRootWidthPx = 0;
@@ -241,13 +242,34 @@ public final class NveMainActivity extends Activity {
 
         surfaceHandle = nativeCreateSurface(1, initialWidthDp, initialHeightDp, density);
 
-        String appLibPath = getApplicationInfo().nativeLibraryDir + "/libnve_app.so";
-        appLoaded = nativeLoadDylib(surfaceHandle, appLibPath);
-        if (!appLoaded) {
-            String err = nativeGetLastError(surfaceHandle);
-            Log.e(TAG, "Failed to load " + appLibPath + ": " + err);
-            showErrorBanner("Failed to load NVE app:\n" + appLibPath + "\n" + err);
-            return;
+        NvePairController.PairLaunchConfig pairConfig = NvePairController.fromIntent(getIntent());
+        if (pairConfig != null) {
+            pairController = new NvePairController(new Runnable() {
+                @Override
+                public void run() {
+                    syncViews();
+                }
+            });
+            appLoaded = pairController.connect(
+                    surfaceHandle,
+                    pairConfig.endpoint,
+                    pairConfig.token,
+                    pairConfig.transport);
+            if (!appLoaded) {
+                String err = nativeGetLastError(surfaceHandle);
+                Log.e(TAG, "Failed to connect paired endpoint " + pairConfig.endpoint + ": " + err);
+                showErrorBanner("Failed to connect NVE paired host:\n" + pairConfig.endpoint + "\n" + err);
+                return;
+            }
+        } else {
+            String appLibPath = getApplicationInfo().nativeLibraryDir + "/libnve_app.so";
+            appLoaded = nativeLoadDylib(surfaceHandle, appLibPath);
+            if (!appLoaded) {
+                String err = nativeGetLastError(surfaceHandle);
+                Log.e(TAG, "Failed to load " + appLibPath + ": " + err);
+                showErrorBanner("Failed to load NVE app:\n" + appLibPath + "\n" + err);
+                return;
+            }
         }
 
         rootContainer.getViewTreeObserver().addOnGlobalLayoutListener(
@@ -267,6 +289,10 @@ public final class NveMainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (pairController != null) {
+            pairController.disconnect();
+            pairController = null;
+        }
         if (surfaceHandle != 0L) {
             nativeDestroySurface(surfaceHandle);
             surfaceHandle = 0L;

@@ -29,6 +29,8 @@ NveWinHostWindow::NveWinHostWindow() {
 }
 
 NveWinHostWindow::~NveWinHostWindow() {
+  wake_hwnd_.store(nullptr, std::memory_order_release);
+  host_.disconnect_paired();
   host_.set_on_visual_tree_changed({});
   discard_device_resources();
   if (d2d_factory_ != nullptr) {
@@ -145,10 +147,39 @@ bool NveWinHostWindow::reload_dylib(
   return host_.reload_dylib(path, out_err_code, out_err_msg);
 }
 
+bool NveWinHostWindow::connect_paired(
+    std::string_view endpoint,
+    std::string_view token,
+    std::string_view transport_override,
+    std::string* out_error) {
+  nve::PairClientConfig cfg{};
+  if (!nve::parse_pair_endpoint(endpoint, transport_override, cfg, out_error)) {
+    return false;
+  }
+  cfg.pairing_token.assign(token.data(), token.size());
+  return connect_paired(cfg, out_error);
+}
+
+bool NveWinHostWindow::connect_paired(
+    const nve::PairClientConfig& pair_config,
+    std::string* out_error) {
+  auto wake_cb = [this]() {
+    if (HWND target = wake_hwnd_.load(std::memory_order_acquire); target != nullptr) {
+      ::PostMessageW(target, WM_APP_PAIR_FRAME, 0, 0);
+    }
+  };
+  return host_.connect_paired(pair_config, current_surface_config(), std::move(wake_cb), out_error);
+}
+
+void NveWinHostWindow::disconnect_paired() noexcept {
+  host_.disconnect_paired();
+}
+
 bool NveWinHostWindow::save_screenshot_bmp(
     std::string_view out_bmp_path,
     std::string* out_error) const {
-  const NveSurfaceConfig cfg = host_.is_valid() ? host_.surface_config() : current_surface_config();
+  const NveSurfaceConfig cfg =
+      (host_.is_valid() || host_.is_paired()) ? host_.surface_config() : current_surface_config();
   const float scale = (cfg.scale_factor > 0.0f) ? cfg.scale_factor : 1.0f;
   const uint32_t px_w = static_cast<uint32_t>(std::max(1.0f, std::round(cfg.width * scale)));
   const uint32_t px_h = static_cast<uint32_t>(std::max(1.0f, std::round(cfg.height * scale)));
@@ -267,6 +298,7 @@ LRESULT CALLBACK NveWinHostWindow::static_wnd_proc(
     ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     if (self != nullptr) {
       self->hwnd_ = hwnd;
+      self->wake_hwnd_.store(hwnd, std::memory_order_release);
     }
   } else {
     self = reinterpret_cast<NveWinHostWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -324,7 +356,14 @@ LRESULT NveWinHostWindow::handle_message(UINT msg, WPARAM wparam, LPARAM lparam)
       on_mouse_wheel(
           GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), GET_WHEEL_DELTA_WPARAM(wparam), true);
       return 0;
+    case WM_APP_PAIR_FRAME:
+      if (host_.poll_paired_frames() > 0u && hwnd_ != nullptr) {
+        ::InvalidateRect(hwnd_, nullptr, FALSE);
+      }
+      return 0;
     case WM_DESTROY:
+      wake_hwnd_.store(nullptr, std::memory_order_release);
+      host_.disconnect_paired();
       discard_device_resources();
       hwnd_ = nullptr;
       if (options_.quit_on_destroy) {

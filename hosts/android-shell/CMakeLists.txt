@@ -7,6 +7,7 @@ add_subdirectory(../../cxx/nve-fabric-bridge nve-fabric-bridge-build)
 
 add_library(nve_android_shell SHARED
   NveAndroidSurfaceJni.cpp
+  NveAndroidPairJni.cpp
 )
 
 if(NOT MSVC)
@@ -44,7 +45,10 @@ if(NOT ANDROID)
     if(NOT MSVC)
       target_compile_options(nve_android_scene_test PRIVATE -Wall -Wextra -Werror)
     endif()
-    target_include_directories(nve_android_scene_test PRIVATE ${JNI_INCLUDE_DIRS})
+    target_include_directories(nve_android_scene_test PRIVATE
+      ${JNI_INCLUDE_DIRS}
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/src"
+    )
     target_link_libraries(nve_android_scene_test
       PRIVATE
         nve_android_shell

@@ -1,15 +1,25 @@
-#include "command_encoder.hpp"
-#include "mock_jsi_recorder.hpp"
-#include "nve_host_runtime.hpp"
-#include "nve_pair_client.hpp"
-
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
+
+#include "command_encoder.hpp"
+#include "mock_jsi_recorder.hpp"
+#include "nve_host_runtime.hpp"
+#include "nve_pair_client.hpp"
 
 #include <algorithm>
 #include <array>
@@ -36,6 +46,101 @@
 
 namespace {
 
+#if defined(_WIN32)
+using TestSocket = SOCKET;
+using TestSockLen = int;
+
+struct TestWinsockGuard {
+  TestWinsockGuard() {
+    WSADATA data{};
+    NVE_CHECK(::WSAStartup(MAKEWORD(2, 2), &data) == 0);
+  }
+  ~TestWinsockGuard() { ::WSACleanup(); }
+};
+
+inline bool test_sock_valid(TestSocket s) noexcept { return s != INVALID_SOCKET; }
+inline void test_close(TestSocket s) noexcept {
+  if (test_sock_valid(s)) ::closesocket(s);
+}
+inline int test_poll_read(TestSocket s, int timeout_ms) noexcept {
+  WSAPOLLFD pfd{};
+  pfd.fd = s;
+  pfd.events = POLLIN;
+  return ::WSAPoll(&pfd, 1u, timeout_ms);
+}
+inline ptrdiff_t test_send(TestSocket s, const uint8_t* data, size_t len) noexcept {
+  return static_cast<ptrdiff_t>(
+      ::send(s, reinterpret_cast<const char*>(data), static_cast<int>(len), 0));
+}
+inline ptrdiff_t test_recv(TestSocket s, uint8_t* data, size_t len) noexcept {
+  return static_cast<ptrdiff_t>(
+      ::recv(s, reinterpret_cast<char*>(data), static_cast<int>(len), 0));
+}
+inline ptrdiff_t test_sendto(
+    TestSocket s,
+    const uint8_t* data,
+    size_t len,
+    const sockaddr* addr,
+    TestSockLen alen) noexcept {
+  return static_cast<ptrdiff_t>(
+      ::sendto(s, reinterpret_cast<const char*>(data), static_cast<int>(len), 0, addr, alen));
+}
+inline ptrdiff_t test_recvfrom(
+    TestSocket s,
+    uint8_t* data,
+    size_t len,
+    sockaddr* addr,
+    TestSockLen* alen) noexcept {
+  return static_cast<ptrdiff_t>(
+      ::recvfrom(s, reinterpret_cast<char*>(data), static_cast<int>(len), 0, addr, alen));
+}
+inline void test_set_reuseaddr(TestSocket s) noexcept {
+  const int reuse = 1;
+  (void)::setsockopt(
+      s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+}
+#else
+using TestSocket = int;
+using TestSockLen = socklen_t;
+
+struct TestWinsockGuard {};
+
+inline bool test_sock_valid(TestSocket s) noexcept { return s >= 0; }
+inline void test_close(TestSocket s) noexcept {
+  if (test_sock_valid(s)) ::close(s);
+}
+inline int test_poll_read(TestSocket s, int timeout_ms) noexcept {
+  pollfd pfd{s, POLLIN, 0};
+  return ::poll(&pfd, 1u, timeout_ms);
+}
+inline ptrdiff_t test_send(TestSocket s, const uint8_t* data, size_t len) noexcept {
+  return static_cast<ptrdiff_t>(::send(s, data, len, 0));
+}
+inline ptrdiff_t test_recv(TestSocket s, uint8_t* data, size_t len) noexcept {
+  return static_cast<ptrdiff_t>(::recv(s, data, len, 0));
+}
+inline ptrdiff_t test_sendto(
+    TestSocket s,
+    const uint8_t* data,
+    size_t len,
+    const sockaddr* addr,
+    TestSockLen alen) noexcept {
+  return static_cast<ptrdiff_t>(::sendto(s, data, len, 0, addr, alen));
+}
+inline ptrdiff_t test_recvfrom(
+    TestSocket s,
+    uint8_t* data,
+    size_t len,
+    sockaddr* addr,
+    TestSockLen* alen) noexcept {
+  return static_cast<ptrdiff_t>(::recvfrom(s, data, len, 0, addr, alen));
+}
+inline void test_set_reuseaddr(TestSocket s) noexcept {
+  const int reuse = 1;
+  (void)::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+}
+#endif
+
 std::vector<uint8_t> build_scene_cmd_buf(
     uint32_t surface_id,
     uint64_t frame_id,
@@ -50,7 +155,6 @@ std::vector<uint8_t> build_scene_cmd_buf(
   std::vector<uint32_t> root_children{2u};
   std::vector<uint32_t> container_children{3u, 4u};
   if (extra_nodes) {
-    // Generate enough ops/text to exceed 1200B UDP MTU and exercise DeltaFrag reassembly!
     for (uint32_t i = 0u; i < 24u; ++i) {
       const uint32_t nid = 20u + i;
       enc.create_node(nid, NVE_COMP_TEXT);
@@ -94,36 +198,34 @@ std::vector<uint8_t> build_scene_cmd_buf(
   return std::vector<uint8_t>(slice.ptr, slice.ptr + slice.len);
 }
 
-#if !defined(_WIN32)
-bool send_all(int fd, const uint8_t* data, size_t len) {
+bool send_all(TestSocket fd, const uint8_t* data, size_t len) {
   size_t off = 0u;
   while (off < len) {
-    const ssize_t n = ::send(fd, data + off, len - off, 0);
+    const ptrdiff_t n = test_send(fd, data + off, len - off);
     if (n <= 0) return false;
     off += static_cast<size_t>(n);
   }
   return true;
 }
 
-bool recv_exact(int fd, uint8_t* buf, size_t len, int timeout_ms = 2000) {
+bool recv_exact(TestSocket fd, uint8_t* buf, size_t len, int timeout_ms = 2000) {
   size_t off = 0u;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (off < len) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) return false;
-    pollfd pfd{fd, POLLIN, 0};
     const int rem = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
-    const int rc = ::poll(&pfd, 1u, std::max(1, std::min(rem, 50)));
+    const int rc = test_poll_read(fd, std::max(1, std::min(rem, 50)));
     if (rc <= 0) continue;
-    const ssize_t n = ::recv(fd, buf + off, len - off, 0);
+    const ptrdiff_t n = test_recv(fd, buf + off, len - off);
     if (n <= 0) return false;
     off += static_cast<size_t>(n);
   }
   return true;
 }
 
-bool write_tcp_framed(int fd, std::span<const uint8_t> payload) {
+bool write_tcp_framed(TestSocket fd, std::span<const uint8_t> payload) {
   uint8_t hdr[4]{
       static_cast<uint8_t>(payload.size() & 0xFFu),
       static_cast<uint8_t>((payload.size() >> 8u) & 0xFFu),
@@ -133,7 +235,7 @@ bool write_tcp_framed(int fd, std::span<const uint8_t> payload) {
   return send_all(fd, hdr, 4u) && send_all(fd, payload.data(), payload.size());
 }
 
-bool read_tcp_framed(int fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
+bool read_tcp_framed(TestSocket fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
   uint8_t hdr[4]{};
   if (!recv_exact(fd, hdr, 4u, timeout_ms)) return false;
   const uint32_t len = static_cast<uint32_t>(hdr[0]) | (static_cast<uint32_t>(hdr[1]) << 8u) |
@@ -144,7 +246,7 @@ bool read_tcp_framed(int fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
   return recv_exact(fd, out.data(), len, timeout_ms);
 }
 
-bool write_ws_binary(int fd, std::span<const uint8_t> payload, bool fragmented = false) {
+bool write_ws_binary(TestSocket fd, std::span<const uint8_t> payload, bool fragmented = false) {
   if (!fragmented || payload.size() < 4u) {
     const auto frame = nve::pair_wire::encode_ws_frame(true, nve::WsOpcode::Binary, payload);
     return send_all(fd, frame.data(), frame.size());
@@ -157,7 +259,7 @@ bool write_ws_binary(int fd, std::span<const uint8_t> payload, bool fragmented =
   return send_all(fd, f1.data(), f1.size()) && send_all(fd, f2.data(), f2.size());
 }
 
-bool read_ws_binary(int fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
+bool read_ws_binary(TestSocket fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
   for (;;) {
     uint8_t hdr[2]{};
     if (!recv_exact(fd, hdr, 2u, timeout_ms)) return false;
@@ -186,7 +288,7 @@ bool read_ws_binary(int fd, std::vector<uint8_t>& out, int timeout_ms = 2000) {
   }
 }
 
-bool handle_server_ws_upgrade(int fd) {
+bool handle_server_ws_upgrade(TestSocket fd) {
   std::string req;
   req.reserve(512u);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -211,7 +313,6 @@ bool handle_server_ws_upgrade(int fd) {
                            accept + "\r\n\r\n";
   return send_all(fd, reinterpret_cast<const uint8_t*>(resp.data()), resp.size());
 }
-#endif
 
 // -----------------------------------------------------------------------------
 // 1. Exact Rust `nve-interop` FNV-1a64 + Token Proof + Session ID + Endpoint Parsing
@@ -235,11 +336,17 @@ void test_rust_parity_vectors_and_endpoint_parser() {
       "nve-live-secret-token", 1u, 0x1122334455667788ULL, 0x99AABBCCDDEEFF00ULL);
   NVE_CHECK(sid == 0x3479b62eu);
 
-  // Endpoint parser checks
+  // Endpoint parser checks (including `auto`)
   nve::PairClientConfig cfg{};
   std::string err;
   NVE_CHECK(nve::parse_pair_endpoint("127.0.0.1:7777", "", cfg, &err));
   NVE_CHECK(cfg.host == "127.0.0.1" && cfg.port == 7777u && cfg.transport == nve::PairTransport::Tcp);
+
+  NVE_CHECK(nve::parse_pair_endpoint("127.0.0.1:7777", "auto", cfg, &err));
+  NVE_CHECK(cfg.transport == nve::PairTransport::Tcp && cfg.port == 7777u);
+
+  NVE_CHECK(nve::parse_pair_endpoint("udp://127.0.0.1:7777", "auto", cfg, &err));
+  NVE_CHECK(cfg.transport == nve::PairTransport::Udp && cfg.port == 7777u);
 
   NVE_CHECK(nve::parse_pair_endpoint("127.0.0.1:7777", "udp", cfg, &err));
   NVE_CHECK(cfg.transport == nve::PairTransport::Udp && cfg.port == 7777u);
@@ -270,21 +377,17 @@ void test_nvd1_codecs_and_reorder_receiver() {
   const auto f2 = build_scene_cmd_buf(7u, 2u, "Frame 2 CommandOp");
   const auto f3 = build_scene_cmd_buf(7u, 3u, "Frame 3 XorRle Final!");
 
-  // Keyframe pkt (seq 1)
   const auto pkt1 = encode_nvd_packet(nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, f1);
-  // CommandOpDelta pkt (seq 2, base 1)
   const auto cmd_delta = encode_command_op_delta(f1, f2);
   NVE_CHECK(cmd_delta.has_value());
   NVE_CHECK(cmd_delta->size() < f2.size());
   const auto pkt2 =
       encode_nvd_packet(nve::DeltaPacketKind::CommandOpDelta, 0u, 2u, 1u, 0u, *cmd_delta);
-  // XorRleDelta pkt (seq 3, base 2)
   const auto xor_delta = encode_xor_rle_delta(f2, f3);
   NVE_CHECK(xor_delta.size() < f3.size());
   const auto pkt3 =
       encode_nvd_packet(nve::DeltaPacketKind::XorRleDelta, 0u, 3u, 2u, 0u, xor_delta);
 
-  // Feed seq 1, then out-of-order seq 3 (buffers & emits NACK for 2 + SACK bit 1), then seq 2!
   SyncDeltaReceiver rx(64u);
   const auto r1 = rx.receive_packet(pkt1);
   NVE_CHECK(r1.status == nve::DeltaReceiveStatus::Ok);
@@ -304,10 +407,8 @@ void test_nvd1_codecs_and_reorder_receiver() {
   NVE_CHECK(ack3.header.kind == nve::DeltaPacketKind::Ack);
   NVE_CHECK(ack3.header.ack_seq == 1u);
   NVE_CHECK(ack3.payload.size() == 8u);
-  // seq 3 is diff=2 from ack_seq=1 -> SACK bit (2-1)=1 => 0x02!
   NVE_CHECK((ack3.payload[0] & 0x02u) != 0u);
 
-  // Now feed seq 2 -> applies both seq 2 (CommandOpDelta) AND buffered seq 3 (XorRleDelta)!
   const auto r2 = rx.receive_packet(pkt2);
   NVE_CHECK(r2.status == nve::DeltaReceiveStatus::Ok);
   NVE_CHECK(r2.applied_frames.size() == 2u);
@@ -315,16 +416,25 @@ void test_nvd1_codecs_and_reorder_receiver() {
   NVE_CHECK(r2.applied_frames[1].first == 3u && r2.applied_frames[1].second == f3);
   NVE_CHECK(rx.last_applied_seq() == 3u && rx.reorder_buffer_len() == 0u);
 
-  // Duplicate seq 2 ignored cleanly with ACK
   const auto dup = rx.receive_packet(pkt2);
   NVE_CHECK(dup.status == nve::DeltaReceiveStatus::Ok && dup.applied_frames.empty() &&
             dup.ack_packet.has_value());
 
-  // Wrong base_seq triggers BaseSequenceMismatch
   const auto bad_base =
       encode_nvd_packet(nve::DeltaPacketKind::XorRleDelta, 0u, 4u, 99u, 0u, xor_delta);
   const auto r_bad = rx.receive_packet(bad_base);
   NVE_CHECK(r_bad.status == nve::DeltaReceiveStatus::BaseSequenceMismatch);
+
+  // Large XOR-RLE roundtrip (base shorter than next, exercising pre-reserve & tail copy).
+  std::vector<uint8_t> base_big(2048u, 0x3Cu);
+  std::vector<uint8_t> next_big(8192u, 0x3Cu);
+  for (size_t i = 512u; i < 4096u; i += 3u) {
+    next_big[i] = static_cast<uint8_t>(i & 0xFFu);
+  }
+  const auto big_delta = encode_xor_rle_delta(base_big, next_big);
+  std::vector<uint8_t> decoded_big;
+  NVE_CHECK(decode_xor_rle_delta(base_big, big_delta, decoded_big));
+  NVE_CHECK(decoded_big == next_big);
 }
 
 // -----------------------------------------------------------------------------
@@ -347,7 +457,6 @@ void test_udp_fragmentation_and_adversarial_packets() {
   const auto t0 = std::chrono::steady_clock::now();
   std::optional<std::vector<uint8_t>> completed;
 
-  // Deliver in reverse order + duplicate middle fragment; omit fragment 0 first to test stale NACK.
   for (size_t i = dgrams.size() - 1u; i >= 1u; --i) {
     nve::TransportEnvelopeView env{};
     NVE_CHECK(parse_envelope(dgrams[i], env));
@@ -355,18 +464,15 @@ void test_udp_fragmentation_and_adversarial_packets() {
     NVE_CHECK(reasm.push(env.payload, t0, completed));
     NVE_CHECK(!completed.has_value());
   }
-  // Duplicate fragment 1 must not complete early
   {
     nve::TransportEnvelopeView env{};
     NVE_CHECK(parse_envelope(dgrams[1], env));
     NVE_CHECK(reasm.push(env.payload, t0, completed));
     NVE_CHECK(!completed.has_value());
   }
-  // Stale NACK poll after 20ms must report missing fragment index 0!
   const auto stale = reasm.poll_stale_nacks(t0 + std::chrono::milliseconds(20), 15u);
   NVE_CHECK(stale.size() == 1u && stale[0].second.size() == 1u && stale[0].second[0] == 0u);
 
-  // Deliver fragment 0 -> exact reassembly!
   {
     nve::TransportEnvelopeView env{};
     NVE_CHECK(parse_envelope(dgrams[0], env));
@@ -376,7 +482,6 @@ void test_udp_fragmentation_and_adversarial_packets() {
     NVE_CHECK(reasm.inflight_count() == 0u);
   }
 
-  // Adversarial corrupt packets: bad magic, truncated, bit-flipped checksum, oversized frag, bad varint
   {
     nve::TransportEnvelopeView env{};
     const std::array<uint8_t, 4> short_env = {'N', 'T', 1u, 4u};
@@ -392,17 +497,15 @@ void test_udp_fragmentation_and_adversarial_packets() {
     NVE_CHECK(!parse_nvd_packet(flipped, dv));
     NVE_CHECK(!parse_nvd_packet(std::span<const uint8_t>(big_nvd.data(), 16u), dv));
 
-    // Oversized fragment total_len rejected before allocation
     std::vector<uint8_t> huge_frag(nve::kFragSubheaderSize + 10u, 0u);
-    huge_frag[4] = 0u; // idx=0
-    huge_frag[6] = 1u; // count=1
+    huge_frag[4] = 0u;
+    huge_frag[6] = 1u;
     huge_frag[8] = 0xFFu;
     huge_frag[9] = 0xFFu;
     huge_frag[10] = 0xFFu;
-    huge_frag[11] = 0x7Fu; // ~2 GiB
+    huge_frag[11] = 0x7Fu;
     NVE_CHECK(!reasm.push(huge_frag, t0, completed));
 
-    // Corrupt XOR-RLE with overflowing varint
     const std::array<uint8_t, 12> bad_varint = {
         0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0x01u};
     std::vector<uint8_t> dec_out;
@@ -411,15 +514,13 @@ void test_udp_fragmentation_and_adversarial_packets() {
 }
 
 // -----------------------------------------------------------------------------
-// 4. RFC 6455 SHA-1 + Base64 + WebSocket Frame Codec
+// 4. RFC 6455 SHA-1 + Base64 + WebSocket Frame Codec (with frame reuse)
 // -----------------------------------------------------------------------------
 void test_rfc6455_ws_codec() {
   using namespace nve::pair_wire;
 
-  // Official RFC 6455 §1.3 test vector
   NVE_CHECK(compute_ws_accept_key("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 
-  // Masked small, unmasked 16-bit (126), and oversized rejection
   const std::vector<uint8_t> small_payload = {1u, 2u, 3u, 4u, 5u};
   const std::array<uint8_t, 4> mask = {0x37u, 0xFAu, 0x21u, 0x3Du};
   const auto encoded_small = encode_ws_frame(true, nve::WsOpcode::Binary, small_payload, mask);
@@ -434,10 +535,13 @@ void test_rfc6455_ws_codec() {
   const auto encoded_med = encode_ws_frame(true, nve::WsOpcode::Binary, med_payload);
   NVE_CHECK(decode_ws_frame_slice(encoded_med, 1024u, decoded, consumed));
   NVE_CHECK(consumed == encoded_med.size() && decoded.payload == med_payload);
-  // Reject when max_payload_len < payload size
   NVE_CHECK(!decode_ws_frame_slice(encoded_med, 100u, decoded, consumed));
 
-  // Reject non-zero RSV bits
+  // Empty payload into reused WsFrame clears cleanly without allocating
+  const auto encoded_empty = encode_ws_frame(true, nve::WsOpcode::Pong, {});
+  NVE_CHECK(decode_ws_frame_slice(encoded_empty, 1024u, decoded, consumed));
+  NVE_CHECK(consumed == encoded_empty.size() && decoded.payload.empty());
+
   auto bad_rsv = encoded_small;
   bad_rsv[0] |= 0x40u;
   NVE_CHECK(!decode_ws_frame_slice(bad_rsv, 1024u, decoded, consumed));
@@ -446,23 +550,21 @@ void test_rfc6455_ws_codec() {
 // -----------------------------------------------------------------------------
 // 5. Live Loopback TCP + WebSocket + UDP Roundtrip with NativeHostSession & FabricHost
 // -----------------------------------------------------------------------------
-#if !defined(_WIN32)
 void test_live_loopback_stream_roundtrip(bool use_ws) {
   const std::string token = "nve-wave10-secret-token";
   const auto expected_proof = nve::pair_wire::derive_token_proof(token, 1u);
   const auto frame1 = build_scene_cmd_buf(1u, 1u, "Paired Frame 1");
   const auto frame2 = build_scene_cmd_buf(1u, 2u, "Paired Frame 2 Delta!");
 
-  int listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  NVE_CHECK(listen_fd >= 0);
-  int reuse = 1;
-  (void)::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+  TestSocket listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  NVE_CHECK(test_sock_valid(listen_fd));
+  test_set_reuseaddr(listen_fd);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;
   NVE_CHECK(::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
-  socklen_t alen = sizeof(addr);
+  TestSockLen alen = static_cast<TestSockLen>(sizeof(addr));
   NVE_CHECK(::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
   const uint16_t port = ntohs(addr.sin_port);
   NVE_CHECK(::listen(listen_fd, 4) == 0);
@@ -474,10 +576,9 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
   std::mutex ev_mutex;
 
   std::thread server_thread([&]() {
-    // Connection 1: Expect bad token -> send Reject!
     {
-      int cfd = ::accept(listen_fd, nullptr, nullptr);
-      NVE_CHECK(cfd >= 0);
+      TestSocket cfd = ::accept(listen_fd, nullptr, nullptr);
+      NVE_CHECK(test_sock_valid(cfd));
       if (use_ws) NVE_CHECK(handle_server_ws_upgrade(cfd));
       std::vector<uint8_t> msg;
       NVE_CHECK(use_ws ? read_ws_binary(cfd, msg) : read_tcp_framed(cfd, msg));
@@ -491,13 +592,12 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
           nve::pair_wire::encode_reject_envelope(nve::PairRejectReason::InvalidPairingToken, 1u);
       NVE_CHECK(use_ws ? write_ws_binary(cfd, rej) : write_tcp_framed(cfd, rej));
       server_rejected_bad_token.store(true);
-      ::close(cfd);
+      test_close(cfd);
     }
 
-    // Connection 2: Valid handshake -> send Keyframe(1) + CommandOpDelta(2) -> receive InputEvents(11)
     {
-      int cfd = ::accept(listen_fd, nullptr, nullptr);
-      NVE_CHECK(cfd >= 0);
+      TestSocket cfd = ::accept(listen_fd, nullptr, nullptr);
+      NVE_CHECK(test_sock_valid(cfd));
       if (use_ws) NVE_CHECK(handle_server_ws_upgrade(cfd));
       std::vector<uint8_t> msg;
       NVE_CHECK(use_ws ? read_ws_binary(cfd, msg) : read_tcp_framed(cfd, msg));
@@ -522,7 +622,6 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
           nve::TransportMsgKind::HelloAck, sid, ack_bytes);
       NVE_CHECK(use_ws ? write_ws_binary(cfd, ack_env) : write_tcp_framed(cfd, ack_env));
 
-      // Send Frame 1 as Keyframe (and on WS exercise fragmented continuation frames!)
       const auto kf1 = nve::pair_wire::encode_nvd_packet(
           nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, frame1);
       const auto env1 =
@@ -530,7 +629,6 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
       NVE_CHECK(use_ws ? write_ws_binary(cfd, env1, /*fragmented=*/true)
                        : write_tcp_framed(cfd, env1));
 
-      // Send Frame 2 as CommandOpDelta
       const auto delta2 = nve::pair_wire::encode_command_op_delta(frame1, frame2);
       NVE_CHECK(delta2.has_value());
       const auto pkt2 = nve::pair_wire::encode_nvd_packet(
@@ -539,7 +637,6 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
           nve::pair_wire::encode_envelope(nve::TransportMsgKind::DeltaSingle, sid, pkt2);
       NVE_CHECK(use_ws ? write_ws_binary(cfd, env2) : write_tcp_framed(cfd, env2));
 
-      // Read ACKs, Pings, and InputEvents = 11 until we observe InputEvents or Bye
       while (use_ws ? read_ws_binary(cfd, msg, 3000) : read_tcp_framed(cfd, msg, 3000)) {
         nve::TransportEnvelopeView in{};
         if (!nve::pair_wire::parse_envelope(msg, in) || in.session_id != sid) continue;
@@ -558,12 +655,11 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
           break;
         }
       }
-      ::close(cfd);
+      test_close(cfd);
     }
-    ::close(listen_fd);
+    test_close(listen_fd);
   });
 
-  // 1. Bad token fails cleanly!
   {
     nve::PairClientConfig bad_cfg{};
     bad_cfg.host = "127.0.0.1";
@@ -578,13 +674,15 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
     NVE_CHECK(err.find("token") != std::string::npos);
   }
 
-  // 2. Valid paired thin-client session (ZERO local dylib!)
   nve::PairClientConfig cfg{};
   cfg.host = "127.0.0.1";
   cfg.port = port;
   cfg.transport = use_ws ? nve::PairTransport::WebSocket : nve::PairTransport::Tcp;
   cfg.ws_path = "/nve-sync";
   cfg.pairing_token = token;
+  // Long heartbeat interval to verify deadline-driven poll blocks cleanly and wakes immediately
+  // on both incoming frames and disconnect() wake_fd!
+  cfg.heartbeat_interval_ms = 5000u;
 
   std::atomic<uint32_t> wake_count{0u};
   nve::NativeHostSession session;
@@ -596,9 +694,8 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
       [&]() { wake_count.fetch_add(1u, std::memory_order_relaxed); },
       &err));
   NVE_CHECK(session.is_paired() && session.is_paired_connected());
-  NVE_CHECK(session.bridge() == nullptr); // Zero local dylib!
+  NVE_CHECK(session.bridge() == nullptr);
 
-  // Wait for both Frame 1 (Keyframe) and Frame 2 (CommandOpDelta) to apply into FabricHost!
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (session.paired_frame_count() < 2u && std::chrono::steady_clock::now() < deadline) {
     (void)session.poll_paired_frames();
@@ -619,7 +716,6 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
   }
   NVE_CHECK(found_updated_text);
 
-  // Dispatch Press on node 4 -> streams upstream via InputEvents = 11!
   NVE_CHECK(session.dispatch_press(4u, 22.5f, 11.25f) == 1u);
 
   const auto ev_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -640,7 +736,13 @@ void test_live_loopback_stream_roundtrip(bool use_ws) {
   NVE_CHECK(decoded[0].kind == nve::EventKind::Press && decoded[0].node_id == 4u);
   NVE_CHECK(std::fabs(decoded[0].x - 22.5f) < 0.01f && std::fabs(decoded[0].y - 11.25f) < 0.01f);
 
+  const auto disc_start = std::chrono::steady_clock::now();
   session.disconnect_paired();
+  const auto disc_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - disc_start)
+                           .count();
+  // Even with heartbeat_interval_ms=5000, wake_fd must interrupt poll/WSAPoll promptly!
+  NVE_CHECK(disc_ms < 500);
   NVE_CHECK(!session.is_paired());
   server_thread.join();
 }
@@ -652,14 +754,14 @@ void test_live_loopback_udp_fragmented_roundtrip() {
   const auto frame2 = build_scene_cmd_buf(1u, 2u, "UDP XorRle Frame 2", /*extra_nodes=*/true);
   NVE_CHECK(frame1.size() > 2500u);
 
-  int srv_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-  NVE_CHECK(srv_fd >= 0);
+  TestSocket srv_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  NVE_CHECK(test_sock_valid(srv_fd));
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;
   NVE_CHECK(::bind(srv_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
-  socklen_t alen = sizeof(addr);
+  TestSockLen alen = static_cast<TestSockLen>(sizeof(addr));
   NVE_CHECK(::getsockname(srv_fd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
   const uint16_t port = ntohs(addr.sin_port);
 
@@ -670,17 +772,16 @@ void test_live_loopback_udp_fragmented_roundtrip() {
   std::thread udp_srv([&]() {
     std::array<uint8_t, 2048> buf{};
     sockaddr_storage peer{};
-    socklen_t peer_len = sizeof(peer);
+    TestSockLen peer_len = static_cast<TestSockLen>(sizeof(peer));
     uint32_t sid = 0u;
     bool sent_frames = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
     while (std::chrono::steady_clock::now() < deadline) {
-      pollfd pfd{srv_fd, POLLIN, 0};
-      const int rc = ::poll(&pfd, 1u, 20);
+      const int rc = test_poll_read(srv_fd, 20);
       if (rc <= 0) continue;
-      peer_len = sizeof(peer);
-      const ssize_t n = ::recvfrom(
-          srv_fd, buf.data(), buf.size(), 0, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+      peer_len = static_cast<TestSockLen>(sizeof(peer));
+      const ptrdiff_t n = test_recvfrom(
+          srv_fd, buf.data(), buf.size(), reinterpret_cast<sockaddr*>(&peer), &peer_len);
       if (n <= 0) continue;
       nve::TransportEnvelopeView env{};
       if (!nve::pair_wire::parse_envelope(
@@ -700,27 +801,25 @@ void test_live_loopback_udp_fragmented_roundtrip() {
         const auto ack_bytes = nve::pair_wire::encode_hello_ack_payload(ack);
         const auto ack_env =
             nve::pair_wire::encode_envelope(nve::TransportMsgKind::HelloAck, sid, ack_bytes);
-        (void)::sendto(
-            srv_fd, ack_env.data(), ack_env.size(), 0, reinterpret_cast<sockaddr*>(&peer), peer_len);
+        (void)test_sendto(
+            srv_fd, ack_env.data(), ack_env.size(), reinterpret_cast<sockaddr*>(&peer), peer_len);
 
-        // Send fragmented Keyframe 1 in REVERSE order!
         const auto kf1 = nve::pair_wire::encode_nvd_packet(
             nve::DeltaPacketKind::Keyframe, 0u, 1u, 0u, 0u, frame1);
         auto frags = nve::pair_wire::packetize_udp_datagrams(sid, kf1);
         NVE_CHECK(frags.size() >= 3u);
         std::reverse(frags.begin(), frags.end());
         for (const auto& dg : frags) {
-          (void)::sendto(
-              srv_fd, dg.data(), dg.size(), 0, reinterpret_cast<sockaddr*>(&peer), peer_len);
+          (void)test_sendto(
+              srv_fd, dg.data(), dg.size(), reinterpret_cast<sockaddr*>(&peer), peer_len);
         }
 
-        // Send Frame 2 as compact single-datagram XorRleDelta!
         const auto delta2 = nve::pair_wire::encode_xor_rle_delta(frame1, frame2);
         const auto pkt2 = nve::pair_wire::encode_nvd_packet(
             nve::DeltaPacketKind::XorRleDelta, 0u, 2u, 1u, 0u, delta2);
         for (const auto& dg : nve::pair_wire::packetize_udp_datagrams(sid, pkt2)) {
-          (void)::sendto(
-              srv_fd, dg.data(), dg.size(), 0, reinterpret_cast<sockaddr*>(&peer), peer_len);
+          (void)test_sendto(
+              srv_fd, dg.data(), dg.size(), reinterpret_cast<sockaddr*>(&peer), peer_len);
         }
         sent_frames = true;
       } else if (env.kind == nve::TransportMsgKind::InputEvents && env.session_id == sid) {
@@ -730,7 +829,7 @@ void test_live_loopback_udp_fragmented_roundtrip() {
         break;
       }
     }
-    ::close(srv_fd);
+    test_close(srv_fd);
   });
 
   nve::PairClientConfig cfg{};
@@ -760,7 +859,6 @@ void test_live_loopback_udp_fragmented_roundtrip() {
   }
   NVE_CHECK(found);
 
-  // Send direct TextChange event upstream over UDP InputEvents = 11!
   NveDirectEvent ev{};
   ev.surface_id = 1u;
   ev.node_id = 5u;
@@ -786,40 +884,20 @@ void test_live_loopback_udp_fragmented_roundtrip() {
   session.disconnect_paired();
   udp_srv.join();
 }
-#else
-void test_win32_stub_connect_fails_cleanly() {
-  nve::PairClientConfig cfg{};
-  cfg.host = "127.0.0.1";
-  cfg.port = 7777u;
-  cfg.transport = nve::PairTransport::Tcp;
-  cfg.pairing_token = "nve-win32-stub-test";
-
-  nve::NativeHostSession session;
-  std::string err;
-  NVE_CHECK(!session.connect_paired(cfg, {}, &err));
-  NVE_CHECK(!session.is_paired());
-  NVE_CHECK(!session.is_paired_connected());
-  NVE_CHECK(!err.empty());
-}
-#endif
 
 } // namespace
 
 int main() {
+  TestWinsockGuard winsock_guard;
+  (void)winsock_guard;
   test_rust_parity_vectors_and_endpoint_parser();
   test_nvd1_codecs_and_reorder_receiver();
   test_udp_fragmentation_and_adversarial_packets();
   test_rfc6455_ws_codec();
-#if !defined(_WIN32)
   test_live_loopback_stream_roundtrip(/*use_ws=*/false);
   test_live_loopback_stream_roundtrip(/*use_ws=*/true);
   test_live_loopback_udp_fragmented_roundtrip();
 
   std::cout << "nve_pair_client_test passed (NVT1/NVD1 + TCP + WS + UDP Frag + InputEvents)\n";
-#else
-  test_win32_stub_connect_fails_cleanly();
-
-  std::cout << "nve_pair_client_test passed (NVT1/NVD1 + WS codec + UDP Frag + Win32 stub)\n";
-#endif
   return 0;
 }

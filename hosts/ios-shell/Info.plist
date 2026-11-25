@@ -20,10 +20,23 @@
   <string>0.1.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>dev.nve.ios-shell.pair</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>nve</string>
+      </array>
+    </dict>
+  </array>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>MinimumOSVersion</key>
   <string>17.0</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>NVE iOS Shell connects to a paired local NVE host over the local network for live UI streaming.</string>
   <key>UIApplicationSceneManifest</key>
   <dict>
     <key>UIApplicationSupportsMultipleScenes</key>

@@ -62,6 +62,30 @@
   return [_host reloadDylibAtPath:dylibPath error:error];
 }
 
+- (BOOL)connectPairedEndpoint:(NSString *)endpoint
+                        token:(NSString *)token
+                    transport:(nullable NSString *)transport
+                    surfaceId:(uint32_t)surfaceId
+                        error:(NSError * _Nullable * _Nullable)error {
+  return [_host connectPairedEndpoint:endpoint
+                                token:token
+                            transport:transport
+                            surfaceId:surfaceId
+                                error:error];
+}
+
+- (void)disconnectPaired {
+  [_host disconnectPaired];
+}
+
+- (BOOL)isPaired {
+  return _host.isPaired;
+}
+
+- (BOOL)isPairedConnected {
+  return _host.isPairedConnected;
+}
+
 - (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
              expectedSchemaVersion:(uint32_t)expectedSchemaVersion
                      restoreTimeUs:(uint64_t * _Nullable)outRestoreUs {

@@ -400,6 +400,52 @@ bool NveRnwComponentHost::reload_dylib(
   return true;
 }
 
+bool NveRnwComponentHost::connect_paired(
+    const nve::PairClientConfig& pair_config,
+    NveSurfaceConfig surface_config,
+    nve::PairClient::WakeCallback on_frame_ready,
+    std::string* out_error) {
+  if (!session_.connect_paired(
+          pair_config, surface_config, std::move(on_frame_ready), out_error)) {
+    return false;
+  }
+  visual_tree_.clear();
+  raw_props_initialized_ = false;
+  if (session_.paired_frame_count() > 0u) {
+    sync_visuals_and_notify(/*check_raw_props=*/true);
+  }
+  return true;
+}
+
+bool NveRnwComponentHost::connect_paired(
+    std::string_view endpoint,
+    std::string_view token,
+    std::string_view transport_override,
+    NveSurfaceConfig surface_config,
+    nve::PairClient::WakeCallback on_frame_ready,
+    std::string* out_error) {
+  nve::PairClientConfig cfg{};
+  if (!nve::parse_pair_endpoint(endpoint, transport_override, cfg, out_error)) {
+    return false;
+  }
+  cfg.pairing_token.assign(token.data(), token.size());
+  return connect_paired(cfg, surface_config, std::move(on_frame_ready), out_error);
+}
+
+size_t NveRnwComponentHost::poll_paired_frames(NveFrameStats* out_last_stats) {
+  const size_t applied = session_.poll_paired_frames(out_last_stats);
+  if (applied > 0u) {
+    sync_visuals_and_notify(/*check_raw_props=*/true);
+  }
+  return applied;
+}
+
+void NveRnwComponentHost::disconnect_paired() noexcept {
+  session_.disconnect_paired();
+  visual_tree_.clear();
+  raw_props_initialized_ = false;
+}
+
 bool NveRnwComponentHost::replay_frame0_snapshot(
     std::string_view snapshot_path,
     uint32_t expected_schema_version,
@@ -485,8 +531,12 @@ bool NveRnwComponentHost::apply_hot_patch_json(std::string_view patch_json) {
 }
 
 int32_t NveRnwComponentHost::render_frame(NveFrameStats* out_stats) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return -100;
+  }
+  if (session_.is_paired()) {
+    (void)poll_paired_frames(out_stats);
+    return 0;
   }
   const int32_t rc = session_.render(out_stats);
   if (rc == 0) {
@@ -497,12 +547,12 @@ int32_t NveRnwComponentHost::render_frame(NveFrameStats* out_stats) {
 }
 
 uint32_t NveRnwComponentHost::dispatch_press(uint32_t node_id, float local_x, float local_y) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0;
   }
   const uint32_t dirty =
       session_.dispatch_press(node_id, local_x, local_y, /*auto_render=*/false);
-  if (dirty != 0) {
+  if (dirty != 0 && session_.is_valid()) {
     (void)render_frame(nullptr);
   } else {
     (void)session_.drain_events();
@@ -511,7 +561,7 @@ uint32_t NveRnwComponentHost::dispatch_press(uint32_t node_id, float local_x, fl
 }
 
 uint32_t NveRnwComponentHost::dispatch_click_at(float surface_x, float surface_y) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0;
   }
   const auto hit = visual_tree_.hit_test_interactive(surface_x, surface_y);
@@ -527,7 +577,7 @@ uint32_t NveRnwComponentHost::dispatch_scroll(
     float offset_y,
     float content_width,
     float content_height) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0u;
   }
   NveDirectEvent ev{};
@@ -544,7 +594,7 @@ uint32_t NveRnwComponentHost::dispatch_scroll(
 
   const uint32_t dirty =
       session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/false);
-  if (dirty != 0u) {
+  if (dirty != 0u && session_.is_valid()) {
     (void)render_frame(nullptr);
   } else {
     (void)session_.drain_events();
@@ -557,7 +607,7 @@ uint32_t NveRnwComponentHost::dispatch_wheel_at(
     float surface_y,
     float delta_x,
     float delta_y) {
-  if (!session_.is_valid()) {
+  if (!session_.is_valid() && !session_.is_paired()) {
     return 0u;
   }
   const auto scroll_id = visual_tree_.hit_test_scrollable(surface_x, surface_y);

@@ -1,12 +1,14 @@
 #include "NveRnwComponentView.hpp"
 #include "NveWinHostWindow.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -239,6 +241,9 @@ class BuiltinWinDemoApp {
 
 struct CliOptions {
   std::string dylib_path;
+  std::string pair_connect;
+  std::string pair_token;
+  std::string pair_transport;
   std::string snapshot_path;
   std::string screenshot_path;
   uint32_t schema_version{1u};
@@ -252,6 +257,12 @@ CliOptions parse_cli(int argc, char** argv) {
   for (int i = 1; i + 1 < argc; ++i) {
     if (std::strcmp(argv[i], "--dylib") == 0) {
       opts.dylib_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--pair-connect") == 0) {
+      opts.pair_connect = argv[++i];
+    } else if (std::strcmp(argv[i], "--pair-token") == 0) {
+      opts.pair_token = argv[++i];
+    } else if (std::strcmp(argv[i], "--pair-transport") == 0) {
+      opts.pair_transport = argv[++i];
     } else if (std::strcmp(argv[i], "--snapshot") == 0) {
       opts.snapshot_path = argv[++i];
     } else if (std::strcmp(argv[i], "--schema") == 0) {
@@ -271,6 +282,18 @@ CliOptions parse_cli(int argc, char** argv) {
     }
   }
   return opts;
+}
+
+bool wait_for_initial_paired_frame(nve::win::NveRnwComponentHost& host, int timeout_ms = 2000) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (host.paired_frame_count() == 0u && std::chrono::steady_clock::now() < deadline) {
+    if (host.poll_paired_frames() > 0u) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return host.paired_frame_count() > 0u;
 }
 
 void maybe_replay_snapshot(
@@ -320,7 +343,16 @@ int main(int argc, char** argv) {
 
     maybe_replay_snapshot(host, opts, cfg);
 
-    if (!opts.dylib_path.empty()) {
+    if (!opts.pair_connect.empty()) {
+      std::string err_msg;
+      if (!host.connect_paired(
+              opts.pair_connect, opts.pair_token, opts.pair_transport, cfg, {}, &err_msg)) {
+        std::cerr << "Failed to connect paired client to '" << opts.pair_connect << "': "
+                  << err_msg << "\n";
+        return 1;
+      }
+      (void)wait_for_initial_paired_frame(host);
+    } else if (!opts.dylib_path.empty()) {
       int err_code = 0;
       std::string err_msg;
       if (!host.load_dylib(opts.dylib_path, cfg, &err_code, &err_msg)) {
@@ -348,11 +380,13 @@ int main(int argc, char** argv) {
             cfg.scale_factor,
             opts.screenshot_path,
             &bmp_err)) {
+      host.disconnect_paired();
       std::cerr << "Failed to write BMP screenshot '" << opts.screenshot_path << "': " << bmp_err
                 << "\n";
       return 1;
     }
     maybe_save_snapshot(host, opts);
+    host.disconnect_paired();
     std::cout << "Rendered " << px_w << "x" << px_h << " screenshot to " << opts.screenshot_path
               << "\n";
     return 0;
@@ -360,7 +394,9 @@ int main(int argc, char** argv) {
 
   nve::win::NveWinHostWindow window;
   nve::win::WinHostWindowOptions win_opts{};
-  win_opts.title = "NVE Windows Host Shell";
+  win_opts.title = opts.pair_connect.empty()
+                       ? "NVE Windows Host Shell"
+                       : ("NVE Windows Host Shell (Paired: " + opts.pair_connect + ")");
   win_opts.width = opts.width;
   win_opts.height = opts.height;
   win_opts.surface_id = 1;
@@ -379,7 +415,14 @@ int main(int argc, char** argv) {
   maybe_replay_snapshot(window.host(), opts, win_cfg);
   window.show(SW_SHOWDEFAULT);
 
-  if (!opts.dylib_path.empty()) {
+  if (!opts.pair_connect.empty()) {
+    std::string err_msg;
+    if (!window.connect_paired(opts.pair_connect, opts.pair_token, opts.pair_transport, &err_msg)) {
+      std::cerr << "Failed to connect paired client to '" << opts.pair_connect << "': "
+                << err_msg << "\n";
+      return 1;
+    }
+  } else if (!opts.dylib_path.empty()) {
     int err_code = 0;
     std::string err_msg;
     if (!window.load_dylib(opts.dylib_path, &err_code, &err_msg)) {
@@ -396,6 +439,7 @@ int main(int argc, char** argv) {
 
   const int exit_code = window.run_message_loop();
   maybe_save_snapshot(window.host(), opts);
+  window.disconnect_paired();
   return exit_code;
 #else
   // Non-Windows headless smoke check for portable host controller verification.
@@ -407,7 +451,16 @@ int main(int argc, char** argv) {
       .scale_factor = opts.scale,
   };
   maybe_replay_snapshot(host, opts, cfg);
-  if (!opts.dylib_path.empty()) {
+  if (!opts.pair_connect.empty()) {
+    std::string err_msg;
+    if (!host.connect_paired(
+            opts.pair_connect, opts.pair_token, opts.pair_transport, cfg, {}, &err_msg)) {
+      std::cerr << "Failed to connect paired client to '" << opts.pair_connect << "': "
+                << err_msg << "\n";
+      return 1;
+    }
+    (void)wait_for_initial_paired_frame(host);
+  } else if (!opts.dylib_path.empty()) {
     int err_code = 0;
     std::string err_msg;
     if (!host.load_dylib(opts.dylib_path, cfg, &err_code, &err_msg)) {
@@ -420,7 +473,9 @@ int main(int argc, char** argv) {
     return 1;
   }
   maybe_save_snapshot(host, opts);
-  std::cout << "nve_windows_shell headless host ready (nodes=" << host.node_count()
+  const uint32_t nodes = host.node_count();
+  host.disconnect_paired();
+  std::cout << "nve_windows_shell headless host ready (nodes=" << nodes
             << "; Win32/Direct2D window requires Windows)\n";
   return 0;
 #endif

@@ -29,6 +29,9 @@ add_library(nve_fabric_bridge STATIC
   src/scene_publisher.cpp
   src/fabric_c_api.cpp
   src/nve_rn_component.cpp
+  src/pair_wire.cpp
+  src/pair_delta.cpp
+  src/pair_ws_frag.cpp
   src/pair_client.cpp
 )
 
@@ -43,11 +46,20 @@ if(MSVC)
   target_compile_options(nve_fabric_bridge PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
 else()
   target_compile_options(nve_fabric_bridge PRIVATE -Wall -Wextra)
-  set_source_files_properties(src/pair_client.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
+  set_source_files_properties(
+    src/pair_wire.cpp
+    src/pair_delta.cpp
+    src/pair_ws_frag.cpp
+    src/pair_client.cpp
+    PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror"
+  )
 endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(nve_fabric_bridge PUBLIC Threads::Threads)
+if(WIN32)
+  target_link_libraries(nve_fabric_bridge PUBLIC ws2_32)
+endif()
 if(UNIX AND NOT APPLE)
   target_link_libraries(nve_fabric_bridge PUBLIC ${CMAKE_DL_LIBS})
 endif()

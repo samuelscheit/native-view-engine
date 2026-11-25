@@ -131,6 +131,8 @@ struct AndroidSurfaceState {
   JavaVM* jvm{nullptr};
   jclass activity_class{nullptr};
   jmethodID measure_text_method{nullptr};
+  jobject pair_wake_target{nullptr};
+  jmethodID pair_wake_method{nullptr};
   std::array<CachedDirectBuffer, kSlabCount> slab_buffers{};
   uint32_t slab_epoch_mask{0u};
 
@@ -145,6 +147,10 @@ struct AndroidSurfaceState {
   std::unordered_map<uint32_t, NodeMetadataEntry> metadata_cache;
   std::unordered_map<uint32_t, int32_t> image_resize_modes;
 };
+
+bool is_session_active(const AndroidSurfaceState* state) noexcept {
+  return state != nullptr && (state->session.is_valid() || state->session.is_paired());
+}
 
 void release_all_slab_buffers(AndroidSurfaceState* state, JNIEnv* env) noexcept {
   if (!state) return;
@@ -496,7 +502,7 @@ uint16_t clamp_u16(size_t n) noexcept {
 /// Packs accessibility, `TextInput`, `Image` (`resizeMode`), and `SkiaCanvas` (`drawList`)
 /// metadata for ONLY dirty/changed nodes into ONE reusable flat `NVE_MET1` binary buffer.
 void pack_dirty_metadata(AndroidSurfaceState* state, const NveSceneView& view) {
-  if (!state || !state->session.is_valid()) {
+  if (!is_session_active(state)) {
     return;
   }
   if (state->metadata_cache_valid && state->metadata_cache_frame == view.frame_id) {
@@ -709,6 +715,50 @@ float sanitize_finite(float value) noexcept {
 
 } // namespace
 
+namespace nve::android_jni {
+
+struct SurfaceHandleAccess {
+  nve::NativeHostSession* session{nullptr};
+  NveSurfaceConfig* config{nullptr};
+  std::string* last_error{nullptr};
+  JavaVM* jvm{nullptr};
+};
+
+SurfaceHandleAccess get_surface_access(jlong handle_ptr) noexcept {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state) return {};
+  return SurfaceHandleAccess{
+      .session = &state->session,
+      .config = &state->config,
+      .last_error = &state->last_error,
+      .jvm = state->jvm,
+  };
+}
+
+void invalidate_surface_slabs(jlong handle_ptr, JNIEnv* env) noexcept {
+  release_all_slab_buffers(reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env);
+}
+
+void set_surface_pair_wake(
+    jlong handle_ptr,
+    JNIEnv* env,
+    jobject wake_global_ref,
+    jmethodID wake_method) noexcept {
+  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
+  if (!state) return;
+  if (state->pair_wake_target != nullptr && env != nullptr) {
+    env->DeleteGlobalRef(state->pair_wake_target);
+  }
+  state->pair_wake_target = wake_global_ref;
+  state->pair_wake_method = wake_method;
+}
+
+void release_surface_pair_wake(jlong handle_ptr, JNIEnv* env) noexcept {
+  set_surface_pair_wake(handle_ptr, env, nullptr, nullptr);
+}
+
+} // namespace nve::android_jni
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_dev_nve_android_NveMainActivity_nativeCreateSurface(
     JNIEnv* env,
@@ -790,6 +840,8 @@ Java_dev_nve_android_NveMainActivity_nativeDestroySurface(
   if (!state) {
     return;
   }
+  state->session.disconnect_paired();
+  nve::android_jni::release_surface_pair_wake(handle_ptr, env);
   release_all_slab_buffers(state, env);
   state->session.reset();
   if (state->activity_class != nullptr && env != nullptr) {
@@ -877,7 +929,7 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchPress(
     jfloat x,
     jfloat y) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state || !state->session.is_valid() || node_id <= 0) {
+  if (!is_session_active(state) || node_id <= 0) {
     return 0;
   }
   const uint32_t dirty = state->session.dispatch_press(
@@ -897,7 +949,7 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchTextChange(
     jint node_id,
     jstring text) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state || !state->session.is_valid() || node_id <= 0) {
+  if (!is_session_active(state) || node_id <= 0) {
     return 0;
   }
 
@@ -912,7 +964,12 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchTextChange(
 
   auto* bridge = state->session.bridge();
   if (!bridge) {
-    return 0;
+    NveFabricHostHandle host = state->session.active_fabric_host();
+    if (!host) return 0;
+    nve::fabric_host_enqueue_text_change(
+        host, static_cast<uint32_t>(node_id), nve::current_timestamp_us(), utf8);
+    const NveBufferSlice inbound = nve_fabric_host_drain_events(host);
+    return state->session.send_paired_event_ring(inbound) ? 1 : 0;
   }
   nve::fabric_host_enqueue_text_change(
       bridge->fabric_host(),
@@ -934,7 +991,7 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
     jstring name,
     jstring payload) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state || !state->session.is_valid() || node_id <= 0 || name == nullptr || env == nullptr) {
+  if (!is_session_active(state) || node_id <= 0 || name == nullptr || env == nullptr) {
     return 0;
   }
 
@@ -959,7 +1016,17 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
 
   auto* bridge = state->session.bridge();
   if (!bridge) {
-    return 0;
+    NveFabricHostHandle host = state->session.active_fabric_host();
+    if (!host) return 0;
+    nve::fabric_host_enqueue_custom_event(
+        host,
+        static_cast<uint32_t>(node_id),
+        nve::current_timestamp_us(),
+        event_name,
+        reinterpret_cast<const uint8_t*>(utf8_payload.data()),
+        utf8_payload.size());
+    const NveBufferSlice inbound = nve_fabric_host_drain_events(host);
+    return state->session.send_paired_event_ring(inbound) ? 1 : 0;
   }
   nve::fabric_host_enqueue_custom_event(
       bridge->fabric_host(),
@@ -983,7 +1050,7 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchScroll(
     jfloat scroll_x,
     jfloat scroll_y) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state || !state->session.is_valid() || node_id <= 0) {
+  if (!is_session_active(state) || node_id <= 0) {
     return 0;
   }
   NveDirectEvent ev{};
@@ -1015,11 +1082,13 @@ Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
     jlong handle_ptr,
     jlongArray out_meta) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state || !state->session.is_valid()) {
+  if (!is_session_active(state)) {
     return -1;
   }
-  if (state->session.bridge()->frame_count() == 0) {
+  if (state->session.is_valid() && state->session.bridge()->frame_count() == 0) {
     (void)state->session.render(nullptr);
+  } else if (state->session.is_paired()) {
+    (void)state->session.poll_paired_frames(nullptr);
   }
   const NveSceneView view = state->session.scene_view();
   if (view.schema_hash != NVE_SCENE_SCHEMA_HASH) {
@@ -1097,7 +1166,7 @@ Java_dev_nve_android_NveMainActivity_nativeGetImageResizeMode(
     jlong handle_ptr,
     jint node_id) {
   auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state || !state->session.is_valid() || node_id <= 0) {
+  if (!is_session_active(state) || node_id <= 0) {
     return 0;
   }
   const NveSceneView view = state->session.scene_view();

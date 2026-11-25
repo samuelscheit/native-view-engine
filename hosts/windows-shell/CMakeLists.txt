@@ -52,6 +52,7 @@ if(WIN32)
       ole32
       user32
       gdi32
+      ws2_32
   )
 endif()
 
