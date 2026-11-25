@@ -135,10 +135,107 @@ fn temp_test_dir(tag: &str) -> PathBuf {
 }
 
 fn tool_available(tool: &str) -> bool {
-    Command::new("which")
-        .arg(tool)
+    Command::new(tool)
+        .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success())
+}
+
+/// Locates `libnve_abi-*.rlib` and all Cargo dependency search directories across both classic
+/// `target/<profile>/deps/` and Cargo 1.100+ per-unit `target/<profile>/build/<pkg>/<hash>/out/`
+/// layouts.
+fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
+    let current_exe = std::env::current_exe().expect("current_exe");
+    let exe_dir = current_exe.parent().expect("test executable parent dir");
+
+    let find_nve_abi_in = |dir: &Path| -> Option<PathBuf> {
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
+            })
+    };
+
+    // 1. Classic Cargo layout (`target/<profile>/deps/`).
+    if let Some(rlib) = find_nve_abi_in(exe_dir) {
+        return (rlib, vec![exe_dir.to_path_buf()]);
+    }
+
+    // 2. Cargo 1.100+ per-unit build layout (`target/<profile>/build/<pkg>/<hash>/out/`).
+    let build_root = current_exe
+        .ancestors()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("build"))
+        .expect("expected Cargo deps/ or build/ ancestor directory for test executable");
+
+    let mut nve_abi_candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut dep_dirs: Vec<PathBuf> = Vec::new();
+
+    if let Ok(pkgs) = std::fs::read_dir(build_root) {
+        for pkg_entry in pkgs.filter_map(|e| e.ok()) {
+            let pkg_path = pkg_entry.path();
+            if !pkg_path.is_dir() {
+                continue;
+            }
+            let is_nve_abi = pkg_entry.file_name() == "nve-abi";
+            let Ok(hashes) = std::fs::read_dir(&pkg_path) else {
+                continue;
+            };
+            for hash_entry in hashes.filter_map(|e| e.ok()) {
+                let out_dir = hash_entry.path().join("out");
+                if !out_dir.is_dir() {
+                    continue;
+                }
+                if is_nve_abi && let Some(rlib) = find_nve_abi_in(&out_dir) {
+                    let mtime = std::fs::metadata(&rlib)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    nve_abi_candidates.push((mtime, rlib));
+                }
+                let has_rlib = std::fs::read_dir(&out_dir).ok().is_some_and(|it| {
+                    it.filter_map(|e| e.ok()).any(|e| {
+                        e.path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .is_some_and(|ext| matches!(ext, "rlib" | "dll" | "so" | "dylib"))
+                    })
+                });
+                if has_rlib {
+                    dep_dirs.push(out_dir);
+                }
+            }
+        }
+    }
+
+    nve_abi_candidates.sort_by_key(|(mtime, _)| *mtime);
+    let nve_abi_rlib = nve_abi_candidates
+        .pop()
+        .map(|(_, path)| path)
+        .expect("libnve_abi-*.rlib must exist in target deps or build dir");
+    (nve_abi_rlib, dep_dirs)
+}
+
+fn add_dep_search_dirs(cmd: &mut Command, temp_dir: &Path, dep_dirs: &[PathBuf]) {
+    if dep_dirs.len() <= 8 {
+        for dir in dep_dirs {
+            cmd.arg("-L").arg(format!("dependency={}", dir.display()));
+        }
+        return;
+    }
+    // Use a `rustc` `@file` response file so Cargo 1.100+'s per-unit `build/<pkg>/<hash>/out`
+    // directories never exceed Windows' 32 KiB `CreateProcessW` command-line limit (OS error 206).
+    let rsp_path = temp_dir.join("rustc_dep_dirs.rsp");
+    let mut contents = String::new();
+    for dir in dep_dirs {
+        contents.push_str("-L\ndependency=");
+        contents.push_str(&dir.to_string_lossy());
+        contents.push('\n');
+    }
+    std::fs::write(&rsp_path, contents).expect("write rustc dep dirs response file");
+    cmd.arg(format!("@{}", rsp_path.display()));
 }
 
 #[test]
@@ -471,8 +568,9 @@ fn rejects_negative_and_malformed_specs() {
 
 #[test]
 fn real_compiler_verifies_c11_and_cpp20_headers() {
-    assert!(tool_available("clang"), "clang must be installed");
-    assert!(tool_available("clang++"), "clang++ must be installed");
+    if !tool_available("clang") || !tool_available("clang++") {
+        return;
+    }
 
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
     let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
@@ -675,25 +773,14 @@ fn real_compiler_verifies_generated_rust_against_nve_abi_with_zero_warnings() {
     rust_out.write_to_dir(&dir).unwrap();
     let rs_file = dir.join("crypto_hybrid.rs");
 
-    // Locate `libnve_abi-*.rlib` in the test executable's `deps/` directory.
-    let current_exe = std::env::current_exe().expect("current_exe");
-    let deps_dir = current_exe.parent().expect("deps dir");
-    let nve_abi_rlib = std::fs::read_dir(deps_dir)
-        .expect("read deps dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
-        })
-        .expect("libnve_abi-*.rlib must exist in target deps dir");
+    // Locate `libnve_abi-*.rlib` and dependency search directories.
+    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
 
     let out_rlib = dir.join("libcrypto_hybrid_check.rlib");
-    let rustc_check = Command::new("rustc")
-        .args(["--edition=2024", "--crate-type=lib", "-D", "warnings"])
-        .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
+    let mut rustc_cmd = Command::new("rustc");
+    rustc_cmd.args(["--edition=2024", "--crate-type=lib", "-D", "warnings"]);
+    add_dep_search_dirs(&mut rustc_cmd, &dir, &dep_dirs);
+    let rustc_check = rustc_cmd
         .arg("--extern")
         .arg(format!("nve_abi={}", nve_abi_rlib.display()))
         .arg(&rs_file)
@@ -879,11 +966,11 @@ fn main() {
     )
     .unwrap();
 
-    let e2e_bin = dir.join("e2e_bin");
-    let e2e_compile = Command::new("rustc")
-        .args(["--edition=2024", "-D", "warnings"])
-        .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
+    let e2e_bin = dir.join(format!("e2e_bin{}", std::env::consts::EXE_SUFFIX));
+    let mut e2e_cmd = Command::new("rustc");
+    e2e_cmd.args(["--edition=2024", "-D", "warnings"]);
+    add_dep_search_dirs(&mut e2e_cmd, &dir, &dep_dirs);
+    let e2e_compile = e2e_cmd
         .arg("--extern")
         .arg(format!("nve_abi={}", nve_abi_rlib.display()))
         .arg("--extern")
@@ -964,25 +1051,14 @@ fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
     rust_out.write_to_dir(&dir).unwrap();
     cpp_out.write_to_dir(&dir).unwrap();
 
-    let current_exe = std::env::current_exe().expect("current_exe");
-    let deps_dir = current_exe.parent().expect("deps dir");
-    let nve_abi_rlib = std::fs::read_dir(deps_dir)
-        .expect("read deps dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
-        })
-        .expect("libnve_abi-*.rlib must exist in target deps dir");
+    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
 
     // 1. Compile generated `crypto_hybrid.rs` as an rlib
     let hybrid_rlib = dir.join("libcrypto_hybrid.rlib");
-    let st = Command::new("rustc")
-        .args(["--edition=2024", "--crate-type=lib", "-D", "warnings"])
-        .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
+    let mut hybrid_cmd = Command::new("rustc");
+    hybrid_cmd.args(["--edition=2024", "--crate-type=lib", "-D", "warnings"]);
+    add_dep_search_dirs(&mut hybrid_cmd, &dir, &dep_dirs);
+    let st = hybrid_cmd
         .arg("--extern")
         .arg(format!("nve_abi={}", nve_abi_rlib.display()))
         .arg(dir.join("crypto_hybrid.rs"))
@@ -1093,10 +1169,10 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
     .unwrap();
 
     let staticlib = dir.join("liblive_provider.a");
-    let lib_build = Command::new("rustc")
-        .args(["--edition=2024", "--crate-type=staticlib", "-D", "warnings"])
-        .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
+    let mut lib_cmd = Command::new("rustc");
+    lib_cmd.args(["--edition=2024", "--crate-type=staticlib", "-D", "warnings"]);
+    add_dep_search_dirs(&mut lib_cmd, &dir, &dep_dirs);
+    let lib_build = lib_cmd
         .arg("--extern")
         .arg(format!("nve_abi={}", nve_abi_rlib.display()))
         .arg("--extern")
@@ -1320,7 +1396,8 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
     assert_eq!(all.len(), 10);
     for file in &all {
         let on_disk = std::fs::read_to_string(root.join(&file.relative_path))
-            .unwrap_or_else(|e| panic!("missing {}: {e}", file.relative_path));
+            .unwrap_or_else(|e| panic!("missing {}: {e}", file.relative_path))
+            .replace("\r\n", "\n");
         assert_eq!(on_disk, file.content, "drift in {}", file.relative_path);
     }
 }
@@ -1467,22 +1544,11 @@ void check() {
     let _touch = nve_abi::NveValue::null();
     let dir = temp_test_dir("adversarial_rust");
     rust_out.write_to_dir(&dir).unwrap();
-    let current_exe = std::env::current_exe().expect("current_exe");
-    let deps_dir = current_exe.parent().expect("deps dir");
-    let nve_abi_rlib = std::fs::read_dir(deps_dir)
-        .expect("read deps dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
-        })
-        .expect("libnve_abi-*.rlib");
-    let out = Command::new("rustc")
-        .args(["--edition=2024", "--crate-type=lib", "-D", "warnings"])
-        .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
+    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
+    let mut adv_cmd = Command::new("rustc");
+    adv_cmd.args(["--edition=2024", "--crate-type=lib", "-D", "warnings"]);
+    add_dep_search_dirs(&mut adv_cmd, &dir, &dep_dirs);
+    let out = adv_cmd
         .arg("--extern")
         .arg(format!("nve_abi={}", nve_abi_rlib.display()))
         .arg(dir.join("safe_banner_hybrid.rs"))

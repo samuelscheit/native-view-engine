@@ -181,5 +181,11 @@ impl NveApp for CounterModule {
     }
 }
 
+// Keep the C ABI export in its own private module so `rustc` places `nve_get_interface` in a
+// dedicated CGU. That prevents MSVC `link.exe` LNK2005 duplicate-symbol clashes when workspace
+// crates (such as `nve-web-shell` tests under `cargo test --workspace`) link multiple example
+// `rlib`s simultaneously while `cdylib` builds still export `nve_get_interface`.
 #[cfg(all(feature = "cdylib-export", not(target_arch = "wasm32")))]
-nve_engine::export_nve_app!(CounterModule);
+mod cdylib_export {
+    nve_engine::export_nve_app!(super::CounterModule);
+}

@@ -613,7 +613,7 @@ pub enum GpuSwapchain {
     Direct3D12(Box<d3d12::D3D12Swapchain>),
     #[cfg(feature = "skia")]
     CpuSkia(Box<CpuSkiaSurface>),
-    Software(SoftwareFramePresenter),
+    Software(Box<SoftwareFramePresenter>),
 }
 
 impl GpuSwapchain {
@@ -689,13 +689,13 @@ impl GpuSwapchain {
                     } else {
                         Some(fallback_reasons.join("; "))
                     };
-                    return Ok(Self::Software(SoftwareFramePresenter::new(
+                    return Ok(Self::Software(Box::new(SoftwareFramePresenter::new(
                         extent.width,
                         extent.height,
                         extent.scale_factor,
                         CosmicTextEngine::shared(),
                         reason,
-                    )?));
+                    )?)));
                 }
                 other => {
                     if !config.allow_cpu_fallback {
@@ -798,13 +798,13 @@ impl GpuSwapchain {
                     } else {
                         Some(fallback_reasons.join("; "))
                     };
-                    return Ok(Self::Software(SoftwareFramePresenter::new(
+                    return Ok(Self::Software(Box::new(SoftwareFramePresenter::new(
                         extent.width,
                         extent.height,
                         extent.scale_factor,
                         CosmicTextEngine::shared(),
                         reason,
-                    )?));
+                    )?)));
                 }
                 other => {
                     if !config.allow_cpu_fallback {
@@ -879,7 +879,10 @@ macro_rules! dispatch_swapchain_ref {
                 let $var: &CpuSkiaSurface = $var;
                 $body
             }
-            Self::Software($var) => $body,
+            Self::Software($var) => {
+                let $var: &SoftwareFramePresenter = $var;
+                $body
+            }
         }
     };
 }
@@ -907,7 +910,10 @@ macro_rules! dispatch_swapchain_mut {
                 let $var: &mut CpuSkiaSurface = $var;
                 $body
             }
-            Self::Software($var) => $body,
+            Self::Software($var) => {
+                let $var: &mut SoftwareFramePresenter = $var;
+                $body
+            }
         }
     };
 }
@@ -984,7 +990,7 @@ pub enum GpuSurface {
     Vulkan(Box<vulkan::VulkanSwapchain>),
     #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
     Direct3D12(Box<d3d12::D3D12Swapchain>),
-    CpuRaster(CpuSkiaSurface),
+    CpuRaster(Box<CpuSkiaSurface>),
 }
 
 #[cfg(feature = "skia")]
@@ -1039,7 +1045,7 @@ impl GpuSurface {
                     if !fallback_reasons.is_empty() {
                         cpu.set_fallback_reason(Some(fallback_reasons.join("; ")));
                     }
-                    return Ok(Self::CpuRaster(cpu));
+                    return Ok(Self::CpuRaster(Box::new(cpu)));
                 }
                 GpuBackendKind::Softbuffer => {
                     // For `GpuSurface` (which requires a Skia surface), CpuRaster is the lowest tier.
@@ -1052,7 +1058,7 @@ impl GpuSurface {
                         if !fallback_reasons.is_empty() {
                             cpu.set_fallback_reason(Some(fallback_reasons.join("; ")));
                         }
-                        return Ok(Self::CpuRaster(cpu));
+                        return Ok(Self::CpuRaster(Box::new(cpu)));
                     }
                 }
                 other => {
@@ -1069,7 +1075,7 @@ impl GpuSurface {
 
     /// Creates a CPU-backed Skia raster surface directly (`skia_safe::surfaces::raster_n32_premul`).
     pub fn new_cpu(width: u32, height: u32) -> Result<Self, GpuSurfaceError> {
-        Ok(Self::CpuRaster(CpuSkiaSurface::new(width, height)?))
+        Ok(Self::CpuRaster(Box::new(CpuSkiaSurface::new(width, height)?)))
     }
 
     pub fn fallback_reason(&self) -> Option<&str> {
@@ -1137,7 +1143,7 @@ impl GpuSurfaceBackend for GpuSurface {
                 let scale = sw.extent().scale_factor;
                 sw.resize(width, height, scale)
             }
-            Self::CpuRaster(cpu) => GpuSurfaceBackend::resize(cpu, width, height),
+            Self::CpuRaster(cpu) => GpuSurfaceBackend::resize(cpu.as_mut(), width, height),
         }
     }
 
@@ -1161,9 +1167,13 @@ impl GpuSurfaceBackend for GpuSurface {
             Self::Direct3D12(sw) => {
                 sw.render_with_renderer(renderer, display_list, scale_factor, clear_color)
             }
-            Self::CpuRaster(cpu) => {
-                GpuSurfaceBackend::render_display_list(cpu, renderer, display_list, scale_factor, clear_color)
-            }
+            Self::CpuRaster(cpu) => GpuSurfaceBackend::render_display_list(
+                cpu.as_mut(),
+                renderer,
+                display_list,
+                scale_factor,
+                clear_color,
+            ),
         }
     }
 

@@ -119,7 +119,10 @@ pub struct UdpDeltaServer {
 impl UdpDeltaServer {
     pub fn bind(addr: impl ToSocketAddrs, config: PairingConfig) -> Result<Self, TransportError> {
         let socket = UdpSocket::bind(addr)?;
-        socket.set_read_timeout(Some(Duration::from_millis(5)))?;
+        // Use non-blocking mode instead of `SO_RCVTIMEO`: on Windows (`afd.sys`), cancelling a
+        // blocking `recvfrom` IRP when a short `SO_RCVTIMEO` expires can silently drop a datagram
+        // arriving on the same timer tick.
+        socket.set_nonblocking(true)?;
         let local_addr = socket.local_addr()?;
         let worker_sock = socket.try_clone()?;
 
@@ -364,7 +367,12 @@ fn udp_server_loop(
                     }
                 }
             }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {}
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            // On Windows, a peer closing its UDP socket triggers ICMP Port Unreachable -> WSAECONNRESET
+            // on the next `recv_from`; ignore it so one dead peer never terminates the server loop.
+            Err(err) if err.kind() == io::ErrorKind::ConnectionReset => {}
             Err(_) => break,
         }
 
@@ -428,7 +436,7 @@ impl UdpDeltaClient {
     fn establish_connection(&mut self, is_reconnect: bool) -> Result<u32, TransportError> {
         let bind_addr = if self.server_addr.is_ipv6() { "[::1]:0" } else { "127.0.0.1:0" };
         let socket = UdpSocket::bind(bind_addr)?;
-        socket.set_read_timeout(Some(Duration::from_millis(20)))?;
+        socket.set_nonblocking(true)?;
 
         let (config, client_last_seq) = {
             let g = self.shared.lock().unwrap();
@@ -460,7 +468,9 @@ impl UdpDeltaClient {
                         _ => {}
                     }
                 }
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {}
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {
+                    thread::sleep(Duration::from_millis(1));
+                }
                 Err(err) => return Err(TransportError::Io(err)),
             }
         };
@@ -474,7 +484,6 @@ impl UdpDeltaClient {
             guard.metrics.record_tx(now, ping.len());
         }
 
-        socket.set_read_timeout(Some(Duration::from_millis(5)))?;
         let worker_sock = socket.try_clone()?;
         self.socket = Some(socket);
         self.shutdown = Arc::new(AtomicBool::new(false));
@@ -618,7 +627,12 @@ fn udp_client_loop(
                     _ => guard.metrics.snapshot.malformed_packets_dropped += 1,
                 }
             }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {}
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            // On Windows, a peer closing its UDP socket triggers ICMP Port Unreachable -> WSAECONNRESET
+            // on the next `recv_from`; ignore it so one dead peer never terminates the server loop.
+            Err(err) if err.kind() == io::ErrorKind::ConnectionReset => {}
             Err(_) => break,
         }
 

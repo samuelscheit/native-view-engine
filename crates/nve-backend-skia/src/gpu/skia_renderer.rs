@@ -474,7 +474,8 @@ pub(crate) fn read_surface_to_pixel_buffer(
         ));
     }
     let dst = target.pixels_mut();
-    for (px, rgba) in dst.iter_mut().zip(scratch_rgba.chunks_exact(4)) {
+    let (rgba_chunks, _) = scratch_rgba.as_chunks::<4>();
+    for (px, rgba) in dst.iter_mut().zip(rgba_chunks) {
         *px = PixelBuffer::pack_rgb(rgba[0], rgba[1], rgba[2]);
     }
     Ok(())

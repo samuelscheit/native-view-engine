@@ -464,10 +464,11 @@ fn assert_parity_pixels(label: &str, buf: &PixelBuffer, scale: f32) {
     let mut lit_text_pixels = 0usize;
     for y in y0..y1 {
         for x in x0..x1 {
-            if let Some((_, g, b)) = buf.get_rgb(x, y) {
-                if g > 40 && b > 60 {
-                    lit_text_pixels += 1;
-                }
+            if let Some((_, g, b)) = buf.get_rgb(x, y)
+                && g > 40
+                && b > 60
+            {
+                lit_text_pixels += 1;
             }
         }
     }

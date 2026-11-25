@@ -94,7 +94,9 @@ pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBu
         let full_path = out_root.join(&file.relative_path);
         if check {
             match std::fs::read_to_string(&full_path) {
-                Ok(existing) if existing == file.content => touched.push(full_path),
+                Ok(existing) if existing.replace("\r\n", "\n") == file.content => {
+                    touched.push(full_path)
+                }
                 Ok(_) => drifted.push(format!("{} (content drifted)", file.relative_path)),
                 Err(e) => drifted.push(format!("{} ({e})", file.relative_path)),
             }

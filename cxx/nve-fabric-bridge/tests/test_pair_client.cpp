@@ -3,11 +3,13 @@
 #include "nve_host_runtime.hpp"
 #include "nve_pair_client.hpp"
 
+#if !defined(_WIN32)
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -92,6 +94,7 @@ std::vector<uint8_t> build_scene_cmd_buf(
   return std::vector<uint8_t>(slice.ptr, slice.ptr + slice.len);
 }
 
+#if !defined(_WIN32)
 bool send_all(int fd, const uint8_t* data, size_t len) {
   size_t off = 0u;
   while (off < len) {
@@ -208,6 +211,7 @@ bool handle_server_ws_upgrade(int fd) {
                            accept + "\r\n\r\n";
   return send_all(fd, reinterpret_cast<const uint8_t*>(resp.data()), resp.size());
 }
+#endif
 
 // -----------------------------------------------------------------------------
 // 1. Exact Rust `nve-interop` FNV-1a64 + Token Proof + Session ID + Endpoint Parsing
@@ -442,6 +446,7 @@ void test_rfc6455_ws_codec() {
 // -----------------------------------------------------------------------------
 // 5. Live Loopback TCP + WebSocket + UDP Roundtrip with NativeHostSession & FabricHost
 // -----------------------------------------------------------------------------
+#if !defined(_WIN32)
 void test_live_loopback_stream_roundtrip(bool use_ws) {
   const std::string token = "nve-wave10-secret-token";
   const auto expected_proof = nve::pair_wire::derive_token_proof(token, 1u);
@@ -781,6 +786,22 @@ void test_live_loopback_udp_fragmented_roundtrip() {
   session.disconnect_paired();
   udp_srv.join();
 }
+#else
+void test_win32_stub_connect_fails_cleanly() {
+  nve::PairClientConfig cfg{};
+  cfg.host = "127.0.0.1";
+  cfg.port = 7777u;
+  cfg.transport = nve::PairTransport::Tcp;
+  cfg.pairing_token = "nve-win32-stub-test";
+
+  nve::NativeHostSession session;
+  std::string err;
+  NVE_CHECK(!session.connect_paired(cfg, {}, &err));
+  NVE_CHECK(!session.is_paired());
+  NVE_CHECK(!session.is_paired_connected());
+  NVE_CHECK(!err.empty());
+}
+#endif
 
 } // namespace
 
@@ -789,10 +810,16 @@ int main() {
   test_nvd1_codecs_and_reorder_receiver();
   test_udp_fragmentation_and_adversarial_packets();
   test_rfc6455_ws_codec();
+#if !defined(_WIN32)
   test_live_loopback_stream_roundtrip(/*use_ws=*/false);
   test_live_loopback_stream_roundtrip(/*use_ws=*/true);
   test_live_loopback_udp_fragmented_roundtrip();
 
   std::cout << "nve_pair_client_test passed (NVT1/NVD1 + TCP + WS + UDP Frag + InputEvents)\n";
+#else
+  test_win32_stub_connect_fails_cleanly();
+
+  std::cout << "nve_pair_client_test passed (NVT1/NVD1 + WS codec + UDP Frag + Win32 stub)\n";
+#endif
   return 0;
 }

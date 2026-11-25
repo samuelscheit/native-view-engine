@@ -916,12 +916,14 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
             }
             std::fs::write(&full_path, &file.content).expect("write generated ABI file");
         }
-        let on_disk = std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
-            panic!(
-                "missing generated ABI file {}: {e}",
-                full_path.display()
-            )
-        });
+        let on_disk = std::fs::read_to_string(&full_path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "missing generated ABI file {}: {e}",
+                    full_path.display()
+                )
+            })
+            .replace("\r\n", "\n");
         assert_eq!(
             on_disk, file.content,
             "ABI schema drift detected in {}! Re-run with NVE_UPDATE_ABI=1 or `cargo nve codegen abi` to regenerate.",

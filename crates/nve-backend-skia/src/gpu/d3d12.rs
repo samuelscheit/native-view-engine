@@ -414,16 +414,12 @@ mod imp {
                 });
             }
             let t0 = Instant::now();
-            let surface = match &mut self.target {
+            let (surface, sync) = match &mut self.target {
                 D3D12Target::Window(win) => {
                     let idx = win.active_index.ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    &mut win.buffers[idx].0
+                    (&mut win.buffers[idx].0, SyncCpu::No)
                 }
-                D3D12Target::Offscreen { surface } => surface,
-            };
-            let sync = match self.target {
-                D3D12Target::Window(_) => SyncCpu::No,
-                D3D12Target::Offscreen { .. } => SyncCpu::Yes,
+                D3D12Target::Offscreen { surface } => (surface, SyncCpu::Yes),
             };
             self.direct_context
                 .flush_and_submit_surface(surface, sync)
@@ -529,10 +525,10 @@ mod imp {
                 continue;
             }
             let mut device: Option<ID3D12Device> = None;
-            if unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device) }.is_ok() {
-                if let Some(dev) = device {
-                    return Ok((adapter, dev));
-                }
+            if unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device) }.is_ok()
+                && let Some(dev) = device
+            {
+                return Ok((adapter, dev));
             }
         }
         Err(GpuSurfaceError::DeviceUnavailable(

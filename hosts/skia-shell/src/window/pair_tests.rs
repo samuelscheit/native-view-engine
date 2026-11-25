@@ -211,8 +211,13 @@ fn wait_until_pixel(
         thread::sleep(Duration::from_millis(5));
     }
     panic!(
-        "pixel ({x},{y}) never reached {expected:?}; last={:?}",
-        session.pixel_buffer().get_rgb(x, y)
+        "pixel ({x},{y}) never reached {expected:?}; last={:?}; transport={:?} connected={} frames={} seq={} metrics={:?}",
+        session.pixel_buffer().get_rgb(x, y),
+        session.app().transport(),
+        session.app().is_connected(),
+        session.app().frames_received(),
+        session.app().last_seq(),
+        session.app().metrics(),
     );
 }
 
@@ -277,6 +282,10 @@ fn hot_reload_client_decodes_nvp1_binary_and_json_frames() {
             latency_ms: 2,
         }
     );
+    let wake_deadline = Instant::now() + Duration::from_secs(1);
+    while wakes.load(Ordering::SeqCst) < 2 && Instant::now() < wake_deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
     assert!(wakes.load(Ordering::SeqCst) >= 2);
 
     drop(client);
