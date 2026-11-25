@@ -16,6 +16,7 @@ pub struct UiHarness {
     timestamp_us: u64,
 }
 
+#[allow(dead_code)]
 impl UiHarness {
     pub fn new(root: fn() -> Element) -> Self {
         let mut backend = HeadlessBackend::new();

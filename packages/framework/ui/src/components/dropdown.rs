@@ -7,7 +7,9 @@ use dioxus_core_macro::Props;
 use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
+use crate::components::overlays::resolve_anchored_position;
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
+use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::use_theme_rgba;
 
@@ -71,7 +73,8 @@ fn dispatch_menu_key(
 }
 
 /// Accessible dropdown menu supporting keyboard roving focus (`ArrowUp`/`ArrowDown`/
-/// `Home`/`End`), `Enter`/`Space` item selection, and `Escape` dismissal.
+/// `Home`/`End`), `Enter`/`Space` item selection, `Escape` dismissal, and optional
+/// collision-flipping positioning via [`crate::positioning::compute_overlay_position`].
 #[component]
 pub fn DropdownMenu(
     open: bool,
@@ -79,6 +82,10 @@ pub fn DropdownMenu(
     items: Vec<MenuItem>,
     #[props(default)] on_open_change: Option<EventHandler<bool>>,
     #[props(default)] on_select: Option<EventHandler<String>>,
+    #[props(default)] anchor_rect: Option<Rect>,
+    #[props(default)] overlay_size: Option<Size>,
+    #[props(default)] viewport: Option<Viewport>,
+    #[props(default)] position_options: Option<PositionOptions>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
@@ -114,6 +121,18 @@ pub fn DropdownMenu(
     let trigger_id = format!("{base_id}-trigger");
     let menu_id = format!("{base_id}-menu");
 
+    let default_opts = position_options.unwrap_or_else(|| {
+        PositionOptions::new(Placement::BottomStart).with_offset(4.0)
+    });
+    let est_height = (items.len().max(1) as f32 * 36.0) + theme.spacing.xs * 2.0;
+    let computed = resolve_anchored_position(
+        anchor_rect,
+        overlay_size,
+        viewport,
+        Some(default_opts),
+        Size::new(200.0, est_height),
+    );
+
     let wrap_style = TypedStyleBuilder::new()
         .flex_col()
         .gap(theme.spacing.xs)
@@ -147,7 +166,7 @@ pub fn DropdownMenu(
         })
         .finish();
 
-    let menu_style = TypedStyleBuilder::new()
+    let mut menu_builder = TypedStyleBuilder::new()
         .flex_col()
         .min_width_px(180.0)
         .padding(theme.spacing.xs)
@@ -160,8 +179,24 @@ pub fn DropdownMenu(
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: theme.elevation_shadow(),
-        })
-        .finish();
+        });
+    if let Some(pos) = computed {
+        if let Some(mw) = pos.max_width {
+            menu_builder = menu_builder.max_width_px(mw);
+        }
+        if let Some(mh) = pos.max_height {
+            menu_builder = menu_builder.max_height_px(mh);
+        }
+    }
+    let menu_style = menu_builder.finish();
+
+    let pos_placement = computed.map(|p| p.placement.as_str().to_owned());
+    let pos_x = computed.map(|p| format!("{:.2}", p.x));
+    let pos_y = computed.map(|p| format!("{:.2}", p.y));
+    let pos_flipped = computed.map(|p| if p.flipped { "true" } else { "false" }.to_owned());
+    let pos_shifted = computed.map(|p| if p.shifted { "true" } else { "false" }.to_owned());
+    let pos_arrow_x = computed.and_then(|p| p.arrow_x).map(|v| format!("{v:.2}"));
+    let pos_arrow_y = computed.and_then(|p| p.arrow_y).map(|v| format!("{v:.2}"));
 
     let aria_expanded = if open { "true" } else { "false" };
     let active_idx = roving.read().active_index();
@@ -289,6 +324,13 @@ pub fn DropdownMenu(
                     test_id: "{menu_id}",
                     accessibility_role: "menu",
                     tab_index: -1,
+                    "data-placement": pos_placement,
+                    "data-x": pos_x,
+                    "data-y": pos_y,
+                    "data-flipped": pos_flipped,
+                    "data-shifted": pos_shifted,
+                    "data-arrow-x": pos_arrow_x,
+                    "data-arrow-y": pos_arrow_y,
                     nve_style: menu_style,
                     onkeydown: move |ev: KeyEvent| {
                         let data = ev.data();

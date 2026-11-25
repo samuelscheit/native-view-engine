@@ -10,8 +10,25 @@ pub use crate::components::dropdown::{DropdownMenu, MenuItem};
 use crate::focus::{
     current_focused_id, notify_focus_scope, FocusTrap, FocusTrapAction, FocusableEntry,
 };
+use crate::positioning::{
+    compute_overlay_position, ComputedPosition, PositionOptions, Rect, Size, Viewport,
+};
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::use_theme_rgba;
+
+#[inline]
+pub(crate) fn resolve_anchored_position(
+    anchor_rect: Option<Rect>,
+    overlay_size: Option<Size>,
+    viewport: Option<Viewport>,
+    position_options: Option<PositionOptions>,
+    default_size: Size,
+) -> Option<ComputedPosition> {
+    let (anchor, vp) = (anchor_rect?, viewport?);
+    let size = overlay_size.unwrap_or(default_size);
+    let opts = position_options.unwrap_or_default();
+    Some(compute_overlay_position(anchor, size, vp, &opts))
+}
 
 /// Accessible modal dialog with `accessibilityRole="dialog"`, `ariaModal="true"`,
 /// [`FocusTrap`] (`Tab`/`Shift+Tab` wrap-around + focus restoration), `Escape` dismissal,
@@ -226,13 +243,18 @@ pub fn Dialog(
 pub use Dialog as Modal;
 pub use DialogProps as ModalProps;
 
-/// Accessible anchored popover (`aria-expanded`, `aria-controls`, `Escape` dismiss).
+/// Accessible anchored popover (`aria-expanded`, `aria-controls`, `Escape` dismiss) with
+/// optional collision-flipping positioning via [`compute_overlay_position`].
 #[component]
 pub fn Popover(
     open: bool,
     trigger_label: String,
     #[props(default)] on_open_change: Option<EventHandler<bool>>,
     #[props(default = true)] close_on_escape: bool,
+    #[props(default)] anchor_rect: Option<Rect>,
+    #[props(default)] overlay_size: Option<Size>,
+    #[props(default)] viewport: Option<Viewport>,
+    #[props(default)] position_options: Option<PositionOptions>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
     children: Element,
@@ -243,6 +265,14 @@ pub fn Popover(
     let base_id = test_id.as_deref().unwrap_or("nve-popover");
     let trigger_id = format!("{base_id}-trigger");
     let content_id = format!("{base_id}-content");
+
+    let computed = resolve_anchored_position(
+        anchor_rect,
+        overlay_size,
+        viewport,
+        position_options,
+        Size::new(240.0, 140.0),
+    );
 
     let wrap_style = TypedStyleBuilder::new()
         .flex_col()
@@ -277,7 +307,7 @@ pub fn Popover(
         })
         .finish();
 
-    let panel_style = TypedStyleBuilder::new()
+    let mut panel_builder = TypedStyleBuilder::new()
         .flex_col()
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
@@ -289,8 +319,24 @@ pub fn Popover(
             border_radius: theme.radii.md,
             opacity: 1.0,
             box_shadow: theme.elevation_shadow(),
-        })
-        .finish();
+        });
+    if let Some(pos) = computed {
+        if let Some(mw) = pos.max_width {
+            panel_builder = panel_builder.max_width_px(mw);
+        }
+        if let Some(mh) = pos.max_height {
+            panel_builder = panel_builder.max_height_px(mh);
+        }
+    }
+    let panel_style = panel_builder.finish();
+
+    let pos_placement = computed.map(|p| p.placement.as_str().to_owned());
+    let pos_x = computed.map(|p| format!("{:.2}", p.x));
+    let pos_y = computed.map(|p| format!("{:.2}", p.y));
+    let pos_flipped = computed.map(|p| if p.flipped { "true" } else { "false" }.to_owned());
+    let pos_shifted = computed.map(|p| if p.shifted { "true" } else { "false" }.to_owned());
+    let pos_arrow_x = computed.and_then(|p| p.arrow_x).map(|v| format!("{v:.2}"));
+    let pos_arrow_y = computed.and_then(|p| p.arrow_y).map(|v| format!("{v:.2}"));
 
     let aria_expanded = if open { "true" } else { "false" };
 
@@ -334,6 +380,13 @@ pub fn Popover(
                     test_id: "{content_id}",
                     accessibility_role: "dialog",
                     tab_index: -1,
+                    "data-placement": pos_placement,
+                    "data-x": pos_x,
+                    "data-y": pos_y,
+                    "data-flipped": pos_flipped,
+                    "data-shifted": pos_shifted,
+                    "data-arrow-x": pos_arrow_x,
+                    "data-arrow-y": pos_arrow_y,
                     nve_style: panel_style,
                     onkeydown: move |ev: KeyEvent| {
                         let data = ev.data();
@@ -352,12 +405,17 @@ pub fn Popover(
 }
 
 /// Accessible tooltip (`accessibilityRole="tooltip"`, `aria-expanded`, `aria-describedby`,
-/// `Escape` dismiss). Works in both controlled (`open: Some(bool)`) and uncontrolled modes.
+/// `Escape` dismiss) with optional anchored collision-flipping via [`compute_overlay_position`].
+/// Works in both controlled (`open: Some(bool)`) and uncontrolled modes.
 #[component]
 pub fn Tooltip(
     content: String,
     #[props(default)] open: Option<bool>,
     #[props(default)] on_open_change: Option<EventHandler<bool>>,
+    #[props(default)] anchor_rect: Option<Rect>,
+    #[props(default)] overlay_size: Option<Size>,
+    #[props(default)] viewport: Option<Viewport>,
+    #[props(default)] position_options: Option<PositionOptions>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
     children: Element,
@@ -373,12 +431,23 @@ pub fn Tooltip(
     let trigger_id = format!("{base_id}-trigger");
     let bubble_id = format!("{base_id}-bubble");
 
+    let default_tip_opts = position_options.unwrap_or_else(|| {
+        PositionOptions::new(crate::positioning::Placement::Top).with_offset(6.0)
+    });
+    let computed = resolve_anchored_position(
+        anchor_rect,
+        overlay_size,
+        viewport,
+        Some(default_tip_opts),
+        Size::new(160.0, 32.0),
+    );
+
     let wrap_style = TypedStyleBuilder::new()
         .flex_col()
         .gap(theme.spacing.xs)
         .finish();
 
-    let tip_style = TypedStyleBuilder::new()
+    let mut tip_builder = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
         .z_index(950)
         .surface(TypedSurfaceStyle {
@@ -392,8 +461,24 @@ pub fn Tooltip(
             border_radius: theme.radii.sm,
             opacity: 1.0,
             box_shadow: theme.elevation_shadow(),
-        })
-        .finish();
+        });
+    if let Some(pos) = computed {
+        if let Some(mw) = pos.max_width {
+            tip_builder = tip_builder.max_width_px(mw);
+        }
+        if let Some(mh) = pos.max_height {
+            tip_builder = tip_builder.max_height_px(mh);
+        }
+    }
+    let tip_style = tip_builder.finish();
+
+    let pos_placement = computed.map(|p| p.placement.as_str().to_owned());
+    let pos_x = computed.map(|p| format!("{:.2}", p.x));
+    let pos_y = computed.map(|p| format!("{:.2}", p.y));
+    let pos_flipped = computed.map(|p| if p.flipped { "true" } else { "false" }.to_owned());
+    let pos_shifted = computed.map(|p| if p.shifted { "true" } else { "false" }.to_owned());
+    let pos_arrow_x = computed.and_then(|p| p.arrow_x).map(|v| format!("{v:.2}"));
+    let pos_arrow_y = computed.and_then(|p| p.arrow_y).map(|v| format!("{v:.2}"));
 
     let tip_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
@@ -450,6 +535,13 @@ pub fn Tooltip(
                 view {
                     test_id: "{bubble_id}",
                     accessibility_role: "tooltip",
+                    "data-placement": pos_placement,
+                    "data-x": pos_x,
+                    "data-y": pos_y,
+                    "data-flipped": pos_flipped,
+                    "data-shifted": pos_shifted,
+                    "data-arrow-x": pos_arrow_x,
+                    "data-arrow-y": pos_arrow_y,
                     nve_style: tip_style,
                     text {
                         nve_style: tip_text_style,

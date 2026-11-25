@@ -437,6 +437,15 @@ pub(crate) fn canonical_a11y_attr_key(name: &str) -> Option<&'static str> {
         "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => Some("ariaValueNow"),
         "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => Some("ariaValueMin"),
         "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => Some("ariaValueMax"),
+        "ariaActiveDescendant" | "aria-activedescendant" | "aria_activedescendant" => {
+            Some("ariaActiveDescendant")
+        }
+        "ariaAutoComplete" | "aria-autocomplete" | "aria_autocomplete" => Some("ariaAutoComplete"),
+        "ariaMultiSelectable" | "aria-multiselectable" | "aria_multiselectable" => {
+            Some("ariaMultiSelectable")
+        }
+        "ariaOrientation" | "aria-orientation" | "aria_orientation" => Some("ariaOrientation"),
+        "ariaInvalid" | "aria-invalid" | "aria_invalid" => Some("ariaInvalid"),
         _ => None,
     }
 }

@@ -81,6 +81,11 @@ macro_rules! define_a11y_attrs {
             aria_valuenow => "ariaValueNow",
             aria_valuemin => "ariaValueMin",
             aria_valuemax => "ariaValueMax",
+            aria_activedescendant => "ariaActiveDescendant",
+            aria_autocomplete => "ariaAutoComplete",
+            aria_multiselectable => "ariaMultiSelectable",
+            aria_orientation => "ariaOrientation",
+            aria_invalid => "ariaInvalid",
         }
     };
 }
