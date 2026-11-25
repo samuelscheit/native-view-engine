@@ -243,6 +243,14 @@ impl WebAppController {
         self.session.borrow().backend().stylesheet().rule_count()
     }
 
+    pub fn keyboard_inset_height(&self) -> f32 {
+        self.session.borrow().backend().keyboard_insets().height
+    }
+
+    pub fn keyboard_visible(&self) -> bool {
+        self.session.borrow().backend().keyboard_insets().visible
+    }
+
     #[cfg(feature = "scene-view")]
     pub fn scene_view_ptr(&self) -> usize { self.session.borrow().scene().view_ptr() as usize }
 

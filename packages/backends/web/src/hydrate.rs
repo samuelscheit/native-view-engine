@@ -407,6 +407,7 @@ impl WebBackend {
 
         backend.attach_root_event_delegator(container);
         backend.attach_window_keydown_listener();
+        backend.attach_visual_viewport_listener();
         // Atomically detach pre-hydration capture listeners and buffer events for Frame 0 replay.
         backend.pending_pre_hydration_events =
             crate::event_replay::drain_browser_pre_hydration_events();

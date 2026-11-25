@@ -41,4 +41,5 @@ web-sys = { workspace = true, features = [
     "KeyboardEvent",
     "NodeList",
     "Performance",
+    "VisualViewport",
 ] }

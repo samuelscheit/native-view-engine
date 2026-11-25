@@ -4,7 +4,9 @@
 
 pub mod canvas_ir;
 pub mod client_hints;
+pub mod input_hints;
 pub mod interaction;
+pub mod keyboard;
 pub mod media;
 pub mod reconcile;
 pub mod style_patch;
@@ -18,9 +20,14 @@ pub use canvas_ir::{
 pub use client_hints::{
     ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
+pub use input_hints::{AutofillHint, InputMode};
 pub use interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+};
+pub use keyboard::{
+    effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
+    VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 pub use media::{
     MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, ResponsiveStylePatch,
@@ -47,7 +54,7 @@ pub fn resolve_tag(tag: &str) -> (ComponentKind, Option<&str>) {
         "text" | "span" | "p" | "h1" | "h2" | "h3" | "label" => (ComponentKind::Text, None),
         "scrollview" | "scroll" => (ComponentKind::ScrollView, None),
         "image" | "img" => (ComponentKind::Image, None),
-        "textinput" | "input" | "textarea" => (ComponentKind::TextInput, None),
+        "textinput" | "text_input" | "input" | "textarea" => (ComponentKind::TextInput, None),
         "pressable" | "button" => (ComponentKind::Pressable, None),
         "skia-canvas" | "canvas" => (ComponentKind::SkiaCanvas, None),
         other => (ComponentKind::Custom, Some(other)),

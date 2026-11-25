@@ -1,14 +1,17 @@
 //! Zero-JSON `NK1` binary keyboard encoding, CJK IME composition guards, and single-root
 //! `wasm32` DOM event delegation (`closest('[data-nve-id]')` -> `NodeEventMeta` lookup).
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use nve_abi::events::encode_keydown_bytes;
 use nve_abi::{ComponentKind, EventMask, NodeId};
 
+pub use crate::input_attrs::{ImeCompositionGuard, InputSyncTracker};
+#[cfg(any(target_arch = "wasm32", test))]
+pub use crate::input_attrs::IME_PROCESS_KEY_CODE;
+
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use nve_abi::hash::HashMap;
 #[cfg(target_arch = "wasm32")]
@@ -20,10 +23,6 @@ use wasm_bindgen::JsCast;
 
 #[cfg(target_arch = "wasm32")]
 use crate::WebBackend;
-
-/// Virtual key code reported by browsers (`KeyboardEvent.keyCode == 229`) during active IME
-/// composition, even when `isComposing` lags on WebKit/Safari.
-pub const IME_PROCESS_KEY_CODE: u32 = 229;
 
 /// Per-node event routing metadata consulted by the root event delegator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,42 +99,14 @@ pub fn encode_keydown_payload(
     encode_keydown_bytes(key, meta, ctrl, shift, alt)
 }
 
-/// Shared CJK IME composition state guard for `<input>` elements.
-#[derive(Debug, Clone, Default)]
-pub struct ImeCompositionGuard {
-    composing: Rc<Cell<bool>>,
-}
-
-impl ImeCompositionGuard {
-    pub fn new() -> Self {
-        Self {
-            composing: Rc::new(Cell::new(false)),
-        }
-    }
-
-    #[inline]
-    pub fn on_composition_start(&self) {
-        self.composing.set(true);
-    }
-
-    #[inline]
-    pub fn on_composition_end(&self) {
-        self.composing.set(false);
-    }
-
-    #[inline]
-    pub fn is_composing(&self) -> bool {
-        self.composing.get()
-    }
-
-    #[inline]
-    pub fn should_suppress_input(&self) -> bool {
-        self.composing.get()
-    }
-
-    #[inline]
-    pub fn should_suppress_keydown(&self, event_is_composing: bool, key_code: u32) -> bool {
-        self.composing.get() || event_is_composing || key_code == IME_PROCESS_KEY_CODE
+#[cfg(target_arch = "wasm32")]
+fn read_dom_input_value(el: &web_sys::Element) -> String {
+    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+        inp.value()
+    } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        ta.value()
+    } else {
+        String::new()
     }
 }
 
@@ -198,6 +169,7 @@ pub(crate) struct RootEventDelegator {
     container: web_sys::Element,
     click: Closure<dyn FnMut(web_sys::MouseEvent)>,
     input: Closure<dyn FnMut(web_sys::Event)>,
+    change: Closure<dyn FnMut(web_sys::Event)>,
     keydown: Closure<dyn FnMut(web_sys::KeyboardEvent)>,
     focusin: Closure<dyn FnMut(web_sys::FocusEvent)>,
     focusout: Closure<dyn FnMut(web_sys::FocusEvent)>,
@@ -212,6 +184,7 @@ impl Drop for RootEventDelegator {
         let c = &self.container;
         let _ = c.remove_event_listener_with_callback("click", self.click.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("input", self.input.as_ref().unchecked_ref());
+        let _ = c.remove_event_listener_with_callback("change", self.change.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("keydown", self.keydown.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("focusin", self.focusin.as_ref().unchecked_ref());
         let _ = c.remove_event_listener_with_callback("focusout", self.focusout.as_ref().unchecked_ref());
@@ -297,11 +270,13 @@ impl WebBackend {
             })
         };
 
-        // 2. input (bubbled, suppressed during active IME composition).
-        let input = {
+        // 2. input & change (bubbled, IME-guarded; `change` syncs OS/browser/password-manager
+        // autofill firing with zero preceding `keydown` or `input` events, deduplicated against `input`).
+        let make_text_listener = |is_change: bool| {
             let root = container.clone();
             let meta = Rc::clone(&self.node_event_meta);
             let ime = Rc::clone(&self.ime_guards);
+            let input_sync = Rc::clone(&self.input_sync);
             let events = Rc::clone(&self.events);
             let on_event = Rc::clone(&self.on_event);
             let surface_id = Rc::clone(&self.surface_id);
@@ -313,31 +288,38 @@ impl WebBackend {
                     })
                 };
                 if let Some((node_id, el)) = found {
-                    if ime
+                    let composing = ime
                         .borrow()
                         .get(&node_id)
-                        .is_some_and(ImeCompositionGuard::should_suppress_input)
-                    {
-                        return;
+                        .is_some_and(ImeCompositionGuard::should_suppress_input);
+                    let raw = read_dom_input_value(&el);
+                    let next = if is_change {
+                        input_sync
+                            .borrow_mut()
+                            .on_change_event(node_id, raw, composing)
+                    } else {
+                        input_sync
+                            .borrow_mut()
+                            .on_input_event(node_id, raw, composing)
+                    };
+                    if let Some(text) = next {
+                        emit_event(
+                            &events,
+                            &on_event,
+                            NativeEvent {
+                                surface_id: surface_id.get(),
+                                node_id,
+                                timestamp_us: now_us(),
+                                kind: NativeEventKind::TextChange,
+                                payload: EventPayload::Text(text),
+                            },
+                        );
                     }
-                    let text = el
-                        .dyn_ref::<web_sys::HtmlInputElement>()
-                        .map(|inp| inp.value())
-                        .unwrap_or_default();
-                    emit_event(
-                        &events,
-                        &on_event,
-                        NativeEvent {
-                            surface_id: surface_id.get(),
-                            node_id,
-                            timestamp_us: now_us(),
-                            kind: NativeEventKind::TextChange,
-                            payload: EventPayload::Text(text),
-                        },
-                    );
                 }
             })
         };
+        let input = make_text_listener(false);
+        let change = make_text_listener(true);
 
         // 3. keydown (bubbled on container, handles TextInput Enter submit with IME guard).
         let keydown = {
@@ -518,6 +500,7 @@ impl WebBackend {
             let root = container.clone();
             let meta = Rc::clone(&self.node_event_meta);
             let ime = Rc::clone(&self.ime_guards);
+            let input_sync = Rc::clone(&self.input_sync);
             let events = Rc::clone(&self.events);
             let on_event = Rc::clone(&self.on_event);
             let surface_id = Rc::clone(&self.surface_id);
@@ -533,10 +516,8 @@ impl WebBackend {
                         .entry(node_id)
                         .or_default()
                         .on_composition_end();
-                    let text = el
-                        .dyn_ref::<web_sys::HtmlInputElement>()
-                        .map(|inp| inp.value())
-                        .unwrap_or_default();
+                    let raw = read_dom_input_value(&el);
+                    let text = input_sync.borrow_mut().on_composition_end(node_id, raw);
                     emit_event(
                         &events,
                         &on_event,
@@ -554,6 +535,7 @@ impl WebBackend {
 
         let _ = container.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback("input", input.as_ref().unchecked_ref());
+        let _ = container.add_event_listener_with_callback("change", change.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback("focusin", focusin.as_ref().unchecked_ref());
         let _ = container.add_event_listener_with_callback("focusout", focusout.as_ref().unchecked_ref());
@@ -565,6 +547,7 @@ impl WebBackend {
             container,
             click,
             input,
+            change,
             keydown,
             focusin,
             focusout,

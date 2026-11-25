@@ -22,6 +22,7 @@ mod hot_patch;
 mod html;
 #[cfg(feature = "hydrate")]
 mod hydrate;
+mod input_attrs;
 mod media_css;
 #[cfg(any(
     feature = "nv-blur",
@@ -41,6 +42,7 @@ mod stylesheet;
 #[cfg(target_arch = "wasm32")]
 mod stylesheet_wasm;
 mod tree;
+mod visual_viewport;
 
 #[cfg(test)]
 mod css_format_tests;
@@ -67,7 +69,11 @@ pub use event_replay::{
 };
 pub use events::{
     encode_keydown_payload, resolve_delegated_node, should_intercept_anchor_click,
-    ImeCompositionGuard, NodeEventMeta,
+    ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
+};
+pub use visual_viewport::{
+    effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
+    KEYBOARD_INSETS_EVENT_NAME, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
@@ -138,6 +144,9 @@ use wasm_bindgen::JsCast;
 
 #[cfg(target_arch = "wasm32")]
 use crate::events::RootEventDelegator;
+use crate::visual_viewport::KeyboardInsetsCallback;
+#[cfg(target_arch = "wasm32")]
+use crate::visual_viewport::VisualViewportTracker;
 #[cfg(feature = "hydrate")]
 use crate::hydrate::HydratedControlState;
 #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
@@ -164,6 +173,8 @@ pub struct WebBackend {
     pub(crate) events: Rc<RefCell<Vec<NativeEvent>>>,
     pub(crate) on_event: Rc<RefCell<Option<RenderCallback>>>,
     pub(crate) node_event_meta: Rc<RefCell<HashMap<NodeId, NodeEventMeta>>>,
+    pub(crate) keyboard_insets: Rc<Cell<KeyboardInsets>>,
+    pub(crate) on_keyboard_insets: Rc<RefCell<Option<KeyboardInsetsCallback>>>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydrating: bool,
     #[cfg(feature = "hydrate")]
@@ -189,9 +200,13 @@ pub struct WebBackend {
     #[cfg(target_arch = "wasm32")]
     pub(crate) ime_guards: Rc<RefCell<HashMap<NodeId, ImeCompositionGuard>>>,
     #[cfg(target_arch = "wasm32")]
+    pub(crate) input_sync: Rc<RefCell<InputSyncTracker>>,
+    #[cfg(target_arch = "wasm32")]
     pub(crate) root_delegator: Option<RootEventDelegator>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) window_keydown: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) visual_viewport_tracker: Option<VisualViewportTracker>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -205,7 +220,8 @@ impl Drop for WebBackend {
                 window_keydown.as_ref().unchecked_ref(),
             );
         }
-        // Dropping `root_delegator` detaches all 8 delegated container listeners cleanly.
+        // Detach `visualViewport` listeners and all delegated container listeners cleanly.
+        self.visual_viewport_tracker = None;
         self.root_delegator = None;
         self.dom_nodes.clear();
     }
@@ -247,6 +263,8 @@ impl WebBackend {
             events: Rc::new(RefCell::new(Vec::new())),
             on_event: Rc::new(RefCell::new(None)),
             node_event_meta: Rc::new(RefCell::new(meta)),
+            keyboard_insets: Rc::new(Cell::new(KeyboardInsets::HIDDEN)),
+            on_keyboard_insets: Rc::new(RefCell::new(None)),
             #[cfg(feature = "hydrate")]
             hydrating: false,
             #[cfg(feature = "hydrate")]
@@ -272,9 +290,13 @@ impl WebBackend {
             #[cfg(target_arch = "wasm32")]
             ime_guards: Rc::new(RefCell::new(HashMap::default())),
             #[cfg(target_arch = "wasm32")]
+            input_sync: Rc::new(RefCell::new(InputSyncTracker::new())),
+            #[cfg(target_arch = "wasm32")]
             root_delegator: None,
             #[cfg(target_arch = "wasm32")]
             window_keydown: None,
+            #[cfg(target_arch = "wasm32")]
+            visual_viewport_tracker: None,
         }
     }
 
@@ -318,6 +340,7 @@ impl WebBackend {
         backend.flush_dirty_styles(&[ROOT_NODE_ID]);
         backend.attach_root_event_delegator(container);
         backend.attach_window_keydown_listener();
+        backend.attach_visual_viewport_listener();
         backend
     }
 
@@ -364,7 +387,10 @@ impl WebBackend {
     pub(crate) fn remove_node_event_meta(&mut self, node_id: NodeId) {
         self.node_event_meta.borrow_mut().remove(&node_id);
         #[cfg(target_arch = "wasm32")]
-        self.ime_guards.borrow_mut().remove(&node_id);
+        {
+            self.ime_guards.borrow_mut().remove(&node_id);
+            self.input_sync.borrow_mut().remove(node_id);
+        }
     }
 
     pub(crate) fn queue_leaf_text_children(&self, parent_id: NodeId, dirty_styles: &mut Vec<NodeId>) {

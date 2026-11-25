@@ -2003,6 +2003,7 @@ dependencies = [
  "dioxus-signals",
  "nve-abi",
  "nve-backend-headless",
+ "nve-backend-web",
  "nve-dioxus",
  "nve-interop",
 ]

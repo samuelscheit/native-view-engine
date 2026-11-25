@@ -19,6 +19,7 @@ dioxus-signals = { workspace = true }
 
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
+nve-backend-web = { workspace = true }
 
 [[test]]
 name = "spatial_focus_tests"

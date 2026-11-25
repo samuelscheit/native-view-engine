@@ -16,14 +16,17 @@ pub use components::{
     FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
 };
 pub use components::{
-    default_combobox_filter, use_toast, Badge, BadgeVariant, BottomSheet, BottomSheetState, Button,
-    ButtonSize, ButtonVariant, Card, CardVariant, Checkbox, Col, Combobox, ComboboxAction,
-    ComboboxOption, ComboboxState, Dialog, DragHandoff, DropdownMenu, IconButton, Input, MenuItem,
-    Modal, Popover, Row, Separator, SheetDetent, SheetSnapOutcome, SplitBound, SplitPane,
-    SplitPaneState, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot, ToastController,
-    ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue, ToastVariant, ToastViewport,
-    Tooltip,
+    default_combobox_filter, effective_bottom_inset, throw_error, throw_ui_error, ui_error,
+    use_effective_bottom_inset, use_keyboard_insets, use_toast, Badge, BadgeVariant, BottomSheet,
+    BottomSheetState, Button, ButtonSize, ButtonVariant, CapturedError, Card, CardVariant,
+    Checkbox, Col, Combobox, ComboboxAction, ComboboxOption, ComboboxState, Dialog, DragHandoff,
+    DropdownMenu, ErrorBoundary, ErrorBoundaryReset, ErrorContext, ErrorFallback, IconButton,
+    Input, KeyboardAvoidingView, KeyboardInsets, MenuItem, Modal, Popover, Row, Separator,
+    SheetDetent, SheetSnapOutcome, SplitBound, SplitPane, SplitPaneState, Stack, Switch, TabList,
+    TabPanel, TabTrigger, TabsRoot, ToastController, ToastItem, ToastLive, ToastOptions,
+    ToastProvider, ToastQueue, ToastVariant, ToastViewport, Tooltip, UiError, UiErrorReport,
 };
+pub use nve_dioxus::{AutofillHint, InputMode};
 pub use focus::{
     current_focused_id, notify_focus_scope, use_focus_scope, FocusScope, FocusScopeProvider,
     FocusTrap, FocusTrapAction, FocusableEntry, Orientation, RovingFocus,
@@ -57,14 +60,18 @@ pub mod prelude {
         FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
     };
     pub use crate::components::{
-        default_combobox_filter, use_toast, Badge, BadgeVariant, BottomSheet, BottomSheetState,
-        Button, ButtonSize, ButtonVariant, Card, CardVariant, Checkbox, Col, Combobox,
-        ComboboxAction, ComboboxOption, ComboboxState, Dialog, DragHandoff, DropdownMenu,
-        IconButton, Input, MenuItem, Modal, Popover, Row, Separator, SheetDetent,
-        SheetSnapOutcome, SplitBound, SplitPane, SplitPaneState, Stack, Switch, TabList, TabPanel,
-        TabTrigger, TabsRoot, ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider,
-        ToastQueue, ToastVariant, ToastViewport, Tooltip,
+        default_combobox_filter, effective_bottom_inset, throw_error, throw_ui_error, ui_error,
+        use_effective_bottom_inset, use_keyboard_insets, use_toast, Badge, BadgeVariant,
+        BottomSheet, BottomSheetState, Button, ButtonSize, ButtonVariant, CapturedError, Card,
+        CardVariant, Checkbox, Col, Combobox, ComboboxAction, ComboboxOption, ComboboxState,
+        Dialog, DragHandoff, DropdownMenu, ErrorBoundary as UiErrorBoundary, ErrorBoundaryReset,
+        ErrorContext, ErrorFallback, IconButton, Input, KeyboardAvoidingView, KeyboardInsets,
+        MenuItem, Modal, Popover, Row, Separator, SheetDetent, SheetSnapOutcome, SplitBound,
+        SplitPane, SplitPaneState, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot,
+        ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue,
+        ToastVariant, ToastViewport, Tooltip, UiError, UiErrorReport,
     };
+    pub use nve_dioxus::{AutofillHint, InputMode};
     pub use crate::focus::{
         use_focus_scope, FocusScope, FocusScopeProvider, FocusTrap, FocusTrapAction,
         FocusableEntry, Orientation, RovingFocus,

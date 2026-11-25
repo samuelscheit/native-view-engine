@@ -3,12 +3,13 @@
 
 use super::types::{
     f32_changed, CanHover, ColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard,
-    HighContrast, HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion,
-    SafeAreaInsets, ScaleFactor, SizeClass, TextScale, UiDensity, VerticalSizeClass,
+    HighContrast, HostToolkit, KeyboardInsets, Locale, Orientation, PlatformOs, PointerKind,
+    ReducedMotion, SafeAreaInsets, ScaleFactor, SizeClass, TextScale, UiDensity,
+    VerticalSizeClass,
 };
 
 /// Number of built-in fast-path trait slots stored directly inside [`BuiltinTraits`].
-pub const BUILTIN_TRAIT_COUNT: usize = 18;
+pub const BUILTIN_TRAIT_COUNT: usize = 19;
 
 /// Compile-time slot index for every built-in fast-path trait.
 #[repr(u8)]
@@ -32,6 +33,7 @@ pub enum BuiltinTraitSlot {
     UiDensity = 15,
     Locale = 16,
     DeviceFormFactor = 17,
+    KeyboardInsets = 18,
 }
 
 impl BuiltinTraitSlot {
@@ -64,6 +66,7 @@ impl BuiltinTraitSlot {
         Self::UiDensity,
         Self::Locale,
         Self::DeviceFormFactor,
+        Self::KeyboardInsets,
     ];
 }
 
@@ -110,6 +113,7 @@ pub struct BuiltinTraits {
     pub container_size: ContainerSize,
     pub orientation: Orientation,
     pub safe_area: SafeAreaInsets,
+    pub keyboard_insets: KeyboardInsets,
     pub scale_factor: f32,
     pub pointer_kind: PointerKind,
     pub can_hover: bool,
@@ -133,6 +137,7 @@ impl Default for BuiltinTraits {
             container_size: ContainerSize::ZERO,
             orientation: Orientation::Portrait,
             safe_area: SafeAreaInsets::ZERO,
+            keyboard_insets: KeyboardInsets::HIDDEN,
             scale_factor: 1.0,
             pointer_kind: PointerKind::Fine,
             can_hover: false,
@@ -298,6 +303,16 @@ impl BuiltinTraits {
                 self.device_form_factor = src.device_form_factor;
                 changed
             }
+            BuiltinTraitSlot::KeyboardInsets => {
+                let changed = f32_changed(self.keyboard_insets.height, src.keyboard_insets.height)
+                    || self.keyboard_insets.visible != src.keyboard_insets.visible
+                    || self.keyboard_insets.animation_duration_ms
+                        != src.keyboard_insets.animation_duration_ms
+                    || self.keyboard_insets.interactive_dismiss
+                        != src.keyboard_insets.interactive_dismiss;
+                self.keyboard_insets = src.keyboard_insets;
+                changed
+            }
         }
     }
 
@@ -337,6 +352,14 @@ impl BuiltinTraits {
             BuiltinTraitSlot::Locale => self.locale == other.locale,
             BuiltinTraitSlot::DeviceFormFactor => {
                 self.device_form_factor == other.device_form_factor
+            }
+            BuiltinTraitSlot::KeyboardInsets => {
+                !f32_changed(self.keyboard_insets.height, other.keyboard_insets.height)
+                    && self.keyboard_insets.visible == other.keyboard_insets.visible
+                    && self.keyboard_insets.animation_duration_ms
+                        == other.keyboard_insets.animation_duration_ms
+                    && self.keyboard_insets.interactive_dismiss
+                        == other.keyboard_insets.interactive_dismiss
             }
         }
     }
@@ -479,6 +502,32 @@ impl TraitKey for SafeAreaInsets {
             || f32_changed(builtins.safe_area.bottom, value.bottom)
             || f32_changed(builtins.safe_area.left, value.left);
         builtins.safe_area = *value;
+        Some(changed)
+    }
+}
+
+impl TraitKey for KeyboardInsets {
+    type Value = KeyboardInsets;
+
+    #[inline]
+    fn default_value() -> KeyboardInsets {
+        KeyboardInsets::HIDDEN
+    }
+
+    const BUILTIN_SLOT: Option<BuiltinTraitSlot> = Some(BuiltinTraitSlot::KeyboardInsets);
+
+    #[inline]
+    fn read_builtin(builtins: &BuiltinTraits) -> Option<KeyboardInsets> {
+        Some(builtins.keyboard_insets)
+    }
+
+    #[inline]
+    fn write_builtin(builtins: &mut BuiltinTraits, value: &KeyboardInsets) -> Option<bool> {
+        let changed = f32_changed(builtins.keyboard_insets.height, value.height)
+            || builtins.keyboard_insets.visible != value.visible
+            || builtins.keyboard_insets.animation_duration_ms != value.animation_duration_ms
+            || builtins.keyboard_insets.interactive_dismiss != value.interactive_dismiss;
+        builtins.keyboard_insets = *value;
         Some(changed)
     }
 }

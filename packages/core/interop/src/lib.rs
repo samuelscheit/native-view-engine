@@ -112,9 +112,10 @@ pub use native_view::{
 pub use traits::{
     BUILTIN_TRAIT_COUNT, BuiltinTraitSlot, BuiltinTraits, CanHover,
     ColorScheme as TraitColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard,
-    HighContrast, HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion,
-    ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitResolver,
-    TraitStore, UiDensity, VerticalSizeClass, ViewportChangeMask,
+    HighContrast, HostToolkit, KeyboardInsets, Locale, Orientation, PlatformOs, PointerKind,
+    ReducedMotion, ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides,
+    TraitResolver, TraitStore, UiDensity, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX, VerticalSizeClass,
+    ViewportChangeMask, effective_bottom_inset, keyboard_insets_from_visual_viewport,
 };
 
 use nve_abi::SurfaceId;

@@ -6,8 +6,8 @@ use std::borrow::Cow;
 use dioxus_core::{AttributeValue, ElementId};
 use nve_abi::{CommandBufferBuilder, LayoutProps, NodeId, RawPropValue, RawPropValueRef, StyleProps};
 use nve_components::{
-    apply_typed_attr_with_raw, canonical_raw_style_key, DrawListDecoder, MediaQuery,
-    DRAW_LIST_ATTR_PREFIX,
+    apply_typed_attr_with_raw, canonical_raw_style_key, AutofillHint, DrawListDecoder, InputMode,
+    MediaQuery, DRAW_LIST_ATTR_PREFIX,
 };
 use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
 
@@ -96,6 +96,7 @@ impl NveMutationWriter {
                 }
                 let prop_name = canonical_raw_style_key(name)
                     .or_else(|| canonical_a11y_attr_key(name))
+                    .or_else(|| canonical_input_attr_key(name))
                     .unwrap_or(name);
                 self.builder
                     .set_raw_prop(node_id, prop_name, &RawPropValue::Null);
@@ -147,6 +148,12 @@ impl NveMutationWriter {
                             rec.native_handle_binder = Some(binder.clone());
                         }
                     }
+                } else if let Some(hint) = any.as_any().downcast_ref::<AutofillHint>() {
+                    self.builder
+                        .set_raw_prop_str(node_id, "autocomplete", hint.as_html_autocomplete());
+                } else if let Some(mode) = any.as_any().downcast_ref::<InputMode>() {
+                    self.builder
+                        .set_raw_prop_str(node_id, "inputmode", mode.as_html_inputmode());
                 }
             }
             AttributeValue::Listener(_) => {}
@@ -400,6 +407,7 @@ impl NveMutationWriter {
         }
         let prop_name = canonical_raw_style_key(name)
             .or_else(|| canonical_a11y_attr_key(name))
+            .or_else(|| canonical_input_attr_key(name))
             .unwrap_or(name);
         self.builder.set_raw_prop_str(node_id, prop_name, value);
     }
@@ -450,6 +458,17 @@ pub(crate) fn canonical_a11y_attr_key(name: &str) -> Option<&'static str> {
         }
         "ariaOrientation" | "aria-orientation" | "aria_orientation" => Some("ariaOrientation"),
         "ariaInvalid" | "aria-invalid" | "aria_invalid" => Some("ariaInvalid"),
+        _ => None,
+    }
+}
+
+/// Canonicalizes cross-platform text-input hint attribute keys into their canonical HTML/wire
+/// names (`autocomplete`, `inputmode`) with zero binary ABI changes.
+#[inline]
+pub(crate) fn canonical_input_attr_key(name: &str) -> Option<&'static str> {
+    match name {
+        "autocomplete" | "autoComplete" | "auto_complete" => Some("autocomplete"),
+        "inputmode" | "inputMode" | "input_mode" => Some("inputmode"),
         _ => None,
     }
 }

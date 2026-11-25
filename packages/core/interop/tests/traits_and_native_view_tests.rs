@@ -808,11 +808,31 @@ fn tv_watch_spatial_platform_os_form_factor_and_pointer_discriminants() {
 }
 
 #[test]
-fn builtin_traits_18_slots_host_defaults_and_resolver_form_factors() {
-    assert_eq!(BUILTIN_TRAIT_COUNT, 18);
-    assert_eq!(BuiltinTraitSlot::ALL.len(), 18);
+fn builtin_traits_19_slots_host_defaults_and_resolver_form_factors() {
+    assert_eq!(BUILTIN_TRAIT_COUNT, 19);
+    assert_eq!(BuiltinTraitSlot::ALL.len(), 19);
     assert_eq!(BuiltinTraitSlot::DeviceFormFactor.index(), 17);
     assert_eq!(BuiltinTraitSlot::DeviceFormFactor.bit(), 1u32 << 17);
+    assert_eq!(BuiltinTraitSlot::KeyboardInsets.index(), 18);
+    assert_eq!(BuiltinTraitSlot::KeyboardInsets.bit(), 1u32 << 18);
+
+    // KeyboardInsets integrates into TraitStore with per-trait revision tracking and overrides.
+    let mut kb_store = TraitStore::new();
+    assert_eq!(kb_store.get::<nve_interop::KeyboardInsets>(), nve_interop::KeyboardInsets::HIDDEN);
+    assert_eq!(kb_store.revision::<nve_interop::KeyboardInsets>(), 0);
+    let shown = nve_interop::KeyboardInsets::new(336.0, true, 250, true);
+    assert!(kb_store.set::<nve_interop::KeyboardInsets>(shown));
+    assert_eq!(kb_store.revision::<nve_interop::KeyboardInsets>(), 1);
+    assert!(!kb_store.set::<nve_interop::KeyboardInsets>(shown));
+    assert_eq!(kb_store.revision::<nve_interop::KeyboardInsets>(), 1);
+    assert_eq!(
+        nve_interop::effective_bottom_inset(34.0, kb_store.get::<nve_interop::KeyboardInsets>(), false),
+        336.0
+    );
+    assert_eq!(
+        nve_interop::effective_bottom_inset(34.0, kb_store.get::<nve_interop::KeyboardInsets>(), true),
+        0.0
+    );
 
     // Host input & form-factor defaults per platform
     let tvos = BuiltinTraits::for_platform(PlatformOs::TvOs, HostToolkit::SwiftUi);

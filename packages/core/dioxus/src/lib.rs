@@ -6,6 +6,7 @@
 
 pub mod dioxus_elements;
 pub use dioxus_elements as elements;
+pub mod error_boundary;
 mod events;
 pub mod hot_patch;
 pub mod native_view;
@@ -21,6 +22,11 @@ pub use elements::{
     FocusEvent, FocusEventData, KeyEvent, KeyEventData, ScrollEvent, ScrollEventData, SubmitEvent,
     SubmitEventData,
 };
+pub use error_boundary::{
+    throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
+    ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
+};
+pub use nve_components::input_hints::{AutofillHint, InputMode};
 pub use native_view::{
     use_native_view_handle, use_native_view_registry, use_provide_native_view_registry,
     BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
@@ -48,13 +54,14 @@ pub use signal_archive::{
 };
 pub use surface::DioxusSurface;
 pub use traits::{
-    use_environment, use_provide_existing_trait_store, use_provide_trait_store, use_trait,
-    use_trait_store, BuiltinTraitSlot, BuiltinTraits, CanHover, ColorScheme, ContainerSize,
-    HasHardwareKeyboard, HighContrast, HostToolkit, Locale, Orientation, PlatformOnly, PlatformOs,
+    effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
+    use_provide_existing_trait_store, use_provide_trait_store, use_trait, use_trait_store,
+    BuiltinTraitSlot, BuiltinTraits, CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard,
+    HighContrast, HostToolkit, KeyboardInsets, Locale, Orientation, PlatformOnly, PlatformOs,
     PointerKind, ReactiveTraitStore, ReducedMotion, SafeAreaInsets, ScaleFactor, SizeClass,
     TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitResolver,
     TraitScope, TraitStore, TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
-    ViewportChangeMask,
+    ViewportChangeMask, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 pub use typed_style::{
     parse_flex_align, parse_flex_direction, parse_flex_justify, ShowOn, TypedStyle,
@@ -89,14 +96,20 @@ pub mod prelude {
         VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand,
         WebViewProps,
     };
+    pub use crate::error_boundary::{
+        throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
+        ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
+    };
     pub use crate::traits::{
-        use_environment, use_provide_existing_trait_store, use_provide_trait_store, use_trait,
-        use_trait_store, CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast,
-        HostToolkit, Locale, Orientation, PlatformOnly, PlatformOs, PointerKind,
+        effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
+        use_provide_existing_trait_store, use_provide_trait_store, use_trait, use_trait_store,
+        CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast, HostToolkit,
+        KeyboardInsets, Locale, Orientation, PlatformOnly, PlatformOs, PointerKind,
         ReactiveTraitStore, ReducedMotion, SafeAreaInsets, ScaleFactor, SizeClass, TextScale,
         TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitScope, TraitStore,
         TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
     };
+    pub use nve_components::input_hints::{AutofillHint, InputMode};
     pub use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
     pub use crate::use_signal;
     pub use crate::{

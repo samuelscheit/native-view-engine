@@ -136,14 +136,16 @@ impl WebBackend {
         if el.raw_props.get("disabled").is_some_and(is_truthy_raw_prop) {
             out.push_str(" disabled aria-disabled=\"true\"");
         }
-        if el.kind == ComponentKind::TextInput
-            && el
+        if el.kind == ComponentKind::TextInput {
+            if el
                 .raw_props
                 .get("secureTextEntry")
                 .or_else(|| el.raw_props.get("secure_text_entry"))
                 .is_some_and(is_truthy_raw_prop)
-        {
-            out.push_str(" type=\"password\"");
+            {
+                out.push_str(" type=\"password\"");
+            }
+            crate::input_attrs::write_input_hint_attrs_html(&el.raw_props, out);
         }
         if el
             .raw_props
