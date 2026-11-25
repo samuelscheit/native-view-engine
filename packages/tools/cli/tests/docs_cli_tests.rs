@@ -240,8 +240,22 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
         "dev-only bundle should be excluded from production static docs output"
     );
     let studio_unified = fs::read_to_string(out_unified.join("examples/studio/index.html")).unwrap();
-    assert!(studio_unified.contains("../_runtime/index.html?app=studio&ws=off&embed=1"));
+    assert!(studio_unified.contains("../_runtime/studio.html?app=studio&ws=off&embed=1"));
     assert!(studio_unified.contains("data-bundle-mode=\"unified\""));
+    assert!(studio_unified.contains("data-testid=\"portal-reset-btn\""));
+    let studio_runtime_html =
+        fs::read_to_string(out_unified.join("examples/_runtime/studio.html")).unwrap();
+    assert!(studio_runtime_html.contains("data-nve-base"));
+    assert!(studio_runtime_html.contains("data-nve-ssr"));
+    assert!(studio_runtime_html.contains("data-nve-snapshot-boot"));
+    assert!(studio_runtime_html.contains("data-nve-replay"));
+    let counter_unified =
+        fs::read_to_string(out_unified.join("examples/counter/index.html")).unwrap();
+    assert!(counter_unified.contains("../_runtime/counter.html?app=counter&ws=off&embed=1"));
+    let counter_runtime_html =
+        fs::read_to_string(out_unified.join("examples/_runtime/counter.html")).unwrap();
+    assert!(counter_runtime_html.contains("data-nve-ssr"));
+    assert!(counter_runtime_html.contains("data-nve-snapshot-boot"));
 
     // A `pkg/` without the app's manifest is not a bundle for that app.
     let no_manifest_src = temp_test_dir("ws-no-manifest-src");

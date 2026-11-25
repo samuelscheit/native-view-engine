@@ -49,6 +49,23 @@ const _: () = {
     assert!(PRE_HYDRATION_REPLAY_SCRIPT_TAG.len() < 1024);
 };
 
+/// Returns the pre-hydration `<script data-nve-replay>` tag bound to `mount_id` (reusing
+/// [`PRE_HYDRATION_REPLAY_SCRIPT_TAG`] verbatim when `mount_id == "app"`).
+pub fn pre_hydration_replay_script_tag(mount_id: &str) -> String {
+    let sanitized: String = mount_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    if sanitized.is_empty() || sanitized == "app" {
+        return PRE_HYDRATION_REPLAY_SCRIPT_TAG.to_owned();
+    }
+    PRE_HYDRATION_REPLAY_SCRIPT_TAG.replacen(
+        "getElementById('app')",
+        &format!("getElementById('{sanitized}')"),
+        1,
+    )
+}
+
 /// Typed pre-hydration user interaction drained atomically from `window.__nveReplayDrain()`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CapturedPreHydrationEvent {

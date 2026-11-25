@@ -24,6 +24,14 @@ use crate::wasm_pair::active_paired_scene_view_ptr;
 use crate::wasm_popup::{
     popup_window_for_surface, register_mounted_surface_window, unregister_surface_window,
 };
+use crate::wasm_snapshot::{
+    clear_persisted_snapshot, load_persisted_state, query_has_reset, query_has_ssr_demo,
+    SnapshotPersistenceGuard, SnapshotTrigger,
+};
+#[cfg(feature = "app-counter")]
+use nve_example_counter::{decode_counter_state, COUNTER_STATE_BIN_VERSION};
+#[cfg(feature = "app-studio")]
+use nve_studio_workspace::{WorkspaceState, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
 #[cfg(any(feature = "dev", feature = "multi-window"))]
 #[wasm_bindgen(inline_js = "export function nve_extract_binary_message(data) {
@@ -131,6 +139,7 @@ struct ActiveShell {
     #[cfg(feature = "dev")]
     _hot_reload: Option<HotReloadSocket>,
     _resize_listener: Option<WindowResizeListener>,
+    _snapshot_guard: Option<SnapshotPersistenceGuard>,
 }
 
 thread_local! {
@@ -197,7 +206,9 @@ pub struct WebAppController {
     mount_id: String,
     surface_id: SurfaceId,
     generation: u64,
+    restored_from_snapshot: bool,
     session: Rc<RefCell<WebAppSession>>,
+    snapshot_trigger: Option<SnapshotTrigger>,
 }
 
 #[wasm_bindgen]
@@ -243,6 +254,34 @@ impl WebAppController {
         self.session.borrow().backend().stylesheet().rule_count()
     }
 
+    pub fn hydration_replayed_events(&self) -> usize {
+        self.session.borrow().backend().hydration_report().replayed_events
+    }
+
+    pub fn hydration_reconciled_dirty_controls(&self) -> usize {
+        self.session
+            .borrow()
+            .backend()
+            .hydration_report()
+            .reconciled_dirty_controls
+    }
+
+    pub fn restored_from_snapshot(&self) -> bool {
+        self.restored_from_snapshot
+    }
+
+    pub fn save_snapshot_now(&self) -> bool {
+        self.snapshot_trigger
+            .as_ref()
+            .is_some_and(|t| t.flush_now(true))
+    }
+
+    pub fn clear_snapshot(&self) {
+        if let Some(t) = self.snapshot_trigger.as_ref() {
+            t.clear();
+        }
+    }
+
     #[cfg(feature = "scene-view")]
     pub fn scene_view_ptr(&self) -> usize { self.session.borrow().scene().view_ptr() as usize }
 
@@ -259,11 +298,16 @@ impl WebAppController {
     }
 
     pub fn dispatch_keydown(&self, key: &str, meta: bool, ctrl: bool) -> Result<bool, JsValue> {
-        self.session
+        let changed = self
+            .session
             .borrow_mut()
             .dispatch_keydown(key, meta, ctrl)
             .map(|timing| timing.is_some())
-            .map_err(|e| JsValue::from_str(&format!("keydown dispatch failed: {e}")))
+            .map_err(|e| JsValue::from_str(&format!("keydown dispatch failed: {e}")))?;
+        if changed && let Some(t) = self.snapshot_trigger.as_ref() {
+            t.schedule_debounced();
+        }
+        Ok(changed)
     }
 
     pub fn unmount(&self) {
@@ -435,16 +479,20 @@ fn find_mount_container(
     Ok((window, container))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn start_surface_app_inner<F>(
     app_name: &'static str,
+    app_slug: &'static str,
+    schema_version: u32,
     surface_id: SurfaceId,
     mount_id: &str,
     ws_url: Option<String>,
     hydrate: bool,
+    state_is_valid: fn(&[u8]) -> bool,
     build_session: F,
 ) -> Result<WebAppController, JsValue>
 where
-    F: FnOnce(SurfaceId, WebBackend, Viewport) -> WebAppSession,
+    F: FnOnce(SurfaceId, WebBackend, Viewport, Option<&[u8]>) -> (WebAppSession, bool),
 {
     if surface_id == 0 {
         return Err(JsValue::from_str("surface_id must be non-zero"));
@@ -452,26 +500,97 @@ where
     let (window, container) = find_mount_container(surface_id, mount_id)?;
     let viewport = browser_viewport(&container);
     let container_for_resize = container.clone();
-    let backend = if hydrate {
-        WebBackend::hydrate_into(container)
+    let container_for_snapshot = container.clone();
+
+    let is_reset = query_has_reset(&window);
+    let is_ssr_demo = query_has_ssr_demo(&window);
+    let enable_persistence = !is_ssr_demo && surface_id == DEFAULT_SURFACE_ID;
+    let has_restored_dom = container.get_attribute("data-nve-restored").as_deref() == Some("1");
+
+    let persisted_state = if is_reset {
+        clear_persisted_snapshot(app_slug, schema_version);
+        None
+    } else if enable_persistence {
+        load_persisted_state(app_slug, schema_version, false)
     } else {
-        WebBackend::mount_into(container)
+        None
     };
-    let session = Rc::new(RefCell::new(build_session(surface_id, backend, viewport)));
+
+    let valid_state = persisted_state.filter(|bytes| state_is_valid(bytes));
+    let can_restore_state = valid_state.is_some();
+    if has_restored_dom && !can_restore_state {
+        // Cached HTML existed without matching valid binary state: purge corrupt storage and fall back cleanly.
+        clear_persisted_snapshot(app_slug, schema_version);
+    }
+
+    // Hydrate only when pre-rendered DOM matches the state we are booting into:
+    // - Layer 1 restored snapshot + valid binary state -> zero-mismatch hydration
+    // - Cold build-time SSR / `?ssr=1` + clean default state -> zero-mismatch hydration
+    // - Corrupt/partial state mismatch -> clean full mount fallback with zero panic.
+    let should_hydrate = if has_restored_dom {
+        can_restore_state
+    } else {
+        !can_restore_state && hydrate
+    };
+
+    let backend = if should_hydrate {
+        WebBackend::hydrate_into(container.clone())
+    } else {
+        WebBackend::mount_into(container.clone())
+    };
+    let (session_val, restored_from_snapshot) =
+        build_session(surface_id, backend, viewport, valid_state.as_deref());
+    let session = Rc::new(RefCell::new(session_val));
+
+    let (snapshot_guard, snapshot_trigger) = if enable_persistence {
+        let (guard, trigger) = SnapshotPersistenceGuard::install(
+            &window,
+            Rc::clone(&session),
+            container_for_snapshot,
+            app_slug,
+            schema_version,
+            !is_reset,
+        );
+        (Some(guard), Some(trigger))
+    } else {
+        (None, None)
+    };
 
     let session_for_events = Rc::clone(&session);
+    let trigger_for_events = snapshot_trigger.clone();
     session.borrow_mut().backend_mut().set_render_callback(move || {
-        if let Ok(mut guard) = session_for_events.try_borrow_mut()
-            && let Err(err) = guard.pump_events()
-        {
-            web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+        if let Ok(mut guard) = session_for_events.try_borrow_mut() {
+            match guard.pump_events() {
+                Ok(Some(_)) => {
+                    if let Some(t) = trigger_for_events.as_ref() {
+                        t.schedule_debounced();
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                }
+            }
         }
     });
 
-    session
-        .borrow_mut()
-        .render_initial()
-        .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
+    {
+        let mut guard = session.borrow_mut();
+        guard
+            .render_initial()
+            .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
+        // Immediately pump any pre-hydration events / reconciled dirty controls queued during
+        // Frame-0 hydration handoff (`on_event` could not re-enter `session.borrow_mut()`).
+        let replayed_frame = guard
+            .pump_events()
+            .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))?;
+        if replayed_frame.is_some()
+            && let Some(t) = snapshot_trigger.as_ref()
+        {
+            t.schedule_debounced();
+        }
+    }
+    let _ = container.set_attribute("data-nve-live", "1");
 
     let session_for_resize = Rc::clone(&session);
     let resize_listener = install_resize_listener(&window, container_for_resize, move |next_vp| {
@@ -524,6 +643,7 @@ where
                 #[cfg(feature = "dev")]
                 _hot_reload: hot_reload,
                 _resize_listener: resize_listener,
+                _snapshot_guard: snapshot_guard,
             },
         );
     });
@@ -533,8 +653,20 @@ where
         mount_id: mount_id.to_string(),
         surface_id,
         generation,
+        restored_from_snapshot,
         session,
+        snapshot_trigger,
     })
+}
+
+#[cfg(feature = "app-studio")]
+pub(crate) fn is_valid_studio_state(bytes: &[u8]) -> bool {
+    WorkspaceState::from_bytes(bytes).is_some()
+}
+
+#[cfg(feature = "app-counter")]
+pub(crate) fn is_valid_counter_state(bytes: &[u8]) -> bool {
+    decode_counter_state(bytes).is_some()
 }
 
 #[cfg(feature = "app-studio")]
@@ -553,7 +685,17 @@ pub fn start_studio_workspace_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_surface_app_inner("StudioWorkspaceApp", surface_id, mount_id, ws_url, false, WebAppSession::new_studio_workspace)
+    start_surface_app_inner(
+        "StudioWorkspaceApp",
+        "studio",
+        STUDIO_SNAPSHOT_SCHEMA_VERSION,
+        surface_id,
+        mount_id,
+        ws_url,
+        false,
+        is_valid_studio_state,
+        WebAppSession::new_studio_workspace_with_state,
+    )
 }
 
 #[cfg(feature = "app-counter")]
@@ -572,5 +714,15 @@ pub fn start_counter_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_surface_app_inner("CounterApp", surface_id, mount_id, ws_url, false, WebAppSession::new_counter)
+    start_surface_app_inner(
+        "CounterApp",
+        "counter",
+        COUNTER_STATE_BIN_VERSION,
+        surface_id,
+        mount_id,
+        ws_url,
+        false,
+        is_valid_counter_state,
+        WebAppSession::new_counter_with_state,
+    )
 }

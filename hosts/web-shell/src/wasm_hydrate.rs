@@ -24,6 +24,14 @@ use crate::hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationSchedul
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
 #[cfg(any(feature = "app-studio", feature = "app-counter"))]
 use crate::wasm_api::{start_surface_app_inner, WebAppController};
+#[cfg(feature = "app-counter")]
+use crate::wasm_api::is_valid_counter_state;
+#[cfg(feature = "app-studio")]
+use crate::wasm_api::is_valid_studio_state;
+#[cfg(feature = "app-counter")]
+use nve_example_counter::COUNTER_STATE_BIN_VERSION;
+#[cfg(feature = "app-studio")]
+use nve_studio_workspace::STUDIO_SNAPSHOT_SCHEMA_VERSION;
 
 #[wasm_bindgen(inline_js = "
 export function nve_intersecting_targets(entries) {
@@ -203,7 +211,17 @@ pub fn hydrate_studio_workspace_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_surface_app_inner("StudioWorkspaceApp", surface_id, mount_id, ws_url, true, WebAppSession::new_studio_workspace)
+    start_surface_app_inner(
+        "StudioWorkspaceApp",
+        "studio",
+        STUDIO_SNAPSHOT_SCHEMA_VERSION,
+        surface_id,
+        mount_id,
+        ws_url,
+        true,
+        is_valid_studio_state,
+        WebAppSession::new_studio_workspace_with_state,
+    )
 }
 
 #[cfg(feature = "app-counter")]
@@ -219,7 +237,17 @@ pub fn hydrate_counter_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_surface_app_inner("CounterApp", surface_id, mount_id, ws_url, true, WebAppSession::new_counter)
+    start_surface_app_inner(
+        "CounterApp",
+        "counter",
+        COUNTER_STATE_BIN_VERSION,
+        surface_id,
+        mount_id,
+        ws_url,
+        true,
+        is_valid_counter_state,
+        WebAppSession::new_counter_with_state,
+    )
 }
 
 struct InteractionCaptureHandle {

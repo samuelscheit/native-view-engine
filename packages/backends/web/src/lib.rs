@@ -34,6 +34,10 @@ pub mod native_view;
 mod raw_style;
 mod reconcile;
 #[cfg(feature = "ssr")]
+mod snapshot;
+#[cfg(feature = "ssr")]
+mod ssg;
+#[cfg(feature = "ssr")]
 mod ssr;
 mod style_hash;
 mod stylesheet;
@@ -45,6 +49,8 @@ mod css_format_tests;
 mod correctness_tests;
 #[cfg(test)]
 mod native_view_tests;
+#[cfg(all(test, feature = "ssr"))]
+mod snapshot_tests;
 #[cfg(test)]
 mod ssr_hydrate_tests;
 #[cfg(test)]
@@ -59,8 +65,9 @@ pub use dom::{
     is_truthy_raw_prop, map_a11y_or_input_attr, raw_prop_route, MappedHtmlAttr, RawPropRoute,
 };
 pub use event_replay::{
-    drain_valid_pre_hydration_events, pre_hydration_event_to_native, CapturedPreHydrationEvent,
-    MAX_REPLAY_AGE_MS, MAX_REPLAY_QUEUE_LEN, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
+    drain_valid_pre_hydration_events, pre_hydration_event_to_native,
+    pre_hydration_replay_script_tag, CapturedPreHydrationEvent, MAX_REPLAY_AGE_MS,
+    MAX_REPLAY_QUEUE_LEN, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
 pub use events::{
     encode_keydown_payload, resolve_delegated_node, should_intercept_anchor_click,
@@ -99,6 +106,22 @@ pub use raw_style::{
     is_image_fit_prop, is_raw_style_prop, is_safe_css_value, raw_prop_to_object_fit, RawStyleProps,
 };
 pub use reconcile::{plan_keyed_child_ops, ChildDiffOp};
+#[cfg(all(feature = "ssr", target_arch = "wasm32"))]
+pub use snapshot::BrowserLocalStorage;
+#[cfg(feature = "ssr")]
+pub use snapshot::{
+    decode_state_envelope, encode_state_envelope, query_has_reset_param,
+    snapshot_and_replay_script_tags, snapshot_bootstrap_script_tag, snapshot_storage_key,
+    state_storage_key, MemorySnapshotStorage, SnapshotError, SnapshotStorage, WebSnapshotPayload,
+    WebSnapshotStore, DEFAULT_MAX_SNAPSHOT_BYTES, DEFAULT_MAX_STATE_BYTES,
+    SNAPSHOT_BOOTSTRAP_MAX_BYTES, SNAPSHOT_ENVELOPE_MAGIC, SNAPSHOT_KEY_PREFIX,
+    STATE_ENVELOPE_MAGIC, STATE_KEY_PREFIX, WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG,
+};
+#[cfg(feature = "ssr")]
+pub use ssg::{
+    inject_ssg_into_shell_html, inject_ssg_with_scripts_into_shell_html, prerender_nve_app_frame0,
+    WebSsgDocumentOptions,
+};
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
 pub use style_hash::{
@@ -310,6 +333,10 @@ impl WebBackend {
         backend.flush_dirty_styles(&[ROOT_NODE_ID]);
         backend.attach_root_event_delegator(container);
         backend.attach_window_keydown_listener();
+        #[cfg(feature = "hydrate")]
+        {
+            let _ = crate::event_replay::drain_browser_pre_hydration_events();
+        }
         backend
     }
 

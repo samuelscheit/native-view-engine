@@ -29,6 +29,8 @@ pub mod wasm_pair;
 pub mod wasm_popup;
 #[cfg(all(target_arch = "wasm32", feature = "dev"))]
 pub mod wasm_probe;
+#[cfg(target_arch = "wasm32")]
+mod wasm_snapshot;
 
 pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec};
 #[cfg(feature = "multi-window")]

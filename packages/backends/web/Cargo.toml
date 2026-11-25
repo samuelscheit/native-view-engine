@@ -39,6 +39,8 @@ web-sys = { workspace = true, features = [
     "IntersectionObserver",
     "IntersectionObserverEntry",
     "KeyboardEvent",
+    "Location",
     "NodeList",
     "Performance",
+    "Storage",
 ] }
