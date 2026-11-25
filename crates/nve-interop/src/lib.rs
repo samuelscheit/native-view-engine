@@ -71,15 +71,19 @@ pub use sync_transport::{
     packetize_udp_datagrams,
 };
 pub use native_view::{
-    BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
-    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, MAX_NATIVE_CMD_ARGS,
-    MAX_NATIVE_PROP_FIELDS, NATIVE_CMD_HEADER_SIZE, NATIVE_CMD_MAGIC, NATIVE_CMD_VERSION,
-    NATIVE_PROPS_HEADER_SIZE, NATIVE_PROPS_MAGIC, NATIVE_PROPS_VERSION, NATIVE_VIEW_KIND_PROP_KEY,
+    BlurMaterial, BlurSurface, BlurSurfaceProps, CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC,
+    CAMERA_FRAME_VERSION, CAMERA_PREVIEW_KIND, CameraFrameDescriptor, CameraPixelFormat,
+    CameraPreview, CameraPreviewCommand, CameraPreviewFacing, CameraPreviewProps,
+    DecodeNativeCommand, DecodeNativeProps, DecodedWebElementProps, EncodeNativeCommand,
+    EncodeNativeProps, MAX_CAMERA_FPS, MAX_NATIVE_CMD_ARGS, MAX_NATIVE_PROP_FIELDS,
+    NATIVE_CMD_HEADER_SIZE, NATIVE_CMD_MAGIC, NATIVE_CMD_VERSION, NATIVE_PROPS_HEADER_SIZE,
+    NATIVE_PROPS_MAGIC, NATIVE_PROPS_VERSION, NATIVE_VIEW_KIND_PROP_KEY,
     NATIVE_VIEW_PROPS_PROP_KEY, NativeCommandDecoder, NativeCommandEncoder, NativePropDecoder,
-    NativePropEncoder, NativeValueRef, NativeViewCodecError, NativeViewHandle as TypedNativeViewHandle,
-    NativeViewHandleBinder, NativeViewRegistry, NativeViewSpec, NoCommand, QueuedNativeCommand,
-    VideoPlayer, VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView,
-    WebViewCommand, WebViewProps,
+    NativePropEncoder, NativeValueRef, NativeViewCodecError,
+    NativeViewHandle as TypedNativeViewHandle, NativeViewHandleBinder, NativeViewRegistry,
+    NativeViewSpec, NoCommand, QueuedNativeCommand, StabilizationMode, TorchMode, VideoPlayer,
+    VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand,
+    WebViewProps,
 };
 pub use traits::{
     BUILTIN_TRAIT_COUNT, BuiltinTraitSlot, BuiltinTraits, CanHover,

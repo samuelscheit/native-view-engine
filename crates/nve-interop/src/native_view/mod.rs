@@ -1,11 +1,18 @@
 //! First-Class Native Platform Primitive Escape Hatches (`NativeViewSpec`, zero-JSON binary
 //! prop/command codecs, `NativeViewHandle`, and wildcard-aware `NativeViewRegistry`).
 
+mod camera;
 mod codec;
 mod handle;
 mod specs;
 mod wire;
 
+pub use camera::{
+    CameraFrameDescriptor, CameraPixelFormat, CameraPreview, CameraPreviewCommand,
+    CameraPreviewFacing, CameraPreviewProps, StabilizationMode, TorchMode,
+    CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC, CAMERA_FRAME_VERSION, CAMERA_PREVIEW_KIND,
+    MAX_CAMERA_FPS,
+};
 pub use codec::{
     NativeCommandDecoder, NativeCommandEncoder, NativePropDecoder, NativePropEncoder,
 };
