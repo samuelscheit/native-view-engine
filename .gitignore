@@ -2,6 +2,11 @@
 /target
 /build
 /cxx/build
+/cxx/build-fabric
+hosts/macos-shell/build/
+hosts/swiftui-kit/.build/
+hosts/flutter-plugin/.dart_tool/
+hosts/flutter-plugin/pubspec.lock
 **/*.o
 **/*.a
 **/*.dylib

@@ -9,8 +9,13 @@ extern "C" {
 
 #define NVE_ABI_MAGIC 0x3145564Eu /* "NVE1" little-endian */
 #define NVE_ABI_VERSION 1u
-#define NVE_APP_ABI_VERSION 1u
 #define NVE_ROOT_NODE_ID 1u
+
+/* Modular interface IDs resolved once via `nve_get_interface(uint32_t)`. */
+#define NVE_IFACE_SURFACE 1u   /* const NveSurfaceApi*   (required) */
+#define NVE_IFACE_LAYOUT 2u    /* const NveLayoutApi*    (optional) */
+#define NVE_IFACE_COMPONENT 3u /* const NveComponentApi* (optional) */
+#define NVE_IFACE_DEV 4u       /* const NveDevApi*       (optional; NULL in release) */
 
 typedef enum NveOpcode {
   NVE_OP_CREATE_NODE = 1,
@@ -37,6 +42,12 @@ typedef enum NveComponentKind {
   NVE_COMP_CUSTOM = 0xFFFF,
 } NveComponentKind;
 
+typedef enum NveGestureDisposition {
+  NVE_GESTURE_CLAIM = 1,
+  NVE_GESTURE_PASS_THROUGH = 2,
+  NVE_GESTURE_DEFER_TO_PARENT = 3,
+} NveGestureDisposition;
+
 typedef struct NveBufferSlice {
   const uint8_t* ptr;
   size_t len;
@@ -58,24 +69,73 @@ typedef struct NveFrameStats {
   uint64_t mount_us;
 } NveFrameStats;
 
+typedef struct NveSizeConstraints {
+  float min_w;
+  float min_h;
+  float max_w;
+  float max_h;
+} NveSizeConstraints;
+
+typedef struct NveIntrinsicSize {
+  float width;
+  float height;
+} NveIntrinsicSize;
+
 typedef void* NveAppHandle;
 typedef void* NveFabricHostHandle;
 
-/* Exported by every Tier-2 hot-swappable Rust app cdylib as `nve_app_vtable`. */
-typedef struct NveAppVTable {
-  uint32_t abi_version;
+/* Required core surface interface (`NVE_IFACE_SURFACE = 1`). */
+typedef struct NveSurfaceApi {
   NveAppHandle (*create)(uint32_t surface_id);
   void (*destroy)(NveAppHandle handle);
   NveBufferSlice (*render)(NveAppHandle handle, uint64_t frame_id);
   uint32_t (*dispatch_events)(NveAppHandle handle, NveBufferSlice events);
+} NveSurfaceApi;
+
+/* Optional layout & gesture interface (`NVE_IFACE_LAYOUT = 2`). Zero-serialization register calls. */
+typedef struct NveLayoutApi {
+  NveIntrinsicSize (*measure)(NveAppHandle handle, NveSizeConstraints constraints);
+  uint8_t (*hit_test)(NveAppHandle handle, float x, float y, uint8_t pointer_phase);
+} NveLayoutApi;
+
+/* Optional embedded component props & outbound event interface (`NVE_IFACE_COMPONENT = 3`). */
+typedef struct NveComponentApi {
+  uint32_t (*set_props)(NveAppHandle handle, NveBufferSlice props);
+  NveBufferSlice (*drain_emitted_events)(NveAppHandle handle);
+} NveComponentApi;
+
+/* Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds). */
+typedef struct NveDevApi {
   uint32_t (*apply_hot_patch)(NveAppHandle handle, NveBufferSlice patch_json);
   NveBufferSlice (*snapshot_state)(NveAppHandle handle);
   void (*restore_state)(NveAppHandle handle, NveBufferSlice state);
-  uint32_t (*set_props)(NveAppHandle handle, NveBufferSlice props);
-  NveBufferSlice (*drain_emitted_events)(NveAppHandle handle);
-} NveAppVTable;
+} NveDevApi;
 
-/* C API implemented by cxx/nve-fabric-bridge for iOS, Android, and headless Fabric tests. */
+/* Single exported symbol per NVE module (`nve_get_interface`). */
+typedef const void* (*NveGetInterfaceFn)(uint32_t interface_id);
+const void* nve_get_interface(uint32_t interface_id);
+
+/* Host-side resolved cache of modular interface pointers (not an ABI struct). */
+typedef struct NveModule {
+  const NveSurfaceApi* surface;
+  const NveLayoutApi* layout;
+  const NveComponentApi* component;
+  const NveDevApi* dev;
+} NveModule;
+
+static inline NveModule nve_resolve_module(NveGetInterfaceFn get_iface) {
+  NveModule m = {NULL, NULL, NULL, NULL};
+  if (!get_iface) {
+    return m;
+  }
+  m.surface = (const NveSurfaceApi*)get_iface(NVE_IFACE_SURFACE);
+  m.layout = (const NveLayoutApi*)get_iface(NVE_IFACE_LAYOUT);
+  m.component = (const NveComponentApi*)get_iface(NVE_IFACE_COMPONENT);
+  m.dev = (const NveDevApi*)get_iface(NVE_IFACE_DEV);
+  return m;
+}
+
+/* C API implemented by cxx/nve-fabric-bridge for iOS, macOS, Android, and headless Fabric tests. */
 NveFabricHostHandle nve_fabric_host_create(NveSurfaceConfig config);
 void nve_fabric_host_destroy(NveFabricHostHandle host);
 int32_t nve_fabric_host_submit_frame(

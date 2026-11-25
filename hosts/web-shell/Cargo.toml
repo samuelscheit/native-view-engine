@@ -16,4 +16,4 @@ nve-example-counter = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
-web-sys = { workspace = true }
+web-sys = { workspace = true, features = ["Location", "Performance", "ErrorEvent", "CloseEvent"] }

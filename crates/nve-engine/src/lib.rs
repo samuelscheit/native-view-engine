@@ -1,13 +1,16 @@
 //! Core framework-agnostic runtime: `RenderBackend` trait, `Surface` coordinator,
 //! 6-stage `FrameProfiler` with Perfetto/Chrome trace export, and 2-tier hot-reload spine.
 
+pub mod app;
 pub mod hotreload;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
 pub mod profiler;
 
+pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
 
+pub use app::NveApp;
 pub use hotreload::HotPatchMsg;
 pub use profiler::{FrameProfiler, FrameTiming};
 

@@ -1,0 +1,831 @@
+use std::path::Path;
+
+use nve_codegen::{
+    export_all_targets, export_compose, export_flutter, export_rn_json, export_rn_spec,
+    export_swiftui, export_target, export_web_component, import_rn_file, import_rn_source,
+    parse_rn_spec, parse_rn_spec_file, CommandSpec, DefaultValue, EventBubbling, EventSpec,
+    ExportBackend, ExportTarget, NveExportSpec, ObjectField, ParamSpec, ParsedRnSpec, PropSpec,
+    PropType,
+};
+
+const RN_LIBRARIES_DIR: &str =
+    "/Users/user/developer/developer/respond/react-native/react-native/packages/react-native/Libraries";
+
+/// Embedded fallback copy of RN's real `SwitchNativeComponent.js` for environments without the local RN checkout.
+const EMBEDDED_SWITCH_SPEC: &str = r#"
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * @flow strict-local
+ */
+import type {ViewProps} from '../../../../../Libraries/Components/View/ViewPropTypes';
+import type {ColorValue} from '../../../../../Libraries/StyleSheet/StyleSheet';
+import type {BubblingEventHandler, Int32, WithDefault} from '../../../../../Libraries/Types/CodegenTypes';
+import codegenNativeCommands from '../../../../../Libraries/Utilities/codegenNativeCommands';
+import codegenNativeComponent from '../../../../../Libraries/Utilities/codegenNativeComponent';
+
+type NativeSwitchChangeEvent = Readonly<{
+  value: boolean,
+  target: Int32,
+}>;
+
+type SwitchNativeProps = Readonly<{
+  ...ViewProps,
+  disabled?: WithDefault<boolean, false>,
+  value?: WithDefault<boolean, false>,
+  tintColor?: ?ColorValue,
+  onTintColor?: ?ColorValue,
+  thumbTintColor?: ?ColorValue,
+  onChange?: ?BubblingEventHandler<NativeSwitchChangeEvent>,
+}>;
+
+interface NativeCommands {
+  readonly setValue: (viewRef: React.ElementRef<ComponentType>, value: boolean) => void;
+}
+
+export const Commands: NativeCommands = codegenNativeCommands<NativeCommands>({
+  supportedCommands: ['setValue'],
+});
+
+export default codegenNativeComponent<SwitchNativeProps>('Switch', {
+  paperComponentName: 'RCTSwitch',
+  excludedPlatforms: ['android'],
+  interfaceOnly: true,
+}) as ComponentType;
+"#;
+
+fn assert_balanced_delimiters(label: &str, code: &str) {
+    let mut braces = 0i32;
+    let mut parens = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if c == '*' && next == Some('/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if in_single {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == '\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == '"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if c == '/' && next == Some('/') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        if c == '\'' && !label.ends_with(".rs") {
+            // Skip Rust lifetimes like `'static`
+            in_single = true;
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_double = true;
+            i += 1;
+            continue;
+        }
+
+        match c {
+            '{' => braces += 1,
+            '}' => braces -= 1,
+            '(' => parens += 1,
+            ')' => parens -= 1,
+            _ => {}
+        }
+        assert!(
+            braces >= 0,
+            "{label}: negative brace balance near char {i}"
+        );
+        assert!(
+            parens >= 0,
+            "{label}: negative paren balance near char {i}"
+        );
+        i += 1;
+    }
+
+    assert_eq!(braces, 0, "{label}: unbalanced curly braces");
+    assert_eq!(parens, 0, "{label}: unbalanced parentheses");
+}
+
+fn counter_card_export_spec(backend: ExportBackend) -> NveExportSpec {
+    NveExportSpec {
+        name: "NveCounterCard".to_owned(),
+        backend,
+        rust_vtable_symbol: Some("nve_counter_card_vtable".to_owned()),
+        android_package: Some("dev.nve.components".to_owned()),
+        doc: Some("Interactive counter card rendered natively by NVE.".to_owned()),
+        props: vec![
+            PropSpec {
+                name: "initialCount".to_owned(),
+                prop_type: PropType::Int32,
+                optional: true,
+                nullable: false,
+                default_value: Some(DefaultValue::Int(0)),
+                doc: Some("Initial counter value.".to_owned()),
+            },
+            PropSpec {
+                name: "accentColor".to_owned(),
+                prop_type: PropType::Color,
+                optional: true,
+                nullable: true,
+                default_value: None,
+                doc: Some("Optional accent tint color.".to_owned()),
+            },
+            PropSpec {
+                name: "variant".to_owned(),
+                prop_type: PropType::StringEnum {
+                    variants: vec!["solid".into(), "outline".into(), "ghost".into()],
+                },
+                optional: true,
+                nullable: false,
+                default_value: Some(DefaultValue::String("solid".into())),
+                doc: Some("Visual button style variant.".to_owned()),
+            },
+            PropSpec {
+                name: "stepScale".to_owned(),
+                prop_type: PropType::Float,
+                optional: true,
+                nullable: false,
+                default_value: Some(DefaultValue::Float(1.0)),
+                doc: None,
+            },
+            PropSpec {
+                name: "disabled".to_owned(),
+                prop_type: PropType::Bool,
+                optional: true,
+                nullable: false,
+                default_value: Some(DefaultValue::Bool(false)),
+                doc: None,
+            },
+        ],
+        events: vec![
+            EventSpec {
+                name: "onCountChange".to_owned(),
+                bubbling: EventBubbling::Direct,
+                optional: true,
+                paper_top_level_name: None,
+                payload: vec![
+                    ObjectField {
+                        name: "count".to_owned(),
+                        field_type: PropType::Int32,
+                        optional: false,
+                        nullable: false,
+                    },
+                    ObjectField {
+                        name: "delta".to_owned(),
+                        field_type: PropType::Int32,
+                        optional: false,
+                        nullable: false,
+                    },
+                ],
+                payload_type_name: Some("CountChangeEvent".to_owned()),
+                doc: Some("Emitted whenever the counter value changes.".to_owned()),
+            },
+            EventSpec {
+                name: "onReset".to_owned(),
+                bubbling: EventBubbling::Bubbling,
+                optional: true,
+                paper_top_level_name: None,
+                payload: Vec::new(),
+                payload_type_name: None,
+                doc: None,
+            },
+        ],
+        commands: vec![CommandSpec {
+            name: "setCount".to_owned(),
+            params: vec![ParamSpec {
+                name: "value".to_owned(),
+                param_type: PropType::Int32,
+                optional: false,
+            }],
+        }],
+    }
+}
+
+#[test]
+fn parses_real_rn_component_specs_and_follows_reexports() {
+    let switch_path = Path::new(RN_LIBRARIES_DIR).join("Components/Switch/SwitchNativeComponent.js");
+    let switch_spec = if switch_path.exists() {
+        parse_rn_spec_file(&switch_path).expect("parse real SwitchNativeComponent.js")
+    } else {
+        parse_rn_spec(EMBEDDED_SWITCH_SPEC).expect("parse embedded Switch spec")
+    };
+
+    let ParsedRnSpec::Component(sw) = switch_spec else {
+        panic!("expected Component spec for Switch");
+    };
+    assert_eq!(sw.component_name, "Switch");
+    assert!(sw.extends_view_props);
+    assert_eq!(
+        sw.options.paper_component_name.as_deref(),
+        Some("RCTSwitch")
+    );
+    assert_eq!(sw.options.excluded_platforms, vec!["android"]);
+    assert!(sw.options.interface_only);
+
+    let disabled = sw.props.iter().find(|p| p.name == "disabled").unwrap();
+    assert_eq!(disabled.prop_type, PropType::Bool);
+    assert_eq!(disabled.default_value, Some(DefaultValue::Bool(false)));
+
+    let tint = sw.props.iter().find(|p| p.name == "tintColor").unwrap();
+    assert_eq!(tint.prop_type, PropType::Color);
+    assert!(tint.nullable);
+
+    assert_eq!(sw.events.len(), 1);
+    assert_eq!(sw.events[0].name, "onChange");
+    assert_eq!(sw.events[0].bubbling, EventBubbling::Bubbling);
+    assert_eq!(sw.events[0].payload.len(), 2);
+    assert_eq!(sw.events[0].payload[0].name, "value");
+    assert_eq!(sw.events[0].payload[0].field_type, PropType::Bool);
+    assert_eq!(sw.events[0].payload[1].name, "target");
+    assert_eq!(sw.events[0].payload[1].field_type, PropType::Int32);
+
+    assert_eq!(sw.commands.len(), 1);
+    assert_eq!(sw.commands[0].name, "setValue");
+    assert_eq!(sw.commands[0].params.len(), 1);
+    assert_eq!(sw.commands[0].params[0].name, "value");
+    assert_eq!(sw.commands[0].params[0].param_type, PropType::Bool);
+
+    // Additional real RN specs if the local RN checkout is present
+    let activity_path = Path::new(RN_LIBRARIES_DIR)
+        .join("Components/ActivityIndicator/ActivityIndicatorViewNativeComponent.js");
+    if activity_path.exists() {
+        let out = import_rn_file(&activity_path).expect("import ActivityIndicatorView");
+        let ParsedRnSpec::Component(act) = &out.spec else {
+            panic!("expected component");
+        };
+        assert_eq!(act.component_name, "ActivityIndicatorView");
+        let size = act.props.iter().find(|p| p.name == "size").unwrap();
+        assert_eq!(
+            size.prop_type,
+            PropType::StringEnum {
+                variants: vec!["small".into(), "large".into()]
+            }
+        );
+        assert_eq!(
+            size.default_value,
+            Some(DefaultValue::String("small".into()))
+        );
+        assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
+        assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+    }
+
+    let modal_path = Path::new(RN_LIBRARIES_DIR).join("Modal/RCTModalHostViewNativeComponent.js");
+    if modal_path.exists() {
+        let out = import_rn_file(&modal_path).expect("import ModalHostView");
+        let ParsedRnSpec::Component(modal) = &out.spec else {
+            panic!("expected component");
+        };
+        assert_eq!(modal.component_name, "ModalHostView");
+        assert!(modal.events.iter().any(|e| e.name == "onRequestClose" && e.payload.is_empty()));
+        let orient_ev = modal
+            .events
+            .iter()
+            .find(|e| e.name == "onOrientationChange")
+            .expect("onOrientationChange");
+        assert_eq!(orient_ev.bubbling, EventBubbling::Direct);
+        assert_eq!(orient_ev.payload.len(), 1);
+        assert_eq!(orient_ev.payload[0].name, "orientation");
+        assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
+        assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+    }
+
+    let refresh_path = Path::new(RN_LIBRARIES_DIR)
+        .join("Components/RefreshControl/PullToRefreshViewNativeComponent.js");
+    if refresh_path.exists() {
+        let out = import_rn_file(&refresh_path).expect("import PullToRefreshView");
+        let ParsedRnSpec::Component(ptr) = &out.spec else {
+            panic!("expected component");
+        };
+        assert_eq!(ptr.component_name, "PullToRefreshView");
+        let refreshing = ptr.props.iter().find(|p| p.name == "refreshing").unwrap();
+        assert!(!refreshing.optional);
+        let offset = ptr
+            .props
+            .iter()
+            .find(|p| p.name == "progressViewOffset")
+            .unwrap();
+        assert_eq!(offset.prop_type, PropType::Float);
+        assert_eq!(offset.default_value, Some(DefaultValue::Int(0)));
+        assert_eq!(ptr.commands.len(), 1);
+        assert_eq!(ptr.commands[0].name, "setNativeRefreshing");
+    }
+}
+
+#[test]
+fn parses_real_rn_turbomodule_specs_and_ts_turbomodules() {
+    let appearance_path = Path::new(RN_LIBRARIES_DIR).join("Utilities/NativeAppearance.js");
+    if appearance_path.exists() {
+        let out = import_rn_file(&appearance_path).expect("import NativeAppearance");
+        let ParsedRnSpec::TurboModule(tm) = &out.spec else {
+            panic!("expected TurboModule");
+        };
+        assert_eq!(tm.module_name, "Appearance");
+        assert!(!tm.enforcing);
+        assert!(tm.methods.iter().any(|m| m.name == "getColorScheme"));
+        assert!(tm.methods.iter().any(|m| m.name == "setColorScheme"));
+        assert!(out.rust_module.content.contains("pub trait AppearanceModule"));
+        assert!(out
+            .cpp_adapter
+            .content
+            .contains("class AppearanceTurboModuleHost"));
+    }
+
+    let ts_tm = r#"
+    import type { TurboModule } from 'react-native';
+    import { TurboModuleRegistry } from 'react-native';
+
+    export interface Spec extends TurboModule {
+      /** Fetch user score asynchronously. */
+      fetchScore(userId: string, force?: boolean): Promise<Double>;
+      ping(count: Int32): boolean;
+      subscribe(callback: (code: Int32, message: string) => void): void;
+    }
+
+    export default TurboModuleRegistry.getEnforcing<Spec>('NveAnalytics');
+    "#;
+
+    let out = import_rn_source(ts_tm).expect("import TS TurboModule");
+    let ParsedRnSpec::TurboModule(tm) = &out.spec else {
+        panic!("expected TurboModule");
+    };
+    assert_eq!(tm.module_name, "NveAnalytics");
+    assert!(tm.enforcing);
+    assert_eq!(tm.methods.len(), 3);
+    assert_eq!(
+        tm.methods[0].return_type,
+        PropType::Promise {
+            inner: Box::new(PropType::Double)
+        }
+    );
+    assert!(tm.methods[0].params[1].optional);
+    assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
+    assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+}
+
+#[test]
+fn import_rn_handles_ts_edge_cases_comments_keywords_unions_and_negative_defaults() {
+    let ts_spec = r#"
+    import type { ViewProps, ColorValue } from 'react-native';
+    import type {
+      BubblingEventHandler,
+      DirectEventHandler,
+      Double,
+      Float,
+      Int32,
+      WithDefault,
+    } from 'react-native/Libraries/Types/CodegenTypes';
+    import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent';
+
+    type MetricPayload = Readonly<{
+      /* inline block comment */
+      latencyMs: Double;
+      droppedFrames: Int32;
+    }>;
+
+    export interface NativeProps extends ViewProps {
+      // Negative integer & float defaults
+      offset?: WithDefault<Int32, -1>;
+      bias?: WithDefault<Float, -0.5>;
+      // Reserved keyword prop names across Rust / C++ / Kotlin / Dart / Swift
+      type?: WithDefault<'bar' | 'line' | 'area', 'line'>;
+      default?: WithDefault<0 | 1 | 2, 1>;
+      tint?: ColorValue | null;
+      tags?: ReadonlyArray<string>;
+      onMetrics?: DirectEventHandler<MetricPayload, 'topMetrics'>;
+      onBubbleTap?: BubblingEventHandler<{ x: Float; y: Float }>;
+    }
+
+    export default codegenNativeComponent<NativeProps>('NveSparkline');
+    "#;
+
+    let out = import_rn_source(ts_spec).expect("import NveSparkline");
+    let ParsedRnSpec::Component(comp) = &out.spec else {
+        panic!("expected component");
+    };
+    assert_eq!(comp.component_name, "NveSparkline");
+    assert_eq!(comp.props.len(), 6);
+    assert_eq!(comp.events.len(), 2);
+
+    let offset = comp.props.iter().find(|p| p.name == "offset").unwrap();
+    assert_eq!(offset.default_value, Some(DefaultValue::Int(-1)));
+    let bias = comp.props.iter().find(|p| p.name == "bias").unwrap();
+    assert_eq!(bias.default_value, Some(DefaultValue::Float(-0.5)));
+
+    let metrics_ev = comp.events.iter().find(|e| e.name == "onMetrics").unwrap();
+    assert_eq!(metrics_ev.bubbling, EventBubbling::Direct);
+    assert_eq!(
+        metrics_ev.paper_top_level_name.as_deref(),
+        Some("topMetrics")
+    );
+    assert_eq!(metrics_ev.payload.len(), 2);
+
+    // Rust keywords escaped properly (`r#type`) & RawPropValue encoding present
+    assert!(out.rust_module.content.contains("pub r#type:"));
+    assert!(out.rust_module.content.contains("RawPropValue::I64"));
+    assert!(out.rust_module.content.contains("RawPropValue::F64"));
+    assert!(out.rust_module.content.contains("pub fn decode_event"));
+    assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
+
+    // C++20 adapter aligns with Slice 2's `nve_rn_component.hpp`
+    assert!(out
+        .cpp_adapter
+        .content
+        .contains("#include \"nve_rn_component.hpp\""));
+    assert!(out
+        .cpp_adapter
+        .content
+        .contains("nve::fabric_host_register_custom_component"));
+    assert!(out
+        .cpp_adapter
+        .content
+        .contains("nve::fabric_host_enqueue_custom_event"));
+    assert!(out.cpp_adapter.content.contains("default_"));
+    assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+}
+
+#[test]
+fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn() {
+    let spec = counter_card_export_spec(ExportBackend::Fabric);
+    let json = spec.to_json_pretty().expect("serialize NveExportSpec");
+    let out = export_rn_json(&json).expect("export_rn_json");
+
+    assert_eq!(
+        out.native_component_ts.relative_path,
+        "NveCounterCardNativeComponent.ts"
+    );
+    assert_eq!(out.cpp_bridge_hpp.relative_path, "NveCounterCardNveBridge.hpp");
+    assert_eq!(out.cpp_bridge_cpp.relative_path, "NveCounterCardNveBridge.cpp");
+    assert_eq!(
+        out.ios_component_view_mm.relative_path,
+        "NveCounterCardComponentView.mm"
+    );
+    assert_eq!(
+        out.android_view_manager_kt.relative_path,
+        "NveCounterCardViewManager.kt"
+    );
+
+    // 1. TypeScript spec assertions
+    let ts = &out.native_component_ts.content;
+    assert!(ts.contains("export interface NativeProps extends ViewProps"));
+    assert!(ts.contains("initialCount?: WithDefault<Int32, 0>;"));
+    assert!(ts.contains("accentColor?: ColorValue | null;"));
+    assert!(ts.contains("variant?: WithDefault<'solid' | 'outline' | 'ghost', 'solid'>;"));
+    assert!(ts.contains("onCountChange?: DirectEventHandler<CountChangeEvent>;"));
+    assert!(ts.contains("onReset?: BubblingEventHandler<null>;"));
+    assert!(ts.contains("export default codegenNativeComponent<NativeProps>('NveCounterCard');"));
+    assert_balanced_delimiters("NveCounterCardNativeComponent.ts", ts);
+
+    // 2. C++20 glue assertions (verbatim match with Slice 2 `nve_rn_component.hpp`)
+    let hpp = &out.cpp_bridge_hpp.content;
+    let cpp = &out.cpp_bridge_cpp.content;
+    assert!(hpp.contains("#include \"nve_rn_component.hpp\""));
+    assert!(hpp.contains("std::unique_ptr<nve::NveRnComponentBridge> bridge_;"));
+    assert!(hpp.contains("const void* nve_counter_card_vtable(uint32_t interface_id);"));
+    assert!(cpp.contains("bridge_->update_props(to_prop_map(props), auto_render)"));
+    assert!(cpp.contains("bridge_->drain_emitted_events()"));
+    assert!(cpp.contains("ev.payload_as_string()"));
+    assert_balanced_delimiters("NveCounterCardNveBridge.hpp", hpp);
+    assert_balanced_delimiters("NveCounterCardNveBridge.cpp", cpp);
+
+    // 3. iOS ObjC++ assertions (verbatim match with Slice 2 `RCTNveComponentView.h`)
+    let mm = &out.ios_component_view_mm.content;
+    assert!(mm.contains("#import \"RCTNveComponentView.h\""));
+    assert!(mm.contains("@interface NveCounterCardComponentView : RCTNveComponentView"));
+    assert!(mm.contains("- (nullable NveGetInterfaceFn)defaultNveGetInterface"));
+    assert!(mm.contains("[self applyPropsDictionary:dict];"));
+    assert!(mm.contains("[self drainNveEmittedEvents];"));
+    assert!(mm.contains("- (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload"));
+    assert_balanced_delimiters("NveCounterCardComponentView.mm", mm);
+
+    // 4. Android Kotlin assertions (wrapping `dev.nve.host.NveNativeBridge`)
+    let kt = &out.android_view_manager_kt.content;
+    assert!(kt.contains("package dev.nve.components"));
+    assert!(kt.contains("import dev.nve.host.NveNativeBridge"));
+    assert!(kt.contains("NveNativeBridge.nativeCreateHost"));
+    assert!(kt.contains("@ReactProp(name = \"initialCount\", defaultInt = 0)"));
+    assert!(kt.contains("@ReactProp(name = \"accentColor\", customType = \"Color\")"));
+    assert!(kt.contains("getExportedCustomDirectEventTypeConstants"));
+    assert!(kt.contains("getExportedCustomBubblingEventTypeConstants"));
+    assert_balanced_delimiters("NveCounterCardViewManager.kt", kt);
+
+    // 5. Full bi-directional round-trip: parse our own generated TS right back via `import_rn`!
+    let roundtrip = import_rn_source(ts).expect("round-trip parse generated NativeComponent.ts");
+    let ParsedRnSpec::Component(rt) = &roundtrip.spec else {
+        panic!("expected component on round-trip");
+    };
+    assert_eq!(rt.component_name, "NveCounterCard");
+    assert_eq!(rt.props.len(), spec.props.len());
+    assert_eq!(rt.events.len(), spec.events.len());
+    assert_eq!(rt.commands.len(), spec.commands.len());
+    assert_eq!(rt.events[0].name, "onCountChange");
+    assert_eq!(rt.events[0].payload.len(), 2);
+}
+
+#[test]
+fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
+    let skia_spec = counter_card_export_spec(ExportBackend::Skia);
+    let fabric_spec = counter_card_export_spec(ExportBackend::Fabric);
+
+    // 1. Flutter (Skia -> NveTextureHostWidget; Fabric -> NvePlatformViewWidget)
+    let fl_skia = export_flutter(&skia_spec).expect("export_flutter skia");
+    assert_eq!(fl_skia.dart_widget.relative_path, "nve_counter_card.dart");
+    let dart_s = &fl_skia.dart_widget.content;
+    assert!(dart_s.contains("import 'dart:ffi' as ffi;"));
+    assert!(dart_s.contains("import 'package:nve_flutter/nve_flutter.dart';"));
+    assert!(dart_s.contains("class NveCounterCard extends StatefulWidget"));
+    assert!(dart_s.contains("return NveTextureHostWidget("));
+    assert!(dart_s.contains("NveSurfaceController"));
+    assert!(dart_s.contains("NveEventKind.custom"));
+    assert!(dart_s.contains("NveCounterCardCountChangeEvent.fromJson"));
+    assert_balanced_delimiters("nve_counter_card.dart", dart_s);
+
+    let fl_fabric = export_flutter(&fabric_spec).expect("export_flutter fabric");
+    assert!(fl_fabric
+        .dart_widget
+        .content
+        .contains("return NvePlatformViewWidget("));
+
+    // 2. SwiftUI (`NveSwiftUI.NveSurfaceRepresentable`)
+    let sw_out = export_swiftui(&skia_spec).expect("export_swiftui");
+    assert_eq!(sw_out.swift_view.relative_path, "NveCounterCardView.swift");
+    let swift = &sw_out.swift_view.content;
+    assert!(swift.contains("import SwiftUI"));
+    assert!(swift.contains("import NveSwiftUI"));
+    assert!(swift.contains("public struct NveCounterCardView: View"));
+    assert!(swift.contains("NveSurfaceRepresentable("));
+    assert!(swift.contains("backend: .skia"));
+    assert!(swift.contains("event.decodePayload(NveCounterCardCountChangeEvent.self)"));
+    assert!(swift.contains("NveSurfaceController"));
+    assert_balanced_delimiters("NveCounterCardView.swift", swift);
+
+    // 3. Jetpack Compose (`dev.nve.compose.NveSurface`)
+    let cmp_out = export_compose(&fabric_spec).expect("export_compose");
+    assert_eq!(
+        cmp_out.compose_kt.relative_path,
+        "NveCounterCardComposable.kt"
+    );
+    let compose = &cmp_out.compose_kt.content;
+    assert!(compose.contains("import dev.nve.compose.NveSurface"));
+    assert!(compose.contains("import dev.nve.compose.NveRenderBackend"));
+    assert!(compose.contains("import dev.nve.compose.rememberNveSurfaceController"));
+    assert!(compose.contains("@Composable\nfun NveCounterCard("));
+    assert!(compose.contains("backend = NveRenderBackend.FABRIC"));
+    assert!(compose.contains("NveEventKind.CUSTOM"));
+    assert_balanced_delimiters("NveCounterCardComposable.kt", compose);
+
+    // 4. Web Component (`<nve-counter-card>` + `.d.ts` wrapping `wasm-bindgen`)
+    let web_out = export_web_component(&skia_spec).expect("export_web_component");
+    assert_eq!(web_out.tag_name, "nve-counter-card");
+    assert_eq!(web_out.element_js.relative_path, "nve-counter-card.js");
+    assert_eq!(web_out.types_dts.relative_path, "nve-counter-card.d.ts");
+    let js = &web_out.element_js.content;
+    let dts = &web_out.types_dts.content;
+    assert!(js.contains("export class NveCounterCardElement extends HTMLElement"));
+    assert!(js.contains("static tagName = 'nve-counter-card';"));
+    assert!(js.contains("this.attachShadow({ mode: 'open' })"));
+    assert!(js.contains("mod.mount_nve_component("));
+    assert!(js.contains("new CustomEvent('count-change'"));
+    assert!(js.contains("customElements.define(tagName, NveCounterCardElement)"));
+    assert_balanced_delimiters("nve-counter-card.js", js);
+
+    assert!(dts.contains("export interface NveCounterCardCountChangeDetail"));
+    assert!(dts.contains("export interface NveCounterCardEventMap"));
+    assert!(dts.contains("'nve-counter-card': NveCounterCardElement;"));
+    assert_balanced_delimiters("nve-counter-card.d.ts", dts);
+
+    // Non-`Nve`-prefixed component name gets prefixed with `nve-` automatically
+    let plain_spec = NveExportSpec::new("SparkChart", ExportBackend::Skia);
+    let plain_web = export_web_component(&plain_spec).expect("plain web component");
+    assert_eq!(plain_web.tag_name, "nve-spark-chart");
+
+    // 5. Unified multi-target export + write_to_dir verification
+    let all = export_all_targets(&fabric_spec, ExportTarget::ALL).expect("export all targets");
+    assert_eq!(all.len(), 5);
+    let total_files: usize = all.iter().map(|o| o.files.len()).sum();
+    assert_eq!(total_files, 10); // 5 RN + 1 Flutter + 1 SwiftUI + 1 Compose + 2 Web
+
+    let single = export_target(&fabric_spec, ExportTarget::from_name("swiftui").unwrap()).unwrap();
+    assert_eq!(single.files.len(), 1);
+
+    let tmp = std::env::temp_dir().join("nve_codegen_test_multi_export");
+    let _ = std::fs::remove_dir_all(&tmp);
+    for bundle in &all {
+        let dir = tmp.join(bundle.target.dir_name());
+        let written = bundle.write_to_dir(&dir).expect("write generated files");
+        assert_eq!(written.len(), bundle.files.len());
+        for path in written {
+            assert!(path.is_file(), "expected generated file at {}", path.display());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn validates_invalid_specs_cleanly() {
+    assert!(export_rn_spec(&NveExportSpec::new("", ExportBackend::Fabric)).is_err());
+    assert!(export_rn_spec(&NveExportSpec::new("123BadName", ExportBackend::Fabric)).is_err());
+    assert!(export_rn_json("{invalid json").is_err());
+    assert!(parse_rn_spec("export const x = 42;").is_err());
+    assert!(ExportTarget::from_name("unknown-platform").is_err());
+}
+
+#[test]
+fn minimal_and_complex_specs_export_cleanly_across_all_five_targets() {
+    // 1. Minimal spec (zero props, zero events, zero commands)
+    let empty = NveExportSpec::new("EmptyCanvas", ExportBackend::Skia);
+    let empty_all = export_all_targets(&empty, ExportTarget::ALL).expect("export minimal spec");
+    assert_eq!(empty_all.len(), 5);
+    for bundle in &empty_all {
+        for file in &bundle.files {
+            assert!(!file.content.is_empty());
+            assert_balanced_delimiters(&file.relative_path, &file.content);
+        }
+    }
+
+    // 2. Complex spec with IntEnum, Double, Point, EdgeInsets, Array, Object, and optional payload fields
+    let mut complex = NveExportSpec::new("DataGrid", ExportBackend::Fabric);
+    complex.props = vec![
+        PropSpec {
+            name: "density".to_owned(),
+            prop_type: PropType::IntEnum {
+                variants: vec![0, 1, 2],
+            },
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Int(1)),
+            doc: None,
+        },
+        PropSpec {
+            name: "rowHeight".to_owned(),
+            prop_type: PropType::Double,
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Float(44.5)),
+            doc: None,
+        },
+        PropSpec {
+            name: "columns".to_owned(),
+            prop_type: PropType::Array {
+                item: Box::new(PropType::String),
+            },
+            optional: false,
+            nullable: false,
+            default_value: None,
+            doc: None,
+        },
+        PropSpec {
+            name: "scrollOffset".to_owned(),
+            prop_type: PropType::Point,
+            optional: true,
+            nullable: true,
+            default_value: None,
+            doc: None,
+        },
+    ];
+    complex.events = vec![EventSpec {
+        name: "onRowSelect".to_owned(),
+        bubbling: EventBubbling::Direct,
+        optional: true,
+        paper_top_level_name: Some("topRowSelect".to_owned()),
+        payload: vec![
+            ObjectField {
+                name: "rowIndex".to_owned(),
+                field_type: PropType::Int32,
+                optional: false,
+                nullable: false,
+            },
+            ObjectField {
+                name: "note".to_owned(),
+                field_type: PropType::String,
+                optional: true,
+                nullable: true,
+            },
+        ],
+        payload_type_name: None,
+        doc: None,
+    }];
+
+    let all = export_all_targets(&complex, ExportTarget::ALL).expect("export complex spec");
+    for bundle in &all {
+        for file in &bundle.files {
+            assert_balanced_delimiters(&file.relative_path, &file.content);
+        }
+    }
+}
+
+#[test]
+fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let include_dir = manifest_dir.join("../../cxx/nve-fabric-bridge/include");
+    if !include_dir.join("nve_rn_component.hpp").exists() {
+        return;
+    }
+
+    let clang_ok = std::process::Command::new("clang++")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !clang_ok {
+        return;
+    }
+
+    let tmp = std::env::temp_dir().join("nve_codegen_cpp20_syntax_check");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    // 1. Check Direction 1 (`import_rn`) C++20 Fabric adapter header
+    let imported = import_rn_source(EMBEDDED_SWITCH_SPEC).expect("import Switch");
+    let adapter_path = tmp.join(&imported.cpp_adapter.relative_path);
+    std::fs::write(&adapter_path, &imported.cpp_adapter.content).unwrap();
+
+    let import_harness = tmp.join("check_import.cpp");
+    std::fs::write(
+        &import_harness,
+        format!(
+            "#include \"{}\"\nvoid instantiate(NveFabricHostHandle h) {{\n  nve::generated::register_switch_adapter(h, [](uint32_t, const nve::generated::SwitchProps&) {{}});\n}}\n",
+            imported.cpp_adapter.relative_path
+        ),
+    )
+    .unwrap();
+
+    let status_import = std::process::Command::new("clang++")
+        .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+        .arg("-I")
+        .arg(&include_dir)
+        .arg("-I")
+        .arg(&tmp)
+        .arg(&import_harness)
+        .output()
+        .expect("run clang++ on import_rn adapter");
+    assert!(
+        status_import.status.success(),
+        "import_rn C++20 adapter failed to compile:\n{}",
+        String::from_utf8_lossy(&status_import.stderr)
+    );
+
+    // 2. Check Direction 2 (`export_rn`) C++20 bridge `.hpp` + `.cpp`
+    let spec = counter_card_export_spec(ExportBackend::Fabric);
+    let exported = export_rn_spec(&spec).expect("export NveCounterCard");
+    exported.write_to_dir(&tmp).unwrap();
+
+    let status_export = std::process::Command::new("clang++")
+        .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+        .arg("-I")
+        .arg(&include_dir)
+        .arg("-I")
+        .arg(&tmp)
+        .arg(tmp.join(&exported.cpp_bridge_cpp.relative_path))
+        .output()
+        .expect("run clang++ on export_rn bridge");
+    assert!(
+        status_export.status.success(),
+        "export_rn C++20 bridge failed to compile:\n{}",
+        String::from_utf8_lossy(&status_export.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

@@ -1,18 +1,23 @@
-//! Tier-2 C-ABI `cdylib` hot-swap loader.
+//! Tier-2 modular `nve_get_interface` `cdylib` hot-swap loader.
 //!
-//! Keeps the native host shell running (macOS Skia, iOS Simulator, Android) and reloads only
-//! the user's compiled Rust UI crate in ~150-400ms while snapshotting and restoring app state.
+//! Resolves the single `nve_get_interface` entry point once at load time, caches the small
+//! `const` interface tables (`NveSurfaceApi`, plus optional `NveLayoutApi`, `NveComponentApi`,
+//! `NveDevApi`), and exposes direct zero-cost calls + state-preserving generation reloads.
 
 use std::path::{Path, PathBuf};
 
 use libloading::{Library, Symbol};
-use nve_abi::{NveAppHandle, NveAppVTable, NveBufferSlice, SurfaceId, NVE_APP_ABI_VERSION};
+use nve_abi::{
+    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveGestureDisposition,
+    NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
+    SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+};
 
 #[derive(Debug)]
 pub enum LoaderError {
     Io(std::io::Error),
     Load(libloading::Error),
-    AbiMismatch { expected: u32, actual: u32 },
+    MissingSurfaceInterface,
 }
 
 impl std::fmt::Display for LoaderError {
@@ -25,15 +30,18 @@ impl std::error::Error for LoaderError {}
 
 pub struct HotAppInstance {
     _lib: Library,
-    vtable: NveAppVTable,
+    surface: NveSurfaceApi,
+    layout: Option<NveLayoutApi>,
+    component: Option<NveComponentApi>,
+    dev: Option<NveDevApi>,
     handle: NveAppHandle,
     generation: u64,
     loaded_copy: PathBuf,
 }
 
 impl HotAppInstance {
-    /// Loads a compiled app cdylib by copying it to a unique generation path (so macOS/Linux
-    /// `dlopen` never returns a stale cached image for the same path).
+    /// Loads a compiled app `cdylib` via a unique generation filename so `dlopen` never returns
+    /// a stale cached image, resolves `nve_get_interface`, and optionally restores state.
     pub fn load(
         dylib_path: &Path,
         surface_id: SurfaceId,
@@ -56,31 +64,48 @@ impl HotAppInstance {
         ));
         std::fs::copy(dylib_path, &loaded_copy).map_err(LoaderError::Io)?;
 
-        // SAFETY: We check the exported ABI version immediately before invoking any vtable fn.
+        // SAFETY: We resolve the single `nve_get_interface` entry point and copy the small
+        // static const function-pointer tables out while `_lib` keeps the image pinned.
         let lib = unsafe { Library::new(&loaded_copy) }.map_err(LoaderError::Load)?;
-        let vtable = unsafe {
-            let sym: Symbol<'_, unsafe extern "C" fn() -> NveAppVTable> =
-                lib.get(b"nve_app_vtable").map_err(LoaderError::Load)?;
-            sym()
+        let get_iface: NveGetInterfaceFn = unsafe {
+            let sym: Symbol<'_, NveGetInterfaceFn> = lib
+                .get(b"nve_get_interface")
+                .map_err(LoaderError::Load)?;
+            *sym
         };
 
-        if vtable.abi_version != NVE_APP_ABI_VERSION {
-            return Err(LoaderError::AbiMismatch {
-                expected: NVE_APP_ABI_VERSION,
-                actual: vtable.abi_version,
-            });
+        let surface_ptr = unsafe { get_iface(NVE_IFACE_SURFACE) as *const NveSurfaceApi };
+        if surface_ptr.is_null() {
+            return Err(LoaderError::MissingSurfaceInterface);
         }
+        let surface = unsafe { *surface_ptr };
 
-        let handle = unsafe { (vtable.create)(surface_id) };
-        if let Some(state) = prior_state {
+        let layout = {
+            let p = unsafe { get_iface(NVE_IFACE_LAYOUT) as *const NveLayoutApi };
+            (!p.is_null()).then(|| unsafe { *p })
+        };
+        let component = {
+            let p = unsafe { get_iface(NVE_IFACE_COMPONENT) as *const NveComponentApi };
+            (!p.is_null()).then(|| unsafe { *p })
+        };
+        let dev = {
+            let p = unsafe { get_iface(NVE_IFACE_DEV) as *const NveDevApi };
+            (!p.is_null()).then(|| unsafe { *p })
+        };
+
+        let handle = unsafe { (surface.create)(surface_id) };
+        if let (Some(dev_api), Some(state)) = (dev, prior_state) {
             if !state.is_empty() {
-                unsafe { (vtable.restore_state)(handle, NveBufferSlice::from_slice(state)) };
+                unsafe { (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state)) };
             }
         }
 
         Ok(Self {
             _lib: lib,
-            vtable,
+            surface,
+            layout,
+            component,
+            dev,
             handle,
             generation,
             loaded_copy,
@@ -93,39 +118,66 @@ impl HotAppInstance {
 
     pub fn render(&mut self, frame_id: u64) -> Vec<u8> {
         unsafe {
-            let slice = (self.vtable.render)(self.handle, frame_id);
+            let slice = (self.surface.render)(self.handle, frame_id);
             slice.as_slice().to_vec()
         }
     }
 
     pub fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        unsafe { (self.vtable.dispatch_events)(self.handle, NveBufferSlice::from_slice(encoded_events)) != 0 }
-    }
-
-    pub fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
         unsafe {
-            (self.vtable.apply_hot_patch)(
+            (self.surface.dispatch_events)(
                 self.handle,
-                NveBufferSlice::from_slice(patch_json.as_bytes()),
+                NveBufferSlice::from_slice(encoded_events),
             ) != 0
         }
     }
 
-    pub fn snapshot_state(&mut self) -> Vec<u8> {
-        unsafe {
-            let slice = (self.vtable.snapshot_state)(self.handle);
-            slice.as_slice().to_vec()
+    pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
+        self.layout
+            .map(|api| unsafe { (api.measure)(self.handle, constraints) })
+    }
+
+    pub fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
+        match self.layout {
+            Some(api) => {
+                NveGestureDisposition::from_u8(unsafe { (api.hit_test)(self.handle, x, y, pointer_phase) })
+            }
+            None => NveGestureDisposition::PassThrough,
         }
     }
 
     pub fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        unsafe { (self.vtable.set_props)(self.handle, NveBufferSlice::from_slice(props_bytes)) != 0 }
+        match self.component {
+            Some(api) => unsafe {
+                (api.set_props)(self.handle, NveBufferSlice::from_slice(props_bytes)) != 0
+            },
+            None => false,
+        }
     }
 
     pub fn drain_emitted_events(&mut self) -> Vec<u8> {
-        unsafe {
-            let slice = (self.vtable.drain_emitted_events)(self.handle);
-            slice.as_slice().to_vec()
+        match self.component {
+            Some(api) => unsafe { (api.drain_emitted_events)(self.handle).as_slice().to_vec() },
+            None => Vec::new(),
+        }
+    }
+
+    pub fn apply_hot_patch(&mut self, patch_json: &str) -> bool {
+        match self.dev {
+            Some(api) => unsafe {
+                (api.apply_hot_patch)(
+                    self.handle,
+                    NveBufferSlice::from_slice(patch_json.as_bytes()),
+                ) != 0
+            },
+            None => false,
+        }
+    }
+
+    pub fn snapshot_state(&mut self) -> Vec<u8> {
+        match self.dev {
+            Some(api) => unsafe { (api.snapshot_state)(self.handle).as_slice().to_vec() },
+            None => Vec::new(),
         }
     }
 
@@ -145,7 +197,7 @@ impl HotAppInstance {
 impl Drop for HotAppInstance {
     fn drop(&mut self) {
         if !self.handle.is_null() {
-            unsafe { (self.vtable.destroy)(self.handle) };
+            unsafe { (self.surface.destroy)(self.handle) };
             self.handle = std::ptr::null_mut();
         }
         let _ = std::fs::remove_file(&self.loaded_copy);

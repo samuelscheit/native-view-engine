@@ -10,9 +10,11 @@ This eliminates React Native's JS reconciler, JSI per-prop crossings, `RawProps`
 
 | Layer | Crate / Dir | Responsibility |
 | :--- | :--- | :--- |
-| **Universal IR & C ABI** | `crates/nve-abi`, `cxx/nve-fabric-bridge/include/nve_abi.h` | Flat binary `CommandBuffer` encoder/decoder, `EventRing`, `#[repr(C)]` FFI structs, and `NveAppVTable` for Tier-2 hot-swappable app modules. |
+| **Universal IR & C ABI** | `crates/nve-abi`, `cxx/nve-fabric-bridge/include/nve_abi.h` | Flat binary `CommandBuffer` encoder/decoder, `EventRing`, and modular `nve_get_interface(uint32_t)` C ABI (`NveSurfaceApi`, `NveLayoutApi`, `NveComponentApi`, `NveDevApi`). |
 | **Typed Primitives** | `crates/nve-components` | Cross-platform primitives (`View`, `Text`, `ScrollView`, `Image`, `TextInput`, `Pressable`, `SkiaCanvas`, `Custom`), Yoga/Taffy-aligned `LayoutStyle`, and `ViewStyle`. |
-| **Core Engine** | `crates/nve-engine` | `RenderBackend` trait, `Surface` & `NodeId` lifecycle, `FrameTiming` 6-stage profiler + Perfetto trace export, 2-tier hot-reload client & `cdylib` loader. |
+| **Core Engine** | `crates/nve-engine` | Safe `NveApp` trait + `export_nve_app!` macro, `RenderBackend` trait, `SurfaceRunner`, 6-stage `FrameProfiler` + Perfetto trace export, 2-tier hot-reload client & modular `cdylib` loader. |
+| **Interop Orchestrator** | `crates/nve-interop` | Multi-framework `SurfaceOrchestrator`, intrinsic `LayoutNegotiator`, nested-scroll `GestureArbitrator`, `NveChannelBus`, `RenderHandoff`, and opt-in `<Island>` specs. |
+| **Bi-Directional Codegen** | `crates/nve-codegen` | `import-rn` (`*NativeComponent.{ts,js}` / `Native*.{ts,js}` → Rust + C++20) and multi-target `export` (one `NveExportSpec` → RN Fabric, Flutter `dart:ffi`, SwiftUI, Jetpack Compose, Web Component). |
 | **Frontend Adapter** | `crates/nve-dioxus` | `dioxus-core` `WriteMutations` adapter emitting batched `CommandBuffer`s, event dispatch back into `VirtualDom`, and Tier-1 RSX template hot-reload hook. |
 | **Fabric C++ Bridge** | `cxx/nve-fabric-bridge` | Thin C++20 adapter insulating Rust from RN `FrameworksGuard.h` / `UmbrellaGuard.h`. Maps `NodeId -> ShadowNode`, writes typed props, commits `ShadowTree`, intercepts `RawEvent` via `EventListener` + mock `jsi::Runtime` recorder (zero Hermes). |
 | **Skia Backend** | `crates/nve-backend-skia` | Cross-platform GPU renderer (macOS, Windows, Linux, iOS, Android) consuming the same `CommandBuffer`, computing Flexbox layout, producing a retained display list, and painting via Skia (`skia-safe` feature). |

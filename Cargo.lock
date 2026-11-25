@@ -1301,9 +1301,11 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-skia",
  "nve-backend-web",
+ "nve-codegen",
  "nve-components",
  "nve-dioxus",
  "nve-engine",
+ "nve-interop",
  "serde_json",
  "tungstenite",
 ]
@@ -1358,6 +1360,15 @@ dependencies = [
  "nve-backend-web",
  "nve-dioxus",
  "nve-engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "nve-interop"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
  "serde",
  "serde_json",
 ]

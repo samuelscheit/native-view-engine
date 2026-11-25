@@ -5,11 +5,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(NVE_WITH_RN_FABRIC "Link against React Native Fabric C++ headers/libraries" OFF)
+option(NVE_WITH_RN_FABRIC "Enable full React Native Fabric ShadowTree/UIManager/EventListener integration" OFF)
+option(NVE_WITH_RN_YOGA "Link against React Native Yoga (auto-enabled when RN_REACT_COMMON_DIR is set)" ON)
+option(NVE_WITH_RN_JSI "Link against React Native JSI for MockJsiRecorderRuntime (auto-enabled when RN_REACT_COMMON_DIR is set)" ON)
 set(RN_REACT_COMMON_DIR "" CACHE PATH "Path to react-native/packages/react-native/ReactCommon")
+set(NVE_RN_EXTRA_INCLUDE_DIRS "" CACHE STRING "Optional extra include dirs (e.g. Folly/glog/boost) when NVE_WITH_RN_FABRIC=ON")
+set(NVE_RN_FABRIC_LIBS "" CACHE STRING "Optional prebuilt RN Fabric libraries to link when NVE_WITH_RN_FABRIC=ON")
 
 add_library(nve_fabric_bridge STATIC
   src/fabric_adapter.cpp
+  src/nve_rn_component.cpp
 )
 
 target_include_directories(nve_fabric_bridge
@@ -19,15 +24,49 @@ target_include_directories(nve_fabric_bridge
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+set(NVE_HAS_RN_YOGA OFF)
+set(NVE_HAS_RN_JSI OFF)
+
+if(RN_REACT_COMMON_DIR)
+  if(NVE_WITH_RN_YOGA AND EXISTS "${RN_REACT_COMMON_DIR}/yoga/yoga/CMakeLists.txt")
+    add_subdirectory("${RN_REACT_COMMON_DIR}/yoga/yoga" "${CMAKE_CURRENT_BINARY_DIR}/rn_yoga" EXCLUDE_FROM_ALL)
+    target_link_libraries(nve_fabric_bridge PUBLIC yogacore)
+    target_compile_definitions(nve_fabric_bridge PUBLIC NVE_WITH_RN_YOGA=1)
+    set(NVE_HAS_RN_YOGA ON)
+    message(STATUS "nve_fabric_bridge: Linked React Native Yoga from ${RN_REACT_COMMON_DIR}/yoga")
+  elseif(NVE_WITH_RN_YOGA)
+    message(WARNING "RN_REACT_COMMON_DIR set, but Yoga CMakeLists.txt not found at ${RN_REACT_COMMON_DIR}/yoga/yoga")
+  endif()
+
+  if(NVE_WITH_RN_JSI AND EXISTS "${RN_REACT_COMMON_DIR}/jsi/jsi/CMakeLists.txt")
+    add_subdirectory("${RN_REACT_COMMON_DIR}/jsi/jsi" "${CMAKE_CURRENT_BINARY_DIR}/rn_jsi" EXCLUDE_FROM_ALL)
+    target_link_libraries(nve_fabric_bridge PUBLIC jsi)
+    target_compile_definitions(nve_fabric_bridge PUBLIC NVE_WITH_RN_JSI=1)
+    set(NVE_HAS_RN_JSI ON)
+    message(STATUS "nve_fabric_bridge: Linked React Native JSI from ${RN_REACT_COMMON_DIR}/jsi")
+  elseif(NVE_WITH_RN_JSI)
+    message(WARNING "RN_REACT_COMMON_DIR set, but JSI CMakeLists.txt not found at ${RN_REACT_COMMON_DIR}/jsi/jsi")
+  endif()
+endif()
+
 if(NVE_WITH_RN_FABRIC)
   if(NOT RN_REACT_COMMON_DIR)
     message(FATAL_ERROR "RN_REACT_COMMON_DIR must be set when NVE_WITH_RN_FABRIC=ON")
   endif()
-  target_compile_definitions(nve_fabric_bridge PRIVATE NVE_WITH_RN_FABRIC=1)
-  target_include_directories(nve_fabric_bridge PRIVATE ${RN_REACT_COMMON_DIR})
+  target_compile_definitions(nve_fabric_bridge PUBLIC NVE_WITH_RN_FABRIC=1)
+  target_include_directories(nve_fabric_bridge PUBLIC
+    ${RN_REACT_COMMON_DIR}
+    ${RN_REACT_COMMON_DIR}/yoga
+    ${RN_REACT_COMMON_DIR}/jsi
+    ${NVE_RN_EXTRA_INCLUDE_DIRS}
+  )
+  if(NVE_RN_FABRIC_LIBS)
+    target_link_libraries(nve_fabric_bridge PUBLIC ${NVE_RN_FABRIC_LIBS})
+  endif()
 endif()
 
 enable_testing()
 add_executable(nve_fabric_bridge_test tests/bridge_test.cpp)
+target_include_directories(nve_fabric_bridge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(nve_fabric_bridge_test PRIVATE nve_fabric_bridge)
 add_test(NAME bridge_abi_test COMMAND nve_fabric_bridge_test)

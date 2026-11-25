@@ -53,29 +53,53 @@ struct StyleProps {
   int32_t z_index{};
 };
 
+inline bool is_valid_component_kind(uint16_t kind) noexcept {
+  return kind <= NVE_COMP_SKIA_CANVAS || kind == NVE_COMP_CUSTOM;
+}
+
+inline bool is_valid_dimension(const Dimension& d) noexcept {
+  return d.tag <= 2;
+}
+
+inline bool is_valid_layout(const LayoutProps& l) noexcept {
+  return is_valid_dimension(l.width) && is_valid_dimension(l.height) &&
+         is_valid_dimension(l.min_width) && is_valid_dimension(l.min_height) &&
+         is_valid_dimension(l.max_width) && is_valid_dimension(l.max_height) &&
+         l.flex_direction <= 3 && l.justify_content <= 5 && l.align_items <= 4;
+}
+
 class BinaryReader {
  public:
   BinaryReader(const uint8_t* ptr, size_t len) : ptr_(ptr), len_(len), pos_(0) {}
 
-  size_t remaining() const { return len_ - pos_; }
+  size_t remaining() const noexcept { return len_ - pos_; }
+  size_t position() const noexcept { return pos_; }
+  bool ok_pointer() const noexcept { return ptr_ != nullptr || len_ == 0; }
 
   template <typename T>
   bool read(T& out) {
-    if (remaining() < sizeof(T)) return false;
+    if (!ok_pointer() || remaining() < sizeof(T)) return false;
     std::memcpy(&out, ptr_ + pos_, sizeof(T));
     pos_ += sizeof(T);
     return true;
   }
 
   bool read_string(size_t len, std::string_view& out) {
-    if (remaining() < len) return false;
+    if (!ok_pointer() || remaining() < len) return false;
     out = std::string_view(reinterpret_cast<const char*>(ptr_ + pos_), len);
     pos_ += len;
     return true;
   }
 
+  bool read_bytes(size_t len, std::vector<uint8_t>& out) {
+    if (!ok_pointer() || remaining() < len) return false;
+    out.assign(ptr_ + pos_, ptr_ + pos_ + len);
+    pos_ += len;
+    return true;
+  }
+
   bool skip(size_t len) {
-    if (remaining() < len) return false;
+    if (!ok_pointer() || remaining() < len) return false;
     pos_ += len;
     return true;
   }

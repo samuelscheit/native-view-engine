@@ -21,3 +21,8 @@ softbuffer = { workspace = true, optional = true }
 tungstenite = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+
+[[example]]
+name = "preview"
+path = "examples/preview.rs"
+required-features = ["desktop"]

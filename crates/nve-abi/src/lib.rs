@@ -1,5 +1,6 @@
-//! Versioned binary CommandBuffer, EventRing, and C ABI definitions shared across
-//! Rust frontends, the C++20 React Native Fabric bridge, Skia, Web WASM, and Headless backends.
+//! Versioned binary CommandBuffer, EventRing, and modular `nve_get_interface` C ABI definitions
+//! shared across Rust frontends, the C++20 Fabric bridge, Skia, Web WASM, Flutter, SwiftUI,
+//! Jetpack Compose, and Headless backends.
 
 pub mod codec;
 pub mod events;
@@ -11,11 +12,12 @@ pub use codec::{
     RawPropValue, StyleProps, NVE_ABI_MAGIC, NVE_ABI_VERSION,
 };
 pub use events::{
-    EventMask, EventPayload, NativeEvent, NativeEventKind, decode_events, encode_events,
+    decode_events, encode_events, EventMask, EventPayload, NativeEvent, NativeEventKind,
 };
 pub use ffi::{
-    NveAppHandle, NveAppVTable, NveBufferSlice, NveFrameStats, NveSurfaceConfig,
-    NVE_APP_ABI_VERSION,
+    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
+    NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
+    NveSurfaceConfig, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
 pub type SurfaceId = u32;

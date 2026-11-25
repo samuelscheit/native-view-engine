@@ -18,6 +18,8 @@ nve-abi = { workspace = true }
 nve-components = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
+nve-codegen = { workspace = true }
+nve-interop = { workspace = true }
 nve-backend-headless = { workspace = true }
-nve-backend-skia = { workspace = true }
+nve-backend-skia = { path = "../nve-backend-skia", features = ["desktop"] }
 nve-backend-web = { workspace = true }

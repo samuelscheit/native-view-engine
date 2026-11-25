@@ -7,12 +7,10 @@
 
 namespace {
 
-using VTableFn = NveAppVTable (*)();
-
 struct AndroidHostState {
   NveFabricHostHandle fabric_host{nullptr};
   void* dylib{nullptr};
-  NveAppVTable vtable{};
+  NveModule module{};
   NveAppHandle app{nullptr};
   uint32_t surface_id{1};
   uint64_t frame_id{1};
@@ -49,10 +47,12 @@ Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
   if (!state) return JNI_FALSE;
 
   std::vector<uint8_t> saved;
-  if (state->app && state->vtable.snapshot_state) {
-    NveBufferSlice s = state->vtable.snapshot_state(state->app);
+  if (state->app && state->module.dev && state->module.dev->snapshot_state) {
+    NveBufferSlice s = state->module.dev->snapshot_state(state->app);
     if (s.ptr && s.len > 0) saved.assign(s.ptr, s.ptr + s.len);
-    state->vtable.destroy(state->app);
+  }
+  if (state->app && state->module.surface && state->module.surface->destroy) {
+    state->module.surface->destroy(state->app);
     state->app = nullptr;
   }
   if (state->dylib) {
@@ -65,23 +65,23 @@ Java_dev_nve_host_NveNativeBridge_nativeHotSwapApp(
   env->ReleaseStringUTFChars(so_path, path);
   if (!lib) return JNI_FALSE;
 
-  auto fn = reinterpret_cast<VTableFn>(dlsym(lib, "nve_app_vtable"));
-  if (!fn) {
+  auto get_iface = reinterpret_cast<NveGetInterfaceFn>(dlsym(lib, "nve_get_interface"));
+  if (!get_iface) {
     dlclose(lib);
     return JNI_FALSE;
   }
-  NveAppVTable vt = fn();
-  if (vt.abi_version != NVE_APP_ABI_VERSION) {
+  NveModule mod = nve_resolve_module(get_iface);
+  if (!mod.surface || !mod.surface->create) {
     dlclose(lib);
     return JNI_FALSE;
   }
   state->dylib = lib;
-  state->vtable = vt;
-  state->app = vt.create(state->surface_id);
-  if (!saved.empty() && vt.restore_state) {
-    vt.restore_state(state->app, NveBufferSlice{saved.data(), saved.size()});
+  state->module = mod;
+  state->app = mod.surface->create(state->surface_id);
+  if (!saved.empty() && mod.dev && mod.dev->restore_state) {
+    mod.dev->restore_state(state->app, NveBufferSlice{saved.data(), saved.size()});
   }
-  NveBufferSlice frame = vt.render(state->app, state->frame_id++);
+  NveBufferSlice frame = mod.surface->render(state->app, state->frame_id++);
   NveFrameStats stats{};
   nve_fabric_host_submit_frame(state->fabric_host, frame, &stats);
   return JNI_TRUE;

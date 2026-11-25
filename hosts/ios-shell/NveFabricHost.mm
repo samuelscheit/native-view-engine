@@ -1,13 +1,11 @@
 #import "NveFabricHost.h"
 #include <dlfcn.h>
 
-typedef NveAppVTable (*NveVTableFn)(void);
-
 @implementation NveFabricHostController {
   NveFabricHostHandle _fabricHost;
   NveSurfaceConfig _config;
   void *_dylibHandle;
-  NveAppVTable _vtable;
+  NveModule _module;
   NveAppHandle _appHandle;
   uint64_t _frameId;
 }
@@ -23,8 +21,8 @@ typedef NveAppVTable (*NveVTableFn)(void);
 }
 
 - (void)dealloc {
-  if (_appHandle && _vtable.destroy) {
-    _vtable.destroy(_appHandle);
+  if (_appHandle && _module.surface && _module.surface->destroy) {
+    _module.surface->destroy(_appHandle);
     _appHandle = NULL;
   }
   if (_dylibHandle) {
@@ -47,31 +45,33 @@ typedef NveAppVTable (*NveVTableFn)(void);
     }
     return NO;
   }
-  NveVTableFn fn = (NveVTableFn)dlsym(handle, "nve_app_vtable");
-  if (!fn) {
+  NveGetInterfaceFn getIface = (NveGetInterfaceFn)dlsym(handle, "nve_get_interface");
+  if (!getIface) {
     dlclose(handle);
     return NO;
   }
-  NveAppVTable vt = fn();
-  if (vt.abi_version != NVE_APP_ABI_VERSION) {
+  NveModule mod = nve_resolve_module(getIface);
+  if (!mod.surface || !mod.surface->create) {
     dlclose(handle);
     return NO;
   }
   _dylibHandle = handle;
-  _vtable = vt;
-  _appHandle = _vtable.create(_config.surface_id);
+  _module = mod;
+  _appHandle = _module.surface->create(_config.surface_id);
   [self renderNextFrame];
   return YES;
 }
 
 - (BOOL)reloadRustAppDylibAtPath:(NSString *)dylibPath error:(NSError **)error {
   NSData *savedState = nil;
-  if (_appHandle && _vtable.snapshot_state) {
-    NveBufferSlice s = _vtable.snapshot_state(_appHandle);
+  if (_appHandle && _module.dev && _module.dev->snapshot_state) {
+    NveBufferSlice s = _module.dev->snapshot_state(_appHandle);
     if (s.ptr && s.len > 0) {
       savedState = [NSData dataWithBytes:s.ptr length:s.len];
     }
-    _vtable.destroy(_appHandle);
+  }
+  if (_appHandle && _module.surface && _module.surface->destroy) {
+    _module.surface->destroy(_appHandle);
     _appHandle = NULL;
   }
   if (_dylibHandle) {
@@ -81,26 +81,26 @@ typedef NveAppVTable (*NveVTableFn)(void);
   if (![self loadRustAppDylibAtPath:dylibPath error:error]) {
     return NO;
   }
-  if (savedState.length > 0 && _vtable.restore_state) {
+  if (savedState.length > 0 && _module.dev && _module.dev->restore_state) {
     NveBufferSlice slice = {(const uint8_t *)savedState.bytes, savedState.length};
-    _vtable.restore_state(_appHandle, slice);
+    _module.dev->restore_state(_appHandle, slice);
     [self renderNextFrame];
   }
   return YES;
 }
 
 - (void)renderNextFrame {
-  if (!_appHandle || !_vtable.render) return;
-  NveBufferSlice cmd = _vtable.render(_appHandle, _frameId++);
+  if (!_appHandle || !_module.surface || !_module.surface->render) return;
+  NveBufferSlice cmd = _module.surface->render(_appHandle, _frameId++);
   NveFrameStats stats = {};
   nve_fabric_host_submit_frame(_fabricHost, cmd, &stats);
 }
 
 - (void)applyHotPatchJson:(NSString *)patchJson {
-  if (!_appHandle || !_vtable.apply_hot_patch) return;
+  if (!_appHandle || !_module.dev || !_module.dev->apply_hot_patch) return;
   NSData *utf8 = [patchJson dataUsingEncoding:NSUTF8StringEncoding];
   NveBufferSlice slice = {(const uint8_t *)utf8.bytes, utf8.length};
-  if (_vtable.apply_hot_patch(_appHandle, slice) != 0) {
+  if (_module.dev->apply_hot_patch(_appHandle, slice) != 0) {
     [self renderNextFrame];
   }
 }

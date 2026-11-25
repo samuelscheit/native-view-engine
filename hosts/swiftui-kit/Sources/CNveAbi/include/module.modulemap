@@ -1,0 +1,4 @@
+module CNveAbi [system] {
+    header "nve_abi.h"
+    export *
+}

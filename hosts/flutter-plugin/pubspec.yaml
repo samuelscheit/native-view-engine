@@ -1,0 +1,30 @@
+name: nve_flutter
+description: >-
+  Native View Engine (NVE) Flutter host plugin. Embeds NVE Rust components at 120fps
+  via zero-copy FlutterTextureRegistry textures or native Fabric platform views, with
+  direct dart:ffi bindings to modular nve_get_interface and NveChannelBus stream bridging.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: dev.nve.flutter
+        pluginClass: NveFlutterPlugin
+      ios:
+        pluginClass: NveFlutterPlugin
+      macos:
+        pluginClass: NveFlutterPlugin
+      linux:
+        pluginClass: NveFlutterPlugin
+      windows:
+        pluginClass: NveFlutterPlugin

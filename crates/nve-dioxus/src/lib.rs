@@ -9,6 +9,7 @@ pub mod elements;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use dioxus_core::{
@@ -518,12 +519,41 @@ fn event_name_to_mask(name: &str) -> u64 {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct FrameTimer(Instant);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FrameTimer {
+    fn start() -> Self {
+        Self(Instant::now())
+    }
+
+    fn elapsed_us(&self) -> u64 {
+        self.0.elapsed().as_micros() as u64
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct FrameTimer;
+
+#[cfg(target_arch = "wasm32")]
+impl FrameTimer {
+    fn start() -> Self {
+        Self
+    }
+
+    fn elapsed_us(&self) -> u64 {
+        0
+    }
+}
+
 /// Complete Dioxus-backed surface producing batched `nve-abi` `CommandBuffer` frames.
 pub struct DioxusSurface {
     surface_id: SurfaceId,
     vdom: VirtualDom,
     writer: NveMutationWriter,
     initialized: bool,
+    pending_hot_patches: Vec<HotPatchMsg>,
 }
 
 impl DioxusSurface {
@@ -533,24 +563,28 @@ impl DioxusSurface {
             vdom: VirtualDom::new(root),
             writer: NveMutationWriter::new(surface_id),
             initialized: false,
+            pending_hot_patches: Vec::new(),
         }
     }
 
     /// Reconciles the `VirtualDom` and returns `(reconcile_us, encode_us, command_buffer_bytes)`.
     pub fn render_frame(&mut self, frame_id: FrameId) -> (u64, u64, Vec<u8>) {
         self.writer.begin_frame(self.surface_id, frame_id);
-        let t_rec = Instant::now();
+        let t_rec = FrameTimer::start();
         if !self.initialized {
             self.vdom.rebuild(&mut self.writer);
             self.initialized = true;
         } else {
             self.vdom.render_immediate(&mut self.writer);
         }
-        let reconcile_us = t_rec.elapsed().as_micros() as u64;
+        for patch in self.pending_hot_patches.drain(..) {
+            self.writer.apply_hot_patch(&patch);
+        }
+        let reconcile_us = t_rec.elapsed_us();
 
-        let t_enc = Instant::now();
+        let t_enc = FrameTimer::start();
         let bytes = self.writer.finish_frame(true).to_vec();
-        let encode_us = t_enc.elapsed().as_micros() as u64;
+        let encode_us = t_enc.elapsed_us();
         (reconcile_us, encode_us, bytes)
     }
 
@@ -585,6 +619,11 @@ impl DioxusSurface {
     }
 
     pub fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
-        self.writer.apply_hot_patch(patch)
+        if matches!(patch, HotPatchMsg::TemplatePatch { .. }) {
+            self.pending_hot_patches.push(patch.clone());
+            true
+        } else {
+            false
+        }
     }
 }

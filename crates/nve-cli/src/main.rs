@@ -1,10 +1,11 @@
 //! `nve` — Best-in-class developer CLI for `native-view-engine`.
 //!
 //! Subcommands:
-//! - `nve doctor`  — verifies Rust targets, caches (kache/ccache), CMake/Ninja, Xcode/Android SDKs, and RN checkout.
+//! - `nve doctor`  — verifies Rust targets, caches (kache/ccache), CMake/Ninja, Xcode/Android/Flutter/Swift SDKs, and RN checkout.
 //! - `nve inspect` — runs a Dioxus `rsx!` app headlessly, simulates native press events, and dumps ShadowTrees + Flexbox rects.
 //! - `nve bench`   — runs 1,000-node initial + incremental multi-backend benchmarks and exports Perfetto/Chrome JSON traces.
-//! - `nve dev`     — starts the 2-tier hot-reload daemon (WebSocket server + file watcher + incremental cdylib builder).
+//! - `nve dev`     — starts the 2-tier hot-reload daemon (`--skia` opens the live desktop preview window automatically).
+//! - `nve codegen` — bi-directional RN <-> NVE + Flutter/SwiftUI/Compose/Web component code generation.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use nve_abi::{
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
+use nve_codegen::ExportTarget;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, RenderBackend, SurfaceRunner, Viewport};
@@ -60,6 +62,37 @@ enum Commands {
         /// WebSocket port for Tier-1/Tier-2 hot-reload clients.
         #[arg(long, default_value_t = 8089)]
         port: u16,
+        /// Launch the live cross-platform desktop preview window (`winit` + `softbuffer`) connected to this daemon.
+        #[arg(long, default_value_t = false)]
+        skia: bool,
+    },
+    /// Bi-directional React Native <-> NVE and multi-framework (Flutter, SwiftUI, Compose, Web) codegen.
+    Codegen {
+        #[command(subcommand)]
+        action: CodegenAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CodegenAction {
+    /// Parse a React Native `*NativeComponent.{ts,js}` or `Native*.{ts,js}` spec and emit zero-JS Rust + C++20 bindings.
+    ImportRn {
+        /// Path to the React Native TypeScript/Flow spec file.
+        spec: PathBuf,
+        /// Output directory for generated Rust and C++20 files.
+        #[arg(long, default_value = "generated/import-rn")]
+        out: PathBuf,
+    },
+    /// Export an `NveExportSpec` JSON file into native wrappers for RN, Flutter, SwiftUI, Compose, and/or Web.
+    Export {
+        /// Path to the `NveExportSpec` JSON file.
+        spec: PathBuf,
+        /// Target framework(s): `rn`, `flutter`, `swiftui`, `compose`, `web`, or `all` (comma-separated allowed).
+        #[arg(long, default_value = "all")]
+        target: String,
+        /// Output root directory (each target writes into `<out>/<target>/`).
+        #[arg(long, default_value = "generated/export")]
+        out: PathBuf,
     },
 }
 
@@ -77,7 +110,9 @@ fn main() {
             package,
             watch,
             port,
-        } => cmd_dev(&package, &watch, port),
+            skia,
+        } => cmd_dev(&package, &watch, port, skia),
+        Commands::Codegen { action } => cmd_codegen(action),
     }
 }
 
@@ -103,13 +138,16 @@ fn cmd_doctor() {
         ("ccache", &["--version"]),
         ("ld64.lld", &["--version"]),
         ("xcodebuild", &["-version"]),
+        ("swift", &["--version"]),
+        ("flutter", &["--version"]),
         ("adb", &["version"]),
+        ("wasm-bindgen", &["--version"]),
     ];
 
     for (name, args) in tools {
         match probe_tool(name, args) {
-            Some(ver) => println!("  [OK]   {name:<12} {ver}"),
-            None => println!("  [MISS] {name:<12} not found in PATH"),
+            Some(ver) => println!("  [OK]   {name:<14} {ver}"),
+            None => println!("  [MISS] {name:<14} not found in PATH"),
         }
     }
 
@@ -123,16 +161,20 @@ fn cmd_doctor() {
             .filter(|l| !l.is_empty())
             .map(ToOwned::to_owned)
             .collect();
-        println!("\n  Installed Rust targets ({}): {}", targets.len(), targets.join(", "));
+        println!(
+            "\n  Installed Rust targets ({}): {}",
+            targets.len(),
+            targets.join(", ")
+        );
     }
 
     let rn_path = Path::new(
         "/Users/user/developer/developer/respond/react-native/react-native/packages/react-native/ReactCommon",
     );
     if rn_path.exists() {
-        println!("  [OK]   RN Fabric    {}", rn_path.display());
+        println!("  [OK]   RN Fabric      {}", rn_path.display());
     } else {
-        println!("  [WARN] RN Fabric    local checkout not found at default path");
+        println!("  [WARN] RN Fabric      local checkout not found at default path");
     }
 }
 
@@ -189,7 +231,6 @@ fn cmd_inspect() {
     );
     print!("{}", runner.backend().render_ascii_tree());
 
-    // Hit-test the pressable button at (60, 75) and dispatch a simulated native press!
     let hit = runner
         .backend()
         .hit_test(60.0, 75.0, true)
@@ -327,14 +368,34 @@ fn cmd_bench(rows: usize, frames: usize, trace: Option<PathBuf>) {
     run_backend_bench(WebBackend::new(), rows, frames, None);
 }
 
-fn cmd_dev(package: &str, watch_dir: &Path, port: u16) {
+fn dylib_path_for_package(package: &str) -> PathBuf {
+    let ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else if cfg!(target_os = "windows") {
+        "dll"
+    } else {
+        "so"
+    };
+    let prefix = if cfg!(target_os = "windows") { "" } else { "lib" };
+    PathBuf::from(format!(
+        "target/debug/{prefix}{}.{ext}",
+        package.replace('-', "_")
+    ))
+}
+
+fn cmd_dev(package: &str, watch_dir: &Path, port: u16, launch_skia_window: bool) {
     use crossbeam_channel::unbounded;
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
+    let ws_url = format!("ws://127.0.0.1:{port}");
     println!("nve dev — 2-Tier Hot Reload Daemon");
     println!("  package: {package}");
     println!("  watch:   {}", watch_dir.display());
-    println!("  ws:      ws://127.0.0.1:{port}\n");
+    println!("  ws:      {ws_url}");
+    if launch_skia_window {
+        println!("  preview: live desktop window enabled (--skia)");
+    }
+    println!();
 
     let clients: Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>> =
         Arc::new(Mutex::new(Vec::new()));
@@ -349,53 +410,125 @@ fn cmd_dev(package: &str, watch_dir: &Path, port: u16) {
         }
     });
 
-    let (tx, rx) = unbounded();
-    let mut watcher = RecommendedWatcher::new(
-        move |res| {
-            let _ = tx.send(res);
-        },
-        Config::default(),
-    )
-    .expect("create file watcher");
-    watcher
-        .watch(watch_dir, RecursiveMode::Recursive)
-        .expect("watch directory");
-
-    let mut generation = 1u64;
-    let build_and_broadcast = |generation: u64| {
-        let t0 = Instant::now();
-        let status = ProcessCommand::new("cargo")
-            .args(["build", "-p", package])
-            .status();
-        let elapsed_ms = t0.elapsed().as_millis() as u64;
-        match status {
-            Ok(s) if s.success() => {
-                let dylib = format!("target/debug/lib{}.dylib", package.replace('-', "_"));
-                let msg = HotPatchMsg::DylibReload {
-                    generation,
-                    dylib_path: dylib.clone(),
-                    build_ms: elapsed_ms,
-                };
-                println!("[gen {generation}] rebuilt {package} in {elapsed_ms}ms -> {dylib}");
-                let payload = tungstenite::Message::Text(msg.to_json().into());
-                let mut guard = clients.lock().unwrap();
-                guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
+    let dylib_path = dylib_path_for_package(package);
+    let build_once = {
+        let package = package.to_owned();
+        let dylib_str = dylib_path.to_string_lossy().into_owned();
+        let clients = Arc::clone(&clients);
+        move |generation: u64| {
+            let t0 = Instant::now();
+            let status = ProcessCommand::new("cargo")
+                .args(["build", "-p", &package])
+                .status();
+            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            match status {
+                Ok(s) if s.success() => {
+                    let msg = HotPatchMsg::DylibReload {
+                        generation,
+                        dylib_path: dylib_str.clone(),
+                        build_ms: elapsed_ms,
+                    };
+                    println!("[gen {generation}] rebuilt {package} in {elapsed_ms}ms -> {dylib_str}");
+                    let payload = tungstenite::Message::Text(msg.to_json().into());
+                    let mut guard = clients.lock().unwrap();
+                    guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
+                }
+                _ => eprintln!("[gen {generation}] build failed after {elapsed_ms}ms"),
             }
-            _ => eprintln!("[gen {generation}] build failed after {elapsed_ms}ms"),
         }
     };
 
-    build_and_broadcast(generation);
-    println!("Watching for changes (Ctrl-C to stop)...");
+    build_once(1);
 
-    loop {
-        if let Ok(Ok(event)) = rx.recv() {
-            if event.kind.is_modify() || event.kind.is_create() {
-                // Debounce rapid editor saves.
-                std::thread::sleep(Duration::from_millis(40));
-                while rx.try_recv().is_ok() {}
-                generation += 1;
-                build_and_broadcast(generation);
+    let watch_owned = watch_dir.to_path_buf();
+    let run_watch_loop = move || {
+        let (tx, rx) = unbounded();
+        let mut watcher = RecommendedWatcher::new(
+            move |res| {
+                let _ = tx.send(res);
+            },
+            Config::default(),
+        )
+        .expect("create file watcher");
+        watcher
+            .watch(&watch_owned, RecursiveMode::Recursive)
+            .expect("watch directory");
+
+        let mut generation = 1u64;
+        println!("Watching for changes (Ctrl-C to stop)...");
+        loop {
+            if let Ok(Ok(event)) = rx.recv() {
+                if event.kind.is_modify() || event.kind.is_create() {
+                    std::thread::sleep(Duration::from_millis(40));
+                    while rx.try_recv().is_ok() {}
+                    generation += 1;
+                    build_once(generation);
+                }
+            }
+        }
+    };
+
+    if launch_skia_window {
+        std::thread::spawn(run_watch_loop);
+        if let Err(err) = nve_backend_skia::run_desktop_preview(dylib_path, Some(ws_url)) {
+            eprintln!("Desktop preview exited with error: {err}");
+            std::process::exit(1);
+        }
+    } else {
+        run_watch_loop();
+    }
+}
+
+fn cmd_codegen(action: CodegenAction) {
+    match action {
+        CodegenAction::ImportRn { spec, out } => {
+            let generated = nve_codegen::import_rn_file(&spec).unwrap_or_else(|e| {
+                eprintln!("import-rn failed for {}: {e}", spec.display());
+                std::process::exit(1);
+            });
+            let written = generated.write_to_dir(&out).unwrap_or_else(|e| {
+                eprintln!("failed writing output to {}: {e}", out.display());
+                std::process::exit(1);
+            });
+            println!("Generated {} files in {}:", written.len(), out.display());
+            for path in written {
+                println!("  - {}", path.display());
+            }
+        }
+        CodegenAction::Export { spec, target, out } => {
+            let targets: Vec<ExportTarget> = if target.eq_ignore_ascii_case("all") {
+                ExportTarget::ALL.to_vec()
+            } else {
+                target
+                    .split(',')
+                    .map(|part| {
+                        ExportTarget::from_name(part.trim()).unwrap_or_else(|e| {
+                            eprintln!("invalid target '{part}': {e}");
+                            std::process::exit(1);
+                        })
+                    })
+                    .collect()
+            };
+            let bundles = nve_codegen::export_json_file_for_targets(&spec, &targets)
+                .unwrap_or_else(|e| {
+                    eprintln!("export failed for {}: {e}", spec.display());
+                    std::process::exit(1);
+                });
+            for bundle in bundles {
+                let target_dir = out.join(bundle.target.dir_name());
+                let written = bundle.write_to_dir(&target_dir).unwrap_or_else(|e| {
+                    eprintln!("failed writing {} output: {e}", bundle.target.dir_name());
+                    std::process::exit(1);
+                });
+                println!(
+                    "[{}] wrote {} file(s) -> {}",
+                    bundle.target.dir_name(),
+                    written.len(),
+                    target_dir.display()
+                );
+                for path in written {
+                    println!("  - {}", path.display());
+                }
             }
         }
     }
