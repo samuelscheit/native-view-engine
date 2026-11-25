@@ -1,10 +1,13 @@
 #import <AppKit/AppKit.h>
+#import <dispatch/dispatch.h>
 #import "NveAppleComponentHost.h"
 #import "NveMacWindowManager.h"
 #import "RCTNveMacComponentView.h"
 
 #include "nve_rn_component.hpp"
+#include "nve_snapshot.hpp"
 
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -208,33 +211,92 @@ class BuiltinMacDemoApp {
 @property (nonatomic, copy, nullable) NSString *pairToken;
 @property (nonatomic, copy, nullable) NSString *pairTransport;
 @property (nonatomic, copy, nullable) NSString *snapshotPath;
+@property (nonatomic, copy, nullable) NSString *sidecarFrame0Path;
 @property (nonatomic, assign) uint32_t schemaVersion;
-@property (nonatomic, assign) BOOL snapshotSaved;
+@property (nonatomic, assign) BOOL noSnapshot;
+@property (nonatomic, assign) BOOL resetState;
 @property (nonatomic, strong) NveMacWindowManager *windowManager;
+@property (nonatomic, weak, nullable) NSWindow *primaryWindow;
 @property (nonatomic, assign) uint32_t primarySurfaceId;
+@property (nonatomic, strong, nullable) dispatch_source_t sigintSource;
+@property (nonatomic, strong, nullable) dispatch_source_t sigtermSource;
 @end
 
 @implementation NveMacAppDelegate
 
-- (void)_persistSnapshotIfConfigured {
-  RCTNveMacComponentView *rootView =
-      [self.windowManager componentViewForSurfaceId:self.primarySurfaceId];
-  if (self.snapshotSaved || self.snapshotPath.length == 0 || rootView == nil) {
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  if (self.sigintSource != nil) {
+    dispatch_source_cancel(self.sigintSource);
+    self.sigintSource = nil;
+  }
+  if (self.sigtermSource != nil) {
+    dispatch_source_cancel(self.sigtermSource);
+    self.sigtermSource = nil;
+  }
+}
+
+- (void)_persistSnapshotWithReason:(const char *)reason
+                      explicitView:(nullable RCTNveMacComponentView *)explicitView {
+  if (self.noSnapshot || self.snapshotPath.length == 0) {
     return;
   }
-  self.snapshotSaved = YES;
+  RCTNveMacComponentView *rootView =
+      explicitView ?: [self.windowManager componentViewForSurfaceId:self.primarySurfaceId];
+  if (rootView == nil || rootView.nveNodeCount == 0u) {
+    return;
+  }
   if ([rootView saveSnapshotAtPath:self.snapshotPath schemaVersion:self.schemaVersion]) {
     std::fprintf(
         stderr,
-        "[nve-macos-shell] Saved Frame-0 + state snapshot to %s (schema v%u)\n",
+        "[nve-macos-shell] Saved Frame-0 + state snapshot to %s (schema v%u, trigger=%s)\n",
         self.snapshotPath.UTF8String,
-        self.schemaVersion);
+        self.schemaVersion,
+        reason);
   } else {
     std::fprintf(
         stderr,
-        "[nve-macos-shell] Warning: failed to save snapshot to %s\n",
-        self.snapshotPath.UTF8String);
+        "[nve-macos-shell] Warning: failed to save snapshot to %s (trigger=%s)\n",
+        self.snapshotPath.UTF8String,
+        reason);
   }
+}
+
+- (void)_handleWindowWillClose:(NSNotification *)notification {
+  NSWindow *closingWindow = notification.object;
+  if (![closingWindow isKindOfClass:[NSWindow class]] || closingWindow != self.primaryWindow) {
+    return;
+  }
+  RCTNveMacComponentView *rootView =
+      [closingWindow.contentView isKindOfClass:[RCTNveMacComponentView class]]
+          ? (RCTNveMacComponentView *)closingWindow.contentView
+          : nil;
+  [self _persistSnapshotWithReason:"window-close" explicitView:rootView];
+  self.primaryWindow = nil;
+}
+
+- (void)_installSignalHandlers {
+  std::signal(SIGINT, SIG_IGN);
+  std::signal(SIGTERM, SIG_IGN);
+  __weak NveMacAppDelegate *weakSelf = self;
+  auto makeSource = [weakSelf](int sig, const char *sigName) -> dispatch_source_t {
+    dispatch_source_t src = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_SIGNAL,
+        static_cast<uintptr_t>(sig),
+        0,
+        dispatch_get_main_queue());
+    dispatch_source_set_event_handler(src, ^{
+      NveMacAppDelegate *strongSelf = weakSelf;
+      if (strongSelf != nil) {
+        [strongSelf _persistSnapshotWithReason:sigName explicitView:nil];
+      }
+      [NSApp terminate:nil];
+    });
+    dispatch_resume(src);
+    return src;
+  };
+  self.sigintSource = makeSource(SIGINT, "SIGINT");
+  self.sigtermSource = makeSource(SIGTERM, "SIGTERM");
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -242,14 +304,6 @@ class BuiltinMacDemoApp {
   self.windowManager = [[NveMacWindowManager alloc] init];
   self.primarySurfaceId = 1u;
 
-  __weak NveMacAppDelegate *weakSelf = self;
-  self.windowManager.shouldCloseWindow = ^BOOL(uint32_t surfaceId) {
-    NveMacAppDelegate *strongSelf = weakSelf;
-    if (strongSelf != nil && surfaceId == strongSelf.primarySurfaceId) {
-      [strongSelf _persistSnapshotIfConfigured];
-    }
-    return YES;
-  };
   self.windowManager.onAllWindowsClosed = ^{
     [NSApp terminate:nil];
   };
@@ -264,54 +318,123 @@ class BuiltinMacDemoApp {
   if (rootView == nil || window == nil) {
     return;
   }
+  self.primaryWindow = window;
 
-  if (self.snapshotPath.length > 0 &&
-      [[NSFileManager defaultManager] fileExistsAtPath:self.snapshotPath]) {
-    uint64_t restoreUs = 0;
-    if ([rootView replayFrame0SnapshotAtPath:self.snapshotPath
-                       expectedSchemaVersion:self.schemaVersion
-                               restoreTimeUs:&restoreUs]) {
-      std::fprintf(
-          stderr,
-          "[nve-macos-shell] Instant-boot Frame-0 mmap restore from %s in %llu us\n",
-          self.snapshotPath.UTF8String,
-          static_cast<unsigned long long>(restoreUs));
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(_handleWindowWillClose:)
+                                               name:NSWindowWillCloseNotification
+                                             object:window];
+  [self _installSignalHandlers];
+
+  BOOL replayedFrame0 = NO;
+  if (!self.noSnapshot) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *replayPath = nil;
+    const char *replaySource = "user-snapshot";
+    if (self.snapshotPath.length > 0 && [fm fileExistsAtPath:self.snapshotPath]) {
+      replayPath = self.snapshotPath;
+    } else if (!self.resetState && self.sidecarFrame0Path.length > 0 &&
+               [fm fileExistsAtPath:self.sidecarFrame0Path]) {
+      replayPath = self.sidecarFrame0Path;
+      replaySource = "sidecar-frame0";
+    }
+    if (replayPath.length > 0) {
+      uint64_t restoreUs = 0;
+      if ([rootView replayFrame0SnapshotAtPath:replayPath
+                         expectedSchemaVersion:self.schemaVersion
+                                 restoreTimeUs:&restoreUs]) {
+        replayedFrame0 = YES;
+        std::fprintf(
+            stderr,
+            "[nve-macos-shell] Instant-boot Frame-0 mmap restore (%s) from %s in %llu us (nodes=%u)\n",
+            replaySource,
+            replayPath.UTF8String,
+            static_cast<unsigned long long>(restoreUs),
+            rootView.nveNodeCount);
+      }
     }
   }
 
   [window center];
   [window makeKeyAndOrderFront:nil];
+  [window displayIfNeeded];
   [NSApp activateIgnoringOtherApps:YES];
 
-  if (self.pairConnect.length > 0) {
-    NveAppleComponentHost *host = [NveAppleComponentHost hostForRootView:rootView];
-    NSError *err = nil;
-    if (!host || ![host connectPairedEndpoint:self.pairConnect
-                                        token:(self.pairToken ?: @"")
-                                    transport:self.pairTransport
-                                    surfaceId:self.primarySurfaceId
-                                        error:&err]) {
-      NSLog(@"Failed to connect paired client to %@: %@",
-            self.pairConnect,
-            err.localizedDescription ?: @"unknown error");
+  __weak NveMacAppDelegate *weakSelf = self;
+  void (^mountLiveApp)(void) = ^{
+    NveMacAppDelegate *strongSelf = weakSelf;
+    if (strongSelf == nil) {
+      return;
+    }
+    if (strongSelf.pairConnect.length > 0) {
+      NveAppleComponentHost *host = [NveAppleComponentHost hostForRootView:rootView];
+      NSError *err = nil;
+      if (!host || ![host connectPairedEndpoint:strongSelf.pairConnect
+                                          token:(strongSelf.pairToken ?: @"")
+                                      transport:strongSelf.pairTransport
+                                      surfaceId:strongSelf.primarySurfaceId
+                                          error:&err]) {
+        NSLog(@"Failed to connect paired client to %@: %@",
+              strongSelf.pairConnect,
+              err.localizedDescription ?: @"unknown error");
+      } else {
+        [strongSelf.windowManager
+            setTitle:[NSString stringWithFormat:@"NVE macOS Host Shell (Paired: %@)",
+                                                strongSelf.pairConnect]
+        forSurfaceId:strongSelf.primarySurfaceId];
+      }
+    } else if (strongSelf.dylibPath.length > 0) {
+      NSError *err = nil;
+      if (![rootView loadNveDylibAtPath:strongSelf.dylibPath
+                              surfaceId:strongSelf.primarySurfaceId
+                                  error:&err]) {
+        NSLog(@"Failed to load NVE dylib %@: %@",
+              strongSelf.dylibPath,
+              err.localizedDescription);
+      } else if (replayedFrame0) {
+        std::fprintf(
+            stderr,
+            "[nve-macos-shell] Mounted live dylib %s with restored app state (nodes=%u)\n",
+            strongSelf.dylibPath.UTF8String,
+            rootView.nveNodeCount);
+      }
     } else {
-      [self.windowManager
-          setTitle:[NSString stringWithFormat:@"NVE macOS Host Shell (Paired: %@)", self.pairConnect]
-      forSurfaceId:self.primarySurfaceId];
+      [rootView attachNveInterface:&BuiltinMacDemoApp::get_interface
+                         surfaceId:strongSelf.primarySurfaceId];
+      if (replayedFrame0) {
+        std::fprintf(
+            stderr,
+            "[nve-macos-shell] Mounted built-in app with restored app state (nodes=%u)\n",
+            rootView.nveNodeCount);
+      }
     }
-  } else if (self.dylibPath.length > 0) {
-    NSError *err = nil;
-    if (![rootView loadNveDylibAtPath:self.dylibPath surfaceId:self.primarySurfaceId error:&err]) {
-      NSLog(@"Failed to load NVE dylib %@: %@", self.dylibPath, err.localizedDescription);
-    }
+  };
+
+  if (replayedFrame0) {
+    dispatch_async(dispatch_get_main_queue(), mountLiveApp);
   } else {
-    [rootView attachNveInterface:&BuiltinMacDemoApp::get_interface surfaceId:self.primarySurfaceId];
+    mountLiveApp();
   }
+}
+
+- (void)applicationDidResignActive:(NSNotification *)notification {
+  (void)notification;
+  [self _persistSnapshotWithReason:"resign-active" explicitView:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   (void)notification;
-  [self _persistSnapshotIfConfigured];
+  [self _persistSnapshotWithReason:"terminate" explicitView:nil];
+  self.primaryWindow = nil;
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  if (self.sigintSource != nil) {
+    dispatch_source_cancel(self.sigintSource);
+    self.sigintSource = nil;
+  }
+  if (self.sigtermSource != nil) {
+    dispatch_source_cancel(self.sigtermSource);
+    self.sigtermSource = nil;
+  }
   [self.windowManager closeAllWindows];
 }
 
@@ -330,24 +453,75 @@ int main(int argc, const char *argv[]) {
     NSString *pairTransport = nil;
     NSString *snapshotPath = nil;
     uint32_t schemaVersion = 1u;
-    for (int i = 1; i + 1 < argc; ++i) {
-      if (std::strcmp(argv[i], "--dylib") == 0) {
+    BOOL noSnapshot = NO;
+    BOOL resetState = NO;
+    for (int i = 1; i < argc; ++i) {
+      if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+        std::printf(
+            "Usage: %s [--dylib <path/to/libapp.dylib>]"
+            " [--pair-connect <host:port|url>] [--pair-token <token>]"
+            " [--pair-transport <udp|tcp|ws>]"
+            " [--snapshot <path.nvereloc>] [--no-snapshot] [--reset-state]"
+            " [--schema <ver>]\n",
+            argv[0]);
+        return 0;
+      } else if (std::strcmp(argv[i], "--no-snapshot") == 0) {
+        noSnapshot = YES;
+      } else if (std::strcmp(argv[i], "--reset-state") == 0) {
+        resetState = YES;
+      } else if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
         dylibPath = [NSString stringWithUTF8String:argv[++i]];
-      } else if (std::strcmp(argv[i], "--pair-connect") == 0) {
+      } else if (std::strcmp(argv[i], "--pair-connect") == 0 && i + 1 < argc) {
         pairConnect = [NSString stringWithUTF8String:argv[++i]];
-      } else if (std::strcmp(argv[i], "--pair-token") == 0) {
+      } else if (std::strcmp(argv[i], "--pair-token") == 0 && i + 1 < argc) {
         pairToken = [NSString stringWithUTF8String:argv[++i]];
-      } else if (std::strcmp(argv[i], "--pair-transport") == 0) {
+      } else if (std::strcmp(argv[i], "--pair-transport") == 0 && i + 1 < argc) {
         pairTransport = [NSString stringWithUTF8String:argv[++i]];
-      } else if (std::strcmp(argv[i], "--snapshot") == 0) {
+      } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
         snapshotPath = [NSString stringWithUTF8String:argv[++i]];
-      } else if (std::strcmp(argv[i], "--schema") == 0) {
+      } else if (std::strcmp(argv[i], "--schema") == 0 && i + 1 < argc) {
         const long parsed = std::strtol(argv[++i], nullptr, 10);
         if (parsed >= 0) {
           schemaVersion = static_cast<uint32_t>(parsed);
         }
       }
     }
+
+    if (nve::is_snapshot_disabled()) {
+      noSnapshot = YES;
+    }
+    if (nve::is_snapshot_reset_requested()) {
+      resetState = YES;
+    }
+
+    NSString *sidecarFrame0Path = nil;
+    if (noSnapshot) {
+      snapshotPath = nil;
+    } else {
+      if (snapshotPath.length == 0 && pairConnect.length == 0) {
+        const std::string appIdentity =
+            dylibPath.length > 0 ? std::string(dylibPath.UTF8String)
+                                 : std::string("nve-macos-shell-builtin");
+        const std::string resolved = nve::resolve_default_snapshot_path(appIdentity);
+        if (!resolved.empty()) {
+          snapshotPath = [NSString stringWithUTF8String:resolved.c_str()];
+        }
+      }
+      if (resetState && snapshotPath.length > 0) {
+        nve::remove_snapshot_file_if_exists(snapshotPath.UTF8String);
+        std::fprintf(
+            stderr,
+            "[nve-macos-shell] Cleared cached snapshot at %s (--reset-state / NVE_RESET_STATE)\n",
+            snapshotPath.UTF8String);
+      }
+      if (dylibPath.length > 0) {
+        const std::string sidecar = nve::resolve_sidecar_frame0_path(dylibPath.UTF8String);
+        if (!sidecar.empty()) {
+          sidecarFrame0Path = [NSString stringWithUTF8String:sidecar.c_str()];
+        }
+      }
+    }
+
     NSApplication *app = [NSApplication sharedApplication];
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
     NveMacAppDelegate *delegate = [[NveMacAppDelegate alloc] init];
@@ -356,7 +530,10 @@ int main(int argc, const char *argv[]) {
     delegate.pairToken = pairToken;
     delegate.pairTransport = pairTransport;
     delegate.snapshotPath = snapshotPath;
+    delegate.sidecarFrame0Path = sidecarFrame0Path;
     delegate.schemaVersion = schemaVersion;
+    delegate.noSnapshot = noSnapshot;
+    delegate.resetState = resetState;
     app.delegate = delegate;
     [app run];
   }

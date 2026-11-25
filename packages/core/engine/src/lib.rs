@@ -21,9 +21,11 @@ pub use frame_arena::{FrameArena, FRAME_ARENA_BASE_ALIGN};
 pub use hash::{xxh64, Xxh64Hasher};
 pub use hotreload::HotPatchMsg;
 pub use instant_boot::{
-    InstantBootError, InstantFrame0, NativeInstantBootStore, NativeStateStore, StateBlobRoot,
-    StateRecoveryStats, StateSaveOutcome, StateStoreConfig, DEFAULT_STATE_ARENA_CAPACITY,
-    DEFAULT_STATE_ARENA_FILE, DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
+    default_instant_boot_dir, is_snapshot_disabled, is_snapshot_reset_requested,
+    reset_instant_boot_dir, resolve_sidecar_frame0_path, InstantBootError, InstantFrame0,
+    NativeInstantBootStore, NativeStateStore, StateBlobRoot, StateRecoveryStats, StateSaveOutcome,
+    StateStoreConfig, DEFAULT_STATE_ARENA_CAPACITY, DEFAULT_STATE_ARENA_FILE,
+    DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
 };
 pub use layout::{
     BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, LayoutEngine, TextMeasurer,

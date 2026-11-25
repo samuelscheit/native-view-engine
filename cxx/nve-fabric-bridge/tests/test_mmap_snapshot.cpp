@@ -422,6 +422,231 @@ void test_mmap_snapshot_and_session_instant_boot() {
       assert(cross.save_snapshot(cpp_out, 1u, "cpp-roundtrip"));
     }
   }
+
+  // 12h. Default snapshot path resolver, env overrides (NVE_SNAPSHOT_DISABLE, NVE_SNAPSHOT_PATH,
+  //      NVE_RESET_STATE), sidecar frame0 lookup, and nested parent dir auto-creation.
+  {
+    struct EnvRestoreGuard {
+      std::string name;
+      bool had_value{false};
+      std::string prev_value;
+      explicit EnvRestoreGuard(std::string env_name) : name(std::move(env_name)) {
+#if defined(_MSC_VER)
+        char* raw = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&raw, &len, name.c_str()) == 0 && raw != nullptr) {
+          had_value = true;
+          prev_value = raw;
+          std::free(raw);
+        }
+#else
+        if (const char* raw = std::getenv(name.c_str()); raw != nullptr) {
+          had_value = true;
+          prev_value = raw;
+        }
+#endif
+      }
+      void set(const char* val) const {
+#if defined(_WIN32)
+        (void)_putenv_s(name.c_str(), val != nullptr ? val : "");
+#else
+        if (val != nullptr) {
+          (void)::setenv(name.c_str(), val, 1);
+        } else {
+          (void)::unsetenv(name.c_str());
+        }
+#endif
+      }
+      ~EnvRestoreGuard() {
+        if (had_value) {
+          set(prev_value.c_str());
+        } else {
+          set(nullptr);
+        }
+      }
+    };
+
+    EnvRestoreGuard g_disable("NVE_SNAPSHOT_DISABLE");
+    EnvRestoreGuard g_path("NVE_SNAPSHOT_PATH");
+    EnvRestoreGuard g_reset("NVE_RESET_STATE");
+    g_disable.set(nullptr);
+    g_path.set(nullptr);
+    g_reset.set(nullptr);
+
+    const std::string p1a = nve::resolve_default_snapshot_path("/apps/one/libdemo.dylib");
+    const std::string p1b = nve::resolve_default_snapshot_path("/apps/one/libdemo.dylib");
+    const std::string p2 = nve::resolve_default_snapshot_path("/apps/two/libdemo.dylib");
+    assert(!p1a.empty());
+    assert(p1a == p1b);
+    assert(p1a != p2);
+    assert(p1a.find("libdemo-") != std::string::npos);
+    assert(p1a.ends_with(".nvereloc"));
+
+    // NVE_SNAPSHOT_DISABLE=1 disables default snapshot path resolution.
+    g_disable.set("1");
+    assert(nve::resolve_default_snapshot_path("/apps/one/libdemo.dylib").empty());
+    g_disable.set(nullptr);
+
+    // NVE_SNAPSHOT_PATH overrides path cleanly.
+    const fs::path custom_override = tmp.dir / "custom_override" / "nested" / "app.nvereloc";
+    g_path.set(custom_override.string().c_str());
+    assert(nve::resolve_default_snapshot_path("/apps/one/libdemo.dylib") ==
+           custom_override.string());
+
+    // write_snapshot_atomic auto-creates missing nested parent directories!
+    const std::string f0_stub = "frame0-bytes";
+    const std::string st_stub = "state-bytes";
+    assert(nve::write_snapshot_atomic(
+        custom_override.string(),
+        1u,
+        NveBufferSlice{reinterpret_cast<const uint8_t*>(f0_stub.data()), f0_stub.size()},
+        NveBufferSlice{reinterpret_cast<const uint8_t*>(st_stub.data()), st_stub.size()}));
+    assert(fs::is_regular_file(custom_override));
+
+    // NVE_RESET_STATE=1 deletes existing snapshot before boot and still returns target path.
+    g_reset.set("1");
+    assert(nve::resolve_default_snapshot_path("/apps/one/libdemo.dylib") ==
+           custom_override.string());
+    assert(!fs::exists(custom_override));
+    g_reset.set(nullptr);
+    g_path.set(nullptr);
+
+    // Sidecar Frame-0 lookup priority: <stem>.frame0.nvereloc > <stem-no-lib>.frame0.nvereloc > frame0.nvereloc.
+    const fs::path sidecar_dir = tmp.dir / "sidecar";
+    fs::create_directories(sidecar_dir);
+    const fs::path fake_dylib = sidecar_dir / "libsample_app.dylib";
+    {
+      std::ofstream out(fake_dylib, std::ios::binary);
+      out << "dylib";
+    }
+    assert(nve::resolve_sidecar_frame0_path(fake_dylib.string()).empty());
+
+    const fs::path generic_f0 = sidecar_dir / "frame0.nvereloc";
+    {
+      std::ofstream out(generic_f0, std::ios::binary);
+      out << "f0";
+    }
+    assert(nve::resolve_sidecar_frame0_path(fake_dylib.string()) == generic_f0.string());
+
+    const fs::path stripped_f0 = sidecar_dir / "sample_app.frame0.nvereloc";
+    {
+      std::ofstream out(stripped_f0, std::ios::binary);
+      out << "f0";
+    }
+    assert(nve::resolve_sidecar_frame0_path(fake_dylib.string()) == stripped_f0.string());
+
+    const fs::path stem_f0 = sidecar_dir / "libsample_app.frame0.nvereloc";
+    {
+      std::ofstream out(stem_f0, std::ios::binary);
+      out << "f0";
+    }
+    assert(nve::resolve_sidecar_frame0_path(fake_dylib.string()) == stem_f0.string());
+
+    // 2-launch lifecycle with auto-created nested directory and continued mutation after restore.
+    const fs::path nested_lifecycle =
+        tmp.dir / "lifecycle" / "deep" / "cache" / "app-state.nvereloc";
+    const NveSurfaceConfig cfg{
+        .surface_id = 15, .width = 480.0f, .height = 320.0f, .scale_factor = 1.0f};
+    {
+      nve::NativeHostSession launch1;
+      assert(launch1.attach_interface(&MockEmbeddedRustComponent::get_interface, cfg));
+      for (int i = 0; i < 5; ++i) {
+        assert(launch1.dispatch_press(2, 12.0f, 12.0f) == 1u);
+      }
+      assert(launch1.save_snapshot(nested_lifecycle.string(), 1u));
+    }
+    assert(fs::is_regular_file(nested_lifecycle));
+
+    {
+      nve::NativeHostSession launch2;
+      launch2.set_surface_config(cfg);
+      assert(launch2.replay_frame0_snapshot(nested_lifecycle.string(), 1u));
+      assert(!launch2.is_valid());
+      assert(launch2.has_replayed_frame0());
+      assert(launch2.has_pending_snapshot_state());
+
+      bool saw_count5_frame0 = false;
+      for (const auto& node : launch2.snapshot_nodes()) {
+        if (node.node_id == 3u && node.text == "Count: 5") {
+          saw_count5_frame0 = true;
+        }
+      }
+      assert(saw_count5_frame0);
+
+      // Mount live app: pending snapshot state must be restored BEFORE first live render!
+      assert(launch2.attach_interface(&MockEmbeddedRustComponent::get_interface, cfg));
+      assert(launch2.is_valid());
+      assert(!launch2.has_pending_snapshot_state());
+
+      bool saw_count5_live = false;
+      for (const auto& node : launch2.snapshot_nodes()) {
+        if (node.node_id == 3u && node.text == "Count: 5") {
+          saw_count5_live = true;
+        }
+      }
+      assert(saw_count5_live);
+
+      // Mutating after restore increments from 5 -> 6 (proves state was truly restored, not just Frame-0!).
+      assert(launch2.dispatch_press(2, 12.0f, 12.0f) == 1u);
+      bool saw_count6_live = false;
+      for (const auto& node : launch2.snapshot_nodes()) {
+        if (node.node_id == 3u && node.text == "Count: 6") {
+          saw_count6_live = true;
+        }
+      }
+      assert(saw_count6_live);
+    }
+
+    // Optional real `libnve_studio_workspace.dylib` 2-launch state restore verification!
+    if (const std::string studio_dylib = read_env("NVE_TEST_STUDIO_DYLIB"); !studio_dylib.empty()) {
+      const fs::path studio_snap = tmp.dir / "studio" / "cache" / "studio.nvereloc";
+      const NveSurfaceConfig studio_cfg{
+          .surface_id = 1, .width = 960.0f, .height = 640.0f, .scale_factor = 1.0f};
+      {
+        nve::NativeHostSession s1;
+        assert(s1.load_dylib(studio_dylib, studio_cfg));
+        // Mutate state via direct props (`view: "docs"`, `studioOpen: true`, `accent: "emerald"`).
+        assert(s1.update_props_json(
+            R"({"view":"docs","studioOpen":true,"accent":"emerald"})", /*auto_render=*/true));
+        assert(s1.save_snapshot(studio_snap.string(), 1u));
+      }
+
+      nve::MmapSnapshot verify_snap;
+      assert(nve::MmapSnapshot::open_with_schema(studio_snap.string(), 1u, verify_snap));
+      assert(verify_snap.frame0_slice().len > 64u);
+      assert(verify_snap.state_slice().len > 4u);
+      // Studio state begins with `NWS1` magic!
+      assert(std::memcmp(verify_snap.state_slice().ptr, "NWS1", 4u) == 0);
+      const std::vector<uint8_t> saved_state_bytes(
+          verify_snap.state_slice().ptr,
+          verify_snap.state_slice().ptr + verify_snap.state_slice().len);
+      verify_snap.close();
+
+      {
+        nve::NativeHostSession s2;
+        s2.set_surface_config(studio_cfg);
+        assert(s2.replay_frame0_snapshot(studio_snap.string(), 1u));
+        assert(!s2.is_valid() && s2.has_replayed_frame0() && s2.has_pending_snapshot_state());
+        const uint32_t frame0_nodes = s2.node_count();
+        assert(frame0_nodes > 20u);
+
+        // Now load real libnve_studio_workspace.dylib — must restore NWS1 state BEFORE first render!
+        assert(s2.load_dylib(studio_dylib, studio_cfg));
+        assert(s2.is_valid() && !s2.has_pending_snapshot_state());
+        assert(s2.node_count() > 20u);
+
+        // Snapshot state from Launch 2 and confirm it matches Launch 1's mutated state!
+        const std::vector<uint8_t> restored_state_bytes = s2.bridge()->snapshot_state();
+        assert(restored_state_bytes.size() == saved_state_bytes.size());
+        assert(std::memcmp(
+                   restored_state_bytes.data(),
+                   saved_state_bytes.data(),
+                   saved_state_bytes.size()) == 0);
+        std::cout << "[bridge_test] Real libnve_studio_workspace.dylib 2-launch Frame-0 + NWS1 state restore verified (frame0_nodes="
+                  << frame0_nodes << ", state_bytes=" << restored_state_bytes.size() << ")\n";
+      }
+    }
+  }
 }
 
 } // namespace nve_test

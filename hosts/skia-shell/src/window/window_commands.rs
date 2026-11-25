@@ -225,6 +225,11 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     Err(_) => {}
                 }
             }
+            WindowEvent::Focused(false) => {
+                if self.primary_window_id == Some(window_id) {
+                    self.save_snapshot_if_configured();
+                }
+            }
             WindowEvent::Moved(pos) => {
                 if let Some(sw) = self.windows.get(&window_id) {
                     let scale = sw.window.scale_factor().max(0.001) as f32;

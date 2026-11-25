@@ -135,6 +135,8 @@ pub struct DesktopPreviewOptions {
     pub instant_boot_dir: Option<PathBuf>,
     pub default_frame0_path: Option<PathBuf>,
     pub schema_version: u32,
+    pub disable_instant_boot: bool,
+    pub reset_state: bool,
 }
 
 impl Default for DesktopPreviewOptions {
@@ -154,6 +156,8 @@ impl Default for DesktopPreviewOptions {
             instant_boot_dir: None,
             default_frame0_path: None,
             schema_version: 1,
+            disable_instant_boot: false,
+            reset_state: false,
         }
     }
 }
@@ -456,9 +460,12 @@ pub fn run_desktop_preview_with_options(
 /// before load and atomic snapshot save on exit) and writes the result as PNG or `P6` PPM.
 pub fn render_headless_screenshot(
     dylib_path: PathBuf,
-    options: DesktopPreviewOptions,
+    mut options: DesktopPreviewOptions,
     screenshot_path: PathBuf,
 ) -> Result<(), DesktopHostError> {
+    if options.instant_boot_dir.is_none() && options.snapshot_path.is_none() {
+        options.disable_instant_boot = true;
+    }
     let mut host = DesktopWindowHost::new(dylib_path, options)?;
     host.session().write_screenshot(&screenshot_path)?;
     host.save_snapshot_if_configured();

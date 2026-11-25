@@ -3,9 +3,13 @@
 #include "nve_abi.generated.h"
 
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -22,7 +26,6 @@
 #include <windows.h>
 #else
 #include <cerrno>
-#include <cstdio>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -624,6 +627,19 @@ inline bool write_snapshot_atomic(
     return false;
   }
 
+  {
+    const std::filesystem::path parent_fs = std::filesystem::path(path).parent_path();
+    std::error_code dir_ec;
+    if (!parent_fs.empty() && !std::filesystem::is_directory(parent_fs, dir_ec)) {
+      dir_ec.clear();
+      std::filesystem::create_directories(parent_fs, dir_ec);
+      if (dir_ec) {
+        set_status(SnapshotStatus::IoError);
+        return false;
+      }
+    }
+  }
+
 #if defined(_WIN32)
   const uint32_t pid = static_cast<uint32_t>(::GetCurrentProcessId());
 #else
@@ -1112,5 +1128,231 @@ class MmapSnapshot {
 };
 
 using MmapReloc = MmapSnapshot;
+
+namespace detail {
+
+inline std::string read_env_string(const char* name) {
+  if (name == nullptr || name[0] == '\0') {
+    return {};
+  }
+#if defined(_MSC_VER)
+  char* raw = nullptr;
+  size_t len = 0u;
+  if (_dupenv_s(&raw, &len, name) != 0 || raw == nullptr) {
+    return {};
+  }
+  std::string out(raw);
+  std::free(raw);
+  return out;
+#else
+  const char* raw = std::getenv(name);
+  return (raw != nullptr) ? std::string(raw) : std::string{};
+#endif
+}
+
+inline std::string_view trim_ascii_whitespace(std::string_view s) noexcept {
+  while (!s.empty() &&
+         (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n')) {
+    s.remove_prefix(1u);
+  }
+  while (!s.empty() &&
+         (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) {
+    s.remove_suffix(1u);
+  }
+  return s;
+}
+
+inline bool is_truthy_env(const char* name) {
+  const std::string raw = read_env_string(name);
+  const std::string_view trimmed = trim_ascii_whitespace(raw);
+  if (trimmed.empty()) {
+    return false;
+  }
+  if (trimmed == "1") {
+    return true;
+  }
+  std::string lower;
+  lower.reserve(trimmed.size());
+  for (char c : trimmed) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return lower == "true" || lower == "yes" || lower == "on";
+}
+
+inline std::string canonicalize_app_identity(std::string_view app_identity) {
+  const std::string_view trimmed = trim_ascii_whitespace(app_identity);
+  if (trimmed.empty()) {
+    return "nve-app";
+  }
+  std::error_code ec;
+  const std::filesystem::path candidate(trimmed);
+  if (std::filesystem::exists(candidate, ec) && !ec) {
+    const std::filesystem::path resolved = std::filesystem::canonical(candidate, ec);
+    if (!ec && !resolved.empty()) {
+      return resolved.string();
+    }
+  }
+  return std::string(trimmed);
+}
+
+inline std::string sanitize_app_slug(std::string_view app_identity) {
+  const std::string_view trimmed = trim_ascii_whitespace(app_identity);
+  if (trimmed.empty()) {
+    return "nve-app";
+  }
+  const size_t sep = trimmed.find_last_of("/\\");
+  const std::string_view base =
+      (sep == std::string_view::npos) ? trimmed : trimmed.substr(sep + 1u);
+  std::string stem = std::filesystem::path(base).stem().string();
+  if (stem.empty()) {
+    stem.assign(base.begin(), base.end());
+  }
+  std::string slug;
+  slug.reserve(stem.size());
+  bool prev_dash = false;
+  for (char c : stem) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    if (std::isalnum(uc) || c == '_' || c == '-') {
+      slug.push_back(static_cast<char>(std::tolower(uc)));
+      prev_dash = false;
+    } else if (!prev_dash && !slug.empty()) {
+      slug.push_back('-');
+      prev_dash = true;
+    }
+    if (slug.size() >= 48u) {
+      break;
+    }
+  }
+  while (!slug.empty() && slug.back() == '-') {
+    slug.pop_back();
+  }
+  return slug.empty() ? std::string("nve-app") : slug;
+}
+
+inline std::filesystem::path default_snapshot_cache_dir() {
+#if defined(__APPLE__)
+  const std::string home = read_env_string("HOME");
+  if (!home.empty()) {
+    return std::filesystem::path(home) / "Library" / "Caches" / "dev.nve" / "instant-boot";
+  }
+  return std::filesystem::temp_directory_path() / "nve" / "instant-boot";
+#elif defined(_WIN32)
+  const std::string local_app_data = read_env_string("LOCALAPPDATA");
+  if (!local_app_data.empty()) {
+    return std::filesystem::path(local_app_data) / "nve" / "instant-boot";
+  }
+  const std::string temp_dir = read_env_string("TEMP");
+  if (!temp_dir.empty()) {
+    return std::filesystem::path(temp_dir) / "nve" / "instant-boot";
+  }
+  return std::filesystem::temp_directory_path() / "nve" / "instant-boot";
+#else
+  const std::string xdg_cache = read_env_string("XDG_CACHE_HOME");
+  if (!xdg_cache.empty()) {
+    return std::filesystem::path(xdg_cache) / "nve" / "instant-boot";
+  }
+  const std::string home = read_env_string("HOME");
+  if (!home.empty()) {
+    return std::filesystem::path(home) / ".cache" / "nve" / "instant-boot";
+  }
+  return std::filesystem::temp_directory_path() / "nve" / "instant-boot";
+#endif
+}
+
+} // namespace detail
+
+/// Returns `true` when `NVE_SNAPSHOT_DISABLE` is set to a truthy value (`1`, `true`, `yes`, `on`).
+inline bool is_snapshot_disabled() {
+  return detail::is_truthy_env("NVE_SNAPSHOT_DISABLE");
+}
+
+/// Returns `true` when `NVE_RESET_STATE` is set to a truthy value (`1`, `true`, `yes`, `on`).
+inline bool is_snapshot_reset_requested() {
+  return detail::is_truthy_env("NVE_RESET_STATE");
+}
+
+/// Deletes an existing snapshot file at `path` if present (ignoring missing files).
+inline void remove_snapshot_file_if_exists(std::string_view path) noexcept {
+  if (path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  (void)std::filesystem::remove(std::filesystem::path(path), ec);
+}
+
+/// Resolves the deterministic per-app default `NVERELOC` snapshot path for `app_identity`.
+///
+/// Honors environment overrides:
+/// - `NVE_SNAPSHOT_DISABLE=1` -> returns empty string (disabled).
+/// - `NVE_SNAPSHOT_PATH=/custom/path` -> returns the explicit override path.
+/// - `NVE_RESET_STATE=1` -> deletes any existing snapshot at the resolved path before returning it
+///   so the app cold-boots cleanly and writes a fresh snapshot on save.
+inline std::string resolve_default_snapshot_path(std::string_view app_identity) {
+  if (is_snapshot_disabled()) {
+    return {};
+  }
+
+  std::string resolved = detail::read_env_string("NVE_SNAPSHOT_PATH");
+  const std::string_view trimmed_override = detail::trim_ascii_whitespace(resolved);
+  if (!trimmed_override.empty()) {
+    resolved.assign(trimmed_override.begin(), trimmed_override.end());
+  } else {
+    const std::string canonical = detail::canonicalize_app_identity(app_identity);
+    const std::string slug = detail::sanitize_app_slug(app_identity);
+    const uint64_t digest =
+        xxh64(reinterpret_cast<const uint8_t*>(canonical.data()), canonical.size(), 0u);
+    char hash8[16]{};
+    std::snprintf(hash8, sizeof(hash8), "%08x", static_cast<uint32_t>(digest & 0xFFFFFFFFULL));
+    const std::filesystem::path full_path =
+        detail::default_snapshot_cache_dir() / (slug + "-" + hash8 + ".nvereloc");
+    resolved = full_path.string();
+  }
+
+  if (is_snapshot_reset_requested()) {
+    remove_snapshot_file_if_exists(resolved);
+  }
+  return resolved;
+}
+
+/// Checks for a pre-baked cold-start sidecar Frame-0 `NVERELOC` file alongside `dylib_path`:
+/// 1. `<dylib-dir>/<stem>.frame0.nvereloc`
+/// 2. `<dylib-dir>/<stem-without-lib-prefix>.frame0.nvereloc` (when `<stem>` starts with `lib`)
+/// 3. `<dylib-dir>/frame0.nvereloc`
+///
+/// Returns the first existing regular file path, or empty string if none exist.
+inline std::string resolve_sidecar_frame0_path(std::string_view dylib_path) {
+  const std::string_view trimmed = detail::trim_ascii_whitespace(dylib_path);
+  if (trimmed.empty()) {
+    return {};
+  }
+  const std::filesystem::path p(trimmed);
+  const std::filesystem::path dir =
+      p.has_parent_path() ? p.parent_path() : std::filesystem::path(".");
+  const std::string stem = p.stem().string();
+
+  auto check_candidate = [](const std::filesystem::path& cand) -> bool {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(cand, ec) && !ec;
+  };
+
+  if (!stem.empty()) {
+    const std::filesystem::path by_stem = dir / (stem + ".frame0.nvereloc");
+    if (check_candidate(by_stem)) {
+      return by_stem.string();
+    }
+    if (stem.size() > 3u && stem.compare(0u, 3u, "lib") == 0) {
+      const std::filesystem::path without_lib = dir / (stem.substr(3u) + ".frame0.nvereloc");
+      if (check_candidate(without_lib)) {
+        return without_lib.string();
+      }
+    }
+  }
+
+  const std::filesystem::path generic = dir / "frame0.nvereloc";
+  if (check_candidate(generic)) {
+    return generic.string();
+  }
+  return {};
+}
 
 } // namespace nve
