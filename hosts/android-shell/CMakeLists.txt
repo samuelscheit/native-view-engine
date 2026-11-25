@@ -7,6 +7,7 @@ add_subdirectory(../../cxx/nve-fabric-bridge nve-fabric-bridge-build)
 
 add_library(nve_android_shell SHARED
   NveJniBridge.cpp
+  NveAndroidSurfaceJni.cpp
 )
 
 target_link_libraries(nve_android_shell
