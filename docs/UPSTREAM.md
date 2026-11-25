@@ -39,3 +39,9 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **`gtk_fixed_get_child_position` returns `(0, 0)` on unmapped widgets**
   - **Observed**: In GTK 4.24.2, `gtk_fixed_get_child_position` delegates to `gtk_widget_compute_point`, which returns `(0, 0)` for unmapped/offscreen widgets (such as headless CTest fixtures).
   - **Mitigation**: Read child translation from `gtk_fixed_get_child_transform` + `gsk_transform_to_translate` (see `hosts/gtk-shell/tests/gtk_shell_test.cpp`).
+
+### Eclipse OpenJ9 (`openj9 0.59.0` / OpenJDK 25.0.3) + Android SDK `d8` (`build-tools 36.0.0`)
+
+- **Scavenger GC assertion crash (`ScavengerRootScanner.hpp:105`) during `d8` dexing**
+  - **Observed**: When Eclipse OpenJ9 0.59.0 is the default `java` on `PATH` on macOS arm64, Android `build-tools/36.0.0/d8` crashes inside `ForkJoinPool` (`com/android/tools/r8/internal/n30.<init>(I)V`) with `Misaligned object` / `j9mm.479 ** ASSERTION FAILED ** at .../openj9/runtime/gc_glue_java/ScavengerRootScanner.hpp:105` and hangs for ~70s writing multi-GB core/javacore/snap dumps.
+  - **Mitigation**: `hosts/android-shell/run-emulator.sh` detects OpenJ9 and automatically switches `JAVA_HOME`/`PATH` to an installed HotSpot/JBR JDK (e.g., Android Studio JBR or Adoptium Temurin) before invoking `javac`/`d8`/`apksigner`, falling back to `-JXgcpolicy:optthruput -JXdump:none` if no HotSpot JDK is installed.

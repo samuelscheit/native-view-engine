@@ -32,11 +32,12 @@ python3 -m http.server 8080 -d hosts/web-shell
 
 Open `http://127.0.0.1:8080` in any modern browser. To connect live hot reload, run `cargo run -p nve-cli -- dev` in another terminal (serves `ws://127.0.0.1:8089`). Pass `?ws=off` to disable WebSocket hot reload.
 
-## Host Unit Tests
+## Host Unit Tests & Headless Browser E2E
 
-Both `nve-backend-web` and `nve-web-shell` run headlessly on the host via `WebDomMirror`:
+Both `nve-backend-web` and `nve-web-shell` run headlessly on the host via `WebDomMirror`, and `e2e/run_e2e.mjs` drives the real compiled WASM bundle in headless Chrome over CDP with zero npm dependencies:
 
 ```bash
 cargo test --locked -p nve-backend-web -p nve-web-shell
-cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
+cargo check --locked -p nve-web-shell --tests --target wasm32-unknown-unknown
+node hosts/web-shell/e2e/run_e2e.mjs
 ```

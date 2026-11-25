@@ -125,6 +125,55 @@ if [[ ! -f "$LIBCXX_SHARED" ]]; then
   exit 1
 fi
 
+# Eclipse OpenJ9 (e.g. 0.59.0 on macOS arm64) hits an internal Scavenger GC assertion
+# (`ScavengerRootScanner.hpp:105`, "Misaligned object in thread ForkJoinPool") when
+# running Android build-tools `d8`. Prefer a HotSpot/JBR JDK when available; otherwise
+# disable Scavenger GC and core dumps on `d8` as a fallback.
+D8_EXTRA_JAVA_OPTS=()
+is_openj9_java() {
+  local java_bin="$1"
+  [[ -x "$java_bin" ]] && "$java_bin" -version 2>&1 | grep -qi "OpenJ9"
+}
+
+if command -v java >/dev/null 2>&1 && is_openj9_java "$(command -v java)"; then
+  HOTSPOT_JAVA_HOME=""
+  JAVA_CANDIDATES=()
+  if [[ -n "${JAVA_HOME:-}" ]]; then
+    JAVA_CANDIDATES+=("$JAVA_HOME")
+  fi
+  JAVA_CANDIDATES+=(
+    "/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+  )
+  for jvm_root in "/Library/Java/JavaVirtualMachines" "$HOME/Library/Java/JavaVirtualMachines"; do
+    if [[ -d "$jvm_root" ]]; then
+      while IFS= read -r home_dir; do
+        JAVA_CANDIDATES+=("$home_dir")
+      done < <(find "$jvm_root" -mindepth 3 -maxdepth 3 -type d -path '*/Contents/Home' 2>/dev/null | sort -rV)
+    fi
+  done
+  if [[ -d "/usr/lib/jvm" ]]; then
+    while IFS= read -r home_dir; do
+      JAVA_CANDIDATES+=("$home_dir")
+    done < <(find "/usr/lib/jvm" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -rV)
+  fi
+
+  for cand in "${JAVA_CANDIDATES[@]}"; do
+    if [[ -x "$cand/bin/java" && -x "$cand/bin/javac" && -x "$cand/bin/keytool" ]] && ! is_openj9_java "$cand/bin/java"; then
+      HOTSPOT_JAVA_HOME="$cand"
+      break
+    fi
+  done
+
+  if [[ -n "$HOTSPOT_JAVA_HOME" ]]; then
+    export JAVA_HOME="$HOTSPOT_JAVA_HOME"
+    export PATH="$HOTSPOT_JAVA_HOME/bin:$PATH"
+    echo "==> Detected OpenJ9 default JVM; switching to HotSpot JDK for d8/apksigner: $HOTSPOT_JAVA_HOME"
+  else
+    echo "==> Warning: OpenJ9 JVM detected and no HotSpot JDK found; passing -JXgcpolicy:optthruput -JXdump:none to d8" >&2
+    D8_EXTRA_JAVA_OPTS+=(-JXgcpolicy:optthruput -JXdump:none)
+  fi
+fi
+
 for cmd in cargo cmake javac keytool zip; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "error: required host tool not found in PATH: $cmd" >&2
@@ -193,7 +242,7 @@ while IFS= read -r -d '' f; do
   CLASS_FILES+=("$f")
 done < <(find "$CLASSES_DIR" -type f -name '*.class' -print0)
 
-"$D8" --min-api 24 --lib "$ANDROID_JAR" --output "$DEX_DIR" "${CLASS_FILES[@]}"
+"$D8" "${D8_EXTRA_JAVA_OPTS[@]+"${D8_EXTRA_JAVA_OPTS[@]}"}" --min-api 24 --lib "$ANDROID_JAR" --output "$DEX_DIR" "${CLASS_FILES[@]}"
 
 # 4. Package APK via aapt2 + zip + zipalign.
 STAGE_DIR="$BUILD_DIR/apk-stage"
