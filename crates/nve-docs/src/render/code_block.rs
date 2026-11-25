@@ -1,0 +1,191 @@
+//! Syntax-highlighted code blocks using `nve_mdx::highlight_code`, line numbers, highlighted-line accent, and clipboard copy.
+
+use dioxus_core_macro::Props;
+use nve_dioxus::prelude::*;
+use nve_mdx::{CodeBlock, HighlightLine, highlight_code};
+
+use crate::state::use_docs_state;
+
+/// Renders a compiled [`nve_mdx::CodeBlock`] with syntax tokens, optional title bar, line highlights, and Copy button.
+#[component]
+pub fn CodeBlockView(block: CodeBlock, block_key: String) -> Element {
+    let lines = if block.highlighted.is_empty() && !block.code.is_empty() {
+        highlight_code(block.lang.as_deref(), &block.code, &block.highlight_lines)
+    } else {
+        block.highlighted.clone()
+    };
+
+    rsx! {
+        HighlightedCodeView {
+            code: block.code,
+            lang: block.lang,
+            title: block.title,
+            lines: lines,
+            show_line_numbers: block.show_line_numbers,
+            block_key: block_key,
+        }
+    }
+}
+
+/// Reusable highlighted code-block component shared by fenced blocks, `<CodeGroup>`, and `LiveDemo` Code tabs.
+#[component]
+pub fn HighlightedCodeView(
+    code: String,
+    #[props(default)] lang: Option<String>,
+    #[props(default)] title: Option<String>,
+    lines: Vec<HighlightLine>,
+    #[props(default = false)] show_line_numbers: bool,
+    block_key: String,
+) -> Element {
+    let mut state = use_docs_state();
+    let snap = state.read();
+    let theme = snap.theme();
+    let is_copied = snap.is_code_copied(&block_key);
+    drop(snap);
+
+    let copy_label = if is_copied { "Copied" } else { "Copy" };
+    let copy_fg = if is_copied {
+        theme.success
+    } else {
+        theme.muted
+    };
+    let copy_border = if is_copied {
+        theme.success
+    } else {
+        theme.border
+    };
+    let copy_tid = format!("docs-code-copy-{block_key}");
+    let frame_tid = format!("docs-code-block-{block_key}");
+    let code_for_copy = code.clone();
+    let key_for_copy = block_key.clone();
+    let lang_badge = lang
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
+
+    let display_line_numbers = show_line_numbers || lines.iter().any(|l| l.highlighted);
+
+    rsx! {
+        view {
+            test_id: "{frame_tid}",
+            accessibility_role: "codeblock",
+            accessibility_label: title.clone().or_else(|| lang_badge.clone()).unwrap_or_else(|| "Code block".to_string()),
+            style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.code_bg};",
+
+            // Top bar: optional filename title, language pill, Copy button
+            view {
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+
+                view {
+                    style: "flex-direction: row; align-items: center; gap: 8px;",
+                    if let Some(ref fname) = title {
+                        text {
+                            style: "font-size: 12px; font-weight: 600; color: {theme.text};",
+                            "{fname}"
+                        }
+                    }
+                    if let Some(ref lang_label) = lang_badge {
+                        view {
+                            style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                            text {
+                                style: "font-size: 11px; font-weight: 600; color: {theme.accent_alt};",
+                                "{lang_label}"
+                            }
+                        }
+                    }
+                }
+
+                pressable {
+                    test_id: "{copy_tid}",
+                    accessibility_role: "button",
+                    accessibility_label: "Copy code to clipboard",
+                    "data-code-copy": "true",
+                    style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {copy_border};",
+                    onpress: move |_| {
+                        let _ = state.write().copy_code(&key_for_copy, &code_for_copy);
+                    },
+                    text {
+                        style: "font-size: 11px; font-weight: 600; color: {copy_fg};",
+                        "{copy_label}"
+                    }
+                }
+            }
+
+            // Highlighted code lines
+            scrollview {
+                accessibility_role: "code",
+                style: "width: 100%; flex-direction: column; padding-vertical: 10px;",
+                if lines.is_empty() {
+                    view {
+                        style: "padding-horizontal: 14px;",
+                        text {
+                            style: "font-size: 13px; font-family: monospace; color: {theme.syntax.plain};",
+                            "{code}"
+                        }
+                    }
+                } else {
+                    for line in lines {
+                        {
+                            let line_bg = if line.highlighted {
+                                theme.code_line_highlight
+                            } else {
+                                "transparent"
+                            };
+                            let marker_color = if line.highlighted {
+                                theme.accent
+                            } else {
+                                "transparent"
+                            };
+                            let line_no_str = line.line_no.to_string();
+                            let hl_attr = if line.highlighted { Some("true".to_string()) } else { None };
+
+                            rsx! {
+                                view {
+                                    key: "{block_key}-ln-{line.line_no}",
+                                    "data-line-highlighted": hl_attr,
+                                    style: "width: 100%; flex-direction: row; align-items: center; padding-horizontal: 10px; padding-vertical: 2px; gap: 8px; background-color: {line_bg};",
+
+                                    view {
+                                        style: "width: 2px; height: 16px; background-color: {marker_color}; border-radius: 1px;",
+                                    }
+
+                                    if display_line_numbers {
+                                        text {
+                                            style: "min-width: 26px; font-size: 12px; font-family: monospace; color: {theme.muted}; text-align: right;",
+                                            "{line_no_str}"
+                                        }
+                                    }
+
+                                    view {
+                                        style: "flex-direction: row; flex-grow: 1;",
+                                        if line.tokens.is_empty() {
+                                            text {
+                                                style: "font-size: 13px; font-family: monospace; color: {theme.syntax.plain};",
+                                                " "
+                                            }
+                                        } else {
+                                            for (tok_idx, span) in line.tokens.into_iter().enumerate() {
+                                                {
+                                                    let tok_color = theme.token_color(span.kind);
+                                                    let tok_kind = span.kind.as_str();
+                                                    rsx! {
+                                                        text {
+                                                            key: "{block_key}-ln-{line.line_no}-tok-{tok_idx}",
+                                                            "data-token": "{tok_kind}",
+                                                            style: "font-size: 13px; font-family: monospace; color: {tok_color};",
+                                                            "{span.text}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
