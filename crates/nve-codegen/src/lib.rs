@@ -31,6 +31,7 @@ pub mod ir;
 pub mod lexer;
 pub mod naming;
 pub mod parser;
+pub mod wire_codecs;
 
 use std::path::Path;
 
@@ -64,6 +65,12 @@ pub use ir::{
     TurboModuleMethod, TurboModuleSpec,
 };
 pub use parser::{parse_rn_spec, parse_rn_spec_file};
+pub use wire_codecs::{
+    fnv1a64, fnv1a64_pair, fnv1a64_update, generate_all_wire_codec_files,
+    generate_cpp_wire_codecs, generate_dart_wire_codecs, generate_java_wire_codecs,
+    generate_swift_wire_codecs, generate_ts_wire_codecs, wire_codecs_schema_hash,
+    NVE_WIRE_CODECS_SCHEMA_HASH,
+};
 
 // ===========================================================================
 // Direction 1: `import_rn` (RN -> NVE)
