@@ -4,9 +4,10 @@
 
 use std::collections::HashMap;
 
-use nve_abi::{ComponentKind, NodeId, RawPropValue};
+use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue};
 use nve_backend_headless::{HeadlessBackend, HeadlessNode};
 use nve_components::canvas_ir::{CanvasOp, DrawListDecoder, ImageResizeMode};
+use nve_components::style_patch::{Display, Overflow, TextAlign as PatchTextAlign};
 use nve_engine::{LayoutEngine, LayoutRect};
 
 use crate::image_cache::ImageCache;
@@ -159,6 +160,7 @@ fn extract_canvas_ops(node: &HeadlessNode) -> Vec<CanvasOp> {
 
 fn emit_box_shadows(
     node: &HeadlessNode,
+    border_radius: f32,
     rect: LayoutRect,
     clip_bounds: LayoutRect,
     ops: &mut Vec<PaintOp>,
@@ -170,7 +172,7 @@ fn emit_box_shadows(
     else {
         return;
     };
-    let radius = node.style.border_radius.max(0.0);
+    let radius = border_radius.max(0.0);
     for sh in parse_box_shadow(raw_shadow) {
         let shadow_bounds = LayoutRect {
             x: rect.x + sh.offset_x - sh.spread_radius,
@@ -264,6 +266,17 @@ fn emit_scrollview_scrollbars<L: LayoutEngine>(
 pub(crate) struct InheritedTextStyle {
     pub(crate) font_weight: Option<u16>,
     pub(crate) text_align: Option<TextAlign>,
+    pub(crate) text_color: Option<ColorRgba>,
+    pub(crate) font_size: Option<f32>,
+}
+
+#[inline]
+fn map_patch_text_align(align: PatchTextAlign) -> TextAlign {
+    match align {
+        PatchTextAlign::Left | PatchTextAlign::Justify => TextAlign::Left,
+        PatchTextAlign::Center => TextAlign::Center,
+        PatchTextAlign::Right => TextAlign::Right,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -283,7 +296,29 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         return;
     };
 
-    let opacity = node.style.opacity.clamp(0.0, 1.0);
+    let patch = layout_tree.effective_patch(id);
+    if patch.display == Some(Display::None) {
+        return;
+    }
+
+    let mut style = node.style;
+    if !patch.is_empty() {
+        patch.apply_style_to(&mut style);
+    }
+    if node.kind == ComponentKind::Text && !node.has_explicit_style {
+        if patch.text_color.is_none()
+            && let Some(c) = inherited_text.text_color
+        {
+            style.text_color = c;
+        }
+        if patch.font_size.is_none()
+            && let Some(fs) = inherited_text.font_size
+        {
+            style.font_size = fs;
+        }
+    }
+
+    let opacity = style.opacity.clamp(0.0, 1.0);
     if opacity <= 0.001 {
         return;
     }
@@ -296,31 +331,35 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
 
     let rect = offset_rect(node.computed_rect, offset);
     let in_clip = intersects_clip(clip_bounds, rect, 0.0);
+    let radius = style.border_radius.max(0.0);
 
     // Emit outer box-shadows before background fill so shadows render behind the box.
-    emit_box_shadows(node, rect, clip_bounds, ops);
+    emit_box_shadows(node, radius, rect, clip_bounds, ops);
 
-    if node.style.background.a > 0 && in_clip {
+    if style.background.a > 0 && in_clip {
         ops.push(PaintOp::FillRoundedRect {
             rect,
-            radius: node.style.border_radius.max(0.0),
-            color: node.style.background,
+            radius,
+            color: style.background,
         });
     }
-    if node.style.border_width > 0.0
-        && node.style.border_color.a > 0
-        && intersects_clip(clip_bounds, rect, node.style.border_width * 0.5)
+    if style.border_width > 0.0
+        && style.border_color.a > 0
+        && intersects_clip(clip_bounds, rect, style.border_width * 0.5)
     {
         ops.push(PaintOp::StrokeRoundedRect {
             rect,
-            radius: node.style.border_radius.max(0.0),
-            width: node.style.border_width,
-            color: node.style.border_color,
+            radius,
+            width: style.border_width,
+            color: style.border_color,
         });
     }
 
-    let own_weight = extract_font_weight(node);
-    let own_align = extract_text_align(node);
+    let own_weight = patch.font_weight.or_else(|| extract_font_weight(node));
+    let own_align = patch
+        .text_align
+        .map(map_patch_text_align)
+        .or_else(|| extract_text_align(node));
     let effective_weight = own_weight
         .or(inherited_text.font_weight)
         .unwrap_or(DEFAULT_FONT_WEIGHT);
@@ -332,25 +371,34 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         {
             ops.push(PaintOp::DrawImage {
                 rect,
-                radius: node.style.border_radius.max(0.0),
+                radius,
                 src,
                 resize_mode: extract_image_resize_mode(node),
             });
         }
         if node.kind == ComponentKind::TextInput {
-            emit_text_input_ops(node, rect, focus, text_engine, ops);
+            emit_text_input_ops(
+                node,
+                &style,
+                effective_weight,
+                effective_align,
+                rect,
+                focus,
+                text_engine,
+                ops,
+            );
         } else if let Some(text) = node.text.as_deref()
             && !text.is_empty()
-            && node.style.font_size > 0.0
-            && node.style.text_color.a > 0
+            && style.font_size > 0.0
+            && style.text_color.a > 0
         {
             ops.push(PaintOp::DrawText {
                 rect,
                 text: text.to_owned(),
-                font_size: node.style.font_size,
+                font_size: style.font_size,
                 font_weight: effective_weight,
                 text_align: effective_align,
-                color: node.style.text_color,
+                color: style.text_color,
             });
         }
         if node.kind == ComponentKind::SkiaCanvas {
@@ -367,6 +415,8 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         InheritedTextStyle {
             font_weight: own_weight.or(inherited_text.font_weight),
             text_align: own_align.or(inherited_text.text_align),
+            text_color: patch.text_color.or(inherited_text.text_color),
+            font_size: patch.font_size.or(inherited_text.font_size),
         }
     } else {
         InheritedTextStyle::default()
@@ -374,7 +424,11 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
 
     let children = &node.children;
     if !children.is_empty() {
-        let clips = should_clip_children(node);
+        let clips = match patch.overflow {
+            Some(Overflow::Visible) => node.kind == ComponentKind::ScrollView,
+            Some(Overflow::Hidden | Overflow::Scroll | Overflow::Auto) => true,
+            None => should_clip_children(node),
+        };
         let next_clip = if clips {
             intersect_rects(clip_bounds, rect)
         } else {
@@ -384,10 +438,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         if let Some(child_clip) = next_clip {
             let clip_op_idx = ops.len();
             if clips {
-                ops.push(PaintOp::PushClip {
-                    rect,
-                    radius: node.style.border_radius.max(0.0),
-                });
+                ops.push(PaintOp::PushClip { rect, radius });
             }
 
             let child_offset = if node.kind == ComponentKind::ScrollView {

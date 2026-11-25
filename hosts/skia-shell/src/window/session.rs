@@ -17,7 +17,7 @@ use nve_backend_skia::raster::{draw_hud_banner, PixelBuffer};
 use nve_backend_skia::gpu::GpuSurfaceConfig;
 #[cfg(feature = "skia")]
 use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
-use nve_backend_skia::SkiaBackend;
+use nve_backend_skia::{CursorKind, SkiaBackend};
 use nve_engine::{write_snapshot_atomic, HotPatchMsg, RenderBackend, SnapshotHeader, Viewport};
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
@@ -140,6 +140,14 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn backend(&self) -> &SkiaBackend {
         &self.backend
+    }
+
+    pub fn backend_mut(&mut self) -> &mut SkiaBackend {
+        &mut self.backend
+    }
+
+    pub fn active_cursor(&self) -> CursorKind {
+        self.backend.active_cursor()
     }
 
     pub fn pixel_buffer(&self) -> &PixelBuffer {

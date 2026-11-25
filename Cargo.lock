@@ -1532,6 +1532,7 @@ name = "nve-backend-headless"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-components",
  "nve-engine",
  "taffy",
 ]

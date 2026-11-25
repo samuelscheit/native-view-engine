@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use dioxus_core::{Element, VirtualDom};
 use nve_abi::{FrameId, NodeId, SurfaceId};
+use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_engine::HotPatchMsg;
 
@@ -91,6 +92,30 @@ impl DioxusSurface {
     #[inline]
     pub fn iter_responsive_rules(&self) -> impl Iterator<Item = (NodeId, &[ResponsiveRule])> + '_ {
         self.writer.iter_responsive_rules()
+    }
+
+    /// Direct typed [`CursorKind`] stored on `node_id` (zero serialization).
+    #[inline]
+    pub fn node_cursor(&self, node_id: NodeId) -> Option<CursorKind> {
+        self.writer.node_cursor(node_id)
+    }
+
+    /// Direct typed [`StateStyleRule`] slice stored on `node_id` (zero serialization).
+    #[inline]
+    pub fn node_state_rules(&self, node_id: NodeId) -> &[StateStyleRule] {
+        self.writer.node_state_rules(node_id)
+    }
+
+    /// Iterates over all active nodes with an explicit [`CursorKind`].
+    #[inline]
+    pub fn iter_cursors(&self) -> impl Iterator<Item = (NodeId, CursorKind)> + '_ {
+        self.writer.iter_cursors()
+    }
+
+    /// Iterates over all active nodes with one or more interactive [`StateStyleRule`] overrides.
+    #[inline]
+    pub fn iter_state_rules(&self) -> impl Iterator<Item = (NodeId, &[StateStyleRule])> + '_ {
+        self.writer.iter_state_rules()
     }
 
     /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.

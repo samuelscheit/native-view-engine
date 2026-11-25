@@ -9,7 +9,8 @@ use core::fmt::Write as _;
 use nve_abi::hash::HashMap;
 use nve_abi::num::{write_i64, write_u64};
 use nve_abi::{EdgeInsets, FlexAlign, FlexDirection, FlexJustify, NodeId};
-use nve_components::media::{MediaQuery, ResponsiveRule, ResponsiveStylePatch};
+use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::style_patch::StylePatch;
 
 use crate::css::{
     canonical_f32, write_compact_color, write_compact_dim, write_compact_edges, write_compact_num,
@@ -84,11 +85,12 @@ fn write_override_edges(prop: &str, e: EdgeInsets, out: &mut String) {
     }
 }
 
-/// Emits strictly typed, compact CSS declarations for every populated field of `patch`.
+/// Emits strictly typed, compact CSS declarations for every populated field of `patch` (shared by
+/// both responsive `@media` rules and interactive pseudo-state rules).
 ///
 /// Unlike base structural emitters, default values (such as `Column`, `0`, `Auto`, or `EdgeInsets::ZERO`)
 /// are emitted explicitly whenever present in the sparse patch so they override base rules cleanly.
-pub fn write_responsive_patch_decls(patch: &ResponsiveStylePatch, out: &mut String) {
+pub fn write_style_patch_decls(patch: &StylePatch, out: &mut String) {
     if let Some(dir) = patch.flex_direction {
         out.push_str("flex-direction:");
         out.push_str(match dir {
@@ -229,6 +231,22 @@ pub fn write_responsive_patch_decls(patch: &ResponsiveStylePatch, out: &mut Stri
         write_u64(out, u64::from(fw.clamp(1, 1000)));
         out.push(';');
     }
+    if let Some(display) = patch.display {
+        out.push_str("display:");
+        out.push_str(display.as_css());
+        out.push(';');
+    }
+    if let Some(cursor) = patch.cursor {
+        out.push_str("cursor:");
+        out.push_str(cursor.to_css_keyword());
+        out.push(';');
+    }
+}
+
+/// Backwards-compatible alias for [`write_style_patch_decls`].
+#[inline]
+pub fn write_responsive_patch_decls(patch: &StylePatch, out: &mut String) {
+    write_style_patch_decls(patch, out);
 }
 
 /// Compiles a node's `show_on` visibility query and `responsive_rules` overrides into
@@ -287,7 +305,7 @@ pub fn compile_node_media_rules(
 }
 
 impl WebBackend {
-    fn flush_or_queue_responsive_dirty(&mut self, dirty: Vec<NodeId>) {
+    pub(crate) fn flush_or_queue_responsive_dirty(&mut self, dirty: Vec<NodeId>) {
         if dirty.is_empty() {
             return;
         }

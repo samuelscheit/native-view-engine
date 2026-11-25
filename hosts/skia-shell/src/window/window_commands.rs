@@ -299,9 +299,17 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 let Some(sw) = self.windows.get_mut(&window_id) else { return };
                 let scale = sw.session.viewport().scale_factor.max(0.001);
                 match sw.session.handle_pointer_move_logical(position.x as f32 / scale, position.y as f32 / scale) {
-                    Ok(true) => sw.window.request_redraw(),
-                    Ok(false) => {}
+                    Ok(true) => { sw.sync_cursor_state(); sw.window.request_redraw(); }
+                    Ok(false) => sw.sync_cursor_state(),
                     Err(err) => eprintln!("[nve-skia-shell] pointer move error: {err}"),
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                let Some(sw) = self.windows.get_mut(&window_id) else { return };
+                let dirty = sw.session.handle_pointer_leave();
+                sw.sync_cursor_state();
+                if dirty {
+                    sw.window.request_redraw();
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
@@ -309,14 +317,18 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 if self.window_manager.active_modal_blocker(sw.handle_id).is_some() { return; }
                 let (x, y) = sw.session.cursor_logical();
                 match sw.session.handle_click_logical(x, y) {
-                    Ok(true) => { sw.sync_ime_state(); sw.window.request_redraw(); }
-                    Ok(false) => {}
+                    Ok(true) => { sw.sync_ime_state(); sw.sync_cursor_state(); sw.window.request_redraw(); }
+                    Ok(false) => sw.sync_cursor_state(),
                     Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 if let Some(sw) = self.windows.get_mut(&window_id) {
-                    sw.session.handle_pointer_up_logical();
+                    let dirty = sw.session.handle_pointer_up_with_redraw();
+                    sw.sync_cursor_state();
+                    if dirty {
+                        sw.window.request_redraw();
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(new_mods) => {

@@ -35,8 +35,11 @@ mod raw_style;
 mod reconcile;
 #[cfg(feature = "ssr")]
 mod ssr;
+mod state_css;
 mod style_hash;
 mod stylesheet;
+#[cfg(target_arch = "wasm32")]
+mod stylesheet_wasm;
 mod tree;
 
 #[cfg(test)]
@@ -69,7 +72,12 @@ pub use events::{
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
 pub use media_css::{
-    compile_node_media_rules, format_media_class, write_responsive_patch_decls, CompiledMediaRule,
+    compile_node_media_rules, format_media_class, write_responsive_patch_decls,
+    write_style_patch_decls, CompiledMediaRule,
+};
+pub use state_css::{
+    compile_node_state_rules, compile_node_state_rules_with_hover_guard, format_cursor_rule,
+    format_state_class, CompiledStateRule,
 };
 #[cfg(any(
     feature = "nv-blur",

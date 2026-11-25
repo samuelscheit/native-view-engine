@@ -10,7 +10,9 @@ use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps, StyleProps};
-use nve_components::media::{MediaQuery, ResponsiveRule, ResponsiveStylePatch};
+use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
+use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::style_patch::StylePatch;
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
 pub const NVE_TYPED_STYLE_ATTR: &str = "nve_style";
@@ -55,6 +57,8 @@ pub struct TypedStyle {
     pub object_fit: Option<Cow<'static, str>>,
     pub show_on: Option<MediaQuery>,
     pub responsive: Vec<ResponsiveRule>,
+    pub cursor: Option<CursorKind>,
+    pub state_rules: Vec<StateStyleRule>,
 }
 
 impl Default for TypedStyle {
@@ -81,6 +85,8 @@ impl TypedStyle {
             object_fit: None,
             show_on: None,
             responsive: Vec::new(),
+            cursor: None,
+            state_rules: Vec::new(),
         }
     }
 
@@ -444,7 +450,7 @@ impl TypedStyle {
 
     /// Appends a conditional [`ResponsiveRule`] applying `patch` whenever `query` matches.
     #[inline]
-    pub fn at(mut self, query: MediaQuery, patch: ResponsiveStylePatch) -> Self {
+    pub fn at(mut self, query: MediaQuery, patch: StylePatch) -> Self {
         self.responsive.push(ResponsiveRule::new(query, patch));
         self
     }
@@ -454,27 +460,113 @@ impl TypedStyle {
     pub fn at_with(
         self,
         query: MediaQuery,
-        build: impl FnOnce(ResponsiveStylePatch) -> ResponsiveStylePatch,
+        build: impl FnOnce(StylePatch) -> StylePatch,
     ) -> Self {
-        self.at(query, build(ResponsiveStylePatch::new()))
+        self.at(query, build(StylePatch::new()))
     }
 
     /// Shorthand for `.at(MediaQuery::compact(), patch)` (`< 600pt`).
     #[inline]
-    pub fn on_compact(self, patch: ResponsiveStylePatch) -> Self {
+    pub fn on_compact(self, patch: StylePatch) -> Self {
         self.at(MediaQuery::compact(), patch)
     }
 
     /// Shorthand for `.at(MediaQuery::medium(), patch)` (`600..1024pt`).
     #[inline]
-    pub fn on_medium(self, patch: ResponsiveStylePatch) -> Self {
+    pub fn on_medium(self, patch: StylePatch) -> Self {
         self.at(MediaQuery::medium(), patch)
     }
 
     /// Shorthand for `.at(MediaQuery::expanded(), patch)` (`>= 1024pt`).
     #[inline]
-    pub fn on_expanded(self, patch: ResponsiveStylePatch) -> Self {
+    pub fn on_expanded(self, patch: StylePatch) -> Self {
         self.at(MediaQuery::expanded(), patch)
+    }
+
+    // --- Interactive pseudo-state rules & typed pointer cursor ---
+
+    /// Sets the base pointer cursor icon for this node (zero serialization).
+    #[inline]
+    pub fn cursor(mut self, cursor: CursorKind) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    /// Appends a conditional [`StateStyleRule`] applying `patch` whenever `state` is active.
+    #[inline]
+    pub fn on_state(mut self, state: InteractionState, patch: StylePatch) -> Self {
+        self.state_rules.push(StateStyleRule::new(state, patch));
+        self
+    }
+
+    /// Builder-closure variant of [`Self::on_state`].
+    #[inline]
+    pub fn on_state_with(
+        self,
+        state: InteractionState,
+        build: impl FnOnce(StylePatch) -> StylePatch,
+    ) -> Self {
+        self.on_state(state, build(StylePatch::new()))
+    }
+
+    /// Shorthand for `.on_state(InteractionState::HOVER, patch)`.
+    #[inline]
+    pub fn on_hover(self, patch: StylePatch) -> Self {
+        self.on_state(InteractionState::HOVER, patch)
+    }
+
+    /// Builder-closure shorthand for `:hover`.
+    #[inline]
+    pub fn on_hover_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+        self.on_state_with(InteractionState::HOVER, build)
+    }
+
+    /// Shorthand for `.on_state(InteractionState::ACTIVE, patch)`.
+    #[inline]
+    pub fn on_active(self, patch: StylePatch) -> Self {
+        self.on_state(InteractionState::ACTIVE, patch)
+    }
+
+    /// Builder-closure shorthand for `:active`.
+    #[inline]
+    pub fn on_active_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+        self.on_state_with(InteractionState::ACTIVE, build)
+    }
+
+    /// Shorthand for `.on_state(InteractionState::FOCUS, patch)`.
+    #[inline]
+    pub fn on_focus(self, patch: StylePatch) -> Self {
+        self.on_state(InteractionState::FOCUS, patch)
+    }
+
+    /// Builder-closure shorthand for `:focus`.
+    #[inline]
+    pub fn on_focus_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+        self.on_state_with(InteractionState::FOCUS, build)
+    }
+
+    /// Shorthand for `.on_state(InteractionState::FOCUS_VISIBLE, patch)`.
+    #[inline]
+    pub fn on_focus_visible(self, patch: StylePatch) -> Self {
+        self.on_state(InteractionState::FOCUS_VISIBLE, patch)
+    }
+
+    /// Builder-closure shorthand for `:focus-visible`.
+    #[inline]
+    pub fn on_focus_visible_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+        self.on_state_with(InteractionState::FOCUS_VISIBLE, build)
+    }
+
+    /// Shorthand for `.on_state(InteractionState::DISABLED, patch)`.
+    #[inline]
+    pub fn on_disabled(self, patch: StylePatch) -> Self {
+        self.on_state(InteractionState::DISABLED, patch)
+    }
+
+    /// Builder-closure shorthand for `:disabled`.
+    #[inline]
+    pub fn on_disabled_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+        self.on_state_with(InteractionState::DISABLED, build)
     }
 }
 

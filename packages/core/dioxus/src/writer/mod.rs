@@ -16,6 +16,7 @@ use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, FrameId, LayoutProps, NodeId, StyleProps,
     SurfaceId, ROOT_NODE_ID,
 };
+use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_interop::native_view::NativeViewHandleBinder;
 
@@ -49,6 +50,8 @@ pub(crate) struct NodeRecord {
     pub(crate) explicit_show_on: Option<MediaQuery>,
     pub(crate) show_on: Option<MediaQuery>,
     pub(crate) responsive_rules: Vec<ResponsiveRule>,
+    pub(crate) cursor: Option<CursorKind>,
+    pub(crate) state_rules: Vec<StateStyleRule>,
 }
 
 impl Default for NodeRecord {
@@ -79,6 +82,8 @@ impl Default for NodeRecord {
             explicit_show_on: None,
             show_on: None,
             responsive_rules: Vec::new(),
+            cursor: None,
+            state_rules: Vec::new(),
         }
     }
 }
@@ -196,6 +201,37 @@ impl NveMutationWriter {
     pub fn iter_responsive_rules(&self) -> impl Iterator<Item = (NodeId, &[ResponsiveRule])> + '_ {
         self.nodes.iter().filter_map(|(&id, rec)| {
             (!rec.responsive_rules.is_empty()).then_some((id, rec.responsive_rules.as_slice()))
+        })
+    }
+
+    /// Returns the direct typed [`CursorKind`] for `node_id` (zero serialization).
+    #[inline]
+    pub fn node_cursor(&self, node_id: NodeId) -> Option<CursorKind> {
+        self.nodes.get(&node_id).and_then(|r| r.cursor)
+    }
+
+    /// Returns the direct typed [`StateStyleRule`] slice for `node_id` (zero serialization).
+    #[inline]
+    pub fn node_state_rules(&self, node_id: NodeId) -> &[StateStyleRule] {
+        self.nodes
+            .get(&node_id)
+            .map(|r| r.state_rules.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Iterates over all active nodes with an explicit [`CursorKind`].
+    #[inline]
+    pub fn iter_cursors(&self) -> impl Iterator<Item = (NodeId, CursorKind)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(&id, rec)| rec.cursor.map(|c| (id, c)))
+    }
+
+    /// Iterates over all active nodes with one or more interactive [`StateStyleRule`] overrides.
+    #[inline]
+    pub fn iter_state_rules(&self) -> impl Iterator<Item = (NodeId, &[StateStyleRule])> + '_ {
+        self.nodes.iter().filter_map(|(&id, rec)| {
+            (!rec.state_rules.is_empty()).then_some((id, rec.state_rules.as_slice()))
         })
     }
 
