@@ -165,8 +165,9 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                 .args(["build", "-p", &package])
                 .status();
             let web_ok = if rebuild_web && status.as_ref().is_ok_and(|s| s.success()) {
+                // Only the dev bundle carries the NVP1 hot-reload client.
                 ProcessCommand::new("./hosts/web-shell/build.sh")
-                    .arg("--dev")
+                    .args(["--dev", "dev"])
                     .status()
                     .is_ok_and(|s| s.success())
             } else {

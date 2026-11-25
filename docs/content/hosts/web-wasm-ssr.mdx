@@ -1,12 +1,12 @@
 ---
 title: "Web WASM, CSS & SSR"
-description: "nve-backend-web and hosts/web-shell: Option 5 structural CSS cache, semantic HTML5 SSR, zero-flicker progressive island hydration, Wizer Frame-0, and 285.8 KiB gzipped builds."
+description: "nve-backend-web and hosts/web-shell: Option 5 structural CSS cache, semantic HTML5 SSR, zero-flicker progressive island hydration, and per-app production bundles (studio 172 KB, counter 97 KB brotli)."
 order: 3
 ---
 
 # Web WASM, CSS & SSR (`nve-backend-web` + `hosts/web-shell`)
 
-`crates/nve-backend-web` compiles the exact same `NVE1` `CommandBuffer` pipeline to `wasm32-unknown-unknown` (browser DOM + CSS Flexbox + HTML5 `<canvas>`) and native Rust (static **HTML5 SSR**). `hosts/web-shell` packages it into a **285.8 KiB gzipped** `wasm-release` bundle with `Wizer` Frame-0 pre-initialization, multi-surface `ACTIVE_SHELLS`, and live `?pair=ws://...` device pairing.
+`crates/nve-backend-web` compiles the exact same `NVE1` `CommandBuffer` pipeline to `wasm32-unknown-unknown` (browser DOM + CSS Flexbox + HTML5 `<canvas>`) and native Rust (static **HTML5 SSR**). `hosts/web-shell` packages it into one production bundle per app (Cargo features `app-studio` / `app-counter`: **172.0 KB** / **96.8 KB** brotli, wasm + JS) plus a `dev` bundle with NVP1 hot reload, multi-surface `ACTIVE_SHELLS` popups, and live `?pair=ws://...` device pairing. Frame 0 comes from SSR HTML.
 
 ## Option 5 Hybrid CSS Architecture
 
@@ -29,19 +29,19 @@ Running `nve-backend-web` natively on the server (or at build time via `nve-docs
 - **Zero-flicker hydration (`hydrate_into`)** — Adopts existing `[data-nve-id]` DOM nodes in-place without wiping `innerHTML`, attaches root event delegation instead of per-node `wasm_bindgen::Closure` fan-out, and recovers gracefully if a subtree mismatches.
 - **Progressive islands** — Interactive `<LiveDemo>` / island subtrees support four hydration triggers: `load`, `visible` (`IntersectionObserver`), `interaction` (event capture & replay on first click/focus), and `idle` (`requestIdleCallback`).
 
-## `Wizer` Frame-0 & Size-Optimized Build Pipeline
+## Per-App Bundles & Size-Optimized Build Pipeline
 
-`hosts/web-shell/build.sh` automates the full four-stage production pipeline:
+`hosts/web-shell/build.sh` builds `pkg/studio`, `pkg/counter` and `pkg/dev`, each through the same pipeline:
 
 :::steps
-::step{title="Compile with --profile wasm-release"}
-`cargo rustc --locked -p nve-web-shell --lib --crate-type cdylib --target wasm32-unknown-unknown --profile wasm-release` (`opt-level = "z"`, full LTO, `codegen-units = 1`, `panic = "abort"`, stripped symbols).
+::step{title="Compile per bundle with --profile wasm-release"}
+Pinned nightly, `-Zbuild-std` with `optimize_for_size`, `-Cpanic=immediate-abort`, and the bundle's Cargo features (`--no-default-features --features app-studio` for studio).
 ::step{title="Generate ES module bindings"}
-`wasm-bindgen --target web --out-dir hosts/web-shell/pkg --no-typescript`.
-::step{title="Bake Frame-0 VDOM with Wizer (optional)"}
-When `wizer` is on `PATH`, `wizer --allow-wasi=false` executes `wizer.initialize` at build time and snapshots pre-initialized linear memory directly into the `.wasm` binary for instant browser boot.
-::step{title="Optimize with wasm-opt -Oz"}
-Runs Binaryen `wasm-opt -Oz` to produce the final **285.8 KiB gzipped** Studio bundle.
+`wasm-bindgen --target web --out-dir hosts/web-shell/pkg/<bundle> --no-typescript`.
+::step{title="Sort functions by size"}
+`tools/wasm-sort-funcs.py` (worth ~1 KB brotli / ~22 KB gzip).
+::step{title="Compression-tuned wasm-opt, terser, precompression"}
+An explicit brotli-positive pass list (not `-Oz`), minified JS glue, and `.br`/`.gz` files next to each shipped file. Each bundle must stay under its brotli budget.
 :::
 
 ```bash title="Unit tests, wasm32 compile check, and full release build"

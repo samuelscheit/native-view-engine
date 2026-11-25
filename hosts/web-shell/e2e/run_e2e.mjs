@@ -21,6 +21,8 @@ const __dirname = path.dirname(__filename);
 const WEB_SHELL_DIR = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(WEB_SHELL_DIR, "..", "..");
 const PKG_DIR = path.join(WEB_SHELL_DIR, "pkg");
+// hosts/web-shell/build.sh bundles: one production bundle per app + the dev bundle (pairing, probes).
+const BUNDLES = ["studio", "counter", "dev"];
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -64,9 +66,10 @@ function parseArgs(argv) {
 }
 
 function ensureWasmBuilt(rebuild, devBuild) {
-  const jsOut = path.join(PKG_DIR, "nve_web_shell.js");
-  const wasmOut = path.join(PKG_DIR, "nve_web_shell_bg.wasm");
-  if (!rebuild && fs.existsSync(jsOut) && fs.existsSync(wasmOut)) {
+  const built = BUNDLES.every((bundle) =>
+    ["nve_web_shell.js", "nve_web_shell_bg.wasm"].every((f) => fs.existsSync(path.join(PKG_DIR, bundle, f)))
+  );
+  if (!rebuild && built) {
     return;
   }
   const buildScript = path.join(WEB_SHELL_DIR, "build.sh");
@@ -707,6 +710,20 @@ async function main() {
     // =========================================================================
     console.log("==> [1/7] Testing Aether Workspace + NVE Studio Desktop 1280x800 (?app=studio&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off` });
+    await waitForCondition(
+      cdp,
+      "production studio bundle loaded (studio exports only: no counter, dev probe or scene view)",
+      () => {
+        const m = window.__nveWasmMod;
+        return (
+          window.__nveBundle === "studio" &&
+          typeof m?.start_studio_workspace_app === "function" &&
+          m.start_counter_app === undefined &&
+          m.run_semantic_style_hydration_probe === undefined &&
+          m.nve_web_scene_view_ptr === undefined
+        );
+      }
+    );
 
     await waitForCondition(
       cdp,
@@ -1094,6 +1111,20 @@ async function main() {
     // =========================================================================
     console.log("==> [3/7] Testing Counter App (?app=counter&ws=off)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=counter&ws=off` });
+    await waitForCondition(
+      cdp,
+      "production counter bundle loaded (counter exports only: no studio, dev probe or scene view)",
+      () => {
+        const m = window.__nveWasmMod;
+        return (
+          window.__nveBundle === "counter" &&
+          typeof m?.start_counter_app === "function" &&
+          m.start_studio_workspace_app === undefined &&
+          m.run_semantic_style_hydration_probe === undefined &&
+          m.nve_web_scene_view_ptr === undefined
+        );
+      }
+    );
 
     await waitForCondition(
       cdp,
@@ -1450,6 +1481,7 @@ async function main() {
 
       const pairPageUrl = `${baseUrl}/?pair=${encodeURIComponent(pairServer.wsUrl)}&token=${encodeURIComponent(pairServer.token)}`;
       await cdp.send("Page.navigate", { url: pairPageUrl });
+      await waitForCondition(cdp, "dev bundle loaded for ?pair=", () => window.__nveBundle === "dev");
 
       await waitForCondition(
         cdp,
@@ -1527,6 +1559,7 @@ async function main() {
     // =========================================================================
     console.log("==> [7/7] Testing Option 5 Hybrid CSS, Semantic SSR & Zero-Flicker Hydration (?app=studio&ws=off&ssr=1)...");
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off&ssr=1` });
+    await waitForCondition(cdp, "production studio bundle loaded for ?ssr=1", () => window.__nveBundle === "studio");
 
     await waitForCondition(
       cdp,
@@ -1627,7 +1660,68 @@ async function main() {
       () => (document.getElementById("app")?.innerText || "").includes("Done (2)")
     );
 
-    // 7b. Verify semantic HTML5 tags + non-empty rendered box-shadow / font-weight / text-align
+    // 7b. Verify ProgressiveIslandHost (load, visible via IntersectionObserver, interaction + event replay, idle).
+    const islandCheck = await evalJs(
+      cdp,
+      `(async () => {
+        const box = document.createElement('div');
+        box.id = 'nve-island-probe';
+        box.innerHTML =
+          '<div data-nve-id="20" data-nve-island="isl-load" data-nve-hydrate="load"></div>' +
+          '<div data-nve-id="21" data-nve-island="isl-vis" data-nve-hydrate="visible" style="width:20px;height:20px;"></div>' +
+          '<div data-nve-id="22" data-nve-island="isl-int" data-nve-hydrate="interaction"><button id="isl-btn" data-nve-id="23">Go</button></div>' +
+          '<div data-nve-id="24" data-nve-island="isl-idle" data-nve-hydrate="idle"></div>';
+        document.body.appendChild(box);
+        let replayedClicks = 0;
+        const intEl = box.querySelector('[data-nve-island="isl-int"]');
+        intEl.addEventListener('nve:island-hydrated', () => {
+          box.querySelector('#isl-btn').addEventListener('click', () => { replayedClicks += 1; });
+        });
+        const host = window.__nveWasmMod.ProgressiveIslandHost.attach('nve-island-probe');
+        const loadImmediate = host.is_hydrated('isl-load');
+        const intBeforeClick = host.is_hydrated('isl-int');
+        box.querySelector('#isl-btn').click();
+        await new Promise((r) => setTimeout(r, 120));
+        const res = {
+          loadImmediate,
+          intBeforeClick,
+          visHydrated: host.is_hydrated('isl-vis'),
+          intHydrated: host.is_hydrated('isl-int'),
+          idleHydrated: host.is_hydrated('isl-idle'),
+          hydratedCount: Number(host.hydrated_count()),
+          replayedEvents: Number(host.replayed_event_count()),
+          replayedClicks,
+        };
+        host.free();
+        box.remove();
+        return res;
+      })()`
+    );
+    if (
+      !islandCheck.loadImmediate ||
+      islandCheck.intBeforeClick ||
+      !islandCheck.visHydrated ||
+      !islandCheck.intHydrated ||
+      !islandCheck.idleHydrated ||
+      islandCheck.hydratedCount !== 4 ||
+      islandCheck.replayedEvents < 1 ||
+      islandCheck.replayedClicks < 1
+    ) {
+      throw new Error(`ProgressiveIslandHost E2E check failed: ${JSON.stringify(islandCheck)}`);
+    }
+
+    // The semantic-style probe is a dev-bundle export (`dev` feature).
+    await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off&bundle=dev` });
+    await waitForCondition(
+      cdp,
+      "dev bundle (?bundle=dev) mounted StudioWorkspaceApp with the hydration probe export",
+      () =>
+        window.__nveBundle === "dev" &&
+        typeof window.__nveWasmMod?.run_semantic_style_hydration_probe === "function" &&
+        window.__nveController?.app_name === "StudioWorkspaceApp"
+    );
+
+    // 7c. Verify semantic HTML5 tags + non-empty rendered box-shadow / font-weight / text-align
     //     + zero-mismatch hydration identity preservation on the style probe.
     const styleProbe = await evalJs(
       cdp,
@@ -1677,56 +1771,6 @@ async function main() {
       styleProbe.invalidAttrs !== 0
     ) {
       throw new Error(`Semantic SSR / RawStyleProps hydration probe failed: ${JSON.stringify(styleProbe)}`);
-    }
-
-    // 7c. Verify ProgressiveIslandHost (load, visible via IntersectionObserver, interaction + event replay, idle).
-    const islandCheck = await evalJs(
-      cdp,
-      `(async () => {
-        const box = document.createElement('div');
-        box.id = 'nve-island-probe';
-        box.innerHTML =
-          '<div data-nve-id="20" data-nve-island="isl-load" data-nve-hydrate="load"></div>' +
-          '<div data-nve-id="21" data-nve-island="isl-vis" data-nve-hydrate="visible" style="width:20px;height:20px;"></div>' +
-          '<div data-nve-id="22" data-nve-island="isl-int" data-nve-hydrate="interaction"><button id="isl-btn" data-nve-id="23">Go</button></div>' +
-          '<div data-nve-id="24" data-nve-island="isl-idle" data-nve-hydrate="idle"></div>';
-        document.body.appendChild(box);
-        let replayedClicks = 0;
-        const intEl = box.querySelector('[data-nve-island="isl-int"]');
-        intEl.addEventListener('nve:island-hydrated', () => {
-          box.querySelector('#isl-btn').addEventListener('click', () => { replayedClicks += 1; });
-        });
-        const host = window.__nveWasmMod.ProgressiveIslandHost.attach('nve-island-probe');
-        const loadImmediate = host.is_hydrated('isl-load');
-        const intBeforeClick = host.is_hydrated('isl-int');
-        box.querySelector('#isl-btn').click();
-        await new Promise((r) => setTimeout(r, 120));
-        const res = {
-          loadImmediate,
-          intBeforeClick,
-          visHydrated: host.is_hydrated('isl-vis'),
-          intHydrated: host.is_hydrated('isl-int'),
-          idleHydrated: host.is_hydrated('isl-idle'),
-          hydratedCount: Number(host.hydrated_count()),
-          replayedEvents: Number(host.replayed_event_count()),
-          replayedClicks,
-        };
-        host.free();
-        box.remove();
-        return res;
-      })()`
-    );
-    if (
-      !islandCheck.loadImmediate ||
-      islandCheck.intBeforeClick ||
-      !islandCheck.visHydrated ||
-      !islandCheck.intHydrated ||
-      !islandCheck.idleHydrated ||
-      islandCheck.hydratedCount !== 4 ||
-      islandCheck.replayedEvents < 1 ||
-      islandCheck.replayedClicks < 1
-    ) {
-      throw new Error(`ProgressiveIslandHost E2E check failed: ${JSON.stringify(islandCheck)}`);
     }
 
     console.log(

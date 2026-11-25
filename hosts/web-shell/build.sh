@@ -1,33 +1,61 @@
 #!/usr/bin/env bash
-# Build the nve-web-shell browser bundle into hosts/web-shell/pkg.
+# Build the nve-web-shell browser bundles into hosts/web-shell/pkg/<bundle>/.
+#
+#   studio   `--no-default-features --features app-studio`   production Studio Workspace
+#   counter  `--no-default-features --features app-counter`  production Counter
+#   dev      default features: both apps, NVP1 hot reload, pairing, popups, scene view, probes
+#
+# index.html loads pkg/<app> for `?app=<app>` and pkg/dev for `?dev`, `?ws=<url>`, `?pair=...`
+# (or an explicit `?bundle=<name>`). Usage: build.sh [--release | --dev] [studio|counter|dev ...]
+# (default: all three bundles).
 #
 # Release (default) is a size pipeline tuned for the *brotli* bytes users download, measured in
 # docs/research/wasm-size/toolchain.md:
 #   1. pinned nightly + -Zbuild-std (std rebuilt with optimize_for_size) + -Cpanic=immediate-abort,
 #      -Zfmt-debug=shallow, -Zlocation-detail=none
 #   2. wasm-bindgen (names kept for step 3; `target_features` kept so externref glue is used)
-#   3. snip functions that are unreachable on wasm32-unknown-unknown (std backtrace symbolization)
-#      and sort functions by size (function order alone is worth ~1 KB brotli / ~22 KB gzip)
+#   3. sort functions by size (function order alone is worth ~1 KB brotli / ~22 KB gzip)
 #   4. wasm-opt with a compression-friendly pass list (NOT -Oz: -Oz grows the brotli size)
 #   5. minify the JS glue, precompress .br/.gz next to every shipped file
-# --dev keeps the fast stable debug build without post-processing.
+# --dev keeps the fast stable debug build without post-processing (what `nve dev` and the E2E use).
+# Each release bundle is checked against its own brotli budget (wasm + JS); over budget fails.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-OUT_DIR="${SCRIPT_DIR}/pkg"
+PKG_ROOT="${SCRIPT_DIR}/pkg"
+
+usage() { echo "Usage: $0 [--release | --dev] [studio|counter|dev ...]" >&2; exit 1; }
 
 PROFILE="wasm-release"
+BUNDLES=()
 for arg in "$@"; do
   case "$arg" in
     --dev|--debug) PROFILE="debug" ;;
     --release) PROFILE="wasm-release" ;;
-    *)
-      echo "Usage: $0 [--release | --dev]" >&2
-      exit 1
-      ;;
+    studio|counter|dev) BUNDLES+=("$arg") ;;
+    *) usage ;;
   esac
 done
+(( ${#BUNDLES[@]} )) || BUNDLES=(studio counter dev)
+
+# Cargo feature selection per bundle.
+bundle_features() {
+  case "$1" in
+    studio) echo "--no-default-features --features app-studio" ;;
+    counter) echo "--no-default-features --features app-counter" ;;
+    dev) echo "" ;;
+  esac
+}
+
+# Brotli (wasm + JS) budgets, ~3% above the sizes measured in docs/research/wasm-size/README.md.
+bundle_budget() {
+  case "$1" in
+    studio) echo "${WASM_BROTLI_BUDGET_STUDIO:-177152}" ;;
+    counter) echo "${WASM_BROTLI_BUDGET_COUNTER:-99328}" ;;
+    dev) echo "${WASM_BROTLI_BUDGET_DEV:-211968}" ;;
+  esac
+}
 
 TARGET_DIR="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}"
 if [[ "${TARGET_DIR}" != /* ]]; then
@@ -52,13 +80,17 @@ fi
 
 if [[ "${PROFILE}" == "debug" ]]; then
   rustup target list --installed | grep -qx "${TARGET}" || rustup target add "${TARGET}"
-  echo "==> Building nve-web-shell (debug, stable, ${TARGET})"
-  (cd "${REPO_ROOT}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo rustc --locked \
-    -p nve-web-shell --lib --crate-type cdylib --target "${TARGET}")
-  rm -rf "${OUT_DIR}"
-  "${WASM_BINDGEN_BIN}" --target web --out-dir "${OUT_DIR}" --no-typescript \
-    "${TARGET_DIR}/${TARGET}/debug/nve_web_shell.wasm"
-  echo "==> Built ${OUT_DIR} (debug)"
+  for bundle in "${BUNDLES[@]}"; do
+    out_dir="${PKG_ROOT}/${bundle}"
+    echo "==> Building nve-web-shell [${bundle}] (debug, stable, ${TARGET})"
+    # shellcheck disable=SC2046 # feature flags are intentionally word-split
+    (cd "${REPO_ROOT}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo rustc --locked \
+      -p nve-web-shell $(bundle_features "${bundle}") --lib --crate-type cdylib --target "${TARGET}")
+    rm -rf "${out_dir}"
+    "${WASM_BINDGEN_BIN}" --target web --out-dir "${out_dir}" --no-typescript \
+      "${TARGET_DIR}/${TARGET}/debug/nve_web_shell.wasm"
+    echo "==> Built ${out_dir} (debug)"
+  done
   exit 0
 fi
 
@@ -77,74 +109,78 @@ fi
 rustup component list --toolchain "${WASM_TOOLCHAIN}" --installed | grep -q '^rust-src' \
   || rustup component add rust-src --toolchain "${WASM_TOOLCHAIN}"
 
-echo "==> Building nve-web-shell (wasm-release, ${WASM_TOOLCHAIN}, -Zbuild-std, ${TARGET})"
-(
-  cd "${REPO_ROOT}"
-  CARGO_TARGET_DIR="${TARGET_DIR}" \
-  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort -Zfmt-debug=shallow -Zlocation-detail=none" \
-  cargo "+${WASM_TOOLCHAIN}" rustc --locked \
-    -p nve-web-shell --lib --crate-type cdylib --target "${TARGET}" --profile wasm-release \
-    -Zbuild-std=std,panic_abort -Zbuild-std-features=optimize_for_size
-)
-WASM_INPUT="${TARGET_DIR}/${TARGET}/wasm-release/nve_web_shell.wasm"
-
-# --- 2. Bindings. The name section is kept for step 3 and dropped by wasm-opt in step 4. ---------
-rm -rf "${OUT_DIR}"
-"${WASM_BINDGEN_BIN}" --target web --out-dir "${OUT_DIR}" --no-typescript \
-  --remove-producers-section "${WASM_INPUT}"
-WASM_OUT="${OUT_DIR}/nve_web_shell_bg.wasm"
-JS_OUT="${OUT_DIR}/nve_web_shell.js"
-
-# --- 3. Snip code that can never run on wasm32-unknown-unknown; order functions by size. ---------
-# std::backtrace is `unsupported` on this target (capture never yields frames), but anyhow's
-# Debug impl keeps Backtrace's Display -> rustc_demangle alive: ~17 KB raw / ~6 KB brotli.
-# Only the symbolize/print paths of a *captured* backtrace are snipped. `Backtrace::capture` and
-# Backtrace drop glue run on every anyhow::Error (dioxus-core CapturedError) and must stay live;
-# --keep makes the build fail if a pattern ever matches them.
-# Step 4 must not run --reorder-functions (or -O2+/-Os/-Oz, which include it) after this.
-python3 "${SCRIPT_DIR}/tools/wat-snip.py" "${WASM_OUT}" "${WASM_OUT}" \
-  --keep 'Backtrace>::(capture|force_capture|status|frames)$' \
-  --keep 'drop_glue::<(core\[[0-9a-f]+\]::option::Option<)?std\[[0-9a-f]+\]::backtrace::Backtrace>+$' \
-  '^<*&?rustc_demangle\[' \
-  '^<*std\[[0-9a-f]+\]::backtrace_rs::' \
-  'backtrace::Backtrace as core\[[0-9a-f]+\]::fmt::Display>::fmt::\{closure' \
-  'LazyLock<std\[[0-9a-f]+\]::backtrace::Capture'
-
-# --- 4. wasm-opt tuned for brotli size. -----------------------------------------------------------
-# -Oz/-Os/-O2+ shrink raw bytes but grow brotli bytes (inlining, local-cse, memory-packing,
-# coalesce/simplify-locals and reorder-functions all hurt compressibility of LLVM -Oz output).
-# This list only runs passes that measured as brotli-positive.
-WASM_OPT_PASSES=(
-  --strip-debug --strip-producers --strip-target-features
-  --duplicate-function-elimination --remove-unused-module-elements
-  --vacuum --merge-blocks --dce --remove-unused-brs --optimize-instructions --precompute
-  --reorder-locals --converge
-)
-"${WASM_OPT_BIN}" "${WASM_OPT_PASSES[@]}" "${WASM_OUT}" -o "${WASM_OUT}.opt"
-mv "${WASM_OUT}.opt" "${WASM_OUT}"
-
-# --- 5. Minify JS glue + precompress. --------------------------------------------------------------
-if command -v npx >/dev/null 2>&1; then
-  while IFS= read -r js; do
-    npx -y terser@5 "${js}" --module --compress passes=3 --mangle --toplevel -o "${js}.min"
-    mv "${js}.min" "${js}"
-  done < <(find "${OUT_DIR}" -name '*.js')
-else
-  echo "==> Info: npx not found; shipping unminified JS glue (~2.7 KB brotli more)"
-fi
-while IFS= read -r f; do
-  brotli -q 11 -f -k "${f}"
-  gzip -9 -f -k "${f}"
-done < <(find "${OUT_DIR}" -type f \( -name '*.wasm' -o -name '*.js' \))
-
 bytes() { wc -c < "$1" | tr -d ' '; }
-WASM_BR=$(bytes "${WASM_OUT}.br")
-JS_BR=0
-while IFS= read -r f; do JS_BR=$((JS_BR + $(bytes "${f}"))); done < <(find "${OUT_DIR}" -name '*.js.br')
-TOTAL_BR=$((WASM_BR + JS_BR))
-echo "==> wasm: $(bytes "${WASM_OUT}") raw, $(bytes "${WASM_OUT}.gz") gzip, ${WASM_BR} brotli"
-echo "==> js:   $(bytes "${JS_OUT}") raw (entry), ${JS_BR} brotli (all JS)"
-BUDGET="${WASM_BROTLI_BUDGET_BYTES:-245760}"
-STATUS="PASS"; (( TOTAL_BR > BUDGET )) && STATUS="OVER BUDGET"
-echo "==> Size budget (wasm+js brotli): ${TOTAL_BR} / ${BUDGET} bytes [${STATUS}]"
+
+build_release_bundle() {
+  local bundle="$1" out_dir="${PKG_ROOT}/$1"
+  local WASM_INPUT WASM_OUT JS_OUT WASM_BR JS_BR TOTAL_BR BUDGET STATUS
+  echo "==> Building nve-web-shell [${bundle}] (wasm-release, ${WASM_TOOLCHAIN}, -Zbuild-std, ${TARGET})"
+  # shellcheck disable=SC2046 # feature flags are intentionally word-split
+  (
+    cd "${REPO_ROOT}"
+    CARGO_TARGET_DIR="${TARGET_DIR}" \
+    CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort -Zfmt-debug=shallow -Zlocation-detail=none" \
+    cargo "+${WASM_TOOLCHAIN}" rustc --locked \
+      -p nve-web-shell $(bundle_features "${bundle}") --lib --crate-type cdylib --target "${TARGET}" \
+      --profile wasm-release -Zbuild-std=std,panic_abort -Zbuild-std-features=optimize_for_size
+  )
+  WASM_INPUT="${TARGET_DIR}/${TARGET}/wasm-release/nve_web_shell.wasm"
+
+  # --- 2. Bindings. The name section is kept for step 3 and dropped by wasm-opt in step 4. ---------
+  rm -rf "${out_dir}"
+  "${WASM_BINDGEN_BIN}" --target web --out-dir "${out_dir}" --no-typescript \
+    --remove-producers-section "${WASM_INPUT}"
+  WASM_OUT="${out_dir}/nve_web_shell_bg.wasm"
+  JS_OUT="${out_dir}/nve_web_shell.js"
+
+  # --- 3. Order functions by size. -------------------------------------------------------------------
+  # Step 4 must not run --reorder-functions (or -O2+/-Os/-Oz, which include it) after this.
+  python3 "${SCRIPT_DIR}/tools/wasm-sort-funcs.py" "${WASM_OUT}" "${WASM_OUT}"
+
+  # --- 4. wasm-opt tuned for brotli size. -----------------------------------------------------------
+  # -Oz/-Os/-O2+ shrink raw bytes but grow brotli bytes (inlining, local-cse, memory-packing,
+  # coalesce/simplify-locals and reorder-functions all hurt compressibility of LLVM -Oz output).
+  # This list only runs passes that measured as brotli-positive.
+  WASM_OPT_PASSES=(
+    --strip-debug --strip-producers --strip-target-features
+    --duplicate-function-elimination --remove-unused-module-elements
+    --vacuum --merge-blocks --dce --remove-unused-brs --optimize-instructions --precompute
+    --reorder-locals --converge
+  )
+  "${WASM_OPT_BIN}" "${WASM_OPT_PASSES[@]}" "${WASM_OUT}" -o "${WASM_OUT}.opt"
+  mv "${WASM_OUT}.opt" "${WASM_OUT}"
+
+  # --- 5. Minify JS glue + precompress. --------------------------------------------------------------
+  if command -v npx >/dev/null 2>&1; then
+    while IFS= read -r js; do
+      npx -y terser@5 "${js}" --module --compress passes=3 --mangle --toplevel -o "${js}.min"
+      mv "${js}.min" "${js}"
+    done < <(find "${out_dir}" -name '*.js')
+  else
+    echo "==> Info: npx not found; shipping unminified JS glue (~2.7 KB brotli more)"
+  fi
+  while IFS= read -r f; do
+    brotli -q 11 -f -k "${f}"
+    gzip -9 -f -k "${f}"
+  done < <(find "${out_dir}" -type f \( -name '*.wasm' -o -name '*.js' \))
+
+  WASM_BR=$(bytes "${WASM_OUT}.br")
+  JS_BR=0
+  while IFS= read -r f; do JS_BR=$((JS_BR + $(bytes "${f}"))); done < <(find "${out_dir}" -name '*.js.br')
+  TOTAL_BR=$((WASM_BR + JS_BR))
+  echo "==> wasm: $(bytes "${WASM_OUT}") raw, $(bytes "${WASM_OUT}.gz") gzip, ${WASM_BR} brotli"
+  echo "==> js:   $(bytes "${JS_OUT}") raw (entry), ${JS_BR} brotli (all JS)"
+  BUDGET=$(bundle_budget "${bundle}")
+  STATUS="PASS"; (( TOTAL_BR > BUDGET )) && STATUS="OVER BUDGET" && OVER_BUDGET+=("${bundle}")
+  echo "==> [${bundle}] size budget (wasm+js brotli): ${TOTAL_BR} / ${BUDGET} bytes [${STATUS}]"
+}
+
+OVER_BUDGET=()
+for bundle in "${BUNDLES[@]}"; do
+  build_release_bundle "${bundle}"
+done
 echo "==> Serve locally: python3 -m http.server 8080 -d hosts/web-shell"
+if (( ${#OVER_BUDGET[@]} )); then
+  echo "Error: over brotli budget: ${OVER_BUDGET[*]}" >&2
+  exit 1
+fi

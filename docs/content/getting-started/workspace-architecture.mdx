@@ -78,7 +78,7 @@ All C++ and Objective-C++ platform shells share a single DRY runtime in `cxx/nve
 - **`hosts/apple-common/`** — Shared UIKit/AppKit ABI loader, hot-swap controller, `NveAppleSceneReconciler`, CoreGraphics `NveAppleCanvasView`, and `NveAppleImageCache` reused by `hosts/macos-shell` and `hosts/ios-shell`.
 - **Desktop shells** — `hosts/skia-shell` (`winit` + GPU/`softbuffer`), `hosts/macos-shell` (AppKit + RN-macOS), `hosts/windows-shell` (Win32/Direct2D/DirectWrite + RNW 0.88 Fabric), `hosts/qt-shell` (Qt 6 Widgets + Quick `QSGNode`), `hosts/gtk-shell` (GTK4/Pango/Cairo).
 - **Mobile & embedder kits** — `hosts/ios-shell` (UIKit/iPadOS `UIScene`), `hosts/android-shell` (JNI DirectByteBuffers + zero-Gradle APK launcher), `hosts/compose-kit` (`dev.nve.compose`), `hosts/swiftui-kit` (`NveSwiftUI`), `hosts/flutter-plugin` (`nve_flutter`).
-- **Web shell** — `hosts/web-shell` (`wasm-bindgen`, `Wizer` Frame-0 pre-init, `ACTIVE_SHELLS` multi-window, `?pair=ws://` live pairing).
+- **Web shell** — `hosts/web-shell` (`wasm-bindgen`, one production bundle per app plus a `dev` bundle, `ACTIVE_SHELLS` multi-window, `?pair=ws://` live pairing).
 
 ## Workspace Build Profiles
 

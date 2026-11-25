@@ -7,7 +7,7 @@ Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-ba
 1. **`DioxusSurface`** (`nve_studio_workspace::create_surface(1)` by default, or `nve_example_counter::create_surface(1)` via `?app=counter`) reconciles `rsx!` into a batched binary `CommandBuffer`.
 2. **`WebBackend::mount_into(container)`** decodes the `CommandBuffer` and mutates real `web_sys::Element` nodes, applying Flexbox `LayoutProps` + `StyleProps` via `HtmlElement::style().set_css_text(...)`.
 3. **Interactive DOM Events**: `EventMask::PRESS` (`click`) and `EventMask::TEXT_CHANGE` (`input`) attach real `wasm_bindgen::closure::Closure` listeners that push `NativeEvent`s into a shared `Rc<RefCell<Vec<NativeEvent>>>` and trigger an immediate incremental re-render (`drain_events -> DioxusSurface::dispatch_events -> render_frame -> submit_recorded_frame`).
-4. **2-Tier Hot Reload (`nve dev`)**: Connects a browser `WebSocket` (default `ws://127.0.0.1:8089`, configurable via `?ws=<url>` or disabled via `?ws=off`) consuming `nve_engine::HotPatchMsg` JSON:
+4. **2-Tier Hot Reload (`nve dev`, `dev` bundle only)**: `?dev` connects a browser `WebSocket` to `ws://<host>:8089` (`?ws=<url>` picks another endpoint) consuming binary `NVP1` `nve_engine::HotPatchMsg` frames (text frames are ignored):
    - `template_patch`: Applies Tier-1 live text/style updates directly (<50ms, zero page reload).
    - `dylib_reload`: Logs generation & build time and cleanly reloads the page.
    - `dev_status`: Logs status and updates the top HUD badge.
@@ -24,17 +24,25 @@ Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-ba
 ## Build & Run
 
 ```bash
-# Build release WASM + JS bindings into hosts/web-shell/pkg/
+# Release bundles: pkg/studio, pkg/counter (one app each, production) and pkg/dev
+# (both apps + NVP1 hot reload, pairing, popups, scene view, E2E probes)
 ./hosts/web-shell/build.sh
 
-# Or fast dev build
+# Only some bundles, or the fast stable debug build (what `nve dev` and the E2E use)
+./hosts/web-shell/build.sh counter
 ./hosts/web-shell/build.sh --dev
 
 # Serve locally
 python3 -m http.server 8080 -d hosts/web-shell
 ```
 
-Open `http://127.0.0.1:8080` in any modern browser. To connect live hot reload, run `cargo run -p nve-cli -- dev` in another terminal (serves `ws://127.0.0.1:8089`). Pass `?ws=off` to disable WebSocket hot reload.
+Open `http://127.0.0.1:8080` (studio) or `?app=counter` in any modern browser; each loads its own
+production bundle. `index.html` loads `pkg/dev` instead for `?dev` / `?ws=<url>` (hot reload) and
+`?pair=...` (thin client), or any bundle via `?bundle=<studio|counter|dev>`. For live hot reload run
+`cargo run -p nve-cli -- dev` in another terminal (serves `ws://127.0.0.1:8089`) and open `?dev`.
+
+Release bundles are checked against per-bundle brotli budgets (wasm + JS, override with
+`WASM_BROTLI_BUDGET_{STUDIO,COUNTER,DEV}`); `build.sh` fails when one is exceeded.
 
 ## Host Unit Tests & Headless Browser E2E
 

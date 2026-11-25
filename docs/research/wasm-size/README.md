@@ -65,7 +65,7 @@ available in Rust.
 |---|---|---:|---:|---|---|
 | 0 | today | 260.1 *m* | 260.1 *m* | — | — |
 | 1 | **toolchain pipeline**: nightly `-Zbuild-std` + immediate-abort + `optimize_for_size`, fmt/location flags, compression-tuned wasm-opt list, size-sorted functions, terser, `strip="debuginfo"`, no Wizer | 218.9 *m* (one shared bundle) | 218.9 *m* | done | low |
-| 2 | **one app per production bundle**; `dev`/`multi-window`/`scene-view` features; `anyhow` without std; `nve_abi::num` fixed-point codec; NVP1-only hot reload; talc; FxHash | 100.2 *m* stable / 87.1 *m* + immediate-abort | 180.0 *m* stable / ~158 *est.* + stage 1 | S–M | low |
+| 2 | **one app per production bundle**; `dev`/`multi-window`/`scene-view` features; `anyhow` without std; `nve_abi::num` fixed-point codec; NVP1-only hot reload; talc; FxHash | **96.8** *m* | **172.0** *m* | done | low |
 | 3 | **raw boundary**: 0 imports, `nve_dom.js` interprets the CommandBuffer from linear memory, delegated events written into the EventRing; subsecond patch | ~66–70 *est.* (−19.1 *m* on a stable counter) | ~140 *est.* (−16.5 *m*) | L | medium |
 | 4 | no JSON in production (channel bus, island props); dense slabs; `VecMap`; one sort instantiation; compile-time typed styles and pre-encoded templates | ~55 *est.* | ~120–125 *est.* | M–L | low–medium |
 | 5 | per-panel lazy split of studio (needs a working split tool) | ~55 | ~85–95 initial *est.* | L | high |
@@ -74,8 +74,8 @@ available in Rust.
 
 How to read it:
 
-- **Stages 1–2 are measured and need no design decision.** They take the counter from 260 to about
-  87 KB and studio to about 160 KB.
+- **Stages 1–2 are done.** They take the counter from 260 to 96.8 KB and studio to 172.0 KB
+  (measured after the SSR/hydration merges, which added ~21 KB).
 - **Stage 3 is a clean subtraction** that fits the "one CommandBuffer per frame" invariant.
   `WebDomMirror` stays as the semantic spec, and a Node parity test pins the JS interpreter to it.
 - **Stage 6 is the real decision.** It is the only step that gets within an order of magnitude of
@@ -96,12 +96,35 @@ How to read it:
 
 ## Already landed
 
-`main` `2106b57` (toolchain): 260,171 → 218,880 B total br, all 6 e2e suites green.
+`main` `2106b57` (stage 1, toolchain): 260,171 → 218,880 B total br, all 6 e2e suites green. The
+SSR/hydration merges that followed grew the same shared bundle to 240,304 B before stage 2.
 
-The snip step was hardened in review. The first version also trapped `Backtrace::capture` and its
-drop glue, which would have aborted the app on every `anyhow::Error`; `wat-snip.py --keep` now fails
-the build if a pattern ever matches a live path. The snip itself goes away once dioxus-core's
-`anyhow` loses `std` (stage 2), which is the root fix.
+Stage 2 (branch `t3/wasm-bundle-size-stage-two`): `hosts/web-shell/build.sh` now builds one
+production bundle per app plus a dev bundle. All 7 e2e suites pass on the release bundles; the
+production suites also assert that the other app, the dev probe and the scene view are absent.
+
+| Bundle (brotli q11, bytes) | wasm raw | wasm gzip | wasm br | JS br | **total br** | budget |
+|---|---:|---:|---:|---:|---:|---:|
+| before: one shared bundle (`main` `83d2f82`) | 756,044 | 286,736 | 232,347 | 7,957 | 240,304 | 245,760 |
+| `pkg/studio` (`app-studio`) | 563,674 | 203,523 | 165,684 | 6,363 | **172,047** (−28.4 %) | 177,152 |
+| `pkg/counter` (`app-counter`) | 268,086 | 107,682 | 90,517 | 6,305 | **96,822** (−59.7 %) | 99,328 |
+| `pkg/dev` (default features: both apps, dev, multi-window, scene-view) | 674,914 | 244,824 | 197,723 | 7,910 | 205,633 (−14.4 %) | 211,968 |
+
+What each step bought on the shared bundle: the dioxus fork plus the removed snip step
+−2.9 KB (240,304 → 237,443); `nve_abi::num`, FxHash, NVP1-only hot reload and talc take the
+dev bundle to 205,633. Production bundles also drop the other app, `dev`, `multi-window` and
+`scene-view`. The counter misses the 87.1 KB research figure by ~10 KB. That figure was measured
+before the SSR/hydration merges, which grew every bundle by ~21 KB; the counter bundle still
+ships `render_counter_ssr_bundle` and `ProgressiveIslandHost`.
+
+The name section of the dev build contains no `core::fmt::float`, `flt2dec`, `dec2flt`, SipHash,
+`RandomState`, dlmalloc or backtrace code. One merged `<[u8]>::starts_with` instance carries a
+`rustc_demangle` name but no demangler code (see docs/UPSTREAM.md). `serde_json` (studio island and
+channel payloads, the counter's JSON props and snapshots) and `anyhow`'s error chain remain; the
+JSON is stage 4.
+
+The snip step is gone. dioxus-core's `anyhow` lost `std` in the fork
+`samuelscheit/dioxus@nve/v0.7.10-wasm-size`, which is the root fix, so nothing has to be trapped.
 
 The upstream bugs and quirks found by all tracks are consolidated in
 [docs/UPSTREAM.md](../../UPSTREAM.md) under *Dioxus*, *WebAssembly size toolchain* and *Browsers*.

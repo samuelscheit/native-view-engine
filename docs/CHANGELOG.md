@@ -6,6 +6,10 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Codegen Hygiene
 
+- **Wasm Bundle Size Stage 2: Per-App Bundles, Dioxus Fork, `nve_abi::num`, FxHash, NVP1-Only Hot Reload** (`t3/wasm-bundle-size-stage-two`)
+  - `hosts/web-shell/build.sh` builds `pkg/studio` (172,047 B br), `pkg/counter` (96,822 B br) and `pkg/dev` (205,633 B br) instead of one 240,304 B bundle, with per-bundle budgets. `index.html` picks the bundle from `?app=`, `?dev`/`?ws=`, `?pair=` or `?bundle=`.
+  - Pinned dioxus to the `samuelscheit/dioxus@nve/v0.7.10-wasm-size` fork (`anyhow` without std, `FxHashSet` subscribers, opt-in subsecond wasm loader) and removed the snip step. Added the fixed-point `nve_abi::num` CSS number codec and `nve_abi::hash` FxHash maps. Hot reload is binary `NVP1` on every host (core ABI hash `0x5BE5D06CC7C01FEF`). Added web-shell features (`app-studio`, `app-counter`, `dev`, `multi-window`, `scene-view`) and the talc allocator, and removed Wizer.
+
 - **Wave 14A — Complete ABI Field-Offset Locks, Zero-JSON Codegen, Modular Splits & `.gitattributes`** (`99c1d99`)
   - Locked every `#[repr(C)]` vtable, struct, union, and enum across `nve-abi` (`layout_asserts.rs`), generated C11/C++20 `NVE_STATIC_ASSERT(offsetof(...))` in `nve_abi.generated.h` / `nve_scene_abi.generated.h`, and `static_assert`s on `NVE_SNAP` (`nve_snapshot.hpp`) and `PairClient` (`nve_pair_client.hpp`).
   - Removed all JSON/`serde_json`/`JSONObject`/`[String: Any]`/`buildMap<String, Any?>` and dead `export_*_json` wrappers from `crates/nve-codegen` (migrated RN, SwiftUI, Compose, Flutter, and Web emitters to zero-JSON `NveBinValue`/`NveDirectEncodable`/direct FFI), split all 13 oversized `nve-abi`/`nve-codegen` files (`<= 586` lines max), fixed `nve-bench` Cargo 1.100 dev-deps, and added root `.gitattributes` (`eol=lf`). Verified: 77/77 Rust tests, 0 Clippy warnings, 10/10 `codegen abi --check`, 2/2 CTest, 42/42 Swift tests.

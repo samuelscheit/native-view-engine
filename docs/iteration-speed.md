@@ -60,6 +60,6 @@ cargo run -p nve-skia-shell -- target/debug/libnve_example_counter.dylib --no-ws
 # Web WASM host unit tests, wasm32 compile check, bundle, and headless Chrome E2E
 cargo test --locked -p nve-backend-web -p nve-web-shell \
   && cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
-./hosts/web-shell/build.sh
+./hosts/web-shell/build.sh            # pkg/{studio,counter,dev}; `--dev` = stable debug, `dev` = one bundle
 node hosts/web-shell/e2e/run_e2e.mjs --no-screenshot
 ```

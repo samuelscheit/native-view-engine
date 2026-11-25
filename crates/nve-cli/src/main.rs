@@ -62,10 +62,11 @@ pub(crate) enum Commands {
         /// WebSocket port for Tier-1/Tier-2 hot-reload clients.
         #[arg(long, default_value_t = 8089)]
         port: u16,
-        /// Rebuild the Web WASM bundle (`hosts/web-shell/build.sh --dev`) on save.
+        /// Rebuild the Web WASM dev bundle (`hosts/web-shell/build.sh --dev dev`) on save;
+        /// open `hosts/web-shell/index.html?dev` to connect.
         #[arg(long, default_value_t = false)]
         web: bool,
-        /// Skip rebuilding the Web WASM bundle (`hosts/web-shell/build.sh --dev`) on save.
+        /// Skip rebuilding the Web WASM dev bundle (`hosts/web-shell/build.sh --dev dev`) on save.
         #[arg(long, default_value_t = false)]
         no_web: bool,
         /// Launch the live cross-platform desktop preview window (`winit` + `softbuffer`) connected to this daemon.
