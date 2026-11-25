@@ -3,11 +3,26 @@
 ## Runnable
 
 - **[`counter`](counter/)** (`nve-example-counter`) — Stateful Dioxus `rsx!` counter built as both `rlib` (headless/CLI/tests) and `cdylib` (`nve_get_interface` native hosts & Tier-2 hot-swap).
+- **[`studio-workspace`](studio-workspace/)** (`nve-studio-workspace`) — Flagship **Aether Workspace** (local-first issue board, `# engineering` / `# design-sync` channels, live layout/frame stress metrics) paired with a docked, toggleable **NVE Studio** meta-workbench (live accent/radius/density self-patching, X-Ray Flexbox HUD, deterministic time-travel scrubber, and Tier-2 `cdylib` state preservation).
 
 ```bash
+# Counter example
 cargo build -p nve-example-counter
 cargo test -p nve-example-counter
-cargo nve dev --example counter
+cargo nve dev --package nve-example-counter --watch examples/counter/src
+
+# Studio Workspace flagship example (single cdylib across every native host)
+cargo build -p nve-studio-workspace
+cargo test -p nve-studio-workspace
+
+# Launch on native macOS AppKit host
+./hosts/macos-shell/build/nve_macos_shell --dylib target/debug/libnve_studio_workspace.dylib
+
+# Launch on native Qt 6 host
+./hosts/qt-shell/build/nve_qt_shell --dylib target/debug/libnve_studio_workspace.dylib --width 960 --height 640
+
+# Launch on Skia Desktop preview (with live hot-reload support)
+cargo run -p nve-backend-skia --features desktop --example preview -- target/debug/libnve_studio_workspace.dylib --no-ws
 ```
 
 ## Flagship Vision

@@ -1550,6 +1550,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-studio-workspace"
+version = "0.1.0"
+dependencies = [
+ "dioxus-core",
+ "dioxus-core-macro",
+ "dioxus-signals",
+ "nve-abi",
+ "nve-backend-headless",
+ "nve-backend-skia",
+ "nve-backend-web",
+ "nve-dioxus",
+ "nve-engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nve-web-shell"
 version = "0.1.0"
 dependencies = [

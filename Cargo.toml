@@ -14,6 +14,7 @@ members = [
     "crates/nve-cli",
     "crates/nve-bench",
     "examples/counter",
+    "examples/studio-workspace",
     "hosts/web-shell",
 ]
 
@@ -34,6 +35,7 @@ nve-backend-headless = { path = "crates/nve-backend-headless" }
 nve-backend-skia = { path = "crates/nve-backend-skia" }
 nve-backend-web = { path = "crates/nve-backend-web" }
 nve-example-counter = { path = "examples/counter" }
+nve-studio-workspace = { path = "examples/studio-workspace" }
 
 dioxus-core = "0.7.10"
 dioxus-signals = "0.7.10"
