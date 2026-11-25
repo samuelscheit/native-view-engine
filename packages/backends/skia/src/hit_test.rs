@@ -22,14 +22,16 @@ fn is_focusable_node(node: &HeadlessNode) -> bool {
 enum HitTargetFilter {
     Interactive,
     Focusable,
+    Interaction,
 }
 
 impl HitTargetFilter {
     #[inline]
-    fn matches(self, node: &HeadlessNode) -> bool {
+    fn matches<L: LayoutEngine>(self, layout_tree: &nve_backend_headless::HeadlessBackend<L>, node: &HeadlessNode) -> bool {
         match self {
             Self::Interactive => node.event_mask != 0,
             Self::Focusable => is_focusable_node(node),
+            Self::Interaction => layout_tree.is_interaction_target(node),
         }
     }
 }
@@ -58,6 +60,21 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             (0.0, 0.0),
             None,
             HitTargetFilter::Focusable,
+            0,
+        )
+    }
+
+    /// Scroll-aware, clip-aware, and z-order-aware interaction hit test for hover/active/cursor
+    /// state (matches interactive nodes, `Pressable`/`TextInput`, disabled nodes, and any node
+    /// declaring `state_rules` or an explicit `cursor`).
+    pub fn hit_test_interaction(&self, x: f32, y: f32) -> Option<NodeId> {
+        self.hit_test_filtered(
+            ROOT_NODE_ID,
+            x,
+            y,
+            (0.0, 0.0),
+            None,
+            HitTargetFilter::Interaction,
             0,
         )
     }
@@ -196,7 +213,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
                 Some(c) if point_in_rect(x, y, c) => Some(c),
                 _ => {
                     // Point is outside clipped region; children cannot be hit.
-                    return if inside_self && filter.matches(node) {
+                    return if inside_self && filter.matches(&self.layout_tree, node) {
                         Some(id)
                     } else {
                         None
@@ -216,7 +233,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             return Some(hit);
         }
 
-        if inside_self && filter.matches(node) {
+        if inside_self && filter.matches(&self.layout_tree, node) {
             Some(id)
         } else {
             None

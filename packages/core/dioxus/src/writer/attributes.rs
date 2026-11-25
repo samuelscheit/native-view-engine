@@ -165,6 +165,8 @@ impl NveMutationWriter {
             || rec.inline_style_override.is_some();
         rec.show_on = rec.explicit_show_on.or(typed.show_on);
         rec.responsive_rules.clone_from(&typed.responsive);
+        rec.cursor = typed.cursor;
+        rec.state_rules.clone_from(&typed.state_rules);
         rec.typed_style = Some(typed);
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
@@ -180,6 +182,8 @@ impl NveMutationWriter {
         let reset_style = prev.has_style || rec.inline_style_override.is_some();
         rec.show_on = rec.explicit_show_on;
         rec.responsive_rules.clear();
+        rec.cursor = None;
+        rec.state_rules.clear();
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
 

@@ -420,6 +420,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             base_title: desc.title,
             modifiers: ModifiersState::empty(),
             ime_allowed: false,
+            last_cursor: nve_backend_skia::CursorKind::Auto,
             last_telemetry: None,
         };
         if let Some(theme) = initial_theme

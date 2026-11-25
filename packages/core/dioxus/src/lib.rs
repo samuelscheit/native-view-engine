@@ -31,10 +31,14 @@ pub use native_view::{
     WebElementProps, WebView, WebViewCommand, WebViewProps, NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC,
     NATIVE_VIEW_KIND_PROP_KEY, NATIVE_VIEW_PROPS_PROP_KEY,
 };
+pub use nve_components::interaction::{
+    resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
+    FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+};
 pub use nve_components::media::{
-    FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
-    ResponsiveStylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH,
-    MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
+    Display, FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow,
+    ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH,
+    MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
 pub use signal_archive::{
     reconcile_signal_entry, signal_slot_id, BinValueSlot, HydrationReport, SignalArchive,
@@ -99,9 +103,12 @@ pub mod prelude {
         BlurEvent, BlurEventData, CustomEvent, CustomEventData, FocusEvent, FocusEventData,
         ScrollEvent, ScrollEventData,
     };
+    pub use nve_components::interaction::{
+        CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+    };
     pub use nve_components::media::{
-        FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
-        ResponsiveStylePatch, TextAlign,
+        Display, FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow,
+        ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign,
     };
     pub use dioxus_core;
     pub use dioxus_core::{Element, VirtualDom};

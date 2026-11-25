@@ -15,6 +15,7 @@ use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
     GpuSwapchain,
 };
+use nve_backend_skia::CursorKind;
 use nve_engine::{RenderBackend, Viewport};
 use nve_interop::{
     SurfacePresentation, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
@@ -24,7 +25,11 @@ use nve_system_env::LocaleSnapshot;
 use softbuffer::{Context, Surface};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::keyboard::ModifiersState;
-use winit::window::{Fullscreen, Theme as WinitTheme, Window, WindowAttributes, WindowLevel};
+use winit::window::{
+    Cursor, Fullscreen, Theme as WinitTheme, Window, WindowAttributes, WindowLevel,
+};
+
+pub use super::text_edit::cursor_kind_to_winit;
 
 use super::session::DesktopSession;
 use super::{DesktopApp, DesktopHostError};
@@ -61,6 +66,7 @@ pub struct SurfaceWindow<A: DesktopApp> {
     pub(crate) base_title: String,
     pub(crate) modifiers: ModifiersState,
     pub(crate) ime_allowed: bool,
+    pub(crate) last_cursor: CursorKind,
     pub(crate) last_telemetry: Option<FrameTelemetry>,
 }
 
@@ -100,6 +106,14 @@ impl<A: DesktopApp> SurfaceWindow<A> {
                 LogicalPosition::new(rect.x as f64, rect.y as f64),
                 LogicalSize::new(rect.width as f64, rect.height as f64),
             );
+        }
+    }
+
+    pub(crate) fn sync_cursor_state(&mut self) {
+        let next = self.session.active_cursor();
+        if self.last_cursor != next {
+            self.last_cursor = next;
+            self.window.set_cursor(Cursor::Icon(cursor_kind_to_winit(next)));
         }
     }
 

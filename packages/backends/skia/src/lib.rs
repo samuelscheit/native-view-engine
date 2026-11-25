@@ -13,6 +13,7 @@ pub mod font;
 pub mod gpu;
 mod hit_test;
 pub mod image_cache;
+mod interaction;
 pub mod raster;
 mod scroll;
 pub mod text;
@@ -68,6 +69,10 @@ pub use image_cache::{
     compute_image_placement, decode_image_uri, decode_png, encode_rgb_png, DecodedImage,
     ImageCache, ImageDecodeError, ImageDrawPlacement,
 };
+pub use nve_components::interaction::{
+    CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+};
+pub use nve_components::style_patch::{Display, StylePatch};
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{
@@ -362,8 +367,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         Some(raw_text_input_value(node).to_owned())
     }
 
-    pub fn set_focused_node(&mut self, node_id: Option<NodeId>) -> bool {
-        let resolved = node_id.filter(|&id| self.layout_tree.node(id).is_some());
+    pub(crate) fn sync_text_focus_without_rebuild(&mut self, resolved: Option<NodeId>) -> bool {
         if self.focus.focused_node == resolved {
             return false;
         }
@@ -376,8 +380,19 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             .map_or(0, |v| v.len());
         self.focus.caret_byte_index = end;
         self.focus.selection_anchor = end;
-        self.rebuild_display_list();
         true
+    }
+
+    pub fn set_focused_node(&mut self, node_id: Option<NodeId>) -> bool {
+        let dirty = self.layout_tree.focus_pointer(node_id);
+        let resolved = self.layout_tree.interaction_tracker().focused();
+        let changed = self.sync_text_focus_without_rebuild(resolved);
+        if changed || !dirty.is_empty() {
+            self.rebuild_display_list();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn caret_byte_index(&self) -> usize {

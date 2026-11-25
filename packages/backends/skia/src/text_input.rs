@@ -1,11 +1,10 @@
 //! `TextInput` display-list emission (placeholder, secure bullet masking, range selection
 //! highlight, vertical caret, IME preedit underline, focus ring) and logical-X cursor hit-testing.
 
-use nve_abi::{ColorRgba, RawPropValue};
+use nve_abi::{ColorRgba, RawPropValue, StyleProps};
 use nve_backend_headless::HeadlessNode;
 use nve_engine::LayoutRect;
 
-use crate::display_list::{extract_font_weight, extract_text_align};
 use crate::text::{CosmicTextEngine, TextAlign};
 use crate::{
     PaintOp, TextFocusState, FOCUS_RING_COLOR, FOCUS_SELECTION_COLOR, IME_PREEDIT_UNDERLINE_COLOR,
@@ -161,20 +160,22 @@ pub(crate) fn compute_text_input_scroll_x(
     (caret_advance - (inner_width - 2.0).max(0.0)).max(0.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_text_input_ops(
     node: &HeadlessNode,
+    style: &StyleProps,
+    font_weight: u16,
+    text_align: TextAlign,
     rect: LayoutRect,
     focus: &TextFocusState,
     text_engine: &CosmicTextEngine,
     ops: &mut Vec<PaintOp>,
 ) {
-    let font_size = if node.style.font_size > 0.0 {
-        node.style.font_size
+    let font_size = if style.font_size > 0.0 {
+        style.font_size
     } else {
         13.0
     };
-    let font_weight = extract_font_weight(node).unwrap_or(400);
-    let text_align = extract_text_align(node).unwrap_or(TextAlign::Left);
     let is_focused = focus.focused_node == Some(node.id);
     let committed = if is_focused {
         focus
@@ -195,8 +196,8 @@ pub(crate) fn emit_text_input_ops(
         None
     };
 
-    let text_color = if node.style.text_color.a > 0 {
-        node.style.text_color
+    let text_color = if style.text_color.a > 0 {
+        style.text_color
     } else {
         ColorRgba::rgb(241, 245, 249)
     };
@@ -212,8 +213,8 @@ pub(crate) fn emit_text_input_ops(
             Some((rendered, text_color))
         } else {
             placeholder.map(|ph| {
-                let base = if node.style.text_color.a > 0 {
-                    node.style.text_color
+                let base = if style.text_color.a > 0 {
+                    style.text_color
                 } else {
                     ColorRgba::rgb(148, 163, 184)
                 };
@@ -291,7 +292,7 @@ pub(crate) fn emit_text_input_ops(
 
     ops.push(PaintOp::PushClip {
         rect,
-        radius: node.style.border_radius.max(0.0),
+        radius: style.border_radius.max(0.0),
     });
 
     // Range selection highlight behind text.
@@ -346,8 +347,8 @@ pub(crate) fn emit_text_input_ops(
             color: text_color,
         });
     } else if let Some(ph) = placeholder {
-        let base = if node.style.text_color.a > 0 {
-            node.style.text_color
+        let base = if style.text_color.a > 0 {
+            style.text_color
         } else {
             ColorRgba::rgb(148, 163, 184)
         };
@@ -387,7 +388,7 @@ pub(crate) fn emit_text_input_ops(
         text_rect.x,
         (text_rect.x + text_rect.width - caret_w).max(text_rect.x),
     );
-    let caret_color = if text_color == node.style.background {
+    let caret_color = if text_color == style.background {
         FOCUS_RING_COLOR
     } else {
         text_color
@@ -407,7 +408,7 @@ pub(crate) fn emit_text_input_ops(
 
     ops.push(PaintOp::StrokeRoundedRect {
         rect,
-        radius: node.style.border_radius.max(0.0),
+        radius: style.border_radius.max(0.0),
         width: 2.0,
         color: FOCUS_RING_COLOR,
     });

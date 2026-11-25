@@ -1,18 +1,18 @@
 //! Option 5 Hybrid CSS stylesheet cache: compact declaration emitters, structural vs volatile
-//! lane resolution, bounded `MAX_DYNAMIC_RULES`, and batched `wasm32` `CSSStyleSheet` flushing.
+//! lane resolution, bounded `MAX_DYNAMIC_RULES`, and 3-layer cascade-ordered flushing
+//! (base structural -> `@media` -> 5-tier interactive pseudo-state rules).
 
 use nve_abi::hash::{HashMap, HashSet};
 use nve_abi::{ComponentKind, EventMask};
 
 pub use crate::css::{
-    write_compact_layout_into, write_compact_style_into, write_volatile_inline_into,
+    write_compact_cursor_into, write_compact_layout_into, write_compact_style_into,
+    write_volatile_inline_into,
 };
 use crate::css::MirrorElement;
 use crate::media_css::{compile_node_media_rules, CompiledMediaRule};
+use crate::state_css::{compile_node_state_rules, format_cursor_rule, CompiledStateRule};
 use crate::style_hash::{format_structural_class, hash_structural_style, is_inheriting_leaf_text};
-
-#[cfg(target_arch = "wasm32")]
-use crate::css::NVE_BASE_RESET_CSS;
 
 /// Hard upper bound on dynamic structural CSS rules in [`StyleSheetCache`].
 pub const MAX_DYNAMIC_RULES: usize = 4096;
@@ -21,17 +21,22 @@ pub const MAX_DYNAMIC_RULES: usize = 4096;
 /// `CSSStyleSheet` via `replace_sync` instead of per-rule `insert_rule`.
 pub const INCREMENTAL_RULE_BATCH_THRESHOLD: usize = 16;
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) const STATE_TIER_COUNT: usize = 5;
+
 /// Resolved Option 5 Hybrid presentation for a single DOM element.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolvedNodeStyle {
     pub class_name: String,
     pub inline_style: String,
     pub structural_rule: Option<(String, String)>,
+    pub cursor_rule: Option<(&'static str, &'static str)>,
     pub media_rules: Vec<CompiledMediaRule>,
+    pub state_rules: Vec<CompiledStateRule>,
 }
 
-/// Computes the deterministic class list, optional structural rule, responsive `@media` rules,
-/// and optional inline lane declarations for `node`.
+/// Computes the deterministic class list, optional structural rule, base cursor rule, responsive
+/// `@media` rules, interactive pseudo-state rules, and optional inline lane declarations for `node`.
 pub fn resolve_node_style(
     node: &MirrorElement,
     parent: Option<&MirrorElement>,
@@ -39,7 +44,7 @@ pub fn resolve_node_style(
     existing_rule_check: impl Fn(&str) -> bool,
 ) -> ResolvedNodeStyle {
     let leaf_text = is_inheriting_leaf_text(parent, node);
-    let mut class_name = String::with_capacity(36);
+    let mut class_name = String::with_capacity(48);
     class_name.push_str("nve");
 
     match node.kind {
@@ -58,11 +63,17 @@ pub fn resolve_node_style(
         compile_node_media_rules(node.show_on, &node.responsive_rules, &mut media_rules);
     }
 
+    let mut state_rules = Vec::new();
+    if !node.state_rules.is_empty() {
+        compile_node_state_rules(&node.state_rules, &mut state_rules);
+    }
+
     let mut inline_style = String::new();
 
     if node.is_consecutive_frame_volatile() {
         write_compact_layout_into(&node.layout, false, &mut inline_style);
         write_compact_style_into(&node.style, &node.raw_style, leaf_text, false, &mut inline_style);
+        write_compact_cursor_into(node.cursor, &mut inline_style);
         if !node.patch_css.is_empty() {
             inline_style.push_str(&node.patch_css);
         }
@@ -70,11 +81,17 @@ pub fn resolve_node_style(
             class_name.push(' ');
             class_name.push_str(&rule.class_name);
         }
+        for rule in &state_rules {
+            class_name.push(' ');
+            class_name.push_str(&rule.class_name);
+        }
         return ResolvedNodeStyle {
             class_name,
             inline_style,
             structural_rule: None,
+            cursor_rule: None,
             media_rules,
+            state_rules,
         };
     }
 
@@ -103,7 +120,22 @@ pub fn resolve_node_style(
         }
     };
 
+    let cursor_rule = node.cursor.and_then(format_cursor_rule).and_then(|(cls, decl)| {
+        if existing_rule_check(cls) || allow_new_rule {
+            class_name.push(' ');
+            class_name.push_str(cls);
+            Some((cls, decl))
+        } else {
+            inline_style.push_str(decl);
+            None
+        }
+    });
+
     for rule in &media_rules {
+        class_name.push(' ');
+        class_name.push_str(&rule.class_name);
+    }
+    for rule in &state_rules {
         class_name.push(' ');
         class_name.push_str(&rule.class_name);
     }
@@ -114,7 +146,9 @@ pub fn resolve_node_style(
         class_name,
         inline_style,
         structural_rule,
+        cursor_rule,
         media_rules,
+        state_rules,
     }
 }
 
@@ -123,6 +157,7 @@ pub fn resolve_node_style(
 pub enum CachedRule {
     Structural(String),
     Media { condition: String, decls: String },
+    State(CompiledStateRule),
 }
 
 impl CachedRule {
@@ -145,65 +180,47 @@ impl CachedRule {
                 out.push_str(decls);
                 out.push_str("}}");
             }
+            Self::State(rule) => rule.write_css_rule_into(out),
         }
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
-export function nve_insert_adopted_stylesheet(doc, sheet, before_sheet) {
-  try {
-    if (!doc || !('adoptedStyleSheets' in doc)) return false;
-    const cur = Array.from(doc.adoptedStyleSheets);
-    const idx = before_sheet ? cur.indexOf(before_sheet) : -1;
-    if (idx >= 0) {
-      cur.splice(idx, 0, sheet);
-    } else {
-      cur.push(sheet);
-    }
-    doc.adoptedStyleSheets = cur;
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-")]
-extern "C" {
-    fn nve_insert_adopted_stylesheet(
-        doc: &web_sys::Document,
-        sheet: &web_sys::CssStyleSheet,
-        before_sheet: Option<&web_sys::CssStyleSheet>,
-    ) -> bool;
-}
-
-/// Bounded content-addressed structural & `@media` CSS cache with cascade-ordered `wasm32` flushing.
+/// Bounded content-addressed structural, `@media`, and interactive pseudo-state CSS cache with
+/// cascade-ordered flushing (`structural -> @media -> Hover < Focus < FocusVisible < Active < Disabled`).
 #[derive(Default)]
 pub struct StyleSheetCache {
     rules: HashMap<String, String>,
     media_rules: HashMap<String, CompiledMediaRule>,
-    inserted: HashSet<String>,
-    pending: Vec<(String, CachedRule)>,
-    base_mounted: bool,
+    state_rules: HashMap<String, CompiledStateRule>,
+    pub(crate) inserted: HashSet<String>,
+    pub(crate) pending: Vec<(String, CachedRule)>,
+    pub(crate) base_mounted: bool,
     #[cfg(not(target_arch = "wasm32"))]
     flushed_css_rules: Vec<String>,
     #[cfg(target_arch = "wasm32")]
-    initial_flushed: bool,
+    pub(crate) initial_flushed: bool,
     #[cfg(target_arch = "wasm32")]
-    use_adopted: Option<bool>,
+    pub(crate) use_adopted: Option<bool>,
     #[cfg(target_arch = "wasm32")]
-    base_sheet: Option<web_sys::CssStyleSheet>,
+    pub(crate) base_sheet: Option<web_sys::CssStyleSheet>,
     #[cfg(target_arch = "wasm32")]
-    dynamic_sheets: Vec<web_sys::CssStyleSheet>,
+    pub(crate) dynamic_sheets: Vec<web_sys::CssStyleSheet>,
     #[cfg(target_arch = "wasm32")]
-    dynamic_sheet_last_len: u32,
+    pub(crate) dynamic_sheet_last_len: u32,
     #[cfg(target_arch = "wasm32")]
-    media_sheets: Vec<web_sys::CssStyleSheet>,
+    pub(crate) media_sheets: Vec<web_sys::CssStyleSheet>,
     #[cfg(target_arch = "wasm32")]
-    media_sheet_last_len: u32,
+    pub(crate) media_sheet_last_len: u32,
     #[cfg(target_arch = "wasm32")]
-    fallback_style_el: Option<web_sys::Element>,
+    pub(crate) state_sheets: [Vec<web_sys::CssStyleSheet>; STATE_TIER_COUNT],
     #[cfg(target_arch = "wasm32")]
-    fallback_media_style_el: Option<web_sys::Element>,
+    pub(crate) state_sheet_last_lens: [u32; STATE_TIER_COUNT],
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fallback_style_el: Option<web_sys::Element>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fallback_media_style_el: Option<web_sys::Element>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fallback_state_style_els: [Option<web_sys::Element>; STATE_TIER_COUNT],
 }
 
 impl StyleSheetCache {
@@ -221,6 +238,7 @@ impl StyleSheetCache {
         self.inserted.contains(class_name)
             || self.rules.contains_key(class_name)
             || self.media_rules.contains_key(class_name)
+            || self.state_rules.contains_key(class_name)
     }
 
     #[inline]
@@ -277,6 +295,22 @@ impl StyleSheetCache {
         true
     }
 
+    /// Queues a content-addressed interactive pseudo-state rule (`nve-s-XXXXXXXX`) unless already
+    /// cached or seeded.
+    pub fn ensure_state_rule(&mut self, rule: CompiledStateRule) -> bool {
+        if self.contains_rule(&rule.class_name) {
+            return true;
+        }
+        if !self.can_insert_new() {
+            return false;
+        }
+        let key = rule.class_name.clone();
+        let cached = CachedRule::State(rule.clone());
+        self.state_rules.insert(key.clone(), rule);
+        self.pending.push((key, cached));
+        true
+    }
+
     #[inline]
     pub fn pending_count(&self) -> usize {
         self.pending.len()
@@ -292,8 +326,13 @@ impl StyleSheetCache {
         &self.media_rules
     }
 
-    /// Returns all CSS rules flushed so far in exact cascade order (structural first, `@media`
-    /// second) on native targets for deterministic testing.
+    #[inline]
+    pub fn state_rules(&self) -> &HashMap<String, CompiledStateRule> {
+        &self.state_rules
+    }
+
+    /// Returns all CSS rules flushed so far in exact cascade order (structural -> `@media` ->
+    /// state rules ordered `Hover < Focus < FocusVisible < Active < Disabled`) on native targets.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn flushed_css_rules(&self) -> &[String] {
         &self.flushed_css_rules
@@ -308,202 +347,24 @@ impl StyleSheetCache {
         let batch = std::mem::take(&mut self.pending);
         let mut structural = Vec::new();
         let mut media = Vec::new();
+        let mut state: Vec<(String, CompiledStateRule)> = Vec::new();
         for (cls, rule) in batch {
             self.inserted.insert(cls.clone());
             match rule {
                 CachedRule::Structural(_) => structural.push((cls, rule)),
                 CachedRule::Media { .. } => media.push((cls, rule)),
+                CachedRule::State(sr) => state.push((cls, sr)),
             }
         }
-        // Emit structural rules strictly before `@media` rules so cascade order is preserved.
-        for (cls, rule) in structural.into_iter().chain(media) {
+        state.sort_by_key(|(_, sr)| sr.state.cascade_order());
+        for (cls, rule) in structural
+            .into_iter()
+            .chain(media)
+            .chain(state.into_iter().map(|(cls, sr)| (cls, CachedRule::State(sr))))
+        {
             let mut css = String::with_capacity(64);
             rule.write_css_into(&cls, &mut css);
             self.flushed_css_rules.push(css);
         }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn flush_to_dom(&mut self) {
-        let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-            for (cls, _) in self.pending.drain(..) {
-                self.inserted.insert(cls);
-            }
-            return;
-        };
-
-        if !self.base_mounted {
-            self.mount_base_reset(&doc);
-            self.base_mounted = true;
-        }
-
-        if self.pending.is_empty() {
-            return;
-        }
-
-        let batch = std::mem::take(&mut self.pending);
-        let mut structural_batch = Vec::new();
-        let mut media_batch = Vec::new();
-        for (cls, rule) in batch {
-            self.inserted.insert(cls.clone());
-            match rule {
-                CachedRule::Structural(_) => structural_batch.push((cls, rule)),
-                CachedRule::Media { .. } => media_batch.push((cls, rule)),
-            }
-        }
-
-        // Flush ALL structural rules BEFORE ALL `@media` rules into separate cascade layers.
-        if !structural_batch.is_empty() {
-            self.flush_layer(&doc, &structural_batch, false);
-        }
-        if !media_batch.is_empty() {
-            self.flush_layer(&doc, &media_batch, true);
-        }
-        self.initial_flushed = true;
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn flush_layer(&mut self, doc: &web_sys::Document, batch: &[(String, CachedRule)], is_media: bool) {
-        let use_adopted = self.use_adopted.unwrap_or(true);
-        if use_adopted {
-            let sheets_empty = if is_media {
-                self.media_sheets.is_empty()
-            } else {
-                self.dynamic_sheets.is_empty()
-            };
-            if !self.initial_flushed
-                || batch.len() > INCREMENTAL_RULE_BATCH_THRESHOLD
-                || sheets_empty
-            {
-                let mut text = String::with_capacity(batch.len() * 64);
-                for (cls, rule) in batch {
-                    rule.write_css_into(cls, &mut text);
-                    text.push('\n');
-                }
-                let before = if is_media { None } else { self.media_sheets.first() };
-                if let Ok(sheet) = web_sys::CssStyleSheet::new()
-                    && sheet.replace_sync(&text).is_ok()
-                    && nve_insert_adopted_stylesheet(doc, &sheet, before)
-                {
-                    if is_media {
-                        self.media_sheets.push(sheet);
-                        self.media_sheet_last_len = batch.len() as u32;
-                    } else {
-                        self.dynamic_sheets.push(sheet);
-                        self.dynamic_sheet_last_len = batch.len() as u32;
-                    }
-                    self.use_adopted = Some(true);
-                    return;
-                }
-                self.use_adopted = Some(false);
-            } else {
-                let (sheet_opt, last_len) = if is_media {
-                    (self.media_sheets.last(), &mut self.media_sheet_last_len)
-                } else {
-                    (self.dynamic_sheets.last(), &mut self.dynamic_sheet_last_len)
-                };
-                if let Some(sheet) = sheet_opt {
-                    let mut all_ok = true;
-                    let mut rule_buf = String::with_capacity(96);
-                    for (cls, rule) in batch {
-                        rule_buf.clear();
-                        rule.write_css_into(cls, &mut rule_buf);
-                        if sheet.insert_rule_with_index(&rule_buf, *last_len).is_err() {
-                            all_ok = false;
-                            break;
-                        }
-                        *last_len = last_len.saturating_add(1);
-                    }
-                    if all_ok {
-                        return;
-                    }
-                }
-            }
-        }
-
-        self.append_to_fallback_style(doc, batch, is_media);
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn style_parent(doc: &web_sys::Document) -> Option<web_sys::Element> {
-        doc.query_selector("head")
-            .ok()
-            .flatten()
-            .or_else(|| doc.document_element())
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn mount_base_reset(&mut self, doc: &web_sys::Document) {
-        let before = self.dynamic_sheets.first().or_else(|| self.media_sheets.first());
-        if let Ok(sheet) = web_sys::CssStyleSheet::new()
-            && sheet.replace_sync(NVE_BASE_RESET_CSS).is_ok()
-            && nve_insert_adopted_stylesheet(doc, &sheet, before)
-        {
-            self.base_sheet = Some(sheet);
-            self.use_adopted = Some(true);
-            return;
-        }
-        self.use_adopted = Some(false);
-        if doc.get_element_by_id("nve-base-styles").is_none()
-            && let Ok(style_el) = doc.create_element("style")
-        {
-            style_el.set_id("nve-base-styles");
-            let _ = style_el.set_attribute("data-nve-base", "");
-            style_el.set_text_content(Some(NVE_BASE_RESET_CSS));
-            if let Some(parent) = Self::style_parent(doc) {
-                let _ = parent.append_child(&style_el);
-            }
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn append_to_fallback_style(
-        &mut self,
-        doc: &web_sys::Document,
-        batch: &[(String, CachedRule)],
-        is_media: bool,
-    ) {
-        let id = if is_media { "nve-media-styles" } else { "nve-styles" };
-        let existing_cached = if is_media {
-            self.fallback_media_style_el.clone()
-        } else {
-            self.fallback_style_el.clone()
-        };
-        let style_el = match existing_cached {
-            Some(el) => el,
-            None => {
-                let el = match doc.get_element_by_id(id) {
-                    Some(el) => el,
-                    None => {
-                        let Ok(created) = doc.create_element("style") else {
-                            return;
-                        };
-                        created.set_id(id);
-                        if let Some(parent) = Self::style_parent(doc) {
-                            if !is_media
-                                && let Some(media_el) = self.fallback_media_style_el.as_ref()
-                            {
-                                let _ = parent.insert_before(&created, Some(media_el));
-                            } else {
-                                let _ = parent.append_child(&created);
-                            }
-                        }
-                        created
-                    }
-                };
-                if is_media {
-                    self.fallback_media_style_el = Some(el.clone());
-                } else {
-                    self.fallback_style_el = Some(el.clone());
-                }
-                el
-            }
-        };
-        let mut css = style_el.text_content().unwrap_or_default();
-        for (cls, rule) in batch {
-            rule.write_css_into(cls, &mut css);
-            css.push('\n');
-        }
-        style_el.set_text_content(Some(&css));
     }
 }

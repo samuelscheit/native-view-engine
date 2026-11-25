@@ -9,6 +9,7 @@ pub mod input;
 pub mod multi_window;
 pub mod pair_client;
 pub mod session;
+pub mod text_edit;
 mod window_commands;
 pub mod window_host;
 

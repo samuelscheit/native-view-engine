@@ -4,8 +4,11 @@
 
 pub mod canvas_ir;
 pub mod client_hints;
+pub mod interaction;
 pub mod media;
 pub mod reconcile;
+pub mod style_patch;
+mod tracker;
 
 pub use canvas_ir::{
     CanvasOp, DrawListBuilder, DrawListDecoder, DrawListError, DrawListHeader, ImageResizeMode,
@@ -15,15 +18,20 @@ pub use canvas_ir::{
 pub use client_hints::{
     ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
+pub use interaction::{
+    resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
+    FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+};
 pub use media::{
-    FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
-    ResponsiveStylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH,
-    MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
+    MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, ResponsiveStylePatch,
+    MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION,
+    MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
 pub use reconcile::{
     reconcile_three_way, ConflictPolicy, DivergenceKind, LogicalClock, ReconcileBatch,
     ReconcileDecision, StateReconciler, ThreeWayEntry,
 };
+pub use style_patch::{Display, FlexWrap, Overflow, StylePatch, TextAlign};
 
 use nve_abi::num::parse_f32;
 use nve_abi::{

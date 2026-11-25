@@ -11,6 +11,7 @@ use nve_abi::{
     FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
 };
 use nve_components::canvas_ir::CanvasOp;
+use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
 
 /// Static `.nve` base reset stylesheet emitted once on mount or SSR.
@@ -385,6 +386,8 @@ pub struct MirrorElement {
     pub draw_op_count: usize,
     pub show_on: Option<MediaQuery>,
     pub responsive_rules: Vec<ResponsiveRule>,
+    pub cursor: Option<CursorKind>,
+    pub state_rules: Vec<StateStyleRule>,
 }
 
 impl MirrorElement {
@@ -417,6 +420,8 @@ impl MirrorElement {
             draw_op_count: 0,
             show_on: None,
             responsive_rules: Vec::new(),
+            cursor: None,
+            state_rules: Vec::new(),
         }
     }
 
@@ -446,6 +451,7 @@ impl MirrorElement {
         out.push_str(kind_default_css(self.kind, self.event_mask));
         layout_to_css_into(&self.layout, out);
         style_to_css_into(&self.style, out);
+        write_compact_cursor_into(self.cursor, out);
         self.raw_style.write_compact_into(false, out);
         out.push_str(&self.patch_css);
     }
@@ -570,6 +576,18 @@ pub fn write_compact_style_into(
         out.push(';');
     }
     raw.write_compact_into(leaf_text, out);
+}
+
+/// Emits `cursor:<kw>;` when an explicit non-default (`!= CursorKind::Auto`) cursor is set.
+#[inline]
+pub fn write_compact_cursor_into(cursor: Option<CursorKind>, out: &mut String) {
+    if let Some(c) = cursor
+        && c != CursorKind::Auto
+    {
+        out.push_str("cursor:");
+        out.push_str(c.to_css_keyword());
+        out.push(';');
+    }
 }
 
 /// Emits ONLY volatile dimensions, non-discrete opacity, and Tier-1 `patch_css` into `out`.

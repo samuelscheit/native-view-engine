@@ -262,8 +262,14 @@ impl WebBackend {
             if let Some((cls, decls)) = resolved.structural_rule {
                 let _ = self.stylesheet.ensure_rule(cls, decls);
             }
+            if let Some((cls, decls)) = resolved.cursor_rule {
+                let _ = self.stylesheet.ensure_rule(cls.to_owned(), decls.to_owned());
+            }
             for media_rule in resolved.media_rules {
                 let _ = self.stylesheet.ensure_media_rule(media_rule);
+            }
+            for state_rule in resolved.state_rules {
+                let _ = self.stylesheet.ensure_state_rule(state_rule);
             }
             #[cfg(any(
                 feature = "nv-blur",
