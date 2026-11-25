@@ -42,6 +42,7 @@ pub(super) fn rust_owned_type(ty: &HybridType) -> String {
                 rust_owned_type(inner)
             }
         ),
+        HybridType::FixedArray { elem, len } => format!("[{}; {len}]", rust_owned_type(elem)),
     }
 }
 
@@ -176,6 +177,7 @@ pub(super) fn emit_bin_write_expr(out: &mut String, indent: &str, buf: &str, exp
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {
             writeln!(out, "{indent}nve_bin_codec::write_null({buf});").unwrap();
         }
@@ -215,6 +217,7 @@ pub(super) fn bin_view_decode_expr(var: &str, ty: &HybridType) -> String {
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => "()".to_string(),
     }
 }
@@ -255,6 +258,7 @@ pub(super) fn value_ref_decode_expr(var: &str, ty: &HybridType) -> String {
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => "()".to_string(),
     }
 }

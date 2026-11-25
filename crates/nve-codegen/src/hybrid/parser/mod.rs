@@ -324,7 +324,8 @@ fn rewrite_named_type(
         HybridType::Optional(inner)
         | HybridType::Vec(inner)
         | HybridType::ConstPtr(inner)
-        | HybridType::MutPtr(inner) => {
+        | HybridType::MutPtr(inner)
+        | HybridType::FixedArray { elem: inner, .. } => {
             rewrite_named_type(inner, enum_names, alias_names);
         }
         HybridType::Result { ok, err } => {

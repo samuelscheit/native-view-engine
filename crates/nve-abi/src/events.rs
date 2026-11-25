@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::NativeEventKind;
 use crate::{DecodeError, NodeId, SurfaceId};
 
 /// Event subscription bitflags encoded in `Command::SetEventMask`.
@@ -15,35 +16,6 @@ impl EventMask {
     pub const BLUR: u64 = 1 << 5;
     pub const LAYOUT: u64 = 1 << 6;
     pub const CUSTOM: u64 = 1 << 7;
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NativeEventKind {
-    Press = 1,
-    LongPress = 2,
-    Scroll = 3,
-    TextChange = 4,
-    Focus = 5,
-    Blur = 6,
-    Layout = 7,
-    Custom = 8,
-}
-
-impl NativeEventKind {
-    fn from_u8(v: u8) -> Result<Self, DecodeError> {
-        match v {
-            1 => Ok(Self::Press),
-            2 => Ok(Self::LongPress),
-            3 => Ok(Self::Scroll),
-            4 => Ok(Self::TextChange),
-            5 => Ok(Self::Focus),
-            6 => Ok(Self::Blur),
-            7 => Ok(Self::Layout),
-            8 => Ok(Self::Custom),
-            other => Err(DecodeError::InvalidEnum("NativeEventKind", other as u32)),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

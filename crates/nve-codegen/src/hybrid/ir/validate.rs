@@ -405,6 +405,14 @@ fn validate_type(
         HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
             validate_type(inner, true, enum_map, struct_map, alias_names, ctx)
         }
+        HybridType::FixedArray { elem, len } => {
+            if *len == 0 {
+                return Err(CodegenError::validation(format!(
+                    "{ctx}: fixed-size array length must be > 0"
+                )));
+            }
+            validate_type(elem, false, enum_map, struct_map, alias_names, ctx)
+        }
         HybridType::Handle(name) => {
             if !alias_names.contains(name.as_str()) {
                 return Err(CodegenError::validation(format!(
@@ -562,7 +570,9 @@ fn detect_recursive_value_structs(
     {
         match ty {
             HybridType::Struct(name) => f(name.as_str()),
-            HybridType::Optional(inner) => collect_direct_struct_edges(inner, f),
+            HybridType::Optional(inner) | HybridType::FixedArray { elem: inner, .. } => {
+                collect_direct_struct_edges(inner, f)
+            }
             // `Vec<T>` introduces heap indirection and breaks direct value-size cycles.
             _ => Ok(()),
         }

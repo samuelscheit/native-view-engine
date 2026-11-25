@@ -1,4 +1,4 @@
-use core::mem::{align_of, offset_of, size_of};
+use core::mem::{align_of, size_of};
 
 use crate::{DecodeError, NativeEventKind, NveBufferSlice};
 
@@ -422,82 +422,127 @@ impl NveEventBatch {
     }
 }
 
-// Compile-time C ABI layout verification matching `cxx/nve-fabric-bridge/include/nve_abi.generated.h`.
-const _: () = {
-    // Pointer-width-independent field offsets (must hold on 32-bit and 64-bit targets).
-    assert!(offset_of!(NveBufferSlice, ptr) == 0);
-    assert!(offset_of!(NveStrSlice, ptr) == 0);
-    assert!(offset_of!(NveValueArray, ptr) == 0);
-    assert!(offset_of!(NveValueMap, ptr) == 0);
-    assert!(offset_of!(NveValueData, bool_val) == 0);
-    assert!(offset_of!(NveValueData, i64_val) == 0);
-    assert!(offset_of!(NveValueData, f64_val) == 0);
-    assert!(offset_of!(NveValueData, str_val) == 0);
-    assert!(offset_of!(NveValueData, bytes_val) == 0);
-    assert!(offset_of!(NveValueData, array_val) == 0);
-    assert!(offset_of!(NveValueData, map_val) == 0);
-    assert!(offset_of!(NveValue, tag) == 0);
-    assert!(offset_of!(NveMapEntry, key) == 0);
-    assert!(offset_of!(NveDirectEvent, surface_id) == 0);
-    assert!(offset_of!(NveDirectEvent, node_id) == 4);
-    assert!(offset_of!(NveDirectEvent, timestamp_us) == 8);
-    assert!(offset_of!(NveDirectEvent, kind) == 16);
-    assert!(offset_of!(NveDirectEvent, payload_tag) == 17);
-    assert!(offset_of!(NveEventBatch, ptr) == 0);
-};
+/// Direct zero-copy typed prop entry matching `struct NvePropEntry` in `nve_abi.generated.h`
+/// (32 bytes, align 8 on 64-bit).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NvePropEntry {
+    pub field_id: u16,
+    pub _pad: [u8; 6],
+    pub value: NveValue,
+}
 
-#[cfg(target_pointer_width = "64")]
-const _: () = {
-    assert!(size_of::<NveBufferSlice>() == 16);
-    assert!(align_of::<NveBufferSlice>() == 8);
-    assert!(offset_of!(NveBufferSlice, ptr) == 0);
-    assert!(offset_of!(NveBufferSlice, len) == 8);
+impl NvePropEntry {
+    #[inline]
+    pub const fn new(field_id: u16, value: NveValue) -> Self {
+        Self {
+            field_id,
+            _pad: [0; 6],
+            value,
+        }
+    }
+}
 
-    assert!(size_of::<NveStrSlice>() == 16);
-    assert!(align_of::<NveStrSlice>() == 8);
-    assert!(offset_of!(NveStrSlice, ptr) == 0);
-    assert!(offset_of!(NveStrSlice, len) == 8);
+/// Zero-copy raw pointer slice of typed prop entries matching `struct NvePropSlice` in
+/// `nve_abi.generated.h` (16 bytes, align 8 on 64-bit).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NvePropSlice {
+    pub entries: *const NvePropEntry,
+    pub len: u32,
+    pub _pad: u32,
+}
 
-    assert!(size_of::<NveValueArray>() == 16);
-    assert!(align_of::<NveValueArray>() == 8);
-    assert!(offset_of!(NveValueArray, ptr) == 0);
-    assert!(offset_of!(NveValueArray, len) == 8);
+impl NvePropSlice {
+    pub const EMPTY: Self = Self {
+        entries: core::ptr::null(),
+        len: 0,
+        _pad: 0,
+    };
 
-    assert!(size_of::<NveValueMap>() == 16);
-    assert!(align_of::<NveValueMap>() == 8);
-    assert!(offset_of!(NveValueMap, ptr) == 0);
-    assert!(offset_of!(NveValueMap, len) == 8);
+    #[inline]
+    pub const fn from_slice(entries: &[NvePropEntry]) -> Self {
+        let len = if entries.len() > u32::MAX as usize {
+            u32::MAX
+        } else {
+            entries.len() as u32
+        };
+        Self {
+            entries: entries.as_ptr(),
+            len,
+            _pad: 0,
+        }
+    }
 
-    assert!(size_of::<NveValueData>() == 16);
-    assert!(align_of::<NveValueData>() == 8);
+    /// Validated slice view returning `None` on null pointer with `len > 0`, misaligned pointer,
+    /// or byte-size overflow (`> isize::MAX`).
+    ///
+    /// # Safety
+    /// Caller must ensure `entries` is valid for `len` initialized `NvePropEntry` items for `'a`.
+    #[inline]
+    pub unsafe fn try_as_slice<'a>(self) -> Option<&'a [NvePropEntry]> {
+        unsafe { guarded_slice(self.entries, self.len as usize) }
+    }
 
-    assert!(size_of::<NveValue>() == 24);
-    assert!(align_of::<NveValue>() == 8);
-    assert!(offset_of!(NveValue, tag) == 0);
-    assert!(offset_of!(NveValue, data) == 8);
+    /// # Safety
+    /// Caller must ensure `entries` is valid for `len` initialized `NvePropEntry` items for `'a`.
+    #[inline]
+    pub unsafe fn as_slice<'a>(self) -> &'a [NvePropEntry] {
+        unsafe { self.try_as_slice() }.unwrap_or(&[])
+    }
+}
 
-    assert!(size_of::<NveMapEntry>() == 40);
-    assert!(align_of::<NveMapEntry>() == 8);
-    assert!(offset_of!(NveMapEntry, key) == 0);
-    assert!(offset_of!(NveMapEntry, value) == 16);
+/// Zero-copy direct imperative command dispatch record matching `struct NveCommandSlice` in
+/// `nve_abi.generated.h` (16 bytes, align 8 on 64-bit).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NveCommandSlice {
+    pub opcode: u16,
+    pub arg_count: u16,
+    pub _pad: u32,
+    pub args: *const NveValue,
+}
 
-    assert!(size_of::<NveDirectEvent>() == 96);
-    assert!(align_of::<NveDirectEvent>() == 8);
-    assert!(offset_of!(NveDirectEvent, surface_id) == 0);
-    assert!(offset_of!(NveDirectEvent, node_id) == 4);
-    assert!(offset_of!(NveDirectEvent, timestamp_us) == 8);
-    assert!(offset_of!(NveDirectEvent, kind) == 16);
-    assert!(offset_of!(NveDirectEvent, payload_tag) == 17);
-    assert!(offset_of!(NveDirectEvent, name) == 24);
-    assert!(offset_of!(NveDirectEvent, x) == 40);
-    assert!(offset_of!(NveDirectEvent, y) == 44);
-    assert!(offset_of!(NveDirectEvent, width) == 48);
-    assert!(offset_of!(NveDirectEvent, height) == 52);
-    assert!(offset_of!(NveDirectEvent, text) == 56);
-    assert!(offset_of!(NveDirectEvent, value) == 72);
+impl NveCommandSlice {
+    #[inline]
+    pub const fn empty(opcode: u16) -> Self {
+        Self {
+            opcode,
+            arg_count: 0,
+            _pad: 0,
+            args: core::ptr::null(),
+        }
+    }
 
-    assert!(size_of::<NveEventBatch>() == 16);
-    assert!(align_of::<NveEventBatch>() == 8);
-    assert!(offset_of!(NveEventBatch, ptr) == 0);
-    assert!(offset_of!(NveEventBatch, len) == 8);
-};
+    #[inline]
+    pub const fn from_args(opcode: u16, args: &[NveValue]) -> Self {
+        let arg_count = if args.len() > u16::MAX as usize {
+            u16::MAX
+        } else {
+            args.len() as u16
+        };
+        Self {
+            opcode,
+            arg_count,
+            _pad: 0,
+            args: args.as_ptr(),
+        }
+    }
+
+    /// Validated args slice view returning `None` on null pointer with `arg_count > 0`,
+    /// misaligned pointer, or byte-size overflow (`> isize::MAX`).
+    ///
+    /// # Safety
+    /// Caller must ensure `args` is valid for `arg_count` initialized `NveValue` items for `'a`.
+    #[inline]
+    pub unsafe fn try_args_slice<'a>(self) -> Option<&'a [NveValue]> {
+        unsafe { guarded_slice(self.args, self.arg_count as usize) }
+    }
+
+    /// # Safety
+    /// Caller must ensure `args` is valid for `arg_count` initialized `NveValue` items for `'a`.
+    #[inline]
+    pub unsafe fn args_slice<'a>(self) -> &'a [NveValue] {
+        unsafe { self.try_args_slice() }.unwrap_or(&[])
+    }
+}

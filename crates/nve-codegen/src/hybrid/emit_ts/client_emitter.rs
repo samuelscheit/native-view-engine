@@ -319,7 +319,9 @@ fn ts_type(ty: &HybridType) -> String {
         HybridType::String => "string".to_string(),
         HybridType::Bytes => "Uint8Array".to_string(),
         HybridType::Optional(inner) => format!("{} | null", ts_type(inner)),
-        HybridType::Vec(inner) => format!("Array<{}>", ts_type(inner)),
+        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
+            format!("Array<{}>", ts_type(inner))
+        }
         HybridType::Result { ok, .. } => ts_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
         HybridType::Value => "NveHybridDynamicValue".to_string(),
@@ -359,6 +361,7 @@ fn emit_ts_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &H
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }
@@ -409,6 +412,7 @@ fn emit_ts_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &Hyb
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }

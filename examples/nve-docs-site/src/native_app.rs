@@ -3,7 +3,7 @@
 //! iOS, Android, SwiftUI, and Flutter hosts.
 
 use nve_abi::{
-    BinValueView, FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
+    FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
     NveSizeConstraints, SurfaceId, decode_events, encode_events,
 };
 use nve_dioxus::DioxusSurface;
@@ -88,17 +88,6 @@ impl NveApp for DocsSiteModule {
 
     fn hit_test(&mut self, _x: f32, _y: f32, _pointer_phase: u8) -> NveGestureDisposition {
         NveGestureDisposition::Claim
-    }
-
-    fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        if let Ok(view) = BinValueView::parse(props_bytes)
-            && let Some(route) = view.get("route").and_then(|v| v.as_str())
-        {
-            self.route = route.to_string();
-            self.rebuild_surface();
-            return true;
-        }
-        false
     }
 
     fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {

@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use nve_abi::{
-    decode_events, encode_events, BinValueView, FrameId, NveEventBatchRef, NveGestureDisposition,
+    decode_events, encode_events, FrameId, NveEventBatchRef, NveGestureDisposition,
     NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
 };
 use nve_dioxus::prelude::*;
@@ -115,28 +115,6 @@ impl NveApp for CounterModule {
 
     fn hit_test(&mut self, _x: f32, _y: f32, _pointer_phase: u8) -> NveGestureDisposition {
         NveGestureDisposition::Claim
-    }
-
-    fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        if let Ok(view) = BinValueView::parse(props_bytes)
-            && let Some(c) = view
-                .get("initialCount")
-                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-        {
-            INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
-            LATEST_COUNT.store(c as i32, Ordering::SeqCst);
-            self.surface = create_surface(self.surface_id);
-            return true;
-        }
-        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_bytes)
-            && let Some(c) = val.get("initialCount").and_then(|v| v.as_i64())
-        {
-            INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
-            LATEST_COUNT.store(c as i32, Ordering::SeqCst);
-            self.surface = create_surface(self.surface_id);
-            return true;
-        }
-        false
     }
 
     fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {

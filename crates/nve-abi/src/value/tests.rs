@@ -39,6 +39,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
 
     let v_bad_str = NveValue::str(null_str);
     assert_eq!(unsafe { v_bad_str.as_ref() }.as_str(), None);
+    #[cfg(feature = "wire")]
     assert_eq!(
         encode_bin_value_to_vec(unsafe { v_bad_str.as_ref() }),
         Err(DecodeError::Truncated)
@@ -53,6 +54,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
         len: 8,
     });
     assert_eq!(unsafe { v_null_bytes.as_ref() }.as_bytes(), None);
+    #[cfg(feature = "wire")]
     assert_eq!(
         encode_bin_value_to_vec(unsafe { v_null_bytes.as_ref() }),
         Err(DecodeError::Truncated)
@@ -63,6 +65,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
         len: usize::MAX,
     });
     assert_eq!(unsafe { v_huge_bytes.as_ref() }.as_bytes(), None);
+    #[cfg(feature = "wire")]
     assert_eq!(
         encode_bin_value_to_vec(unsafe { v_huge_bytes.as_ref() }),
         Err(DecodeError::Truncated)
@@ -111,6 +114,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
             data: NveValueData { array_val: arr },
         };
         assert!(unsafe { v.as_ref() }.as_array().is_none());
+        #[cfg(feature = "wire")]
         assert_eq!(
             encode_bin_value_to_vec(unsafe { v.as_ref() }),
             Err(DecodeError::Truncated)
@@ -146,6 +150,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
             data: NveValueData { map_val: map },
         };
         assert!(unsafe { v.as_ref() }.as_map().is_none());
+        #[cfg(feature = "wire")]
         assert_eq!(
             encode_bin_value_to_vec(unsafe { v.as_ref() }),
             Err(DecodeError::Truncated)
@@ -167,7 +172,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     assert_eq!(map_ref.iter().count(), 0);
 
     // 5. NveEventBatch / NveEventBatchRef: null+len>0 and misaligned (0x1) rejected cleanly.
-    assert_eq!(unsafe { NveEventBatch::EMPTY.try_as_slice() }.map(|s| s.len()), Some(0));
+    assert_eq!(unsafe { NveEventBatch::EMPTY.try_as_slice() }.map(<[NveDirectEvent]>::len), Some(0));
     let null_batch = NveEventBatch {
         ptr: std::ptr::null(),
         len: 2,
@@ -194,4 +199,113 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     let batch_ref = unsafe { NveEventBatchRef::try_from_raw(valid_batch) }.expect("valid batch");
     assert_eq!(batch_ref.len(), 1);
     assert_eq!(batch_ref.get(0).unwrap().node_id(), 2);
+}
+
+#[test]
+fn prop_slice_and_command_slice_zero_copy_roundtrip_and_guards() {
+    // 1. NvePropSlice / NvePropSliceRef zero-copy roundtrip & O(n) field_id lookup.
+    let label = "hello-zero-copy";
+    let payload = [0xDEu8, 0xAD, 0xBE, 0xEF];
+    let prop_entries = [
+        NvePropEntry::new(1, NveValue::bool(true)),
+        NvePropEntry::new(7, NveValue::i64(-12345)),
+        NvePropEntry::new(42, NveValue::from_str(label)),
+        NvePropEntry::new(99, NveValue::from_bytes(&payload)),
+    ];
+    let raw_props = NvePropSlice::from_slice(&prop_entries);
+    assert_eq!(raw_props.len, 4);
+    assert_eq!(raw_props._pad, 0);
+
+    let props_ref = unsafe { NvePropSliceRef::try_from_raw(raw_props) }.expect("valid prop slice");
+    assert_eq!(props_ref.len(), 4);
+    assert!(!props_ref.is_empty());
+    assert_eq!(props_ref.get(1).and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(props_ref.get(7).and_then(|v| v.as_i64()), Some(-12345));
+    let borrowed_str = props_ref.get(42).and_then(|v| v.as_str()).unwrap();
+    assert_eq!(borrowed_str, label);
+    assert_eq!(borrowed_str.as_ptr(), label.as_ptr(), "must be zero-copy");
+    let borrowed_bytes = props_ref.get(99).and_then(|v| v.as_bytes()).unwrap();
+    assert_eq!(borrowed_bytes, &payload);
+    assert_eq!(borrowed_bytes.as_ptr(), payload.as_ptr(), "must be zero-copy");
+    assert!(props_ref.get(404).is_none());
+    assert_eq!(props_ref.entry(2).map(|(id, _)| id), Some(42));
+    assert!(props_ref.entry(4).is_none());
+    let ids: Vec<u16> = props_ref.iter().map(|(id, _)| id).collect();
+    assert_eq!(ids, vec![1, 7, 42, 99]);
+
+    // Empty / null / misaligned guards for NvePropSlice.
+    let empty_props = unsafe { NvePropSliceRef::try_from_raw(NvePropSlice::EMPTY) }.expect("empty");
+    assert!(empty_props.is_empty());
+    assert!(empty_props.get(1).is_none());
+
+    let null_non_empty = NvePropSlice {
+        entries: std::ptr::null(),
+        len: 3,
+        _pad: 0,
+    };
+    assert!(unsafe { null_non_empty.try_as_slice() }.is_none());
+    assert!(unsafe { null_non_empty.as_slice() }.is_empty());
+    assert!(unsafe { NvePropSliceRef::try_from_raw(null_non_empty) }.is_none());
+    assert!(unsafe { NvePropSliceRef::from_raw(null_non_empty) }.is_empty());
+
+    let misaligned_props = NvePropSlice {
+        entries: std::ptr::without_provenance(1),
+        len: 1,
+        _pad: 0,
+    };
+    assert!(unsafe { NvePropSliceRef::try_from_raw(misaligned_props) }.is_none());
+    assert!(unsafe { NvePropSliceRef::from_raw(misaligned_props) }.is_empty());
+
+    // 2. NveCommandSlice / NveCommandSliceRef zero-copy roundtrip & guards.
+    let cmd_target = "scrollTo";
+    let cmd_args = [
+        NveValue::from_str(cmd_target),
+        NveValue::f64(120.5),
+        NveValue::bool(true),
+    ];
+    let raw_cmd = NveCommandSlice::from_args(0x0009, &cmd_args);
+    assert_eq!(raw_cmd.opcode, 9);
+    assert_eq!(raw_cmd.arg_count, 3);
+    assert_eq!(raw_cmd._pad, 0);
+
+    let cmd_ref = unsafe { NveCommandSliceRef::try_from_raw(raw_cmd) }.expect("valid command");
+    assert_eq!(cmd_ref.opcode(), 9);
+    assert_eq!(cmd_ref.len(), 3);
+    assert!(!cmd_ref.is_empty());
+    let arg0 = cmd_ref.arg(0).and_then(|v| v.as_str()).unwrap();
+    assert_eq!(arg0, cmd_target);
+    assert_eq!(arg0.as_ptr(), cmd_target.as_ptr(), "must be zero-copy");
+    assert_eq!(cmd_ref.arg(1).and_then(|v| v.as_f64()), Some(120.5));
+    assert_eq!(cmd_ref.arg(2).and_then(|v| v.as_bool()), Some(true));
+    assert!(cmd_ref.arg(3).is_none());
+    assert_eq!(cmd_ref.args().len(), 3);
+    assert_eq!(cmd_ref.iter().count(), 3);
+
+    // Empty / null / misaligned guards for NveCommandSlice.
+    let empty_cmd = unsafe { NveCommandSliceRef::try_from_raw(NveCommandSlice::empty(5)) }
+        .expect("empty command");
+    assert_eq!(empty_cmd.opcode(), 5);
+    assert!(empty_cmd.is_empty());
+    assert!(empty_cmd.arg(0).is_none());
+
+    let null_cmd = NveCommandSlice {
+        opcode: 7,
+        arg_count: 2,
+        _pad: 0,
+        args: std::ptr::null(),
+    };
+    assert!(unsafe { null_cmd.try_args_slice() }.is_none());
+    assert!(unsafe { null_cmd.args_slice() }.is_empty());
+    assert!(unsafe { NveCommandSliceRef::try_from_raw(null_cmd) }.is_none());
+    let fallback_cmd = unsafe { NveCommandSliceRef::from_raw(null_cmd) };
+    assert_eq!(fallback_cmd.opcode(), 7);
+    assert!(fallback_cmd.is_empty());
+
+    let misaligned_cmd = NveCommandSlice {
+        opcode: 8,
+        arg_count: 1,
+        _pad: 0,
+        args: std::ptr::without_provenance(1),
+    };
+    assert!(unsafe { NveCommandSliceRef::try_from_raw(misaligned_cmd) }.is_none());
 }

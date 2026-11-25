@@ -33,9 +33,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    decode_events, encode_events, BinValueView, EventPayload, FrameId, NativeEvent,
-    NativeEventKind, NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize, NvePropsRef,
-    NveSizeConstraints, SurfaceId, ROOT_NODE_ID,
+    decode_events, encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind,
+    NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
+    SurfaceId, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -411,51 +411,8 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        // Fast path: zero-JSON binary `NveBinValue` map.
-        if let Ok(view) = BinValueView::parse(props_bytes)
-            && view.as_map().is_some()
-        {
-            let upd = PropUpdates {
-                studio_open: view.get("studioOpen").and_then(|v| v.as_bool()),
-                accent: view.get("accent").and_then(|v| v.as_str()),
-                layout_engine: view.get("layoutEngine").and_then(|v| v.as_str()),
-                view: view.get("view").and_then(|v| v.as_str()),
-                route: view.get("route").and_then(|v| v.as_str()),
-                viewport_width: view
-                    .get("viewportWidth")
-                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                viewport_height: view
-                    .get("viewportHeight")
-                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                stream_scroll_y: view
-                    .get("streamScrollY")
-                    .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-                    .filter(|&n| n >= 0)
-                    .map(|n| n as u64),
-                sync_transport: view.get("syncTransport").and_then(|v| v.as_str()),
-                sync_peers: view
-                    .get("syncPeers")
-                    .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-                    .and_then(|n| u16::try_from(n).ok()),
-                sync_kbps: view
-                    .get("syncKbps")
-                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                sync_compression: view
-                    .get("syncCompression")
-                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                sync_rtt_ms: view
-                    .get("syncRttMs")
-                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-            };
-            let changed = self
-                .store
-                .lock()
-                .map(|mut guard| apply_prop_updates(&mut guard, upd))
-                .unwrap_or(false);
-            if changed {
-                self.reset_surface_with_current_store();
-                self.persist_if_dirty();
-            }
+        // Fast path: zero-JSON binary `NveBinValue` map delegated directly to `set_props_direct`.
+        if let Some(changed) = nve_engine::app::try_dispatch_bin_props_direct(self, props_bytes) {
             return changed;
         }
 

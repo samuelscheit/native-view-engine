@@ -31,7 +31,9 @@ pub(super) fn dart_type(ty: &HybridType) -> String {
         HybridType::String => "String".to_string(),
         HybridType::Bytes => "Uint8List".to_string(),
         HybridType::Optional(inner) => format!("{}?", dart_type(inner)),
-        HybridType::Vec(inner) => format!("List<{}>", dart_type(inner)),
+        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
+            format!("List<{}>", dart_type(inner))
+        }
         HybridType::Result { ok, .. } => dart_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
         HybridType::Value => "NveHybridDynamicValue".to_string(),
@@ -239,7 +241,9 @@ pub(super) fn dart_default_value(
         HybridType::String => "''".to_string(),
         HybridType::Bytes => "Uint8List(0)".to_string(),
         HybridType::Optional(_) => "null".to_string(),
-        HybridType::Vec(inner) => format!("<{}>[]", dart_type(inner)),
+        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
+            format!("<{}>[]", dart_type(inner))
+        }
         HybridType::Struct(name) => {
             if let Some(s) = spec.find_struct(name) {
                 let args: Vec<String> = s
@@ -308,6 +312,7 @@ pub(super) fn emit_dart_bin_write(out: &mut String, indent: &str, w: &str, expr:
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }
@@ -359,6 +364,7 @@ pub(super) fn emit_dart_bin_read(out: &mut String, indent: &str, r: &str, dst: &
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }

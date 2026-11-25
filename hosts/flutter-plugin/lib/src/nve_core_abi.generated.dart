@@ -3,9 +3,9 @@
 
 import 'dart:ffi' as ffi;
 
-/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x5BE5D06CC7C01FEF`).
-const int nveCoreAbiSchemaHash = 6621927992744484847;
-const String nveCoreAbiSchemaHashHex = '0x5BE5D06CC7C01FEF';
+/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x8AE89F103A70D669`).
+const int nveCoreAbiSchemaHash = -8437319009829857687;
+const String nveCoreAbiSchemaHashHex = '0x8AE89F103A70D669';
 
 const int nveAbiMagic = 0x3145564E;
 const int nveAbiVersion = 1;
@@ -288,6 +288,32 @@ final class NveEventBatch extends ffi.Struct {
   external ffi.Pointer<NveDirectEvent> ptr;
   @ffi.Uint32()
   external int len;
+}
+
+final class NvePropEntry extends ffi.Struct {
+  @ffi.Uint16()
+  external int fieldId;
+  @ffi.Array(6)
+  external ffi.Array<ffi.Uint8> pad;
+  external NveValue value;
+}
+
+final class NvePropSlice extends ffi.Struct {
+  external ffi.Pointer<NvePropEntry> entries;
+  @ffi.Uint32()
+  external int len;
+  @ffi.Uint32()
+  external int pad;
+}
+
+final class NveCommandSlice extends ffi.Struct {
+  @ffi.Uint16()
+  external int opcode;
+  @ffi.Uint16()
+  external int argCount;
+  @ffi.Uint32()
+  external int pad;
+  external ffi.Pointer<NveValue> args;
 }
 
 final class NveSurfaceConfig extends ffi.Struct {

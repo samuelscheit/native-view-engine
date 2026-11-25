@@ -36,7 +36,9 @@ pub(super) fn kotlin_type(ty: &HybridType) -> String {
         HybridType::String => "String".to_string(),
         HybridType::Bytes => "ByteArray".to_string(),
         HybridType::Optional(inner) => format!("{}?", kotlin_type(inner)),
-        HybridType::Vec(inner) => format!("List<{}>", kotlin_type(inner)),
+        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
+            format!("List<{}>", kotlin_type(inner))
+        }
         HybridType::Result { ok, .. } => kotlin_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
         HybridType::Value => "NveHybridDynamicValue".to_string(),
@@ -144,6 +146,7 @@ pub(super) fn jni_cpp_owned_type(ty: &HybridType) -> String {
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => "void".to_string(),
     }
 }
@@ -192,6 +195,7 @@ pub(super) fn emit_jni_cpp_bin_write(
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }
@@ -233,6 +237,7 @@ pub(super) fn emit_jni_cpp_bin_read(out: &mut String, indent: &str, r: &str, dst
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }
@@ -285,7 +290,7 @@ pub(super) fn kotlin_default_value(
         HybridType::String => "\"\"".to_string(),
         HybridType::Bytes => "ByteArray(0)".to_string(),
         HybridType::Optional(_) => "null".to_string(),
-        HybridType::Vec(_) => "emptyList()".to_string(),
+        HybridType::Vec(_) | HybridType::FixedArray { .. } => "emptyList()".to_string(),
         HybridType::Struct(name) => format!("{name}()"),
         HybridType::Enum(name) => {
             if let Some(e) = spec.find_enum(name) {
@@ -331,6 +336,7 @@ pub(super) fn emit_kotlin_bin_write(out: &mut String, indent: &str, w: &str, exp
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }
@@ -374,6 +380,7 @@ pub(super) fn emit_kotlin_bin_read(out: &mut String, indent: &str, r: &str, dst:
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }

@@ -15,7 +15,7 @@ use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
 /// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.generated.h`).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x5BE5_D06C_C7C0_1FEF;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x8AE8_9F10_3A70_D669;
 
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
@@ -118,6 +118,67 @@ impl NveGestureDisposition {
         }
     }
 }
+
+/// Native event discriminator matching `enum NveEventKind` in `nve_abi.generated.h`.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum NativeEventKind {
+    Press = 1,
+    LongPress = 2,
+    Scroll = 3,
+    TextChange = 4,
+    Focus = 5,
+    Blur = 6,
+    Layout = 7,
+    Custom = 8,
+}
+
+impl NativeEventKind {
+    #[inline]
+    pub const fn from_u8_opt(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(Self::Press),
+            2 => Some(Self::LongPress),
+            3 => Some(Self::Scroll),
+            4 => Some(Self::TextChange),
+            5 => Some(Self::Focus),
+            6 => Some(Self::Blur),
+            7 => Some(Self::Layout),
+            8 => Some(Self::Custom),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub const fn from_u8(v: u8) -> Result<Self, DecodeError> {
+        match Self::from_u8_opt(v) {
+            Some(kind) => Ok(kind),
+            None => Err(DecodeError::InvalidEnum("NativeEventKind", v as u32)),
+        }
+    }
+}
+
+/// Validation / decoding errors shared across zero-copy FFI views and binary wire codecs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    Truncated,
+    InvalidMagic(u32),
+    UnsupportedVersion(u16),
+    UnknownOpcode(u8),
+    InvalidEnum(&'static str, u32),
+    InvalidUtf8,
+    TrailingBytes(usize),
+    MaxDepthExceeded,
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for DecodeError {}
 
 /// Opaque handle to an instantiated NVE app/component.
 pub type NveAppHandle = *mut c_void;

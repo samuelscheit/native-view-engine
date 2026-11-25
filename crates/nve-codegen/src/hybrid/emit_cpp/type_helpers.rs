@@ -40,6 +40,7 @@ pub(super) fn cpp_owned_type(ty: &HybridType) -> String {
         HybridType::Value => "DynamicValue".to_string(),
         HybridType::ConstPtr(inner) => format!("const {}*", cpp_owned_type(inner)),
         HybridType::MutPtr(inner) => format!("{}*", cpp_owned_type(inner)),
+        HybridType::FixedArray { elem, len } => format!("std::array<{}, {len}>", cpp_owned_type(elem)),
     }
 }
 
@@ -158,6 +159,7 @@ pub(super) fn emit_cpp_bin_write(out: &mut String, indent: &str, w: &str, expr: 
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {
             writeln!(out, "{indent}{w}.write_null();").unwrap();
         }
@@ -208,6 +210,7 @@ pub(super) fn emit_cpp_bin_read(out: &mut String, indent: &str, r: &str, dst: &s
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }

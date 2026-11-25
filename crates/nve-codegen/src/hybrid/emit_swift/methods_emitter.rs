@@ -272,7 +272,9 @@ pub(super) fn swift_type(ty: &HybridType) -> String {
         HybridType::String => "String".to_string(),
         HybridType::Bytes => "[UInt8]".to_string(),
         HybridType::Optional(inner) => format!("{}?", swift_type(inner)),
-        HybridType::Vec(inner) => format!("[{}]", swift_type(inner)),
+        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
+            format!("[{}]", swift_type(inner))
+        }
         HybridType::Result { ok, .. } => swift_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) | HybridType::Handle(name) => {
             name.clone()
@@ -340,7 +342,7 @@ pub(super) fn swift_default_value(
         | HybridType::U64 => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::String => "\"\"".to_string(),
-        HybridType::Bytes | HybridType::Vec(_) => "[]".to_string(),
+        HybridType::Bytes | HybridType::Vec(_) | HybridType::FixedArray { .. } => "[]".to_string(),
         HybridType::Optional(_)
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
@@ -430,6 +432,7 @@ pub(super) fn emit_swift_bin_write(out: &mut String, indent: &str, w: &str, expr
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {
             writeln!(out, "{indent}{w}.writeNull()").unwrap();
         }
@@ -484,6 +487,7 @@ pub(super) fn emit_swift_bin_read(out: &mut String, indent: &str, r: &str, dst: 
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
+        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {}
     }
 }

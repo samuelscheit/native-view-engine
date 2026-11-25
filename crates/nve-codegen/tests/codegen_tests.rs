@@ -986,6 +986,20 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     assert!(core_files[4].content.contains("HOST: 5,"));
     assert!(core_files[4].content.contains("export const NVE_HOST_STATUS ="));
 
+    // Verify NvePropEntry, NvePropSlice, and NveCommandSlice direct zero-copy slab types.
+    assert!(core_files[0].content.contains("typedef struct NvePropEntry"));
+    assert!(core_files[0].content.contains("typedef struct NvePropSlice"));
+    assert!(core_files[0].content.contains("typedef struct NveCommandSlice"));
+    assert!(core_files[0].content.contains("sizeof(NvePropEntry) == 32u"));
+    assert!(core_files[0].content.contains("sizeof(NvePropSlice) == 16u"));
+    assert!(core_files[0].content.contains("sizeof(NveCommandSlice) == 16u"));
+    assert!(core_files[2].content.contains("final class NvePropEntry extends ffi.Struct"));
+    assert!(core_files[2].content.contains("final class NvePropSlice extends ffi.Struct"));
+    assert!(core_files[2].content.contains("final class NveCommandSlice extends ffi.Struct"));
+    assert!(core_files[3].content.contains("public static final int SIZEOF_PROP_ENTRY_64 = 32;"));
+    assert!(core_files[3].content.contains("public static final int SIZEOF_PROP_SLICE_64 = 16;"));
+    assert!(core_files[3].content.contains("public static final int SIZEOF_COMMAND_SLICE_64 = 16;"));
+
     let update_mode =
         std::env::var("NVE_UPDATE_ABI").is_ok() || std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
     for file in &all_files {
