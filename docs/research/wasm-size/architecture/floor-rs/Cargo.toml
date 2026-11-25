@@ -1,0 +1,19 @@
+# Standalone (not a workspace member): no_std Rust counter floor with raw imports, no wasm-bindgen.
+[package]
+name = "nve-floor-rs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[workspace]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

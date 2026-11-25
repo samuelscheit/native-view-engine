@@ -1,0 +1,29 @@
+[package]
+name = "probe"
+version = "0.1.0"
+edition = "2021"
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+wasm-bindgen = "=0.2.130"
+sycamore-reactive = { version = "0.9", optional = true }
+reactive_graph = { version = "0.2", optional = true, default-features = false }
+dioxus-core = { version = "0.7.10", optional = true }
+dioxus-core-macro = { version = "0.7.10", optional = true }
+dioxus-signals = { version = "0.7.10", optional = true }
+[features]
+dx = ["dep:dioxus-core","dep:dioxus-core-macro","dep:dioxus-signals"]
+syc = ["dep:sycamore-reactive"]
+rg = ["dep:reactive_graph"]
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[patch.crates-io]
+dioxus-core = { path = "../../../../../third_party/dioxus-core" }
+dioxus-signals = { path = "../../../../../third_party/dioxus-signals" }
+
+[workspace]

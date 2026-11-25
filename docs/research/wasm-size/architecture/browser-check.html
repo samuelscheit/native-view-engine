@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><body style="margin:0;height:100vh">
+<script type=module>
+// Loads ?dir=<floor dir>&js=<loader>, clicks increment x3, reset, increment x1, writes the observed texts to <pre id=out>.
+const q = new URLSearchParams(location.search), dir = q.get("dir");
+const realFetch = fetch; window.fetch = (u) => realFetch(dir + "/" + u);
+await import("./" + dir + "/loader.js");
+await new Promise((r) => setTimeout(r, 300));
+const btn = (n) => [...document.querySelectorAll("[data-e],[data-n]")].filter((e) => e.matches("i"))[n];
+const txt = () => document.querySelector("u").textContent;
+const seen = [];
+for (const n of [0, 0, 0, 1, 0]) { btn(n).querySelector("b").click(); seen.push(txt()); }
+const pre = document.createElement("pre"); pre.id = "out"; pre.textContent = "RESULT " + JSON.stringify(seen); document.documentElement.append(pre);
+</script>
