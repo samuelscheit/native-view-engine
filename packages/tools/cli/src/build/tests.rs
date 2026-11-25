@@ -246,22 +246,30 @@ fn xcframework_pairs_device_and_simulator_slices_with_generated_headers() {
         let xcf = plan.xcframework.expect("xcframework invocation");
         assert_eq!(xcf.program, "xcodebuild");
         assert_eq!(xcf.slices.len(), 2);
+        let expected_device_lib = req
+            .target_dir
+            .join(device.spec().rust_triple)
+            .join("release")
+            .join("libnve_studio_workspace.a")
+            .display()
+            .to_string();
+        let expected_sim_lib = req
+            .target_dir
+            .join(sim.spec().rust_triple)
+            .join("release")
+            .join("libnve_studio_workspace.a")
+            .display()
+            .to_string();
         assert_eq!(
             xcf.args,
             vec![
                 "-create-xcframework",
                 "-library",
-                &format!(
-                    "/repo/target/{}/release/libnve_studio_workspace.a",
-                    device.spec().rust_triple
-                ),
+                expected_device_lib.as_str(),
                 "-headers",
                 "/repo/hosts/swiftui-kit/Sources/CNveAbi/include",
                 "-library",
-                &format!(
-                    "/repo/target/{}/release/libnve_studio_workspace.a",
-                    sim.spec().rust_triple
-                ),
+                expected_sim_lib.as_str(),
                 "-headers",
                 "/repo/hosts/swiftui-kit/Sources/CNveAbi/include",
                 "-output",
