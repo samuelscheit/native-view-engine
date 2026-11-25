@@ -3,6 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use nve_interop::crdt::{
+    CrdtDeltaPacket, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
+    RgaList, VersionVector,
+};
 use nve_interop::{
     ChannelPayload, FrameworkKind, GestureCapabilities, InteropRuntime, IntrinsicSize,
     LayoutProposal, MeasurableSurface, NveChannelBus, PayloadEncoding, PointerPhase, PointerSample,
@@ -209,10 +213,131 @@ fn bench_intrinsic_layout_negotiation(c: &mut Criterion) {
     group.finish();
 }
 
+fn build_crdt_bench_packet(record_count: usize) -> CrdtDeltaPacket {
+    let peer = PeerId(1);
+    let mut clock = HlcClock::with_initial(peer, 1_700_000_000_000);
+    let mut vv = VersionVector::new();
+    let mut records = Vec::with_capacity(record_count);
+    let mut prev_rga = None;
+
+    for i in 0..record_count {
+        let seq = (i + 1) as u64;
+        let op = OpId::new(peer, seq);
+        vv.observe(op);
+        let ts = clock.tick(1_700_000_000_000 + (i as u64 / 4));
+        match i % 4 {
+            0 => records.push(CrdtRecord::OrSetAddU64 {
+                namespace: 1,
+                key: i as u64,
+                op_id: op,
+            }),
+            1 => records.push(CrdtRecord::LwwSet {
+                namespace: 2,
+                entity_id: (i / 4) as u64,
+                field_id: 1,
+                op_id: op,
+                timestamp: ts,
+                value: CrdtValue::Utf8(format!("Task title payload #{i}")),
+            }),
+            2 => records.push(CrdtRecord::PnCounterSet {
+                namespace: 6,
+                entity_id: (i / 4) as u64,
+                peer,
+                op_id: op,
+                pos: seq,
+                neg: seq / 8,
+            }),
+            _ => {
+                records.push(CrdtRecord::RgaInsert {
+                    namespace: 9,
+                    list_id: 1,
+                    id: op,
+                    after_id: prev_rga,
+                    value: CrdtValue::U32(i as u32),
+                });
+                prev_rga = Some(op);
+            }
+        }
+    }
+
+    CrdtDeltaPacket::new(peer, vv, records)
+}
+
+fn bench_crdt_delta_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("interop/crdt_delta_encode");
+
+    for &count in &[16usize, 128, 512] {
+        let packet = build_crdt_bench_packet(count);
+        let mut scratch = Vec::with_capacity(count * 64);
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(BenchmarkId::new("records", count), &count, |b, _| {
+            b.iter(|| {
+                packet.encode_into(&mut scratch).unwrap();
+                black_box(scratch.len())
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_crdt_delta_merge(c: &mut Criterion) {
+    let mut group = c.benchmark_group("interop/crdt_delta_merge");
+
+    for &count in &[16usize, 128, 512] {
+        let packet = build_crdt_bench_packet(count);
+        let wire_bytes = packet.encode().unwrap();
+
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(BenchmarkId::new("records", count), &count, |b, _| {
+            b.iter(|| {
+                let decoded = CrdtDeltaPacket::decode(black_box(&wire_bytes)).unwrap();
+                let mut set = OrSet::new();
+                let mut reg = LwwRegister::default();
+                let mut counter = PnCounter::new();
+                let mut rga = RgaList::new();
+                let mut applied = 0usize;
+
+                for rec in decoded.records {
+                    match rec {
+                        CrdtRecord::OrSetAddU64 { key, op_id, .. } => {
+                            applied += usize::from(set.add(key, op_id));
+                        }
+                        CrdtRecord::LwwSet {
+                            timestamp,
+                            value: CrdtValue::Utf8(s),
+                            ..
+                        } => {
+                            applied += usize::from(reg.set(s, timestamp));
+                        }
+                        CrdtRecord::PnCounterSet { peer, pos, neg, .. } => {
+                            applied += usize::from(counter.merge_peer(peer, pos, neg));
+                        }
+                        CrdtRecord::RgaInsert {
+                            id,
+                            after_id,
+                            value: CrdtValue::U32(v),
+                            ..
+                        } => {
+                            applied += usize::from(rga.insert_after(after_id, id, v));
+                        }
+                        _ => {}
+                    }
+                }
+                black_box((applied, set.len(), counter.value(), rga.visible_len()))
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     interop_benches,
     bench_channel_bus,
     bench_gesture_arbitration,
-    bench_intrinsic_layout_negotiation
+    bench_intrinsic_layout_negotiation,
+    bench_crdt_delta_encode,
+    bench_crdt_delta_merge
 );
 criterion_main!(interop_benches);

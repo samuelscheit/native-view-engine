@@ -6,6 +6,7 @@
 //! shared state channels, and GPU/native view handoff.
 
 pub mod channel;
+pub mod crdt;
 pub mod error;
 pub mod gesture;
 pub mod handoff;

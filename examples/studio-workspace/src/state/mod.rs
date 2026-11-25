@@ -4,12 +4,14 @@
 mod actions;
 mod codec;
 mod codec_io;
+pub mod crdt_sync;
 mod docs;
 mod history;
 mod models;
 mod workbench;
 
 pub use codec::{WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION};
+pub use crdt_sync::{CrdtMergeSummary, StudioCrdtDoc};
 pub use docs::{default_seed_docs, DocBlock, DocBlockKind, WorkspaceDoc};
 pub use models::{
     AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
