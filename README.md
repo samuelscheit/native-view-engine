@@ -14,38 +14,40 @@
 
 ## Measured Baselines
 
-Real numbers from `cargo bench -p nve-bench`, `nve_fabric_bridge_bench` (Release, RN Yoga + JSI), and `crates/nve-engine` snapshot tests:
+Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Release `nve_fabric_bridge_bench` on Apple Silicon):
 
 | Pipeline Stage | Measured Latency | Throughput / Notes |
 | :--- | ---: | :--- |
-| `nve_get_interface` FFI lookup / render slice | **1.44 – 1.54 ns** | Zero-cost C ABI dispatch |
-| Direct Bump-Arena FFI JSI event dispatch | **137.5 ns / event** | **7.27 M/s** (~13x faster than JSON, 0 alloc) |
-| Rust `NveValueRef` zero-copy nested field read | **21.9 ns** | Borrowed straight from C++ arena |
-| Binary `CommandBuffer` decode (1,000 nodes) | **117 µs** | ~800 MiB/s |
-| Dioxus incremental state diff | **1.10 µs** | Tier-1 hot-patch: **2.22 µs** |
-| 1,000-row Flexbox layout (`Yoga` / `Taffy`) | **1.86 – 2.51 ms** / **2.14 – 3.05 ms** | Switchable via `LayoutEngine` trait |
-| Skia software rasterize (card / 1,000 nodes) | **158 µs** / **1.50 ms** | `winit` + `softbuffer` live desktop window |
-| Cold `mmap` Frame-0 + state restore (100 rows) | **82 – 136 µs** | `29 µs` raw `mmap` open, 0 copies |
+| `nve_get_interface` FFI lookup / render slice | **0.98 – 1.33 ns** | Zero-cost C ABI dispatch (`catch_unwind` panic-safe) |
+| Direct `NveSceneView` dirty read (3 of 1,000 nodes) | **24.82 ns** | 64-byte cache-line `NveRenderNode`, zero decode |
+| Rust `NveValueRef` zero-copy nested field read | **17.09 ns** | Borrowed straight from C++ bump arena |
+| Streaming `CommandBuffer` decode (1,000 nodes) | **18.05 µs** | Zero-alloc `CommandRef` (~4.7 GiB/s) |
+| C++20 Fabric incremental patch (10 / 1,000 nodes) | **7.12 µs** | Direct `NveSceneView` publish: **7.54 µs** |
+| Dioxus incremental state diff / Tier-1 hot-patch | **931 ns** / **1.33 µs** | Real RSX AST hot-patch diff `< 2.5 ms` |
+| 1,000-row Flexbox layout (`Taffy` / C++ standalone) | **1.77 ms** / **451 µs** | 1,000-row hit-test: **3.62 µs** |
+| Web DOM HTML SSR (100 / 500 rows) | **12.45 µs** / **65.05 µs** | Incremental 10-node patch: **1.22 µs** |
+| Skia display list (1,000 nodes) / card rasterize | **962 µs** / **136.6 µs** | Software + Apple Metal GPU swapchains |
+| Cold `mmap` Frame-0 + state restore (100 rows) | **82 – 136 µs** | `29 µs` raw `mmap` open + append-only `.nvewal` |
 
 ## Architecture at a Glance
 
 ```text
 Rust App (Dioxus 0.7 rsx! via nve-dioxus, or any frontend implementing NveApp)
   │  Exposes nve_get_interface(uint32_t): Surface | Layout | Component | Dev
-  │  Batched binary CommandBuffer + Zero-Copy Direct FFI NveValue Arena / EventRing
+  │  Zero-JSON binary CommandBuffer, 64B NveSceneView, NVE_DRAW1 vectors, NK1/NVP1/NVT1 wire codecs
   ▼
-nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot, Profiler, 2-Tier Hot Reload)
-  ├──► cxx/nve-fabric-bridge (C++20 Yoga/JSI/Fabric + nve_host_runtime.hpp)
-  │     ├──► hosts/apple-common + hosts/{macos-shell,ios-shell}  (AppKit & UIKit / RN Fabric)
-  │     ├──► hosts/windows-shell                                 (Win32/Direct2D/DirectWrite & RNW Fabric)
-  │     ├──► hosts/qt-shell                                      (Qt 6 QWidget + QFontMetricsF)
-  │     ├──► hosts/gtk-shell                                     (GTK4 + Pango)
-  │     └──► hosts/android-shell                                 (JNI + NDK)
+nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot + WAL, 2-Tier Hot Reload)
+  ├──► cxx/nve-fabric-bridge (C++20 Yoga/JSI/Fabric, nve_host_runtime.hpp, nve_draw_list.hpp)
+  │     ├──► hosts/apple-common + hosts/{macos-shell,ios-shell}  (AppKit & UIKit / CoreGraphics / VoiceOver)
+  │     ├──► hosts/windows-shell                                 (Win32/Direct2D/WIC/DirectWrite & RNW Fabric)
+  │     ├──► hosts/qt-shell                                      (Qt 6 QWidget + Retained Qt Quick QSG)
+  │     ├──► hosts/gtk-shell                                     (GTK4 + Pango + Cairo + AT-SPI)
+  │     └──► hosts/android-shell                                 (JNI DirectByteBuffer Slabs + TalkBack)
   ├──► hosts/{swiftui-kit,flutter-plugin,compose-kit}            (SwiftUI, Flutter dart:ffi, Jetpack Compose)
-  ├──► nve-backend-skia + hosts/skia-shell                       (Skia renderer + desktop winit/softbuffer/GPU host)
-  ├──► nve-backend-web + hosts/web-shell                         (WASM -> Browser DOM + CSS Flexbox)
+  ├──► nve-backend-skia + hosts/skia-shell                       (Skia CPU/Metal/Vulkan + winit + IME + --pair-connect)
+  ├──► nve-backend-web + hosts/web-shell                         (WASM -> DOM + ARIA/IME + <canvas> + ?pair=ws://)
   ├──► nve-backend-headless + nve-layout-yoga                    (Generic Taffy / real RN Yoga + sub-ms tests)
-  └──► nve-codegen + nve-interop                                 (5-target codegen + multi-framework islands)
+  └──► nve-codegen + nve-interop + nve-cli                       (6-target Nitro-style hybrid FFI + NVD1 live pairing)
 ```
 
 ## Quick Start
@@ -58,19 +60,19 @@ nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot, Profiler, 2
 cargo test --workspace
 cargo bench -p nve-bench
 
-# 3. Build example cdylibs (counter + flagship Aether Workspace / NVE Studio POC)
+# 3. Build example cdylibs (counter + flagship Aether Workspace / NVE Studio)
 cargo build -p nve-example-counter -p nve-studio-workspace
 
-# 4. Launch in the native macOS AppKit host (or Qt 6 / Skia Desktop / Web WASM)
-cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja && cmake --build hosts/macos-shell/build
-./hosts/macos-shell/build/nve_macos_shell --dylib target/debug/libnve_example_counter.dylib
-
-# 5. Launch in the cross-platform Skia desktop shell
+# 4. Launch in the cross-platform Skia desktop shell (or capture a PNG screenshot)
 cargo run -p nve-skia-shell -- \
-  target/debug/libnve_example_counter.dylib --no-ws
+  target/debug/libnve_studio_workspace.dylib --no-ws --width 1280 --height 800
 
-# 6. Start the 2-tier hot-reload dev daemon
-cargo nve dev --example counter
+# 5. Start the 2-tier hot-reload dev daemon (with optional live NVD1 pairing)
+cargo nve dev --package nve-studio-workspace --pair
+
+# 6. Or stream any app over bidirectional NVT1/NVD1 UDP + WebSocket pairing to thin clients
+cargo nve pair --package nve-studio-workspace --udp-port 8091 --ws-port 8092 --token dev-secret
+cargo run -p nve-skia-shell -- --pair-connect 127.0.0.1:8091 --pair-transport udp --pair-token dev-secret
 ```
 
 ## Documentation & Roadmap
