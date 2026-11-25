@@ -2,7 +2,7 @@
 //!
 //! Combines SwiftUI `EnvironmentValues`, Jetpack Compose `CompositionLocal`, and CSS
 //! `@media`/`@container` queries into a zero-JSON, zero-allocation fast-path trait engine:
-//! - 17 built-in traits live directly inside a compact `Copy` [`BuiltinTraits`] struct (`O(1)`
+//! - 18 built-in traits live directly inside a compact `Copy` [`BuiltinTraits`] struct (`O(1)`
 //!   field access, zero hashing/boxing).
 //! - User-defined [`TraitKey`]s live in a persistent copy-on-write `TypeId` overlay map.
 //! - [`TraitStore`] tracks per-trait `u64` revision counters with breakpoint-only viewport updates
@@ -19,7 +19,7 @@ pub use environment::{TraitEnvironment, TraitOverrides};
 pub use resolver::TraitResolver;
 pub use store::{TraitStore, ViewportChangeMask};
 pub use types::{
-    CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast, HostToolkit, Locale,
-    Orientation, PlatformOs, PointerKind, ReducedMotion, SafeAreaInsets, ScaleFactor, SizeClass,
-    TextScale, UiDensity, VerticalSizeClass,
+    CanHover, ColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard, HighContrast,
+    HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, SafeAreaInsets,
+    ScaleFactor, SizeClass, TextScale, UiDensity, VerticalSizeClass,
 };

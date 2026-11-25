@@ -3,8 +3,8 @@
 use super::builtin::TraitKey;
 use super::environment::TraitEnvironment;
 use super::types::{
-    ColorScheme, HostToolkit, Orientation, PlatformOs, PointerKind, SizeClass, UiDensity,
-    VerticalSizeClass,
+    ColorScheme, DeviceFormFactor, HostToolkit, Orientation, PlatformOs, PointerKind, SizeClass,
+    UiDensity, VerticalSizeClass,
 };
 
 /// Zero-allocation short-circuiting conditional trait resolver created by [`TraitEnvironment::resolve`].
@@ -37,6 +37,29 @@ impl<'a, T> TraitResolver<'a, T> {
             self.resolved = Some(value);
         }
         self
+    }
+
+    #[inline]
+    pub fn when_form_factor(mut self, factor: DeviceFormFactor, value: T) -> Self {
+        if self.resolved.is_none() && self.env.builtins.device_form_factor == factor {
+            self.resolved = Some(value);
+        }
+        self
+    }
+
+    #[inline]
+    pub fn when_tv(self, value: T) -> Self {
+        self.when_form_factor(DeviceFormFactor::Tv, value)
+    }
+
+    #[inline]
+    pub fn when_watch(self, value: T) -> Self {
+        self.when_form_factor(DeviceFormFactor::Watch, value)
+    }
+
+    #[inline]
+    pub fn when_spatial(self, value: T) -> Self {
+        self.when_form_factor(DeviceFormFactor::Spatial, value)
     }
 
     #[inline]

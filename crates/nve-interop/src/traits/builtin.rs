@@ -2,13 +2,13 @@
 //! zero-allocation `TraitKey` implementations.
 
 use super::types::{
-    f32_changed, CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast,
-    HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, SafeAreaInsets,
-    ScaleFactor, SizeClass, TextScale, UiDensity, VerticalSizeClass,
+    f32_changed, CanHover, ColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard,
+    HighContrast, HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion,
+    SafeAreaInsets, ScaleFactor, SizeClass, TextScale, UiDensity, VerticalSizeClass,
 };
 
 /// Number of built-in fast-path trait slots stored directly inside [`BuiltinTraits`].
-pub const BUILTIN_TRAIT_COUNT: usize = 17;
+pub const BUILTIN_TRAIT_COUNT: usize = 18;
 
 /// Compile-time slot index for every built-in fast-path trait.
 #[repr(u8)]
@@ -31,6 +31,7 @@ pub enum BuiltinTraitSlot {
     TextScale = 14,
     UiDensity = 15,
     Locale = 16,
+    DeviceFormFactor = 17,
 }
 
 impl BuiltinTraitSlot {
@@ -62,6 +63,7 @@ impl BuiltinTraitSlot {
         Self::TextScale,
         Self::UiDensity,
         Self::Locale,
+        Self::DeviceFormFactor,
     ];
 }
 
@@ -101,6 +103,7 @@ pub trait TraitKey: 'static {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BuiltinTraits {
     pub platform_os: PlatformOs,
+    pub device_form_factor: DeviceFormFactor,
     pub host_toolkit: HostToolkit,
     pub size_class: SizeClass,
     pub vertical_size_class: SizeClass,
@@ -123,6 +126,7 @@ impl Default for BuiltinTraits {
     fn default() -> Self {
         Self {
             platform_os: PlatformOs::Unknown,
+            device_form_factor: DeviceFormFactor::Desktop,
             host_toolkit: HostToolkit::Headless,
             size_class: SizeClass::Compact,
             vertical_size_class: SizeClass::Compact,
@@ -146,18 +150,51 @@ impl Default for BuiltinTraits {
 impl BuiltinTraits {
     /// Initializes built-in traits with the compile-time host OS and sensible platform input defaults.
     pub fn for_current_host(toolkit: HostToolkit) -> Self {
-        let os = PlatformOs::current();
-        let is_mobile = os.is_mobile();
+        Self::for_platform(PlatformOs::current(), toolkit)
+    }
+
+    /// Initializes built-in traits for an explicit [`PlatformOs`] and [`HostToolkit`].
+    pub fn for_platform(os: PlatformOs, toolkit: HostToolkit) -> Self {
+        let pointer_kind = match os {
+            PlatformOs::TvOs | PlatformOs::AndroidTv => PointerKind::Remote,
+            PlatformOs::WatchOs => PointerKind::Crown,
+            PlatformOs::VisionOs => PointerKind::Gaze,
+            PlatformOs::Ios | PlatformOs::Android => PointerKind::Coarse,
+            PlatformOs::MacOs
+            | PlatformOs::Windows
+            | PlatformOs::Linux
+            | PlatformOs::Web
+            | PlatformOs::Unknown => PointerKind::Fine,
+        };
+        let can_hover = match os {
+            PlatformOs::VisionOs => true,
+            PlatformOs::TvOs
+            | PlatformOs::AndroidTv
+            | PlatformOs::WatchOs
+            | PlatformOs::Ios
+            | PlatformOs::Android => false,
+            PlatformOs::MacOs
+            | PlatformOs::Windows
+            | PlatformOs::Linux
+            | PlatformOs::Web
+            | PlatformOs::Unknown => true,
+        };
+        let has_hardware_keyboard = !matches!(
+            os,
+            PlatformOs::Ios
+                | PlatformOs::Android
+                | PlatformOs::TvOs
+                | PlatformOs::AndroidTv
+                | PlatformOs::WatchOs
+                | PlatformOs::VisionOs
+        );
         Self {
             platform_os: os,
+            device_form_factor: os.default_form_factor(),
             host_toolkit: toolkit,
-            pointer_kind: if is_mobile {
-                PointerKind::Coarse
-            } else {
-                PointerKind::Fine
-            },
-            can_hover: !is_mobile,
-            has_hardware_keyboard: !is_mobile,
+            pointer_kind,
+            can_hover,
+            has_hardware_keyboard,
             ..Self::default()
         }
     }
@@ -256,6 +293,11 @@ impl BuiltinTraits {
                 self.locale = src.locale;
                 changed
             }
+            BuiltinTraitSlot::DeviceFormFactor => {
+                let changed = self.device_form_factor != src.device_form_factor;
+                self.device_form_factor = src.device_form_factor;
+                changed
+            }
         }
     }
 
@@ -293,6 +335,9 @@ impl BuiltinTraits {
             BuiltinTraitSlot::TextScale => !f32_changed(self.text_scale, other.text_scale),
             BuiltinTraitSlot::UiDensity => self.ui_density == other.ui_density,
             BuiltinTraitSlot::Locale => self.locale == other.locale,
+            BuiltinTraitSlot::DeviceFormFactor => {
+                self.device_form_factor == other.device_form_factor
+            }
         }
     }
 }
@@ -352,6 +397,13 @@ macro_rules! impl_builtin_f32_trait_key {
 }
 
 impl_builtin_trait_key!(PlatformOs, PlatformOs, PlatformOs, platform_os, PlatformOs::Unknown);
+impl_builtin_trait_key!(
+    DeviceFormFactor,
+    DeviceFormFactor,
+    DeviceFormFactor,
+    device_form_factor,
+    DeviceFormFactor::Desktop
+);
 impl_builtin_trait_key!(HostToolkit, HostToolkit, HostToolkit, host_toolkit, HostToolkit::Headless);
 impl_builtin_trait_key!(SizeClass, SizeClass, SizeClass, size_class, SizeClass::Compact);
 impl_builtin_trait_key!(
