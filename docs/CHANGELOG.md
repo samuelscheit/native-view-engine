@@ -6,6 +6,9 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Wave 14 (Zero-Copy, DRY & Production Docs)
 
+- **Windows 11 Live Re-Verification of Wave 14A/B/C, Docs Finale, Tier-2/3 SDK & RNW 0.88 (`samuel-pc`)** (`2c2efd0`)
+  - Fixed `NVE_WITH_RN_JSI=1` protected `facebook::jsi::Runtime::PointerValue` visibility in split `mock_jsi_arena.hpp`/`mock_jsi_runtime.hpp` and restored `aria-label="Command Palette"` / `role="searchbox"` on `nve_ui::Dialog` & `nve_ui::Input` in Studio (`ui_palette.rs`).
+  - Verified natively on Windows 11 (MSVC 19.51, Ninja Release): `411/411` full Rust workspace tests, `0` Cargo/rustc/Clippy warnings, `10/10` `codegen abi --check`, `2/2` `cxx/nve-fabric-bridge`, `3/3` Standalone + `3/3` RNW 0.88 Fabric (`67/67` Ninja targets, `0` `/W4` warnings), and `40/40` Skia D3D12 tests.
 - **Skia Desktop Host Services (`NVE_IFACE_HOST = 5`), Multi-Window Glue & Zero-Copy `HotAppInstance`** (`c2f83c0`)
   - Refactored `HotAppInstance::render`, `drain_emitted_events`, and `snapshot_state` to borrow `&[u8]` directly from `NveBufferSlice::as_slice()` (eliminating per-frame `.to_vec()` allocations across `nve-engine`, `nve-cli/pair`, and `hosts/skia-shell`).
   - Bound `Arc<SkiaHostServices>` (`nve-sdk` Tier-1 + `SERVICE_WINDOW = 0x0002` `NVW1`) into `DesktopWindowHost`, wired `WindowEvent::ThemeChanged` / `ScaleFactorChanged` live `NVT2` & `NVL1` pushes, modal parent close-blocking, cascading sheet/popover cleanup, `CloseRequested` veto/allow, and safe Tier-2 `HotAppSlot::reload` callback re-binding (`82/82` tests, `0` Clippy warnings).
