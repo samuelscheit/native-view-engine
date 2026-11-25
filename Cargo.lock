@@ -1585,8 +1585,12 @@ dependencies = [
  "nve-codegen",
  "nve-components",
  "nve-dioxus",
+ "nve-docs",
+ "nve-docs-site",
  "nve-engine",
  "nve-interop",
+ "nve-mdx",
+ "nve-sdk",
  "nve-skia-shell",
  "serde_json",
  "tungstenite",
@@ -1646,6 +1650,9 @@ dependencies = [
  "dioxus-core-macro",
  "dioxus-signals",
  "nve-abi",
+ "nve-backend-headless",
+ "nve-backend-skia",
+ "nve-backend-web",
  "nve-components",
  "nve-dioxus",
  "nve-docs",
@@ -1655,6 +1662,8 @@ dependencies = [
  "nve-router",
  "nve-sdk",
  "nve-ui",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
