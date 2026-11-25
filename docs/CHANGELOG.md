@@ -1,6 +1,6 @@
-# Changelog (`docs/CHANGELOG.md`)
+# Changelog
 
-Chronological log of completed, verified milestones in `native-view-engine`.
+Complete reverse-chronological log of shipped milestones in `native-view-engine`, from bootstrap (`63b381e`) to current `main`. Open roadmap items live in [docs/BACKLOG.md](./BACKLOG.md).
 
 ---
 
@@ -14,7 +14,7 @@ Chronological log of completed, verified milestones in `native-view-engine`.
   - Renamed all 8 non-Java checked-in ABI artifacts to `*.generated.{h,dart,ts}`, moved `NveCoreAbi.java` and `NveSceneBuffer.java` into `package dev.nve.android.generated;`, updated all `nve-codegen` emitters, `cargo nve codegen abi --check` (10/10 artifacts), host builds, and docs with zero legacy shims.
 - **`crates/nve-mdx` Pure-Rust `.md`/`.mdx` Compiler & `NVS1` Search Index** (`47e793b`)
   - Zero-dependency CommonMark/GFM parser, YAML/TOML frontmatter, Nextra-style `_meta.toml` navigation + `PrevNext`, fenced directives (`:::callout`, `:::tabs`, `:::steps`, `:::cards`, `:::demo`), declarative `<Component prop="val" num={42} />` tags + ` ```rsx live ` blocks, compile-time schema/link/anchor validator, 13-language pure-Rust syntax highlighter, deterministic Rust/Dioxus codegen, and binary `NVS1` full-text search index (`< 1 ms` queries, FNV-1a64 checksum). 12/12 tests, 0 Clippy warnings, `wasm32` clean.
-- **`nve-router::web` Browser History API Adapter** (`0827eab`)
+- **`nve-router::web` Browser History API Adapter** (`0827eab`, `e691874`)
   - Cross-platform `HistoryBackend` (`MemoryHistoryBackend` + `wasm32` `BrowserHistoryBackend`), `WebHistoryAdapter` with GitHub Pages `base_path` normalization, deduplicated `pushState`/`replaceState`, loop-free `popstate`, browser-accurate link interception, and `#anchor` scrolling. 17/17 tests, 0 native/`wasm32` Clippy warnings.
 
 ---
@@ -23,17 +23,17 @@ Chronological log of completed, verified milestones in `native-view-engine`.
 
 - **Swift/Dart Direct FFI Codegen DRY, `NveDirectEncodable` & C11/Rust `offset_of!` ABI Checks** (`66832d2`)
   - Split `NveDirectFfi.swift` (551L) into `NveDirectArena.swift` (188L), `NveDirectValueEncoding.swift` (268L), and `NveDirectWriters.swift` (246L) and removed its line-count test exemption.
-  - Added zero-boxing `NveDirectEncodable` + `StaticString` keys (`NveDirectPropsWriter.withEncodedProps`) across SwiftUI and generated Swift (deleting `pinnedBuffers`), unified Dart codegen onto shared `nve_bin_codec.dart` + `nve_hybrid_runtime.dart` + `direct_ffi.dart`, and added compile-time `offset_of!` assertions on `ffi_types.rs` cross-checked against C11 `_Static_assert(offsetof(...))` in `nve_abi.h`.
+  - Added zero-boxing `NveDirectEncodable` + `StaticString` keys (`NveDirectPropsWriter.withEncodedProps`) across SwiftUI and generated Swift (deleting `pinnedBuffers`), unified Dart codegen onto shared `nve_bin_codec.dart` + `nve_hybrid_runtime.dart` + `direct_ffi.dart`, and added compile-time `offset_of!` assertions on `ffi_types.rs` cross-checked against C11 `_Static_assert(offsetof(...))`.
   - Verified: 52/52 Rust, 42/42 Swift, 52/52 Flutter (`0` analyze issues).
 - **Multi-Window Lifecycle Primitives Across 7 Hosts** (`21d86ac`, `b1a7922`)
-  - `SurfacePresentation`, `WindowManager` (modal parent focus blocking, cascading child sheet/popover close, cancelable `CloseRequested` veto), and zero-JSON binary `NVW1` command/event codec in `crates/nve-interop`.
-  - Multi-window managers across Skia `winit`, macOS AppKit (`NveMacWindowManager`), iOS/iPadOS `UIWindowScene` allocator, Windows Win32 (`NveWinWindowManager`), GTK4 (`NveGtkWindowManager`), Qt 6 (`NveQtWindowManager`), and Web WASM (`ACTIVE_SHELLS` + `BroadcastChannel`).
-- **`NVE_IFACE_HOST = 5` Binary Capability ABI & Tier-1 `crates/nve-sdk`** (`0aeee16`, `9174788`)
-  - Single zero-JSON binary host-capability interface (`NVE_IFACE_HOST = 5`, `NVH1`, `NVT2`, `NVL1`) regenerated across all 5 ABI targets (`0x54A4A32B6F258107`).
-  - Zero-dependency Tier-1 native capabilities: Clipboard, Filesystem/File Picker, Secure Store (macOS Keychain / Win32 CredMan / Unix fallback), Linking, live System Theme & Locale (`NveChannelBus` retained binary replay), Notifications (with unbundled macOS `bundleIdentifier` guard), and Haptics.
+  - Added `SurfacePresentation`, `WindowManager` (modal parent focus blocking, cascading child sheet/popover close, cancelable `CloseRequested` veto), and zero-JSON binary `NVW1` command/event codec in `crates/nve-interop`.
+  - Implemented multi-window managers across Skia `winit`, macOS AppKit (`NveMacWindowManager`), iOS/iPadOS `UIWindowScene` allocator, Windows Win32 (`NveWinWindowManager`), GTK4 (`NveGtkWindowManager`), Qt 6 (`NveQtWindowManager`), and Web WASM (`ACTIVE_SHELLS` + `BroadcastChannel`).
+- **`NVE_IFACE_HOST = 5` Binary Capability ABI & Tier-1 `crates/nve-sdk`** (`0aeee16`, `9174788`, `36efdd3`)
+  - Added single zero-JSON binary host-capability interface (`NVE_IFACE_HOST = 5`, `NVH1`, `NVT2`, `NVL1`) regenerated across all 5 ABI targets (`0x54A4A32B6F258107`).
+  - Shipped zero-dependency Tier-1 native capabilities: Clipboard, Filesystem/File Picker, Secure Store (macOS Keychain / Win32 CredMan / Unix fallback), Linking, live System Theme & Locale (`NveChannelBus` retained binary replay), Notifications (with unbundled macOS `bundleIdentifier` guard), and Haptics. Fixed Retina 2x SwiftUI `NSHostingView` bitmap backing test (`9174788`).
 - **`crates/nve-ui` Accessible Component Kit & Extended ARIA/`tabIndex`** (`0995977`)
   - Added 12 typed ARIA + `tabIndex` attributes to `crates/nve-dioxus` with zero ABI changes.
-  - Built 15 accessible, themeable components (`Stack`, `Row`, `Col`, `Separator`, `Card`, `Button`, `IconButton`, `Badge`, `Input`, `Checkbox`, `Switch`, `Tabs`, `Dialog`/`Modal`, `Popover`/`Tooltip`, `DropdownMenu`, `Toast`, 100k-row Fenwick `VirtualList`) with `UiTheme`, atomic `StyleBuf`, `FocusTrap`, and `RovingFocus`.
+  - Built 15 accessible, themeable components (`Stack`, `Row`, `Col`, `Separator`, `Card`, `Button`, `IconButton`, `Badge`, `Input`, `Checkbox`, `Switch`, `Tabs`, `Dialog`/`Modal`, `Popover`/`Tooltip`, `DropdownMenu`, `Toast`, 100k-row Fenwick `VirtualList`) with `UiTheme`, `StyleBuf`, `FocusTrap`, and `RovingFocus`.
 - **`crates/nve-router` Type-Safe Stack, Tab, Modal & Deep-Link Router** (`2c63272`)
   - Zero-proc-macro `define_routes!`, cursor-based stack + independent per-tab stacks + isolated modal overlays, synchronous redirect/cycle-safe guards, deep-link URI matching, binary `NVN1` `CHANNEL_ID_NAVIGATION` bridge, and Dioxus `RouterProvider`/`TabRouterProvider`/`Outlet`/`Link`.
 
@@ -43,22 +43,92 @@ Chronological log of completed, verified milestones in `native-view-engine`.
 
 - **Live Windows 11 (`samuel-pc`) Verification — D3D12, RNW 0.88, Full Rust Workspace & WinSock2 `PairClient`** (`58106d1`, `7509985`, `020f6d0`)
   - Verified live on Windows 11 Pro (Build 26200, MSVC 19.51, Cargo 1.100): Skia D3D12 (`--features skia-d3d`, 32/32), full Rust workspace (257/257 + 0 Clippy warnings), `cxx/nve-fabric-bridge` + `ws2_32` (2/2, 0 `/W4` warnings), `hosts/windows-shell` Standalone & RNW 0.88 Fabric (3/3, 0 `/W4` warnings across 63 Ninja targets), and live cross-process `nve.exe pair` → `nve_windows_shell.exe --pair-connect` byte-for-byte identical across WebSocket, TCP, and UDP.
-  - Fixed D3D12 `submit_frame` double borrow, MSVC `LNK2005` `mod cdylib_export`, Windows `afd.sys` non-blocking UDP + `WSAECONNRESET` in both Rust and C++, Cargo 1.100 per-unit `build-dir` + `@response_file`, CRLF ABI drift checks, and documented 5 upstream quirks in `docs/UPSTREAM.md`.
+  - Fixed D3D12 `submit_frame` double borrow, MSVC `LNK2005` `mod cdylib_export`, Windows `afd.sys` non-blocking UDP + `WSAECONNRESET` in both Rust and C++, Cargo 1.100 per-unit `build-dir` + `@response_file`, CRLF ABI drift checks, and documented 5 upstream quirks in [docs/UPSTREAM.md](./UPSTREAM.md).
 - **Skia Rendering Polish, Drag Range Selection, Native Clipboard & Modular Perf Refactor** (`bc92d40`, `8d96bb0`)
   - Forwarded `font-weight`, `text-align`, `box-shadow`, `overflow` via `raw_props` (zero ABI churn); added weighted `cosmic-text`, aligned text, `ScrollView` overlay scrollbars, analytical `erfc` `box-shadow`, mouse-drag & double-click range selection, and zero-dep native OS clipboard.
   - Split `raster.rs`, `image_cache.rs`, and `gpu/mod.rs` into `< 635`-line modules; added rounded-clip interior-span fast path, `O(log n)` LRU, per-filter PNG row unfiltering, and DRY `gpu/select.rs`.
 - **Modular `PairClient`, WinSock2 Runtime & Windows/Android/iOS Thin-Client Pairing** (`8ea05dc`)
   - Split `pair_client.cpp` (2,977L) into 5 `< 700`-line units, eliminated 100 Hz idle polling via deadline-driven `poll`/`WSAPoll` + wake fd, added WinSock2 runtime + `ws2_32`, and wired zero-cdylib `--pair-connect` across Windows, Android (JNI + `NvePairController` + `INTERNET`), and iOS (`nve://pair?...` + `NSLocalNetworkUsageDescription`).
 - **Zero-Dep Binary CRDT Engine (`NVC1`) & Studio Multi-Peer Convergence** (`b3ecf8f`, `b1585e1`)
-  - HLC, `LwwRegister`, `GCounter`/`PnCounter`, `OrSet`, `RgaList`, and `NVC1` binary delta wire format in `crates/nve-interop/src/crdt/`, plus modular `StudioCrdtDoc` (5-peer partition-heal convergence + Criterion benchmarks).
+  - Implemented HLC, `LwwRegister`, `GCounter`/`PnCounter`, `OrSet`, `RgaList`, and `NVC1` binary delta wire format in `crates/nve-interop/src/crdt/`, plus modular `StudioCrdtDoc` (5-peer partition-heal convergence + Criterion benchmarks).
 - **Live Browser E2E for Docs, Workbench & Real `nve pair` Binary WebSocket** (`eb5a7ac`)
   - Added ephemeral `--ws-port 0` + `NVE_PAIR_READY` readiness line in `nve pair` and expanded `hosts/web-shell/e2e/run_e2e.mjs` to 6/6 live headless Chrome suites (including live `?pair=ws://...` Counter streaming & `InputEvents=11` round-trips).
 
 ---
 
-## Waves 1–11 (Summary of Core Engine & Multi-Host Foundation)
+## Wave 11 — Workspace Clippy Gate, Security Hardening, C++20 `PairClient`, Studio Docs/Workbench & Perf Breakthroughs
 
-- **Core Binary Engine & Modular C ABI**: Flat binary `CommandBuffer`/`EventRing`, 64-byte `NveRenderNode` Scene ABI, modular `nve_get_interface(1..=4)`, `MmapSnapshot` + `.nvewal` WAL persistence (`NWS1` v2), pluggable Taffy/Yoga layout engines, Tier-1 `< 50 ms` `NVP1` RSX diff patching, Tier-2 `cdylib` hot-swap, and strict full-workspace + `wasm32` Clippy `-D warnings` CI gates (`a205e34`..`88c74d9`).
-- **Performance & Size Wins**: Stack-packed `CommandBufferBuilder` (`44.14 µs → 21.17 µs`, -51.9%), inline zero-alloc `GestureArbitrator` (`246.96 ns → 64.51 ns`, -73.8%), `[profile.wasm-release]` (`1,500 KB → 786 KB raw / 285.8 KiB gzipped`), and `cargo nve bench` Cold-Start & Peak RSS profiling (`2d1ceae`).
-- **9 Native + Web Hosts & 5-Target Codegen**: Skia Desktop, Web WASM (`Wizer` Frame-0), macOS AppKit, iOS UIKit/Fabric, Windows Direct2D/RNW, Android JNI/Jetpack Compose, Qt 6 Widgets+Quick, GTK4, SwiftUI Kit, Flutter Impeller — all supporting native `NVE_DRAW1` vector canvas, accessibility/IME, and bi-directional 5-target `nve-codegen`.
-- **Flagship Studio Workspace**: 100k-row Fenwick virtualized stream, Notion-class Block-Doc Editor (`ActiveView::Docs`), Multi-Viewport Meta Workbench (`ActiveView::Workbench`), `Cmd+K` palette, PNG avatars, `<Island>` sandbox, and live sync telemetry.
+- **Strict Full-Workspace & `wasm32` Clippy `-D warnings` CI Gate** (`36c52c3`, `04c7f91`, `88c74d9`)
+  - Eliminated every Clippy warning across all workspace crates and `wasm32-unknown-unknown` targets and enforced `-D warnings` in CI.
+- **Codegen Security Hardening, PNG/Vulkan Safety & Tighter CI Gates** (`6a2731b`, `a205e34`)
+  - Neutralized string literal and comment injection across codegen emitters, hardened PNG/Vulkan decoding paths, and tightened CI verification gates.
+- **Zero-Dep C++20 `nve::PairClient` & Desktop Thin-Client Pairing** (`67fe847`)
+  - Implemented zero-dependency C++20 `nve::PairClient` (`NVT1`/`NVD1` over UDP/TCP/WS), wired paired thin-client mode into macOS AppKit, Qt 6, and GTK4 shells, and hardened `EventRingWriter`.
+- **Studio Crash-Safe Persistence (`NWS1` v2 + `.nvewal`), Block-Doc Editor & Meta Workbench** (`77e8ba5`)
+  - Added local-first `MmapSnapshot` + append-only `.nvewal` WAL persistence (`NWS1` v2 + FNV-1a64 checksums), Notion-class `ActiveView::Docs` block editor with Markdown export, and `ActiveView::Workbench` multi-viewport meta workbench.
+- **Codec, Gesture, WASM Size & Cold-Start/RSS Perf Wave** (`2d1ceae`, `9406d1e`, `9545a54`, `cb25fe1`)
+  - Stack-packed `CommandBufferBuilder` (**44.14 µs → 21.17 µs**, -51.9%), zero-alloc inline `GestureArbitrator` (**246.96 ns → 64.51 ns**, -73.8%), added `[profile.wasm-release]` (**1,500 KB → 786 KB raw / 285.8 KiB gzipped**), added `cargo nve bench` Cold-Start & Peak RSS profiling, validated `text_slab` `NVE_DRAW1` in Android JNI, cleared Flutter analyzer diagnostics, and refreshed quiet-machine benchmark baselines.
+
+---
+
+## Wave 10 — Live `NVT1`/`NVD1` Pairing, Universal `NVE_DRAW1` Canvas & Zero-JSON Wire Codecs
+
+- **Live `NVT1`/`NVD1` Thin-Client Pairing & `SyncTelemetry` Push** (`f6b35bd`, `1fc01bb`)
+  - Added bidirectional `InputEvents = 11` backchannel, `nve pair` / `nve dev --pair` daemon, and live thin-client pairing across `hosts/skia-shell` and `hosts/web-shell` with real-time `SyncTelemetry` pushing.
+- **Universal Native `NVE_DRAW1` Vector Canvas, IME & Accessibility Across All 9 Hosts** (`de61d5d`, `93ea769`, `2aa1431`, `1232b8c`, `590a6e2`, `6491531`, `79ca053`, `0987c7c`, `b67ecf8`)
+  - Implemented zero-alloc `NVE_DRAW1` vector canvas rendering across Skia Desktop, Web HTML5 Canvas, Apple CoreGraphics (`NveAppleCanvasView`), Qt 6, GTK4, Windows Direct2D, Android/Compose (`NveCanvasView`), Flutter Impeller, and SwiftUI.
+  - Added interactive `TextInput` focus/IME/caret/placeholder rendering, zero-JSON `NK1` binary keydown codecs, Web ARIA/IME guards, batched Android TalkBack metadata, and `Image` caches across all hosts.
+- **Zero-JSON Binary Wire Codecs & Workspace Modularization** (`f17586d`, `c354281`, `4b5f835`, `7c77d54`)
+  - Eliminated remaining JSON on internal wire codecs (`crates/nve-abi`, `nve-engine`, `nve-dioxus`, `studio-workspace`, `nve-backend-web`) and split oversized Rust/C++ host, CLI, and component modules into focused submodules.
+
+---
+
+## Wave 9 — `O(changed)` `NveSceneView` Migration, Tier-1 RSX Hot-Patch & Zero-Copy Rust/C++ Pipeline
+
+- **Direct `NveSceneView` Host Migration Across All Platforms** (`cf1f3a7`, `bbb4687`, `1469a31`, `a3b6017`, `eec1993`, `fa47479`, `f8d24fd`)
+  - Added direct `NveSceneView` publisher, scratch arena, and slot table in `cxx/nve-fabric-bridge`, and migrated Apple, Android, Qt 6 (retained `QSGNode` tree), GTK4, Windows, Flutter, and Web shells to `O(changed)` `NveSceneView` reconciliation with `Image` rendering and `ScrollView` events.
+- **Tier-1 `< 10 ms` RSX Hot-Patcher & Full Event Dispatch** (`350258b`, `77b8e0e`)
+  - Implemented targeted `NVP1` binary RSX template hot-patching across `nve-cli`, `nve-dioxus`, and `nve-backend-web` with instant live style/text patching without recompiling.
+- **Zero-Copy Streaming ABI, FFI Panic Boundaries & Transactional Reloads** (`d3b43d4`, `27776f4`, `73cbdda`, `5cd04b8`)
+  - Built zero-copy streaming `CommandBuffer` decoder, slot-indexed headless/Taffy layout engine, zero-clone Skia display list, strict FFI `catch_unwind` panic boundaries, guarded raw slices, and transactional `HotAppInstance::reload(&mut self)`.
+- **Native OS Accessibility & IME Across Apple, Qt 6 & GTK4 + Full CI Parity** (`db0b9c8`, `dcbef0e`, `f254529`)
+  - Wired native VoiceOver/AT-SPI/Qt accessibility and `TextInput`/IME across Apple, Qt 6, and GTK4; expanded `studio-workspace` to exercise every NVE primitive; brought `scripts/check-all.sh` and GitHub Actions CI to 100% host & suite parity.
+
+---
+
+## Waves 6–8 — Unified Nitro-Style Hybrid Codegen, Live `NVD1` Transport, Skia GPU Swapchains & Snapshot WAL
+
+- **Nitro-Inspired 6-Target Hybrid FFI Codegen & Unified Core + Scene ABI** (`d131b04`, `2e0fe6a`, `8213168`)
+  - Created Rust-first 6-target Hybrid FFI codegen (`crates/nve-codegen`) and unified both Core ABI and zero-decode 64-byte `NveRenderNode` Scene ABI onto the single-source schema pipeline (`C`, `Rust`, `Swift`, `Dart`, `Kotlin`/`Java`, `TypeScript`).
+- **Live UDP, TCP & RFC 6455 WebSocket `NVD1` Delta Transport** (`3078642`)
+  - Implemented frame delta diffing/patching (`NVD1`) and live UDP (fragmented + RTO resync), TCP, and zero-dep RFC 6455 WebSocket transports in `crates/nve-interop`.
+- **Skia Hardware GPU Swapchains (Metal, Vulkan, D3D12) & Standalone `hosts/skia-shell`** (`23f690a`, `b3d2c06`, `937d137`)
+  - Added `cosmic-text` native font shaping/rasterization, wired Metal, Vulkan, and Direct3D 12 hardware GPU swapchains in `crates/nve-backend-skia`, and extracted the runnable `winit` desktop host into `hosts/skia-shell` (`nve-skia-shell`).
+- **Flagship Studio Depth & Standalone Flexbox Parity** (`360f735`, `07aba59`)
+  - Added 100k Fenwick-tree virtualized stream, live Taffy/Yoga layout switcher, binary sync delta telemetry, panic-isolated plugin host, and mobile portrait layout in `examples/studio-workspace`.
+  - Achieved full standalone C++20 Flexbox parity for post-flex text wrapping and `Baseline` alignment in `cxx/nve-fabric-bridge`.
+- **Instant-Boot `MmapSnapshot` Phase 2, WAL, `Wizer` Pre-Init & `nve dev` DX** (`22d6eaf`, `bb5a054`, `1d8dcd1`, `32f24ed`, `bcb71e7`)
+  - Wired zero-copy Frame-0 `MmapSnapshot` across C++20 runtime and desktop shells, added append-only `.nvewal` WAL + Dioxus signal archive + GTK4/iOS replay + WASM `Wizer` Frame-0 pre-init, and upgraded `nve dev` with LAN `--host 0.0.0.0` binding, default `studio-workspace` launch, and `--web` live auto-rebuild.
+
+---
+
+## Waves 3–5 — Multi-Host Expansion (Qt 6, GTK4, Windows, iOS, Android, Flutter, Web) & Zero-Copy Direct FFI
+
+- **Qt 6 Widgets + GPU Qt Quick, GTK4, Windows Direct2D/RNW & Android Compose Kit** (`7037a97`, `d5702c5`, `d6ac926`, `0be9bbf`, `22f4ddd`, `098f95f`, `51c5ae4`)
+  - Built native hosts on top of the shared C++20 `nve_host_runtime`: Qt 6 `QWidget` (`hosts/qt-shell`) + GPU-composited `NveQtQuickItem`, GTK4 (`hosts/gtk-shell`), Windows Win32/Direct2D + `react-native-windows` Fabric (`hosts/windows-shell`), and Android Library Gradle module (`hosts/compose-kit`).
+  - Added continuous Rust Criterion & C++20 benchmark regression tracking in CI (`51c5ae4`).
+- **Zero-Xcode iOS, Zero-Gradle Android, Flutter `RenderBox` & Headless Chrome Web E2E** (`f89e4ae`, `ac341ab`, `fe11f2d`, `bc37d92`, `2c84c74`, `9b2dcae`, `c48f7a6`, `1870fd6`, `714e84e`, `e111231`)
+  - Added standalone zero-Xcode iOS Simulator launcher (with iOS 27 `UIScene` lifecycle and Xcode 27 `DeviceHub.app`), standalone zero-Gradle Android APK builder/emulator launcher, Flutter Path 1 direct `RenderBox` + `Canvas` host (`NveCanvasView`), default Studio Web WASM build, headless Chrome E2E test harness, initial live Windows 11 MSVC 19.51 verification, and `docs/UPSTREAM.md`.
+- **Zero-Copy Direct FFI (`NveBinValue`), Instant-Boot Frame-0 Snapshot & Flagship Studio** (`7430122`, `cc7727e`, `a4a51ae`, `a94dd2c`, `b7dc482`)
+  - Replaced JSON event/props crossings with zero-copy direct FFI and binary `NveBinValue` (`7430122`), introduced Instant-Boot Frame-0 `CommandBuffer` + `mmap` state snapshots (`cc7727e`), created the flagship `Aether Workspace + NVE Studio` example (`a4a51ae`), and added unified `scripts/check-all.sh` + multi-OS GitHub Actions CI (`a94dd2c`).
+
+---
+
+## Waves 1–2 — Core Binary Engine, Modular C ABI, Pluggable Layout & Testing Foundation
+
+- **Composable Layout Engines, Shared C++20 Runtime & Apple DRY Extraction** (`e38f333`, `264e359`, `0b916c3`, `533fd24`, `8d3afd9`)
+  - Introduced composable `LayoutEngine`/`TextMeasurer` traits, generic layout backends, and `nve-layout-yoga` (`e38f333`); built the shared C++20 native host runtime with Windows/MSVC portability (`264e359`); implemented intrinsic auto-sizing, `justify-content`, and `align-items` in standalone Flexbox (`0b916c3`); extracted shared iOS/macOS host logic into `hosts/apple-common/` (`533fd24`); fixed text style inheritance and native text measurement (`8d3afd9`).
+- **Deep Benchmarks, Property/Fuzz Tests & Host Kit Suites** (`c95d108`, `eda7340`, `135c8ae`, `23676ab`, `d6cf3c2`)
+  - Added C++20 microbenchmarks, fuzz tests, and decoder hardening (`c95d108`); Rust Criterion benchmarks and deep unit/property tests (`eda7340`); unit & integration suites for SwiftUI, Flutter, and Android JNI host kits (`135c8ae`); and initial `AGENTS.md`, README, and roadmap docs.
+- **Workspace Bootstrap & Modular `nve_get_interface` C ABI** (`63b381e`, `a90e7ec`, `5bae7f6`)
+  - Bootstrapped the multi-backend `native-view-engine` Cargo workspace (`nve-abi`, `nve-engine`, `nve-dioxus`, `nve-components`, `nve-interop`, `nve-codegen`, `nve-cli`, headless/Skia/Web backends, C++20 Fabric/Yoga/JSI bridge, Apple/Android/Flutter/SwiftUI host shells) and refactored the C ABI to the modular `nve_get_interface(1..=4)` architecture backed by the safe Rust `NveApp` trait and `export_nve_app!` macro.
