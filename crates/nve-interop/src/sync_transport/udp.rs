@@ -304,11 +304,11 @@ fn udp_server_loop(
                         if let Ok((fid, missing)) = decode_frag_nack(env.payload) {
                             state.metrics.snapshot.nacks_received += 1;
                             for idx in missing {
-                                if let Some(dg) = peer.lookup_frag(fid, idx) {
-                                    if socket.send_to(dg, src).is_ok() {
-                                        state.metrics.record_tx(now, dg.len());
-                                        state.metrics.snapshot.retransmits_sent += 1;
-                                    }
+                                if let Some(dg) = peer.lookup_frag(fid, idx)
+                                    && socket.send_to(dg, src).is_ok()
+                                {
+                                    state.metrics.record_tx(now, dg.len());
+                                    state.metrics.snapshot.retransmits_sent += 1;
                                 }
                             }
                         } else {
@@ -442,7 +442,7 @@ impl UdpDeltaClient {
         let (sid, win) = loop {
             let now = Instant::now();
             if now >= deadline { return Err(TransportError::HandshakeTimeout); }
-            if last_send.map_or(true, |t| now.saturating_duration_since(t) >= Duration::from_millis(25)) {
+            if last_send.is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_millis(25)) {
                 socket.send_to(&hello_pkt, self.server_addr)?;
                 self.shared.lock().unwrap().metrics.record_tx(now, hello_pkt.len());
                 last_send = Some(now);
@@ -635,14 +635,16 @@ fn udp_client_loop(
                     guard.metrics.snapshot.nacks_sent += 1;
                 }
             }
-            if let Some(mseq) = guard.session.next_missing_seq() {
-                if nack_cooldowns.get(&mseq).map_or(true, |t| now.saturating_duration_since(*t) >= Duration::from_millis(18)) {
-                    nack_cooldowns.insert(mseq, now);
-                    let env = encode_envelope(TransportMsgKind::DeltaSingle, sid, &guard.session.build_nack_packet(mseq));
-                    if socket.send_to(&env, server_addr).is_ok() {
-                        guard.metrics.record_tx(now, env.len());
-                        guard.metrics.snapshot.nacks_sent += 1;
-                    }
+            if let Some(mseq) = guard.session.next_missing_seq()
+                && nack_cooldowns
+                    .get(&mseq)
+                    .is_none_or(|t| now.saturating_duration_since(*t) >= Duration::from_millis(18))
+            {
+                nack_cooldowns.insert(mseq, now);
+                let env = encode_envelope(TransportMsgKind::DeltaSingle, sid, &guard.session.build_nack_packet(mseq));
+                if socket.send_to(&env, server_addr).is_ok() {
+                    guard.metrics.record_tx(now, env.len());
+                    guard.metrics.snapshot.nacks_sent += 1;
                 }
             }
             if now.saturating_duration_since(last_ping_sent) >= hb {
@@ -677,7 +679,7 @@ fn handle_udp_nvd_packet(
     let hdr = parsed.header();
     let (last_applied, max_win) = (guard.session.last_applied_seq(), guard.session.max_window() as u32);
     let mut send_kf_req = |guard: &mut ClientSharedState, reason: u8| {
-        if last_kf_req.map_or(true, |t| now.saturating_duration_since(t) >= Duration::from_millis(25)) {
+        if last_kf_req.is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_millis(25)) {
             *last_kf_req = Some(now);
             let req = encode_keyframe_request(sid, guard.session.last_applied_seq(), reason);
             if socket.send_to(&req, server_addr).is_ok() {
@@ -712,7 +714,7 @@ fn handle_udp_nvd_packet(
                     .and_then(|p| (p.payload().len() == 4).then(|| u32::from_le_bytes(p.payload().try_into().unwrap())))
                     .unwrap_or(0);
                 if hdr.seq.saturating_sub(missing_seq) < 2 { continue; }
-                if nack_cooldowns.get(&missing_seq).map_or(true, |t| now.saturating_duration_since(*t) >= Duration::from_millis(25)) {
+                if nack_cooldowns.get(&missing_seq).is_none_or(|t| now.saturating_duration_since(*t) >= Duration::from_millis(25)) {
                     nack_cooldowns.insert(missing_seq, now);
                     let nack_env = encode_envelope(TransportMsgKind::DeltaSingle, sid, &nack_nvd);
                     if socket.send_to(&nack_env, server_addr).is_ok() {

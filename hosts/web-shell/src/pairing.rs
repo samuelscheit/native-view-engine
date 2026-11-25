@@ -468,10 +468,9 @@ impl PairedWebSession {
             && self.viewport.height.is_finite()
             && self.viewport.width > 0.0
             && self.viewport.height > 0.0
+            && let Ok(Some(layout_pkt)) = self.encode_viewport_resize(self.viewport)
         {
-            if let Ok(Some(layout_pkt)) = self.encode_viewport_resize(self.viewport) {
-                self.outbound_queue.push_back(layout_pkt);
-            }
+            self.outbound_queue.push_back(layout_pkt);
         }
         Ok(self.outbound_queue.pop_front().unwrap_or_default())
     }

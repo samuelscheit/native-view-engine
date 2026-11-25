@@ -309,12 +309,14 @@ pub enum SurfaceEvent {
 /// - Lifecycle state machine (`Mounted`, `Paused`, `Resumed`, `Destroyed`) with subtree propagation
 /// - Theme, safe-area, scale-factor, and locale cascading with per-surface override support
 /// - Leak-free bottom-up cascading teardown
+type TeardownHook = Box<dyn FnOnce(&TeardownRecord) + Send + 'static>;
+
 pub struct SurfaceOrchestrator {
     next_id: SurfaceId,
     surfaces: BTreeMap<SurfaceId, SurfaceRecord>,
     roots: Vec<SurfaceId>,
     events: Vec<SurfaceEvent>,
-    teardown_hooks: BTreeMap<SurfaceId, Box<dyn FnOnce(&TeardownRecord) + Send + 'static>>,
+    teardown_hooks: BTreeMap<SurfaceId, TeardownHook>,
 }
 
 impl Default for SurfaceOrchestrator {
@@ -569,20 +571,19 @@ impl SurfaceOrchestrator {
 
         let mut transitioned = Vec::new();
         for id in targets {
-            if let Some(rec) = self.surfaces.get_mut(&id) {
-                if rec.state != LifecycleState::Destroyed
-                    && rec.state != next_state
-                    && rec.state.can_transition_to(next_state)
-                {
-                    let from = rec.state;
-                    rec.state = next_state;
-                    transitioned.push(id);
-                    self.events.push(SurfaceEvent::LifecycleChanged {
-                        surface_id: id,
-                        from,
-                        to: next_state,
-                    });
-                }
+            if let Some(rec) = self.surfaces.get_mut(&id)
+                && rec.state != LifecycleState::Destroyed
+                && rec.state != next_state
+                && rec.state.can_transition_to(next_state)
+            {
+                let from = rec.state;
+                rec.state = next_state;
+                transitioned.push(id);
+                self.events.push(SurfaceEvent::LifecycleChanged {
+                    surface_id: id,
+                    from,
+                    to: next_state,
+                });
             }
         }
         Ok(transitioned)

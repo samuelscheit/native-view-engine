@@ -95,7 +95,11 @@ pub(crate) fn peak_rss_bytes() -> Option<u64> {
         // SAFETY: `getrusage` returned 0 and initialized `usage`.
         let usage = unsafe { usage.assume_init() };
         let is_apple = cfg!(any(target_os = "macos", target_os = "ios"));
-        Some(normalize_maxrss_to_bytes(usage.ru_maxrss as i64, is_apple))
+        #[cfg(target_pointer_width = "64")]
+        let raw_maxrss: i64 = usage.ru_maxrss;
+        #[cfg(not(target_pointer_width = "64"))]
+        let raw_maxrss: i64 = i64::from(usage.ru_maxrss);
+        Some(normalize_maxrss_to_bytes(raw_maxrss, is_apple))
     }
     #[cfg(not(unix))]
     {
@@ -186,15 +190,15 @@ pub(crate) fn collect_artifact_sizes(
         if seen_paths.iter().any(|p: &PathBuf| p == &path) {
             return;
         }
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if meta.is_file() {
-                seen_paths.push(path.clone());
-                results.push(ArtifactSize {
-                    label,
-                    path,
-                    bytes: meta.len(),
-                });
-            }
+        if let Ok(meta) = std::fs::metadata(&path)
+            && meta.is_file()
+        {
+            seen_paths.push(path.clone());
+            results.push(ArtifactSize {
+                label,
+                path,
+                bytes: meta.len(),
+            });
         }
     };
 

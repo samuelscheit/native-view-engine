@@ -227,14 +227,13 @@ impl NveMutationWriter {
                 // element when Dioxus wraps a leaf text node inside `text { ... }`).
                 for &nid in &matched_text_nodes {
                     attr_targets.push(nid);
-                    if let Some(parent) = self.nodes.get(&nid).and_then(|n| n.parent) {
-                        if self
+                    if let Some(parent) = self.nodes.get(&nid).and_then(|n| n.parent)
+                        && self
                             .nodes
                             .get(&parent)
                             .is_some_and(|p| p.kind == ComponentKind::Text)
-                        {
-                            attr_targets.push(parent);
-                        }
+                    {
+                        attr_targets.push(parent);
                     }
                 }
                 attr_targets.sort_unstable();

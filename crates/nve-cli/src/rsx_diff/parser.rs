@@ -289,18 +289,18 @@ impl RsxIndex {
                 parse_rsx_attribute(lex, pos, close)
             {
                 if val_end == val_start + 1 {
-                    if let TokenKind::StringLit { .. } = lex.tokens[val_start] {
-                        if let Some(css_attr) = normalize_patchable_attr_name(&attr_name) {
-                            self.literals.insert(
-                                val_start,
-                                RsxLitContext::Attr {
-                                    element_open_idx: open,
-                                    attr_name: css_attr,
-                                    element_test_id: elem_test_id.clone(),
-                                    node_path: elem_path.clone(),
-                                },
-                            );
-                        }
+                    if let TokenKind::StringLit { .. } = lex.tokens[val_start]
+                        && let Some(css_attr) = normalize_patchable_attr_name(&attr_name)
+                    {
+                        self.literals.insert(
+                            val_start,
+                            RsxLitContext::Attr {
+                                element_open_idx: open,
+                                attr_name: css_attr,
+                                element_test_id: elem_test_id.clone(),
+                                node_path: elem_path.clone(),
+                            },
+                        );
                     }
                 } else {
                     self.scan_rust_range(lex, val_start, val_end);
@@ -336,14 +336,14 @@ fn find_element_static_test_id(lex: &LexResult<'_>, start: usize, end: usize) ->
     while pos < end {
         if let Some((attr_name, val_start, val_end, next_pos)) = parse_rsx_attribute(lex, pos, end)
         {
-            if is_test_id_attr(&attr_name) && val_end == val_start + 1 {
-                if let TokenKind::StringLit { raw, is_raw } = lex.tokens[val_start] {
-                    if let Ok(val) = unescape_string_literal(raw, is_raw) {
-                        if !val.is_empty() && !has_interpolation_braces(&val) {
-                            return Some(val);
-                        }
-                    }
-                }
+            if is_test_id_attr(&attr_name)
+                && val_end == val_start + 1
+                && let TokenKind::StringLit { raw, is_raw } = lex.tokens[val_start]
+                && let Ok(val) = unescape_string_literal(raw, is_raw)
+                && !val.is_empty()
+                && !has_interpolation_braces(&val)
+            {
+                return Some(val);
             }
             pos = next_pos;
             continue;

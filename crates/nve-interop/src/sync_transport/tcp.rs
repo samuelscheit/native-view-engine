@@ -257,10 +257,11 @@ fn tcp_server_peer_worker(
         inner.0.lock().unwrap().metrics.snapshot.malformed_packets_dropped += 1;
         return;
     };
-    let Ok(hello) = (env.kind == TransportMsgKind::Hello)
-        .then(|| HelloPayload::decode(env.payload))
-        .unwrap_or(Err(TransportError::MalformedFrame("expected Hello")))
-    else {
+    let Ok(hello) = (if env.kind == TransportMsgKind::Hello {
+        HelloPayload::decode(env.payload)
+    } else {
+        Err(TransportError::MalformedFrame("expected Hello"))
+    }) else {
         inner.0.lock().unwrap().metrics.snapshot.malformed_packets_dropped += 1;
         return;
     };
@@ -345,11 +346,11 @@ fn tcp_server_peer_worker(
                                         state.metrics.snapshot.nacks_received += 1;
                                         if let Ok(Some(retx)) = peer.session.handle_nack(env.payload, now_ms) {
                                             let retx_env = encode_envelope(TransportMsgKind::DeltaSingle, session_id, &retx);
-                                            if let Ok(mut ws) = peer.write_stream.lock() {
-                                                if let Ok(n) = write_framed_message(&mut ws, peer.framing, false, &retx_env) {
-                                                    state.metrics.record_tx(now, n);
-                                                    state.metrics.snapshot.retransmits_sent += 1;
-                                                }
+                                            if let Ok(mut ws) = peer.write_stream.lock()
+                                                && let Ok(n) = write_framed_message(&mut ws, peer.framing, false, &retx_env)
+                                            {
+                                                state.metrics.record_tx(now, n);
+                                                state.metrics.snapshot.retransmits_sent += 1;
                                             }
                                         }
                                     }
@@ -370,11 +371,11 @@ fn tcp_server_peer_worker(
                         if let (Some(peer), Some(latest)) = (state.peers.get_mut(&peer_id), latest_opt) {
                             let kf = peer.session.encode_keyframe(&latest, now_ms);
                             let kf_env = encode_envelope(TransportMsgKind::DeltaSingle, session_id, &kf);
-                            if let Ok(mut ws) = peer.write_stream.lock() {
-                                if let Ok(n) = write_framed_message(&mut ws, peer.framing, false, &kf_env) {
-                                    state.metrics.record_tx(now, n);
-                                    state.metrics.record_frame_sent(PacketKind::Keyframe, latest.len(), true);
-                                }
+                            if let Ok(mut ws) = peer.write_stream.lock()
+                                && let Ok(n) = write_framed_message(&mut ws, peer.framing, false, &kf_env)
+                            {
+                                state.metrics.record_tx(now, n);
+                                state.metrics.record_frame_sent(PacketKind::Keyframe, latest.len(), true);
                             }
                         }
                     }
@@ -389,10 +390,10 @@ fn tcp_server_peer_worker(
                     TransportMsgKind::Ping => {
                         if let Ok(ts) = decode_timestamp_us(env.payload) {
                             let pong = encode_ping_or_pong(TransportMsgKind::Pong, session_id, ts);
-                            if let Ok(mut ws) = write_stream.lock() {
-                                if let Ok(n) = write_framed_message(&mut ws, framing, false, &pong) {
-                                    guard.metrics.record_tx(now, n);
-                                }
+                            if let Ok(mut ws) = write_stream.lock()
+                                && let Ok(n) = write_framed_message(&mut ws, framing, false, &pong)
+                            {
+                                guard.metrics.record_tx(now, n);
                             }
                         }
                     }
@@ -532,10 +533,10 @@ impl TcpDeltaClient {
             guard.on_connected(sid, win, is_reconnect);
             let now = Instant::now();
             let ping = encode_ping_or_pong(TransportMsgKind::Ping, sid, guard.now_us(now));
-            if let Ok(mut ws) = write_stream.lock() {
-                if let Ok(n) = write_framed_message(&mut ws, self.framing, true, &ping) {
-                    guard.metrics.record_tx(now, n);
-                }
+            if let Ok(mut ws) = write_stream.lock()
+                && let Ok(n) = write_framed_message(&mut ws, self.framing, true, &ping)
+            {
+                guard.metrics.record_tx(now, n);
             }
         }
 
@@ -661,21 +662,21 @@ fn tcp_client_loop(
                             }
                             if let Some(ack_nvd) = outcome.ack_packet {
                                 let ack_env = encode_envelope(TransportMsgKind::DeltaSingle, sid, &ack_nvd);
-                                if let Ok(mut ws) = write_stream.lock() {
-                                    if let Ok(n) = write_framed_message(&mut ws, framing, true, &ack_env) {
-                                        guard.metrics.record_tx(now, n);
-                                        guard.metrics.snapshot.acks_sent += 1;
-                                    }
+                                if let Ok(mut ws) = write_stream.lock()
+                                    && let Ok(n) = write_framed_message(&mut ws, framing, true, &ack_env)
+                                {
+                                    guard.metrics.record_tx(now, n);
+                                    guard.metrics.snapshot.acks_sent += 1;
                                 }
                             }
                         }
                         Err(SyncDeltaError::BaseSequenceMismatch { .. }) => {
                             let req = encode_keyframe_request(sid, guard.session.last_applied_seq(), 3);
-                            if let Ok(mut ws) = write_stream.lock() {
-                                if let Ok(n) = write_framed_message(&mut ws, framing, true, &req) {
-                                    guard.metrics.record_tx(now, n);
-                                    guard.metrics.snapshot.keyframe_resyncs += 1;
-                                }
+                            if let Ok(mut ws) = write_stream.lock()
+                                && let Ok(n) = write_framed_message(&mut ws, framing, true, &req)
+                            {
+                                guard.metrics.record_tx(now, n);
+                                guard.metrics.snapshot.keyframe_resyncs += 1;
                             }
                         }
                         Err(_) => guard.metrics.snapshot.malformed_packets_dropped += 1,
@@ -683,10 +684,10 @@ fn tcp_client_loop(
                     TransportMsgKind::Ping => {
                         if let Ok(ts) = decode_timestamp_us(env.payload) {
                             let pong = encode_ping_or_pong(TransportMsgKind::Pong, sid, ts);
-                            if let Ok(mut ws) = write_stream.lock() {
-                                if let Ok(n) = write_framed_message(&mut ws, framing, true, &pong) {
-                                    guard.metrics.record_tx(now, n);
-                                }
+                            if let Ok(mut ws) = write_stream.lock()
+                                && let Ok(n) = write_framed_message(&mut ws, framing, true, &pong)
+                            {
+                                guard.metrics.record_tx(now, n);
                             }
                         }
                     }

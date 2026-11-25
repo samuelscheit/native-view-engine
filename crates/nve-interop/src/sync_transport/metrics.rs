@@ -112,8 +112,10 @@ pub(crate) struct MetricsTracker {
 
 impl MetricsTracker {
     pub(crate) fn new(schema_version: u16, window: Duration) -> Self {
-        let mut snapshot = PairingMetrics::default();
-        snapshot.schema_version = schema_version;
+        let snapshot = PairingMetrics {
+            schema_version,
+            ..PairingMetrics::default()
+        };
         Self {
             snapshot,
             tx_meter: SlidingWindowMeter::new(window),

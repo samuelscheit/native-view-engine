@@ -261,10 +261,10 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         if node.kind != ComponentKind::TextInput {
             return None;
         }
-        if self.focus.focused_node == Some(node_id) {
-            if let Some(override_val) = &self.focus.uncontrolled_value {
-                return Some(override_val.clone());
-            }
+        if self.focus.focused_node == Some(node_id)
+            && let Some(override_val) = &self.focus.uncontrolled_value
+        {
+            return Some(override_val.clone());
         }
         Some(raw_text_input_value(node).to_owned())
     }
@@ -333,12 +333,11 @@ impl<L: LayoutEngine> SkiaBackend<L> {
     /// when changed.
     pub fn set_select_all(&mut self, select_all: bool) {
         let effective = select_all && self.focus.focused_node.is_some();
-        if effective {
-            if let Some(id) = self.focus.focused_node {
-                if let Some(val) = self.text_input_value(id) {
-                    self.focus.caret_byte_index = val.len();
-                }
-            }
+        if effective
+            && let Some(id) = self.focus.focused_node
+            && let Some(val) = self.text_input_value(id)
+        {
+            self.focus.caret_byte_index = val.len();
         }
         if self.focus.select_all != effective {
             self.focus.select_all = effective;

@@ -68,9 +68,9 @@ pub fn encode_xor_rle_delta_into(base: &[u8], next: &[u8], out: &mut Vec<u8>) {
             out.push(0x80);
             write_varint(lit_len as u64, out);
         }
-        for idx in lit_start..i {
-            let b = base.get(idx).copied().unwrap_or(0);
-            out.push(b ^ next[idx]);
+        for (offset, &nb) in next[lit_start..i].iter().enumerate() {
+            let b = base.get(lit_start + offset).copied().unwrap_or(0);
+            out.push(b ^ nb);
         }
     }
 }

@@ -917,7 +917,7 @@ fn bin_value_roundtrip_depth_guard_and_zero_copy_view() {
         NveValue::bool(false),
         NveValue::i64(i64::MIN),
         NveValue::i64(i64::MAX),
-        NveValue::f64(3.141592653589793),
+        NveValue::f64(std::f64::consts::PI),
         NveValue::from_str("hello 🚀"),
         NveValue::from_bytes(&[1, 2, 3, 4, 5]),
     ];
@@ -955,7 +955,7 @@ fn bin_value_roundtrip_depth_guard_and_zero_copy_view() {
     assert_eq!(arr.array_at(1).unwrap().as_bool(), Some(false));
     assert_eq!(arr.array_at(2).unwrap().as_i64(), Some(i64::MIN));
     assert_eq!(arr.array_at(3).unwrap().as_i64(), Some(i64::MAX));
-    assert_eq!(arr.array_at(4).unwrap().as_f64(), Some(3.141592653589793));
+    assert_eq!(arr.array_at(4).unwrap().as_f64(), Some(std::f64::consts::PI));
     assert_eq!(arr.array_at(5).unwrap().as_str(), Some("hello 🚀"));
     assert_eq!(arr.array_at(6).unwrap().as_bytes(), Some(&[1, 2, 3, 4, 5][..]));
     assert!(arr.array_at(7).is_none());

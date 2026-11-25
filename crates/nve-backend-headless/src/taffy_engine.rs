@@ -134,11 +134,11 @@ impl LayoutEngine for TaffyLayoutEngine {
     fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
         if let Some(slot) = self.slots.get(id) {
             let tid = slot.taffy_id;
-            if let Some(ctx) = self.taffy.get_node_context_mut(tid) {
-                if ctx.kind != kind {
-                    ctx.kind = kind;
-                    let _ = self.taffy.mark_dirty(tid);
-                }
+            if let Some(ctx) = self.taffy.get_node_context_mut(tid)
+                && ctx.kind != kind
+            {
+                ctx.kind = kind;
+                let _ = self.taffy.mark_dirty(tid);
             }
             return;
         }
@@ -198,12 +198,12 @@ impl LayoutEngine for TaffyLayoutEngine {
         } else {
             StyleProps::default().font_size
         };
-        if let Some(ctx) = self.taffy.get_node_context_mut(tid) {
-            if (ctx.font_size - font_size).abs() > f32::EPSILON {
-                ctx.font_size = font_size;
-                if ctx.kind == ComponentKind::Text {
-                    let _ = self.taffy.mark_dirty(tid);
-                }
+        if let Some(ctx) = self.taffy.get_node_context_mut(tid)
+            && (ctx.font_size - font_size).abs() > f32::EPSILON
+        {
+            ctx.font_size = font_size;
+            if ctx.kind == ComponentKind::Text {
+                let _ = self.taffy.mark_dirty(tid);
             }
         }
     }
@@ -213,20 +213,20 @@ impl LayoutEngine for TaffyLayoutEngine {
             return;
         };
         let tid = slot.taffy_id;
-        if let Some(ctx) = self.taffy.get_node_context_mut(tid) {
-            if ctx.text.as_deref() != Some(text) {
-                match &mut ctx.text {
-                    Some(existing) => {
-                        existing.clear();
-                        existing.push_str(text);
-                    }
-                    None => {
-                        ctx.text = Some(text.to_owned());
-                    }
+        if let Some(ctx) = self.taffy.get_node_context_mut(tid)
+            && ctx.text.as_deref() != Some(text)
+        {
+            match &mut ctx.text {
+                Some(existing) => {
+                    existing.clear();
+                    existing.push_str(text);
                 }
-                if ctx.kind == ComponentKind::Text {
-                    let _ = self.taffy.mark_dirty(tid);
+                None => {
+                    ctx.text = Some(text.to_owned());
                 }
+            }
+            if ctx.kind == ComponentKind::Text {
+                let _ = self.taffy.mark_dirty(tid);
             }
         }
     }

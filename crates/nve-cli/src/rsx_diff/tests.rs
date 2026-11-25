@@ -440,8 +440,8 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     let original = std::fs::read_to_string(&ui_path)
         .unwrap_or_else(|e| panic!("failed reading {}: {e}", ui_path.display()));
 
-    // 1. Static text edit inside `rsx!` ("AETHER" -> "AETHER STUDIO")
-    let edited_text = original.replacen("\"AETHER\"", "\"AETHER STUDIO\"", 1);
+    // 1. Static text edit inside `rsx!` ("LOCAL-FIRST | NVE" -> "LOCAL-FIRST | LIVE")
+    let edited_text = original.replacen("\"LOCAL-FIRST | NVE\"", "\"LOCAL-FIRST | LIVE\"", 1);
     assert_ne!(original, edited_text);
     let t0 = Instant::now();
     let text_patch = expect_patch(diff_rsx_source(
@@ -454,7 +454,7 @@ fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
     assert!(text_patch.attr_updates.is_empty());
     assert_eq!(
         text_patch.text_replacements,
-        vec![("AETHER".into(), "AETHER STUDIO".into())]
+        vec![("LOCAL-FIRST | NVE".into(), "LOCAL-FIRST | LIVE".into())]
     );
     assert!(
         elapsed.as_millis() < 10,

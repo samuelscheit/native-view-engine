@@ -284,10 +284,10 @@ impl SignalDelta {
         for _ in 0..op_count {
             let op_kind = read_u8(bytes, &mut pos)?;
             let slot_id = read_u64_le(bytes, &mut pos)?;
-            if let Some(prev) = prev_slot {
-                if slot_id <= prev {
-                    return Err(SignalArchiveError::UnsortedOrDuplicateSlot(slot_id));
-                }
+            if let Some(prev) = prev_slot
+                && slot_id <= prev
+            {
+                return Err(SignalArchiveError::UnsortedOrDuplicateSlot(slot_id));
             }
             prev_slot = Some(slot_id);
             match op_kind {
@@ -416,10 +416,10 @@ impl SignalTableSnapshot {
 
         for _ in 0..slot_count {
             let slot_id = read_u64_le(bytes, &mut pos)?;
-            if let Some(prev) = prev_slot {
-                if slot_id <= prev {
-                    return Err(SignalArchiveError::UnsortedOrDuplicateSlot(slot_id));
-                }
+            if let Some(prev) = prev_slot
+                && slot_id <= prev
+            {
+                return Err(SignalArchiveError::UnsortedOrDuplicateSlot(slot_id));
             }
             prev_slot = Some(slot_id);
             let value = decode_value(bytes, &mut pos)?;

@@ -48,7 +48,7 @@ impl FenwickHeightTree {
             total = total.saturating_add(h);
             let i = idx + 1;
             bit[i] = bit[i].saturating_add(h);
-            let parent = i + (i & i.wrapping_neg());
+            let parent = i + i.isolate_lowest_one();
             if parent <= n {
                 bit[parent] = bit[parent].saturating_add(bit[i]);
             }
@@ -102,14 +102,14 @@ impl FenwickHeightTree {
             self.total = self.total.saturating_add(delta);
             while i <= n {
                 self.bit[i] = self.bit[i].saturating_add(delta);
-                i += i & i.wrapping_neg();
+                i += i.isolate_lowest_one();
             }
         } else {
             let delta = u32::from(old_h - clamped);
             self.total = self.total.saturating_sub(delta);
             while i <= n {
                 self.bit[i] = self.bit[i].saturating_sub(delta);
-                i += i & i.wrapping_neg();
+                i += i.isolate_lowest_one();
             }
         }
     }

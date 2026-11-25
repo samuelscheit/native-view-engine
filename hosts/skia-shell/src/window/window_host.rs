@@ -292,13 +292,13 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             .focused_node()
             .filter(|&id| self.session.backend().is_text_input(id));
         window.set_ime_allowed(focused.is_some());
-        if let Some(node_id) = focused {
-            if let Some(rect) = self.session.backend().layout_of(node_id) {
-                window.set_ime_cursor_area(
-                    LogicalPosition::new(rect.x as f64, rect.y as f64),
-                    LogicalSize::new(rect.width as f64, rect.height as f64),
-                );
-            }
+        if let Some(node_id) = focused
+            && let Some(rect) = self.session.backend().layout_of(node_id)
+        {
+            window.set_ime_cursor_area(
+                LogicalPosition::new(rect.x as f64, rect.y as f64),
+                LogicalSize::new(rect.width as f64, rect.height as f64),
+            );
         }
     }
 
@@ -317,10 +317,10 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                         let pw = self.session.pixel_buffer().width();
                         let ph = self.session.pixel_buffer().height();
                         let scale = self.session.viewport().scale_factor;
-                        if swapchain.resize(pw, ph, scale).is_ok() {
-                            if let Ok(telemetry) = self.session.present_to_swapchain(swapchain) {
-                                self.last_telemetry = Some(telemetry);
-                            }
+                        if swapchain.resize(pw, ph, scale).is_ok()
+                            && let Ok(telemetry) = self.session.present_to_swapchain(swapchain)
+                        {
+                            self.last_telemetry = Some(telemetry);
                         }
                     }
                     Err(err) => {
@@ -395,10 +395,10 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         }
         self.sync_window_title();
         self.sync_ime_state();
-        if needs_redraw {
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
+        if needs_redraw
+            && let Some(window) = &self.window
+        {
+            window.request_redraw();
         }
     }
 
@@ -554,10 +554,10 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
                 if let Err(err) = self.session.resize(new_size.width, new_size.height, scale) {
                     eprintln!("[nve-skia-shell] resize error: {err}");
                 }
-                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut() {
-                    if let Err(err) = sw.resize(new_size.width, new_size.height, scale) {
-                        eprintln!("[nve-skia-shell] hardware swapchain resize error: {err}");
-                    }
+                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut()
+                    && let Err(err) = sw.resize(new_size.width, new_size.height, scale)
+                {
+                    eprintln!("[nve-skia-shell] hardware swapchain resize error: {err}");
                 }
                 self.sync_ime_state();
                 if let Some(window) = &self.window {
@@ -584,10 +584,10 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
                 {
                     eprintln!("[nve-skia-shell] scale change error: {err}");
                 }
-                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut() {
-                    if let Err(err) = sw.resize(size.width, size.height, scale_factor as f32) {
-                        eprintln!("[nve-skia-shell] hardware swapchain scale resize error: {err}");
-                    }
+                if let Some(WindowPresenter::Hardware(sw)) = self.presenter.as_mut()
+                    && let Err(err) = sw.resize(size.width, size.height, scale_factor as f32)
+                {
+                    eprintln!("[nve-skia-shell] hardware swapchain scale resize error: {err}");
                 }
                 self.sync_ime_state();
                 if let Some(window) = &self.window {

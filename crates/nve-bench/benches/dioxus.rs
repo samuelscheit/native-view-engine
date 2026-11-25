@@ -59,7 +59,11 @@ fn bench_dioxus(c: &mut Criterion) {
         b.iter(|| {
             generation += 1;
             pframe += 1;
-            let opacity = if generation % 2 == 0 { "0.85" } else { "0.95" };
+            let opacity = if generation.is_multiple_of(2) {
+                "0.85"
+            } else {
+                "0.95"
+            };
             let patch = HotPatchMsg::TemplatePatch {
                 generation,
                 template_id: "bench_counter".into(),

@@ -254,23 +254,23 @@ pub fn encode_command_op_delta(base: &[u8], next: &[u8]) -> Option<Vec<u8>> {
         } else {
             // Try per-op XOR+RLE against the previous op on the same `(opcode, node_id)`.
             let mut emitted_xor = false;
-            if let Some(key) = raw_op_identity(nslice) {
-                if let Some(&pidx) = prev_by_node.get(&key) {
-                    let (ps, pe) = prev_ranges[pidx];
-                    encode_xor_rle_delta_into(&base[ps..pe], nslice, &mut scratch_xor);
-                    scratch_token.clear();
-                    scratch_token.push(CMD_DELTA_XOR_OP);
-                    write_varint(pidx as u64, &mut scratch_token);
-                    write_varint(scratch_xor.len() as u64, &mut scratch_token);
-                    scratch_token.extend_from_slice(&scratch_xor);
+            if let Some(key) = raw_op_identity(nslice)
+                && let Some(&pidx) = prev_by_node.get(&key)
+            {
+                let (ps, pe) = prev_ranges[pidx];
+                encode_xor_rle_delta_into(&base[ps..pe], nslice, &mut scratch_xor);
+                scratch_token.clear();
+                scratch_token.push(CMD_DELTA_XOR_OP);
+                write_varint(pidx as u64, &mut scratch_token);
+                write_varint(scratch_xor.len() as u64, &mut scratch_token);
+                scratch_token.extend_from_slice(&scratch_xor);
 
-                    // Compare against LiteralOp size: 1 + varint(len) + len
-                    let lit_overhead = 1 + if nslice.len() < 128 { 1 } else { 2 } + nslice.len();
-                    if scratch_token.len() < lit_overhead {
-                        out.extend_from_slice(&scratch_token);
-                        emitted_xor = true;
-                        expected_prev = pidx + 1;
-                    }
+                // Compare against LiteralOp size: 1 + varint(len) + len
+                let lit_overhead = 1 + if nslice.len() < 128 { 1 } else { 2 } + nslice.len();
+                if scratch_token.len() < lit_overhead {
+                    out.extend_from_slice(&scratch_token);
+                    emitted_xor = true;
+                    expected_prev = pidx + 1;
                 }
             }
             if !emitted_xor {
@@ -305,7 +305,7 @@ pub fn decode_command_op_delta(base: &[u8], delta_payload: &[u8]) -> Result<Vec<
     let op_count = u32::try_from(read_varint(delta_payload, &mut pos)?)
         .map_err(|_| SyncDeltaError::CorruptPayload("op_count overflow"))?;
 
-    let mut out = Vec::with_capacity(base.len().min(64 * 1024).max(NVE_CMD_HEADER_SIZE));
+    let mut out = Vec::with_capacity(base.len().clamp(NVE_CMD_HEADER_SIZE, 64 * 1024));
     out.extend_from_slice(&NVE_ABI_MAGIC.to_le_bytes());
     out.extend_from_slice(&NVE_ABI_VERSION.to_le_bytes());
     out.extend_from_slice(&flags.to_le_bytes());

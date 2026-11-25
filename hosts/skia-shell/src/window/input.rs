@@ -205,10 +205,10 @@ pub fn classify_focused_key(
             }
         }
         _ => {
-            if !primary {
-                if let Some(t) = text.filter(|s| is_printable_text(s)) {
-                    return FocusedKeyAction::Insert(t.to_owned());
-                }
+            if !primary
+                && let Some(t) = text.filter(|s| is_printable_text(s))
+            {
+                return FocusedKeyAction::Insert(t.to_owned());
             }
             FocusedKeyAction::None
         }

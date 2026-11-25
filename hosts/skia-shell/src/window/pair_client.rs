@@ -511,10 +511,10 @@ fn pair_worker_loop(
             *metrics.lock().unwrap() = client.metrics();
         }
 
-        if received_any {
-            if let Some(cb) = wake_cb.lock().unwrap().as_ref().cloned() {
-                cb();
-            }
+        if received_any
+            && let Some(cb) = wake_cb.lock().unwrap().as_ref().cloned()
+        {
+            cb();
         }
     }
 

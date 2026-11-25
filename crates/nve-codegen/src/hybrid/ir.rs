@@ -577,10 +577,10 @@ impl HybridFileSpec {
 
     /// PascalCase stem used for generated filenames (`<Stem>HybridAbi.h`, `<Stem>HybridSpec.swift`, etc.).
     pub fn stem_pascal(&self) -> String {
-        if let Some(ns) = &self.namespace {
-            if !ns.trim().is_empty() {
-                return to_pascal_case(ns);
-            }
+        if let Some(ns) = &self.namespace
+            && !ns.trim().is_empty()
+        {
+            return to_pascal_case(ns);
         }
         if let Some(m) = self.modules.first() {
             return to_pascal_case(&m.name);
@@ -658,10 +658,10 @@ impl HybridFileSpec {
             return;
         }
         for f in &s.fields {
-            if let HybridType::Struct(dep) = &f.ty {
-                if let Some(dep_spec) = self.find_struct(dep) {
-                    self.visit_struct_topo(dep_spec, visited, out);
-                }
+            if let HybridType::Struct(dep) = &f.ty
+                && let Some(dep_spec) = self.find_struct(dep)
+            {
+                self.visit_struct_topo(dep_spec, visited, out);
             }
         }
         out.push(s);
@@ -781,13 +781,13 @@ impl HybridFileSpec {
                     s.name
                 )));
             }
-            if let Some(align) = s.align {
-                if align == 0 || !align.is_power_of_two() {
-                    return Err(CodegenError::validation(format!(
-                        "struct '{}' align {} must be a power of two",
-                        s.name, align
-                    )));
-                }
+            if let Some(align) = s.align
+                && (align == 0 || !align.is_power_of_two())
+            {
+                return Err(CodegenError::validation(format!(
+                    "struct '{}' align {} must be a power of two",
+                    s.name, align
+                )));
             }
             if s.fields.is_empty() {
                 return Err(CodegenError::validation(format!(

@@ -55,16 +55,16 @@ impl RsxWatchCache {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name == "target" || name.starts_with('.') {
-                            continue;
-                        }
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                        && (name == "target" || name.starts_with('.'))
+                    {
+                        continue;
                     }
                     walk(&path, out);
-                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    if let Ok(src) = std::fs::read_to_string(&path) {
-                        out.insert(normalize_cache_key(&path), src);
-                    }
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                    && let Ok(src) = std::fs::read_to_string(&path)
+                {
+                    out.insert(normalize_cache_key(&path), src);
                 }
             }
         }

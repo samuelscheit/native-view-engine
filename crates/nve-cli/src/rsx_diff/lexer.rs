@@ -143,13 +143,14 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
                 matching_close.push(0);
                 continue;
             }
-            if pos + 1 < len && bytes[pos + 1] == b'r' {
-                if let Some(end) = try_scan_raw_string(bytes, pos + 1)? {
-                    tokens.push(TokenKind::OtherLit(&src[pos..end]));
-                    matching_close.push(0);
-                    pos = end;
-                    continue;
-                }
+            if pos + 1 < len
+                && bytes[pos + 1] == b'r'
+                && let Some(end) = try_scan_raw_string(bytes, pos + 1)?
+            {
+                tokens.push(TokenKind::OtherLit(&src[pos..end]));
+                matching_close.push(0);
+                pos = end;
+                continue;
             }
             if b == b'b' && pos + 1 < len && bytes[pos + 1] == b'\'' {
                 let start = pos;
@@ -191,17 +192,15 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
             pos += 1;
             while pos < len {
                 let c = bytes[pos];
-                if c.is_ascii_alphanumeric() || c == b'_' {
-                    pos += 1;
-                } else if c == b'.'
-                    && pos + 1 < len
-                    && bytes[pos + 1] != b'.'
-                    && !is_ident_start(bytes[pos + 1])
-                {
-                    pos += 1;
-                } else if (c == b'+' || c == b'-')
-                    && pos > start
-                    && (bytes[pos - 1] == b'e' || bytes[pos - 1] == b'E')
+                if c.is_ascii_alphanumeric()
+                    || c == b'_'
+                    || (c == b'.'
+                        && pos + 1 < len
+                        && bytes[pos + 1] != b'.'
+                        && !is_ident_start(bytes[pos + 1]))
+                    || ((c == b'+' || c == b'-')
+                        && pos > start
+                        && (bytes[pos - 1] == b'e' || bytes[pos - 1] == b'E'))
                 {
                     pos += 1;
                 } else {

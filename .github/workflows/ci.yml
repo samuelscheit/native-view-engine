@@ -60,8 +60,8 @@ jobs:
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
           cargo check -p nve-web-shell --target wasm32-unknown-unknown
-          # --no-deps and -A clippy::collapsible-if isolate owned crates from pre-existing warnings in unowned files
-          cargo clippy --no-deps -p nve-codegen -p nve-backend-skia --all-targets -- -D warnings -A clippy::collapsible-if
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
           cargo run --locked -p nve-cli -- codegen abi --check
 
       - name: Run Python benchmark-regression unit tests

@@ -143,11 +143,11 @@ struct PropUpdates<'a> {
 
 fn apply_prop_updates(guard: &mut WorkspaceState, upd: PropUpdates<'_>) -> bool {
     let mut changed = false;
-    if let Some(open) = upd.studio_open {
-        if guard.current.studio.panel_open != open {
-            guard.toggle_studio_panel();
-            changed = true;
-        }
+    if let Some(open) = upd.studio_open
+        && guard.current.studio.panel_open != open
+    {
+        guard.toggle_studio_panel();
+        changed = true;
     }
     if let Some(accent) = upd.accent.and_then(parse_accent) {
         guard.set_accent(accent);
@@ -257,9 +257,7 @@ impl StudioWorkspaceModule {
     }
 
     pub fn persist_now(&mut self) -> Option<Result<PersistOutcome, PersistError>> {
-        if self.persist_store.is_none() {
-            return None;
-        }
+        self.persist_store.as_ref()?;
         let snapshot = self.state_snapshot();
         self.last_persisted_frame_count = snapshot.frame_count;
         self.persist_store.as_mut().map(|store| store.save(&snapshot))
@@ -270,12 +268,11 @@ impl StudioWorkspaceModule {
             return;
         }
         let snapshot = self.state_snapshot();
-        if snapshot.frame_count != self.last_persisted_frame_count {
-            if let Some(persist) = self.persist_store.as_mut() {
-                if persist.save(&snapshot).is_ok() {
-                    self.last_persisted_frame_count = snapshot.frame_count;
-                }
-            }
+        if snapshot.frame_count != self.last_persisted_frame_count
+            && let Some(persist) = self.persist_store.as_mut()
+            && persist.save(&snapshot).is_ok()
+        {
+            self.last_persisted_frame_count = snapshot.frame_count;
         }
     }
 
@@ -350,34 +347,33 @@ impl NveApp for StudioWorkspaceModule {
                 (NativeEventKind::Layout, EventPayload::Layout { width, height, .. })
                     if ev.node_id == ROOT_NODE_ID && *width > 0.0 =>
                 {
-                    if let Ok(mut guard) = self.store.lock() {
-                        if guard.set_viewport_size(*width, *height) {
-                            handled_host_event = true;
-                        }
+                    if let Ok(mut guard) = self.store.lock()
+                        && guard.set_viewport_size(*width, *height)
+                    {
+                        handled_host_event = true;
                     }
                 }
                 (NativeEventKind::Scroll, EventPayload::Scroll { y, .. }) => {
-                    if let Ok(mut guard) = self.store.lock() {
-                        if guard.current.active_view == ActiveView::Stream100k {
-                            let target_y = if y.is_finite() && *y >= 0.0 {
-                                *y as u32
-                            } else {
-                                0
-                            };
-                            guard.set_stream_scroll_offset(target_y);
-                            handled_host_event = true;
-                        }
+                    if let Ok(mut guard) = self.store.lock()
+                        && guard.current.active_view == ActiveView::Stream100k
+                    {
+                        let target_y = if y.is_finite() && *y >= 0.0 {
+                            *y as u32
+                        } else {
+                            0
+                        };
+                        guard.set_stream_scroll_offset(target_y);
+                        handled_host_event = true;
                     }
                 }
                 (NativeEventKind::Custom, EventPayload::Custom { name, data })
                     if name == "keydown" =>
                 {
-                    if let Some(kd) = parse_keydown_payload(data) {
-                        if let Ok(mut guard) = self.store.lock() {
-                            if dispatch_keydown(&mut guard, &kd.key, kd.has_primary_modifier()) {
-                                handled_host_event = true;
-                            }
-                        }
+                    if let Some(kd) = parse_keydown_payload(data)
+                        && let Ok(mut guard) = self.store.lock()
+                        && dispatch_keydown(&mut guard, &kd.key, kd.has_primary_modifier())
+                    {
+                        handled_host_event = true;
                     }
                 }
                 (NativeEventKind::Custom, EventPayload::Custom { name, .. })
@@ -424,7 +420,7 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {
-        let min_w = constraints.min_w.max(320.0).min(1280.0);
+        let min_w = constraints.min_w.clamp(320.0, 1280.0);
         let max_w = if constraints.max_w.is_finite() && constraints.max_w > 0.0 {
             constraints.max_w.min(1280.0)
         } else {
@@ -436,7 +432,7 @@ impl NveApp for StudioWorkspaceModule {
             max_w.clamp(min_w, 1280.0)
         };
 
-        let min_h = constraints.min_h.max(240.0).min(840.0);
+        let min_h = constraints.min_h.clamp(240.0, 840.0);
         let max_h = if constraints.max_h.is_finite() && constraints.max_h > 0.0 {
             constraints.max_h.min(840.0)
         } else {
@@ -494,50 +490,50 @@ impl NveApp for StudioWorkspaceModule {
 
     fn set_props(&mut self, props_bytes: &[u8]) -> bool {
         // Fast path: zero-JSON binary `NveBinValue` map.
-        if let Ok(view) = BinValueView::parse(props_bytes) {
-            if view.as_map().is_some() {
-                let upd = PropUpdates {
-                    studio_open: view.get("studioOpen").and_then(|v| v.as_bool()),
-                    accent: view.get("accent").and_then(|v| v.as_str()),
-                    layout_engine: view.get("layoutEngine").and_then(|v| v.as_str()),
-                    view: view.get("view").and_then(|v| v.as_str()),
-                    viewport_width: view
-                        .get("viewportWidth")
-                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                    viewport_height: view
-                        .get("viewportHeight")
-                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                    stream_scroll_y: view
-                        .get("streamScrollY")
-                        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-                        .filter(|&n| n >= 0)
-                        .map(|n| n as u64),
-                    sync_transport: view.get("syncTransport").and_then(|v| v.as_str()),
-                    sync_peers: view
-                        .get("syncPeers")
-                        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-                        .and_then(|n| u16::try_from(n).ok()),
-                    sync_kbps: view
-                        .get("syncKbps")
-                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                    sync_compression: view
-                        .get("syncCompression")
-                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                    sync_rtt_ms: view
-                        .get("syncRttMs")
-                        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
-                };
-                let changed = self
-                    .store
-                    .lock()
-                    .map(|mut guard| apply_prop_updates(&mut guard, upd))
-                    .unwrap_or(false);
-                if changed {
-                    self.reset_surface_with_current_store();
-                    self.persist_if_dirty();
-                }
-                return changed;
+        if let Ok(view) = BinValueView::parse(props_bytes)
+            && view.as_map().is_some()
+        {
+            let upd = PropUpdates {
+                studio_open: view.get("studioOpen").and_then(|v| v.as_bool()),
+                accent: view.get("accent").and_then(|v| v.as_str()),
+                layout_engine: view.get("layoutEngine").and_then(|v| v.as_str()),
+                view: view.get("view").and_then(|v| v.as_str()),
+                viewport_width: view
+                    .get("viewportWidth")
+                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                viewport_height: view
+                    .get("viewportHeight")
+                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                stream_scroll_y: view
+                    .get("streamScrollY")
+                    .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                    .filter(|&n| n >= 0)
+                    .map(|n| n as u64),
+                sync_transport: view.get("syncTransport").and_then(|v| v.as_str()),
+                sync_peers: view
+                    .get("syncPeers")
+                    .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                    .and_then(|n| u16::try_from(n).ok()),
+                sync_kbps: view
+                    .get("syncKbps")
+                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                sync_compression: view
+                    .get("syncCompression")
+                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+                sync_rtt_ms: view
+                    .get("syncRttMs")
+                    .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))),
+            };
+            let changed = self
+                .store
+                .lock()
+                .map(|mut guard| apply_prop_updates(&mut guard, upd))
+                .unwrap_or(false);
+            if changed {
+                self.reset_surface_with_current_store();
+                self.persist_if_dirty();
             }
+            return changed;
         }
 
         // Fallback for UTF-8 JSON props from external hosts / dynamic plugin tests.

@@ -85,6 +85,9 @@ pub(crate) struct FragReassembler {
     order: VecDeque<u32>,
 }
 
+pub(crate) type FragNack = (u32, Vec<u16>);
+pub(crate) type FragPushOutcome = (Option<Vec<u8>>, Option<FragNack>);
+
 impl FragReassembler {
     pub(crate) fn new(max_frame_bytes: usize) -> Self {
         Self {
@@ -104,7 +107,7 @@ impl FragReassembler {
         &mut self,
         payload: &[u8],
         now: Instant,
-    ) -> Result<(Option<Vec<u8>>, Option<(u32, Vec<u16>)>), TransportError> {
+    ) -> Result<FragPushOutcome, TransportError> {
         if payload.len() < FRAG_SUBHEADER_SIZE {
             return Err(TransportError::TruncatedFrame);
         }

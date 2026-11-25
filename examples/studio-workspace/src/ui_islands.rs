@@ -119,6 +119,8 @@ impl Default for IslandsSnapshot {
     }
 }
 
+type DeliveryLogEntry = (SurfaceId, String, u64, usize);
+
 /// Real `nve_interop` multi-host runtime coordinating `SurfaceOrchestrator`, `IslandSpec`,
 /// `NveChannelBus`, and `GestureArbitrator`.
 pub struct IslandSandboxRuntime {
@@ -128,7 +130,7 @@ pub struct IslandSandboxRuntime {
     pub root_id: SurfaceId,
     pub rail_id: SurfaceId,
     pub islands: Vec<(IslandHostKind, SurfaceId, IslandSpec)>,
-    delivery_log: Arc<Mutex<Vec<(SurfaceId, String, u64, usize)>>>,
+    delivery_log: Arc<Mutex<Vec<DeliveryLogEntry>>>,
 }
 
 impl Default for IslandSandboxRuntime {
@@ -142,7 +144,7 @@ impl IslandSandboxRuntime {
         let mut orchestrator = SurfaceOrchestrator::new();
         let mut bus = NveChannelBus::new();
         let mut arbitrator = GestureArbitrator::new();
-        let delivery_log = Arc::new(Mutex::new(Vec::<(SurfaceId, String, u64, usize)>::new()));
+        let delivery_log = Arc::new(Mutex::new(Vec::<DeliveryLogEntry>::new()));
 
         let root_env = SurfaceEnvironment {
             theme: ThemeContext {

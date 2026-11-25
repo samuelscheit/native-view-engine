@@ -345,7 +345,11 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
 
     if opts.skia {
         std::thread::spawn(run_watch_loop);
-        if let Err(err) = nve_skia_shell::run_desktop_preview(dylib_path, Some(client_ws_url)) {
+        let preview_res = nve_skia_shell::run_desktop_preview(dylib_path, Some(client_ws_url));
+        if let Some(tx) = pair_tx_slot.lock().unwrap().as_ref() {
+            let _ = tx.send(PairControlMsg::Shutdown);
+        }
+        if let Err(err) = preview_res {
             eprintln!("Desktop preview exited with error: {err}");
             std::process::exit(1);
         }

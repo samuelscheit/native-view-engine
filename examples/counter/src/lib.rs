@@ -118,24 +118,23 @@ impl NveApp for CounterModule {
     }
 
     fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        if let Ok(view) = BinValueView::parse(props_bytes) {
-            if let Some(c) = view
+        if let Ok(view) = BinValueView::parse(props_bytes)
+            && let Some(c) = view
                 .get("initialCount")
                 .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-            {
-                INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
-                LATEST_COUNT.store(c as i32, Ordering::SeqCst);
-                self.surface = create_surface(self.surface_id);
-                return true;
-            }
+        {
+            INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
+            LATEST_COUNT.store(c as i32, Ordering::SeqCst);
+            self.surface = create_surface(self.surface_id);
+            return true;
         }
-        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_bytes) {
-            if let Some(c) = val.get("initialCount").and_then(|v| v.as_i64()) {
-                INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
-                LATEST_COUNT.store(c as i32, Ordering::SeqCst);
-                self.surface = create_surface(self.surface_id);
-                return true;
-            }
+        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_bytes)
+            && let Some(c) = val.get("initialCount").and_then(|v| v.as_i64())
+        {
+            INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
+            LATEST_COUNT.store(c as i32, Ordering::SeqCst);
+            self.surface = create_surface(self.surface_id);
+            return true;
         }
         false
     }

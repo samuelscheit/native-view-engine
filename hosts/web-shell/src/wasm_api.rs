@@ -84,13 +84,13 @@ where
 
 impl Drop for WindowResizeListener {
     fn drop(&mut self) {
-        if let Some(on_resize) = self.on_resize.take() {
-            if let Some(window) = web_sys::window() {
-                let _ = window.remove_event_listener_with_callback(
-                    "resize",
-                    on_resize.as_ref().unchecked_ref(),
-                );
-            }
+        if let Some(on_resize) = self.on_resize.take()
+            && let Some(window) = web_sys::window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "resize",
+                on_resize.as_ref().unchecked_ref(),
+            );
         }
         if let Some(observer) = self.resize_observer.take() {
             observer.disconnect();

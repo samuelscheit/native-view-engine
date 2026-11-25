@@ -127,10 +127,10 @@ impl HotAppInstance {
             let _ = std::fs::remove_file(&loaded_copy);
             return Err(LoaderError::NullHandle);
         }
-        if let (Some(dev_api), Some(state)) = (dev, prior_state) {
-            if !state.is_empty() {
-                unsafe { (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state)) };
-            }
+        if let (Some(dev_api), Some(state)) = (dev, prior_state)
+            && !state.is_empty()
+        {
+            unsafe { (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state)) };
         }
 
         Ok(Self {

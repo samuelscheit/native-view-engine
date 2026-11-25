@@ -115,7 +115,7 @@ impl CommandBufferBuilder {
             len_b[2],
             len_b[3],
         ];
-        let payload_bytes = children.len() * std::mem::size_of::<NodeId>();
+        let payload_bytes = std::mem::size_of_val(children);
         self.buf.reserve(header.len() + payload_bytes);
         self.buf.extend_from_slice(&header);
         #[cfg(target_endian = "little")]

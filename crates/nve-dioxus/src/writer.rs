@@ -225,21 +225,22 @@ impl NveMutationWriter {
         }
 
         while let Some((cid, parent_color, parent_font_size)) = self.style_walk_stack.pop() {
-            if let Some(child) = self.nodes.get_mut(&cid) {
-                if child.kind == ComponentKind::Text && !child.has_explicit_style {
-                    if child.style.text_color != parent_color
-                        || (child.style.font_size - parent_font_size).abs() > f32::EPSILON
-                    {
-                        child.style.text_color = parent_color;
-                        child.style.font_size = parent_font_size;
-                        self.dirty_style.push(cid);
-                    }
-                    let next_color = child.style.text_color;
-                    let next_font_size = child.style.font_size;
-                    for &grandchild in &child.children {
-                        self.style_walk_stack
-                            .push((grandchild, next_color, next_font_size));
-                    }
+            if let Some(child) = self.nodes.get_mut(&cid)
+                && child.kind == ComponentKind::Text
+                && !child.has_explicit_style
+            {
+                if child.style.text_color != parent_color
+                    || (child.style.font_size - parent_font_size).abs() > f32::EPSILON
+                {
+                    child.style.text_color = parent_color;
+                    child.style.font_size = parent_font_size;
+                    self.dirty_style.push(cid);
+                }
+                let next_color = child.style.text_color;
+                let next_font_size = child.style.font_size;
+                for &grandchild in &child.children {
+                    self.style_walk_stack
+                        .push((grandchild, next_color, next_font_size));
                 }
             }
         }
@@ -330,12 +331,12 @@ impl NveMutationWriter {
         }
         // Decode `nve-draw1;b64,...` attributes directly into binary `RawPropValue::Bytes`
         // in one pass — eliminating any full-frame CommandBuffer decode+re-encode pass.
-        if value.starts_with(DRAW_LIST_ATTR_PREFIX) {
-            if let Ok(raw_draw_bytes) = DrawListDecoder::decode_attr_bytes(value) {
-                self.builder
-                    .set_raw_prop(node_id, name, &RawPropValue::Bytes(raw_draw_bytes));
-                return;
-            }
+        if value.starts_with(DRAW_LIST_ATTR_PREFIX)
+            && let Ok(raw_draw_bytes) = DrawListDecoder::decode_attr_bytes(value)
+        {
+            self.builder
+                .set_raw_prop(node_id, name, &RawPropValue::Bytes(raw_draw_bytes));
+            return;
         }
         self.builder
             .set_raw_prop(node_id, name, &RawPropValue::String(value.to_owned()));

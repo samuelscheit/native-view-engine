@@ -477,11 +477,11 @@ fn udp_window_overflow_auto_keyframe_resync_and_graceful_reconnect() {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut synced_f16 = false;
     while Instant::now() < deadline {
-        if let Some((_, rx)) = client.recv_frame(Duration::from_millis(150)).unwrap() {
-            if rx == f16 {
-                synced_f16 = true;
-                break;
-            }
+        if let Some((_, rx)) = client.recv_frame(Duration::from_millis(150)).unwrap()
+            && rx == f16
+        {
+            synced_f16 = true;
+            break;
         }
     }
     assert!(

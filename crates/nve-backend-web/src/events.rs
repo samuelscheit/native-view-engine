@@ -184,13 +184,13 @@ impl WebBackend {
                 closure.as_ref().unchecked_ref(),
             );
             entry.compositionstart = Some(closure);
-        } else if !want_ime {
-            if let Some(old) = entry.compositionstart.take() {
-                let _ = dom_el.remove_event_listener_with_callback(
-                    "compositionstart",
-                    old.as_ref().unchecked_ref(),
-                );
-            }
+        } else if !want_ime
+            && let Some(old) = entry.compositionstart.take()
+        {
+            let _ = dom_el.remove_event_listener_with_callback(
+                "compositionstart",
+                old.as_ref().unchecked_ref(),
+            );
         }
 
         if want_ime && entry.compositionend.is_none() {
@@ -222,13 +222,13 @@ impl WebBackend {
                 closure.as_ref().unchecked_ref(),
             );
             entry.compositionend = Some(closure);
-        } else if !want_ime {
-            if let Some(old) = entry.compositionend.take() {
-                let _ = dom_el.remove_event_listener_with_callback(
-                    "compositionend",
-                    old.as_ref().unchecked_ref(),
-                );
-            }
+        } else if !want_ime
+            && let Some(old) = entry.compositionend.take()
+        {
+            let _ = dom_el.remove_event_listener_with_callback(
+                "compositionend",
+                old.as_ref().unchecked_ref(),
+            );
         }
 
         if want_click && entry.click.is_none() {
@@ -256,11 +256,11 @@ impl WebBackend {
             let _ = dom_el
                 .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
             entry.click = Some(closure);
-        } else if !want_click {
-            if let Some(old) = entry.click.take() {
-                let _ = dom_el
-                    .remove_event_listener_with_callback("click", old.as_ref().unchecked_ref());
-            }
+        } else if !want_click
+            && let Some(old) = entry.click.take()
+        {
+            let _ =
+                dom_el.remove_event_listener_with_callback("click", old.as_ref().unchecked_ref());
         }
 
         if want_input && entry.input.is_none() {
@@ -292,11 +292,11 @@ impl WebBackend {
             let _ = dom_el
                 .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref());
             entry.input = Some(closure);
-        } else if !want_input {
-            if let Some(old) = entry.input.take() {
-                let _ = dom_el
-                    .remove_event_listener_with_callback("input", old.as_ref().unchecked_ref());
-            }
+        } else if !want_input
+            && let Some(old) = entry.input.take()
+        {
+            let _ =
+                dom_el.remove_event_listener_with_callback("input", old.as_ref().unchecked_ref());
         }
 
         if want_scroll && entry.scroll.is_none() {
@@ -325,11 +325,11 @@ impl WebBackend {
             let _ = dom_el
                 .add_event_listener_with_callback("scroll", closure.as_ref().unchecked_ref());
             entry.scroll = Some(closure);
-        } else if !want_scroll {
-            if let Some(old) = entry.scroll.take() {
-                let _ = dom_el
-                    .remove_event_listener_with_callback("scroll", old.as_ref().unchecked_ref());
-            }
+        } else if !want_scroll
+            && let Some(old) = entry.scroll.take()
+        {
+            let _ =
+                dom_el.remove_event_listener_with_callback("scroll", old.as_ref().unchecked_ref());
         }
 
         if want_focus && entry.focus.is_none() {
@@ -354,11 +354,11 @@ impl WebBackend {
             let _ = dom_el
                 .add_event_listener_with_callback("focus", closure.as_ref().unchecked_ref());
             entry.focus = Some(closure);
-        } else if !want_focus {
-            if let Some(old) = entry.focus.take() {
-                let _ = dom_el
-                    .remove_event_listener_with_callback("focus", old.as_ref().unchecked_ref());
-            }
+        } else if !want_focus
+            && let Some(old) = entry.focus.take()
+        {
+            let _ =
+                dom_el.remove_event_listener_with_callback("focus", old.as_ref().unchecked_ref());
         }
 
         if want_blur && entry.blur.is_none() {
@@ -383,11 +383,11 @@ impl WebBackend {
             let _ = dom_el
                 .add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref());
             entry.blur = Some(closure);
-        } else if !want_blur {
-            if let Some(old) = entry.blur.take() {
-                let _ = dom_el
-                    .remove_event_listener_with_callback("blur", old.as_ref().unchecked_ref());
-            }
+        } else if !want_blur
+            && let Some(old) = entry.blur.take()
+        {
+            let _ =
+                dom_el.remove_event_listener_with_callback("blur", old.as_ref().unchecked_ref());
         }
 
         if want_keydown && entry.keydown.is_none() {
@@ -437,11 +437,11 @@ impl WebBackend {
             let _ = dom_el
                 .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
             entry.keydown = Some(closure);
-        } else if !want_keydown {
-            if let Some(old) = entry.keydown.take() {
-                let _ = dom_el
-                    .remove_event_listener_with_callback("keydown", old.as_ref().unchecked_ref());
-            }
+        } else if !want_keydown
+            && let Some(old) = entry.keydown.take()
+        {
+            let _ = dom_el
+                .remove_event_listener_with_callback("keydown", old.as_ref().unchecked_ref());
         }
 
         if entry.click.is_none()

@@ -179,15 +179,15 @@ pub(crate) fn compute_scroll_content_size<L: LayoutEngine>(
         max_h = (max_h + node.layout.padding.bottom.max(0.0)).max(node.computed_rect.height);
     }
 
-    if let Some(virtual_h) = parse_px_raw_prop(node.raw_props.get("virtual-total-height")) {
-        if virtual_h > max_h {
-            max_h = virtual_h;
-        }
+    if let Some(virtual_h) = parse_px_raw_prop(node.raw_props.get("virtual-total-height"))
+        && virtual_h > max_h
+    {
+        max_h = virtual_h;
     }
-    if let Some(virtual_w) = parse_px_raw_prop(node.raw_props.get("virtual-total-width")) {
-        if virtual_w > max_w {
-            max_w = virtual_w;
-        }
+    if let Some(virtual_w) = parse_px_raw_prop(node.raw_props.get("virtual-total-width"))
+        && virtual_w > max_w
+    {
+        max_w = virtual_w;
     }
 
     Some((max_w, max_h))

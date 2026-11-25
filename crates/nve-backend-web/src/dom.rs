@@ -141,28 +141,25 @@ impl WebBackend {
             .raw_props
             .get("accessibilityLabel")
             .or_else(|| el.raw_props.get("accessibility_label"))
+            && !label.is_empty()
         {
-            if !label.is_empty() {
-                write_attr("aria-label", label, out);
-            }
+            write_attr("aria-label", label, out);
         }
         if let Some(RawPropValue::String(role)) = el
             .raw_props
             .get("accessibilityRole")
             .or_else(|| el.raw_props.get("accessibility_role"))
+            && !role.is_empty()
         {
-            if !role.is_empty() {
-                write_attr("role", role, out);
-            }
+            write_attr("role", role, out);
         }
         if let Some(RawPropValue::String(hint)) = el
             .raw_props
             .get("accessibilityHint")
             .or_else(|| el.raw_props.get("accessibility_hint"))
+            && !hint.is_empty()
         {
-            if !hint.is_empty() {
-                write_attr("aria-description", hint, out);
-            }
+            write_attr("aria-description", hint, out);
         }
         if el.raw_props.get("disabled").is_some_and(is_truthy_raw_prop) {
             out.push_str(" disabled aria-disabled=\"true\"");
@@ -226,10 +223,10 @@ impl WebBackend {
         #[cfg(target_arch = "wasm32")]
         if let Some(dom_el) = self.dom_nodes.get(&node_id) {
             if is_input {
-                if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>() {
-                    if inp.value() != text {
-                        inp.set_value(text);
-                    }
+                if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>()
+                    && inp.value() != text
+                {
+                    inp.set_value(text);
                 }
             } else {
                 dom_el.set_text_content(Some(text));
@@ -310,13 +307,13 @@ impl WebBackend {
                 let _ = dom_el.remove_attribute(key);
             }
             RawPropValue::String(s) => {
-                if key == "value" {
-                    if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>() {
-                        if inp.value() != *s {
-                            inp.set_value(s);
-                        }
-                        return;
+                if key == "value"
+                    && let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>()
+                {
+                    if inp.value() != *s {
+                        inp.set_value(s);
                     }
+                    return;
                 }
                 if is_image && key == "uri" {
                     let _ = dom_el.set_attribute("src", s);
@@ -374,11 +371,11 @@ impl WebBackend {
         let mut reachable = HashSet::with_capacity(self.nodes.len());
         let mut stack = vec![ROOT_NODE_ID];
         while let Some(nid) = stack.pop() {
-            if reachable.insert(nid) {
-                if let Some(el) = self.nodes.get(&nid) {
-                    for &cid in &el.children {
-                        stack.push(cid);
-                    }
+            if reachable.insert(nid)
+                && let Some(el) = self.nodes.get(&nid)
+            {
+                for &cid in &el.children {
+                    stack.push(cid);
                 }
             }
         }

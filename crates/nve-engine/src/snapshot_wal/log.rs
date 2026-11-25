@@ -47,10 +47,10 @@ impl SnapshotWal {
         durability: WalDurability,
     ) -> Result<Self, WalError> {
         let path_buf = path.as_ref().to_path_buf();
-        if let Some(parent) = path_buf.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path_buf.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
 
         let mut file = OpenOptions::new()
@@ -125,10 +125,10 @@ impl SnapshotWal {
         durability: WalDurability,
     ) -> Result<Self, WalError> {
         let path_ref = path.as_ref();
-        if let Some(parent) = path_ref.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path_ref.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
         let header = WalHeader::new(base_schema_version, base_checksum);
         write_fresh_wal_header_atomic(path_ref, header)?;

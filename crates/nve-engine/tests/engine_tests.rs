@@ -937,9 +937,9 @@ fn profiler_chrome_trace_json_emits_valid_spans_and_monotonic_timestamps() {
     // Frame 2 starts after frame 1 + 100us gap, and zero-dur spans still advance by 1us.
     let f2_start = arr[6]["ts"].as_u64().unwrap();
     assert_eq!(f2_start, 87 + 100);
-    for idx in 7..12 {
-        let ts = arr[idx]["ts"].as_u64().unwrap();
-        assert_eq!(ts, f2_start + (idx - 6) as u64);
+    for (offset, ev) in arr[7..12].iter().enumerate() {
+        let ts = ev["ts"].as_u64().unwrap();
+        assert_eq!(ts, f2_start + (offset + 1) as u64);
     }
 }
 

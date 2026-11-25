@@ -572,34 +572,34 @@ impl GestureArbitrator {
         innermost: SurfaceId,
         sample: PointerSample,
     ) -> ArbitrationDecision {
-        if !self.overrides.is_empty() {
-            if let Some(&forced) = self.overrides.get(innermost) {
-                let winner = match forced {
-                    GestureDisposition::Claim => Some(innermost),
-                    GestureDisposition::DeferToParent => hit_chain.get(1).copied(),
-                    GestureDisposition::PassThrough => hit_chain
-                        .iter()
-                        .skip(1)
-                        .copied()
-                        .find(|id| self.is_interactive(*id)),
-                };
-                self.active_pointers.insert(
-                    sample.pointer_id,
-                    ActivePointer {
-                        chain: SurfaceChain::from_slice(hit_chain),
-                        down_x: sample.x,
-                        down_y: sample.y,
-                        winner,
-                        locked_scroll: false,
-                    },
-                );
-                return ArbitrationDecision {
-                    innermost_disposition: forced,
+        if !self.overrides.is_empty()
+            && let Some(&forced) = self.overrides.get(innermost)
+        {
+            let winner = match forced {
+                GestureDisposition::Claim => Some(innermost),
+                GestureDisposition::DeferToParent => hit_chain.get(1).copied(),
+                GestureDisposition::PassThrough => hit_chain
+                    .iter()
+                    .skip(1)
+                    .copied()
+                    .find(|id| self.is_interactive(*id)),
+            };
+            self.active_pointers.insert(
+                sample.pointer_id,
+                ActivePointer {
+                    chain: SurfaceChain::from_slice(hit_chain),
+                    down_x: sample.x,
+                    down_y: sample.y,
                     winner,
-                    cancelled_surfaces: Vec::new(),
-                    reason: ArbitrationReason::ExplicitOverride,
-                };
-            }
+                    locked_scroll: false,
+                },
+            );
+            return ArbitrationDecision {
+                innermost_disposition: forced,
+                winner,
+                cancelled_surfaces: Vec::new(),
+                reason: ArbitrationReason::ExplicitOverride,
+            };
         }
 
         let tentative_winner = hit_chain.iter().copied().find(|id| self.is_interactive(*id));
@@ -636,7 +636,7 @@ impl GestureArbitrator {
         sample: PointerSample,
     ) -> ArbitrationDecision {
         let capabilities = &self.capabilities;
-        let mut track_opt = self.active_pointers.get_mut(sample.pointer_id);
+        let track_opt = self.active_pointers.get_mut(sample.pointer_id);
 
         let (chain, down_x, down_y, prev_winner, prev_locked_scroll): (
             &[SurfaceId],
@@ -747,13 +747,13 @@ impl GestureArbitrator {
         }
 
         let mut cancelled_surfaces = Vec::new();
-        if let Some(prev) = prev_winner {
-            if Some(prev) != chosen_winner {
-                cancelled_surfaces.push(prev);
-            }
+        if let Some(prev) = prev_winner
+            && Some(prev) != chosen_winner
+        {
+            cancelled_surfaces.push(prev);
         }
 
-        if let Some(track) = track_opt.as_deref_mut() {
+        if let Some(track) = track_opt {
             track.winner = chosen_winner;
             track.locked_scroll = chosen_winner.is_some();
         }

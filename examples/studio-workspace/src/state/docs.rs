@@ -338,12 +338,12 @@ impl WorkspaceState {
             format!("Uncheck #{block_id} [ ]")
         };
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id) {
-                if let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id) {
-                    block.kind = DocBlockKind::Checklist {
-                        checked: next_checked,
-                    };
-                }
+            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+                && let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id)
+            {
+                block.kind = DocBlockKind::Checklist {
+                    checked: next_checked,
+                };
             }
         });
         true
@@ -363,10 +363,10 @@ impl WorkspaceState {
         };
         let label = format!("Block #{block_id} -> {}", next_kind.label());
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id) {
-                if let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id) {
-                    block.kind = next_kind;
-                }
+            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+                && let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id)
+            {
+                block.kind = next_kind;
             }
         });
         true
@@ -399,10 +399,11 @@ impl WorkspaceState {
         let dir = if delta < 0 { "Up" } else { "Down" };
         let label = format!("Move Block #{block_id} {dir}");
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id) {
-                if idx < doc.blocks.len() && target < doc.blocks.len() {
-                    doc.blocks.swap(idx, target);
-                }
+            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+                && idx < doc.blocks.len()
+                && target < doc.blocks.len()
+            {
+                doc.blocks.swap(idx, target);
             }
         });
         true
@@ -547,14 +548,14 @@ impl WorkspaceState {
         }
         let label = format!("Edit Block #{block_id}");
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id) {
-                if let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id) {
-                    block.text = trimmed.clone();
-                    if matches!(block.kind, DocBlockKind::Heading1)
-                        && doc.blocks.first().is_some_and(|first| first.id == block_id)
-                    {
-                        doc.title = trimmed;
-                    }
+            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+                && let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id)
+            {
+                block.text = trimmed.clone();
+                if matches!(block.kind, DocBlockKind::Heading1)
+                    && doc.blocks.first().is_some_and(|first| first.id == block_id)
+                {
+                    doc.title = trimmed;
                 }
             }
             s.doc_editing_block_id = None;

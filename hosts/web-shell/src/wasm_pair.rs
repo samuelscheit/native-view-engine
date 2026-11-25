@@ -333,10 +333,10 @@ impl NveWebHost {
                 let Ok(mut guard) = session_for_resize.try_borrow_mut() else {
                     return;
                 };
-                if let Ok(Some(pkt)) = guard.encode_viewport_resize(next_vp) {
-                    if let Some(ws) = socket_for_resize.borrow().as_ref() {
-                        send_binary_if_open(ws, &pkt);
-                    }
+                if let Ok(Some(pkt)) = guard.encode_viewport_resize(next_vp)
+                    && let Some(ws) = socket_for_resize.borrow().as_ref()
+                {
+                    send_binary_if_open(ws, &pkt);
                 }
             });
 

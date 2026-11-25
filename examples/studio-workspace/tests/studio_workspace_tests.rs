@@ -754,28 +754,28 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     );
 
     // Optional cross-language export/verify hook when running Rust <-> C++ interop checks.
-    if let Ok(export_path) = std::env::var("NVE_TEST_EXPORT_RUST_SNAPSHOT") {
-        if !export_path.is_empty() {
-            std::fs::copy(&snap_path, &export_path).expect("export rust snapshot for C++ test");
-        }
+    if let Ok(export_path) = std::env::var("NVE_TEST_EXPORT_RUST_SNAPSHOT")
+        && !export_path.is_empty()
+    {
+        std::fs::copy(&snap_path, &export_path).expect("export rust snapshot for C++ test");
     }
-    if let Ok(cpp_in) = std::env::var("NVE_TEST_CPP_SNAPSHOT_IN") {
-        if !cpp_in.is_empty() {
-            let cpp_snap =
-                MmapSnapshot::open_with_schema(&cpp_in, 1).expect("open C++-written snapshot");
-            assert_eq!(cpp_snap.meta_bytes(), b"cpp-roundtrip");
-            let mut verify_host = HeadlessBackend::new();
-            verify_host.set_viewport(1, vp);
-            verify_host
-                .submit_frame(cpp_snap.frame0_command_buffer())
-                .expect("submit C++-written Frame-0 into Rust HeadlessBackend");
-            let verify_tree = verify_host.render_ascii_tree();
-            assert!(verify_tree.contains("# engineering"));
-            assert!(verify_tree.contains("X-Ray HUD: ON"));
-            let mut verify_app = StudioWorkspaceModule::create(1);
-            verify_app.restore_state(cpp_snap.state_bytes());
-            assert_eq!(verify_app.state_snapshot(), expected_state);
-        }
+    if let Ok(cpp_in) = std::env::var("NVE_TEST_CPP_SNAPSHOT_IN")
+        && !cpp_in.is_empty()
+    {
+        let cpp_snap =
+            MmapSnapshot::open_with_schema(&cpp_in, 1).expect("open C++-written snapshot");
+        assert_eq!(cpp_snap.meta_bytes(), b"cpp-roundtrip");
+        let mut verify_host = HeadlessBackend::new();
+        verify_host.set_viewport(1, vp);
+        verify_host
+            .submit_frame(cpp_snap.frame0_command_buffer())
+            .expect("submit C++-written Frame-0 into Rust HeadlessBackend");
+        let verify_tree = verify_host.render_ascii_tree();
+        assert!(verify_tree.contains("# engineering"));
+        assert!(verify_tree.contains("X-Ray HUD: ON"));
+        let mut verify_app = StudioWorkspaceModule::create(1);
+        verify_app.restore_state(cpp_snap.state_bytes());
+        assert_eq!(verify_app.state_snapshot(), expected_state);
     }
 
     // Sub-millisecond cold mmap open on POSIX; allow headroom for NTFS + Defender AV scan on

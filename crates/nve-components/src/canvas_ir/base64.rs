@@ -6,15 +6,14 @@ const B64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub(super) fn encode_base64_into(input: &[u8], out: &mut String) {
-    let mut chunks = input.chunks_exact(3);
-    for chunk in &mut chunks {
+    let (chunks, rem) = input.as_chunks::<3>();
+    for chunk in chunks {
         let n = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | (chunk[2] as u32);
         out.push(B64_ALPHABET[((n >> 18) & 0x3f) as usize] as char);
         out.push(B64_ALPHABET[((n >> 12) & 0x3f) as usize] as char);
         out.push(B64_ALPHABET[((n >> 6) & 0x3f) as usize] as char);
         out.push(B64_ALPHABET[(n & 0x3f) as usize] as char);
     }
-    let rem = chunks.remainder();
     match rem.len() {
         1 => {
             let n = (rem[0] as u32) << 16;
@@ -51,7 +50,7 @@ pub(super) fn decode_base64(input: &str) -> Result<Vec<u8>, DrawListError> {
         return Err(DrawListError::InvalidBase64);
     }
     let mut out = Vec::with_capacity((raw.len() / 4) * 3);
-    for (idx, chunk) in raw.chunks_exact(4).enumerate() {
+    for (idx, chunk) in raw.as_chunks::<4>().0.iter().enumerate() {
         let is_last = (idx + 1) * 4 == raw.len();
         let a = decode_b64_digit(chunk[0]).ok_or(DrawListError::InvalidBase64)?;
         let b = decode_b64_digit(chunk[1]).ok_or(DrawListError::InvalidBase64)?;

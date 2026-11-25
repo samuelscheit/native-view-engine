@@ -4,7 +4,8 @@
 //! per frame — feeding Fabric (iOS/Android), Skia (Desktop/Mobile), Web (WASM), and Headless
 //! backends identically.
 
-pub mod elements;
+pub mod dioxus_elements;
+pub use dioxus_elements as elements;
 mod events;
 pub mod hot_patch;
 pub mod signal_archive;

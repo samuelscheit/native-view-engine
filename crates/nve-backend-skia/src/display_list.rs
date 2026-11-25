@@ -465,27 +465,29 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         });
     }
     if in_clip {
-        if node.kind == ComponentKind::Image {
-            if let Some(src) = extract_image_src(node) {
-                ops.push(PaintOp::DrawImage {
-                    rect,
-                    radius: node.style.border_radius.max(0.0),
-                    src,
-                    resize_mode: extract_image_resize_mode(node),
-                });
-            }
+        if node.kind == ComponentKind::Image
+            && let Some(src) = extract_image_src(node)
+        {
+            ops.push(PaintOp::DrawImage {
+                rect,
+                radius: node.style.border_radius.max(0.0),
+                src,
+                resize_mode: extract_image_resize_mode(node),
+            });
         }
         if node.kind == ComponentKind::TextInput {
             emit_text_input_ops(node, rect, focus, text_engine, ops);
-        } else if let Some(text) = node.text.as_deref() {
-            if !text.is_empty() && node.style.font_size > 0.0 && node.style.text_color.a > 0 {
-                ops.push(PaintOp::DrawText {
-                    rect,
-                    text: text.to_owned(),
-                    font_size: node.style.font_size,
-                    color: node.style.text_color,
-                });
-            }
+        } else if let Some(text) = node.text.as_deref()
+            && !text.is_empty()
+            && node.style.font_size > 0.0
+            && node.style.text_color.a > 0
+        {
+            ops.push(PaintOp::DrawText {
+                rect,
+                text: text.to_owned(),
+                font_size: node.style.font_size,
+                color: node.style.text_color,
+            });
         }
         if node.kind == ComponentKind::SkiaCanvas {
             let canvas_ops = extract_canvas_ops(node);

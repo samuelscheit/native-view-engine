@@ -67,13 +67,13 @@ pub struct WebBackend {
 #[cfg(target_arch = "wasm32")]
 impl Drop for WebBackend {
     fn drop(&mut self) {
-        if let Some(window_keydown) = self.window_keydown.take() {
-            if let Some(window) = web_sys::window() {
-                let _ = window.remove_event_listener_with_callback(
-                    "keydown",
-                    window_keydown.as_ref().unchecked_ref(),
-                );
-            }
+        if let Some(window_keydown) = self.window_keydown.take()
+            && let Some(window) = web_sys::window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "keydown",
+                window_keydown.as_ref().unchecked_ref(),
+            );
         }
         let dom_nodes = std::mem::take(&mut self.dom_nodes);
         for (node_id, dom_el) in dom_nodes {
@@ -253,20 +253,19 @@ impl RenderBackend for WebBackend {
                         old_el.remove();
                     }
                     #[cfg(target_arch = "wasm32")]
-                    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                        if let Ok(el) = doc.create_element(tag) {
-                            self.css_scratch.clear();
-                            let _ = write!(&mut self.css_scratch, "{node_id}");
-                            let _ = el.set_attribute("data-nve-id", &self.css_scratch);
-                            self.dom_nodes.insert(node_id, el);
-                            self.sync_dom_style(node_id);
-                            if matches!(kind, ComponentKind::ScrollView | ComponentKind::TextInput)
-                            {
-                                self.sync_event_listeners(node_id, EventMask::NONE);
-                            }
-                            if kind == ComponentKind::SkiaCanvas {
-                                dirty_canvases.push(node_id);
-                            }
+                    if let Some(doc) = web_sys::window().and_then(|w| w.document())
+                        && let Ok(el) = doc.create_element(tag)
+                    {
+                        self.css_scratch.clear();
+                        let _ = write!(&mut self.css_scratch, "{node_id}");
+                        let _ = el.set_attribute("data-nve-id", &self.css_scratch);
+                        self.dom_nodes.insert(node_id, el);
+                        self.sync_dom_style(node_id);
+                        if matches!(kind, ComponentKind::ScrollView | ComponentKind::TextInput) {
+                            self.sync_event_listeners(node_id, EventMask::NONE);
+                        }
+                        if kind == ComponentKind::SkiaCanvas {
+                            dirty_canvases.push(node_id);
                         }
                     }
                     #[cfg(not(target_arch = "wasm32"))]

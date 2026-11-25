@@ -66,22 +66,22 @@ impl NvePluginSlot {
             return Err(PluginError::NullHandleReturned);
         }
 
-        if let (Some(dev_api), Some(state)) = (tables.dev, prior_state) {
-            if !state.is_empty() {
-                nve_engine::clear_last_ffi_panic();
-                let restore_res = catch_unwind(AssertUnwindSafe(|| unsafe {
-                    (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state));
+        if let (Some(dev_api), Some(state)) = (tables.dev, prior_state)
+            && !state.is_empty()
+        {
+            nve_engine::clear_last_ffi_panic();
+            let restore_res = catch_unwind(AssertUnwindSafe(|| unsafe {
+                (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state));
+            }));
+            let ffi_panic = nve_engine::take_last_ffi_panic();
+            if restore_res.is_err() || ffi_panic.is_some() {
+                let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    (tables.surface.destroy)(handle);
                 }));
-                let ffi_panic = nve_engine::take_last_ffi_panic();
-                if restore_res.is_err() || ffi_panic.is_some() {
-                    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-                        (tables.surface.destroy)(handle);
-                    }));
-                    nve_engine::clear_last_ffi_panic();
-                    return Err(PluginError::PluginPanicked(
-                        ffi_panic.unwrap_or_else(|| "NveDevApi::restore_state".into()),
-                    ));
-                }
+                nve_engine::clear_last_ffi_panic();
+                return Err(PluginError::PluginPanicked(
+                    ffi_panic.unwrap_or_else(|| "NveDevApi::restore_state".into()),
+                ));
             }
         }
 
@@ -193,24 +193,24 @@ impl NvePluginSlot {
             }
         };
 
-        if let (Some(dev_api), Some(state)) = (tables.dev, prior_state) {
-            if !state.is_empty() {
-                nve_engine::clear_last_ffi_panic();
-                let restore_res = catch_unwind(AssertUnwindSafe(|| unsafe {
-                    (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state));
+        if let (Some(dev_api), Some(state)) = (tables.dev, prior_state)
+            && !state.is_empty()
+        {
+            nve_engine::clear_last_ffi_panic();
+            let restore_res = catch_unwind(AssertUnwindSafe(|| unsafe {
+                (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state));
+            }));
+            let ffi_panic = nve_engine::take_last_ffi_panic();
+            if restore_res.is_err() || ffi_panic.is_some() {
+                let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    (tables.surface.destroy)(handle);
                 }));
-                let ffi_panic = nve_engine::take_last_ffi_panic();
-                if restore_res.is_err() || ffi_panic.is_some() {
-                    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-                        (tables.surface.destroy)(handle);
-                    }));
-                    nve_engine::clear_last_ffi_panic();
-                    drop(lib);
-                    let _ = std::fs::remove_file(&copy_path);
-                    return Err(PluginError::PluginPanicked(
-                        ffi_panic.unwrap_or_else(|| "NveDevApi::restore_state".into()),
-                    ));
-                }
+                nve_engine::clear_last_ffi_panic();
+                drop(lib);
+                let _ = std::fs::remove_file(&copy_path);
+                return Err(PluginError::PluginPanicked(
+                    ffi_panic.unwrap_or_else(|| "NveDevApi::restore_state".into()),
+                ));
             }
         }
 

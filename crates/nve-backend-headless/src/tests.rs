@@ -230,7 +230,7 @@ fn supports_runtime_boxed_dyn_layout_engine() {
         scale_factor: 1.0,
     };
 
-    let boxed: DynLayoutEngine = Box::new(TaffyLayoutEngine::new());
+    let boxed: DynLayoutEngine = Box::<TaffyLayoutEngine>::default();
     let mut backend: HeadlessBackend<DynLayoutEngine> = HeadlessBackend::with_layout(boxed);
     backend.set_viewport(1, viewport);
     backend.submit_frame(&frame).unwrap();

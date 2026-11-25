@@ -176,11 +176,11 @@ impl SyncDeltaSession {
             let mut best_kind = PacketKind::XorRleDelta;
             let mut best_payload = xor_delta;
 
-            if let Some(cd) = cmd_delta {
-                if cd.len() < best_payload.len() {
-                    best_kind = PacketKind::CommandOpDelta;
-                    best_payload = cd;
-                }
+            if let Some(cd) = cmd_delta
+                && cd.len() < best_payload.len()
+            {
+                best_kind = PacketKind::CommandOpDelta;
+                best_payload = cd;
             }
 
             if frame_bytes.len() <= best_payload.len() {

@@ -89,11 +89,11 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
             len: 1,
         },
         NveValueArray {
-            ptr: 0x1usize as *const NveValue,
+            ptr: std::ptr::without_provenance(1),
             len: 1,
         },
         NveValueArray {
-            ptr: 0x1usize as *const NveValue,
+            ptr: std::ptr::without_provenance(1),
             len: 0,
         },
         NveValueArray {
@@ -124,11 +124,11 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
             len: 1,
         },
         NveValueMap {
-            ptr: 0x1usize as *const NveMapEntry,
+            ptr: std::ptr::without_provenance(1),
             len: 1,
         },
         NveValueMap {
-            ptr: 0x1usize as *const NveMapEntry,
+            ptr: std::ptr::without_provenance(1),
             len: 0,
         },
         NveValueMap {
@@ -154,8 +154,8 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
 
     assert!(unsafe { NveMapRef::try_from_raw_parts(std::ptr::null(), 0) }.is_some());
     assert!(unsafe { NveMapRef::try_from_raw_parts(std::ptr::null(), 1) }.is_none());
-    assert!(unsafe { NveMapRef::try_from_raw_parts(0x1usize as *const NveMapEntry, 1) }.is_none());
-    assert!(unsafe { NveMapRef::from_raw_parts(0x1usize as *const NveMapEntry, 1) }.is_empty());
+    assert!(unsafe { NveMapRef::try_from_raw_parts(std::ptr::without_provenance(1), 1) }.is_none());
+    assert!(unsafe { NveMapRef::from_raw_parts(std::ptr::without_provenance(1), 1) }.is_empty());
 
     // Corrupt map entry key (null ptr with len > 0) must not match empty key "".
     let bad_key_entries = [NveMapEntry {
@@ -178,7 +178,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     assert!(unsafe { NveEventBatchRef::from_raw(null_batch) }.is_empty());
 
     let misaligned_batch = NveEventBatch {
-        ptr: 0x1usize as *const NveDirectEvent,
+        ptr: std::ptr::without_provenance(1),
         len: 1,
     };
     assert!(unsafe { misaligned_batch.try_as_slice() }.is_none());

@@ -99,7 +99,7 @@ fn for_each_matches_decode_all_on_valid_truncated_and_corrupt_buffers() {
         let hdr = CommandDecoder::new(bytes)?.for_each(|cmd| {
             if let CommandRef::SetChildren { children, .. } = cmd {
                 assert_eq!(children.len(), children.iter().count());
-                assert_eq!(children.is_empty(), children.len() == 0);
+                assert_eq!(children.is_empty(), children.iter().next().is_none());
                 let rev: Vec<NodeId> = children.iter().rev().collect();
                 let mut fwd = Vec::new();
                 children.copy_into(&mut fwd);

@@ -51,7 +51,7 @@ fn roundtrip_all_signal_value_types_and_bin_value() {
     table.set_named("Root", "dark_mode", SignalValue::Bool(true));
     table.set_named("Counter", "delta", SignalValue::I64(-9_876_543_210));
     table.set_named("Counter", "generation", SignalValue::U64(u64::MAX - 7));
-    table.set_named("Canvas", "scale", SignalValue::F64(3.141_592_653_589_793));
+    table.set_named("Canvas", "scale", SignalValue::F64(std::f64::consts::PI));
     table.set_named("Canvas", "nan_guard", SignalValue::F64(f64::NAN));
     table.set_named("Editor", "title", SignalValue::Str("Aether Studio 🚀".into()));
     table.set_named("Editor", "raw", SignalValue::Bytes(vec![0, 1, 2, 254, 255]));
@@ -309,8 +309,7 @@ fn corrupt_and_truncated_archives_are_rejected() {
     ));
 
     // Corrupt BinValue inside archive rejected even if checksum is recomputed.
-    let mut bad_bin = Vec::new();
-    bad_bin.resize(HEADER_SIZE, 0);
+    let mut bad_bin = vec![0u8; HEADER_SIZE];
     bad_bin.extend_from_slice(&42u64.to_le_bytes());
     bad_bin.push(SignalValueTag::BinValue as u8);
     bad_bin.extend_from_slice(&2u32.to_le_bytes());

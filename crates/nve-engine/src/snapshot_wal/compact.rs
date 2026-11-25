@@ -56,13 +56,14 @@ pub(super) fn write_fresh_wal_header_atomic(
     };
 
     let write_res = (|| -> io::Result<()> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)?;
-        f.write_all(&header.encode())?;
-        f.sync_all()?;
-        drop(f);
+        {
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)?;
+            f.write_all(&header.encode())?;
+            f.sync_all()?;
+        }
         fs::rename(&tmp_path, path)?;
         sync_parent_dir(path);
         Ok(())
@@ -99,10 +100,10 @@ impl SnapshotWal {
         metadata_bytes: &[u8],
     ) -> Result<(SnapshotHeader, SnapshotWal), WalError> {
         let snap_path = snapshot_path.as_ref();
-        if let Some(parent) = snap_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = snap_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
         let header = write_snapshot_atomic(
             snap_path,

@@ -51,7 +51,7 @@ impl TextMeasurer for HeuristicTextMeasurer {
             Some(mw) if !mw.is_finite() || mw <= 0.0 => {
                 // Min-content probe (e.g. Yoga `AtMost 0` or Taffy `MinContent`).
                 let explicit_lines = text.split('\n').count().max(1) as f32;
-                return (0.0, explicit_lines * line_h);
+                (0.0, explicit_lines * line_h)
             }
             Some(mw) => {
                 for line in text.split('\n') {

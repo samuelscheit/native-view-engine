@@ -422,7 +422,7 @@ fn rejects_missing_empty_truncated_bad_magic_and_bad_version() {
 
     // Truncated header (40 bytes < 80 bytes).
     let trunc_path = dir.path().join("trunc.nvesnap");
-    std::fs::write(&trunc_path, &vec![0u8; 40]).unwrap();
+    std::fs::write(&trunc_path, [0u8; 40]).unwrap();
     let err = MmapSnapshot::open(&trunc_path).unwrap_err();
     assert!(
         matches!(

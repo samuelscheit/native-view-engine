@@ -276,12 +276,11 @@ impl CosmicTextEngine {
         let mw_bits = normalized_max_w.map_or(u32::MAX, f32::to_bits);
         let cache_hash = hash_measure_key(text, fs_bits, mw_bits);
 
-        if let Ok(cache) = self.measure_cache.lock() {
-            if let Some(entry) = cache.get(&cache_hash) {
-                if entry.matches(text, fs_bits, mw_bits) {
-                    return entry.size;
-                }
-            }
+        if let Ok(cache) = self.measure_cache.lock()
+            && let Some(entry) = cache.get(&cache_hash)
+            && entry.matches(text, fs_bits, mw_bits)
+        {
+            return entry.size;
         }
 
         let size = {
@@ -352,12 +351,11 @@ impl CosmicTextEngine {
         let scale_bits = scale.to_bits();
         let cache_hash = hash_shaped_key(text, fs_bits, ww_bits, scale_bits);
 
-        if let Ok(cache) = self.shaped_cache.lock() {
-            if let Some(entry) = cache.get(&cache_hash) {
-                if entry.matches(text, fs_bits, ww_bits, scale_bits) {
-                    return Arc::clone(&entry.shaped);
-                }
-            }
+        if let Ok(cache) = self.shaped_cache.lock()
+            && let Some(entry) = cache.get(&cache_hash)
+            && entry.matches(text, fs_bits, ww_bits, scale_bits)
+        {
+            return Arc::clone(&entry.shaped);
         }
 
         let lh = line_height_for(font_size);

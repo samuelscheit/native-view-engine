@@ -261,12 +261,12 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let (sx, sy) = self.visual_scroll_shift(node);
         let child_offset = (offset.0 - sx, offset.1 - sy);
 
-        if child_clip.is_none_or(|c| point_in_rect(x, y, c)) {
-            if let Some(hit) = self.visit_children_topmost_first(&node.children, |child| {
+        if child_clip.is_none_or(|c| point_in_rect(x, y, c))
+            && let Some(hit) = self.visit_children_topmost_first(&node.children, |child| {
                 self.hit_test_scroll_rec(child, x, y, child_offset, child_clip, depth + 1)
-            }) {
-                return Some(hit);
-            }
+            })
+        {
+            return Some(hit);
         }
 
         if inside_self && is_scrollable {

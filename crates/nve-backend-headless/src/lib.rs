@@ -589,27 +589,27 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                     }
                     let mut parent_to_resync: Option<NodeId> = None;
                     if let Some(removed) = self.nodes.remove(node_id) {
-                        if let Some(pid) = removed.parent {
-                            if let Some(pnode) = self.nodes.get_mut(pid) {
-                                pnode.children.retain(|&c| c != node_id);
-                                parent_to_resync = Some(pid);
-                            }
+                        if let Some(pid) = removed.parent
+                            && let Some(pnode) = self.nodes.get_mut(pid)
+                        {
+                            pnode.children.retain(|&c| c != node_id);
+                            parent_to_resync = Some(pid);
                         }
                         for cid in removed.children {
-                            if let Some(cnode) = self.nodes.get_mut(cid) {
-                                if cnode.parent == Some(node_id) {
-                                    cnode.parent = None;
-                                }
+                            if let Some(cnode) = self.nodes.get_mut(cid)
+                                && cnode.parent == Some(node_id)
+                            {
+                                cnode.parent = None;
                             }
                         }
                         if self.has_nested_text {
                             self.text_style_dirty = true;
                         }
                     }
-                    if let Some(pid) = parent_to_resync {
-                        if let Some(pnode) = self.nodes.get(pid) {
-                            self.layout.set_children(pid, &pnode.children);
-                        }
+                    if let Some(pid) = parent_to_resync
+                        && let Some(pnode) = self.nodes.get(pid)
+                    {
+                        self.layout.set_children(pid, &pnode.children);
                     }
                     self.layout.remove_node(node_id);
                     self.prev_rects.remove(node_id);
@@ -659,27 +659,27 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                                 "cyclic or root child {cid} under parent {parent_id}"
                             )));
                         }
-                        if let Some(g) = child_gen {
-                            if !self.visit_stamps.mark(cid, g) {
-                                return Err(BackendError::Internal(format!(
-                                    "duplicate child {cid} under parent {parent_id}"
-                                )));
-                            }
+                        if let Some(g) = child_gen
+                            && !self.visit_stamps.mark(cid, g)
+                        {
+                            return Err(BackendError::Internal(format!(
+                                "duplicate child {cid} under parent {parent_id}"
+                            )));
                         }
                         self.scratch_children.push(cid);
                     }
 
                     self.scratch_old_children.clear();
-                    if let Some(parent) = self.nodes.get_mut(parent_id) {
-                        if !parent.children.is_empty() {
-                            self.scratch_old_children.extend_from_slice(&parent.children);
-                        }
+                    if let Some(parent) = self.nodes.get_mut(parent_id)
+                        && !parent.children.is_empty()
+                    {
+                        self.scratch_old_children.extend_from_slice(&parent.children);
                     }
                     for &old_cid in &self.scratch_old_children {
-                        if let Some(cnode) = self.nodes.get_mut(old_cid) {
-                            if cnode.parent == Some(parent_id) {
-                                cnode.parent = None;
-                            }
+                        if let Some(cnode) = self.nodes.get_mut(old_cid)
+                            && cnode.parent == Some(parent_id)
+                        {
+                            cnode.parent = None;
                         }
                     }
 
@@ -688,13 +688,13 @@ impl<L: LayoutEngine> RenderBackend for HeadlessBackend<L> {
                         if let Some(cnode) = self.nodes.get_mut(cid) {
                             let prev_parent = cnode.parent;
                             cnode.parent = Some(parent_id);
-                            if let Some(prev_pid) = prev_parent {
-                                if prev_pid != parent_id {
-                                    if let Some(prev_pnode) = self.nodes.get_mut(prev_pid) {
-                                        prev_pnode.children.retain(|&c| c != cid);
-                                    }
-                                    self.scratch_prev_parents.push(prev_pid);
+                            if let Some(prev_pid) = prev_parent
+                                && prev_pid != parent_id
+                            {
+                                if let Some(prev_pnode) = self.nodes.get_mut(prev_pid) {
+                                    prev_pnode.children.retain(|&c| c != cid);
                                 }
+                                self.scratch_prev_parents.push(prev_pid);
                             }
                         }
                     }

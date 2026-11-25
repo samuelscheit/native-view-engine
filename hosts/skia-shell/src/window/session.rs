@@ -394,10 +394,10 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.backend
                 .rasterize(&mut self.pixel_buffer, self.clear_color);
         }
-        if self.show_hud {
-            if let Some(banner) = &self.status_banner {
-                draw_hud_banner(&mut self.pixel_buffer, self.viewport.scale_factor, banner);
-            }
+        if self.show_hud
+            && let Some(banner) = &self.status_banner
+        {
+            draw_hud_banner(&mut self.pixel_buffer, self.viewport.scale_factor, banner);
         }
         let elapsed_us = t0.elapsed().as_micros() as u64;
         self.frame_counter += 1;

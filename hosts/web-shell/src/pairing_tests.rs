@@ -240,7 +240,7 @@ fn pair_client_machine_rejects_bad_token_corrupt_envelopes_and_requests_keyframe
     .is_err());
 
     // Truncated / bad magic / bad version envelopes are rejected.
-    assert!(client.on_binary_message(&[b'N', b'T']).is_err());
+    assert!(client.on_binary_message(b"NT").is_err());
     assert!(client.on_binary_message(b"XX\x01\x02\x00\x00\x00\x00").is_err());
     assert!(client.on_binary_message(b"NT\x99\x02\x00\x00\x00\x00").is_err());
 

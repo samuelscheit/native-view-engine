@@ -173,8 +173,8 @@ pub(crate) fn mirror_to_scene_input<'a>(
 }
 
 enum SessionApp {
-    Dioxus(DioxusSurface),
-    Studio(StudioWorkspaceModule),
+    Dioxus(Box<DioxusSurface>),
+    Studio(Box<StudioWorkspaceModule>),
 }
 
 impl SessionApp {
@@ -234,7 +234,7 @@ impl WebAppSession {
     ) -> Self {
         Self::new_with_preinit_app(
             surface_id,
-            SessionApp::Dioxus(surface),
+            SessionApp::Dioxus(Box::new(surface)),
             None,
             backend,
             viewport,
@@ -297,7 +297,7 @@ impl WebAppSession {
         }
         Self::new_with_preinit_app(
             surface_id,
-            SessionApp::Studio(module),
+            SessionApp::Studio(Box::new(module)),
             preinit,
             backend,
             viewport,
@@ -316,7 +316,7 @@ impl WebAppSession {
         };
         Self::new_with_preinit_app(
             surface_id,
-            SessionApp::Dioxus(nve_example_counter::create_surface(surface_id)),
+            SessionApp::Dioxus(Box::new(nve_example_counter::create_surface(surface_id))),
             preinit,
             backend,
             viewport,

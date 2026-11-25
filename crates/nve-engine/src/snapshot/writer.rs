@@ -139,13 +139,14 @@ pub fn write_snapshot_atomic(
     };
 
     let write_result = (|| -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
         fs::rename(&tmp_path, dest)?;
         #[cfg(unix)]
         if let Some(parent) = dest.parent() {

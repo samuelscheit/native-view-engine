@@ -111,11 +111,12 @@ impl RemoteServerApp {
                         data.starts_with(&KEYDOWN_WIRE_MAGIC),
                         "remote keydown must use NK1 binary payload"
                     );
-                    if let Some(dk) = decode_keydown_bytes(&data) {
-                        if dk.meta && dk.key == "k" {
-                            self.palette_open = !self.palette_open;
-                            changed = true;
-                        }
+                    if let Some(dk) = decode_keydown_bytes(&data)
+                        && dk.meta
+                        && dk.key == "k"
+                    {
+                        self.palette_open = !self.palette_open;
+                        changed = true;
                     }
                 }
                 _ => {}
@@ -284,16 +285,15 @@ fn hot_reload_client_decodes_nvp1_binary_and_json_frames() {
 
 #[test]
 fn paired_remote_app_e2e_udp_tcp_and_ws_rasterizes_and_mutates_pixels() {
-    let server = TestPairServer::start("skia-pair-e2e-token");
-
-    for (transport, addr) in [
-        (PairTransport::Udp, server.udp_addr.to_string()),
-        (PairTransport::Tcp, server.tcp_addr.to_string()),
-        (
-            PairTransport::Ws,
-            format!("ws://{}/ws/nvd", server.tcp_addr),
-        ),
-    ] {
+    // Exercise ALL three transports independently with fresh server state so Frame-1 blue -> green,
+    // NK1 Cmd+K palette toggle, EventLoop wake callback, and status banner are verified on each.
+    for transport in [PairTransport::Udp, PairTransport::Tcp, PairTransport::Ws] {
+        let server = TestPairServer::start("skia-pair-e2e-token");
+        let addr = match transport {
+            PairTransport::Udp => server.udp_addr.to_string(),
+            PairTransport::Tcp => server.tcp_addr.to_string(),
+            PairTransport::Ws => format!("ws://{}/ws/nvd", server.tcp_addr),
+        };
         let wakes = Arc::new(AtomicUsize::new(0));
         let wakes_cb = Arc::clone(&wakes);
 
@@ -357,7 +357,7 @@ fn paired_remote_app_e2e_udp_tcp_and_ws_rasterizes_and_mutates_pixels() {
             Duration::from_secs(2),
         );
 
-        // Reset palette back for the next transport iteration.
+        // Reset palette back.
         assert!(session.handle_keydown("k", true, false, false, false).unwrap());
         wait_until_pixel(
             &mut session,
@@ -374,47 +374,6 @@ fn paired_remote_app_e2e_udp_tcp_and_ws_rasterizes_and_mutates_pixels() {
         assert!(session.app().remote_status_banner().unwrap().contains("LIVE"));
         session.app_mut().disconnect();
         assert!(!session.app().is_connected());
-        // Keep server click count reset cleanly by spinning a new server per transport below if needed.
-        break;
-    }
-
-    // Exercise ALL three transports independently with fresh server state so Frame-1 blue -> green
-    // transition is verified on UDP, TCP, AND WS individually.
-    for transport in [PairTransport::Udp, PairTransport::Tcp, PairTransport::Ws] {
-        let fresh_server = TestPairServer::start("skia-pair-per-transport");
-        let addr = match transport {
-            PairTransport::Udp => fresh_server.udp_addr.to_string(),
-            PairTransport::Tcp => fresh_server.tcp_addr.to_string(),
-            PairTransport::Ws => format!("ws://{}/ws/nvd", fresh_server.tcp_addr),
-        };
-        let app = PairedRemoteApp::connect(PairConnectConfig::new(
-            addr,
-            fresh_server.token.clone(),
-            transport,
-        ))
-        .unwrap();
-        let viewport = Viewport {
-            width: 300.0,
-            height: 200.0,
-            scale_factor: 1.0,
-        };
-        let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::BLACK, false);
-        session
-            .app_mut()
-            .wait_for_frame(Duration::from_secs(2))
-            .unwrap();
-        session.render_and_rasterize().unwrap();
-        assert_eq!(session.pixel_buffer().get_rgb(60, 48), Some((37, 99, 235)));
-
-        assert!(session.handle_click_logical(60.0, 48.0).unwrap());
-        wait_until_pixel(
-            &mut session,
-            60,
-            48,
-            (16, 185, 129),
-            Duration::from_secs(2),
-        );
-        session.app_mut().disconnect();
     }
 }
 
