@@ -36,7 +36,7 @@ enum SelectedBackend {
     Software(Box<SoftwareFramePresenter>),
 }
 
-enum SelectionMode<'a, W: ?Sized> {
+enum SelectionMode<'a, W> {
     OffscreenSwapchain,
     WindowSwapchain(&'a W),
     #[cfg(feature = "skia")]
@@ -61,7 +61,7 @@ fn select_backend<W>(
     mode: SelectionMode<'_, W>,
 ) -> Result<SelectedBackend, GpuSurfaceError>
 where
-    W: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + ?Sized,
+    W: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle,
 {
     let extent = config.extent()?;
     let candidates =

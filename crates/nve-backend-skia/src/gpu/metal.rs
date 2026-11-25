@@ -508,14 +508,13 @@ mod imp {
         }
     }
 
-    fn create_metal_context() -> Result<
-        (
-            Retained<ProtocolObject<dyn MTLDevice>>,
-            Retained<ProtocolObject<dyn MTLCommandQueue>>,
-            DirectContext,
-        ),
-        GpuSurfaceError,
-    > {
+    type MetalContextInit = (
+        Retained<ProtocolObject<dyn MTLDevice>>,
+        Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        DirectContext,
+    );
+
+    fn create_metal_context() -> Result<MetalContextInit, GpuSurfaceError> {
         let device = MTLCreateSystemDefaultDevice().ok_or_else(|| {
             GpuSurfaceError::DeviceUnavailable(
                 "MTLCreateSystemDefaultDevice returned None".to_string(),
