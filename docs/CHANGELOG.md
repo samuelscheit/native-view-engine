@@ -4,8 +4,21 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
-## Docs, Web Foundations & Codegen Hygiene
+## Docs, Web Foundations & Wave 14 (Zero-Copy, DRY & Production Docs)
 
+- **Skia Desktop Host Services (`NVE_IFACE_HOST = 5`), Multi-Window Glue & Zero-Copy `HotAppInstance`** (`c2f83c0`)
+  - Refactored `HotAppInstance::render`, `drain_emitted_events`, and `snapshot_state` to borrow `&[u8]` directly from `NveBufferSlice::as_slice()` (eliminating per-frame `.to_vec()` allocations across `nve-engine`, `nve-cli/pair`, and `hosts/skia-shell`).
+  - Bound `Arc<SkiaHostServices>` (`nve-sdk` Tier-1 + `SERVICE_WINDOW = 0x0002` `NVW1`) into `DesktopWindowHost`, wired `WindowEvent::ThemeChanged` / `ScaleFactorChanged` live `NVT2` & `NVL1` pushes, modal parent close-blocking, cascading sheet/popover cleanup, `CloseRequested` veto/allow, and safe Tier-2 `HotAppSlot::reload` callback re-binding (`82/82` tests, `0` Clippy warnings).
+- **Weighted Text Measurement & `flex-wrap: wrap` Pipeline Fix (`nve-engine`, `nve-backend-headless`, `nve-backend-skia`, `nve-backend-web`, `nve-docs`)**
+  - Added `TextMeasurer::measure_with_weight` + `LayoutEngine::set_raw_layout_prop`, wired `font-weight` and `flex-wrap` into `TaffyLayoutEngine` and Web `RawStyleProps`, and added weight-aware `CosmicTextEngine::measure_text_with_weight` with a `+1px` subpixel overhang guard—fixing bold/semibold clipping and inline prose wrapping on native Skia.
+- **Flagship Studio Live Multi-Peer `NVC1` CRDT Transport & `nve-ui` Migration** (`075141d`)
+  - Added zero-JSON binary `CrdtPeerTransport` (`InMemoryMeshTransport` with fault injection + `LoopbackTcpCrdtTransport` over `NVT1` OS loopback TCP with automatic `NVCD` anti-entropy catch-up), wired live CRDT sync metrics and partition/heal controls into Studio, and migrated Studio chrome across 9 view modules onto shared `crates/nve-ui` components (`29/29` tests, `0` Clippy warnings, `wasm32` clean).
+- **Wave 14C — Direct Zero-String-Parse `TypedStyle` Props (`nve-dioxus`, `nve-ui`) & `writer.rs` Split** (`192b726`)
+  - Added `nve_style: TypedStyle` via `AttributeValue::Any` with deterministic inline `style` override merging, cached pre-parsed `UiPaletteRgba` tokens in `ThemeProvider`, migrated all 15 `nve-ui` components off `StyleBuf` string formatting/reparsing, and split `writer.rs` (912L) into 5 `< 415`-line submodules (`45/45` tests, `0` Clippy warnings, `wasm32` clean).
+- **Wave 14B — Delete Legacy Fallbacks, Apple DRY Consolidation, Flutter/Kotlin Hot-Path Fixes & C++/JNI Splits** (`1d566bc`)
+  - Removed legacy non-direct `set_props` / ring `dispatch_events` fallbacks across SwiftUI, `cxx/nve-fabric-bridge`, macOS, and Windows; eliminated redundant Flutter `MethodChannel` calls; added zero-alloc reusable `NveBinWriter` and unified `NVE_MET1` decoding across Kotlin/Java; extracted `NveAppleComponentViewBase` & `NveAppleValueBridge` into `hosts/apple-common/`; and split `mock_jsi_recorder.hpp` (1,250L), `nve_host_runtime.hpp` (1,170L), and `NveAndroidSurfaceJni.cpp` (1,229L) below 615 lines. Verified across all 8 host CTest/Swift/Flutter/Gradle/`javac` suites.
+- **Docs Finale (Phases 2B/3B/4) — `cargo nve docs` CLI, `examples/nve-docs-site` (5 Live Playgrounds + Native App) & GitHub Pages CI** (`1ee43c2`)
+  - Shipped `cargo nve docs check|build|dev`, embedded zero-FS `examples/nve-docs-site` with all 5 real interactive playgrounds (`ui-playground`, `virtual-list-100k`, `router-sandbox`, `canvas-draw1`, `crdt-simulator`), native `export_nve_app!`, `wasm32` progressive hydration (`adopted=894, mismatches=0, domIdentityPreserved=true`), zero-npm headless Chrome E2E (`run_docs_e2e.mjs`), and `.github/workflows/docs.yml` (`43/43` tests, `0` Clippy warnings).
 - **SwiftUI Kit & Flutter Plugin Thin-Client `NVT1`/`NVD1` Pairing (10/10 Host Parity)** (`ffe1d5f`)
   - Implemented pure-Swift (`URLSessionWebSocketTask`, `NvePairProtocol.swift`, `NvePairClient.swift`, `NvePairedSurfaceView.swift`) and pure-Dart (`dart:io` `WebSocket`, `nve_pair_protocol.dart`, `nve_pair_client.dart`, `nve_paired_surface.dart`) zero-JSON binary `NVT1` + `NVD1` (`Keyframe`/`XorRleDelta`/`CommandOpDelta`) + `InputEvents = 11` thin-client pairing clients and interactive UI views, completing live pairing parity across all 10 NVE platform hosts. Verified: 50/50 `swift test`, 60/60 `flutter test`, 0 `flutter analyze` issues, all source files `< 550` lines.
 - **Tier-2/3 `crates/nve-sdk` Native Storage & Hardware Modules** (`a5ae15c`)
