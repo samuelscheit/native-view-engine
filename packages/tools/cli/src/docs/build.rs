@@ -238,6 +238,7 @@ fn emit_ssr_page(
     backend
         .submit_frame(&frame_bytes)
         .map_err(|e| format!("SSR submit_frame failed for '{public_route}': {e}"))?;
+    backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
 
     let ssr_preview = backend.render_ssr();
     let css_bytes = ssr_preview.base_css.len() + ssr_preview.style_css.len();
@@ -251,6 +252,7 @@ fn emit_ssr_page(
         lang: Some("en".to_string()),
         head_extra: Some(DOCS_HEAD_CHROME.to_string()),
         body_scripts: body_scripts.map(str::to_string),
+        enable_event_replay: body_scripts.is_some(),
     });
 
     let out_file = route_output_path(out_dir, public_route);
@@ -394,6 +396,7 @@ fn render_404_page(
     backend
         .submit_frame(&frame_bytes)
         .map_err(|e| format!("SSR 404 submit_frame failed: {e}"))?;
+    backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
     Ok(backend.render_ssr_document(&SsrDocumentOptions {
         title: "Native View Engine — Documentation".to_string(),
         description: Some("Native View Engine documentation".to_string()),
@@ -402,6 +405,7 @@ fn render_404_page(
         lang: Some("en".to_string()),
         head_extra: Some(DOCS_HEAD_CHROME.to_string()),
         body_scripts: body_scripts.map(str::to_string),
+        enable_event_replay: body_scripts.is_some(),
     }))
 }
 
