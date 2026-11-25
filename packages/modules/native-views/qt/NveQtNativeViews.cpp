@@ -1,7 +1,11 @@
 #include "NveQtNativeViews.hpp"
 
+#if NVE_NV_ENABLE_BLUR
 #include <QPalette>
+#endif
+#if NVE_NV_ENABLE_WEBVIEW || NVE_NV_ENABLE_VIDEO
 #include <QVBoxLayout>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -12,6 +16,7 @@ namespace nve::qt {
 
 namespace {
 
+#if NVE_NV_ENABLE_WEBVIEW || NVE_NV_ENABLE_VIDEO
 std::string normalize_url_scheme(std::string_view raw) {
   std::string norm;
   norm.reserve(raw.size());
@@ -23,6 +28,17 @@ std::string normalize_url_scheme(std::string_view raw) {
   return norm;
 }
 
+void mount_backend_child(QWidget* container, QWidget* child) {
+  if (container == nullptr || child == nullptr) return;
+  auto* layout = new QVBoxLayout(container);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(0);
+  child->setParent(container);
+  layout->addWidget(child);
+}
+#endif
+
+#if NVE_NV_ENABLE_BLUR
 QColor fallback_material_tint(nve::BlurMaterial mat, float intensity) noexcept {
   int base_alpha = 160;
   switch (mat) {
@@ -51,23 +67,6 @@ bool is_blur_kind(std::string_view k) noexcept {
   return k == nve::kNativeKindBlurSurface || k == nve::kNativeKindBlurAlias;
 }
 
-bool is_webview_kind(std::string_view k) noexcept {
-  return k == nve::kNativeKindWebView || k == nve::kNativeKindWebViewAlias;
-}
-
-bool is_video_kind(std::string_view k) noexcept {
-  return k == nve::kNativeKindVideoPlayer || k == nve::kNativeKindVideoAlias;
-}
-
-void mount_backend_child(QWidget* container, QWidget* child) {
-  if (container == nullptr || child == nullptr) return;
-  auto* layout = new QVBoxLayout(container);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(0);
-  child->setParent(container);
-  layout->addWidget(child);
-}
-
 nve::NativeViewAdapter make_blur_adapter() {
   nve::NativeViewAdapter adapter{};
   adapter.create = [](uint32_t, std::string_view, const nve::NvnpDecoder*) -> void* {
@@ -87,6 +86,12 @@ nve::NativeViewAdapter make_blur_adapter() {
     delete widget;
   };
   return adapter;
+}
+#endif // NVE_NV_ENABLE_BLUR
+
+#if NVE_NV_ENABLE_WEBVIEW
+bool is_webview_kind(std::string_view k) noexcept {
+  return k == nve::kNativeKindWebView || k == nve::kNativeKindWebViewAlias;
 }
 
 nve::NativeViewAdapter make_webview_adapter(
@@ -125,6 +130,12 @@ nve::NativeViewAdapter make_webview_adapter(
   };
   return adapter;
 }
+#endif // NVE_NV_ENABLE_WEBVIEW
+
+#if NVE_NV_ENABLE_VIDEO
+bool is_video_kind(std::string_view k) noexcept {
+  return k == nve::kNativeKindVideoPlayer || k == nve::kNativeKindVideoAlias;
+}
 
 nve::NativeViewAdapter make_video_adapter(
     std::function<std::unique_ptr<NveQtVideoBackend>(uint32_t)> factory) {
@@ -162,21 +173,11 @@ nve::NativeViewAdapter make_video_adapter(
   };
   return adapter;
 }
+#endif // NVE_NV_ENABLE_VIDEO
 
 } // namespace
 
-bool is_safe_qt_webview_url(std::string_view url) noexcept {
-  const std::string norm = normalize_url_scheme(url);
-  if (norm.empty()) return false;
-  return norm.starts_with("https://") || norm.starts_with("http://") || norm == "about:blank";
-}
-
-bool is_safe_qt_media_uri(std::string_view uri) noexcept {
-  const std::string norm = normalize_url_scheme(uri);
-  if (norm.empty()) return false;
-  return norm.starts_with("https://") || norm.starts_with("http://") || norm.starts_with("file://");
-}
-
+#if NVE_NV_ENABLE_BLUR
 QColor color_from_rrggbbaa(uint32_t rrggbbaa) noexcept {
   const int r = static_cast<int>((rrggbbaa >> 24u) & 0xFFu);
   const int g = static_cast<int>((rrggbbaa >> 16u) & 0xFFu);
@@ -230,6 +231,21 @@ void NveQtBlurSurfaceWidget::applyBlurProps(const nve::BlurSurfaceProps& props) 
   QPalette pal = palette();
   pal.setColor(QPalette::Window, effective_tint_);
   setPalette(pal);
+}
+
+NveQtBlurSurfaceWidget* blur_surface_for_node(
+    const nve::NativeViewRegistry& registry,
+    uint32_t node_id) noexcept {
+  if (!is_blur_kind(registry.kind_for(node_id))) return nullptr;
+  return static_cast<NveQtBlurSurfaceWidget*>(registry.instance_for(node_id));
+}
+#endif // NVE_NV_ENABLE_BLUR
+
+#if NVE_NV_ENABLE_WEBVIEW
+bool is_safe_qt_webview_url(std::string_view url) noexcept {
+  const std::string norm = normalize_url_scheme(url);
+  if (norm.empty()) return false;
+  return norm.starts_with("https://") || norm.starts_with("http://") || norm == "about:blank";
 }
 
 NveQtWebViewWidget::NveQtWebViewWidget(
@@ -297,6 +313,21 @@ void NveQtWebViewWidget::stopAndUnmount() {
   if (backend_) {
     backend_->stopAndClose();
   }
+}
+
+NveQtWebViewWidget* web_view_for_node(
+    const nve::NativeViewRegistry& registry,
+    uint32_t node_id) noexcept {
+  if (!is_webview_kind(registry.kind_for(node_id))) return nullptr;
+  return static_cast<NveQtWebViewWidget*>(registry.instance_for(node_id));
+}
+#endif // NVE_NV_ENABLE_WEBVIEW
+
+#if NVE_NV_ENABLE_VIDEO
+bool is_safe_qt_media_uri(std::string_view uri) noexcept {
+  const std::string norm = normalize_url_scheme(uri);
+  if (norm.empty()) return false;
+  return norm.starts_with("https://") || norm.starts_with("http://") || norm.starts_with("file://");
 }
 
 NveQtVideoPlayerWidget::NveQtVideoPlayerWidget(
@@ -369,58 +400,71 @@ void NveQtVideoPlayerWidget::stopAndUnmount() {
   }
 }
 
+NveQtVideoPlayerWidget* video_player_for_node(
+    const nve::NativeViewRegistry& registry,
+    uint32_t node_id) noexcept {
+  if (!is_video_kind(registry.kind_for(node_id))) return nullptr;
+  return static_cast<NveQtVideoPlayerWidget*>(registry.instance_for(node_id));
+}
+#endif // NVE_NV_ENABLE_VIDEO
+
 void register_qt_native_views(nve::NativeViewRegistry& registry, NveQtNativeViewHooks hooks) {
+  (void)registry;
+  (void)hooks;
+#if NVE_NV_ENABLE_BLUR
   registry.register_adapter(nve::kNativeKindBlurSurface, make_blur_adapter());
   registry.register_adapter(nve::kNativeKindBlurAlias, make_blur_adapter());
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
   registry.register_adapter(nve::kNativeKindWebView, make_webview_adapter(hooks.create_webview_backend));
   registry.register_adapter(
       nve::kNativeKindWebViewAlias,
       make_webview_adapter(std::move(hooks.create_webview_backend)));
+#endif
+#if NVE_NV_ENABLE_VIDEO
   registry.register_adapter(nve::kNativeKindVideoPlayer, make_video_adapter(hooks.create_video_backend));
   registry.register_adapter(
       nve::kNativeKindVideoAlias,
       make_video_adapter(std::move(hooks.create_video_backend)));
+#endif
 }
 
 void bind_qt_native_views_to_fabric_host(
     NveFabricHostHandle host,
     nve::NativeViewRegistry& registry) {
+  (void)registry;
   if (host == nullptr) return;
+#if NVE_NV_ENABLE_BLUR
   registry.bind_to_fabric_host(host, nve::kNativeKindBlurSurface);
   registry.bind_to_fabric_host(host, nve::kNativeKindBlurAlias);
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
   registry.bind_to_fabric_host(host, nve::kNativeKindWebView);
   registry.bind_to_fabric_host(host, nve::kNativeKindWebViewAlias);
+#endif
+#if NVE_NV_ENABLE_VIDEO
   registry.bind_to_fabric_host(host, nve::kNativeKindVideoPlayer);
   registry.bind_to_fabric_host(host, nve::kNativeKindVideoAlias);
+#endif
 }
 
 QWidget* native_widget_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept {
   const std::string_view k = registry.kind_for(node_id);
-  if (!is_blur_kind(k) && !is_webview_kind(k) && !is_video_kind(k)) return nullptr;
+  bool matched = false;
+#if NVE_NV_ENABLE_BLUR
+  matched = matched || is_blur_kind(k);
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
+  matched = matched || is_webview_kind(k);
+#endif
+#if NVE_NV_ENABLE_VIDEO
+  matched = matched || is_video_kind(k);
+#endif
+  (void)k;
+  if (!matched) return nullptr;
   return static_cast<QWidget*>(registry.instance_for(node_id));
-}
-
-NveQtBlurSurfaceWidget* blur_surface_for_node(
-    const nve::NativeViewRegistry& registry,
-    uint32_t node_id) noexcept {
-  if (!is_blur_kind(registry.kind_for(node_id))) return nullptr;
-  return static_cast<NveQtBlurSurfaceWidget*>(registry.instance_for(node_id));
-}
-
-NveQtWebViewWidget* web_view_for_node(
-    const nve::NativeViewRegistry& registry,
-    uint32_t node_id) noexcept {
-  if (!is_webview_kind(registry.kind_for(node_id))) return nullptr;
-  return static_cast<NveQtWebViewWidget*>(registry.instance_for(node_id));
-}
-
-NveQtVideoPlayerWidget* video_player_for_node(
-    const nve::NativeViewRegistry& registry,
-    uint32_t node_id) noexcept {
-  if (!is_video_kind(registry.kind_for(node_id))) return nullptr;
-  return static_cast<NveQtVideoPlayerWidget*>(registry.instance_for(node_id));
 }
 
 } // namespace nve::qt

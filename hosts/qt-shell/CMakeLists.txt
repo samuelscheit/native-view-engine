@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(NVE_ENABLE_NATIVE_VIEWS "Enable packages/modules/native-views" OFF)
+
 # Prefer unified prefixes (/opt/homebrew, /opt/homebrew/opt/qt) before split kegs (qtbase,
 # qtdeclarative) so Qt6Config.cmake discovers Widgets, Quick, and Qml together.
 foreach(_nve_qt_hint IN ITEMS
@@ -50,8 +52,6 @@ add_library(nve_qt_shell_lib STATIC
   NveQtCustomWidgets.cpp
   NveQtTextInputA11y.cpp
   NveQtWidgetReconciler.cpp
-  NveQtNativeViews.hpp
-  NveQtNativeViews.cpp
   NveQtWindowManager.hpp
   NveQtWindowManager.cpp
 )
@@ -72,6 +72,17 @@ target_link_libraries(nve_qt_shell_lib
     nve_fabric_bridge
     Qt6::Widgets
 )
+
+if(NVE_ENABLE_NATIVE_VIEWS)
+  if(NOT TARGET nve_qt_native_views)
+    add_subdirectory(
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../packages/modules/native-views/qt"
+      "${CMAKE_CURRENT_BINARY_DIR}/nve_qt_native_views"
+    )
+  endif()
+  target_link_libraries(nve_qt_shell_lib PUBLIC nve_qt_native_views)
+  target_compile_definitions(nve_qt_shell_lib PUBLIC NVE_ENABLE_NATIVE_VIEWS=1)
+endif()
 
 set(NVE_QT_HAS_QUICK OFF)
 if(TARGET Qt6::Quick AND TARGET Qt6::Qml)

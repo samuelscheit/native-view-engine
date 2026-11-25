@@ -2,6 +2,16 @@
 
 #include "nve_native_view.hpp"
 
+#ifndef NVE_NV_ENABLE_BLUR
+#define NVE_NV_ENABLE_BLUR 1
+#endif
+#ifndef NVE_NV_ENABLE_WEBVIEW
+#define NVE_NV_ENABLE_WEBVIEW 1
+#endif
+#ifndef NVE_NV_ENABLE_VIDEO
+#define NVE_NV_ENABLE_VIDEO 1
+#endif
+
 #include <gtk/gtk.h>
 
 #include <cstdint>
@@ -12,13 +22,7 @@
 
 namespace nve::gtk {
 
-/// Returns `true` if `url` uses an allowed WebView scheme (`https://`, `http://`, `about:blank`).
-/// Rejects `javascript:`, `vbscript:`, `data:`, and control-character obfuscated URLs.
-bool is_safe_gtk_webview_url(std::string_view url) noexcept;
-
-/// Returns `true` if `uri` is a safe media URI (`https://`, `http://`, `file://`).
-bool is_safe_gtk_media_uri(std::string_view uri) noexcept;
-
+#if NVE_NV_ENABLE_BLUR
 /// Unpacked RGBA components decoded from `0xRRGGBBAA` native tint values.
 struct GtkTintRgba {
   uint8_t r{0u};
@@ -70,6 +74,12 @@ class NveGtkBlurSurface {
   std::string backdrop_filter_spec_;
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_BLUR
+
+#if NVE_NV_ENABLE_WEBVIEW
+/// Returns `true` if `url` uses an allowed WebView scheme (`https://`, `http://`, `about:blank`).
+/// Rejects `javascript:`, `vbscript:`, `data:`, and control-character obfuscated URLs.
+bool is_safe_gtk_webview_url(std::string_view url) noexcept;
 
 /// Pluggable GTK4 WebView backend interface (e.g., WebKitGTK `WebKitWebView` or mock controller).
 class NveGtkWebViewBackend {
@@ -125,6 +135,11 @@ class NveGtkWebView {
   size_t evaluate_script_count_{0u};
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_WEBVIEW
+
+#if NVE_NV_ENABLE_VIDEO
+/// Returns `true` if `uri` is a safe media URI (`https://`, `http://`, `file://`).
+bool is_safe_gtk_media_uri(std::string_view uri) noexcept;
 
 /// Pluggable GTK4 video backend interface (e.g., `GtkVideo` / `GtkMediaFile` / GStreamer).
 class NveGtkVideoBackend {
@@ -188,17 +203,22 @@ class NveGtkVideoPlayer {
   size_t volume_change_count_{0u};
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_VIDEO
 
-/// Optional backend factory hooks injected when registering GTK4 native views.
+/// Optional backend factory hooks injected when registering enabled GTK4 native views.
 struct NveGtkNativeViewHooks {
+#if NVE_NV_ENABLE_WEBVIEW
   std::function<std::unique_ptr<NveGtkWebViewBackend>(uint32_t node_id)> create_webview_backend;
+#endif
+#if NVE_NV_ENABLE_VIDEO
   std::function<std::unique_ptr<NveGtkVideoBackend>(uint32_t node_id)> create_video_backend;
+#endif
 };
 
-/// Registers `BlurSurface`, `WebView`, and `VideoPlayer` (canonical kinds + aliases) in `registry`.
+/// Registers compile-time enabled GTK4 native views (canonical kinds + aliases) in `registry`.
 void register_gtk_native_views(nve::NativeViewRegistry& registry, NveGtkNativeViewHooks hooks = {});
 
-/// Binds GTK4 native view kinds registered in `registry` to `host`.
+/// Binds compile-time enabled GTK4 native view kinds registered in `registry` to `host`.
 void bind_gtk_native_views_to_fabric_host(
     NveFabricHostHandle host,
     nve::NativeViewRegistry& registry);
@@ -208,14 +228,20 @@ GtkWidget* native_widget_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
 
+#if NVE_NV_ENABLE_BLUR
 NveGtkBlurSurface* blur_surface_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
 NveGtkWebView* web_view_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
+#if NVE_NV_ENABLE_VIDEO
 NveGtkVideoPlayer* video_player_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
 
 } // namespace nve::gtk

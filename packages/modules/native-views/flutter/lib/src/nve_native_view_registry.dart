@@ -369,16 +369,20 @@ class NveNativeViewRegistry {
   int get mountedCount => _mounted.length;
   Widget? buildWidgetFor(BuildContext ctx, int nodeId) => _mounted[nodeId]?.adapter.buildWidget?.call(ctx, _mounted[nodeId]!.instance);
 
-  void registerDefaultFlutterNativeViews({
-    Widget Function(BuildContext context, NveFlutterWebViewState state)? webViewBuilder,
-    Widget Function(BuildContext context, NveFlutterVideoPlayerState state)? videoPlayerBuilder,
-  }) {
+  /// Registers only `BlurSurface` (`"nve.blur_surface"` / `"nve.blur"`).
+  void registerBlurSurface() {
     final NveNativeViewAdapter blur = NveNativeViewAdapter(
       create: (_, __, ___) => NveFlutterBlurSurfaceState(),
       updateProps: (Object i, _, NvnpDecoder d) { if (i is NveFlutterBlurSurfaceState) i.apply(NveBlurSurfaceProps.decode(d)); },
       unmount: (Object i, _) { if (i is NveFlutterBlurSurfaceState) i.markUnmounted(); },
       buildWidget: (_, Object i) => NveFlutterBlurSurfaceWidget(state: i as NveFlutterBlurSurfaceState),
     );
+    registerAdapter(NveNativeViewConstants.kindBlurSurface, blur);
+    registerAdapter(NveNativeViewConstants.kindBlurAlias, blur);
+  }
+
+  /// Registers only `WebView` (`"nve.web_view"` / `"nve.webview"`).
+  void registerWebView({Widget Function(BuildContext context, NveFlutterWebViewState state)? webViewBuilder}) {
     final NveNativeViewAdapter web = NveNativeViewAdapter(
       create: (_, __, ___) => NveFlutterWebViewState(),
       updateProps: (Object i, _, NvnpDecoder d) { if (i is NveFlutterWebViewState) i.apply(NveWebViewProps.decode(d)); },
@@ -386,6 +390,12 @@ class NveNativeViewRegistry {
       unmount: (Object i, _) { if (i is NveFlutterWebViewState) i.markUnmounted(); },
       buildWidget: (BuildContext c, Object i) => webViewBuilder != null ? webViewBuilder(c, i as NveFlutterWebViewState) : const SizedBox.expand(),
     );
+    registerAdapter(NveNativeViewConstants.kindWebView, web);
+    registerAdapter(NveNativeViewConstants.kindWebViewAlias, web);
+  }
+
+  /// Registers only `VideoPlayer` (`"nve.video_player"` / `"nve.video"`).
+  void registerVideoPlayer({Widget Function(BuildContext context, NveFlutterVideoPlayerState state)? videoPlayerBuilder}) {
     final NveNativeViewAdapter video = NveNativeViewAdapter(
       create: (_, __, ___) => NveFlutterVideoPlayerState(),
       updateProps: (Object i, _, NvnpDecoder d) { if (i is NveFlutterVideoPlayerState) i.apply(NveVideoPlayerProps.decode(d)); },
@@ -393,12 +403,20 @@ class NveNativeViewRegistry {
       unmount: (Object i, _) { if (i is NveFlutterVideoPlayerState) i.markUnmounted(); },
       buildWidget: (BuildContext c, Object i) => videoPlayerBuilder != null ? videoPlayerBuilder(c, i as NveFlutterVideoPlayerState) : const SizedBox.expand(),
     );
-    registerAdapter(NveNativeViewConstants.kindBlurSurface, blur);
-    registerAdapter(NveNativeViewConstants.kindBlurAlias, blur);
-    registerAdapter(NveNativeViewConstants.kindWebView, web);
-    registerAdapter(NveNativeViewConstants.kindWebViewAlias, web);
     registerAdapter(NveNativeViewConstants.kindVideoPlayer, video);
     registerAdapter(NveNativeViewConstants.kindVideoAlias, video);
+  }
+
+  void registerDefaultFlutterNativeViews({
+    bool enableBlur = true,
+    bool enableWebView = true,
+    bool enableVideo = true,
+    Widget Function(BuildContext context, NveFlutterWebViewState state)? webViewBuilder,
+    Widget Function(BuildContext context, NveFlutterVideoPlayerState state)? videoPlayerBuilder,
+  }) {
+    if (enableBlur) registerBlurSurface();
+    if (enableWebView) registerWebView(webViewBuilder: webViewBuilder);
+    if (enableVideo) registerVideoPlayer(videoPlayerBuilder: videoPlayerBuilder);
   }
 }
 

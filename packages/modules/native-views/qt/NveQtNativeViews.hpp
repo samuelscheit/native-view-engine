@@ -2,8 +2,20 @@
 
 #include "nve_native_view.hpp"
 
+#ifndef NVE_NV_ENABLE_BLUR
+#define NVE_NV_ENABLE_BLUR 1
+#endif
+#ifndef NVE_NV_ENABLE_WEBVIEW
+#define NVE_NV_ENABLE_WEBVIEW 1
+#endif
+#ifndef NVE_NV_ENABLE_VIDEO
+#define NVE_NV_ENABLE_VIDEO 1
+#endif
+
+#if NVE_NV_ENABLE_BLUR
 #include <QColor>
 #include <QGraphicsBlurEffect>
+#endif
 #include <QString>
 #include <QWidget>
 
@@ -15,13 +27,7 @@
 
 namespace nve::qt {
 
-/// Returns `true` if `url` uses an allowed WebView scheme (`https://`, `http://`, `about:blank`).
-/// Rejects `javascript:`, `vbscript:`, `data:`, and control-character obfuscated URLs.
-bool is_safe_qt_webview_url(std::string_view url) noexcept;
-
-/// Returns `true` if `uri` is a safe media URI (`https://`, `http://`, `file://`).
-bool is_safe_qt_media_uri(std::string_view uri) noexcept;
-
+#if NVE_NV_ENABLE_BLUR
 /// Converts a packed `0xRRGGBBAA` native color to `QColor`.
 QColor color_from_rrggbbaa(uint32_t rrggbbaa) noexcept;
 
@@ -53,6 +59,12 @@ class NveQtBlurSurfaceWidget : public QWidget {
   uint32_t tint_rgba_{0u};
   QColor effective_tint_;
 };
+#endif // NVE_NV_ENABLE_BLUR
+
+#if NVE_NV_ENABLE_WEBVIEW
+/// Returns `true` if `url` uses an allowed WebView scheme (`https://`, `http://`, `about:blank`).
+/// Rejects `javascript:`, `vbscript:`, `data:`, and control-character obfuscated URLs.
+bool is_safe_qt_webview_url(std::string_view url) noexcept;
 
 /// Pluggable Qt WebView backend interface (e.g., `QWebEngineView` or a custom/mock controller).
 class NveQtWebViewBackend {
@@ -104,6 +116,11 @@ class NveQtWebViewWidget : public QWidget {
   size_t evaluate_script_count_{0u};
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_WEBVIEW
+
+#if NVE_NV_ENABLE_VIDEO
+/// Returns `true` if `uri` is a safe media URI (`https://`, `http://`, `file://`).
+bool is_safe_qt_media_uri(std::string_view uri) noexcept;
 
 /// Pluggable Qt Multimedia video backend interface (e.g., `QMediaPlayer` + `QVideoWidget`).
 class NveQtVideoBackend {
@@ -163,17 +180,22 @@ class NveQtVideoPlayerWidget : public QWidget {
   size_t volume_change_count_{0u};
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_VIDEO
 
-/// Optional backend factory hooks injected when registering Qt 6 native views.
+/// Optional backend factory hooks injected when registering enabled Qt 6 native views.
 struct NveQtNativeViewHooks {
+#if NVE_NV_ENABLE_WEBVIEW
   std::function<std::unique_ptr<NveQtWebViewBackend>(uint32_t node_id)> create_webview_backend;
+#endif
+#if NVE_NV_ENABLE_VIDEO
   std::function<std::unique_ptr<NveQtVideoBackend>(uint32_t node_id)> create_video_backend;
+#endif
 };
 
-/// Registers `BlurSurface`, `WebView`, and `VideoPlayer` (canonical kinds + aliases) in `registry`.
+/// Registers compile-time enabled Qt native views (canonical kinds + aliases) in `registry`.
 void register_qt_native_views(nve::NativeViewRegistry& registry, NveQtNativeViewHooks hooks = {});
 
-/// Binds Qt native view kinds registered in `registry` to `host`.
+/// Binds compile-time enabled Qt native view kinds registered in `registry` to `host`.
 void bind_qt_native_views_to_fabric_host(
     NveFabricHostHandle host,
     nve::NativeViewRegistry& registry);
@@ -183,14 +205,20 @@ QWidget* native_widget_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
 
+#if NVE_NV_ENABLE_BLUR
 NveQtBlurSurfaceWidget* blur_surface_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
 NveQtWebViewWidget* web_view_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
+#if NVE_NV_ENABLE_VIDEO
 NveQtVideoPlayerWidget* video_player_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
 
 } // namespace nve::qt

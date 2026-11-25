@@ -9,7 +9,17 @@
 #include <string>
 #include <string_view>
 
-#if defined(_WIN32)
+#ifndef NVE_NV_ENABLE_BLUR
+#define NVE_NV_ENABLE_BLUR 1
+#endif
+#ifndef NVE_NV_ENABLE_WEBVIEW
+#define NVE_NV_ENABLE_WEBVIEW 1
+#endif
+#ifndef NVE_NV_ENABLE_VIDEO
+#define NVE_NV_ENABLE_VIDEO 1
+#endif
+
+#if defined(_WIN32) && NVE_NV_ENABLE_BLUR
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -21,6 +31,7 @@
 
 namespace nve::win {
 
+#if NVE_NV_ENABLE_BLUR
 /// Win32 DWM system backdrop type values matching `DWM_SYSTEMBACKDROP_TYPE` (Win11 22H2+).
 enum class WinSystemBackdropType : uint32_t {
   Auto = 0u,
@@ -41,13 +52,6 @@ struct WinTintColor {
   float b{0.0f};
   float a{0.0f};
 };
-
-/// Returns `true` if `url` uses an allowed WebView scheme (`https://`, `http://`, `about:blank`).
-/// Rejects `javascript:`, `vbscript:`, `data:`, and control-character obfuscated URLs.
-bool is_safe_win_webview_url(std::string_view url) noexcept;
-
-/// Returns `true` if `uri` is a safe media source (`https://`, `http://`, `file://`).
-bool is_safe_win_media_uri(std::string_view uri) noexcept;
 
 /// Unpacks a `0xRRGGBBAA` color value into 8-bit and normalized `[0, 1]` channels.
 WinTintColor unpack_win_tint_rrggbbaa(uint32_t rrggbbaa) noexcept;
@@ -92,6 +96,12 @@ class NveWinBlurSurfaceView {
   uint32_t update_count_{0u};
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_BLUR
+
+#if NVE_NV_ENABLE_WEBVIEW
+/// Returns `true` if `url` uses an allowed WebView scheme (`https://`, `http://`, `about:blank`).
+/// Rejects `javascript:`, `vbscript:`, `data:`, and control-character obfuscated URLs.
+bool is_safe_win_webview_url(std::string_view url) noexcept;
 
 /// Pluggable WebView2 backend interface so a real `ICoreWebView2Controller` binds when present.
 class NveWinWebViewBackend {
@@ -144,6 +154,11 @@ class NveWinWebView {
   size_t evaluate_script_count_{0u};
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_WEBVIEW
+
+#if NVE_NV_ENABLE_VIDEO
+/// Returns `true` if `uri` is a safe media source (`https://`, `http://`, `file://`).
+bool is_safe_win_media_uri(std::string_view uri) noexcept;
 
 /// Pluggable Media Foundation backend interface (`IMFMediaEngine` / `IMFMediaSession`).
 class NveWinVideoBackend {
@@ -204,30 +219,40 @@ class NveWinVideoPlayer {
   size_t volume_change_count_{0u};
   bool unmounted_{false};
 };
+#endif // NVE_NV_ENABLE_VIDEO
 
-/// Optional backend factory hooks injected when registering Windows native views.
+/// Optional backend factory hooks injected when registering enabled Windows native views.
 struct NveWinNativeViewHooks {
+#if NVE_NV_ENABLE_WEBVIEW
   std::function<std::unique_ptr<NveWinWebViewBackend>(uint32_t node_id)> create_webview_backend;
+#endif
+#if NVE_NV_ENABLE_VIDEO
   std::function<std::unique_ptr<NveWinVideoBackend>(uint32_t node_id)> create_video_backend;
+#endif
 };
 
-/// Registers `BlurSurface`, `WebView`, and `VideoPlayer` (canonical kinds + aliases) in `registry`.
+/// Registers all compile-time enabled Windows native views (canonical kinds + aliases) in `registry`.
 void register_win_native_views(nve::NativeViewRegistry& registry, NveWinNativeViewHooks hooks = {});
 
-/// Binds Windows native view kinds registered in `registry` to `host`.
+/// Binds compile-time enabled Windows native view kinds registered in `registry` to `host`.
 void bind_win_native_views_to_fabric_host(
     NveFabricHostHandle host,
     nve::NativeViewRegistry& registry);
 
-/// Type-safe instance lookups for mounted nodes in `registry`.
+#if NVE_NV_ENABLE_BLUR
 NveWinBlurSurfaceView* blur_surface_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
+#if NVE_NV_ENABLE_WEBVIEW
 NveWinWebView* web_view_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
+#if NVE_NV_ENABLE_VIDEO
 NveWinVideoPlayer* video_player_for_node(
     const nve::NativeViewRegistry& registry,
     uint32_t node_id) noexcept;
+#endif
 
 } // namespace nve::win
