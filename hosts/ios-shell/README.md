@@ -1,6 +1,35 @@
 # iOS Prebuilt Host Shell (`hosts/ios-shell`)
 
-This directory provides two iOS integration surfaces backed by `cxx/nve-fabric-bridge`:
+This directory provides a standalone zero-Xcode-project iOS Simulator runner and two iOS integration surfaces backed by `cxx/nve-fabric-bridge`.
+
+## Quick Start: One-Command iOS Simulator Launcher (`run-simulator.sh`)
+
+Build, sign, install, and launch any NVE Rust app (`nve-studio-workspace`, `nve-example-counter`, or any crate exporting `nve_get_interface`) directly in the iOS Simulator — no `.xcodeproj` or `xcodebuild` required:
+
+```bash
+# Default: build & launch nve-studio-workspace in the iOS Simulator
+./hosts/ios-shell/run-simulator.sh
+
+# Launch the interactive counter example
+./hosts/ios-shell/run-simulator.sh nve-example-counter
+
+# Build the signed NveIosShell.app bundle only (no Simulator boot/install)
+./hosts/ios-shell/run-simulator.sh nve-example-counter --build-only
+
+# Headless launch + screenshot capture on a specific Simulator
+./hosts/ios-shell/run-simulator.sh nve-example-counter \
+  --headless \
+  --device "iPhone 16 Pro" \
+  --screenshot /tmp/nve-ios.png
+```
+
+Prerequisites:
+
+- Xcode Command Line Tools / iOS Simulator SDK (`xcrun --sdk iphonesimulator`)
+- Rust iOS Simulator target: `rustup target add aarch64-apple-ios-sim`
+- Optional: set `RN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon` to compile and link React Native Yoga (`NVE_WITH_RN_YOGA=1`); otherwise the host runs in standalone layout mode.
+
+At runtime `main.mm` mounts `RCTNveComponentView` pinned inside the root view controller's `safeAreaLayoutGuide` (updating across rotation and resize) and loads `NveIosShell.app/libnve_app.dylib` (overridable via the `NVE_APP_DYLIB` environment variable).
 
 ## 1. Standalone Prebuilt Host Shell (`NveFabricHost.h` / `NveFabricHost.mm`)
 
