@@ -116,29 +116,12 @@ public final class NveSurfaceController: ObservableObject {
     }
 
     private func applyDirectProps<P: NveDirectEncodable>(_ props: P) -> Bool? {
-        guard let handle, let component = module.component?.pointee else {
+        guard let handle, let directFn = module.component?.pointee.set_props_direct else {
             return nil
         }
-        let needsRender: UInt32
-        if let directFn = component.set_props_direct {
-            guard let status = try? NveDirectPropsWriter.withEncodedProps(props, { ptr, count in
-                directFn(handle, ptr, count)
-            }) else {
-                return nil
-            }
-            needsRender = status
-        } else if let binFn = component.set_props {
-            guard let binData = try? NveDirectPropsWriter.encodeFallbackBinData(from: props) else {
-                return nil
-            }
-            needsRender = binData.withUnsafeBytes { raw -> UInt32 in
-                let slice = NveBufferSlice(
-                    ptr: raw.bindMemory(to: UInt8.self).baseAddress,
-                    len: raw.count
-                )
-                return binFn(handle, slice)
-            }
-        } else {
+        guard let needsRender = try? NveDirectPropsWriter.withEncodedProps(props, { ptr, count in
+            directFn(handle, ptr, count)
+        }) else {
             return nil
         }
 
@@ -149,38 +132,19 @@ public final class NveSurfaceController: ObservableObject {
         return needsRender != 0
     }
 
-    /// Pushes typed props via `NveComponentApi.set_props_direct` (zero JSON), falling back to
-    /// compact binary `NveBinValue` on `set_props` only if `set_props_direct == nil`.
+    /// Pushes typed props via required `NveComponentApi.set_props_direct` (zero JSON, no legacy fallback).
     @discardableResult
     public func setProps(_ entries: [(String, NveBinValue)]) -> Bool {
         let canonical = NveBinValue.map(entries)
         if lastPropsValue == canonical {
             return false
         }
-        guard let handle, let component = module.component?.pointee else {
+        guard let handle, let directFn = module.component?.pointee.set_props_direct else {
             return false
         }
-
-        let needsRender: UInt32
-        if let directFn = component.set_props_direct {
-            guard let status = try? NveDirectPropsWriter.withEntries(entries, { ptr, count in
-                directFn(handle, ptr, count)
-            }) else {
-                return false
-            }
-            needsRender = status
-        } else if let binFn = component.set_props {
-            guard let binData = try? canonical.encode() else {
-                return false
-            }
-            needsRender = binData.withUnsafeBytes { raw -> UInt32 in
-                let slice = NveBufferSlice(
-                    ptr: raw.bindMemory(to: UInt8.self).baseAddress,
-                    len: raw.count
-                )
-                return binFn(handle, slice)
-            }
-        } else {
+        guard let needsRender = try? NveDirectPropsWriter.withEntries(entries, { ptr, count in
+            directFn(handle, ptr, count)
+        }) else {
             return false
         }
 
@@ -203,31 +167,15 @@ public final class NveSurfaceController: ObservableObject {
         return setProps(entries)
     }
 
-    /// Dispatches a batch of typed events via `NveSurfaceApi.dispatch_events_direct` when
-    /// available, falling back to binary `EventRing` on `dispatch_events`.
+    /// Dispatches a batch of typed events via required `NveSurfaceApi.dispatch_events_direct`.
     @discardableResult
     public func dispatchEvents(_ events: [NveEvent]) -> Bool {
-        guard !events.isEmpty, let handle, let surface = module.surface?.pointee else {
+        guard !events.isEmpty, let handle, let directFn = module.surface?.pointee.dispatch_events_direct else {
             return false
         }
-        let needsRender: UInt32
-        if let directFn = surface.dispatch_events_direct {
-            guard let status = try? NveDirectEventWriter.withBatch(events, { batch in
-                directFn(handle, batch)
-            }) else {
-                return false
-            }
-            needsRender = status
-        } else if let ringFn = surface.dispatch_events {
-            let encoded = NveEventRingCodec.encode(events)
-            needsRender = encoded.withUnsafeBytes { raw -> UInt32 in
-                let slice = NveBufferSlice(
-                    ptr: raw.bindMemory(to: UInt8.self).baseAddress,
-                    len: raw.count
-                )
-                return ringFn(handle, slice)
-            }
-        } else {
+        guard let needsRender = try? NveDirectEventWriter.withBatch(events, { batch in
+            directFn(handle, batch)
+        }) else {
             return false
         }
 
@@ -251,38 +199,15 @@ public final class NveSurfaceController: ObservableObject {
         nodeId: UInt32 = 1,
         timestampUs: UInt64 = UInt64(Date().timeIntervalSince1970 * 1_000_000)
     ) {
-        guard let handle, let surface = module.surface?.pointee else { return }
-        let needsRender: UInt32
-        if let directFn = surface.dispatch_events_direct {
-            guard let status = try? NveDirectEventWriter.withCustomEvent(
-                surfaceId: surfaceId,
-                nodeId: nodeId,
-                timestampUs: timestampUs,
-                name: name,
-                value: value,
-                { batch in directFn(handle, batch) }
-            ) else {
-                return
-            }
-            needsRender = status
-        } else if let ringFn = surface.dispatch_events {
-            guard let encoded = try? NveEventRingCodec.encodeCustomEvent(
-                surfaceId: surfaceId,
-                nodeId: nodeId,
-                name: name,
-                value: value,
-                timestampUs: timestampUs
-            ) else {
-                return
-            }
-            needsRender = encoded.withUnsafeBytes { raw -> UInt32 in
-                let slice = NveBufferSlice(
-                    ptr: raw.bindMemory(to: UInt8.self).baseAddress,
-                    len: raw.count
-                )
-                return ringFn(handle, slice)
-            }
-        } else {
+        guard let handle, let directFn = module.surface?.pointee.dispatch_events_direct else { return }
+        guard let needsRender = try? NveDirectEventWriter.withCustomEvent(
+            surfaceId: surfaceId,
+            nodeId: nodeId,
+            timestampUs: timestampUs,
+            name: name,
+            value: value,
+            { batch in directFn(handle, batch) }
+        ) else {
             return
         }
 

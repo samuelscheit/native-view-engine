@@ -205,6 +205,26 @@ struct MockMacRustComponent {
     return 0;
   }
 
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto *self = static_cast<MockMacRustComponent *>(h);
+    if (batch.ptr == nullptr) return 0;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent &ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4) {
+        ++self->count;
+        const NveMapEntry entry{
+            nve::make_str_slice("count"),
+            nve::make_i64_value(static_cast<int64_t>(self->count)),
+        };
+        const NveValue payload = nve::make_map_value(&entry, 1);
+        self->outbound.push_custom_value(
+            self->surface_id, 4, ev.timestamp_us, "onIncrement", payload);
+        return 1;
+      }
+    }
+    return 0;
+  }
+
   static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_json) {
     auto *self = static_cast<MockMacRustComponent *>(h);
     self->title.assign(reinterpret_cast<const char *>(patch_json.ptr), patch_json.len);
@@ -261,7 +281,7 @@ struct MockMacRustComponent {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
-        .dispatch_events_direct = nullptr,
+        .dispatch_events_direct = &dispatch_events_direct,
     };
     static const NveComponentApi kComponent{
         .set_props = &set_props,
@@ -392,6 +412,26 @@ struct HostEdgeApp {
     return 0;
   }
 
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto *self = static_cast<HostEdgeApp *>(h);
+    if (batch.ptr == nullptr) return 0;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent &ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange) && ev.node_id == 5) {
+        self->last_typed = std::string(nve::str_slice_view(ev.text));
+        const NveMapEntry entry{
+            nve::make_str_slice("typed"),
+            nve::make_str_value(nve::make_str_slice(self->last_typed)),
+        };
+        const NveValue payload = nve::make_map_value(&entry, 1);
+        self->outbound.push_custom_value(
+            self->surface_id, 5, ev.timestamp_us, "onTextTyped", payload);
+        return 0;
+      }
+    }
+    return 0;
+  }
+
   static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
     auto *self = static_cast<HostEdgeApp *>(h);
     if (const auto view = nve::BinValueView::parse(props)) {
@@ -431,7 +471,7 @@ struct HostEdgeApp {
   }
 
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
     static const NveComponentApi kComp{&set_props, &drain_emitted_events, &set_props_direct};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
@@ -614,6 +654,33 @@ struct A11yImeMacApp {
     return 0;
   }
 
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto *self = static_cast<A11yImeMacApp *>(h);
+    if (batch.ptr == nullptr) return 0;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent &ev = batch.ptr[i];
+      if (ev.node_id == 6) {
+        if (ev.kind == static_cast<uint8_t>(nve::EventKind::Focus)) {
+          ++self->focus_count;
+        } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Blur)) {
+          ++self->blur_count;
+        } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
+          ++self->text_change_count;
+          self->last_text = std::string(nve::str_slice_view(ev.text));
+        } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) &&
+                   nve::str_slice_view(ev.name) == "onSubmit") {
+          ++self->submit_count;
+          if (ev.value.tag == NVE_VAL_STR) {
+            self->last_submit = std::string(nve::str_slice_view(ev.value.data.str_val));
+          } else {
+            self->last_submit.clear();
+          }
+        }
+      }
+    }
+    return 0;
+  }
+
   static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
     auto *self = static_cast<A11yImeMacApp *>(h);
     for (uint32_t i = 0; i < count; ++i) {
@@ -637,7 +704,7 @@ struct A11yImeMacApp {
   }
 
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
     static const NveComponentApi kComp{nullptr, &drain_emitted_events, &set_props_direct};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
@@ -946,6 +1013,7 @@ struct CanvasSparklineApp {
   }
 
   static uint32_t dispatch_events(NveAppHandle, NveBufferSlice) { return 0u; }
+  static uint32_t dispatch_events_direct(NveAppHandle, NveEventBatch) { return 0u; }
   static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
     auto *self = static_cast<CanvasSparklineApp *>(h);
     for (uint32_t i = 0u; i < count; ++i) {
@@ -963,7 +1031,7 @@ struct CanvasSparklineApp {
   }
   static NveBufferSlice drain_emitted_events(NveAppHandle) { return {nullptr, 0u}; }
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
     static const NveComponentApi kComp{nullptr, &drain_emitted_events, &set_props_direct};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;

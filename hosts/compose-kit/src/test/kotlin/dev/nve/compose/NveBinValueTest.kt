@@ -144,6 +144,38 @@ class NveBinValueTest {
         }
     }
 
+    @Test
+    fun reusableBinWriterAvoidsAllocationsAndMatchesAstEncodingByteForByte() {
+        val writer = NveBinWriter(initialCapacity = 16)
+        val firstMap = mapOf(
+            "ascii" to "hello",
+            "emoji" to "NVE 🚀 日本語 €",
+            "nested" to mapOf("arr" to listOf(1, true, null, 2.5, byteArrayOf(1, 2, 3))),
+        )
+        writer.reset()
+        writer.writeMap(firstMap)
+        val directBytes = writer.toByteArray()
+        val astBytes = NveBinValue.fromAny(firstMap).encode()
+        assertArrayEquals(astBytes, directBytes)
+
+        var scratch = ByteArray(0)
+        scratch = writer.copyInto(scratch)
+        val firstLen = writer.size
+        assertTrue(writer.contentEquals(scratch, firstLen))
+
+        // Reuse the same writer instance across updates and verify deduplication comparison.
+        writer.reset()
+        writer.writeMap(firstMap)
+        assertTrue(writer.contentEquals(scratch, firstLen))
+
+        writer.reset()
+        writer.writeMap(mapOf("ascii" to "changed", "count" to 99L))
+        assertTrue(!writer.contentEquals(scratch, firstLen))
+        val parsed = NveBinValueView.parse(writer.toByteArray())
+        assertEquals("changed", parsed.mapValue("ascii")!!.stringValue)
+        assertEquals(99L, parsed.mapValue("count")!!.int64Value)
+    }
+
     private fun writeLe32(out: ByteArrayOutputStream, v: Int) {
         out.write(v and 0xFF)
         out.write((v ushr 8) and 0xFF)

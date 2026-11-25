@@ -17,6 +17,7 @@ typedef UIFont NvePlatformFont;
 #endif
 
 #import "NveAppleImageCache.h"
+#import "NveAppleValueBridge.h"
 
 #include "nve_abi.generated.h"
 #include "nve_rn_component.hpp"
@@ -81,9 +82,6 @@ uint64_t current_timestamp_us() noexcept;
 
 /// Convert packed little-endian RGBA8888 (R in low byte, A in high byte) to `NSColor` / `UIColor`.
 NvePlatformColor * _Nonnull color_from_rgba(uint32_t rgba);
-
-/// Convert a decoded NVE event into an Objective-C payload dictionary.
-NSDictionary<NSString *, id> * _Nonnull payload_dictionary_from_event(const nve::DecodedEvent &ev);
 
 /// Open a Rust NVE `cdylib`, resolve `nve_get_interface`, and validate `NVE_IFACE_SURFACE`.
 /// On failure, closes any opened handle, populates `*out_error` (when non-null) with

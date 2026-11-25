@@ -1,14 +1,11 @@
-#import "NveAppleComponentHost.h"
+#import "NveAppleComponentHostInternal.h"
+#import "NveAppleValueBridge.h"
 
-#import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 
-#include "nve_snapshot.hpp"
-#include "nve_value.hpp"
-
-#include <chrono>
 #include <cmath>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -23,85 +20,9 @@ namespace {
 
 const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
 
-NSError *make_init_error(NSString *domain, NSString *description) {
-  return [NSError errorWithDomain:domain
-                             code:static_cast<NSInteger>(nve::apple::DylibErrorCode::MissingSurfaceInterface)
-                         userInfo:@{NSLocalizedDescriptionKey : description}];
-}
-
-NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uint32_t depth) {
-  if (obj == nil || obj == [NSNull null] || depth > NVE_BIN_VALUE_MAX_DEPTH) {
-    return nve::make_null_value();
-  }
-  if ([obj isKindOfClass:[NSNumber class]]) {
-    NSNumber *num = (NSNumber *)obj;
-    if (CFGetTypeID((__bridge CFTypeRef)num) == CFBooleanGetTypeID()) {
-      return nve::make_bool_value(num.boolValue ? true : false);
-    }
-    if (CFNumberIsFloatType((__bridge CFNumberRef)num)) {
-      const double d = num.doubleValue;
-      return std::isfinite(d) ? nve::make_f64_value(d) : nve::make_null_value();
-    }
-    return nve::make_i64_value(static_cast<int64_t>(num.longLongValue));
-  }
-  if ([obj isKindOfClass:[NSString class]]) {
-    NSString *str = (NSString *)obj;
-    const char *utf8 = str.UTF8String;
-    if (!utf8) {
-      return nve::make_str_value(NveStrSlice{nullptr, 0});
-    }
-    return nve::make_str_value(arena.copy_str(std::string_view(utf8)));
-  }
-  if ([obj isKindOfClass:[NSData class]]) {
-    NSData *data = (NSData *)obj;
-    return nve::make_bytes_value(
-        arena.copy_bytes(static_cast<const uint8_t *>(data.bytes), data.length));
-  }
-  if ([obj isKindOfClass:[NSArray class]]) {
-    NSArray *arr = (NSArray *)obj;
-    const size_t n = arr.count;
-    NveValue *elems = n > 0 ? arena.alloc_array<NveValue>(n) : nullptr;
-    for (size_t i = 0; i < n; ++i) {
-      elems[i] = nve_value_from_objc_object(arr[i], arena, depth + 1u);
-    }
-    return nve::make_array_value(elems, n);
-  }
-  if ([obj isKindOfClass:[NSDictionary class]]) {
-    NSDictionary *dict = (NSDictionary *)obj;
-    const size_t n = dict.count;
-    NveMapEntry *entries = n > 0 ? arena.alloc_array<NveMapEntry>(n) : nullptr;
-    __block size_t idx = 0;
-    [dict enumerateKeysAndObjectsUsingBlock:^(id key, id val, BOOL *stop) {
-      (void)stop;
-      if (idx >= n) return;
-      NSString *keyStr = [key isKindOfClass:[NSString class]] ? (NSString *)key : [key description];
-      const char *kutf8 = keyStr.UTF8String;
-      entries[idx++] = NveMapEntry{
-          kutf8 ? arena.copy_str(std::string_view(kutf8)) : NveStrSlice{nullptr, 0},
-          nve_value_from_objc_object(val, arena, depth + 1u),
-      };
-    }];
-    return nve::make_map_value(entries, idx);
-  }
-  return nve::make_null_value();
-}
-
 } // namespace
 
-@implementation NveAppleComponentHost {
-  __weak id<NveAppleComponentViewAdapter> _adapter;
-  NSString *_errorDomain;
-  NveAppleSceneReconciler *_reconciler;
-  std::unique_ptr<nve::NveRnComponentBridge> _bridge;
-  std::unique_ptr<nve::PairClient> _pairClient;
-  NveFabricHostHandle _pairedHost;
-  uint64_t _pairedFrameCount;
-  NveFabricHostHandle _frame0Host;
-  std::vector<uint8_t> _pendingSnapshotState;
-  void *_dylibHandle;
-  uint32_t _surfaceId;
-  nve::BumpArena _propsArena;
-}
+@implementation NveAppleComponentHost
 
 + (nullable NveAppleComponentHost *)hostForRootView:(NvePlatformView *)rootView {
   if (!rootView) return nil;
@@ -191,7 +112,8 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   if (!adapter || !mod.surface || !mod.surface->create) {
     nve::apple::close_dylib(dylibHandle);
     if (error) {
-      *error = make_init_error(_errorDomain, @"Missing NVE_IFACE_SURFACE interface");
+      *error = nve::apple::make_host_init_error(
+          _errorDomain, @"Missing NVE_IFACE_SURFACE interface");
     }
     return NO;
   }
@@ -218,7 +140,8 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
     nextBridge.reset();
     nve::apple::close_dylib(dylibHandle);
     if (error) {
-      *error = make_init_error(_errorDomain, @"Failed to initialize NVE surface instance");
+      *error = nve::apple::make_host_init_error(
+          _errorDomain, @"Failed to initialize NVE surface instance");
     }
     return NO;
   }
@@ -235,7 +158,7 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
     nextBridge.reset();
     nve::apple::close_dylib(dylibHandle);
     if (error) {
-      *error = make_init_error(
+      *error = nve::apple::make_host_init_error(
           _errorDomain,
           [NSString stringWithFormat:@"Initial frame render failed (rc=%d)", rc]);
     }
@@ -259,140 +182,6 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   [_reconciler syncFromFabricHost:[self _activeFabricHost] hasMutations:YES];
   [self drainEmittedEvents];
   return YES;
-}
-
-- (BOOL)connectPairedEndpoint:(NSString *)endpoint
-                        token:(NSString *)token
-                    transport:(nullable NSString *)transport
-                    surfaceId:(uint32_t)surfaceId
-                        error:(NSError * _Nullable * _Nullable)error {
-  nve::PairClientConfig cfg{};
-  const char *epUtf8 = endpoint.UTF8String;
-  const char *tokUtf8 = token.UTF8String;
-  const char *trUtf8 = transport ? transport.UTF8String : "";
-  std::string parseErr;
-  if (!nve::parse_pair_endpoint(
-          epUtf8 ? std::string_view(epUtf8) : std::string_view{},
-          trUtf8 ? std::string_view(trUtf8) : std::string_view{},
-          cfg,
-          &parseErr)) {
-    if (error) {
-      *error = make_init_error(
-          _errorDomain,
-          [NSString stringWithUTF8String:parseErr.c_str()] ?: @"Invalid pairing endpoint");
-    }
-    return NO;
-  }
-  if (tokUtf8 != nullptr) {
-    cfg.pairing_token = tokUtf8;
-  }
-  return [self connectPairedConfig:cfg surfaceId:surfaceId error:error];
-}
-
-- (BOOL)connectPairedConfig:(const nve::PairClientConfig &)config
-                  surfaceId:(uint32_t)surfaceId
-                      error:(NSError * _Nullable * _Nullable)error {
-  id<NveAppleComponentViewAdapter> adapter = _adapter;
-  if (!adapter) {
-    if (error) {
-      *error = make_init_error(_errorDomain, @"Component view adapter is no longer alive");
-    }
-    return NO;
-  }
-
-  const NveSurfaceConfig surfaceCfg = [adapter nveSurfaceConfigForSurfaceId:surfaceId];
-  NveFabricHostHandle nextHost = nve_fabric_host_create(surfaceCfg);
-  if (nextHost == nullptr) {
-    if (error) {
-      *error = make_init_error(_errorDomain, @"Failed to create FabricHost for paired session");
-    }
-    return NO;
-  }
-  nve::apple::install_native_text_measurer(nextHost);
-
-  __weak NveAppleComponentHost *weakSelf = self;
-  auto wakeCb = [weakSelf]() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      __strong NveAppleComponentHost *strongSelf = weakSelf;
-      if (strongSelf) {
-        [strongSelf pollPairedFrames];
-      }
-    });
-  };
-
-  auto nextClient = std::make_unique<nve::PairClient>();
-  std::string connectErr;
-  if (!nextClient->connect(config, std::move(wakeCb), &connectErr)) {
-    nve_fabric_host_destroy(nextHost);
-    if (error) {
-      *error = make_init_error(
-          _errorDomain,
-          [NSString stringWithUTF8String:connectErr.c_str()] ?: @"Failed to connect paired client");
-    }
-    return NO;
-  }
-
-  [self disconnectPaired];
-  _bridge.reset();
-  if (_frame0Host != nullptr) {
-    nve_fabric_host_destroy(_frame0Host);
-    _frame0Host = nullptr;
-  }
-  _pendingSnapshotState.clear();
-  nve::apple::close_dylib(_dylibHandle);
-  [_reconciler clearNativeNodeViews];
-
-  _pairedHost = nextHost;
-  _pairClient = std::move(nextClient);
-  _pairedFrameCount = 0u;
-  _surfaceId = surfaceId;
-  (void)[self pollPairedFrames];
-  return YES;
-}
-
-- (void)disconnectPaired {
-  if (_pairClient != nullptr) {
-    _pairClient->disconnect();
-    _pairClient.reset();
-  }
-  if (_pairedHost != nullptr) {
-    nve_fabric_host_destroy(_pairedHost);
-    _pairedHost = nullptr;
-  }
-  _pairedFrameCount = 0u;
-}
-
-- (NSUInteger)pollPairedFrames {
-  if (!_pairClient || _pairedHost == nullptr) {
-    return 0u;
-  }
-  std::vector<std::pair<uint32_t, std::vector<uint8_t>>> frames;
-  if (_pairClient->drain_pending_frames(frames) == 0u) {
-    return 0u;
-  }
-  NSUInteger applied = 0u;
-  BOOL anyMutations = NO;
-  for (const auto &item : frames) {
-    const auto &cmdBuf = item.second;
-    if (cmdBuf.empty()) continue;
-    NveFrameStats stats{};
-    if (nve_fabric_host_submit_frame(
-            _pairedHost, NveBufferSlice{cmdBuf.data(), cmdBuf.size()}, &stats) == 0) {
-      ++applied;
-      ++_pairedFrameCount;
-      if (stats.mutation_count > 0u) {
-        anyMutations = YES;
-      }
-      const NveBufferSlice ev = nve_fabric_host_drain_events(_pairedHost);
-      if (ev.ptr != nullptr && ev.len > 4u) {
-        (void)_pairClient->send_events(std::span<const uint8_t>(ev.ptr, ev.len));
-      }
-    }
-  }
-  if (applied > 0u) {
-    [_reconciler syncFromFabricHost:_pairedHost hasMutations:anyMutations];
-  }
-  return applied;
 }
 
 - (BOOL)attachInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId {
@@ -436,99 +225,39 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
                         error:error];
 }
 
+- (BOOL)connectPairedEndpoint:(NSString *)endpoint
+                        token:(NSString *)token
+                    transport:(nullable NSString *)transport
+                    surfaceId:(uint32_t)surfaceId
+                        error:(NSError * _Nullable * _Nullable)error {
+  return nve::apple::host_connect_paired_endpoint(
+      self, endpoint, token, transport, surfaceId, error);
+}
+
+- (BOOL)connectPairedConfig:(const nve::PairClientConfig &)config
+                  surfaceId:(uint32_t)surfaceId
+                      error:(NSError * _Nullable * _Nullable)error {
+  return nve::apple::host_connect_paired_config(self, config, surfaceId, error);
+}
+
+- (void)disconnectPaired {
+  nve::apple::host_disconnect_paired(self);
+}
+
+- (NSUInteger)pollPairedFrames {
+  return nve::apple::host_poll_paired_frames(self);
+}
+
 - (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
              expectedSchemaVersion:(uint32_t)expectedSchemaVersion
                      restoreTimeUs:(uint64_t * _Nullable)outRestoreUs {
-  id<NveAppleComponentViewAdapter> adapter = _adapter;
-  if (!adapter || snapshotPath.length == 0) {
-    return NO;
-  }
-  const char *utf8 = snapshotPath.UTF8String;
-  if (utf8 == nullptr) {
-    return NO;
-  }
-
-  using Clock = std::chrono::steady_clock;
-  const auto t0 = Clock::now();
-
-  nve::MmapSnapshot snap;
-  if (!nve::MmapSnapshot::open_with_schema(
-          std::string_view(utf8), expectedSchemaVersion, snap, /*verify_checksum=*/true)) {
-    return NO;
-  }
-
-  const NveBufferSlice frame0 = snap.frame0_slice();
-  if (frame0.ptr == nullptr || frame0.len == 0u) {
-    return NO;
-  }
-  const NveBufferSlice state = snap.state_slice();
-
-  if (_bridge) {
-    if (nve_fabric_host_submit_frame(_bridge->fabric_host(), frame0, nullptr) != 0) {
-      return NO;
-    }
-    if (state.ptr != nullptr && state.len > 0u) {
-      _bridge->restore_state(state, /*auto_render=*/false);
-    }
-  } else {
-    const NveSurfaceConfig cfg = [adapter nveSurfaceConfigForSurfaceId:_surfaceId];
-    NveFabricHostHandle nextHost = nve_fabric_host_create(cfg);
-    if (nextHost == nullptr) {
-      return NO;
-    }
-    nve::apple::install_native_text_measurer(nextHost);
-    if (nve_fabric_host_submit_frame(nextHost, frame0, nullptr) != 0) {
-      nve_fabric_host_destroy(nextHost);
-      return NO;
-    }
-    if (_frame0Host != nullptr) {
-      nve_fabric_host_destroy(_frame0Host);
-    }
-    _frame0Host = nextHost;
-    if (state.ptr != nullptr && state.len > 0u) {
-      _pendingSnapshotState.assign(state.ptr, state.ptr + state.len);
-    } else {
-      _pendingSnapshotState.clear();
-    }
-  }
-
-  [_reconciler clearNativeNodeViews];
-  [_reconciler syncFromFabricHost:[self _activeFabricHost] hasMutations:YES];
-
-  const auto t1 = Clock::now();
-  if (outRestoreUs != nullptr) {
-    *outRestoreUs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
-  }
-  return YES;
+  return nve::apple::host_replay_frame0_snapshot(
+      self, snapshotPath, expectedSchemaVersion, outRestoreUs);
 }
 
 - (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
              schemaVersion:(uint32_t)schemaVersion {
-  if (snapshotPath.length == 0) {
-    return NO;
-  }
-  const char *utf8 = snapshotPath.UTF8String;
-  if (utf8 == nullptr) {
-    return NO;
-  }
-  NveFabricHostHandle host = [self _activeFabricHost];
-  if (host == nullptr) {
-    return NO;
-  }
-  const uint64_t frameId = (_bridge && _bridge->frame_count() > 0u) ? _bridge->frame_count() : 1u;
-  const std::vector<uint8_t> frame0 = nve::fabric_host_serialize_frame0(host, frameId);
-  if (frame0.empty()) {
-    return NO;
-  }
-  const std::vector<uint8_t> state = _bridge ? _bridge->snapshot_state() : _pendingSnapshotState;
-  return nve::write_snapshot_atomic(
-             std::string_view(utf8),
-             schemaVersion,
-             NveBufferSlice{frame0.data(), frame0.size()},
-             NveBufferSlice{state.empty() ? nullptr : state.data(), state.size()})
-             ? YES
-             : NO;
+  return nve::apple::host_save_snapshot(self, snapshotPath, schemaVersion);
 }
 
 - (BOOL)applyPropsJson:(NSString *)propsJson {
@@ -548,7 +277,7 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {
   if (!_bridge || !props) return NO;
   _propsArena.reset();
-  const NveValue mapVal = nve_value_from_objc_object(props, _propsArena, 0u);
+  const NveValue mapVal = nve::apple::nve_value_from_objc_object(props, _propsArena, 0u);
   const NveMapEntry *entries = (mapVal.tag == NVE_VAL_MAP) ? mapVal.data.map_val.ptr : nullptr;
   const uint32_t count =
       (mapVal.tag == NVE_VAL_MAP) ? static_cast<uint32_t>(mapVal.data.map_val.len) : 0u;
@@ -606,6 +335,19 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
 
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
   if (_bridge) {
+    if (_bridge->has_direct_events()) {
+      NveDirectEvent ev{};
+      ev.surface_id = _surfaceId;
+      ev.node_id = nodeId;
+      ev.timestamp_us = nve::apple::current_timestamp_us();
+      ev.kind = static_cast<uint8_t>(nve::EventKind::Press);
+      ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
+      ev.x = x;
+      ev.y = y;
+      ev.value = nve::make_null_value();
+      [self _dispatchDirectEvent:ev];
+      return;
+    }
     nve::fabric_host_enqueue_press(
         _bridge->fabric_host(), nodeId, nve::apple::current_timestamp_us(), x, y);
     [self _dispatchInboundEventsAndRender];
@@ -625,6 +367,18 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
       utf8 ? std::string_view(reinterpret_cast<const char *>(utf8.bytes), utf8.length)
            : std::string_view{};
   if (_bridge) {
+    if (_bridge->has_direct_events()) {
+      NveDirectEvent ev{};
+      ev.surface_id = _surfaceId;
+      ev.node_id = nodeId;
+      ev.timestamp_us = nve::apple::current_timestamp_us();
+      ev.kind = static_cast<uint8_t>(nve::EventKind::TextChange);
+      ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
+      ev.text = nve::make_str_slice(sv);
+      ev.value = nve::make_null_value();
+      [self _dispatchDirectEvent:ev];
+      return;
+    }
     nve::fabric_host_enqueue_text_change(
         _bridge->fabric_host(), nodeId, nve::apple::current_timestamp_us(), sv);
     [self _dispatchInboundEventsAndRender];

@@ -1,8 +1,166 @@
+import 'dart:convert' show utf8;
+import 'dart:ffi' as ffi;
+import 'dart:io' show Platform;
+
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_flutter.dart';
+
+class _DirectFfiTextureMock {
+  _DirectFfiTextureMock() {
+    _calloc = _libc.lookupFunction<
+        ffi.Pointer<ffi.Void> Function(ffi.Size, ffi.Size),
+        ffi.Pointer<ffi.Void> Function(int, int)>('calloc');
+    _free = _libc.lookupFunction<
+        ffi.Void Function(ffi.Pointer<ffi.Void>),
+        void Function(ffi.Pointer<ffi.Void>)>('free');
+
+    _emptySlice = _alloc<NveBufferSlice>(ffi.sizeOf<NveBufferSlice>());
+    _outboundSlice = _alloc<NveBufferSlice>(ffi.sizeOf<NveBufferSlice>());
+
+    _createCb = ffi.NativeCallable<NveCreateNative>.isolateLocal(
+      (int sid) => ffi.Pointer<ffi.Void>.fromAddress(0x7000 + sid),
+    );
+    _destroyCb = ffi.NativeCallable<NveDestroyNative>.isolateLocal((ffi.Pointer<ffi.Void> _) {});
+    _renderCb = ffi.NativeCallable<NveRenderNative>.isolateLocal(_onRender);
+    _dispatchRingCb = ffi.NativeCallable<NveDispatchEventsNative>.isolateLocal(
+      (ffi.Pointer<ffi.Void> _, NveBufferSlice __) => 0,
+      exceptionalReturn: 0,
+    );
+    _dispatchDirectCb = ffi.NativeCallable<NveDispatchEventsDirectNative>.isolateLocal(
+      _onDispatchDirect,
+      exceptionalReturn: 0,
+    );
+    _setPropsDirectCb = ffi.NativeCallable<NveSetPropsDirectNative>.isolateLocal(
+      _onSetPropsDirect,
+      exceptionalReturn: 0,
+    );
+    _drainEventsCb = ffi.NativeCallable<NveDrainEmittedEventsNative>.isolateLocal(_onDrainEvents);
+
+    _surfaceApi = _alloc<NveSurfaceApi>(ffi.sizeOf<NveSurfaceApi>());
+    _surfaceApi.ref
+      ..create = _createCb.nativeFunction
+      ..destroy = _destroyCb.nativeFunction
+      ..render = _renderCb.nativeFunction
+      ..dispatchEvents = _dispatchRingCb.nativeFunction
+      ..dispatchEventsDirect = _dispatchDirectCb.nativeFunction;
+
+    _componentApi = _alloc<NveComponentApi>(ffi.sizeOf<NveComponentApi>());
+    _componentApi.ref
+      ..setProps = ffi.nullptr
+      ..drainEmittedEvents = _drainEventsCb.nativeFunction
+      ..setPropsDirect = _setPropsDirectCb.nativeFunction;
+  }
+
+  static final ffi.DynamicLibrary _libc = Platform.isWindows
+      ? ffi.DynamicLibrary.open('ucrtbase.dll')
+      : ffi.DynamicLibrary.process();
+
+  late final ffi.Pointer<ffi.Void> Function(int, int) _calloc;
+  late final void Function(ffi.Pointer<ffi.Void>) _free;
+  final List<ffi.Pointer<ffi.Void>> _allocs = <ffi.Pointer<ffi.Void>>[];
+
+  late final ffi.Pointer<NveBufferSlice> _emptySlice;
+  late final ffi.Pointer<NveBufferSlice> _outboundSlice;
+  late final ffi.Pointer<NveSurfaceApi> _surfaceApi;
+  late final ffi.Pointer<NveComponentApi> _componentApi;
+
+  late final ffi.NativeCallable<NveCreateNative> _createCb;
+  late final ffi.NativeCallable<NveDestroyNative> _destroyCb;
+  late final ffi.NativeCallable<NveRenderNative> _renderCb;
+  late final ffi.NativeCallable<NveDispatchEventsNative> _dispatchRingCb;
+  late final ffi.NativeCallable<NveDispatchEventsDirectNative> _dispatchDirectCb;
+  late final ffi.NativeCallable<NveSetPropsDirectNative> _setPropsDirectCb;
+  late final ffi.NativeCallable<NveDrainEmittedEventsNative> _drainEventsCb;
+
+  int renderCount = 0;
+  int directPropsCount = 0;
+  int lastDirectCountProp = -1;
+  final List<String> directCommands = <String>[];
+  final List<NveEvent> _pendingOutbound = <NveEvent>[];
+
+  ffi.Pointer<T> _alloc<T extends ffi.NativeType>(int bytes) {
+    final p = _calloc(1, bytes <= 0 ? 1 : bytes);
+    _allocs.add(p);
+    return p.cast<T>();
+  }
+
+  ffi.Pointer<ffi.Void> getInterface(int ifaceId) {
+    if (ifaceId == nveIfaceSurface) return _surfaceApi.cast<ffi.Void>();
+    if (ifaceId == nveIfaceComponent) return _componentApi.cast<ffi.Void>();
+    return ffi.nullptr;
+  }
+
+  NveBufferSlice _onRender(ffi.Pointer<ffi.Void> _, int frameId) {
+    renderCount += 1;
+    return _emptySlice.ref;
+  }
+
+  int _onSetPropsDirect(
+    ffi.Pointer<ffi.Void> _,
+    ffi.Pointer<NveMapEntry> entries,
+    int count,
+  ) {
+    directPropsCount += 1;
+    for (var i = 0; i < count; i++) {
+      final entry = entries[i];
+      final key = entry.key.len == 0
+          ? ''
+          : utf8.decode(entry.key.ptr.cast<ffi.Uint8>().asTypedList(entry.key.len));
+      if (key == 'count' && entry.value.tag == NveValueTag.i64.code) {
+        lastDirectCountProp = entry.value.data.i64Val;
+      }
+    }
+    _pendingOutbound.add(
+      NveEvent.custom(
+        surfaceId: 3100,
+        nodeId: 1,
+        name: 'onDirectProps',
+        value: <String, Object?>{'count': lastDirectCountProp},
+      ),
+    );
+    return 1;
+  }
+
+  int _onDispatchDirect(ffi.Pointer<ffi.Void> _, NveEventBatch batch) {
+    for (var i = 0; i < batch.len; i++) {
+      final ev = batch.ptr[i];
+      if (ev.name.len > 0) {
+        final name = utf8.decode(ev.name.ptr.cast<ffi.Uint8>().asTypedList(ev.name.len));
+        directCommands.add(name);
+      }
+    }
+    return 1;
+  }
+
+  NveBufferSlice _onDrainEvents(ffi.Pointer<ffi.Void> _) {
+    if (_pendingOutbound.isEmpty) return _emptySlice.ref;
+    final bytes = NveEventRingCodec.encodeEvents(_pendingOutbound);
+    _pendingOutbound.clear();
+    final ptr = _alloc<ffi.Uint8>(bytes.length);
+    ptr.asTypedList(bytes.length).setAll(0, bytes);
+    _outboundSlice.ref
+      ..ptr = ptr
+      ..len = bytes.length;
+    return _outboundSlice.ref;
+  }
+
+  void dispose() {
+    _createCb.close();
+    _destroyCb.close();
+    _renderCb.close();
+    _dispatchRingCb.close();
+    _dispatchDirectCb.close();
+    _setPropsDirectCb.close();
+    _drainEventsCb.close();
+    for (final p in _allocs) {
+      _free(p);
+    }
+    _allocs.clear();
+  }
+}
 
 void main() {
   const textureChannel = MethodChannel('dev.nve/flutter_texture');
@@ -203,6 +361,81 @@ void main() {
           'surfaceId': 3001,
           'textureId': 42,
         });
+      },
+    );
+
+    testWidgets(
+      'direct FFI handles setProps, dispatchCommand, and requestRender with zero redundant MethodChannel calls',
+      (WidgetTester tester) async {
+        final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        final calls = <MethodCall>[];
+        final mock = _DirectFfiTextureMock();
+
+        messenger.setMockMethodCallHandler(textureChannel, (MethodCall call) async {
+          calls.add(call);
+          if (call.method == 'createTextureSurface') {
+            return 88;
+          }
+          return null;
+        });
+        messenger.setMockMethodCallHandler(
+          const MethodChannel(eventChannelName),
+          (MethodCall call) async => null,
+        );
+        addTearDown(() {
+          messenger.setMockMethodCallHandler(textureChannel, null);
+          messenger.setMockMethodCallHandler(const MethodChannel(eventChannelName), null);
+          mock.dispose();
+        });
+
+        final controller = NveSurfaceController();
+        final receivedEvents = <NveEvent>[];
+
+        Widget buildDirectHost(Map<String, Object?> props) {
+          return Directionality(
+            textDirection: TextDirection.ltr,
+            child: NveTextureHostWidget(
+              componentName: 'NveDirectCard',
+              surfaceId: 3100,
+              interfaceResolver: mock.getInterface,
+              width: 240,
+              height: 120,
+              props: props,
+              controller: controller,
+              onEvent: receivedEvents.add,
+            ),
+          );
+        }
+
+        await tester.pumpWidget(buildDirectHost(const <String, Object?>{'count': 1}));
+        await tester.pump();
+
+        expect(mock.directPropsCount, 1);
+        expect(mock.lastDirectCountProp, 1);
+        expect(mock.renderCount, 1);
+        expect(receivedEvents, hasLength(1));
+        expect(receivedEvents.single.name, 'onDirectProps');
+
+        // Push updated props, dispatch a command, and request an explicit render.
+        await tester.pumpWidget(buildDirectHost(const <String, Object?>{'count': 7}));
+        controller.dispatchCommand('refresh', const <String, Object?>{'force': true});
+        controller.requestRender();
+        await tester.pump();
+
+        expect(mock.directPropsCount, 2);
+        expect(mock.lastDirectCountProp, 7);
+        expect(mock.directCommands, <String>['refresh']);
+        // 1 initial + 1 props update + 1 command + 1 explicit requestRender = 4
+        expect(mock.renderCount, 4);
+        expect(receivedEvents, hasLength(2));
+        expect(receivedEvents.last.parseBinValue()?.get('count')?.asInt64(), 7);
+
+        // Zero redundant MethodChannel invocations when direct FFI handled the operations.
+        expect(calls.where((c) => c.method == 'setProps'), isEmpty);
+        expect(calls.where((c) => c.method == 'dispatchCommand'), isEmpty);
+        expect(calls.where((c) => c.method == 'requestRender'), isEmpty);
+
+        await tester.pumpWidget(const SizedBox.shrink());
       },
     );
   });
