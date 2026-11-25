@@ -6,6 +6,8 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Codegen Hygiene
 
+- **Reusable `crates/nve-docs` Fumadocs × Linear Docs Framework** (`8d58496`)
+  - Built 21 modular files (`< 455` lines each, zero new external deps) exclusively on `nve-ui`, `nve-router`, `nve-sdk`, and `nve-mdx`: dark-first/light `DocsTheme` + exhaustive `SyntaxPalette`, `DocsSiteConfig`, `DocsRoute`, `PlaygroundRegistry` + strict 13-component registry, responsive 3-column shell (sticky navbar, collapsible `260px` sidebar / `< 960pt` mobile drawer, `220px` sticky TOC, `⌘K` `NVS1` search modal with `FocusTrap`, breadcrumbs, GitHub edit link, `PrevNext` cards), and complete `nve-mdx` AST renderer with copy-to-clipboard code blocks and `<LiveDemo>` islands. 9/9 tests, 0 Clippy warnings, `wasm32` clean.
 - **Complete 6-Section NVE Documentation Content Suite (`docs/content/`)** (`2f11098`)
   - Authored 30 `.mdx` pages + 7 `_meta.toml` navigation manifests (16,317 words across Getting Started, Architecture, Guides, all 10 Platform Hosts, Interop/Codegen/Pairing, and Reference) plus all 5 `<LiveDemo>` hooks, validated with 0 diagnostics and 177 `NVS1` search sections via `nve-mdx`.
 - **Windows 11 Live Verification of Wave 13 SDK, `NveWinWindowManager`, RNW 0.88 & `.generated.h`** (`4e046ca`)
