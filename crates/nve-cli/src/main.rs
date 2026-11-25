@@ -65,9 +65,12 @@ enum Commands {
         /// WebSocket port for Tier-1/Tier-2 hot-reload clients.
         #[arg(long, default_value_t = 8089)]
         port: u16,
-        /// Also rebuild the Web WASM bundle (`hosts/web-shell/build.sh`) before broadcasting reload.
+        /// Rebuild the Web WASM bundle (`hosts/web-shell/build.sh --dev`) on save (enabled automatically when `hosts/web-shell/build.sh` exists).
         #[arg(long, default_value_t = false)]
         web: bool,
+        /// Skip rebuilding the Web WASM bundle (`hosts/web-shell/build.sh --dev`) on save.
+        #[arg(long, default_value_t = false)]
+        no_web: bool,
         /// Launch the live cross-platform desktop preview window (`winit` + `softbuffer`) connected to this daemon.
         #[arg(long, default_value_t = false)]
         skia: bool,
@@ -118,10 +121,12 @@ fn main() {
             host,
             port,
             web,
+            no_web,
             skia,
         } => {
             let watch_dir = watch.unwrap_or_else(|| default_watch_dir_for_package(&package));
-            cmd_dev(&package, &watch_dir, &host, port, web, skia);
+            let rebuild_web = !no_web && (web || Path::new("hosts/web-shell/build.sh").exists());
+            cmd_dev(&package, &watch_dir, &host, port, rebuild_web, skia);
         }
         Commands::Codegen { action } => cmd_codegen(action),
     }
@@ -487,7 +492,7 @@ fn cmd_dev(
     println!("  watch:   {}", watch_dir.display());
     println!("  ws:      ws://{bind_addr} (local: {client_ws_url})");
     if rebuild_web {
-        println!("  web:     rebuilding hosts/web-shell WASM bundle on change (--web)");
+        println!("  web:     auto-rebuilding hosts/web-shell WASM (--dev) on save (pass --no-web to skip)");
     }
     if launch_skia_window {
         println!("  preview: live desktop window enabled (--skia)");
@@ -527,6 +532,7 @@ fn cmd_dev(
                 .status();
             let web_ok = if rebuild_web && status.as_ref().is_ok_and(|s| s.success()) {
                 ProcessCommand::new("./hosts/web-shell/build.sh")
+                    .arg("--dev")
                     .status()
                     .is_ok_and(|s| s.success())
             } else {
@@ -722,6 +728,7 @@ mod tests {
                 host,
                 port,
                 web,
+                no_web,
                 skia,
             } => {
                 assert_eq!(package, "my-app");
@@ -729,6 +736,7 @@ mod tests {
                 assert_eq!(host, "0.0.0.0");
                 assert_eq!(port, 9001);
                 assert!(!web);
+                assert!(!no_web);
                 assert!(skia);
             }
             _ => panic!("expected Dev"),
