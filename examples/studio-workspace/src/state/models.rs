@@ -5,6 +5,9 @@ use nve_engine::BuiltinLayout;
 
 use crate::ui_islands::IslandsSnapshot;
 
+use super::docs::{default_seed_docs, DocBlockKind, WorkspaceDoc};
+use super::workbench::WorkbenchState;
+
 /// Maximum number of retained deterministic snapshots in the time-travel ring.
 pub const MAX_HISTORY: usize = 64;
 
@@ -23,6 +26,8 @@ pub enum ActiveView {
     Board,
     ChannelEngineering,
     ChannelDesign,
+    Docs,
+    Workbench,
     Stream100k,
     Islands,
     Metrics,
@@ -34,6 +39,8 @@ impl ActiveView {
             Self::Board => "Issue Board",
             Self::ChannelEngineering => "# engineering",
             Self::ChannelDesign => "# design-sync",
+            Self::Docs => "Workspace Docs",
+            Self::Workbench => "Meta Workbench",
             Self::Stream100k => "100k Stream",
             Self::Islands => "Multi-Host Islands",
             Self::Metrics => "Live Metrics",
@@ -475,6 +482,16 @@ pub struct WorkspaceSnapshot {
     pub telemetry_samples_us: Vec<u32>,
     pub stream: Stream100kState,
     pub islands: IslandsSnapshot,
+    pub docs: Vec<WorkspaceDoc>,
+    pub active_doc_id: u32,
+    pub next_doc_id: u32,
+    pub next_block_id: u32,
+    pub doc_new_block_draft: String,
+    pub doc_new_block_kind: DocBlockKind,
+    pub doc_editing_block_id: Option<u32>,
+    pub doc_edit_draft: String,
+    pub doc_markdown_preview_open: bool,
+    pub workbench: WorkbenchState,
     pub studio: StudioConfig,
     pub action_label: String,
     pub viewport_width: u32,
@@ -485,6 +502,7 @@ pub struct WorkspaceSnapshot {
 
 impl Default for WorkspaceSnapshot {
     fn default() -> Self {
+        let (docs, active_doc_id, next_doc_id, next_block_id) = default_seed_docs();
         Self {
             active_view: ActiveView::Board,
             board_filter: BoardFilter::All,
@@ -585,6 +603,16 @@ impl Default for WorkspaceSnapshot {
             telemetry_samples_us: default_telemetry_samples(),
             stream: Stream100kState::default(),
             islands: IslandsSnapshot::default(),
+            docs,
+            active_doc_id,
+            next_doc_id,
+            next_block_id,
+            doc_new_block_draft: String::new(),
+            doc_new_block_kind: DocBlockKind::Paragraph,
+            doc_editing_block_id: None,
+            doc_edit_draft: String::new(),
+            doc_markdown_preview_open: false,
+            workbench: WorkbenchState::default(),
             studio: StudioConfig::default(),
             action_label: "Workspace Boot".into(),
             viewport_width: default_viewport_width(),

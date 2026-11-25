@@ -15,10 +15,10 @@ use nve_backend_web::WebBackend;
 use nve_components::{CanvasOp, DrawListDecoder, ImageResizeMode, NVE_DRAW_MAGIC};
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
-use nve_engine::snapshot::{write_snapshot_atomic, MmapSnapshot};
+use nve_engine::snapshot::{fnv1a_64, write_snapshot_atomic, MmapSnapshot};
 use nve_engine::{
     DynLayoutEngine, HotPatchMsg, LayoutEngine, LayoutRect, NveApp, RenderBackend, TextMeasurer,
-    Viewport,
+    Viewport, WalDurability, WAL_HEADER_SIZE,
 };
 use nve_interop::{
     DeltaPacketRef, NvePluginHost, PluginRequirement, SyncDeltaSession, SyncMetrics,
@@ -26,8 +26,10 @@ use nve_interop::{
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
     create_surface_for_viewport, fuzzy_score, AccentTheme, ActiveView, ChannelKind,
-    CornerRadiusMode, DensityMode, LayoutEngineMode, StudioWorkspaceModule, SyncTransportMode,
-    WorkspaceState, MAX_HISTORY, MOBILE_BREAKPOINT_PT, WORKSPACE_STATE_BIN_MAGIC,
+    CornerRadiusMode, DensityMode, DocBlockKind, LayoutEngineMode, PersistConfig,
+    StudioWorkspaceModule, SyncTransportMode, WorkbenchPreset, WorkspaceState, WorkspaceStore,
+    HOST_SURFACES, MAX_HISTORY, MOBILE_BREAKPOINT_PT, SNAPSHOT_FILE_NAME, WAL_FILE_NAME,
+    WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION,
 };
 
 struct MultiBackendHarness {
@@ -1847,4 +1849,459 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
         "expected SetRawProp('drawList', RawPropValue::Bytes(NVE_DRAW1...)) in CommandBuffer"
     );
 }
+
+fn unique_test_dir(tag: &str) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "nve-studio-wave10-{tag}-{}-{n}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn nws1_v2_fnv1a64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
+    let mut state = WorkspaceState::default();
+    assert!(state.create_custom_task("Verify FNV-1a64 persistence"));
+    state.send_quick_reply(ChannelKind::Engineering, "NWS1 v2 integrity gate");
+    state.select_view(ActiveView::Docs);
+    assert!(state.toggle_doc_checklist(7));
+    let added = state
+        .add_doc_block(DocBlockKind::Callout, "FNV-1a64 checksummed block")
+        .expect("add doc block");
+    assert!(state.update_doc_block_text(added, "Edited checksummed callout"));
+    state.toggle_doc_markdown_preview();
+    state.select_view(ActiveView::Workbench);
+    state.set_workbench_preset(WorkbenchPreset::Tablet);
+    state.toggle_workbench_chrome();
+    state.select_workbench_host("flutter");
+    state.set_accent(AccentTheme::Amber);
+    state.set_radius(CornerRadiusMode::Pill);
+    state.set_density(DensityMode::Compact);
+    state.cycle_sync_transport();
+
+    let encoded = state.to_bytes();
+    assert!(encoded.starts_with(&WORKSPACE_STATE_BIN_MAGIC));
+    assert_eq!(
+        u16::from_le_bytes([encoded[4], encoded[5]]),
+        WORKSPACE_STATE_BIN_VERSION
+    );
+    assert_eq!(WORKSPACE_STATE_BIN_VERSION, 2);
+
+    let decoded = WorkspaceState::from_bytes(&encoded).expect("valid NWS1 v2 decode");
+    assert_eq!(decoded, state);
+
+    // Every single-bit flip across header, payload samples, and all 8 checksum bytes must fail.
+    let len = encoded.len();
+    let mut flip_positions = vec![0, 1, 3, 4, 5, 6, 16, len / 4, len / 2, (len * 3) / 4];
+    for tail in (len - 8)..len {
+        flip_positions.push(tail);
+    }
+    for pos in flip_positions {
+        let mut mutated = encoded.clone();
+        mutated[pos] ^= 0x80;
+        assert!(
+            WorkspaceState::from_bytes(&mutated).is_none(),
+            "single-bit flip at byte {pos}/{len} must be rejected by FNV-1a64"
+        );
+    }
+
+    // Truncations across header, payload, and checksum tail fail cleanly.
+    for cut in [0, 1, 4, 6, 13, 14, len / 2, len - 9, len - 8, len - 1] {
+        assert!(
+            WorkspaceState::from_bytes(&encoded[..cut]).is_none(),
+            "truncated NWS1 v2 slice of len {cut} must be rejected"
+        );
+    }
+
+    // Appended garbage fails checksum.
+    let mut with_extra = encoded.clone();
+    with_extra.push(0x42);
+    assert!(WorkspaceState::from_bytes(&with_extra).is_none());
+
+    // Forged v1 version with recomputed valid FNV-1a64 must still be rejected (no v1 shims).
+    let mut forged_v1 = encoded.clone();
+    forged_v1[4..6].copy_from_slice(&1u16.to_le_bytes());
+    let crc = fnv1a_64(&forged_v1[..len - 8]);
+    forged_v1[len - 8..].copy_from_slice(&crc.to_le_bytes());
+    assert!(
+        WorkspaceState::from_bytes(&forged_v1).is_none(),
+        "v1 format must be strictly rejected"
+    );
+}
+
+#[test]
+fn workspace_store_cold_save_wal_torn_tail_compaction_and_full_restart_recovery() {
+    let dir = unique_test_dir("persist");
+    let cfg = PersistConfig {
+        max_wal_bytes: 0,
+        max_wal_records: 4,
+        durability: WalDurability::Buffered,
+    };
+
+    // 1. Cold open initializes base NVE_SNAP + empty .nvewal.
+    let mut store = WorkspaceStore::open_with_config(&dir, cfg).expect("cold open store");
+    assert!(store.is_enabled());
+    assert!(!store.recovery_stats().loaded_from_disk);
+    assert_eq!(store.wal_record_count(), 0);
+    assert!(dir.join(SNAPSHOT_FILE_NAME).exists());
+    assert!(dir.join(WAL_FILE_NAME).exists());
+
+    // 2. Mutate tasks, messages, docs, checklist state, theme, and workbench across 3 WAL appends.
+    let mut state = store.initial_state().clone();
+    assert!(state.create_custom_task("Ship local-first WAL persistence"));
+    state.send_quick_reply(ChannelKind::Engineering, "WAL append #1 verified");
+    let out1 = store.save(&state).expect("wal append 1");
+    assert_eq!(out1.wal_seq, 1);
+    assert!(!out1.compacted);
+    assert_eq!(out1.wal_record_count, 1);
+
+    state.select_view(ActiveView::Docs);
+    assert!(state.toggle_doc_checklist(7));
+    let added_blk = state
+        .add_doc_block(DocBlockKind::Code, "WorkspaceStore::open(dir)")
+        .expect("add code block");
+    assert!(state.update_doc_block_text(4, "Updated binary CommandBuffer invariant."));
+    let out2 = store.save(&state).expect("wal append 2");
+    assert_eq!(out2.wal_seq, 2);
+    assert!(!out2.compacted);
+    assert_eq!(out2.wal_record_count, 2);
+
+    state.set_accent(AccentTheme::Violet);
+    state.set_radius(CornerRadiusMode::Pill);
+    state.set_density(DensityMode::Compact);
+    state.select_view(ActiveView::Workbench);
+    state.set_workbench_preset(WorkbenchPreset::Mobile);
+    state.select_workbench_host("skia-metal");
+    let out3 = store.save(&state).expect("wal append 3");
+    assert_eq!(out3.wal_seq, 3);
+    assert!(!out3.compacted);
+    assert_eq!(out3.wal_record_count, 3);
+    let state_before_crash = state.clone();
+    drop(store);
+
+    // 3. Simulate mid-write crash: append 17 torn trailing garbage bytes to workspace.nvewal.
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join(WAL_FILE_NAME))
+            .expect("open wal for torn-tail injection");
+        f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+            .expect("write torn tail");
+    }
+
+    // 4. Cold restart recovers cleanly from torn tail & replays all 3 valid WAL records!
+    let mut store_reopened =
+        WorkspaceStore::open_with_config(&dir, cfg).expect("recover torn-tail WAL");
+    let stats = store_reopened.recovery_stats();
+    assert!(stats.loaded_from_disk);
+    assert_eq!(stats.truncated_torn_wal_bytes, 17);
+    assert_eq!(stats.replayed_wal_records, 3);
+    assert!(!stats.recovered_from_corrupt_snapshot);
+    assert!(!stats.recovered_from_corrupt_wal);
+    assert_eq!(store_reopened.initial_state(), &state_before_crash);
+    assert_eq!(store_reopened.wal_record_count(), 3);
+
+    // 5. 4th append crosses `max_wal_records = 4` -> triggers automatic atomic compaction!
+    let mut state_after_compact = store_reopened.initial_state().clone();
+    state_after_compact.send_quick_reply(ChannelKind::Design, "Post-compaction message");
+    assert!(state_after_compact.toggle_doc_checklist(6));
+    let out4 = store_reopened
+        .save(&state_after_compact)
+        .expect("wal append 4 triggers compaction");
+    assert!(out4.compacted, "4th WAL append must trigger auto-compaction");
+    assert_eq!(store_reopened.compaction_count(), 1);
+    assert_eq!(store_reopened.wal_record_count(), 0);
+    assert_eq!(store_reopened.wal_file_len(), WAL_HEADER_SIZE as u64);
+    assert_eq!(
+        store_reopened.load_state().expect("load_state after compact"),
+        state_after_compact
+    );
+    drop(store_reopened);
+
+    // 6. Full cold restart after compaction restores directly from MmapSnapshot with 0 WAL replays.
+    let store_cold =
+        WorkspaceStore::open_with_config(&dir, cfg).expect("cold restart after compaction");
+    let cold_stats = store_cold.recovery_stats();
+    assert!(cold_stats.loaded_from_disk);
+    assert_eq!(cold_stats.replayed_wal_records, 0);
+    assert_eq!(cold_stats.truncated_torn_wal_bytes, 0);
+    let restored = store_cold.initial_state();
+    assert_eq!(restored, &state_after_compact);
+    assert!(restored
+        .current
+        .tasks
+        .iter()
+        .any(|t| t.title == "Ship local-first WAL persistence"));
+    assert!(restored
+        .current
+        .eng_messages
+        .iter()
+        .any(|m| m.body == "WAL append #1 verified"));
+    assert!(restored
+        .current
+        .design_messages
+        .iter()
+        .any(|m| m.body == "Post-compaction message"));
+    assert_eq!(restored.current.studio.accent, AccentTheme::Violet);
+    assert_eq!(restored.current.studio.radius, CornerRadiusMode::Pill);
+    assert_eq!(restored.current.studio.density, DensityMode::Compact);
+    let doc1 = restored
+        .current
+        .docs
+        .iter()
+        .find(|d| d.id == 1)
+        .expect("doc 1 preserved");
+    assert!(doc1
+        .blocks
+        .iter()
+        .any(|b| b.id == 7 && matches!(b.kind, DocBlockKind::Checklist { checked: true })));
+    assert!(doc1
+        .blocks
+        .iter()
+        .any(|b| b.id == 6 && matches!(b.kind, DocBlockKind::Checklist { checked: false })));
+    assert!(doc1
+        .blocks
+        .iter()
+        .any(|b| b.id == added_blk && b.text == "WorkspaceStore::open(dir)"));
+    drop(store_cold);
+
+    // 7. Corrupt base snapshot file falls back cleanly to default state without panicking.
+    std::fs::write(dir.join(SNAPSHOT_FILE_NAME), b"CORRUPTED_SNAPSHOT_BYTES")
+        .expect("corrupt snapshot file");
+    let store_corrupt_snap =
+        WorkspaceStore::open_with_config(&dir, cfg).expect("fallback on corrupt snapshot");
+    assert!(store_corrupt_snap.recovery_stats().recovered_from_corrupt_snapshot);
+    assert_eq!(store_corrupt_snap.initial_state(), &WorkspaceState::default());
+    drop(store_corrupt_snap);
+
+    // 8. StudioWorkspaceModule::create_with_persist_dir auto-persists live mutations across cold restarts.
+    let mod_dir = unique_test_dir("module-persist");
+    {
+        let mut app =
+            StudioWorkspaceModule::create_with_persist_dir(1, &mod_dir).expect("create module");
+        let _ = app.render(1);
+        assert!(app.set_props(br#"{"accent":"green","view":"docs"}"#));
+        let _ = app.render(2);
+        assert!(app.persist_store().expect("persist store").wal_record_count() >= 1);
+    }
+    {
+        let app2 =
+            StudioWorkspaceModule::create_with_persist_dir(1, &mod_dir).expect("reopen module");
+        let snap = app2.state_snapshot();
+        assert_eq!(snap.current.studio.accent, AccentTheme::Green);
+        assert_eq!(snap.current.active_view, ActiveView::Docs);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&mod_dir);
+}
+
+#[test]
+fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
+    let mut h = MultiBackendHarness::new(1280.0, 800.0);
+
+    // Navigate to Docs via left sidebar nav button (showing doc count badge 2).
+    assert!(h.find_by_test_id("nav-docs").is_some());
+    h.press("nav-docs");
+    assert!(h.ascii().contains("Workspace Docs"));
+    assert!(h.ascii().contains("RFC-042: Zero-Copy NveSceneView"));
+    assert!(h.ascii().contains("Release Checklist: v1.0"));
+    assert!(h.ascii().contains("1/2 checks"));
+    h.assert_no_horizontal_overflow("docs-1280x800-initial");
+
+    // Switch between seeded specs and back.
+    h.press("doc-tab-2");
+    assert!(h.ascii().contains("Pre-Flight Gates"));
+    assert!(h.ascii().contains("2/3 checks"));
+    h.press("doc-tab-1");
+    assert!(h.ascii().contains("Binary ABI Invariants"));
+
+    // Toggle checklist item #7 ([ ] -> [x]) and verify progress updates 1/2 -> 2/2.
+    h.press("doc-check-7");
+    assert!(h.ascii().contains("2/2 checks"));
+
+    // Edit block #4 via real inline TextInput (`onchange` + Save button).
+    h.press("doc-block-edit-4");
+    assert!(h.find_by_test_id("doc-block-input-4").is_some());
+    h.type_text("doc-block-input-4", "Flat zero-copy binary frames everywhere.");
+    h.press("doc-block-save-4");
+    assert!(h.ascii().contains("Flat zero-copy binary frames everywhere."));
+    assert!(h.find_by_test_id("doc-block-input-4").is_none());
+
+    // Add a new block via composer TextInput + kind cycler (Paragraph -> Checklist) + submit.
+    h.press("doc-new-block-kind");
+    h.type_text("doc-new-block-input", "Verify crash-safe .nvewal compaction");
+    h.press("doc-new-block-submit");
+    assert!(h.ascii().contains("Verify crash-safe .nvewal compaction"));
+    assert!(h.ascii().contains("2/3 checks"));
+
+    // Cycle block #5 kind (Code -> Callout) and reorder block #5 up.
+    h.press("doc-block-kind-5");
+    h.press("doc-block-up-5");
+
+    // Delete block #3 and verify it disappears, then Time-Travel Undo restores it!
+    assert!(h.find_by_test_id("doc-block-3").is_some());
+    h.press("doc-block-del-3");
+    assert!(h.find_by_test_id("doc-block-3").is_none());
+    h.press("tt-undo");
+    assert!(
+        h.find_by_test_id("doc-block-3").is_some(),
+        "Time-Travel Undo must restore deleted doc block"
+    );
+    h.press("tt-redo");
+    assert!(
+        h.find_by_test_id("doc-block-3").is_none(),
+        "Time-Travel Redo must re-apply block deletion"
+    );
+
+    // Export clean Markdown preview in UI and verify direct `to_markdown()` formatting.
+    h.press("doc-export-md");
+    assert!(h.find_by_test_id("doc-markdown-preview").is_some());
+    let tree_md = h.ascii();
+    assert!(tree_md.contains("# RFC-042: Zero-Copy NveSceneView"));
+    assert!(tree_md.contains("- [x] Enable crash-safe NVE_SNAP + .nvewal local persistence in Studio"));
+    assert!(tree_md.contains("- [ ] Verify crash-safe .nvewal compaction"));
+    h.assert_no_horizontal_overflow("docs-1280x800-with-markdown");
+
+    // Verify clean Markdown formatting directly on WorkspaceState::default() docs.
+    let default_state = WorkspaceState::default();
+    let md = default_state.active_doc_markdown();
+    assert!(md.starts_with("# RFC-042: Zero-Copy NveSceneView"));
+    assert!(md.contains("\n\n> Status: Accepted"));
+    assert!(md.contains("\n\n## Binary ABI Invariants\n\n"));
+    assert!(md.contains("```\nnve_get_interface(NVE_IFACE_SURFACE) -> submit_frame(&[u8])\n```"));
+    assert!(md.contains("- [x] Eliminate JSON scene descriptors"));
+    assert!(md.contains("- [ ] Enable crash-safe NVE_SNAP"));
+
+    // Verify Cmd+K Command Palette reaches ActiveView::Docs cleanly.
+    let mut app = StudioWorkspaceModule::create(1);
+    let _ = app.render(1);
+    let cmd_k = encode_events(&[NativeEvent {
+        surface_id: 1,
+        node_id: ROOT_NODE_ID,
+        timestamp_us: 1000,
+        kind: NativeEventKind::Custom,
+        payload: EventPayload::Custom {
+            name: "keydown".into(),
+            data: encode_keydown_bytes("k", true, false, false, false),
+        },
+    }]);
+    assert!(app.dispatch_events(&cmd_k));
+    assert!(app.state_snapshot().palette.open);
+
+    // Verify Docs fits cleanly on Mobile Portrait 393x852 with zero horizontal overflow.
+    let mut h_mob = MultiBackendHarness::new(393.0, 852.0);
+    h_mob.press("mobile-toggle-nav");
+    h_mob.press("nav-docs");
+    assert!(h_mob.ascii().contains("Workspace Docs"));
+    h_mob.assert_no_horizontal_overflow("docs-393x852-mobile");
+}
+
+#[test]
+fn workbench_view_multi_viewport_presets_live_telemetry_and_no_overflow() {
+    // 1. Desktop 1280x800 layout & synchronized multi-viewport preview grid.
+    let mut h = MultiBackendHarness::new(1280.0, 800.0);
+    assert!(h.find_by_test_id("nav-workbench").is_some());
+    h.press("nav-workbench");
+    assert!(h.ascii().contains("Meta Workbench"));
+    assert!(h.ascii().contains("CONNECTED HOST SURFACES (9)"));
+
+    let desk_id = h.find_by_test_id("wb-frame-desktop").expect("desktop frame");
+    let tab_id = h.find_by_test_id("wb-frame-tablet").expect("tablet frame");
+    let mob_id = h.find_by_test_id("wb-frame-mobile").expect("mobile frame");
+    let r_desk = h.headless.layout_of(desk_id).expect("desktop rect");
+    let r_tab = h.headless.layout_of(tab_id).expect("tablet rect");
+    let r_mob = h.headless.layout_of(mob_id).expect("mobile rect");
+    assert!(
+        r_desk.x < r_tab.x && r_tab.x < r_mob.x,
+        "Desktop, Tablet, Mobile frames must sit side-by-side at 1280x800: desk={r_desk:?}, tab={r_tab:?}, mob={r_mob:?}"
+    );
+    assert!(h.ascii().contains("1280x800"));
+    assert!(h.ascii().contains("820x1180"));
+    assert!(h.ascii().contains("390x844"));
+    h.assert_no_horizontal_overflow("workbench-1280x800-all");
+
+    // Verify all 9 connected host surface cards render with live SyncTelemetry metrics.
+    assert_eq!(HOST_SURFACES.len(), 9);
+    for spec in HOST_SURFACES {
+        let tid = format!("wb-host-{}", spec.slug);
+        assert!(
+            h.find_by_test_id(&tid).is_some(),
+            "missing connected host surface card '{tid}'"
+        );
+        assert!(
+            h.ascii().contains(spec.name),
+            "workbench missing host surface name '{}'",
+            spec.name
+        );
+    }
+    assert!(h.ascii().contains("LAN QUIC"));
+    assert!(h.ascii().contains("3.8 KB/s"));
+    assert!(h.ascii().contains("6.4x"));
+
+    // Live Studio token changes immediately reflect inside Workbench frames & live strip.
+    h.press("accent-violet");
+    h.press("radius-pill");
+    h.press("layout-yoga");
+    let tree_tokens = h.ascii();
+    assert!(tree_tokens.contains("Violet | 18px | Normal | Yoga | 4 issues | 2 docs"));
+
+    // Live SyncTelemetry transport cycle immediately reflects in Workbench banner & host cards.
+    h.press("wb-sync-cycle");
+    let tree_sync = h.ascii();
+    assert!(tree_sync.contains("USB Mux"));
+    assert!(tree_sync.contains("2.4 KB/s"));
+    assert!(tree_sync.contains("7.2x"));
+
+    // Interactive viewport preset toggles (Desktop -> Tablet -> Mobile -> All) & Chrome toggle.
+    h.press("wb-preset-desktop");
+    assert!(h.find_by_test_id("wb-frame-desktop").is_some());
+    assert!(h.find_by_test_id("wb-frame-tablet").is_none());
+    assert!(h.find_by_test_id("wb-frame-mobile").is_none());
+    h.assert_no_horizontal_overflow("workbench-1280x800-desktop");
+
+    h.press("wb-preset-tablet");
+    assert!(h.find_by_test_id("wb-frame-desktop").is_none());
+    assert!(h.find_by_test_id("wb-frame-tablet").is_some());
+    assert!(h.find_by_test_id("wb-frame-mobile").is_none());
+    h.assert_no_horizontal_overflow("workbench-1280x800-tablet");
+
+    h.press("wb-preset-mobile");
+    assert!(h.find_by_test_id("wb-frame-desktop").is_none());
+    assert!(h.find_by_test_id("wb-frame-tablet").is_none());
+    assert!(h.find_by_test_id("wb-frame-mobile").is_some());
+    h.assert_no_horizontal_overflow("workbench-1280x800-mobile");
+
+    h.press("wb-preset-all");
+    assert!(h.find_by_test_id("wb-frame-desktop").is_some());
+    assert!(h.find_by_test_id("wb-frame-tablet").is_some());
+    assert!(h.find_by_test_id("wb-frame-mobile").is_some());
+
+    h.press("wb-toggle-chrome");
+    assert!(!h.ascii().contains("1280x800"));
+    h.press("wb-toggle-chrome");
+    assert!(h.ascii().contains("1280x800"));
+
+    // Select a host surface card and verify Time-Travel records it.
+    h.press("wb-host-skia-metal");
+    assert!(h.ascii().contains("Host -> Skia Metal"));
+
+    // 2. Mobile Portrait 393x852 layout: zero horizontal overflow across all presets!
+    let mut h_mob = MultiBackendHarness::new(393.0, 852.0);
+    h_mob.press("mobile-toggle-nav");
+    h_mob.press("nav-workbench");
+    assert!(h_mob.ascii().contains("Meta Workbench"));
+    assert!(h_mob.find_by_test_id("wb-frame-desktop").is_some());
+    assert!(h_mob.find_by_test_id("wb-frame-tablet").is_some());
+    assert!(h_mob.find_by_test_id("wb-frame-mobile").is_some());
+    h_mob.assert_no_horizontal_overflow("workbench-393x852-all");
+
+    h_mob.press("wb-preset-mobile");
+    h_mob.assert_no_horizontal_overflow("workbench-393x852-mobile");
+}
+
 

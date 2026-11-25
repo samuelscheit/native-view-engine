@@ -8,15 +8,23 @@
 //! sandbox state, Live Sync telemetry, and deterministic time-travel snapshot).
 
 pub mod assets;
+pub mod persist;
 pub mod state;
 pub mod theme;
 pub mod ui;
+mod ui_board;
+mod ui_channels;
+pub mod ui_docs;
 pub mod ui_islands;
+mod ui_islands_view;
+mod ui_metrics;
 pub mod ui_palette;
 pub mod ui_stream;
 pub mod ui_studio;
+pub mod ui_workbench;
 pub mod virtual_list;
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
@@ -28,12 +36,18 @@ use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
 
 pub use assets::{avatar_for_author, build_metrics_sparkline};
+pub use persist::{
+    PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, WorkspaceStore,
+    DEFAULT_WAL_COMPACT_MAX_BYTES, DEFAULT_WAL_COMPACT_MAX_RECORDS, SNAPSHOT_FILE_NAME,
+    STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION, WAL_FILE_NAME,
+};
 pub use state::{
-    AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
-    LayoutEngineMode, Priority, Stream100kState, StudioConfig, SyncTelemetryState,
-    SyncTransportMode, TaskItem, TaskStatus, WorkspaceSnapshot, WorkspaceState, MAX_HISTORY,
-    MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT, WORKSPACE_STATE_BIN_MAGIC,
-    WORKSPACE_STATE_BIN_VERSION,
+    default_seed_docs, AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage,
+    CornerRadiusMode, DensityMode, DocBlock, DocBlockKind, HostSurfaceSpec, LayoutEngineMode,
+    Priority, Stream100kState, StudioConfig, SyncTelemetryState, SyncTransportMode, TaskItem,
+    TaskStatus, WorkbenchPreset, WorkbenchState, WorkspaceDoc, WorkspaceSnapshot, WorkspaceState,
+    HOST_SURFACES, MAX_HISTORY, MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
+    WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION,
 };
 pub use ui::StudioWorkspaceApp;
 pub use ui_islands::{
@@ -102,6 +116,8 @@ fn parse_active_view(s: &str) -> Option<ActiveView> {
         "board" => Some(ActiveView::Board),
         "engineering" => Some(ActiveView::ChannelEngineering),
         "design" => Some(ActiveView::ChannelDesign),
+        "docs" | "doc" => Some(ActiveView::Docs),
+        "workbench" | "wb" | "preview" => Some(ActiveView::Workbench),
         "stream" | "stream100k" | "100k" => Some(ActiveView::Stream100k),
         "islands" | "island" => Some(ActiveView::Islands),
         "metrics" => Some(ActiveView::Metrics),
@@ -200,9 +216,69 @@ pub struct StudioWorkspaceModule {
     last_reported_layout_engine: LayoutEngineMode,
     last_state_buf: Vec<u8>,
     last_emitted_events_buf: Vec<u8>,
+    persist_store: Option<WorkspaceStore>,
+    last_persisted_frame_count: u64,
 }
 
 impl StudioWorkspaceModule {
+    /// Creates a `StudioWorkspaceModule` backed by an explicit local persistence directory.
+    pub fn create_with_persist_dir(
+        surface_id: SurfaceId,
+        dir: impl AsRef<Path>,
+    ) -> Result<Self, PersistError> {
+        Self::create_with_persist_config(surface_id, dir, PersistConfig::default())
+    }
+
+    /// Creates a `StudioWorkspaceModule` backed by an explicit local persistence directory and config.
+    pub fn create_with_persist_config(
+        surface_id: SurfaceId,
+        dir: impl AsRef<Path>,
+        config: PersistConfig,
+    ) -> Result<Self, PersistError> {
+        let persist = WorkspaceStore::open_with_config(dir, config)?;
+        let initial = persist.initial_state().clone();
+        let initial_frame_count = initial.frame_count;
+        let layout_engine = initial.current.studio.layout_engine;
+        Ok(Self {
+            surface_id,
+            store: Arc::new(Mutex::new(initial)),
+            surface: create_surface(surface_id),
+            mounted: false,
+            last_reported_layout_engine: layout_engine,
+            last_state_buf: Vec::new(),
+            last_emitted_events_buf: Vec::new(),
+            persist_store: Some(persist),
+            last_persisted_frame_count: initial_frame_count,
+        })
+    }
+
+    pub fn persist_store(&self) -> Option<&WorkspaceStore> {
+        self.persist_store.as_ref()
+    }
+
+    pub fn persist_now(&mut self) -> Option<Result<PersistOutcome, PersistError>> {
+        if self.persist_store.is_none() {
+            return None;
+        }
+        let snapshot = self.state_snapshot();
+        self.last_persisted_frame_count = snapshot.frame_count;
+        self.persist_store.as_mut().map(|store| store.save(&snapshot))
+    }
+
+    fn persist_if_dirty(&mut self) {
+        if self.persist_store.is_none() {
+            return;
+        }
+        let snapshot = self.state_snapshot();
+        if snapshot.frame_count != self.last_persisted_frame_count {
+            if let Some(persist) = self.persist_store.as_mut() {
+                if persist.save(&snapshot).is_ok() {
+                    self.last_persisted_frame_count = snapshot.frame_count;
+                }
+            }
+        }
+    }
+
     fn reset_surface_with_current_store(&mut self) {
         self.surface = create_surface(self.surface_id);
         self.mounted = false;
@@ -231,15 +307,24 @@ impl StudioWorkspaceModule {
 
 impl NveApp for StudioWorkspaceModule {
     fn create(surface_id: SurfaceId) -> Self {
-        let store = Arc::new(Mutex::new(WorkspaceState::default()));
+        let persist_store = WorkspaceStore::open_from_env().and_then(Result::ok);
+        let initial = persist_store
+            .as_ref()
+            .map(|p| p.initial_state().clone())
+            .unwrap_or_default();
+        let initial_frame_count = initial.frame_count;
+        let layout_engine = initial.current.studio.layout_engine;
+        let store = Arc::new(Mutex::new(initial));
         Self {
             surface_id,
             store,
             surface: create_surface(surface_id),
             mounted: false,
-            last_reported_layout_engine: LayoutEngineMode::Taffy,
+            last_reported_layout_engine: layout_engine,
             last_state_buf: Vec::new(),
             last_emitted_events_buf: Vec::new(),
+            persist_store,
+            last_persisted_frame_count: initial_frame_count,
         }
     }
 
@@ -310,6 +395,13 @@ impl NveApp for StudioWorkspaceModule {
                                 ActiveView::ChannelDesign => {
                                     guard.submit_channel_draft(ChannelKind::Design)
                                 }
+                                ActiveView::Docs => {
+                                    if guard.current.doc_editing_block_id.is_some() {
+                                        guard.commit_doc_block_edit()
+                                    } else {
+                                        guard.submit_new_doc_block_draft()
+                                    }
+                                }
                                 _ => false,
                             }
                         };
@@ -325,6 +417,9 @@ impl NveApp for StudioWorkspaceModule {
             self.reset_surface_with_current_store();
         }
         let handled_ui = self.surface.dispatch_events(&decoded);
+        if handled_host_event || handled_ui {
+            self.persist_if_dirty();
+        }
         handled_host_event || handled_ui
     }
 
@@ -392,6 +487,7 @@ impl NveApp for StudioWorkspaceModule {
             .unwrap_or(false);
         if changed {
             self.reset_surface_with_current_store();
+            self.persist_if_dirty();
         }
         changed
     }
@@ -438,6 +534,7 @@ impl NveApp for StudioWorkspaceModule {
                     .unwrap_or(false);
                 if changed {
                     self.reset_surface_with_current_store();
+                    self.persist_if_dirty();
                 }
                 return changed;
             }
@@ -471,6 +568,7 @@ impl NveApp for StudioWorkspaceModule {
             .unwrap_or(false);
         if changed {
             self.reset_surface_with_current_store();
+            self.persist_if_dirty();
         }
         changed
     }

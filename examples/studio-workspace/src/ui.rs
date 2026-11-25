@@ -1,30 +1,29 @@
-//! Dioxus 0.7 `rsx!` UI for **Aether Workspace** + docked **NVE Studio** meta-workbench.
-//!
-//! Exercises every NVE primitive (`View`, `Text`, `Pressable`, `ScrollView`, `TextInput`,
-//! `Image`, `SkiaCanvas`) using the typed CSS/attribute subset so the emitted single `nve-abi`
-//! binary `CommandBuffer` lays out and renders identically across macOS AppKit, Qt 6, Skia
-//! Desktop, Web WASM, and Headless Taffy/Yoga backends.
+//! Dioxus 0.7 `rsx!` shell for **Aether Workspace** + docked **NVE Studio** meta-workbench.
 //!
 //! Automatically adapts between the desktop 3-column workspace (`>= 620pt`) and a responsive
 //! single-column mobile portrait shell (`< 620pt`, e.g. iPhone 17 393pt) with collapsible top
-//! navigation and NVE Studio drawers so the center board is never crushed.
+//! navigation and NVE Studio drawers, routing the center workspace across Board, Channels,
+//! Docs, Meta Workbench, 100k Stream, Multi-Host Islands, and Live Metrics.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
 
-use crate::assets::{avatar_for_author, build_metrics_sparkline};
-use crate::state::{ActiveView, BoardFilter, ChannelKind, WorkspaceState};
+use crate::state::{ActiveView, ChannelKind, WorkspaceState, HOST_SURFACES};
 use crate::theme::{
-    card_border, control_border, panel_border, row_border, LayoutMetrics, BORDER_DEFAULT,
-    CANVAS_BG, CARD_ALT_BG, CARD_BG, CONTROL_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY,
-    TEXT_SECONDARY, XRAY_ROW,
+    card_border, control_border, panel_border, row_border, LayoutMetrics, CANVAS_BG, CARD_ALT_BG,
+    CONTROL_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, XRAY_ROW,
 };
-use crate::ui_islands::render_islands_view;
+use crate::ui_board::render_board_view;
+use crate::ui_channels::render_channel_view;
+use crate::ui_docs::render_docs_view;
+use crate::ui_islands_view::render_islands_view;
+use crate::ui_metrics::render_metrics_view;
 use crate::ui_palette::{filter_palette_items, render_command_palette};
 use crate::ui_stream::{SharedStore, Stream100kPanel};
 use crate::ui_studio::render_studio_panel;
+use crate::ui_workbench::render_workbench_view;
 
 thread_local! {
     /// Hands a module-owned `Arc<Mutex<WorkspaceState>>` into the `DioxusSurface` root hook
@@ -136,6 +135,8 @@ pub fn StudioWorkspaceApp() -> Element {
     let total_tasks = current.tasks.len();
     let eng_count = current.eng_messages.len();
     let design_count = current.design_messages.len();
+    let docs_count = current.docs.len();
+    let hosts_count = HOST_SURFACES.len();
     let islands_count = current.islands.cards.len();
     let stress_rows = current.stress_rows;
 
@@ -157,6 +158,13 @@ pub fn StudioWorkspaceApp() -> Element {
             "nav-design",
             "# design-sync",
             design_count.to_string(),
+        ),
+        (ActiveView::Docs, "nav-docs", "Docs", docs_count.to_string()),
+        (
+            ActiveView::Workbench,
+            "nav-workbench",
+            "Workbench",
+            hosts_count.to_string(),
         ),
         (
             ActiveView::Stream100k,
@@ -221,7 +229,11 @@ pub fn StudioWorkspaceApp() -> Element {
     };
     let studio_badge_text = if studio_open_active { "ON" } else { "OFF" };
 
-    let center_pad = if is_mobile { m.main_pad.min(10) } else { m.main_pad };
+    let center_pad = if is_mobile {
+        m.main_pad.min(10)
+    } else {
+        m.main_pad
+    };
     let center_style = if is_mobile {
         format!(
             "width: 100%; flex: 1; flex-direction: column; padding: {center_pad}px; gap: {}px; background-color: {CANVAS_BG}; border-width: {panel_bw}px; border-color: {panel_bc};",
@@ -250,7 +262,11 @@ pub fn StudioWorkspaceApp() -> Element {
         format!("Frame #{frame_num} | {snap_idx}/{hist_len}")
     };
     let (cmdk_bw, cmdk_bc) = control_border(xray, palette.open, accent_hex);
-    let cmdk_bg = if palette.open { accent_tint } else { CONTROL_BG };
+    let cmdk_bg = if palette.open {
+        accent_tint
+    } else {
+        CONTROL_BG
+    };
     let cmdk_fg = if palette.open {
         accent_hex
     } else {
@@ -273,13 +289,6 @@ pub fn StudioWorkspaceApp() -> Element {
         None => "",
     };
 
-    let sparkline_attr = if active_view == ActiveView::Metrics {
-        build_metrics_sparkline(&current.telemetry_samples_us, hist_len, accent_hex)
-            .to_attr_string()
-    } else {
-        String::new()
-    };
-
     let root_flex_dir = if is_mobile { "column" } else { "row" };
 
     let s_new_task = Arc::clone(&store);
@@ -288,14 +297,6 @@ pub fn StudioWorkspaceApp() -> Element {
     let s_toggle_studio_mobile = Arc::clone(&store);
     let s_toggle_nav_mobile = Arc::clone(&store);
     let s_toggle_palette = Arc::clone(&store);
-    let s_board_search = Arc::clone(&store);
-    let s_board_search_clear = Arc::clone(&store);
-    let s_board_draft = Arc::clone(&store);
-    let s_board_draft_submit = Arc::clone(&store);
-    let s_board_draft_btn = Arc::clone(&store);
-    let s_stress8 = Arc::clone(&store);
-    let s_stress24 = Arc::clone(&store);
-    let s_stress_rst = Arc::clone(&store);
 
     let (mnav_bw, mnav_bc) = control_border(xray, current.mobile_nav_open, accent_hex);
     let mnav_bg = if current.mobile_nav_open {
@@ -317,9 +318,7 @@ pub fn StudioWorkspaceApp() -> Element {
             "viewport-mode": "{viewport_mode_str}",
             style: "width: 100%; height: 100%; flex-direction: {root_flex_dir}; background-color: {CANVAS_BG};",
 
-            // =========================================================================
             // 1A. MOBILE PORTRAIT COMPACT TOP BAR + COLLAPSIBLE DRAWERS (< 620pt)
-            // =========================================================================
             if is_mobile {
                 view {
                     test_id: "mobile-top-bar",
@@ -391,15 +390,12 @@ pub fn StudioWorkspaceApp() -> Element {
                 }
             }
 
-            // =========================================================================
             // 1B. DESKTOP LEFT SIDEBAR (172px fixed, >= 620pt)
-            // =========================================================================
             if !is_mobile {
                 view {
                     test_id: "desktop-sidebar",
                     style: "{sidebar_style}",
 
-                    // Brand Header
                     view {
                         style: "{brand_box_style}",
                         text {
@@ -412,7 +408,6 @@ pub fn StudioWorkspaceApp() -> Element {
                         }
                     }
 
-                    // Navigation Tabs
                     view {
                         style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; border-width: {row_bw}px; border-color: {row_bc};",
                         for (view_kind, tid, label, count) in nav_items.iter() {
@@ -456,12 +451,8 @@ pub fn StudioWorkspaceApp() -> Element {
                         }
                     }
 
-                    // Flexible Spacer
-                    view {
-                        style: "width: 100%; flex: 1;",
-                    }
+                    view { style: "width: 100%; flex: 1;" }
 
-                    // Bottom Actions
                     view {
                         style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 6px; border-width: {row_bw}px; border-color: {row_bc};",
                         pressable {
@@ -493,14 +484,11 @@ pub fn StudioWorkspaceApp() -> Element {
                 }
             }
 
-            // =========================================================================
-            // 2. CENTER MAIN WORKSPACE (flex: 1 — full width on mobile portrait)
-            // =========================================================================
+            // 2. CENTER MAIN WORKSPACE
             view {
                 test_id: "center-workspace",
                 style: "{center_style}",
 
-                // Top Header Bar with Cmd+K Command Palette trigger + Status Pill
                 view {
                     style: "{header_bar_style}",
                     text {
@@ -527,328 +515,26 @@ pub fn StudioWorkspaceApp() -> Element {
                     }
                 }
 
-                // ---- CMD+K COMMAND PALETTE OVERLAY ----
                 if palette.open {
                     {render_command_palette(&store, version, &palette, &palette_matches, accent_hex, accent_tint, xray, m)}
                 }
 
-                // ---- BOARD VIEW ----
                 if active_view == ActiveView::Board {
-                    // Filter Pills Row
-                    view {
-                        style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; border-width: {row_bw}px; border-color: {row_bc};",
-                        for &(flt, tid, label, cnt, pill_w) in [
-                            (BoardFilter::All, "filter-all", "All", total_tasks, 64u32),
-                            (BoardFilter::Active, "filter-active", "Active", active_tasks, 78u32),
-                            (BoardFilter::Done, "filter-done", "Done", done_tasks, 68u32),
-                        ].iter() {
-                            {
-                                let is_sel = current.board_filter == flt;
-                                let (bw, bc) = control_border(xray, is_sel, accent_hex);
-                                let bg = if is_sel { accent_tint } else { PANEL_BG };
-                                let fg = if is_sel { accent_hex } else { TEXT_SECONDARY };
-                                let flt_style = format!(
-                                    "width: {pill_w}px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
-                                    m.pill_radius
-                                );
-                                let text_val = format!("{label} ({cnt})");
-                                let s_flt = Arc::clone(&store);
-                                rsx! {
-                                    pressable {
-                                        key: "{tid}",
-                                        test_id: "{tid}",
-                                        style: "{flt_style}",
-                                        onpress: move |_| mutate_state(&s_flt, version, |st| st.set_board_filter(flt)),
-                                        text {
-                                            style: "color: {fg}; font-size: 10px;",
-                                            "{text_val}"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Live Board Search & Custom Task Create Bar (real TextInput primitives)
-                    view {
-                        style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; border-width: {row_bw}px; border-color: {row_bc};",
-                        view {
-                            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
-                            textinput {
-                                test_id: "board-search-input",
-                                placeholder: "Filter issues...",
-                                value: "{current.board_search_query}",
-                                multiline: false,
-                                accessibility_label: "Filter board issues",
-                                accessibility_role: "searchbox",
-                                style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {PANEL_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                onchange: move |ev| {
-                                    let q = ev.data().value.clone();
-                                    mutate_state(&s_board_search, version, |st| st.set_board_search_query(q));
-                                },
-                            }
-                            if !current.board_search_query.is_empty() {
-                                pressable {
-                                    test_id: "board-search-clear",
-                                    style: "width: 40px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                    onpress: move |_| mutate_state(&s_board_search_clear, version, |st| st.set_board_search_query("")),
-                                    text { style: "color: {TEXT_SECONDARY}; font-size: 9px;", "Clear" }
-                                }
-                            }
-                        }
-                        view {
-                            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
-                            textinput {
-                                test_id: "board-new-task-input",
-                                placeholder: "New custom issue title...",
-                                value: "{current.new_task_draft}",
-                                multiline: false,
-                                accessibility_label: "New issue title",
-                                style: "flex: 1; height: 26px; padding-horizontal: 8px; background-color: {PANEL_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                onchange: move |ev| {
-                                    let txt = ev.data().value.clone();
-                                    mutate_state(&s_board_draft, version, |st| st.set_new_task_draft(txt));
-                                },
-                                onsubmit: move |_| {
-                                    mutate_state(&s_board_draft_submit, version, |st| {
-                                        let _ = st.submit_new_task_draft();
-                                    });
-                                },
-                            }
-                            pressable {
-                                test_id: "board-new-task-submit",
-                                style: "width: 50px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_tint}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
-                                onpress: move |_| mutate_state(&s_board_draft_btn, version, |st| {
-                                    let _ = st.submit_new_task_draft();
-                                }),
-                                text { style: "color: {accent_hex}; font-size: 10px;", "+ Add" }
-                            }
-                        }
-                    }
-
-                    // Scrollable Task Card List (with real PNG Image avatars)
-                    scrollview {
-                        style: "width: 100%; flex: 1; flex-direction: column; gap: {m.list_gap}px; border-width: {row_bw}px; border-color: {row_bc};",
-                        for task in filtered_tasks.iter() {
-                            {
-                                let tid = task.id;
-                                let status_tid = format!("task-status-{tid}");
-                                let avatar_tid = format!("task-avatar-{tid}");
-                                let avatar_src = avatar_for_author(&task.assignee);
-                                let card_style = format!(
-                                    "width: 100%; flex-shrink: 0; flex-direction: column; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
-                                    m.card_pad, m.card_gap, m.card_radius
-                                );
-                                let p_bg = task.priority.badge_bg();
-                                let p_fg = task.priority.badge_fg();
-                                let p_bc = task.priority.badge_border();
-                                let p_lbl = task.priority.label();
-                                let st_bg = task.status.pill_bg();
-                                let st_fg = task.status.pill_fg();
-                                let st_bc = if xray { XRAY_ROW } else { task.status.pill_border() };
-                                let st_lbl = task.status.label();
-                                let meta_line = format!("{} | {}", task.assignee, task.tag);
-                                let s_cyc = Arc::clone(&store);
-                                rsx! {
-                                    view {
-                                        key: "task-{tid}",
-                                        style: "{card_style}",
-                                        // Top row: Key + Priority pill | Clickable Status pill
-                                        view {
-                                            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; border-width: {row_bw}px; border-color: {row_bc};",
-                                            view {
-                                                style: "flex-direction: row; align-items: center; gap: 6px;",
-                                                view {
-                                                    style: "width: 28px; height: 20px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {p_bg}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {p_bc};",
-                                                    text {
-                                                        style: "color: {p_fg}; font-size: 10px;",
-                                                        "{p_lbl}"
-                                                    }
-                                                }
-                                                text {
-                                                    style: "color: {TEXT_MUTED}; font-size: 11px;",
-                                                    "{task.key}"
-                                                }
-                                            }
-                                            pressable {
-                                                test_id: "{status_tid}",
-                                                style: "width: 88px; height: 24px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {st_bg}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {st_bc};",
-                                                onpress: move |_| mutate_state(&s_cyc, version, |st| st.cycle_task_status(tid)),
-                                                text {
-                                                    style: "color: {st_fg}; font-size: 11px;",
-                                                    "{st_lbl}"
-                                                }
-                                            }
-                                        }
-                                        // Task Title
-                                        text {
-                                            style: "color: {TEXT_PRIMARY}; font-size: 12px;",
-                                            "{task.title}"
-                                        }
-                                        // Assignee Avatar Image & Tag row
-                                        view {
-                                            style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 6px;",
-                                            image {
-                                                test_id: "{avatar_tid}",
-                                                src: "{avatar_src}",
-                                                alt: "{task.assignee}",
-                                                resize_mode: "cover",
-                                                accessibility_label: "Assignee avatar {task.assignee}",
-                                                style: "width: 18px; height: 18px; flex-shrink: 0; border-radius: 9px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                            }
-                                            text {
-                                                style: "color: {TEXT_MUTED}; font-size: 11px;",
-                                                "{meta_line}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    {render_board_view(&store, version, &current, &filtered_tasks, total_tasks, active_tasks, done_tasks, accent_hex, accent_tint, xray, m)}
                 }
 
-                // ---- CHANNEL VIEWS (# engineering & # design-sync) ----
                 if let Some(ch) = active_channel {
-                    scrollview {
-                        style: "width: 100%; flex: 1; flex-direction: column; gap: {m.list_gap}px; border-width: {row_bw}px; border-color: {row_bc};",
-                        for msg in channel_messages.iter() {
-                            {
-                                let mid = msg.id;
-                                let react_tid = format!("msg-react-{mid}");
-                                let avatar_tid = format!("msg-avatar-{mid}");
-                                let avatar_src = avatar_for_author(&msg.author);
-                                let card_style = format!(
-                                    "width: 100%; flex-shrink: 0; flex-direction: column; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
-                                    m.card_pad, m.card_gap, m.card_radius
-                                );
-                                let react_lbl = format!("+1  {}", msg.reactions);
-                                let react_bc = if xray { XRAY_ROW } else { accent_hex };
-                                let s_react = Arc::clone(&store);
-                                rsx! {
-                                    view {
-                                        key: "msg-{mid}",
-                                        style: "{card_style}",
-                                        view {
-                                            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; border-width: {row_bw}px; border-color: {row_bc};",
-                                            view {
-                                                style: "flex-direction: row; align-items: center; gap: 6px;",
-                                                image {
-                                                    test_id: "{avatar_tid}",
-                                                    src: "{avatar_src}",
-                                                    alt: "{msg.author}",
-                                                    resize_mode: "cover",
-                                                    accessibility_label: "Author avatar {msg.author}",
-                                                    style: "width: 18px; height: 18px; flex-shrink: 0; border-radius: 9px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                                }
-                                                view {
-                                                    style: "height: 20px; flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 7px; background-color: {msg.badge_bg}; border-radius: {m.pill_radius}px;",
-                                                    text {
-                                                        style: "color: {msg.badge_fg}; font-size: 10px;",
-                                                        "{msg.author}"
-                                                    }
-                                                }
-                                                text {
-                                                    style: "color: {TEXT_MUTED}; font-size: 10px;",
-                                                    "{msg.timestamp}"
-                                                }
-                                            }
-                                            pressable {
-                                                test_id: "{react_tid}",
-                                                style: "width: 58px; height: 24px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_tint}; border-radius: {m.pill_radius}px; border-width: 1px; border-color: {react_bc};",
-                                                onpress: move |_| mutate_state(&s_react, version, |st| st.react_message(ch, mid)),
-                                                text {
-                                                    style: "color: {accent_hex}; font-size: 11px;",
-                                                    "{react_lbl}"
-                                                }
-                                            }
-                                        }
-                                        text {
-                                            style: "color: {TEXT_PRIMARY}; font-size: 11px;",
-                                            "{msg.body}"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Live TextInput Chat Composer + Quick-Reply Chips
-                    {
-                        let composer_placeholder = format!("Message {}...", ch.tag());
-                        let s_chat_input = Arc::clone(&store);
-                        let s_chat_submit = Arc::clone(&store);
-                        let s_chat_send = Arc::clone(&store);
-                        rsx! {
-                            view {
-                                style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 9px; background-color: {PANEL_BG}; border-radius: {m.button_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                                view {
-                                    style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; align-items: center;",
-                                    textinput {
-                                        test_id: "chat-composer-input",
-                                        placeholder: "{composer_placeholder}",
-                                        value: "{channel_draft}",
-                                        multiline: false,
-                                        accessibility_label: "Channel message input",
-                                        style: "flex: 1; height: 28px; padding-horizontal: 8px; background-color: {CARD_ALT_BG}; color: {TEXT_PRIMARY}; font-size: 11px; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                                        onchange: move |ev| {
-                                            let txt = ev.data().value.clone();
-                                            mutate_state(&s_chat_input, version, |st| st.set_channel_draft(ch, txt));
-                                        },
-                                        onsubmit: move |_| {
-                                            mutate_state(&s_chat_submit, version, |st| {
-                                                let _ = st.submit_channel_draft(ch);
-                                            });
-                                        },
-                                    }
-                                    pressable {
-                                        test_id: "chat-composer-send",
-                                        style: "width: 48px; height: 28px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {accent_hex}; border-radius: {m.button_radius}px;",
-                                        onpress: move |_| mutate_state(&s_chat_send, version, |st| {
-                                            let _ = st.submit_channel_draft(ch);
-                                        }),
-                                        text { style: "color: #0b1120; font-size: 10px;", "Send" }
-                                    }
-                                }
-                                text {
-                                    style: "color: {TEXT_MUTED}; font-size: 10px;",
-                                    "QUICK REPLY"
-                                }
-                                view {
-                                    style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px;",
-                                    for &(tid, chip_label, reply_body) in [
-                                        ("reply-ship", "Ship It", "Ship It - all checks green!"),
-                                        ("reply-bench", "Run Benches", "Run Benches - checking p99."),
-                                        ("reply-lgtm", "LGTM", "LGTM - clean single-ABI PR."),
-                                    ].iter() {
-                                        {
-                                            let (bw, bc) = control_border(xray, false, accent_hex);
-                                            let chip_style = format!(
-                                                "flex: 1; height: 26px; justify-content: center; align-items: center; background-color: {CARD_BG}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
-                                                m.button_radius
-                                            );
-                                            let s_rep = Arc::clone(&store);
-                                            rsx! {
-                                                pressable {
-                                                    key: "{tid}",
-                                                    test_id: "{tid}",
-                                                    style: "{chip_style}",
-                                                    onpress: move |_| mutate_state(&s_rep, version, |st| st.send_quick_reply(ch, reply_body)),
-                                                    text {
-                                                        style: "color: {TEXT_PRIMARY}; font-size: 10px;",
-                                                        "{chip_label}"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    {render_channel_view(&store, version, ch, channel_messages, channel_draft, accent_hex, accent_tint, xray, m)}
                 }
 
-                // ---- 100K VIRTUALIZED STREAM VIEW ----
+                if active_view == ActiveView::Docs {
+                    {render_docs_view(&store, version, &current, accent_hex, accent_tint, xray, m, is_mobile)}
+                }
+
+                if active_view == ActiveView::Workbench {
+                    {render_workbench_view(&store, version, &current, &sync_telemetry, accent_hex, accent_tint, xray, m, is_mobile)}
+                }
+
                 if active_view == ActiveView::Stream100k {
                     Stream100kPanel {
                         store: SharedStore(Arc::clone(&store)),
@@ -862,111 +548,16 @@ pub fn StudioWorkspaceApp() -> Element {
                     }
                 }
 
-                // ---- MULTI-HOST <ISLAND> SANDBOX VIEW ----
                 if active_view == ActiveView::Islands {
                     {render_islands_view(&store, version, &current.islands, accent_hex, accent_tint, xray, m)}
                 }
 
-                // ---- METRICS VIEW ----
                 if active_view == ActiveView::Metrics {
-                    // 2x2 KPI Grid
-                    view {
-                        style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 8px;",
-                        view {
-                            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 8px;",
-                            view {
-                                style: "flex: 1; flex-direction: column; padding: 10px; gap: 4px; background-color: {CARD_BG}; border-radius: {m.card_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                                text { style: "color: {TEXT_MUTED}; font-size: 10px;", "FRAMES" }
-                                text { style: "color: {accent_hex}; font-size: 18px;", "{frame_num}" }
-                            }
-                            view {
-                                style: "flex: 1; flex-direction: column; padding: 10px; gap: 4px; background-color: {CARD_BG}; border-radius: {m.card_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                                text { style: "color: {TEXT_MUTED}; font-size: 10px;", "SNAPSHOTS" }
-                                text { style: "color: #a78bfa; font-size: 18px;", "{snap_idx}/{hist_len}" }
-                            }
-                        }
-                        view {
-                            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 8px;",
-                            view {
-                                style: "flex: 1; flex-direction: column; padding: 10px; gap: 4px; background-color: {CARD_BG}; border-radius: {m.card_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                                text { style: "color: {TEXT_MUTED}; font-size: 10px;", "ACTIVE TASKS" }
-                                text { style: "color: #22c55e; font-size: 18px;", "{active_tasks}" }
-                            }
-                            view {
-                                style: "flex: 1; flex-direction: column; padding: 10px; gap: 4px; background-color: {CARD_BG}; border-radius: {m.card_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                                text { style: "color: {TEXT_MUTED}; font-size: 10px;", "MESSAGES" }
-                                text { style: "color: #f59e0b; font-size: 18px;", "{total_msgs}" }
-                            }
-                        }
-                    }
-
-                    // Live SkiaCanvas Telemetry Sparkline emitting NVE_DRAW1 binary draw-list IR
-                    view {
-                        style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 4px; padding: 8px; background-color: {PANEL_BG}; border-radius: {m.card_radius}px; border-width: {card_bw}px; border-color: {card_bc};",
-                        view {
-                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
-                            text { style: "color: {TEXT_MUTED}; font-size: 10px;", "SKIA SPARKLINE (NVE_DRAW1)" }
-                            text { style: "color: {accent_hex}; font-size: 10px;", "{current.telemetry_samples_us.len()} pts" }
-                        }
-                        canvas {
-                            test_id: "metrics-sparkline-canvas",
-                            draw_list: "{sparkline_attr}",
-                            accessibility_label: "Live telemetry frame timing sparkline",
-                            accessibility_role: "image",
-                            style: "width: 100%; height: 72px; flex-shrink: 0; background-color: {CARD_ALT_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-                        }
-                    }
-
-                    // Stress Controls Row
-                    view {
-                        style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; border-width: {row_bw}px; border-color: {row_bc};",
-                        pressable {
-                            test_id: "stress-add-8",
-                            style: "flex: 1; height: 28px; justify-content: center; align-items: center; background-color: {accent_tint}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
-                            onpress: move |_| mutate_state(&s_stress8, version, |st| st.add_stress_rows(8)),
-                            text { style: "color: {accent_hex}; font-size: 11px;", "+8 Rows" }
-                        }
-                        pressable {
-                            test_id: "stress-add-24",
-                            style: "flex: 1; height: 28px; justify-content: center; align-items: center; background-color: {accent_tint}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {accent_hex};",
-                            onpress: move |_| mutate_state(&s_stress24, version, |st| st.add_stress_rows(24)),
-                            text { style: "color: {accent_hex}; font-size: 11px;", "+24 Rows" }
-                        }
-                        pressable {
-                            test_id: "stress-reset",
-                            style: "flex: 1; height: 28px; justify-content: center; align-items: center; background-color: {CONTROL_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: #334155;",
-                            onpress: move |_| mutate_state(&s_stress_rst, version, |st| st.reset_stress_rows()),
-                            text { style: "color: {TEXT_SECONDARY}; font-size: 11px;", "Reset" }
-                        }
-                    }
-
-                    // Live Stress Metric Rows
-                    scrollview {
-                        style: "width: 100%; flex: 1; flex-direction: column; gap: 5px; border-width: {row_bw}px; border-color: {row_bc};",
-                        for row_idx in 1..=stress_rows {
-                            {
-                                let us = 180 + ((row_idx * 17) % 140);
-                                let row_bg = if row_idx % 2 == 0 { CARD_BG } else { CARD_ALT_BG };
-                                let row_lbl = format!("Node Batch #{row_idx:02}");
-                                let timing_lbl = format!("{us}us | OK");
-                                let (rbw, rbc) = if xray { (1, XRAY_ROW) } else { (1, "#1e293b") };
-                                rsx! {
-                                    view {
-                                        key: "metric-row-{row_idx}",
-                                        style: "width: 100%; height: 28px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 10px; background-color: {row_bg}; border-radius: {m.pill_radius}px; border-width: {rbw}px; border-color: {rbc};",
-                                        text { style: "color: {TEXT_SECONDARY}; font-size: 11px;", "{row_lbl}" }
-                                        text { style: "color: #22c55e; font-size: 11px;", "{timing_lbl}" }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    {render_metrics_view(&store, version, &current, frame_num, snap_idx, hist_len, active_tasks, total_msgs, accent_hex, accent_tint, xray, m)}
                 }
             }
 
-            // =========================================================================
             // 3. RIGHT DOCKED NVE STUDIO META-WORKBENCH (desktop >= 620pt when open)
-            // =========================================================================
             if !is_mobile && studio.panel_open {
                 {render_studio_panel(&store, version, &current, &sync_telemetry, snap_idx, hist_len, can_undo, can_redo, m, false)}
             }

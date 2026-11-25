@@ -1,288 +1,40 @@
-//! Compact zero-JSON little-endian binary codec (`NWS1`) for [`WorkspaceState`]
-//! snapshot/restore across Tier-2 `cdylib` hot-swaps and mmap snapshots.
+//! Compact zero-JSON little-endian binary codec (`NWS1` v2) for [`WorkspaceState`]
+//! with trailing FNV-1a64 integrity checksum for Tier-2 hot-swaps, `MmapSnapshot`, and `.nvewal`.
 
-use crate::ui_islands::{IslandCardState, IslandHostKind, IslandsSnapshot};
+use nve_engine::fnv1a_64;
+
 use crate::ui_palette::CommandPaletteState;
 
+use super::codec_io::{
+    decode_chat_msg, decode_doc, decode_doc_block_kind, decode_islands, decode_task,
+    decode_workbench, encode_chat_msg, encode_doc, encode_doc_block_kind, encode_islands,
+    encode_task, encode_workbench, BinReader, BinWriter,
+};
 use super::models::{
-    AccentTheme, ActiveView, BoardFilter, ChatMessage, CornerRadiusMode, DensityMode,
-    LayoutEngineMode, Priority, Stream100kState, StudioConfig, SyncTelemetryState,
-    SyncTransportMode, TaskItem, TaskStatus, WorkspaceSnapshot,
+    AccentTheme, ActiveView, BoardFilter, CornerRadiusMode, DensityMode, LayoutEngineMode,
+    Stream100kState, StudioConfig, SyncTelemetryState, SyncTransportMode, WorkspaceSnapshot,
 };
 use super::WorkspaceState;
 
 /// 4-byte ASCII magic identifying a binary `WorkspaceState` snapshot (`NWS1`).
 pub const WORKSPACE_STATE_BIN_MAGIC: [u8; 4] = *b"NWS1";
 
-/// Current binary schema version for `NWS1`.
-pub const WORKSPACE_STATE_BIN_VERSION: u16 = 1;
+/// Current binary schema version for `NWS1` (v2: Docs + Workbench + trailing FNV-1a64 checksum).
+pub const WORKSPACE_STATE_BIN_VERSION: u16 = 2;
 
-const MAX_ITEMS: usize = 16_384;
-
-struct BinWriter {
-    buf: Vec<u8>,
-}
-
-impl BinWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(cap),
-        }
-    }
-
-    fn push_u8(&mut self, v: u8) {
-        self.buf.push(v);
-    }
-
-    fn push_bool(&mut self, v: bool) {
-        self.buf.push(u8::from(v));
-    }
-
-    fn push_u16(&mut self, v: u16) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn push_u32(&mut self, v: u32) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn push_u64(&mut self, v: u64) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn push_str(&mut self, s: &str) {
-        let b = s.as_bytes();
-        self.push_u32(b.len() as u32);
-        self.buf.extend_from_slice(b);
-    }
-}
-
-struct BinReader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> BinReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        if self.bytes.len().saturating_sub(self.pos) < n {
-            return None;
-        }
-        let s = &self.bytes[self.pos..self.pos + n];
-        self.pos += n;
-        Some(s)
-    }
-
-    fn read_u8(&mut self) -> Option<u8> {
-        Some(self.take(1)?[0])
-    }
-
-    fn read_bool(&mut self) -> Option<bool> {
-        match self.read_u8()? {
-            0 => Some(false),
-            1 => Some(true),
-            _ => None,
-        }
-    }
-
-    fn read_u16(&mut self) -> Option<u16> {
-        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
-    }
-
-    fn read_u32(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
-    }
-
-    fn read_u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
-    }
-
-    fn read_count(&mut self) -> Option<usize> {
-        let c = self.read_u32()? as usize;
-        (c <= MAX_ITEMS).then_some(c)
-    }
-
-    fn read_str(&mut self) -> Option<String> {
-        let len = self.read_u32()? as usize;
-        let slice = self.take(len)?;
-        std::str::from_utf8(slice).ok().map(str::to_owned)
-    }
-
-    fn finish(self) -> Option<()> {
-        (self.pos == self.bytes.len()).then_some(())
-    }
-}
-
-fn encode_task(w: &mut BinWriter, t: &TaskItem) {
-    w.push_u32(t.id);
-    w.push_str(&t.key);
-    w.push_str(&t.title);
-    w.push_str(&t.assignee);
-    w.push_str(&t.tag);
-    w.push_u8(match t.priority {
-        Priority::P0 => 0,
-        Priority::P1 => 1,
-        Priority::P2 => 2,
-    });
-    w.push_u8(match t.status {
-        TaskStatus::Todo => 0,
-        TaskStatus::InProgress => 1,
-        TaskStatus::Done => 2,
-    });
-}
-
-fn decode_task(r: &mut BinReader<'_>) -> Option<TaskItem> {
-    let id = r.read_u32()?;
-    let key = r.read_str()?;
-    let title = r.read_str()?;
-    let assignee = r.read_str()?;
-    let tag = r.read_str()?;
-    let priority = match r.read_u8()? {
-        0 => Priority::P0,
-        1 => Priority::P1,
-        2 => Priority::P2,
-        _ => return None,
-    };
-    let status = match r.read_u8()? {
-        0 => TaskStatus::Todo,
-        1 => TaskStatus::InProgress,
-        2 => TaskStatus::Done,
-        _ => return None,
-    };
-    Some(TaskItem {
-        id,
-        key,
-        title,
-        assignee,
-        tag,
-        priority,
-        status,
-    })
-}
-
-fn encode_chat_msg(w: &mut BinWriter, m: &ChatMessage) {
-    w.push_u32(m.id);
-    w.push_str(&m.author);
-    w.push_str(&m.badge_bg);
-    w.push_str(&m.badge_fg);
-    w.push_str(&m.timestamp);
-    w.push_str(&m.body);
-    w.push_u32(m.reactions);
-}
-
-fn decode_chat_msg(r: &mut BinReader<'_>) -> Option<ChatMessage> {
-    Some(ChatMessage {
-        id: r.read_u32()?,
-        author: r.read_str()?,
-        badge_bg: r.read_str()?,
-        badge_fg: r.read_str()?,
-        timestamp: r.read_str()?,
-        body: r.read_str()?,
-        reactions: r.read_u32()?,
-    })
-}
-
-fn encode_islands(w: &mut BinWriter, isl: &IslandsSnapshot) {
-    w.push_u32(isl.root_surface_id);
-    w.push_u32(isl.rail_surface_id);
-    w.push_u32(isl.active_surface_count as u32);
-    w.push_u32(isl.cards.len() as u32);
-    for c in &isl.cards {
-        w.push_str(&c.slug);
-        w.push_u8(match c.host {
-            IslandHostKind::ReactNative => 0,
-            IslandHostKind::Flutter => 1,
-            IslandHostKind::SwiftUI => 2,
-            IslandHostKind::JetpackCompose => 3,
-        });
-        w.push_u32(c.surface_id);
-        w.push_str(&c.component_name);
-        w.push_str(&c.mount_policy);
-        w.push_str(&c.lifecycle);
-        w.push_u32(c.received_messages);
-    }
-    w.push_u32(isl.bus_broadcast_count);
-    w.push_u32(isl.bus_total_deliveries);
-    w.push_str(&isl.last_bus_summary);
-    w.push_str(&isl.last_gesture_disposition);
-    match isl.last_gesture_winner {
-        Some(sid) => {
-            w.push_u8(1);
-            w.push_u32(sid);
-        }
-        None => w.push_u8(0),
-    }
-    w.push_str(&isl.last_gesture_reason);
-    w.push_u32(isl.last_gesture_cancelled_count as u32);
-}
-
-fn decode_islands(r: &mut BinReader<'_>) -> Option<IslandsSnapshot> {
-    let root_surface_id = r.read_u32()?;
-    let rail_surface_id = r.read_u32()?;
-    let active_surface_count = r.read_u32()? as usize;
-    let card_len = r.read_count()?;
-    let mut cards = Vec::with_capacity(card_len.min(64));
-    for _ in 0..card_len {
-        let slug = r.read_str()?;
-        let host = match r.read_u8()? {
-            0 => IslandHostKind::ReactNative,
-            1 => IslandHostKind::Flutter,
-            2 => IslandHostKind::SwiftUI,
-            3 => IslandHostKind::JetpackCompose,
-            _ => return None,
-        };
-        let surface_id = r.read_u32()?;
-        let component_name = r.read_str()?;
-        let mount_policy = r.read_str()?;
-        let lifecycle = r.read_str()?;
-        let received_messages = r.read_u32()?;
-        cards.push(IslandCardState {
-            slug,
-            host,
-            surface_id,
-            component_name,
-            mount_policy,
-            lifecycle,
-            received_messages,
-        });
-    }
-    let bus_broadcast_count = r.read_u32()?;
-    let bus_total_deliveries = r.read_u32()?;
-    let last_bus_summary = r.read_str()?;
-    let last_gesture_disposition = r.read_str()?;
-    let last_gesture_winner = match r.read_u8()? {
-        0 => None,
-        1 => Some(r.read_u32()?),
-        _ => return None,
-    };
-    let last_gesture_reason = r.read_str()?;
-    let last_gesture_cancelled_count = r.read_u32()? as usize;
-    Some(IslandsSnapshot {
-        root_surface_id,
-        rail_surface_id,
-        active_surface_count,
-        cards,
-        bus_broadcast_count,
-        bus_total_deliveries,
-        last_bus_summary,
-        last_gesture_disposition,
-        last_gesture_winner,
-        last_gesture_reason,
-        last_gesture_cancelled_count,
-    })
-}
+const HEADER_LEN: usize = 4 + 2;
+const CHECKSUM_LEN: usize = 8;
 
 fn encode_snapshot(w: &mut BinWriter, s: &WorkspaceSnapshot) {
     w.push_u8(match s.active_view {
         ActiveView::Board => 0,
         ActiveView::ChannelEngineering => 1,
         ActiveView::ChannelDesign => 2,
-        ActiveView::Stream100k => 3,
-        ActiveView::Islands => 4,
-        ActiveView::Metrics => 5,
+        ActiveView::Docs => 3,
+        ActiveView::Workbench => 4,
+        ActiveView::Stream100k => 5,
+        ActiveView::Islands => 6,
+        ActiveView::Metrics => 7,
     });
     w.push_u8(match s.board_filter {
         BoardFilter::All => 0,
@@ -327,6 +79,27 @@ fn encode_snapshot(w: &mut BinWriter, s: &WorkspaceSnapshot) {
 
     encode_islands(w, &s.islands);
 
+    w.push_u32(s.docs.len() as u32);
+    for doc in &s.docs {
+        encode_doc(w, doc);
+    }
+    w.push_u32(s.active_doc_id);
+    w.push_u32(s.next_doc_id);
+    w.push_u32(s.next_block_id);
+    w.push_str(&s.doc_new_block_draft);
+    encode_doc_block_kind(w, s.doc_new_block_kind);
+    match s.doc_editing_block_id {
+        Some(bid) => {
+            w.push_u8(1);
+            w.push_u32(bid);
+        }
+        None => w.push_u8(0),
+    }
+    w.push_str(&s.doc_edit_draft);
+    w.push_bool(s.doc_markdown_preview_open);
+
+    encode_workbench(w, &s.workbench);
+
     w.push_bool(s.studio.panel_open);
     w.push_u8(match s.studio.accent {
         AccentTheme::Cyan => 0,
@@ -361,9 +134,11 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
         0 => ActiveView::Board,
         1 => ActiveView::ChannelEngineering,
         2 => ActiveView::ChannelDesign,
-        3 => ActiveView::Stream100k,
-        4 => ActiveView::Islands,
-        5 => ActiveView::Metrics,
+        3 => ActiveView::Docs,
+        4 => ActiveView::Workbench,
+        5 => ActiveView::Stream100k,
+        6 => ActiveView::Islands,
+        7 => ActiveView::Metrics,
         _ => return None,
     };
     let board_filter = match r.read_u8()? {
@@ -422,6 +197,26 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
 
     let islands = decode_islands(r)?;
 
+    let doc_len = r.read_count()?;
+    let mut docs = Vec::with_capacity(doc_len.min(64));
+    for _ in 0..doc_len {
+        docs.push(decode_doc(r)?);
+    }
+    let active_doc_id = r.read_u32()?;
+    let next_doc_id = r.read_u32()?;
+    let next_block_id = r.read_u32()?;
+    let doc_new_block_draft = r.read_str()?;
+    let doc_new_block_kind = decode_doc_block_kind(r)?;
+    let doc_editing_block_id = match r.read_u8()? {
+        0 => None,
+        1 => Some(r.read_u32()?),
+        _ => return None,
+    };
+    let doc_edit_draft = r.read_str()?;
+    let doc_markdown_preview_open = r.read_bool()?;
+
+    let workbench = decode_workbench(r)?;
+
     let panel_open = r.read_bool()?;
     let accent = match r.read_u8()? {
         0 => AccentTheme::Cyan,
@@ -478,6 +273,16 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
         telemetry_samples_us,
         stream,
         islands,
+        docs,
+        active_doc_id,
+        next_doc_id,
+        next_block_id,
+        doc_new_block_draft,
+        doc_new_block_kind,
+        doc_editing_block_id,
+        doc_edit_draft,
+        doc_markdown_preview_open,
+        workbench,
         studio,
         action_label,
         viewport_width,
@@ -488,9 +293,10 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
 }
 
 impl WorkspaceState {
-    /// Encodes the full workspace state into compact zero-JSON `NWS1` binary format.
+    /// Encodes the full workspace state into compact zero-JSON `NWS1` v2 binary format
+    /// terminated by an 8-byte little-endian FNV-1a64 integrity checksum.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut w = BinWriter::with_capacity(1024 + self.history.len() * 512);
+        let mut w = BinWriter::with_capacity(2048 + self.history.len() * 768);
         w.buf.extend_from_slice(&WORKSPACE_STATE_BIN_MAGIC);
         w.push_u16(WORKSPACE_STATE_BIN_VERSION);
         encode_snapshot(&mut w, &self.current);
@@ -517,12 +323,24 @@ impl WorkspaceState {
         w.push_u16(self.sync_telemetry.compression_tenths);
         w.push_u32(self.sync_telemetry.rtt_ms_tenths);
 
+        let checksum = fnv1a_64(&w.buf);
+        w.push_u64(checksum);
         w.buf
     }
 
-    /// Decodes a compact binary `NWS1` snapshot back into [`WorkspaceState`].
+    /// Decodes a compact binary `NWS1` v2 snapshot back into [`WorkspaceState`],
+    /// strictly verifying the trailing FNV-1a64 checksum and rejecting v1 or corrupt payloads.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let mut r = BinReader::new(bytes);
+        if bytes.len() < HEADER_LEN + CHECKSUM_LEN {
+            return None;
+        }
+        let (payload, checksum_tail) = bytes.split_at(bytes.len() - CHECKSUM_LEN);
+        let expected_checksum = u64::from_le_bytes(checksum_tail.try_into().ok()?);
+        if fnv1a_64(payload) != expected_checksum {
+            return None;
+        }
+
+        let mut r = BinReader::new(payload);
         if r.take(4)? != WORKSPACE_STATE_BIN_MAGIC {
             return None;
         }
@@ -583,35 +401,63 @@ impl WorkspaceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{ChannelKind, CornerRadiusMode, DensityMode};
+    use crate::state::{ChannelKind, DocBlockKind, WorkbenchPreset};
 
     #[test]
-    fn binary_nws1_roundtrip_and_corrupt_buffer_rejection() {
+    fn binary_nws1_v2_roundtrip_and_fnv64_corruption_rejection() {
         let mut state = WorkspaceState::default();
         state.set_accent(AccentTheme::Violet);
         state.set_radius(CornerRadiusMode::Pill);
         state.set_density(DensityMode::Compact);
         state.toggle_xray();
-        state.send_quick_reply(ChannelKind::Engineering, "Zero-JSON NWS1 binary snapshot");
+        state.send_quick_reply(ChannelKind::Engineering, "Zero-JSON NWS1 v2 snapshot");
+        state.toggle_doc_checklist(7);
+        state.add_doc_block(DocBlockKind::Callout, "Persisted block callout");
+        state.set_workbench_preset(WorkbenchPreset::Tablet);
+        state.select_workbench_host("skia-metal");
         state.open_palette();
         state.set_palette_query("Yoga");
         state.cycle_sync_transport();
 
         let bytes = state.to_bytes();
         assert!(bytes.starts_with(&WORKSPACE_STATE_BIN_MAGIC));
-        let restored = WorkspaceState::from_bytes(&bytes).expect("valid NWS1 roundtrip");
+        assert_eq!(
+            u16::from_le_bytes([bytes[4], bytes[5]]),
+            WORKSPACE_STATE_BIN_VERSION
+        );
+        let restored = WorkspaceState::from_bytes(&bytes).expect("valid NWS1 v2 roundtrip");
         assert_eq!(restored, state);
 
+        // Single-bit flips anywhere in header, payload, or trailing checksum must fail.
+        for pos in [0, 4, 6, bytes.len() / 2, bytes.len() - 9, bytes.len() - 1] {
+            let mut flipped = bytes.clone();
+            flipped[pos] ^= 0x01;
+            assert!(
+                WorkspaceState::from_bytes(&flipped).is_none(),
+                "bitflip at byte {pos} must be rejected"
+            );
+        }
+
         // Truncated prefixes fail cleanly without panicking.
-        for cut in [0, 1, 4, 6, 32, bytes.len() - 1] {
+        for cut in [0, 1, 4, 6, 14, 32, bytes.len() - 8, bytes.len() - 1] {
             assert!(WorkspaceState::from_bytes(&bytes[..cut]).is_none());
         }
+
         // Trailing bytes rejected.
         let mut with_tail = bytes.clone();
         with_tail.push(0);
         assert!(WorkspaceState::from_bytes(&with_tail).is_none());
+
+        // Legacy v1 version rejected (zero backwards compatibility).
+        let mut v1_forged = bytes.clone();
+        v1_forged[4..6].copy_from_slice(&1u16.to_le_bytes());
+        let len = v1_forged.len();
+        let forged_crc = fnv1a_64(&v1_forged[..len - 8]);
+        v1_forged[len - 8..].copy_from_slice(&forged_crc.to_le_bytes());
+        assert!(WorkspaceState::from_bytes(&v1_forged).is_none());
+
         // JSON or wrong magic rejected.
         assert!(WorkspaceState::from_bytes(b"{}").is_none());
-        assert!(WorkspaceState::from_bytes(b"BAD!\x01\x00").is_none());
+        assert!(WorkspaceState::from_bytes(b"BAD!\x02\x0000000000").is_none());
     }
 }

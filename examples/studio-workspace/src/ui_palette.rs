@@ -176,6 +176,16 @@ pub fn build_palette_items(state: &WorkspaceState) -> Vec<CommandPaletteItem> {
             "Design sync chat channel",
         ),
         (
+            ActiveView::Docs,
+            "View: Docs",
+            "Block documents & Markdown export",
+        ),
+        (
+            ActiveView::Workbench,
+            "View: Workbench",
+            "Multi-viewport preview & 9 host surfaces",
+        ),
+        (
             ActiveView::Stream100k,
             "View: 100k Stream",
             "Virtualized Fenwick 100k stream",
