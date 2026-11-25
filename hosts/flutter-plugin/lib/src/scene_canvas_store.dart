@@ -1,10 +1,70 @@
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/rendering.dart';
 
 import 'command_types.dart';
+import 'draw_list_painter.dart';
 import 'nve_scene_abi_gen.dart';
+import 'scene_image_cache.dart';
+
+export 'draw_list_painter.dart';
+export 'scene_image_cache.dart';
+
+/// Explicit accessibility role override for a scene node.
+enum NveAccessibilityRole {
+  none,
+  button,
+  text,
+  header,
+  image,
+  textField,
+  scrollView,
+}
+
+/// Optional per-node rendering & accessibility metadata layered alongside the compact
+/// 64-byte `NveRenderNode` struct (e.g. `resizeMode`, `placeholder`, `secureTextEntry`,
+/// and screen-reader role/label overrides).
+class NveSceneNodeMetadata {
+  const NveSceneNodeMetadata({
+    this.resizeMode = NveImageResizeMode.cover,
+    this.placeholder,
+    this.secureTextEntry = false,
+    this.accessibilityLabel,
+    this.accessibilityHint,
+    this.accessibilityRole,
+    this.disabled = false,
+  });
+
+  final NveImageResizeMode resizeMode;
+  final String? placeholder;
+  final bool secureTextEntry;
+  final String? accessibilityLabel;
+  final String? accessibilityHint;
+  final NveAccessibilityRole? accessibilityRole;
+  final bool disabled;
+
+  NveSceneNodeMetadata copyWith({
+    NveImageResizeMode? resizeMode,
+    String? placeholder,
+    bool? secureTextEntry,
+    String? accessibilityLabel,
+    String? accessibilityHint,
+    NveAccessibilityRole? accessibilityRole,
+    bool? disabled,
+  }) {
+    return NveSceneNodeMetadata(
+      resizeMode: resizeMode ?? this.resizeMode,
+      placeholder: placeholder ?? this.placeholder,
+      secureTextEntry: secureTextEntry ?? this.secureTextEntry,
+      accessibilityLabel: accessibilityLabel ?? this.accessibilityLabel,
+      accessibilityHint: accessibilityHint ?? this.accessibilityHint,
+      accessibilityRole: accessibilityRole ?? this.accessibilityRole,
+      disabled: disabled ?? this.disabled,
+    );
+  }
+}
 
 /// Cached immutable snapshot of one 64-byte `NveRenderNode` struct ingested directly via
 /// [NveSceneReader] (`dart:ffi`) without per-node Dart command decoding.
@@ -22,6 +82,7 @@ class NveSceneNodeSnapshot {
     required this.borderWidth,
     required this.fontSize,
     required this.text,
+    required this.textBytes,
     required this.children,
     required this.zIndex,
   });
@@ -38,12 +99,16 @@ class NveSceneNodeSnapshot {
   final double borderWidth;
   final double fontSize;
   final String text;
+  final Uint8List textBytes;
   final Uint32List children;
   final int zIndex;
 
   bool get isLeafText => (flags & nveNodeLeafText) != 0;
   bool get isInteractive => (flags & nveNodeInteractive) != 0;
   bool get isScrollView => kind == nveNodeKindScrollView;
+  bool get isImage => kind == nveNodeKindImage;
+  bool get isTextInput => kind == nveNodeKindTextInput;
+  bool get isSkiaCanvas => kind == nveNodeKindSkiaCanvas;
   bool get clipsBounds => isScrollView || (flags & nveNodeClipBounds) != 0;
   double get opacity => opacityU8 / 255.0;
 }
@@ -64,9 +129,31 @@ class NveScrollUpdate {
 /// Incremental `O(dirtyCount + removedCount)` direct `NveSceneView` store & canvas painter
 /// backing [RenderNveCanvas.updateFromSceneView].
 class NveSceneCanvasStore {
+  NveSceneCanvasStore({
+    NveSceneImageCache? imageCache,
+    NveDrawListPainter? drawListPainter,
+  })  : imageCache = imageCache ?? NveSceneImageCache(),
+        _ownsImageCache = imageCache == null,
+        drawListPainter = drawListPainter ?? NveDrawListPainter();
+
+  final NveSceneImageCache imageCache;
+  final bool _ownsImageCache;
+  final NveDrawListPainter drawListPainter;
+
   final Map<int, NveSceneNodeSnapshot> _nodesById = <int, NveSceneNodeSnapshot>{};
   final List<int> _indexToId = <int>[];
   final Map<int, Offset> _scrollOffsets = <int, Offset>{};
+  final Map<int, NveSceneNodeMetadata> _metadata = <int, NveSceneNodeMetadata>{};
+
+  final Paint _fillPaint = Paint()
+    ..style = PaintingStyle.fill
+    ..isAntiAlias = true;
+  final Paint _strokePaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..isAntiAlias = true;
+  final Paint _imagePaint = Paint()
+    ..filterQuality = FilterQuality.medium
+    ..isAntiAlias = true;
 
   int _frameId = 0;
   int _lastDirtyCount = 0;
@@ -82,6 +169,49 @@ class NveSceneCanvasStore {
 
   NveSceneNodeSnapshot? node(int nodeId) => _nodesById[nodeId];
 
+  NveSceneNodeMetadata? metadataOf(int nodeId) => _metadata[nodeId];
+
+  /// Sets per-node metadata (`resizeMode`, `placeholder`, `secureTextEntry`, accessibility).
+  void setNodeMetadata(int nodeId, NveSceneNodeMetadata meta) {
+    _metadata[nodeId] = meta;
+  }
+
+  /// Sets the `Image` resize mode for [nodeId].
+  void setImageResizeMode(int nodeId, NveImageResizeMode mode) {
+    final existing = _metadata[nodeId] ?? const NveSceneNodeMetadata();
+    _metadata[nodeId] = existing.copyWith(resizeMode: mode);
+  }
+
+  /// Sets `TextInput` placeholder and `secureTextEntry` options for [nodeId].
+  void setTextInputConfig(
+    int nodeId, {
+    String? placeholder,
+    bool? secureTextEntry,
+  }) {
+    final existing = _metadata[nodeId] ?? const NveSceneNodeMetadata();
+    _metadata[nodeId] = existing.copyWith(
+      placeholder: placeholder,
+      secureTextEntry: secureTextEntry,
+    );
+  }
+
+  /// Sets screen-reader accessibility overrides for [nodeId].
+  void setAccessibility(
+    int nodeId, {
+    String? label,
+    String? hint,
+    NveAccessibilityRole? role,
+    bool? disabled,
+  }) {
+    final existing = _metadata[nodeId] ?? const NveSceneNodeMetadata();
+    _metadata[nodeId] = existing.copyWith(
+      accessibilityLabel: label,
+      accessibilityHint: hint,
+      accessibilityRole: role,
+      disabled: disabled,
+    );
+  }
+
   Offset scrollOffsetOf(int nodeId) => _scrollOffsets[nodeId] ?? Offset.zero;
 
   /// Applies a direct `dart:ffi` [NveSceneReader] snapshot in `O(dirtyCount + removedCount)`.
@@ -91,6 +221,7 @@ class NveSceneCanvasStore {
       final deadId = removed[i];
       _nodesById.remove(deadId);
       _scrollOffsets.remove(deadId);
+      _metadata.remove(deadId);
     }
 
     final needsFullSync = _indexToId.isEmpty ||
@@ -128,6 +259,13 @@ class NveSceneCanvasStore {
 
   NveSceneNodeSnapshot _readNodeSnapshot(NveSceneReader reader, NveRenderNode n) {
     final childSlice = reader.childrenFor(n);
+    final rawBytes = n.textLen > 0
+        ? Uint8List.fromList(reader.textBytesFor(n))
+        : Uint8List(0);
+    String decodedText = '';
+    if (rawBytes.isNotEmpty && n.kind != nveNodeKindSkiaCanvas) {
+      decodedText = utf8.decode(rawBytes, allowMalformed: true);
+    }
     return NveSceneNodeSnapshot(
       nodeId: n.nodeId,
       kind: n.kind,
@@ -140,7 +278,8 @@ class NveSceneCanvasStore {
       borderRadius: n.borderRadius,
       borderWidth: n.borderWidth,
       fontSize: n.fontSize,
-      text: n.textLen > 0 ? reader.textFor(n) : '',
+      text: decodedText,
+      textBytes: rawBytes,
       children: childSlice.isEmpty ? Uint32List(0) : Uint32List.fromList(childSlice),
       zIndex: n.zIndex,
     );
@@ -178,27 +317,48 @@ class NveSceneCanvasStore {
 
   /// Reverse z-order hit-test over cached 64-byte `NveRenderNode` snapshots.
   int? hitTestNode(Offset localPosition, {bool interactiveOnly = true}) {
-    final rootId = _rootId();
+    final rootId = rootNodeId;
     if (rootId == null) return null;
     return _hitTestRecursive(rootId, localPosition, interactiveOnly);
   }
 
   /// Finds the innermost `ScrollView` node containing [localPosition].
   int? hitTestScrollable(Offset localPosition) {
-    final rootId = _rootId();
+    final rootId = rootNodeId;
     if (rootId == null) return null;
     return _hitTestScrollableRecursive(rootId, localPosition);
   }
 
-  /// Computes surface-local visual rect for `nodeId` taking active ancestor scroll offsets into account.
+  /// Computes surface-local visual rect for `nodeId`.
   Rect? layoutOf(int nodeId) => _nodesById[nodeId]?.rect;
 
-  int? _rootId() {
+  /// Root node ID currently stored in the scene, if any.
+  int? get rootNodeId {
     if (_nodesById.containsKey(nveRootNodeId)) return nveRootNodeId;
     if (_indexToId.isNotEmpty && _nodesById.containsKey(_indexToId.first)) {
       return _indexToId.first;
     }
     return _nodesById.isNotEmpty ? _nodesById.keys.first : null;
+  }
+
+  /// Returns child IDs sorted stably in ascending `zIndex` paint order.
+  List<int> childrenInPaintOrder(Uint32List children) => _childrenInPaintOrder(children);
+
+  /// Collects aggregated descendant leaf text (used as fallback label for interactive containers).
+  String collectTextLabel(int nodeId) {
+    final n = _nodesById[nodeId];
+    if (n == null) return '';
+    if (n.text.isNotEmpty && !n.isImage && !n.isSkiaCanvas) {
+      return n.text;
+    }
+    final parts = <String>[];
+    for (var i = 0; i < n.children.length; i++) {
+      final childText = collectTextLabel(n.children[i]);
+      if (childText.isNotEmpty) {
+        parts.add(childText);
+      }
+    }
+    return parts.join(' ');
   }
 
   int? _hitTestRecursive(int nodeId, Offset pos, bool interactiveOnly) {
@@ -269,10 +429,18 @@ class NveSceneCanvasStore {
     Offset surfaceOffset,
     Rect surfaceBounds, {
     String? defaultFontFamily,
+    VoidCallback? onImageDecoded,
   }) {
-    final rootId = _rootId();
+    final rootId = rootNodeId;
     if (rootId == null) return;
-    _paintNode(canvas, rootId, surfaceOffset, surfaceBounds, defaultFontFamily);
+    _paintNode(
+      canvas,
+      rootId,
+      surfaceOffset,
+      surfaceBounds,
+      defaultFontFamily,
+      onImageDecoded,
+    );
   }
 
   void _paintNode(
@@ -281,6 +449,7 @@ class NveSceneCanvasStore {
     Offset surfaceOffset,
     Rect surfaceBounds,
     String? defaultFontFamily,
+    VoidCallback? onImageDecoded,
   ) {
     final n = _nodesById[nodeId];
     if (n == null || n.opacityU8 == 0) return;
@@ -300,56 +469,63 @@ class NveSceneCanvasStore {
     // 1. Background fill
     final bg = NveColorRgba.fromWireUint32(n.bgRgba);
     if (hasArea && bg.a > 0) {
-      final fillPaint = Paint()
-        ..color = bg.toFlutterColor()
-        ..style = PaintingStyle.fill
-        ..isAntiAlias = true;
+      _fillPaint.color = bg.toFlutterColor();
       if (radius > 0.0) {
-        canvas.drawRRect(RRect.fromRectAndRadius(rect, Radius.circular(radius)), fillPaint);
+        canvas.drawRRect(RRect.fromRectAndRadius(rect, Radius.circular(radius)), _fillPaint);
       } else {
-        canvas.drawRect(rect, fillPaint);
+        canvas.drawRect(rect, _fillPaint);
       }
     }
 
-    // 2. Border stroke
+    // 2. Specialized node contents (`SkiaCanvas`, `Image`, `TextInput`, or leaf `Text`)
+    if (hasArea) {
+      if (n.isSkiaCanvas) {
+        if (n.textBytes.isNotEmpty) {
+          drawListPainter.paint(canvas, rect, n.textBytes, borderRadius: radius);
+        }
+      } else if (n.isImage) {
+        _paintImageNode(canvas, n, rect, radius, onImageDecoded);
+      } else if (n.isTextInput) {
+        _paintTextInputNode(canvas, n, rect, defaultFontFamily);
+      } else if (n.isLeafText && n.text.isNotEmpty) {
+        final textColor = NveColorRgba.fromWireUint32(n.textRgba);
+        if (textColor.a > 0) {
+          final fontSize = (n.fontSize.isFinite && n.fontSize > 0.0) ? n.fontSize : 16.0;
+          final painter = TextPainter(
+            text: TextSpan(
+              text: n.text,
+              style: TextStyle(
+                color: textColor.toFlutterColor(),
+                fontSize: fontSize,
+                fontFamily: defaultFontFamily,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout(maxWidth: math.max(0.0, rect.width));
+          painter.paint(canvas, rect.topLeft);
+          painter.dispose();
+        }
+      }
+    }
+
+    // 3. Border stroke (drawn after background/content so image/canvas fits cleanly inside frame)
     final border = NveColorRgba.fromWireUint32(n.borderRgba);
     if (hasArea && n.borderWidth > 0.0 && border.a > 0) {
       final bw = n.borderWidth;
-      final strokePaint = Paint()
+      _strokePaint
         ..color = border.toFlutterColor()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = bw
-        ..isAntiAlias = true;
+        ..strokeWidth = bw;
       final inset = bw * 0.5;
       final strokeRect = rect.width > bw && rect.height > bw ? rect.deflate(inset) : rect;
       if (radius > 0.0) {
         final innerRadius = math.max(0.0, radius - inset);
         canvas.drawRRect(
           RRect.fromRectAndRadius(strokeRect, Radius.circular(innerRadius)),
-          strokePaint,
+          _strokePaint,
         );
       } else {
-        canvas.drawRect(strokeRect, strokePaint);
+        canvas.drawRect(strokeRect, _strokePaint);
       }
-    }
-
-    // 3. Leaf text
-    final textColor = NveColorRgba.fromWireUint32(n.textRgba);
-    if (n.isLeafText && n.text.isNotEmpty && textColor.a > 0 && hasArea) {
-      final fontSize = (n.fontSize.isFinite && n.fontSize > 0.0) ? n.fontSize : 16.0;
-      final painter = TextPainter(
-        text: TextSpan(
-          text: n.text,
-          style: TextStyle(
-            color: textColor.toFlutterColor(),
-            fontSize: fontSize,
-            fontFamily: defaultFontFamily,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: math.max(0.0, rect.width));
-      painter.paint(canvas, rect.topLeft);
-      painter.dispose();
     }
 
     // 4. Children with ScrollView / clipBounds clip rect & scroll translation
@@ -373,7 +549,7 @@ class NveSceneCanvasStore {
 
       final ordered = _childrenInPaintOrder(n.children);
       for (final childId in ordered) {
-        _paintNode(canvas, childId, surfaceOffset, surfaceBounds, defaultFontFamily);
+        _paintNode(canvas, childId, surfaceOffset, surfaceBounds, defaultFontFamily, onImageDecoded);
       }
 
       if (needsSave) {
@@ -383,6 +559,127 @@ class NveSceneCanvasStore {
 
     if (pushedLayer) {
       canvas.restore();
+    }
+  }
+
+  void _paintImageNode(
+    Canvas canvas,
+    NveSceneNodeSnapshot n,
+    Rect rect,
+    double radius,
+    VoidCallback? onImageDecoded,
+  ) {
+    if (n.text.isEmpty) return;
+    final img = imageCache.resolveOrRequest(n.text, onDecoded: onImageDecoded);
+    if (img == null) return;
+    final mode = _metadata[n.nodeId]?.resizeMode ?? NveImageResizeMode.cover;
+    final placement = NveImagePlacement.compute(
+      rect,
+      img.width.toDouble(),
+      img.height.toDouble(),
+      mode,
+    );
+    if (placement == null) return;
+
+    canvas.save();
+    if (radius > 0.0) {
+      canvas.clipRRect(RRect.fromRectAndRadius(rect, Radius.circular(radius)));
+    } else {
+      canvas.clipRect(rect);
+    }
+    canvas.drawImageRect(img, placement.srcRect, placement.dstRect, _imagePaint);
+    canvas.restore();
+  }
+
+  void _paintTextInputNode(
+    Canvas canvas,
+    NveSceneNodeSnapshot n,
+    Rect rect,
+    String? defaultFontFamily,
+  ) {
+    final meta = _metadata[n.nodeId];
+    final fontSize = (n.fontSize.isFinite && n.fontSize > 0.0) ? n.fontSize : 14.0;
+    paintTextInputText(
+      canvas,
+      rect,
+      value: n.text,
+      placeholder: meta?.placeholder,
+      secureTextEntry: meta?.secureTextEntry ?? false,
+      textRgba: n.textRgba,
+      fontSize: fontSize,
+      defaultFontFamily: defaultFontFamily,
+    );
+  }
+
+  /// Paints `TextInput` value (bullet-masked when [secureTextEntry] is true) or muted
+  /// [placeholder] inset cleanly within [rect]. Shared by direct scene and retained paths.
+  void paintTextInputText(
+    Canvas canvas,
+    Rect rect, {
+    required String value,
+    String? placeholder,
+    bool secureTextEntry = false,
+    required int textRgba,
+    required double fontSize,
+    String? defaultFontFamily,
+  }) {
+    final rawTextColor = NveColorRgba.fromWireUint32(textRgba);
+
+    String? displayText;
+    Color? displayColor;
+
+    if (value.isNotEmpty) {
+      displayText = secureTextEntry
+          ? List<String>.filled(value.runes.length, '\u2022').join()
+          : value;
+      displayColor = rawTextColor.a > 0
+          ? rawTextColor.toFlutterColor()
+          : const Color(0xFFF1F5F9);
+    } else if (placeholder != null && placeholder.isNotEmpty) {
+      displayText = placeholder;
+      if (rawTextColor.a > 0) {
+        final mutedAlpha = (rawTextColor.a * 0.55).round().clamp(96, 170);
+        displayColor = Color.fromARGB(mutedAlpha, rawTextColor.r, rawTextColor.g, rawTextColor.b);
+      } else {
+        displayColor = const Color.fromARGB(140, 148, 163, 184);
+      }
+    }
+
+    if (displayText == null || displayText.isEmpty || displayColor == null) {
+      return;
+    }
+
+    final padX = math.min(8.0, rect.width * 0.15);
+    final innerWidth = math.max(1.0, rect.width - padX * 2.0);
+    final painter = TextPainter(
+      text: TextSpan(
+        text: displayText,
+        style: TextStyle(
+          color: displayColor,
+          fontSize: fontSize,
+          fontFamily: defaultFontFamily,
+        ),
+      ),
+      maxLines: 1,
+      ellipsis: '\u2026',
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: innerWidth);
+
+    final dy = rect.height > painter.height
+        ? (rect.height - painter.height) * 0.5
+        : 0.0;
+
+    canvas.save();
+    canvas.clipRect(rect);
+    painter.paint(canvas, Offset(rect.left + padX, rect.top + dy));
+    canvas.restore();
+    painter.dispose();
+  }
+
+  /// Releases owned image cache resources.
+  void dispose() {
+    if (_ownsImageCache) {
+      imageCache.dispose();
     }
   }
 }

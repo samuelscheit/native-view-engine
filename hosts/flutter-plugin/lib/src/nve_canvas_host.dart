@@ -1,17 +1,40 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
 import '../nve_flutter.dart';
+import 'canvas_semantics.dart';
 import 'command_decoder.dart';
 import 'nve_canvas_controller.dart';
 import 'scene_canvas_store.dart';
 
+export 'draw_list_painter.dart'
+    show
+        NveDrawListErrorCode,
+        NveDrawListPainter,
+        NveDrawListResult,
+        NveDrawOpcode,
+        nveDrawHeaderSize,
+        nveDrawListAttrPrefix,
+        nveDrawMagic,
+        nveDrawMaxOps,
+        nveDrawMaxPolylinePoints,
+        nveDrawVersion;
 export 'event_codec.dart' show encodePressEvent, encodeScrollEvent;
 export 'nve_canvas_controller.dart' show NveCanvasController;
-export 'scene_canvas_store.dart' show NveSceneCanvasStore, NveSceneNodeSnapshot, NveScrollUpdate;
+export 'scene_canvas_store.dart'
+    show
+        NveAccessibilityRole,
+        NveImagePlacement,
+        NveImageResizeMode,
+        NveSceneCanvasStore,
+        NveSceneImageCache,
+        NveSceneNodeMetadata,
+        NveSceneNodeSnapshot,
+        NveScrollUpdate;
 
 /// Direct Flutter `RenderBox` + Impeller/Skia [Canvas] host widget for any
 /// compiled NVE Rust app/island.
@@ -66,7 +89,9 @@ class _PointerScrollSession {
 
 /// Custom [RenderBox] that paints either a retained [NveRetainedTree] or a direct
 /// zero-decode `NveSceneView` slab ([updateFromSceneView]) onto Flutter's [Canvas],
-/// handling reverse z-order hit-testing, `ScrollView` clipping, and wheel/drag scrolling.
+/// handling reverse z-order hit-testing, `ScrollView` clipping, wheel/drag scrolling,
+/// `NVE_DRAW1` vector draw lists, cached `Image` rendering, `TextInput`, and live
+/// Flutter [SemanticsNode] assembly.
 class RenderNveCanvas extends RenderBox {
   RenderNveCanvas({
     NveCanvasController? controller,
@@ -75,12 +100,14 @@ class RenderNveCanvas extends RenderBox {
     int surfaceId = 1,
     String? defaultFontFamily,
     NveEventCallback? onSceneEvent,
+    NveSceneImageCache? imageCache,
   })  : _controller = controller,
         _devicePixelRatio = devicePixelRatio,
         _backgroundColor = backgroundColor,
         _surfaceId = surfaceId,
         _defaultFontFamily = defaultFontFamily,
-        _onSceneEvent = onSceneEvent;
+        _onSceneEvent = onSceneEvent,
+        _sceneStore = NveSceneCanvasStore(imageCache: imageCache);
 
   static const double _scrollDragSlop = 4.0;
 
@@ -91,7 +118,8 @@ class RenderNveCanvas extends RenderBox {
   final String? _defaultFontFamily;
   NveEventCallback? _onSceneEvent;
 
-  final NveSceneCanvasStore _sceneStore = NveSceneCanvasStore();
+  final NveSceneCanvasStore _sceneStore;
+  final NveCanvasSemanticsAssembler _semantics = NveCanvasSemanticsAssembler();
   bool _sceneMode = false;
 
   final Map<int, int> _activePointerTargets = <int, int>{};
@@ -111,6 +139,7 @@ class RenderNveCanvas extends RenderBox {
       _controller?.addListener(_onControllerChanged);
     }
     markNeedsLayout();
+    markNeedsSemanticsUpdate();
   }
 
   double get devicePixelRatio => _devicePixelRatio;
@@ -147,6 +176,7 @@ class RenderNveCanvas extends RenderBox {
     _sceneStore.updateFromSceneView(reader);
     _sceneMode = true;
     markNeedsPaint();
+    markNeedsSemanticsUpdate();
   }
 
   /// Exposes computed surface-local node geometry for tests and tooling.
@@ -160,6 +190,12 @@ class RenderNveCanvas extends RenderBox {
 
   /// Exposes retained nodes for tests and diagnostics.
   Map<int, NveNode> get debugNodes => _controller?.debugNodes ?? const <int, NveNode>{};
+
+  void _onAsyncImageDecoded() {
+    if (attached) {
+      markNeedsPaint();
+    }
+  }
 
   @override
   void attach(PipelineOwner owner) {
@@ -175,6 +211,13 @@ class RenderNveCanvas extends RenderBox {
     super.detach();
   }
 
+  @override
+  void dispose() {
+    _semantics.clear();
+    _sceneStore.dispose();
+    super.dispose();
+  }
+
   void _onControllerChanged() {
     if (!attached) return;
     if (hasSize && (!constraints.hasBoundedWidth || !constraints.hasBoundedHeight)) {
@@ -182,6 +225,7 @@ class RenderNveCanvas extends RenderBox {
     } else {
       markNeedsPaint();
     }
+    markNeedsSemanticsUpdate();
   }
 
   @override
@@ -247,7 +291,6 @@ class RenderNveCanvas extends RenderBox {
           _activePointerTargets.remove(event.pointer);
         }
         if (session.isDragging && event.localDelta != Offset.zero) {
-          // Natural drag direction: dragging pointer upward increases scroll offset.
           _applyScroll(session.scrollNodeId, Offset(-event.localDelta.dx, -event.localDelta.dy));
         }
       }
@@ -283,6 +326,7 @@ class RenderNveCanvas extends RenderBox {
       final updated = _sceneStore.scrollBy(scrollNodeId, delta);
       if (updated == null) return;
       markNeedsPaint();
+      markNeedsSemanticsUpdate();
       final ts = DateTime.now().microsecondsSinceEpoch;
       final ctrl = _controller;
       if (ctrl != null && !ctrl.isDisposed) {
@@ -317,6 +361,7 @@ class RenderNveCanvas extends RenderBox {
     final updated = ctrl.scrollNodeBy(scrollNodeId, delta);
     if (updated != null) {
       markNeedsPaint();
+      markNeedsSemanticsUpdate();
     }
   }
 
@@ -339,6 +384,63 @@ class RenderNveCanvas extends RenderBox {
     }
   }
 
+  // MARK: - Live Flutter Semantics Tree (`assembleSemanticsNode`)
+
+  @override
+  void describeSemanticsConfiguration(SemanticsConfiguration config) {
+    super.describeSemanticsConfiguration(config);
+    config
+      ..isSemanticBoundary = true
+      ..explicitChildNodes = true;
+  }
+
+  @override
+  void clearSemantics() {
+    _semantics.clear();
+    super.clearSemantics();
+  }
+
+  @override
+  void assembleSemanticsNode(
+    SemanticsNode node,
+    SemanticsConfiguration config,
+    Iterable<SemanticsNode> children,
+  ) {
+    final surfaceRect = Offset.zero & size;
+    void onTapNode(int nodeId, Offset center) {
+      _emitPress(nodeId, center);
+      markNeedsPaint();
+    }
+
+    final List<SemanticsNode> built;
+    if (_sceneMode) {
+      built = _semantics.buildSceneSemantics(
+        store: _sceneStore,
+        surfaceRect: surfaceRect,
+        onTapNode: onTapNode,
+      );
+    } else {
+      final ctrl = _controller;
+      built = (ctrl != null && !ctrl.isDisposed)
+          ? _semantics.buildRetainedSemantics(
+              controller: ctrl,
+              surfaceRect: surfaceRect,
+              onTapNode: onTapNode,
+            )
+          : const <SemanticsNode>[];
+    }
+
+    node.updateWith(
+      config: config,
+      childrenInInversePaintOrder: <SemanticsNode>[
+        ...children,
+        ...built.reversed,
+      ],
+    );
+  }
+
+  // MARK: - Painting
+
   @override
   void paint(PaintingContext context, Offset offset) {
     final canvas = context.canvas;
@@ -357,6 +459,7 @@ class RenderNveCanvas extends RenderBox {
         offset,
         bounds,
         defaultFontFamily: _controller?.defaultFontFamily ?? _defaultFontFamily,
+        onImageDecoded: _onAsyncImageDecoded,
       );
     } else {
       final ctrl = _controller;
@@ -395,7 +498,6 @@ class RenderNveCanvas extends RenderBox {
     final hasArea = rect.width > 0.0 && rect.height > 0.0;
     final radius = math.max(0.0, node.style.borderRadius);
 
-    // 1. Rounded rectangle background fill.
     if (hasArea && node.style.background.a > 0) {
       final fillPaint = Paint()
         ..color = node.style.background.toFlutterColor()
@@ -408,7 +510,10 @@ class RenderNveCanvas extends RenderBox {
       }
     }
 
-    // 2. Border stroke.
+    if (hasArea) {
+      _paintRetainedContent(canvas, ctrl, node, rect, radius);
+    }
+
     if (hasArea && node.style.borderWidth > 0.0 && node.style.borderColor.a > 0) {
       final bw = node.style.borderWidth;
       final strokePaint = Paint()
@@ -429,30 +534,6 @@ class RenderNveCanvas extends RenderBox {
       }
     }
 
-    // 3. Leaf Text node glyph painting.
-    if (node.isTextLeaf &&
-        node.text != null &&
-        node.text!.isNotEmpty &&
-        node.style.textColor.a > 0 &&
-        hasArea) {
-      final fontSize =
-          (node.style.fontSize.isFinite && node.style.fontSize > 0.0) ? node.style.fontSize : 16.0;
-      final painter = TextPainter(
-        text: TextSpan(
-          text: node.text!,
-          style: TextStyle(
-            color: node.style.textColor.toFlutterColor(),
-            fontSize: fontSize,
-            fontFamily: ctrl.defaultFontFamily,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: math.max(0.0, rect.width));
-      painter.paint(canvas, rect.topLeft);
-      painter.dispose();
-    }
-
-    // 4. Children in ascending zIndex order (with ScrollView clip rect & offset translation).
     final isScrollView = node.kind == NveComponentKind.scrollView;
     final scrollOffset = isScrollView ? ctrl.scrollOffsetOf(nodeId) : Offset.zero;
     final clipChildren = hasArea && isScrollView;
@@ -471,17 +552,108 @@ class RenderNveCanvas extends RenderBox {
       }
     }
 
-    final orderedChildren = childrenInPaintOrder(tree, node.children);
-    for (final childId in orderedChildren) {
+    for (final childId in childrenInPaintOrder(tree, node.children)) {
       _paintNode(canvas, ctrl, childId, surfaceOffset, surfaceBounds);
     }
 
-    if (needsSave) {
-      canvas.restore();
+    if (needsSave) canvas.restore();
+    if (pushedLayer) canvas.restore();
+  }
+
+  void _paintRetainedContent(
+    Canvas canvas,
+    NveCanvasController ctrl,
+    NveNode node,
+    Rect rect,
+    double radius,
+  ) {
+    if (node.kind == NveComponentKind.skiaCanvas) {
+      final rawDraw = node.rawProps['drawList'] ?? node.rawProps['draw_list'];
+      Uint8List? drawBytes = rawDraw?.asBytes;
+      if (drawBytes == null && rawDraw?.asString != null) {
+        drawBytes = NveDrawListPainter.decodeAttrString(rawDraw!.asString!);
+      }
+      if (drawBytes != null && drawBytes.isNotEmpty) {
+        _sceneStore.drawListPainter.paint(canvas, rect, drawBytes, borderRadius: radius);
+      }
+      return;
     }
 
-    if (pushedLayer) {
+    if (node.kind == NveComponentKind.image) {
+      final uri = node.rawProps['src']?.asString ??
+          node.rawProps['uri']?.asString ??
+          node.text ??
+          '';
+      if (uri.isEmpty) return;
+      final img = _sceneStore.imageCache.resolveOrRequest(uri, onDecoded: _onAsyncImageDecoded);
+      if (img == null) return;
+      final modeProp = node.rawProps['resizeMode'] ?? node.rawProps['resize_mode'];
+      final mode = modeProp?.asInt != null
+          ? NveImageResizeMode.fromCode(modeProp!.asInt!)
+          : NveImageResizeMode.parse(modeProp?.asString);
+      final placement = NveImagePlacement.compute(
+        rect,
+        img.width.toDouble(),
+        img.height.toDouble(),
+        mode,
+      );
+      if (placement == null) return;
+      canvas.save();
+      if (radius > 0.0) {
+        canvas.clipRRect(RRect.fromRectAndRadius(rect, Radius.circular(radius)));
+      } else {
+        canvas.clipRect(rect);
+      }
+      canvas.drawImageRect(
+        img,
+        placement.srcRect,
+        placement.dstRect,
+        Paint()
+          ..filterQuality = FilterQuality.medium
+          ..isAntiAlias = true,
+      );
       canvas.restore();
+      return;
+    }
+
+    if (node.kind == NveComponentKind.textInput) {
+      final rawVal = node.rawProps['value']?.asString ?? node.text ?? '';
+      final placeholder = node.rawProps['placeholder']?.asString ?? '';
+      final isSecure = node.rawProps['secureTextEntry']?.asBool ?? false;
+      final fontSize =
+          (node.style.fontSize.isFinite && node.style.fontSize > 0.0) ? node.style.fontSize : 14.0;
+      _sceneStore.paintTextInputText(
+        canvas,
+        rect,
+        value: rawVal,
+        placeholder: placeholder,
+        secureTextEntry: isSecure,
+        textRgba: node.style.textColor.toWireUint32(),
+        fontSize: fontSize,
+        defaultFontFamily: ctrl.defaultFontFamily,
+      );
+      return;
+    }
+
+    if (node.isTextLeaf &&
+        node.text != null &&
+        node.text!.isNotEmpty &&
+        node.style.textColor.a > 0) {
+      final fontSize =
+          (node.style.fontSize.isFinite && node.style.fontSize > 0.0) ? node.style.fontSize : 16.0;
+      final painter = TextPainter(
+        text: TextSpan(
+          text: node.text!,
+          style: TextStyle(
+            color: node.style.textColor.toFlutterColor(),
+            fontSize: fontSize,
+            fontFamily: ctrl.defaultFontFamily,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: math.max(0.0, rect.width));
+      painter.paint(canvas, rect.topLeft);
+      painter.dispose();
     }
   }
 }
