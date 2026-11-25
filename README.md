@@ -78,5 +78,5 @@ cargo nve dev --example counter
 - [Architecture & ADRs](docs/architecture.md)
 - [Iteration Speed & Tooling Playbook](docs/iteration-speed.md)
 - [Examples & Flagship Vision](examples/README.md)
-- [Prioritized Roadmap & Backlog](BACKLOG.md)
+- [Prioritized Roadmap & Backlog](docs/BACKLOG.md)
 - [Agent & Engineering Invariants](AGENTS.md)
