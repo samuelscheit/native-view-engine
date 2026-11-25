@@ -1,8 +1,8 @@
 #include "nve_rn_component.hpp"
 #include "command_decoder.hpp"
+#include "mock_jsi_recorder.hpp"
 
 #include <cmath>
-#include <cstdio>
 #include <utility>
 
 namespace nve {
@@ -21,31 +21,6 @@ const char* canonical_event_name(EventKind kind) noexcept {
     case EventKind::Custom: return "onCustom";
   }
   return "onUnknown";
-}
-
-void append_json_string(std::string& out, std::string_view s) {
-  out.push_back('"');
-  for (unsigned char c : s) {
-    switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\b': out += "\\b"; break;
-      case '\f': out += "\\f"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if (c < 0x20) {
-          char hex[8];
-          std::snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned>(c));
-          out += hex;
-        } else {
-          out.push_back(static_cast<char>(c));
-        }
-        break;
-    }
-  }
-  out.push_back('"');
 }
 
 } // namespace
@@ -141,43 +116,6 @@ bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_even
   return true;
 }
 
-std::string serialize_props_json(const PropMap& props) {
-  std::string out;
-  out.reserve(64 + props.size() * 24);
-  out.push_back('{');
-  bool first = true;
-  for (const auto& [key, val] : props) {
-    if (!first) out.push_back(',');
-    first = false;
-    append_json_string(out, key);
-    out.push_back(':');
-    std::visit(
-        [&out](const auto& v) {
-          using T = std::decay_t<decltype(v)>;
-          if constexpr (std::is_same_v<T, std::nullptr_t>) {
-            out += "null";
-          } else if constexpr (std::is_same_v<T, bool>) {
-            out += (v ? "true" : "false");
-          } else if constexpr (std::is_same_v<T, int64_t>) {
-            out += std::to_string(v);
-          } else if constexpr (std::is_same_v<T, double>) {
-            if (!std::isfinite(v)) {
-              out += "null";
-            } else {
-              char buf[64];
-              std::snprintf(buf, sizeof(buf), "%.17g", v);
-              out += buf;
-            }
-          } else if constexpr (std::is_same_v<T, std::string>) {
-            append_json_string(out, v);
-          }
-        },
-        val);
-  }
-  out.push_back('}');
-  return out;
-}
-
 NveRnComponentBridge::NveRnComponentBridge(
     NveModule module,
     NveSurfaceConfig config,
@@ -210,7 +148,9 @@ NveRnComponentBridge::NveRnComponentBridge(NveRnComponentBridge&& other) noexcep
       fabric_host_(other.fabric_host_),
       app_handle_(other.app_handle_),
       next_frame_id_(other.next_frame_id_),
-      on_event_(std::move(other.on_event_)) {
+      on_event_(std::move(other.on_event_)),
+      prop_arena_(std::move(other.prop_arena_)),
+      fallback_props_buf_(std::move(other.fallback_props_buf_)) {
   other.fabric_host_ = nullptr;
   other.app_handle_ = nullptr;
   other.module_ = {};
@@ -225,6 +165,8 @@ NveRnComponentBridge& NveRnComponentBridge::operator=(NveRnComponentBridge&& oth
     app_handle_ = other.app_handle_;
     next_frame_id_ = other.next_frame_id_;
     on_event_ = std::move(other.on_event_);
+    prop_arena_ = std::move(other.prop_arena_);
+    fallback_props_buf_ = std::move(other.fallback_props_buf_);
     other.fabric_host_ = nullptr;
     other.app_handle_ = nullptr;
     other.module_ = {};
@@ -271,8 +213,62 @@ bool NveRnComponentBridge::update_props_json(std::string_view props_json, bool a
   return dirty != 0;
 }
 
+bool NveRnComponentBridge::update_props_direct(
+    const NveMapEntry* entries,
+    uint32_t count,
+    bool auto_render) {
+  if (!is_valid() || !module_.component) {
+    return false;
+  }
+  uint32_t dirty = 0;
+  if (module_.component->set_props_direct != nullptr) {
+    dirty = module_.component->set_props_direct(app_handle_, entries, count);
+  } else if (module_.component->set_props != nullptr) {
+    fallback_props_buf_.clear();
+    const NveValue map_val = make_map_value(entries, count);
+    if (!encode_bin_value(fallback_props_buf_, map_val)) {
+      return false;
+    }
+    const NveBufferSlice slice{fallback_props_buf_.data(), fallback_props_buf_.size()};
+    dirty = module_.component->set_props(app_handle_, slice);
+  } else {
+    return false;
+  }
+  if (dirty != 0 && auto_render) {
+    render(nullptr);
+  }
+  return dirty != 0;
+}
+
 bool NveRnComponentBridge::update_props(const PropMap& props, bool auto_render) {
-  return update_props_json(serialize_props_json(props), auto_render);
+  if (!is_valid() || !module_.component) {
+    return false;
+  }
+  prop_arena_.reset();
+  const uint32_t count = static_cast<uint32_t>(props.size());
+  NveMapEntry* entries = count > 0 ? prop_arena_.alloc_array<NveMapEntry>(count) : nullptr;
+  uint32_t idx = 0;
+  for (const auto& [key, val] : props) {
+    NveValue nv = make_null_value();
+    std::visit(
+        [&nv](const auto& v) {
+          using T = std::decay_t<decltype(v)>;
+          if constexpr (std::is_same_v<T, std::nullptr_t>) {
+            nv = make_null_value();
+          } else if constexpr (std::is_same_v<T, bool>) {
+            nv = make_bool_value(v);
+          } else if constexpr (std::is_same_v<T, int64_t>) {
+            nv = make_i64_value(v);
+          } else if constexpr (std::is_same_v<T, double>) {
+            nv = std::isfinite(v) ? make_f64_value(v) : make_null_value();
+          } else if constexpr (std::is_same_v<T, std::string>) {
+            nv = make_str_value(std::string_view(v));
+          }
+        },
+        val);
+    entries[idx++] = NveMapEntry{make_str_slice(key), nv};
+  }
+  return update_props_direct(entries, count, auto_render);
 }
 
 int32_t NveRnComponentBridge::render(NveFrameStats* out_stats) {
@@ -288,6 +284,31 @@ uint32_t NveRnComponentBridge::dispatch_native_events(NveBufferSlice events, boo
     return 0;
   }
   const uint32_t dirty = module_.surface->dispatch_events(app_handle_, events);
+  if (dirty != 0 && auto_render) {
+    render(nullptr);
+  }
+  return dirty;
+}
+
+uint32_t NveRnComponentBridge::dispatch_direct_events(NveEventBatch batch, bool auto_render) {
+  if (!is_valid() || !module_.surface) {
+    return 0;
+  }
+  uint32_t dirty = 0;
+  if (module_.surface->dispatch_events_direct != nullptr) {
+    dirty = module_.surface->dispatch_events_direct(app_handle_, batch);
+  } else if (module_.surface->dispatch_events != nullptr) {
+    EventRingWriter ring;
+    ring.clear();
+    if (batch.ptr != nullptr) {
+      for (uint32_t i = 0; i < batch.len; ++i) {
+        ring.push_direct_event(batch.ptr[i]);
+      }
+    }
+    const auto& bytes = ring.finalize();
+    dirty = module_.surface->dispatch_events(
+        app_handle_, NveBufferSlice{bytes.data(), bytes.size()});
+  }
   if (dirty != 0 && auto_render) {
     render(nullptr);
   }

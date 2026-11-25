@@ -150,6 +150,7 @@ final class NveSurfaceApi extends ffi.Struct {
   external ffi.Pointer<ffi.NativeFunction<NveDestroyNative>> destroy;
   external ffi.Pointer<ffi.NativeFunction<NveRenderNative>> render;
   external ffi.Pointer<ffi.NativeFunction<NveDispatchEventsNative>> dispatchEvents;
+  external ffi.Pointer<ffi.Void> dispatchEventsDirect;
 }
 
 /// Optional layout & gesture interface (`NVE_IFACE_LAYOUT = 2`).
@@ -162,6 +163,7 @@ final class NveLayoutApi extends ffi.Struct {
 final class NveComponentApi extends ffi.Struct {
   external ffi.Pointer<ffi.NativeFunction<NveSetPropsNative>> setProps;
   external ffi.Pointer<ffi.NativeFunction<NveDrainEmittedEventsNative>> drainEmittedEvents;
+  external ffi.Pointer<ffi.Void> setPropsDirect;
 }
 
 /// Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds).

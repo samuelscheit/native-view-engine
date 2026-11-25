@@ -396,6 +396,7 @@ pub enum DecodeError {
     InvalidEnum(&'static str, u32),
     InvalidUtf8,
     TrailingBytes(usize),
+    MaxDepthExceeded,
 }
 
 impl std::fmt::Display for DecodeError {

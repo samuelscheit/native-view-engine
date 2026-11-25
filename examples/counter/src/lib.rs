@@ -7,8 +7,8 @@
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use nve_abi::{
-    decode_events, encode_events, FrameId, NveGestureDisposition, NveIntrinsicSize,
-    NveSizeConstraints, SurfaceId,
+    decode_events, encode_events, BinValueView, FrameId, NveEventBatchRef, NveGestureDisposition,
+    NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
 };
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -100,6 +100,10 @@ impl NveApp for CounterModule {
         self.surface.dispatch_events(&decoded)
     }
 
+    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        self.surface.dispatch_events_direct(events)
+    }
+
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {
         let w = constraints.max_w.clamp(constraints.min_w.max(320.0), 640.0);
         let h = constraints.max_h.clamp(constraints.min_h.max(220.0), 480.0);
@@ -113,14 +117,38 @@ impl NveApp for CounterModule {
         NveGestureDisposition::Claim
     }
 
-    fn set_props(&mut self, props_json: &[u8]) -> bool {
-        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_json) {
+    fn set_props(&mut self, props_bytes: &[u8]) -> bool {
+        if let Ok(view) = BinValueView::parse(props_bytes) {
+            if let Some(c) = view
+                .get("initialCount")
+                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+            {
+                INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
+                LATEST_COUNT.store(c as i32, Ordering::SeqCst);
+                self.surface = create_surface(self.surface_id);
+                return true;
+            }
+        }
+        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_bytes) {
             if let Some(c) = val.get("initialCount").and_then(|v| v.as_i64()) {
                 INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
                 LATEST_COUNT.store(c as i32, Ordering::SeqCst);
                 self.surface = create_surface(self.surface_id);
                 return true;
             }
+        }
+        false
+    }
+
+    fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {
+        if let Some(c) = props
+            .get("initialCount")
+            .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+        {
+            INITIAL_COUNT.store(c as i32, Ordering::SeqCst);
+            LATEST_COUNT.store(c as i32, Ordering::SeqCst);
+            self.surface = create_surface(self.surface_id);
+            return true;
         }
         false
     }

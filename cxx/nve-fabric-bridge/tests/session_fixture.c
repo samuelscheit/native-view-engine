@@ -185,16 +185,44 @@ static void fixture_restore_state(NveAppHandle handle, NveBufferSlice state) {
   app->count = (int32_t)atoi(tmp);
 }
 
+static uint32_t fixture_dispatch_events_direct(NveAppHandle handle, NveEventBatch batch) {
+  SessionFixtureApp* app = (SessionFixtureApp*)handle;
+  if (!app || !batch.ptr || batch.len == 0) {
+    return 0u;
+  }
+  app->count += (int32_t)batch.len;
+  return 1u;
+}
+
+static uint32_t fixture_set_props_direct(
+    NveAppHandle handle,
+    const NveMapEntry* entries,
+    uint32_t count) {
+  SessionFixtureApp* app = (SessionFixtureApp*)handle;
+  if (!app || !entries || count == 0) {
+    return 0u;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (entries[i].key.len == 1 && entries[i].key.ptr && entries[i].key.ptr[0] == 'v') {
+      snprintf(app->label_prefix, sizeof(app->label_prefix), "Updated");
+      return 1u;
+    }
+  }
+  return 0u;
+}
+
 static const NveSurfaceApi kSurfaceApi = {
     fixture_create,
     fixture_destroy,
     fixture_render,
     fixture_dispatch_events,
+    fixture_dispatch_events_direct,
 };
 
 static const NveComponentApi kComponentApi = {
     fixture_set_props,
     fixture_drain_events,
+    fixture_set_props_direct,
 };
 
 static const NveDevApi kDevApi = {

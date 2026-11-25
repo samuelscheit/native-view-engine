@@ -533,6 +533,13 @@ class NativeHostSession {
     return bridge_->update_props_json(props_json, auto_render);
   }
 
+  bool update_props_direct(const NveMapEntry* entries, uint32_t count, bool auto_render = true) {
+    if (!is_valid()) {
+      return false;
+    }
+    return bridge_->update_props_direct(entries, count, auto_render);
+  }
+
   int32_t render(NveFrameStats* out_stats = nullptr) {
     if (!is_valid()) {
       return -100;
@@ -547,6 +554,13 @@ class NativeHostSession {
     fabric_host_enqueue_press(bridge_->fabric_host(), node_id, current_timestamp_us(), x, y);
     const NveBufferSlice inbound = nve_fabric_host_drain_events(bridge_->fabric_host());
     return bridge_->dispatch_native_events(inbound, auto_render);
+  }
+
+  uint32_t dispatch_direct_events(NveEventBatch batch, bool auto_render = true) {
+    if (!is_valid()) {
+      return 0;
+    }
+    return bridge_->dispatch_direct_events(batch, auto_render);
   }
 
   std::vector<DecodedEvent> drain_events() {

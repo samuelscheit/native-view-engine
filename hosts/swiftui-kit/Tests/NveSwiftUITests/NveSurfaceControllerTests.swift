@@ -129,7 +129,8 @@ private enum MockVtables {
                     let dirty = state.dispatchEventsReturnValue
                     state.lock.unlock()
                     return dirty
-                }
+                },
+                dispatch_events_direct: nil
             )
         )
         return UnsafePointer(ptr)
@@ -138,7 +139,13 @@ private enum MockVtables {
     static let surfaceApiNilCreate: UnsafePointer<NveSurfaceApi> = {
         let ptr = UnsafeMutablePointer<NveSurfaceApi>.allocate(capacity: 1)
         ptr.initialize(
-            to: NveSurfaceApi(create: nil, destroy: nil, render: nil, dispatch_events: nil)
+            to: NveSurfaceApi(
+                create: nil,
+                destroy: nil,
+                render: nil,
+                dispatch_events: nil,
+                dispatch_events_direct: nil
+            )
         )
         return UnsafePointer(ptr)
     }()
@@ -190,7 +197,8 @@ private enum MockVtables {
                     let copied = UnsafeMutablePointer<UInt8>.allocate(capacity: outbound.count)
                     outbound.copyBytes(to: copied, count: outbound.count)
                     return NveBufferSlice(ptr: UnsafePointer(copied), len: outbound.count)
-                }
+                },
+                set_props_direct: nil
             )
         )
         return UnsafePointer(ptr)

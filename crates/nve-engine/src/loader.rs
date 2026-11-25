@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 
 use libloading::Library;
 use nve_abi::{
-    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveGestureDisposition,
-    NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
-    SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
+    NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveMapEntry,
+    NveSizeConstraints, NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
 #[derive(Debug)]
@@ -148,6 +149,13 @@ impl HotAppInstance {
         }
     }
 
+    pub fn dispatch_events_direct(&mut self, events: &[NveDirectEvent]) -> bool {
+        match self.surface.dispatch_events_direct {
+            Some(f) => unsafe { f(self.handle, NveEventBatch::from_slice(events)) != 0 },
+            None => false,
+        }
+    }
+
     pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
         self.layout
             .map(|api| unsafe { (api.measure)(self.handle, constraints) })
@@ -166,6 +174,19 @@ impl HotAppInstance {
         match self.component {
             Some(api) => unsafe {
                 (api.set_props)(self.handle, NveBufferSlice::from_slice(props_bytes)) != 0
+            },
+            None => false,
+        }
+    }
+
+    pub fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
+        match self.component.and_then(|api| api.set_props_direct) {
+            Some(f) => unsafe {
+                f(
+                    self.handle,
+                    entries.as_ptr(),
+                    entries.len().min(u32::MAX as usize) as u32,
+                ) != 0
             },
             None => false,
         }

@@ -27,6 +27,77 @@ typedef struct NveBufferSlice {
   size_t len;
 } NveBufferSlice;
 
+typedef struct NveStrSlice {
+  const uint8_t* ptr;
+  size_t len;
+} NveStrSlice;
+
+typedef enum NveValueTag {
+  NVE_VAL_NULL = 0,
+  NVE_VAL_BOOL = 1,
+  NVE_VAL_I64 = 2,
+  NVE_VAL_F64 = 3,
+  NVE_VAL_STR = 4,
+  NVE_VAL_BYTES = 5,
+  NVE_VAL_ARRAY = 6,
+  NVE_VAL_MAP = 7,
+} NveValueTag;
+
+#define NVE_BIN_VALUE_MAX_DEPTH 64u
+
+typedef struct NveValue NveValue;
+typedef struct NveMapEntry NveMapEntry;
+
+typedef struct NveValueArray {
+  const NveValue* ptr;
+  size_t len;
+} NveValueArray;
+
+typedef struct NveValueMap {
+  const NveMapEntry* ptr;
+  size_t len;
+} NveValueMap;
+
+typedef union NveValueData {
+  uint8_t bool_val;
+  int64_t i64_val;
+  double f64_val;
+  NveStrSlice str_val;
+  NveBufferSlice bytes_val;
+  NveValueArray array_val;
+  NveValueMap map_val;
+} NveValueData;
+
+struct NveValue {
+  uint32_t tag;
+  NveValueData data;
+};
+
+struct NveMapEntry {
+  NveStrSlice key;
+  NveValue value;
+};
+
+typedef struct NveDirectEvent {
+  uint32_t surface_id;
+  uint32_t node_id;
+  uint64_t timestamp_us;
+  uint8_t kind;
+  uint8_t payload_tag;
+  NveStrSlice name;
+  float x;
+  float y;
+  float width;
+  float height;
+  NveStrSlice text;
+  NveValue value;
+} NveDirectEvent;
+
+typedef struct NveEventBatch {
+  const NveDirectEvent* ptr;
+  uint32_t len;
+} NveEventBatch;
+
 typedef struct NveSurfaceConfig {
   uint32_t surface_id;
   float width;
@@ -63,6 +134,7 @@ typedef struct NveSurfaceApi {
   void (*destroy)(NveAppHandle handle);
   NveBufferSlice (*render)(NveAppHandle handle, uint64_t frame_id);
   uint32_t (*dispatch_events)(NveAppHandle handle, NveBufferSlice events);
+  uint32_t (*dispatch_events_direct)(NveAppHandle handle, NveEventBatch batch);
 } NveSurfaceApi;
 
 typedef struct NveLayoutApi {
@@ -73,6 +145,7 @@ typedef struct NveLayoutApi {
 typedef struct NveComponentApi {
   uint32_t (*set_props)(NveAppHandle handle, NveBufferSlice props);
   NveBufferSlice (*drain_emitted_events)(NveAppHandle handle);
+  uint32_t (*set_props_direct)(NveAppHandle handle, const NveMapEntry* entries, uint32_t count);
 } NveComponentApi;
 
 typedef struct NveDevApi {

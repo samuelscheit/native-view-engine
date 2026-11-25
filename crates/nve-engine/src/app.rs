@@ -6,7 +6,9 @@
 //! C++ Fabric, iOS/macOS, Android/JNI, Flutter `dart:ffi`, SwiftUI, and Tier-2 `cdylib` hot-swap.
 
 use nve_abi::{
-    FrameId, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId,
+    encode_bin_value_to_vec, encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind,
+    NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
+    SurfaceId,
 };
 
 pub trait NveApp: Sized + 'static {
@@ -17,6 +19,64 @@ pub trait NveApp: Sized + 'static {
 
     /// Processes a binary `EventRing` batch (`nve_abi::decode_events`); returns `true` if re-render is needed.
     fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
+
+    /// Processes a zero-copy direct FFI event batch (`NveEventBatchRef`) with zero deserialization.
+    ///
+    /// Default implementation bridges to `dispatch_events` via binary `EventRing` encoding so
+    /// existing `NveApp` implementations continue working; override for true zero-allocation
+    /// in-process direct event handling.
+    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        if events.is_empty() {
+            return false;
+        }
+        let mut owned = Vec::with_capacity(events.len());
+        for ev in events.iter() {
+            let Some(kind) = ev.kind() else {
+                continue;
+            };
+            let payload = match ev.payload_tag() {
+                0 => EventPayload::Empty,
+                1 => EventPayload::Point {
+                    x: ev.x(),
+                    y: ev.y(),
+                },
+                2 => EventPayload::Scroll {
+                    x: ev.x(),
+                    y: ev.y(),
+                    content_width: ev.width(),
+                    content_height: ev.height(),
+                },
+                3 => EventPayload::Text(ev.text().to_owned()),
+                4 => EventPayload::Layout {
+                    x: ev.x(),
+                    y: ev.y(),
+                    width: ev.width(),
+                    height: ev.height(),
+                },
+                5 => EventPayload::Custom {
+                    name: ev.name().to_owned(),
+                    data: encode_bin_value_to_vec(ev.value()).unwrap_or_default(),
+                },
+                _ => continue,
+            };
+            owned.push(NativeEvent {
+                surface_id: ev.surface_id(),
+                node_id: ev.node_id(),
+                timestamp_us: ev.timestamp_us(),
+                kind: if ev.payload_tag() == 5 {
+                    NativeEventKind::Custom
+                } else {
+                    kind
+                },
+                payload,
+            });
+        }
+        if owned.is_empty() {
+            return false;
+        }
+        let encoded = encode_events(&owned);
+        self.dispatch_events(&encoded)
+    }
 
     /// Intrinsic size measurement for embedded hosts (RN Yoga, Flutter RenderBox, SwiftUI, Compose).
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {
@@ -41,8 +101,13 @@ pub trait NveApp: Sized + 'static {
         NveGestureDisposition::PassThrough
     }
 
-    /// Applies host-supplied JSON props (for embedded components in RN/Flutter/SwiftUI/Compose).
-    fn set_props(&mut self, _props_json: &[u8]) -> bool {
+    /// Applies host-supplied encoded props (for embedded components in RN/Flutter/SwiftUI/Compose).
+    fn set_props(&mut self, _props_bytes: &[u8]) -> bool {
+        false
+    }
+
+    /// Applies zero-copy structured props (`NvePropsRef`) directly with zero serialization.
+    fn set_props_direct(&mut self, _props: NvePropsRef<'_>) -> bool {
         false
     }
 
@@ -76,9 +141,10 @@ macro_rules! export_nve_app {
         const _: () = {
             use ::std::ffi::c_void;
             use $crate::abi::{
-                NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveIntrinsicSize,
-                NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NVE_IFACE_COMPONENT,
-                NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+                NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveEventBatch,
+                NveEventBatchRef, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
+                NveSizeConstraints, NveSurfaceApi, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+                NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
             };
             use $crate::NveApp;
 
@@ -116,6 +182,18 @@ macro_rules! export_nve_app {
                 u32::from(app.dispatch_events(bytes))
             }
 
+            unsafe extern "C" fn __nve_dispatch_events_direct(
+                handle: NveAppHandle,
+                batch: NveEventBatch,
+            ) -> u32 {
+                if handle.is_null() {
+                    return 0;
+                }
+                let app = unsafe { &mut *(handle as *mut $app_ty) };
+                let events = unsafe { NveEventBatchRef::from_raw(batch) };
+                u32::from(app.dispatch_events_direct(events))
+            }
+
             unsafe extern "C" fn __nve_measure(
                 handle: NveAppHandle,
                 constraints: NveSizeConstraints,
@@ -150,6 +228,19 @@ macro_rules! export_nve_app {
                 let app = unsafe { &mut *(handle as *mut $app_ty) };
                 let bytes = unsafe { props.as_slice() };
                 u32::from(app.set_props(bytes))
+            }
+
+            unsafe extern "C" fn __nve_set_props_direct(
+                handle: NveAppHandle,
+                entries: *const NveMapEntry,
+                count: u32,
+            ) -> u32 {
+                if handle.is_null() {
+                    return 0;
+                }
+                let app = unsafe { &mut *(handle as *mut $app_ty) };
+                let props = unsafe { NvePropsRef::from_raw_parts(entries, count) };
+                u32::from(app.set_props_direct(props))
             }
 
             unsafe extern "C" fn __nve_drain_emitted_events(
@@ -200,6 +291,7 @@ macro_rules! export_nve_app {
                 destroy: __nve_destroy,
                 render: __nve_render,
                 dispatch_events: __nve_dispatch_events,
+                dispatch_events_direct: Some(__nve_dispatch_events_direct),
             };
 
             static __NVE_LAYOUT_API: NveLayoutApi = NveLayoutApi {
@@ -210,6 +302,7 @@ macro_rules! export_nve_app {
             static __NVE_COMPONENT_API: NveComponentApi = NveComponentApi {
                 set_props: __nve_set_props,
                 drain_emitted_events: __nve_drain_emitted_events,
+                set_props_direct: Some(__nve_set_props_direct),
             };
 
             static __NVE_DEV_API: NveDevApi = NveDevApi {

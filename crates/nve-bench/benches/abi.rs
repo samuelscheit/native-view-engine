@@ -2,8 +2,9 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use nve_abi::{
-    decode_events, encode_events, CommandDecoder, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    decode_events, encode_bin_value_to_vec, encode_events, BinValueView, CommandDecoder,
+    NveLayoutApi, NveMapEntry, NveSizeConstraints, NveSurfaceApi, NveValue, NVE_IFACE_LAYOUT,
+    NVE_IFACE_SURFACE,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
 
@@ -104,10 +105,59 @@ fn bench_ffi_interface_overhead(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_zero_copy_value_read(c: &mut Criterion) {
+    let mut group = c.benchmark_group("abi/value");
+
+    let velocity = [NveValue::f64(12.5), NveValue::f64(-4.25)];
+    let entries = [
+        NveMapEntry::new("event", NveValue::from_str("onGestureUpdate")),
+        NveMapEntry::new("x", NveValue::f64(142.25)),
+        NveMapEntry::new("y", NveValue::f64(84.5)),
+        NveMapEntry::new("active", NveValue::bool(true)),
+        NveMapEntry::new("velocity", NveValue::array(&velocity)),
+    ];
+    let root = NveValue::map(&entries);
+    let encoded = encode_bin_value_to_vec(unsafe { root.as_ref() }).unwrap();
+
+    group.bench_function("value_direct_ffi_read", |b| {
+        b.iter(|| {
+            let v = unsafe { black_box(&root).as_ref() };
+            let ev = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
+            let x = v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let active = v.get("active").and_then(|x| x.as_bool()).unwrap_or(false);
+            let vx = v
+                .get("velocity")
+                .and_then(|a| a.as_array())
+                .and_then(|a| a.get(0))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            black_box((ev.len(), x + vx, active))
+        });
+    });
+
+    group.bench_function("value_binary_view_read", |b| {
+        b.iter(|| {
+            let v = BinValueView::parse(black_box(&encoded)).unwrap();
+            let ev = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
+            let x = v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let active = v.get("active").and_then(|x| x.as_bool()).unwrap_or(false);
+            let vx = v
+                .get("velocity")
+                .and_then(|a| a.array_at(0))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            black_box((ev.len(), x + vx, active))
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     abi_benches,
     bench_command_buffer_codec,
     bench_event_ring_codec,
-    bench_ffi_interface_overhead
+    bench_ffi_interface_overhead,
+    bench_zero_copy_value_read
 );
 criterion_main!(abi_benches);

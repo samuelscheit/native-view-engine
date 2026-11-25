@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nve_abi.h"
+#include "nve_value.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -45,7 +46,7 @@ struct DecodedEvent {
   /// for built-in kinds it is the canonical RN name ("onPress", "onLongPress",
   /// "onScroll", "onChangeText", "onFocus", "onBlur", "onLayout").
   std::string name;
-  /// Raw payload bytes (UTF-8 JSON for custom events, UTF-8 text for TextChange).
+  /// Raw payload bytes (compact binary `NveBinValue` for custom events, UTF-8 text for TextChange).
   std::vector<uint8_t> payload_bytes;
   /// Structured fields populated for built-in event payload variants.
   float x{0.0f};
@@ -104,9 +105,6 @@ struct RenderedNodeSnapshot {
 
 /// Decode an `EventRing` byte slice (`nve_abi::encode_events`) into `DecodedEvent` records.
 bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_events);
-
-/// Serialize a `PropMap` into a compact RFC 8259 UTF-8 JSON object string for `NveComponentApi::set_props`.
-std::string serialize_props_json(const PropMap& props);
 
 /// Host inspection & control helpers implemented by `src/fabric_adapter.cpp`.
 bool fabric_host_get_node_layout(NveFabricHostHandle host, uint32_t node_id, LayoutRect* out_rect);
@@ -174,12 +172,18 @@ class NveRnComponentBridge {
   /// Update viewport dimensions (e.g. from Fabric `updateLayoutMetrics:`).
   void set_surface_size(float width, float height, float scale_factor = 0.0f);
 
-  /// Push a UTF-8 JSON prop object to `NveComponentApi::set_props`.
+  /// Push a raw encoded prop payload to `NveComponentApi::set_props`.
   /// Returns true if the Rust component signaled a re-render is needed (auto-renders when `auto_render` is true).
   bool update_props_json(std::string_view props_json, bool auto_render = true);
 
-  /// Push a structured key/value prop map (serialized to JSON) to `NveComponentApi::set_props`.
+  /// Push a structured key/value prop map directly via `NveComponentApi::set_props_direct`
+  /// using an internal zero-allocation `BumpArena` (falling back to binary `NveBinValue` via
+  /// `set_props` if `set_props_direct` is NULL).
   bool update_props(const PropMap& props, bool auto_render = true);
+
+  /// Zero-copy direct props update via `NveComponentApi::set_props_direct` (falls back to
+  /// binary `NveBinValue` via `set_props` when `set_props_direct` is NULL).
+  bool update_props_direct(const NveMapEntry* entries, uint32_t count, bool auto_render = true);
 
   /// Invoke `NveSurfaceApi::render(app, next_frame_id)` and submit the binary CommandBuffer to the
   /// internal `NveFabricHostHandle`. Returns 0 on success or a negative error code.
@@ -188,6 +192,18 @@ class NveRnComponentBridge {
   /// Dispatch an inbound binary EventRing (e.g. native touch/press) into `NveSurfaceApi::dispatch_events`,
   /// re-rendering if the Rust component requests it and `auto_render` is true.
   uint32_t dispatch_native_events(NveBufferSlice events, bool auto_render = true);
+
+  /// Zero-copy direct event batch dispatch via `NveSurfaceApi::dispatch_events_direct`
+  /// (falls back to binary `EventRing` via `dispatch_events` if `dispatch_events_direct` is NULL).
+  uint32_t dispatch_direct_events(NveEventBatch batch, bool auto_render = true);
+
+  /// Query whether the attached module exposes zero-copy direct event / prop FFI entry points.
+  bool has_direct_events() const noexcept {
+    return module_.surface != nullptr && module_.surface->dispatch_events_direct != nullptr;
+  }
+  bool has_direct_props() const noexcept {
+    return module_.component != nullptr && module_.component->set_props_direct != nullptr;
+  }
 
   /// Zero-cost scalar layout measurement via `NveLayoutApi::measure` (if provided).
   std::optional<NveIntrinsicSize> measure(NveSizeConstraints constraints) const;
@@ -224,6 +240,8 @@ class NveRnComponentBridge {
   NveAppHandle app_handle_{nullptr};
   uint64_t next_frame_id_{1};
   EventEmitterCallback on_event_;
+  BumpArena prop_arena_{8192u};
+  std::vector<uint8_t> fallback_props_buf_;
 };
 
 } // namespace nve

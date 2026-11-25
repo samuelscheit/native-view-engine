@@ -84,7 +84,8 @@ class _MockNativeModule {
       ..create = _createCb.nativeFunction
       ..destroy = _destroyCb.nativeFunction
       ..render = _renderCb.nativeFunction
-      ..dispatchEvents = _dispatchEventsCb.nativeFunction;
+      ..dispatchEvents = _dispatchEventsCb.nativeFunction
+      ..dispatchEventsDirect = ffi.nullptr;
 
     _layoutApi = _alloc.allocate<NveLayoutApi>(ffi.sizeOf<NveLayoutApi>());
     _layoutApi.ref
@@ -94,7 +95,8 @@ class _MockNativeModule {
     _componentApi = _alloc.allocate<NveComponentApi>(ffi.sizeOf<NveComponentApi>());
     _componentApi.ref
       ..setProps = _setPropsCb.nativeFunction
-      ..drainEmittedEvents = _drainCb.nativeFunction;
+      ..drainEmittedEvents = _drainCb.nativeFunction
+      ..setPropsDirect = ffi.nullptr;
 
     _devApi = _alloc.allocate<NveDevApi>(ffi.sizeOf<NveDevApi>());
     _devApi.ref

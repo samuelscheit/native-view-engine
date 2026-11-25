@@ -177,14 +177,13 @@ struct MockMacRustComponent {
     for (const auto &ev : decoded) {
       if (ev.kind == nve::EventKind::Press && ev.node_id == 4) {
         ++self->count;
-        const std::string payload = "{\"count\":" + std::to_string(self->count) + "}";
-        self->outbound.push_custom(
-            self->surface_id,
-            4,
-            ev.timestamp_us,
-            "onIncrement",
-            reinterpret_cast<const uint8_t *>(payload.data()),
-            payload.size());
+        const NveMapEntry entry{
+            nve::make_str_slice("count"),
+            nve::make_i64_value(static_cast<int64_t>(self->count)),
+        };
+        const NveValue payload = nve::make_map_value(&entry, 1);
+        self->outbound.push_custom_value(
+            self->surface_id, 4, ev.timestamp_us, "onIncrement", payload);
         return 1;
       }
     }
@@ -202,18 +201,35 @@ struct MockMacRustComponent {
 
   static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
     auto *self = static_cast<MockMacRustComponent *>(h);
-    std::string json(reinterpret_cast<const char *>(props.ptr), props.len);
-    if (json.find("Updated") != std::string::npos) {
-      self->title = "Updated";
+    if (const auto view = nve::BinValueView::parse(props)) {
+      if (const auto title = view->map_get("title"); title && title->as_str()) {
+        self->title = std::string(*title->as_str());
+      }
+    } else if (props.ptr && props.len > 0) {
+      std::string raw(reinterpret_cast<const char *>(props.ptr), props.len);
+      if (raw.find("Updated") != std::string::npos) {
+        self->title = "Updated";
+      }
     }
-    const std::string payload = "{\"ok\":true}";
-    self->outbound.push_custom(
-        self->surface_id,
-        NVE_ROOT_NODE_ID,
-        500,
-        "onPropsApplied",
-        reinterpret_cast<const uint8_t *>(payload.data()),
-        payload.size());
+    const NveMapEntry entry{nve::make_str_slice("ok"), nve::make_bool_value(true)};
+    const NveValue payload = nve::make_map_value(&entry, 1);
+    self->outbound.push_custom_value(
+        self->surface_id, NVE_ROOT_NODE_ID, 500, "onPropsApplied", payload);
+    return 1;
+  }
+
+  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+    auto *self = static_cast<MockMacRustComponent *>(h);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (nve::str_slice_view(entries[i].key) == "title" &&
+          entries[i].value.tag == NVE_VAL_STR) {
+        self->title = std::string(nve::str_slice_view(entries[i].value.data.str_val));
+      }
+    }
+    const NveMapEntry entry{nve::make_str_slice("ok"), nve::make_bool_value(true)};
+    const NveValue payload = nve::make_map_value(&entry, 1);
+    self->outbound.push_custom_value(
+        self->surface_id, NVE_ROOT_NODE_ID, 500, "onPropsApplied", payload);
     return 1;
   }
 
@@ -230,10 +246,12 @@ struct MockMacRustComponent {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
+        .dispatch_events_direct = nullptr,
     };
     static const NveComponentApi kComponent{
         .set_props = &set_props,
         .drain_emitted_events = &drain_emitted_events,
+        .set_props_direct = &set_props_direct,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = &apply_hot_patch,

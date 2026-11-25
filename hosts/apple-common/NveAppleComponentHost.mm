@@ -1,9 +1,75 @@
 #import "NveAppleComponentHost.h"
 
+#import <CoreFoundation/CoreFoundation.h>
+
+#include "nve_value.hpp"
+
+#include <cmath>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+namespace {
+
+NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uint32_t depth) {
+  if (obj == nil || obj == [NSNull null] || depth > NVE_BIN_VALUE_MAX_DEPTH) {
+    return nve::make_null_value();
+  }
+  if ([obj isKindOfClass:[NSNumber class]]) {
+    NSNumber *num = (NSNumber *)obj;
+    if (CFGetTypeID((__bridge CFTypeRef)num) == CFBooleanGetTypeID()) {
+      return nve::make_bool_value(num.boolValue ? true : false);
+    }
+    if (CFNumberIsFloatType((__bridge CFNumberRef)num)) {
+      const double d = num.doubleValue;
+      return std::isfinite(d) ? nve::make_f64_value(d) : nve::make_null_value();
+    }
+    return nve::make_i64_value(static_cast<int64_t>(num.longLongValue));
+  }
+  if ([obj isKindOfClass:[NSString class]]) {
+    NSString *str = (NSString *)obj;
+    const char *utf8 = str.UTF8String;
+    if (!utf8) {
+      return nve::make_str_value(NveStrSlice{nullptr, 0});
+    }
+    return nve::make_str_value(arena.copy_str(std::string_view(utf8)));
+  }
+  if ([obj isKindOfClass:[NSData class]]) {
+    NSData *data = (NSData *)obj;
+    return nve::make_bytes_value(
+        arena.copy_bytes(static_cast<const uint8_t *>(data.bytes), data.length));
+  }
+  if ([obj isKindOfClass:[NSArray class]]) {
+    NSArray *arr = (NSArray *)obj;
+    const size_t n = arr.count;
+    NveValue *elems = n > 0 ? arena.alloc_array<NveValue>(n) : nullptr;
+    for (size_t i = 0; i < n; ++i) {
+      elems[i] = nve_value_from_objc_object(arr[i], arena, depth + 1u);
+    }
+    return nve::make_array_value(elems, n);
+  }
+  if ([obj isKindOfClass:[NSDictionary class]]) {
+    NSDictionary *dict = (NSDictionary *)obj;
+    const size_t n = dict.count;
+    NveMapEntry *entries = n > 0 ? arena.alloc_array<NveMapEntry>(n) : nullptr;
+    __block size_t idx = 0;
+    [dict enumerateKeysAndObjectsUsingBlock:^(id key, id val, BOOL *stop) {
+      (void)stop;
+      if (idx >= n) return;
+      NSString *keyStr = [key isKindOfClass:[NSString class]] ? (NSString *)key : [key description];
+      const char *kutf8 = keyStr.UTF8String;
+      entries[idx++] = NveMapEntry{
+          kutf8 ? arena.copy_str(std::string_view(kutf8)) : NveStrSlice{nullptr, 0},
+          nve_value_from_objc_object(val, arena, depth + 1u),
+      };
+    }];
+    return nve::make_map_value(entries, idx);
+  }
+  return nve::make_null_value();
+}
+
+} // namespace
 
 @implementation NveAppleComponentHost {
   __weak id<NveAppleComponentViewAdapter> _adapter;
@@ -13,6 +79,7 @@
   uint32_t _surfaceId;
   std::unordered_map<uint32_t, NvePlatformView *> _nodeViews;
   std::unordered_map<uint32_t, uint32_t> _nodeViewTags;
+  nve::BumpArena _propsArena;
 }
 
 - (instancetype)initWithAdapter:(id<NveAppleComponentViewAdapter>)adapter
@@ -138,17 +205,19 @@
 }
 
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {
-  if (!props) return NO;
-  NSError *error = nil;
-  NSData *jsonData = [NSJSONSerialization dataWithJSONObject:props options:0 error:&error];
-  if (error || !jsonData) {
-    return NO;
+  if (!_bridge || !props) return NO;
+  _propsArena.reset();
+  const NveValue mapVal = nve_value_from_objc_object(props, _propsArena, 0u);
+  const NveMapEntry *entries = (mapVal.tag == NVE_VAL_MAP) ? mapVal.data.map_val.ptr : nullptr;
+  const uint32_t count =
+      (mapVal.tag == NVE_VAL_MAP) ? static_cast<uint32_t>(mapVal.data.map_val.len) : 0u;
+  const bool dirty = _bridge->update_props_direct(entries, count, /*auto_render=*/false);
+  if (dirty) {
+    [self renderFrame];
+  } else {
+    [self drainEmittedEvents];
   }
-  NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-  if (!jsonString) {
-    return NO;
-  }
-  return [self applyPropsJson:jsonString];
+  return dirty ? YES : NO;
 }
 
 - (void)renderFrame {

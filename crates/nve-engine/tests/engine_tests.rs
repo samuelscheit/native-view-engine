@@ -12,8 +12,9 @@ use std::process::Command as ProcessCommand;
 
 use nve_abi::{
     CommandBufferBuilder, DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice,
-    NveComponentApi, NveDevApi, NveGestureDisposition, NveIntrinsicSize, NveLayoutApi,
-    NveSizeConstraints, NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch, NveEventBatchRef,
+    NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
+    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
     NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_engine::loader::{HotAppInstance, LoaderError};
@@ -194,6 +195,16 @@ impl NveApp for RoutingTestApp {
         !props_json.is_empty()
     }
 
+    fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {
+        props.get("count").and_then(|v| v.as_i64()).is_some()
+    }
+
+    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        events
+            .iter()
+            .any(|ev| ev.name() == "onPing" && ev.value().get("ok").and_then(|v| v.as_bool()) == Some(true))
+    }
+
     fn drain_emitted_events(&mut self) -> &[u8] {
         &self.emitted
     }
@@ -243,11 +254,19 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         assert_eq!((surface.render)(null, 1).len, 0);
         assert_eq!((surface.dispatch_events)(null, NveBufferSlice::EMPTY), 0);
         assert_eq!(
+            (surface.dispatch_events_direct.unwrap())(null, NveEventBatch::EMPTY),
+            0
+        );
+        assert_eq!(
             (layout.measure)(null, NveSizeConstraints::loose(100.0, 200.0)),
             NveIntrinsicSize::default()
         );
         assert_eq!((layout.hit_test)(null, 10.0, 20.0, 1), 2);
         assert_eq!((component.set_props)(null, NveBufferSlice::EMPTY), 0);
+        assert_eq!(
+            (component.set_props_direct.unwrap())(null, std::ptr::null(), 0),
+            0
+        );
         assert_eq!((component.drain_emitted_events)(null).len, 0);
         assert_eq!((dev.apply_hot_patch)(null, NveBufferSlice::EMPTY), 0);
         assert_eq!((dev.snapshot_state)(null).len, 0);
@@ -257,6 +276,34 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
     // Live handle exercises patch routing, invalid UTF-8 rejection, default measure/hit_test, state snapshot.
     let handle = unsafe { (surface.create)(7) };
     assert!(!handle.is_null());
+
+    // Direct zero-copy event dispatch & props update via C ABI
+    let payload_entries = [NveMapEntry::new("ok", NveValue::bool(true))];
+    let direct_events = [NveDirectEvent::custom(
+        7,
+        42,
+        1234,
+        "onPing",
+        NveValue::map(&payload_entries),
+    )];
+    let prop_entries = [NveMapEntry::new("count", NveValue::i64(99))];
+    unsafe {
+        assert_eq!(
+            (surface.dispatch_events_direct.unwrap())(
+                handle,
+                NveEventBatch::from_slice(&direct_events)
+            ),
+            1
+        );
+        assert_eq!(
+            (component.set_props_direct.unwrap())(
+                handle,
+                prop_entries.as_ptr(),
+                prop_entries.len() as u32
+            ),
+            1
+        );
+    }
 
     // Default NveApp::measure handles finite and infinite constraints properly.
     let finite_size = unsafe {
@@ -409,6 +456,7 @@ fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
             pub destroy: unsafe extern "C" fn(*mut c_void),
             pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
             pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
         }
 
         struct MinimalApp { buf: Vec<u8> }
@@ -428,7 +476,13 @@ fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
             u32::from(ev.len > 0)
         }
 
-        static SURFACE_API: NveSurfaceApi = NveSurfaceApi { create, destroy, render, dispatch_events };
+        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
+            create,
+            destroy,
+            render,
+            dispatch_events,
+            dispatch_events_direct: None,
+        };
 
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
@@ -483,6 +537,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
             pub destroy: unsafe extern "C" fn(*mut c_void),
             pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
             pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
         }
 
         #[repr(C)]
@@ -495,6 +550,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
         pub struct NveComponentApi {
             pub set_props: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
             pub drain_emitted_events: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
+            pub set_props_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
         }
 
         #[repr(C)]
@@ -579,9 +635,19 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
             }
         }
 
-        static SURFACE_API: NveSurfaceApi = NveSurfaceApi { create, destroy, render, dispatch_events };
+        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
+            create,
+            destroy,
+            render,
+            dispatch_events,
+            dispatch_events_direct: None,
+        };
         static LAYOUT_API: NveLayoutApi = NveLayoutApi { measure, hit_test };
-        static COMPONENT_API: NveComponentApi = NveComponentApi { set_props, drain_emitted_events };
+        static COMPONENT_API: NveComponentApi = NveComponentApi {
+            set_props,
+            drain_emitted_events,
+            set_props_direct: None,
+        };
         static DEV_API: NveDevApi = NveDevApi { apply_hot_patch, snapshot_state, restore_state };
 
         #[unsafe(no_mangle)]

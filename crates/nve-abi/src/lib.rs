@@ -5,6 +5,7 @@
 pub mod codec;
 pub mod events;
 pub mod ffi;
+pub mod value;
 
 pub use codec::{
     ColorRgba, Command, CommandBufferBuilder, CommandBufferHeader, CommandDecoder, ComponentKind,
@@ -18,6 +19,12 @@ pub use ffi::{
     NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
     NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
     NveSurfaceConfig, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+};
+pub use value::{
+    encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinMapIter, BinValueView, NveArrayRef,
+    NveDirectEvent, NveDirectEventRef, NveEventBatch, NveEventBatchRef, NveMapEntry, NveMapRef,
+    NvePropsRef, NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap, NveValueRef,
+    NveValueTag, NVE_BIN_VALUE_MAX_DEPTH,
 };
 
 pub type SurfaceId = u32;

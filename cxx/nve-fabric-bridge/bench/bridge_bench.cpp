@@ -414,20 +414,24 @@ struct BenchComponent {
     for (const auto& ev : decoded) {
       if (ev.kind == nve::EventKind::Press && ev.node_id == 2) {
         ++self->presses;
-        char payload[48];
-        const int n = std::snprintf(payload, sizeof(payload), "{\"presses\":%llu}",
-                                    static_cast<unsigned long long>(self->presses));
-        self->outbound_events.push_custom(
-            self->surface_id,
-            2,
-            ev.timestamp_us,
-            "onPressCount",
-            reinterpret_cast<const uint8_t*>(payload),
-            n > 0 ? static_cast<size_t>(n) : 0);
+        const NveMapEntry entry{
+            nve::make_str_slice("presses"),
+            nve::make_i64_value(static_cast<int64_t>(self->presses)),
+        };
+        const NveValue payload = nve::make_map_value(&entry, 1);
+        self->outbound_events.push_custom_value(
+            self->surface_id, 2, ev.timestamp_us, "onPressCount", payload);
         dirty = 1;
       }
     }
     return dirty;
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<BenchComponent*>(h);
+    if (!self || !batch.ptr) return 0;
+    self->presses += batch.len;
+    return batch.len > 0 ? 1u : 0u;
   }
 
   static NveIntrinsicSize measure(NveAppHandle, NveSizeConstraints c) {
@@ -442,6 +446,9 @@ struct BenchComponent {
   }
 
   static uint32_t set_props(NveAppHandle, NveBufferSlice) { return 1; }
+  static uint32_t set_props_direct(NveAppHandle, const NveMapEntry*, uint32_t count) {
+    return count > 0 ? 1u : 0u;
+  }
 
   static NveBufferSlice drain_emitted_events(NveAppHandle h) {
     auto* self = static_cast<BenchComponent*>(h);
@@ -451,9 +458,10 @@ struct BenchComponent {
   }
 
   static const void* get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+    static const NveSurfaceApi kSurface{
+        &create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
     static const NveLayoutApi kLayout{&measure, &hit_test};
-    static const NveComponentApi kComponent{&set_props, &drain_emitted_events};
+    static const NveComponentApi kComponent{&set_props, &drain_emitted_events, &set_props_direct};
     switch (interface_id) {
       case NVE_IFACE_SURFACE: return &kSurface;
       case NVE_IFACE_LAYOUT: return &kLayout;
@@ -767,21 +775,78 @@ int main(int argc, char** argv) {
         }));
   }
 
-  // 5. `MockJsiRecorderRuntime` JSI event dispatch throughput (when NVE_WITH_RN_JSI is enabled).
+  // 5. `MockJsiRecorderRuntime` zero-copy arena FFI vs binary EventRing throughput (when NVE_WITH_RN_JSI is enabled).
 #if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
-  if (should_run("mock_jsi_event_dispatch", cfg)) {
+  if (should_run("mock_jsi_direct_arena_ffi_dispatch", cfg)) {
+    nve::MockJsiRecorderRuntime rt;
+    constexpr uint64_t kBatch = 10;
+
+    auto direct_sink = [](NveEventBatch batch) -> uint32_t {
+      double acc = 0.0;
+      for (uint32_t i = 0; i < batch.len; ++i) {
+        const NveValue& val = batch.ptr[i].value;
+        if (val.tag == NVE_VAL_MAP) {
+          for (size_t j = 0; j < val.data.map_val.len; ++j) {
+            const NveMapEntry& e = val.data.map_val.ptr[j];
+            const std::string_view k = nve::str_slice_view(e.key);
+            if (k == "x" && e.value.tag == NVE_VAL_F64) {
+              acc += e.value.data.f64_val;
+            } else if (k == "velocity" && e.value.tag == NVE_VAL_ARRAY &&
+                       e.value.data.array_val.len >= 2) {
+              acc += e.value.data.array_val.ptr[0].data.f64_val;
+            }
+          }
+        }
+      }
+      do_not_optimize(acc);
+      return batch.len;
+    };
+
+    results.push_back(run_bench(
+        "mock_jsi_direct_arena_ffi_dispatch",
+        50,
+        1000,
+        /*ops_per_iter=*/kBatch,
+        cfg,
+        [&](int iter) {
+          rt.reset_frame();
+          for (uint64_t k = 0; k < kBatch; ++k) {
+            facebook::jsi::Object payload(rt);
+            payload.setProperty(rt, "event", "onGestureUpdate");
+            payload.setProperty(rt, "x", static_cast<double>(iter + k) * 1.25);
+            payload.setProperty(rt, "y", 84.5);
+            payload.setProperty(rt, "active", true);
+            facebook::jsi::Array velocity(rt, 2);
+            velocity.setValueAtIndex(rt, 0, 12.5);
+            velocity.setValueAtIndex(rt, 1, -4.25);
+            payload.setProperty(rt, "velocity", std::move(velocity));
+
+            rt.record_direct_event(
+                1,
+                static_cast<uint32_t>(10 + k),
+                static_cast<uint64_t>(iter) * 1000ULL + k,
+                "onGestureUpdate",
+                facebook::jsi::Value(rt, payload));
+          }
+          const uint32_t handled = rt.dispatch_direct(direct_sink);
+          do_not_optimize(handled);
+        }));
+  }
+
+  if (should_run("mock_jsi_binary_ring_dispatch", cfg)) {
     nve::MockJsiRecorderRuntime rt;
     nve::EventRingWriter ring;
     std::vector<nve::DecodedEvent> decoded;
     constexpr uint64_t kBatch = 10;
 
     results.push_back(run_bench(
-        "mock_jsi_event_dispatch",
-        30,
-        500,
+        "mock_jsi_binary_ring_dispatch",
+        50,
+        1000,
         /*ops_per_iter=*/kBatch,
         cfg,
         [&](int iter) {
+          rt.reset_frame();
           ring.clear();
           for (uint64_t k = 0; k < kBatch; ++k) {
             facebook::jsi::Object payload(rt);
@@ -804,8 +869,20 @@ int main(int argc, char** argv) {
           }
           const auto& bytes = ring.finalize();
           const bool ok = nve::decode_event_ring(NveBufferSlice{bytes.data(), bytes.size()}, decoded);
+          double acc = 0.0;
+          for (const auto& ev : decoded) {
+            if (const auto view = nve::BinValueView::parse(
+                    ev.payload_bytes.data(), ev.payload_bytes.size())) {
+              if (const auto x = view->map_get("x"); x && x->as_f64()) {
+                acc += *x->as_f64();
+              }
+              if (const auto v = view->map_get("velocity"); v && v->array_at(0)) {
+                acc += v->array_at(0)->as_f64().value_or(0.0);
+              }
+            }
+          }
           do_not_optimize(ok);
-          do_not_optimize(decoded.size());
+          do_not_optimize(acc);
         }));
   }
 #endif

@@ -11,6 +11,8 @@
 
 use std::ffi::c_void;
 
+use crate::value::{NveEventBatch, NveMapEntry};
+
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
 pub const NVE_IFACE_COMPONENT: u32 = 3;
@@ -127,6 +129,9 @@ pub struct NveSurfaceApi {
     pub render: unsafe extern "C" fn(handle: NveAppHandle, frame_id: u64) -> NveBufferSlice,
     pub dispatch_events:
         unsafe extern "C" fn(handle: NveAppHandle, events: NveBufferSlice) -> u32,
+    /// Optional zero-copy direct event dispatch (may be NULL).
+    pub dispatch_events_direct:
+        Option<unsafe extern "C" fn(handle: NveAppHandle, batch: NveEventBatch) -> u32>,
 }
 
 /// Optional layout & gesture negotiation interface (`NVE_IFACE_LAYOUT = 2`).
@@ -150,6 +155,14 @@ pub struct NveLayoutApi {
 pub struct NveComponentApi {
     pub set_props: unsafe extern "C" fn(handle: NveAppHandle, props: NveBufferSlice) -> u32,
     pub drain_emitted_events: unsafe extern "C" fn(handle: NveAppHandle) -> NveBufferSlice,
+    /// Optional zero-copy structured props update (may be NULL).
+    pub set_props_direct: Option<
+        unsafe extern "C" fn(
+            handle: NveAppHandle,
+            entries: *const NveMapEntry,
+            count: u32,
+        ) -> u32,
+    >,
 }
 
 /// Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds).

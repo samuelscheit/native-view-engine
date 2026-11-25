@@ -551,10 +551,18 @@ void test_flexbox_layout() {
   nve_fabric_host_destroy(host);
 }
 
-// 4. Test NveRnComponentBridge end-to-end (set_props, render, native events, drain_emitted_events, snapshot/restore).
+// 4. Test NveRnComponentBridge end-to-end (set_props_direct, dispatch_events_direct, render, native events, drain_emitted_events, snapshot/restore).
 struct MockEmbeddedRustComponent {
   uint32_t surface_id{1};
   std::string last_props_json;
+  std::string last_direct_title;
+  int64_t last_direct_initial_count{0};
+  bool last_direct_enabled{false};
+  double last_direct_ratio{0.0};
+  bool saw_direct_null{false};
+  uint32_t direct_props_calls{0};
+  uint32_t direct_event_calls{0};
+  std::string last_direct_event_name;
   int count{0};
   std::vector<uint8_t> last_cmd_buf;
   nve::EventRingWriter outbound_events;
@@ -598,14 +606,31 @@ struct MockEmbeddedRustComponent {
     for (const auto& ev : decoded) {
       if (ev.kind == nve::EventKind::Press && ev.node_id == 2) {
         self->count += 1;
-        const std::string json = "{\"count\":" + std::to_string(self->count) + "}";
-        self->outbound_events.push_custom(
-            self->surface_id,
-            2,
-            ev.timestamp_us,
-            "onIncrement",
-            reinterpret_cast<const uint8_t*>(json.data()),
-            json.size());
+        const NveMapEntry entry{
+            nve::make_str_slice("count"),
+            nve::make_i64_value(static_cast<int64_t>(self->count)),
+        };
+        const NveValue payload = nve::make_map_value(&entry, 1);
+        self->outbound_events.push_custom_value(
+            self->surface_id, 2, ev.timestamp_us, "onIncrement", payload);
+        dirty = 1;
+      }
+    }
+    return dirty;
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<MockEmbeddedRustComponent*>(h);
+    if (!self || !batch.ptr || batch.len == 0) return 0;
+    uint32_t dirty = 0;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      ++self->direct_event_calls;
+      if (ev.kind == 1 && ev.node_id == 2) {
+        self->count += 1;
+        dirty = 1;
+      } else if (ev.kind == 8) {
+        self->last_direct_event_name = std::string(nve::str_slice_view(ev.name));
         dirty = 1;
       }
     }
@@ -636,14 +661,35 @@ struct MockEmbeddedRustComponent {
   static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
     auto* self = static_cast<MockEmbeddedRustComponent*>(h);
     self->last_props_json.assign(reinterpret_cast<const char*>(props.ptr), props.len);
-    const std::string payload = "{\"accepted\":true}";
-    self->outbound_events.push_custom(
-        self->surface_id,
-        NVE_ROOT_NODE_ID,
-        1000,
-        "onPropsApplied",
-        reinterpret_cast<const uint8_t*>(payload.data()),
-        payload.size());
+    const NveMapEntry entry{nve::make_str_slice("accepted"), nve::make_bool_value(true)};
+    const NveValue payload = nve::make_map_value(&entry, 1);
+    self->outbound_events.push_custom_value(
+        self->surface_id, NVE_ROOT_NODE_ID, 1000, "onPropsApplied", payload);
+    return 1;
+  }
+
+  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
+    auto* self = static_cast<MockEmbeddedRustComponent*>(h);
+    ++self->direct_props_calls;
+    for (uint32_t i = 0; i < count; ++i) {
+      const std::string_view k = nve::str_slice_view(entries[i].key);
+      const NveValue& v = entries[i].value;
+      if (k == "title" && v.tag == NVE_VAL_STR) {
+        self->last_direct_title = std::string(nve::str_slice_view(v.data.str_val));
+      } else if (k == "initialCount" && v.tag == NVE_VAL_I64) {
+        self->last_direct_initial_count = v.data.i64_val;
+      } else if (k == "enabled" && v.tag == NVE_VAL_BOOL) {
+        self->last_direct_enabled = v.data.bool_val != 0;
+      } else if (k == "ratio" && v.tag == NVE_VAL_F64) {
+        self->last_direct_ratio = v.data.f64_val;
+      } else if (k == "optional" && v.tag == NVE_VAL_NULL) {
+        self->saw_direct_null = true;
+      }
+    }
+    const NveMapEntry entry{nve::make_str_slice("accepted"), nve::make_bool_value(true)};
+    const NveValue payload = nve::make_map_value(&entry, 1);
+    self->outbound_events.push_custom_value(
+        self->surface_id, NVE_ROOT_NODE_ID, 1000, "onPropsApplied", payload);
     return 1;
   }
 
@@ -671,6 +717,7 @@ struct MockEmbeddedRustComponent {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
+        .dispatch_events_direct = &dispatch_events_direct,
     };
     static const NveLayoutApi kLayout{
         .measure = &measure,
@@ -679,6 +726,7 @@ struct MockEmbeddedRustComponent {
     static const NveComponentApi kComponent{
         .set_props = &set_props,
         .drain_emitted_events = &drain_emitted_events,
+        .set_props_direct = &set_props_direct,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = &apply_hot_patch,
@@ -704,11 +752,13 @@ void test_rn_component_bridge() {
       [&](const nve::DecodedEvent& ev) { emitted_via_cb.push_back(ev); });
 
   assert(bridge.is_valid());
+  assert(bridge.has_direct_events());
+  assert(bridge.has_direct_props());
   auto measured = bridge.measure(NveSizeConstraints{0.0f, 0.0f, 320.0f, 120.0f});
   assert(measured.has_value() && approx_eq(measured->width, 200.0f) && approx_eq(measured->height, 60.0f));
   assert(bridge.hit_test(10.0f, 10.0f, 1) == NVE_GESTURE_CLAIM);
 
-  // 1. Update props via typed PropMap -> JSON -> vtable.set_props -> auto-render
+  // 1. Update props via typed PropMap -> zero-copy BumpArena -> set_props_direct -> auto-render
   nve::PropMap props;
   props["title"] = std::string("Hello \"RN\"");
   props["initialCount"] = static_cast<int64_t>(5);
@@ -716,15 +766,17 @@ void test_rn_component_bridge() {
   props["ratio"] = 0.75;
   props["optional"] = nullptr;
 
-  const std::string serialized = nve::serialize_props_json(props);
-  assert(serialized.find("\"title\":\"Hello \\\"RN\\\"\"") != std::string::npos);
-  assert(serialized.find("\"initialCount\":5") != std::string::npos);
-  assert(serialized.find("\"enabled\":true") != std::string::npos);
-  assert(serialized.find("\"optional\":null") != std::string::npos);
-
   assert(bridge.update_props(props, /*auto_render=*/true));
   assert(bridge.frame_count() == 1);
   assert(bridge.node_count() == 3);
+
+  auto* mock_app = static_cast<MockEmbeddedRustComponent*>(bridge.app_handle());
+  assert(mock_app->direct_props_calls == 1);
+  assert(mock_app->last_direct_title == "Hello \"RN\"");
+  assert(mock_app->last_direct_initial_count == 5);
+  assert(mock_app->last_direct_enabled == true);
+  assert(std::fabs(mock_app->last_direct_ratio - 0.75) < 1e-9);
+  assert(mock_app->saw_direct_null);
 
   auto rect = bridge.node_layout(2);
   assert(rect.has_value());
@@ -734,10 +786,12 @@ void test_rn_component_bridge() {
   assert(evs.size() == 1);
   assert(evs[0].kind == nve::EventKind::Custom);
   assert(evs[0].name == "onPropsApplied");
-  assert(evs[0].payload_as_string() == "{\"accepted\":true}");
+  const auto ev0_view = nve::BinValueView::parse(evs[0].payload_bytes.data(), evs[0].payload_bytes.size());
+  assert(ev0_view.has_value() && ev0_view->tag() == NVE_VAL_MAP);
+  assert(ev0_view->map_get("accepted")->as_bool() == true);
   assert(emitted_via_cb.size() == 1);
 
-  // 2. Simulate native press -> dispatch -> outbound onIncrement event
+  // 2. Simulate native press -> dispatch -> outbound binary onIncrement event
   nve::fabric_host_enqueue_press(bridge.fabric_host(), 2, 99999, 15.0f, 25.0f);
   const NveBufferSlice inbound = nve_fabric_host_drain_events(bridge.fabric_host());
   assert(bridge.dispatch_native_events(inbound, /*auto_render=*/true) == 1);
@@ -746,8 +800,23 @@ void test_rn_component_bridge() {
   auto evs2 = bridge.drain_emitted_events();
   assert(evs2.size() == 1);
   assert(evs2[0].name == "onIncrement");
-  assert(evs2[0].payload_as_string() == "{\"count\":1}");
+  const auto ev2_view = nve::BinValueView::parse(evs2[0].payload_bytes.data(), evs2[0].payload_bytes.size());
+  assert(ev2_view.has_value() && ev2_view->map_get("count")->as_i64() == 1);
   assert(emitted_via_cb.size() == 2);
+
+  // 2b. Zero-copy direct event dispatch via NveRnComponentBridge::dispatch_direct_events
+  NveDirectEvent direct_ev{};
+  direct_ev.surface_id = 42;
+  direct_ev.node_id = 2;
+  direct_ev.timestamp_us = 100500;
+  direct_ev.kind = 8;
+  direct_ev.payload_tag = 5;
+  direct_ev.name = nve::make_str_slice("onDirectPinch");
+  direct_ev.value = nve::make_f64_value(2.5);
+  assert(bridge.dispatch_direct_events(NveEventBatch{&direct_ev, 1}, /*auto_render=*/true) == 1);
+  assert(mock_app->direct_event_calls == 1);
+  assert(mock_app->last_direct_event_name == "onDirectPinch");
+  assert(bridge.frame_count() == 3);
 
   // 3. Snapshot and restore state
   const auto snap = bridge.snapshot_state();
@@ -756,45 +825,314 @@ void test_rn_component_bridge() {
   bridge.restore_state(
       NveBufferSlice{reinterpret_cast<const uint8_t*>(next_state.data()), next_state.size()},
       /*auto_render=*/true);
-  assert(bridge.frame_count() == 3);
+  assert(bridge.frame_count() == 4);
   const auto snap2 = bridge.snapshot_state();
   assert(snap2.size() == 1 && snap2[0] == '7');
 }
 
 #if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
-// 5. Test real facebook::jsi::Runtime subclass (MockJsiRecorderRuntime) with zero Hermes!
+// 5. Test real facebook::jsi::Runtime subclass (MockJsiRecorderRuntime):
+//    zero-copy BumpArena direct FFI path, binary EventRing path, zero-malloc multi-frame reuse,
+//    post-assignment mutation sync, BigInt, ArrayBuffer, and cyclic object depth guard.
 void test_mock_jsi_recorder_runtime() {
   nve::MockJsiRecorderRuntime rt;
-  facebook::jsi::Object root(rt);
-  root.setProperty(rt, "event", "onSvgLoad");
-  root.setProperty(rt, "width", 128.5);
-  root.setProperty(rt, "animated", true);
-  root.setProperty(rt, "tag", nullptr);
 
-  facebook::jsi::Array pts(rt, 2);
-  pts.setValueAtIndex(rt, 0, 10);
-  pts.setValueAtIndex(rt, 1, 20);
-  root.setProperty(rt, "points", std::move(pts));
+  struct RawBuffer final : public facebook::jsi::MutableBuffer {
+    std::vector<uint8_t> bytes{0xCA, 0xFE, 0xBA, 0xBE};
+    size_t size() const override { return bytes.size(); }
+    uint8_t* data() override { return bytes.data(); }
+  };
 
-  nve::EventRingWriter ring;
-  ring.clear();
-  rt.record_custom_event(ring, 1, 77, 123456, "onSvgLoad", facebook::jsi::Value(rt, root));
+  // (a) Direct arena FFI path + zero-copy pointer identity + BigInt + ArrayBuffer + post-assignment mutation
+  {
+    facebook::jsi::Object root(rt);
+    root.setProperty(rt, "event", "onSvgLoad");
+    root.setProperty(rt, "width", 128.5);
+    root.setProperty(rt, "animated", true);
+    root.setProperty(rt, "tag", nullptr);
+    root.setProperty(rt, "big", facebook::jsi::BigInt::fromInt64(rt, -9007199254740993LL));
+    root.setProperty(rt, "blob", facebook::jsi::ArrayBuffer(rt, std::make_shared<RawBuffer>()));
 
-  const auto& bytes = ring.finalize();
-  std::vector<nve::DecodedEvent> decoded;
-  assert(nve::decode_event_ring(NveBufferSlice{bytes.data(), bytes.size()}, decoded));
-  assert(decoded.size() == 1);
-  assert(decoded[0].kind == nve::EventKind::Custom);
-  assert(decoded[0].node_id == 77);
-  assert(decoded[0].name == "onSvgLoad");
-  const std::string_view json = decoded[0].payload_as_string();
-  assert(json.find("\"event\":\"onSvgLoad\"") != std::string_view::npos);
-  assert(json.find("\"width\":128.5") != std::string_view::npos);
-  assert(json.find("\"animated\":true") != std::string_view::npos);
-  assert(json.find("\"tag\":null") != std::string_view::npos);
-  assert(json.find("\"points\":[10,20]") != std::string_view::npos);
+    facebook::jsi::Array pts(rt, 2);
+    pts.setValueAtIndex(rt, 0, 10.0);
+    pts.setValueAtIndex(rt, 1, 20.0);
+    root.setProperty(rt, "points", pts);
+
+    // Mutate nested object AFTER setting it on `root` to verify materialize_node synchronization!
+    facebook::jsi::Object child(rt);
+    root.setProperty(rt, "nested", child);
+    child.setProperty(rt, "lateKey", "lateVal");
+
+    rt.record_direct_event(1, 77, 123456, "onSvgLoad", facebook::jsi::Value(rt, root));
+
+    bool sink_called = false;
+    const uint32_t rc = rt.dispatch_direct([&](NveEventBatch batch) -> uint32_t {
+      sink_called = true;
+      assert(batch.len == 1);
+      const NveDirectEvent& ev = batch.ptr[0];
+      assert(ev.surface_id == 1 && ev.node_id == 77 && ev.timestamp_us == 123456);
+      assert(ev.kind == 8 && ev.payload_tag == 5);
+      assert(nve::str_slice_view(ev.name) == "onSvgLoad");
+      assert(ev.value.tag == NVE_VAL_MAP);
+
+      auto find_field = [&](std::string_view key) -> const NveValue* {
+        for (size_t i = 0; i < ev.value.data.map_val.len; ++i) {
+          if (nve::str_slice_view(ev.value.data.map_val.ptr[i].key) == key) {
+            return &ev.value.data.map_val.ptr[i].value;
+          }
+        }
+        return nullptr;
+      };
+
+      const NveValue* f_event = find_field("event");
+      assert(f_event && f_event->tag == NVE_VAL_STR &&
+             nve::str_slice_view(f_event->data.str_val) == "onSvgLoad");
+      const NveValue* f_width = find_field("width");
+      assert(f_width && f_width->tag == NVE_VAL_F64 &&
+             std::fabs(f_width->data.f64_val - 128.5) < 1e-9);
+      const NveValue* f_anim = find_field("animated");
+      assert(f_anim && f_anim->tag == NVE_VAL_BOOL && f_anim->data.bool_val == 1);
+      const NveValue* f_tag = find_field("tag");
+      assert(f_tag && f_tag->tag == NVE_VAL_NULL);
+      const NveValue* f_big = find_field("big");
+      assert(f_big && f_big->tag == NVE_VAL_I64 &&
+             f_big->data.i64_val == -9007199254740993LL);
+      const NveValue* f_blob = find_field("blob");
+      assert(f_blob && f_blob->tag == NVE_VAL_BYTES && f_blob->data.bytes_val.len == 4 &&
+             f_blob->data.bytes_val.ptr[0] == 0xCA && f_blob->data.bytes_val.ptr[3] == 0xBE);
+      const NveValue* f_pts = find_field("points");
+      assert(f_pts && f_pts->tag == NVE_VAL_ARRAY && f_pts->data.array_val.len == 2);
+      assert(std::fabs(f_pts->data.array_val.ptr[0].data.f64_val - 10.0) < 1e-9);
+      assert(std::fabs(f_pts->data.array_val.ptr[1].data.f64_val - 20.0) < 1e-9);
+      const NveValue* f_nested = find_field("nested");
+      assert(f_nested && f_nested->tag == NVE_VAL_MAP && f_nested->data.map_val.len == 1);
+      assert(nve::str_slice_view(f_nested->data.map_val.ptr[0].key) == "lateKey");
+      assert(nve::str_slice_view(f_nested->data.map_val.ptr[0].value.data.str_val) == "lateVal");
+      return 1u;
+    });
+    assert(sink_called && rc == 1u);
+
+    // (b) Binary EventRing path -> decode_event_ring -> zero-copy BinValueView
+    nve::EventRingWriter ring;
+    ring.clear();
+    assert(rt.record_custom_event(ring, 1, 77, 123456, "onSvgLoad", facebook::jsi::Value(rt, root)));
+
+    const auto& bytes = ring.finalize();
+    std::vector<nve::DecodedEvent> decoded;
+    assert(nve::decode_event_ring(NveBufferSlice{bytes.data(), bytes.size()}, decoded));
+    assert(decoded.size() == 1);
+    assert(decoded[0].kind == nve::EventKind::Custom);
+    assert(decoded[0].node_id == 77);
+    assert(decoded[0].name == "onSvgLoad");
+
+    const auto view = nve::BinValueView::parse(
+        decoded[0].payload_bytes.data(), decoded[0].payload_bytes.size());
+    assert(view.has_value() && view->tag() == NVE_VAL_MAP);
+    const auto ev_str = view->map_get("event")->as_str();
+    assert(ev_str.has_value() && *ev_str == "onSvgLoad");
+    // Zero-copy pointer identity inside decoded[0].payload_bytes!
+    const auto* p_start = reinterpret_cast<const char*>(decoded[0].payload_bytes.data());
+    const auto* p_end = p_start + decoded[0].payload_bytes.size();
+    assert(ev_str->data() >= p_start && ev_str->data() < p_end);
+    assert(std::fabs(*view->map_get("width")->as_f64() - 128.5) < 1e-9);
+    assert(view->map_get("animated")->as_bool() == true);
+    assert(view->map_get("tag")->is_null());
+    assert(view->map_get("big")->as_i64() == -9007199254740993LL);
+    assert(view->map_get("blob")->as_bytes()->len == 4);
+    assert(view->map_get("points")->array_len() == 2);
+    assert(std::fabs(*view->map_get("points")->array_at(0)->as_f64() - 10.0) < 1e-9);
+    assert(std::fabs(*view->map_get("points")->array_at(1)->as_f64() - 20.0) < 1e-9);
+    assert(view->map_get("nested")->map_get("lateKey")->as_str() == "lateVal");
+  }
+
+  // (c) Cyclic object reference must be bounded safely by NVE_BIN_VALUE_MAX_DEPTH
+  rt.reset_frame();
+  {
+    facebook::jsi::Object cyc(rt);
+    cyc.setProperty(rt, "self", cyc);
+    const NveValue captured = rt.capture_value(facebook::jsi::Value(rt, cyc));
+    assert(captured.tag == NVE_VAL_MAP);
+    std::vector<uint8_t> bin;
+    assert(!nve::encode_bin_value(bin, captured)); // depth > 64 cleanly rejected
+    assert(bin.empty());
+  }
+
+  // (d) 1,200-frame arena reuse test: zero extra slab allocations after frame 1!
+  rt.reset_frame();
+  size_t slabs_after_warmup = 0;
+  for (int frame = 0; frame < 1200; ++frame) {
+    rt.reset_frame();
+    for (int k = 0; k < 8; ++k) {
+      facebook::jsi::Object ev(rt);
+      ev.setProperty(rt, "event", "onGestureUpdate");
+      ev.setProperty(rt, "x", static_cast<double>(frame + k));
+      ev.setProperty(rt, "y", 42.5);
+      ev.setProperty(rt, "active", (k & 1) == 0);
+      facebook::jsi::Array v(rt, 2);
+      v.setValueAtIndex(rt, 0, 1.5);
+      v.setValueAtIndex(rt, 1, -2.5);
+      ev.setProperty(rt, "velocity", std::move(v));
+      rt.record_direct_event(1, static_cast<uint32_t>(10 + k), static_cast<uint64_t>(frame), "onGestureUpdate", facebook::jsi::Value(rt, ev));
+    }
+    assert(rt.direct_event_batch().len == 8);
+    if (frame == 0) {
+      slabs_after_warmup = rt.arena().slab_count();
+    } else {
+      assert(rt.arena().slab_count() == slabs_after_warmup);
+    }
+  }
 }
 #endif
+
+// 5b. Test BumpArena alignment/reuse across 1,500 frames and BinValueView roundtrip + 600+ seeded fuzz corpus.
+void test_bump_arena_and_bin_value_fuzz() {
+  // BumpArena alignment & slab reuse across 1,500 frames
+  {
+    nve::BumpArena arena(2048u);
+    size_t warmup_slabs = 0;
+    for (int frame = 0; frame < 1500; ++frame) {
+      arena.reset();
+      for (size_t align : {size_t{1}, size_t{2}, size_t{4}, size_t{8}, size_t{16}, size_t{32}, size_t{64}}) {
+        void* p = arena.alloc(37u, align);
+        assert(p != nullptr);
+        assert((reinterpret_cast<uintptr_t>(p) & (align - 1u)) == 0u);
+      }
+      // Force crossing slab boundary on frame 0, then verify zero new slabs for frames 1..1499.
+      auto* big = arena.alloc_array<NveMapEntry>(80u);
+      assert(big != nullptr);
+      big[0] = NveMapEntry{arena.copy_str("key"), nve::make_i64_value(frame)};
+      if (frame == 0) {
+        warmup_slabs = arena.slab_count();
+        assert(warmup_slabs >= 2u);
+      } else {
+        assert(arena.slab_count() == warmup_slabs);
+      }
+    }
+  }
+
+  // Roundtrip all 8 NveValueTag variants + nested containers + exact depth boundary (64 ok, 65 fail)
+  std::vector<uint8_t> baseline;
+  {
+    const uint8_t blob[4] = {0x11, 0x22, 0x33, 0x44};
+    const NveValue arr_elems[3] = {
+        nve::make_null_value(),
+        nve::make_bool_value(false),
+        nve::make_i64_value(-1234567890123LL),
+    };
+    const NveMapEntry inner_entries[2] = {
+        {nve::make_str_slice("arr"), nve::make_array_value(arr_elems, 3)},
+        {nve::make_str_slice("bytes"), nve::make_bytes_value(NveBufferSlice{blob, sizeof(blob)})},
+    };
+    const NveMapEntry root_entries[4] = {
+        {nve::make_str_slice("str"), nve::make_str_value("hello-utf8")},
+        {nve::make_str_slice("num"), nve::make_f64_value(3.141592653589793)},
+        {nve::make_str_slice("inner"), nve::make_map_value(inner_entries, 2)},
+        {nve::make_str_slice("flag"), nve::make_bool_value(true)},
+    };
+    const NveValue root = nve::make_map_value(root_entries, 4);
+    assert(nve::encode_bin_value(baseline, root));
+
+    const auto view = nve::BinValueView::parse(baseline.data(), baseline.size());
+    assert(view.has_value() && view->tag() == NVE_VAL_MAP && view->map_len() == 4);
+    assert(view->map_get("str")->as_str() == "hello-utf8");
+    assert(std::fabs(*view->map_get("num")->as_f64() - 3.141592653589793) < 1e-12);
+    assert(view->map_get("flag")->as_bool() == true);
+    const auto inner = view->map_get("inner");
+    assert(inner.has_value() && inner->map_get("arr")->array_at(2)->as_i64() == -1234567890123LL);
+    assert(inner->map_get("bytes")->as_bytes()->len == 4);
+
+    // Depth boundary: 64 ok, 65 rejected
+    auto build_nested = [](uint32_t depth) {
+      std::vector<uint8_t> cur{static_cast<uint8_t>(NVE_VAL_NULL)};
+      for (uint32_t d = 0; d < depth; ++d) {
+        std::vector<uint8_t> next;
+        next.reserve(cur.size() + 9u);
+        next.push_back(static_cast<uint8_t>(NVE_VAL_ARRAY));
+        const uint32_t payload_len = static_cast<uint32_t>(4u + cur.size());
+        const uint32_t count = 1u;
+        next.insert(next.end(), reinterpret_cast<const uint8_t*>(&payload_len),
+                    reinterpret_cast<const uint8_t*>(&payload_len) + 4);
+        next.insert(next.end(), reinterpret_cast<const uint8_t*>(&count),
+                    reinterpret_cast<const uint8_t*>(&count) + 4);
+        next.insert(next.end(), cur.begin(), cur.end());
+        cur = std::move(next);
+      }
+      return cur;
+    };
+    const auto ok64 = build_nested(NVE_BIN_VALUE_MAX_DEPTH);
+    assert(nve::BinValueView::parse(ok64.data(), ok64.size()).has_value());
+    const auto bad65 = build_nested(NVE_BIN_VALUE_MAX_DEPTH + 1u);
+    assert(!nve::BinValueView::parse(bad65.data(), bad65.size()).has_value());
+  }
+
+  // 600+ seeded fuzz corpus for BinValueView::parse (verified under ASan+UBSan)
+  std::mt19937_64 rng(0xB1A7C0DE5EEDCAFEULL);
+  auto rand_u8 = [&]() -> uint8_t { return static_cast<uint8_t>(rng() & 0xFFu); };
+  size_t fuzz_cases = 0;
+
+  // Prefix truncations
+  for (size_t cut = 0; cut < baseline.size(); ++cut) {
+    assert(!nve::BinValueView::parse(baseline.data(), cut).has_value());
+    ++fuzz_cases;
+  }
+  // Trailing byte
+  {
+    std::vector<uint8_t> trailing = baseline;
+    trailing.push_back(0x00);
+    assert(!nve::BinValueView::parse(trailing.data(), trailing.size()).has_value());
+    ++fuzz_cases;
+  }
+  // Invalid bool, invalid tag, invalid UTF-8, oversized counts
+  {
+    const uint8_t bad_bool[2] = {NVE_VAL_BOOL, 2};
+    const uint8_t bad_tag[1] = {99};
+    const uint8_t bad_utf8[8] = {NVE_VAL_STR, 3, 0, 0, 0, 0xFF, 0xFE, 0x80};
+    const uint8_t huge_arr[9] = {NVE_VAL_ARRAY, 4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF};
+    const uint8_t huge_map[9] = {NVE_VAL_MAP, 4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF};
+    assert(!nve::BinValueView::parse(bad_bool, sizeof(bad_bool)).has_value());
+    assert(!nve::BinValueView::parse(bad_tag, sizeof(bad_tag)).has_value());
+    assert(!nve::BinValueView::parse(bad_utf8, sizeof(bad_utf8)).has_value());
+    assert(!nve::BinValueView::parse(huge_arr, sizeof(huge_arr)).has_value());
+    assert(!nve::BinValueView::parse(huge_map, sizeof(huge_map)).has_value());
+    fuzz_cases += 5;
+  }
+  // 300 random buffers
+  for (int i = 0; i < 300; ++i) {
+    const size_t len = static_cast<size_t>(rng() % 513u);
+    std::vector<uint8_t> buf(len);
+    for (auto& b : buf) b = rand_u8();
+    if (const auto parsed = nve::BinValueView::parse(buf.data(), buf.size())) {
+      (void)parsed->as_str();
+      (void)parsed->map_get("str");
+      (void)parsed->array_at(0);
+    }
+    ++fuzz_cases;
+  }
+  // 250 mutated copies of baseline
+  for (int i = 0; i < 250; ++i) {
+    std::vector<uint8_t> mut = baseline;
+    const size_t edits = 1u + static_cast<size_t>(rng() % 6u);
+    for (size_t e = 0; e < edits; ++e) {
+      const size_t mode = rng() % 4u;
+      if (mode == 0 && !mut.empty()) {
+        mut[rng() % mut.size()] ^= static_cast<uint8_t>(1u << (rng() % 8u));
+      } else if (mode == 1 && !mut.empty()) {
+        mut[rng() % mut.size()] = rand_u8();
+      } else if (mode == 2 && mut.size() > 1) {
+        mut.resize(1u + static_cast<size_t>(rng() % (mut.size() - 1u)));
+      } else {
+        mut.push_back(rand_u8());
+      }
+    }
+    if (const auto parsed = nve::BinValueView::parse(mut.data(), mut.size())) {
+      (void)parsed->as_str();
+      (void)parsed->map_get("inner");
+      (void)parsed->array_at(0);
+    }
+    ++fuzz_cases;
+  }
+  assert(fuzz_cases >= 600);
+}
 
 // 6. Test NVE_COMP_TEXT multi-level style inheritance, explicit overrides, reparent reset, and default opaque black.
 void test_text_style_inheritance() {
@@ -1675,12 +2013,14 @@ void test_native_host_session() {
   assert(props_evs[0].name == "onPropsApplied");
   assert(callback_events.size() == 1);
 
-  // Dispatch press -> increments counter to 1 and emits onIncrement
+  // Dispatch press -> increments counter to 1 and emits binary onIncrement
   assert(session.dispatch_press(2, 12.0f, 18.0f) == 1);
   auto press_evs = session.drain_events();
   assert(press_evs.size() == 1);
   assert(press_evs[0].name == "onIncrement");
-  assert(press_evs[0].payload_as_string() == "{\"count\":1}");
+  const auto press_view = nve::BinValueView::parse(
+      press_evs[0].payload_bytes.data(), press_evs[0].payload_bytes.size());
+  assert(press_view.has_value() && press_view->map_get("count")->as_i64() == 1);
   assert(callback_events.size() == 2);
 
   // Resize surface
@@ -1758,6 +2098,7 @@ int main() {
 #if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
   test_mock_jsi_recorder_runtime();
 #endif
+  test_bump_arena_and_bin_value_fuzz();
   test_text_style_inheritance();
   test_text_measurer_callback();
   test_seeded_fuzz_corpus();

@@ -148,6 +148,7 @@ const void *nve_get_interface(uint32_t interface_id) {
       .destroy = &fixture_destroy,
       .render = &fixture_render,
       .dispatch_events = &fixture_dispatch_events,
+      .dispatch_events_direct = NULL,
   };
   static const NveDevApi kDev = {
       .apply_hot_patch = &fixture_apply_hot_patch,

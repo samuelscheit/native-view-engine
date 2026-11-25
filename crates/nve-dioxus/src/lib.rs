@@ -18,7 +18,8 @@ use dioxus_core::{
 };
 use nve_abi::{
     CommandBufferBuilder, ComponentKind, EventMask, EventPayload, FrameId, LayoutProps,
-    NativeEvent, NativeEventKind, NodeId, RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
+    NativeEvent, NativeEventKind, NodeId, NveEventBatchRef, RawPropValue, StyleProps, SurfaceId,
+    ROOT_NODE_ID,
 };
 use nve_components::{apply_typed_attr, resolve_tag};
 use nve_engine::HotPatchMsg;
@@ -685,6 +686,40 @@ impl DioxusSurface {
                 (NativeEventKind::TextChange, EventPayload::Text(value)) => {
                     let data: Rc<dyn Any> = Rc::new(elements::TextEventData {
                         value: value.clone(),
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event("change", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                _ => {}
+            }
+        }
+        handled
+    }
+
+    /// Routes zero-copy direct FFI events (`NveEventBatchRef`) straight into Dioxus handlers
+    /// without decoding an `EventRing`.
+    pub fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        let mut handled = false;
+        for ev in events.iter() {
+            let Some(el_id) = self.writer.element_id_of(ev.node_id()) else {
+                continue;
+            };
+            match (ev.kind(), ev.payload_tag()) {
+                (Some(NativeEventKind::Press), 1) => {
+                    let data: Rc<dyn Any> = Rc::new(elements::PressEventData {
+                        x: ev.x(),
+                        y: ev.y(),
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event("press", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::TextChange), 3) => {
+                    let data: Rc<dyn Any> = Rc::new(elements::TextEventData {
+                        value: ev.text().to_owned(),
                     });
                     self.vdom
                         .runtime()

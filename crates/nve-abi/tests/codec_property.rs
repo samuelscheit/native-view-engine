@@ -825,3 +825,249 @@ fn ffi_slice_and_value_helpers_handle_edge_cases() {
     assert_eq!(loose.max_w, 393.0);
     assert_eq!(loose.max_h, 852.0);
 }
+
+#[test]
+fn direct_ffi_value_and_event_zero_copy_pointer_identity() {
+    use nve_abi::{
+        NveDirectEvent, NveEventBatch, NveEventBatchRef, NveMapEntry, NvePropsRef, NveValue,
+        NveValueTag,
+    };
+
+    let name_src = "onGestureUpdate";
+    let str_src = "pan-active";
+    let bytes_src: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+    let vel_elems = [NveValue::f64(12.5), NveValue::f64(-4.25)];
+    let map_entries = [
+        NveMapEntry::new("state", NveValue::from_str(str_src)),
+        NveMapEntry::new("count", NveValue::i64(-9_007_199_254_740_991)),
+        NveMapEntry::new("x", NveValue::f64(42.75)),
+        NveMapEntry::new("active", NveValue::bool(true)),
+        NveMapEntry::new("nothing", NveValue::null()),
+        NveMapEntry::new("raw", NveValue::from_bytes(&bytes_src)),
+        NveMapEntry::new("velocity", NveValue::array(&vel_elems)),
+    ];
+    let root_val = NveValue::map(&map_entries);
+    let events = [
+        NveDirectEvent::press(1, 10, 1000, 12.5, 34.5),
+        NveDirectEvent::text_change(1, 11, 2000, str_src),
+        NveDirectEvent::custom(1, 12, 3000, name_src, root_val),
+    ];
+
+    let batch = NveEventBatch::from_slice(&events);
+    let batch_ref = unsafe { NveEventBatchRef::from_raw(batch) };
+    assert_eq!(batch_ref.len(), 3);
+
+    // Event 0: Press
+    let e0 = batch_ref.get(0).unwrap();
+    assert_eq!(e0.kind(), Some(NativeEventKind::Press));
+    assert_eq!(e0.x(), 12.5);
+    assert_eq!(e0.y(), 34.5);
+
+    // Event 1: TextChange borrows directly without copying
+    let e1 = batch_ref.get(1).unwrap();
+    assert_eq!(e1.kind(), Some(NativeEventKind::TextChange));
+    assert_eq!(e1.text(), str_src);
+    assert_eq!(e1.text().as_ptr(), str_src.as_ptr());
+
+    // Event 2: Custom structured value borrows directly with zero copy
+    let e2 = batch_ref.get(2).unwrap();
+    assert_eq!(e2.kind(), Some(NativeEventKind::Custom));
+    assert_eq!(e2.name(), name_src);
+    assert_eq!(e2.name().as_ptr(), name_src.as_ptr());
+
+    let val = e2.value();
+    assert_eq!(val.tag(), Some(NveValueTag::Map));
+    assert_eq!(val.get("state").unwrap().as_str(), Some(str_src));
+    assert_eq!(
+        val.get("state").unwrap().as_str().unwrap().as_ptr(),
+        str_src.as_ptr()
+    );
+    assert_eq!(
+        val.get("count").unwrap().as_i64(),
+        Some(-9_007_199_254_740_991)
+    );
+    assert_eq!(val.get("x").unwrap().as_f64(), Some(42.75));
+    assert_eq!(val.get("active").unwrap().as_bool(), Some(true));
+    assert!(val.get("nothing").unwrap().is_null());
+    let raw = val.get("raw").unwrap().as_bytes().unwrap();
+    assert_eq!(raw, &bytes_src);
+    assert_eq!(raw.as_ptr(), bytes_src.as_ptr());
+    let vel = val.get("velocity").unwrap().as_array().unwrap();
+    assert_eq!(vel.len(), 2);
+    assert_eq!(vel.get(0).unwrap().as_f64(), Some(12.5));
+    assert_eq!(vel.get(1).unwrap().as_f64(), Some(-4.25));
+    assert!(val.get("missing").is_none());
+
+    // Direct props slice view
+    let props = unsafe { NvePropsRef::from_raw_parts(map_entries.as_ptr(), map_entries.len() as u32) };
+    assert_eq!(props.len(), map_entries.len());
+    assert_eq!(props.get("state").unwrap().as_str().unwrap().as_ptr(), str_src.as_ptr());
+    assert_eq!(props.iter().count(), map_entries.len());
+}
+
+#[test]
+fn bin_value_roundtrip_depth_guard_and_zero_copy_view() {
+    use nve_abi::{
+        encode_bin_value_to_vec, BinValueView, NveMapEntry, NveValue, NveValueTag,
+        NVE_BIN_VALUE_MAX_DEPTH,
+    };
+
+    let nested_arr = [
+        NveValue::null(),
+        NveValue::bool(false),
+        NveValue::i64(i64::MIN),
+        NveValue::i64(i64::MAX),
+        NveValue::f64(3.141592653589793),
+        NveValue::from_str("hello 🚀"),
+        NveValue::from_bytes(&[1, 2, 3, 4, 5]),
+    ];
+    let inner_entries = [
+        NveMapEntry::new("nested", NveValue::array(&nested_arr)),
+        NveMapEntry::new("empty_arr", NveValue::array(&[])),
+        NveMapEntry::new("empty_map", NveValue::map(&[])),
+    ];
+    let root_entries = [
+        NveMapEntry::new("event", NveValue::from_str("onGestureUpdate")),
+        NveMapEntry::new("inner", NveValue::map(&inner_entries)),
+        NveMapEntry::new("after_nested", NveValue::i64(777)),
+    ];
+    let root = NveValue::map(&root_entries);
+    let encoded = encode_bin_value_to_vec(unsafe { root.as_ref() }).unwrap();
+
+    let view = BinValueView::parse(&encoded).unwrap();
+    assert_eq!(view.tag(), NveValueTag::Map);
+    assert_eq!(view.map_len(), Some(3));
+
+    // Zero-copy pointer identity: borrowed str slices point directly inside `encoded`.
+    let ev_str = view.get("event").unwrap().as_str().unwrap();
+    assert_eq!(ev_str, "onGestureUpdate");
+    let buf_start = encoded.as_ptr() as usize;
+    let buf_end = buf_start + encoded.len();
+    assert!(ev_str.as_ptr() as usize >= buf_start && (ev_str.as_ptr() as usize) < buf_end);
+
+    // O(1) skip over nested map lands cleanly on `after_nested`.
+    assert_eq!(view.get("after_nested").unwrap().as_i64(), Some(777));
+
+    let inner = view.get("inner").unwrap();
+    let arr = inner.get("nested").unwrap();
+    assert_eq!(arr.array_len(), Some(7));
+    assert!(arr.array_at(0).unwrap().is_null());
+    assert_eq!(arr.array_at(1).unwrap().as_bool(), Some(false));
+    assert_eq!(arr.array_at(2).unwrap().as_i64(), Some(i64::MIN));
+    assert_eq!(arr.array_at(3).unwrap().as_i64(), Some(i64::MAX));
+    assert_eq!(arr.array_at(4).unwrap().as_f64(), Some(3.141592653589793));
+    assert_eq!(arr.array_at(5).unwrap().as_str(), Some("hello 🚀"));
+    assert_eq!(arr.array_at(6).unwrap().as_bytes(), Some(&[1, 2, 3, 4, 5][..]));
+    assert!(arr.array_at(7).is_none());
+    assert_eq!(inner.get("empty_arr").unwrap().array_len(), Some(0));
+    assert_eq!(inner.get("empty_map").unwrap().map_len(), Some(0));
+
+    // Exact depth boundary: depth 64 succeeds, depth 65 fails with MaxDepthExceeded.
+    let build_nested_arrays = |depth: usize| -> Vec<u8> {
+        let mut cur = vec![NveValueTag::Null as u8];
+        for _ in 0..depth {
+            let mut next = Vec::with_capacity(cur.len() + 9);
+            next.push(NveValueTag::Array as u8);
+            next.extend_from_slice(&((4 + cur.len()) as u32).to_le_bytes());
+            next.extend_from_slice(&1u32.to_le_bytes());
+            next.extend_from_slice(&cur);
+            cur = next;
+        }
+        cur
+    };
+
+    let depth_ok = build_nested_arrays(NVE_BIN_VALUE_MAX_DEPTH);
+    assert!(BinValueView::parse(&depth_ok).is_ok());
+
+    let depth_too_deep = build_nested_arrays(NVE_BIN_VALUE_MAX_DEPTH + 1);
+    assert_eq!(
+        BinValueView::parse(&depth_too_deep),
+        Err(DecodeError::MaxDepthExceeded)
+    );
+}
+
+#[test]
+fn bin_value_seeded_fuzz_corpus_rejects_corrupt_buffers_without_panics() {
+    use nve_abi::{encode_bin_value_to_vec, BinValueView, NveMapEntry, NveValue};
+
+    let arr = [NveValue::i64(1), NveValue::from_str("abc"), NveValue::bool(true)];
+    let entries = [
+        NveMapEntry::new("k1", NveValue::array(&arr)),
+        NveMapEntry::new("k2", NveValue::f64(99.5)),
+        NveMapEntry::new("k3", NveValue::from_bytes(&[7, 8, 9])),
+    ];
+    let root_map = NveValue::map(&entries);
+    let baseline = encode_bin_value_to_vec(unsafe { root_map.as_ref() }).unwrap();
+
+    let mut cases = 0usize;
+
+    // 1. Every prefix truncation must fail cleanly.
+    for cut in 0..baseline.len() {
+        assert!(BinValueView::parse(&baseline[..cut]).is_err());
+        cases += 1;
+    }
+
+    // 2. Trailing byte must fail with TrailingBytes.
+    let mut trailing = baseline.clone();
+    trailing.push(0x00);
+    assert_eq!(BinValueView::parse(&trailing), Err(DecodeError::TrailingBytes(1)));
+    cases += 1;
+
+    // 3. Invalid bool byte, invalid tag, invalid UTF-8 string, oversized array/map counts.
+    assert_eq!(BinValueView::parse(&[1, 2]), Err(DecodeError::InvalidEnum("NveBinBool", 2)));
+    assert_eq!(BinValueView::parse(&[99]), Err(DecodeError::InvalidEnum("NveValueTag", 99)));
+    assert_eq!(
+        BinValueView::parse(&[4, 3, 0, 0, 0, 0xFF, 0xFE, 0x80]),
+        Err(DecodeError::InvalidUtf8)
+    );
+    assert_eq!(
+        BinValueView::parse(&[6, 4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]),
+        Err(DecodeError::Truncated)
+    );
+    assert_eq!(
+        BinValueView::parse(&[7, 4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]),
+        Err(DecodeError::Truncated)
+    );
+    cases += 5;
+
+    // 4. 550 seeded random & mutated buffers must never panic or OOM.
+    let mut rng = XorShift64::new(0xB1A7_C0DE_5EED_CAFE);
+    for _ in 0..300 {
+        let len = rng.next_usize(513);
+        let buf: Vec<u8> = (0..len).map(|_| rng.next_u8()).collect();
+        let _ = BinValueView::parse(&buf);
+        cases += 1;
+    }
+    for _ in 0..250 {
+        let mut mut_buf = baseline.clone();
+        let edits = 1 + rng.next_usize(6);
+        for _ in 0..edits {
+            match rng.next_usize(4) {
+                0 if !mut_buf.is_empty() => {
+                    let idx = rng.next_usize(mut_buf.len());
+                    mut_buf[idx] ^= 1u8 << rng.next_usize(8);
+                }
+                1 if !mut_buf.is_empty() => {
+                    let idx = rng.next_usize(mut_buf.len());
+                    mut_buf[idx] = rng.next_u8();
+                }
+                2 if mut_buf.len() > 1 => {
+                    let cut = 1 + rng.next_usize(mut_buf.len() - 1);
+                    mut_buf.truncate(cut);
+                }
+                _ => {
+                    mut_buf.push(rng.next_u8());
+                }
+            }
+        }
+        if let Ok(view) = BinValueView::parse(&mut_buf) {
+            // Exercise accessors on any accidentally valid mutation.
+            let _ = view.as_str();
+            let _ = view.as_bytes();
+            let _ = view.get("k1");
+            let _ = view.array_at(0);
+        }
+        cases += 1;
+    }
+    assert!(cases >= 600);
+}
