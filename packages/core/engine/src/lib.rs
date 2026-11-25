@@ -2,10 +2,13 @@
 //! 6-stage `FrameProfiler` with Perfetto/Chrome trace export, and 2-tier hot-reload spine.
 
 pub mod app;
+pub mod frame_arena;
+pub mod hash;
 pub mod hotreload;
 pub mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
+pub mod mmap_arena;
 pub mod profiler;
 pub mod snapshot;
 pub mod snapshot_wal;
@@ -14,13 +17,19 @@ pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
 
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
+pub use frame_arena::{FrameArena, FRAME_ARENA_BASE_ALIGN};
+pub use hash::{xxh64, Xxh64Hasher};
 pub use hotreload::HotPatchMsg;
 pub use layout::{
     BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, LayoutEngine, TextMeasurer,
 };
+pub use mmap_arena::{
+    ArenaError, ArenaHeaderSlot, ArenaPod, MmapOffsetArena, OffsetPtr, OffsetSlice, OffsetStr,
+    TrustedUtf8Str,
+};
 pub use profiler::{FrameProfiler, FrameTiming};
 pub use snapshot::{
-    encode_snapshot, fnv1a_64, write_snapshot_atomic, MmapSnapshot, RelocatableStateArena,
+    encode_snapshot, write_snapshot_atomic, MmapSnapshot, RelocatableStateArena,
     RelocatableTableView, RelocatableValue, SnapshotError, SnapshotHeader, NVE_SNAP_FORMAT_VERSION,
     NVE_SNAP_MAGIC, SNAPSHOT_HEADER_SIZE,
 };

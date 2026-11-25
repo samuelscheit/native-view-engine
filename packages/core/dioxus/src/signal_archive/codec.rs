@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use nve_abi::BinValueView;
-use nve_engine::snapshot::fnv1a_64_update;
+use nve_engine::hash::Xxh64Hasher;
 use nve_engine::{MmapSnapshot, SnapshotWal, WalRecordKind};
 
 use super::{
-    signal_slot_id, SignalArchiveError, SignalValue, SignalValueTag, FNV1A_64_OFFSET_BASIS,
-    NVE_SIGNAL_ARCHIVE_MAGIC, NVE_SIGNAL_ARCHIVE_VERSION, NVE_SIGNAL_DELTA_MAGIC,
+    signal_slot_id, SignalArchiveError, SignalValue, SignalValueTag, NVE_SIGNAL_ARCHIVE_MAGIC,
+    NVE_SIGNAL_ARCHIVE_VERSION, NVE_SIGNAL_DELTA_MAGIC,
 };
 
 pub(super) const HEADER_SIZE: usize = 28;
@@ -20,8 +20,10 @@ const DELTA_OP_REMOVE: u8 = 2;
 
 #[inline]
 fn compute_container_checksum(bytes: &[u8]) -> u64 {
-    let h = fnv1a_64_update(FNV1A_64_OFFSET_BASIS, &bytes[0..CHECKSUM_OFFSET]);
-    fnv1a_64_update(h, &bytes[CHECKSUM_END..])
+    let mut h = Xxh64Hasher::new(0);
+    h.update(&bytes[0..CHECKSUM_OFFSET]);
+    h.update(&bytes[CHECKSUM_END..]);
+    h.finish()
 }
 
 #[inline]

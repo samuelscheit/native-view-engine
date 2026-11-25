@@ -253,7 +253,7 @@ impl SnapshotWal {
                 seq: rec.seq,
                 kind: rec.kind,
                 payload: rec.payload.to_vec(),
-                checksum_fnv64: rec.checksum_fnv64,
+                checksum_xxh64: rec.checksum_xxh64,
             });
             Ok(())
         })?;

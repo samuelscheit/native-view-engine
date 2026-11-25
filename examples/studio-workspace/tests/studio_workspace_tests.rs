@@ -15,7 +15,8 @@ use nve_backend_web::WebBackend;
 use nve_components::{CanvasOp, DrawListDecoder, ImageResizeMode, NVE_DRAW_MAGIC};
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
-use nve_engine::snapshot::{fnv1a_64, write_snapshot_atomic, MmapSnapshot};
+use nve_engine::snapshot::{write_snapshot_atomic, MmapSnapshot};
+use nve_engine::xxh64;
 use nve_engine::{
     DynLayoutEngine, HotPatchMsg, LayoutEngine, LayoutRect, NveApp, RenderBackend, TextMeasurer,
     Viewport, WalDurability, WAL_HEADER_SIZE,
@@ -1920,7 +1921,7 @@ fn nws1_v2_fnv1a64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
     // Forged v1 version with recomputed valid FNV-1a64 must still be rejected (no v1 shims).
     let mut forged_v1 = encoded.clone();
     forged_v1[4..6].copy_from_slice(&1u16.to_le_bytes());
-    let crc = fnv1a_64(&forged_v1[..len - 8]);
+    let crc = xxh64(&forged_v1[..len - 8], 0);
     forged_v1[len - 8..].copy_from_slice(&crc.to_le_bytes());
     assert!(
         WorkspaceState::from_bytes(&forged_v1).is_none(),

@@ -90,7 +90,7 @@ fn incremental_delta_folding_and_compaction_equivalence() {
     let base_bytes = base.encode().unwrap();
     let snap_hdr =
         write_snapshot_atomic(&snap_path, 2, 0, b"FRAME0_BASE", &base_bytes, b"").unwrap();
-    let mut wal = SnapshotWal::open_or_create(&wal_path, 2, snap_hdr.checksum_fnv64).unwrap();
+    let mut wal = SnapshotWal::open_or_create(&wal_path, 2, snap_hdr.checksum_xxh64).unwrap();
 
     // Delta 1: mutate count, add filter.
     let mut step1 = base.clone();

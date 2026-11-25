@@ -1,6 +1,8 @@
 use std::fmt;
 use std::io;
 
+use crate::hash::Xxh64Hasher;
+
 /// 8-byte file magic identifying an NVE instant-boot snapshot container.
 pub const NVE_SNAP_MAGIC: [u8; 8] = *b"NVE_SNAP";
 
@@ -13,28 +15,9 @@ pub const SNAPSHOT_HEADER_SIZE: usize = 80;
 /// Byte alignment enforced for every payload section offset.
 pub const SNAPSHOT_SECTION_ALIGN: usize = 8;
 
-/// Offset of the 8-byte `checksum_fnv64` field inside the header.
+/// Offset of the 8-byte `checksum_xxh64` field inside the header.
 pub(super) const CHECKSUM_FIELD_OFFSET: usize = 24;
 pub(super) const CHECKSUM_FIELD_END: usize = 32;
-
-const FNV1A_64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_64_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// Computes FNV-1a 64-bit hash over `bytes`.
-#[inline]
-pub fn fnv1a_64(bytes: &[u8]) -> u64 {
-    fnv1a_64_update(FNV1A_64_OFFSET_BASIS, bytes)
-}
-
-/// Continues an FNV-1a 64-bit hash with additional `bytes`.
-#[inline]
-pub fn fnv1a_64_update(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(FNV1A_64_PRIME);
-    }
-    hash
-}
 
 #[inline]
 pub(super) fn align_up_8(n: usize) -> usize {
@@ -111,7 +94,7 @@ impl fmt::Display for SnapshotError {
             Self::ChecksumMismatch { expected, actual } => {
                 write!(
                     f,
-                    "snapshot FNV-1a checksum mismatch: expected {expected:#018x}, computed {actual:#018x}"
+                    "snapshot XXH64 checksum mismatch: expected {expected:#018x}, computed {actual:#018x}"
                 )
             }
             Self::UnalignedSection { section, offset } => {
@@ -157,7 +140,7 @@ pub struct SnapshotHeader {
     pub format_version: u32,
     pub app_schema_version: u32,
     pub flags: u32,
-    pub checksum_fnv64: u64,
+    pub checksum_xxh64: u64,
     pub frame0_offset: u64,
     pub frame0_len: u64,
     pub state_offset: u64,
@@ -188,7 +171,7 @@ impl SnapshotHeader {
         if reserved != 0 {
             return Err(SnapshotError::InvalidReservedHeader(reserved));
         }
-        let checksum_fnv64 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+        let checksum_xxh64 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
         let frame0_offset = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
         let frame0_len = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
         let state_offset = u64::from_le_bytes(bytes[48..56].try_into().unwrap());
@@ -201,7 +184,7 @@ impl SnapshotHeader {
             format_version,
             app_schema_version,
             flags,
-            checksum_fnv64,
+            checksum_xxh64,
             frame0_offset,
             frame0_len,
             state_offset,
@@ -278,9 +261,11 @@ impl SnapshotHeader {
     }
 }
 
-/// Computes the canonical container checksum over the header prefix (`0..24`),
+/// Computes the canonical container **XXH64** checksum over the header prefix (`0..24`),
 /// header tail (`32..80`), and all payload + padding bytes (`80..`).
 pub(super) fn compute_snapshot_checksum(bytes: &[u8]) -> u64 {
-    let h = fnv1a_64_update(FNV1A_64_OFFSET_BASIS, &bytes[0..CHECKSUM_FIELD_OFFSET]);
-    fnv1a_64_update(h, &bytes[CHECKSUM_FIELD_END..])
+    let mut h = Xxh64Hasher::new(0);
+    h.update(&bytes[0..CHECKSUM_FIELD_OFFSET]);
+    h.update(&bytes[CHECKSUM_FIELD_END..]);
+    h.finish()
 }

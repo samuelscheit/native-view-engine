@@ -236,7 +236,7 @@ fn threshold_compaction_roundtrips_mmap_snapshot_and_rotates_wal() {
     .unwrap();
 
     let mut wal =
-        SnapshotWal::open_or_create(&wal_path, 5, initial_snap.checksum_fnv64).unwrap();
+        SnapshotWal::open_or_create(&wal_path, 5, initial_snap.checksum_xxh64).unwrap();
     assert!(!wal.should_compact(512, 4));
 
     for i in 1..=4i64 {
@@ -271,19 +271,19 @@ fn threshold_compaction_roundtrips_mmap_snapshot_and_rotates_wal() {
     )
     .unwrap();
 
-    assert_ne!(new_header.checksum_fnv64, initial_snap.checksum_fnv64);
+    assert_ne!(new_header.checksum_xxh64, initial_snap.checksum_xxh64);
     assert_eq!(rotated_wal.record_count(), 0);
     assert_eq!(rotated_wal.next_seq(), 1);
     assert_eq!(rotated_wal.file_len(), WAL_HEADER_SIZE as u64);
     assert_eq!(
         rotated_wal.header().base_snapshot_checksum,
-        new_header.checksum_fnv64
+        new_header.checksum_xxh64
     );
     assert!(!rotated_wal.should_compact(512, 4));
 
     // MmapSnapshot::open must read the compacted snapshot with zero errors.
     let mapped = MmapSnapshot::open_with_schema(&snap_path, 5).unwrap();
-    assert_eq!(mapped.checksum_fnv64(), new_header.checksum_fnv64);
+    assert_eq!(mapped.checksum_xxh64(), new_header.checksum_xxh64);
     assert_eq!(mapped.frame0_command_buffer(), b"FRAME0_V2_COMPACTED");
     assert_eq!(mapped.meta_bytes(), b"meta-v2");
     let table = mapped.state_table().unwrap();
@@ -309,7 +309,7 @@ fn thousand_delta_append_replay_and_compact_performance() {
     let initial_header =
         write_snapshot_atomic(&snap_path, 1, 0, b"FRAME0_INIT", b"state0", b"").unwrap();
     let mut wal =
-        SnapshotWal::open_or_create(&wal_path, 1, initial_header.checksum_fnv64).unwrap();
+        SnapshotWal::open_or_create(&wal_path, 1, initial_header.checksum_xxh64).unwrap();
 
     let t_append = Instant::now();
     for i in 0..1_000u64 {
@@ -349,7 +349,7 @@ fn thousand_delta_append_replay_and_compact_performance() {
 
     assert_eq!(wal.record_count(), 0);
     assert_eq!(wal.file_len(), WAL_HEADER_SIZE as u64);
-    assert_eq!(wal.header().base_snapshot_checksum, new_header.checksum_fnv64);
+    assert_eq!(wal.header().base_snapshot_checksum, new_header.checksum_xxh64);
 
     let mapped = MmapSnapshot::open_with_schema(&snap_path, 1).unwrap();
     assert_eq!(mapped.state_bytes(), &sum.to_le_bytes());

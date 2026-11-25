@@ -1,7 +1,7 @@
 //! Compact zero-JSON little-endian binary codec (`NWS1` v2) for [`WorkspaceState`]
-//! with trailing FNV-1a64 integrity checksum for Tier-2 hot-swaps, `MmapSnapshot`, and `.nvewal`.
+//! with trailing XXH64 integrity checksum for Tier-2 hot-swaps, `MmapSnapshot`, and `.nvewal`.
 
-use nve_engine::fnv1a_64;
+use nve_engine::xxh64;
 use nve_router::Routable;
 use nve_system_env::{ColorScheme, ContrastLevel, LocaleSnapshot, TextDirection, ThemeSnapshot};
 
@@ -372,20 +372,20 @@ impl WorkspaceState {
             None => w.push_u8(0),
         }
 
-        let checksum = fnv1a_64(&w.buf);
+        let checksum = xxh64(&w.buf, 0);
         w.push_u64(checksum);
         w.buf
     }
 
     /// Decodes a compact binary `NWS1` v2 snapshot back into [`WorkspaceState`],
-    /// strictly verifying the trailing FNV-1a64 checksum and rejecting v1 or corrupt payloads.
+    /// strictly verifying the trailing XXH64 checksum and rejecting v1 or corrupt payloads.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < HEADER_LEN + CHECKSUM_LEN {
             return None;
         }
         let (payload, checksum_tail) = bytes.split_at(bytes.len() - CHECKSUM_LEN);
         let expected_checksum = u64::from_le_bytes(checksum_tail.try_into().ok()?);
-        if fnv1a_64(payload) != expected_checksum {
+        if xxh64(payload, 0) != expected_checksum {
             return None;
         }
 
@@ -553,7 +553,7 @@ mod tests {
         let mut v1_forged = bytes.clone();
         v1_forged[4..6].copy_from_slice(&1u16.to_le_bytes());
         let len = v1_forged.len();
-        let forged_crc = fnv1a_64(&v1_forged[..len - 8]);
+        let forged_crc = xxh64(&v1_forged[..len - 8], 0);
         v1_forged[len - 8..].copy_from_slice(&forged_crc.to_le_bytes());
         assert!(WorkspaceState::from_bytes(&v1_forged).is_none());
 

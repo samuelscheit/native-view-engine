@@ -14,7 +14,7 @@
 //! - `kind: u8` (`1 = StateDelta`, `2 = Frame0Delta`, `3 = Checkpoint`)
 //! - `payload_len: u32`
 //! - `payload_bytes: [u8; payload_len]`
-//! - `checksum_fnv64: u64` (FNV-1a 64-bit over `seq || kind || payload_len || payload_bytes`)
+//! - `checksum_xxh64: u64` (XXH64 over `seq || kind || payload_len || payload_bytes`)
 //!
 //! # Crash Recovery & Integrity Invariants
 //!

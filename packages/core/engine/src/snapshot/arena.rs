@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use super::format::{fnv1a_64, SnapshotError};
+use crate::hash::xxh64;
+
+use super::format::SnapshotError;
 
 /// Magic identifying a relocatable offset-indexed state table (`NVERELOC`).
 pub const RELOCATABLE_ARENA_MAGIC: [u8; 8] = *b"NVERELOC";
@@ -86,12 +88,12 @@ impl RelocatableStateArena {
     }
 
     /// Serializes all entries into a compact, deterministic, pointer-free binary buffer sorted by
-    /// `(fnv1a_64(key), key)` for `O(log N)` zero-allocation binary-search lookup.
+    /// `(xxh64(key, 0), key)` for `O(log N)` zero-allocation binary-search lookup.
     pub fn finish(&self) -> Vec<u8> {
         let mut sorted: Vec<(u64, &str, &OwnedValue)> = self
             .entries
             .iter()
-            .map(|(k, v)| (fnv1a_64(k.as_bytes()), k.as_str(), v))
+            .map(|(k, v)| (xxh64(k.as_bytes(), 0), k.as_str(), v))
             .collect();
         sorted.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.as_bytes().cmp(b.1.as_bytes())));
 
@@ -239,7 +241,7 @@ impl<'a> RelocatableTableView<'a> {
             let _ = std::str::from_utf8(key_bytes).map_err(|_| {
                 SnapshotError::InvalidRelocatableArena("slot key is not valid UTF-8")
             })?;
-            if fnv1a_64(key_bytes) != slot.key_hash {
+            if xxh64(key_bytes, 0) != slot.key_hash {
                 return Err(SnapshotError::InvalidRelocatableArena(
                     "slot key hash mismatch",
                 ));
@@ -324,7 +326,7 @@ impl<'a> RelocatableTableView<'a> {
 
     fn find_slot(&self, key: &str) -> Option<ArenaSlot> {
         let key_bytes = key.as_bytes();
-        let target_hash = fnv1a_64(key_bytes);
+        let target_hash = xxh64(key_bytes, 0);
         let mut lo = 0usize;
         let mut hi = self.entry_count;
 

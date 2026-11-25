@@ -2,12 +2,12 @@
 //!
 //! Stores a flat `#[repr(C)]` relocatable layout directly readable from `mmap` with zero
 //! allocations and zero deserialization:
-//! - [`RelocHeader`] (48 bytes, 8-byte aligned, FNV-1a 64-bit checksum)
+//! - [`RelocHeader`] (48 bytes, 8-byte aligned, XXH64 checksum)
 //! - [`RelocSlice<TaskPod>`] (contiguous 64-byte cache-line-aligned `TaskPod` slab)
 //! - UTF-8 string pool addressed via [`RelocStr`] `(offset, len)` pairs
 //!
 //! Supports three explicit cold-load validation modes:
-//! - [`VerifyMode::Full`]: Untrusted validation (header + full FNV-1a checksum + every
+//! - [`VerifyMode::Full`]: Untrusted validation (header + full XXH64 checksum + every
 //!   `TaskPod`'s `RelocStr` bounds and UTF-8 validity).
 //! - [`VerifyMode::HeaderOnly`]: Trusted local `mmap` O(1) header + section bounds/alignment check
 //!   without faulting payload pages.
@@ -19,9 +19,9 @@ use std::marker::PhantomData;
 use std::mem::{align_of, offset_of, size_of};
 use std::path::Path;
 
-use nve_engine::fnv1a_64;
+use nve_engine::hash::Xxh64Hasher;
+use nve_engine::mmap_arena::{write_file_bytes, ReadOnlyMmap};
 
-use super::os_mmap::{write_file_bytes, ReadOnlyMmap};
 use super::{fold_task_fields, OwnedTask};
 
 pub const RELOC_MAGIC: [u8; 8] = *b"NVERELOC";
@@ -30,7 +30,7 @@ pub const RELOC_VERSION: u32 = 1;
 /// Validation tier for cold-loading an `NVERELOC` zero-copy buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyMode {
-    /// Untrusted validation: header, alignment, FNV-1a checksum, and every string slice's UTF-8.
+    /// Untrusted validation: header, alignment, XXH64 checksum, and every string slice's UTF-8.
     Full,
     /// Trusted local `mmap`: O(1) header, alignment, and section bounds check only.
     HeaderOnly,
@@ -149,7 +149,7 @@ pub struct RelocHeader {
     pub version: u32,
     pub flags: u32,
     pub total_bytes: u64,
-    pub checksum_fnv64: u64,
+    pub checksum_xxh64: u64,
     pub tasks: RelocSlice<TaskPod>,
     pub string_pool_offset: u32,
     pub string_pool_len: u32,
@@ -180,7 +180,7 @@ const _: () = {
     assert!(offset_of!(RelocHeader, version) == 8);
     assert!(offset_of!(RelocHeader, flags) == 12);
     assert!(offset_of!(RelocHeader, total_bytes) == 16);
-    assert!(offset_of!(RelocHeader, checksum_fnv64) == 24);
+    assert!(offset_of!(RelocHeader, checksum_xxh64) == 24);
     assert!(offset_of!(RelocHeader, tasks) == 32);
     assert!(offset_of!(RelocHeader, string_pool_offset) == 40);
     assert!(offset_of!(RelocHeader, string_pool_len) == 44);
@@ -198,10 +198,11 @@ fn align_up(value: usize, align: usize) -> Result<usize, RelocError> {
 
 #[inline]
 pub(crate) fn compute_reloc_checksum(bytes: &[u8]) -> u64 {
-    // Hash header[0..24] + header[32..48] + body[48..] (skipping checksum_fnv64 at 24..32).
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    let h1 = nve_engine::snapshot::fnv1a_64_update(OFFSET_BASIS, &bytes[0..24]);
-    nve_engine::snapshot::fnv1a_64_update(h1, &bytes[32..])
+    // Hash header[0..24] + header[32..48] + body[48..] (skipping checksum_xxh64 at 24..32).
+    let mut h = Xxh64Hasher::new(0);
+    h.update(&bytes[0..24]);
+    h.update(&bytes[32..]);
+    h.finish()
 }
 
 /// Builds an 8-byte aligned `NVERELOC` binary buffer from owned Studio Workspace tasks.
@@ -294,7 +295,7 @@ pub fn build_reloc_workspace(tasks: &[OwnedTask]) -> Result<Vec<u8>, RelocError>
         version: RELOC_VERSION,
         flags: 0,
         total_bytes: total_bytes as u64,
-        checksum_fnv64: 0,
+        checksum_xxh64: 0,
         tasks: RelocSlice::new(tasks_offset_u32, tasks_len_u32),
         string_pool_offset: pool_offset_u32,
         string_pool_len: pool_len_u32,
@@ -309,10 +310,8 @@ pub fn build_reloc_workspace(tasks: &[OwnedTask]) -> Result<Vec<u8>, RelocError>
         );
     }
 
-    header.checksum_fnv64 = compute_reloc_checksum(&buf);
-    buf[24..32].copy_from_slice(&header.checksum_fnv64.to_le_bytes());
-
-    let _ = fnv1a_64; // keep parity with nve-engine FNV-1a parameters
+    header.checksum_xxh64 = compute_reloc_checksum(&buf);
+    buf[24..32].copy_from_slice(&header.checksum_xxh64.to_le_bytes());
     Ok(buf)
 }
 
@@ -347,9 +346,9 @@ impl<'a> RelocWorkspaceView<'a> {
             VerifyMode::Full => {
                 let mut view = Self::from_bytes_header_only(bytes)?;
                 let actual = compute_reloc_checksum(bytes);
-                if actual != view.header.checksum_fnv64 {
+                if actual != view.header.checksum_xxh64 {
                     return Err(RelocError::ChecksumMismatch {
-                        expected: view.header.checksum_fnv64,
+                        expected: view.header.checksum_xxh64,
                         actual,
                     });
                 }

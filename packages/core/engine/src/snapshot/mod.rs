@@ -8,7 +8,7 @@
 //! - `12..16`: `app_schema_version: u32` (caller-supplied schema version)
 //! - `16..20`: `flags: u32`
 //! - `20..24`: `reserved: u32` (must be `0`, preserves 8-byte alignment)
-//! - `24..32`: `checksum_fnv64: u64` (FNV-1a 64-bit over `0..24` + `32..file_len`)
+//! - `24..32`: `checksum_xxh64: u64` (XXH64 over `0..24` + `32..file_len`)
 //! - `32..40`: `frame0_offset: u64` (8-byte aligned offset of the Frame-0 `CommandBuffer`)
 //! - `40..48`: `frame0_len: u64`
 //! - `48..56`: `state_offset: u64` (8-byte aligned offset of relocatable app state)
@@ -28,8 +28,8 @@ pub use arena::{
     RELOCATABLE_ARENA_VERSION,
 };
 pub use format::{
-    fnv1a_64, fnv1a_64_update, SnapshotError, SnapshotHeader, NVE_SNAP_FORMAT_VERSION,
-    NVE_SNAP_MAGIC, SNAPSHOT_HEADER_SIZE, SNAPSHOT_SECTION_ALIGN,
+    SnapshotError, SnapshotHeader, NVE_SNAP_FORMAT_VERSION, NVE_SNAP_MAGIC, SNAPSHOT_HEADER_SIZE,
+    SNAPSHOT_SECTION_ALIGN,
 };
 pub use mmap::MmapSnapshot;
 pub use writer::{encode_snapshot, write_snapshot_atomic};
