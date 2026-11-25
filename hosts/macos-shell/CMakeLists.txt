@@ -23,6 +23,7 @@ add_library(nve_macos_shell_lib STATIC
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost+Session.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentViewBase.mm"
+  "${NVE_APPLE_COMMON_DIR}/NveAppleCamera.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleNativeViews.mm"
   NveMacFabricHost.mm
   NveMacWindowManager.mm
@@ -39,7 +40,10 @@ target_compile_options(nve_macos_shell_lib PRIVATE -fobjc-arc -Wall -Wextra -Wer
 target_link_libraries(nve_macos_shell_lib
   PUBLIC
     nve_fabric_bridge
+    "-framework AVFoundation"
     "-framework Cocoa"
+    "-framework CoreMedia"
+    "-framework CoreVideo"
     "-framework QuartzCore"
     "-framework WebKit"
 )
