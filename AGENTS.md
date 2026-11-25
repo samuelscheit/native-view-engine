@@ -80,3 +80,4 @@ cargo test --locked -p nve-backend-web -p nve-web-shell \
 ## Learned rules
 
 - **Zero-overhead first**: For every boundary (FFI, events, interop, host bridges), research proven designs on the web and choose the zero-cost one, even when it is harder and takes longer. Never ship a quick solution that adds runtime overhead, such as serializing to JSON, wrapper layers or extra copies.
+- **Delegate only real work**: Do small tasks yourself, such as a backlog or doc entry, instead of spawning a delegate. Give a delegate its own worktree only when it runs in parallel with others that edit the same files. Otherwise let it work in the shared checkout.
