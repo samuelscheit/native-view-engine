@@ -1,3 +1,4 @@
+#include "NveAndroidDirectChannel.hpp"
 #include "NveAndroidSurfaceInternal.hpp"
 
 #include <algorithm>
@@ -157,7 +158,8 @@ Java_dev_nve_android_NveMainActivity_nativeCreateSurface(
     jfloat width,
     jfloat height,
     jfloat scale_factor) {
-  auto* state = new AndroidSurfaceState();
+  auto* session = new AndroidSurfaceSession();
+  AndroidSurfaceState* state = session;
   state->config = NveSurfaceConfig{
       .surface_id = static_cast<uint32_t>(surface_id > 0 ? surface_id : 1),
       .width = sanitize_positive(width, 412.0f),
@@ -226,19 +228,21 @@ Java_dev_nve_android_NveMainActivity_nativeDestroySurface(
     JNIEnv* env,
     jclass /*clazz*/,
     jlong handle_ptr) {
-  auto* state = reinterpret_cast<AndroidSurfaceState*>(handle_ptr);
-  if (!state) {
+  auto* session = as_surface_session(handle_ptr);
+  if (!session) {
     return;
   }
+  AndroidSurfaceState* state = session;
   state->session.disconnect_paired();
   nve::android_jni::release_surface_pair_wake(handle_ptr, env);
+  release_direct_scratch_buffers(session, env);
   release_all_slab_buffers(state, env);
   state->session.reset();
   if (state->activity_class != nullptr && env != nullptr) {
     env->DeleteGlobalRef(state->activity_class);
     state->activity_class = nullptr;
   }
-  delete state;
+  delete session;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

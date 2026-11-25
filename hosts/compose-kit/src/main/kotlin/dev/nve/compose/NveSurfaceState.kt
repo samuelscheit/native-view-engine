@@ -1,5 +1,7 @@
 package dev.nve.compose
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -173,6 +175,8 @@ class NveSurfaceController(
     val state: NveSurfaceState = NveSurfaceState(surfaceId)
 
     private var nativeHandle: Long = 0L
+    private var eventScratchBuffer: ByteBuffer? = null
+    private var propScratchBuffer: ByteBuffer? = null
     private var frameCounter: Long = 0L
     private val propsWriter = NveBinWriter(128)
     private val commandWriter = NveBinWriter(128)
@@ -205,6 +209,8 @@ class NveSurfaceController(
         if (handle == 0L) return false
 
         nativeHandle = handle
+        eventScratchBuffer = bridge.getEventScratchBuffer(handle)?.order(ByteOrder.LITTLE_ENDIAN)
+        propScratchBuffer = bridge.getPropScratchBuffer(handle)?.order(ByteOrder.LITTLE_ENDIAN)
         state.lifecycleState = NveSurfaceLifecycleState.ATTACHED
 
         // Re-sync remembered viewport and props when re-attaching after a detach.
@@ -213,7 +219,7 @@ class NveSurfaceController(
             bridge.resizeSurface(handle, vp.width, vp.height, vp.scaleFactor)
         }
         if (lastPropsLen >= 0) {
-            bridge.setPropsBinary(handle, lastPropsBuf.copyOf(lastPropsLen))
+            submitPropsBytes(lastPropsBuf, lastPropsLen, copyOnFallback = true)
         }
         return true
     }
@@ -242,18 +248,16 @@ class NveSurfaceController(
 
         val resized = bridge.resizeSurface(nativeHandle, width, height, scaleFactor)
         if (resized) {
-            val layoutBytes = NveEventRingCodec.encodeSingle(
-                NveEventRingCodec.layout(
-                    surfaceId = surfaceId,
-                    nodeId = 0,
-                    x = 0f,
-                    y = 0f,
-                    width = width,
-                    height = height,
-                    timestampUs = timestampUs,
-                ),
+            val layoutEvent = NveEventRingCodec.layout(
+                surfaceId = surfaceId,
+                nodeId = 0,
+                x = 0f,
+                y = 0f,
+                width = width,
+                height = height,
+                timestampUs = timestampUs,
             )
-            bridge.submitEvents(nativeHandle, layoutBytes)
+            submitSingleEvent(layoutEvent)
         }
         return resized
     }
@@ -268,7 +272,7 @@ class NveSurfaceController(
         lastPropsBuf = propsWriter.copyInto(lastPropsBuf)
         lastPropsLen = propsWriter.size
         if (nativeHandle == 0L || !bridge.isAvailable) return
-        if (bridge.setPropsBinary(nativeHandle, propsWriter.toByteArray())) {
+        if (submitPropsBytes(lastPropsBuf, lastPropsLen, copyOnFallback = true)) {
             requestRender()
         }
         drainAndForwardEvents()
@@ -287,7 +291,7 @@ class NveSurfaceController(
         }
         lastPropsLen = propsBin.size
         if (nativeHandle == 0L || !bridge.isAvailable) return
-        if (bridge.setPropsBinary(nativeHandle, propsBin)) {
+        if (submitPropsBytes(propsBin, propsBin.size, copyOnFallback = false)) {
             requestRender()
         }
         drainAndForwardEvents()
@@ -317,9 +321,22 @@ class NveSurfaceController(
         if (isDisposed || nativeHandle == 0L || !bridge.isAvailable || pendingEvents.isEmpty()) {
             return false
         }
-        val encoded = NveEventRingCodec.encode(pendingEvents)
-        pendingEvents.clear()
-        val ok = bridge.submitEvents(nativeHandle, encoded)
+        val directScratch = eventScratchBuffer
+        val ok = if (directScratch != null) {
+            val written = NveEventRingCodec.encodeInto(pendingEvents, directScratch)
+            if (written >= 0) {
+                pendingEvents.clear()
+                bridge.submitEventsDirect(nativeHandle, written)
+            } else {
+                val encoded = NveEventRingCodec.encode(pendingEvents)
+                pendingEvents.clear()
+                bridge.submitEvents(nativeHandle, encoded)
+            }
+        } else {
+            val encoded = NveEventRingCodec.encode(pendingEvents)
+            pendingEvents.clear()
+            bridge.submitEvents(nativeHandle, encoded)
+        }
         if (ok) {
             drainAndForwardEvents()
         }
@@ -415,6 +432,8 @@ class NveSurfaceController(
         }
         val ok = bridge.hotReloadApp(nativeHandle, soPath)
         if (ok) {
+            eventScratchBuffer = bridge.getEventScratchBuffer(nativeHandle)?.order(ByteOrder.LITTLE_ENDIAN)
+            propScratchBuffer = bridge.getPropScratchBuffer(nativeHandle)?.order(ByteOrder.LITTLE_ENDIAN)
             state.reloadGeneration += 1
             val vp = state.viewport
             if (vp.width > 0f || vp.height > 0f) {
@@ -462,6 +481,8 @@ class NveSurfaceController(
             bridge.destroySurface(nativeHandle)
         }
         nativeHandle = 0L
+        eventScratchBuffer = null
+        propScratchBuffer = null
         pendingEvents.clear()
         state.clearScene()
         state.lifecycleState = NveSurfaceLifecycleState.DETACHED
@@ -477,12 +498,37 @@ class NveSurfaceController(
             bridge.destroySurface(nativeHandle)
         }
         nativeHandle = 0L
+        eventScratchBuffer = null
+        propScratchBuffer = null
         pendingEvents.clear()
         lastPropsLen = -1
         lastPropsBuf = ByteArray(0)
         onEventCallback = null
         state.clearScene()
         state.lifecycleState = NveSurfaceLifecycleState.DISPOSED
+    }
+
+    private fun submitSingleEvent(event: NveEvent): Boolean {
+        val directScratch = eventScratchBuffer
+        if (directScratch != null) {
+            val written = NveEventRingCodec.encodeSingleInto(event, directScratch)
+            if (written >= 0) {
+                return bridge.submitEventsDirect(nativeHandle, written)
+            }
+        }
+        return bridge.submitEvents(nativeHandle, NveEventRingCodec.encodeSingle(event))
+    }
+
+    private fun submitPropsBytes(src: ByteArray, len: Int, copyOnFallback: Boolean): Boolean {
+        val directScratch = propScratchBuffer
+        if (directScratch != null && len > 0 && len <= directScratch.capacity()) {
+            directScratch.clear()
+            directScratch.put(src, 0, len)
+            directScratch.flip()
+            return bridge.setPropsDirect(nativeHandle, len)
+        }
+        val payload = if (copyOnFallback || len != src.size) src.copyOf(len) else src
+        return bridge.setPropsBinary(nativeHandle, payload)
     }
 
     private fun regionEquals(a: ByteArray, b: ByteArray, len: Int): Boolean {

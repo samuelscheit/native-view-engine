@@ -242,6 +242,165 @@ object NveEventRingCodec {
 
     fun encodeSingle(event: NveEvent): ByteArray = encode(listOf(event))
 
+    /**
+     * Zero-allocation `EventRing` encoder writing little-endian bytes directly into [out]
+     * (typically a native-owned `DirectByteBuffer` from [NveBridgeBackend.getEventScratchBuffer]).
+     *
+     * On success, flips [out] (`position = 0`, `limit = written`) and returns the exact byte count
+     * written (byte-for-byte identical to [encode]).
+     * Returns `-1` (leaving [out] cleared) if [out] is read-only or lacks capacity for the batch,
+     * allowing the caller to fall back cleanly to [encode] (`ByteArray`).
+     */
+    fun encodeInto(events: List<NveEvent>, out: ByteBuffer): Int {
+        if (out.isReadOnly || out.capacity() < 4) return -1
+        out.clear()
+        out.order(ByteOrder.LITTLE_ENDIAN)
+        out.putInt(events.size)
+        for (i in events.indices) {
+            if (!writeEventInto(events[i], out)) {
+                out.clear()
+                return -1
+            }
+        }
+        val written = out.position()
+        out.flip()
+        return written
+    }
+
+    /**
+     * Zero-allocation single-event encoder writing directly into [out] without wrapping in a [List].
+     * Returns bytes written (`>= 22`) or `-1` if [out] lacks capacity.
+     */
+    fun encodeSingleInto(event: NveEvent, out: ByteBuffer): Int {
+        if (out.isReadOnly || out.capacity() < 4 + EVENT_HEADER_BYTES) return -1
+        out.clear()
+        out.order(ByteOrder.LITTLE_ENDIAN)
+        out.putInt(1)
+        if (!writeEventInto(event, out)) {
+            out.clear()
+            return -1
+        }
+        val written = out.position()
+        out.flip()
+        return written
+    }
+
+    private fun writeEventInto(event: NveEvent, out: ByteBuffer): Boolean {
+        if (out.remaining() < EVENT_HEADER_BYTES) return false
+        out.putInt(event.surfaceId)
+        out.putInt(event.nodeId)
+        out.putLong(event.timestampUs)
+        out.put((event.kind.code and 0xFF).toByte())
+        val payload = event.payload
+        out.put((payload.tag and 0xFF).toByte())
+        return when (payload) {
+            NveEventPayload.Empty -> true
+            is NveEventPayload.Point -> {
+                if (out.remaining() < 8) return false
+                out.putInt(payload.x.toRawBits())
+                out.putInt(payload.y.toRawBits())
+                true
+            }
+            is NveEventPayload.Scroll -> {
+                if (out.remaining() < 16) return false
+                out.putInt(payload.x.toRawBits())
+                out.putInt(payload.y.toRawBits())
+                out.putInt(payload.contentWidth.toRawBits())
+                out.putInt(payload.contentHeight.toRawBits())
+                true
+            }
+            is NveEventPayload.Text -> {
+                val utf8Len = utf8ByteLength(payload.text)
+                if (out.remaining() < 4 + utf8Len) return false
+                out.putInt(utf8Len)
+                writeUtf8Into(payload.text, out)
+                true
+            }
+            is NveEventPayload.Layout -> {
+                if (out.remaining() < 16) return false
+                out.putInt(payload.x.toRawBits())
+                out.putInt(payload.y.toRawBits())
+                out.putInt(payload.width.toRawBits())
+                out.putInt(payload.height.toRawBits())
+                true
+            }
+            is NveEventPayload.Custom -> {
+                val nameLen = utf8ByteLength(payload.name)
+                require(nameLen <= 0xFFFF) {
+                    "Custom event name exceeds uint16 length limit: $nameLen"
+                }
+                val dataLen = payload.data.size
+                val needed = 2L + nameLen.toLong() + 4L + dataLen.toLong()
+                if (out.remaining().toLong() < needed) return false
+                out.putShort((nameLen and 0xFFFF).toShort())
+                writeUtf8Into(payload.name, out)
+                out.putInt(dataLen)
+                if (dataLen > 0) {
+                    out.put(payload.data)
+                }
+                true
+            }
+        }
+    }
+
+    private fun utf8ByteLength(s: String): Int {
+        val len = s.length
+        var bytes = 0
+        var i = 0
+        while (i < len) {
+            val c = s[i].code
+            if (c < 0x80) {
+                bytes += 1
+                i += 1
+            } else if (c < 0x800) {
+                bytes += 2
+                i += 1
+            } else if (c in 0xD800..0xDBFF && i + 1 < len && s[i + 1].code in 0xDC00..0xDFFF) {
+                bytes += 4
+                i += 2
+            } else if (c in 0xD800..0xDFFF) {
+                // Unpaired surrogate matches Java String.getBytes(UTF_8) -> '?' (0x3F).
+                bytes += 1
+                i += 1
+            } else {
+                bytes += 3
+                i += 1
+            }
+        }
+        return bytes
+    }
+
+    private fun writeUtf8Into(s: String, out: ByteBuffer) {
+        val len = s.length
+        var i = 0
+        while (i < len) {
+            val c = s[i].code
+            if (c < 0x80) {
+                out.put(c.toByte())
+                i += 1
+            } else if (c < 0x800) {
+                out.put((0xC0 or (c ushr 6)).toByte())
+                out.put((0x80 or (c and 0x3F)).toByte())
+                i += 1
+            } else if (c in 0xD800..0xDBFF && i + 1 < len && s[i + 1].code in 0xDC00..0xDFFF) {
+                val cp = 0x10000 + (((c - 0xD800) shl 10) or (s[i + 1].code - 0xDC00))
+                out.put((0xF0 or (cp ushr 18)).toByte())
+                out.put((0x80 or ((cp ushr 12) and 0x3F)).toByte())
+                out.put((0x80 or ((cp ushr 6) and 0x3F)).toByte())
+                out.put((0x80 or (cp and 0x3F)).toByte())
+                i += 2
+            } else if (c in 0xD800..0xDFFF) {
+                out.put(0x3F.toByte())
+                i += 1
+            } else {
+                out.put((0xE0 or (c ushr 12)).toByte())
+                out.put((0x80 or ((c ushr 6) and 0x3F)).toByte())
+                out.put((0x80 or (c and 0x3F)).toByte())
+                i += 1
+            }
+        }
+    }
+
     fun encode(events: List<NveEvent>): ByteArray {
         val out = ByteArrayOutputStream(4 + events.size * 32)
         writeI32Le(out, events.size)
