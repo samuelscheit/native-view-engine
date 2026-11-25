@@ -6,7 +6,12 @@ pub mod canvas_ir;
 pub mod client_hints;
 pub mod interaction;
 pub mod media;
+pub mod motion;
+pub mod motion_clock;
+#[cfg(test)]
+mod motion_tests;
 pub mod reconcile;
+pub mod spring;
 pub mod style_patch;
 mod tracker;
 
@@ -27,9 +32,17 @@ pub use media::{
     MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION,
     MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
+pub use motion::{
+    lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for,
+    EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
+    TimedTransition, TransitionProperty, TransitionSpec,
+};
 pub use reconcile::{
     reconcile_three_way, ConflictPolicy, DivergenceKind, LogicalClock, ReconcileBatch,
     ReconcileDecision, StateReconciler, ThreeWayEntry,
+};
+pub use spring::{
+    MotionPreference, SpringSpec, SpringState, DEFAULT_REST_DISPLACEMENT, DEFAULT_REST_VELOCITY,
 };
 pub use style_patch::{Display, FlexWrap, Overflow, StylePatch, TextAlign};
 

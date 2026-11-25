@@ -7,6 +7,7 @@ use dioxus_core::{Element, VirtualDom};
 use nve_abi::{FrameId, NodeId, SurfaceId};
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::motion::TransitionSpec;
 use nve_engine::HotPatchMsg;
 
 use crate::signal_archive::{HydrationReport, SignalArchiveError, SignalRegistry};
@@ -116,6 +117,18 @@ impl DioxusSurface {
     #[inline]
     pub fn iter_state_rules(&self) -> impl Iterator<Item = (NodeId, &[StateStyleRule])> + '_ {
         self.writer.iter_state_rules()
+    }
+
+    /// Direct typed [`TransitionSpec`] slice stored on `node_id` (zero serialization).
+    #[inline]
+    pub fn node_transitions(&self, node_id: NodeId) -> &[TransitionSpec] {
+        self.writer.node_transitions(node_id)
+    }
+
+    /// Iterates over all active nodes with one or more declarative [`TransitionSpec`]s.
+    #[inline]
+    pub fn iter_transitions(&self) -> impl Iterator<Item = (NodeId, &[TransitionSpec])> + '_ {
+        self.writer.iter_transitions()
     }
 
     /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.

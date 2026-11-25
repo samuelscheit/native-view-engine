@@ -13,6 +13,7 @@ use nve_abi::{
 use nve_components::canvas_ir::CanvasOp;
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::motion::TransitionSpec;
 
 /// Static `.nve` base reset stylesheet emitted once on mount or SSR.
 ///
@@ -388,6 +389,7 @@ pub struct MirrorElement {
     pub responsive_rules: Vec<ResponsiveRule>,
     pub cursor: Option<CursorKind>,
     pub state_rules: Vec<StateStyleRule>,
+    pub transitions: Vec<TransitionSpec>,
 }
 
 impl MirrorElement {
@@ -422,6 +424,7 @@ impl MirrorElement {
             responsive_rules: Vec::new(),
             cursor: None,
             state_rules: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 
@@ -452,6 +455,7 @@ impl MirrorElement {
         layout_to_css_into(&self.layout, out);
         style_to_css_into(&self.style, out);
         write_compact_cursor_into(self.cursor, out);
+        TransitionSpec::write_css_list_into(&self.transitions, out);
         self.raw_style.write_compact_into(false, out);
         out.push_str(&self.patch_css);
     }

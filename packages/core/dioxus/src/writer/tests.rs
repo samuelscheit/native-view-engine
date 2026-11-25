@@ -291,3 +291,40 @@ fn typed_style_sanitizes_non_finite_values_and_none_style_is_noop() {
         Command::SetRawProp { key, .. } if key == "style" || key == NVE_TYPED_STYLE_ATTR
     )));
 }
+
+#[test]
+fn typed_style_stores_zero_serialization_transitions_on_node_record() {
+    use nve_components::motion::{EasingCurve, TransitionProperty, TransitionSpec};
+
+    let t1 = TransitionSpec::new(TransitionProperty::BackgroundColor, 150)
+        .easing(EasingCurve::EaseOut);
+    let t2 = TransitionSpec::new(TransitionProperty::Opacity, 220)
+        .easing(EasingCurve::EaseInOut)
+        .delay_ms(20);
+    let ts = TypedStyle::new()
+        .bg(ColorRgba::rgb(30, 41, 59))
+        .transition(t1)
+        .transitions(&[t2]);
+
+    let mut writer = NveMutationWriter::new(1);
+    writer.begin_frame(1, 1);
+    let nid = writer.alloc_node(ComponentKind::Pressable, None);
+    let el = ElementId(1);
+    writer.bind_element_id(nid, el);
+    writer.set_attribute(NVE_TYPED_STYLE_ATTR, None, &ts.into_value(), el);
+    let _ = writer.finish_frame(true);
+
+    assert_eq!(writer.node_transitions(nid), &[t1, t2]);
+    let collected: Vec<(u32, Vec<TransitionSpec>)> = writer
+        .iter_transitions()
+        .map(|(id, s)| (id, s.to_vec()))
+        .collect();
+    assert_eq!(collected, vec![(nid, vec![t1, t2])]);
+
+    // Clearing TypedStyle clears transitions cleanly.
+    writer.begin_frame(1, 2);
+    writer.set_attribute(NVE_TYPED_STYLE_ATTR, None, &AttributeValue::None, el);
+    let _ = writer.finish_frame(true);
+    assert!(writer.node_transitions(nid).is_empty());
+    assert_eq!(writer.iter_transitions().count(), 0);
+}

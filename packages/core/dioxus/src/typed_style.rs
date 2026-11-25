@@ -12,6 +12,7 @@ use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps, StyleProps};
 use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::motion::TransitionSpec;
 use nve_components::style_patch::StylePatch;
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
@@ -59,6 +60,7 @@ pub struct TypedStyle {
     pub responsive: Vec<ResponsiveRule>,
     pub cursor: Option<CursorKind>,
     pub state_rules: Vec<StateStyleRule>,
+    pub transitions: Vec<TransitionSpec>,
 }
 
 impl Default for TypedStyle {
@@ -87,6 +89,7 @@ impl TypedStyle {
             responsive: Vec::new(),
             cursor: None,
             state_rules: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 
@@ -567,6 +570,23 @@ impl TypedStyle {
     #[inline]
     pub fn on_disabled_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
         self.on_state_with(InteractionState::DISABLED, build)
+    }
+
+    // --- Declarative style transitions ---
+
+    /// Appends a declarative [`TransitionSpec`] (zero serialization: native CSS `transition:` on
+    /// Web, `MotionDriver` interpolation on Skia/native).
+    #[inline]
+    pub fn transition(mut self, spec: TransitionSpec) -> Self {
+        self.transitions.push(spec);
+        self
+    }
+
+    /// Appends a slice of declarative [`TransitionSpec`]s in order.
+    #[inline]
+    pub fn transitions(mut self, specs: &[TransitionSpec]) -> Self {
+        self.transitions.extend_from_slice(specs);
+        self
     }
 }
 

@@ -40,6 +40,7 @@ mod style_hash;
 mod stylesheet;
 #[cfg(target_arch = "wasm32")]
 mod stylesheet_wasm;
+mod transition_css;
 mod tree;
 
 #[cfg(test)]
@@ -52,6 +53,8 @@ mod native_view_tests;
 mod ssr_hydrate_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transition_tests;
 
 pub use css::{
     canonical_f32_bits, component_to_html_tag, is_semantic_tag_prop, layout_to_css,
@@ -116,6 +119,9 @@ pub use style_hash::{
 pub use stylesheet::{
     resolve_node_style, CachedRule, ResolvedNodeStyle, StyleSheetCache,
     INCREMENTAL_RULE_BATCH_THRESHOLD, MAX_DYNAMIC_RULES,
+};
+pub use transition_css::{
+    compile_node_transitions, format_transition_class, CompiledTransitionRule,
 };
 
 #[cfg(target_arch = "wasm32")]

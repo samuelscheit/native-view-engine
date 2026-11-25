@@ -265,6 +265,9 @@ impl WebBackend {
             if let Some((cls, decls)) = resolved.cursor_rule {
                 let _ = self.stylesheet.ensure_rule(cls.to_owned(), decls.to_owned());
             }
+            if let Some((cls, decls)) = resolved.transition_rule {
+                let _ = self.stylesheet.ensure_rule(cls, decls);
+            }
             for media_rule in resolved.media_rules {
                 let _ = self.stylesheet.ensure_media_rule(media_rule);
             }

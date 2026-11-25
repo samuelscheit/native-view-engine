@@ -18,6 +18,7 @@ use nve_abi::{
 };
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::motion::TransitionSpec;
 use nve_interop::native_view::NativeViewHandleBinder;
 
 use crate::native_view::NATIVE_VIEW_TAG;
@@ -52,6 +53,7 @@ pub(crate) struct NodeRecord {
     pub(crate) responsive_rules: Vec<ResponsiveRule>,
     pub(crate) cursor: Option<CursorKind>,
     pub(crate) state_rules: Vec<StateStyleRule>,
+    pub(crate) transitions: Vec<TransitionSpec>,
 }
 
 impl Default for NodeRecord {
@@ -84,6 +86,7 @@ impl Default for NodeRecord {
             responsive_rules: Vec::new(),
             cursor: None,
             state_rules: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 }
@@ -232,6 +235,23 @@ impl NveMutationWriter {
     pub fn iter_state_rules(&self) -> impl Iterator<Item = (NodeId, &[StateStyleRule])> + '_ {
         self.nodes.iter().filter_map(|(&id, rec)| {
             (!rec.state_rules.is_empty()).then_some((id, rec.state_rules.as_slice()))
+        })
+    }
+
+    /// Returns the direct typed [`TransitionSpec`] slice for `node_id` (zero serialization).
+    #[inline]
+    pub fn node_transitions(&self, node_id: NodeId) -> &[TransitionSpec] {
+        self.nodes
+            .get(&node_id)
+            .map(|r| r.transitions.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Iterates over all active nodes with one or more declarative [`TransitionSpec`]s.
+    #[inline]
+    pub fn iter_transitions(&self) -> impl Iterator<Item = (NodeId, &[TransitionSpec])> + '_ {
+        self.nodes.iter().filter_map(|(&id, rec)| {
+            (!rec.transitions.is_empty()).then_some((id, rec.transitions.as_slice()))
         })
     }
 

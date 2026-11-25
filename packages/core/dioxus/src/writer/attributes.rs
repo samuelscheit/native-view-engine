@@ -167,6 +167,7 @@ impl NveMutationWriter {
         rec.responsive_rules.clone_from(&typed.responsive);
         rec.cursor = typed.cursor;
         rec.state_rules.clone_from(&typed.state_rules);
+        rec.transitions.clone_from(&typed.transitions);
         rec.typed_style = Some(typed);
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
@@ -184,6 +185,7 @@ impl NveMutationWriter {
         rec.responsive_rules.clear();
         rec.cursor = None;
         rec.state_rules.clear();
+        rec.transitions.clear();
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
 
