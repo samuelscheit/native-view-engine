@@ -250,6 +250,34 @@ impl Parser {
             }
         }
 
+        // Fixed-size array types: `[T; N]`
+        if self.eat(&TokKind::LBracket) {
+            let elem = self.parse_type()?;
+            self.expect(&TokKind::Semi, "';'")?;
+            let len_tok = self.bump();
+            let len = match len_tok.kind {
+                TokKind::Int(v, _) => usize::try_from(v).map_err(|_| {
+                    CodegenError::parse(
+                        len_tok.line,
+                        len_tok.col,
+                        "fixed array length exceeds usize::MAX",
+                    )
+                })?,
+                _ => {
+                    return Err(CodegenError::parse(
+                        len_tok.line,
+                        len_tok.col,
+                        "expected integer length after ';' in fixed array type",
+                    ));
+                }
+            };
+            self.expect(&TokKind::RBracket, "']'")?;
+            return Ok(HybridType::FixedArray {
+                elem: Box::new(elem),
+                len,
+            });
+        }
+
         // Reference types: `&str`, `&[u8]`, `&[T]`, `&T`
         if self.eat(&TokKind::Amp) {
             self.eat_ident("mut");

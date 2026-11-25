@@ -8,8 +8,8 @@ package dev.nve.android.generated;
 public final class NveCoreAbi {
     private NveCoreAbi() {}
 
-    public static final long CORE_ABI_SCHEMA_HASH = 0x5BE5D06CC7C01FEFL;
-    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x5BE5D06CC7C01FEF";
+    public static final long CORE_ABI_SCHEMA_HASH = 0x8AE89F103A70D669L;
+    public static final String CORE_ABI_SCHEMA_HASH_HEX = "0x8AE89F103A70D669";
 
     public static final int ABI_MAGIC = 0x3145564E;
     public static final int ABI_VERSION = 1;
@@ -104,6 +104,9 @@ public final class NveCoreAbi {
     public static final int SIZEOF_MAP_ENTRY_64 = 40;
     public static final int SIZEOF_DIRECT_EVENT_64 = 96;
     public static final int SIZEOF_EVENT_BATCH_64 = 16;
+    public static final int SIZEOF_PROP_ENTRY_64 = 32;
+    public static final int SIZEOF_PROP_SLICE_64 = 16;
+    public static final int SIZEOF_COMMAND_SLICE_64 = 16;
     public static final int SIZEOF_SURFACE_CONFIG = 16;
     public static final int SIZEOF_FRAME_STATS = 40;
     public static final int SIZEOF_SIZE_CONSTRAINTS = 16;

@@ -11,6 +11,7 @@ fn host_callbacks_abi_layout_matches_c_header() {
     }
 }
 
+#[cfg(feature = "wire")]
 #[test]
 fn nvh1_batch_roundtrip_all_three_record_kinds() {
     let mut batch = NveHostEventBatch::new();
@@ -25,6 +26,7 @@ fn nvh1_batch_roundtrip_all_three_record_kinds() {
     assert_eq!(decoded, batch);
 }
 
+#[cfg(feature = "wire")]
 #[test]
 fn nvh1_decoder_rejects_corrupt_truncated_and_oversized_batches() {
     assert!(matches!(

@@ -375,22 +375,4 @@ pub struct CommandBufferHeader {
     pub op_count: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DecodeError {
-    Truncated,
-    InvalidMagic(u32),
-    UnsupportedVersion(u16),
-    UnknownOpcode(u8),
-    InvalidEnum(&'static str, u32),
-    InvalidUtf8,
-    TrailingBytes(usize),
-    MaxDepthExceeded,
-}
-
-impl std::fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl std::error::Error for DecodeError {}
+pub use crate::DecodeError;

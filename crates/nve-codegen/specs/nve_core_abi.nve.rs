@@ -232,6 +232,44 @@ pub struct NveEventBatch {
     pub len: u32,
 }
 
+/// Direct zero-copy typed prop entry (`field_id` + `NveValue`) matching `crates/nve-abi`.
+#[repr(C)]
+#[nve_hybrid_struct(size_64 = 32)]
+pub struct NvePropEntry {
+    #[offset(0)]
+    pub field_id: u16,
+    #[offset(2)]
+    pub _pad: [u8; 6],
+    #[offset(8)]
+    pub value: NveValue,
+}
+
+/// Zero-copy raw pointer slice of typed prop entries (`NvePropEntry`).
+#[repr(C)]
+#[nve_hybrid_struct(size_64 = 16)]
+pub struct NvePropSlice {
+    #[offset(0)]
+    pub entries: *const NvePropEntry,
+    #[offset64(8)]
+    pub len: u32,
+    #[offset64(12)]
+    pub _pad: u32,
+}
+
+/// Zero-copy direct imperative command dispatch record (`opcode` + `args`).
+#[repr(C)]
+#[nve_hybrid_struct(size_64 = 16)]
+pub struct NveCommandSlice {
+    #[offset(0)]
+    pub opcode: u16,
+    #[offset(2)]
+    pub arg_count: u16,
+    #[offset(4)]
+    pub _pad: u32,
+    #[offset(8)]
+    pub args: *const NveValue,
+}
+
 /// Surface viewport configuration passed to `nve_fabric_host_create`.
 #[repr(C)]
 #[nve_hybrid_struct(size = 16)]

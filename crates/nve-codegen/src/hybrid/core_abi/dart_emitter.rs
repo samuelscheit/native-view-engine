@@ -163,15 +163,27 @@ pub fn generate_dart_core_abi() -> String {
         let base = if s.is_union { "ffi.Union" } else { "ffi.Struct" };
         let _ = writeln!(out, "final class {} extends {base} {{", s.name);
         for f in &s.fields {
-            if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
-                let _ = writeln!(out, "  {ann}");
-            }
             let dart_field = to_camel_case(&f.name);
-            let _ = writeln!(
-                out,
-                "  external {} {dart_field};",
-                dart_core_struct_field_type(&f.ty)
-            );
+            match &f.ty {
+                HybridType::FixedArray { elem, len } => {
+                    let _ = writeln!(out, "  @ffi.Array({len})");
+                    let _ = writeln!(
+                        out,
+                        "  external ffi.Array<{}> {dart_field};",
+                        dart_core_native_type(elem)
+                    );
+                }
+                _ => {
+                    if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+                        let _ = writeln!(out, "  {ann}");
+                    }
+                    let _ = writeln!(
+                        out,
+                        "  external {} {dart_field};",
+                        dart_core_struct_field_type(&f.ty)
+                    );
+                }
+            }
         }
         let _ = writeln!(out, "}}");
         let _ = writeln!(out);

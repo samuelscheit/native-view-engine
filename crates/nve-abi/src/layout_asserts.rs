@@ -8,14 +8,15 @@
 use core::mem::{align_of, offset_of, size_of};
 
 use crate::ffi::{
-    NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
-    NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig,
+    NativeEventKind, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats,
+    NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
+    NveSurfaceConfig,
 };
 use crate::host::{NveHostApi, NveHostCallbacks, NveHostEventKind, NveHostStatus};
 use crate::scene::{NveRenderNode, NveSceneView, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE};
 use crate::value::{
-    NveDirectEvent, NveEventBatch, NveMapEntry, NveStrSlice, NveValue, NveValueArray,
-    NveValueData, NveValueMap, NveValueTag,
+    NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry, NvePropSlice,
+    NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap, NveValueTag,
 };
 
 const PTR_SIZE: usize = size_of::<*const ()>();
@@ -30,6 +31,8 @@ const _: () = {
     // ---- Repr enums ----
     assert!(size_of::<NveGestureDisposition>() == 1);
     assert!(align_of::<NveGestureDisposition>() == 1);
+    assert!(size_of::<NativeEventKind>() == 1);
+    assert!(align_of::<NativeEventKind>() == 1);
     assert!(size_of::<NveHostStatus>() == 4);
     assert!(align_of::<NveHostStatus>() == 4);
     assert!(size_of::<NveHostEventKind>() == 1);
@@ -180,6 +183,25 @@ const _: () = {
     assert!(align_of::<NveEventBatch>() == PTR_ALIGN);
     assert!(size_of::<NveEventBatch>() == align_up(PTR_SIZE + 4, PTR_ALIGN));
 
+    assert!(offset_of!(NvePropEntry, field_id) == 0);
+    assert!(offset_of!(NvePropEntry, _pad) == 2);
+    assert!(offset_of!(NvePropEntry, value) == 8);
+    assert!(align_of::<NvePropEntry>() == align_of::<NveValue>());
+    assert!(size_of::<NvePropEntry>() == 8 + size_of::<NveValue>());
+
+    assert!(offset_of!(NvePropSlice, entries) == 0);
+    assert!(offset_of!(NvePropSlice, len) == PTR_SIZE);
+    assert!(offset_of!(NvePropSlice, _pad) == PTR_SIZE + 4);
+    assert!(align_of::<NvePropSlice>() == PTR_ALIGN);
+    assert!(size_of::<NvePropSlice>() == PTR_SIZE + 8);
+
+    assert!(offset_of!(NveCommandSlice, opcode) == 0);
+    assert!(offset_of!(NveCommandSlice, arg_count) == 2);
+    assert!(offset_of!(NveCommandSlice, _pad) == 4);
+    assert!(offset_of!(NveCommandSlice, args) == 8);
+    assert!(align_of::<NveCommandSlice>() == PTR_ALIGN);
+    assert!(size_of::<NveCommandSlice>() == 8 + PTR_SIZE);
+
     // ---- Scene ABI types (scene/types.rs) ----
     assert!(size_of::<NveRenderNode>() == NVE_RENDER_NODE_SIZE);
     assert!(align_of::<NveRenderNode>() == NVE_RENDER_NODE_ALIGN);
@@ -257,6 +279,25 @@ const _: () = {
     assert!(size_of::<NveEventBatch>() == 16);
     assert!(align_of::<NveEventBatch>() == 8);
     assert!(offset_of!(NveEventBatch, len) == 8);
+
+    assert!(size_of::<NvePropEntry>() == 32);
+    assert!(align_of::<NvePropEntry>() == 8);
+    assert!(offset_of!(NvePropEntry, field_id) == 0);
+    assert!(offset_of!(NvePropEntry, _pad) == 2);
+    assert!(offset_of!(NvePropEntry, value) == 8);
+
+    assert!(size_of::<NvePropSlice>() == 16);
+    assert!(align_of::<NvePropSlice>() == 8);
+    assert!(offset_of!(NvePropSlice, entries) == 0);
+    assert!(offset_of!(NvePropSlice, len) == 8);
+    assert!(offset_of!(NvePropSlice, _pad) == 12);
+
+    assert!(size_of::<NveCommandSlice>() == 16);
+    assert!(align_of::<NveCommandSlice>() == 8);
+    assert!(offset_of!(NveCommandSlice, opcode) == 0);
+    assert!(offset_of!(NveCommandSlice, arg_count) == 2);
+    assert!(offset_of!(NveCommandSlice, _pad) == 4);
+    assert!(offset_of!(NveCommandSlice, args) == 8);
 
     assert!(size_of::<NveSurfaceApi>() == 40);
     assert!(size_of::<NveLayoutApi>() == 16);

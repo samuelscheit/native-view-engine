@@ -23,7 +23,7 @@ extern "C" {
 #endif
 #endif
 
-#define NVE_CORE_ABI_SCHEMA_HASH 0x5BE5D06CC7C01FEFULL
+#define NVE_CORE_ABI_SCHEMA_HASH 0x8AE89F103A70D669ULL
 #define NVE_ABI_MAGIC 0x3145564Eu
 #define NVE_ABI_VERSION 1u
 #define NVE_ROOT_NODE_ID 1u
@@ -178,6 +178,25 @@ typedef struct NveEventBatch {
   uint32_t len;
 } NveEventBatch;
 
+typedef struct NvePropEntry {
+  uint16_t field_id;
+  uint8_t _pad[6];
+  NveValue value;
+} NvePropEntry;
+
+typedef struct NvePropSlice {
+  const NvePropEntry* entries;
+  uint32_t len;
+  uint32_t _pad;
+} NvePropSlice;
+
+typedef struct NveCommandSlice {
+  uint16_t opcode;
+  uint16_t arg_count;
+  uint32_t _pad;
+  const NveValue* args;
+} NveCommandSlice;
+
 typedef struct NveSurfaceConfig {
   uint32_t surface_id;
   float width;
@@ -264,6 +283,24 @@ NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveDirectEvent, value) == 72u, 
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveEventBatch) == 16u, "NveEventBatch size must be 16 on 64-bit");
 NVE_STATIC_ASSERT(offsetof(NveEventBatch, ptr) == 0u, "NveEventBatch::ptr offset must be 0");
 NVE_STATIC_ASSERT(offsetof(NveEventBatch, len) == sizeof(void*), "NveEventBatch::len offset must be sizeof(void*)");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NvePropEntry) == 32u, "NvePropEntry size must be 32 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(NvePropEntry) == 8u + sizeof(NveValue), "NvePropEntry size must be 8 + sizeof(NveValue)");
+NVE_STATIC_ASSERT(offsetof(NvePropEntry, field_id) == 0u, "NvePropEntry::field_id offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NvePropEntry, _pad) == 2u, "NvePropEntry::_pad offset must be 2");
+NVE_STATIC_ASSERT(offsetof(NvePropEntry, value) == 8u, "NvePropEntry::value offset must be 8");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NvePropSlice) == 16u, "NvePropSlice size must be 16 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(NvePropSlice) == sizeof(void*) + 8u, "NvePropSlice size must be sizeof(void*) + 8");
+NVE_STATIC_ASSERT(offsetof(NvePropSlice, len) == sizeof(void*), "NvePropSlice::len offset must be sizeof(void*)");
+NVE_STATIC_ASSERT(offsetof(NvePropSlice, _pad) == sizeof(void*) + 4u, "NvePropSlice::_pad offset must be sizeof(void*) + 4");
+NVE_STATIC_ASSERT(offsetof(NvePropSlice, entries) == 0u, "NvePropSlice::entries offset must be 0");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NvePropSlice, len) == 8u, "NvePropSlice::len offset must be 8");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NvePropSlice, _pad) == 12u, "NvePropSlice::_pad offset must be 12");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveCommandSlice) == 16u, "NveCommandSlice size must be 16 on 64-bit");
+NVE_STATIC_ASSERT(sizeof(NveCommandSlice) == 8u + sizeof(void*), "NveCommandSlice size must be 8 + sizeof(void*)");
+NVE_STATIC_ASSERT(offsetof(NveCommandSlice, opcode) == 0u, "NveCommandSlice::opcode offset must be 0");
+NVE_STATIC_ASSERT(offsetof(NveCommandSlice, arg_count) == 2u, "NveCommandSlice::arg_count offset must be 2");
+NVE_STATIC_ASSERT(offsetof(NveCommandSlice, _pad) == 4u, "NveCommandSlice::_pad offset must be 4");
+NVE_STATIC_ASSERT(offsetof(NveCommandSlice, args) == 8u, "NveCommandSlice::args offset must be 8");
 NVE_STATIC_ASSERT(sizeof(NveSurfaceConfig) == 16u, "NveSurfaceConfig size must be 16");
 NVE_STATIC_ASSERT(offsetof(NveSurfaceConfig, surface_id) == 0u, "NveSurfaceConfig::surface_id offset must be 0");
 NVE_STATIC_ASSERT(offsetof(NveSurfaceConfig, width) == 4u, "NveSurfaceConfig::width offset must be 4");

@@ -129,6 +129,10 @@ pub enum HybridType {
     Value,
     ConstPtr(Box<HybridType>),
     MutPtr(Box<HybridType>),
+    FixedArray {
+        elem: Box<HybridType>,
+        len: usize,
+    },
     Handle(String),
 }
 
@@ -163,6 +167,7 @@ impl HybridType {
             Self::Value => "nve_value".to_string(),
             Self::ConstPtr(inner) => format!("*const {}", inner.canonical_signature()),
             Self::MutPtr(inner) => format!("*mut {}", inner.canonical_signature()),
+            Self::FixedArray { elem, len } => format!("[{};{len}]", elem.canonical_signature()),
             Self::Handle(name) => format!("handle:{name}"),
         }
     }
@@ -185,6 +190,7 @@ impl HybridType {
             Self::Struct(name) => file
                 .find_struct(name)
                 .is_some_and(|s| s.is_pod(file)),
+            Self::FixedArray { elem, .. } => elem.is_pod(file),
             Self::Void
             | Self::String
             | Self::Bytes
@@ -215,7 +221,8 @@ impl HybridType {
             Self::Optional(inner)
             | Self::Vec(inner)
             | Self::ConstPtr(inner)
-            | Self::MutPtr(inner) => inner.collect_refs(structs, enums),
+            | Self::MutPtr(inner)
+            | Self::FixedArray { elem: inner, .. } => inner.collect_refs(structs, enums),
             Self::Result { ok, err } => {
                 ok.collect_refs(structs, enums);
                 err.collect_refs(structs, enums);
@@ -389,6 +396,7 @@ impl HybridStructSpec {
                 HybridType::Struct(other) => file
                     .find_struct(other)
                     .is_some_and(|s| s.is_pod_inner(file, visited)),
+                HybridType::FixedArray { elem, .. } => elem.is_pod(file),
                 _ => false,
             });
         visited.remove(&self.name);

@@ -2,6 +2,8 @@
 //!
 //! Uses a zero-dependency `XorShift64` PRNG so every failure is 100% reproducible.
 
+#![cfg(feature = "wire")]
+
 use nve_abi::codec::{HEADER_SIZE, Opcode};
 use nve_abi::{
     decode_events, encode_events, ColorRgba, Command, CommandBufferBuilder, CommandDecoder,

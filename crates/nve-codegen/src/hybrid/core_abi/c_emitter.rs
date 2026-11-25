@@ -212,6 +212,32 @@ pub fn generate_c_core_abi_h() -> String {
                     "NVE_STATIC_ASSERT(offsetof(NveEventBatch, len) == sizeof(void*), \"NveEventBatch::len offset must be sizeof(void*)\");"
                 );
             }
+            "NvePropEntry" => {
+                let _ = writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(sizeof(NvePropEntry) == 8u + sizeof(NveValue), \"NvePropEntry size must be 8 + sizeof(NveValue)\");"
+                );
+            }
+            "NvePropSlice" => {
+                let _ = writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(sizeof(NvePropSlice) == sizeof(void*) + 8u, \"NvePropSlice size must be sizeof(void*) + 8\");"
+                );
+                let _ = writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(offsetof(NvePropSlice, len) == sizeof(void*), \"NvePropSlice::len offset must be sizeof(void*)\");"
+                );
+                let _ = writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(offsetof(NvePropSlice, _pad) == sizeof(void*) + 4u, \"NvePropSlice::_pad offset must be sizeof(void*) + 4\");"
+                );
+            }
+            "NveCommandSlice" => {
+                let _ = writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(sizeof(NveCommandSlice) == 8u + sizeof(void*), \"NveCommandSlice size must be 8 + sizeof(void*)\");"
+                );
+            }
             "NveHostCallbacks" => {
                 let _ = writeln!(
                     out,
@@ -383,7 +409,14 @@ fn emit_c_core_struct_or_union(out: &mut String, s: &HybridStructSpec) {
         let _ = writeln!(out, "typedef struct {} {{", s.name);
     }
     for f in &s.fields {
-        let _ = writeln!(out, "  {} {};", c_core_type(&f.ty), f.name);
+        match &f.ty {
+            HybridType::FixedArray { elem, len } => {
+                let _ = writeln!(out, "  {} {}[{len}];", c_core_type(elem), f.name);
+            }
+            _ => {
+                let _ = writeln!(out, "  {} {};", c_core_type(&f.ty), f.name);
+            }
+        }
     }
     if is_forward_typedef {
         let _ = writeln!(out, "}};");
