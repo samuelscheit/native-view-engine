@@ -5,18 +5,18 @@
 //! Emits all 10 checked-in ABI artifacts from ONE pipeline:
 //!
 //! **Core ABI (5 files):**
-//! 1. `cxx/nve-fabric-bridge/include/nve_abi.h`
-//! 2. `hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.h`
-//! 3. `hosts/flutter-plugin/lib/src/nve_core_abi_gen.dart`
-//! 4. `hosts/android-shell/android-app/src/dev/nve/android/NveCoreAbi.java`
-//! 5. `hosts/web-shell/nve_core_abi.ts`
+//! 1. `cxx/nve-fabric-bridge/include/nve_abi.generated.h`
+//! 2. `hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.generated.h`
+//! 3. `hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart`
+//! 4. `hosts/android-shell/android-app/src/dev/nve/android/generated/NveCoreAbi.java`
+//! 5. `hosts/web-shell/nve_core_abi.generated.ts`
 //!
 //! **Scene ABI (5 files):**
-//! 6. `cxx/nve-fabric-bridge/include/nve_scene_abi.h`
-//! 7. `hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.h`
-//! 8. `hosts/flutter-plugin/lib/src/nve_scene_abi_gen.dart`
-//! 9. `hosts/android-shell/android-app/src/dev/nve/android/NveSceneBuffer.java`
-//! 10. `hosts/web-shell/nve_scene_view.ts`
+//! 6. `cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h`
+//! 7. `hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.generated.h`
+//! 8. `hosts/flutter-plugin/lib/src/nve_scene_abi.generated.dart`
+//! 9. `hosts/android-shell/android-app/src/dev/nve/android/generated/NveSceneBuffer.java`
+//! 10. `hosts/web-shell/nve_scene_view.generated.ts`
 
 use std::fmt::Write as _;
 
@@ -296,11 +296,11 @@ fn module_c_struct_name(m: &HybridModuleSpec) -> String {
 }
 
 // ============================================================================
-// Core ABI Target 1 & 2: C11 / C++20 / Swift (`nve_abi.h`)
+// Core ABI Target 1 & 2: C11 / C++20 / Swift (`nve_abi.generated.h`)
 // ============================================================================
 
-/// Generates `nve_abi.h` (used identically by `cxx/nve-fabric-bridge/include/nve_abi.h`
-/// and `hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.h`) directly from
+/// Generates `nve_abi.generated.h` (used identically by `cxx/nve-fabric-bridge/include/nve_abi.generated.h`
+/// and `hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.generated.h`) directly from
 /// `crates/nve-codegen/specs/nve_core_abi.nve.rs`.
 pub fn generate_c_core_abi_h() -> String {
     let spec = core_abi_spec();
@@ -613,10 +613,10 @@ fn emit_c_function_decl(out: &mut String, f: &HybridMethodSpec) {
 }
 
 // ============================================================================
-// Core ABI Target 3: Dart `dart:ffi` (`hosts/flutter-plugin/lib/src/nve_core_abi_gen.dart`)
+// Core ABI Target 3: Dart `dart:ffi` (`hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart`)
 // ============================================================================
 
-/// Generates `hosts/flutter-plugin/lib/src/nve_core_abi_gen.dart` directly from
+/// Generates `hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart` directly from
 /// `crates/nve-codegen/specs/nve_core_abi.nve.rs`.
 pub fn generate_dart_core_abi() -> String {
     let spec = core_abi_spec();
@@ -836,10 +836,10 @@ pub fn generate_dart_core_abi() -> String {
 }
 
 // ============================================================================
-// Core ABI Target 4: Android Java (`hosts/android-shell/.../NveCoreAbi.java`)
+// Core ABI Target 4: Android Java (`hosts/android-shell/.../generated/NveCoreAbi.java`)
 // ============================================================================
 
-/// Generates `hosts/android-shell/android-app/src/dev/nve/android/NveCoreAbi.java`
+/// Generates `hosts/android-shell/android-app/src/dev/nve/android/generated/NveCoreAbi.java`
 /// directly from `crates/nve-codegen/specs/nve_core_abi.nve.rs`.
 pub fn generate_java_core_abi() -> String {
     let spec = core_abi_spec();
@@ -854,7 +854,7 @@ pub fn generate_java_core_abi() -> String {
         out,
         "// Single-source NVE Core ABI constants generated from specs/nve_core_abi.nve.rs."
     );
-    let _ = writeln!(out, "package dev.nve.android;");
+    let _ = writeln!(out, "package dev.nve.android.generated;");
     let _ = writeln!(out);
     let _ = writeln!(out, "/**");
     let _ = writeln!(
@@ -937,10 +937,10 @@ pub fn generate_java_core_abi() -> String {
 }
 
 // ============================================================================
-// Core ABI Target 5: Web TypeScript (`hosts/web-shell/nve_core_abi.ts`)
+// Core ABI Target 5: Web TypeScript (`hosts/web-shell/nve_core_abi.generated.ts`)
 // ============================================================================
 
-/// Generates `hosts/web-shell/nve_core_abi.ts` directly from
+/// Generates `hosts/web-shell/nve_core_abi.generated.ts` directly from
 /// `crates/nve-codegen/specs/nve_core_abi.nve.rs`.
 pub fn generate_ts_core_abi() -> String {
     let spec = core_abi_spec();
@@ -1013,11 +1013,11 @@ pub fn generate_ts_core_abi() -> String {
 }
 
 // ============================================================================
-// Scene ABI Target 1 & 2: C11 / C++20 / Swift (`nve_scene_abi.h`)
+// Scene ABI Target 1 & 2: C11 / C++20 / Swift (`nve_scene_abi.generated.h`)
 // ============================================================================
 
-/// Generates `nve_scene_abi.h` (used identically by `cxx/nve-fabric-bridge/include/nve_scene_abi.h`
-/// and `hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.h`) directly from
+/// Generates `nve_scene_abi.generated.h` (used identically by `cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h`
+/// and `hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.generated.h`) directly from
 /// `crates/nve-codegen/specs/nve_scene_abi.nve.rs`.
 pub fn generate_c_scene_abi_h() -> String {
     let spec = scene_abi_spec();
@@ -1135,10 +1135,10 @@ pub fn generate_c_scene_abi_h() -> String {
 }
 
 // ============================================================================
-// Scene ABI Target 3: Dart `dart:ffi` (`hosts/flutter-plugin/lib/src/nve_scene_abi_gen.dart`)
+// Scene ABI Target 3: Dart `dart:ffi` (`hosts/flutter-plugin/lib/src/nve_scene_abi.generated.dart`)
 // ============================================================================
 
-/// Generates `hosts/flutter-plugin/lib/src/nve_scene_abi_gen.dart` directly from
+/// Generates `hosts/flutter-plugin/lib/src/nve_scene_abi.generated.dart` directly from
 /// `crates/nve-codegen/specs/nve_scene_abi.nve.rs`.
 pub fn generate_dart_scene_abi() -> String {
     let spec = scene_abi_spec();
@@ -1201,7 +1201,7 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "/// 64-byte zero-decode render node (`NveRenderNode` in `nve_scene_abi.h`)."
+        "/// 64-byte zero-decode render node (`NveRenderNode` in `nve_scene_abi.generated.h`)."
     );
     let _ = writeln!(out, "final class NveRenderNode extends ffi.Struct {{");
     for f in &render_node.fields {
@@ -1224,7 +1224,7 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "/// Zero-decode scene snapshot header + slab pointers (`NveSceneView` in `nve_scene_abi.h`)."
+        "/// Zero-decode scene snapshot header + slab pointers (`NveSceneView` in `nve_scene_abi.generated.h`)."
     );
     let _ = writeln!(out, "final class NveSceneView extends ffi.Struct {{");
     for f in &scene_view.fields {
@@ -1441,10 +1441,10 @@ pub fn generate_dart_scene_abi() -> String {
 }
 
 // ============================================================================
-// Scene ABI Target 4: Java / Android DirectByteBuffer (`NveSceneBuffer.java`)
+// Scene ABI Target 4: Java / Android DirectByteBuffer (`generated/NveSceneBuffer.java`)
 // ============================================================================
 
-/// Generates `hosts/android-shell/android-app/src/dev/nve/android/NveSceneBuffer.java`
+/// Generates `hosts/android-shell/android-app/src/dev/nve/android/generated/NveSceneBuffer.java`
 /// directly from `crates/nve-codegen/specs/nve_scene_abi.nve.rs`.
 pub fn generate_java_scene_buffer() -> String {
     let spec = scene_abi_spec();
@@ -1461,7 +1461,7 @@ pub fn generate_java_scene_buffer() -> String {
         out,
         "// Single-source 64-byte NveRenderNode + NveSceneView zero-GC DirectByteBuffer reader."
     );
-    let _ = writeln!(out, "package dev.nve.android;");
+    let _ = writeln!(out, "package dev.nve.android.generated;");
     let _ = writeln!(out);
     let _ = writeln!(out, "import java.nio.ByteBuffer;");
     let _ = writeln!(out, "import java.nio.ByteOrder;");
@@ -1635,10 +1635,10 @@ pub fn generate_java_scene_buffer() -> String {
 }
 
 // ============================================================================
-// Scene ABI Target 5: TypeScript / WASM (`hosts/web-shell/nve_scene_view.ts`)
+// Scene ABI Target 5: TypeScript / WASM (`hosts/web-shell/nve_scene_view.generated.ts`)
 // ============================================================================
 
-/// Generates `hosts/web-shell/nve_scene_view.ts` directly from
+/// Generates `hosts/web-shell/nve_scene_view.generated.ts` directly from
 /// `crates/nve-codegen/specs/nve_scene_abi.nve.rs`.
 pub fn generate_ts_scene_view() -> String {
     let spec = scene_abi_spec();
@@ -1845,24 +1845,26 @@ pub fn generate_all_core_abi_files() -> Vec<GeneratedFile> {
     let c_header = generate_c_core_abi_h();
     vec![
         GeneratedFile {
-            relative_path: "cxx/nve-fabric-bridge/include/nve_abi.h".to_owned(),
+            relative_path: "cxx/nve-fabric-bridge/include/nve_abi.generated.h".to_owned(),
             content: c_header.clone(),
         },
         GeneratedFile {
-            relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.h".to_owned(),
+            relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.generated.h"
+                .to_owned(),
             content: c_header,
         },
         GeneratedFile {
-            relative_path: "hosts/flutter-plugin/lib/src/nve_core_abi_gen.dart".to_owned(),
+            relative_path: "hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart".to_owned(),
             content: generate_dart_core_abi(),
         },
         GeneratedFile {
             relative_path:
-                "hosts/android-shell/android-app/src/dev/nve/android/NveCoreAbi.java".to_owned(),
+                "hosts/android-shell/android-app/src/dev/nve/android/generated/NveCoreAbi.java"
+                    .to_owned(),
             content: generate_java_core_abi(),
         },
         GeneratedFile {
-            relative_path: "hosts/web-shell/nve_core_abi.ts".to_owned(),
+            relative_path: "hosts/web-shell/nve_core_abi.generated.ts".to_owned(),
             content: generate_ts_core_abi(),
         },
     ]
@@ -1873,25 +1875,26 @@ pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
     let c_header = generate_c_scene_abi_h();
     vec![
         GeneratedFile {
-            relative_path: "cxx/nve-fabric-bridge/include/nve_scene_abi.h".to_owned(),
+            relative_path: "cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h".to_owned(),
             content: c_header.clone(),
         },
         GeneratedFile {
-            relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.h".to_owned(),
+            relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.generated.h"
+                .to_owned(),
             content: c_header,
         },
         GeneratedFile {
-            relative_path: "hosts/flutter-plugin/lib/src/nve_scene_abi_gen.dart".to_owned(),
+            relative_path: "hosts/flutter-plugin/lib/src/nve_scene_abi.generated.dart".to_owned(),
             content: generate_dart_scene_abi(),
         },
         GeneratedFile {
             relative_path:
-                "hosts/android-shell/android-app/src/dev/nve/android/NveSceneBuffer.java"
+                "hosts/android-shell/android-app/src/dev/nve/android/generated/NveSceneBuffer.java"
                     .to_owned(),
             content: generate_java_scene_buffer(),
         },
         GeneratedFile {
-            relative_path: "hosts/web-shell/nve_scene_view.ts".to_owned(),
+            relative_path: "hosts/web-shell/nve_scene_view.generated.ts".to_owned(),
             content: generate_ts_scene_view(),
         },
     ]

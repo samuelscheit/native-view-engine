@@ -49,7 +49,7 @@ const int nveNodeOffsetChildCount = 54;
 const int nveNodeOffsetChildOffset = 56;
 const int nveNodeOffsetZIndex = 60;
 
-/// 64-byte zero-decode render node (`NveRenderNode` in `nve_scene_abi.h`).
+/// 64-byte zero-decode render node (`NveRenderNode` in `nve_scene_abi.generated.h`).
 final class NveRenderNode extends ffi.Struct {
   @ffi.Uint32()
   external int nodeId; // offset 0
@@ -93,7 +93,7 @@ final class NveRenderNode extends ffi.Struct {
   external int zIndex; // offset 60
 }
 
-/// Zero-decode scene snapshot header + slab pointers (`NveSceneView` in `nve_scene_abi.h`).
+/// Zero-decode scene snapshot header + slab pointers (`NveSceneView` in `nve_scene_abi.generated.h`).
 final class NveSceneView extends ffi.Struct {
   @ffi.Uint64()
   external int schemaHash;

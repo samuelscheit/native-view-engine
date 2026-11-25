@@ -2,7 +2,7 @@ import 'package:flutter/rendering.dart';
 
 import 'command_decoder.dart';
 import 'nve_canvas_controller.dart';
-import 'nve_scene_abi_gen.dart';
+import 'nve_scene_abi.generated.dart';
 import 'scene_canvas_store.dart';
 
 /// Shared live Flutter [SemanticsNode] assembler for [RenderNveCanvas], supporting both

@@ -1,5 +1,5 @@
-//! Declarative single-source specification for NVE's Core C ABI (`nve_abi.h`,
-//! `nve_core_abi_gen.dart`, `NveCoreAbi.java`, `nve_core_abi.ts`).
+//! Declarative single-source specification for NVE's Core C ABI (`nve_abi.generated.h`,
+//! `nve_core_abi.generated.dart`, `generated/NveCoreAbi.java`, `nve_core_abi.generated.ts`).
 //!
 //! Dogfoods NVE's own Nitro-style Rust-first Hybrid FFI parser & generator
 //! (`crates/nve-codegen/src/hybrid/`).

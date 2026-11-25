@@ -1,4 +1,4 @@
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 #include "nve_rn_component.hpp"
 
 #include <cmath>

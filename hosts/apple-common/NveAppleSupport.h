@@ -18,9 +18,9 @@ typedef UIFont NvePlatformFont;
 
 #import "NveAppleImageCache.h"
 
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 #include "nve_rn_component.hpp"
-#include "nve_scene_abi.h"
+#include "nve_scene_abi.generated.h"
 
 #include <cstdint>
 #include <string>

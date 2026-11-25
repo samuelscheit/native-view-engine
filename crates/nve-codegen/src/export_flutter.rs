@@ -22,7 +22,7 @@ pub fn generate_export_flutter(spec: &NveExportSpec) -> Result<ExportFlutterOutp
     Ok(ExportFlutterOutput {
         spec: spec.clone(),
         dart_widget: GeneratedFile {
-            relative_path: format!("{file_stem}.dart"),
+            relative_path: format!("{file_stem}.generated.dart"),
             content,
         },
     })

@@ -33,7 +33,7 @@ void _writeEventHeader(
 
 void main() {
   group('ABI constants and enums', () {
-    test('interface IDs match nve_abi.h', () {
+    test('interface IDs match nve_abi.generated.h', () {
       expect(nveIfaceSurface, 1);
       expect(nveIfaceLayout, 2);
       expect(nveIfaceComponent, 3);

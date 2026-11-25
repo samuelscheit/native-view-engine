@@ -266,13 +266,13 @@ fn raw_scene_ref_rejects_corrupt_views() {
 #[test]
 fn checked_in_c_header_matches_compile_time_schema_hash() {
     let header_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../cxx/nve-fabric-bridge/include/nve_scene_abi.h");
+        .join("../../cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h");
     let content = std::fs::read_to_string(&header_path)
-        .expect("read generated cxx/nve-fabric-bridge/include/nve_scene_abi.h");
+        .expect("read generated cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h");
     let expected_macro = format!("0x{NVE_SCENE_SCHEMA_HASH:016X}ULL");
     assert!(
         content.contains(&expected_macro),
-        "nve_scene_abi.h schema hash drift! Expected {expected_macro} in {}",
+        "nve_scene_abi.generated.h schema hash drift! Expected {expected_macro} in {}",
         header_path.display()
     );
 }

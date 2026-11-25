@@ -3,7 +3,7 @@
 #include "mock_jsi_recorder.hpp"
 #include "nve_host_runtime.hpp"
 #include "nve_pair_client.hpp"
-#include "nve_scene_abi.h"
+#include "nve_scene_abi.generated.h"
 
 #include <arpa/inet.h>
 #include <jni.h>

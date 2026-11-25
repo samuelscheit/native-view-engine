@@ -287,6 +287,15 @@ fn generates_all_6_targets_deterministically_with_zero_json() {
         assert!(!output.files.is_empty());
         for file in &output.files {
             assert!(!file.content.is_empty());
+            let fname = Path::new(&file.relative_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap();
+            assert!(
+                fname.contains(".generated."),
+                "{} must obey the `<name>.generated.<ext>` naming convention",
+                file.relative_path
+            );
             // Guarantee zero JSON runtime usage across all 6 targets
             assert!(
                 !file.content.contains("serde_json"),
@@ -440,9 +449,9 @@ fn programmatic_rust_dsl_spec_matches_parsed_spec() {
     dsl.validate().expect("programmatic spec should validate");
     let outputs = generate_hybrid_all(&dsl, HybridTarget::ALL).expect("generate all targets");
     assert_eq!(outputs.len(), 6);
-    assert_eq!(outputs[0].files[0].relative_path, "mini_math_hybrid.rs");
-    assert_eq!(outputs[1].files[0].relative_path, "MiniMathHybridAbi.h");
-    assert_eq!(outputs[1].files[1].relative_path, "MiniMathHybridSpec.hpp");
+    assert_eq!(outputs[0].files[0].relative_path, "mini_math_hybrid.generated.rs");
+    assert_eq!(outputs[1].files[0].relative_path, "MiniMathHybridAbi.generated.h");
+    assert_eq!(outputs[1].files[1].relative_path, "MiniMathHybridSpec.generated.hpp");
 }
 
 #[test]
@@ -578,14 +587,14 @@ fn real_compiler_verifies_c11_and_cpp20_headers() {
     cpp_out.write_to_dir(&dir).unwrap();
 
     let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
-    let abi_h = dir.join("CryptoHybridAbi.h");
+    let abi_h = dir.join("CryptoHybridAbi.generated.h");
 
     // 1. Verify pure C11 header directly (`-x c-header`) AND included from a C11 translation unit
     let c_driver = dir.join("driver.c");
     std::fs::write(
         &c_driver,
         r#"
-#include "CryptoHybridAbi.h"
+#include "CryptoHybridAbi.generated.h"
 int _check_c11(const NveHybridCryptoVTable* vt) {
   return vt && vt->abi_version == NVE_HYBRID_ABI_VERSION
       && vt->interface_id == NVE_HYBRID_CRYPTO_INTERFACE_ID
@@ -635,7 +644,7 @@ int _check_c11(const NveHybridCryptoVTable* vt) {
     std::fs::write(
         &cpp_driver,
         r#"
-#include "CryptoHybridSpec.hpp"
+#include "CryptoHybridSpec.generated.hpp"
 void _check_instantiation(const NveHybridCryptoVTable* cvt, const NveHybridVideoSurfaceVTable* vvt) {
   nve::hybrid::CryptoClient crypto(cvt);
   (void)crypto.add(1, 2);
@@ -709,7 +718,7 @@ struct JNIEnv {
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(format!("-I{}", nve_inc.display()))
         .arg(format!("-I{}", dir.display()))
-        .arg(dir.join("CryptoHybridJni.cpp"))
+        .arg(dir.join("CryptoHybridJni.generated.cpp"))
         .output()
         .expect("run clang++ on generated JNI C++20 glue");
     assert!(
@@ -804,8 +813,8 @@ fn real_compiler_verifies_swift_direct_c_interop() {
     swift_out.write_to_dir(&dir).unwrap();
 
     let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
-    let abi_h = dir.join("CryptoHybridAbi.h");
-    let swift_file = dir.join("CryptoHybridSpec.swift");
+    let abi_h = dir.join("CryptoHybridAbi.generated.h");
+    let swift_file = dir.join("CryptoHybridSpec.generated.swift");
 
     let mut swift_cmd = Command::new("swiftc");
     swift_cmd
@@ -843,14 +852,20 @@ fn real_compiler_verifies_generated_rust_against_nve_abi_with_zero_warnings() {
 
     let dir = temp_test_dir("rust");
     rust_out.write_to_dir(&dir).unwrap();
-    let rs_file = dir.join("crypto_hybrid.rs");
+    let rs_file = dir.join("crypto_hybrid.generated.rs");
 
     // Locate `libnve_abi-*.rlib` and dependency search directories.
     let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
 
     let out_rlib = dir.join("libcrypto_hybrid_check.rlib");
     let mut rustc_cmd = Command::new("rustc");
-    rustc_cmd.args(["--edition=2024", "--crate-type=lib", "-D", "warnings"]);
+    rustc_cmd.args([
+        "--edition=2024",
+        "--crate-type=lib",
+        "--crate-name=crypto_hybrid",
+        "-D",
+        "warnings",
+    ]);
     add_dep_search_dirs(&mut rustc_cmd, &dir, &dep_dirs);
     let rustc_check = rustc_cmd
         .arg("--extern")
@@ -1139,7 +1154,9 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         return;
     }
 
-    let mut c_src = String::from("#include <stddef.h>\n#include <stdalign.h>\n#include \"nve_abi.h\"\n\n");
+    let mut c_src = String::from(
+        "#include <stddef.h>\n#include <stdalign.h>\n#include \"nve_abi.generated.h\"\n\n",
+    );
 
     let mut check_layout = |c_ty: &str, sz: usize, al: usize, fields: &[(&str, usize)]| {
         c_src.push_str(&format!(
@@ -1262,10 +1279,10 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         .arg(format!("-I{}", nve_inc.display()))
         .arg(&c_file)
         .output()
-        .expect("run clang to verify Rust offset_of! matches C offsetof in nve_abi.h");
+        .expect("run clang to verify Rust offset_of! matches C offsetof in nve_abi.generated.h");
     assert!(
         check.status.success(),
-        "Rust offset_of! vs C nve_abi.h offsetof mismatch:\nstdout:\n{}\nstderr:\n{}\nC source:\n{}",
+        "Rust offset_of! vs C nve_abi.generated.h offsetof mismatch:\nstdout:\n{}\nstderr:\n{}\nC source:\n{}",
         String::from_utf8_lossy(&check.stdout),
         String::from_utf8_lossy(&check.stderr),
         c_src
@@ -1291,15 +1308,21 @@ fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
 
     let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
 
-    // 1. Compile generated `crypto_hybrid.rs` as an rlib
+    // 1. Compile generated `crypto_hybrid.generated.rs` as an rlib
     let hybrid_rlib = dir.join("libcrypto_hybrid.rlib");
     let mut hybrid_cmd = Command::new("rustc");
-    hybrid_cmd.args(["--edition=2024", "--crate-type=lib", "-D", "warnings"]);
+    hybrid_cmd.args([
+        "--edition=2024",
+        "--crate-type=lib",
+        "--crate-name=crypto_hybrid",
+        "-D",
+        "warnings",
+    ]);
     add_dep_search_dirs(&mut hybrid_cmd, &dir, &dep_dirs);
     let st = hybrid_cmd
         .arg("--extern")
         .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(dir.join("crypto_hybrid.rs"))
+        .arg(dir.join("crypto_hybrid.generated.rs"))
         .arg("-o")
         .arg(&hybrid_rlib)
         .output()
@@ -1433,7 +1456,7 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
         r#"
 #include <cassert>
 #include <stdexcept>
-#include "CryptoHybridSpec.hpp"
+#include "CryptoHybridSpec.generated.hpp"
 
 int main() {
   using namespace nve::hybrid;
@@ -1709,7 +1732,7 @@ pub trait SafeBannerSpec {
             &driver,
             r#"
 #include <cassert>
-#include "SafeBannerHybridSpec.hpp"
+#include "SafeBannerHybridSpec.generated.hpp"
 void check() {
   nve::hybrid::SafeBannerProps p;
   assert(p.envTemplate == "$HOME/${USER}");
@@ -1740,7 +1763,7 @@ void check() {
         swift_cmd
             .arg("-typecheck")
             .arg("-import-objc-header")
-            .arg(dir.join("SafeBannerHybridAbi.h"))
+            .arg(dir.join("SafeBannerHybridAbi.generated.h"))
             .arg("-I")
             .arg(&nve_inc)
             .arg("-I")
@@ -1749,7 +1772,7 @@ void check() {
             swift_cmd.arg(runtime_file);
         }
         let out = swift_cmd
-            .arg(dir.join("SafeBannerHybridSpec.swift"))
+            .arg(dir.join("SafeBannerHybridSpec.generated.swift"))
             .output()
             .expect("swiftc adversarial hybrid swift");
         assert!(
@@ -1791,12 +1814,18 @@ void check() {
     rust_out.write_to_dir(&dir).unwrap();
     let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
     let mut adv_cmd = Command::new("rustc");
-    adv_cmd.args(["--edition=2024", "--crate-type=lib", "-D", "warnings"]);
+    adv_cmd.args([
+        "--edition=2024",
+        "--crate-type=lib",
+        "--crate-name=safe_banner_hybrid",
+        "-D",
+        "warnings",
+    ]);
     add_dep_search_dirs(&mut adv_cmd, &dir, &dep_dirs);
     let out = adv_cmd
         .arg("--extern")
         .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(dir.join("safe_banner_hybrid.rs"))
+        .arg(dir.join("safe_banner_hybrid.generated.rs"))
         .arg("-o")
         .arg(dir.join("libsafe_banner_hybrid.rlib"))
         .output()

@@ -1,6 +1,6 @@
 //! TypeScript / WASM target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits `<stem>_hybrid.ts` with:
+//! Emits `<stem>_hybrid.generated.ts` with:
 //! - Typed TypeScript enums, interfaces, props, and event payloads
 //! - Exact `INTERFACE_ID` and `SCHEMA_HASH` (`bigint`) constants
 //! - Zero-JSON `DataView` / `Uint8Array` compact binary `NveBinValue` encoder & decoder
@@ -17,7 +17,7 @@ use crate::hybrid::ir::{
 use crate::ir::GeneratedFile;
 use crate::naming::{escape_ts_single_quoted, to_camel_case, to_pascal_case, to_snake_case};
 
-/// Emits `<stem>_hybrid.ts` with typed interfaces and direct `DataView`/`Uint8Array` WASM bridge.
+/// Emits `<stem>_hybrid.generated.ts` with typed interfaces and direct `DataView`/`Uint8Array` WASM bridge.
 pub fn generate_hybrid_ts(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
     let stem = spec.stem_snake();
@@ -54,7 +54,7 @@ pub fn generate_hybrid_ts(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, C
     }
 
     Ok(vec![GeneratedFile {
-        relative_path: format!("{stem}_hybrid.ts"),
+        relative_path: format!("{stem}_hybrid.generated.ts"),
         content: out,
     }])
 }

@@ -1,6 +1,6 @@
 //! Swift 5.9+ target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits `<Stem>HybridSpec.swift` targeting direct C interop with `<Stem>HybridAbi.h`:
+//! Emits `<Stem>HybridSpec.generated.swift` targeting direct C interop with `<Stem>HybridAbi.generated.h`:
 //! - Zero `@objc`, zero `NSObject`, zero `objc_msgSend`, zero JSON
 //! - Native Swift `enum`, `struct`, `public protocol Hybrid<Name>Spec`
 //! - `public final class <Name>HybridClient` invoking C vtable function pointers directly
@@ -20,7 +20,7 @@ use crate::naming::{
     to_pascal_case,
 };
 
-/// Emits `<Stem>HybridSpec.swift` targeting direct C interop with `<Stem>HybridAbi.h`.
+/// Emits `<Stem>HybridSpec.generated.swift` targeting direct C interop with `<Stem>HybridAbi.generated.h`.
 pub fn generate_hybrid_swift(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
     let stem = spec.stem_pascal();
@@ -33,7 +33,7 @@ pub fn generate_hybrid_swift(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>
     .unwrap();
     writeln!(
         out,
-        "// Direct C-ABI interop against `{stem}HybridAbi.h`: zero Objective-C runtime bridging, zero JSON."
+        "// Direct C-ABI interop against `{stem}HybridAbi.generated.h`: zero Objective-C runtime bridging, zero JSON."
     )
     .unwrap();
     writeln!(out).unwrap();
@@ -63,7 +63,7 @@ pub fn generate_hybrid_swift(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>
     out.push_str(swift_optional_unwrap_extension());
 
     Ok(vec![GeneratedFile {
-        relative_path: format!("{stem}HybridSpec.swift"),
+        relative_path: format!("{stem}HybridSpec.generated.swift"),
         content: out,
     }])
 }

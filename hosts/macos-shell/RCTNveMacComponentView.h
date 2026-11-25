@@ -1,5 +1,5 @@
 #import <AppKit/AppKit.h>
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 
 #if defined(NVE_WITH_RN_FABRIC) && NVE_WITH_RN_FABRIC
 #import <React/RCTViewComponentView.h>

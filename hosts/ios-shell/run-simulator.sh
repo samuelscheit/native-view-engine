@@ -152,7 +152,8 @@ if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG
 fi
 
 HEADER_DEPS=(
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.h"
+  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.generated.h"
+  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_draw_list.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_host_runtime.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_pair_client.hpp"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 
 #include <array>
 #include <atomic>

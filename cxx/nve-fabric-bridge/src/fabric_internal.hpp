@@ -3,9 +3,9 @@
 #include "command_decoder.hpp"
 #include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 #include "nve_rn_component.hpp"
-#include "nve_scene_abi.h"
+#include "nve_scene_abi.generated.h"
 
 #include <algorithm>
 #include <chrono>

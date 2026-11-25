@@ -6,7 +6,7 @@ import 'package:flutter/rendering.dart';
 
 import 'command_types.dart';
 import 'draw_list_painter.dart';
-import 'nve_scene_abi_gen.dart';
+import 'nve_scene_abi.generated.dart';
 import 'scene_image_cache.dart';
 
 export 'draw_list_painter.dart';

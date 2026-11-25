@@ -1,6 +1,6 @@
 #pragma once
 
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 #include "nve_pair_client.hpp"
 #include "nve_rn_component.hpp"
 #include "nve_snapshot.hpp"

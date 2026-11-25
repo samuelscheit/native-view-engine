@@ -7,7 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'direct_ffi.dart';
 import 'event_codec.dart';
 import 'nve_bin_value.dart';
-import 'nve_core_abi_gen.dart';
+import 'nve_core_abi.generated.dart';
 
 /// Managed Dart wrapper around a native NVE module resolved via `nve_get_interface`.
 class NveAppInstance {

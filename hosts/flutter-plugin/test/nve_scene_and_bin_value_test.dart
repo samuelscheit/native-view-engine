@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_hybrid_runtime.dart';
-import 'package:nve_flutter/src/nve_scene_abi_gen.dart';
+import 'package:nve_flutter/src/nve_scene_abi.generated.dart';
 
 class _NativeAlloc {
   static final ffi.DynamicLibrary _libc = Platform.isWindows

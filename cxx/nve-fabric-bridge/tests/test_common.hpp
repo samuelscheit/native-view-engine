@@ -3,7 +3,7 @@
 #include "command_decoder.hpp"
 #include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 #include "nve_host_runtime.hpp"
 #include "nve_rn_component.hpp"
 #include "nve_scene_builder.hpp"

@@ -1,6 +1,6 @@
 //! Rust target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits a self-contained Rust module (`<stem>_hybrid.rs`) with zero JSON dependencies:
+//! Emits a self-contained Rust module (`<stem>_hybrid.generated.rs`) with zero JSON dependencies:
 //! - `#[repr(u32)]` enums with safe `from_u32` / `to_u32`
 //! - `#[repr(C)]` POD structs (passed directly by value) and idiomatic owned Rust structs
 //! - Direct C-ABI `NveHybridOwnedBytes`, `NveHybridStatus`, and POD `NveHybridOpt*` structs
@@ -80,7 +80,7 @@ pub fn generate_hybrid_rust(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     out.push_str(&body);
 
     Ok(vec![GeneratedFile {
-        relative_path: format!("{stem}_hybrid.rs"),
+        relative_path: format!("{stem}_hybrid.generated.rs"),
         content: out,
     }])
 }

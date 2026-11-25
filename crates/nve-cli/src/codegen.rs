@@ -268,10 +268,10 @@ mod tests {
         assert_eq!(written.len(), 10);
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
-        let target_file = tmp.join("hosts/web-shell/nve_core_abi.ts");
+        let target_file = tmp.join("hosts/web-shell/nve_core_abi.generated.ts");
         std::fs::write(&target_file, "// drifted\n").unwrap();
         let drift_err = run_codegen_abi(&tmp, true).unwrap_err();
-        assert!(drift_err.contains("hosts/web-shell/nve_core_abi.ts"));
+        assert!(drift_err.contains("hosts/web-shell/nve_core_abi.generated.ts"));
 
         let spec_file = tmp.join("greeter.nve.rs");
         std::fs::write(
@@ -287,12 +287,14 @@ pub trait GreeterSpec {
         let hybrid_out = tmp.join("hybrid_out");
         let summary = run_codegen_hybrid(&spec_file, "all", &hybrid_out).expect("hybrid gen");
         assert_eq!(summary.len(), 6);
-        assert!(hybrid_out.join("rust/greeter_hybrid.rs").exists());
-        assert!(hybrid_out.join("cpp/GreeterHybridAbi.h").exists());
-        assert!(hybrid_out.join("cpp/GreeterHybridSpec.hpp").exists());
-        assert!(hybrid_out.join("swift/GreeterHybridSpec.swift").exists());
-        assert!(hybrid_out.join("dart/greeter_hybrid.dart").exists());
-        assert!(hybrid_out.join("ts/greeter_hybrid.ts").exists());
+        assert!(hybrid_out.join("rust/greeter_hybrid.generated.rs").exists());
+        assert!(hybrid_out.join("cpp/GreeterHybridAbi.generated.h").exists());
+        assert!(hybrid_out.join("cpp/GreeterHybridSpec.generated.hpp").exists());
+        assert!(hybrid_out.join("swift/GreeterHybridSpec.generated.swift").exists());
+        assert!(hybrid_out.join("kotlin/GreeterHybridSpec.generated.kt").exists());
+        assert!(hybrid_out.join("kotlin/GreeterHybridJni.generated.cpp").exists());
+        assert!(hybrid_out.join("dart/greeter_hybrid.generated.dart").exists());
+        assert!(hybrid_out.join("ts/greeter_hybrid.generated.ts").exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

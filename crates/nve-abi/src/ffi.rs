@@ -14,7 +14,7 @@ use std::ffi::c_void;
 use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
-/// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.h`).
+/// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.generated.h`).
 pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x54A4_A32B_6F25_8107;
 
 pub const NVE_IFACE_SURFACE: u32 = 1;
@@ -188,14 +188,14 @@ mod tests {
 
     #[test]
     fn checked_in_core_c_header_matches_compile_time_schema_hash() {
-        let header_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cxx/nve-fabric-bridge/include/nve_abi.h");
+        let header_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../cxx/nve-fabric-bridge/include/nve_abi.generated.h");
         let content = std::fs::read_to_string(&header_path)
-            .expect("read generated cxx/nve-fabric-bridge/include/nve_abi.h");
+            .expect("read generated cxx/nve-fabric-bridge/include/nve_abi.generated.h");
         let expected_macro = format!("0x{NVE_CORE_ABI_SCHEMA_HASH:016X}ULL");
         assert!(
             content.contains(&expected_macro),
-            "nve_abi.h schema hash drift! Expected {expected_macro} in {}",
+            "nve_abi.generated.h schema hash drift! Expected {expected_macro} in {}",
             header_path.display()
         );
     }

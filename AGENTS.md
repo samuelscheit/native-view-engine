@@ -4,7 +4,7 @@ Concise architecture invariants, engineering rules, and verified build/test comm
 
 ## Architecture Invariants
 
-- **Single binary IR & modular C ABI** (`crates/nve-abi`, `cxx/nve-fabric-bridge/include/nve_abi.h`, `crates/nve-engine`):
+- **Single binary IR & modular C ABI** (`crates/nve-abi`, `cxx/nve-fabric-bridge/include/nve_abi.generated.h`, `crates/nve-engine`):
   - Every frame crosses the Rust/host boundary as one flat, batched binary `CommandBuffer` and `EventRing` (`submit_frame`). Never add per-prop FFI/JNI crossings or `folly::dynamic` serialization.
   - Expose app modules solely via `nve_get_interface(uint32_t)` (`NVE_IFACE_SURFACE=1`, `NVE_IFACE_LAYOUT=2`, `NVE_IFACE_COMPONENT=3`, `NVE_IFACE_DEV=4`), backed by the safe Rust `NveApp` trait and `export_nve_app!` macro. No monolithic vtables or legacy compatibility shims.
   - Keep `crates/nve-engine` framework-agnostic (zero dependency on `dioxus-core`).
@@ -24,6 +24,7 @@ Concise architecture invariants, engineering rules, and verified build/test comm
 - **Root causes only**: Fix underlying invariants rather than patching symptoms.
 - **Deep tests & live benchmarks**: Write edge-case, property, and fuzz tests (truncated/corrupt buffers, layout/style inheritance, hot-swap state preservation, ABI error paths) instead of smoke tests. Keep statistical benchmarks (`cargo bench`, `nve_fabric_bridge_bench`) green.
 - **Keep files modular**: Split oversized files along clear subsystem boundaries.
+- **Generated file naming invariant**: Every generated non-Java file MUST contain `.generated.` in its filename (`<name>.generated.<ext>`), e.g., `nve_abi.generated.h`, `nve_core_abi.generated.dart`, `nve_core_abi.generated.ts`, `<Stem>HybridSpec.generated.{hpp,swift,kt}`. Every generated Java file MUST live inside a `generated/` package directory (e.g., `package dev.nve.android.generated;` in `.../generated/NveCoreAbi.java`) because `javac` forbids dots in `public class` filenames. Never add legacy un-suffixed symlinks or shim headers.
 
 ## Orchestration & Git Workflow
 

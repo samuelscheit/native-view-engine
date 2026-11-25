@@ -1,5 +1,5 @@
 #include "jni_test_recorder.h"
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 
 #include <algorithm>
 #include <cstring>

@@ -21,7 +21,7 @@ pub fn generate_export_compose(spec: &NveExportSpec) -> Result<ExportComposeOutp
     Ok(ExportComposeOutput {
         spec: spec.clone(),
         compose_kt: GeneratedFile {
-            relative_path: format!("{}Composable.kt", spec.name),
+            relative_path: format!("{}Composable.generated.kt", spec.name),
             content,
         },
     })

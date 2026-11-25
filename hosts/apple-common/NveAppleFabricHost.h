@@ -1,7 +1,7 @@
 #pragma once
 
 #import <Foundation/Foundation.h>
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

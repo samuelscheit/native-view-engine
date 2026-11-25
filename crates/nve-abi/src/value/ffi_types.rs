@@ -31,7 +31,7 @@ pub(super) unsafe fn guarded_slice<'a, T>(ptr: *const T, len: usize) -> Option<&
     Some(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
-/// Borrowed UTF-8 string slice matching `NveStrSlice` in `nve_abi.h`.
+/// Borrowed UTF-8 string slice matching `NveStrSlice` in `nve_abi.generated.h`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NveStrSlice {
@@ -143,7 +143,7 @@ pub union NveValueData {
     pub map_val: NveValueMap,
 }
 
-/// Tagged union value matching `struct NveValue` in `nve_abi.h` (24 bytes, align 8 on 64-bit).
+/// Tagged union value matching `struct NveValue` in `nve_abi.generated.h` (24 bytes, align 8 on 64-bit).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NveValue {
@@ -259,7 +259,7 @@ impl Default for NveValue {
     }
 }
 
-/// Key/value entry matching `struct NveMapEntry` in `nve_abi.h` (40 bytes, align 8 on 64-bit).
+/// Key/value entry matching `struct NveMapEntry` in `nve_abi.generated.h` (40 bytes, align 8 on 64-bit).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NveMapEntry {
@@ -277,7 +277,7 @@ impl NveMapEntry {
     }
 }
 
-/// Direct FFI event matching `struct NveDirectEvent` in `nve_abi.h` (96 bytes, align 8 on 64-bit).
+/// Direct FFI event matching `struct NveDirectEvent` in `nve_abi.generated.h` (96 bytes, align 8 on 64-bit).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NveDirectEvent {
@@ -382,7 +382,7 @@ impl NveDirectEvent {
     }
 }
 
-/// Contiguous batch of direct events matching `struct NveEventBatch` in `nve_abi.h`.
+/// Contiguous batch of direct events matching `struct NveEventBatch` in `nve_abi.generated.h`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NveEventBatch {
@@ -422,7 +422,7 @@ impl NveEventBatch {
     }
 }
 
-// Compile-time C ABI layout verification matching `cxx/nve-fabric-bridge/include/nve_abi.h`.
+// Compile-time C ABI layout verification matching `cxx/nve-fabric-bridge/include/nve_abi.generated.h`.
 const _: () = {
     // Pointer-width-independent field offsets (must hold on 32-bit and 64-bit targets).
     assert!(offset_of!(NveBufferSlice, ptr) == 0);

@@ -2,7 +2,7 @@
 
 ## 1. Core Thesis
 
-`native-view-engine` separates **UI authoring**, **mutation transport**, and **platform rendering** along one narrow, zero-overhead boundary: a versioned, flat binary `CommandBuffer` and `EventRing` (`nve-abi` / `include/nve_abi.h`).
+`native-view-engine` separates **UI authoring**, **mutation transport**, and **platform rendering** along one narrow, zero-overhead boundary: a versioned, flat binary `CommandBuffer` and `EventRing` (`nve-abi` / `include/nve_abi.generated.h`).
 
 This eliminates React Native's JS reconciler, JSI per-prop crossings, `RawProps` string parsing, and `folly::dynamic` serialization while preserving **real platform-native views** (iOS `UIView`, Android `View`) and **native RN Fabric ecosystem compatibility** — and lets the exact same binary IR drive **Skia** (macOS, Windows, Linux, iOS, Android), **Web DOM/WASM**, and **Headless** test hosts.
 
@@ -10,7 +10,7 @@ This eliminates React Native's JS reconciler, JSI per-prop crossings, `RawProps`
 
 | Layer | Crate / Dir | Responsibility |
 | :--- | :--- | :--- |
-| **Universal IR & C ABI** | `crates/nve-abi`, `cxx/nve-fabric-bridge/include/nve_abi.h` | Flat binary `CommandBuffer` encoder/decoder, `EventRing`, and modular `nve_get_interface(uint32_t)` C ABI (`NveSurfaceApi`, `NveLayoutApi`, `NveComponentApi`, `NveDevApi`). |
+| **Universal IR & C ABI** | `crates/nve-abi`, `cxx/nve-fabric-bridge/include/nve_abi.generated.h` | Flat binary `CommandBuffer` encoder/decoder, `EventRing`, and modular `nve_get_interface(uint32_t)` C ABI (`NveSurfaceApi`, `NveLayoutApi`, `NveComponentApi`, `NveDevApi`). |
 | **Typed Primitives** | `crates/nve-components` | Cross-platform primitives (`View`, `Text`, `ScrollView`, `Image`, `TextInput`, `Pressable`, `SkiaCanvas`, `Custom`), Yoga/Taffy-aligned `LayoutStyle`, and `ViewStyle`. |
 | **Core Engine** | `crates/nve-engine` | Safe `NveApp` trait + `export_nve_app!` macro, `RenderBackend` trait, `SurfaceRunner`, 6-stage `FrameProfiler` + Perfetto trace export, 2-tier hot-reload client & modular `cdylib` loader. |
 | **Interop Orchestrator** | `crates/nve-interop` | Multi-framework `SurfaceOrchestrator`, intrinsic `LayoutNegotiator`, nested-scroll `GestureArbitrator`, `NveChannelBus`, `RenderHandoff`, and opt-in `<Island>` specs. |

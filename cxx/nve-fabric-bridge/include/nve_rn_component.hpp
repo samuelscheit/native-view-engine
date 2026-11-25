@@ -1,7 +1,7 @@
 #pragma once
 
-#include "nve_abi.h"
-#include "nve_scene_abi.h"
+#include "nve_abi.generated.h"
+#include "nve_scene_abi.generated.h"
 #include "nve_value.hpp"
 
 #include <cstddef>

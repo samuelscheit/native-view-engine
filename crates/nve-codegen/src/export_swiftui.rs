@@ -21,7 +21,7 @@ pub fn generate_export_swiftui(spec: &NveExportSpec) -> Result<ExportSwiftUiOutp
     Ok(ExportSwiftUiOutput {
         spec: spec.clone(),
         swift_view: GeneratedFile {
-            relative_path: format!("{}View.swift", spec.name),
+            relative_path: format!("{}View.generated.swift", spec.name),
             content,
         },
     })

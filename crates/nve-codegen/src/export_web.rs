@@ -21,11 +21,11 @@ pub fn generate_export_web_component(
     spec.validate()?;
     let tag_name = web_component_tag(&spec.name);
     let element_js = GeneratedFile {
-        relative_path: format!("{tag_name}.js"),
+        relative_path: format!("{tag_name}.generated.js"),
         content: emit_web_component_js(spec, &tag_name),
     };
     let types_dts = GeneratedFile {
-        relative_path: format!("{tag_name}.d.ts"),
+        relative_path: format!("{tag_name}.generated.d.ts"),
         content: emit_web_component_dts(spec, &tag_name),
     };
 

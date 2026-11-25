@@ -1,4 +1,4 @@
-#include "nve_abi.h"
+#include "nve_abi.generated.h"
 
 /* Translation unit ensuring SwiftPM produces CNveAbi.o cleanly when linking static archives. */
 uint32_t nve_swiftui_abi_version(void) {

@@ -497,21 +497,27 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
 
     assert_eq!(
         out.native_component_ts.relative_path,
-        "NveCounterCardNativeComponent.ts"
+        "NveCounterCardNativeComponent.generated.ts"
     );
-    assert_eq!(out.cpp_bridge_hpp.relative_path, "NveCounterCardNveBridge.hpp");
-    assert_eq!(out.cpp_bridge_cpp.relative_path, "NveCounterCardNveBridge.cpp");
+    assert_eq!(
+        out.cpp_bridge_hpp.relative_path,
+        "NveCounterCardNveBridge.generated.hpp"
+    );
+    assert_eq!(
+        out.cpp_bridge_cpp.relative_path,
+        "NveCounterCardNveBridge.generated.cpp"
+    );
     assert_eq!(
         out.ios_component_view_mm.relative_path,
-        "NveCounterCardComponentView.mm"
+        "NveCounterCardComponentView.generated.mm"
     );
     assert_eq!(
         out.android_view_manager_kt.relative_path,
-        "NveCounterCardViewManager.kt"
+        "NveCounterCardViewManager.generated.kt"
     );
     assert_eq!(
         out.windows_component_view_hpp.relative_path,
-        "NveCounterCardRnwComponentView.hpp"
+        "NveCounterCardRnwComponentView.generated.hpp"
     );
     assert_eq!(out.files().len(), 6);
 
@@ -524,7 +530,7 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(ts.contains("onCountChange?: DirectEventHandler<CountChangeEvent>;"));
     assert!(ts.contains("onReset?: BubblingEventHandler<null>;"));
     assert!(ts.contains("export default codegenNativeComponent<NativeProps>('NveCounterCard');"));
-    assert_balanced_delimiters("NveCounterCardNativeComponent.ts", ts);
+    assert_balanced_delimiters("NveCounterCardNativeComponent.generated.ts", ts);
 
     // 2. C++20 glue assertions (verbatim match with Slice 2 `nve_rn_component.hpp`)
     let hpp = &out.cpp_bridge_hpp.content;
@@ -535,8 +541,8 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(cpp.contains("bridge_->update_props(to_prop_map(props), auto_render)"));
     assert!(cpp.contains("bridge_->drain_emitted_events()"));
     assert!(cpp.contains("ev.payload_as_string()"));
-    assert_balanced_delimiters("NveCounterCardNveBridge.hpp", hpp);
-    assert_balanced_delimiters("NveCounterCardNveBridge.cpp", cpp);
+    assert_balanced_delimiters("NveCounterCardNveBridge.generated.hpp", hpp);
+    assert_balanced_delimiters("NveCounterCardNveBridge.generated.cpp", cpp);
 
     // 3. iOS ObjC++ assertions (verbatim match with Slice 2 `RCTNveComponentView.h`)
     let mm = &out.ios_component_view_mm.content;
@@ -546,7 +552,7 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(mm.contains("[self applyPropsDictionary:dict];"));
     assert!(mm.contains("[self drainNveEmittedEvents];"));
     assert!(mm.contains("- (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload"));
-    assert_balanced_delimiters("NveCounterCardComponentView.mm", mm);
+    assert_balanced_delimiters("NveCounterCardComponentView.generated.mm", mm);
 
     // 4. Android Kotlin assertions (wrapping `dev.nve.host.NveNativeBridge`)
     let kt = &out.android_view_manager_kt.content;
@@ -557,7 +563,7 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(kt.contains("@ReactProp(name = \"accentColor\", customType = \"Color\")"));
     assert!(kt.contains("getExportedCustomDirectEventTypeConstants"));
     assert!(kt.contains("getExportedCustomBubblingEventTypeConstants"));
-    assert_balanced_delimiters("NveCounterCardViewManager.kt", kt);
+    assert_balanced_delimiters("NveCounterCardViewManager.generated.kt", kt);
 
     // 4b. Windows RNW Fabric C++20 header assertions (targeting `NveRnwComponentView.hpp`)
     let rnw = &out.windows_component_view_hpp.content;
@@ -567,7 +573,7 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(rnw.contains("register_nve_counter_card_rnw_component"));
     assert!(rnw.contains("nve::win::register_nve_rnw_component"));
     assert!(rnw.contains("L\"NveCounterCard\""));
-    assert_balanced_delimiters("NveCounterCardRnwComponentView.hpp", rnw);
+    assert_balanced_delimiters("NveCounterCardRnwComponentView.generated.hpp", rnw);
 
     // 5. Full bi-directional round-trip: parse our own generated TS right back via `import_rn`!
     let roundtrip = import_rn_source(ts).expect("round-trip parse generated NativeComponent.ts");
@@ -589,7 +595,10 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
 
     // 1. Flutter (Skia -> NveTextureHostWidget; Fabric -> NvePlatformViewWidget)
     let fl_skia = export_flutter(&skia_spec).expect("export_flutter skia");
-    assert_eq!(fl_skia.dart_widget.relative_path, "nve_counter_card.dart");
+    assert_eq!(
+        fl_skia.dart_widget.relative_path,
+        "nve_counter_card.generated.dart"
+    );
     let dart_s = &fl_skia.dart_widget.content;
     assert!(dart_s.contains("import 'dart:ffi' as ffi;"));
     assert!(dart_s.contains("import 'package:nve_flutter/nve_flutter.dart';"));
@@ -603,7 +612,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(dart_s.contains(
         "Platform.isWindows ? 'nve_counter_card.dll' : Platform.isMacOS ? 'libnve_counter_card.dylib' : 'libnve_counter_card.so'"
     ));
-    assert_balanced_delimiters("nve_counter_card.dart", dart_s);
+    assert_balanced_delimiters("nve_counter_card.generated.dart", dart_s);
 
     let fl_fabric = export_flutter(&fabric_spec).expect("export_flutter fabric");
     assert!(fl_fabric
@@ -613,7 +622,10 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
 
     // 2. SwiftUI (`NveSwiftUI.NveSurfaceRepresentable`)
     let sw_out = export_swiftui(&skia_spec).expect("export_swiftui");
-    assert_eq!(sw_out.swift_view.relative_path, "NveCounterCardView.swift");
+    assert_eq!(
+        sw_out.swift_view.relative_path,
+        "NveCounterCardView.generated.swift"
+    );
     let swift = &sw_out.swift_view.content;
     assert!(swift.contains("import SwiftUI"));
     assert!(swift.contains("import NveSwiftUI"));
@@ -622,13 +634,13 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(swift.contains("backend: .skia"));
     assert!(swift.contains("event.decodePayload(NveCounterCardCountChangeEvent.self)"));
     assert!(swift.contains("NveSurfaceController"));
-    assert_balanced_delimiters("NveCounterCardView.swift", swift);
+    assert_balanced_delimiters("NveCounterCardView.generated.swift", swift);
 
     // 3. Jetpack Compose (`dev.nve.compose.NveSurface`)
     let cmp_out = export_compose(&fabric_spec).expect("export_compose");
     assert_eq!(
         cmp_out.compose_kt.relative_path,
-        "NveCounterCardComposable.kt"
+        "NveCounterCardComposable.generated.kt"
     );
     let compose = &cmp_out.compose_kt.content;
     assert!(compose.contains("import dev.nve.compose.NveSurface"));
@@ -637,13 +649,19 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(compose.contains("@Composable\nfun NveCounterCard("));
     assert!(compose.contains("backend = NveRenderBackend.FABRIC"));
     assert!(compose.contains("NveEventKind.CUSTOM"));
-    assert_balanced_delimiters("NveCounterCardComposable.kt", compose);
+    assert_balanced_delimiters("NveCounterCardComposable.generated.kt", compose);
 
     // 4. Web Component (`<nve-counter-card>` + `.d.ts` wrapping `wasm-bindgen`)
     let web_out = export_web_component(&skia_spec).expect("export_web_component");
     assert_eq!(web_out.tag_name, "nve-counter-card");
-    assert_eq!(web_out.element_js.relative_path, "nve-counter-card.js");
-    assert_eq!(web_out.types_dts.relative_path, "nve-counter-card.d.ts");
+    assert_eq!(
+        web_out.element_js.relative_path,
+        "nve-counter-card.generated.js"
+    );
+    assert_eq!(
+        web_out.types_dts.relative_path,
+        "nve-counter-card.generated.d.ts"
+    );
     let js = &web_out.element_js.content;
     let dts = &web_out.types_dts.content;
     assert!(js.contains("export class NveCounterCardElement extends HTMLElement"));
@@ -652,12 +670,12 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(js.contains("mod.mount_nve_component("));
     assert!(js.contains("new CustomEvent('count-change'"));
     assert!(js.contains("customElements.define(tagName, NveCounterCardElement)"));
-    assert_balanced_delimiters("nve-counter-card.js", js);
+    assert_balanced_delimiters("nve-counter-card.generated.js", js);
 
     assert!(dts.contains("export interface NveCounterCardCountChangeDetail"));
     assert!(dts.contains("export interface NveCounterCardEventMap"));
     assert!(dts.contains("'nve-counter-card': NveCounterCardElement;"));
-    assert_balanced_delimiters("nve-counter-card.d.ts", dts);
+    assert_balanced_delimiters("nve-counter-card.generated.d.ts", dts);
 
     // Non-`Nve`-prefixed component name gets prefixed with `nve-` automatically
     let plain_spec = NveExportSpec::new("SparkChart", ExportBackend::Skia);
@@ -922,6 +940,28 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     let update_mode =
         std::env::var("NVE_UPDATE_ABI").is_ok() || std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
     for file in &all_files {
+        let fname = Path::new(&file.relative_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap();
+        if file.relative_path.ends_with(".java") {
+            assert!(
+                file.relative_path.contains("/generated/"),
+                "generated Java file must live inside a `generated/` package directory: {}",
+                file.relative_path
+            );
+            assert!(
+                file.content.contains("package dev.nve.android.generated;"),
+                "generated Java file must declare `package dev.nve.android.generated;`: {}",
+                file.relative_path
+            );
+        } else {
+            assert!(
+                fname.contains(".generated."),
+                "generated non-Java file must contain `.generated.` in filename: {}",
+                file.relative_path
+            );
+        }
         let full_path = repo_root.join(&file.relative_path);
         if update_mode {
             if let Some(parent) = full_path.parent() {

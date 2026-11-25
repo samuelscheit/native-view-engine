@@ -1,10 +1,10 @@
 //! Android Kotlin + C++20 JNI target emitter for NVE Hybrid FFI codegen.
 //!
 //! Emits:
-//! 1. `<Stem>HybridSpec.kt`: `enum class`, `data class` structs/props/events, compact binary
+//! 1. `<Stem>HybridSpec.generated.kt`: `enum class`, `data class` structs/props/events, compact binary
 //!    `NveBinValue` reader/writer over `java.nio.ByteBuffer` (zero `org.json`!),
 //!    `interface Hybrid<Name>Spec`, and `class <Name>HybridClient` with `external fun` bindings.
-//! 2. `<Stem>HybridJni.cpp`: C++20 JNI glue calling `NveHybrid<Name>VTable` directly over
+//! 2. `<Stem>HybridJni.generated.cpp`: C++20 JNI glue calling `NveHybrid<Name>VTable` directly over
 //!    JNI primitives, `GetDirectBufferAddress` (`DirectByteBuffer`), and `GetByteArrayElements`
 //!    (zero `org.json`!).
 
@@ -24,13 +24,13 @@ use crate::naming::{
 const KOTLIN_PACKAGE: &str = "dev.nve.hybrid";
 const JNI_PACKAGE_PREFIX: &str = "Java_dev_nve_hybrid";
 
-/// Emits `<Stem>HybridSpec.kt` and `<Stem>HybridJni.cpp`.
+/// Emits `<Stem>HybridSpec.generated.kt` and `<Stem>HybridJni.generated.cpp`.
 pub fn generate_hybrid_kotlin(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
     let stem = spec.stem_pascal();
-    let kt_name = format!("{stem}HybridSpec.kt");
-    let jni_name = format!("{stem}HybridJni.cpp");
-    let hpp_name = format!("{stem}HybridSpec.hpp");
+    let kt_name = format!("{stem}HybridSpec.generated.kt");
+    let jni_name = format!("{stem}HybridJni.generated.cpp");
+    let hpp_name = format!("{stem}HybridSpec.generated.hpp");
 
     let kt = emit_kotlin_spec(spec);
     let jni = emit_jni_cpp(spec, &hpp_name);

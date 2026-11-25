@@ -1,6 +1,6 @@
 //! Declarative single-source specification for NVE's zero-decode 64-byte
-//! `NveRenderNode` + `NveSceneView` ABI (`nve_scene_abi.h`, `nve_scene_abi_gen.dart`,
-//! `NveSceneBuffer.java`, `nve_scene_view.ts`).
+//! `NveRenderNode` + `NveSceneView` ABI (`nve_scene_abi.generated.h`, `nve_scene_abi.generated.dart`,
+//! `generated/NveSceneBuffer.java`, `nve_scene_view.generated.ts`).
 //!
 //! Dogfoods NVE's own Nitro-style Rust-first Hybrid FFI parser & generator
 //! (`crates/nve-codegen/src/hybrid/`).

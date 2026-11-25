@@ -1,10 +1,10 @@
 //! C11 & C++20 target emitter for NVE Hybrid FFI codegen.
 //!
 //! Emits two clean, zero-JSON headers:
-//! 1. `<Stem>HybridAbi.h`: pure C11 header including `nve_abi.h`, declaring
+//! 1. `<Stem>HybridAbi.generated.h`: pure C11 header including `nve_abi.generated.h`, declaring
 //!    `NVE_HYBRID_<NAME>_INTERFACE_ID`, `NVE_HYBRID_<NAME>_SCHEMA_HASH`, `#[repr(C)]` POD
 //!    structs/enums, `NveHybridOwnedBytes`, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`.
-//! 2. `<Stem>HybridSpec.hpp`: C++20 `namespace nve::hybrid` with `enum class`, native structs,
+//! 2. `<Stem>HybridSpec.generated.hpp`: C++20 `namespace nve::hybrid` with `enum class`, native structs,
 //!    compact binary `NveBinValue` reader/writer, Nitro-style abstract `class Hybrid<Name>Spec`,
 //!    and zero-overhead RAII `class <Name>Client` resolving `nve_get_interface` + checking
 //!    `schema_hash` on construction.
@@ -22,12 +22,12 @@ use crate::naming::{
     to_pascal_case, to_snake_case,
 };
 
-/// Emits `<Stem>HybridAbi.h` (pure C11) and `<Stem>HybridSpec.hpp` (C++20).
+/// Emits `<Stem>HybridAbi.generated.h` (pure C11) and `<Stem>HybridSpec.generated.hpp` (C++20).
 pub fn generate_hybrid_cpp(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
     let stem = spec.stem_pascal();
-    let header_name = format!("{stem}HybridAbi.h");
-    let hpp_name = format!("{stem}HybridSpec.hpp");
+    let header_name = format!("{stem}HybridAbi.generated.h");
+    let hpp_name = format!("{stem}HybridSpec.generated.hpp");
 
     let c_header = emit_c11_header(spec);
     let cpp_header = emit_cpp20_spec(spec, &header_name);
@@ -52,7 +52,7 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
     writeln!(out, "#include <stdbool.h>").unwrap();
     writeln!(out, "#include <stddef.h>").unwrap();
     writeln!(out, "#include <stdint.h>").unwrap();
-    writeln!(out, "#include \"nve_abi.h\"").unwrap();
+    writeln!(out, "#include \"nve_abi.generated.h\"").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "#ifdef __cplusplus").unwrap();
     writeln!(out, "extern \"C\" {{").unwrap();

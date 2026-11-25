@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets
 
 /**
  * Helper for building exact 64-byte little-endian `NveRenderNode` direct `ByteBuffer` slabs
- * matching `crates/nve-abi/src/scene.rs` and `cxx/nve-fabric-bridge/include/nve_scene_abi.h`.
+ * matching `crates/nve-abi/src/scene.rs` and `cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h`.
  */
 class SceneSlabBuilder {
     data class NodeSpec(

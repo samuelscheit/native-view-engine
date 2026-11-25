@@ -1,5 +1,7 @@
 package dev.nve.android;
 
+import dev.nve.android.generated.NveSceneBuffer;
+
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Bitmap;

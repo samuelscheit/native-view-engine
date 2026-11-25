@@ -1,6 +1,6 @@
 //! Flutter / Dart (`dart:ffi`) target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits a standalone, zero-JSON, zero-external-package Dart file (`<stem>_hybrid.dart`):
+//! Emits a standalone, zero-JSON, zero-external-package Dart file (`<stem>_hybrid.generated.dart`):
 //! - Uses only Dart SDK (`dart:convert` UTF-8, `dart:ffi`, `dart:typed_data`)
 //! - Exact `ffi.Struct` definitions for `NveStrSlice`, `NveBufferSlice`, `NveHybridOwnedBytes`,
 //!   `NveValue`, `NveMapEntry`, POD structs, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`
@@ -21,7 +21,7 @@ use crate::naming::{
     to_pascal_case,
 };
 
-/// Emits `<stem>_hybrid.dart` using `dart:ffi` and the shared `package:nve_flutter/nve_hybrid_runtime.dart`.
+/// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and the shared `package:nve_flutter/nve_hybrid_runtime.dart`.
 pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
     let stem = spec.stem_snake();
@@ -84,7 +84,7 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     out.push_str(&body);
 
     Ok(vec![GeneratedFile {
-        relative_path: format!("{stem}_hybrid.dart"),
+        relative_path: format!("{stem}_hybrid.generated.dart"),
         content: out,
     }])
 }
