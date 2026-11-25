@@ -2,6 +2,7 @@
 
 #include "nve_abi.h"
 
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -57,15 +58,35 @@ inline bool is_valid_component_kind(uint16_t kind) noexcept {
   return kind <= NVE_COMP_SKIA_CANVAS || kind == NVE_COMP_CUSTOM;
 }
 
+constexpr float kMaxLayoutScalar = 1e7f;
+
+inline bool is_valid_scalar(float v) noexcept {
+  return std::isfinite(v) && std::fabs(v) <= kMaxLayoutScalar;
+}
+
 inline bool is_valid_dimension(const Dimension& d) noexcept {
-  return d.tag <= 2;
+  return d.tag == 0 || ((d.tag == 1 || d.tag == 2) && is_valid_scalar(d.value));
+}
+
+inline bool is_valid_insets(const EdgeInsets& e) noexcept {
+  return is_valid_scalar(e.top) && is_valid_scalar(e.right) && is_valid_scalar(e.bottom) &&
+         is_valid_scalar(e.left);
 }
 
 inline bool is_valid_layout(const LayoutProps& l) noexcept {
   return is_valid_dimension(l.width) && is_valid_dimension(l.height) &&
          is_valid_dimension(l.min_width) && is_valid_dimension(l.min_height) &&
          is_valid_dimension(l.max_width) && is_valid_dimension(l.max_height) &&
-         l.flex_direction <= 3 && l.justify_content <= 5 && l.align_items <= 4;
+         l.flex_direction <= 3 && l.justify_content <= 5 && l.align_items <= 4 &&
+         is_valid_scalar(l.flex_grow) && l.flex_grow >= 0.0f &&
+         is_valid_scalar(l.flex_shrink) && l.flex_shrink >= 0.0f &&
+         is_valid_scalar(l.gap) && l.gap >= 0.0f &&
+         is_valid_insets(l.padding) && is_valid_insets(l.margin);
+}
+
+inline bool is_valid_style(const StyleProps& s) noexcept {
+  return is_valid_scalar(s.border_width) && is_valid_scalar(s.border_radius) &&
+         is_valid_scalar(s.opacity) && is_valid_scalar(s.font_size);
 }
 
 class BinaryReader {

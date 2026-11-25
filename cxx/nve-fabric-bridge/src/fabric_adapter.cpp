@@ -175,6 +175,9 @@ struct ShadowNodeEntry {
   RawPropMap raw_props;
   uint64_t event_mask{0};
   std::vector<uint32_t> children;
+  bool has_parent{false};
+  uint32_t parent_id{0};
+  uint64_t visit_gen{0};
   const TextMeasurerCallback* text_measurer{nullptr};
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
   YGNodeRef yg_node{nullptr};
@@ -189,7 +192,10 @@ static YGSize measure_text_node(
     float height,
     YGMeasureMode height_mode) {
   const auto* entry = static_cast<const ShadowNodeEntry*>(YGNodeGetContext(node));
-  const float font_size = (entry && entry->style.font_size > 0.0f) ? entry->style.font_size : 16.0f;
+  const float font_size =
+      (entry && std::isfinite(entry->style.font_size) && entry->style.font_size > 0.0f)
+          ? entry->style.font_size
+          : 16.0f;
   const size_t len = entry ? entry->text.size() : 0;
 
   float out_w = 0.0f;
@@ -197,8 +203,8 @@ static YGSize measure_text_node(
   if (len > 0 && entry && entry->text_measurer && *entry->text_measurer) {
     const float max_w = (width_mode == YGMeasureModeUndefined) ? 0.0f : width;
     const NveIntrinsicSize measured = (*entry->text_measurer)(entry->text, font_size, max_w);
-    out_w = measured.width;
-    out_h = measured.height;
+    out_w = (std::isfinite(measured.width) && measured.width >= 0.0f) ? measured.width : 0.0f;
+    out_h = (std::isfinite(measured.height) && measured.height >= 0.0f) ? measured.height : 0.0f;
     if (width_mode == YGMeasureModeExactly) {
       out_w = width;
     } else if (width_mode == YGMeasureModeAtMost) {
@@ -442,12 +448,60 @@ class FabricHost {
           uint32_t parent_id = 0;
           uint32_t count = 0;
           if (!r.read(parent_id) || !r.read(count)) return -4;
+          if (static_cast<size_t>(count) > r.remaining() / sizeof(uint32_t)) return -4;
           std::vector<uint32_t> children(count);
           for (uint32_t c = 0; c < count; ++c) {
             if (!r.read(children[c])) return -4;
           }
           auto it = nodes_.find(parent_id);
           if (it == nodes_.end()) return -5;
+
+          const uint64_t ancestor_gen = ++gen_counter_;
+          uint32_t walk_id = parent_id;
+          bool walking = true;
+          for (size_t hops = 0; walking && hops <= nodes_.size(); ++hops) {
+            auto wit = nodes_.find(walk_id);
+            if (wit == nodes_.end()) break;
+            wit->second.visit_gen = ancestor_gen;
+            walking = wit->second.has_parent;
+            walk_id = wit->second.parent_id;
+          }
+
+          const uint64_t dup_gen = ++gen_counter_;
+          for (uint32_t cid : children) {
+            if (cid == parent_id || cid == NVE_ROOT_NODE_ID) {
+              return -6;
+            }
+            auto cit = nodes_.find(cid);
+            if (cit != nodes_.end()) {
+              if (cit->second.visit_gen == ancestor_gen || cit->second.visit_gen == dup_gen) {
+                return -6;
+              }
+              cit->second.visit_gen = dup_gen;
+            }
+          }
+
+          for (uint32_t old_cid : it->second.children) {
+            auto oit = nodes_.find(old_cid);
+            if (oit != nodes_.end() && oit->second.has_parent && oit->second.parent_id == parent_id) {
+              oit->second.has_parent = false;
+              oit->second.parent_id = 0;
+            }
+          }
+          for (uint32_t cid : children) {
+            auto cit = nodes_.find(cid);
+            if (cit != nodes_.end()) {
+              if (cit->second.has_parent && cit->second.parent_id != parent_id) {
+                auto prev_pit = nodes_.find(cit->second.parent_id);
+                if (prev_pit != nodes_.end()) {
+                  std::erase(prev_pit->second.children, cid);
+                }
+              }
+              cit->second.has_parent = true;
+              cit->second.parent_id = parent_id;
+            }
+          }
+
           it->second.children = std::move(children);
           sync_children_yoga(it->second);
           ++mutations;
@@ -489,6 +543,7 @@ class FabricHost {
           uint32_t id = 0;
           StyleProps style{};
           if (!r.read(id) || !r.read_style(style)) return -4;
+          if (!is_valid_style(style)) return -6;
           auto it = nodes_.find(id);
           if (it == nodes_.end()) return -5;
           it->second.style = style;
@@ -668,6 +723,19 @@ class FabricHost {
   void destroy_node_if_exists(uint32_t id) {
     auto it = nodes_.find(id);
     if (it == nodes_.end()) return;
+    if (it->second.has_parent) {
+      auto pit = nodes_.find(it->second.parent_id);
+      if (pit != nodes_.end()) {
+        std::erase(pit->second.children, id);
+      }
+    }
+    for (uint32_t cid : it->second.children) {
+      auto cit = nodes_.find(cid);
+      if (cit != nodes_.end() && cit->second.has_parent && cit->second.parent_id == id) {
+        cit->second.has_parent = false;
+        cit->second.parent_id = 0;
+      }
+    }
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
     if (YGNodeRef yg = it->second.yg_node) {
       if (YGNodeRef owner = YGNodeGetOwner(yg)) {
@@ -688,17 +756,17 @@ class FabricHost {
     if (!parent.children.empty() && YGNodeHasMeasureFunc(parent.yg_node)) {
       YGNodeSetMeasureFunc(parent.yg_node, nullptr);
     }
-    size_t idx = 0;
     for (uint32_t child_id : parent.children) {
+      if (child_id == parent.node_id) continue;
       auto cit = nodes_.find(child_id);
       if (cit == nodes_.end() || !cit->second.yg_node) continue;
       YGNodeRef child_yg = cit->second.yg_node;
       if (YGNodeRef prev_owner = YGNodeGetOwner(child_yg)) {
         YGNodeRemoveChild(prev_owner, child_yg);
       }
-      YGNodeInsertChild(parent.yg_node, child_yg, idx++);
+      YGNodeInsertChild(parent.yg_node, child_yg, YGNodeGetChildCount(parent.yg_node));
     }
-    if (parent.kind == NVE_COMP_TEXT && idx == 0) {
+    if (parent.kind == NVE_COMP_TEXT && YGNodeGetChildCount(parent.yg_node) == 0) {
       YGNodeSetMeasureFunc(parent.yg_node, &measure_text_node);
     }
 #else
@@ -706,39 +774,62 @@ class FabricHost {
 #endif
   }
 
-  void propagate_text_styles_rec(uint32_t node_id, uint32_t inherited_color, float inherited_font_size, bool has_inherited) {
-    auto it = nodes_.find(node_id);
-    if (it == nodes_.end()) return;
-    auto& entry = it->second;
+  void propagate_text_styles() {
+    struct Frame {
+      uint32_t node_id;
+      uint32_t inherited_color;
+      float inherited_font_size;
+      bool has_inherited;
+    };
+    const uint64_t pass_gen = ++gen_counter_;
+    std::vector<Frame> stack;
+    stack.reserve(64);
+    stack.push_back(Frame{NVE_ROOT_NODE_ID, 0xFF000000u, 16.0f, false});
 
-    if (entry.kind == NVE_COMP_TEXT) {
-      if (!entry.has_explicit_style && has_inherited) {
-        if (entry.style.text_color_rgba != inherited_color ||
-            std::fabs(entry.style.font_size - inherited_font_size) > 1e-3f) {
-          entry.style.text_color_rgba = inherited_color;
-          entry.style.font_size = inherited_font_size;
+    while (!stack.empty()) {
+      const Frame f = stack.back();
+      stack.pop_back();
+
+      auto it = nodes_.find(f.node_id);
+      if (it == nodes_.end()) continue;
+      auto& entry = it->second;
+      if (entry.visit_gen == pass_gen) continue;
+      entry.visit_gen = pass_gen;
+
+      uint32_t next_color = f.inherited_color;
+      float next_font_size = f.inherited_font_size;
+      bool next_has_inherited = f.has_inherited;
+
+      if (entry.kind == NVE_COMP_TEXT) {
+        if (!entry.has_explicit_style) {
+          const uint32_t target_color = f.has_inherited ? f.inherited_color : 0xFF000000u;
+          const float target_font_size = f.has_inherited ? f.inherited_font_size : 16.0f;
+          if (entry.style.text_color_rgba != target_color ||
+              std::fabs(entry.style.font_size - target_font_size) > 1e-3f) {
+            entry.style.text_color_rgba = target_color;
+            entry.style.font_size = target_font_size;
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
-          if (entry.yg_node && YGNodeHasMeasureFunc(entry.yg_node)) {
-            YGNodeMarkDirty(entry.yg_node);
-          }
+            if (entry.yg_node && YGNodeHasMeasureFunc(entry.yg_node)) {
+              YGNodeMarkDirty(entry.yg_node);
+            }
 #endif
+          }
         }
+        next_color = entry.style.text_color_rgba;
+        next_font_size = entry.style.font_size;
+        next_has_inherited = true;
       }
-      inherited_color = entry.style.text_color_rgba;
-      inherited_font_size = entry.style.font_size;
-      has_inherited = true;
-    }
 
-    const auto children = entry.children;
-    for (uint32_t cid : children) {
-      propagate_text_styles_rec(cid, inherited_color, inherited_font_size, has_inherited);
+      for (auto rit = entry.children.rbegin(); rit != entry.children.rend(); ++rit) {
+        stack.push_back(Frame{*rit, next_color, next_font_size, next_has_inherited});
+      }
     }
   }
 
   void run_layout_pass() {
     auto root_it = nodes_.find(NVE_ROOT_NODE_ID);
     if (root_it == nodes_.end()) return;
-    propagate_text_styles_rec(NVE_ROOT_NODE_ID, 0xFF000000u, 16.0f, false);
+    propagate_text_styles();
 
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA
     YGNodeRef root_yg = root_it->second.yg_node;
@@ -794,13 +885,44 @@ class FabricHost {
     }
   }
 
+  NveIntrinsicSize measure_text_fallback(const ShadowNodeEntry& entry, float max_w) const {
+    const float font_size =
+        (std::isfinite(entry.style.font_size) && entry.style.font_size > 0.0f)
+            ? entry.style.font_size
+            : 16.0f;
+    const size_t len = entry.text.size();
+    if (len == 0) {
+      return NveIntrinsicSize{0.0f, 0.0f};
+    }
+    if (text_measurer_) {
+      const NveIntrinsicSize measured = text_measurer_(entry.text, font_size, max_w);
+      float out_w = (std::isfinite(measured.width) && measured.width >= 0.0f) ? measured.width : 0.0f;
+      float out_h = (std::isfinite(measured.height) && measured.height >= 0.0f) ? measured.height : 0.0f;
+      if (max_w > 0.0f) {
+        out_w = std::min(out_w, max_w);
+      }
+      return NveIntrinsicSize{out_w, out_h};
+    }
+    const float char_width = font_size * 0.55f;
+    const float line_height = font_size * 1.3f;
+    const float intrinsic_w = static_cast<float>(len) * char_width + 4.0f;
+    const float out_w = (max_w > 0.0f) ? std::min(intrinsic_w, max_w) : intrinsic_w;
+    float out_h = line_height;
+    if (out_w > 0.0f && intrinsic_w > out_w) {
+      out_h = std::ceil(intrinsic_w / out_w) * line_height;
+    }
+    return NveIntrinsicSize{out_w, out_h};
+  }
+
   void compute_fallback_layout(
       uint32_t node_id,
       float x,
       float y,
       float w,
       float h,
-      uint64_t ts) {
+      uint64_t ts,
+      uint32_t depth = 0) {
+    if (depth > 512) return;
     auto it = nodes_.find(node_id);
     if (it == nodes_.end()) return;
     ShadowNodeEntry& node = it->second;
@@ -840,9 +962,27 @@ class FabricHost {
       const float c_margin = is_row ? (cl.margin.top + cl.margin.bottom) : (cl.margin.left + cl.margin.right);
       const Dimension& m_dim = is_row ? cl.width : cl.height;
       const Dimension& c_dim = is_row ? cl.height : cl.width;
-      const float fallback_main = (cit->second.kind == NVE_COMP_TEXT) ? (cit->second.style.font_size * 1.25f) : 0.0f;
+      float fallback_main = 0.0f;
+      float fallback_cross = std::max(0.0f, cross_avail - c_margin);
+      if (cit->second.kind == NVE_COMP_TEXT && cit->second.children.empty()) {
+        float max_w = 0.0f;
+        if (cl.width.tag == 1) {
+          max_w = cl.width.value;
+        } else if (cl.width.tag == 2) {
+          max_w = inner_w * (cl.width.value * 0.01f);
+        } else {
+          max_w = is_row ? std::max(0.0f, main_avail - m_margin) : std::max(0.0f, cross_avail - c_margin);
+        }
+        const NveIntrinsicSize measured = measure_text_fallback(cit->second, max_w);
+        fallback_main = is_row ? measured.width : measured.height;
+        if (is_row) {
+          fallback_cross = measured.height;
+        } else if (node.layout.align_items != 0) {
+          fallback_cross = std::min(measured.width, fallback_cross);
+        }
+      }
       child_main[i] = resolve_dim(m_dim, main_avail, fallback_main);
-      child_cross[i] = resolve_dim(c_dim, cross_avail, std::max(0.0f, cross_avail - c_margin));
+      child_cross[i] = resolve_dim(c_dim, cross_avail, fallback_cross);
       fixed_main += child_main[i] + m_margin;
       total_grow += std::max(0.0f, cl.flex_grow);
     }
@@ -867,7 +1007,7 @@ class FabricHost {
       const float cy = is_row ? (inner_y + cl.margin.top) : (cursor + cl.margin.top);
       const float cw = is_row ? child_main[i] : child_cross[i];
       const float ch = is_row ? child_cross[i] : child_main[i];
-      compute_fallback_layout(node.children[i], cx, cy, cw, ch, ts);
+      compute_fallback_layout(node.children[i], cx, cy, cw, ch, ts, depth + 1);
       cursor += child_main[i] + (is_row ? (cl.margin.left + cl.margin.right) : (cl.margin.top + cl.margin.bottom)) +
                 node.layout.gap;
     }
@@ -957,6 +1097,7 @@ class FabricHost {
   std::unordered_map<uint32_t, ShadowNodeEntry> nodes_;
   std::unordered_map<std::string, CustomComponentDescriptor> custom_components_;
   TextMeasurerCallback text_measurer_;
+  uint64_t gen_counter_{0};
   mutable std::mutex event_mutex_;
   EventRingWriter event_ring_;
   std::vector<uint8_t> drained_snapshot_;

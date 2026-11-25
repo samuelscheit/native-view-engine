@@ -134,7 +134,11 @@ bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_even
     }
     out_events.push_back(std::move(ev));
   }
-  return r.remaining() == 0;
+  if (r.remaining() != 0) {
+    out_events.clear();
+    return false;
+  }
+  return true;
 }
 
 std::string serialize_props_json(const PropMap& props) {
