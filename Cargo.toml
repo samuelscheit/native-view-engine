@@ -37,7 +37,7 @@ members = [
     "packages/modules/system-env",
     "packages/modules/tv",
     "packages/modules/web-auth",
-    "examples/counter",
+    "examples/kitchen-sink",
     "examples/studio-workspace",
     "examples/nve-docs-site",
     "hosts/skia-shell",
@@ -75,7 +75,7 @@ nve-system-env = { path = "packages/modules/system-env" }
 nve-notifications = { path = "packages/modules/notifications" }
 nve-haptics = { path = "packages/modules/haptics" }
 nve-skia-shell = { path = "hosts/skia-shell" }
-nve-example-counter = { path = "examples/counter" }
+nve-example-kitchen-sink = { path = "examples/kitchen-sink", default-features = false }
 nve-studio-workspace = { path = "examples/studio-workspace", default-features = false }
 
 dioxus-core = "0.7.10"

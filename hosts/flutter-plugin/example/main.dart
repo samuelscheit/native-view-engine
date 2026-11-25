@@ -6,18 +6,18 @@ import 'package:nve_flutter/nve_canvas.dart';
 /// Runnable Flutter demo embedding any compiled NVE Rust app (`lib*.dylib` / `*.so` / `*.dll`)
 /// directly on Flutter's Impeller/Skia Canvas via [NveCanvasView] with zero PlatformViews.
 ///
-/// Build the counter cdylib first from the repo root:
+/// Build the kitchen-sink cdylib first from the repo root:
 /// ```bash
-/// cargo build -p nve-example-counter
+/// cargo build -p nve-example-kitchen-sink
 /// ```
 void main() {
   runApp(const NveCanvasExampleApp());
 }
 
 String _defaultLibraryPath() {
-  if (Platform.isMacOS) return '../../target/debug/libnve_example_counter.dylib';
-  if (Platform.isWindows) return r'..\..\target\debug\nve_example_counter.dll';
-  return '../../target/debug/libnve_example_counter.so';
+  if (Platform.isMacOS) return '../../target/debug/libnve_example_kitchen_sink.dylib';
+  if (Platform.isWindows) return r'..\..\target\debug\nve_example_kitchen_sink.dll';
+  return '../../target/debug/libnve_example_kitchen_sink.so';
 }
 
 class NveCanvasExampleApp extends StatelessWidget {

@@ -209,6 +209,11 @@ impl StudioWorkspaceModule {
         self.mounted = false;
     }
 
+    /// Direct zero-serialization access to the underlying [`DioxusSurface`].
+    pub fn surface(&self) -> &DioxusSurface {
+        &self.surface
+    }
+
     pub fn state_snapshot(&self) -> WorkspaceState {
         self.store
             .lock()

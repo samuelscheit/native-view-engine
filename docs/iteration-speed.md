@@ -28,8 +28,8 @@ cargo run --locked -p nve-cli -- codegen abi --check
 cargo bench --workspace
 cargo nve bench
 
-# Build nve-example-counter cdylib (Tier-2 hot-swap & native host embedding)
-cargo build -p nve-example-counter
+# Build nve-example-kitchen-sink cdylib (Tier-2 hot-swap & native host embedding)
+cargo build -p nve-example-kitchen-sink
 
 # C++20 Fabric/Yoga/JSI bridge CTest & benchmark
 # (omit -DRN_REACT_COMMON_DIR for standalone mode without RN Yoga/JSI)
@@ -55,11 +55,11 @@ swift test --package-path hosts/swiftui-kit
 
 # Skia desktop host tests & CLI launch
 cargo test -p nve-backend-skia -p nve-skia-shell
-cargo run -p nve-skia-shell -- target/debug/libnve_example_counter.dylib --no-ws
+cargo run -p nve-skia-shell -- target/debug/libnve_example_kitchen_sink.dylib --no-ws
 
 # Web WASM host unit tests, wasm32 compile check, bundle, and headless Chrome E2E
 cargo test --locked -p nve-backend-web -p nve-web-shell \
   && cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
-./hosts/web-shell/build.sh            # pkg/{studio,counter,dev}; `--dev` = stable debug, `dev` = one bundle
+./hosts/web-shell/build.sh            # pkg/{studio,kitchen-sink,dev}; `--dev` = stable debug, `dev` = one bundle
 node hosts/web-shell/e2e/run_e2e.mjs --no-screenshot
 ```

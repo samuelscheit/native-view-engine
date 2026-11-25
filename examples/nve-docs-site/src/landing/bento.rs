@@ -244,7 +244,7 @@ pub fn LiveExamplesStrip() -> Element {
         .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
     let examples_href = config.resolve_href("/examples");
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
-    let counter_href = resolve_example_app_href(&config.base_path, "/examples/counter");
+    let kitchen_sink_href = resolve_example_app_href(&config.base_path, "/examples/kitchen-sink");
 
     let playground_links: [(&str, &str); 4] = [
         ("UI + 100k List", "/docs/guides/ui-components"),
@@ -328,36 +328,36 @@ pub fn LiveExamplesStrip() -> Element {
                     }
                 }
 
-                // Card 2: Interactive Counter
+                // Card 2: Kitchen Sink Component Gallery
                 view {
-                    test_id: "showcase-card-counter",
+                    test_id: "showcase-card-kitchen-sink",
                     style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
                     view {
                         style: "flex-direction: column; gap: 10px;",
                         view {
                             style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
                             PillBadge { label: "WASM App".to_string(), accent: true }
-                            PillBadge { label: "Minimal Bundle".to_string() }
-                            PillBadge { label: "Dioxus Signals".to_string() }
+                            PillBadge { label: "All nve-ui".to_string() }
+                            PillBadge { label: "nve-i18n".to_string() }
                         }
                         text {
                             style: "font-size: 18px; font-weight: 700; color: {theme.text};",
-                            "Interactive Counter"
+                            "NVE Kitchen Sink Gallery"
                         }
                         text {
                             style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
-                            "Minimal end-to-end NveApp proving fine-grained signal diffs, direct binary EventRing dispatch, and zero-JSON DOM patching."
+                            "Interactive showcase of every nve-ui component, theme/density/locale switching, 1k VirtualList, Canvas draw lists, and ErrorBoundary recovery."
                         }
                     }
                     pressable {
-                        test_id: "showcase-launch-counter",
+                        test_id: "showcase-launch-kitchen-sink",
                         accessibility_role: "link",
-                        "href": "{counter_href}",
+                        "href": "{kitchen_sink_href}",
                         "data-nve-hard-nav": "true",
                         style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                         text {
                             style: "font-size: 13px; font-weight: 700; color: {theme.text};",
-                            "Launch Counter WASM →"
+                            "Launch Kitchen Sink WASM →"
                         }
                     }
                 }

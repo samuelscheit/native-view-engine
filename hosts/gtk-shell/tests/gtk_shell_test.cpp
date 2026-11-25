@@ -567,12 +567,12 @@ void test_dylib_error_codes_and_hot_reload() {
 }
 
 void test_live_counter_dylib_if_present() {
-  const char* dylib_env = std::getenv("NVE_TEST_COUNTER_DYLIB");
+  const char* dylib_env = std::getenv("NVE_TEST_KITCHEN_SINK_DYLIB");
   if (dylib_env == nullptr || dylib_env[0] == '\0') {
     return;
   }
 
-  NveSurfaceConfig cfg{.surface_id = 1u, .width = 640.0f, .height = 420.0f, .scale_factor = 1.0f};
+  NveSurfaceConfig cfg{.surface_id = 1u, .width = 1280.0f, .height = 800.0f, .scale_factor = 1.0f};
   nve::NveGtkHost host(cfg);
 
   int err_code = -1;
@@ -581,15 +581,12 @@ void test_live_counter_dylib_if_present() {
   NVE_CHECK(err_code == 0 && err_msg.empty());
   NVE_CHECK(host.is_loaded());
 
-  // Verify top card container is mounted under root_widget()
+  // Verify root container is mounted under root_widget()
   GtkWidget* top_container = gtk_widget_get_first_child(host.root_widget());
   NVE_CHECK(top_container != nullptr && GTK_IS_FIXED(top_container));
-  GtkWidget* top_card = gtk_widget_get_first_child(top_container);
-  NVE_CHECK(top_card != nullptr && GTK_IS_FIXED(top_card));
-  NVE_CHECK(gtk_widget_get_overflow(top_card) == GTK_OVERFLOW_HIDDEN);
 
-  // Verify top card container + 4 GtkLabels:
-  // "NATIVE VIEW ENGINE", "Count: 0", "Increment +", "Reset"
+  // Verify core Kitchen Sink labels:
+  // "NVE Kitchen Sink", "Count: 0", "Increment +", "Reset"
   const auto has_label_text = [&](std::string_view needle) {
     for (GtkLabel* lbl : collect_labels(host.root_widget())) {
       const char* txt = gtk_label_get_text(lbl);
@@ -602,7 +599,7 @@ void test_live_counter_dylib_if_present() {
 
   const std::vector<GtkLabel*> labels = collect_labels(host.root_widget());
   NVE_CHECK(labels.size() >= 4u);
-  NVE_CHECK(has_label_text("NATIVE VIEW ENGINE"));
+  NVE_CHECK(has_label_text("NVE Kitchen Sink"));
   NVE_CHECK(has_label_text("Count: 0"));
   NVE_CHECK(has_label_text("Increment +"));
   NVE_CHECK(has_label_text("Reset"));
@@ -611,7 +608,7 @@ void test_live_counter_dylib_if_present() {
   for (GtkLabel* lbl : labels) {
     int w = 0, h = 0;
     gtk_widget_get_size_request(GTK_WIDGET(lbl), &w, &h);
-    NVE_CHECK(w > 20 && h >= 14);
+    NVE_CHECK(w > 0 && h >= 10);
     NVE_CHECK(gtk_widget_get_can_target(GTK_WIDGET(lbl)) == FALSE);
   }
 

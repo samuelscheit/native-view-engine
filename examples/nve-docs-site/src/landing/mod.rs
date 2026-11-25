@@ -252,7 +252,7 @@ pub(crate) fn SiteFooter() -> Element {
     }
 }
 
-/// Build a trailing-slash href for standalone lazy-loaded example apps (`/examples/studio/`, `/examples/counter/`).
+/// Build a trailing-slash href for standalone lazy-loaded example apps (`/examples/studio/`, `/examples/kitchen-sink/`).
 pub(crate) fn resolve_example_app_href(base_path: &str, app_path: &str) -> String {
     let clean_base = base_path.trim().trim_matches('/');
     let clean_app = app_path.trim().trim_matches('/');

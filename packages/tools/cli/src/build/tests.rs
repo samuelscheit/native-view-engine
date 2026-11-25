@@ -199,8 +199,8 @@ fn debug_profile_uses_dev_panic_abort_and_omits_release_flag() {
     let probe = FakeProbe::all_ready(&headers);
     let req = Tier3BuildRequest {
         targets: vec![AppleTier3Target::WatchOsSim],
-        package: "nve-example-counter".into(),
-        lib_name: "nve_example_counter".into(),
+        package: "nve-example-kitchen-sink".into(),
+        lib_name: "nve_example_kitchen_sink".into(),
         release: false,
         toolchain: "nightly-2026-10-20".into(),
         target_dir: PathBuf::from("/repo/target"),
@@ -214,7 +214,7 @@ fn debug_profile_uses_dev_panic_abort_and_omits_release_flag() {
     assert!(!step.args.contains(&"--release".to_owned()));
     assert_eq!(
         step.output_staticlib,
-        PathBuf::from("/repo/target/aarch64-apple-watchos-sim/debug/libnve_example_counter.a")
+        PathBuf::from("/repo/target/aarch64-apple-watchos-sim/debug/libnve_example_kitchen_sink.a")
     );
 }
 
@@ -467,10 +467,10 @@ fn cli_parses_nve_build_flags_and_rejects_missing_target() {
         "--target",
         "tvos,tvos-sim",
         "--package",
-        "nve-example-counter",
+        "nve-example-kitchen-sink",
         "--release",
         "--xcframework",
-        "dist/Counter.xcframework",
+        "dist/KitchenSink.xcframework",
         "--dry-run",
     ])
     .unwrap()
@@ -488,11 +488,14 @@ fn cli_parses_nve_build_flags_and_rejects_missing_target() {
             dry_run,
         } => {
             assert_eq!(targets, vec!["tvos", "tvos-sim"]);
-            assert_eq!(package, "nve-example-counter");
+            assert_eq!(package, "nve-example-kitchen-sink");
             assert!(lib_name.is_none());
             assert!(release);
             assert_eq!(toolchain, "nightly");
-            assert_eq!(xcframework, Some(PathBuf::from("dist/Counter.xcframework")));
+            assert_eq!(
+                xcframework,
+                Some(PathBuf::from("dist/KitchenSink.xcframework"))
+            );
             assert!(headers.is_none());
             assert!(target_dir.is_none());
             assert!(dry_run);

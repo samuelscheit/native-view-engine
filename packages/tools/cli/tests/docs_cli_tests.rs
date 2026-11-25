@@ -158,16 +158,16 @@ fn docs_build_skip_wasm_emits_all_30_semantic_html_pages_sitemap_and_nvs1() {
         "expected base_path prefixed studio launch CTA href"
     );
 
-    // Inspect /examples/ gallery and /examples/{studio,counter}/ fallback portal wrappers
+    // Inspect /examples/ gallery and /examples/{studio,kitchen-sink}/ fallback portal wrappers
     let examples_html =
         fs::read_to_string(out_dir.join("examples/index.html")).expect("read examples/index.html");
     assert!(examples_html.contains("Interactive Examples &amp; Live Playgrounds") || examples_html.contains("Interactive Examples"));
     let studio_html = fs::read_to_string(out_dir.join("examples/studio/index.html"))
         .expect("read examples/studio/index.html");
     assert!(studio_html.contains("Back to Examples") && studio_html.contains("data-nve-example-fallback=\"studio\""));
-    let counter_html = fs::read_to_string(out_dir.join("examples/counter/index.html"))
-        .expect("read examples/counter/index.html");
-    assert!(counter_html.contains("Back to Examples") && counter_html.contains("data-nve-example-fallback=\"counter\""));
+    let kitchen_sink_html = fs::read_to_string(out_dir.join("examples/kitchen-sink/index.html"))
+        .expect("read examples/kitchen-sink/index.html");
+    assert!(kitchen_sink_html.contains("Back to Examples") && kitchen_sink_html.contains("data-nve-example-fallback=\"kitchen-sink\""));
 
     // Inspect /docs/ and nested /docs/guides/ui-components/ semantic HTML5
     let docs_root_html =
@@ -195,7 +195,7 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
         "<html><head></head><body><header class=\"topbar\"></header><main id=\"app\"></main></body></html>",
     )
     .unwrap();
-    for (bundle, hash) in [("studio", "0123456789abcdef"), ("counter", "fedcba9876543210"), ("dev", "00112233aabbccdd")] {
+    for (bundle, hash) in [("studio", "0123456789abcdef"), ("kitchen-sink", "fedcba9876543210"), ("dev", "00112233aabbccdd")] {
         let dir = unified_src.join("pkg").join(bundle).join(hash);
         fs::create_dir_all(dir.join("snippets/nve-web-shell-1/")).unwrap();
         fs::write(dir.join("nve_web_shell.js"), "export default function(){}").unwrap();
@@ -230,8 +230,8 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
         "studio/manifest.json",
         "studio/0123456789abcdef/nve_web_shell_bg.wasm",
         "studio/0123456789abcdef/snippets/nve-web-shell-1/inline0.js",
-        "counter/manifest.json",
-        "counter/fedcba9876543210/nve_web_shell.js",
+        "kitchen-sink/manifest.json",
+        "kitchen-sink/fedcba9876543210/nve_web_shell.js",
     ] {
         assert!(runtime_pkg.join(file).is_file(), "{file} copied");
     }
@@ -249,13 +249,13 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
     assert!(studio_runtime_html.contains("data-nve-ssr"));
     assert!(studio_runtime_html.contains("data-nve-snapshot-boot"));
     assert!(studio_runtime_html.contains("data-nve-replay"));
-    let counter_unified =
-        fs::read_to_string(out_unified.join("examples/counter/index.html")).unwrap();
-    assert!(counter_unified.contains("../_runtime/counter.html?app=counter&ws=off&embed=1"));
-    let counter_runtime_html =
-        fs::read_to_string(out_unified.join("examples/_runtime/counter.html")).unwrap();
-    assert!(counter_runtime_html.contains("data-nve-ssr"));
-    assert!(counter_runtime_html.contains("data-nve-snapshot-boot"));
+    let kitchen_sink_unified =
+        fs::read_to_string(out_unified.join("examples/kitchen-sink/index.html")).unwrap();
+    assert!(kitchen_sink_unified.contains("../_runtime/kitchen-sink.html?app=kitchen-sink&ws=off&embed=1"));
+    let kitchen_sink_runtime_html =
+        fs::read_to_string(out_unified.join("examples/_runtime/kitchen-sink.html")).unwrap();
+    assert!(kitchen_sink_runtime_html.contains("data-nve-ssr"));
+    assert!(kitchen_sink_runtime_html.contains("data-nve-snapshot-boot"));
 
     // A `pkg/` without the app's manifest is not a bundle for that app.
     let no_manifest_src = temp_test_dir("ws-no-manifest-src");
@@ -275,10 +275,10 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
     let studio_fallback = fs::read_to_string(out_no_manifest.join("examples/studio/index.html")).unwrap();
     assert!(!studio_fallback.contains("data-bundle-mode=\"unified\""), "{studio_fallback}");
 
-    // 2. Future per-app layout (`<dist>/studio/` + `<dist>/counter/` + shared `nve_dom.js`)
+    // 2. Future per-app layout (`<dist>/studio/` + `<dist>/kitchen-sink/` + shared `nve_dom.js`)
     let per_app_src = temp_test_dir("ws-perapp-src");
     fs::create_dir_all(per_app_src.join("studio")).unwrap();
-    fs::create_dir_all(per_app_src.join("counter")).unwrap();
+    fs::create_dir_all(per_app_src.join("kitchen-sink")).unwrap();
     fs::write(per_app_src.join("nve_dom.js"), "// thin interpreter").unwrap();
     fs::write(
         per_app_src.join("studio/index.html"),
@@ -287,11 +287,11 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
     .unwrap();
     fs::write(per_app_src.join("studio/studio.wasm"), b"\0asm").unwrap();
     fs::write(
-        per_app_src.join("counter/index.html"),
-        "<html><head></head><body>counter per-app</body></html>",
+        per_app_src.join("kitchen-sink/index.html"),
+        "<html><head></head><body>kitchen-sink per-app</body></html>",
     )
     .unwrap();
-    fs::write(per_app_src.join("counter/counter.wasm"), b"\0asm").unwrap();
+    fs::write(per_app_src.join("kitchen-sink/kitchen-sink.wasm"), b"\0asm").unwrap();
 
     let out_per_app = temp_test_dir("ws-perapp-out");
     let status2 = Command::new(nve_bin())
@@ -312,7 +312,7 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
     assert!(status2.success());
     assert!(out_per_app.join("examples/studio/app/studio.wasm").is_file());
     assert!(out_per_app.join("examples/studio/nve_dom.js").is_file());
-    assert!(out_per_app.join("examples/counter/app/counter.wasm").is_file());
+    assert!(out_per_app.join("examples/kitchen-sink/app/kitchen-sink.wasm").is_file());
     let studio_per = fs::read_to_string(out_per_app.join("examples/studio/index.html")).unwrap();
     assert!(studio_per.contains("./app/index.html?ws=off&embed=1"));
     assert!(studio_per.contains("data-bundle-mode=\"per-app\""));

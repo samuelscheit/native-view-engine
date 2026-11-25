@@ -2,7 +2,7 @@
 //! feature `dev`), canonical 0ms snapshot capture, and zero-copy `NveSceneTable` mirroring
 //! (feature `scene-view`).
 
-#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_abi::encode_events;
 use nve_abi::{
     EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId, ROOT_NODE_ID,
@@ -13,15 +13,21 @@ use nve_backend_web::{encode_keydown_payload, WebBackend, WebSnapshotPayload};
 use nve_dioxus::DioxusSurface;
 #[cfg(feature = "dev")]
 use nve_engine::HotPatchMsg;
-#[cfg(any(feature = "app-studio", feature = "app-counter"))]
+#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_engine::NveApp;
 use nve_engine::{xxh64, BackendError, FrameTiming, RenderBackend, SurfaceRunner, Viewport};
-#[cfg(feature = "app-counter")]
-use nve_example_counter::{CounterModule, COUNTER_STATE_BIN_VERSION};
+#[cfg(feature = "app-kitchen-sink")]
+use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
 #[cfg(feature = "app-studio")]
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
-#[cfg(all(test, feature = "app-studio", feature = "app-counter", feature = "dev", feature = "scene-view"))]
+#[cfg(all(
+    test,
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 #[path = "tests.rs"]
 mod tests;
 
@@ -52,8 +58,8 @@ enum SessionApp {
     Dioxus(Box<DioxusSurface>),
     #[cfg(feature = "app-studio")]
     Studio(Box<StudioWorkspaceModule>),
-    #[cfg(feature = "app-counter")]
-    Counter(Box<CounterModule>),
+    #[cfg(feature = "app-kitchen-sink")]
+    KitchenSink(Box<KitchenSinkModule>),
 }
 
 impl SessionApp {
@@ -62,8 +68,8 @@ impl SessionApp {
             Self::Dioxus(_) => None,
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => Some("studio"),
-            #[cfg(feature = "app-counter")]
-            Self::Counter(_) => Some("counter"),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(_) => Some("kitchen-sink"),
         }
     }
 
@@ -72,8 +78,8 @@ impl SessionApp {
             Self::Dioxus(_) => 1,
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => STUDIO_SNAPSHOT_SCHEMA_VERSION,
-            #[cfg(feature = "app-counter")]
-            Self::Counter(_) => COUNTER_STATE_BIN_VERSION,
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(_) => KITCHEN_SINK_STATE_VERSION,
         }
     }
 
@@ -91,8 +97,8 @@ impl SessionApp {
                 let elapsed = 0u64;
                 (elapsed, 0, bytes)
             }
-            #[cfg(feature = "app-counter")]
-            Self::Counter(module) => {
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 let t0 = std::time::Instant::now();
                 let bytes = module.render(frame_id).to_vec();
@@ -110,8 +116,8 @@ impl SessionApp {
             Self::Dioxus(surface) => surface.dispatch_events(events),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.dispatch_events(&encode_events(events)),
-            #[cfg(feature = "app-counter")]
-            Self::Counter(module) => module.dispatch_events(&encode_events(events)),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.dispatch_events(&encode_events(events)),
         }
     }
 
@@ -121,8 +127,8 @@ impl SessionApp {
             Self::Dioxus(surface) => surface.apply_hot_patch(msg),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.apply_hot_patch(msg),
-            #[cfg(feature = "app-counter")]
-            Self::Counter(module) => module.apply_hot_patch(msg),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.apply_hot_patch(msg),
         }
     }
 
@@ -131,8 +137,8 @@ impl SessionApp {
             Self::Dioxus(_) => None,
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => Some(module.snapshot_state().to_vec()),
-            #[cfg(feature = "app-counter")]
-            Self::Counter(module) => Some(module.snapshot_state().to_vec()),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => Some(module.snapshot_state().to_vec()),
         }
     }
 
@@ -141,14 +147,24 @@ impl SessionApp {
             Self::Dioxus(_) => false,
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.try_restore_state(bytes),
-            #[cfg(feature = "app-counter")]
-            Self::Counter(module) => module.try_restore_state(bytes),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.try_restore_state(bytes),
+        }
+    }
+
+    fn surface(&self) -> &DioxusSurface {
+        match self {
+            Self::Dioxus(surface) => surface,
+            #[cfg(feature = "app-studio")]
+            Self::Studio(module) => module.surface(),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.surface(),
         }
     }
 }
 
 /// Cross-target session binding an NVE app (`DioxusSurface`, `StudioWorkspaceModule`, or
-/// `CounterModule`) to a `SurfaceRunner<WebBackend>` (plus, with `scene-view`, a zero-copy
+/// `KitchenSinkModule`) to a `SurfaceRunner<WebBackend>` (plus, with `scene-view`, a zero-copy
 /// [`SceneMirror`]).
 ///
 /// Runs identically in browser WASM (`web-dom-wasm`) and in host unit tests (`web-dom-mirror`).
@@ -219,24 +235,29 @@ impl WebAppSession {
         )
     }
 
-    /// Boots the `nve-example-counter` module on `WebBackend`.
-    #[cfg(feature = "app-counter")]
-    pub fn new_counter(surface_id: SurfaceId, backend: WebBackend, viewport: Viewport) -> Self {
-        Self::new_counter_with_state(surface_id, backend, viewport, None).0
+    /// Boots the `nve-example-kitchen-sink` module on `WebBackend`.
+    #[cfg(feature = "app-kitchen-sink")]
+    pub fn new_kitchen_sink(surface_id: SurfaceId, backend: WebBackend, viewport: Viewport) -> Self {
+        Self::new_kitchen_sink_with_state(surface_id, backend, viewport, None).0
     }
 
-    /// Boots `nve-example-counter` and optionally restores binary `NWC1` state bytes BEFORE Frame 0.
-    #[cfg(feature = "app-counter")]
-    pub fn new_counter_with_state(
+    /// Boots `nve-example-kitchen-sink` and optionally restores binary state bytes BEFORE Frame 0.
+    #[cfg(feature = "app-kitchen-sink")]
+    pub fn new_kitchen_sink_with_state(
         surface_id: SurfaceId,
         backend: WebBackend,
         viewport: Viewport,
         state_bytes: Option<&[u8]>,
     ) -> (Self, bool) {
-        let mut module = CounterModule::create(surface_id);
+        let mut module = KitchenSinkModule::create(surface_id);
         let restored = state_bytes.is_some_and(|bytes| module.try_restore_state(bytes));
         (
-            Self::with_app(surface_id, SessionApp::Counter(Box::new(module)), backend, viewport),
+            Self::with_app(
+                surface_id,
+                SessionApp::KitchenSink(Box::new(module)),
+                backend,
+                viewport,
+            ),
             restored,
         )
     }
@@ -257,12 +278,12 @@ impl WebAppSession {
         self.runner.backend_mut()
     }
 
-    /// Captures the app's binary state payload (`NWS1` / `NWC1`), if supported.
+    /// Captures the app's binary state payload, if supported.
     pub fn snapshot_state(&mut self) -> Option<Vec<u8>> {
         self.app.snapshot_state()
     }
 
-    /// Restores the app's binary state payload (`NWS1` / `NWC1`), returning `true` on success.
+    /// Restores the app's binary state payload, returning `true` on success.
     pub fn try_restore_state(&mut self, bytes: &[u8]) -> bool {
         self.app.try_restore_state(bytes)
     }
@@ -321,9 +342,9 @@ impl WebAppSession {
                 }
                 s
             }
-            #[cfg(feature = "app-counter")]
-            SessionApp::Counter(_) => {
-                let (s, ok) = Self::new_counter_with_state(
+            #[cfg(feature = "app-kitchen-sink")]
+            SessionApp::KitchenSink(_) => {
+                let (s, ok) = Self::new_kitchen_sink_with_state(
                     surface_id,
                     WebBackend::new(),
                     viewport,
@@ -476,6 +497,13 @@ impl WebAppSession {
         let timing = self
             .runner
             .submit_recorded_frame(frame_id, reconcile_us, encode_us, &bytes)?;
+        {
+            let surface = self.app.surface();
+            let backend = self.runner.backend_mut();
+            backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
+            backend.sync_interaction_from(surface.iter_cursors(), surface.iter_state_rules());
+            backend.sync_transitions_from(surface.iter_transitions());
+        }
         self.sync_scene(frame_id);
         Ok(timing)
     }

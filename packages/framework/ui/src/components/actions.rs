@@ -93,6 +93,7 @@ fn button_metrics(theme: &UiTheme, size: ButtonSize) -> (f32, f32, f32, f32) {
     let pad_scale = match theme.density {
         crate::theme::UiDensity::Normal => 1.0,
         crate::theme::UiDensity::Compact => 0.8,
+        crate::theme::UiDensity::Spacious => 1.15,
     };
     match size {
         ButtonSize::Sm => (

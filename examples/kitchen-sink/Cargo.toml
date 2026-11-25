@@ -1,11 +1,11 @@
 [package]
-name = "nve-example-counter"
+name = "nve-example-kitchen-sink"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "nve_example_counter"
+name = "nve_example_kitchen_sink"
 # rlib for direct headless/CLI/WASM embedding + cdylib for Tier-2 hot-swap reloading!
 crate-type = ["rlib", "cdylib"]
 
@@ -15,16 +15,17 @@ cdylib-export = []
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-components = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
+nve-interop = { workspace = true }
+nve-ui = { workspace = true }
+nve-i18n = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-backend-web = { workspace = true }
-

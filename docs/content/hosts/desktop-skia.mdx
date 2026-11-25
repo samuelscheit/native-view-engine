@@ -41,8 +41,8 @@ cargo run -p nve-skia-shell -- target/debug/libnve_studio_workspace.dylib \
   --no-ws --snapshot studio.nvesnap --schema 1
 
 # 3. Headless PNG or P6 PPM screenshot (CI-safe, no window opened)
-cargo run -p nve-skia-shell -- target/debug/libnve_example_counter.dylib \
-  --no-ws --screenshot counter.png --width 420 --height 780 --scale 2.0 --no-hud
+cargo run -p nve-skia-shell -- target/debug/libnve_example_kitchen_sink.dylib \
+  --no-ws --screenshot kitchen-sink.png --width 1280 --height 800 --scale 2.0 --no-hud
 
 # 4. Zero-cdylib thin client connected to a remote `cargo nve pair` session
 cargo run -p nve-skia-shell -- \

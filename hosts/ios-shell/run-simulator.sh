@@ -24,7 +24,7 @@ launches it in the iOS Simulator.
 
 Positional arguments:
   app-crate               Cargo package name (e.g. nve-studio-workspace,
-                          nve-example-counter). Defaults to nve-studio-workspace.
+                          nve-example-kitchen-sink). Defaults to nve-studio-workspace.
 
 Options:
   --build-only            Build and sign hosts/ios-shell/build/NveIosShell.app

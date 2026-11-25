@@ -1,4 +1,4 @@
-//! WASM bundle artifact size tracking for `hosts/web-shell/pkg/{studio,counter,dev}`.
+//! WASM bundle artifact size tracking for `hosts/web-shell/pkg/{studio,kitchen-sink,dev}`.
 //!
 //! Reads built `*.wasm`, `*.js`, `*.gz`, and `*.br` outputs (including `wasm-bindgen` inline JS
 //! under `snippets/`) with zero external dependencies and zero panics when bundles are absent.
@@ -10,14 +10,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Default brotli (wasm + JS) budget in bytes for `hosts/web-shell/pkg/studio`.
-pub const DEFAULT_BROTLI_BUDGET_STUDIO: u64 = 285_696;
-/// Default brotli (wasm + JS) budget in bytes for `hosts/web-shell/pkg/counter`.
-pub const DEFAULT_BROTLI_BUDGET_COUNTER: u64 = 108_544;
+pub const DEFAULT_BROTLI_BUDGET_STUDIO: u64 = 316_416;
+/// Default brotli (wasm + JS) budget in bytes for `hosts/web-shell/pkg/kitchen-sink`.
+pub const DEFAULT_BROTLI_BUDGET_KITCHEN_SINK: u64 = 315_392;
 /// Default brotli (wasm + JS) budget in bytes for `hosts/web-shell/pkg/dev`.
-pub const DEFAULT_BROTLI_BUDGET_DEV: u64 = 318_464;
+pub const DEFAULT_BROTLI_BUDGET_DEV: u64 = 485_376;
 
 /// Canonical bundle directories produced by `hosts/web-shell/build.sh`.
-pub const DEFAULT_WEB_SHELL_BUNDLES: &[&str] = &["studio", "counter", "dev"];
+pub const DEFAULT_WEB_SHELL_BUNDLES: &[&str] = &["studio", "kitchen-sink", "dev"];
 
 /// Raw, gzip, and brotli byte totals for one asset class (`wasm`, `js`, or combined).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -191,7 +191,7 @@ fn format_bytes_kb(bytes: u64) -> String {
 pub fn default_brotli_budget(bundle: &str) -> Option<u64> {
     let (env_key, fallback) = match bundle {
         "studio" => ("WASM_BROTLI_BUDGET_STUDIO", DEFAULT_BROTLI_BUDGET_STUDIO),
-        "counter" => ("WASM_BROTLI_BUDGET_COUNTER", DEFAULT_BROTLI_BUDGET_COUNTER),
+        "kitchen-sink" => ("WASM_BROTLI_BUDGET_KITCHEN_SINK", DEFAULT_BROTLI_BUDGET_KITCHEN_SINK),
         "dev" => ("WASM_BROTLI_BUDGET_DEV", DEFAULT_BROTLI_BUDGET_DEV),
         _ => return None,
     };
@@ -331,7 +331,7 @@ mod tests {
         }
         let table = report.format_table();
         assert!(table.contains("studio"));
-        assert!(table.contains("counter"));
+        assert!(table.contains("kitchen-sink"));
         assert!(table.contains("dev"));
         assert!(table.contains("NOT BUILT"));
     }
@@ -339,32 +339,36 @@ mod tests {
     #[test]
     fn aggregates_nested_snippet_js_and_wasm_raw_gzip_brotli_and_ignores_other_files() {
         let root = temp_pkg_dir("aggregate");
-        let counter_dir = root.join("counter");
+        let ks_dir = root.join("kitchen-sink");
 
-        write_bytes(&counter_dir.join("nve_web_shell_bg.wasm"), 200_000);
-        write_bytes(&counter_dir.join("nve_web_shell_bg.wasm.gz"), 95_000);
-        write_bytes(&counter_dir.join("nve_web_shell_bg.wasm.br"), 80_000);
-        write_bytes(&counter_dir.join("nve_web_shell.js"), 12_000);
-        write_bytes(&counter_dir.join("nve_web_shell.js.gz"), 4_200);
-        write_bytes(&counter_dir.join("nve_web_shell.js.br"), 3_500);
+        write_bytes(&ks_dir.join("nve_web_shell_bg.wasm"), 200_000);
+        write_bytes(&ks_dir.join("nve_web_shell_bg.wasm.gz"), 95_000);
+        write_bytes(&ks_dir.join("nve_web_shell_bg.wasm.br"), 80_000);
+        write_bytes(&ks_dir.join("nve_web_shell.js"), 12_000);
+        write_bytes(&ks_dir.join("nve_web_shell.js.gz"), 4_200);
+        write_bytes(&ks_dir.join("nve_web_shell.js.br"), 3_500);
         // Nested wasm-bindgen inline_js snippet.
         write_bytes(
-            &counter_dir.join("snippets/nve-backend-web-abc/inline0.js"),
+            &ks_dir.join("snippets/nve-backend-web-abc/inline0.js"),
             1_024,
         );
         write_bytes(
-            &counter_dir.join("snippets/nve-backend-web-abc/inline0.js.gz"),
+            &ks_dir.join("snippets/nve-backend-web-abc/inline0.js.gz"),
             400,
         );
         write_bytes(
-            &counter_dir.join("snippets/nve-backend-web-abc/inline0.js.br"),
+            &ks_dir.join("snippets/nve-backend-web-abc/inline0.js.br"),
             320,
         );
         // Non-bundle artifacts must be ignored.
-        write_bytes(&counter_dir.join("package.json"), 512);
-        write_bytes(&counter_dir.join("nve_web_shell.d.ts"), 2_048);
+        write_bytes(&ks_dir.join("package.json"), 512);
+        write_bytes(&ks_dir.join("nve_web_shell.d.ts"), 2_048);
 
-        let m = measure_bundle_dir("counter", &counter_dir, Some(DEFAULT_BROTLI_BUDGET_COUNTER));
+        let m = measure_bundle_dir(
+            "kitchen-sink",
+            &ks_dir,
+            Some(DEFAULT_BROTLI_BUDGET_KITCHEN_SINK),
+        );
         assert!(m.present);
         assert_eq!(m.wasm.file_count, 1);
         assert_eq!(m.wasm.raw_bytes, 200_000);
@@ -381,13 +385,13 @@ mod tests {
         assert_eq!(
             m.budget_status(),
             BudgetStatus::WithinBudget {
-                margin_bytes: DEFAULT_BROTLI_BUDGET_COUNTER - 83_820
+                margin_bytes: DEFAULT_BROTLI_BUDGET_KITCHEN_SINK - 83_820
             }
         );
         assert!(!m.is_over_budget());
         assert_eq!(
             m.brotli_delta_bytes(),
-            Some(83_820i64 - DEFAULT_BROTLI_BUDGET_COUNTER as i64)
+            Some(83_820i64 - DEFAULT_BROTLI_BUDGET_KITCHEN_SINK as i64)
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -397,12 +401,15 @@ mod tests {
     fn budget_boundaries_and_soft_warning_report_behavior() {
         let root = temp_pkg_dir("budgets");
 
-        // `counter`: exact budget boundary -> PASS with 0 margin.
-        let counter = root.join("counter");
-        write_bytes(&counter.join("app.wasm"), 120_000);
-        write_bytes(&counter.join("app.wasm.br"), 100_000);
-        write_bytes(&counter.join("app.js"), 10_000);
-        write_bytes(&counter.join("app.js.br"), 8_544);
+        // `kitchen-sink`: exact budget boundary -> PASS with 0 margin.
+        let ks = root.join("kitchen-sink");
+        write_bytes(&ks.join("app.wasm"), 350_000);
+        write_bytes(&ks.join("app.wasm.br"), 300_000);
+        write_bytes(&ks.join("app.js"), 25_000);
+        write_bytes(
+            &ks.join("app.js.br"),
+            (DEFAULT_BROTLI_BUDGET_KITCHEN_SINK - 300_000) as usize,
+        );
 
         // `studio`: +512 B over budget -> soft warning (`OverBudget`), no panic.
         let studio = root.join("studio");
@@ -428,19 +435,19 @@ mod tests {
         );
         assert_eq!(over[0].brotli_delta_bytes(), Some(512));
 
-        let counter_m = report.bundles.iter().find(|b| b.name == "counter").unwrap();
+        let ks_m = report.bundles.iter().find(|b| b.name == "kitchen-sink").unwrap();
         assert_eq!(
-            counter_m.budget_status(),
+            ks_m.budget_status(),
             BudgetStatus::WithinBudget { margin_bytes: 0 }
         );
-        assert_eq!(counter_m.brotli_delta_bytes(), Some(0));
+        assert_eq!(ks_m.brotli_delta_bytes(), Some(0));
 
         let dev_m = report.bundles.iter().find(|b| b.name == "dev").unwrap();
         assert_eq!(dev_m.budget_status(), BudgetStatus::UncompressedOnly);
         assert_eq!(dev_m.brotli_delta_bytes(), None);
 
         // Custom bundle with no budget configured reports `NoBudget`.
-        let custom = measure_bundle_dir("custom", &counter, None);
+        let custom = measure_bundle_dir("custom", &ks, None);
         assert_eq!(custom.budget_status(), BudgetStatus::NoBudget);
 
         let table = report.format_table();

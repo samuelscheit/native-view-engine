@@ -213,8 +213,8 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     let _ = writeln!(out, "        (eventName, payloadBin) => this._dispatchNativeEvent(eventName, payloadBin),");
     let _ = writeln!(out, "        hotReloadUrl,");
     let _ = writeln!(out, "      );");
-    let _ = writeln!(out, "    }} else if (typeof mod.start_counter_app === 'function') {{");
-    let _ = writeln!(out, "      mod.start_counter_app(this._mountRoot.id, hotReloadUrl);");
+    let _ = writeln!(out, "    }} else if (typeof mod.start_kitchen_sink_app === 'function') {{");
+    let _ = writeln!(out, "      mod.start_kitchen_sink_app(this._mountRoot.id, hotReloadUrl);");
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "    this._syncProps();");
     let _ = writeln!(out, "  }}");

@@ -2,7 +2,7 @@
 //! `IslandHydrationScheduler`, event capture + replay, and Studio Workspace SSR byte reduction).
 
 use nve_abi::{
-    CommandBufferBuilder, ComponentKind, EventMask, EventPayload, NativeEvent, NativeEventKind,
+    CommandBufferBuilder, ComponentKind, EventPayload, NativeEvent, NativeEventKind,
     NodeId, RawPropValue, ROOT_NODE_ID,
 };
 use nve_backend_web::{
@@ -11,7 +11,7 @@ use nve_backend_web::{
     WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG,
 };
 use nve_engine::{RenderBackend, Viewport};
-use nve_example_counter::COUNTER_STATE_BIN_VERSION;
+use nve_example_kitchen_sink::{KITCHEN_SINK_STATE_MAGIC, KITCHEN_SINK_STATE_VERSION};
 use nve_studio_workspace::STUDIO_SNAPSHOT_SCHEMA_VERSION;
 
 use crate::hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler};
@@ -328,18 +328,13 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
 }
 
 #[test]
-fn counter_canonical_snapshot_roundtrips_nwc1_state_with_zero_mismatch_hydration() {
+fn kitchen_sink_canonical_snapshot_roundtrips_binary_state_with_zero_mismatch_hydration() {
     let vp = Viewport::default();
-    let mut session1 = WebAppSession::new_counter(1, WebBackend::new(), vp);
+    let mut session1 = WebAppSession::new_kitchen_sink(1, WebBackend::new(), vp);
     session1.render_initial().unwrap();
 
-    let mut pressables: Vec<NodeId> = session1
-        .backend()
-        .iter_nodes()
-        .filter_map(|(id, el)| ((el.event_mask & EventMask::PRESS) != 0).then_some(id))
-        .collect();
-    pressables.sort_unstable();
-    let inc_btn = pressables[0];
+    let inc_btn = find_node_by_testid(session1.backend(), "ks-counter-inc")
+        .expect("ks-counter-inc button must exist in Kitchen Sink Frame 0");
 
     for i in 1..=3 {
         session1.backend().push_event(NativeEvent {
@@ -355,21 +350,21 @@ fn counter_canonical_snapshot_roundtrips_nwc1_state_with_zero_mismatch_hydration
 
     let (state_bytes, payload) = session1
         .capture_canonical_snapshot(Vec::new())
-        .expect("Counter must produce canonical snapshot + NWC1 state");
-    assert!(state_bytes.starts_with(b"NWC1"));
+        .expect("Kitchen Sink must produce canonical snapshot + binary state");
+    assert!(state_bytes.starts_with(&KITCHEN_SINK_STATE_MAGIC));
     assert!(payload.html.contains("Count: 3"));
 
     let mut store = WebSnapshotStore::new(
         MemorySnapshotStorage::new(),
-        "counter",
-        COUNTER_STATE_BIN_VERSION,
+        "kitchen-sink",
+        KITCHEN_SINK_STATE_VERSION,
     );
     store.save_all(&payload, &state_bytes).unwrap();
 
     let cached_frame = store.load_frame().unwrap();
     let cached_state = store.load_state().unwrap();
 
-    let (mut session2, restored) = WebAppSession::new_counter_with_state(
+    let (mut session2, restored) = WebAppSession::new_kitchen_sink_with_state(
         1,
         WebBackend::hydrate_from_ssr(&cached_frame.to_ssr_output()),
         vp,
@@ -387,8 +382,9 @@ fn counter_canonical_snapshot_roundtrips_nwc1_state_with_zero_mismatch_hydration
 }
 
 fn extract_testid_node_id(html: &str, testid: &str) -> Option<NodeId> {
-    let needle = format!("testid=\"{testid}\"");
-    let pos = html.find(&needle)?;
+    let pos = html
+        .find(&format!("data-testid=\"{testid}\""))
+        .or_else(|| html.find(&format!("testid=\"{testid}\"")))?;
     let tag_start = html[..pos].rfind('<')?;
     let tag = &html[tag_start..pos];
     let id_attr = "data-nve-id=\"";
@@ -396,3 +392,4 @@ fn extract_testid_node_id(html: &str, testid: &str) -> Option<NodeId> {
     let end = tag[id_pos..].find('"')?;
     tag[id_pos..id_pos + end].parse().ok()
 }
+

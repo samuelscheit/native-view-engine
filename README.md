@@ -61,8 +61,8 @@ nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot + WAL, 2-Tie
 cargo test --workspace
 cargo bench -p nve-bench
 
-# 3. Build example cdylibs (counter + flagship Aether Workspace / NVE Studio)
-cargo build -p nve-example-counter -p nve-studio-workspace
+# 3. Build example cdylibs (Kitchen Sink gallery + flagship Aether Workspace / NVE Studio)
+cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
 
 # 4. Launch in the cross-platform Skia desktop shell (or capture a PNG screenshot)
 cargo run -p nve-skia-shell -- \

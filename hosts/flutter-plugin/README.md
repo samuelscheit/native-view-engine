@@ -28,7 +28,7 @@ Flutter Widget Tree
 
 ## Quickstart: Direct `NveCanvasView` (Zero PlatformViews)
 
-Build any NVE Rust cdylib (e.g. `cargo build -p nve-example-counter`), then mount it directly on Flutter's Canvas:
+Build any NVE Rust cdylib (e.g. `cargo build -p nve-example-kitchen-sink`), then mount it directly on Flutter's Canvas:
 
 ```dart
 import 'package:flutter/material.dart';
@@ -135,7 +135,7 @@ class _CounterScreenState extends State<CounterScreen> {
 ## Verification
 
 ```bash
-cargo build -p nve-example-counter
+cargo build -p nve-example-kitchen-sink
 (cd hosts/flutter-plugin && flutter analyze && flutter test)
 ```
 

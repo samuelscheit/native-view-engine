@@ -22,7 +22,7 @@ const WEB_SHELL_DIR = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(WEB_SHELL_DIR, "..", "..");
 const PKG_DIR = path.join(WEB_SHELL_DIR, "pkg");
 // hosts/web-shell/build.sh bundles: one production bundle per app + the dev bundle (pairing, probes).
-const BUNDLES = ["studio", "counter", "dev"];
+const BUNDLES = ["studio", "kitchen-sink", "dev"];
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -461,29 +461,26 @@ function resolvePairArtifacts() {
     process.platform === "darwin" ? "dylib" : process.platform === "win32" ? "dll" : "so";
 
   const nveBin = path.join(targetDir, "debug", `nve${exeExt}`);
-  const counterDylib = path.join(targetDir, "debug", `${libPrefix}nve_example_counter.${libExt}`);
-  return { nveBin, counterDylib };
+  const kitchenSinkDylib = path.join(targetDir, "debug", `${libPrefix}nve_example_kitchen_sink.${libExt}`);
+  return { nveBin, kitchenSinkDylib };
 }
 
 function ensurePairArtifacts() {
-  const { nveBin, counterDylib } = resolvePairArtifacts();
-  if (fs.existsSync(nveBin) && fs.existsSync(counterDylib)) {
-    return { nveBin, counterDylib };
-  }
-  console.log("==> Building nve-cli + nve-example-counter for live pair E2E...");
-  const res = spawnSync("cargo", ["build", "-p", "nve-example-counter", "-p", "nve-cli"], {
+  const { nveBin, kitchenSinkDylib } = resolvePairArtifacts();
+  console.log("==> Building nve-cli + nve-example-kitchen-sink for live pair E2E...");
+  const res = spawnSync("cargo", ["build", "-p", "nve-example-kitchen-sink", "-p", "nve-cli"], {
     cwd: REPO_ROOT,
     stdio: "inherit",
   });
   if (res.status !== 0) {
-    throw new Error(`cargo build -p nve-example-counter -p nve-cli failed with exit code ${res.status}`);
+    throw new Error(`cargo build -p nve-example-kitchen-sink -p nve-cli failed with exit code ${res.status}`);
   }
-  if (!fs.existsSync(nveBin) || !fs.existsSync(counterDylib)) {
+  if (!fs.existsSync(nveBin) || !fs.existsSync(kitchenSinkDylib)) {
     throw new Error(
-      `Expected live pair artifacts after build:\n  nveBin=${nveBin} (exists=${fs.existsSync(nveBin)})\n  counterDylib=${counterDylib} (exists=${fs.existsSync(counterDylib)})`
+      `Expected live pair artifacts after build:\n  nveBin=${nveBin} (exists=${fs.existsSync(nveBin)})\n  kitchenSinkDylib=${kitchenSinkDylib} (exists=${fs.existsSync(kitchenSinkDylib)})`
     );
   }
-  return { nveBin, counterDylib };
+  return { nveBin, kitchenSinkDylib };
 }
 
 async function stopChildProcess(proc) {
@@ -763,7 +760,7 @@ async function main() {
         return (
           window.__nveBundle === "studio" &&
           typeof m?.start_studio_workspace_app === "function" &&
-          m.start_counter_app === undefined &&
+          m.start_kitchen_sink_app === undefined &&
           m.run_semantic_style_hydration_probe === undefined &&
           m.run_hostile_frame_probe === undefined &&
           m.panic_probe === undefined &&
@@ -1154,18 +1151,18 @@ async function main() {
     );
 
     // =========================================================================
-    // 3. Counter App (`/?app=counter&ws=off`)
+    // 3. Kitchen Sink Gallery (`/?app=kitchen-sink&ws=off`)
     // =========================================================================
-    console.log("==> [3/7] Testing Counter App (?app=counter&ws=off)...");
-    await cdp.send("Page.navigate", { url: `${baseUrl}/?app=counter&ws=off` });
+    console.log("==> [3/7] Testing Kitchen Sink Gallery (?app=kitchen-sink&ws=off)...");
+    await cdp.send("Page.navigate", { url: `${baseUrl}/?app=kitchen-sink&ws=off&reset=1` });
     await waitForCondition(
       cdp,
-      "production counter bundle loaded (counter exports only: no studio, dev probe or scene view)",
+      "production kitchen-sink bundle loaded (kitchen-sink exports only: no studio, dev probe or scene view)",
       () => {
         const m = window.__nveWasmMod;
         return (
-          window.__nveBundle === "counter" &&
-          typeof m?.start_counter_app === "function" &&
+          window.__nveBundle === "kitchen-sink" &&
+          typeof m?.start_kitchen_sink_app === "function" &&
           m.start_studio_workspace_app === undefined &&
           m.run_semantic_style_hydration_probe === undefined &&
           m.run_hostile_frame_probe === undefined &&
@@ -1177,14 +1174,15 @@ async function main() {
 
     await waitForCondition(
       cdp,
-      "CounterApp mounted with Count: 0",
+      "KitchenSinkApp mounted with Overview & Primitives and Count: 0",
       () => {
         const ctrl = window.__nveController;
         const text = document.getElementById("app")?.innerText || "";
         return (
           ctrl &&
-          ctrl.app_name === "CounterApp" &&
-          text.includes("NATIVE VIEW ENGINE") &&
+          ctrl.app_name === "KitchenSinkApp" &&
+          text.includes("NVE Kitchen Sink") &&
+          text.includes("Overview & Primitives") &&
           text.includes("Count: 0") &&
           text.includes("Increment +") &&
           text.includes("Reset")
@@ -1194,31 +1192,73 @@ async function main() {
 
     const findButtonByText = (label) =>
       `Array.from(document.querySelectorAll('#app button')).find((b) => b.innerText.trim() === ${JSON.stringify(label)})`;
+    const findByTestId = (tid) => `document.querySelector('#app [testid="${tid}"]')`;
 
     // Click Increment + twice -> Count: 1 -> Count: 2
-    await clickElement(cdp, findButtonByText("Increment +"), "Increment + (1st click)");
+    await clickElement(cdp, findByTestId("ks-counter-inc"), "Kitchen Sink Increment + (1st click)");
     await waitForCondition(
       cdp,
-      "Counter incremented to Count: 1",
+      "Kitchen Sink counter incremented to Count: 1",
       () => (document.getElementById("app")?.innerText || "").includes("Count: 1")
     );
 
-    await clickElement(cdp, findButtonByText("Increment +"), "Increment + (2nd click)");
+    await clickElement(cdp, findByTestId("ks-counter-inc"), "Kitchen Sink Increment + (2nd click)");
     await waitForCondition(
       cdp,
-      "Counter incremented to Count: 2",
+      "Kitchen Sink counter incremented to Count: 2",
       () => (document.getElementById("app")?.innerText || "").includes("Count: 2")
     );
 
     // Click Reset -> Count: 0
-    await clickElement(cdp, findButtonByText("Reset"), "Reset");
+    await clickElement(cdp, findByTestId("ks-counter-reset"), "Kitchen Sink Reset");
     await waitForCondition(
       cdp,
-      "Counter reset to Count: 0",
+      "Kitchen Sink counter reset to Count: 0",
       () => (document.getElementById("app")?.innerText || "").includes("Count: 0")
     );
 
-    console.log("    PASS Counter App (Increment x2 -> Count: 2 -> Reset -> Count: 0)");
+    // Navigate to Overlays & fire a Success toast
+    await clickElement(cdp, findByTestId("ks-nav-overlays"), "Navigate to Overlays section");
+    await waitForCondition(
+      cdp,
+      "Overlays section mounted",
+      () => (document.getElementById("app")?.innerText || "").includes("ToastProvider")
+    );
+    await clickElement(cdp, findByTestId("ks-toast-success"), "Fire Success Toast");
+    await waitForCondition(
+      cdp,
+      "Success toast rendered in ToastViewport",
+      () => (document.getElementById("app")?.innerText || "").includes("Build Verified")
+    );
+
+    // Navigate to Motion & Resilience -> Trigger ErrorBoundary -> Verify Fallback -> Retry recovery!
+    await clickElement(cdp, findByTestId("ks-nav-motion"), "Navigate to Motion & Resilience section");
+    await waitForCondition(
+      cdp,
+      "Motion & Resilience section mounted",
+      () => (document.getElementById("app")?.innerText || "").includes("UiErrorBoundary Subtree Isolation")
+    );
+    await clickElement(cdp, findByTestId("ks-trigger-error"), "Trigger Subtree Error");
+    await waitForCondition(
+      cdp,
+      "UiErrorBoundary caught subtree error without crashing gallery",
+      () => {
+        const text = document.getElementById("app")?.innerText || "";
+        return (
+          text.includes("Subtree Error Caught") &&
+          text.includes("Origin:") &&
+          text.includes("NVE Kitchen Sink")
+        );
+      }
+    );
+    await clickElement(cdp, findByTestId("ks-error-boundary-retry"), "Retry ErrorBoundary");
+    await waitForCondition(
+      cdp,
+      "UiErrorBoundary recovered cleanly on Retry",
+      () => (document.getElementById("app")?.innerText || "").includes("Protected subtree is mounted and operational.")
+    );
+
+    console.log("    PASS Kitchen Sink Gallery (Counter, Overlays/Toast, Motion/UiErrorBoundary recovery)");
 
     // =========================================================================
     // 4. Studio Docs View (`ActiveView::Docs`)
@@ -1515,9 +1555,9 @@ async function main() {
     // 6. Live `nve pair` Binary WebSocket Thin-Client (`?pair=ws://...&token=...`)
     // =========================================================================
     console.log("==> [6/7] Testing Live nve pair Binary WebSocket Thin-Client (?pair=ws://...&token=...)...");
-    const { nveBin, counterDylib } = ensurePairArtifacts();
+    const { nveBin, kitchenSinkDylib } = ensurePairArtifacts();
     try {
-      pairServer = await launchPairServer(nveBin, counterDylib);
+      pairServer = await launchPairServer(nveBin, kitchenSinkDylib);
       assertIncludes(pairServer.stdout, "nve://pair?", "nve pair stdout URI");
       assertIncludes(
         pairServer.stdout,
@@ -1534,7 +1574,7 @@ async function main() {
 
       await waitForCondition(
         cdp,
-        "Live paired thin-client connected with ZERO local WASM app and rendered Counter Count: 0",
+        "Live paired thin-client connected with ZERO local WASM app and rendered Kitchen Sink Count: 0",
         () => {
           const host = window.__nvePairHost;
           const status = document.getElementById("nve-status");
@@ -1548,7 +1588,7 @@ async function main() {
             status?.dataset.state === "connected" &&
             status?.dataset.pairConnected === "true" &&
             app?.dataset.nveMode === "paired" &&
-            text.includes("NATIVE VIEW ENGINE") &&
+            text.includes("NVE Kitchen Sink") &&
             text.includes("Count: 0") &&
             text.includes("Increment +") &&
             text.includes("Reset")
@@ -1556,28 +1596,28 @@ async function main() {
         }
       );
 
-      // Click Increment + twice -> live InputEvents=11 -> Rust CounterModule -> NVD1 delta -> DOM.
-      await clickElement(cdp, findButtonByText("Increment +"), "Paired Increment + (1st click)");
+      // Click Increment + twice -> live InputEvents=11 -> Rust KitchenSinkModule -> NVD1 delta -> DOM.
+      await clickElement(cdp, findByTestId("ks-counter-inc"), "Paired Increment + (1st click)");
       await waitForCondition(
         cdp,
-        "Paired Counter incremented to Count: 1 over live binary WebSocket",
+        "Paired Kitchen Sink incremented to Count: 1 over live binary WebSocket",
         () => (document.getElementById("app")?.innerText || "").includes("Count: 1")
       );
 
-      await clickElement(cdp, findButtonByText("Increment +"), "Paired Increment + (2nd click)");
+      await clickElement(cdp, findByTestId("ks-counter-inc"), "Paired Increment + (2nd click)");
       await waitForCondition(
         cdp,
-        "Paired Counter incremented to Count: 2 over live binary WebSocket",
+        "Paired Kitchen Sink incremented to Count: 2 over live binary WebSocket",
         () =>
           (document.getElementById("app")?.innerText || "").includes("Count: 2") &&
           Number(window.__nvePairHost?.frames_received() || 0) >= 3
       );
 
       // Click Reset -> verify Count: 0 round-trip.
-      await clickElement(cdp, findButtonByText("Reset"), "Paired Reset");
+      await clickElement(cdp, findByTestId("ks-counter-reset"), "Paired Reset");
       await waitForCondition(
         cdp,
-        "Paired Counter reset to Count: 0 over live binary WebSocket",
+        "Paired Kitchen Sink reset to Count: 0 over live binary WebSocket",
         () => (document.getElementById("app")?.innerText || "").includes("Count: 0")
       );
 
@@ -1894,7 +1934,7 @@ async function main() {
     console.log("==> [8/8] Testing Cold SSG + 0ms Instant Snapshot & State Restore (.wasm blocked & unblocked, hydration, replay, ?reset=1)...");
     await cdp.send("Network.enable");
 
-    // Stage real pre-rendered `/examples/_runtime/{studio,counter}.html` via `nve docs build`
+    // Stage real pre-rendered `/examples/_runtime/{studio,kitchen-sink}.html` via `nve docs build`
     // using the freshly built `hosts/web-shell/pkg/` bundles, served on a clean origin (empty localStorage).
     const ssgTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nve-web-ssg-e2e-"));
     const ssgBuild = spawnSync(
@@ -1920,11 +1960,11 @@ async function main() {
     const { server: ssgServer, port: ssgPort } = await startStaticServer(ssgTmpDir);
     const ssgBaseUrl = `http://127.0.0.1:${ssgPort}`;
     const studioSsgUrl = `${ssgBaseUrl}/examples/_runtime/studio.html?app=studio&ws=off`;
-    const counterSsgUrl = `${ssgBaseUrl}/examples/_runtime/counter.html?app=counter&ws=off`;
+    const kitchenSinkSsgUrl = `${ssgBaseUrl}/examples/_runtime/kitchen-sink.html?app=kitchen-sink&ws=off`;
 
     try {
       // 8a. COLD FIRST VISIT (empty localStorage, .wasm COMPLETELY BLOCKED) -> full initial
-      //     Studio AND Counter UIs must ALREADY be visibly rendered at 0ms from embedded SSG HTML+CSS!
+      //     Studio AND Kitchen Sink UIs must ALREADY be visibly rendered at 0ms from embedded SSG HTML+CSS!
       allowExpectedOfflineWasmError = true;
       await cdp.send("Network.setBlockedURLs", { urls: ["*.wasm"] });
       try {
@@ -1954,10 +1994,10 @@ async function main() {
           }
         );
 
-        await cdp.send("Page.navigate", { url: counterSsgUrl });
+        await cdp.send("Page.navigate", { url: kitchenSinkSsgUrl });
         await waitForCondition(
           cdp,
-          "Cold first-visit Counter SSG rendered full initial UI at 0ms with empty localStorage and .wasm blocked",
+          "Cold first-visit Kitchen Sink SSG rendered full initial UI at 0ms with empty localStorage and .wasm blocked",
           () => {
             const app = document.getElementById("app");
             const status = document.getElementById("nve-status");
@@ -1970,14 +2010,14 @@ async function main() {
               Boolean(document.querySelector("style[data-nve-base]")) &&
               Boolean(document.querySelector("style[data-nve-ssr][data-nve-hashes]")) &&
               Boolean(app?.querySelector("[data-nve-ssr-hash]")) &&
-              text.includes("NATIVE VIEW ENGINE") &&
+              text.includes("NVE Kitchen Sink") &&
               text.includes("Count: 0") &&
               text.includes("Increment +") &&
               status?.textContent === "Snapshot (offline)"
             );
           }
         );
-        console.log("    PASS Cold First-Visit SSG with .wasm COMPLETELY BLOCKED (Studio + Counter painted at 0ms with empty localStorage)");
+        console.log("    PASS Cold First-Visit SSG with .wasm COMPLETELY BLOCKED (Studio + Kitchen Sink painted at 0ms with empty localStorage)");
       } finally {
         await cdp.send("Network.setBlockedURLs", { urls: [] });
         allowExpectedOfflineWasmError = false;
@@ -2043,11 +2083,11 @@ async function main() {
         return stats;
       };
 
-      const coldCounterStats = await verifyColdSsgHydration(counterSsgUrl, "Counter", "CounterApp", 5);
+      const coldKitchenSinkStats = await verifyColdSsgHydration(kitchenSinkSsgUrl, "Kitchen Sink", "KitchenSinkApp", 20);
       await evalJs(cdp, `window.__nveController?.clear_snapshot(); localStorage.clear(); true`);
       const coldStudioStats = await verifyColdSsgHydration(studioSsgUrl, "Studio", "StudioWorkspaceApp", 20);
       console.log(
-        `    PASS Cold First-Visit SSG Hydration (Studio adopted=${coldStudioStats.adopted} mismatches=0 rootId=true; Counter adopted=${coldCounterStats.adopted} mismatches=0 rootId=true)`
+        `    PASS Cold First-Visit SSG Hydration (Studio adopted=${coldStudioStats.adopted} mismatches=0 rootId=true; Kitchen Sink adopted=${coldKitchenSinkStats.adopted} mismatches=0 rootId=true)`
       );
 
       // 8c. RETURNING USER VISIT: Mutate Studio on the SSG page, persist NVWS1 + NWS1,
@@ -2212,49 +2252,72 @@ async function main() {
         `    PASS Returning-User Studio Hydration + Replay (adopted=${snapHydrateStats.adopted}, mismatches=0, replayed=${snapHydrateStats.replayed}, rootIdentity=true, NWS1 Board intact)`
       );
 
-      // 8e. Counter Returning-User 0ms Snapshot + NWC1 State Restore + Zero-Mismatch Hydration.
-      await cdp.send("Page.navigate", { url: `${counterSsgUrl}&reset=1` });
+      // 8e. Kitchen Sink Returning-User 0ms Snapshot + Binary State Restore + Zero-Mismatch Hydration.
+      await cdp.send("Page.navigate", { url: `${kitchenSinkSsgUrl}&reset=1` });
       await waitForCondition(
         cdp,
-        "Counter SSG reset to Count: 0 with 0-mismatch cold SSG hydration",
+        "Kitchen Sink SSG reset to Count: 0 with 0-mismatch cold SSG hydration",
         () =>
-          window.__nveController?.app_name === "CounterApp" &&
+          window.__nveController?.app_name === "KitchenSinkApp" &&
           window.__nveController?.is_hydrated() === true &&
           Number(window.__nveController?.hydration_mismatch_count()) === 0 &&
           (document.getElementById("app")?.innerText || "").includes("Count: 0")
       );
-      await cdp.send("Page.navigate", { url: counterSsgUrl });
+      await cdp.send("Page.navigate", { url: kitchenSinkSsgUrl });
       await waitForCondition(
         cdp,
-        "Counter SSG mounted for mutation",
+        "Kitchen Sink SSG mounted for mutation",
         () =>
-          window.__nveController?.app_name === "CounterApp" &&
+          window.__nveController?.app_name === "KitchenSinkApp" &&
           (document.getElementById("app")?.innerText || "").includes("Count: 0")
       );
       for (let i = 1; i <= 3; i++) {
-        await clickElement(cdp, findButtonByText("Increment +"), `Snapshot Counter Increment #${i}`);
+        await clickElement(cdp, findByTestId("ks-counter-inc"), `Snapshot Kitchen Sink Increment #${i}`);
         await waitForCondition(
           cdp,
-          `Counter incremented to Count: ${i}`,
+          `Kitchen Sink incremented to Count: ${i}`,
           `() => (document.getElementById("app")?.innerText || "").includes("Count: ${i}")`
         );
       }
       await waitForCondition(
         cdp,
-        "Counter NVWS1 + NWC1 persisted to localStorage",
+        "Kitchen Sink snapshot + binary state persisted to localStorage",
         () =>
-          (localStorage.getItem("nve:snap:counter:v1") || "").startsWith("NVWS1|1|") &&
-          (localStorage.getItem("nve:state:counter:v1") || "").startsWith("NVB1|1|")
+          (localStorage.getItem("nve:snap:kitchen-sink:v1") || "").startsWith("NVWS1|1|") &&
+          (localStorage.getItem("nve:state:kitchen-sink:v1") || "").startsWith("NVB1|1|")
       );
-      await cdp.send("Page.navigate", { url: counterSsgUrl });
+
+      // Verify returning-user 0ms instant restore even with .wasm BLOCKED!
+      allowExpectedOfflineWasmError = true;
+      await cdp.send("Network.setBlockedURLs", { urls: ["*.wasm"] });
+      try {
+        await cdp.send("Page.navigate", { url: kitchenSinkSsgUrl });
+        await waitForCondition(
+          cdp,
+          "Kitchen Sink returning-user 0ms instant snapshot painted Count: 3 with .wasm blocked",
+          () => {
+            const app = document.getElementById("app");
+            return (
+              app?.dataset.nveRestored === "1" &&
+              window.__nveWasmMod === undefined &&
+              (app?.innerText || "").includes("Count: 3")
+            );
+          }
+        );
+      } finally {
+        await cdp.send("Network.setBlockedURLs", { urls: [] });
+        allowExpectedOfflineWasmError = false;
+      }
+
+      await cdp.send("Page.navigate", { url: kitchenSinkSsgUrl });
       await waitForCondition(
         cdp,
-        "Counter hydrated restored Count: 3 snapshot with 0 mismatches",
+        "Kitchen Sink hydrated restored Count: 3 snapshot with 0 mismatches",
         () => {
           const ctrl = window.__nveController;
           return (
             Boolean(ctrl) &&
-            ctrl.app_name === "CounterApp" &&
+            ctrl.app_name === "KitchenSinkApp" &&
             ctrl.restored_from_snapshot() === true &&
             ctrl.is_hydrated() === true &&
             Number(ctrl.hydration_mismatch_count()) === 0 &&
@@ -2262,7 +2325,7 @@ async function main() {
           );
         }
       );
-      console.log("    PASS Counter 0ms Instant Snapshot + NWC1 State Restore (Count: 3, mismatches=0)");
+      console.log("    PASS Kitchen Sink 0ms Instant Snapshot + Binary State Restore (Count: 3, mismatches=0)");
 
       // 8f. `?reset=1` clears localStorage, preserves clean build-time SSG Board HTML with 0-mismatch hydration,
       //     and corrupt storage falls back cleanly with zero panics.

@@ -241,7 +241,7 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
     let updated = session
         .handle_hot_patch(HotPatchMsg::DylibReload {
             generation: 2,
-            dylib_path: "target/debug/libnve_example_counter.dylib".into(),
+            dylib_path: "target/debug/libnve_example_kitchen_sink.dylib".into(),
             build_ms: 185,
         })
         .unwrap();
@@ -536,7 +536,7 @@ fn render_visual_verification_ppms_at_2x_hidpi() {
             "/tmp/nve_skia_cosmic_studio.ppm",
         ),
         (
-            "libnve_example_counter",
+            "libnve_example_kitchen_sink",
             640.0f32,
             420.0f32,
             ColorRgba::rgb(15, 23, 42),

@@ -91,19 +91,19 @@ trap cleanup EXIT
 
 case "$OS_NAME" in
   Darwin)
-    COUNTER_DYLIB="$REPO_ROOT/target/debug/libnve_example_counter.dylib"
+    KITCHEN_SINK_DYLIB="$REPO_ROOT/target/debug/libnve_example_kitchen_sink.dylib"
     STUDIO_DYLIB="$REPO_ROOT/target/debug/libnve_studio_workspace.dylib"
     ;;
   Linux)
-    COUNTER_DYLIB="$REPO_ROOT/target/debug/libnve_example_counter.so"
+    KITCHEN_SINK_DYLIB="$REPO_ROOT/target/debug/libnve_example_kitchen_sink.so"
     STUDIO_DYLIB="$REPO_ROOT/target/debug/libnve_studio_workspace.so"
     ;;
   MINGW*|MSYS*|CYGWIN*)
-    COUNTER_DYLIB="$REPO_ROOT/target/debug/nve_example_counter.dll"
+    KITCHEN_SINK_DYLIB="$REPO_ROOT/target/debug/nve_example_kitchen_sink.dll"
     STUDIO_DYLIB="$REPO_ROOT/target/debug/nve_studio_workspace.dll"
     ;;
   *)
-    COUNTER_DYLIB="$REPO_ROOT/target/debug/libnve_example_counter.so"
+    KITCHEN_SINK_DYLIB="$REPO_ROOT/target/debug/libnve_example_kitchen_sink.so"
     STUDIO_DYLIB="$REPO_ROOT/target/debug/libnve_studio_workspace.so"
     ;;
 esac
@@ -369,7 +369,7 @@ detect_java_home() {
 
 suite_rust_workspace() {
   cd "$REPO_ROOT"
-  cargo build -p nve-example-counter -p nve-studio-workspace
+  cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
   cargo test --workspace
   cargo bench --no-run
   if [ "$QUICK_MODE" -eq 0 ]; then
@@ -439,15 +439,15 @@ suite_macos_appkit() {
     ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
   cmake --build "$build_dir"
   ctest --test-dir "$build_dir" --output-on-failure
-  if [ ! -f "$COUNTER_DYLIB" ]; then
-    echo "error: expected counter dylib at $COUNTER_DYLIB" >&2
+  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
+    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
     return 1
   fi
   if [ ! -f "$STUDIO_DYLIB" ]; then
     echo "error: expected studio dylib at $STUDIO_DYLIB" >&2
     return 1
   fi
-  NVE_TEST_COUNTER_DYLIB="$COUNTER_DYLIB" \
+  NVE_TEST_KITCHEN_SINK_DYLIB="$KITCHEN_SINK_DYLIB" \
     NVE_TEST_STUDIO_DYLIB="$STUDIO_DYLIB" \
     "$build_dir/nve_macos_shell_test"
 }
@@ -469,18 +469,18 @@ suite_windows_host() {
     ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
     ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
   cmake --build "$build_dir"
-  if [ ! -f "$COUNTER_DYLIB" ]; then
-    echo "error: expected counter dylib at $COUNTER_DYLIB" >&2
+  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
+    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
     return 1
   fi
   if [ ! -f "$STUDIO_DYLIB" ]; then
     echo "error: expected studio dylib at $STUDIO_DYLIB" >&2
     return 1
   fi
-  local win_counter win_studio
-  win_counter="$(native_host_path "$COUNTER_DYLIB")"
+  local win_ks win_studio
+  win_ks="$(native_host_path "$KITCHEN_SINK_DYLIB")"
   win_studio="$(native_host_path "$STUDIO_DYLIB")"
-  NVE_TEST_COUNTER_DYLIB="$win_counter" \
+  NVE_TEST_KITCHEN_SINK_DYLIB="$win_ks" \
     NVE_TEST_STUDIO_DYLIB="$win_studio" \
     ctest --test-dir "$build_dir" --output-on-failure
 }
@@ -492,16 +492,16 @@ suite_qt6_host() {
     ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
   cmake --build "$build_dir"
   QT_QPA_PLATFORM=offscreen ctest --test-dir "$build_dir" --output-on-failure
-  if [ ! -f "$COUNTER_DYLIB" ]; then
-    echo "error: expected counter dylib at $COUNTER_DYLIB" >&2
+  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
+    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
     return 1
   fi
   if [ ! -f "$STUDIO_DYLIB" ]; then
     echo "error: expected studio dylib at $STUDIO_DYLIB" >&2
     return 1
   fi
-  local host_counter host_studio
-  host_counter="$(native_host_path "$COUNTER_DYLIB")"
+  local host_ks host_studio
+  host_ks="$(native_host_path "$KITCHEN_SINK_DYLIB")"
   host_studio="$(native_host_path "$STUDIO_DYLIB")"
 
   local shell_test_bin=""
@@ -515,7 +515,7 @@ suite_qt6_host() {
   fi
 
   QT_QPA_PLATFORM=offscreen \
-    NVE_TEST_COUNTER_DYLIB="$host_counter" \
+    NVE_TEST_KITCHEN_SINK_DYLIB="$host_ks" \
     NVE_TEST_STUDIO_DYLIB="$host_studio" \
     "$shell_test_bin"
 
@@ -528,7 +528,7 @@ suite_qt6_host() {
   if [ -n "$quick_test_bin" ]; then
     QT_QPA_PLATFORM=offscreen \
       QT_QUICK_BACKEND=software \
-      NVE_TEST_COUNTER_DYLIB="$host_counter" \
+      NVE_TEST_KITCHEN_SINK_DYLIB="$host_ks" \
       NVE_TEST_STUDIO_DYLIB="$host_studio" \
       "$quick_test_bin"
   fi
@@ -542,10 +542,10 @@ suite_gtk4_host() {
   cmake --build "$build_dir"
 
   local env_prefix=()
-  if [ -f "$COUNTER_DYLIB" ] && [ -f "$STUDIO_DYLIB" ]; then
-    env_prefix=(env "NVE_TEST_COUNTER_DYLIB=$COUNTER_DYLIB" "NVE_TEST_STUDIO_DYLIB=$STUDIO_DYLIB")
-  elif [ -f "$COUNTER_DYLIB" ]; then
-    env_prefix=(env "NVE_TEST_COUNTER_DYLIB=$COUNTER_DYLIB")
+  if [ -f "$KITCHEN_SINK_DYLIB" ] && [ -f "$STUDIO_DYLIB" ]; then
+    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$KITCHEN_SINK_DYLIB" "NVE_TEST_STUDIO_DYLIB=$STUDIO_DYLIB")
+  elif [ -f "$KITCHEN_SINK_DYLIB" ]; then
+    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$KITCHEN_SINK_DYLIB")
   fi
 
   if [ "$OS_NAME" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xvfb-run >/dev/null 2>&1; then

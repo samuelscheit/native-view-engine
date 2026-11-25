@@ -191,7 +191,7 @@
 				<div class="topbar-right">
 					<nav class="app-switcher" aria-label="NVE Web Demo App">
 						<a id="tab-studio" class="app-tab" href="?app=studio" data-active="true">Studio</a>
-						<a id="tab-counter" class="app-tab" href="?app=counter" data-active="false">Counter</a>
+						<a id="tab-kitchen-sink" class="app-tab" href="?app=kitchen-sink" data-active="false">Kitchen Sink</a>
 					</nav>
 					<a id="nve-reset-btn" class="app-tab" data-testid="shell-reset-btn" href="?reset=1" title="Clear persisted workspace snapshot & state">Reset</a>
 					<div id="nve-status" class="status-pill" data-state="booting">Booting WASM…</div>
@@ -202,19 +202,19 @@
 			</main>
 		</div>
 
-		<script data-nve-snapshot-boot>(()=>{try{let L=localStorage,D=document,a=D.getElementById('app'),q=new URL(location).searchParams,g=x=>q.get(x),p=(g('app')||'studio').toLowerCase(),v=p=='counter'?1:2,Z=':'+p+':v'+v,k='nve:snap'+Z,s='nve:state'+Z;if(g('reset')==1)return delete L[k],delete L[s];if(!a||g('pair')||g('ssr'))return;let r=L[k],i=r?.indexOf('\n');if(!L[s]||i<6||!/^NVWS1\|/.test(r))return;let[u,,z,...n]=r.slice(6,i).split('|'),o=i+1,[H,B,C,M]=n.map(x=>r.slice(o,o+=+x));if(+u!=v||n.length-4||!M||o!=r.length)return;let S=(t,c,h)=>{t='data-nve-'+t;let e=D.querySelector('['+t+']')||D.head.appendChild(D.createElement('style'));e.setAttribute(t,'');h&&(e.dataset.nveHashes=h);e.textContent=c};S('base',B);S('ssr',C,H);a.innerHTML=M;a.dataset.nveRestored=1;if(z){let V=a.querySelectorAll('.nve-s');z.replace(/(\d+):(\d+)/g,(_,j,y)=>V[j]&&(V[j].scrollTop=y))}}catch{}})();</script>
+		<script data-nve-snapshot-boot>(()=>{try{let L=localStorage,D=document,a=D.getElementById('app'),q=new URL(location).searchParams,g=x=>q.get(x),p=(g('app')||'studio').toLowerCase(),v=p=='kitchen-sink'?1:2,Z=':'+p+':v'+v,k='nve:snap'+Z,s='nve:state'+Z;if(g('reset')==1)return delete L[k],delete L[s];if(!a||g('pair')||g('ssr'))return;let r=L[k],i=r?.indexOf('\n');if(!L[s]||i<6||!/^NVWS1\|/.test(r))return;let[u,,z,...n]=r.slice(6,i).split('|'),o=i+1,[H,B,C,M]=n.map(x=>r.slice(o,o+=+x));if(+u!=v||n.length-4||!M||o!=r.length)return;let S=(t,c,h)=>{t='data-nve-'+t;let e=D.querySelector('['+t+']')||D.head.appendChild(D.createElement('style'));e.setAttribute(t,'');h&&(e.dataset.nveHashes=h);e.textContent=c};S('base',B);S('ssr',C,H);a.innerHTML=M;a.dataset.nveRestored=1;if(z){let V=a.querySelectorAll('.nve-s');z.replace(/(\d+):(\d+)/g,(_,j,y)=>V[j]&&(V[j].scrollTop=y))}}catch{}})();</script>
 		<script data-nve-replay>(()=>{let W=window,a=document.getElementById('app'),q=[],d=0;if(!a)return;let N=t=>t?.closest?t:t?.parentElement,I=t=>{let e=N(t)?.closest('[data-nve-id]');return e&&a.contains(e)?+e.dataset.nveId:0},P=o=>!d&&q.length<64&&(o.t=Date.now(),q.push(o)),R=(e,n,f)=>{let{key:k,metaKey:m,ctrlKey:c}=e;if(m||c||k=='Escape'||f&&k=='Enter'){e.__n=1;(m||c)&&/^k$/i.test(k)&&e.preventDefault();P({k:'k',id:n,key:k,m,c,sh:e.shiftKey,a:e.altKey})}},L=[['click',e=>{let t=N(e.target),h=t?.closest('a[href]')?.getAttribute('href').trim(),n=I(t);(!h||h=='#')&&n&&P({k:'p',id:n,x:e.clientX||0,y:e.clientY||0})}],['keydown',e=>R(e,I(e.target)||1,1)],['submit',e=>{e.preventDefault();let f=e.target;P({k:'s',id:I(f)||1,v:(f?.querySelector?.('input,textarea,select')||f)?.value||''})}],['change',e=>{let x=e.target?.dataset;if(x)x.nveDirty=1}],['keydown',e=>!e.__n&&R(e,1),W]],T=s=>{s+='EventListener';L.map(x=>(x[2]||a)[s](x[0],x[1]))};T('add');W.__nveReplayDrain=()=>d?[]:(d=1,T('remove'),q.splice(0))})();</script>
 		<script type="module">
 			const statusEl = document.getElementById("nve-status");
 			const appEl = document.getElementById("app");
 			const brandTitleEl = document.getElementById("nve-brand-title");
 			const tabStudio = document.getElementById("tab-studio");
-			const tabCounter = document.getElementById("tab-counter");
+			const tabKitchenSink = document.getElementById("tab-kitchen-sink");
 			const resetBtn = document.getElementById("nve-reset-btn");
 
 			const params = new URLSearchParams(window.location.search);
 			const appParam = (params.get("app") || "studio").trim().toLowerCase();
-			const isCounter = appParam === "counter";
+			const isKitchenSink = appParam === "kitchen-sink";
 			const pairParam = (params.get("pair") || "").trim();
 			const pairToken = (params.get("token") || params.get("pair_token") || "").trim();
 			const isPaired = pairParam.length > 0;
@@ -224,16 +224,16 @@
 				wsParam === "off" || wsParam === "none"
 					? null
 					: wsParam || (params.has("dev") ? `ws://${window.location.hostname}:8089` : null);
-			// One production bundle per app (`pkg/studio`, `pkg/counter`); hot reload and pairing
+			// One production bundle per app (`pkg/studio`, `pkg/kitchen-sink`); hot reload and pairing
 			// live only in `pkg/dev` (hosts/web-shell/build.sh). `?bundle=<name>` overrides.
-			const BUNDLES = ["studio", "counter", "dev"];
+			const BUNDLES = ["studio", "kitchen-sink", "dev"];
 			const bundleParam = (params.get("bundle") || "").trim().toLowerCase();
 			const bundle = BUNDLES.includes(bundleParam)
 				? bundleParam
 				: isPaired || hotReloadWsUrl
 					? "dev"
-					: isCounter
-						? "counter"
+					: isKitchenSink
+						? "kitchen-sink"
 						: "studio";
 			window.__nveBundle = bundle;
 
@@ -266,11 +266,11 @@
 
 			if (tabStudio) {
 				tabStudio.href = buildAppHref("studio");
-				tabStudio.dataset.active = String(!isPaired && !isCounter);
+				tabStudio.dataset.active = String(!isPaired && !isKitchenSink);
 			}
-			if (tabCounter) {
-				tabCounter.href = buildAppHref("counter");
-				tabCounter.dataset.active = String(!isPaired && isCounter);
+			if (tabKitchenSink) {
+				tabKitchenSink.href = buildAppHref("kitchen-sink");
+				tabKitchenSink.dataset.active = String(!isPaired && isKitchenSink);
 			}
 			if (resetBtn) {
 				resetBtn.href = buildResetHref();
@@ -285,10 +285,10 @@
 				if (brandTitleEl) {
 					brandTitleEl.textContent = "Native View Engine · Live Paired Client (NVD1/WS)";
 				}
-			} else if (isCounter) {
-				document.title = "Counter · Native View Engine Web WASM";
+			} else if (isKitchenSink) {
+				document.title = "Kitchen Sink · Native View Engine Web WASM";
 				if (brandTitleEl) {
-					brandTitleEl.textContent = "Native View Engine · Counter (Web WASM)";
+					brandTitleEl.textContent = "Native View Engine · Kitchen Sink Gallery (Web WASM)";
 				}
 			}
 
@@ -453,15 +453,15 @@
 					if (isPaired) {
 						bootPairedClient(wasmMod, pairParam, pairToken);
 					} else {
-						const mode = isCounter ? "counter" : "studio";
+						const mode = isKitchenSink ? "kitchen-sink" : "studio";
 						const ssrParam = params.get("ssr");
 						const wantSsrDemo = ssrParam === "1" || ssrParam === "true";
 						if (statusEl) statusEl.dataset.mode = mode;
 						if (appEl) appEl.dataset.nveMode = mode;
 
 						if (wantSsrDemo && appEl) {
-							const ssr = isCounter
-								? wasmMod.render_counter_ssr_bundle()
+							const ssr = isKitchenSink
+								? wasmMod.render_kitchen_sink_ssr_bundle()
 								: wasmMod.render_studio_ssr_bundle();
 							const baseStyle = document.createElement("style");
 							baseStyle.setAttribute("data-nve-base", "");
@@ -485,11 +485,11 @@
 
 						const hasPreRenderedSsr = Boolean(appEl && appEl.querySelector("[data-nve-ssr-hash]"));
 						const controller = hasPreRenderedSsr
-							? isCounter
-								? wasmMod.hydrate_counter_app("app", hotReloadWsUrl)
+							? isKitchenSink
+								? wasmMod.hydrate_kitchen_sink_app("app", hotReloadWsUrl)
 								: wasmMod.hydrate_studio_workspace_app("app", hotReloadWsUrl)
-							: isCounter
-								? wasmMod.start_counter_app("app", hotReloadWsUrl)
+							: isKitchenSink
+								? wasmMod.start_kitchen_sink_app("app", hotReloadWsUrl)
 								: wasmMod.start_studio_workspace_app("app", hotReloadWsUrl);
 						window.__nveController = controller;
 						if (appEl && appEl.querySelector("[data-nve-island]")) {

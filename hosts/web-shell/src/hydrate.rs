@@ -8,7 +8,7 @@ use nve_abi::hash::HashMap;
 use nve_abi::{NodeId, RawPropValue};
 use nve_backend_web::WebBackend;
 
-#[cfg(all(test, feature = "app-studio", feature = "app-counter"))]
+#[cfg(all(test, feature = "app-studio", feature = "app-kitchen-sink"))]
 #[path = "hydrate_tests.rs"]
 mod hydrate_tests;
 

@@ -12,10 +12,10 @@ crate-type = ["rlib"]
 [features]
 # Default = the `nve dev` / test shell: both demo apps and all dev infrastructure.
 # Production bundles (hosts/web-shell/build.sh): `--no-default-features --features app-studio`
-# (or `app-counter`): exactly one app, no hot reload, pairing, popups or scene mirror.
-default = ["app-studio", "app-counter", "dev", "multi-window", "scene-view"]
+# (or `app-kitchen-sink`): exactly one app, no hot reload, pairing, popups or scene mirror.
+default = ["app-studio", "app-kitchen-sink", "dev", "multi-window", "scene-view"]
 app-studio = ["dep:nve-studio-workspace"]
-app-counter = ["dep:nve-example-counter"]
+app-kitchen-sink = ["dep:nve-example-kitchen-sink"]
 # `nve dev` Tier-1/2 hot-reload WebSocket (binary NVP1), the `NveWebHost` NVT1/NVD1 pairing client
 # and the semantic-style hydration probe used by the E2E suite.
 dev = []
@@ -30,7 +30,7 @@ nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-interop = { workspace = true }
-nve-example-counter = { path = "../../examples/counter", default-features = false, optional = true }
+nve-example-kitchen-sink = { workspace = true, optional = true }
 nve-studio-workspace = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -42,4 +42,4 @@ talc = "5.1.1"
 
 [[test]]
 name = "wasm_dom_tests"
-required-features = ["app-studio", "app-counter", "dev"]
+required-features = ["app-studio", "app-kitchen-sink", "dev"]

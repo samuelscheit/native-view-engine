@@ -17,8 +17,8 @@ Native **Qt 6** desktop host shell for Native View Engine, offering both a **GPU
 ## Build, Run & Test
 
 ```bash
-# 1. Build the example counter cdylib
-cargo build -p nve-example-counter
+# 1. Build the example Kitchen Sink cdylib
+cargo build -p nve-example-kitchen-sink
 
 # 2. Configure & build Qt 6 host shell (optionally pass -DRN_REACT_COMMON_DIR=... for Yoga + JSI)
 cmake -S hosts/qt-shell -B hosts/qt-shell/build -G Ninja \
@@ -29,5 +29,5 @@ cmake --build hosts/qt-shell/build
 ctest --test-dir hosts/qt-shell/build --output-on-failure
 
 # 4. Launch GPU-accelerated Qt Quick preview window (or omit --quick for QWidget mode)
-./hosts/qt-shell/build/nve_qt_shell --quick target/debug/libnve_example_counter.dylib
+./hosts/qt-shell/build/nve_qt_shell --quick target/debug/libnve_example_kitchen_sink.dylib
 ```

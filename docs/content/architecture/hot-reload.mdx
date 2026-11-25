@@ -83,7 +83,7 @@ cargo nve dev --package nve-studio-workspace --host 0.0.0.0 --port 8089 --web --
 
 With the web rebuild on, `nve dev` also serves `hosts/web-shell` on `--web-port` (default
 `8088`). Opening `http://<host>:8088/` redirects to the `dev` bundle wired to the daemon's
-hot-reload socket (`?ws=ws://<host>:8089`). Production bundles (`pkg/studio`, `pkg/counter`) contain
+hot-reload socket (`?ws=ws://<host>:8089`). Production bundles (`pkg/studio`, `pkg/kitchen-sink`) contain
 no hot-reload code.
 
 <Callout kind="info" title="Physical iOS and Android devices">

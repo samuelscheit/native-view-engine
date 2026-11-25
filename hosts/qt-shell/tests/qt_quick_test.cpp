@@ -1010,12 +1010,12 @@ void test_z_index_hit_test_and_paint_order() {
 }
 
 void test_live_counter_and_studio_dylibs() {
-  const char* counter_env = std::getenv("NVE_TEST_COUNTER_DYLIB");
+  const char* counter_env = std::getenv("NVE_TEST_KITCHEN_SINK_DYLIB");
   if (counter_env != nullptr && counter_env[0] != '\0') {
     QQuickWindow win;
-    win.resize(640, 420);
+    win.resize(1280, 800);
     auto* item = new nve::NveQtQuickItem(win.contentItem());
-    item->setSize(QSizeF(640, 420));
+    item->setSize(QSizeF(1280, 800));
 
     const QString counter_path = QString::fromUtf8(counter_env);
     int err_code = -1;
@@ -1033,7 +1033,7 @@ void test_live_counter_and_studio_dylibs() {
       return 0u;
     };
 
-    const uint32_t title_id = find_node_by_text("NATIVE VIEW ENGINE");
+    const uint32_t title_id = find_node_by_text("NVE Kitchen Sink");
     const uint32_t count_id = find_node_by_text("Count: 0");
     const uint32_t inc_text_id = find_node_by_text("Increment +");
     const uint32_t reset_text_id = find_node_by_text("Reset");

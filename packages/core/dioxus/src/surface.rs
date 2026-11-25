@@ -159,6 +159,10 @@ impl DioxusSurface {
             self.initialized = true;
         } else {
             self.vdom.render_immediate(&mut self.writer);
+            // Flush any follow-up scopes queued during render (e.g. an ErrorBoundary catching a
+            // child's `Result::Err` or panic during an incremental update, which queues its
+            // subscriber onto the runtime event channel without draining mid-pass).
+            self.vdom.render_immediate(&mut self.writer);
         }
         for patch in self.pending_hot_patches.drain(..) {
             self.writer.apply_hot_patch(&patch);

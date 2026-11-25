@@ -1,6 +1,6 @@
 //! `nve prerender` — Build-time / cold Frame-0 `frame0.nvereloc` pre-baker for native NVE apps.
 //!
-//! Executes Frame 0 of the selected `NveApp` (`studio` or `counter`) at the requested logical
+//! Executes Frame 0 of the selected `NveApp` (`studio` or `kitchen-sink`) at the requested logical
 //! viewport + scale factor using `CosmicTextEngine` + `TaffyLayoutEngine`, validates the emitted
 //! `SceneRelocView` under `VerifyMode::Full`, and writes it crash-safely via atomic rename.
 
@@ -11,7 +11,7 @@ use nve_abi::ColorRgba;
 use nve_backend_headless::prerender_native_frame0_with_text_measurer;
 use nve_backend_skia::CosmicTextEngine;
 use nve_engine::{write_reloc_atomic, NveApp, SceneRelocView, TextMeasurer, VerifyMode, Viewport};
-use nve_example_counter::{CounterModule, COUNTER_STATE_BIN_VERSION};
+use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
 /// Options passed to `nve prerender`.
@@ -34,7 +34,7 @@ pub struct PrerenderReport {
     pub elapsed_us: u64,
 }
 
-/// Prerenders Frame 0 for `opts.app` (`studio` | `counter`), validates it with `VerifyMode::Full`,
+/// Prerenders Frame 0 for `opts.app` (`studio` | `kitchen-sink`), validates it with `VerifyMode::Full`,
 /// and atomically writes `frame0.nvereloc` to `opts.out`.
 pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport, String> {
     if !opts.width.is_finite() || opts.width <= 0.0 {
@@ -70,23 +70,23 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
             .map_err(|e| format!("failed to prerender studio Frame-0: {e}"))?;
             ("studio".to_string(), STUDIO_SNAPSHOT_SCHEMA_VERSION, buf)
         }
-        "counter" | "nve-example-counter" => {
-            let mut app = CounterModule::create(1);
+        "kitchen-sink" | "nve-example-kitchen-sink" => {
+            let mut app = KitchenSinkModule::create(1);
             let buf = prerender_native_frame0_with_text_measurer(
                 &mut app,
                 1,
                 viewport,
-                COUNTER_STATE_BIN_VERSION,
-                "counter",
+                KITCHEN_SINK_STATE_VERSION,
+                "kitchen-sink",
                 ColorRgba::rgb(15, 23, 42),
                 measurer,
             )
-            .map_err(|e| format!("failed to prerender counter Frame-0: {e}"))?;
-            ("counter".to_string(), COUNTER_STATE_BIN_VERSION, buf)
+            .map_err(|e| format!("failed to prerender kitchen-sink Frame-0: {e}"))?;
+            ("kitchen-sink".to_string(), KITCHEN_SINK_STATE_VERSION, buf)
         }
         other => {
             return Err(format!(
-                "unsupported --app '{other}' (expected 'studio' or 'counter')"
+                "unsupported --app '{other}' (expected 'studio' or 'kitchen-sink')"
             ));
         }
     };
@@ -143,10 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn prerender_studio_and_counter_roundtrip_into_skia_backend() {
+    fn prerender_studio_and_kitchen_sink_roundtrip_into_skia_backend() {
         for (app_name, w, h, expected_text) in [
             ("studio", 1280.0, 800.0, "AETHER"),
-            ("counter", 640.0, 420.0, "Count: 0"),
+            ("kitchen-sink", 1280.0, 800.0, "NVE Kitchen Sink"),
         ] {
             let out = temp_out(app_name);
             let report = prerender_app_to_file(&PrerenderOptions {

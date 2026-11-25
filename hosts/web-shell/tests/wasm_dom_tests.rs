@@ -168,16 +168,14 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
 }
 
 #[test]
-fn counter_app_rapid_clicks_and_unhandled_event_resilience() {
-    let mut session = WebAppSession::new_counter(1, WebBackend::new(), Viewport::default());
-    session.render_initial().expect("initial counter mount");
+fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
+    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
+    session.render_initial().expect("initial kitchen-sink mount");
 
-    let mut pressable: Vec<NodeId> = (1..=64)
-        .filter(|&id| (session.backend().event_mask_of(id) & EventMask::PRESS) != 0)
-        .collect();
-    pressable.sort_unstable();
-    assert_eq!(pressable.len(), 2);
-    let (inc_id, reset_id) = (pressable[0], pressable[1]);
+    let inc_id = find_node_by_test_id(session.backend(), "ks-counter-inc")
+        .expect("ks-counter-inc button");
+    let reset_id = find_node_by_test_id(session.backend(), "ks-counter-reset")
+        .expect("ks-counter-reset button");
 
     // Unhandled press on a nonexistent node must be ignored cleanly (no frame, no panic).
     session.backend().push_event(NativeEvent {
@@ -201,7 +199,7 @@ fn counter_app_rapid_clicks_and_unhandled_event_resilience() {
             .pump_events()
             .expect("increment pump")
             .expect("increment frame");
-        assert!(timing.mutation_count <= 2);
+        assert!(timing.mutation_count > 0 && timing.mutation_count < 24);
         let html = session.backend().render_html();
         assert_balanced_dom(&html);
         assert!(html.contains(&format!("Count: {step}")));
@@ -220,13 +218,13 @@ fn counter_app_rapid_clicks_and_unhandled_event_resilience() {
 
 #[test]
 fn hot_patch_empty_and_out_of_bounds_edge_cases() {
-    let mut session = WebAppSession::new_counter(1, WebBackend::new(), Viewport::default());
+    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
     session.render_initial().expect("initial mount");
 
     // Empty TemplatePatch succeeds with 0 mutations.
     let empty_patch = HotPatchMsg::TemplatePatch {
         generation: 1,
-        template_id: "CounterApp".into(),
+        template_id: "KitchenSinkApp".into(),
         attr_updates: vec![],
         text_updates: vec![],
         target_test_id: None,
@@ -240,7 +238,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         action,
         HotReloadAction::TemplatePatched {
             generation: 1,
-            template_id: "CounterApp".into(),
+            template_id: "KitchenSinkApp".into(),
             mutations: 0,
         }
     );
@@ -248,7 +246,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
     // Out-of-bounds text index does not panic and leaves DOM valid.
     let oob_patch = HotPatchMsg::TemplatePatch {
         generation: 2,
-        template_id: "CounterApp".into(),
+        template_id: "KitchenSinkApp".into(),
         attr_updates: vec![("outline".into(), "1px solid #38bdf8".into())],
         text_updates: vec![(9999, "ignored-oob".into())],
         target_test_id: None,
@@ -280,14 +278,14 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_exports_compile_check {
-    use nve_web_shell::{start_counter_app, start_studio_workspace_app, WebAppController};
+    use nve_web_shell::{start_kitchen_sink_app, start_studio_workspace_app, WebAppController};
 
     #[allow(dead_code)]
     fn assert_wasm_entrypoints_signature() {
         let _: fn(&str, Option<String>) -> Result<WebAppController, wasm_bindgen::JsValue> =
             start_studio_workspace_app;
         let _: fn(&str, Option<String>) -> Result<WebAppController, wasm_bindgen::JsValue> =
-            start_counter_app;
+            start_kitchen_sink_app;
         let _: fn(&WebAppController) -> String = WebAppController::app_name;
         let _: fn(&WebAppController) -> String = WebAppController::mount_id;
         let _: fn(&WebAppController) -> usize = WebAppController::node_count;

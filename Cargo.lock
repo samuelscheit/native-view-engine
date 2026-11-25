@@ -1682,7 +1682,7 @@ dependencies = [
  "nve-docs",
  "nve-docs-site",
  "nve-engine",
- "nve-example-counter",
+ "nve-example-kitchen-sink",
  "nve-interop",
  "nve-mdx",
  "nve-skia-shell",
@@ -1785,7 +1785,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nve-example-counter"
+name = "nve-example-kitchen-sink"
 version = "0.1.0"
 dependencies = [
  "dioxus-core",
@@ -1795,10 +1795,12 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-skia",
  "nve-backend-web",
+ "nve-components",
  "nve-dioxus",
  "nve-engine",
- "serde",
- "serde_json",
+ "nve-i18n",
+ "nve-interop",
+ "nve-ui",
 ]
 
 [[package]]
@@ -1859,7 +1861,7 @@ dependencies = [
  "nve-abi",
  "nve-backend-headless",
  "nve-engine",
- "nve-example-counter",
+ "nve-example-kitchen-sink",
 ]
 
 [[package]]
@@ -2034,7 +2036,7 @@ dependencies = [
  "nve-backend-web",
  "nve-dioxus",
  "nve-engine",
- "nve-example-counter",
+ "nve-example-kitchen-sink",
  "nve-interop",
  "nve-studio-workspace",
  "talc",

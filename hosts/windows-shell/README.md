@@ -26,14 +26,14 @@ cmake -S hosts/windows-shell -B hosts/windows-shell/build -G Ninja `
   -DRN_REACT_COMMON_DIR="C:\path\to\react-native\ReactCommon"
 cmake --build hosts/windows-shell/build
 
-# Run live Rust counter DLL test (builds nve_example_counter.dll first):
-cargo build -p nve-example-counter
-$env:NVE_TEST_COUNTER_DYLIB = (Resolve-Path target\debug\nve_example_counter.dll).Path
+# Run live Rust Kitchen Sink DLL test (builds nve_example_kitchen_sink.dll first):
+cargo build -p nve-example-kitchen-sink
+$env:NVE_TEST_KITCHEN_SINK_DYLIB = (Resolve-Path target\debug\nve_example_kitchen_sink.dll).Path
 ctest --test-dir hosts/windows-shell/build --output-on-failure
 
 # Launch standalone Win32/Direct2D preview window or render headless BMP screenshot:
-.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_counter.dll
-.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_counter.dll --screenshot counter.bmp
+.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_kitchen_sink.dll
+.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_kitchen_sink.dll --screenshot kitchen-sink.bmp
 ```
 
 ## Embedding in `react-native-windows` 0.83+/0.88+ Composition Fabric
@@ -53,6 +53,6 @@ Then register your NVE Rust component inside your RNW `IReactPackageProvider::Cr
 ```cpp
 nve::win::NveRnwComponentRegistrationConfig cfg{};
 cfg.component_name = L"NveCounterView";
-cfg.default_dylib_path = "nve_example_counter.dll";
+cfg.default_dylib_path = "nve_example_kitchen_sink.dll";
 nve::win::register_nve_rnw_component(packageBuilder, std::move(cfg));
 ```

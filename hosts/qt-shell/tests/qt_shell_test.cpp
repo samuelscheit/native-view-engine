@@ -543,13 +543,13 @@ void test_attach_props_events_morph_and_measurer() {
 }
 
 void test_real_counter_dylib() {
-  const char* dylib_env = std::getenv("NVE_TEST_COUNTER_DYLIB");
+  const char* dylib_env = std::getenv("NVE_TEST_KITCHEN_SINK_DYLIB");
   if (dylib_env == nullptr || dylib_env[0] == '\0') {
     return;
   }
 
   nve::qt::NveQtWidget widget;
-  widget.resize(640, 420);
+  widget.resize(1280, 800);
 
   auto base_measurer = nve::qt::NveQtWidget::makeQtTextMeasurer();
   std::atomic<int> counter_measure_calls{0};
@@ -584,7 +584,7 @@ void test_real_counter_dylib() {
   const QList<QLabel*> initial_labels = collect_labels();
   NVE_CHECK(initial_labels.size() >= 4);
 
-  QLabel* title_lbl = find_label(QStringLiteral("NATIVE VIEW ENGINE"));
+  QLabel* title_lbl = find_label(QStringLiteral("NVE Kitchen Sink"));
   QLabel* count_lbl = find_label(QStringLiteral("Count: 0"));
   QLabel* inc_lbl = find_label(QStringLiteral("Increment +"));
   QLabel* reset_lbl = find_label(QStringLiteral("Reset"));
@@ -601,13 +601,13 @@ void test_real_counter_dylib() {
     NVE_CHECK(lbl->testAttribute(Qt::WA_TransparentForMouseEvents));
   }
 
-  // Locate top card ancestor and button pressable ancestors from snapshots.
+  // Locate card ancestor and button pressable ancestors from snapshots.
   const auto snapshots = widget.session().snapshot_nodes();
   uint32_t inc_pressable_id = 0;
   uint32_t reset_pressable_id = 0;
   QWidget* top_card = nullptr;
   for (const auto& snap : snapshots) {
-    if (snap.kind == NVE_COMP_VIEW && snap.border_radius >= 15.0f && snap.layout.width > 200.0f &&
+    if (snap.kind == NVE_COMP_VIEW && snap.border_radius >= 8.0f && snap.layout.width > 200.0f &&
         snap.layout.height > 60.0f) {
       top_card = widget.nativeWidgetForNodeId(snap.node_id);
     }
@@ -698,7 +698,7 @@ void test_real_counter_dylib() {
   widget.simulatePressOnNodeId(reset_after_reload, 20.0f, 20.0f);
   QCoreApplication::processEvents();
   NVE_CHECK(find_label(QStringLiteral("Count: 0")) != nullptr);
-  // Reset CounterModule's process-global INITIAL_COUNT to 0 so cold load proves restore_state works!
+  // Reset KitchenSinkModule's counter to 0 so cold load proves restore_state works!
   const NveMapEntry reset_initial[1] = {
       NveMapEntry{nve::make_str_slice("initialCount"), nve::make_i64_value(0)},
   };

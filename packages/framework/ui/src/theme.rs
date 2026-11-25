@@ -175,6 +175,14 @@ impl SpacingScale {
         lg: 12.0,
         xl: 18.0,
     };
+
+    pub const SPACIOUS: Self = Self {
+        xs: 6.0,
+        sm: 10.0,
+        md: 16.0,
+        lg: 22.0,
+        xl: 32.0,
+    };
 }
 
 /// Border-radius scale in logical points.
@@ -225,6 +233,7 @@ pub enum UiDensity {
     #[default]
     Normal,
     Compact,
+    Spacious,
 }
 
 /// Complete design-token theme consumed by `nve-ui` components.
@@ -412,6 +421,7 @@ impl UiTheme {
         self.spacing = match density {
             UiDensity::Normal => SpacingScale::NORMAL,
             UiDensity::Compact => SpacingScale::COMPACT,
+            UiDensity::Spacious => SpacingScale::SPACIOUS,
         };
         self
     }

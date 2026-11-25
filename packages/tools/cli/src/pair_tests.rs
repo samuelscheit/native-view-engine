@@ -36,7 +36,7 @@ fn pair_token_generation_and_uri_formatting() {
         "NVE_PAIR_READY ws=ws://127.0.0.1:41002 token=tok123 udp=127.0.0.1:41001 tcp=127.0.0.1:41002"
     );
     let banner = format_pair_banner(
-        Path::new("target/debug/libnve_example_counter.dylib"),
+        Path::new("target/debug/libnve_example_kitchen_sink.dylib"),
         "0.0.0.0",
         udp_addr,
         ws_addr,

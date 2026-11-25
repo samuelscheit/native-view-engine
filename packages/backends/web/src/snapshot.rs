@@ -16,7 +16,7 @@ use crate::ssr::SsrOutput;
 /// ASCII header magic for serialized 0ms frame snapshots in `localStorage`.
 pub const SNAPSHOT_ENVELOPE_MAGIC: &str = "NVWS1";
 
-/// ASCII header magic for base64-framed binary app-state blobs (`NWS1`, `NWC1`, etc.).
+/// ASCII header magic for base64-framed binary app-state blobs.
 pub const STATE_ENVELOPE_MAGIC: &str = "NVB1";
 
 /// Storage key prefix for cached frame snapshots (`nve:snap:<slug>:v<ver>`).
@@ -49,7 +49,7 @@ pub const WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG: &str = concat!(
     "<script data-nve-snapshot-boot>",
     "(()=>{try{let L=localStorage,D=document,a=D.getElementById('app'),",
     "q=new URL(location).searchParams,g=x=>q.get(x),",
-    "p=(g('app')||'studio').toLowerCase(),v=p=='counter'?1:2,",
+    "p=(g('app')||'studio').toLowerCase(),v=p=='kitchen-sink'?1:2,",
     "Z=':'+p+':v'+v,k='nve:snap'+Z,s='nve:state'+Z;",
     "if(g('reset')==1)return delete L[k],delete L[s];",
     "if(!a||g('pair')||g('ssr'))return;",
@@ -323,7 +323,7 @@ fn split_utf16_prefix(s: &str, count: usize) -> Option<(&str, &str)> {
     None
 }
 
-/// Encodes binary application state bytes (`NWS1`, `NWC1`, etc.) into a versioned `NVB1`
+/// Encodes binary application state bytes into a versioned `NVB1`
 /// base64 envelope suitable for UTF-16 `localStorage`.
 pub fn encode_state_envelope(schema_version: u32, bytes: &[u8]) -> String {
     let mut out = String::with_capacity(16 + (bytes.len().div_ceil(3) * 4));

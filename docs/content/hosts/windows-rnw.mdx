@@ -23,9 +23,9 @@ cmake -S hosts/windows-shell -B hosts/windows-shell/build -G Ninja
 cmake --build hosts/windows-shell/build
 ctest --test-dir hosts/windows-shell/build --output-on-failure
 
-# Build the Rust counter DLL and launch
-cargo build -p nve-example-counter
-.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_counter.dll
+# Build the Rust Kitchen Sink DLL and launch
+cargo build -p nve-example-kitchen-sink
+.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_kitchen_sink.dll
 
 # Or connect as a zero-DLL thin client over WinSock2
 .\hosts\windows-shell\build\nve_windows_shell.exe \
@@ -49,7 +49,7 @@ Register your Rust component inside `IReactPackageProvider::CreatePackage` (`Nve
 ```cpp title="Registering an NVE component in RNW Composition Fabric" highlight="3-6"
 nve::win::NveRnwComponentRegistrationConfig cfg{};
 cfg.component_name = L"NveCounterView";
-cfg.default_dylib_path = "nve_example_counter.dll";
+cfg.default_dylib_path = "nve_example_kitchen_sink.dll";
 nve::win::register_nve_rnw_component(packageBuilder, std::move(cfg));
 ```
 
