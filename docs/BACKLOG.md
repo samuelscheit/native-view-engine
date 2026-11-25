@@ -1,11 +1,6 @@
 # Backlog
 
-Prioritized roadmap for `native-view-engine`, ordered from remaining platform verification and host hardening to core engine completeness and the flagship showcase.
-
-## P0 — Verification & Platform Coverage
-
-- [ ] **Live Windows runtime verification on `samuel-pc`**
-  - MSVC + `react-native-windows` 0.88 build and `nve_fabric_bridge_bench.exe` are verified; run `nve_windows_shell.exe` + `nve_example_counter.dll` end-to-end once Windows Smart App Control allows unsigned test binaries or binaries are signed.
+Prioritized roadmap for `native-view-engine`, ordered from remaining host hardening to core engine completeness and the flagship showcase.
 
 ## P1 — Host & Runtime Hardening
 
