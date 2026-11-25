@@ -99,6 +99,9 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
                     ("background-color".into(), "#0f172a".into()),
                 ],
                 text_updates: vec![(0, "Hello 🚀".into()), (3, "".into())],
+                target_test_id: None,
+                node_path: vec![],
+                text_replacements: vec![],
             },
             "template_patch",
         ),
@@ -108,6 +111,9 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
                 template_id: "".into(),
                 attr_updates: vec![],
                 text_updates: vec![],
+                target_test_id: None,
+                node_path: vec![],
+                text_replacements: vec![],
             },
             "template_patch",
         ),
@@ -342,6 +348,9 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         template_id: "root".into(),
         attr_updates: vec![("opacity".into(), "0.6".into())],
         text_updates: vec![],
+        target_test_id: None,
+        node_path: vec![],
+        text_replacements: vec![],
     }
     .to_json();
     assert_eq!(

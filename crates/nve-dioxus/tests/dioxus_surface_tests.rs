@@ -544,6 +544,9 @@ fn tier1_template_patch_persists_across_frames_and_ignores_non_template_messages
         template_id: "card".into(),
         attr_updates: vec![("border-radius".into(), "14px".into())],
         text_updates: vec![],
+        target_test_id: None,
+        node_path: vec![],
+        text_replacements: vec![],
     }));
 
     let (_, _, f1) = surface.render_frame(1);
@@ -560,6 +563,9 @@ fn tier1_template_patch_persists_across_frames_and_ignores_non_template_messages
             (0, "Patched Title".into()),
             (999, "OutOfBoundsIgnored".into()),
         ],
+        target_test_id: None,
+        node_path: vec![],
+        text_replacements: vec![],
     }));
     let (_, _, f2) = surface.render_frame(2);
     tree.apply(&f2);

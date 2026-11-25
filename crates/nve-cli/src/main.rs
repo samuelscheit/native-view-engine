@@ -7,6 +7,8 @@
 //! - `nve dev`     — starts the 2-tier hot-reload daemon (`--skia` opens the live desktop preview window automatically).
 //! - `nve codegen` — bi-directional RN <-> NVE + Flutter/SwiftUI/Compose/Web component code generation.
 
+mod rsx_diff;
+
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -204,13 +206,23 @@ fn cmd_doctor() {
         );
     }
 
-    let rn_path = Path::new(
-        "/Users/user/developer/developer/respond/react-native/react-native/packages/react-native/ReactCommon",
-    );
-    if rn_path.exists() {
-        println!("  [OK]   RN Fabric      {}", rn_path.display());
-    } else {
-        println!("  [WARN] RN Fabric      local checkout not found at default path");
+    match std::env::var("RN_REACT_COMMON_DIR") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            let rn_path = PathBuf::from(raw.trim());
+            if rn_path.exists() {
+                println!("  [OK]   RN Fabric      {}", rn_path.display());
+            } else {
+                println!(
+                    "  [WARN] RN Fabric      RN_REACT_COMMON_DIR does not exist: {}",
+                    rn_path.display()
+                );
+            }
+        }
+        _ => {
+            println!(
+                "  [WARN] RN Fabric      RN_REACT_COMMON_DIR not set (optional for standalone builds)"
+            );
+        }
     }
 }
 
@@ -623,12 +635,19 @@ fn cmd_dev(
         }
     });
 
+    let broadcast_msg = |clients: &Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>>,
+                         msg: &HotPatchMsg| {
+        let payload = tungstenite::Message::Text(msg.to_json().into());
+        let mut guard = clients.lock().unwrap();
+        guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
+    };
+
     let dylib_path = dylib_path_for_package(package);
     let build_once = {
         let package = package.to_owned();
         let dylib_for_build = dylib_path.clone();
         let clients = Arc::clone(&clients);
-        move |generation: u64| {
+        move |generation: u64| -> bool {
             let t0 = Instant::now();
             let status = ProcessCommand::new("cargo")
                 .args(["build", "-p", &package])
@@ -650,19 +669,25 @@ fn cmd_dev(
                         if rebuild_web { " + web-wasm" } else { "" },
                         dylib_for_build.display()
                     );
-                    let payload = tungstenite::Message::Text(msg.to_json().into());
-                    let mut guard = clients.lock().unwrap();
-                    guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
+                    broadcast_msg(&clients, &msg);
+                    true
                 }
-                _ => eprintln!("[gen {generation}] build failed after {elapsed_ms}ms"),
+                _ => {
+                    eprintln!("[gen {generation}] build failed after {elapsed_ms}ms");
+                    false
+                }
             }
         }
     };
 
-    build_once(1);
+    let _ = build_once(1);
 
     let watch_owned = watch_dir.to_path_buf();
+    let clients_for_watch = Arc::clone(&clients);
     let run_watch_loop = move || {
+        let mut rsx_cache = rsx_diff::RsxWatchCache::new();
+        rsx_cache.seed_dir(&watch_owned);
+
         let (tx, rx) = unbounded();
         let mut watcher = RecommendedWatcher::new(
             move |res| {
@@ -676,10 +701,13 @@ fn cmd_dev(
             .expect("watch directory");
 
         let mut generation = 1u64;
-        println!("Watching for changes (Ctrl-C to stop)...");
+        println!(
+            "Watching for changes ({} cached .rs file(s) for Tier-1 hot-patch; Ctrl-C to stop)...",
+            rsx_cache.len()
+        );
         loop {
             if let Ok(Ok(event)) = rx.recv() {
-                let changed_paths: Vec<PathBuf> = event
+                let mut changed_paths: Vec<PathBuf> = event
                     .paths
                     .iter()
                     .filter(|p| is_relevant_source_path(p))
@@ -688,13 +716,95 @@ fn cmd_dev(
                 if should_trigger_rebuild(&event.kind)
                     && (event.paths.is_empty() || !changed_paths.is_empty())
                 {
-                    if let Some(first) = changed_paths.first() {
-                        println!("[watch] changed: {}", first.display());
-                    }
                     std::thread::sleep(Duration::from_millis(40));
-                    while rx.try_recv().is_ok() {}
-                    generation += 1;
-                    build_once(generation);
+                    while let Ok(Ok(extra)) = rx.try_recv() {
+                        if should_trigger_rebuild(&extra.kind) {
+                            for p in extra.paths {
+                                if is_relevant_source_path(&p) && !changed_paths.contains(&p) {
+                                    changed_paths.push(p);
+                                }
+                            }
+                        }
+                    }
+
+                    // Try fast-path Tier-1 RSX hot-patch before falling back to Tier-2 cargo build.
+                    let t_diff = Instant::now();
+                    let mut tier1_patches: Vec<(PathBuf, HotPatchMsg)> = Vec::new();
+                    let mut fallback_reason: Option<String> = None;
+
+                    if changed_paths.is_empty() {
+                        fallback_reason = Some("unspecified path event".into());
+                    } else {
+                        for path in &changed_paths {
+                            match std::fs::read_to_string(path) {
+                                Ok(new_src) => {
+                                    match rsx_cache.diff_file(path, &new_src, generation + 1) {
+                                        rsx_diff::DiffOutcome::NoOp => {}
+                                        rsx_diff::DiffOutcome::Tier1Patch(msg) => {
+                                            tier1_patches.push((path.clone(), msg));
+                                        }
+                                        rsx_diff::DiffOutcome::RequireTier2Rebuild { reason } => {
+                                            fallback_reason = Some(reason);
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    fallback_reason = Some(format!(
+                                        "could not read {}: {err}",
+                                        path.display()
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(reason) = fallback_reason {
+                        if let Some(first) = changed_paths.first() {
+                            println!(
+                                "[tier-2] {} ({reason}) — rebuilding...",
+                                first.display()
+                            );
+                        }
+                        generation += 1;
+                        if build_once(generation) {
+                            rsx_cache.seed_dir(&watch_owned);
+                        }
+                    } else if tier1_patches.is_empty() {
+                        if let Some(first) = changed_paths.first() {
+                            println!(
+                                "[watch] {} — comment/whitespace-only edit (no-op)",
+                                first.display()
+                            );
+                        }
+                    } else {
+                        let elapsed_ms = t_diff.elapsed().as_millis() as u64;
+                        for (path, mut msg) in tier1_patches {
+                            generation += 1;
+                            if let HotPatchMsg::TemplatePatch {
+                                generation: ref mut g,
+                                ..
+                            } = msg
+                            {
+                                *g = generation;
+                            }
+                            broadcast_msg(&clients_for_watch, &msg);
+                            let status = HotPatchMsg::DevStatus {
+                                message: format!(
+                                    "[tier-1] patched {} in {}ms (0 cargo build)",
+                                    path.display(),
+                                    elapsed_ms
+                                ),
+                                latency_ms: elapsed_ms,
+                            };
+                            broadcast_msg(&clients_for_watch, &status);
+                            println!(
+                                "[tier-1] patched {} in {elapsed_ms}ms (0 cargo build)",
+                                path.display()
+                            );
+                        }
+                    }
                 }
             }
         }

@@ -335,23 +335,14 @@ impl WebAppSession {
     /// Applies one decoded `HotPatchMsg` from `nve dev`.
     pub fn handle_hot_patch(&mut self, msg: HotPatchMsg) -> Result<HotReloadAction, String> {
         match msg {
-            HotPatchMsg::TemplatePatch {
+            ref msg @ HotPatchMsg::TemplatePatch {
                 generation,
-                template_id,
-                attr_updates,
-                text_updates,
+                ref template_id,
+                ..
             } => {
-                let patch_msg = HotPatchMsg::TemplatePatch {
-                    generation,
-                    template_id: template_id.clone(),
-                    attr_updates: attr_updates.clone(),
-                    text_updates: text_updates.clone(),
-                };
-                let _ = self.surface.apply_hot_patch(&patch_msg);
-                let mutations = self
-                    .runner
-                    .backend_mut()
-                    .apply_template_patch(&attr_updates, &text_updates);
+                let template_id = template_id.clone();
+                let _ = self.surface.apply_hot_patch(msg);
+                let mutations = self.runner.backend_mut().apply_template_patch(msg);
                 let next_frame = self.scene_frame_id.wrapping_add(1).max(1);
                 self.sync_scene_table(next_frame);
                 Ok(HotReloadAction::TemplatePatched {
@@ -596,6 +587,9 @@ mod tests {
             template_id: "CounterApp".into(),
             attr_updates: vec![("border-color".into(), "#38bdf8".into())],
             text_updates: vec![(0, "NVE LIVE PATCHED".into())],
+            target_test_id: None,
+            node_path: vec![],
+            text_replacements: vec![],
         };
         let act1 = session.handle_hot_patch_json(&tpl.to_json()).unwrap();
         match act1 {

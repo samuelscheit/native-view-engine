@@ -219,6 +219,9 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         template_id: "CounterApp".into(),
         attr_updates: vec![],
         text_updates: vec![],
+        target_test_id: None,
+        node_path: vec![],
+        text_replacements: vec![],
     };
     let action = session
         .handle_hot_patch_json(&empty_patch.to_json())
@@ -238,6 +241,9 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         template_id: "CounterApp".into(),
         attr_updates: vec![("outline".into(), "1px solid #38bdf8".into())],
         text_updates: vec![(9999, "ignored-oob".into())],
+        target_test_id: None,
+        node_path: vec![],
+        text_replacements: vec![],
     };
     let oob_action = session
         .handle_hot_patch_json(&oob_patch.to_json())

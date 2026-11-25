@@ -5,6 +5,7 @@
 //! backends identically.
 
 pub mod elements;
+pub mod hot_patch;
 pub mod signal_archive;
 
 pub use signal_archive::{
@@ -31,9 +32,42 @@ use nve_abi::{
 use nve_components::{apply_typed_attr, resolve_tag};
 use nve_engine::HotPatchMsg;
 
+/// Payload for native `Scroll` events dispatched into Dioxus `onscroll` listeners.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ScrollEventData {
+    pub x: f32,
+    pub y: f32,
+    pub content_width: f32,
+    pub content_height: f32,
+}
+
+/// Payload for native `Focus` events dispatched into Dioxus `onfocus` listeners.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FocusEventData;
+
+/// Payload for native `Blur` events dispatched into Dioxus `onblur` listeners.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BlurEventData;
+
+/// Payload for native `Custom` events dispatched into Dioxus custom event listeners.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CustomEventData {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+pub type ScrollEvent = Event<ScrollEventData>;
+pub type FocusEvent = Event<FocusEventData>;
+pub type BlurEvent = Event<BlurEventData>;
+pub type CustomEvent = Event<CustomEventData>;
+
 pub mod prelude {
     pub use crate::elements::{self as dioxus_elements, events::*, PressEvent, TextEvent};
     pub use crate::use_signal;
+    pub use crate::{
+        BlurEvent, BlurEventData, CustomEvent, CustomEventData, FocusEvent, FocusEventData,
+        ScrollEvent, ScrollEventData,
+    };
     pub use dioxus_core;
     pub use dioxus_core::{Element, VirtualDom};
     pub use dioxus_core_macro::{component, rsx};
@@ -47,15 +81,17 @@ pub fn use_signal<T: 'static>(init: impl FnOnce() -> T) -> dioxus_signals::Signa
 }
 
 #[derive(Debug, Clone)]
-struct NodeRecord {
-    kind: ComponentKind,
-    parent: Option<NodeId>,
-    children: Vec<NodeId>,
-    layout: LayoutProps,
-    style: StyleProps,
-    has_explicit_style: bool,
-    event_mask: u64,
-    dioxus_id: Option<ElementId>,
+pub(crate) struct NodeRecord {
+    pub(crate) kind: ComponentKind,
+    pub(crate) parent: Option<NodeId>,
+    pub(crate) children: Vec<NodeId>,
+    pub(crate) layout: LayoutProps,
+    pub(crate) style: StyleProps,
+    pub(crate) has_explicit_style: bool,
+    pub(crate) event_mask: u64,
+    pub(crate) dioxus_id: Option<ElementId>,
+    pub(crate) test_id: Option<String>,
+    pub(crate) text: Option<String>,
 }
 
 impl Default for NodeRecord {
@@ -69,6 +105,8 @@ impl Default for NodeRecord {
             has_explicit_style: false,
             event_mask: 0,
             dioxus_id: None,
+            test_id: None,
+            text: None,
         }
     }
 }
@@ -79,7 +117,7 @@ pub struct NveMutationWriter {
     /// Maps Dioxus `ElementId` -> NVE `NodeId`. (`ElementId(0)` == `ROOT_NODE_ID`).
     el_to_node: HashMap<ElementId, NodeId>,
     node_to_el: HashMap<NodeId, ElementId>,
-    nodes: HashMap<NodeId, NodeRecord>,
+    pub(crate) nodes: HashMap<NodeId, NodeRecord>,
     stack: Vec<NodeId>,
     /// Persistent scratch buffers reused across frames (cleared + sorted/deduped in place).
     style_sources: Vec<NodeId>,
@@ -88,9 +126,9 @@ pub struct NveMutationWriter {
     dirty_layout: Vec<NodeId>,
     dirty_style: Vec<NodeId>,
     dirty_events: Vec<NodeId>,
-    patch_ids: Vec<NodeId>,
-    patch_leaf_text_ids: Vec<NodeId>,
-    builder: CommandBufferBuilder,
+    pub(crate) patch_ids: Vec<NodeId>,
+    pub(crate) patch_leaf_text_ids: Vec<NodeId>,
+    pub(crate) builder: CommandBufferBuilder,
 }
 
 impl NveMutationWriter {
@@ -206,6 +244,25 @@ impl NveMutationWriter {
         self.node_to_el.get(&node_id).copied()
     }
 
+    pub(crate) fn has_event_mask(&self, node_id: NodeId, bit: u64) -> bool {
+        self.nodes
+            .get(&node_id)
+            .is_some_and(|n| (n.event_mask & bit) != 0)
+    }
+
+    pub(crate) fn has_event_mask_in_chain(&self, mut node_id: NodeId, bit: u64) -> bool {
+        while let Some(rec) = self.nodes.get(&node_id) {
+            if (rec.event_mask & bit) != 0 {
+                return true;
+            }
+            match rec.parent {
+                Some(parent) => node_id = parent,
+                None => break,
+            }
+        }
+        false
+    }
+
     fn alloc_node(&mut self, kind: ComponentKind, custom_name: Option<&str>) -> NodeId {
         let id = self.next_node_id;
         self.next_node_id += 1;
@@ -300,6 +357,7 @@ impl NveMutationWriter {
             }
             TemplateNode::Text { text } => {
                 let id = self.alloc_node(ComponentKind::Text, None);
+                self.record_text(id, text);
                 self.builder.set_text(id, text);
                 id
             }
@@ -319,7 +377,10 @@ impl NveMutationWriter {
         Some(cur)
     }
 
-    fn apply_str_attr(&mut self, node_id: NodeId, name: &str, value: &str) {
+    pub(crate) fn apply_str_attr(&mut self, node_id: NodeId, name: &str, value: &str) {
+        if hot_patch::is_test_id_attr_name(name) {
+            self.record_test_id(node_id, value);
+        }
         if let Some(rec) = self.nodes.get_mut(&node_id) {
             let prev_layout = rec.layout;
             let prev_style = rec.style;
@@ -387,55 +448,6 @@ impl NveMutationWriter {
             self.builder.remove_node(node_id);
         }
     }
-
-    /// Applies a Tier-1 live template/style hot patch directly to matching nodes (<50ms).
-    pub fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
-        match patch {
-            HotPatchMsg::TemplatePatch {
-                attr_updates,
-                text_updates,
-                ..
-            } => {
-                self.patch_ids.clear();
-                self.patch_ids
-                    .extend(self.nodes.keys().copied().filter(|&id| id != ROOT_NODE_ID));
-                self.patch_ids.sort_unstable();
-                let mut changed = false;
-                for (k, v) in attr_updates {
-                    for i in 0..self.patch_ids.len() {
-                        let nid = self.patch_ids[i];
-                        self.apply_str_attr(nid, k, v);
-                        changed = true;
-                    }
-                }
-                if !text_updates.is_empty() {
-                    self.patch_leaf_text_ids.clear();
-                    for &id in &self.patch_ids {
-                        if self
-                            .nodes
-                            .get(&id)
-                            .is_some_and(|n| n.kind == ComponentKind::Text && n.children.is_empty())
-                        {
-                            self.patch_leaf_text_ids.push(id);
-                        }
-                    }
-                    for (idx, text) in text_updates {
-                        let target = self
-                            .patch_leaf_text_ids
-                            .get(*idx)
-                            .copied()
-                            .or_else(|| self.patch_ids.get(*idx).copied());
-                        if let Some(nid) = target {
-                            self.builder.set_text(nid, text);
-                            changed = true;
-                        }
-                    }
-                }
-                changed
-            }
-            _ => false,
-        }
-    }
 }
 
 impl WriteMutations for NveMutationWriter {
@@ -478,6 +490,7 @@ impl WriteMutations for NveMutationWriter {
     fn create_text_node(&mut self, value: &str, id: ElementId) {
         let nid = self.alloc_node(ComponentKind::Text, None);
         self.bind_element_id(nid, id);
+        self.record_text(nid, value);
         self.builder.set_text(nid, value);
         self.stack.push(nid);
     }
@@ -595,6 +608,9 @@ impl WriteMutations for NveMutationWriter {
                     .set_raw_prop(node_id, name, &RawPropValue::Bool(*b));
             }
             AttributeValue::None => {
+                if hot_patch::is_test_id_attr_name(name) {
+                    self.clear_test_id(node_id);
+                }
                 self.builder
                     .set_raw_prop(node_id, name, &RawPropValue::Null);
             }
@@ -604,6 +620,7 @@ impl WriteMutations for NveMutationWriter {
 
     fn set_node_text(&mut self, value: &str, id: ElementId) {
         if let Some(node_id) = self.resolve_el(id) {
+            self.record_text(node_id, value);
             self.builder.set_text(node_id, value);
         }
     }
@@ -762,6 +779,48 @@ impl DioxusSurface {
                         .handle_event("press", Event::new(data, true), el_id);
                     handled = true;
                 }
+                (NativeEventKind::LongPress, EventPayload::Point { x, y })
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id, EventMask::LONG_PRESS) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(elements::PressEventData { x: *x, y: *y });
+                    self.vdom
+                        .runtime()
+                        .handle_event("longpress", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (NativeEventKind::LongPress, EventPayload::Empty)
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id, EventMask::LONG_PRESS) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(elements::PressEventData::default());
+                    self.vdom
+                        .runtime()
+                        .handle_event("longpress", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (
+                    NativeEventKind::Scroll,
+                    EventPayload::Scroll {
+                        x,
+                        y,
+                        content_width,
+                        content_height,
+                    },
+                ) if self.writer.has_event_mask(ev.node_id, EventMask::SCROLL) => {
+                    let data: Rc<dyn Any> = Rc::new(ScrollEventData {
+                        x: *x,
+                        y: *y,
+                        content_width: *content_width,
+                        content_height: *content_height,
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event("scroll", Event::new(data, false), el_id);
+                    handled = true;
+                }
                 (NativeEventKind::TextChange, EventPayload::Text(value)) => {
                     let data: Rc<dyn Any> = Rc::new(elements::TextEventData {
                         value: value.clone(),
@@ -769,6 +828,39 @@ impl DioxusSurface {
                     self.vdom
                         .runtime()
                         .handle_event("change", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (NativeEventKind::Focus, EventPayload::Empty)
+                    if self.writer.has_event_mask(ev.node_id, EventMask::FOCUS) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(FocusEventData);
+                    self.vdom
+                        .runtime()
+                        .handle_event("focus", Event::new(data, false), el_id);
+                    handled = true;
+                }
+                (NativeEventKind::Blur, EventPayload::Empty)
+                    if self.writer.has_event_mask(ev.node_id, EventMask::BLUR) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(BlurEventData);
+                    self.vdom
+                        .runtime()
+                        .handle_event("blur", Event::new(data, false), el_id);
+                    handled = true;
+                }
+                (NativeEventKind::Custom, EventPayload::Custom { name, data })
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id, EventMask::CUSTOM) =>
+                {
+                    let wire_name = normalize_custom_event_name(name);
+                    let payload: Rc<dyn Any> = Rc::new(CustomEventData {
+                        name: name.clone(),
+                        data: data.clone(),
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event(wire_name, Event::new(payload, true), el_id);
                     handled = true;
                 }
                 _ => {}
@@ -796,6 +888,45 @@ impl DioxusSurface {
                         .handle_event("press", Event::new(data, true), el_id);
                     handled = true;
                 }
+                (Some(NativeEventKind::LongPress), 1)
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::LONG_PRESS) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(elements::PressEventData {
+                        x: ev.x(),
+                        y: ev.y(),
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event("longpress", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::LongPress), 0)
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::LONG_PRESS) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(elements::PressEventData::default());
+                    self.vdom
+                        .runtime()
+                        .handle_event("longpress", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::Scroll), 2)
+                    if self.writer.has_event_mask(ev.node_id(), EventMask::SCROLL) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(ScrollEventData {
+                        x: ev.x(),
+                        y: ev.y(),
+                        content_width: ev.width(),
+                        content_height: ev.height(),
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event("scroll", Event::new(data, false), el_id);
+                    handled = true;
+                }
                 (Some(NativeEventKind::TextChange), 3) => {
                     let data: Rc<dyn Any> = Rc::new(elements::TextEventData {
                         value: ev.text().to_owned(),
@@ -803,6 +934,47 @@ impl DioxusSurface {
                     self.vdom
                         .runtime()
                         .handle_event("change", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::Focus), 0)
+                    if self.writer.has_event_mask(ev.node_id(), EventMask::FOCUS) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(FocusEventData);
+                    self.vdom
+                        .runtime()
+                        .handle_event("focus", Event::new(data, false), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::Blur), 0)
+                    if self.writer.has_event_mask(ev.node_id(), EventMask::BLUR) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(BlurEventData);
+                    self.vdom
+                        .runtime()
+                        .handle_event("blur", Event::new(data, false), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::Custom), 5)
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::CUSTOM) =>
+                {
+                    let name = ev.name();
+                    let wire_name = normalize_custom_event_name(name);
+                    let raw_bytes = if let Some(b) = ev.value().as_bytes() {
+                        b.to_vec()
+                    } else if let Some(s) = ev.value().as_str() {
+                        s.as_bytes().to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    let payload: Rc<dyn Any> = Rc::new(CustomEventData {
+                        name: name.to_owned(),
+                        data: raw_bytes,
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event(wire_name, Event::new(payload, true), el_id);
                     handled = true;
                 }
                 _ => {}
@@ -818,5 +990,289 @@ impl DioxusSurface {
         } else {
             false
         }
+    }
+}
+
+#[inline]
+fn normalize_custom_event_name(name: &str) -> &str {
+    let stripped = name.strip_prefix("on").unwrap_or(name);
+    if stripped.is_empty() {
+        "custom"
+    } else {
+        stripped
+    }
+}
+
+#[cfg(test)]
+mod event_dispatch_tests {
+    use super::*;
+    use crate::prelude::*;
+    use dioxus_core::{Attribute, AttributeValue, Element, VNode};
+    use nve_abi::{
+        Command, CommandDecoder, EventPayload, NativeEvent, NativeEventKind, NveBufferSlice,
+        NveDirectEvent, NveEventBatch, NveStrSlice, NveValue, RawPropValue,
+    };
+
+    #[component]
+    fn AllEventsApp() -> Element {
+        let mut log = use_signal(String::new);
+
+        let on_scroll = Attribute::new(
+            "onscroll",
+            AttributeValue::listener(move |ev: ScrollEvent| {
+                let d = ev.data();
+                log.set(format!(
+                    "scroll:{},{},{},{}",
+                    d.x, d.y, d.content_width, d.content_height
+                ));
+            }),
+            None,
+            false,
+        );
+        let on_focus = Attribute::new(
+            "onfocus",
+            AttributeValue::listener(move |_ev: FocusEvent| {
+                log.set("focus".into());
+            }),
+            None,
+            false,
+        );
+        let on_blur = Attribute::new(
+            "onblur",
+            AttributeValue::listener(move |_ev: BlurEvent| {
+                log.set("blur".into());
+            }),
+            None,
+            false,
+        );
+        let on_longpress = Attribute::new(
+            "onlongpress",
+            AttributeValue::listener(move |ev: elements::PressEvent| {
+                let d = ev.data();
+                log.set(format!("longpress:{},{}", d.x, d.y));
+            }),
+            None,
+            false,
+        );
+        let on_custom = Attribute::new(
+            "onmetrics",
+            AttributeValue::listener(move |ev: CustomEvent| {
+                let d = ev.data();
+                log.set(format!("custom:{}:{}", d.name, d.data.len()));
+            }),
+            None,
+            false,
+        );
+
+        let _ = VNode::empty();
+        rsx! {
+            view {
+                test_id: "event-target",
+                ..vec![on_scroll, on_focus, on_blur, on_longpress, on_custom],
+                text { "{log}" }
+            }
+        }
+    }
+
+    fn extract_target_and_text(bytes: &[u8]) -> (Option<NodeId>, Vec<String>) {
+        let (_, cmds) = CommandDecoder::new(bytes).unwrap().decode_all().unwrap();
+        let mut target = None;
+        let mut texts = Vec::new();
+        for cmd in cmds {
+            match cmd {
+                Command::SetRawProp {
+                    node_id,
+                    key,
+                    value: RawPropValue::String(v),
+                } if key == "testID" && v == "event-target" => {
+                    target = Some(node_id);
+                }
+                Command::SetText { text, .. } => texts.push(text),
+                _ => {}
+            }
+        }
+        (target, texts)
+    }
+
+    #[test]
+    fn dispatches_scroll_focus_blur_longpress_and_custom_via_ring_and_direct_ffi() {
+        let mut surface = DioxusSurface::new(1, AllEventsApp);
+        let (_, _, f1) = surface.render_frame(1);
+        let (target_opt, _) = extract_target_and_text(&f1);
+        let target = target_opt.expect("event-target node mounted");
+
+        // 1. Scroll (EventRing)
+        assert!(surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 10,
+            kind: NativeEventKind::Scroll,
+            payload: EventPayload::Scroll {
+                x: 12.0,
+                y: 240.0,
+                content_width: 393.0,
+                content_height: 2400.0,
+            },
+        }]));
+        let (_, _, f2) = surface.render_frame(2);
+        assert!(extract_target_and_text(&f2)
+            .1
+            .contains(&"scroll:12,240,393,2400".to_owned()));
+
+        // 2. Focus (EventRing)
+        assert!(surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 20,
+            kind: NativeEventKind::Focus,
+            payload: EventPayload::Empty,
+        }]));
+        let (_, _, f3) = surface.render_frame(3);
+        assert!(extract_target_and_text(&f3).1.contains(&"focus".to_owned()));
+
+        // 3. Blur (EventRing)
+        assert!(surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 30,
+            kind: NativeEventKind::Blur,
+            payload: EventPayload::Empty,
+        }]));
+        let (_, _, f4) = surface.render_frame(4);
+        assert!(extract_target_and_text(&f4).1.contains(&"blur".to_owned()));
+
+        // 4. LongPress (EventRing)
+        assert!(surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 40,
+            kind: NativeEventKind::LongPress,
+            payload: EventPayload::Point { x: 75.5, y: 32.25 },
+        }]));
+        let (_, _, f5) = surface.render_frame(5);
+        assert!(extract_target_and_text(&f5)
+            .1
+            .contains(&"longpress:75.5,32.25".to_owned()));
+
+        // 5. Custom (EventRing — with leading "on" prefix normalized cleanly)
+        assert!(surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 50,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: "onmetrics".into(),
+                data: vec![1, 2, 3, 4],
+            },
+        }]));
+        let (_, _, f6) = surface.render_frame(6);
+        assert!(extract_target_and_text(&f6)
+            .1
+            .contains(&"custom:onmetrics:4".to_owned()));
+
+        // 6. Direct FFI path: Scroll, Focus, Blur, LongPress, Custom
+        let direct_scroll = [NveDirectEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 60,
+            kind: NativeEventKind::Scroll as u8,
+            payload_tag: 2,
+            name: NveStrSlice::EMPTY,
+            x: 5.0,
+            y: 99.0,
+            width: 320.0,
+            height: 1200.0,
+            text: NveStrSlice::EMPTY,
+            value: NveValue::null(),
+        }];
+        let batch_scroll = unsafe {
+            NveEventBatchRef::from_raw(NveEventBatch {
+                ptr: direct_scroll.as_ptr(),
+                len: 1,
+            })
+        };
+        assert!(surface.dispatch_events_direct(batch_scroll));
+        let (_, _, f7) = surface.render_frame(7);
+        assert!(extract_target_and_text(&f7)
+            .1
+            .contains(&"scroll:5,99,320,1200".to_owned()));
+
+        let direct_focus = [NveDirectEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 70,
+            kind: NativeEventKind::Focus as u8,
+            payload_tag: 0,
+            ..Default::default()
+        }];
+        let batch_focus = unsafe {
+            NveEventBatchRef::from_raw(NveEventBatch {
+                ptr: direct_focus.as_ptr(),
+                len: 1,
+            })
+        };
+        assert!(surface.dispatch_events_direct(batch_focus));
+        let (_, _, f8) = surface.render_frame(8);
+        assert!(extract_target_and_text(&f8).1.contains(&"focus".to_owned()));
+
+        let direct_blur = [NveDirectEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 80,
+            kind: NativeEventKind::Blur as u8,
+            payload_tag: 0,
+            ..Default::default()
+        }];
+        let batch_blur = unsafe {
+            NveEventBatchRef::from_raw(NveEventBatch {
+                ptr: direct_blur.as_ptr(),
+                len: 1,
+            })
+        };
+        assert!(surface.dispatch_events_direct(batch_blur));
+        let (_, _, f9) = surface.render_frame(9);
+        assert!(extract_target_and_text(&f9).1.contains(&"blur".to_owned()));
+
+        let direct_lp = [NveDirectEvent {
+            surface_id: 1,
+            node_id: target,
+            timestamp_us: 90,
+            kind: NativeEventKind::LongPress as u8,
+            payload_tag: 1,
+            x: 11.0,
+            y: 22.0,
+            ..Default::default()
+        }];
+        let batch_lp = unsafe {
+            NveEventBatchRef::from_raw(NveEventBatch {
+                ptr: direct_lp.as_ptr(),
+                len: 1,
+            })
+        };
+        assert!(surface.dispatch_events_direct(batch_lp));
+        let (_, _, f10) = surface.render_frame(10);
+        assert!(extract_target_and_text(&f10)
+            .1
+            .contains(&"longpress:11,22".to_owned()));
+
+        let custom_bytes = [7u8, 8, 9];
+        let direct_custom = [NveDirectEvent::custom(
+            1,
+            target,
+            100,
+            "metrics",
+            NveValue::bytes(NveBufferSlice::from_slice(&custom_bytes)),
+        )];
+        let batch_custom = unsafe {
+            NveEventBatchRef::from_raw(NveEventBatch {
+                ptr: direct_custom.as_ptr(),
+                len: 1,
+            })
+        };
+        assert!(surface.dispatch_events_direct(batch_custom));
+        let (_, _, f11) = surface.render_frame(11);
+        assert!(extract_target_and_text(&f11)
+            .1
+            .contains(&"custom:metrics:3".to_owned()));
     }
 }
