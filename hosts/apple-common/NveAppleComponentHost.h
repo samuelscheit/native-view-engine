@@ -17,6 +17,9 @@ NS_ASSUME_NONNULL_BEGIN
                 interactive:(BOOL)interactive;
 
 @optional
+/// Optional creation hook receiving extracted accessibility & TextInput semantics (e.g. `secureTextEntry`).
+- (NvePlatformView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap
+                                          semantics:(const nve::apple::NodeSemantics &)semantics;
 /// Optional container override (e.g. AppKit `NSScrollView.documentView`) for mounting children.
 - (NvePlatformView *)nveChildContainerForParentView:(NvePlatformView *)parentView;
 /// Optional scroll content-size hook invoked after laying out `NVE_COMP_SCROLL_VIEW` children.
@@ -64,6 +67,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)drainEmittedEvents;
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y;
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text;
+- (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text;
+- (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused;
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor;
 - (BOOL)getRootLayoutSize:(CGSize *)outSize;

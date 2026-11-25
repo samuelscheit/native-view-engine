@@ -388,6 +388,48 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   [self _dispatchInboundEventsAndRender];
 }
 
+- (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text {
+  if (!_bridge) return;
+  NSData *utf8 = [(text ?: @"") dataUsingEncoding:NSUTF8StringEncoding];
+  const std::string_view sv =
+      utf8 ? std::string_view(reinterpret_cast<const char *>(utf8.bytes), utf8.length)
+           : std::string_view{};
+  NveDirectEvent ev{};
+  ev.surface_id = _surfaceId;
+  ev.node_id = nodeId;
+  ev.timestamp_us = nve::apple::current_timestamp_us();
+  ev.kind = static_cast<uint8_t>(nve::EventKind::Custom);
+  ev.payload_tag = 5u;
+  ev.name = nve::make_str_slice("onSubmit");
+  ev.text = nve::make_str_slice(sv);
+  ev.value = nve::make_str_value(sv);
+  const uint32_t dirty =
+      _bridge->dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/false);
+  if (dirty != 0) {
+    [self renderFrame];
+  } else {
+    [self drainEmittedEvents];
+  }
+}
+
+- (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused {
+  if (!_bridge) return;
+  NveDirectEvent ev{};
+  ev.surface_id = _surfaceId;
+  ev.node_id = nodeId;
+  ev.timestamp_us = nve::apple::current_timestamp_us();
+  ev.kind = static_cast<uint8_t>(focused ? nve::EventKind::Focus : nve::EventKind::Blur);
+  ev.payload_tag = 0u;
+  ev.value = nve::make_null_value();
+  const uint32_t dirty =
+      _bridge->dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/false);
+  if (dirty != 0) {
+    [self renderFrame];
+  } else {
+    [self drainEmittedEvents];
+  }
+}
+
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor {
   NveFabricHostHandle host = [self _activeFabricHost];
   if (!host) return;
@@ -438,11 +480,15 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   _nodeViewTags.clear();
 }
 
-- (uint32_t)_viewTagForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
-  // Distinguish leaf text nodes (UILabel / NSTextField) from wrapper text containers.
+- (uint32_t)_viewTagForSnapshot:(const nve::RenderedNodeSnapshot &)snap
+                      semantics:(const nve::apple::NodeSemantics &)semantics {
+  // Distinguish leaf text nodes (UILabel / NSTextField) from wrapper text containers,
+  // and secure text fields (NSSecureTextField) from plain text fields.
   const uint32_t isContainerText =
       (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) ? 0x10000u : 0u;
-  return static_cast<uint32_t>(snap.kind) | isContainerText;
+  const uint32_t isSecureInput =
+      (snap.kind == NVE_COMP_TEXT_INPUT && semantics.secure_text_entry) ? 0x20000u : 0u;
+  return static_cast<uint32_t>(snap.kind) | isContainerText | isSecureInput;
 }
 
 - (void)syncNativeViewsFromHost {
@@ -450,6 +496,9 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
   NveFabricHostHandle host = [self _activeFabricHost];
   if (!host || !adapter) return;
   const auto snapshots = nve::fabric_host_snapshot_nodes(host);
+  const auto rawPropsByNode = nve::apple::extract_raw_props_by_node(host, snapshots);
+  const BOOL hasSemanticsCreate =
+      [adapter respondsToSelector:@selector(nveCreateNativeViewForSnapshot:semantics:)];
 
   // Pass 1: Prune removed nodes.
   std::unordered_set<uint32_t> liveIds;
@@ -467,15 +516,20 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
     }
   }
 
-  // Pass 2: Create or update mounted native views and apply layout + style properties.
+  // Pass 2: Create or update mounted native views and apply layout + style + a11y/IME properties.
   for (const auto &snap : snapshots) {
+    const auto rpIt = rawPropsByNode.find(snap.node_id);
+    const nve::RawPropMap *rawPropsPtr = (rpIt != rawPropsByNode.end()) ? &rpIt->second : nullptr;
+    const nve::apple::NodeSemantics sem = nve::apple::extract_node_semantics(snap, rawPropsPtr);
+
     if (snap.node_id == NVE_ROOT_NODE_ID) {
       [adapter nveApplyRootBackgroundRgba:snap.background_rgba];
+      nve::apple::apply_node_accessibility([adapter nveHostRootView], snap, sem);
       continue;
     }
 
     NvePlatformView *view = nil;
-    const uint32_t viewTag = [self _viewTagForSnapshot:snap];
+    const uint32_t viewTag = [self _viewTagForSnapshot:snap semantics:sem];
     const auto existingIt = _nodeViews.find(snap.node_id);
     if (existingIt != _nodeViews.end() && _nodeViewTags[snap.node_id] == viewTag) {
       view = existingIt->second;
@@ -483,7 +537,8 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
       if (existingIt != _nodeViews.end()) {
         [existingIt->second removeFromSuperview];
       }
-      view = [adapter nveCreateNativeViewForSnapshot:snap];
+      view = hasSemanticsCreate ? [adapter nveCreateNativeViewForSnapshot:snap semantics:sem]
+                                : [adapter nveCreateNativeViewForSnapshot:snap];
       _nodeViews[snap.node_id] = view;
       _nodeViewTags[snap.node_id] = viewTag;
     }
@@ -500,8 +555,13 @@ NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uin
             : 0.0;
     view.frame = CGRectMake(fx, fy, fw, fh);
     const BOOL interactive =
+        !sem.disabled &&
         (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & nve::apple::kEventMaskPress) != 0);
     [adapter nveUpdateNativeView:view forSnapshot:snap interactive:interactive];
+    if (snap.kind == NVE_COMP_TEXT_INPUT) {
+      nve::apple::apply_text_input_props(view, snap, sem);
+    }
+    nve::apple::apply_node_accessibility(view, snap, sem);
     nve::apple::apply_common_layer_style(view.layer, snap);
   }
 

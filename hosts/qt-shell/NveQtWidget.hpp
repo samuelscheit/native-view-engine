@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NveQtCommon.hpp"
 #include "nve_host_runtime.hpp"
 
 #include <QPointF>
@@ -8,6 +9,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace nve::qt {
@@ -77,6 +79,15 @@ class NveQtWidget : public QWidget {
   /// Enqueue and dispatch a press event on `nodeId` at local coordinates `(x, y)` and sync views.
   uint32_t simulatePressOnNodeId(uint32_t nodeId, float x = 0.0f, float y = 0.0f);
   uint32_t simulatePressOnNodeId(uint32_t nodeId, const QPointF& point);
+
+  /// Dispatch a UTF-8 `TextChange`, Return-key `onSubmit`, or `Focus`/`Blur` event for `nodeId`.
+  uint32_t dispatchTextChangeOnNodeId(uint32_t nodeId, std::string_view text);
+  uint32_t dispatchSubmitOnNodeId(uint32_t nodeId, std::string_view text);
+  uint32_t dispatchFocusOnNodeId(uint32_t nodeId, bool focused);
+
+  /// Query extracted per-node accessibility & TextInput metadata for `nodeId`.
+  std::optional<NodeSemantics> accessibilityInfoForNodeId(uint32_t nodeId) const;
+  QAccessible::Role accessibleRoleForNodeId(uint32_t nodeId) const;
 
   /// Lookup the retained `QWidget*` mounted for `nodeId` (`NVE_ROOT_NODE_ID` returns `this`).
   QWidget* nativeWidgetForNodeId(uint32_t nodeId) const;

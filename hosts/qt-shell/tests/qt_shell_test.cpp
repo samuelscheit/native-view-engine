@@ -2,12 +2,15 @@
 
 #include "mock_jsi_recorder.hpp"
 
+#include <QAccessible>
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFont>
+#include <QInputMethodEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -128,6 +131,27 @@ class BinaryCmdHelper {
     push<float>(opacity);
     push<float>(font_size);
     push<int32_t>(0);
+    ++ops;
+  }
+
+  void set_raw_prop_string(uint32_t id, std::string_view key, std::string_view val) {
+    push<uint8_t>(NVE_OP_SET_RAW_PROP);
+    push<uint32_t>(id);
+    push<uint16_t>(static_cast<uint16_t>(key.size()));
+    buf.insert(buf.end(), key.begin(), key.end());
+    push<uint8_t>(4u);
+    push<uint32_t>(static_cast<uint32_t>(val.size()));
+    buf.insert(buf.end(), val.begin(), val.end());
+    ++ops;
+  }
+
+  void set_raw_prop_bool(uint32_t id, std::string_view key, bool val) {
+    push<uint8_t>(NVE_OP_SET_RAW_PROP);
+    push<uint32_t>(id);
+    push<uint16_t>(static_cast<uint16_t>(key.size()));
+    buf.insert(buf.end(), key.begin(), key.end());
+    push<uint8_t>(1u);
+    push<uint8_t>(val ? 1u : 0u);
     ++ops;
   }
 
@@ -768,6 +792,190 @@ void test_frame0_mmap_snapshot_roundtrip() {
   }
 }
 
+struct MockA11yImeQtApp {
+  static inline MockA11yImeQtApp* last_instance = nullptr;
+  uint32_t surface_id{1};
+  bool disabled_btn{false};
+  bool secure_input{false};
+  std::string input_text;
+  int press_calls{0};
+  int text_change_calls{0};
+  int submit_calls{0};
+  std::string last_text;
+  std::string last_submit;
+  BinaryCmdHelper cmd;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockA11yImeQtApp();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockA11yImeQtApp*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockA11yImeQtApp*>(h);
+    self->cmd.begin(self->surface_id, frame_id);
+
+    self->cmd.create_node(2, NVE_COMP_PRESSABLE);
+    self->cmd.create_node(3, NVE_COMP_TEXT);
+    self->cmd.create_node(4, NVE_COMP_VIEW);
+    self->cmd.create_node(5, NVE_COMP_TEXT_INPUT);
+
+    self->cmd.set_children(NVE_ROOT_NODE_ID, {2, 3, 4, 5});
+
+    self->cmd.set_layout(2, 0, 1, 140.0f, 1, 36.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_raw_prop_string(2, "accessibilityLabel", "Submit Action");
+    self->cmd.set_raw_prop_string(2, "accessibilityHint", "Activates submission");
+    self->cmd.set_raw_prop_string(2, "testID", "qt-submit-btn");
+    self->cmd.set_raw_prop_bool(2, "disabled", self->disabled_btn);
+
+    self->cmd.set_layout(3, 0, 1, 180.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(3, "Section Title");
+    self->cmd.set_raw_prop_string(3, "role", "header");
+    self->cmd.set_raw_prop_string(3, "aria-label", "Main Section");
+
+    self->cmd.set_layout(4, 0, 1, 120.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_raw_prop_string(4, "accessibilityRole", "checkbox");
+    self->cmd.set_raw_prop_string(4, "accessibilityLabel", "Auto Save");
+    self->cmd.set_raw_prop_string(4, "accessibilityValue", "on");
+
+    self->cmd.set_layout(5, 0, 1, 220.0f, 1, 32.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(5, self->input_text);
+    self->cmd.set_raw_prop_string(5, "placeholder", "Type CJK or accented text...");
+    self->cmd.set_raw_prop_string(5, "accessibilityLabel", "Search Query");
+    self->cmd.set_raw_prop_string(5, "data-testid", "qt-search-input");
+    self->cmd.set_raw_prop_bool(5, "secureTextEntry", self->secure_input);
+
+    return self->cmd.finish();
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto* self = static_cast<MockA11yImeQtApp*>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0;
+    for (const auto& ev : decoded) {
+      if (ev.kind == nve::EventKind::Press && ev.node_id == 2) {
+        ++self->press_calls;
+      } else if (ev.kind == nve::EventKind::TextChange && ev.node_id == 5) {
+        ++self->text_change_calls;
+        self->last_text = ev.text;
+      } else if (ev.kind == nve::EventKind::Custom && ev.node_id == 5 && ev.name == "onSubmit") {
+        ++self->submit_calls;
+        if (const auto v = nve::BinValueView::parse(ev.payload_bytes.data(), ev.payload_bytes.size());
+            v && v->as_str()) {
+          self->last_submit = std::string(*v->as_str());
+        }
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
+    auto* self = static_cast<MockA11yImeQtApp*>(h);
+    const std::string json(reinterpret_cast<const char*>(props.ptr), props.len);
+    if (json.find("\"disabled\":true") != std::string::npos) self->disabled_btn = true;
+    if (json.find("\"secure\":true") != std::string::npos) self->secure_input = true;
+    if (json.find("\"serverText\":\"stale\"") != std::string::npos) self->input_text = "stale";
+    return 1;
+  }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveComponentApi kComp{&set_props, nullptr, nullptr};
+    if (iface == NVE_IFACE_SURFACE) return &kSurface;
+    if (iface == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
+void test_accessibility_and_ime_text_input() {
+  nve::qt::NveQtWidget widget;
+  widget.resize(480, 320);
+  NVE_CHECK(widget.attachInterface(&MockA11yImeQtApp::get_interface, 19));
+  NVE_CHECK(MockA11yImeQtApp::last_instance != nullptr);
+  auto* mock = MockA11yImeQtApp::last_instance;
+
+  QWidget* btn = widget.nativeWidgetForNodeId(2);
+  QWidget* hdr = widget.nativeWidgetForNodeId(3);
+  QWidget* chk = widget.nativeWidgetForNodeId(4);
+  auto* edit = qobject_cast<QLineEdit*>(widget.nativeWidgetForNodeId(5));
+  NVE_CHECK(btn != nullptr && hdr != nullptr && chk != nullptr && edit != nullptr);
+
+  // Verify accessibleName, accessibleDescription, objectName, and QAccessible interface
+  NVE_CHECK(btn->accessibleName() == QStringLiteral("Submit Action"));
+  NVE_CHECK(btn->accessibleDescription() == QStringLiteral("Activates submission"));
+  NVE_CHECK(btn->objectName() == QStringLiteral("qt-submit-btn"));
+  NVE_CHECK(widget.accessibleRoleForNodeId(2) == QAccessible::Button);
+  if (QAccessibleInterface* btn_iface = QAccessible::queryAccessibleInterface(btn)) {
+    NVE_CHECK(btn_iface->role() == QAccessible::Button);
+    NVE_CHECK(btn_iface->text(QAccessible::Name) == QStringLiteral("Submit Action"));
+    NVE_CHECK(btn_iface->text(QAccessible::Description) == QStringLiteral("Activates submission"));
+    NVE_CHECK(!btn_iface->state().disabled);
+  }
+
+  NVE_CHECK(hdr->accessibleName() == QStringLiteral("Main Section"));
+  NVE_CHECK(widget.accessibleRoleForNodeId(3) == QAccessible::Heading);
+
+  NVE_CHECK(chk->accessibleName() == QStringLiteral("Auto Save"));
+  NVE_CHECK(widget.accessibleRoleForNodeId(4) == QAccessible::CheckBox);
+  const auto chk_sem = widget.accessibilityInfoForNodeId(4);
+  NVE_CHECK(chk_sem.has_value() && chk_sem->value == QStringLiteral("on"));
+  if (QAccessibleInterface* chk_iface = QAccessible::queryAccessibleInterface(chk)) {
+    NVE_CHECK(chk_iface->role() == QAccessible::CheckBox);
+    NVE_CHECK(chk_iface->text(QAccessible::Value) == QStringLiteral("on"));
+  }
+
+  // Verify QLineEdit IME attributes, placeholder, echo mode
+  NVE_CHECK(edit->testAttribute(Qt::WA_InputMethodEnabled));
+  NVE_CHECK(edit->placeholderText() == QStringLiteral("Type CJK or accented text..."));
+  NVE_CHECK(edit->accessibleName() == QStringLiteral("Search Query"));
+  NVE_CHECK(edit->objectName() == QStringLiteral("qt-search-input"));
+  NVE_CHECK(edit->echoMode() == QLineEdit::Normal);
+  NVE_CHECK(widget.accessibleRoleForNodeId(5) == QAccessible::EditableText);
+
+  // 1. IME preedit event must NOT dispatch premature TextChange or be clobbered on re-render
+  {
+    QList<QInputMethodEvent::Attribute> attrs;
+    QInputMethodEvent preedit_ev(QStringLiteral("にほん"), attrs);
+    QCoreApplication::sendEvent(edit, &preedit_ev);
+    NVE_CHECK(mock->text_change_calls == 0);
+
+    // Server re-render mid-preedit must NOT overwrite composition!
+    NVE_CHECK(widget.applyPropsJson(R"({"serverText":"stale"})"));
+    NVE_CHECK(edit->text().isEmpty());
+  }
+
+  // 2. IME commit event with multi-byte CJK + accented + emoji characters dispatches clean UTF-8!
+  {
+    QInputMethodEvent commit_ev;
+    commit_ev.setCommitString(QStringLiteral("日本語 café 🚀"));
+    QCoreApplication::sendEvent(edit, &commit_ev);
+    NVE_CHECK(edit->text() == QStringLiteral("日本語 café 🚀"));
+    NVE_CHECK(mock->text_change_calls == 1);
+    NVE_CHECK(mock->last_text == "日本語 café 🚀");
+  }
+
+  // 3. Return key dispatches onSubmit with the exact UTF-8 text
+  {
+    QKeyEvent ret_ev(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    QCoreApplication::sendEvent(edit, &ret_ev);
+    NVE_CHECK(mock->submit_calls == 1);
+    NVE_CHECK(mock->last_submit == "日本語 café 🚀");
+  }
+
+  // 4. Toggle disabled=true and secureTextEntry=true
+  NVE_CHECK(widget.applyPropsJson(R"({"disabled":true,"secure":true})"));
+  NVE_CHECK(!btn->isEnabled());
+  NVE_CHECK(edit->echoMode() == QLineEdit::Password);
+  send_left_click(btn, QPointF(10.0, 10.0));
+  NVE_CHECK(mock->press_calls == 0);
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -777,6 +985,7 @@ int main(int argc, char* argv[]) {
   test_attach_props_events_morph_and_measurer();
   test_real_counter_dylib();
   test_frame0_mmap_snapshot_roundtrip();
+  test_accessibility_and_ime_text_input();
 
   std::cout << "nve_qt_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6" : "Standalone+Qt6") << ")\n";

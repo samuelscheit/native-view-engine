@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NveQtCommon.hpp"
 #include "nve_host_runtime.hpp"
 #include "nve_scene_builder.hpp"
 
@@ -137,7 +138,16 @@ class NveQtQuickItem : public QQuickItem {
       float contentWidth,
       float contentHeight);
   uint32_t dispatchTextChange(uint32_t nodeId, std::string_view text);
+  uint32_t dispatchSubmit(uint32_t nodeId, std::string_view text);
   uint32_t dispatchFocus(uint32_t nodeId, bool focused);
+
+  /// Per-node accessibility & TextInput metadata queries.
+  std::optional<NodeSemantics> accessibilityInfoForNodeId(uint32_t nodeId) const;
+  QAccessible::Role accessibleRoleForNodeId(uint32_t nodeId) const;
+  QString accessibleNameForNodeId(uint32_t nodeId) const;
+  QString accessibleDescriptionForNodeId(uint32_t nodeId) const;
+  QString imePreeditText(uint32_t nodeId) const;
+  QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
   /// Front-to-back hit-test against the active `NveSceneView`, honoring `z_index`, clip bounds,
   /// and scroll offsets. Returns `0` if no node matches.
@@ -201,6 +211,7 @@ class NveQtQuickItem : public QQuickItem {
   void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
+  void inputMethodEvent(QInputMethodEvent* event) override;
 
  private:
   class Impl;

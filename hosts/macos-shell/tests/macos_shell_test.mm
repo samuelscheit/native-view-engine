@@ -424,6 +424,212 @@ struct HostEdgeApp {
   }
 };
 
+struct A11yImeMacApp {
+  uint32_t surface_id{1};
+  bool disabled_btn{false};
+  bool secure_input{false};
+  std::string input_text{"init"};
+  int focus_count{0};
+  int blur_count{0};
+  int text_change_count{0};
+  int submit_count{0};
+  std::string last_text;
+  std::string last_submit;
+  std::vector<uint8_t> cmd_buf;
+  nve::EventRingWriter outbound;
+  std::vector<uint8_t> outbound_snap;
+  static inline A11yImeMacApp *last_instance = nullptr;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto *self = new A11yImeMacApp();
+    self->surface_id = sid;
+    self->outbound.clear();
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto *self = static_cast<A11yImeMacApp *>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  template <typename T>
+  void push(T v) {
+    const auto *p = reinterpret_cast<const uint8_t *>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto *self = static_cast<A11yImeMacApp *>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_text = [&](uint32_t id, const std::string &s) {
+      self->push<uint8_t>(NVE_OP_SET_TEXT);
+      self->push<uint32_t>(id);
+      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1); self->push<float>(w);
+      self->push<uint8_t>(1); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0); self->push<float>(0.0f); }
+      self->push<uint8_t>(0); self->push<uint8_t>(0); self->push<uint8_t>(0);
+      self->push<float>(0.0f); self->push<float>(1.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+    auto set_raw_bool = [&](uint32_t id, std::string_view k, bool v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(1);
+      self->push<uint8_t>(v ? 1 : 0);
+      ++ops;
+    };
+
+    create_node(2, NVE_COMP_PRESSABLE);
+    create_node(3, NVE_COMP_TEXT);
+    create_node(4, NVE_COMP_VIEW);
+    create_node(5, NVE_COMP_VIEW);
+    create_node(6, NVE_COMP_TEXT_INPUT);
+    create_node(7, NVE_COMP_SCROLL_VIEW);
+
+    set_children(NVE_ROOT_NODE_ID, {2, 3, 4, 5, 6, 7});
+    set_box(2, 140.0f, 36.0f);
+    set_box(3, 180.0f, 24.0f);
+    set_box(4, 100.0f, 24.0f);
+    set_box(5, 80.0f, 20.0f);
+    set_box(6, 200.0f, 32.0f);
+    set_box(7, 200.0f, 60.0f);
+
+    // 2: Pressable button with full a11y metadata + dynamic disabled toggle
+    set_raw_str(2, "accessibilityLabel", "Save Document");
+    set_raw_str(2, "accessibilityHint", "Persists your current work");
+    set_raw_str(2, "testID", "save-btn");
+    set_raw_bool(2, "accessibilityDisabled", self->disabled_btn);
+
+    // 3: Static text with aria-label / role / data-testid
+    set_text(3, "Visible Title");
+    set_raw_str(3, "aria-label", "Settings Header");
+    set_raw_str(3, "role", "header");
+    set_raw_str(3, "data-testid", "hdr-1");
+
+    // 4: Explicit checkbox role + value
+    set_raw_str(4, "accessibilityRole", "checkbox");
+    set_raw_str(4, "accessibilityLabel", "Enable Sync");
+    set_raw_str(4, "accessibilityValue", "checked");
+
+    // 5: Explicit none role -> accessibilityElement == NO
+    set_raw_str(5, "role", "none");
+
+    // 6: TextInput with placeholder, secureTextEntry, testID, a11y label
+    set_text(6, self->input_text);
+    set_raw_str(6, "placeholder", "Enter name...");
+    set_raw_str(6, "accessibilityLabel", "Display Name");
+    set_raw_str(6, "accessibilityHint", "Type your display name");
+    set_raw_str(6, "testID", "name-input");
+    set_raw_bool(6, "secureTextEntry", self->secure_input);
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto *self = static_cast<A11yImeMacApp *>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0;
+    for (const auto &ev : decoded) {
+      if (ev.node_id == 6) {
+        if (ev.kind == nve::EventKind::Focus) {
+          ++self->focus_count;
+        } else if (ev.kind == nve::EventKind::Blur) {
+          ++self->blur_count;
+        } else if (ev.kind == nve::EventKind::TextChange) {
+          ++self->text_change_count;
+          self->last_text = ev.text;
+        } else if (ev.kind == nve::EventKind::Custom && ev.name == "onSubmit") {
+          ++self->submit_count;
+          if (const auto v = nve::BinValueView::parse(ev.payload_bytes.data(), ev.payload_bytes.size());
+              v && v->as_str()) {
+            self->last_submit = std::string(*v->as_str());
+          } else {
+            self->last_submit = std::string(ev.payload_as_string());
+          }
+        }
+      }
+    }
+    return 0;
+  }
+
+  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+    auto *self = static_cast<A11yImeMacApp *>(h);
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto k = nve::str_slice_view(entries[i].key);
+      if (k == "disabled" && entries[i].value.tag == NVE_VAL_BOOL) {
+        self->disabled_btn = entries[i].value.data.bool_val != 0;
+      } else if (k == "secure" && entries[i].value.tag == NVE_VAL_BOOL) {
+        self->secure_input = entries[i].value.data.bool_val != 0;
+      } else if (k == "inputText" && entries[i].value.tag == NVE_VAL_STR) {
+        self->input_text = std::string(nve::str_slice_view(entries[i].value.data.str_val));
+      }
+    }
+    return 1;
+  }
+
+  static NveBufferSlice drain_emitted_events(NveAppHandle h) {
+    auto *self = static_cast<A11yImeMacApp *>(h);
+    self->outbound_snap = self->outbound.finalize();
+    self->outbound.clear();
+    return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
+  }
+
+  static const void *get_interface(uint32_t interface_id) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveComponentApi kComp{nullptr, &drain_emitted_events, &set_props_direct};
+    if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
+    if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
 } // namespace
 
 @interface TestMacComponentDelegate : NSObject <RCTNveMacComponentViewDelegate>
@@ -975,6 +1181,119 @@ int main() {
         assert(hasLabelText(studioCold, @"Live Metrics"));
         [[NSFileManager defaultManager] removeItemAtPath:studioSnap error:nil];
       }
+    }
+
+    // 9. Native AppKit Accessibility & TextInput / IME / Submit tests
+    {
+      RCTNveMacComponentView *a11yView =
+          [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 320, 260)];
+      assert([a11yView attachNveInterface:&A11yImeMacApp::get_interface surfaceId:42]);
+      assert(A11yImeMacApp::last_instance != nullptr);
+      A11yImeMacApp *mock = A11yImeMacApp::last_instance;
+
+      NSView *btn = [a11yView nativeViewForNodeId:2];
+      NSView *hdr = [a11yView nativeViewForNodeId:3];
+      NSView *chk = [a11yView nativeViewForNodeId:4];
+      NSView *hiddenA11y = [a11yView nativeViewForNodeId:5];
+      NSTextField *input = (NSTextField *)[a11yView nativeViewForNodeId:6];
+      NSView *scroll = [a11yView nativeViewForNodeId:7];
+
+      assert(btn != nil && hdr != nil && chk != nil && hiddenA11y != nil && input != nil &&
+             scroll != nil);
+
+      // Button inferred role + explicit label/hint/testID/enabled
+      assert(btn.isAccessibilityElement == YES);
+      assert([btn.accessibilityRole isEqualToString:NSAccessibilityButtonRole]);
+      assert([btn.accessibilityLabel isEqualToString:@"Save Document"]);
+      assert([btn.accessibilityHelp isEqualToString:@"Persists your current work"]);
+      assert([btn.accessibilityIdentifier isEqualToString:@"save-btn"]);
+      assert(btn.isAccessibilityEnabled == YES);
+      assert(btn.gestureRecognizers.count == 1);
+
+      // Header with aria-label & data-testid
+      assert(hdr.isAccessibilityElement == YES);
+      assert([hdr.accessibilityRole isEqualToString:NSAccessibilityStaticTextRole]);
+      assert([hdr.accessibilityLabel isEqualToString:@"Settings Header"]);
+      assert([hdr.accessibilityIdentifier isEqualToString:@"hdr-1"]);
+
+      // Explicit checkbox role + accessibilityValue
+      assert(chk.isAccessibilityElement == YES);
+      assert([chk.accessibilityRole isEqualToString:NSAccessibilityCheckBoxRole]);
+      assert([chk.accessibilityLabel isEqualToString:@"Enable Sync"]);
+      assert([chk.accessibilityValue isEqual:@"checked"]);
+
+      // Explicit role="none" hides element from accessibility tree
+      assert(hiddenA11y.isAccessibilityElement == NO);
+
+      // Inferred ScrollArea role
+      assert([scroll.accessibilityRole isEqualToString:NSAccessibilityScrollAreaRole]);
+
+      // TextInput: placeholderString, a11y metadata, plain NSTextField initially
+      assert([input isKindOfClass:[NSTextField class]]);
+      assert(![input isKindOfClass:[NSSecureTextField class]]);
+      assert([input.accessibilityRole isEqualToString:NSAccessibilityTextFieldRole]);
+      assert([input.accessibilityLabel isEqualToString:@"Display Name"]);
+      assert([input.accessibilityHelp isEqualToString:@"Type your display name"]);
+      assert([input.accessibilityIdentifier isEqualToString:@"name-input"]);
+      assert([input.placeholderString isEqualToString:@"Enter name..."]);
+      assert([input.stringValue isEqualToString:@"init"]);
+
+      // Focus -> TextChange (UTF-8 CJK/accented) -> Return-key Submit -> Blur
+      id<NSTextFieldDelegate> textDelegate = (id<NSTextFieldDelegate>)a11yView;
+      [textDelegate controlTextDidBeginEditing:
+                        [NSNotification notificationWithName:NSControlTextDidBeginEditingNotification
+                                                      object:input]];
+      assert(mock->focus_count == 1);
+
+      // Marked-text IME safety: live composition on field editor MUST NOT dispatch TextChange or Submit
+      NSTextView *markedEditor = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 180, 24)];
+      [markedEditor setMarkedText:@"にほん"
+                    selectedRange:NSMakeRange(3, 0)
+                 replacementRange:NSMakeRange(NSNotFound, 0)];
+      assert(markedEditor.hasMarkedText == YES);
+      input.stringValue = @"にほん";
+      [textDelegate controlTextDidChange:
+                        [NSNotification notificationWithName:NSControlTextDidChangeNotification
+                                                      object:input
+                                                    userInfo:@{@"NSFieldEditor" : markedEditor}]];
+      assert(mock->text_change_count == 0);
+      assert([textDelegate control:input
+                          textView:markedEditor
+               doCommandBySelector:@selector(insertNewline:)] == NO);
+      assert(mock->submit_count == 0);
+
+      // Commit IME text (unmarked) -> dispatches UTF-8 TextChange + Return-key Submit
+      [markedEditor unmarkText];
+      assert(markedEditor.hasMarkedText == NO);
+      input.stringValue = @"東京 café";
+      [textDelegate controlTextDidChange:
+                        [NSNotification notificationWithName:NSControlTextDidChangeNotification
+                                                      object:input
+                                                    userInfo:@{@"NSFieldEditor" : markedEditor}]];
+      assert(mock->text_change_count == 1);
+      assert(mock->last_text == "東京 café");
+
+      assert([textDelegate control:input
+                          textView:markedEditor
+               doCommandBySelector:@selector(insertNewline:)] == YES);
+      assert(mock->submit_count == 1);
+      assert(mock->last_submit == "東京 café");
+
+      [textDelegate controlTextDidEndEditing:
+                        [NSNotification notificationWithName:NSControlTextDidEndEditingNotification
+                                                      object:input]];
+      assert(mock->blur_count == 1);
+
+      // Toggle disabled=true on button and secureTextEntry=true on TextInput
+      NSDictionary<NSString *, id> *toggleProps = @{@"disabled" : @YES, @"secure" : @YES};
+      assert([a11yView applyPropsDictionary:toggleProps]);
+      assert(btn.isAccessibilityEnabled == NO);
+      assert(btn.gestureRecognizers.count == 0);
+
+      NSView *secureField = [a11yView nativeViewForNodeId:6];
+      assert([secureField isKindOfClass:[NSSecureTextField class]]);
+      assert([((NSTextField *)secureField).placeholderString isEqualToString:@"Enter name..."]);
+      assert([secureField.accessibilityIdentifier isEqualToString:@"name-input"]);
     }
 
     std::cout << "nve_macos_shell_test passed ("

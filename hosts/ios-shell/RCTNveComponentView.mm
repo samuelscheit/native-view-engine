@@ -1,7 +1,7 @@
 #import "RCTNveComponentView.h"
 #import "NveAppleComponentHost.h"
 
-@interface RCTNveComponentView () <NveAppleComponentViewAdapter>
+@interface RCTNveComponentView () <NveAppleComponentViewAdapter, UITextFieldDelegate>
 @end
 
 @implementation RCTNveComponentView {
@@ -179,6 +179,7 @@
         break;
       case NVE_COMP_TEXT_INPUT: {
         UITextField *field = [[UITextField alloc] initWithFrame:CGRectZero];
+        field.delegate = self;
         [field addTarget:self
                       action:@selector(_handleTextFieldChanged:)
             forControlEvents:UIControlEventEditingChanged];
@@ -212,10 +213,6 @@
     }
   } else if ([view isKindOfClass:[UITextField class]]) {
     UITextField *field = (UITextField *)view;
-    NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
-    if (![(field.text ?: @"") isEqualToString:nextText]) {
-      field.text = nextText;
-    }
     field.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
     if (snap.font_size > 0.0f) {
       field.font = [UIFont systemFontOfSize:static_cast<CGFloat>(snap.font_size)];
@@ -248,9 +245,35 @@
 }
 
 - (void)_handleTextFieldChanged:(UITextField *)field {
+  if (nve::apple::is_text_input_composing_ime(field)) {
+    return;
+  }
   const uint32_t nodeId = static_cast<uint32_t>(field.tag);
   if (nodeId == 0) return;
   [_host dispatchTextChangeOnNodeId:nodeId text:field.text ?: @""];
+}
+
+- (void)textFieldDidBeginEditing:(UITextField *)textField {
+  const uint32_t nodeId = static_cast<uint32_t>(textField.tag);
+  if (nodeId == 0) return;
+  [_host dispatchFocusOnNodeId:nodeId focused:YES];
+}
+
+- (void)textFieldDidEndEditing:(UITextField *)textField {
+  const uint32_t nodeId = static_cast<uint32_t>(textField.tag);
+  if (nodeId == 0) return;
+  [_host dispatchFocusOnNodeId:nodeId focused:NO];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+  if (nve::apple::is_text_input_composing_ime(textField)) {
+    return NO;
+  }
+  const uint32_t nodeId = static_cast<uint32_t>(textField.tag);
+  if (nodeId != 0) {
+    [_host dispatchSubmitOnNodeId:nodeId text:textField.text ?: @""];
+  }
+  return YES;
 }
 
 - (void)_handleNodeTap:(UITapGestureRecognizer *)recognizer {

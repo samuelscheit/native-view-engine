@@ -2,11 +2,13 @@
 
 #include "mock_jsi_recorder.hpp"
 
+#include <QAccessible>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPointingDevice>
@@ -152,6 +154,27 @@ class BinaryCmdHelper {
     push<float>(opacity);
     push<float>(font_size);
     push<int32_t>(z_index);
+    ++ops;
+  }
+
+  void set_raw_prop_string(uint32_t id, std::string_view key, std::string_view val) {
+    push<uint8_t>(NVE_OP_SET_RAW_PROP);
+    push<uint32_t>(id);
+    push<uint16_t>(static_cast<uint16_t>(key.size()));
+    buf.insert(buf.end(), key.begin(), key.end());
+    push<uint8_t>(4u);
+    push<uint32_t>(static_cast<uint32_t>(val.size()));
+    buf.insert(buf.end(), val.begin(), val.end());
+    ++ops;
+  }
+
+  void set_raw_prop_bool(uint32_t id, std::string_view key, bool val) {
+    push<uint8_t>(NVE_OP_SET_RAW_PROP);
+    push<uint32_t>(id);
+    push<uint16_t>(static_cast<uint16_t>(key.size()));
+    buf.insert(buf.end(), key.begin(), key.end());
+    push<uint8_t>(1u);
+    push<uint8_t>(val ? 1u : 0u);
     ++ops;
   }
 
@@ -1093,6 +1116,163 @@ void test_live_counter_and_studio_dylibs() {
   }
 }
 
+struct MockQuickA11yImeComponent {
+  static inline MockQuickA11yImeComponent* last_instance = nullptr;
+  uint32_t surface_id{1};
+  std::string input_text;
+  int direct_text_calls{0};
+  int direct_submit_calls{0};
+  std::string last_text;
+  std::string last_submit;
+  BinaryCmdHelper cmd;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockQuickA11yImeComponent();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockQuickA11yImeComponent*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockQuickA11yImeComponent*>(h);
+    self->cmd.begin(self->surface_id, frame_id);
+
+    self->cmd.create_node(2, NVE_COMP_VIEW);
+    self->cmd.create_node(3, NVE_COMP_PRESSABLE);
+    self->cmd.create_node(4, NVE_COMP_TEXT);
+    self->cmd.create_node(5, NVE_COMP_TEXT_INPUT);
+
+    self->cmd.set_children(NVE_ROOT_NODE_ID, {2});
+    self->cmd.set_children(2, {3, 4, 5});
+
+    self->cmd.set_layout(2, 0, 2, 100.0f, 2, 100.0f, 0.0f, 12.0f, 8.0f);
+    self->cmd.set_layout(3, 0, 1, 140.0f, 1, 36.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_raw_prop_string(3, "accessibilityLabel", "Disabled Action");
+    self->cmd.set_raw_prop_string(3, "accessibilityHint", "Currently unavailable");
+    self->cmd.set_raw_prop_bool(3, "accessibilityDisabled", true);
+
+    self->cmd.set_layout(4, 0, 1, 180.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(4, "Quick Heading");
+    self->cmd.set_raw_prop_string(4, "accessibilityRole", "header");
+    self->cmd.set_raw_prop_string(4, "testID", "quick-hdr");
+
+    self->cmd.set_layout(5, 0, 1, 240.0f, 1, 34.0f, 0.0f, 0.0f, 0.0f);
+    self->cmd.set_text(5, self->input_text);
+    self->cmd.set_style(5, 0xFF0F172Au, 0xFFFFFFFFu, 0xFF64748Bu, 1.0f, 6.0f, 1.0f, 14.0f);
+    self->cmd.set_raw_prop_string(5, "accessibilityLabel", "Quick Search");
+    self->cmd.set_raw_prop_string(5, "placeholder", "Search IME...");
+
+    return self->cmd.finish();
+  }
+
+  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+    auto* self = static_cast<MockQuickA11yImeComponent*>(h);
+    if (batch.ptr == nullptr) return 0;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      if (ev.node_id == 5 && ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
+        ++self->direct_text_calls;
+        const auto sv = nve::str_slice_view(ev.text);
+        self->last_text.assign(sv.data(), sv.size());
+        self->input_text = self->last_text;
+        return 1;
+      }
+      if (ev.node_id == 5 && ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) &&
+          nve::str_slice_view(ev.name) == "onSubmit") {
+        ++self->direct_submit_calls;
+        const auto sv = nve::str_slice_view(ev.text);
+        self->last_submit.assign(sv.data(), sv.size());
+      }
+    }
+    return 0;
+  }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, nullptr, &dispatch_events_direct};
+    if (iface == NVE_IFACE_SURFACE) return &kSurface;
+    return nullptr;
+  }
+};
+
+void test_accessibility_and_ime_input_method() {
+  QQuickWindow win;
+  win.resize(480, 320);
+  auto* item = new nve::NveQtQuickItem(win.contentItem());
+  item->setSize(QSizeF(480, 320));
+  NVE_CHECK((item->flags() & QQuickItem::ItemAcceptsInputMethod) != 0);
+
+  NVE_CHECK(item->attachInterface(&MockQuickA11yImeComponent::get_interface, 23u));
+  NVE_CHECK(MockQuickA11yImeComponent::last_instance != nullptr);
+  auto* mock = MockQuickA11yImeComponent::last_instance;
+
+  // Verify accessible metadata & role extraction
+  NVE_CHECK(item->accessibleRoleForNodeId(3) == QAccessible::Button);
+  NVE_CHECK(item->accessibleNameForNodeId(3) == QStringLiteral("Disabled Action"));
+  NVE_CHECK(item->accessibleDescriptionForNodeId(3) == QStringLiteral("Currently unavailable"));
+  NVE_CHECK(item->accessibleRoleForNodeId(4) == QAccessible::Heading);
+  NVE_CHECK(item->accessibleNameForNodeId(4) == QStringLiteral("Quick Heading"));
+  NVE_CHECK(item->accessibleRoleForNodeId(5) == QAccessible::EditableText);
+  NVE_CHECK(item->accessibleNameForNodeId(5) == QStringLiteral("Quick Search"));
+  const auto input_sem = item->accessibilityInfoForNodeId(5);
+  NVE_CHECK(input_sem.has_value() && input_sem->placeholder == QStringLiteral("Search IME..."));
+
+  // Disabled button must NOT be hit-testable as interactive
+  const QRectF disabled_btn_bounds = item->sceneNodeGlobalBounds(3);
+  NVE_CHECK(disabled_btn_bounds.isValid());
+  NVE_CHECK(item->hitTestNode(disabled_btn_bounds.center(), /*interactiveOnly=*/true) == 0u);
+
+  // Focus TextInput 5 via mouse click
+  const QRectF input_bounds = item->sceneNodeGlobalBounds(5);
+  NVE_CHECK(input_bounds.isValid());
+  send_quick_click(item, input_bounds.center());
+  NVE_CHECK(item->focusedNodeId() == 5u);
+  NVE_CHECK(item->inputMethodQuery(Qt::ImEnabled).toBool());
+
+  // 1. IME preedit displays live without dispatching premature TextChange or Submit
+  {
+    QList<QInputMethodEvent::Attribute> attrs;
+    QInputMethodEvent preedit_ev(QStringLiteral("かんじ"), attrs);
+    QCoreApplication::sendEvent(item, &preedit_ev);
+    NVE_CHECK(item->imePreeditText(5) == QStringLiteral("かんじ"));
+    NVE_CHECK(mock->direct_text_calls == 0);
+
+    // Return key during preedit must NOT submit prematurely
+    send_quick_key(item, Qt::Key_Return, QStringLiteral("\r"));
+    NVE_CHECK(mock->direct_submit_calls == 0);
+  }
+
+  // 2. IME commit with CJK + accented characters dispatches clean UTF-8 TextChange
+  {
+    QInputMethodEvent commit_ev;
+    commit_ev.setCommitString(QStringLiteral("漢字 naïve"));
+    QCoreApplication::sendEvent(item, &commit_ev);
+    NVE_CHECK(item->imePreeditText(5).isEmpty());
+    NVE_CHECK(mock->direct_text_calls == 1);
+    NVE_CHECK(mock->last_text == "漢字 naïve");
+    NVE_CHECK(item->sceneNodeText(5) == "漢字 naïve");
+  }
+
+  // 3. IME replacement replaces "naïve" (5 UTF-16 units) with "café" without corrupting CJK prefix
+  {
+    QInputMethodEvent replace_ev;
+    replace_ev.setCommitString(QStringLiteral("café"), -5, 5);
+    QCoreApplication::sendEvent(item, &replace_ev);
+    NVE_CHECK(mock->direct_text_calls == 2);
+    NVE_CHECK(mock->last_text == "漢字 café");
+    NVE_CHECK(item->sceneNodeText(5) == "漢字 café");
+  }
+
+  // 4. Return key dispatches direct onSubmit carrying exact UTF-8 text
+  send_quick_key(item, Qt::Key_Return, QStringLiteral("\r"));
+  NVE_CHECK(mock->direct_submit_calls == 1);
+  NVE_CHECK(mock->last_submit == "漢字 café");
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -1106,6 +1286,7 @@ int main(int argc, char* argv[]) {
   test_mmap_snapshot_roundtrip();
   test_z_index_hit_test_and_paint_order();
   test_live_counter_and_studio_dylibs();
+  test_accessibility_and_ime_input_method();
 
   std::cout << "nve_qt_quick_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6Quick" : "Standalone+Qt6Quick")

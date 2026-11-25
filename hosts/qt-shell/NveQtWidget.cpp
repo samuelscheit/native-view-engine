@@ -1,10 +1,14 @@
 #include "NveQtWidget.hpp"
 #include "NveQtCommon.hpp"
 
+#include <QAccessible>
+#include <QAccessibleWidget>
 #include <QApplication>
 #include <QColor>
+#include <QFocusEvent>
 #include <QFont>
 #include <QGraphicsOpacityEffect>
+#include <QInputMethodEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -19,7 +23,9 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -28,6 +34,231 @@ namespace nve::qt {
 namespace {
 
 constexpr const char* kNodeIdProperty = "nveNodeId";
+constexpr const char* kA11yRoleProperty = "nveAccessibleRole";
+constexpr const char* kA11yValueProperty = "nveAccessibleValue";
+
+class NveQtAccessibleWidget final : public QAccessibleWidget {
+ public:
+  explicit NveQtAccessibleWidget(QWidget* w)
+      : QAccessibleWidget(
+            w,
+            static_cast<QAccessible::Role>(
+                w->property(kA11yRoleProperty).toInt())) {}
+
+  QAccessible::Role role() const override {
+    if (QWidget* w = widget()) {
+      const QVariant v = w->property(kA11yRoleProperty);
+      if (v.isValid()) {
+        return static_cast<QAccessible::Role>(v.toInt());
+      }
+    }
+    return QAccessibleWidget::role();
+  }
+
+  QString text(QAccessible::Text t) const override {
+    if (QWidget* w = widget()) {
+      if (t == QAccessible::Name && !w->accessibleName().isEmpty()) {
+        return w->accessibleName();
+      }
+      if (t == QAccessible::Description && !w->accessibleDescription().isEmpty()) {
+        return w->accessibleDescription();
+      }
+      if (t == QAccessible::Value) {
+        const QVariant v = w->property(kA11yValueProperty);
+        if (v.isValid()) {
+          return v.toString();
+        }
+        if (auto* edit = qobject_cast<QLineEdit*>(w)) {
+          return edit->text();
+        }
+      }
+    }
+    return QAccessibleWidget::text(t);
+  }
+
+  QAccessible::State state() const override {
+    QAccessible::State st = QAccessibleWidget::state();
+    if (QWidget* w = widget()) {
+      st.disabled = !w->isEnabled();
+    }
+    return st;
+  }
+};
+
+QAccessibleInterface* nveQtAccessibleFactory(const QString& /*classname*/, QObject* object) {
+  auto* widget = qobject_cast<QWidget*>(object);
+  if (widget != nullptr && widget->property(kA11yRoleProperty).isValid()) {
+    return new NveQtAccessibleWidget(widget);
+  }
+  return nullptr;
+}
+
+void ensureAccessibleFactoryInstalled() {
+  static std::once_flag flag;
+  std::call_once(flag, []() { QAccessible::installFactory(&nveQtAccessibleFactory); });
+}
+
+void applyWidgetAccessibility(QWidget* widget, const NodeSemantics& sem) {
+  if (widget == nullptr) {
+    return;
+  }
+  const QString prev_name = widget->accessibleName();
+  const QString prev_desc = widget->accessibleDescription();
+
+  widget->setAccessibleName(sem.label);
+  widget->setAccessibleDescription(sem.hint);
+  widget->setProperty(kA11yRoleProperty, static_cast<int>(sem.accessibleRole));
+  if (sem.hasExplicitValue) {
+    widget->setProperty(kA11yValueProperty, sem.value);
+  } else {
+    widget->setProperty(kA11yValueProperty, QVariant());
+  }
+  if (!sem.testId.isEmpty() && widget->objectName() != sem.testId) {
+    widget->setObjectName(sem.testId);
+  }
+  if (widget->isEnabled() == sem.disabled) {
+    widget->setEnabled(!sem.disabled);
+  }
+
+  if (prev_name != sem.label) {
+    QAccessibleEvent ev(widget, QAccessible::NameChanged);
+    QAccessible::updateAccessibility(&ev);
+  }
+  if (prev_desc != sem.hint) {
+    QAccessibleEvent ev(widget, QAccessible::DescriptionChanged);
+    QAccessible::updateAccessibility(&ev);
+  }
+}
+
+/// IME-safe `QLineEdit` subclass supporting `Qt::WA_InputMethodEnabled`, preedit vs commit
+/// disambiguation without dropping multi-byte CJK/accented characters, `placeholder`,
+/// `secureTextEntry`, focus/blur, and Return-key submit.
+class NveQtLineEdit final : public QLineEdit {
+ public:
+  using TextChangeHandler = std::function<void(uint32_t, std::string_view)>;
+  using SubmitHandler = std::function<void(uint32_t, std::string_view)>;
+  using FocusHandler = std::function<void(uint32_t, bool)>;
+
+  NveQtLineEdit(
+      uint32_t node_id,
+      TextChangeHandler on_text_change,
+      SubmitHandler on_submit,
+      FocusHandler on_focus,
+      QWidget* parent = nullptr)
+      : QLineEdit(parent),
+        node_id_(node_id),
+        on_text_change_(std::move(on_text_change)),
+        on_submit_(std::move(on_submit)),
+        on_focus_(std::move(on_focus)) {
+    setAttribute(Qt::WA_InputMethodEnabled, true);
+    setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(node_id));
+
+    connect(this, &QLineEdit::textEdited, this, [this](const QString&) {
+      if (!updating_programmatically_ && !composing_ime_) {
+        dispatchCurrentTextIfChanged();
+      }
+    });
+    connect(this, &QLineEdit::returnPressed, this, [this]() {
+      if (!composing_ime_ && on_submit_) {
+        const QByteArray utf8 = text().toUtf8();
+        auto cb = on_submit_;
+        const uint32_t id = node_id_;
+        cb(id, std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())));
+      }
+    });
+  }
+
+  bool isComposingIme() const noexcept { return composing_ime_; }
+  const QString& preeditText() const noexcept { return preedit_text_; }
+
+  void applySemantics(const NodeSemantics& sem) {
+    if (placeholderText() != sem.placeholder) {
+      setPlaceholderText(sem.placeholder);
+    }
+    const EchoMode target_mode = sem.secureTextEntry ? QLineEdit::Password : QLineEdit::Normal;
+    if (echoMode() != target_mode) {
+      setEchoMode(target_mode);
+    }
+  }
+
+  void applySnapshotText(const QString& next_text) {
+    // Never clobber live IME composition mid-preedit.
+    if (composing_ime_) {
+      return;
+    }
+    if (!has_synced_snapshot_ || (next_text != last_snapshot_text_ && next_text != text())) {
+      updating_programmatically_ = true;
+      setText(next_text);
+      last_dispatched_text_ = next_text;
+      updating_programmatically_ = false;
+    }
+    last_snapshot_text_ = next_text;
+    has_synced_snapshot_ = true;
+  }
+
+ protected:
+  void inputMethodEvent(QInputMethodEvent* event) override {
+    if (event == nullptr) {
+      QLineEdit::inputMethodEvent(event);
+      return;
+    }
+    const QString preedit = event->preeditString();
+    const QString commit = event->commitString();
+    const bool has_commit = !commit.isEmpty() || event->replacementLength() > 0;
+    preedit_text_ = preedit;
+    composing_ime_ = !preedit.isEmpty();
+
+    QLineEdit::inputMethodEvent(event);
+
+    if (has_commit && !composing_ime_) {
+      dispatchCurrentTextIfChanged();
+    }
+  }
+
+  void focusInEvent(QFocusEvent* event) override {
+    QLineEdit::focusInEvent(event);
+    if (on_focus_) {
+      auto cb = on_focus_;
+      const uint32_t id = node_id_;
+      cb(id, true);
+    }
+  }
+
+  void focusOutEvent(QFocusEvent* event) override {
+    QLineEdit::focusOutEvent(event);
+    if (on_focus_) {
+      auto cb = on_focus_;
+      const uint32_t id = node_id_;
+      cb(id, false);
+    }
+  }
+
+ private:
+  void dispatchCurrentTextIfChanged() {
+    const QString current = text();
+    if (current == last_dispatched_text_) {
+      return;
+    }
+    last_dispatched_text_ = current;
+    if (on_text_change_) {
+      const QByteArray utf8 = current.toUtf8();
+      auto cb = on_text_change_;
+      const uint32_t id = node_id_;
+      cb(id, std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())));
+    }
+  }
+
+  uint32_t node_id_{0};
+  TextChangeHandler on_text_change_;
+  SubmitHandler on_submit_;
+  FocusHandler on_focus_;
+  QString preedit_text_;
+  QString last_dispatched_text_;
+  QString last_snapshot_text_;
+  bool has_synced_snapshot_{false};
+  bool composing_ime_{false};
+  bool updating_programmatically_{false};
+};
 
 inline QColor qcolor_from_rgba(uint32_t rgba) noexcept {
   return qcolorFromRgba(rgba);
@@ -186,12 +417,14 @@ class NveQtBoxWidget final : public QWidget {
 class NveQtWidget::Impl {
  public:
   explicit Impl(NveQtWidget* owner) : owner_(owner), adapter_(this) {
+    ensureAccessibleFactoryInstalled();
     session_.set_text_measurer(NveQtWidget::makeQtTextMeasurer());
   }
 
   ~Impl() {
     destroying_ = true;
     reconciler_.clear(adapter_);
+    node_semantics_.clear();
     session_.reset();
   }
 
@@ -206,22 +439,61 @@ class NveQtWidget::Impl {
   }
 
   void syncViews() {
-    if (session_.active_fabric_host() == nullptr) {
+    NveFabricHostHandle host = session_.active_fabric_host();
+    if (host == nullptr) {
       return;
     }
     const auto snapshots = session_.snapshot_nodes();
+    const auto raw_props = extractRawPropsByNode(host, snapshots);
+    node_semantics_.clear();
+    node_semantics_.reserve(snapshots.size());
+    for (const auto& snap : snapshots) {
+      const auto it = raw_props.find(snap.node_id);
+      const nve::RawPropMap* rp = (it != raw_props.end()) ? &it->second : nullptr;
+      node_semantics_.emplace(snap.node_id, extractNodeSemantics(snap, rp));
+    }
     reconciler_.sync(snapshots, adapter_);
     owner_->update();
   }
 
   void clearViews() {
     reconciler_.clear(adapter_);
+    node_semantics_.clear();
     root_bg_color_ = QColor(0, 0, 0, 0);
     owner_->update();
   }
 
+  const NodeSemantics* findSemantics(uint32_t node_id) const noexcept {
+    const auto it = node_semantics_.find(node_id);
+    return (it != node_semantics_.end()) ? &it->second : nullptr;
+  }
+
   void handlePressFromWidget(uint32_t node_id, float x, float y) {
     (void)dispatchPress(node_id, x, y);
+  }
+
+  NveDirectEvent makeBaseEvent(uint32_t node_id, nve::EventKind kind, uint8_t payload_tag) const {
+    NveDirectEvent ev{};
+    ev.surface_id = surface_id_;
+    ev.node_id = node_id;
+    ev.timestamp_us = nve::current_timestamp_us();
+    ev.kind = static_cast<uint8_t>(kind);
+    ev.payload_tag = payload_tag;
+    ev.value = nve::make_null_value();
+    return ev;
+  }
+
+  uint32_t dispatchSingleDirectEvent(const NveDirectEvent& ev) {
+    if (!session_.is_valid()) {
+      return 0;
+    }
+    const uint32_t dirty =
+        session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
+    if (dirty != 0) {
+      syncViews();
+    }
+    (void)session_.drain_events();
+    return dirty;
   }
 
   uint32_t dispatchPress(uint32_t node_id, float x, float y) {
@@ -236,6 +508,26 @@ class NveQtWidget::Impl {
     return dirty;
   }
 
+  uint32_t dispatchTextChange(uint32_t node_id, std::string_view text) {
+    NveDirectEvent ev = makeBaseEvent(node_id, nve::EventKind::TextChange, 3u);
+    ev.text = nve::make_str_slice(text);
+    return dispatchSingleDirectEvent(ev);
+  }
+
+  uint32_t dispatchSubmit(uint32_t node_id, std::string_view text) {
+    NveDirectEvent ev = makeBaseEvent(node_id, nve::EventKind::Custom, 5u);
+    ev.name = nve::make_str_slice("onSubmit");
+    ev.text = nve::make_str_slice(text);
+    ev.value = nve::make_str_value(text);
+    return dispatchSingleDirectEvent(ev);
+  }
+
+  uint32_t dispatchFocus(uint32_t node_id, bool focused) {
+    NveDirectEvent ev =
+        makeBaseEvent(node_id, focused ? nve::EventKind::Focus : nve::EventKind::Blur, 0u);
+    return dispatchSingleDirectEvent(ev);
+  }
+
   struct QtViewAdapter {
     Impl* self{nullptr};
 
@@ -244,6 +536,9 @@ class NveQtWidget::Impl {
       if (self->root_bg_color_ != next_bg) {
         self->root_bg_color_ = next_bg;
         self->owner_->update();
+      }
+      if (const NodeSemantics* sem = self->findSemantics(snap.node_id)) {
+        applyWidgetAccessibility(self->owner_, *sem);
       }
     }
 
@@ -294,8 +589,18 @@ class NveQtWidget::Impl {
             break;
           }
           case NVE_COMP_TEXT_INPUT: {
-            auto* edit = new QLineEdit(self->owner_);
-            edit->setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(snap.node_id));
+            auto* edit = new NveQtLineEdit(
+                snap.node_id,
+                [owner_impl = self](uint32_t nid, std::string_view text) {
+                  (void)owner_impl->dispatchTextChange(nid, text);
+                },
+                [owner_impl = self](uint32_t nid, std::string_view text) {
+                  (void)owner_impl->dispatchSubmit(nid, text);
+                },
+                [owner_impl = self](uint32_t nid, bool focused) {
+                  (void)owner_impl->dispatchFocus(nid, focused);
+                },
+                self->owner_);
             widget = edit;
             break;
           }
@@ -319,6 +624,10 @@ class NveQtWidget::Impl {
         return;
       }
 
+      const NodeSemantics default_sem = extractNodeSemantics(snap, nullptr);
+      const NodeSemantics& sem =
+          self->findSemantics(snap.node_id) ? *self->findSemantics(snap.node_id) : default_sem;
+
       const int x = static_cast<int>(std::lround(snap.layout.x));
       const int y = static_cast<int>(std::lround(snap.layout.y));
       const int w = std::max(0, static_cast<int>(std::lround(snap.layout.width)));
@@ -326,6 +635,7 @@ class NveQtWidget::Impl {
       view->setGeometry(x, y, w, h);
 
       const bool interactive =
+          !sem.disabled &&
           (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & nve::kEventMaskPress) != 0);
 
       if (auto* box = dynamic_cast<NveQtBoxWidget*>(view)) {
@@ -354,12 +664,11 @@ class NveQtWidget::Impl {
         }
         label->setPalette(pal);
         apply_widget_opacity(label, snap.opacity);
-      } else if (auto* edit = qobject_cast<QLineEdit*>(view)) {
+      } else if (auto* edit = dynamic_cast<NveQtLineEdit*>(view)) {
         const QString qtext =
             QString::fromUtf8(snap.text.data(), static_cast<qsizetype>(snap.text.size()));
-        if (edit->text() != qtext) {
-          edit->setText(qtext);
-        }
+        edit->applySemantics(sem);
+        edit->applySnapshotText(qtext);
         edit->setFont(make_nve_font(snap.font_size));
         QPalette pal = edit->palette();
         if (snap.text_color_rgba != 0) {
@@ -379,6 +688,8 @@ class NveQtWidget::Impl {
         }
         apply_widget_opacity(scroll, snap.opacity);
       }
+
+      applyWidgetAccessibility(view, sem);
     }
 
     void destroy_view(uint32_t /*node_id*/, QWidget*& view) {
@@ -467,6 +778,7 @@ class NveQtWidget::Impl {
   nve::NativeHostSession session_;
   QtViewAdapter adapter_;
   nve::RetainedViewReconciler<QWidget*, QtViewAdapter> reconciler_;
+  std::unordered_map<uint32_t, NodeSemantics> node_semantics_;
   QColor root_bg_color_{0, 0, 0, 0};
   uint32_t surface_id_{1};
   bool destroying_{false};
@@ -628,6 +940,32 @@ uint32_t NveQtWidget::simulatePressOnNodeId(uint32_t nodeId, float x, float y) {
 uint32_t NveQtWidget::simulatePressOnNodeId(uint32_t nodeId, const QPointF& point) {
   return impl_->dispatchPress(
       nodeId, static_cast<float>(point.x()), static_cast<float>(point.y()));
+}
+
+uint32_t NveQtWidget::dispatchTextChangeOnNodeId(uint32_t nodeId, std::string_view text) {
+  return impl_->dispatchTextChange(nodeId, text);
+}
+
+uint32_t NveQtWidget::dispatchSubmitOnNodeId(uint32_t nodeId, std::string_view text) {
+  return impl_->dispatchSubmit(nodeId, text);
+}
+
+uint32_t NveQtWidget::dispatchFocusOnNodeId(uint32_t nodeId, bool focused) {
+  return impl_->dispatchFocus(nodeId, focused);
+}
+
+std::optional<NodeSemantics> NveQtWidget::accessibilityInfoForNodeId(uint32_t nodeId) const {
+  if (const NodeSemantics* sem = impl_->findSemantics(nodeId)) {
+    return *sem;
+  }
+  return std::nullopt;
+}
+
+QAccessible::Role NveQtWidget::accessibleRoleForNodeId(uint32_t nodeId) const {
+  if (const NodeSemantics* sem = impl_->findSemantics(nodeId)) {
+    return sem->accessibleRole;
+  }
+  return QAccessible::NoRole;
 }
 
 QWidget* NveQtWidget::nativeWidgetForNodeId(uint32_t nodeId) const {

@@ -1,10 +1,12 @@
 #include "NveQtQuickItem.hpp"
 #include "NveQtCommon.hpp"
 
+#include <QAccessible>
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QImage>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMatrix4x4>
 #include <QMouseEvent>
@@ -421,6 +423,8 @@ class NveQtQuickItem::Impl {
     session_.reset();
     scene_.clear();
     id_to_index_.clear();
+    node_semantics_.clear();
+    ime_preedit_buffers_.clear();
   }
 
   NveSurfaceConfig currentSurfaceConfig(uint32_t surface_id) const {
@@ -448,23 +452,59 @@ class NveQtQuickItem::Impl {
   void clearSceneState() {
     scene_.clear();
     id_to_index_.clear();
+    node_semantics_.clear();
     scroll_offsets_.clear();
     text_input_buffers_.clear();
+    ime_preedit_buffers_.clear();
     pressed_node_id_ = 0;
     focused_node_id_ = 0;
     bumpGenerationAndRequestUpdate();
   }
 
   void syncScene() {
-    if (session_.active_fabric_host() == nullptr) {
+    NveFabricHostHandle host = session_.active_fabric_host();
+    if (host == nullptr) {
       return;
     }
     const auto snapshots = session_.snapshot_nodes();
+    const auto raw_props = extractRawPropsByNode(host, snapshots);
+    const QString prev_root_name = accessibleNameFor(NVE_ROOT_NODE_ID);
+    node_semantics_.clear();
+    node_semantics_.reserve(snapshots.size());
+    for (const auto& snap : snapshots) {
+      const auto it = raw_props.find(snap.node_id);
+      const nve::RawPropMap* rp = (it != raw_props.end()) ? &it->second : nullptr;
+      node_semantics_.emplace(snap.node_id, extractNodeSemantics(snap, rp));
+    }
+
     const uint64_t fid = ++scene_frame_id_;
     scene_.sync(fid, snapshots);
     rebuildNodeIndex();
     pruneTransientState();
     bumpGenerationAndRequestUpdate();
+
+    const QString next_root_name = accessibleNameFor(NVE_ROOT_NODE_ID);
+    if (next_root_name != prev_root_name) {
+      QAccessibleEvent ev(owner_, QAccessible::NameChanged);
+      QAccessible::updateAccessibility(&ev);
+    }
+  }
+
+  const NodeSemantics* findSemantics(uint32_t node_id) const noexcept {
+    const auto it = node_semantics_.find(node_id);
+    return (it != node_semantics_.end()) ? &it->second : nullptr;
+  }
+
+  bool isNodeDisabled(uint32_t node_id) const noexcept {
+    const NodeSemantics* sem = findSemantics(node_id);
+    return sem != nullptr && sem->disabled;
+  }
+
+  QString accessibleNameFor(uint32_t node_id) const {
+    if (const NodeSemantics* sem = findSemantics(node_id)) {
+      return sem->label;
+    }
+    return {};
   }
 
   void rebuildNodeIndex() {
@@ -487,6 +527,13 @@ class NveQtQuickItem::Impl {
     for (auto it = text_input_buffers_.begin(); it != text_input_buffers_.end();) {
       if (id_to_index_.find(it->first) == id_to_index_.end()) {
         it = text_input_buffers_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for (auto it = ime_preedit_buffers_.begin(); it != ime_preedit_buffers_.end();) {
+      if (id_to_index_.find(it->first) == id_to_index_.end()) {
+        it = ime_preedit_buffers_.erase(it);
       } else {
         ++it;
       }
@@ -631,7 +678,7 @@ class NveQtQuickItem::Impl {
       return (node->kind == NVE_NODE_KIND_SCROLL_VIEW) ? node_id : 0u;
     }
     if (interactive_only) {
-      return isInteractiveNode(*node) ? node_id : 0u;
+      return (isInteractiveNode(*node) && !isNodeDisabled(node_id)) ? node_id : 0u;
     }
     return node_id;
   }
@@ -704,6 +751,9 @@ class NveQtQuickItem::Impl {
       return;
     }
     const uint32_t prev_focus = focused_node_id_;
+    if (prev_focus != 0u) {
+      ime_preedit_buffers_.erase(prev_focus);
+    }
     focused_node_id_ = next_focus;
 
     NveDirectEvent batch_events[2]{};
@@ -718,6 +768,8 @@ class NveQtQuickItem::Impl {
       (void)dispatchDirectBatch(NveEventBatch{batch_events, count});
     }
     bumpGenerationAndRequestUpdate();
+    QAccessibleEvent a11y_ev(owner_, QAccessible::Focus);
+    QAccessible::updateAccessibility(&a11y_ev);
   }
 
   std::string effectiveTextForNode(const NveRenderNode& node) const {
@@ -839,7 +891,34 @@ class NveQtQuickItem::Impl {
     const bool is_leaf_text = (node->flags & NVE_NODE_LEAF_TEXT) != 0u;
     const bool is_text_input = (node->kind == NVE_NODE_KIND_TEXT_INPUT);
     if ((is_leaf_text || is_text_input) && w > 0.0f && h > 0.0f) {
-      const std::string text_str = effectiveTextForNode(*node);
+      std::string text_str = effectiveTextForNode(*node);
+      uint32_t effective_text_rgba = node->text_rgba;
+      if (is_text_input) {
+        const NodeSemantics* sem = findSemantics(node->node_id);
+        const auto preedit_it = ime_preedit_buffers_.find(node->node_id);
+        const QString preedit = (preedit_it != ime_preedit_buffers_.end()) ? preedit_it->second : QString();
+        if (sem != nullptr && sem->secureTextEntry && !text_str.empty()) {
+          const QString qplain =
+              QString::fromUtf8(text_str.data(), static_cast<qsizetype>(text_str.size()));
+          QString masked;
+          masked.fill(QChar(0x2022), qplain.size());
+          const QByteArray utf8 = masked.toUtf8();
+          text_str.assign(utf8.constData(), static_cast<size_t>(utf8.size()));
+        }
+        if (!preedit.isEmpty()) {
+          const QByteArray pre_utf8 = preedit.toUtf8();
+          text_str.append(pre_utf8.constData(), static_cast<size_t>(pre_utf8.size()));
+        } else if (text_str.empty() && sem != nullptr && !sem->placeholder.isEmpty()) {
+          const QByteArray ph_utf8 = sem->placeholder.toUtf8();
+          text_str.assign(ph_utf8.constData(), static_cast<size_t>(ph_utf8.size()));
+          if (effective_text_rgba != 0u) {
+            const uint32_t a = ((effective_text_rgba >> 24) & 0xFFu) / 2u;
+            effective_text_rgba = (effective_text_rgba & 0x00FFFFFFu) | (a << 24);
+          } else {
+            effective_text_rgba = 0x8094A3B8u;
+          }
+        }
+      }
       if (!text_str.empty() || is_focused_input) {
         const int qw = std::max(1, static_cast<int>(std::lround(w * 2.0f)));
         const int qh = std::max(1, static_cast<int>(std::lround(h * 2.0f)));
@@ -850,7 +929,7 @@ class NveQtQuickItem::Impl {
                          entry.matches(
                              text_str,
                              node->font_size,
-                             node->text_rgba,
+                             effective_text_rgba,
                              qw,
                              qh,
                              dpr_centis,
@@ -864,7 +943,7 @@ class NveQtQuickItem::Impl {
           const QImage img = rasterizeTextImage(
               text_str,
               node->font_size,
-              node->text_rgba,
+              effective_text_rgba,
               w,
               h,
               dpr,
@@ -874,7 +953,7 @@ class NveQtQuickItem::Impl {
 
           entry.text = text_str;
           entry.font_size = node->font_size;
-          entry.text_rgba = node->text_rgba;
+          entry.text_rgba = effective_text_rgba;
           entry.quant_w = qw;
           entry.quant_h = qh;
           entry.quant_dpr = dpr_centis;
@@ -984,8 +1063,10 @@ class NveQtQuickItem::Impl {
   nve::NativeHostSession session_;
   nve::SceneTableBuilder scene_;
   std::unordered_map<uint32_t, size_t> id_to_index_;
+  std::unordered_map<uint32_t, NodeSemantics> node_semantics_;
   std::unordered_map<uint32_t, QPointF> scroll_offsets_;
   std::unordered_map<uint32_t, std::string> text_input_buffers_;
+  std::unordered_map<uint32_t, QString> ime_preedit_buffers_;
 
   QString dylib_path_;
   uint32_t surface_id_{1};
@@ -1002,6 +1083,7 @@ class NveQtQuickItem::Impl {
 NveQtQuickItem::NveQtQuickItem(QQuickItem* parent)
     : QQuickItem(parent), impl_(std::make_unique<Impl>(this)) {
   setFlag(ItemHasContents, true);
+  setFlag(ItemAcceptsInputMethod, true);
   setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
   setAcceptHoverEvents(true);
   setImplicitWidth(640.0);
@@ -1238,10 +1320,51 @@ uint32_t NveQtQuickItem::dispatchTextChange(uint32_t nodeId, std::string_view te
   return impl_->dispatchSingleDirectEvent(ev);
 }
 
+uint32_t NveQtQuickItem::dispatchSubmit(uint32_t nodeId, std::string_view text) {
+  NveDirectEvent ev = impl_->makeBaseEvent(nodeId, nve::EventKind::Custom, 5u);
+  ev.name = nve::make_str_slice("onSubmit");
+  ev.text = nve::make_str_slice(text);
+  ev.value = nve::make_str_value(text);
+  return impl_->dispatchSingleDirectEvent(ev);
+}
+
 uint32_t NveQtQuickItem::dispatchFocus(uint32_t nodeId, bool focused) {
   NveDirectEvent ev =
       impl_->makeBaseEvent(nodeId, focused ? nve::EventKind::Focus : nve::EventKind::Blur, 0u);
   return impl_->dispatchSingleDirectEvent(ev);
+}
+
+std::optional<NodeSemantics> NveQtQuickItem::accessibilityInfoForNodeId(uint32_t nodeId) const {
+  if (const NodeSemantics* sem = impl_->findSemantics(nodeId)) {
+    return *sem;
+  }
+  return std::nullopt;
+}
+
+QAccessible::Role NveQtQuickItem::accessibleRoleForNodeId(uint32_t nodeId) const {
+  if (const NodeSemantics* sem = impl_->findSemantics(nodeId)) {
+    return sem->accessibleRole;
+  }
+  return QAccessible::NoRole;
+}
+
+QString NveQtQuickItem::accessibleNameForNodeId(uint32_t nodeId) const {
+  if (const NodeSemantics* sem = impl_->findSemantics(nodeId)) {
+    return sem->label;
+  }
+  return {};
+}
+
+QString NveQtQuickItem::accessibleDescriptionForNodeId(uint32_t nodeId) const {
+  if (const NodeSemantics* sem = impl_->findSemantics(nodeId)) {
+    return sem->hint;
+  }
+  return {};
+}
+
+QString NveQtQuickItem::imePreeditText(uint32_t nodeId) const {
+  const auto it = impl_->ime_preedit_buffers_.find(nodeId);
+  return (it != impl_->ime_preedit_buffers_.end()) ? it->second : QString();
 }
 
 uint32_t NveQtQuickItem::hitTestNode(const QPointF& itemPos, bool interactiveOnly) const {
@@ -1560,7 +1683,22 @@ void NveQtQuickItem::keyPressEvent(QKeyEvent* event) {
   std::string current = impl_->effectiveTextForNode(*node);
   bool changed = false;
 
-  if (event->key() == Qt::Key_Backspace) {
+  if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+    const auto pre_it = impl_->ime_preedit_buffers_.find(target_id);
+    if (pre_it != impl_->ime_preedit_buffers_.end() && !pre_it->second.isEmpty()) {
+      event->ignore();
+      return;
+    }
+    const NodeSemantics* sem = impl_->findSemantics(target_id);
+    if (sem != nullptr && sem->multiline) {
+      current.push_back('\n');
+      changed = true;
+    } else {
+      (void)dispatchSubmit(target_id, current);
+      event->accept();
+      return;
+    }
+  } else if (event->key() == Qt::Key_Backspace) {
     if (!current.empty()) {
       popUtf8Char(current);
       changed = true;
@@ -1583,6 +1721,96 @@ void NveQtQuickItem::keyPressEvent(QKeyEvent* event) {
   }
 
   event->ignore();
+}
+
+void NveQtQuickItem::inputMethodEvent(QInputMethodEvent* event) {
+  if (event == nullptr || impl_->focused_node_id_ == 0u) {
+    QQuickItem::inputMethodEvent(event);
+    return;
+  }
+
+  const uint32_t target_id = impl_->focused_node_id_;
+  const NveRenderNode* node = impl_->findNode(target_id);
+  if (node == nullptr || node->kind != NVE_NODE_KIND_TEXT_INPUT) {
+    impl_->setFocusedNode(0u);
+    event->ignore();
+    return;
+  }
+
+  const std::string cur_utf8 = impl_->effectiveTextForNode(*node);
+  QString qcurrent = QString::fromUtf8(cur_utf8.data(), static_cast<qsizetype>(cur_utf8.size()));
+  const qsizetype cursor = qcurrent.size();
+
+  const int replace_start = event->replacementStart();
+  const int replace_len = event->replacementLength();
+  const QString commit = event->commitString();
+  const QString preedit = event->preeditString();
+
+  bool committed_change = false;
+  if (replace_len > 0) {
+    const qsizetype start_pos =
+        std::clamp<qsizetype>(cursor + static_cast<qsizetype>(replace_start), 0, qcurrent.size());
+    const qsizetype clamped_len =
+        std::min<qsizetype>(static_cast<qsizetype>(replace_len), qcurrent.size() - start_pos);
+    if (clamped_len > 0) {
+      qcurrent.remove(start_pos, clamped_len);
+      committed_change = true;
+    }
+    if (!commit.isEmpty()) {
+      qcurrent.insert(start_pos, commit);
+      committed_change = true;
+    }
+  } else if (!commit.isEmpty()) {
+    qcurrent.append(commit);
+    committed_change = true;
+  }
+
+  if (preedit.isEmpty()) {
+    impl_->ime_preedit_buffers_.erase(target_id);
+  } else {
+    impl_->ime_preedit_buffers_[target_id] = preedit;
+  }
+
+  if (committed_change) {
+    const QByteArray next_utf8 = qcurrent.toUtf8();
+    std::string next_str(next_utf8.constData(), static_cast<size_t>(next_utf8.size()));
+    impl_->text_input_buffers_[target_id] = next_str;
+    impl_->bumpGenerationAndRequestUpdate();
+    (void)dispatchTextChange(target_id, next_str);
+  } else {
+    impl_->bumpGenerationAndRequestUpdate();
+  }
+  event->accept();
+}
+
+QVariant NveQtQuickItem::inputMethodQuery(Qt::InputMethodQuery query) const {
+  const uint32_t focused = impl_->focused_node_id_;
+  switch (query) {
+    case Qt::ImEnabled:
+      return focused != 0u;
+    case Qt::ImCursorRectangle:
+      return (focused != 0u) ? QVariant(sceneNodeGlobalBounds(focused)) : QVariant(QRectF());
+    case Qt::ImSurroundingText: {
+      if (focused == 0u) return QString();
+      const std::string_view sv = sceneNodeText(focused);
+      return QString::fromUtf8(sv.data(), static_cast<qsizetype>(sv.size()));
+    }
+    case Qt::ImCursorPosition:
+    case Qt::ImAnchorPosition: {
+      if (focused == 0u) return 0;
+      const std::string_view sv = sceneNodeText(focused);
+      return static_cast<int>(QString::fromUtf8(sv.data(), static_cast<qsizetype>(sv.size())).size());
+    }
+    case Qt::ImHints: {
+      const NodeSemantics* sem = impl_->findSemantics(focused);
+      if (sem != nullptr && sem->secureTextEntry) {
+        return static_cast<int>(Qt::ImhHiddenText | Qt::ImhNoPredictiveText);
+      }
+      return static_cast<int>(Qt::ImhNone);
+    }
+    default:
+      return QQuickItem::inputMethodQuery(query);
+  }
 }
 
 } // namespace nve::qt

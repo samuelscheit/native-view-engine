@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -13,6 +14,387 @@ namespace nve {
 namespace {
 
 std::atomic<uint32_t> g_next_gtk_host_id{1};
+
+std::string ascii_lower(std::string_view sv) {
+  std::string out;
+  out.reserve(sv.size());
+  for (unsigned char ch : sv) {
+    out.push_back(static_cast<char>(std::tolower(ch)));
+  }
+  return out;
+}
+
+bool read_raw_string(const RawPropMap& props, const char* key, std::string& out) {
+  const auto it = props.find(key);
+  if (it == props.end()) return false;
+  if (const auto* s = std::get_if<std::string>(&it->second)) {
+    out = *s;
+    return true;
+  }
+  return false;
+}
+
+bool read_raw_value_as_string(const RawPropMap& props, const char* key, std::string& out) {
+  const auto it = props.find(key);
+  if (it == props.end()) return false;
+  if (const auto* s = std::get_if<std::string>(&it->second)) {
+    out = *s;
+    return true;
+  }
+  if (const auto* i = std::get_if<int64_t>(&it->second)) {
+    out = std::to_string(*i);
+    return true;
+  }
+  if (const auto* d = std::get_if<double>(&it->second)) {
+    if (std::isfinite(*d)) {
+      out = std::to_string(*d);
+      return true;
+    }
+    return false;
+  }
+  if (const auto* b = std::get_if<bool>(&it->second)) {
+    out = *b ? "true" : "false";
+    return true;
+  }
+  return false;
+}
+
+bool read_raw_bool(const RawPropMap& props, const char* key, bool& out) {
+  const auto it = props.find(key);
+  if (it == props.end()) return false;
+  if (const auto* b = std::get_if<bool>(&it->second)) {
+    out = *b;
+    return true;
+  }
+  if (const auto* i = std::get_if<int64_t>(&it->second)) {
+    out = (*i != 0);
+    return true;
+  }
+  if (const auto* s = std::get_if<std::string>(&it->second)) {
+    const std::string lower = ascii_lower(*s);
+    if (lower == "true" || lower == "1" || lower == "yes") {
+      out = true;
+      return true;
+    }
+    if (lower == "false" || lower == "0" || lower == "no") {
+      out = false;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool parse_a11y_role(std::string_view raw, GtkA11yRole& out) {
+  const std::string lower = ascii_lower(raw);
+  if (lower == "button") {
+    out = GtkA11yRole::Button;
+    return true;
+  }
+  if (lower == "text" || lower == "statictext" || lower == "label") {
+    out = GtkA11yRole::Text;
+    return true;
+  }
+  if (lower == "header" || lower == "heading") {
+    out = GtkA11yRole::Header;
+    return true;
+  }
+  if (lower == "textbox" || lower == "textinput" || lower == "search" || lower == "searchbox") {
+    out = GtkA11yRole::TextBox;
+    return true;
+  }
+  if (lower == "scrollarea" || lower == "scrollview") {
+    out = GtkA11yRole::ScrollArea;
+    return true;
+  }
+  if (lower == "image" || lower == "img") {
+    out = GtkA11yRole::Image;
+    return true;
+  }
+  if (lower == "list") {
+    out = GtkA11yRole::List;
+    return true;
+  }
+  if (lower == "listitem") {
+    out = GtkA11yRole::ListItem;
+    return true;
+  }
+  if (lower == "checkbox" || lower == "switch") {
+    out = GtkA11yRole::CheckBox;
+    return true;
+  }
+  if (lower == "link") {
+    out = GtkA11yRole::Link;
+    return true;
+  }
+  if (lower == "group" || lower == "region") {
+    out = GtkA11yRole::Group;
+    return true;
+  }
+  if (lower == "none" || lower == "presentation") {
+    out = GtkA11yRole::None;
+    return true;
+  }
+  return false;
+}
+
+GtkA11yRole infer_default_role(const RenderedNodeSnapshot& snap) noexcept {
+  if (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & kEventMaskPress) != 0u) {
+    return GtkA11yRole::Button;
+  }
+  switch (snap.kind) {
+    case NVE_COMP_TEXT:
+      return GtkA11yRole::Text;
+    case NVE_COMP_TEXT_INPUT:
+      return GtkA11yRole::TextBox;
+    case NVE_COMP_SCROLL_VIEW:
+      return GtkA11yRole::ScrollArea;
+    case NVE_COMP_IMAGE:
+      return GtkA11yRole::Image;
+    default:
+      return GtkA11yRole::Group;
+  }
+}
+
+GtkAccessibleRole to_gtk_accessible_role(GtkA11yRole role) noexcept {
+  switch (role) {
+    case GtkA11yRole::Button:
+      return GTK_ACCESSIBLE_ROLE_BUTTON;
+    case GtkA11yRole::Text:
+      return GTK_ACCESSIBLE_ROLE_LABEL;
+    case GtkA11yRole::Header:
+      return GTK_ACCESSIBLE_ROLE_HEADING;
+    case GtkA11yRole::TextBox:
+      return GTK_ACCESSIBLE_ROLE_TEXT_BOX;
+    case GtkA11yRole::ScrollArea:
+      return GTK_ACCESSIBLE_ROLE_GENERIC;
+    case GtkA11yRole::Image:
+      return GTK_ACCESSIBLE_ROLE_IMG;
+    case GtkA11yRole::List:
+      return GTK_ACCESSIBLE_ROLE_LIST;
+    case GtkA11yRole::ListItem:
+      return GTK_ACCESSIBLE_ROLE_LIST_ITEM;
+    case GtkA11yRole::CheckBox:
+      return GTK_ACCESSIBLE_ROLE_CHECKBOX;
+    case GtkA11yRole::Link:
+      return GTK_ACCESSIBLE_ROLE_LINK;
+    case GtkA11yRole::Group:
+      return GTK_ACCESSIBLE_ROLE_GROUP;
+    case GtkA11yRole::None:
+      return GTK_ACCESSIBLE_ROLE_NONE;
+  }
+  return GTK_ACCESSIBLE_ROLE_GROUP;
+}
+
+void decode_raw_props_from_command_buffer(
+    const uint8_t* data,
+    size_t len,
+    std::unordered_map<uint32_t, RawPropMap>& out) {
+  if (data == nullptr || len < 24u) {
+    return;
+  }
+  size_t pos = 0;
+  auto read_pod = [&](auto& v) -> bool {
+    if (sizeof(v) > len - pos) return false;
+    std::memcpy(&v, data + pos, sizeof(v));
+    pos += sizeof(v);
+    return true;
+  };
+  auto skip = [&](size_t n) -> bool {
+    if (n > len - pos) return false;
+    pos += n;
+    return true;
+  };
+
+  uint32_t magic = 0;
+  uint16_t version = 0;
+  uint16_t flags = 0;
+  uint32_t surface_id = 0;
+  uint64_t frame_id = 0;
+  uint32_t op_count = 0;
+  if (!read_pod(magic) || !read_pod(version) || !read_pod(flags) || !read_pod(surface_id) ||
+      !read_pod(frame_id) || !read_pod(op_count)) {
+    return;
+  }
+  if (magic != NVE_ABI_MAGIC || version != NVE_ABI_VERSION) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < op_count; ++i) {
+    uint8_t op = 0;
+    if (!read_pod(op)) return;
+    switch (static_cast<NveOpcode>(op)) {
+      case NVE_OP_CREATE_NODE: {
+        uint16_t name_len = 0;
+        if (!skip(6u) || !read_pod(name_len) || !skip(name_len)) return;
+        break;
+      }
+      case NVE_OP_REMOVE_NODE:
+        if (!skip(4u)) return;
+        break;
+      case NVE_OP_SET_CHILDREN: {
+        uint32_t count = 0;
+        if (!skip(4u) || !read_pod(count)) return;
+        if (static_cast<size_t>(count) > (len - pos) / sizeof(uint32_t)) return;
+        pos += static_cast<size_t>(count) * sizeof(uint32_t);
+        break;
+      }
+      case NVE_OP_SET_TEXT: {
+        uint32_t tlen = 0;
+        if (!skip(4u) || !read_pod(tlen) || !skip(tlen)) return;
+        break;
+      }
+      case NVE_OP_SET_LAYOUT:
+        if (!skip(81u)) return;
+        break;
+      case NVE_OP_SET_STYLE:
+        if (!skip(36u)) return;
+        break;
+      case NVE_OP_SET_RAW_PROP: {
+        uint32_t node_id = 0;
+        uint16_t key_len = 0;
+        if (!read_pod(node_id) || !read_pod(key_len) || key_len > len - pos) return;
+        std::string key(reinterpret_cast<const char*>(data + pos), key_len);
+        pos += key_len;
+        uint8_t tag = 0;
+        if (!read_pod(tag)) return;
+        RawPropValue val{nullptr};
+        switch (tag) {
+          case 0:
+            val = nullptr;
+            break;
+          case 1: {
+            uint8_t b = 0;
+            if (!read_pod(b)) return;
+            val = (b != 0);
+            break;
+          }
+          case 2: {
+            int64_t v = 0;
+            if (!read_pod(v)) return;
+            val = v;
+            break;
+          }
+          case 3: {
+            double v = 0.0;
+            if (!read_pod(v)) return;
+            val = v;
+            break;
+          }
+          case 4: {
+            uint32_t vlen = 0;
+            if (!read_pod(vlen) || vlen > len - pos) return;
+            val = std::string(reinterpret_cast<const char*>(data + pos), vlen);
+            pos += vlen;
+            break;
+          }
+          case 5: {
+            uint32_t vlen = 0;
+            if (!read_pod(vlen) || vlen > len - pos) return;
+            val = std::vector<uint8_t>(data + pos, data + pos + vlen);
+            pos += vlen;
+            break;
+          }
+          default:
+            return;
+        }
+        out[node_id][std::move(key)] = std::move(val);
+        break;
+      }
+      case NVE_OP_SET_EVENT_MASK:
+        if (!skip(12u)) return;
+        break;
+      case NVE_OP_DISPATCH_COMMAND: {
+        uint16_t nlen = 0;
+        uint32_t plen = 0;
+        if (!skip(4u) || !read_pod(nlen) || !skip(nlen) || !read_pod(plen) || !skip(plen)) return;
+        break;
+      }
+      case NVE_OP_COMMIT:
+        if (!skip(1u)) return;
+        break;
+      default:
+        return;
+    }
+  }
+}
+
+template <typename Snap>
+std::unordered_map<uint32_t, RawPropMap> extract_raw_props_impl(
+    NveFabricHostHandle host,
+    const std::vector<Snap>& snapshots) {
+  std::unordered_map<uint32_t, RawPropMap> result;
+  if constexpr (requires(const Snap& s) { s.raw_props; }) {
+    for (const auto& snap : snapshots) {
+      if (!snap.raw_props.empty()) {
+        result.emplace(snap.node_id, snap.raw_props);
+      }
+    }
+  } else {
+    (void)snapshots;
+    if (host == nullptr) {
+      return result;
+    }
+    const std::vector<uint8_t> frame0 = fabric_host_serialize_frame0(host, 1u);
+    decode_raw_props_from_command_buffer(frame0.data(), frame0.size(), result);
+  }
+  return result;
+}
+
+std::unordered_map<uint32_t, RawPropMap> extract_raw_props_by_node(
+    NveFabricHostHandle host,
+    const std::vector<RenderedNodeSnapshot>& snapshots) {
+  return extract_raw_props_impl(host, snapshots);
+}
+
+GtkNodeSemantics extract_node_semantics(
+    const RenderedNodeSnapshot& snap,
+    const RawPropMap* raw_props) {
+  GtkNodeSemantics sem{};
+  sem.role = infer_default_role(snap);
+
+  if (raw_props != nullptr) {
+    std::string role_str;
+    if (read_raw_string(*raw_props, "accessibilityRole", role_str) ||
+        read_raw_string(*raw_props, "role", role_str)) {
+      GtkA11yRole parsed = sem.role;
+      if (parse_a11y_role(role_str, parsed)) {
+        sem.role = parsed;
+        sem.explicit_role = true;
+      }
+    }
+
+    if (read_raw_string(*raw_props, "accessibilityLabel", sem.label) ||
+        read_raw_string(*raw_props, "aria-label", sem.label)) {
+      sem.has_explicit_label = !sem.label.empty();
+    }
+
+    (void)read_raw_string(*raw_props, "accessibilityHint", sem.hint);
+
+    if (read_raw_value_as_string(*raw_props, "accessibilityValue", sem.value)) {
+      sem.has_explicit_value = true;
+    }
+
+    if (!read_raw_bool(*raw_props, "accessibilityDisabled", sem.disabled)) {
+      (void)read_raw_bool(*raw_props, "disabled", sem.disabled);
+    }
+
+    if (!read_raw_string(*raw_props, "testID", sem.test_id)) {
+      (void)read_raw_string(*raw_props, "data-testid", sem.test_id);
+    }
+
+    (void)read_raw_string(*raw_props, "placeholder", sem.placeholder);
+    (void)read_raw_bool(*raw_props, "secureTextEntry", sem.secure_text_entry);
+    (void)read_raw_bool(*raw_props, "multiline", sem.multiline);
+  }
+
+  if (!sem.has_explicit_label && snap.kind == NVE_COMP_TEXT && snap.children.empty() &&
+      !snap.text.empty()) {
+    sem.label = snap.text;
+  }
+
+  sem.gtk_role = to_gtk_accessible_role(sem.role);
+  return sem;
+}
 
 std::string format_css_float(double value) {
   if (!std::isfinite(value)) {
@@ -190,8 +572,10 @@ NveGtkHost::~NveGtkHost() {
 
   reconciler_.clear(adapter_);
   click_bindings_.clear();
+  entry_bindings_.clear();
   scroll_contents_.clear();
   node_layouts_.clear();
+  node_semantics_.clear();
   node_css_.clear();
   session_.reset();
 
@@ -389,6 +773,59 @@ uint32_t NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
   return dirty;
 }
 
+NveDirectEvent NveGtkHost::make_base_event(
+    uint32_t node_id,
+    EventKind kind,
+    uint8_t payload_tag) const {
+  NveDirectEvent ev{};
+  ev.surface_id = config_.surface_id;
+  ev.node_id = node_id;
+  ev.timestamp_us = current_timestamp_us();
+  ev.kind = static_cast<uint8_t>(kind);
+  ev.payload_tag = payload_tag;
+  ev.value = make_null_value();
+  return ev;
+}
+
+uint32_t NveGtkHost::dispatch_single_direct_event(const NveDirectEvent& ev) {
+  if (!session_.is_valid()) {
+    return 0u;
+  }
+  const uint32_t dirty =
+      session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
+  if (dirty != 0u) {
+    sync_views();
+  }
+  (void)session_.drain_events();
+  return dirty;
+}
+
+uint32_t NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
+  NveDirectEvent ev = make_base_event(node_id, EventKind::TextChange, 3u);
+  ev.text = make_str_slice(text);
+  return dispatch_single_direct_event(ev);
+}
+
+uint32_t NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {
+  NveDirectEvent ev = make_base_event(node_id, EventKind::Custom, 5u);
+  ev.name = make_str_slice("onSubmit");
+  ev.text = make_str_slice(text);
+  ev.value = make_str_value(text);
+  return dispatch_single_direct_event(ev);
+}
+
+uint32_t NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {
+  NveDirectEvent ev = make_base_event(node_id, focused ? EventKind::Focus : EventKind::Blur, 0u);
+  return dispatch_single_direct_event(ev);
+}
+
+std::optional<GtkNodeSemantics> NveGtkHost::accessibility_info_for_node_id(uint32_t node_id) const {
+  if (const GtkNodeSemantics* sem = find_semantics(node_id)) {
+    return *sem;
+  }
+  return std::nullopt;
+}
+
 void NveGtkHost::set_surface_size(float width, float height, float scale_factor) {
   if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0f || height <= 0.0f) {
     return;
@@ -478,12 +915,127 @@ void NveGtkHost::set_event_callback(EventCallback callback) {
 }
 
 void NveGtkHost::sync_views() {
-  if (session_.active_fabric_host() == nullptr) {
+  NveFabricHostHandle host = session_.active_fabric_host();
+  if (host == nullptr) {
     return;
   }
   const std::vector<RenderedNodeSnapshot> snapshots = session_.snapshot_nodes();
+  const auto raw_props = extract_raw_props_by_node(host, snapshots);
+  node_semantics_.clear();
+  node_semantics_.reserve(snapshots.size());
+  for (const auto& snap : snapshots) {
+    const auto it = raw_props.find(snap.node_id);
+    const RawPropMap* rp = (it != raw_props.end()) ? &it->second : nullptr;
+    node_semantics_.emplace(snap.node_id, extract_node_semantics(snap, rp));
+  }
   reconciler_.sync(snapshots, adapter_);
   flush_css_if_dirty();
+}
+
+const GtkNodeSemantics* NveGtkHost::find_semantics(uint32_t node_id) const noexcept {
+  const auto it = node_semantics_.find(node_id);
+  return (it != node_semantics_.end()) ? &it->second : nullptr;
+}
+
+void NveGtkHost::apply_accessibility_to_widget(GtkWidget* widget, const GtkNodeSemantics& sem) {
+  if (widget == nullptr) {
+    return;
+  }
+  GtkAccessible* acc = GTK_ACCESSIBLE(widget);
+  if (!sem.label.empty()) {
+    gtk_accessible_update_property(acc, GTK_ACCESSIBLE_PROPERTY_LABEL, sem.label.c_str(), -1);
+  } else {
+    gtk_accessible_reset_property(acc, GTK_ACCESSIBLE_PROPERTY_LABEL);
+  }
+
+  if (!sem.hint.empty()) {
+    gtk_accessible_update_property(
+        acc, GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, sem.hint.c_str(), -1);
+  } else {
+    gtk_accessible_reset_property(acc, GTK_ACCESSIBLE_PROPERTY_DESCRIPTION);
+  }
+
+  if (sem.has_explicit_value) {
+    gtk_accessible_update_property(
+        acc, GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, sem.value.c_str(), -1);
+  } else {
+    gtk_accessible_reset_property(acc, GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT);
+  }
+
+  gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_DISABLED, sem.disabled ? TRUE : FALSE, -1);
+  gtk_widget_set_sensitive(widget, sem.disabled ? FALSE : TRUE);
+
+  if (!sem.test_id.empty()) {
+    gtk_widget_set_name(widget, sem.test_id.c_str());
+  }
+}
+
+NveGtkHost::EntryBinding* NveGtkHost::ensure_entry_binding(uint32_t node_id, GtkWidget* widget) {
+  if (widget == nullptr || !GTK_IS_ENTRY(widget)) {
+    return nullptr;
+  }
+  const auto it = entry_bindings_.find(node_id);
+  if (it != entry_bindings_.end() && it->second != nullptr && it->second->widget == widget) {
+    return it->second.get();
+  }
+  remove_entry_binding(node_id, widget);
+
+  auto binding = std::make_unique<EntryBinding>();
+  binding->host = this;
+  binding->node_id = node_id;
+  binding->widget = widget;
+  binding->changed_handler = g_signal_connect(
+      GTK_EDITABLE(widget),
+      "changed",
+      gtk_detail::to_gcallback(&NveGtkHost::on_entry_changed),
+      binding.get());
+  binding->activate_handler = g_signal_connect(
+      GTK_ENTRY(widget),
+      "activate",
+      gtk_detail::to_gcallback(&NveGtkHost::on_entry_activate),
+      binding.get());
+
+  GtkEventController* focus_ctrl = gtk_event_controller_focus_new();
+  g_signal_connect(
+      focus_ctrl,
+      "enter",
+      gtk_detail::to_gcallback(&NveGtkHost::on_entry_focus_enter),
+      binding.get());
+  g_signal_connect(
+      focus_ctrl,
+      "leave",
+      gtk_detail::to_gcallback(&NveGtkHost::on_entry_focus_leave),
+      binding.get());
+  gtk_widget_add_controller(widget, focus_ctrl);
+  binding->focus_controller = focus_ctrl;
+
+  EntryBinding* raw = binding.get();
+  entry_bindings_[node_id] = std::move(binding);
+  return raw;
+}
+
+void NveGtkHost::remove_entry_binding(uint32_t node_id, GtkWidget* widget) {
+  const auto it = entry_bindings_.find(node_id);
+  if (it == entry_bindings_.end()) {
+    return;
+  }
+  if (it->second != nullptr) {
+    GtkWidget* target = (widget != nullptr) ? widget : it->second->widget;
+    if (target != nullptr) {
+      if (it->second->changed_handler != 0u &&
+          g_signal_handler_is_connected(target, it->second->changed_handler)) {
+        g_signal_handler_disconnect(target, it->second->changed_handler);
+      }
+      if (it->second->activate_handler != 0u &&
+          g_signal_handler_is_connected(target, it->second->activate_handler)) {
+        g_signal_handler_disconnect(target, it->second->activate_handler);
+      }
+      if (it->second->focus_controller != nullptr) {
+        gtk_widget_remove_controller(target, it->second->focus_controller);
+      }
+    }
+  }
+  entry_bindings_.erase(it);
 }
 
 LayoutRect NveGtkHost::layout_for_node(uint32_t node_id) const noexcept {
@@ -579,27 +1131,36 @@ void NveGtkHost::GtkViewAdapter::update_root(const RenderedNodeSnapshot& snap) {
     host->root_css_ = std::move(next_root_css);
     host->css_dirty_ = true;
   }
+  if (const GtkNodeSemantics* sem = host->find_semantics(snap.node_id)) {
+    host->apply_accessibility_to_widget(host->root_widget_, *sem);
+  }
 }
 
 GtkWidget* NveGtkHost::GtkViewAdapter::create_view(const RenderedNodeSnapshot& snap) {
+  const GtkNodeSemantics default_sem = extract_node_semantics(snap, nullptr);
+  const GtkNodeSemantics& sem =
+      host->find_semantics(snap.node_id) ? *host->find_semantics(snap.node_id) : default_sem;
+
   GtkWidget* widget = nullptr;
   if (is_leaf_text_snapshot(snap)) {
-    widget = gtk_label_new("");
+    widget = GTK_WIDGET(g_object_new(
+        GTK_TYPE_LABEL, "label", "", "accessible-role", sem.gtk_role, nullptr));
     gtk_label_set_wrap(GTK_LABEL(widget), TRUE);
     gtk_label_set_wrap_mode(GTK_LABEL(widget), PANGO_WRAP_WORD_CHAR);
     gtk_label_set_xalign(GTK_LABEL(widget), 0.0f);
     gtk_label_set_yalign(GTK_LABEL(widget), 0.0f);
     gtk_widget_set_can_target(widget, FALSE);
   } else if (snap.kind == NVE_COMP_SCROLL_VIEW) {
-    widget = gtk_scrolled_window_new();
+    widget = GTK_WIDGET(
+        g_object_new(GTK_TYPE_SCROLLED_WINDOW, "accessible-role", sem.gtk_role, nullptr));
     GtkWidget* inner_fixed = gtk_fixed_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(widget), inner_fixed);
     host->scroll_contents_[widget] = inner_fixed;
   } else if (snap.kind == NVE_COMP_TEXT_INPUT) {
-    widget = gtk_entry_new();
+    widget = GTK_WIDGET(g_object_new(GTK_TYPE_ENTRY, "accessible-role", sem.gtk_role, nullptr));
   } else {
     // NVE_COMP_VIEW, NVE_COMP_PRESSABLE, wrapper NVE_COMP_TEXT, and container kinds
-    widget = gtk_fixed_new();
+    widget = GTK_WIDGET(g_object_new(GTK_TYPE_FIXED, "accessible-role", sem.gtk_role, nullptr));
   }
 
   g_object_ref_sink(widget);
@@ -616,6 +1177,10 @@ void NveGtkHost::GtkViewAdapter::update_view(
   if (view == nullptr) {
     return;
   }
+
+  const GtkNodeSemantics default_sem = extract_node_semantics(snap, nullptr);
+  const GtkNodeSemantics& sem =
+      host->find_semantics(snap.node_id) ? *host->find_semantics(snap.node_id) : default_sem;
 
   host->node_layouts_[snap.node_id] = snap.layout;
 
@@ -638,9 +1203,24 @@ void NveGtkHost::GtkViewAdapter::update_view(
     }
     gtk_widget_set_can_target(view, FALSE);
   } else if (GTK_IS_ENTRY(view)) {
-    const char* current = gtk_editable_get_text(GTK_EDITABLE(view));
-    if (current == nullptr || snap.text != current) {
-      gtk_editable_set_text(GTK_EDITABLE(view), snap.text.c_str());
+    EntryBinding* binding = host->ensure_entry_binding(snap.node_id, view);
+    gtk_entry_set_placeholder_text(
+        GTK_ENTRY(view), sem.placeholder.empty() ? nullptr : sem.placeholder.c_str());
+    gtk_entry_set_visibility(GTK_ENTRY(view), sem.secure_text_entry ? FALSE : TRUE);
+
+    if (binding != nullptr && !binding->user_editing) {
+      const char* current = gtk_editable_get_text(GTK_EDITABLE(view));
+      const std::string_view current_sv =
+          (current != nullptr) ? std::string_view(current) : std::string_view{};
+      if (!binding->has_synced_snapshot ||
+          (snap.text != binding->last_snapshot_text && snap.text != current_sv)) {
+        binding->updating_programmatically = true;
+        gtk_editable_set_text(GTK_EDITABLE(view), snap.text.c_str());
+        binding->last_dispatched_text = snap.text;
+        binding->updating_programmatically = false;
+      }
+      binding->last_snapshot_text = snap.text;
+      binding->has_synced_snapshot = true;
     }
   } else if (GTK_IS_FIXED(view)) {
     const bool clip = std::isfinite(snap.border_radius) && snap.border_radius > 0.0f;
@@ -650,9 +1230,11 @@ void NveGtkHost::GtkViewAdapter::update_view(
     gtk_widget_set_overflow(view, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
   }
 
+  host->apply_accessibility_to_widget(view, sem);
+
   // Leaf labels explicitly opt out of pointer targeting so presses hit parent pressables.
   const bool interactive =
-      !is_leaf_text_snapshot(snap) &&
+      !sem.disabled && !is_leaf_text_snapshot(snap) &&
       (snap.kind == NVE_COMP_PRESSABLE || (snap.event_mask & kEventMaskPress) != 0u);
   host->ensure_click_gesture(snap.node_id, view, interactive);
 
@@ -662,7 +1244,9 @@ void NveGtkHost::GtkViewAdapter::update_view(
 
 void NveGtkHost::GtkViewAdapter::destroy_view(uint32_t node_id, GtkWidget*& view) {
   host->remove_click_gesture(node_id, view);
+  host->remove_entry_binding(node_id, view);
   host->node_layouts_.erase(node_id);
+  host->node_semantics_.erase(node_id);
   host->erase_node_css(node_id);
 
   if (view == nullptr) {
@@ -781,6 +1365,62 @@ void NveGtkHost::on_gesture_released(
   NveGtkHost* host = binding->host;
   const uint32_t node_id = binding->node_id;
   (void)host->simulate_press(node_id, static_cast<float>(x), static_cast<float>(y));
+}
+
+void NveGtkHost::on_entry_changed(GtkEditable* editable, gpointer user_data) {
+  auto* binding = static_cast<EntryBinding*>(user_data);
+  if (binding == nullptr || binding->host == nullptr || binding->updating_programmatically) {
+    return;
+  }
+  const char* raw = gtk_editable_get_text(editable);
+  const std::string current = (raw != nullptr) ? std::string(raw) : std::string{};
+  if (current == binding->last_dispatched_text) {
+    return;
+  }
+  binding->last_dispatched_text = current;
+  NveGtkHost* host = binding->host;
+  const uint32_t node_id = binding->node_id;
+  binding->user_editing = true;
+  (void)host->dispatch_text_change(node_id, current);
+  // Look up binding again in case the re-render destroyed the entry widget.
+  const auto it = host->entry_bindings_.find(node_id);
+  if (it != host->entry_bindings_.end() && it->second != nullptr) {
+    it->second->user_editing = false;
+  }
+}
+
+void NveGtkHost::on_entry_activate(GtkEntry* entry, gpointer user_data) {
+  auto* binding = static_cast<EntryBinding*>(user_data);
+  if (binding == nullptr || binding->host == nullptr) {
+    return;
+  }
+  const char* raw = gtk_editable_get_text(GTK_EDITABLE(entry));
+  const std::string current = (raw != nullptr) ? std::string(raw) : std::string{};
+  NveGtkHost* host = binding->host;
+  const uint32_t node_id = binding->node_id;
+  (void)host->dispatch_submit(node_id, current);
+}
+
+void NveGtkHost::on_entry_focus_enter(GtkEventControllerFocus* controller, gpointer user_data) {
+  (void)controller;
+  auto* binding = static_cast<EntryBinding*>(user_data);
+  if (binding == nullptr || binding->host == nullptr) {
+    return;
+  }
+  NveGtkHost* host = binding->host;
+  const uint32_t node_id = binding->node_id;
+  (void)host->dispatch_focus(node_id, true);
+}
+
+void NveGtkHost::on_entry_focus_leave(GtkEventControllerFocus* controller, gpointer user_data) {
+  (void)controller;
+  auto* binding = static_cast<EntryBinding*>(user_data);
+  if (binding == nullptr || binding->host == nullptr) {
+    return;
+  }
+  NveGtkHost* host = binding->host;
+  const uint32_t node_id = binding->node_id;
+  (void)host->dispatch_focus(node_id, false);
 }
 
 gboolean NveGtkHost::on_tick_callback(

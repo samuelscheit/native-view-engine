@@ -6,12 +6,46 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace nve {
+
+/// Canonical cross-platform accessibility roles inferred from `RenderedNodeSnapshot` and raw props.
+enum class GtkA11yRole : uint8_t {
+  None = 0,
+  Group,
+  Button,
+  Text,
+  Header,
+  TextBox,
+  ScrollArea,
+  Image,
+  List,
+  ListItem,
+  CheckBox,
+  Link,
+};
+
+/// Normalized accessibility & TextInput metadata extracted from `raw_props` + node kind/event_mask.
+struct GtkNodeSemantics {
+  GtkA11yRole role{GtkA11yRole::Group};
+  GtkAccessibleRole gtk_role{GTK_ACCESSIBLE_ROLE_GROUP};
+  bool explicit_role{false};
+  std::string label;
+  bool has_explicit_label{false};
+  std::string hint;
+  std::string value;
+  bool has_explicit_value{false};
+  bool disabled{false};
+  std::string test_id;
+  std::string placeholder;
+  bool secure_text_entry{false};
+  bool multiline{false};
+};
 
 namespace gtk_detail {
 
@@ -107,6 +141,14 @@ class NveGtkHost {
   /// and drain outbound events.
   uint32_t simulate_press(uint32_t node_id, float x = 0.0f, float y = 0.0f);
 
+  /// Dispatch UTF-8 `TextChange`, Return-key `onSubmit`, or `Focus`/`Blur` events for `node_id`.
+  uint32_t dispatch_text_change(uint32_t node_id, std::string_view text);
+  uint32_t dispatch_submit(uint32_t node_id, std::string_view text);
+  uint32_t dispatch_focus(uint32_t node_id, bool focused);
+
+  /// Query extracted per-node accessibility & TextInput semantics for `node_id`.
+  std::optional<GtkNodeSemantics> accessibility_info_for_node_id(uint32_t node_id) const;
+
   /// Update surface viewport dimensions (logical pixels + optional scale factor)
   /// and re-reconcile widget frames immediately.
   void set_surface_size(float width, float height, float scale_factor = 0.0f);
@@ -187,6 +229,20 @@ class NveGtkHost {
     GtkGesture* gesture{nullptr};
   };
 
+  struct EntryBinding {
+    NveGtkHost* host{nullptr};
+    uint32_t node_id{0};
+    GtkWidget* widget{nullptr};
+    gulong changed_handler{0};
+    gulong activate_handler{0};
+    GtkEventController* focus_controller{nullptr};
+    bool updating_programmatically{false};
+    bool user_editing{false};
+    bool has_synced_snapshot{false};
+    std::string last_snapshot_text;
+    std::string last_dispatched_text;
+  };
+
   struct WindowBinding {
     GtkWindow* window{nullptr};
     gulong width_handler{0};
@@ -196,6 +252,12 @@ class NveGtkHost {
 
   void install_pango_text_measurer();
   void sync_views();
+  const GtkNodeSemantics* find_semantics(uint32_t node_id) const noexcept;
+  void apply_accessibility_to_widget(GtkWidget* widget, const GtkNodeSemantics& sem);
+  EntryBinding* ensure_entry_binding(uint32_t node_id, GtkWidget* widget);
+  void remove_entry_binding(uint32_t node_id, GtkWidget* widget);
+  uint32_t dispatch_single_direct_event(const NveDirectEvent& ev);
+  NveDirectEvent make_base_event(uint32_t node_id, EventKind kind, uint8_t payload_tag) const;
   void sync_children_impl(
       uint32_t parent_id,
       GtkWidget** parent_view,
@@ -216,6 +278,10 @@ class NveGtkHost {
       gdouble x,
       gdouble y,
       gpointer user_data);
+  static void on_entry_changed(GtkEditable* editable, gpointer user_data);
+  static void on_entry_activate(GtkEntry* entry, gpointer user_data);
+  static void on_entry_focus_enter(GtkEventControllerFocus* controller, gpointer user_data);
+  static void on_entry_focus_leave(GtkEventControllerFocus* controller, gpointer user_data);
   static gboolean on_tick_callback(
       GtkWidget* widget,
       GdkFrameClock* frame_clock,
@@ -243,8 +309,10 @@ class NveGtkHost {
   int last_observed_scale_{0};
 
   std::unordered_map<uint32_t, LayoutRect> node_layouts_;
+  std::unordered_map<uint32_t, GtkNodeSemantics> node_semantics_;
   std::unordered_map<GtkWidget*, GtkWidget*> scroll_contents_;
   std::unordered_map<uint32_t, std::unique_ptr<ClickBinding>> click_bindings_;
+  std::unordered_map<uint32_t, std::unique_ptr<EntryBinding>> entry_bindings_;
   std::unordered_map<uint32_t, std::string> node_css_;
   std::string root_css_;
   std::string active_css_;

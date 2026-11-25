@@ -201,6 +201,12 @@
 }
 
 - (NSView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap {
+  nve::apple::NodeSemantics defaults{};
+  return [self nveCreateNativeViewForSnapshot:snap semantics:defaults];
+}
+
+- (NSView *)nveCreateNativeViewForSnapshot:(const nve::RenderedNodeSnapshot &)snap
+                                 semantics:(const nve::apple::NodeSemantics &)semantics {
   if (snap.kind == NVE_COMP_TEXT && !snap.children.empty()) {
     NveFlippedContainerView *container =
         [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
@@ -223,7 +229,9 @@
       return label;
     }
     case NVE_COMP_TEXT_INPUT: {
-      NSTextField *input = [[NSTextField alloc] initWithFrame:NSZeroRect];
+      NSTextField *input = semantics.secure_text_entry
+                               ? [[NSSecureTextField alloc] initWithFrame:NSZeroRect]
+                               : [[NSTextField alloc] initWithFrame:NSZeroRect];
       input.editable = YES;
       input.bezeled = YES;
       input.delegate = self;
@@ -260,9 +268,11 @@
 
   if ([view isKindOfClass:[NSTextField class]]) {
     NSTextField *field = (NSTextField *)view;
-    NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
-    if (![field.stringValue isEqualToString:nextText]) {
-      field.stringValue = nextText;
+    if (snap.kind != NVE_COMP_TEXT_INPUT) {
+      NSString *nextText = [NSString stringWithUTF8String:snap.text.c_str()] ?: @"";
+      if (![field.stringValue isEqualToString:nextText]) {
+        field.stringValue = nextText;
+      }
     }
     field.textColor = nve::apple::color_from_rgba(snap.text_color_rgba);
     if (snap.font_size > 0.0f) {
@@ -305,12 +315,60 @@
   }
 }
 
-- (void)controlTextDidChange:(NSNotification *)obj {
+- (void)controlTextDidBeginEditing:(NSNotification *)obj {
   if (![obj.object isKindOfClass:[NSTextField class]]) return;
   NSTextField *field = (NSTextField *)obj.object;
   const uint32_t nodeId = [_host nodeIdForNativeView:field];
   if (nodeId == 0) return;
+  [_host dispatchFocusOnNodeId:nodeId focused:YES];
+}
+
+- (void)controlTextDidEndEditing:(NSNotification *)obj {
+  if (![obj.object isKindOfClass:[NSTextField class]]) return;
+  NSTextField *field = (NSTextField *)obj.object;
+  const uint32_t nodeId = [_host nodeIdForNativeView:field];
+  if (nodeId == 0) return;
+  [_host dispatchFocusOnNodeId:nodeId focused:NO];
+}
+
+- (void)controlTextDidChange:(NSNotification *)obj {
+  if (![obj.object isKindOfClass:[NSTextField class]]) return;
+  NSTextField *field = (NSTextField *)obj.object;
+  if (nve::apple::is_text_input_composing_ime(field)) {
+    return;
+  }
+  id fieldEditor = obj.userInfo[@"NSFieldEditor"];
+  if ([fieldEditor isKindOfClass:[NSTextView class]]) {
+    NSTextView *tv = (NSTextView *)fieldEditor;
+    if (tv.hasMarkedText || tv.markedRange.length > 0) {
+      return;
+    }
+  }
+  const uint32_t nodeId = [_host nodeIdForNativeView:field];
+  if (nodeId == 0) return;
   [_host dispatchTextChangeOnNodeId:nodeId text:field.stringValue ?: @""];
+}
+
+- (BOOL)control:(NSControl *)control
+       textView:(NSTextView *)textView
+doCommandBySelector:(SEL)commandSelector {
+  if (commandSelector == @selector(insertNewline:)) {
+    if (textView != nil && (textView.hasMarkedText || textView.markedRange.length > 0)) {
+      return NO;
+    }
+    if ([control isKindOfClass:[NSTextField class]]) {
+      NSTextField *field = (NSTextField *)control;
+      if (!field.usesSingleLineMode) {
+        return NO;
+      }
+      const uint32_t nodeId = [_host nodeIdForNativeView:field];
+      if (nodeId != 0) {
+        [_host dispatchSubmitOnNodeId:nodeId text:field.stringValue ?: @""];
+        return YES;
+      }
+    }
+  }
+  return NO;
 }
 
 - (void)_handleNodeClick:(NSClickGestureRecognizer *)recognizer {

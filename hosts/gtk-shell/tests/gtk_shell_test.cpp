@@ -727,6 +727,255 @@ void test_snapshot_replay_state_restore_and_atomic_save() {
   }
 }
 
+struct MockGtkA11yImeComponent {
+  static inline MockGtkA11yImeComponent* last_instance = nullptr;
+  uint32_t surface_id{1u};
+  bool disabled_btn{false};
+  bool secure_input{false};
+  std::string input_text{"initial"};
+  int text_change_calls{0};
+  int submit_calls{0};
+  std::string last_text;
+  std::string last_submit;
+  std::vector<uint8_t> cmd_buf;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* self = new MockGtkA11yImeComponent();
+    self->surface_id = sid;
+    last_instance = self;
+    return self;
+  }
+  static void destroy(NveAppHandle h) {
+    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
+    if (last_instance == self) last_instance = nullptr;
+    delete self;
+  }
+
+  template <typename T>
+  void push(T v) {
+    const auto* p = reinterpret_cast<const uint8_t*>(&v);
+    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
+  }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
+    self->cmd_buf.clear();
+    uint32_t ops = 0u;
+    self->push<uint32_t>(NVE_ABI_MAGIC);
+    self->push<uint16_t>(NVE_ABI_VERSION);
+    self->push<uint16_t>(0u);
+    self->push<uint32_t>(self->surface_id);
+    self->push<uint64_t>(frame_id);
+    self->push<uint32_t>(0u);
+
+    auto create_node = [&](uint32_t id, uint16_t kind) {
+      self->push<uint8_t>(NVE_OP_CREATE_NODE);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(kind);
+      self->push<uint16_t>(0u);
+      ++ops;
+    };
+    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
+      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
+      self->push<uint32_t>(parent);
+      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
+      for (uint32_t k : kids) self->push<uint32_t>(k);
+      ++ops;
+    };
+    auto set_text = [&](uint32_t id, const std::string& s) {
+      self->push<uint8_t>(NVE_OP_SET_TEXT);
+      self->push<uint32_t>(id);
+      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
+      ++ops;
+    };
+    auto set_box = [&](uint32_t id, float w, float h) {
+      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
+      self->push<uint32_t>(id);
+      self->push<uint8_t>(1u); self->push<float>(w);
+      self->push<uint8_t>(1u); self->push<float>(h);
+      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
+      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
+      self->push<float>(0.0f); self->push<float>(1.0f); self->push<float>(0.0f);
+      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
+      ++ops;
+    };
+    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(4u);
+      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
+      ++ops;
+    };
+    auto set_raw_bool = [&](uint32_t id, std::string_view k, bool v) {
+      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
+      self->push<uint32_t>(id);
+      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
+      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
+      self->push<uint8_t>(1u);
+      self->push<uint8_t>(v ? 1u : 0u);
+      ++ops;
+    };
+
+    create_node(2u, NVE_COMP_PRESSABLE);
+    create_node(3u, NVE_COMP_TEXT);
+    create_node(4u, NVE_COMP_VIEW);
+    create_node(5u, NVE_COMP_TEXT_INPUT);
+
+    set_children(NVE_ROOT_NODE_ID, {2u, 3u, 4u, 5u});
+    set_box(2u, 140.0f, 36.0f);
+    set_box(3u, 180.0f, 24.0f);
+    set_box(4u, 100.0f, 24.0f);
+    set_box(5u, 220.0f, 32.0f);
+
+    set_raw_str(2u, "accessibilityLabel", "Publish Release");
+    set_raw_str(2u, "accessibilityHint", "Deploys current build");
+    set_raw_str(2u, "accessibilityValue", "ready");
+    set_raw_str(2u, "testID", "gtk-publish-btn");
+    set_raw_bool(2u, "accessibilityDisabled", self->disabled_btn);
+
+    set_text(3u, "Dashboard");
+    set_raw_str(3u, "role", "header");
+    set_raw_str(3u, "data-testid", "gtk-header");
+
+    set_raw_str(4u, "accessibilityRole", "checkbox");
+    set_raw_str(4u, "aria-label", "Dark Theme");
+
+    set_text(5u, self->input_text);
+    set_raw_str(5u, "placeholder", "Type UTF-8 text...");
+    set_raw_str(5u, "accessibilityLabel", "Release Note");
+    set_raw_str(5u, "testID", "gtk-note-input");
+    set_raw_bool(5u, "secureTextEntry", self->secure_input);
+
+    self->push<uint8_t>(NVE_OP_COMMIT);
+    self->push<uint8_t>(1u);
+    ++ops;
+    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
+    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
+  }
+
+  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
+    std::vector<nve::DecodedEvent> decoded;
+    if (!nve::decode_event_ring(events, decoded)) return 0u;
+    for (const auto& ev : decoded) {
+      if (ev.node_id == 5u && ev.kind == nve::EventKind::TextChange) {
+        ++self->text_change_calls;
+        self->last_text = ev.text;
+        return 1u; // Force a re-render while inside `changed` to test loop/IME guard!
+      }
+      if (ev.node_id == 5u && ev.kind == nve::EventKind::Custom && ev.name == "onSubmit") {
+        ++self->submit_calls;
+        if (const auto v = nve::BinValueView::parse(ev.payload_bytes.data(), ev.payload_bytes.size());
+            v && v->as_str()) {
+          self->last_submit = std::string(*v->as_str());
+        }
+      }
+    }
+    return 0u;
+  }
+
+  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
+    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
+    const std::string json(reinterpret_cast<const char*>(props.ptr), props.len);
+    if (json.find("\"disabled\":true") != std::string::npos) self->disabled_btn = true;
+    if (json.find("\"secure\":true") != std::string::npos) self->secure_input = true;
+    if (json.find("\"text\":\"programmatic\"") != std::string::npos) self->input_text = "programmatic";
+    return 1u;
+  }
+
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveComponentApi kComp{&set_props, nullptr, nullptr};
+    if (iface == NVE_IFACE_SURFACE) return &kSurface;
+    if (iface == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
+void test_accessibility_and_ime_text_input() {
+  NveSurfaceConfig cfg{.surface_id = 12u, .width = 480.0f, .height = 300.0f, .scale_factor = 1.0f};
+  nve::NveGtkHost host(cfg);
+  NVE_CHECK(host.attach_interface(&MockGtkA11yImeComponent::get_interface, 12u));
+  NVE_CHECK(MockGtkA11yImeComponent::last_instance != nullptr);
+  auto* mock = MockGtkA11yImeComponent::last_instance;
+
+  GtkWidget* btn = host.widget_for_node_id(2u);
+  GtkWidget* hdr = host.widget_for_node_id(3u);
+  GtkWidget* chk = host.widget_for_node_id(4u);
+  GtkWidget* entry = host.widget_for_node_id(5u);
+  NVE_CHECK(btn != nullptr && hdr != nullptr && chk != nullptr && entry != nullptr);
+  NVE_CHECK(GTK_IS_ENTRY(entry));
+
+  // Verify GTK4 accessible roles, properties, states, and widget names (`testID`)
+  gtk_test_accessible_assert_role(btn, GTK_ACCESSIBLE_ROLE_BUTTON);
+  gtk_test_accessible_assert_property(btn, GTK_ACCESSIBLE_PROPERTY_LABEL, "Publish Release");
+  gtk_test_accessible_assert_property(btn, GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, "Deploys current build");
+  gtk_test_accessible_assert_property(btn, GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, "ready");
+  gtk_test_accessible_assert_state(btn, GTK_ACCESSIBLE_STATE_DISABLED, FALSE);
+  NVE_CHECK(gtk_widget_get_sensitive(btn) == TRUE);
+  NVE_CHECK(std::string(gtk_widget_get_name(btn)) == "gtk-publish-btn");
+
+  gtk_test_accessible_assert_role(hdr, GTK_ACCESSIBLE_ROLE_HEADING);
+  gtk_test_accessible_assert_property(hdr, GTK_ACCESSIBLE_PROPERTY_LABEL, "Dashboard");
+  NVE_CHECK(std::string(gtk_widget_get_name(hdr)) == "gtk-header");
+
+  gtk_test_accessible_assert_role(chk, GTK_ACCESSIBLE_ROLE_CHECKBOX);
+  gtk_test_accessible_assert_property(chk, GTK_ACCESSIBLE_PROPERTY_LABEL, "Dark Theme");
+
+  gtk_test_accessible_assert_role(entry, GTK_ACCESSIBLE_ROLE_TEXT_BOX);
+  gtk_test_accessible_assert_property(entry, GTK_ACCESSIBLE_PROPERTY_LABEL, "Release Note");
+  NVE_CHECK(std::string(gtk_widget_get_name(entry)) == "gtk-note-input");
+
+  // Verify GtkEntry placeholder-text, visibility, and zero feedback loop on initial mount
+  const char* ph = gtk_entry_get_placeholder_text(GTK_ENTRY(entry));
+  NVE_CHECK(ph != nullptr && std::string(ph) == "Type UTF-8 text...");
+  NVE_CHECK(gtk_entry_get_visibility(GTK_ENTRY(entry)) == TRUE);
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "initial");
+  NVE_CHECK(mock->text_change_calls == 0);
+
+  // Programmatic snapshot text update must NOT trigger a feedback `TextChange` loop
+  NVE_CHECK(host.apply_props_json(R"({"text":"programmatic"})"));
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "programmatic");
+  NVE_CHECK(mock->text_change_calls == 0);
+
+  // IME-style UTF-8 insertion fires `changed` -> dispatches exactly 1 TextChange and does NOT get
+  // clobbered by the synchronous re-render whose snapshot still holds "programmatic"!
+  {
+    int pos = static_cast<int>(std::string("programmatic").size());
+    gtk_editable_insert_text(GTK_EDITABLE(entry), " 日本語 café", -1, &pos);
+  }
+  NVE_CHECK(mock->text_change_calls == 1);
+  NVE_CHECK(mock->last_text == "programmatic 日本語 café");
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "programmatic 日本語 café");
+
+  // Full replacement via gtk_editable_set_text (delete+insert) ends cleanly on exact UTF-8 text
+  gtk_editable_set_text(GTK_EDITABLE(entry), "日本語 café");
+  const int calls_after_replace = mock->text_change_calls;
+  NVE_CHECK(calls_after_replace >= 2);
+  NVE_CHECK(mock->last_text == "日本語 café");
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "日本語 café");
+
+  // Unrelated re-render with unchanged snapshot text still preserves user/IME buffer
+  NVE_CHECK(host.render_frame() == 0);
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "日本語 café");
+  NVE_CHECK(mock->text_change_calls == calls_after_replace);
+
+  // `activate` signal -> dispatches `onSubmit` with exact UTF-8 text
+  g_signal_emit_by_name(entry, "activate");
+  NVE_CHECK(mock->submit_calls == 1);
+  NVE_CHECK(mock->last_submit == "日本語 café");
+
+  // Toggle disabled=true and secureTextEntry=true
+  NVE_CHECK(host.apply_props_json(R"({"disabled":true,"secure":true})"));
+  gtk_test_accessible_assert_state(btn, GTK_ACCESSIBLE_STATE_DISABLED, TRUE);
+  NVE_CHECK(gtk_widget_get_sensitive(btn) == FALSE);
+  NVE_CHECK(gtk_entry_get_visibility(GTK_ENTRY(entry)) == FALSE);
+}
+
 } // namespace
 
 int main() {
@@ -740,6 +989,7 @@ int main() {
   test_dylib_error_codes_and_hot_reload();
   test_snapshot_replay_state_restore_and_atomic_save();
   test_live_counter_dylib_if_present();
+  test_accessibility_and_ime_text_input();
 
   std::cout << "nve_gtk_shell_test passed ("
             << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+GTK4" : "Standalone+GTK4")
