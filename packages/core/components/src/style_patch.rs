@@ -13,6 +13,7 @@ use crate::interaction::CursorKind;
 use crate::layout_ext::{
     GridTrack, GridTrackPlacement, LayoutDirection, LayoutExt, PositionMode,
 };
+use crate::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 use crate::transform::Transform2D;
 
 /// Strictly typed `display` mode shared by [`LayoutExt`] and [`StylePatch`].
@@ -139,6 +140,7 @@ pub struct StylePatch {
     pub padding: Option<EdgeInsets>,
     pub margin: Option<EdgeInsets>,
     pub background: Option<ColorRgba>,
+    pub background_fill: Option<BackgroundFill>,
     pub text_color: Option<ColorRgba>,
     pub border_width: Option<f32>,
     pub border_color: Option<ColorRgba>,
@@ -192,6 +194,7 @@ impl StylePatch {
             padding: None,
             margin: None,
             background: None,
+            background_fill: None,
             text_color: None,
             border_width: None,
             border_color: None,
@@ -244,6 +247,7 @@ impl StylePatch {
             && self.padding.is_none()
             && self.margin.is_none()
             && self.background.is_none()
+            && self.background_fill.is_none()
             && self.text_color.is_none()
             && self.border_width.is_none()
             && self.border_color.is_none()
@@ -296,6 +300,9 @@ impl StylePatch {
     #[inline] pub fn margin_insets(mut self, insets: EdgeInsets) -> Self { self.margin = Some(insets); self }
     #[inline] pub fn bg(mut self, c: ColorRgba) -> Self { self.background = Some(c); self }
     #[inline] pub fn background(self, c: ColorRgba) -> Self { self.bg(c) }
+    #[inline] pub fn background_fill(mut self, fill: BackgroundFill) -> Self { self.background_fill = Some(fill); self }
+    #[inline] pub fn linear_gradient(mut self, angle_deg: f32, stops: impl Into<Vec<GradientStop>>) -> Self { self.background_fill = Some(BackgroundFill::Linear(LinearGradient::new(angle_deg, stops))); self }
+    #[inline] pub fn radial_gradient(mut self, center_x: f32, center_y: f32, radius: f32, stops: impl Into<Vec<GradientStop>>) -> Self { self.background_fill = Some(BackgroundFill::Radial(RadialGradient::new(center_x, center_y, radius, stops))); self }
     #[inline] pub fn color(mut self, c: ColorRgba) -> Self { self.text_color = Some(c); self }
     #[inline] pub fn text_color(self, c: ColorRgba) -> Self { self.color(c) }
     #[inline] pub fn border(mut self, w: f32, c: ColorRgba) -> Self { self.border_width = Some(Self::sanitize(w).max(0.0)); self.border_color = Some(c); self }
@@ -376,6 +383,7 @@ impl StylePatch {
         if other.padding.is_some() { self.padding = other.padding; }
         if other.margin.is_some() { self.margin = other.margin; }
         if other.background.is_some() { self.background = other.background; }
+        if let Some(ref fill) = other.background_fill { self.background_fill = Some(fill.clone()); }
         if other.text_color.is_some() { self.text_color = other.text_color; }
         if other.border_width.is_some() { self.border_width = other.border_width; }
         if other.border_color.is_some() { self.border_color = other.border_color; }

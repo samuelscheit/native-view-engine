@@ -342,7 +342,9 @@ impl WebBackend {
                 }
             }
         }
-        if let Some(text) = restore_text
+        if new_children.is_empty() && self.nodes.get(&parent_id).is_some_and(|n| n.svg.is_some()) {
+            self.sync_dom_svg_node(parent_id);
+        } else if let Some(text) = restore_text
             && container.text_content().as_deref() != Some(text)
         {
             container.set_text_content(Some(text));
@@ -565,6 +567,9 @@ impl WebBackend {
             self.apply_text_mutation(node_id, &text);
         }
         self.sync_dom_dir_attr(node_id);
+        if self.nodes.get(&node_id).is_some_and(|n| n.svg.is_some()) {
+            self.sync_dom_svg_node(node_id);
+        }
     }
 
     #[cfg(target_arch = "wasm32")]

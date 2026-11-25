@@ -2,8 +2,10 @@
 
 mod canvas;
 pub(crate) mod clip;
+mod gradient;
 mod pixel_buffer;
 pub mod shadow;
+pub mod svg;
 pub(crate) mod text_blend;
 mod transform;
 
@@ -15,7 +17,9 @@ use crate::{DisplayList, PaintOp};
 
 use canvas::{draw_image, execute_canvas_ops};
 use clip::{rounded_rect_sdf, ClipStack};
+use gradient::{fill_rounded_rect_gradient, fill_rounded_rect_gradient_transformed};
 use shadow::draw_box_shadow;
+use svg::draw_svg;
 pub(crate) use text_blend::{
     blend_color_glyph, blend_mask_glyph, blend_subpixel_glyph, draw_bitmap_text,
 };
@@ -26,6 +30,10 @@ use transform::{
 
 pub use pixel_buffer::PixelBuffer;
 pub use shadow::{parse_box_shadow, BoxShadow};
+pub use svg::{
+    draw_svg_to_buffer, rasterize_svg_picture, CachedSvgBitmap, SvgCache, SvgCacheKey,
+    SvgCacheStats, DEFAULT_SVG_CACHE_MAX_BYTES, DEFAULT_SVG_CACHE_MAX_ENTRIES,
+};
 
 pub(crate) fn fill_rounded_rect(
     buf: &mut PixelBuffer,
@@ -334,6 +342,32 @@ fn rasterize_display_list_inner(
                     );
                 }
             }
+            PaintOp::FillRoundedRectGradient {
+                rect,
+                radius,
+                gradient,
+            } => {
+                if is_tf {
+                    fill_rounded_rect_gradient_transformed(
+                        buffer,
+                        &clip_stack,
+                        transform_stack.current(),
+                        scale_rect(*rect, scale),
+                        radius * scale,
+                        gradient,
+                        cur_opacity,
+                    );
+                } else {
+                    fill_rounded_rect_gradient(
+                        buffer,
+                        &clip_stack,
+                        scale_rect(*rect, scale),
+                        radius * scale,
+                        gradient,
+                        cur_opacity,
+                    );
+                }
+            }
             PaintOp::StrokeRoundedRect {
                 rect,
                 radius,
@@ -428,6 +462,21 @@ fn rasterize_display_list_inner(
                     src,
                     *resize_mode,
                     scale,
+                    cur_opacity,
+                );
+            }
+            PaintOp::DrawSvg {
+                rect,
+                picture,
+                tint,
+            } => {
+                draw_svg(
+                    buffer,
+                    &clip_stack,
+                    is_tf.then(|| transform_stack.current()),
+                    scale_rect(*rect, scale),
+                    picture,
+                    *tint,
                     cur_opacity,
                 );
             }

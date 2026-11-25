@@ -11,6 +11,8 @@ use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
 use nve_components::native_view::TypedNativeViewProps;
+use nve_components::paint::BackgroundFill;
+use nve_components::svg::SvgPicture;
 use nve_components::transform::Transform2D;
 use nve_engine::HotPatchMsg;
 
@@ -207,6 +209,30 @@ impl DioxusSurface {
     #[inline]
     pub fn iter_native_views(&self) -> impl Iterator<Item = (NodeId, &TypedNativeViewProps)> + '_ {
         self.writer.iter_native_views()
+    }
+
+    /// Direct zero-serialization [`BackgroundFill`] stored on `node_id`.
+    #[inline]
+    pub fn node_background_fill(&self, node_id: NodeId) -> Option<&BackgroundFill> {
+        self.writer.node_background_fill(node_id)
+    }
+
+    /// Iterates over all active nodes with a direct typed [`BackgroundFill`].
+    #[inline]
+    pub fn iter_background_fills(&self) -> impl Iterator<Item = (NodeId, &BackgroundFill)> + '_ {
+        self.writer.iter_background_fills()
+    }
+
+    /// Direct zero-serialization [`SvgPicture`] stored on `node_id`.
+    #[inline]
+    pub fn node_svg_picture(&self, node_id: NodeId) -> Option<&SvgPicture> {
+        self.writer.node_svg_picture(node_id)
+    }
+
+    /// Iterates over all active nodes with a direct typed [`SvgPicture`].
+    #[inline]
+    pub fn iter_svg_pictures(&self) -> impl Iterator<Item = (NodeId, &SvgPicture)> + '_ {
+        self.writer.iter_svg_pictures()
     }
 
     /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.

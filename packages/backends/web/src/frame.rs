@@ -105,10 +105,12 @@ impl RenderBackend for WebBackend {
                         feature = "camera",
                     ))]
                     self.native_views.remove(&node_id);
-                    #[cfg(feature = "hydrate")]
                     let mut mirror = MirrorElement::new(kind);
-                    #[cfg(not(feature = "hydrate"))]
-                    let mirror = MirrorElement::new(kind);
+                    let is_svg_custom =
+                        kind == ComponentKind::Custom && custom_name.as_deref() == Some("svg");
+                    if is_svg_custom {
+                        mirror.tag = "svg";
+                    }
                     #[cfg(feature = "hydrate")]
                     let adopting_ssr = self.hydrating && self.has_ssr_dom_node(node_id);
                     #[cfg(not(feature = "hydrate"))]
@@ -127,6 +129,7 @@ impl RenderBackend for WebBackend {
                         feature = "camera",
                     ))]
                     if kind == ComponentKind::Custom
+                        && !is_svg_custom
                         && let Some(name) = custom_name.as_deref()
                     {
                         self.init_custom_native_view(node_id, name);
@@ -259,9 +262,19 @@ impl RenderBackend for WebBackend {
                     mutations += 1;
                 }
                 Command::SetStyle { node_id, style } => {
+                    #[cfg(target_arch = "wasm32")]
+                    let mut has_svg = false;
                     if let Some(el) = self.nodes.get_mut(&node_id) {
                         el.style = style;
                         el.record_style_mutation(current_frame);
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            has_svg = el.svg.is_some();
+                        }
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    if has_svg {
+                        self.sync_dom_svg_node(node_id);
                     }
                     dirty_styles.push(node_id);
                     self.queue_leaf_text_children(node_id, &mut dirty_styles);
@@ -334,6 +347,11 @@ impl RenderBackend for WebBackend {
                                     dirty_styles.push(node_id);
                                 } else {
                                     self.sync_dom_raw_prop(node_id, &key, &value);
+                                }
+                                if key == "tint"
+                                    && self.nodes.get(&node_id).is_some_and(|n| n.svg.is_some())
+                                {
+                                    self.sync_dom_svg_node(node_id);
                                 }
                             }
                             #[cfg(not(target_arch = "wasm32"))]

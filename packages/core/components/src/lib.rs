@@ -14,9 +14,11 @@ pub mod motion_clock;
 #[cfg(test)]
 mod motion_tests;
 pub mod native_view;
+pub mod paint;
 pub mod reconcile;
 pub mod spring;
 pub mod style_patch;
+pub mod svg;
 mod tracker;
 pub mod transform;
 
@@ -59,7 +61,16 @@ pub use layout_ext::{
     GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
     PositionInsets, PositionMode,
 };
+pub use paint::{
+    lerp_color_premul, normalize_stops, sample_gradient_stops, sample_normalized_stops,
+    stops_are_normalized, write_css_color, write_css_gradient, BackgroundFill, GradientStop,
+    LinearGradient, RadialGradient,
+};
 pub use style_patch::{Display, FlexWrap, Overflow, StylePatch, TextAlign};
+pub use svg::{
+    compute_svg_content_hash, parse_svg_path_data, write_path_data_into, FillRule, SvgPicture,
+    VectorPathCmd, VectorShape, MAX_SVG_PATH_COMMANDS, MAX_SVG_PATH_INPUT_BYTES,
+};
 pub use transform::{
     affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
 };

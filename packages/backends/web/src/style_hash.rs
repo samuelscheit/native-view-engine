@@ -3,10 +3,12 @@
 
 use nve_abi::{ColorRgba, ComponentKind, Dimension, EdgeInsets, LayoutProps, StyleProps};
 use nve_components::layout_ext::LayoutExt;
+use nve_components::paint::BackgroundFill;
 use nve_components::transform::Transform2D;
 
 use crate::css::{canonical_f32, canonical_f32_bits, MirrorElement};
 use crate::layout_ext_css::hash_layout_ext_and_transform;
+use crate::paint_svg::hash_background_fill;
 use crate::raw_style::RawStyleProps;
 
 /// Point dimension threshold above which `Dimension::Points(v)` routes to the inline lane
@@ -136,14 +138,16 @@ pub fn hash_structural_style(
     raw: &RawStyleProps,
     leaf_text: bool,
 ) -> u64 {
-    hash_structural_style_full(layout, None, style, None, raw, leaf_text)
+    hash_structural_style_full(layout, None, style, None, None, raw, leaf_text)
 }
 
-/// Computes deterministic FNV-1a64 hash including optional [`LayoutExt`] and [`Transform2D`].
+/// Computes deterministic FNV-1a64 hash including optional [`LayoutExt`], [`BackgroundFill`],
+/// and [`Transform2D`].
 pub fn hash_structural_style_full(
     layout: &LayoutProps,
     layout_ext: Option<&LayoutExt>,
     style: &StyleProps,
+    background_fill: Option<&BackgroundFill>,
     transform: Option<Transform2D>,
     raw: &RawStyleProps,
     leaf_text: bool,
@@ -206,5 +210,6 @@ pub fn hash_structural_style_full(
     h = fnv1a_opt_str(h, raw.effective_overflow());
     h = fnv1a_opt_str(h, raw.effective_flex_wrap());
     h = fnv1a_opt_str(h, raw.object_fit);
+    let h = hash_background_fill(h, background_fill);
     hash_layout_ext_and_transform(h, layout_ext, transform)
 }

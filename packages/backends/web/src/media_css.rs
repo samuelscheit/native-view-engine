@@ -167,6 +167,9 @@ pub fn write_style_patch_decls(patch: &StylePatch, out: &mut String) {
         write_compact_color(bg, out);
         out.push(';');
     }
+    if let Some(ref fill) = patch.background_fill {
+        fill.write_css_decl_into(true, out);
+    }
     if let Some(tc) = patch.text_color {
         out.push_str("color:");
         write_compact_color(tc, out);

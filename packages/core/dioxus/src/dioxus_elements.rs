@@ -244,6 +244,13 @@ pub mod elements {
     define_element!(canvas, "skia-canvas", {
         draw_list => "drawList",
     });
+    define_element!(svg, "svg", {
+        picture => "svg_picture",
+        svg_picture => "svg_picture",
+        view_box => "viewBox",
+        tint => "tint",
+        mirror => "data-nve-mirror",
+    });
 
     pub mod completions {
         pub mod CompleteWithBraces {}
@@ -291,6 +298,7 @@ pub mod GlobalAttributes {
         style => "style",
         nve_style => "nve_style",
         nve_show_on => "nve-show-on",
+        svg_picture => "svg_picture",
     }
     define_a11y_attrs!();
 }

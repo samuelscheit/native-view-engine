@@ -4,9 +4,11 @@
 
 use std::collections::HashMap;
 
-use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue};
+use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue, StyleProps};
 use nve_backend_headless::{HeadlessBackend, HeadlessNode};
 use nve_components::canvas_ir::{DrawList, DrawListDecoder, ImageResizeMode};
+use nve_components::paint::BackgroundFill;
+use nve_components::parse_color;
 use nve_components::style_patch::{Display, Overflow, TextAlign as PatchTextAlign};
 use nve_engine::{LayoutEngine, LayoutRect};
 
@@ -367,12 +369,33 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
     // Emit outer box-shadows before background fill so shadows render behind the box.
     emit_box_shadows(node, radius, rect, clip_bounds, ops);
 
-    if style.background.a > 0 && in_clip {
-        ops.push(PaintOp::FillRoundedRect {
-            rect,
-            radius,
-            color: style.background,
-        });
+    if in_clip {
+        match patch.background_fill.as_ref().or(node.background_fill.as_ref()) {
+            Some(fill @ (BackgroundFill::Linear(_) | BackgroundFill::Radial(_))) => {
+                ops.push(PaintOp::FillRoundedRectGradient {
+                    rect,
+                    radius,
+                    gradient: fill.clone(),
+                });
+            }
+            Some(BackgroundFill::Solid(c)) => {
+                if c.a > 0 {
+                    ops.push(PaintOp::FillRoundedRect {
+                        rect,
+                        radius,
+                        color: *c,
+                    });
+                }
+            }
+            None if style.background.a > 0 => {
+                ops.push(PaintOp::FillRoundedRect {
+                    rect,
+                    radius,
+                    color: style.background,
+                });
+            }
+            None => {}
+        }
     }
     if style.border_width > 0.0
         && style.border_color.a > 0
@@ -430,6 +453,22 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                 font_weight: effective_weight,
                 text_align: effective_align,
                 color: style.text_color,
+            });
+        }
+        if let Some(ref picture) = node.svg {
+            let tint = match node.raw_props.get("tint") {
+                Some(RawPropValue::String(raw)) => parse_color(raw),
+                _ if style.text_color != StyleProps::default().text_color
+                    && style.text_color.a > 0 =>
+                {
+                    Some(style.text_color)
+                }
+                _ => None,
+            };
+            ops.push(PaintOp::DrawSvg {
+                rect,
+                picture: picture.clone(),
+                tint,
             });
         }
         if node.kind == ComponentKind::SkiaCanvas {

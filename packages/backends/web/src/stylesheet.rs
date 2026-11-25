@@ -12,6 +12,7 @@ pub use crate::css::{
 use crate::css::MirrorElement;
 use crate::layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
 use crate::media_css::{compile_node_media_rules, CompiledMediaRule};
+use crate::paint_svg::write_compact_background_fill_into;
 use crate::state_css::{compile_node_state_rules, format_cursor_rule, CompiledStateRule};
 use crate::style_hash::{
     format_structural_class, hash_structural_style_full, is_inheriting_leaf_text,
@@ -90,6 +91,7 @@ pub fn resolve_node_style(
         write_compact_layout_into(&node.layout, false, &mut inline_style);
         write_compact_layout_ext_into(node.layout_ext.as_deref(), &mut inline_style);
         write_compact_style_into(&node.style, &node.raw_style, leaf_text, false, &mut inline_style);
+        write_compact_background_fill_into(node.background_fill.as_ref(), &mut inline_style);
         write_compact_transform_into(node.transform, &mut inline_style);
         write_compact_cursor_into(node.cursor, &mut inline_style);
         TransitionSpec::write_css_list_into(&node.transitions, &mut inline_style);
@@ -125,6 +127,7 @@ pub fn resolve_node_style(
         true,
         &mut structural_decls,
     );
+    write_compact_background_fill_into(node.background_fill.as_ref(), &mut structural_decls);
     write_compact_transform_into(node.transform, &mut structural_decls);
 
     let structural_rule = if structural_decls.is_empty() {
@@ -134,6 +137,7 @@ pub fn resolve_node_style(
             &node.layout,
             node.layout_ext.as_deref(),
             &node.style,
+            node.background_fill.as_ref(),
             node.transform,
             &node.raw_style,
             leaf_text,
