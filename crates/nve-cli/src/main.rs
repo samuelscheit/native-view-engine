@@ -59,6 +59,9 @@ enum Commands {
         /// Directory to watch for Rust source changes.
         #[arg(long, default_value = "examples/counter/src")]
         watch: PathBuf,
+        /// Bind address for the hot-reload WebSocket server (`0.0.0.0` allows LAN/phone clients).
+        #[arg(long, default_value = "0.0.0.0")]
+        host: String,
         /// WebSocket port for Tier-1/Tier-2 hot-reload clients.
         #[arg(long, default_value_t = 8089)]
         port: u16,
@@ -109,9 +112,10 @@ fn main() {
         Commands::Dev {
             package,
             watch,
+            host,
             port,
             skia,
-        } => cmd_dev(&package, &watch, port, skia),
+        } => cmd_dev(&package, &watch, &host, port, skia),
         Commands::Codegen { action } => cmd_codegen(action),
     }
 }
@@ -387,6 +391,10 @@ fn ws_url_for_port(port: u16) -> String {
     format!("ws://127.0.0.1:{port}")
 }
 
+fn ws_bind_addr(host: &str, port: u16) -> String {
+    format!("{host}:{port}")
+}
+
 fn should_trigger_rebuild(kind: &notify::EventKind) -> bool {
     kind.is_modify() || kind.is_create()
 }
@@ -416,15 +424,20 @@ fn parse_export_targets(target: &str) -> Result<Vec<ExportTarget>, String> {
     Ok(out)
 }
 
-fn cmd_dev(package: &str, watch_dir: &Path, port: u16, launch_skia_window: bool) {
+fn cmd_dev(package: &str, watch_dir: &Path, host: &str, port: u16, launch_skia_window: bool) {
     use crossbeam_channel::unbounded;
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
-    let ws_url = ws_url_for_port(port);
+    let bind_addr = ws_bind_addr(host, port);
+    let client_ws_url = if host == "0.0.0.0" || host == "::" {
+        ws_url_for_port(port)
+    } else {
+        format!("ws://{host}:{port}")
+    };
     println!("nve dev — 2-Tier Hot Reload Daemon");
     println!("  package: {package}");
     println!("  watch:   {}", watch_dir.display());
-    println!("  ws:      {ws_url}");
+    println!("  ws:      ws://{bind_addr} (local: {client_ws_url})");
     if launch_skia_window {
         println!("  preview: live desktop window enabled (--skia)");
     }
@@ -433,11 +446,19 @@ fn cmd_dev(package: &str, watch_dir: &Path, port: u16, launch_skia_window: bool)
     let clients: Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>> =
         Arc::new(Mutex::new(Vec::new()));
     let ws_clients = Arc::clone(&clients);
+    let bind_addr_thread = bind_addr.clone();
 
     std::thread::spawn(move || {
-        let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind hot-reload WS port");
+        let listener = TcpListener::bind(&bind_addr_thread)
+            .unwrap_or_else(|e| panic!("bind hot-reload WS {bind_addr_thread}: {e}"));
         for stream in listener.incoming().flatten() {
-            if let Ok(ws) = tungstenite::accept(stream) {
+            let _ = stream.set_nodelay(true);
+            if let Ok(mut ws) = tungstenite::accept(stream) {
+                let status = HotPatchMsg::DevStatus {
+                    message: "Hot reload: connected".into(),
+                    latency_ms: 0,
+                };
+                let _ = ws.send(tungstenite::Message::Text(status.to_json().into()));
                 ws_clients.lock().unwrap().push(ws);
             }
         }
@@ -502,7 +523,7 @@ fn cmd_dev(package: &str, watch_dir: &Path, port: u16, launch_skia_window: bool)
 
     if launch_skia_window {
         std::thread::spawn(run_watch_loop);
-        if let Err(err) = nve_backend_skia::run_desktop_preview(dylib_path, Some(ws_url)) {
+        if let Err(err) = nve_backend_skia::run_desktop_preview(dylib_path, Some(client_ws_url)) {
             eprintln!("Desktop preview exited with error: {err}");
             std::process::exit(1);
         }
@@ -628,11 +649,13 @@ mod tests {
             Commands::Dev {
                 package,
                 watch,
+                host,
                 port,
                 skia,
             } => {
                 assert_eq!(package, "my-app");
                 assert_eq!(watch, PathBuf::from("src"));
+                assert_eq!(host, "0.0.0.0");
                 assert_eq!(port, 9001);
                 assert!(skia);
             }
@@ -770,6 +793,7 @@ mod tests {
         }
 
         assert_eq!(ws_url_for_port(8089), "ws://127.0.0.1:8089");
+        assert_eq!(ws_bind_addr("0.0.0.0", 8089), "0.0.0.0:8089");
 
         let msg = make_dylib_reload_msg(3, &dylib, 180);
         let decoded = HotPatchMsg::from_json(&msg.to_json()).unwrap();
