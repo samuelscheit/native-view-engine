@@ -45,8 +45,10 @@ Options:
   --ws <url>                Connect to nve dev WebSocket hot-reload server (default: ws://127.0.0.1:8089)
   --no-ws                   Disable WebSocket hot-reload client
   --snapshot <path.nvereloc>       Replay Frame-0 NVERELOC before dylib load & atomically save on exit
-  --instant-boot-dir <dir>         Per-user NativeInstantBootStore dir (user_frame0.nvereloc + state.nvemmap)
+  --instant-boot-dir <dir>         Per-user NativeInstantBootStore dir (default: auto per-app cache dir)
   --default-frame0 <path.nvereloc> Bundled cold-start frame0.nvereloc for first launch with --instant-boot-dir
+  --no-snapshot                    Disable default instant-boot Frame-0 replay & state persistence
+  --reset-state                    Clear cached snapshot/state before launching fresh
   --schema <ver>                   Expected snapshot app schema version (default: 1)
   --screenshot <out.png|ppm> Render headlessly to a PNG or P6 PPM file and exit (no window opened)
   --width <px>              Logical window/viewport width (default: 420)
@@ -139,6 +141,14 @@ where
                     .next()
                     .ok_or_else(|| "--default-frame0 requires a file path argument".to_string())?;
                 options.default_frame0_path = Some(PathBuf::from(path));
+            }
+            "--no-snapshot" => {
+                options.disable_instant_boot = true;
+                options.snapshot_path = None;
+                options.instant_boot_dir = None;
+            }
+            "--reset-state" => {
+                options.reset_state = true;
             }
             "--schema" => {
                 let raw = iter
@@ -395,5 +405,20 @@ mod tests {
         assert!(parse_args(s(&["libapp.dylib", "--schema", "abc"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--width", "0"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn parses_no_snapshot_and_reset_state_flags() {
+        let disabled = parse_args(s(&["libapp.dylib", "--no-snapshot"]))
+            .unwrap()
+            .unwrap();
+        assert!(disabled.options.disable_instant_boot);
+        assert!(!disabled.options.reset_state);
+
+        let reset = parse_args(s(&["libapp.dylib", "--reset-state"]))
+            .unwrap()
+            .unwrap();
+        assert!(!reset.options.disable_instant_boot);
+        assert!(reset.options.reset_state);
     }
 }

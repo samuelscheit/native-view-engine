@@ -1,5 +1,6 @@
 #include "NveQtWidgetInternal.hpp"
 
+#include <QCloseEvent>
 #include <QMetaObject>
 #include <QPainter>
 #include <QPointer>
@@ -349,6 +350,11 @@ bool NveQtWidget::saveSnapshot(const QString& snapshotPath, uint32_t schemaVersi
       std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), schemaVersion);
 }
 
+void NveQtWidget::setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion) {
+  impl_->auto_snapshot_path_ = snapshotPath;
+  impl_->auto_snapshot_schema_ = schemaVersion;
+}
+
 bool NveQtWidget::applyPropsJson(std::string_view propsJson) {
   if (!impl_->session_.is_valid()) {
     return false;
@@ -530,6 +536,13 @@ void NveQtWidget::paintEvent(QPaintEvent* /*event*/) {
     QPainter painter(this);
     painter.fillRect(rect(), impl_->root_bg_color_);
   }
+}
+
+void NveQtWidget::closeEvent(QCloseEvent* event) {
+  if (!impl_->auto_snapshot_path_.isEmpty() && nodeCount() > 0u) {
+    (void)saveSnapshot(impl_->auto_snapshot_path_, impl_->auto_snapshot_schema_);
+  }
+  QWidget::closeEvent(event);
 }
 
 } // namespace nve::qt

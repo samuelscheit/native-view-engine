@@ -133,6 +133,9 @@ class NveQtWidget : public QWidget {
   /// and writes it atomically to `snapshotPath`.
   bool saveSnapshot(const QString& snapshotPath, uint32_t schemaVersion = 1) const;
 
+  /// Configures automatic atomic snapshot persistence on `closeEvent`. Pass empty path to disable.
+  void setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion = 1);
+
   /// Forward UTF-8 JSON props to `NveComponentApi::set_props`, re-render if dirty, sync Qt views,
   /// and drain outbound events.
   bool applyPropsJson(std::string_view propsJson);
@@ -202,6 +205,7 @@ class NveQtWidget : public QWidget {
  protected:
   void resizeEvent(QResizeEvent* event) override;
   void paintEvent(QPaintEvent* event) override;
+  void closeEvent(QCloseEvent* event) override;
 
  private:
   class Impl;

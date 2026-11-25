@@ -18,6 +18,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
 
+use super::instant_boot::resolve_default_instant_boot_options;
 use super::hot_reload_client::HotReloadClient;
 use super::multi_window::{
     apply_window_state, build_window_attributes, create_presenter, CloseVetoHandler, HostWakeEvent,
@@ -37,7 +38,7 @@ use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) options: DesktopPreviewOptions,
     primary_session: Option<DesktopSession<A>>,
-    primary_window_id: Option<WindowId>,
+    pub(crate) primary_window_id: Option<WindowId>,
     primary_handle: Option<WindowHandleId>,
     pub(crate) windows: HashMap<WindowId, SurfaceWindow<A>>,
     pub(crate) surface_to_window: BTreeMap<SurfaceId, WindowId>,
@@ -48,14 +49,14 @@ pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) secondary_app_factory: Option<SecondaryAppFactory<A>>,
     hot_reload: Option<HotReloadClient>,
     pub(crate) proxy: Option<EventLoopProxy<HostWakeEvent>>,
-    snapshot_saved: bool,
 }
 
 impl DesktopWindowHost<HotAppSlot> {
     pub fn new(
         dylib_path: PathBuf,
-        options: DesktopPreviewOptions,
+        mut options: DesktopPreviewOptions,
     ) -> Result<Self, DesktopHostError> {
+        resolve_default_instant_boot_options(&dylib_path, &mut options);
         let scale = if options.scale_factor.is_finite() && options.scale_factor > 0.0 {
             options.scale_factor
         } else {
@@ -178,7 +179,6 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             secondary_app_factory: None,
             hot_reload: None,
             proxy: None,
-            snapshot_saved: false,
         }
     }
 
@@ -270,7 +270,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
     }
 
     pub fn save_snapshot_if_configured(&mut self) {
-        if self.snapshot_saved {
+        if self.options.disable_instant_boot {
             return;
         }
         let schema_version = self.options.schema_version;
@@ -289,7 +289,6 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     .map(|s| s.save_instant_boot_checkpoint(&boot_dir, schema_version, &app_tag))
             };
             if let Some(res) = saved {
-                self.snapshot_saved = true;
                 match res {
                     Ok(_) => eprintln!(
                         "[nve-skia-shell] Saved instant-boot user_frame0.nvereloc + state.nvemmap to '{}' (schema v{schema_version})",
@@ -317,7 +316,6 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 .map(|s| s.save_snapshot(&snap_path, schema_version))
         };
         let Some(res) = saved else { return };
-        self.snapshot_saved = true;
         match res {
             Ok(_) => eprintln!(
                 "[nve-skia-shell] Saved Frame-0 + state NVERELOC to '{}' (schema v{schema_version})",

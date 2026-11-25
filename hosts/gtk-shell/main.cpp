@@ -1,4 +1,10 @@
 #include "NveGtkHost.hpp"
+#include "nve_snapshot.hpp"
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <glib-unix.h>
+#include <csignal>
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -210,33 +216,46 @@ struct AppLaunchState {
   std::string pair_token;
   std::string pair_transport;
   std::string snapshot_path;
+  std::string sidecar_frame0_path;
   uint32_t schema_version{1u};
-  bool snapshot_saved{false};
+  bool no_snapshot{false};
+  bool reset_state{false};
   int width{640};
   int height{420};
+  GtkApplication* app{nullptr};
   std::unique_ptr<nve::NveGtkHost> host;
 };
 
-void persist_snapshot_if_configured(AppLaunchState* state) {
-  if (state == nullptr || state->snapshot_saved || state->snapshot_path.empty() ||
-      state->host == nullptr) {
+void persist_snapshot_if_configured(AppLaunchState* state, const char* trigger) {
+  if (state == nullptr || state->no_snapshot || state->snapshot_path.empty() ||
+      state->host == nullptr || state->host->node_count() == 0u) {
     return;
   }
-  state->snapshot_saved = true;
   if (state->host->save_snapshot(state->snapshot_path, state->schema_version)) {
     std::cerr << "[nve-gtk-shell] Saved Frame-0 + state snapshot to " << state->snapshot_path
-              << " (schema v" << state->schema_version << ")\n";
+              << " (schema v" << state->schema_version << ", trigger=" << trigger << ")\n";
   } else {
     std::cerr << "[nve-gtk-shell] Warning: failed to save snapshot to " << state->snapshot_path
-              << "\n";
+              << " (trigger=" << trigger << ")\n";
   }
 }
 
 gboolean on_window_close_request(GtkWindow* window, gpointer user_data) {
   (void)window;
-  persist_snapshot_if_configured(static_cast<AppLaunchState*>(user_data));
+  persist_snapshot_if_configured(static_cast<AppLaunchState*>(user_data), "window-close");
   return FALSE;
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+gboolean on_unix_termination_signal(gpointer user_data) {
+  auto* state = static_cast<AppLaunchState*>(user_data);
+  persist_snapshot_if_configured(state, "signal");
+  if (state != nullptr && state->app != nullptr) {
+    g_application_quit(G_APPLICATION(state->app));
+  }
+  return G_SOURCE_REMOVE;
+}
+#endif
 
 void on_app_activate(GtkApplication* app, gpointer user_data) {
   auto* state = static_cast<AppLaunchState*>(user_data);
@@ -261,16 +280,25 @@ void on_app_activate(GtkApplication* app, gpointer user_data) {
 
   gtk_window_set_child(GTK_WINDOW(window), state->host->host_widget());
 
-  if (!state->snapshot_path.empty()) {
+  if (!state->no_snapshot) {
     std::error_code ec;
-    if (std::filesystem::exists(state->snapshot_path, ec)) {
+    std::string replay_path;
+    const char* replay_source = "user-snapshot";
+    if (!state->snapshot_path.empty() && std::filesystem::exists(state->snapshot_path, ec)) {
+      replay_path = state->snapshot_path;
+    } else if (!state->reset_state && !state->sidecar_frame0_path.empty() &&
+               std::filesystem::exists(state->sidecar_frame0_path, ec)) {
+      replay_path = state->sidecar_frame0_path;
+      replay_source = "sidecar-frame0";
+    }
+    if (!replay_path.empty()) {
       const auto t0 = std::chrono::steady_clock::now();
-      if (state->host->replay_snapshot(state->snapshot_path, state->schema_version)) {
+      if (state->host->replay_snapshot(replay_path, state->schema_version)) {
         const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                     std::chrono::steady_clock::now() - t0)
                                     .count();
-        std::cerr << "[nve-gtk-shell] Instant-boot Frame-0 mmap restore from "
-                  << state->snapshot_path << " in " << elapsed_us << " us\n";
+        std::cerr << "[nve-gtk-shell] Instant-boot Frame-0 mmap restore (" << replay_source
+                  << ") from " << replay_path << " in " << elapsed_us << " us\n";
       }
     }
   }
@@ -306,7 +334,7 @@ void print_usage(const char* argv0) {
             << " [--dylib <path/to/libapp.so>]"
                " [--pair-connect <host:port|url>] [--pair-token <token>]"
                " [--pair-transport <udp|tcp|ws>]"
-               " [--snapshot <path/to/frame0.nvesnap>]"
+               " [--snapshot <path/to/frame0.nvereloc>] [--no-snapshot] [--reset-state]"
                " [--schema <ver>] [--width W] [--height H]\n";
 }
 
@@ -319,7 +347,11 @@ int main(int argc, char* argv[]) {
       print_usage(argv[0]);
       return 0;
     }
-    if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
+    if (std::strcmp(argv[i], "--no-snapshot") == 0) {
+      state.no_snapshot = true;
+    } else if (std::strcmp(argv[i], "--reset-state") == 0) {
+      state.reset_state = true;
+    } else if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
       state.dylib_path = argv[++i];
     } else if (std::strcmp(argv[i], "--pair-connect") == 0 && i + 1 < argc) {
       state.pair_connect = argv[++i];
@@ -347,13 +379,47 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  GtkApplication* app = gtk_application_new("dev.nve.GtkShell", G_APPLICATION_NON_UNIQUE);
-  g_signal_connect(app, "activate", nve::gtk_detail::to_gcallback(&on_app_activate), &state);
-  const int status = g_application_run(G_APPLICATION(app), 0, nullptr);
+  if (nve::is_snapshot_disabled()) {
+    state.no_snapshot = true;
+  }
+  if (nve::is_snapshot_reset_requested()) {
+    state.reset_state = true;
+  }
+  if (state.no_snapshot) {
+    state.snapshot_path.clear();
+  } else {
+    if (state.snapshot_path.empty() && state.pair_connect.empty()) {
+      const std::string app_identity =
+          !state.dylib_path.empty() ? state.dylib_path : std::string("nve-gtk-shell-builtin");
+      state.snapshot_path = nve::resolve_default_snapshot_path(app_identity);
+    }
+    if (state.reset_state && !state.snapshot_path.empty()) {
+      nve::remove_snapshot_file_if_exists(state.snapshot_path);
+      std::cerr << "[nve-gtk-shell] Cleared cached snapshot at " << state.snapshot_path
+                << " (--reset-state / NVE_RESET_STATE)\n";
+    }
+    if (!state.dylib_path.empty()) {
+      state.sidecar_frame0_path = nve::resolve_sidecar_frame0_path(state.dylib_path);
+    }
+  }
 
-  persist_snapshot_if_configured(&state);
+  GtkApplication* app = gtk_application_new("dev.nve.GtkShell", G_APPLICATION_NON_UNIQUE);
+  state.app = app;
+  g_signal_connect(app, "activate", nve::gtk_detail::to_gcallback(&on_app_activate), &state);
+#if defined(__unix__) || defined(__APPLE__)
+  const guint sigint_id = g_unix_signal_add(SIGINT, &on_unix_termination_signal, &state);
+  const guint sigterm_id = g_unix_signal_add(SIGTERM, &on_unix_termination_signal, &state);
+#endif
+  const int status = g_application_run(G_APPLICATION(app), 0, nullptr);
+#if defined(__unix__) || defined(__APPLE__)
+  if (sigint_id != 0u) g_source_remove(sigint_id);
+  if (sigterm_id != 0u) g_source_remove(sigterm_id);
+#endif
+
+  persist_snapshot_if_configured(&state, "shutdown");
   // Destroy host before releasing GtkApplication.
   state.host.reset();
+  state.app = nullptr;
   g_object_unref(app);
   return status;
 }

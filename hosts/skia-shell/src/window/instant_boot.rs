@@ -3,15 +3,17 @@
 //! Opens a pre-baked `frame0.nvereloc` / returning-user `user_frame0.nvereloc` (or legacy bundle
 //! `NVERELOC`) and paints Frame 0 into [`SkiaBackend`] prior to loading any app `cdylib`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use nve_abi::{ColorRgba, SurfaceId};
 use nve_backend_skia::raster::PixelBuffer;
 use nve_backend_skia::SkiaBackend;
 use nve_engine::{
-    MmapReloc, NativeInstantBootStore, RelocBundleView, RelocError, RenderBackend, SceneRelocView,
-    StateStoreConfig, VerifyMode, Viewport, RELOC_KIND_BUNDLE, RELOC_KIND_SCENE,
+    default_instant_boot_dir, is_snapshot_disabled, is_snapshot_reset_requested,
+    reset_instant_boot_dir, resolve_sidecar_frame0_path, MmapReloc, NativeInstantBootStore,
+    RelocBundleView, RelocError, RenderBackend, SceneRelocView, StateStoreConfig, VerifyMode,
+    Viewport, RELOC_KIND_BUNDLE, RELOC_KIND_SCENE,
 };
 
 use super::{DesktopHostError, DesktopPreviewOptions};
@@ -25,6 +27,53 @@ pub struct PrewarmedSnapshot {
     pub state_bytes: Vec<u8>,
     pub restore_us: u64,
     pub used_user_frame0: bool,
+    pub has_frame0: bool,
+}
+
+/// Resolves default-on per-app `instant_boot_dir` and sidecar `frame0.nvereloc` for `dylib_path`,
+/// honoring `--no-snapshot`, `--reset-state`, `NVE_SNAPSHOT_DISABLE`, `NVE_SNAPSHOT_PATH`, and
+/// `NVE_RESET_STATE`.
+pub(crate) fn resolve_default_instant_boot_options(
+    dylib_path: &Path,
+    options: &mut DesktopPreviewOptions,
+) {
+    if options.disable_instant_boot || is_snapshot_disabled() {
+        options.instant_boot_dir = None;
+        options.snapshot_path = None;
+        return;
+    }
+
+    if options.instant_boot_dir.is_none() && options.snapshot_path.is_none() {
+        if let Ok(env_path) = std::env::var("NVE_SNAPSHOT_PATH")
+            && !env_path.trim().is_empty()
+        {
+            options.snapshot_path = Some(PathBuf::from(env_path.trim()));
+        } else {
+            let app_id = dylib_path.to_string_lossy();
+            options.instant_boot_dir = default_instant_boot_dir(&app_id);
+        }
+    }
+
+    if options.default_frame0_path.is_none() {
+        options.default_frame0_path = resolve_sidecar_frame0_path(dylib_path);
+    }
+
+    if options.reset_state || is_snapshot_reset_requested() {
+        if let Some(dir) = options.instant_boot_dir.as_deref() {
+            reset_instant_boot_dir(dir);
+            eprintln!(
+                "[nve-skia-shell] Cleared cached instant-boot state in '{}' (--reset-state / NVE_RESET_STATE)",
+                dir.display()
+            );
+        }
+        if let Some(snap) = options.snapshot_path.as_deref() {
+            let _ = std::fs::remove_file(snap);
+            eprintln!(
+                "[nve-skia-shell] Cleared cached snapshot at '{}' (--reset-state / NVE_RESET_STATE)",
+                snap.display()
+            );
+        }
+    }
 }
 
 /// Opens an `NVERELOC` file (`SceneRelocView` or `RelocBundleView`) with schema validation,
@@ -77,6 +126,7 @@ pub fn replay_snapshot_into_backend(
         state_bytes,
         restore_us,
         used_user_frame0: true,
+        has_frame0: true,
     })
 }
 
@@ -101,10 +151,12 @@ pub fn replay_instant_boot_store_into_backend(
     let mut backend = SkiaBackend::new();
     backend.set_viewport(surface_id, viewport);
     let mut used_user_frame0 = false;
+    let mut has_frame0 = false;
     if let Some(frame0) = store.load_frame0(VerifyMode::Full) {
         used_user_frame0 = frame0.is_user_cached();
         let scene = frame0.scene_view(VerifyMode::Full)?;
         backend.render_reloc_scene(scene)?;
+        has_frame0 = true;
     }
 
     let state_bytes = store
@@ -124,6 +176,7 @@ pub fn replay_instant_boot_store_into_backend(
         state_bytes,
         restore_us,
         used_user_frame0,
+        has_frame0,
     })
 }
 
@@ -142,16 +195,29 @@ pub(crate) fn prewarm_from_options(
             options.clear_color,
         ) {
             Ok(p) => {
-                let src = if p.used_user_frame0 {
-                    "user_frame0.nvereloc"
+                if !p.has_frame0 && p.state_bytes.is_empty() {
+                    return None;
+                }
+                if p.has_frame0 {
+                    let src = if p.used_user_frame0 {
+                        "user_frame0.nvereloc"
+                    } else {
+                        "bundled frame0.nvereloc"
+                    };
+                    eprintln!(
+                        "[nve-skia-shell] Instant-boot Frame-0 NVERELOC restore from '{}' ({src}) in {} us (state={} bytes)",
+                        boot_dir.display(),
+                        p.restore_us,
+                        p.state_bytes.len()
+                    );
                 } else {
-                    "bundled frame0.nvereloc"
-                };
-                eprintln!(
-                    "[nve-skia-shell] Instant-boot Frame-0 NVERELOC restore from '{}' ({src}) in {} us",
-                    boot_dir.display(),
-                    p.restore_us
-                );
+                    eprintln!(
+                        "[nve-skia-shell] Instant-boot state restore from '{}' ({} bytes) in {} us",
+                        boot_dir.display(),
+                        p.state_bytes.len(),
+                        p.restore_us
+                    );
+                }
                 Some(p)
             }
             Err(err) => {
@@ -186,5 +252,158 @@ pub(crate) fn prewarm_from_options(
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::window::{DesktopApp, DesktopSession, DesktopWindowHost};
+    use nve_abi::{
+        CommandBufferBuilder, ComponentKind, Dimension, FrameId, LayoutProps, StyleProps,
+        ROOT_NODE_ID,
+    };
+
+    struct CountingTestApp {
+        count: u32,
+        buf: Vec<u8>,
+        state_buf: Vec<u8>,
+    }
+
+    impl CountingTestApp {
+        fn new() -> Self {
+            Self {
+                count: 0,
+                buf: Vec::new(),
+                state_buf: Vec::new(),
+            }
+        }
+    }
+
+    impl DesktopApp for CountingTestApp {
+        fn generation(&self) -> u64 {
+            1
+        }
+        fn render(&mut self, frame_id: FrameId) -> &[u8] {
+            let mut b = CommandBufferBuilder::new(1, frame_id);
+            b.create_node(2, ComponentKind::View, None);
+            b.set_children(ROOT_NODE_ID, &[2]);
+            b.set_layout(
+                2,
+                &LayoutProps {
+                    width: Dimension::Points(200.0),
+                    height: Dimension::Points(100.0),
+                    ..Default::default()
+                },
+            );
+            b.set_style(
+                2,
+                &StyleProps {
+                    background: ColorRgba::rgb(37, 99, 235),
+                    ..Default::default()
+                },
+            );
+            b.commit(true);
+            self.buf = b.finish().to_vec();
+            &self.buf
+        }
+        fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+            self.count += 1;
+            true
+        }
+        fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
+            false
+        }
+        fn reload(&mut self, _p: &Path, _sid: SurfaceId) -> Result<u64, DesktopHostError> {
+            Ok(1)
+        }
+        fn snapshot_state(&mut self) -> &[u8] {
+            self.state_buf = format!("count={}", self.count).into_bytes();
+            &self.state_buf
+        }
+    }
+
+    #[test]
+    fn default_instant_boot_options_resolve_and_allow_repeated_saves() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "nve_skia_default_boot_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let fake_dylib = tmp_dir.join("libdemo_default_boot.dylib");
+        std::fs::write(&fake_dylib, b"stub").unwrap();
+        let mut opts = DesktopPreviewOptions::default();
+        resolve_default_instant_boot_options(&fake_dylib, &mut opts);
+        assert!(opts.instant_boot_dir.is_some());
+        assert!(opts.default_frame0_path.is_none());
+
+        let sidecar = tmp_dir.join("frame0.nvereloc");
+        std::fs::write(&sidecar, b"stub-frame0").unwrap();
+        let mut opts_sidecar = DesktopPreviewOptions::default();
+        resolve_default_instant_boot_options(&fake_dylib, &mut opts_sidecar);
+        assert_eq!(opts_sidecar.default_frame0_path.as_deref(), Some(sidecar.as_path()));
+
+        let mut opts_disabled = DesktopPreviewOptions {
+            disable_instant_boot: true,
+            snapshot_path: Some(tmp_dir.join("ignored.nvereloc")),
+            ..Default::default()
+        };
+        resolve_default_instant_boot_options(&fake_dylib, &mut opts_disabled);
+        assert!(opts_disabled.instant_boot_dir.is_none());
+        assert!(opts_disabled.snapshot_path.is_none());
+
+        let boot_dir = tmp_dir.join("repeated_save_store");
+        let viewport = Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        };
+        let mut session = DesktopSession::new(
+            CountingTestApp::new(),
+            1,
+            viewport,
+            ColorRgba::BLACK,
+            false,
+        );
+        session.render_and_rasterize().unwrap();
+        session.app_mut().count = 1;
+
+        let host_opts = DesktopPreviewOptions {
+            instant_boot_dir: Some(boot_dir.clone()),
+            schema_version: 1,
+            ..Default::default()
+        };
+        let mut host = DesktopWindowHost::from_primary_session(host_opts, session);
+        host.save_snapshot_if_configured();
+
+        let first = replay_instant_boot_store_into_backend(
+            &boot_dir,
+            None,
+            1,
+            1,
+            viewport,
+            ColorRgba::BLACK,
+        )
+        .unwrap();
+        assert!(first.has_frame0);
+        assert_eq!(first.state_bytes, b"count=1");
+
+        host.session_mut().app_mut().count = 2;
+        host.save_snapshot_if_configured();
+
+        let second = replay_instant_boot_store_into_backend(
+            &boot_dir,
+            None,
+            1,
+            1,
+            viewport,
+            ColorRgba::BLACK,
+        )
+        .unwrap();
+        assert_eq!(second.state_bytes, b"count=2");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

@@ -19,7 +19,10 @@ use std::mem::{align_of, offset_of, size_of};
 use crate::mmap_arena::{ArenaError, ArenaPod, OffsetSlice};
 use crate::reloc::RelocError;
 
-pub use boot_store::{InstantFrame0, NativeInstantBootStore};
+pub use boot_store::{
+    default_instant_boot_dir, is_snapshot_disabled, is_snapshot_reset_requested,
+    reset_instant_boot_dir, resolve_sidecar_frame0_path, InstantFrame0, NativeInstantBootStore,
+};
 pub use state_store::NativeStateStore;
 
 /// Default file name for per-user crash-atomic `MmapOffsetArena` state storage.

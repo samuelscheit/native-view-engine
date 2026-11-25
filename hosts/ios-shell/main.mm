@@ -29,10 +29,29 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
   return [[NSBundle mainBundle] pathForResource:@"libnve_app" ofType:@"dylib"];
 }
 
+BOOL NveIsTruthyEnvFlag(NSString * _Nullable value) {
+  if (value.length == 0) {
+    return NO;
+  }
+  NSString *trimmed =
+      [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSString *lower = trimmed.lowercaseString;
+  return [lower isEqualToString:@"1"] || [lower isEqualToString:@"true"] ||
+         [lower isEqualToString:@"yes"] || [lower isEqualToString:@"on"];
+}
+
+BOOL NveHasLaunchArgument(NSString *flag) {
+  return [NSProcessInfo.processInfo.arguments containsObject:flag];
+}
+
+BOOL NveIsSnapshotResetRequested(void) {
+  return NveIsTruthyEnvFlag(NSProcessInfo.processInfo.environment[@"NVE_RESET_STATE"]) ||
+         NveHasLaunchArgument(@"--reset-state");
+}
+
 NSString * _Nullable NveResolveSnapshotPath(uint32_t surfaceId) {
   NSDictionary<NSString *, NSString *> *env = NSProcessInfo.processInfo.environment;
-  NSString *disabled = env[@"NVE_SNAPSHOT_DISABLE"];
-  if ([disabled isEqualToString:@"1"] || [disabled.lowercaseString isEqualToString:@"true"]) {
+  if (NveIsTruthyEnvFlag(env[@"NVE_SNAPSHOT_DISABLE"]) || NveHasLaunchArgument(@"--no-snapshot")) {
     return nil;
   }
   NSString *envPath = env[@"NVE_SNAPSHOT_PATH"];
@@ -49,8 +68,8 @@ NSString * _Nullable NveResolveSnapshotPath(uint32_t surfaceId) {
     return nil;
   }
   NSString *filename = surfaceId <= 1u
-                           ? @"nve_frame0.nvesnap"
-                           : [NSString stringWithFormat:@"nve_frame0_s%u.nvesnap", surfaceId];
+                           ? @"nve_frame0.nvereloc"
+                           : [NSString stringWithFormat:@"nve_frame0_s%u.nvereloc", surfaceId];
   return [cacheDir stringByAppendingPathComponent:filename];
 }
 
@@ -174,6 +193,10 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   self.view.backgroundColor = NveDarkSlateColor();
   self.snapshotPath = NveResolveSnapshotPath(self.surfaceId);
   self.snapshotSchemaVersion = NveResolveSnapshotSchemaVersion();
+  if (self.snapshotPath.length > 0 && NveIsSnapshotResetRequested()) {
+    [[NSFileManager defaultManager] removeItemAtPath:self.snapshotPath error:nil];
+    NSLog(@"NveIosShell: Cleared cached snapshot at %@ (NVE_RESET_STATE)", self.snapshotPath);
+  }
   if (self.pairEndpoint.length == 0) {
     const NveIosPairConfig launchPair = NveResolveLaunchPairConfig();
     self.pairEndpoint = launchPair.endpoint;
@@ -250,14 +273,20 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 }
 
 - (void)_loadBundledApp {
-  if (self.snapshotPath.length > 0 &&
-      [[NSFileManager defaultManager] fileExistsAtPath:self.snapshotPath]) {
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSString *replayPath = nil;
+  if (self.snapshotPath.length > 0 && [fm fileExistsAtPath:self.snapshotPath]) {
+    replayPath = self.snapshotPath;
+  } else if (self.snapshotPath.length > 0 && !NveIsSnapshotResetRequested()) {
+    replayPath = [[NSBundle mainBundle] pathForResource:@"frame0" ofType:@"nvereloc"];
+  }
+  if (replayPath.length > 0) {
     uint64_t restoreUs = 0;
-    if ([self.componentView replayFrame0SnapshotAtPath:self.snapshotPath
+    if ([self.componentView replayFrame0SnapshotAtPath:replayPath
                                  expectedSchemaVersion:self.snapshotSchemaVersion
                                          restoreTimeUs:&restoreUs]) {
       NSLog(@"NveIosShell: Instant-boot Frame-0 mmap restore from %@ in %llu us (nodes=%u)",
-            self.snapshotPath,
+            replayPath,
             static_cast<unsigned long long>(restoreUs),
             self.componentView.nveNodeCount);
     }

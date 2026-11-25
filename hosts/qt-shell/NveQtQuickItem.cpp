@@ -30,7 +30,15 @@ class NveQtQuickItem::Impl {
   explicit Impl(NveQtQuickItem* owner) : owner_(owner) {
     session_.set_text_measurer(NveQtQuickItem::makeQtTextMeasurer());
   }
-  ~Impl() { session_.reset(); }
+  ~Impl() {
+    if (!auto_snapshot_path_.isEmpty() && session_.node_count() > 0u) {
+      const QByteArray utf8 = auto_snapshot_path_.toUtf8();
+      (void)session_.save_snapshot(
+          std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())),
+          auto_snapshot_schema_);
+    }
+    session_.reset();
+  }
 
   qreal effectiveDpr() const {
     if (QQuickWindow* win = owner_->window()) {
@@ -280,6 +288,8 @@ class NveQtQuickItem::Impl {
   uint64_t scene_generation_{0};
   uint32_t pressed_node_id_{0};
   uint32_t focused_node_id_{0};
+  QString auto_snapshot_path_;
+  uint32_t auto_snapshot_schema_{1};
   SceneGraphStats sg_stats_{};
 };
 
@@ -431,6 +441,11 @@ bool NveQtQuickItem::saveSnapshot(const QString& snapshotPath, uint32_t schemaVe
   const QByteArray utf8 = snapshotPath.toUtf8();
   return impl_->session_.save_snapshot(
       std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), schemaVersion);
+}
+
+void NveQtQuickItem::setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion) {
+  impl_->auto_snapshot_path_ = snapshotPath;
+  impl_->auto_snapshot_schema_ = schemaVersion;
 }
 
 bool NveQtQuickItem::applyPropsJson(std::string_view propsJson) {
