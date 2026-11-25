@@ -46,6 +46,12 @@ pub use nve_components::media::{
     ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH,
     MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
+pub use nve_components::motion::{
+    lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for,
+    EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
+    TimedTransition, TransitionProperty, TransitionSpec,
+};
+pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
 pub use signal_archive::{
     reconcile_signal_entry, signal_slot_id, BinValueSlot, HydrationReport, SignalArchive,
     SignalArchiveError, SignalCodec, SignalDelta, SignalDeltaOp, SignalRegistry,
@@ -123,6 +129,11 @@ pub mod prelude {
         Display, FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow,
         ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign,
     };
+    pub use nve_components::motion::{
+        EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
+        TimedTransition, TransitionProperty, TransitionSpec,
+    };
+    pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
     pub use dioxus_core;
     pub use dioxus_core::{Element, VirtualDom};
     pub use dioxus_core_macro::{component, rsx, Props};

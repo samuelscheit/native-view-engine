@@ -33,6 +33,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         if self.layout_tree.set_node_state_rules(id, rules)
             && !self.layout_tree.interaction_state(id).is_empty()
         {
+            self.sync_motion_targets(&[id]);
             self.rebuild_display_list();
         }
     }
@@ -50,6 +51,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             .iter()
             .any(|&id| !self.layout_tree.interaction_state(id).is_empty())
         {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
     }
@@ -67,6 +69,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             self.focus.selection_anchor = 0;
         }
         if !dirty.is_empty() {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -78,6 +81,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let target = self.hit_test_interaction(x, y);
         let dirty = self.layout_tree.pointer_move_node(target);
         if !dirty.is_empty() {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -87,6 +91,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
     pub fn pointer_leave(&mut self) -> Vec<NodeId> {
         let dirty = self.layout_tree.pointer_leave();
         if !dirty.is_empty() {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -97,6 +102,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let target = self.hit_test_interaction(x, y);
         let dirty = self.layout_tree.pointer_down_node(target);
         if !dirty.is_empty() {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -107,6 +113,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let target = self.hit_test_interaction(x, y);
         let dirty = self.layout_tree.pointer_up_node(target);
         if !dirty.is_empty() {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -118,6 +125,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let target = self.hit_test_interaction(x, y);
         let dirty = self.layout_tree.touch_tap_node(target);
         if !dirty.is_empty() {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -130,6 +138,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let resolved = self.layout_tree.interaction_tracker().focused();
         let text_changed = self.sync_text_focus_without_rebuild(resolved);
         if !dirty.is_empty() || text_changed {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -142,6 +151,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let resolved = self.layout_tree.interaction_tracker().focused();
         let text_changed = self.sync_text_focus_without_rebuild(resolved);
         if !dirty.is_empty() || text_changed {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty
@@ -152,6 +162,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         let dirty = self.layout_tree.blur();
         let text_changed = self.sync_text_focus_without_rebuild(None);
         if !dirty.is_empty() || text_changed {
+            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
         dirty

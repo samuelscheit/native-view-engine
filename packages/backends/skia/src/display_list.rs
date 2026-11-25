@@ -11,6 +11,7 @@ use nve_components::style_patch::{Display, Overflow, TextAlign as PatchTextAlign
 use nve_engine::{LayoutEngine, LayoutRect};
 
 use crate::image_cache::ImageCache;
+use crate::motion::MotionDriver;
 use crate::raster::parse_box_shadow;
 use crate::scroll::compute_scroll_content_size;
 use crate::text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
@@ -284,6 +285,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
     layout_tree: &HeadlessBackend<L>,
     scroll_offsets: &HashMap<NodeId, (f32, f32)>,
     focus: &TextFocusState,
+    motion: &MotionDriver,
     text_engine: &CosmicTextEngine,
     clip_bounds: LayoutRect,
     offset: (f32, f32),
@@ -305,6 +307,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
     if !patch.is_empty() {
         patch.apply_style_to(&mut style);
     }
+    motion.apply_animated_style(id, &mut style);
     if node.kind == ComponentKind::Text && !node.has_explicit_style {
         if patch.text_color.is_none()
             && let Some(c) = inherited_text.text_color
@@ -471,6 +474,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                         layout_tree,
                         scroll_offsets,
                         focus,
+                        motion,
                         text_engine,
                         child_clip,
                         child_offset,
@@ -487,6 +491,7 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
                         layout_tree,
                         scroll_offsets,
                         focus,
+                        motion,
                         text_engine,
                         child_clip,
                         child_offset,

@@ -13,6 +13,8 @@ use crate::css::MirrorElement;
 use crate::media_css::{compile_node_media_rules, CompiledMediaRule};
 use crate::state_css::{compile_node_state_rules, format_cursor_rule, CompiledStateRule};
 use crate::style_hash::{format_structural_class, hash_structural_style, is_inheriting_leaf_text};
+use crate::transition_css::compile_node_transitions;
+use nve_components::motion::TransitionSpec;
 
 /// Hard upper bound on dynamic structural CSS rules in [`StyleSheetCache`].
 pub const MAX_DYNAMIC_RULES: usize = 4096;
@@ -31,6 +33,7 @@ pub struct ResolvedNodeStyle {
     pub inline_style: String,
     pub structural_rule: Option<(String, String)>,
     pub cursor_rule: Option<(&'static str, &'static str)>,
+    pub transition_rule: Option<(String, String)>,
     pub media_rules: Vec<CompiledMediaRule>,
     pub state_rules: Vec<CompiledStateRule>,
 }
@@ -63,6 +66,16 @@ pub fn resolve_node_style(
         compile_node_media_rules(node.show_on, &node.responsive_rules, &mut media_rules);
     }
 
+    let compiled_transition = (!node.transitions.is_empty())
+        .then(|| compile_node_transitions(&node.transitions))
+        .flatten();
+    if let Some(ref tr) = compiled_transition
+        && let Some(ref rm_rule) = tr.reduced_motion_rule
+        && !media_rules.iter().any(|r| r.class_name == rm_rule.class_name)
+    {
+        media_rules.push(rm_rule.clone());
+    }
+
     let mut state_rules = Vec::new();
     if !node.state_rules.is_empty() {
         compile_node_state_rules(&node.state_rules, &mut state_rules);
@@ -74,6 +87,7 @@ pub fn resolve_node_style(
         write_compact_layout_into(&node.layout, false, &mut inline_style);
         write_compact_style_into(&node.style, &node.raw_style, leaf_text, false, &mut inline_style);
         write_compact_cursor_into(node.cursor, &mut inline_style);
+        TransitionSpec::write_css_list_into(&node.transitions, &mut inline_style);
         if !node.patch_css.is_empty() {
             inline_style.push_str(&node.patch_css);
         }
@@ -90,6 +104,7 @@ pub fn resolve_node_style(
             inline_style,
             structural_rule: None,
             cursor_rule: None,
+            transition_rule: None,
             media_rules,
             state_rules,
         };
@@ -131,6 +146,17 @@ pub fn resolve_node_style(
         }
     });
 
+    let transition_rule = compiled_transition.and_then(|tr| {
+        if existing_rule_check(&tr.class_name) || allow_new_rule {
+            class_name.push(' ');
+            class_name.push_str(&tr.class_name);
+            Some((tr.class_name, tr.decls))
+        } else {
+            inline_style.push_str(&tr.decls);
+            None
+        }
+    });
+
     for rule in &media_rules {
         class_name.push(' ');
         class_name.push_str(&rule.class_name);
@@ -147,6 +173,7 @@ pub fn resolve_node_style(
         inline_style,
         structural_rule,
         cursor_rule,
+        transition_rule,
         media_rules,
         state_rules,
     }

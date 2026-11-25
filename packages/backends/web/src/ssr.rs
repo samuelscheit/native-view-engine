@@ -108,6 +108,9 @@ impl WebBackend {
         if let Some((cls, decls)) = resolved.cursor_rule {
             rules.entry(cls.to_owned()).or_insert_with(|| decls.to_owned());
         }
+        if let Some((cls, decls)) = resolved.transition_rule {
+            rules.entry(cls).or_insert(decls);
+        }
         for media_rule in resolved.media_rules {
             if media_seen.insert(media_rule.class_name.clone()) {
                 media_rules.push(media_rule);
