@@ -108,6 +108,7 @@ target_compile_definitions(nve_fabric_bridge_test PRIVATE
 )
 if(MSVC)
   target_compile_options(nve_fabric_bridge_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
+  target_link_options(nve_fabric_bridge_test PRIVATE /STACK:8388608)
 else()
   target_compile_options(nve_fabric_bridge_test PRIVATE -Wall -Wextra -Werror)
 endif()

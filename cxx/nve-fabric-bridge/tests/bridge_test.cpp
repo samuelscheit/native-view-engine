@@ -2509,8 +2509,23 @@ void test_mmap_snapshot_and_session_instant_boot() {
 #endif
 
   // 12g. Optional cross-language Rust <-> C++ compatibility probe via environment variables.
-  if (const char* rust_snap = std::getenv("NVE_TEST_RUST_SNAPSHOT_IN");
-      rust_snap != nullptr && rust_snap[0] != '\0') {
+  const auto read_env = [](const char* name) -> std::string {
+#if defined(_MSC_VER)
+    char* raw = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&raw, &len, name) != 0 || raw == nullptr) {
+      return {};
+    }
+    std::string out(raw);
+    std::free(raw);
+    return out;
+#else
+    const char* raw = std::getenv(name);
+    return raw != nullptr ? std::string(raw) : std::string{};
+#endif
+  };
+
+  if (const std::string rust_snap = read_env("NVE_TEST_RUST_SNAPSHOT_IN"); !rust_snap.empty()) {
     nve::MmapSnapshot snap;
     assert(nve::MmapSnapshot::open_with_schema(rust_snap, 1u, snap, /*verify_checksum=*/true));
     assert(snap.frame0_slice().len > 24u);
@@ -2530,8 +2545,7 @@ void test_mmap_snapshot_and_session_instant_boot() {
               << " us (nodes=" << cross.node_count() << ", ops=" << stats.op_count << ")\n";
     assert(cross.node_count() > 10u);
 
-    if (const char* cpp_out = std::getenv("NVE_TEST_CPP_SNAPSHOT_OUT");
-        cpp_out != nullptr && cpp_out[0] != '\0') {
+    if (const std::string cpp_out = read_env("NVE_TEST_CPP_SNAPSHOT_OUT"); !cpp_out.empty()) {
       assert(cross.save_snapshot(cpp_out, 1u, "cpp-roundtrip"));
     }
   }

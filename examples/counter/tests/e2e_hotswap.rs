@@ -83,14 +83,11 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
 fn tier2_cdylib_hotswap_preserves_state_across_generations() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
-    let dylib_ext = if cfg!(target_os = "macos") {
-        "dylib"
-    } else if cfg!(target_os = "windows") {
-        "dll"
-    } else {
-        "so"
-    };
-    let dylib_path = workspace_root.join(format!("target/debug/libnve_example_counter.{dylib_ext}"));
+    let dylib_path = workspace_root.join(format!(
+        "target/debug/{}nve_example_counter.{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_EXTENSION
+    ));
     if !dylib_path.exists() {
         // Ensure the cdylib artifact is built when running this test standalone.
         let status = std::process::Command::new("cargo")
