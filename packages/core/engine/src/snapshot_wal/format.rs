@@ -1,7 +1,8 @@
 use std::fmt;
 use std::io;
 
-use crate::snapshot::{fnv1a_64_update, SnapshotError};
+use crate::hash::Xxh64Hasher;
+use crate::snapshot::SnapshotError;
 
 /// 8-byte file magic identifying an NVE append-only snapshot WAL.
 pub const NVE_WAL_MAGIC: [u8; 8] = *b"NVE_WAL1";
@@ -15,13 +16,11 @@ pub const WAL_HEADER_SIZE: usize = 24;
 /// Fixed byte length of each record prefix (`seq: u64` + `kind: u8` + `payload_len: u32`).
 pub const WAL_RECORD_HEADER_SIZE: usize = 13;
 
-/// Fixed byte length of each record trailing FNV-1a 64-bit checksum.
+/// Fixed byte length of each record trailing XXH64 checksum.
 pub const WAL_RECORD_CHECKSUM_SIZE: usize = 8;
 
 /// Total framing overhead per WAL record in bytes.
 pub const WAL_RECORD_OVERHEAD: usize = WAL_RECORD_HEADER_SIZE + WAL_RECORD_CHECKSUM_SIZE;
-
-const FNV1A_64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 
 /// Discriminant tag for sequential records inside an `NVE_WAL1` log.
 #[repr(u8)]
@@ -119,7 +118,7 @@ pub struct WalRecordRef<'a> {
     pub seq: u64,
     pub kind: WalRecordKind,
     pub payload: &'a [u8],
-    pub checksum_fnv64: u64,
+    pub checksum_xxh64: u64,
 }
 
 /// Owned copy of one validated WAL record.
@@ -128,7 +127,7 @@ pub struct WalRecord {
     pub seq: u64,
     pub kind: WalRecordKind,
     pub payload: Vec<u8>,
-    pub checksum_fnv64: u64,
+    pub checksum_xxh64: u64,
 }
 
 /// Errors returned while opening, validating, appending, replaying, or compacting a WAL.
@@ -241,8 +240,10 @@ pub(super) fn compute_record_checksum(
     prefix: &[u8; WAL_RECORD_HEADER_SIZE],
     payload: &[u8],
 ) -> u64 {
-    let h = fnv1a_64_update(FNV1A_64_OFFSET_BASIS, prefix);
-    fnv1a_64_update(h, payload)
+    let mut h = Xxh64Hasher::new(0);
+    h.update(prefix);
+    h.update(payload);
+    h.finish()
 }
 
 #[inline]
@@ -369,7 +370,7 @@ where
             seq,
             kind,
             payload,
-            checksum_fnv64: stored_checksum,
+            checksum_xxh64: stored_checksum,
         })
         .map_err(|e| WalError::ReplayCallback(e.to_string()))?;
 

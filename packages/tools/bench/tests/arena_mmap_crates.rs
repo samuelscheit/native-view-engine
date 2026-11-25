@@ -12,8 +12,10 @@ use crate_codecs::{
     write_musli_workspace, write_rkyv_workspace, write_serde_json,
 };
 use nve_bench::arena_mmap::baseline_codec::{read_tasks_nve_snap, write_tasks_nve_snap};
-use nve_bench::arena_mmap::mmap_arena::MmapOffsetArena;
 use nve_bench::arena_mmap::reloc::{write_reloc_workspace, MmapRelocWorkspace, VerifyMode};
+use nve_bench::arena_mmap::workspace_arena::{
+    populate_workspace_arena, random_read_workspace_arena,
+};
 use nve_bench::arena_mmap::{
     deterministic_read_indices, generate_workspace_tasks, random_read_owned_tasks, TempFileGuard,
 };
@@ -69,10 +71,13 @@ fn all_six_formats_produce_identical_checksums_and_expected_sizes() {
     // 6. MmapOffsetArena
     let arena_guard = TempFileGuard::new("parity_arena", "nvearena");
     let arena =
-        MmapOffsetArena::populate_workspace(arena_guard.path(), 1, "studio-parity", &tasks, 0)
+        populate_workspace_arena(arena_guard.path(), 1, "studio-parity", &tasks, 0)
             .expect("populate arena");
     let arena_bytes = arena.used_bytes();
-    assert_eq!(arena.random_read_checksum(&indices).unwrap(), expected);
+    assert_eq!(
+        random_read_workspace_arena(&arena, &indices).unwrap(),
+        expected
+    );
 
     // Binary/zero-copy layouts must all be strictly more compact than JSON text.
     assert!(snap_bytes < json_bytes);

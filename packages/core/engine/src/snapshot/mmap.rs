@@ -280,7 +280,7 @@ pub struct MmapSnapshot {
 }
 
 impl MmapSnapshot {
-    /// Opens and memory-maps a snapshot file, validating header, bounds, alignment, and FNV-1a checksum.
+    /// Opens and memory-maps a snapshot file, validating header, bounds, alignment, and XXH64 checksum.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SnapshotError> {
         let region = platform::MappedRegion::open(path.as_ref())?;
         Self::from_backing(SnapshotBacking::Mapped(region), true)
@@ -335,12 +335,12 @@ impl MmapSnapshot {
         Ok(snap)
     }
 
-    /// Verifies the stored FNV-1a 64-bit checksum against the mapped bytes.
+    /// Verifies the stored XXH64 checksum against the mapped bytes.
     pub fn verify_checksum(&self) -> Result<(), SnapshotError> {
         let computed = compute_snapshot_checksum(self.as_bytes());
-        if computed != self.header.checksum_fnv64 {
+        if computed != self.header.checksum_xxh64 {
             return Err(SnapshotError::ChecksumMismatch {
-                expected: self.header.checksum_fnv64,
+                expected: self.header.checksum_xxh64,
                 actual: computed,
             });
         }
@@ -377,8 +377,8 @@ impl MmapSnapshot {
     }
 
     #[inline]
-    pub fn checksum_fnv64(&self) -> u64 {
-        self.header.checksum_fnv64
+    pub fn checksum_xxh64(&self) -> u64 {
+        self.header.checksum_xxh64
     }
 
     /// Returns the entire mapped snapshot byte slice.

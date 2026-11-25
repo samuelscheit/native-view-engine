@@ -5,17 +5,17 @@
 //!   - [`baseline_codec`]: JSON (`serde_json`-style) & `NVE_SNAP` binary owned encode/decode.
 //!   - [`reloc`]: `NVERELOC` / `RelocSlice<T>` aligned zero-copy buffer (`Full`, `HeaderOnly`,
 //!     and `Unchecked` mmap load modes).
-//!   - [`mmap_arena`]: Live `MAP_SHARED` 32-bit offset-arena (`MmapOffsetArena`) with
-//!     address-independent `OffsetPtr<T>` / `OffsetSlice<T>`, in-place mutation, and `msync`.
+//!   - [`workspace_arena`]: Studio Workspace adapter directly over production
+//!     [`nve_engine::MmapOffsetArena`] with `TrustedUtf8Str`, double-buffered root commits,
+//!     and `msync`.
 //! - **Workload B** (Per-frame UI tree & prop allocation):
-//!   - [`frame_arena`]: `FrameArena` typed bump allocator with O(1) `reset()` vs standard
-//!     `Vec` + `String` heap allocation baseline.
+//!   - [`frame_arena`]: UI tree benchmark harness over production [`nve_engine::FrameArena`] vs
+//!     standard `Vec` + `String` heap allocation baseline.
 
 pub mod baseline_codec;
 pub mod frame_arena;
-pub mod mmap_arena;
-pub mod os_mmap;
 pub mod reloc;
+pub mod workspace_arena;
 
 #[cfg(test)]
 mod tests;

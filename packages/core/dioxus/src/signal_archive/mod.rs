@@ -6,14 +6,14 @@
 //! [`nve_engine::SnapshotWal`], compact deterministically, and hydrate safely across app
 //! upgrades (tolerating added, removed, or re-typed signal slots without crashing).
 //!
-//! # Binary Layouts (little-endian, FNV-1a 64-bit checksummed)
+//! # Binary Layouts (little-endian, XXH64 checksummed)
 //!
 //! ## Full Snapshot (`NVE_SIG1`, 28-byte header)
 //! - `0..8`:   `magic = *b"NVE_SIG1"`
 //! - `8..12`:  `format_version: u32 = 1`
 //! - `12..16`: `schema_version: u32`
 //! - `16..20`: `slot_count: u32`
-//! - `20..28`: `checksum_fnv64: u64` (over `0..20` + `28..len`)
+//! - `20..28`: `checksum_xxh64: u64` (over `0..20` + `28..len`)
 //! - Followed by `slot_count` strictly sorted entries: `slot_id: u64`, `tag: u8`, value payload.
 //!
 //! ## Incremental Delta (`NVE_SGD1`, 28-byte header)
@@ -21,7 +21,7 @@
 //! - `8..12`:  `format_version: u32 = 1`
 //! - `12..16`: `schema_version: u32`
 //! - `16..20`: `op_count: u32`
-//! - `20..28`: `checksum_fnv64: u64` (over `0..20` + `28..len`)
+//! - `20..28`: `checksum_xxh64: u64` (over `0..20` + `28..len`)
 //! - Followed by `op_count` strictly sorted ops: `op_kind: u8` (`1=Upsert`, `2=Remove`),
 //!   `slot_id: u64`, and (for `Upsert`) `tag: u8` + value payload.
 
@@ -41,7 +41,7 @@ use nve_abi::{encode_bin_value_to_vec, BinValueView, DecodeError, NveValueRef};
 use nve_components::reconcile::{
     reconcile_three_way, ConflictPolicy, ReconcileDecision, ThreeWayEntry,
 };
-use nve_engine::snapshot::fnv1a_64_update;
+use nve_engine::hash::Xxh64Hasher;
 use nve_engine::WalError;
 
 /// Reconciles one signal slot during hot-reload using 3-way merge (`ConflictPolicy::PreferLocal`).
@@ -79,17 +79,17 @@ pub const NVE_SIGNAL_DELTA_MAGIC: [u8; 8] = *b"NVE_SGD1";
 /// Format version for both `NVE_SIG1` and `NVE_SGD1` containers.
 pub const NVE_SIGNAL_ARCHIVE_VERSION: u32 = 1;
 
-pub(crate) const FNV1A_64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-
-/// Computes the stable 64-bit FNV-1a slot identifier for `(component_path, signal_name)`.
+/// Computes the stable 64-bit XXH64 slot identifier for `(component_path, signal_name)`.
 ///
 /// Uses an explicit NUL separator between `component_path` and `signal_name` so
 /// `("app/nav", "tab")` and `("app/navt", "ab")` never collide.
 #[inline]
 pub fn signal_slot_id(component_path: &str, signal_name: &str) -> u64 {
-    let h = fnv1a_64_update(FNV1A_64_OFFSET_BASIS, component_path.as_bytes());
-    let h = fnv1a_64_update(h, &[0u8]);
-    fnv1a_64_update(h, signal_name.as_bytes())
+    let mut h = Xxh64Hasher::new(0);
+    h.update(component_path.as_bytes());
+    h.update(&[0u8]);
+    h.update(signal_name.as_bytes());
+    h.finish()
 }
 
 /// Discriminant tag for archived signal values.

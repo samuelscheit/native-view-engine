@@ -210,7 +210,7 @@ mod imp {
             let wal = SnapshotWal::create_fresh(
                 &wal_path,
                 STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                header.checksum_fnv64,
+                header.checksum_xxh64,
                 config.durability,
             )?;
 
@@ -220,7 +220,7 @@ mod imp {
                 wal_path,
                 wal,
                 config,
-                base_checksum: header.checksum_fnv64,
+                base_checksum: header.checksum_xxh64,
                 compaction_count: 0,
                 initial_state: default_state,
                 recovery,
@@ -297,7 +297,7 @@ mod imp {
                     &state_bytes,
                     SNAPSHOT_META_TAG,
                 )?;
-                self.base_checksum = header.checksum_fnv64;
+                self.base_checksum = header.checksum_xxh64;
                 self.compaction_count = self.compaction_count.saturating_add(1);
                 compacted = true;
             }
@@ -326,7 +326,7 @@ mod imp {
                 &state_bytes,
                 SNAPSHOT_META_TAG,
             )?;
-            self.base_checksum = header.checksum_fnv64;
+            self.base_checksum = header.checksum_xxh64;
             self.compaction_count = self.compaction_count.saturating_add(1);
             Ok(self.base_checksum)
         }
@@ -350,7 +350,7 @@ mod imp {
         let snap = MmapSnapshot::open_with_schema(path, STUDIO_SNAPSHOT_SCHEMA_VERSION)?;
         let decoded = WorkspaceState::from_bytes(snap.state_bytes())
             .ok_or(PersistError::CorruptState("NWS1 v2 decode failed"))?;
-        Ok((decoded, snap.checksum_fnv64()))
+        Ok((decoded, snap.checksum_xxh64()))
     }
 
     fn open_and_replay_wal(

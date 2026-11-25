@@ -116,7 +116,7 @@ impl SnapshotWal {
         let fresh_wal = Self::create_fresh(
             wal_path,
             schema_version,
-            header.checksum_fnv64,
+            header.checksum_xxh64,
             WalDurability::Buffered,
         )?;
         Ok((header, fresh_wal))

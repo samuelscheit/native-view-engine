@@ -1,13 +1,17 @@
 //! Cross-candidate correctness, persistence, alignment, bounds, and corruption tests
 //! for `NVERELOC` (`RelocSlice<T>`) and `MmapOffsetArena` (`OffsetPtr<T>` / `OffsetSlice<T>`).
 
-use std::mem::{align_of, size_of};
+use std::mem::size_of;
 
-use super::mmap_arena::{ArenaError, ArenaTask, MmapOffsetArena, OffsetPtr, OffsetSlice};
-use super::os_mmap::AnonReservation;
+use nve_engine::mmap_arena::{AnonReservation, MmapOffsetArena};
+
 use super::reloc::{
     build_reloc_workspace, compute_reloc_checksum, write_reloc_workspace, MmapRelocWorkspace,
     RelocError, RelocWorkspaceView, VerifyMode,
+};
+use super::workspace_arena::{
+    mutate_task_in_place, populate_workspace_arena, random_read_workspace_arena, workspace_root,
+    workspace_tasks, workspace_tasks_mut, ArenaTask, WorkspaceRoot,
 };
 use super::{
     deterministic_read_indices, generate_workspace_tasks, random_read_owned_tasks, TempFileGuard,
@@ -132,17 +136,22 @@ fn mmap_arena_persists_across_drop_and_different_virtual_address() {
 
     let guard = TempFileGuard::new("arena_persist", "nvearena");
     let mut arena1 =
-        MmapOffsetArena::populate_workspace(guard.path(), 42, "studio-main", &tasks, 4096)
-            .expect("populate");
+        populate_workspace_arena(guard.path(), 42, "studio-main", &tasks, 4096).expect("populate");
     let addr1 = arena1.base_addr();
-    assert_eq!(arena1.random_read_checksum(&indices).unwrap(), expected_acc);
+    assert_eq!(
+        random_read_workspace_arena(&arena1, &indices).unwrap(),
+        expected_acc
+    );
 
     // Mutate scalar fields AND allocate a brand-new title string inside the same live mmap.
-    let mutated_off = arena1
-        .mutate_task_in_place(77, 9, 3, 1_999_999_999_000)
-        .expect("mutate");
-    let new_title = arena1.alloc_str("UPDATED-TASK-00078: live mmap string").expect("alloc_str");
-    arena1.tasks_mut().unwrap()[77].title = new_title;
+    let mutated_off =
+        mutate_task_in_place(&mut arena1, 77, 9, 3, 1_999_999_999_000).expect("mutate");
+    let new_title = arena1
+        .alloc_str("UPDATED-TASK-00078: live mmap string")
+        .expect("alloc_str");
+    workspace_tasks_mut(&mut arena1).unwrap()[77].title = new_title;
+    let root_ptr = arena1.root_ptr::<WorkspaceRoot>();
+    arena1.commit_root(root_ptr).expect("commit_root");
     arena1
         .sync_range(mutated_off, size_of::<ArenaTask>())
         .expect("msync range");
@@ -155,17 +164,17 @@ fn mmap_arena_persists_across_drop_and_different_virtual_address() {
         addr1, addr_concurrent,
         "concurrent mmap must land at a different virtual address"
     );
-    assert_eq!(arena_concurrent.root().unwrap().workspace_id, 42);
+    assert_eq!(workspace_root(&arena_concurrent).unwrap().workspace_id, 42);
     assert_eq!(
         arena_concurrent
-            .str_at(arena_concurrent.root().unwrap().name)
+            .str_at(workspace_root(&arena_concurrent).unwrap().name)
             .unwrap(),
         "studio-main"
     );
-    assert_eq!(arena_concurrent.tasks().unwrap()[77].status, 9);
+    assert_eq!(workspace_tasks(&arena_concurrent).unwrap()[77].status, 9);
     assert_eq!(
         arena_concurrent
-            .str_at(arena_concurrent.tasks().unwrap()[77].title)
+            .str_at(workspace_tasks(&arena_concurrent).unwrap()[77].title)
             .unwrap(),
         "UPDATED-TASK-00078: live mmap string"
     );
@@ -177,7 +186,7 @@ fn mmap_arena_persists_across_drop_and_different_virtual_address() {
     drop(arena_concurrent);
 
     let arena2 = MmapOffsetArena::open(guard.path()).expect("reopen after drop");
-    let reopened_tasks = arena2.tasks().expect("tasks");
+    let reopened_tasks = workspace_tasks(&arena2).expect("tasks");
     assert_eq!(reopened_tasks.len(), tasks.len());
     assert_eq!(reopened_tasks[77].status, 9);
     assert_eq!(reopened_tasks[77].priority, 3);
@@ -194,69 +203,4 @@ fn mmap_arena_persists_across_drop_and_different_virtual_address() {
         assert_eq!(arena2.str_at(reopened_tasks[i].body).unwrap(), orig.body);
         assert_eq!(arena2.str_at(reopened_tasks[i].tag).unwrap(), orig.tag);
     }
-}
-
-#[test]
-fn mmap_arena_bounds_alignment_and_corruption_detection() {
-    let guard = TempFileGuard::new("arena_checks", "nvearena");
-    let mut arena = MmapOffsetArena::create(guard.path(), 512).expect("create");
-
-    // Mixed-alignment allocations must auto-align to 8 bytes for `u64`.
-    let s = arena.alloc_str("abc").expect("str 3 bytes");
-    assert_eq!(arena.str_at(s).unwrap(), "abc");
-    let num = arena.alloc_val(0xDEAD_BEEF_CAFE_BABEu64).expect("u64");
-    assert_eq!(num.offset as usize % align_of::<u64>(), 0);
-    assert_eq!(*arena.get(num).unwrap(), 0xDEAD_BEEF_CAFE_BABEu64);
-
-    // Null, misaligned, OOB, and overflowing handles rejected.
-    assert!(matches!(
-        arena.get(OffsetPtr::<u64>::NULL),
-        Err(ArenaError::NullPointer)
-    ));
-    assert!(matches!(
-        arena.get(OffsetPtr::<u64>::new(num.offset + 1)),
-        Err(ArenaError::Misaligned { .. })
-    ));
-    assert!(matches!(
-        arena.get(OffsetPtr::<u64>::new(4096)),
-        Err(ArenaError::OutOfBounds { .. })
-    ));
-    assert!(matches!(
-        arena.slice(OffsetSlice::<u64>::new(num.offset, u32::MAX)),
-        Err(ArenaError::OutOfBounds { .. } | ArenaError::Overflow)
-    ));
-
-    // Capacity exhaustion rejected without advancing cursor.
-    let before_used = arena.used_bytes();
-    let huge = vec![0u8; 2048];
-    assert!(matches!(
-        arena.alloc_slice_copy(&huge),
-        Err(ArenaError::OutOfCapacity { .. })
-    ));
-    assert_eq!(arena.used_bytes(), before_used);
-    drop(arena);
-
-    // Corrupt header checksum -> rejected on reopen.
-    let mut bytes = std::fs::read(guard.path()).unwrap();
-    bytes[24] ^= 0x01;
-    std::fs::write(guard.path(), &bytes).unwrap();
-    assert!(matches!(
-        MmapOffsetArena::open(guard.path()),
-        Err(ArenaError::HeaderChecksumMismatch { .. })
-    ));
-
-    // Corrupt magic -> rejected on reopen.
-    bytes[0] = b'X';
-    std::fs::write(guard.path(), &bytes).unwrap();
-    assert!(matches!(
-        MmapOffsetArena::open(guard.path()),
-        Err(ArenaError::InvalidMagic)
-    ));
-
-    // Truncated file -> rejected on reopen.
-    std::fs::write(guard.path(), &bytes[..16]).unwrap();
-    assert!(matches!(
-        MmapOffsetArena::open(guard.path()),
-        Err(ArenaError::Truncated)
-    ));
 }

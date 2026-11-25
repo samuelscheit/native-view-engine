@@ -1,198 +1,11 @@
 //! Workload B: Per-frame UI tree & prop allocation (`1k`, `10k`, `50k` nodes).
 //!
-//! Compares:
-//! - **Baseline (`HeapUiTree`)**: Standard `Vec` + `String` per-frame allocation and drop churn.
-//! - **Candidate (`FrameArena`)**: 64-byte-aligned contiguous slab bump allocator with O(1)
-//!   `reset()` statically enforced by Rust's borrow checker (`&mut self` on reset vs `&self` on
-//!   allocation).
+//! Benchmarks production [`nve_engine::FrameArena`] (64-byte-aligned contiguous slab bump
+//! allocator with O(1) borrow-checked `reset()`) against standard `Vec` + `String` heap churn.
 
-use std::alloc::{alloc, dealloc, Layout};
-use std::cell::Cell;
-use std::mem::{align_of, offset_of, size_of};
-use std::ptr::NonNull;
+use std::mem::{align_of, offset_of};
 
-pub const FRAME_ARENA_BASE_ALIGN: usize = 64;
-
-/// Typed bump allocator backed by a single 64-byte-aligned contiguous slab with O(1) `reset()`.
-///
-/// Allocation takes `&self` via a `Cell<usize>` cursor so multiple references live concurrently
-/// during a frame; [`Self::reset`] requires `&mut self`, statically preventing dangling references
-/// across frame boundaries.
-pub struct FrameArena {
-    ptr: NonNull<u8>,
-    capacity: usize,
-    cursor: Cell<usize>,
-    high_water: Cell<usize>,
-}
-
-impl FrameArena {
-    /// Allocates a contiguous 64-byte-aligned slab of `capacity_bytes`.
-    pub fn with_capacity(capacity_bytes: usize) -> Self {
-        let cap = capacity_bytes
-            .max(FRAME_ARENA_BASE_ALIGN)
-            .next_multiple_of(FRAME_ARENA_BASE_ALIGN);
-        let layout =
-            Layout::from_size_align(cap, FRAME_ARENA_BASE_ALIGN).expect("valid arena layout");
-        // SAFETY: `cap >= 64` (non-zero) and alignment is power-of-two 64.
-        let raw = unsafe { alloc(layout) };
-        let ptr = NonNull::new(raw).expect("frame arena OOM");
-        Self {
-            ptr,
-            capacity: cap,
-            cursor: Cell::new(0),
-            high_water: Cell::new(0),
-        }
-    }
-
-    #[inline]
-    pub fn capacity_bytes(&self) -> usize {
-        self.capacity
-    }
-
-    #[inline]
-    pub fn used_bytes(&self) -> usize {
-        self.cursor.get()
-    }
-
-    #[inline]
-    pub fn high_water_bytes(&self) -> usize {
-        self.high_water.get()
-    }
-
-    /// O(1) frame reset: rewinds the bump pointer to 0 without freeing or zeroing the slab.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.cursor.set(0);
-    }
-
-    /// Bump-allocates `size` bytes with `align` alignment, returning the byte offset from slab base.
-    #[inline]
-    pub fn try_alloc_raw(&self, size: usize, align: usize) -> Option<usize> {
-        debug_assert!(align.is_power_of_two() && align <= FRAME_ARENA_BASE_ALIGN);
-        let cur = self.cursor.get();
-        let mask = align - 1;
-        let aligned = (cur.checked_add(mask)?) & !mask;
-        let end = aligned.checked_add(size)?;
-        if end > self.capacity {
-            return None;
-        }
-        self.cursor.set(end);
-        if end > self.high_water.get() {
-            self.high_water.set(end);
-        }
-        Some(aligned)
-    }
-
-    /// Allocates a single `Copy` value in the slab (panics if capacity is exceeded).
-    #[inline]
-    pub fn alloc<T: Copy>(&self, val: T) -> &T {
-        self.try_alloc(val).expect("FrameArena capacity exceeded")
-    }
-
-    /// Fallible single-value bump allocation.
-    #[inline]
-    pub fn try_alloc<T: Copy>(&self, val: T) -> Option<&T> {
-        assert!(
-            align_of::<T>() <= FRAME_ARENA_BASE_ALIGN,
-            "alignment > 64 unsupported"
-        );
-        let off = self.try_alloc_raw(size_of::<T>(), align_of::<T>())?;
-        // SAFETY: `ptr` is 64-byte aligned, `off` is `align_of::<T>()`-aligned, and
-        // `off + size_of::<T>() <= capacity` is uniquely claimed by advancing `cursor`.
-        unsafe {
-            let slot = self.ptr.as_ptr().add(off).cast::<T>();
-            slot.write(val);
-            Some(&*slot)
-        }
-    }
-
-    /// Bump-allocates a slice of `len` `Copy` elements initialized via `f(index)`.
-    #[inline]
-    pub fn alloc_slice_fill_with<T: Copy>(&self, len: usize, mut f: impl FnMut(usize) -> T) -> &[T] {
-        assert!(
-            align_of::<T>() <= FRAME_ARENA_BASE_ALIGN,
-            "alignment > 64 unsupported"
-        );
-        if len == 0 {
-            return &[];
-        }
-        let bytes = len
-            .checked_mul(size_of::<T>())
-            .expect("FrameArena slice size overflow");
-        let off = self
-            .try_alloc_raw(bytes, align_of::<T>())
-            .expect("FrameArena capacity exceeded");
-        // SAFETY: Claimed non-overlapping aligned region within slab.
-        unsafe {
-            let base = self.ptr.as_ptr().add(off).cast::<T>();
-            for i in 0..len {
-                base.add(i).write(f(i));
-            }
-            std::slice::from_raw_parts(base, len)
-        }
-    }
-
-    /// Bump-allocates a copy of `src` in the slab.
-    #[inline]
-    pub fn alloc_slice_copy<T: Copy>(&self, src: &[T]) -> &[T] {
-        if src.is_empty() {
-            return &[];
-        }
-        let bytes = src
-            .len()
-            .checked_mul(size_of::<T>())
-            .expect("FrameArena slice size overflow");
-        let off = self
-            .try_alloc_raw(bytes, align_of::<T>())
-            .expect("FrameArena capacity exceeded");
-        // SAFETY: Claimed non-overlapping aligned region within slab.
-        unsafe {
-            let base = self.ptr.as_ptr().add(off).cast::<T>();
-            std::ptr::copy_nonoverlapping(src.as_ptr(), base, src.len());
-            std::slice::from_raw_parts(base, src.len())
-        }
-    }
-
-    /// Bump-allocates a UTF-8 string directly inside the slab.
-    #[inline]
-    pub fn alloc_str(&self, s: &str) -> &str {
-        let bytes = self.alloc_slice_copy(s.as_bytes());
-        // SAFETY: Copied directly from a valid `&str`.
-        unsafe { std::str::from_utf8_unchecked(bytes) }
-    }
-
-    /// Allocates a formatted ASCII label (`"node-<idx>-f<frame>"`) directly into the slab
-    /// with zero intermediate `String` heap allocation.
-    #[inline]
-    pub fn alloc_node_label(&self, idx: usize, frame: u32) -> &str {
-        let mut stack = [0u8; 40];
-        let len = format_node_label_buf(&mut stack, idx, frame);
-        let bytes = self.alloc_slice_copy(&stack[..len]);
-        // SAFETY: Pure ASCII bytes written by `format_node_label_buf`.
-        unsafe { std::str::from_utf8_unchecked(bytes) }
-    }
-
-    /// Allocates a formatted prop value (`"val-<idx>-<frame>"`) directly into the slab.
-    #[inline]
-    pub fn alloc_prop_str(&self, idx: usize, frame: u32) -> &str {
-        let mut stack = [0u8; 40];
-        let len = format_prop_str_buf(&mut stack, idx, frame);
-        let bytes = self.alloc_slice_copy(&stack[..len]);
-        // SAFETY: Pure ASCII bytes written by `format_prop_str_buf`.
-        unsafe { std::str::from_utf8_unchecked(bytes) }
-    }
-}
-
-impl Drop for FrameArena {
-    fn drop(&mut self) {
-        let layout = Layout::from_size_align(self.capacity, FRAME_ARENA_BASE_ALIGN)
-            .expect("valid arena layout");
-        // SAFETY: Matches the exact `alloc(layout)` in `with_capacity`.
-        unsafe {
-            dealloc(self.ptr.as_ptr(), layout);
-        }
-    }
-}
+pub use nve_engine::{FrameArena, FRAME_ARENA_BASE_ALIGN};
 
 #[inline]
 fn write_u64_into(dst: &mut [u8], pos: &mut usize, mut v: u64) {
@@ -233,6 +46,24 @@ fn format_prop_str_buf(buf: &mut [u8; 40], idx: usize, frame: u32) -> usize {
     pos += 1;
     write_u64_into(buf, &mut pos, frame as u64);
     pos
+}
+
+#[inline]
+fn alloc_node_label(arena: &FrameArena, idx: usize, frame: u32) -> &str {
+    let mut stack = [0u8; 40];
+    let len = format_node_label_buf(&mut stack, idx, frame);
+    // SAFETY: `format_node_label_buf` writes pure ASCII bytes.
+    let s = unsafe { std::str::from_utf8_unchecked(&stack[..len]) };
+    arena.alloc_str(s)
+}
+
+#[inline]
+fn alloc_prop_str(arena: &FrameArena, idx: usize, frame: u32) -> &str {
+    let mut stack = [0u8; 40];
+    let len = format_prop_str_buf(&mut stack, idx, frame);
+    // SAFETY: `format_prop_str_buf` writes pure ASCII bytes.
+    let s = unsafe { std::str::from_utf8_unchecked(&stack[..len]) };
+    arena.alloc_str(s)
 }
 
 // ============================================================================
@@ -282,8 +113,6 @@ const _: () = {
 
 /// Returns a generous slab capacity in bytes sufficient for `node_count` nodes + props + strings.
 pub const fn recommended_frame_arena_capacity(node_count: usize) -> usize {
-    // Each node uses: ~88B RenderNode + 3 * 40B PropEntry (~120B) + ~40B inline strings + ~16B children ≈ 280B.
-    // Use 384B per node + 64 KiB headroom.
     node_count * 384 + 65_536
 }
 
@@ -298,8 +127,8 @@ pub fn run_arena_frame(arena: &mut FrameArena, node_count: usize, frame: u32) ->
             let flags = ((i & 7) as u16) | ((frame as u16 & 1) << 8);
             let x = ((i % 32) as f32) * 12.0;
             let y = ((i / 32) as f32) * 44.0 + (frame as f32 * 0.5);
-            let label = a.alloc_node_label(i, frame);
-            let prop_val_str = a.alloc_prop_str(i, frame);
+            let label = alloc_node_label(a, i, frame);
+            let prop_val_str = alloc_prop_str(a, i, frame);
 
             let props = a.alloc_slice_copy(&[
                 ArenaPropEntry {
@@ -537,54 +366,6 @@ fn fold_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[repr(C, align(64))]
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    struct CacheLine64([u64; 8]);
-
-    #[repr(C, align(16))]
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    struct Vec16([u32; 4]);
-
-    #[test]
-    fn frame_arena_alignment_and_reset_safety() {
-        let mut arena = FrameArena::with_capacity(4096);
-        assert_eq!(arena.used_bytes(), 0);
-
-        let a = arena.alloc(1u8);
-        let b = arena.alloc(2u16);
-        let c = arena.alloc(3u32);
-        let d = arena.alloc(4u64);
-        let e = arena.alloc(Vec16([1, 2, 3, 4]));
-        let f = arena.alloc(CacheLine64([9; 8]));
-
-        assert_eq!((b as *const u16 as usize) % align_of::<u16>(), 0);
-        assert_eq!((c as *const u32 as usize) % align_of::<u32>(), 0);
-        assert_eq!((d as *const u64 as usize) % align_of::<u64>(), 0);
-        assert_eq!((e as *const Vec16 as usize) % align_of::<Vec16>(), 0);
-        assert_eq!(
-            (f as *const CacheLine64 as usize) % align_of::<CacheLine64>(),
-            0
-        );
-        assert_eq!((*a, *b, *c, *d, e.0[3], f.0[7]), (1, 2, 3, 4, 4, 9));
-
-        let peak = arena.used_bytes();
-        assert!(peak >= 128);
-        assert_eq!(arena.high_water_bytes(), peak);
-
-        // Fallible allocation exceeding capacity returns None without modifying cursor.
-        assert!(arena.try_alloc_raw(arena.capacity_bytes(), 8).is_none());
-        assert_eq!(arena.used_bytes(), peak);
-
-        // O(1) reset rewinds cursor to 0 while preserving high-water mark.
-        arena.reset();
-        assert_eq!(arena.used_bytes(), 0);
-        assert_eq!(arena.high_water_bytes(), peak);
-
-        let reused = arena.alloc(0xCAFE_BABEu64);
-        assert_eq!(*reused, 0xCAFE_BABEu64);
-        assert_eq!(arena.used_bytes(), 8);
-    }
 
     #[test]
     fn arena_and_heap_ui_trees_produce_identical_traversals() {

@@ -12,14 +12,18 @@ use crate_codecs::{
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use nve_bench::arena_mmap::baseline_codec::{read_tasks_nve_snap, write_tasks_nve_snap};
 use nve_bench::arena_mmap::frame_arena::{
-    recommended_frame_arena_capacity, run_arena_frames, run_heap_frames, FrameArena,
+    recommended_frame_arena_capacity, run_arena_frames, run_heap_frames,
 };
-use nve_bench::arena_mmap::mmap_arena::{ArenaTask, MmapOffsetArena};
 use nve_bench::arena_mmap::reloc::{write_reloc_workspace, MmapRelocWorkspace, VerifyMode};
+use nve_bench::arena_mmap::workspace_arena::{
+    mutate_task_in_place, populate_workspace_arena, random_read_workspace_arena, workspace_tasks,
+    ArenaTask, WorkspaceRoot,
+};
 use nve_bench::arena_mmap::{
     deterministic_mutation_indices, deterministic_read_indices, generate_workspace_tasks,
     random_read_owned_tasks, TempFileGuard,
 };
+use nve_engine::{FrameArena, MmapOffsetArena};
 
 fn bench_workload_a_build_and_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("workload_a/build_and_write");
@@ -76,7 +80,7 @@ fn bench_workload_a_build_and_write(c: &mut Criterion) {
             &tasks,
             |b, t| {
                 b.iter(|| {
-                    let arena = MmapOffsetArena::populate_workspace(
+                    let arena = populate_workspace_arena(
                         arena_file.path(),
                         1,
                         "studio-bench",
@@ -117,7 +121,7 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
 
         let arena_file = TempFileGuard::new(&format!("cl_arena_{label}"), "nvearena");
         {
-            let arena = MmapOffsetArena::populate_workspace(
+            let arena = populate_workspace_arena(
                 arena_file.path(),
                 1,
                 "studio-bench",
@@ -197,7 +201,7 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("mmap_arena_reopen", label), |b| {
             b.iter(|| {
                 let arena = MmapOffsetArena::open(black_box(arena_file.path())).unwrap();
-                black_box(arena.tasks().unwrap().len())
+                black_box(workspace_tasks(&arena).unwrap().len())
             });
         });
     }
@@ -233,7 +237,7 @@ fn bench_workload_a_random_read(c: &mut Criterion) {
         );
 
         let arena_file = TempFileGuard::new(&format!("rr_arena_{label}"), "nvearena");
-        let arena = MmapOffsetArena::populate_workspace(
+        let arena = populate_workspace_arena(
             arena_file.path(),
             1,
             "studio-bench",
@@ -241,7 +245,7 @@ fn bench_workload_a_random_read(c: &mut Criterion) {
             4096,
         )
         .unwrap();
-        assert_eq!(arena.random_read_checksum(&indices).unwrap(), expected);
+        assert_eq!(random_read_workspace_arena(&arena, &indices).unwrap(), expected);
 
         group.bench_function(BenchmarkId::new("owned_vec_in_ram", label), |b| {
             b.iter(|| black_box(random_read_owned_tasks(black_box(&tasks), black_box(&indices))));
@@ -267,7 +271,9 @@ fn bench_workload_a_random_read(c: &mut Criterion) {
         });
 
         group.bench_function(BenchmarkId::new("mmap_arena_zero_copy", label), |b| {
-            b.iter(|| black_box(arena.random_read_checksum(black_box(&indices)).unwrap()));
+            b.iter(|| {
+                black_box(random_read_workspace_arena(&arena, black_box(&indices)).unwrap())
+            });
         });
     }
     group.finish();
@@ -348,7 +354,7 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
             });
 
             let arena_file = TempFileGuard::new(&format!("mut_arena_{param}"), "nvearena");
-            let mut arena = MmapOffsetArena::populate_workspace(
+            let mut arena = populate_workspace_arena(
                 arena_file.path(),
                 1,
                 "studio-bench",
@@ -362,14 +368,14 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
                     step_a += 1;
                     let mut last_off = 0usize;
                     for &idx in &indices {
-                        last_off = arena
-                            .mutate_task_in_place(
-                                idx,
-                                (step_a % 5) as u32,
-                                (step_a % 4) as u32,
-                                1_800_000_000_000 + step_a as i64,
-                            )
-                            .unwrap();
+                        last_off = mutate_task_in_place(
+                            &mut arena,
+                            idx,
+                            (step_a % 5) as u32,
+                            (step_a % 4) as u32,
+                            1_800_000_000_000 + step_a as i64,
+                        )
+                        .unwrap();
                     }
                     black_box(last_off)
                 });
@@ -384,19 +390,20 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
                         let mut min_off = usize::MAX;
                         let mut max_end = 0usize;
                         for &idx in &indices {
-                            let off = arena
-                                .mutate_task_in_place(
-                                    idx,
-                                    (step_ms % 5) as u32,
-                                    (step_ms % 4) as u32,
-                                    1_800_000_000_000 + step_ms as i64,
-                                )
-                                .unwrap();
+                            let off = mutate_task_in_place(
+                                &mut arena,
+                                idx,
+                                (step_ms % 5) as u32,
+                                (step_ms % 4) as u32,
+                                1_800_000_000_000 + step_ms as i64,
+                            )
+                            .unwrap();
                             min_off = min_off.min(off);
                             max_end = max_end.max(off + size_of::<ArenaTask>());
                         }
                         arena.sync_range(min_off, max_end - min_off).unwrap();
-                        black_box(max_end - min_off)
+                        let root_ptr = arena.root_ptr::<WorkspaceRoot>();
+                        black_box(arena.commit_root(root_ptr).unwrap())
                     });
                 },
             );

@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use musli_zerocopy::{Buf, OwnedBuf, Ref, ZeroCopy};
-use nve_bench::arena_mmap::os_mmap::{read_file_bytes, write_file_bytes, ReadOnlyMmap};
+use nve_engine::mmap_arena::{read_file_bytes, write_file_bytes, ReadOnlyMmap};
 use nve_bench::arena_mmap::{fold_task_fields, OwnedTask};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};

@@ -11,7 +11,7 @@ use std::path::Path;
 
 use nve_engine::{encode_snapshot, MmapSnapshot};
 
-use super::os_mmap::{read_file_bytes, write_file_bytes};
+use nve_engine::mmap_arena::{read_file_bytes, write_file_bytes};
 use super::OwnedTask;
 
 const SNAP_SCHEMA_VERSION: u32 = 1;
@@ -409,7 +409,7 @@ pub fn read_tasks_json(path: &Path) -> Result<Vec<OwnedTask>, CodecError> {
 // ============================================================================
 
 /// Encodes `tasks` into a compact binary stream wrapped in an `NVE_SNAP` container
-/// (80-byte header + FNV-1a checksum).
+/// (80-byte header + XXH64 checksum).
 pub fn encode_tasks_nve_snap(tasks: &[OwnedTask]) -> Vec<u8> {
     let mut state = Vec::with_capacity(tasks.len() * 240 + 8);
     state.extend_from_slice(&BIN_MAGIC);

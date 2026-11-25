@@ -87,15 +87,15 @@ fn encode_snapshot_with_header(
     buf[64..72].copy_from_slice(&meta_offset.to_le_bytes());
     buf[72..80].copy_from_slice(&meta_len.to_le_bytes());
 
-    let checksum_fnv64 = compute_snapshot_checksum(&buf);
-    buf[CHECKSUM_FIELD_OFFSET..CHECKSUM_FIELD_END].copy_from_slice(&checksum_fnv64.to_le_bytes());
+    let checksum_xxh64 = compute_snapshot_checksum(&buf);
+    buf[CHECKSUM_FIELD_OFFSET..CHECKSUM_FIELD_END].copy_from_slice(&checksum_xxh64.to_le_bytes());
 
     let header = SnapshotHeader {
         magic: NVE_SNAP_MAGIC,
         format_version: NVE_SNAP_FORMAT_VERSION,
         app_schema_version,
         flags,
-        checksum_fnv64,
+        checksum_xxh64,
         frame0_offset,
         frame0_len,
         state_offset,
