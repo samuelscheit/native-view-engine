@@ -255,7 +255,7 @@ pub fn generate_swift_wire_codecs() -> String {
         }}
     }}
 
-    /// Flat zero-JSON `EventRing` writer matching `packages/core/abi/src/events.rs`.
+    /// Flat binary `EventRing` writer matching `packages/core/abi/src/events.rs`.
     public struct EventRingWriter: Sendable {{
         private let framed: Bool
         private var buffer: Data

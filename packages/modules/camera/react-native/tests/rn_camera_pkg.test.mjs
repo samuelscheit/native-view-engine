@@ -14,7 +14,7 @@ import {
   useCameraDevice,
 } from "../src/index.ts";
 
-test("@nve/camera routes to global.__nveCameraInstall native JSI host with zero-JSON NVNP/NVNC/NVCF buffers", async () => {
+test("@nve/camera routes to global.__nveCameraInstall native JSI host with binary NVNP/NVNC/NVCF buffers", async () => {
   const receivedNvnp = [];
   const receivedNvnc = [];
   let disposed = false;
@@ -143,7 +143,6 @@ test("@nve/camera routes to global.__nveCameraInstall native JSI host with zero-
     assert.equal(frame?.width, 1920);
     assert.equal(frame?.nativeHandleId, 9999n);
 
-    // <Camera /> produces native NveCameraPreview descriptor with binary NVNP bytes
     const el = Camera({ device: devices[0], zoom: 1.5, isActive: true });
     assert.equal(el.type, "NveCameraPreview");
     assert.equal(decodeCameraProps(el.props.nvnpProps).zoom, 1.5);
@@ -156,28 +155,15 @@ test("@nve/camera routes to global.__nveCameraInstall native JSI host with zero-
   }
 });
 
-test("@nve/camera falls back to NveWebCameraSession on Web", async () => {
-  const session = new CameraSession({
-    backend: "web",
-    webEnv: {
-      mediaDevices: {
-        async enumerateDevices() {
-          return [{ deviceId: "web-0", kind: "videoinput", label: "Front Webcam" }];
-        },
-        async getUserMedia() {
-          const track = { kind: "video", stop() {} };
-          return {
-            getTracks: () => [track],
-            getVideoTracks: () => [track],
-            getAudioTracks: () => [],
-          };
-        },
-      },
-    },
-  });
-  assert.equal(session.backend, "web");
-  const devices = await session.listDevices();
-  assert.equal(devices.length, 1);
-  assert.equal(devices[0].facing, "front");
-  await session.dispose();
+test("@nve/camera throws explicitly when no VisionCamera native bridge is installed", () => {
+  const prevInstall = globalThis.__nveCameraInstall;
+  const prevMod = globalThis.__nveCamera;
+  try {
+    globalThis.__nveCamera = undefined;
+    globalThis.__nveCameraInstall = undefined;
+    assert.throws(() => new CameraSession(), /NVE_CAMERA_NATIVE_UNAVAILABLE/);
+  } finally {
+    globalThis.__nveCameraInstall = prevInstall;
+    globalThis.__nveCamera = prevMod;
+  }
 });

@@ -1,4 +1,4 @@
-//! Zero-JSON `<Name>NveBridge.generated.hpp` & `.cpp` emitter for `export_rn`.
+//! Binary `<Name>NveBridge.generated.hpp` & `.cpp` emitter for `export_rn`.
 
 use std::fmt::Write as _;
 
@@ -22,7 +22,7 @@ pub(crate) fn emit_cpp_bridge_hpp(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// Zero-JSON C++20 bridge connecting RN Fabric `{}` Props/EventEmitter <-> `nve::NveRnComponentBridge`.",
+        "// Binary C++20 bridge connecting RN Fabric `{}` Props/EventEmitter <-> `nve::NveRnComponentBridge`.",
         sanitize_single_line_comment(name)
     );
     let _ = writeln!(out);

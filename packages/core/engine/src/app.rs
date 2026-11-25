@@ -206,7 +206,7 @@ pub trait NveApp: Sized + 'static {
     /// Restores previously snapshotted state after a Tier-2 `cdylib` hot-swap.
     fn restore_state(&mut self, _state: &[u8]) {}
 
-    /// Binds host-provided zero-JSON capability callbacks (`NVE_IFACE_HOST = 5`).
+    /// Binds host-provided binary capability callbacks (`NVE_IFACE_HOST = 5`).
     /// Passing `None` unbinds any previously attached host callbacks.
     fn bind_host(&mut self, _callbacks: Option<NveHostCallbacks>) {}
 

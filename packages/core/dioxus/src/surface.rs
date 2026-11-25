@@ -235,7 +235,7 @@ impl DioxusSurface {
         self.writer.iter_svg_pictures()
     }
 
-    /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.
+    /// Encodes all signals registered on this surface into a binary `NVE_SIG1` binary archive.
     pub fn snapshot_signals(&self) -> Result<Vec<u8>, SignalArchiveError> {
         self.signal_registry.encode_full()
     }

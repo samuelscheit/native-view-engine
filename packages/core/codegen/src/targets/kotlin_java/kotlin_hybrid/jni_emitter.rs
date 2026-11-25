@@ -12,7 +12,7 @@ pub(super) fn emit_jni_cpp(spec: &HybridFileSpec, hpp_header: &str) -> String {
     .unwrap();
     writeln!(
         out,
-        "// Zero-JSON direct JNI bindings over primitives & DirectByteBuffer -> NveHybrid*VTable."
+        "// Binary direct JNI bindings over primitives & DirectByteBuffer -> NveHybrid*VTable."
     )
     .unwrap();
     writeln!(out, "#include <jni.h>").unwrap();

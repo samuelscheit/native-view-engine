@@ -63,12 +63,6 @@ void main() {
       expect(NveEventKind.fromCode(255), NveEventKind.custom);
     });
 
-    test('NveRenderMode enum values', () {
-      expect(NveRenderMode.values, <NveRenderMode>[
-        NveRenderMode.texture,
-        NveRenderMode.platformView,
-      ]);
-    });
   });
 
   group('NveEvent', () {

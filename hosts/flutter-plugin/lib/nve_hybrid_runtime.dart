@@ -5,7 +5,7 @@
 /// - Core C-ABI FFI structs (`NveStrSlice`, `NveBufferSlice`, `NveValue`, `NveMapEntry`, ...)
 /// - Hybrid owned-bytes ABI struct (`NveHybridOwnedBytes`)
 /// - Canonical binary `NveBinValue` codec (`NveBinWriter`, `NveBinReader`, `NveHybridDynamicValue`)
-/// - Zero-JSON bump-arena direct props encoder (`NveDirectEncodable`, `NveDirectPropsBuilder`,
+/// - Binary bump-arena direct props encoder (`NveDirectEncodable`, `NveDirectPropsBuilder`,
 ///   `NveDirectPropsWriter`, `NveNativeArena`)
 library nve_hybrid_runtime;
 

@@ -18,7 +18,7 @@ NSString * _Nonnull nsstring_from_sv(std::string_view sv);
 NSString * _Nullable nsstring_or_nil_from_sv(std::string_view sv);
 
 /// Recursively convert an Objective-C Foundation object (`NSDictionary`, `NSArray`, `NSString`,
-/// `NSNumber`, `NSData`, `NSNull`) into an arena-backed `NveValue` with zero JSON serialization.
+/// `NSNumber`, `NSData`, `NSNull`) into an arena-backed `NveValue` with direct binary FFI.
 NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uint32_t depth = 0u);
 
 /// Recursively convert a zero-copy `BinValueView` into an Objective-C Foundation object.

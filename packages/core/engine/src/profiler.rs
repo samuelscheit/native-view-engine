@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -73,42 +74,54 @@ impl FrameProfiler {
 
     /// Exports recorded frames in Chrome Trace Event Format (loadable directly in Perfetto UI).
     pub fn to_chrome_trace_json(&self) -> String {
-        #[derive(Serialize)]
-        struct Event<'a> {
-            name: &'a str,
-            cat: &'a str,
-            ph: &'a str,
-            ts: u64,
-            dur: u64,
-            pid: u32,
-            tid: u32,
+        if self.frames.is_empty() {
+            return "[]".to_owned();
         }
-
-        let mut events = Vec::with_capacity(self.frames.len() * 6);
+        let mut out = String::with_capacity(self.frames.len() * 6 * 120 + 4);
+        out.push_str("[\n");
         let mut cursor_ts = 0u64;
+        let mut first = true;
         for f in &self.frames {
             let stages = [
-                ("rust.reconcile", f.reconcile_us, 1),
-                ("abi.encode", f.encode_us, 1),
-                ("backend.decode", f.decode_us, 2),
-                ("backend.layout", f.layout_us, 2),
-                ("backend.diff", f.diff_us, 2),
-                ("backend.mount", f.mount_us, 3),
+                ("rust.reconcile", f.reconcile_us, 1u32),
+                ("abi.encode", f.encode_us, 1u32),
+                ("backend.decode", f.decode_us, 2u32),
+                ("backend.layout", f.layout_us, 2u32),
+                ("backend.diff", f.diff_us, 2u32),
+                ("backend.mount", f.mount_us, 3u32),
             ];
             for (name, dur, tid) in stages {
-                events.push(Event {
-                    name,
-                    cat: "nve.frame",
-                    ph: "X",
-                    ts: cursor_ts,
-                    dur,
-                    pid: 1,
-                    tid,
-                });
+                if !first {
+                    out.push_str(",\n");
+                }
+                first = false;
+                out.push_str("  {\n    \"name\": \"");
+                write_json_escaped(&mut out, name);
+                let _ = write!(
+                    out,
+                    "\",\n    \"cat\": \"nve.frame\",\n    \"ph\": \"X\",\n    \"ts\": {cursor_ts},\n    \"dur\": {dur},\n    \"pid\": 1,\n    \"tid\": {tid}\n  }}"
+                );
                 cursor_ts += dur.max(1);
             }
             cursor_ts += 100;
         }
-        serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into())
+        out.push_str("\n]");
+        out
+    }
+}
+
+fn write_json_escaped(out: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
     }
 }

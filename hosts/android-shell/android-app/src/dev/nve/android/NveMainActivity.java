@@ -58,7 +58,7 @@ import java.util.Set;
 /**
  * Standalone zero-Gradle Android Activity hosting any compiled NVE Rust app (`libnve_app.so`)
  * directly on native Android Views via cached zero-copy `DirectByteBuffer` `NveSceneBuffer` slabs
- * + batched `NVE_MET1` dirty-node metadata slab (zero JSON, zero per-prop JNI chatter,
+ * + batched `NVE_MET1` dirty-node metadata slab (binary FFI, zero per-prop JNI chatter,
  * `O(changed)` incremental reconciliation via `dirty_indices`, `removed_ids`, and `NVE_DRAW1`
  * `NveCanvasView`).
  */
@@ -465,7 +465,7 @@ public final class NveMainActivity extends Activity {
     }
 
     /**
-     * Formats hardware keyboard events into compact zero-JSON shorthands matching
+     * Formats hardware keyboard events into compact binary shorthands matching
      * `examples/studio-workspace/src/ui_palette.rs::parse_keydown_payload`
      * (e.g. `"Cmd+k"`, `"Ctrl+k"`, `"ArrowDown"`, `"ArrowUp"`, `"Enter"`, `"Escape"`).
      */

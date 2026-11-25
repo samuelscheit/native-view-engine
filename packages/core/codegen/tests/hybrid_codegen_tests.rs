@@ -69,7 +69,7 @@ pub struct SignedPayload {
     pub nonce: Option<u64>,
 }
 
-/// High-performance zero-JSON native crypto module.
+/// High-performance binary native crypto module.
 #[nve_hybrid_module(name = "Crypto")]
 pub trait CryptoSpec {
     fn version(&self) -> String;
@@ -327,7 +327,7 @@ fn generates_all_6_targets_deterministically_with_zero_json() {
                 "{} must obey the `<name>.generated.<ext>` naming convention",
                 file.relative_path
             );
-            // Guarantee zero JSON runtime usage across all 6 targets
+            // Guarantee no runtime JSON serialization across all 6 targets
             assert!(
                 !file.content.contains("serde_json"),
                 "{} must not use serde_json",
@@ -961,7 +961,7 @@ impl CryptoHybrid for MyCrypto {
             },
             label: format!("item-{id}"),
             digest: vec![0xAA, 0xBB],
-            tags: vec!["fast".to_string(), "zero-json".to_string()],
+            tags: vec!["fast".to_string(), "binary".to_string()],
             nonce: Some(99),
         })
     }

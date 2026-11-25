@@ -72,7 +72,7 @@ Experiment with stack pushes, pops, modal sheets, guarded redirects, and deep-li
 
 ## Binary `NVN1` Host Channel Bridge
 
-`RouterChannelBridge` binds `RouterState` / `TabRouterState` onto `nve_interop::NveChannelBus` (`CHANNEL_ID_NAVIGATION = 4`, topic `"navigation"`) using the zero-JSON **`NVN1`** binary packet format (`packages/framework/router/src/nvn1.rs`, minimum 20 bytes):
+`RouterChannelBridge` binds `RouterState` / `TabRouterState` onto `nve_interop::NveChannelBus` (`CHANNEL_ID_NAVIGATION = 4`, topic `"navigation"`) using the binary **`NVN1`** binary packet format (`packages/framework/router/src/nvn1.rs`, minimum 20 bytes):
 
 - **Header:** `magic("NVN1")` (4 B) + `version(u8 = 1)` + `action(u8)` + `flags(u8: CAN_GO_BACK | CAN_GO_FORWARD | IS_MODAL)` + `reserved(u8 = 0)` + `stack_depth(u32)` + `active_tab_index(u32)` + `uri_len(u16)` + `uri_utf8` + `tab_id_len(u16)` + `tab_id_utf8`.
 - **Zero-copy decode (`NavPacketRef<'a>`)** — Native hosts (iOS `UINavigationController`, Android predictive back gesture, desktop title bars, or browser shells) inspect `can_go_back` and the current URI without allocating strings, and push inbound hardware-back or deep-link commands back into Rust over the same channel.

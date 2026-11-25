@@ -291,7 +291,7 @@ inline std::optional<EventRingFramedHeader> decode_event_ring_framed_header(
   return EventRingFramedHeader{{version, count}};
 }}
 
-/// Flat zero-JSON `EventRing` writer matching `packages/core/abi/src/events.rs`.
+/// Flat binary `EventRing` writer matching `packages/core/abi/src/events.rs`.
 class EventRingWriter {{
  public:
   explicit EventRingWriter(bool framed_nvev = false) : framed_(framed_nvev) {{ clear(); }}

@@ -89,7 +89,7 @@ pub fn LandingHero() -> Element {
                         }
                         text {
                             style: "font-size: 12px; color: {theme.muted};",
-                            "· 10 Native & Web Hosts · Zero JSON"
+                            "· 10 Native & Web Hosts · Direct Binary ABI"
                         }
                     }
                 }
@@ -112,7 +112,7 @@ pub fn LandingHero() -> Element {
                     test_id: "landing-hero-subtitle",
                     nve_style: sub_resp,
                     style: "font-size: 17px; color: {theme.muted}; line-height: 1.55;",
-                    "Write declarative UI once with Rust rsx! and fine-grained signals. Every frame crosses the host boundary as one flat binary CommandBuffer and 64-byte cache-line NveSceneView — zero JS VM, zero JSON bridge, sub-second hot reload."
+                    "Write declarative UI once with Rust rsx! and fine-grained signals. Every frame crosses the host boundary as one flat binary CommandBuffer and 64-byte cache-line NveSceneView — zero JS VM, direct binary bridge, sub-second hot reload."
                 }
 
                 // Primary + Secondary CTAs (row on desktop, stacked on mobile for zero overflow)

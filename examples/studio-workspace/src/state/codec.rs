@@ -1,4 +1,4 @@
-//! Compact zero-JSON little-endian binary codec (`NWS1` v2) for [`WorkspaceState`]
+//! Compact binary little-endian binary codec (`NWS1` v2) for [`WorkspaceState`]
 //! with trailing XXH64 integrity checksum for Tier-2 hot-swaps and `MmapOffsetArena`.
 
 use nve_engine::xxh64;
@@ -297,7 +297,7 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
 }
 
 impl WorkspaceState {
-    /// Encodes the full workspace state into compact zero-JSON `NWS1` v2 binary format
+    /// Encodes the full workspace state into compact binary `NWS1` v2 binary format
     /// terminated by an 8-byte little-endian FNV-1a64 integrity checksum.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = BinWriter::with_capacity(2048 + self.history.len() * 768);
@@ -511,7 +511,7 @@ mod tests {
         state.set_radius(CornerRadiusMode::Pill);
         state.set_density(DensityMode::Compact);
         state.toggle_xray();
-        state.send_quick_reply(ChannelKind::Engineering, "Zero-JSON NWS1 v2 snapshot");
+        state.send_quick_reply(ChannelKind::Engineering, "Binary NWS1 v2 snapshot");
         state.toggle_doc_checklist(7);
         state.add_doc_block(DocBlockKind::Callout, "Persisted block callout");
         state.set_workbench_preset(WorkbenchPreset::Tablet);

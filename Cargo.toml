@@ -22,22 +22,15 @@ members = [
     "packages/framework/docs",
     "packages/tools/cli",
     "packages/tools/bench",
-    "packages/modules/audio",
     "packages/modules/camera",
     "packages/modules/clipboard",
     "packages/modules/filesystem",
-    "packages/modules/fonts",
     "packages/modules/haptics",
     "packages/modules/linking",
-    "packages/modules/location",
-    "packages/modules/notifications",
     "packages/modules/secure-store",
-    "packages/modules/sensors",
-    "packages/modules/share",
     "packages/modules/storage",
     "packages/modules/system-env",
     "packages/modules/tv",
-    "packages/modules/web-auth",
     "examples/kitchen-sink",
     "examples/studio-workspace",
     "examples/nve-docs-site",
@@ -75,7 +68,6 @@ nve-filesystem = { path = "packages/modules/filesystem" }
 nve-secure-store = { path = "packages/modules/secure-store" }
 nve-linking = { path = "packages/modules/linking" }
 nve-system-env = { path = "packages/modules/system-env" }
-nve-notifications = { path = "packages/modules/notifications" }
 nve-haptics = { path = "packages/modules/haptics" }
 nve-skia-shell = { path = "hosts/skia-shell" }
 nve-example-kitchen-sink = { path = "examples/kitchen-sink", default-features = false }

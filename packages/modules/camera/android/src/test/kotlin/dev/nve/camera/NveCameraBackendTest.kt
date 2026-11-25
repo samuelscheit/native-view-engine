@@ -335,100 +335,18 @@ class NveCameraBackendTest {
     }
 
     // =========================================================================
-    // 3. Standalone CameraX Adapter Lifecycle & Zero-RN Contract
+    // 3. Registry Precedence (VisionCamera v5 > Custom, explicit error when empty)
     // =========================================================================
 
     @Test
-    fun cameraXAdapterManagesLifecycleBindingsCommandsAndZeroCopyFrames() {
-        val binding = InMemoryCameraXHostBinding()
-        val adapter = NveCameraXAdapter(binding)
-        val events = RecordingListener()
-        adapter.attachListener(events)
-
-        assertEquals(NveCameraBackendKind.CAMERAX, adapter.backendKind)
-        assertEquals(2, adapter.listDevices().size)
-
-        adapter.applyEncodedProps(
-            NveCameraCodec.encodeProps(
-                NveCameraPreviewProps(
-                    facing = NveCameraFacing.BACK,
-                    torch = NveTorchMode.ON,
-                    zoom = 2.5f,
-                    fps = 60,
-                    hdr = true,
-                    stabilization = NveStabilizationMode.CINEMATIC,
-                    enableFrameProcessor = true,
-                    audioEnabled = true,
-                    active = true,
-                ),
-            ),
-        )
-
-        assertEquals(NveCameraSessionState.RUNNING, adapter.state)
-        assertEquals(1, binding.bindCount)
-        assertEquals("camerax-back-0", binding.boundConfig?.deviceId)
-        assertEquals(NveTorchMode.ON, binding.torchMode)
-        assertEquals(2.5f, binding.zoomRatio)
-
-        // Emit frame via ImageAnalysis hook -> validated NVCF delivered
-        val frame = NveCameraFrameDescriptor(
-            width = 1280,
-            height = 720,
-            strideBytes = 1280,
-            pixelFormat = NveCameraPixelFormat.YUV420_888,
-            rotationDeg = 0,
-            timestampNs = 99_000_000L,
-            nativeHandleId = 0x1020_3040L,
-        )
-        binding.emitSimulatedFrame(frame)
-        assertEquals(1, events.frames.size)
-        assertEquals(frame, events.frames[0].first)
-
-        // Recording + Android lifecycle pause/stop cleanly finishes recording & unbinds use cases
-        adapter.dispatchCommand(NveCameraCommand.StartRecording("/tmp/cx_clip.mp4"))
-        assertEquals(NveCameraSessionState.RECORDING, adapter.state)
-
-        adapter.onLifecycleStop()
-        assertEquals(NveCameraSessionState.STOPPED, adapter.state)
-        assertEquals(1, binding.unbindCount)
-        assertNull(binding.boundConfig)
-        assertEquals(1, events.videos.size)
-
-        // Lifecycle resume re-binds automatically because activeProps.active is still true
-        adapter.onLifecycleStart()
-        assertEquals(NveCameraSessionState.RUNNING, adapter.state)
-        assertEquals(2, binding.bindCount)
-        assertNotNull(binding.boundConfig)
-
-        // StopRecording when not recording throws cleanly
-        assertThrows(IllegalStateException::class.java) {
-            adapter.dispatchCommand(NveCameraCommand.StopRecording)
-        }
-
-        // Photo capture & focus
-        adapter.dispatchCommand(NveCameraCommand.FocusPoint(0.5f, 0.5f))
-        assertEquals(0.5f to 0.5f, binding.lastFocusPoint)
-        adapter.dispatchCommand(NveCameraCommand.CapturePhoto(quality = 90, flash = 0))
-        assertEquals(1, events.photos.size)
-
-        adapter.onLifecycleDestroy()
-        assertEquals(NveCameraSessionState.RELEASED, adapter.state)
-        assertEquals(2, binding.unbindCount)
-    }
-
-    // =========================================================================
-    // 4. Registry Precedence (VisionCamera v5 > Custom > CameraX Fallback)
-    // =========================================================================
-
-    @Test
-    fun registryAutoSelectsVisionCameraWhenRegisteredAndFallsBackToCameraXStandalone() {
+    fun registryRequiresRegisteredVisionCameraOrCustomBackend() {
         val registry = NveCameraRegistry()
 
-        // Standalone Android/Compose default: CameraX selected automatically
         assertFalse(registry.isVisionCameraRegistered())
-        assertEquals(NveCameraBackendKind.CAMERAX, registry.resolveBackendKind())
-        val standalone = registry.createBackend(surfaceId = 1, nodeId = 10)
-        assertEquals(NveCameraBackendKind.CAMERAX, standalone.backendKind)
+        assertNull(registry.resolveBackendKind())
+        assertThrows(IllegalStateException::class.java) {
+            registry.createBackend(surfaceId = 1, nodeId = 10)
+        }
 
         // Register VisionCamera v5 bridge -> auto-selected with highest precedence
         registry.registerVisionCamera { _, _ -> FakeVisionCameraBridge() }
@@ -437,21 +355,10 @@ class NveCameraBackendTest {
         val vcBackend = registry.createBackend(surfaceId = 1, nodeId = 11)
         assertEquals(NveCameraBackendKind.VISION_CAMERA_V5, vcBackend.backendKind)
 
-        // Explicit preferredKind can still request CameraX even when VisionCamera is registered
-        val explicitCameraX = registry.createBackend(
-            surfaceId = 1,
-            nodeId = 12,
-            preferredKind = NveCameraBackendKind.CAMERAX,
-        )
-        assertEquals(NveCameraBackendKind.CAMERAX, explicitCameraX.backendKind)
-
-        // Unregister VisionCamera -> cleanly falls back to CameraX again
+        // Unregister VisionCamera -> returns null / throws explicitly
         assertTrue(registry.unregister(NveCameraBackendKind.VISION_CAMERA_V5))
         assertFalse(registry.isVisionCameraRegistered())
-        assertEquals(NveCameraBackendKind.CAMERAX, registry.resolveBackendKind())
-        assertEquals(NveCameraBackendKind.CAMERAX, registry.createBackend(1, 13).backendKind)
-
-        // Requesting unregistered preferredKind throws clearly
+        assertNull(registry.resolveBackendKind())
         assertThrows(IllegalStateException::class.java) {
             registry.createBackend(1, 14, preferredKind = NveCameraBackendKind.VISION_CAMERA_V5)
         }

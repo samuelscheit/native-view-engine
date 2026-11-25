@@ -191,21 +191,23 @@ void main() {
     expectCodecErr(() => NvncDecoder.parse(Uint8List.fromList(<int>[0x4E, 0x56, 0x4E, 0x43, 1, 1, 0, 200])), NveNativeViewCodecErrorKind.tooManyFields);
   });
 
-  test('Per-view registration toggles register only selected views', () {
-    final NveNativeViewRegistry blurOnly = NveNativeViewRegistry()
-      ..registerDefaultFlutterNativeViews(enableBlur: true, enableWebView: false, enableVideo: false);
-    expect(blurOnly.supports(NveNativeViewConstants.kindBlurSurface), isTrue);
-    expect(blurOnly.supports(NveNativeViewConstants.kindBlurAlias), isTrue);
-    expect(blurOnly.supports(NveNativeViewConstants.kindWebView), isFalse);
-    expect(blurOnly.supports(NveNativeViewConstants.kindVideoPlayer), isFalse);
+  test('Default Flutter registry registers only real BackdropFilter blur; WebView/Video require explicit adapter', () {
+    final NveNativeViewRegistry defaults = NveNativeViewRegistry()..registerDefaultFlutterNativeViews();
+    expect(defaults.supports(NveNativeViewConstants.kindBlurSurface), isTrue);
+    expect(defaults.supports(NveNativeViewConstants.kindBlurAlias), isTrue);
+    expect(defaults.supports(NveNativeViewConstants.kindWebView), isFalse);
+    expect(defaults.supports(NveNativeViewConstants.kindVideoPlayer), isFalse);
+    expect(defaults.mountOrUpdate(99, NveNativeViewConstants.kindWebView, Uint8List(0)), isNull);
+    expect(defaults.mountOrUpdate(100, NveNativeViewConstants.kindVideoPlayer, Uint8List(0)), isNull);
 
-    final NveNativeViewRegistry webOnly = NveNativeViewRegistry()..registerWebView();
+    final NveNativeViewRegistry webOnly = NveNativeViewRegistry()
+      ..registerWebView(NveNativeViewAdapter(create: (_, __, ___) => 'custom-webview'));
     expect(webOnly.supports(NveNativeViewConstants.kindBlurSurface), isFalse);
     expect(webOnly.supports(NveNativeViewConstants.kindWebView), isTrue);
     expect(webOnly.supports(NveNativeViewConstants.kindVideoPlayer), isFalse);
   });
 
-  testWidgets('Registry wildcards, URL safety, BlurSurface BackdropFilter, WebView & VideoPlayer', (WidgetTester tester) async {
+  testWidgets('Registry wildcards, URL safety, and BlurSurface BackdropFilter', (WidgetTester tester) async {
     expect(isSafeNveWebViewUrl('https://flutter.nve.dev'), isTrue);
     expect(isSafeNveWebViewUrl('http://localhost:8080'), isTrue);
     expect(isSafeNveWebViewUrl('  ABOUT:BLANK\n'), isTrue);
@@ -213,12 +215,10 @@ void main() {
     expect(isSafeNveWebViewUrl('JaVa\tScRiPt:alert(1)'), isFalse);
     expect(isSafeNveWebViewUrl('vbscript:msgbox(1)'), isFalse);
     expect(isSafeNveWebViewUrl('data:text/html,<b>x</b>'), isFalse);
+    expect(isSafeNveMediaUri('https://cdn.nve.dev/demo.mp4'), isTrue);
+    expect(isSafeNveMediaUri('javascript:alert(1)'), isFalse);
 
-    final NveNativeViewRegistry registry = NveNativeViewRegistry();
-    registry.registerDefaultFlutterNativeViews(
-      webViewBuilder: (_, NveFlutterWebViewState s) => Text(s.lastRequestedUrl, textDirection: TextDirection.ltr),
-      videoPlayerBuilder: (_, NveFlutterVideoPlayerState s) => Text(s.props.sourceUri, textDirection: TextDirection.ltr),
-    );
+    final NveNativeViewRegistry registry = NveNativeViewRegistry()..registerDefaultFlutterNativeViews();
 
     // Wildcard precedence
     registry.registerAdapter('web.*', NveNativeViewAdapter(create: (_, __, ___) => 'web-wild'));
@@ -230,7 +230,7 @@ void main() {
     expect(registry.mountOrUpdate(2, 'web.media.video', Uint8List(0)), 'media-wild');
     expect(registry.mountOrUpdate(3, 'web.media.audio', Uint8List(0)), 'exact-audio');
 
-    // BlurSurface with BackdropFilter + tint
+    // BlurSurface with real BackdropFilter + tint
     final _NvnpBuilder blur = _NvnpBuilder()
       ..addU32(1, NveBlurMaterial.thick.wireCode)
       ..addF32(2, 0.5)
@@ -249,46 +249,29 @@ void main() {
     expect(find.byType(BackdropFilter), findsOneWidget);
     expect(find.byType(ColoredBox), findsOneWidget);
 
-    // WebView props + NVNC commands + URL sanitization
-    final _NvnpBuilder wv = _NvnpBuilder()
-      ..addStr(1, 'https://initial.nve.dev')
-      ..addBool(2, true);
-    final NveFlutterWebViewState wvState =
-        registry.mountOrUpdate(11, NveNativeViewConstants.kindWebView, wv.finish())! as NveFlutterWebViewState;
-    expect(wvState.lastRequestedUrl, 'https://initial.nve.dev');
+    // WebView & VideoPlayer NVNP/NVNC decoders still validate wire payloads cleanly.
+    final NveWebViewProps wvProps = NveWebViewProps.decode(
+      NvnpDecoder.parse((_NvnpBuilder()..addStr(1, 'https://initial.nve.dev')..addBool(2, true)).finish()),
+    );
+    expect(wvProps.url, 'https://initial.nve.dev');
+    expect(wvProps.allowsBackForward, isTrue);
+    final NveWebViewCommand wvCmd = NveWebViewCommand.decode(
+      NvncDecoder.parse((_NvncBuilder(1)..argStr('https://next.nve.dev')).finish()),
+    );
+    expect(wvCmd.kind, NveWebViewCommandKind.navigate);
 
-    expect(registry.dispatchCommand(11, 'navigate', (_NvncBuilder(1)..argStr('javascript:bad()')).finish()), isFalse);
-    expect(registry.dispatchCommand(11, 'navigate', (_NvncBuilder(1)..argStr('https://next.nve.dev')).finish()), isTrue);
-    expect(registry.dispatchCommand(11, 'reload', _NvncBuilder(2).finish()), isTrue);
-    expect(registry.dispatchCommand(11, 'go_back', _NvncBuilder(3).finish()), isTrue);
-    expect(registry.dispatchCommand(11, 'evaluate_script', (_NvncBuilder(5)..argStr('2 + 2')).finish()), isTrue);
-    expect(wvState.lastRequestedUrl, 'https://next.nve.dev');
-    expect(wvState.reloadCount, 1);
-    expect(wvState.goBackCount, 1);
-    expect(wvState.lastEvaluatedScript, '2 + 2');
+    final NveVideoPlayerProps vidProps = NveVideoPlayerProps.decode(
+      NvnpDecoder.parse((_NvnpBuilder()..addStr(1, 'https://cdn.nve.dev/demo.mp4')..addBool(2, false)..addBool(3, true)..addBool(4, true)..addBool(5, true)).finish()),
+    );
+    expect(vidProps.sourceUri, 'https://cdn.nve.dev/demo.mp4');
+    final NveVideoPlayerCommand vidCmd = NveVideoPlayerCommand.decode(
+      NvncDecoder.parse((_NvncBuilder(3)..argU64(5500)).finish()),
+    );
+    expect(vidCmd.seekMs, 5500);
 
-    // VideoPlayer props + NVNC commands
-    final _NvnpBuilder vid = _NvnpBuilder()
-      ..addStr(1, 'https://cdn.nve.dev/demo.mp4')
-      ..addBool(2, false)
-      ..addBool(3, true)
-      ..addBool(4, true)
-      ..addBool(5, true);
-    final NveFlutterVideoPlayerState vidState =
-        registry.mountOrUpdate(12, NveNativeViewConstants.kindVideoAlias, vid.finish())! as NveFlutterVideoPlayerState;
-    expect(registry.dispatchCommand(12, 'play', _NvncBuilder(1).finish()), isTrue);
-    expect(registry.dispatchCommand(12, 'seek_ms', (_NvncBuilder(3)..argU64(5500)).finish()), isTrue);
-    expect(registry.dispatchCommand(12, 'set_volume', (_NvncBuilder(4)..argF32(0.25)).finish()), isTrue);
-    expect(vidState.isPlaying, isTrue);
-    expect(vidState.positionMs, 5500);
-    expect(vidState.volume, closeTo(0.25, 1e-5));
-
-    // Unmount widget tree before disposing ChangeNotifiers
     await tester.pumpWidget(const SizedBox.shrink());
     registry.unmountAll();
     expect(registry.mountedCount, 0);
     expect(blurState.unmounted, isTrue);
-    expect(wvState.unmounted, isTrue);
-    expect(vidState.unmounted, isTrue);
   });
 }

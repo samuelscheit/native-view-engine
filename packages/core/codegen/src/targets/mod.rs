@@ -57,7 +57,7 @@ impl HybridGenerateOutput {
     }
 }
 
-/// Generates zero-JSON Hybrid FFI bindings for a single requested [`HybridTarget`].
+/// Generates binary Hybrid FFI bindings for a single requested [`HybridTarget`].
 pub fn generate_hybrid_target(
     spec: &HybridFileSpec,
     target: HybridTarget,
@@ -74,7 +74,7 @@ pub fn generate_hybrid_target(
     Ok(HybridGenerateOutput { target, files })
 }
 
-/// Generates zero-JSON Hybrid FFI bindings for all requested [`HybridTarget`]s (or
+/// Generates binary Hybrid FFI bindings for all requested [`HybridTarget`]s (or
 /// [`HybridTarget::ALL`]).
 pub fn generate_hybrid_all(
     spec: &HybridFileSpec,
@@ -206,7 +206,7 @@ pub fn generate_reloc_all(schema: &RelocSchema) -> Result<Vec<GeneratedFile>, Co
 // React Native Fabric Import / Export Dispatchers
 // ============================================================================
 
-/// Generates zero-JS, zero-JSON Rust `nve-dioxus` bindings and a thin C++20 Fabric adapter
+/// Generates zero-JS, binary FFI Rust `nve-dioxus` bindings and a thin C++20 Fabric adapter
 /// from a parsed RN spec.
 pub fn generate_import_rn(spec: &ParsedRnSpec) -> Result<ImportRnOutput, CodegenError> {
     match spec {
@@ -251,7 +251,7 @@ fn generate_turbomodule_import(spec: &TurboModuleSpec) -> Result<ImportRnOutput,
     })
 }
 
-/// Generates a complete drop-in zero-JSON React Native Fabric NativeComponent package for an NVE component.
+/// Generates a complete drop-in binary React Native Fabric NativeComponent package for an NVE component.
 pub fn generate_export_rn(spec: &NveExportSpec) -> Result<ExportRnOutput, CodegenError> {
     spec.validate()?;
 

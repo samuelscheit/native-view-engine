@@ -1,7 +1,6 @@
 //! Reusable 3-way divergence reconciliation re-exports and `NveCrdtDelta` sync adapter.
 //!
-//! Bridges [`nve_components::reconcile::StateReconciler`] with `nve-interop`'s zero-JSON
-//! `NveCrdtDelta` (`XXH64`) wire protocol so offline optimistic UI edits reconcile deterministically
+//! Bridges [`nve_components::reconcile::StateReconciler`] with `nve-interop`'s binary //! `NveCrdtDelta` (`XXH64`) wire protocol so offline optimistic UI edits reconcile deterministically
 //! against incoming peer state.
 
 pub use nve_components::reconcile::*;

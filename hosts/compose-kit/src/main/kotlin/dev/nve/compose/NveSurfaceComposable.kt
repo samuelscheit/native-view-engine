@@ -235,7 +235,7 @@ fun resolveCanvasDrawListBytes(node: NveRenderNodeSnapshot): ByteArray? {
 }
 
 /**
- * Decodes a `data:image/<mime>;base64,...` URI into a Compose [ImageBitmap] with zero JSON parsing.
+ * Decodes a `data:image/<mime>;base64,...` URI into a Compose [ImageBitmap] with direct binary decoding.
  */
 fun decodeDataUriImageBitmap(src: String): ImageBitmap? {
     if (src.isEmpty()) return null

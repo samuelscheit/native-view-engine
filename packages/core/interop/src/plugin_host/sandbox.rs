@@ -1,31 +1,24 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
-use std::path::PathBuf;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(not(target_arch = "wasm32"))]
-use libloading::Library;
 use nve_abi::{
     FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
     NveEventBatch, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi,
     NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use nve_engine::loader::{LoaderError, StagedDylib};
 
 use super::manifest::{
     resolve_and_validate_tables, PluginCapabilities, PluginError, PluginId, PluginMetadata,
     PluginRequirement, PluginSourceKind,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-static TEMP_COPY_SEQ: AtomicU64 = AtomicU64::new(1);
-
 /// Safe RAII wrapper owning one live `nve_get_interface`-compatible plugin instance.
 pub struct NvePluginSlot {
     #[cfg(not(target_arch = "wasm32"))]
-    _lib: Option<Library>,
-    temp_copy: Option<PathBuf>,
+    staged: Option<StagedDylib>,
     metadata: PluginMetadata,
     surface: NveSurfaceApi,
     layout: Option<NveLayoutApi>,
@@ -87,8 +80,7 @@ impl NvePluginSlot {
 
         Ok(Self {
             #[cfg(not(target_arch = "wasm32"))]
-            _lib: None,
-            temp_copy: None,
+            staged: None,
             metadata: PluginMetadata {
                 plugin_id,
                 name,
@@ -105,8 +97,7 @@ impl NvePluginSlot {
         })
     }
 
-    /// Loads a compiled dynamic library (`cdylib`) via a unique temporary copy so `dlopen` never
-    /// serves a stale cached image across hot-swaps.
+    /// Loads a compiled dynamic library (`cdylib`) using `nve_engine::loader::StagedDylib`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_dylib(
         plugin_id: PluginId,
@@ -117,120 +108,28 @@ impl NvePluginSlot {
         req: PluginRequirement,
         prior_state: Option<&[u8]>,
     ) -> Result<Self, PluginError> {
-        let ext = dylib_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("dylib");
-        let stem = dylib_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("nve_plugin");
-        let seq = TEMP_COPY_SEQ.fetch_add(1, Ordering::Relaxed);
-        let temp_dir = std::env::temp_dir().join("nve-plugin-host");
-        std::fs::create_dir_all(&temp_dir).map_err(|e| PluginError::Io(e.to_string()))?;
-        let copy_path = temp_dir.join(format!(
-            "{stem}_p{plugin_id}_g{generation}_{}_{seq}.{ext}",
-            std::process::id()
-        ));
-        std::fs::copy(dylib_path, &copy_path).map_err(|e| PluginError::Io(e.to_string()))?;
-
-        let lib = match unsafe { Library::new(&copy_path) } {
-            Ok(lib) => lib,
-            Err(err) => {
-                let _ = std::fs::remove_file(&copy_path);
-                return Err(PluginError::LibraryLoadFailed(err.to_string()));
-            }
-        };
-
-        let get_iface: NveGetInterfaceFn = match unsafe {
-            lib.get::<NveGetInterfaceFn>(b"nve_get_interface")
-        } {
-            Ok(sym) => *sym,
-            Err(err) => {
-                drop(lib);
-                let _ = std::fs::remove_file(&copy_path);
-                return Err(PluginError::SymbolNotFound(err.to_string()));
-            }
-        };
-
-        let tables = match resolve_and_validate_tables(get_iface, req) {
-            Ok(t) => t,
-            Err(err) => {
-                drop(lib);
-                let _ = std::fs::remove_file(&copy_path);
-                return Err(err);
-            }
-        };
-
-        nve_engine::clear_last_ffi_panic();
-        let handle = match catch_unwind(AssertUnwindSafe(|| unsafe {
-            (tables.surface.create)(surface_id)
-        })) {
-            Ok(h) => {
-                if let Some(msg) = nve_engine::take_last_ffi_panic() {
-                    if !h.is_null() {
-                        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-                            (tables.surface.destroy)(h);
-                        }));
-                        nve_engine::clear_last_ffi_panic();
-                    }
-                    drop(lib);
-                    let _ = std::fs::remove_file(&copy_path);
-                    return Err(PluginError::PluginPanicked(msg));
-                }
-                if h.is_null() {
-                    drop(lib);
-                    let _ = std::fs::remove_file(&copy_path);
-                    return Err(PluginError::NullHandleReturned);
-                }
-                h
-            }
-            Err(_) => {
-                nve_engine::clear_last_ffi_panic();
-                drop(lib);
-                let _ = std::fs::remove_file(&copy_path);
-                return Err(PluginError::PluginPanicked("NveSurfaceApi::create".into()));
-            }
-        };
-
-        if let (Some(dev_api), Some(state)) = (tables.dev, prior_state)
-            && !state.is_empty()
-        {
-            nve_engine::clear_last_ffi_panic();
-            let restore_res = catch_unwind(AssertUnwindSafe(|| unsafe {
-                (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state));
-            }));
-            let ffi_panic = nve_engine::take_last_ffi_panic();
-            if restore_res.is_err() || ffi_panic.is_some() {
-                let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-                    (tables.surface.destroy)(handle);
-                }));
-                nve_engine::clear_last_ffi_panic();
-                drop(lib);
-                let _ = std::fs::remove_file(&copy_path);
-                return Err(PluginError::PluginPanicked(
-                    ffi_panic.unwrap_or_else(|| "NveDevApi::restore_state".into()),
-                ));
-            }
-        }
-
-        Ok(Self {
-            _lib: Some(lib),
-            temp_copy: Some(copy_path),
-            metadata: PluginMetadata {
-                plugin_id,
-                name,
-                surface_id,
-                generation,
-                capabilities: tables.capabilities,
-                source: PluginSourceKind::DynamicLibrary(dylib_path.to_path_buf()),
-            },
-            surface: tables.surface,
-            layout: tables.layout,
-            component: tables.component,
-            dev: tables.dev,
-            handle,
-        })
+        let staged = StagedDylib::load(
+            dylib_path,
+            "nve-plugin-host",
+            &format!("p{plugin_id}_g{generation}"),
+        )
+        .map_err(|err| match err {
+            LoaderError::Io(io) => PluginError::Io(io.to_string()),
+            LoaderError::Load(load) => PluginError::LibraryLoadFailed(load.to_string()),
+            other => PluginError::LibraryLoadFailed(other.to_string()),
+        })?;
+        let mut slot = Self::from_in_process(
+            plugin_id,
+            name,
+            surface_id,
+            generation,
+            staged.get_interface(),
+            req,
+            prior_state,
+        )?;
+        slot.staged = Some(staged);
+        slot.metadata.source = PluginSourceKind::DynamicLibrary(dylib_path.to_path_buf());
+        Ok(slot)
     }
 
     pub fn metadata(&self) -> &PluginMetadata {
@@ -442,10 +341,7 @@ impl Drop for NvePluginSlot {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            drop(self._lib.take());
-        }
-        if let Some(path) = self.temp_copy.take() {
-            let _ = std::fs::remove_file(path);
+            drop(self.staged.take());
         }
     }
 }

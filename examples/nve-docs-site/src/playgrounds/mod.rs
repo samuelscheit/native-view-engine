@@ -63,7 +63,7 @@ pub fn build_playground_registry() -> PlaygroundRegistry {
     reg.register(
         PlaygroundMeta::new(
             "canvas-draw1",
-            "NVE_DRAW1 Zero-JSON Vector Canvas",
+            "NVE_DRAW1 Binary Vector Canvas",
             CANVAS_DRAW1_SOURCE,
         )
         .with_description(

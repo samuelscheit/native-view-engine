@@ -46,7 +46,7 @@ const PLAYGROUND_SPECS: [PlaygroundCardSpec; 5] = [
         title: "NVE_DRAW1 Vector Canvas",
         guide_route: "/docs/guides/canvas-draw1",
         summary: "Switch sparkline/bar/radial scenes, color palettes, and stroke widths compiled directly to binary NVE_DRAW1 draw op buffers.",
-        badges: &["NVE_DRAW1", "Zero JSON", "Vector"],
+        badges: &["NVE_DRAW1", "Binary ABI", "Vector"],
     },
     PlaygroundCardSpec {
         id: "crdt-simulator",
@@ -226,7 +226,7 @@ pub fn ExamplesGalleryPage() -> Element {
                                     style: "flex-direction: row; flex-wrap: wrap; gap: 6px; padding-top: 2px;",
                                     PillBadge { label: "All nve-ui".to_string(), accent: true }
                                     PillBadge { label: "nve-i18n + RTL".to_string() }
-                                    PillBadge { label: "Zero JSON".to_string(), secondary: true }
+                                    PillBadge { label: "Binary ABI".to_string(), secondary: true }
                                     PillBadge { label: "ErrorBoundary".to_string() }
                                 }
                             }

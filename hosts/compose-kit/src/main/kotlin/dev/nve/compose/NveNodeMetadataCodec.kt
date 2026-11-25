@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets
 
 /**
  * Retained per-node accessibility, `TextInput`, `Image`, and `SkiaCanvas` metadata decoded from
- * one batched `NVE_MET1` binary slab per dirty frame (zero JSON, zero per-prop JNI chatter).
+ * one batched `NVE_MET1` binary slab per dirty frame (binary FFI, zero per-prop JNI chatter).
  */
 data class NveNodeMetadata(
     val accessibilityLabel: String = "",
@@ -71,7 +71,7 @@ data class NveNodeMetadata(
 }
 
 /**
- * Zero-JSON decoder for the batched dirty-node `NVE_MET1` binary metadata slab produced by
+ * Binary decoder for the batched dirty-node `NVE_MET1` binary metadata slab produced by
  * `NveAndroidMetadataPacker.cpp`.
  *
  * Uses `ByteOrder.LITTLE_ENDIAN` structured `ByteBuffer` reads and a reusable UTF-8 scratch

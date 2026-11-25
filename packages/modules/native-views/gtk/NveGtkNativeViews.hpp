@@ -35,8 +35,9 @@ struct GtkTintRgba {
 GtkTintRgba unpack_gtk_tint_rrggbbaa(uint32_t rrggbbaa) noexcept;
 double base_gtk_blur_radius(nve::BlurMaterial material) noexcept;
 
-/// GTK4 native blur surface backed by a CSS-styled tinted `GtkBox` and `GtkCssProvider` for
-/// `"nve.blur_surface"` / `"nve.blur"`.
+/// GTK4 translucent frosted tint surface backed by a CSS-styled `GtkBox` for
+/// `"nve.blur_surface"` / `"nve.blur"`. GTK4 does not provide compositor `backdrop-filter`,
+/// so this surface renders an honest translucent tint without blurring its own children.
 class NveGtkBlurSurface {
  public:
   explicit NveGtkBlurSurface(uint32_t node_id);
@@ -56,7 +57,6 @@ class NveGtkBlurSurface {
   uint32_t tint_rgba() const noexcept { return tint_rgba_; }
   const std::string& css_class() const noexcept { return css_class_; }
   const std::string& active_css() const noexcept { return active_css_; }
-  const std::string& backdrop_filter_spec() const noexcept { return backdrop_filter_spec_; }
   bool unmounted() const noexcept { return unmounted_; }
 
  private:
@@ -71,7 +71,6 @@ class NveGtkBlurSurface {
   uint32_t tint_rgba_{0u};
   std::string css_class_;
   std::string active_css_;
-  std::string backdrop_filter_spec_;
   bool unmounted_{false};
 };
 #endif // NVE_NV_ENABLE_BLUR
@@ -96,9 +95,10 @@ class NveGtkWebViewBackend {
 };
 
 /// GTK4 `GtkBox` container adapter for `"nve.web_view"` / `"nve.webview"`.
+/// Requires a non-null injected `NveGtkWebViewBackend`; mounting without one returns `nullptr`.
 class NveGtkWebView {
  public:
-  explicit NveGtkWebView(std::unique_ptr<NveGtkWebViewBackend> backend = nullptr);
+  explicit NveGtkWebView(std::unique_ptr<NveGtkWebViewBackend> backend);
   ~NveGtkWebView();
 
   NveGtkWebView(const NveGtkWebView&) = delete;
@@ -111,12 +111,6 @@ class NveGtkWebView {
   GtkWidget* widget() const noexcept { return box_; }
   const std::string& last_requested_url() const noexcept { return last_requested_url_; }
   bool allows_back_forward() const noexcept { return allows_back_forward_; }
-  size_t navigation_count() const noexcept { return navigation_count_; }
-  size_t reload_count() const noexcept { return reload_count_; }
-  size_t go_back_count() const noexcept { return go_back_count_; }
-  size_t go_forward_count() const noexcept { return go_forward_count_; }
-  const std::string& last_evaluated_script() const noexcept { return last_evaluated_script_; }
-  size_t evaluate_script_count() const noexcept { return evaluate_script_count_; }
   bool unmounted() const noexcept { return unmounted_; }
   NveGtkWebViewBackend* backend() const noexcept { return backend_.get(); }
 
@@ -127,12 +121,6 @@ class NveGtkWebView {
   std::unique_ptr<NveGtkWebViewBackend> backend_;
   std::string last_requested_url_;
   bool allows_back_forward_{true};
-  size_t navigation_count_{0u};
-  size_t reload_count_{0u};
-  size_t go_back_count_{0u};
-  size_t go_forward_count_{0u};
-  std::string last_evaluated_script_;
-  size_t evaluate_script_count_{0u};
   bool unmounted_{false};
 };
 #endif // NVE_NV_ENABLE_WEBVIEW
@@ -158,9 +146,10 @@ class NveGtkVideoBackend {
 };
 
 /// GTK4 `GtkBox` container adapter for `"nve.video_player"` / `"nve.video"`.
+/// Requires a non-null injected `NveGtkVideoBackend`; mounting without one returns `nullptr`.
 class NveGtkVideoPlayer {
  public:
-  explicit NveGtkVideoPlayer(std::unique_ptr<NveGtkVideoBackend> backend = nullptr);
+  explicit NveGtkVideoPlayer(std::unique_ptr<NveGtkVideoBackend> backend);
   ~NveGtkVideoPlayer();
 
   NveGtkVideoPlayer(const NveGtkVideoPlayer&) = delete;
@@ -179,10 +168,6 @@ class NveGtkVideoPlayer {
   bool is_playing() const noexcept { return playing_; }
   uint64_t position_ms() const noexcept { return position_ms_; }
   float volume() const noexcept { return volume_; }
-  size_t play_count() const noexcept { return play_count_; }
-  size_t pause_count() const noexcept { return pause_count_; }
-  size_t seek_count() const noexcept { return seek_count_; }
-  size_t volume_change_count() const noexcept { return volume_change_count_; }
   bool unmounted() const noexcept { return unmounted_; }
   NveGtkVideoBackend* backend() const noexcept { return backend_.get(); }
 
@@ -197,10 +182,6 @@ class NveGtkVideoPlayer {
   bool playing_{false};
   uint64_t position_ms_{0u};
   float volume_{1.0f};
-  size_t play_count_{0u};
-  size_t pause_count_{0u};
-  size_t seek_count_{0u};
-  size_t volume_change_count_{0u};
   bool unmounted_{false};
 };
 #endif // NVE_NV_ENABLE_VIDEO

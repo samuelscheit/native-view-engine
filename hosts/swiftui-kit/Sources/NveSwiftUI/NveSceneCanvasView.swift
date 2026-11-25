@@ -280,7 +280,7 @@ public enum NveSceneRenderer {
 
 // MARK: - SwiftUI `NveSceneCanvasView`
 
-/// Direct zero-JSON SwiftUI `Canvas` view backed by ``NveSceneStore`` / ``NveSceneReader``.
+/// Direct binary SwiftUI `Canvas` view backed by ``NveSceneStore`` / ``NveSceneReader``.
 ///
 /// Renders 64-byte `NveRenderNode` slabs directly (rounded rects, borders, opacity, `SkiaCanvas`,
 /// cached `Image`s, `TextInput`s, text, scroll/bounds clips), exposes VoiceOver accessibility

@@ -1,19 +1,17 @@
-//! Live `<Island>` Multi-Host Sandbox view (`ActiveView::Islands`).
+//! Live Multi-Surface Orchestration Sandbox view (`ActiveView::Islands`).
 //!
-//! Backed directly by real `nve_interop::{SurfaceOrchestrator, IslandSpec, NveChannelBus,
-//! GestureArbitrator}` showcasing interactive `ReactNative`, `Flutter`, `SwiftUI`, and
-//! `JetpackCompose` island cards with live zero-copy `NveChannelBus` broadcasts and
-//! cross-framework `GestureArbitrator` claim / pass-through / defer-to-parent simulation.
+//! Backed directly by `nve_interop::{SurfaceOrchestrator, NveChannelBus, GestureArbitrator}`
+//! showcasing surface lifecycle transitions, binary `NveChannelBus` broadcasts, and
+//! cross-surface `GestureArbitrator` claim / pass-through / defer-to-parent simulation.
 
 use std::sync::{Arc, Mutex};
 
 use nve_abi::SurfaceId;
 use nve_interop::{
-    ArbitrationDecision, ChannelPayload, ColorScheme, ComposeIslandSpec, FlutterEngineGroupConfig,
-    FlutterIslandSpec, FrameworkKind, GestureArbitrator, GestureCapabilities, GestureDisposition,
-    IslandMountPolicy, IslandSpec, LifecycleState, NveChannelBus, PointerPhase, PointerSample,
-    RnIslandSpec, ScrollEdgeState, SurfaceDescriptor, SurfaceEnvironment, SurfaceOrchestrator,
-    SwiftUIIslandSpec, ThemeContext, TOPIC_THEME,
+    ArbitrationDecision, ChannelPayload, ColorScheme, FrameworkKind, GestureArbitrator,
+    GestureCapabilities, GestureDisposition, LifecycleState, NveChannelBus, PointerPhase,
+    PointerSample, ScrollEdgeState, SurfaceDescriptor, SurfaceEnvironment, SurfaceOrchestrator,
+    ThemeContext, TOPIC_THEME,
 };
 use serde::{Deserialize, Serialize};
 
@@ -121,7 +119,7 @@ impl Default for IslandsSnapshot {
 
 type DeliveryLogEntry = (SurfaceId, String, u64, usize);
 
-/// Real `nve_interop` multi-host runtime coordinating `SurfaceOrchestrator`, `IslandSpec`,
+/// Multi-surface orchestration runtime coordinating `SurfaceOrchestrator`,
 /// `NveChannelBus`, and `GestureArbitrator`.
 pub struct IslandSandboxRuntime {
     pub orchestrator: SurfaceOrchestrator,
@@ -129,7 +127,7 @@ pub struct IslandSandboxRuntime {
     pub arbitrator: GestureArbitrator,
     pub root_id: SurfaceId,
     pub rail_id: SurfaceId,
-    pub islands: Vec<(IslandHostKind, SurfaceId, IslandSpec)>,
+    pub islands: Vec<(IslandHostKind, SurfaceId, &'static str)>,
     delivery_log: Arc<Mutex<Vec<DeliveryLogEntry>>>,
 }
 
@@ -169,79 +167,47 @@ impl IslandSandboxRuntime {
             GestureCapabilities::horizontal_scroll(FrameworkKind::Nve),
         );
 
-        let specs: Vec<(IslandHostKind, &str, IslandSpec, GestureCapabilities)> = vec![
-            (
-                IslandHostKind::ReactNative,
-                "RNLiveMapView",
-                IslandSpec::ReactNative(RnIslandSpec {
-                    module_name: "MapsModule".into(),
-                    component_name: "RNLiveMapView".into(),
-                    initial_props_json: r#"{"zoom":14,"dark":true}"#.into(),
-                    fabric_enabled: true,
-                    hermes_bytecode_path: None,
-                    mount_policy: IslandMountPolicy::LazyOnVisible,
-                }),
-                GestureCapabilities::vertical_scroll(FrameworkKind::ReactNativeFabric),
-            ),
-            (
-                IslandHostKind::Flutter,
-                "RevenueSparkChart",
-                IslandSpec::Flutter(FlutterIslandSpec {
-                    widget_name: "RevenueSparkChart".into(),
-                    engine_group: FlutterEngineGroupConfig {
-                        group_id: "aether_flutter_pool".into(),
-                        entrypoint: "telemetryMain".into(),
-                        initial_route: Some("/spark".into()),
-                        dart_entrypoint_args: vec!["--120hz".into()],
-                        share_isolate_group: true,
-                        warm_spare_engine: true,
+        let specs: Vec<(IslandHostKind, FrameworkKind, &str, &'static str, GestureCapabilities)> =
+            vec![
+                (
+                    IslandHostKind::ReactNative,
+                    FrameworkKind::ReactNativeFabric,
+                    "RNLiveMapView",
+                    "LazyOnVisible",
+                    GestureCapabilities::vertical_scroll(FrameworkKind::ReactNativeFabric),
+                ),
+                (
+                    IslandHostKind::Flutter,
+                    FrameworkKind::Flutter,
+                    "RevenueSparkChart",
+                    "LazyOnVisible",
+                    GestureCapabilities::horizontal_scroll(FrameworkKind::Flutter),
+                ),
+                (
+                    IslandHostKind::SwiftUI,
+                    FrameworkKind::SwiftUI,
+                    "ApplePayCheckoutCard",
+                    "OnFirstInteraction",
+                    GestureCapabilities {
+                        framework: FrameworkKind::SwiftUI,
+                        ..GestureCapabilities::default()
                     },
-                    prefer_texture_compositing: true,
-                    initial_props_json: r#"{"window":"7d"}"#.into(),
-                    mount_policy: IslandMountPolicy::LazyOnVisible,
-                }),
-                GestureCapabilities::horizontal_scroll(FrameworkKind::Flutter),
-            ),
-            (
-                IslandHostKind::SwiftUI,
-                "ApplePayCheckoutCard",
-                IslandSpec::SwiftUI(SwiftUIIslandSpec {
-                    view_name: "ApplePayCheckoutCard".into(),
-                    module_name: "PayKit".into(),
-                    initial_props_json: r#"{"currency":"USD"}"#.into(),
-                    use_intrinsic_sizing: true,
-                    mount_policy: IslandMountPolicy::OnFirstInteraction,
-                }),
-                GestureCapabilities {
-                    framework: FrameworkKind::SwiftUI,
-                    ..GestureCapabilities::default()
-                },
-            ),
-            (
-                IslandHostKind::JetpackCompose,
-                "MediaPlayerSheet",
-                IslandSpec::JetpackCompose(ComposeIslandSpec {
-                    composable_fqn: "dev.aether.compose.MediaPlayerSheet".into(),
-                    initial_props_json: r#"{"hardwareLayer":true}"#.into(),
-                    use_hardware_layer: true,
-                    mount_policy: IslandMountPolicy::EagerOnCreate,
-                }),
-                GestureCapabilities::vertical_scroll(FrameworkKind::JetpackCompose),
-            ),
-        ];
+                ),
+                (
+                    IslandHostKind::JetpackCompose,
+                    FrameworkKind::JetpackCompose,
+                    "MediaPlayerSheet",
+                    "EagerOnCreate",
+                    GestureCapabilities::vertical_scroll(FrameworkKind::JetpackCompose),
+                ),
+            ];
 
         let _ = bus.ensure_channel(TOPIC_WORKSPACE_SYNC);
 
         let mut islands = Vec::with_capacity(specs.len());
-        for (host, name, spec, caps) in specs {
-            spec.validate().expect("built-in island spec valid");
-            let framework = spec.framework();
+        for (host, framework, name, policy, caps) in specs {
             let sid = orchestrator
-                .register_surface(
-                    SurfaceDescriptor::new(framework, name)
-                        .with_parent(rail_id)
-                        .with_island(spec.clone()),
-                )
+                .register_surface(SurfaceDescriptor::new(framework, name).with_parent(rail_id))
                 .expect("register island surface");
             arbitrator.set_capabilities(sid, caps);
 
@@ -255,7 +221,7 @@ impl IslandSandboxRuntime {
                 .expect("subscribe island to NveChannelBus");
             }
 
-            islands.push((host, sid, spec));
+            islands.push((host, sid, policy));
         }
 
         // Bring root + Compose (EagerOnCreate) to Resumed at boot while lazy islands start Mounted.
@@ -313,14 +279,14 @@ impl IslandSandboxRuntime {
         let cards = self
             .islands
             .iter()
-            .map(|(host, sid, spec)| {
+            .map(|(host, sid, policy)| {
                 let rec = self.orchestrator.get(*sid).expect("island record exists");
                 IslandCardState {
                     slug: host.slug().into(),
                     host: *host,
                     surface_id: *sid,
                     component_name: rec.component_name.clone(),
-                    mount_policy: format_mount_policy(spec.mount_policy()).into(),
+                    mount_policy: (*policy).into(),
                     lifecycle: format_lifecycle(rec.state).into(),
                     received_messages: 0,
                 }
@@ -355,15 +321,25 @@ impl IslandSandboxRuntime {
         Some((sid, next))
     }
 
-    /// Broadcasts the active theme across all subscribed islands over `NveChannelBus` (`TOPIC_THEME`).
+    /// Broadcasts the active theme across all subscribed surfaces over `NveChannelBus` (`TOPIC_THEME`)
+    /// using a compact binary payload (`scheme=dark`, accent label, hex color).
     pub fn broadcast_theme(&mut self, accent: AccentTheme) -> usize {
-        let payload = serde_json::json!({
-            "scheme": "dark",
-            "accent": accent.label(),
-            "hex": accent.hex(),
-        });
+        let label = accent.label().as_bytes();
+        let hex = accent.hex().as_bytes();
+        let mut bytes = Vec::with_capacity(4 + label.len() + hex.len());
+        bytes.push(1u8); // version 1
+        bytes.push(2u8); // dark scheme
+        bytes.push(label.len() as u8);
+        bytes.extend_from_slice(label);
+        bytes.push(hex.len() as u8);
+        bytes.extend_from_slice(hex);
         self.bus
-            .publish_json(TOPIC_THEME, Some(self.root_id), &payload, true)
+            .publish_bytes(
+                TOPIC_THEME,
+                Some(self.root_id),
+                ChannelPayload::from_vec(bytes),
+                true,
+            )
             .unwrap_or(0)
     }
 
@@ -475,14 +451,6 @@ fn parse_lifecycle(raw: &str) -> LifecycleState {
         "Paused" => LifecycleState::Paused,
         "Destroyed" => LifecycleState::Destroyed,
         _ => LifecycleState::Mounted,
-    }
-}
-
-fn format_mount_policy(policy: IslandMountPolicy) -> &'static str {
-    match policy {
-        IslandMountPolicy::LazyOnVisible => "LazyOnVisible",
-        IslandMountPolicy::EagerOnCreate => "EagerOnCreate",
-        IslandMountPolicy::OnFirstInteraction => "OnFirstInteraction",
     }
 }
 

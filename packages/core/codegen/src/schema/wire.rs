@@ -323,7 +323,7 @@ pub const EVENT_MASKS: &[WireBitflag] = &[
 // `NK1` KeyDown binary wire framing — matches `packages/core/abi/src/events.rs`
 // ============================================================================
 
-/// 3-byte ASCII wire magic identifying compact zero-JSON keydown payloads (`NK1`).
+/// 3-byte ASCII wire magic identifying compact binary keydown payloads (`NK1`).
 pub const KEYDOWN_WIRE_MAGIC: [u8; 3] = *b"NK1";
 pub const KEYDOWN_HEADER_SIZE: usize = 4;
 pub const KEYDOWN_MIN_LEN: usize = 5;

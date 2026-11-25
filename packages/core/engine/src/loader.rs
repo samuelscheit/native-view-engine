@@ -33,6 +33,75 @@ impl std::fmt::Display for LoaderError {
 
 impl std::error::Error for LoaderError {}
 
+/// Canonical RAII dynamic-library loader that stages a unique copy before calling `dlopen`
+/// (avoiding OS image caching and Windows DLL locks) and unloads before removing the temp copy.
+pub struct StagedDylib {
+    lib: Option<Library>,
+    get_interface: NveGetInterfaceFn,
+    loaded_copy: PathBuf,
+}
+
+impl StagedDylib {
+    pub fn load(dylib_path: &Path, subdir: &str, label: &str) -> Result<Self, LoaderError> {
+        let ext = dylib_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("dylib");
+        let stem = dylib_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("nve_app");
+        let seq = STAGED_COPY_SEQ.fetch_add(1, Ordering::Relaxed);
+        let temp_dir = std::env::temp_dir().join(subdir);
+        std::fs::create_dir_all(&temp_dir).map_err(LoaderError::Io)?;
+        let loaded_copy = temp_dir.join(format!(
+            "{stem}_{label}_{}_{seq}.{ext}",
+            std::process::id()
+        ));
+        std::fs::copy(dylib_path, &loaded_copy).map_err(LoaderError::Io)?;
+
+        let lib = match unsafe { Library::new(&loaded_copy) } {
+            Ok(lib) => lib,
+            Err(err) => {
+                let _ = std::fs::remove_file(&loaded_copy);
+                return Err(LoaderError::Load(err));
+            }
+        };
+        let get_interface: NveGetInterfaceFn = match unsafe {
+            lib.get::<NveGetInterfaceFn>(b"nve_get_interface")
+        } {
+            Ok(sym) => *sym,
+            Err(err) => {
+                drop(lib);
+                let _ = std::fs::remove_file(&loaded_copy);
+                return Err(LoaderError::Load(err));
+            }
+        };
+        Ok(Self {
+            lib: Some(lib),
+            get_interface,
+            loaded_copy,
+        })
+    }
+
+    pub fn get_interface(&self) -> NveGetInterfaceFn {
+        self.get_interface
+    }
+
+    pub fn loaded_copy_path(&self) -> &Path {
+        &self.loaded_copy
+    }
+}
+
+impl Drop for StagedDylib {
+    fn drop(&mut self) {
+        // Unload the dynamic library before removing the temporary copy so Windows
+        // releases the OS file lock prior to deletion.
+        drop(self.lib.take());
+        let _ = std::fs::remove_file(&self.loaded_copy);
+    }
+}
+
 /// Summary returned after a successful transactional [`HotAppInstance::reload`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReloadOutcome {
@@ -42,7 +111,7 @@ pub struct ReloadOutcome {
 }
 
 pub struct HotAppInstance {
-    _lib: Option<Library>,
+    staged: Option<StagedDylib>,
     surface: NveSurfaceApi,
     layout: Option<NveLayoutApi>,
     component: Option<NveComponentApi>,
@@ -52,7 +121,6 @@ pub struct HotAppInstance {
     handle: NveAppHandle,
     surface_id: SurfaceId,
     generation: u64,
-    loaded_copy: PathBuf,
 }
 
 impl HotAppInstance {
@@ -65,47 +133,11 @@ impl HotAppInstance {
         generation: u64,
         prior_state: Option<&[u8]>,
     ) -> Result<Self, LoaderError> {
-        let ext = dylib_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("dylib");
-        let stem = dylib_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("nve_app");
-        let seq = STAGED_COPY_SEQ.fetch_add(1, Ordering::Relaxed);
-        let temp_dir = std::env::temp_dir().join("nve-hotswap");
-        std::fs::create_dir_all(&temp_dir).map_err(LoaderError::Io)?;
-        let loaded_copy = temp_dir.join(format!(
-            "{stem}_gen{generation}_{}_{seq}.{ext}",
-            std::process::id()
-        ));
-        std::fs::copy(dylib_path, &loaded_copy).map_err(LoaderError::Io)?;
-
-        // SAFETY: We resolve the single `nve_get_interface` entry point and copy the small
-        // static const function-pointer tables out while `_lib` keeps the image pinned.
-        let lib = match unsafe { Library::new(&loaded_copy) } {
-            Ok(lib) => lib,
-            Err(err) => {
-                let _ = std::fs::remove_file(&loaded_copy);
-                return Err(LoaderError::Load(err));
-            }
-        };
-        let get_iface: NveGetInterfaceFn = match unsafe {
-            lib.get::<NveGetInterfaceFn>(b"nve_get_interface")
-        } {
-            Ok(sym) => *sym,
-            Err(err) => {
-                drop(lib);
-                let _ = std::fs::remove_file(&loaded_copy);
-                return Err(LoaderError::Load(err));
-            }
-        };
+        let staged = StagedDylib::load(dylib_path, "nve-hotswap", &format!("gen{generation}"))?;
+        let get_iface = staged.get_interface();
 
         let surface_ptr = unsafe { get_iface(NVE_IFACE_SURFACE) as *const NveSurfaceApi };
         if surface_ptr.is_null() {
-            drop(lib);
-            let _ = std::fs::remove_file(&loaded_copy);
             return Err(LoaderError::MissingSurfaceInterface);
         }
         let surface = unsafe { *surface_ptr };
@@ -129,8 +161,6 @@ impl HotAppInstance {
 
         let handle = unsafe { (surface.create)(surface_id) };
         if handle.is_null() {
-            drop(lib);
-            let _ = std::fs::remove_file(&loaded_copy);
             return Err(LoaderError::NullHandle);
         }
         if let (Some(dev_api), Some(state)) = (dev, prior_state)
@@ -140,7 +170,7 @@ impl HotAppInstance {
         }
 
         Ok(Self {
-            _lib: Some(lib),
+            staged: Some(staged),
             surface,
             layout,
             component,
@@ -150,7 +180,6 @@ impl HotAppInstance {
             handle,
             surface_id,
             generation,
-            loaded_copy,
         })
     }
 
@@ -163,7 +192,10 @@ impl HotAppInstance {
     }
 
     pub fn loaded_copy_path(&self) -> &Path {
-        &self.loaded_copy
+        self.staged
+            .as_ref()
+            .map(StagedDylib::loaded_copy_path)
+            .unwrap_or_else(|| Path::new(""))
     }
 
     /// Renders a frame and borrows the binary `CommandBuffer` slice directly from the loaded
@@ -322,9 +354,6 @@ impl Drop for HotAppInstance {
             unsafe { (self.surface.destroy)(self.handle) };
             self.handle = std::ptr::null_mut();
         }
-        // Unload the dynamic library before removing the temporary copy so Windows
-        // releases the OS file lock prior to deletion.
-        drop(self._lib.take());
-        let _ = std::fs::remove_file(&self.loaded_copy);
+        drop(self.staged.take());
     }
 }

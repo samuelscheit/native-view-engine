@@ -264,7 +264,7 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     assert!(restored.can_navigate_forward());
     assert_eq!(restored.current_route(), &StudioRoute::Doc { id: 2 });
 
-    // 4. Deep-link navigation via `StudioWorkspaceModule` direct zero-JSON & binary props.
+    // 4. Deep-link navigation via `StudioWorkspaceModule` direct binary & binary props.
     let mut module = StudioWorkspaceModule::create(1);
     let _ = module.render(1);
     let entries = [NveMapEntry::new("route", NveValue::from_str("aether://studio/doc/2"))];

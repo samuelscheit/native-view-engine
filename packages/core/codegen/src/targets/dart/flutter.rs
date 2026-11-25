@@ -1,12 +1,12 @@
 //! `export_flutter`: `NveExportSpec` -> typed Dart `StatefulWidget` using `dart:ffi`
-//! and `package:nve_flutter/nve_flutter.dart` (`NveTextureHostWidget` / `NvePlatformViewWidget`).
+//! and `package:nve_flutter/nve_canvas.dart` (`NveCanvasView` / `NveCanvasController`).
 
 use std::fmt::Write as _;
 
 use crate::error::CodegenError;
 use crate::schema::export::{
-    DefaultValue, EventSpec, ExportBackend, ExportFlutterOutput, GeneratedFile, NveExportSpec,
-    ObjectField, PropSpec, PropType,
+    DefaultValue, EventSpec, ExportFlutterOutput, GeneratedFile, NveExportSpec, ObjectField,
+    PropSpec, PropType,
 };
 use crate::naming::{
     dart_ident, escape_dart_single_quoted_string, format_float_literal, int_enum_variant_camel,
@@ -31,10 +31,6 @@ pub fn generate_export_flutter(spec: &NveExportSpec) -> Result<ExportFlutterOutp
 fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     let name = &spec.name;
     let vtable_sym = spec.vtable_symbol();
-    let host_widget = match spec.backend {
-        ExportBackend::Skia => "NveTextureHostWidget",
-        ExportBackend::Fabric => "NvePlatformViewWidget",
-    };
 
     let mut out = String::with_capacity(4096);
     let _ = writeln!(
@@ -44,12 +40,13 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// Typed Flutter StatefulWidget + dart:ffi binding wrapping `package:nve_flutter/nve_flutter.dart`."
+        "// Typed Flutter StatefulWidget + dart:ffi binding wrapping `package:nve_flutter/nve_canvas.dart`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "import 'dart:ffi' as ffi;");
     let _ = writeln!(out, "import 'dart:io' show Platform;");
     let _ = writeln!(out, "import 'package:flutter/widgets.dart';");
+    let _ = writeln!(out, "import 'package:nve_flutter/nve_canvas.dart';");
     let _ = writeln!(out, "import 'package:nve_flutter/nve_flutter.dart';");
     let _ = writeln!(out);
 
@@ -240,6 +237,39 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
 
     // State class
     let _ = writeln!(out, "class _{name}State extends State<{name}> {{");
+    let _ = writeln!(out, "  NveCanvasController? _canvas;");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  @override");
+    let _ = writeln!(out, "  void initState() {{");
+    let _ = writeln!(out, "    super.initState();");
+    let _ = writeln!(out, "    final bindings = {name}NativeBindings.open(libraryPath: widget.libraryPath);");
+    let _ = writeln!(out, "    _canvas = NveCanvasController.fromInterfaceResolver(");
+    let _ = writeln!(out, "      surfaceId: widget.surfaceId ?? 1,");
+    let _ = writeln!(out, "      getInterface: bindings.getInterface,");
+    let _ = writeln!(out, "      onEvent: _handleEvent,");
+    let _ = writeln!(out, "    );");
+    let _ = writeln!(out, "    _syncProps();");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  @override");
+    let _ = writeln!(out, "  void didUpdateWidget(covariant {name} oldWidget) {{");
+    let _ = writeln!(out, "    super.didUpdateWidget(oldWidget);");
+    let _ = writeln!(out, "    _syncProps();");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  @override");
+    let _ = writeln!(out, "  void dispose() {{");
+    let _ = writeln!(out, "    _canvas?.dispose();");
+    let _ = writeln!(out, "    super.dispose();");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  void _syncProps() {{");
+    let _ = writeln!(out, "    final ctrl = _canvas;");
+    let _ = writeln!(out, "    if (ctrl == null || ctrl.isDisposed) return;");
+    let _ = writeln!(out, "    ctrl.instance.setPropsDirect(_encodeProps());");
+    let _ = writeln!(out, "    ctrl.renderNextFrame();");
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out);
     let _ = writeln!(out, "  Map<String, dynamic> _encodeProps() {{");
     let _ = writeln!(out, "    final map = <String, dynamic>{{}};");
     for prop in &spec.props {
@@ -294,23 +324,15 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
 
     let _ = writeln!(out, "  @override");
     let _ = writeln!(out, "  Widget build(BuildContext context) {{");
-    let _ = writeln!(out, "    return {host_widget}(");
-    let _ = writeln!(
-        out,
-        "      componentName: {name}NativeBindings.componentName,"
-    );
-    let _ = writeln!(
-        out,
-        "      vtableSymbol: {name}NativeBindings.vtableSymbol,"
-    );
-    let _ = writeln!(out, "      libraryPath: widget.libraryPath,");
-    let _ = writeln!(out, "      props: _encodeProps(),");
-    let _ = writeln!(out, "      controller: widget.controller?.inner,");
-    let _ = writeln!(out, "      onEvent: _handleEvent,");
-    let _ = writeln!(out, "      surfaceId: widget.surfaceId,");
-    let _ = writeln!(out, "      channelClient: widget.channelClient,");
+    let _ = writeln!(out, "    final ctrl = _canvas;");
+    let _ = writeln!(out, "    if (ctrl == null) return const SizedBox.shrink();");
+    let _ = writeln!(out, "    return SizedBox(");
     let _ = writeln!(out, "      width: widget.width,");
     let _ = writeln!(out, "      height: widget.height,");
+    let _ = writeln!(out, "      child: NveCanvasView(");
+    let _ = writeln!(out, "        controller: ctrl,");
+    let _ = writeln!(out, "        onEvent: _handleEvent,");
+    let _ = writeln!(out, "      ),");
     let _ = writeln!(out, "    );");
     let _ = writeln!(out, "  }}");
     let _ = writeln!(out, "}}");

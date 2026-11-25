@@ -415,7 +415,7 @@ class NveDirectPropsBuilder {
   }
 }
 
-/// Zero-JSON direct writer populating `NveMapEntry[]` + `NveValue` structs for
+/// Binary direct writer populating `NveMapEntry[]` + `NveValue` structs for
 /// `NveComponentApi.set_props_direct`.
 class NveDirectPropsWriter {
   const NveDirectPropsWriter._();
@@ -456,7 +456,7 @@ class NveDirectPropsWriter {
   }
 }
 
-/// Zero-JSON direct writer populating `NveDirectEvent[]` + `NveEventBatch` structs for
+/// Binary direct writer populating `NveDirectEvent[]` + `NveEventBatch` structs for
 /// `NveSurfaceApi.dispatch_events_direct`.
 class NveDirectEventWriter {
   const NveDirectEventWriter._();

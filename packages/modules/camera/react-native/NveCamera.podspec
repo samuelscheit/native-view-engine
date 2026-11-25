@@ -35,7 +35,7 @@ Pod::Spec.new do |s|
     "cxx/include/nve_rn_camera_jsi_convert.hpp",
   ]
 
-  s.frameworks = "AVFoundation", "CoreMedia", "CoreVideo", "QuartzCore"
+  s.frameworks = "Foundation"
   s.ios.frameworks = "UIKit"
   s.osx.frameworks = "AppKit"
 

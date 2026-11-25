@@ -105,7 +105,7 @@ extern "C" {
     ) -> bool;
 }
 
-/// Zero-JSON `wasm_bindgen` SSR bundle returned to browser JS / E2E harnesses.
+/// Binary `wasm_bindgen` SSR bundle returned to browser JS / E2E harnesses.
 #[wasm_bindgen]
 pub struct SsrRenderResult {
     base_css: String,

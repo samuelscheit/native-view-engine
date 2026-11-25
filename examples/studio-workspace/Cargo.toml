@@ -28,7 +28,6 @@ dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 nve-wire = { workspace = true }

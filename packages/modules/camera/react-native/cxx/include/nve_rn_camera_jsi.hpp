@@ -18,7 +18,7 @@ using BackendFactory = std::function<std::unique_ptr<nve::NveCameraBackend>()>;
 // Portable Standalone C++20 Bridge (Works with `NVE_WITH_RN_JSI=0` and `=1`)
 // =============================================================================
 
-/// Thin zero-JSON facade over `nve::camera::HybridCameraSession` with zero duplicated camera logic.
+/// Thin binary-codec facade over `nve::camera::HybridCameraSession` with zero duplicated camera logic.
 class RnCameraBridge final {
  public:
   explicit RnCameraBridge(std::shared_ptr<nve::camera::HybridCameraSession> session)
@@ -104,7 +104,7 @@ inline void install_nve_camera_standalone(
 
 #if defined(NVE_WITH_RN_JSI) && NVE_WITH_RN_JSI
 
-/// Zero-JSON `facebook::jsi::HostObject` wrapping `nve::camera::HybridCameraSession`.
+/// Binary-buffer `facebook::jsi::HostObject` wrapping `nve::camera::HybridCameraSession`.
 class RnCameraSessionHostObject final : public facebook::jsi::HostObject {
  public:
   explicit RnCameraSessionHostObject(std::shared_ptr<nve::camera::HybridCameraSession> session)

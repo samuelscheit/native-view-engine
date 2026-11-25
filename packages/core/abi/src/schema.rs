@@ -333,7 +333,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
         trait_name: "NveHostApiSpec",
         interface_id: NVE_IFACE_HOST,
         c_name: "NveHostApi",
-        doc: Some("Optional zero-JSON host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`)."),
+        doc: Some("Optional binary host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`)."),
         methods: &[
             abi_method("bind_host", &[abi_param("callbacks", "*const NveHostCallbacks")], "()", true, false, None),
             abi_method("dispatch_host_events", &[abi_param("batch", "NveBufferSlice")], "u32", true, false, None),

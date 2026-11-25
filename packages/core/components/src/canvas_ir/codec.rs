@@ -8,7 +8,7 @@ use super::types::{
     MAX_DRAW_OPS, MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC, NVE_DRAW_VERSION,
 };
 
-/// Zero-JSON flat binary encoder producing `NVE_DRAW1` byte buffers directly into a single `Vec<u8>`.
+/// Binary flat binary encoder producing `NVE_DRAW1` byte buffers directly into a single `Vec<u8>`.
 #[derive(Debug, Clone)]
 pub struct DrawListBuilder {
     buf: Vec<u8>,
@@ -217,7 +217,7 @@ impl DrawListBuilder {
         self.buf
     }
 
-    /// Consumes the builder directly into a zero-JSON [`RawPropValue::Bytes`] property value.
+    /// Consumes the builder directly into a binary [`RawPropValue::Bytes`] property value.
     pub fn to_raw_prop(self) -> RawPropValue {
         RawPropValue::Bytes(self.finish())
     }

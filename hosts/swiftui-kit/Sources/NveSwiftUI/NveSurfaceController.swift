@@ -5,7 +5,7 @@ import SwiftUI
 
 // MARK: - Surface Controller (`nve_get_interface` Lifecycle + Direct FFI + Layout + Events)
 
-/// Manages an instantiated `nve_get_interface` surface, zero-JSON direct props propagation,
+/// Manages an instantiated `nve_get_interface` surface, binary FFI direct props propagation,
 /// direct event/command dispatch, intrinsic layout negotiation, and outbound event draining.
 public final class NveSurfaceController: ObservableObject {
     private static var nextSurfaceId: UInt32 = 1
@@ -144,7 +144,7 @@ public final class NveSurfaceController: ObservableObject {
         return needsRender != 0
     }
 
-    /// Pushes typed props via required `NveComponentApi.set_props_direct` (zero JSON, no legacy fallback).
+    /// Pushes typed props via required `NveComponentApi.set_props_direct` (binary FFI, no legacy fallback).
     @discardableResult
     public func setProps(_ entries: [(String, NveBinValue)]) -> Bool {
         let canonical = NveBinValue.map(entries)
@@ -170,7 +170,7 @@ public final class NveSurfaceController: ObservableObject {
         return needsRender != 0
     }
 
-    /// Pushes `[String: Any]` props into the mounted component via zero-JSON direct C-ABI structs.
+    /// Pushes `[String: Any]` props into the mounted component via binary direct C-ABI structs.
     @discardableResult
     public func setProps(_ props: [String: Any]) -> Bool {
         guard let entries = try? NveBinValue.canonicalEntries(from: props) else {
@@ -230,7 +230,7 @@ public final class NveSurfaceController: ObservableObject {
     }
 
     /// Dispatches an imperative command with `[String: Any]` arguments (converted directly to
-    /// `NveValue` / `NveBinValue`, zero JSON).
+    /// `NveValue` / `NveBinValue`, binary FFI).
     public func dispatchCommand(name: String, args: [String: Any] = [:]) {
         guard let entries = try? NveBinValue.canonicalEntries(from: args) else { return }
         dispatchCommand(name: name, value: .map(entries))

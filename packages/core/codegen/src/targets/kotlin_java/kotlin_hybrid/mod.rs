@@ -62,7 +62,7 @@ fn emit_kotlin_spec(spec: &HybridFileSpec) -> String {
     .unwrap();
     writeln!(
         out,
-        "// Zero-JSON direct JNI bindings over primitives & DirectByteBuffer."
+        "// Binary direct JNI bindings over primitives & DirectByteBuffer."
     )
     .unwrap();
     writeln!(out, "package {KOTLIN_PACKAGE}").unwrap();
@@ -105,7 +105,7 @@ fn emit_kotlin_common(out: &mut String, spec: &HybridFileSpec) {
 
     writeln!(
         out,
-        r#"/** Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (zero JSON). */
+        r#"/** Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (binary). */
 data class NveHybridDynamicValue(val binBytes: ByteArray = byteArrayOf(0)) {{
     override fun equals(other: Any?): Boolean =
         other is NveHybridDynamicValue && binBytes.contentEquals(other.binBytes)

@@ -29,7 +29,7 @@ pub fn cursor_kind_to_winit(kind: CursorKind) -> CursorIcon {
     }
 }
 
-/// Formats a keyboard event into NVE's zero-JSON compact modifier shorthand
+/// Formats a keyboard event into NVE's binary compact modifier shorthand
 /// (e.g. `"Cmd+k"`, `"Ctrl+Shift+Enter"`, `"ArrowDown"`, `"Escape"`).
 pub fn format_keydown_shorthand(
     key: &str,

@@ -412,7 +412,7 @@ fn wire_crdt_delta_roundtrip_and_adversarial_fuzzing() {
                 field_id: 1,
                 op_id: OpId::new(PeerId(1), 10),
                 timestamp: HlcTimestamp::new(1_700_000_000_000, 3, 1),
-                value: CrdtValue::Utf8("Zero-JSON binary CRDT 🚀".into()),
+                value: CrdtValue::Utf8("Binary CRDT 🚀".into()),
             },
             CrdtRecord::GCounterSet {
                 namespace: 3,

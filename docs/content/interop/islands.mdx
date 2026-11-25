@@ -41,12 +41,12 @@ Resolves nested scroll and pointer ownership across mixed-framework ancestor cha
 
 ### 4. `NveChannelBus`
 
-Zero-JSON pub/sub and retained shared-state bus connecting Rust surfaces and native hosts (`ChannelId`, `ChannelMessage`, `ChannelPayload`, `PayloadEncoding`). Built-in retained channels:
+Binary pub/sub and retained shared-state bus connecting Rust surfaces and native hosts (`ChannelId`, `ChannelMessage`, `ChannelPayload`, `PayloadEncoding::{Binary, Text}`). Built-in retained channels:
 
 | `ChannelId` | Constant | Topic | Wire Format |
 | :--- | :--- | :--- | :--- |
-| `1` | `CHANNEL_ID_THEME` | `"theme"` | `NVT2` (16-byte fixed) |
-| `2` | `CHANNEL_ID_LOCALE` | `"locale"` | `NVL1` |
+| `1` | `CHANNEL_ID_THEME` | `"theme"` | `ThemeSnapshot` / binary |
+| `2` | `CHANNEL_ID_LOCALE` | `"locale"` | Binary |
 | `3` | `CHANNEL_ID_AUTH` | `"auth"` | Binary / `NveBinValue` |
 | `4` | `CHANNEL_ID_NAVIGATION` | `"navigation"` | `NVN1` |
 
@@ -54,13 +54,9 @@ Zero-JSON pub/sub and retained shared-state bus connecting Rust surfaces and nat
 - **Publish to 8 subscribers:** **66.69 ns**
 - **Publish to 64 subscribers:** **385.82 ns**
 
-## Opt-In Foreign Framework `<Island>`s & `RenderHandoff`
+## Foreign Framework `<Island>` Runtime (Backlog)
 
-When an app needs a JS-only React Native library, an existing SwiftUI chart, a Jetpack Compose widget, or a Flutter `FlutterEngineGroup` view, declare an opt-in `IslandSpec` (`packages/core/interop/src/handoff.rs`):
-
-- **Specs:** `RnIslandSpec`, `FlutterIslandSpec` (with `FlutterEngineGroupConfig`), `SwiftUIIslandSpec`, `ComposeIslandSpec`.
-- **Mount policies (`IslandMountPolicy`):** Eager or lazy mount on visibility/interaction so unused foreign VMs consume **0 MB** RAM until mounted.
-- **`RenderHandoff`:** Supports both native view hierarchy embedding (`NativeViewHandle` / `NativeViewHandleKind`) and zero-copy GPU texture sharing (`SharedGpuTexture` — `IOSurface`, `AHardwareBuffer`, `DXGI`, `DMA-BUF`, with `GpuTextureFormat`).
+Opt-in foreign-framework `<Island>` mounting (React Native, Flutter `FlutterEngineGroup`, SwiftUI, and Jetpack Compose view/GPU-texture handoff) is tracked as an open backlog item in `docs/BACKLOG.md` until real cross-runtime compositor bridges are implemented and verified end-to-end.
 
 ## Panic-Isolated Plugin Host (`NvePluginHost`)
 

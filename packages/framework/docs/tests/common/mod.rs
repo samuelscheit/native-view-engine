@@ -78,7 +78,7 @@ Every frame crosses the FFI boundary as one flat `CommandBuffer`.
 
 | Target | Backend | Overhead |
 | :--- | :---: | ---: |
-| Web | WASM DOM | Zero JSON |
+| Web | WASM DOM | Binary ABI |
 | Desktop | Skia GPU | Batched |
 
 ### Binary Pipeline

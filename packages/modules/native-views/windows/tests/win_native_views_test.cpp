@@ -251,7 +251,7 @@ void test_windows_native_views_registry_and_toggles() {
 #if NVE_NV_ENABLE_WEBVIEW
   auto* wv = nve::win::web_view_for_node(registry, 11u);
   NVE_CHECK(wv != nullptr && wv->last_requested_url() == "https://initial.nve.dev");
-  NVE_CHECK(wv->navigation_count() == 1u && wv->allows_back_forward());
+  NVE_CHECK(wv->allows_back_forward());
 
   NvncBuilder nav_bad(1u);
   nav_bad.arg_str("javascript:evil()");
@@ -296,9 +296,10 @@ void test_windows_native_views_registry_and_toggles() {
 #endif
 
 #if NVE_NV_ENABLE_WEBVIEW
-  NVE_CHECK(wv->last_requested_url() == "https://docs.nve.dev" && wv->navigation_count() == 2u);
-  NVE_CHECK(wv->reload_count() == 1u && wv->go_back_count() == 1u && wv->go_forward_count() == 1u);
-  NVE_CHECK(wv->last_evaluated_script() == "window.__nveReady = true;");
+  auto* spy_web = static_cast<SpyWebBackend*>(wv->backend());
+  NVE_CHECK(wv->last_requested_url() == "https://docs.nve.dev");
+  NVE_CHECK(spy_web->reloads == 1 && spy_web->backs == 1 && spy_web->forwards == 1);
+  NVE_CHECK(spy_web->last_script == "window.__nveReady = true;");
 
   NvnpBuilder wv_no_bf;
   wv_no_bf.add_str(1u, "https://docs.nve.dev");
@@ -306,11 +307,17 @@ void test_windows_native_views_registry_and_toggles() {
   NVE_CHECK(registry.mount_or_update(11u, nve::kNativeKindWebView, wv_no_bf.finish()) != nullptr);
   NVE_CHECK(!registry.dispatch_command(11u, "go_back", back.finish()));
   NVE_CHECK(!registry.dispatch_command(11u, "go_forward", fwd.finish()));
+
+  // Without an injected backend factory, mounting WebView explicitly returns nullptr.
+  nve::NativeViewRegistry empty_reg;
+  nve::win::register_win_native_views(empty_reg);
+  NVE_CHECK(empty_reg.mount_or_update(99u, nve::kNativeKindWebView, wv_no_bf.finish()) == nullptr);
 #endif
 
 #if NVE_NV_ENABLE_VIDEO
-  NVE_CHECK(!vid->is_playing() && vid->pause_count() == 1u);
-  NVE_CHECK(vid->position_ms() == 12345ULL && std::fabs(vid->volume() - 0.35f) < 1e-5f);
+  auto* spy_vid = static_cast<SpyVideoBackend*>(vid->backend());
+  NVE_CHECK(!vid->is_playing() && !spy_vid->playing);
+  NVE_CHECK(spy_vid->seek_target == 12345ULL && std::fabs(spy_vid->vol - 0.35f) < 1e-5f);
 #endif
 
   registry.unmount_all();

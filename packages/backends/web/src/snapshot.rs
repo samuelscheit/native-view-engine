@@ -1,5 +1,5 @@
 //! Reusable 0ms Web Instant Snapshot & State Restore primitive (`WebSnapshotPayload`,
-//! `WebSnapshotStore`, zero-JSON length-prefixed `NVWS1` frame envelope, `NVB1` binary state
+//! `WebSnapshotStore`, binary FFI length-prefixed `NVWS1` frame envelope, `NVB1` binary state
 //! envelope, `< 900` byte synchronous `<script data-nve-snapshot-boot>`, and build-time cold SSR
 //! shell HTML injection).
 //!
@@ -204,7 +204,7 @@ impl WebSnapshotPayload {
         }
     }
 
-    /// Encodes the payload into a compact, zero-JSON UTF-16 length-prefixed `NVWS1` envelope:
+    /// Encodes the payload into a compact, binary FFI UTF-16 length-prefixed `NVWS1` envelope:
     /// `NVWS1|<ver>|<hash16>|<scrolls>|<hashes_u16>|<base_u16>|<style_u16>|<html_u16>\n<payload>`.
     pub fn encode_envelope(&self) -> String {
         let hashes_csv = self.rule_hashes.join(",");

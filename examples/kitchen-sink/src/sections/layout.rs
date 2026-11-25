@@ -118,7 +118,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                         value: "binary".to_owned(),
                         text {
                             style: "font-size: 13px; color: {text_secondary};",
-                            "Zero JSON on hot paths: direct #[repr(C)] slabs, borrowed NveSceneView slices, and compact versioned state snapshots."
+                            "Direct binary encoding on hot paths: direct #[repr(C)] slabs, borrowed NveSceneView slices, and compact versioned state snapshots."
                         }
                     }
                     TabPanel {

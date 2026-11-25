@@ -104,41 +104,6 @@ fn intrinsic_layout_negotiation_clamping_caching_and_invalidation() {
     assert_eq!(runtime.layout.cache_misses(), misses_before + 2);
 }
 
-#[test]
-fn island_spec_validation_and_flutter_engine_group_serialization() {
-    let flutter_island = IslandSpec::Flutter(FlutterIslandSpec {
-        widget_name: "AnalyticsChartWidget".into(),
-        engine_group: FlutterEngineGroupConfig {
-            group_id: "main_flutter_pool".into(),
-            entrypoint: "analyticsMain".into(),
-            initial_route: Some("/charts/revenue".into()),
-            dart_entrypoint_args: vec!["--high-refresh".into()],
-            share_isolate_group: true,
-            warm_spare_engine: true,
-        },
-        prefer_texture_compositing: true,
-        initial_props_json: r#"{"range":"30d"}"#.into(),
-        mount_policy: IslandMountPolicy::LazyOnVisible,
-    });
-    assert!(flutter_island.validate().is_ok());
-    assert_eq!(flutter_island.framework(), FrameworkKind::Flutter);
-
-    let json = serde_json::to_string(&flutter_island).unwrap();
-    let roundtripped: IslandSpec = serde_json::from_str(&json).unwrap();
-    assert_eq!(roundtripped, flutter_island);
-
-    let bad_island = IslandSpec::JetpackCompose(ComposeIslandSpec {
-        composable_fqn: "dev.nve.Demo".into(),
-        initial_props_json: "{not valid json".into(),
-        use_hardware_layer: true,
-        mount_policy: IslandMountPolicy::EagerOnCreate,
-    });
-    assert!(matches!(
-        bad_island.validate(),
-        Err(InteropError::InvalidIslandSpec(_))
-    ));
-}
-
 #[cfg(feature = "gesture")]
 #[test]
 fn gesture_edge_cases_slop_local_overscroll_multitouch_and_teardown() {
@@ -251,7 +216,7 @@ fn gesture_edge_cases_slop_local_overscroll_multitouch_and_teardown() {
 
 #[cfg(feature = "layout")]
 #[test]
-fn constraints_deflate_swiftui_proposal_and_handoff_variants() {
+fn constraints_deflate_and_swiftui_proposal() {
     let c = SizeConstraints::new(40.0, 20.0, 200.0, f32::INFINITY);
     let deflated = c.deflate(16.0, 30.0);
     assert_eq!(deflated.min_w, 24.0);
@@ -264,60 +229,6 @@ fn constraints_deflate_swiftui_proposal_and_handoff_variants() {
     assert!(!proposal.constraints.has_bounded_height());
     let snapped = IntrinsicSize::new(100.1, 44.2).snap_to_pixel_grid(2.0);
     assert_eq!(snapped, IntrinsicSize::new(100.5, 44.5));
-
-    let handoffs = vec![
-        RenderHandoff::SharedGpuTexture(SharedGpuTexture {
-            width: 800,
-            height: 600,
-            scale_factor: 2.0,
-            registry_texture_id: 1,
-            handle: SharedGpuTextureKind::CvPixelBuffer {
-                ptr: 0x1000,
-                pixel_format: GpuTextureFormat::Bgra8Unorm,
-            },
-        }),
-        RenderHandoff::SharedGpuTexture(SharedGpuTexture {
-            width: 1080,
-            height: 1920,
-            scale_factor: 3.0,
-            registry_texture_id: 2,
-            handle: SharedGpuTextureKind::AHardwareBuffer {
-                ptr: 0x2000,
-                format: 1,
-            },
-        }),
-        RenderHandoff::SharedGpuTexture(SharedGpuTexture {
-            width: 1920,
-            height: 1080,
-            scale_factor: 1.5,
-            registry_texture_id: 3,
-            handle: SharedGpuTextureKind::DxgiHandle {
-                handle: 0x3000,
-                adapter_luid: 0xAABB_CCDD,
-            },
-        }),
-        RenderHandoff::SharedGpuTexture(SharedGpuTexture {
-            width: 1280,
-            height: 720,
-            scale_factor: 1.0,
-            registry_texture_id: 4,
-            handle: SharedGpuTextureKind::DmaBuf {
-                fd: 17,
-                stride: 5120,
-                offset: 0,
-                modifier: 0,
-            },
-        }),
-        RenderHandoff::NativeView(NativeViewHandle {
-            framework: FrameworkKind::WebDom,
-            handle: NativeViewHandleKind::DomElement {
-                element_id: "nve-root".into(),
-            },
-        }),
-    ];
-    let json = serde_json::to_string(&handoffs).unwrap();
-    let decoded: Vec<RenderHandoff> = serde_json::from_str(&json).unwrap();
-    assert_eq!(decoded, handoffs);
 }
 
 #[cfg(feature = "channel")]

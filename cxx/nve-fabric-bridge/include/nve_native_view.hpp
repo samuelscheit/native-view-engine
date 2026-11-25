@@ -473,6 +473,7 @@ class NativeViewRegistry {
     if (it != mounted_.end() && it->second.kind != kind) { unmount(node_id); it = mounted_.end(); }
     if (it == mounted_.end()) {
       void* inst = adapter->create ? adapter->create(node_id, kind, has_props ? &dec : nullptr) : nullptr;
+      if (inst == nullptr) return nullptr;
       it = mounted_.emplace(node_id, MountedEntry{std::string(kind), inst, adapter}).first;
     }
     if (has_props && adapter->update_props) adapter->update_props(it->second.instance, node_id, dec);

@@ -49,13 +49,13 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         commit: "2d1ceae",
         hosts: "10 hosts",
         title: "Universal NVE_DRAW1, Pairing & Perf Wave",
-        summary: "Zero-JSON NVE_DRAW1 canvas across hosts, NVT1/NVD1 thin-client pairing, CommandBuffer -51.9%, GestureArbitrator -73.8%, and WASM release -47.6%.",
+        summary: "Binary NVE_DRAW1 canvas across hosts, NVT1/NVD1 thin-client pairing, CommandBuffer -51.9%, GestureArbitrator -73.8%, and WASM release -47.6%.",
     },
     WaveMilestone {
         wave: "Wave 12",
         commit: "b3ecf8f",
         hosts: "10 hosts",
-        title: "Zero-JSON NVC1 CRDTs & Windows 11 Live Parity",
+        title: "Binary NVC1 CRDTs & Windows 11 Live Parity",
         summary: "Local-first NVC1 binary CRDTs (HLC, LwwRegister, PnCounter, OrSet, RgaList), WinSock2 PairClient, and full live Windows 11 MSVC/D3D12/RNW verification.",
     },
     WaveMilestone {
@@ -110,7 +110,7 @@ pub fn DevAndBenchProgression() -> Element {
                     }
                     text {
                         style: "font-size: 14px; color: {theme.muted}; line-height: 1.5;",
-                        "Every latency and payload breakthrough below is tracked directly from benchmarks/baseline.json and rendered natively via zero-JSON NVE_DRAW1 vector canvases."
+                        "Every latency and payload breakthrough below is tracked directly from benchmarks/baseline.json and rendered natively via binary NVE_DRAW1 vector canvases."
                     }
                 }
 

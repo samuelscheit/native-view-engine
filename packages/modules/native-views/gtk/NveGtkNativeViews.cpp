@@ -93,8 +93,9 @@ nve::NativeViewAdapter make_webview_adapter(
   nve::NativeViewAdapter adapter{};
   adapter.create = [factory = std::move(factory)](
                        uint32_t node_id, std::string_view, const nve::NvnpDecoder*) -> void* {
-    std::unique_ptr<NveGtkWebViewBackend> backend;
-    if (factory) backend = factory(node_id);
+    if (!factory) return nullptr;
+    auto backend = factory(node_id);
+    if (!backend) return nullptr;
     return new NveGtkWebView(std::move(backend));
   };
   adapter.update_props = [](void* inst, uint32_t, const nve::NvnpDecoder& dec) {
@@ -131,8 +132,9 @@ nve::NativeViewAdapter make_video_adapter(
   nve::NativeViewAdapter adapter{};
   adapter.create = [factory = std::move(factory)](
                        uint32_t node_id, std::string_view, const nve::NvnpDecoder*) -> void* {
-    std::unique_ptr<NveGtkVideoBackend> backend;
-    if (factory) backend = factory(node_id);
+    if (!factory) return nullptr;
+    auto backend = factory(node_id);
+    if (!backend) return nullptr;
     return new NveGtkVideoPlayer(std::move(backend));
   };
   adapter.update_props = [](void* inst, uint32_t, const nve::NvnpDecoder& dec) {
@@ -222,21 +224,16 @@ void NveGtkBlurSurface::apply_props(const nve::BlurSurfaceProps& props) {
   const GtkTintRgba rgba =
       has_tint_ ? unpack_gtk_tint_rrggbbaa(tint_rgba_) : fallback_material_tint(props.material, clamped);
 
-  char spec_buf[96];
-  std::snprintf(spec_buf, sizeof(spec_buf), "backdrop-filter: blur(%.2fpx);", blur_radius_);
-  backdrop_filter_spec_ = spec_buf;
-
-  char css_buf[256];
+  char css_buf[192];
   std::snprintf(
       css_buf,
       sizeof(css_buf),
-      ".%s { background-color: rgba(%u, %u, %u, %.4f); filter: blur(%.2fpx); }",
+      ".%s { background-color: rgba(%u, %u, %u, %.4f); }",
       css_class_.c_str(),
       static_cast<unsigned>(rgba.r),
       static_cast<unsigned>(rgba.g),
       static_cast<unsigned>(rgba.b),
-      rgba.alpha_unit,
-      blur_radius_);
+      rgba.alpha_unit);
   active_css_ = css_buf;
 
   if (css_provider_ != nullptr) {
@@ -301,43 +298,37 @@ NveGtkWebView::~NveGtkWebView() {
 }
 
 bool NveGtkWebView::load_safe_url(std::string_view url) {
-  if (!is_safe_gtk_webview_url(url)) return false;
-  if (backend_ && !backend_->navigate(url)) return false;
+  if (!backend_ || !is_safe_gtk_webview_url(url)) return false;
+  if (!backend_->navigate(url)) return false;
   last_requested_url_.assign(url);
-  ++navigation_count_;
   return true;
 }
 
 void NveGtkWebView::apply_props(const nve::WebViewProps& props) {
+  if (!backend_) return;
   allows_back_forward_ = props.allows_back_forward;
-  if (backend_) backend_->set_allows_back_forward(allows_back_forward_);
+  backend_->set_allows_back_forward(allows_back_forward_);
   if (last_requested_url_ != props.url) {
     (void)load_safe_url(props.url);
   }
 }
 
 bool NveGtkWebView::dispatch_command(const nve::WebViewCommand& cmd) {
+  if (!backend_) return false;
   switch (cmd.kind) {
     case nve::WebViewCommandKind::Navigate:
       return load_safe_url(cmd.text);
     case nve::WebViewCommandKind::Reload:
-      ++reload_count_;
-      if (backend_) backend_->reload();
+      backend_->reload();
       return true;
     case nve::WebViewCommandKind::GoBack:
       if (!allows_back_forward_) return false;
-      ++go_back_count_;
-      if (backend_) (void)backend_->go_back();
-      return true;
+      return backend_->go_back();
     case nve::WebViewCommandKind::GoForward:
       if (!allows_back_forward_) return false;
-      ++go_forward_count_;
-      if (backend_) (void)backend_->go_forward();
-      return true;
+      return backend_->go_forward();
     case nve::WebViewCommandKind::EvaluateScript:
-      last_evaluated_script_.assign(cmd.text);
-      ++evaluate_script_count_;
-      if (backend_) backend_->evaluate_script(cmd.text);
+      backend_->evaluate_script(cmd.text);
       return true;
   }
   return false;
@@ -387,48 +378,43 @@ NveGtkVideoPlayer::~NveGtkVideoPlayer() {
 }
 
 void NveGtkVideoPlayer::apply_props(const nve::VideoPlayerProps& props) {
+  if (!backend_) return;
   if (source_uri_ != props.source_uri && is_safe_gtk_media_uri(props.source_uri)) {
     source_uri_.assign(props.source_uri);
-    if (backend_) backend_->set_source_uri(source_uri_);
+    backend_->set_source_uri(source_uri_);
   }
   autoplay_ = props.autoplay;
   muted_ = props.muted;
   looping_ = props.looping;
   controls_ = props.controls;
-  if (backend_) {
-    backend_->set_muted(muted_);
-    backend_->set_looping(looping_);
-    backend_->set_controls(controls_);
-  }
+  backend_->set_muted(muted_);
+  backend_->set_looping(looping_);
+  backend_->set_controls(controls_);
   if (autoplay_ && !source_uri_.empty() && !playing_) {
     playing_ = true;
-    ++play_count_;
-    if (backend_) backend_->play();
+    backend_->play();
   }
 }
 
 bool NveGtkVideoPlayer::dispatch_command(const nve::VideoPlayerCommand& cmd) {
+  if (!backend_) return false;
   switch (cmd.kind) {
     case nve::VideoPlayerCommandKind::Play:
       playing_ = true;
-      ++play_count_;
-      if (backend_) backend_->play();
+      backend_->play();
       return true;
     case nve::VideoPlayerCommandKind::Pause:
       playing_ = false;
-      ++pause_count_;
-      if (backend_) backend_->pause();
+      backend_->pause();
       return true;
     case nve::VideoPlayerCommandKind::SeekMs:
       position_ms_ = cmd.seek_ms;
-      ++seek_count_;
-      if (backend_) backend_->seek_ms(position_ms_);
+      backend_->seek_ms(position_ms_);
       return true;
     case nve::VideoPlayerCommandKind::SetVolume:
       if (!std::isfinite(cmd.volume)) return false;
       volume_ = std::clamp(cmd.volume, 0.0f, 1.0f);
-      ++volume_change_count_;
-      if (backend_) backend_->set_volume(volume_);
+      backend_->set_volume(volume_);
       return true;
   }
   return false;

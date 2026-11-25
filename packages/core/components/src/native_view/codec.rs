@@ -204,7 +204,7 @@ pub trait NativeCommandSource {
 // Binary Native Props Encoder & Decoder (`NVNP`) — Cross-Language FFI Wire
 // =============================================================================
 
-/// Compact binary prop encoder writing numeric `field_id: u16` entries with zero JSON.
+/// Compact binary prop encoder writing numeric `field_id: u16` entries with binary FFI.
 #[derive(Debug, Clone)]
 pub struct NativePropEncoder {
     buf: Vec<u8>,

@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// 4-byte wire magic identifying a zero-JSON compact binary `HotPatchMsg` frame (`NVP1`).
+/// 4-byte wire magic identifying a binary compact binary `HotPatchMsg` frame (`NVP1`).
 pub const HOT_PATCH_WIRE_MAGIC: [u8; 4] = *b"NVP1";
 
 /// Maximum item count accepted per vector inside a binary `NVP1` frame to prevent OOM on corrupt input.
@@ -131,7 +131,7 @@ impl<'a> WireReader<'a> {
 }
 
 impl HotPatchMsg {
-    /// Encodes this hot-patch message into compact zero-JSON binary `NVP1` framing.
+    /// Encodes this hot-patch message into compact binary `NVP1` framing.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(64);
         out.extend_from_slice(&HOT_PATCH_WIRE_MAGIC);
@@ -202,7 +202,7 @@ impl HotPatchMsg {
         out
     }
 
-    /// Decodes a compact zero-JSON binary `NVP1` hot-patch frame.
+    /// Decodes a compact binary `NVP1` hot-patch frame.
     pub fn from_bytes(raw: &[u8]) -> Result<Self, HotPatchDecodeError> {
         let mut r = WireReader::new(raw);
         let magic = r.take(4)?;

@@ -67,7 +67,7 @@ size_t nve_nitro_memory_size(NveNitroHandle handle);
 /// Returns `1` if `name` is registered in `HybridObjectRegistry::global()`, `0` otherwise.
 int32_t nve_nitro_has_registered(const char* name);
 
-/// Invokes a zero-JSON binary method on `handle` with raw argument bytes (`NVNP`/`NVNC`/`NVCF` or
+/// Invokes a binary method on `handle` with raw argument bytes (`NVNP`/`NVNC`/`NVCF` or
 /// module-defined binary payload). Writes result bytes to `out_buf` and actual length to `*out_len`.
 /// If `out_cap` is smaller than required, sets `*out_len` to required size and returns
 /// `NVE_NITRO_ERR_BUFFER_TOO_SMALL`.
@@ -165,7 +165,7 @@ class ArrayBuffer final {
 };
 
 // -----------------------------------------------------------------------------
-// NitroVariant (Zero-JSON Typed Value for Direct C++ / C-ABI Invocation)
+// NitroVariant (Binary Typed Value for Direct C++ / C-ABI Invocation)
 // -----------------------------------------------------------------------------
 
 enum class NitroValueKind : uint8_t {
@@ -266,7 +266,7 @@ class HybridObject : public std::enable_shared_from_this<HybridObject> {
   virtual void dispose() { disposed_.store(true, std::memory_order_release); }
   bool is_disposed() const noexcept { return disposed_.load(std::memory_order_acquire); }
 
-  /// Dynamic zero-JSON method dispatch hook (used by `nve_nitro_invoke_bytes` and cross-language FFI).
+  /// Dynamic binary method dispatch hook (used by `nve_nitro_invoke_bytes` and cross-language FFI).
   virtual NitroVariant invoke_method(std::string_view method, std::span<const NitroVariant> args) {
     (void)args;
     return NitroVariant::from_error("METHOD_NOT_FOUND: " + std::string(method));

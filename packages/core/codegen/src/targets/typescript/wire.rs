@@ -249,7 +249,7 @@ export function decodeEventRingFramedHeader(bytes: Uint8Array): NveEventRingFram
   return {{ version, count }};
 }}
 
-/** Flat zero-JSON `EventRing` writer matching `packages/core/abi/src/events.rs`. */
+/** Flat binary `EventRing` writer matching `packages/core/abi/src/events.rs`. */
 export class NveWireEventRingWriter {{
   private readonly framed: boolean;
   private buf: Uint8Array;

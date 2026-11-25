@@ -362,10 +362,10 @@ fn form_draft_store_persists_across_mmap_offset_arena_crash_reopen_and_clears_on
 
 #[test]
 fn form_draft_store_works_with_memory_snapshot_storage_and_rejects_corruption_plus_prg_roundtrip() {
-    // 1. Verify zero-JSON NVE_FORM_DRAFT_V1 binary roundtrip & tamper detection.
+    // 1. Verify binary NVE_FORM_DRAFT_V1 binary roundtrip & tamper detection.
     let mut fields = BTreeMap::new();
     fields.insert("title".into(), "Launch Notes".into());
-    fields.insert("body".into(), "Zero-JSON binary draft".into());
+    fields.insert("body".into(), "Binary draft".into());
     let mut blob = encode_form_draft(&fields);
     assert!(blob.starts_with(b"NVE_FORM_DRAFT_V1"));
     assert_eq!(decode_form_draft(&blob), Some(fields.clone()));

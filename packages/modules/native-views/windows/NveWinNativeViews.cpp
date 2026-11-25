@@ -95,10 +95,9 @@ nve::NativeViewAdapter make_webview_adapter(
   nve::NativeViewAdapter adapter{};
   adapter.create = [factory = std::move(factory)](
                        uint32_t node_id, std::string_view, const nve::NvnpDecoder*) -> void* {
-    std::unique_ptr<NveWinWebViewBackend> backend;
-    if (factory) {
-      backend = factory(node_id);
-    }
+    if (!factory) return nullptr;
+    auto backend = factory(node_id);
+    if (!backend) return nullptr;
     return new NveWinWebView(std::move(backend));
   };
   adapter.update_props = [](void* inst, uint32_t, const nve::NvnpDecoder& dec) {
@@ -137,10 +136,9 @@ nve::NativeViewAdapter make_video_adapter(
   nve::NativeViewAdapter adapter{};
   adapter.create = [factory = std::move(factory)](
                        uint32_t node_id, std::string_view, const nve::NvnpDecoder*) -> void* {
-    std::unique_ptr<NveWinVideoBackend> backend;
-    if (factory) {
-      backend = factory(node_id);
-    }
+    if (!factory) return nullptr;
+    auto backend = factory(node_id);
+    if (!backend) return nullptr;
     return new NveWinVideoPlayer(std::move(backend));
   };
   adapter.update_props = [](void* inst, uint32_t, const nve::NvnpDecoder& dec) {
@@ -259,49 +257,41 @@ NveWinWebView::~NveWinWebView() {
 }
 
 bool NveWinWebView::load_safe_url(std::string_view url) {
-  if (!is_safe_win_webview_url(url)) {
+  if (!backend_ || !is_safe_win_webview_url(url)) {
     return false;
   }
-  if (backend_ && !backend_->navigate(url)) {
+  if (!backend_->navigate(url)) {
     return false;
   }
   last_requested_url_.assign(url);
-  ++navigation_count_;
   return true;
 }
 
 void NveWinWebView::apply_props(const nve::WebViewProps& props) {
+  if (!backend_) return;
   allows_back_forward_ = props.allows_back_forward;
-  if (backend_) {
-    backend_->set_allows_back_forward(allows_back_forward_);
-  }
+  backend_->set_allows_back_forward(allows_back_forward_);
   if (last_requested_url_ != props.url) {
     (void)load_safe_url(props.url);
   }
 }
 
 bool NveWinWebView::dispatch_command(const nve::WebViewCommand& cmd) {
+  if (!backend_) return false;
   switch (cmd.kind) {
     case nve::WebViewCommandKind::Navigate:
       return load_safe_url(cmd.text);
     case nve::WebViewCommandKind::Reload:
-      ++reload_count_;
-      if (backend_) backend_->reload();
+      backend_->reload();
       return true;
     case nve::WebViewCommandKind::GoBack:
       if (!allows_back_forward_) return false;
-      ++go_back_count_;
-      if (backend_) (void)backend_->go_back();
-      return true;
+      return backend_->go_back();
     case nve::WebViewCommandKind::GoForward:
       if (!allows_back_forward_) return false;
-      ++go_forward_count_;
-      if (backend_) (void)backend_->go_forward();
-      return true;
+      return backend_->go_forward();
     case nve::WebViewCommandKind::EvaluateScript:
-      last_evaluated_script_.assign(cmd.text);
-      ++evaluate_script_count_;
-      if (backend_) backend_->evaluate_script(cmd.text);
+      backend_->evaluate_script(cmd.text);
       return true;
   }
   return false;
@@ -338,49 +328,44 @@ NveWinVideoPlayer::~NveWinVideoPlayer() {
 }
 
 void NveWinVideoPlayer::apply_props(const nve::VideoPlayerProps& props) {
+  if (!backend_) return;
   const bool uri_changed = source_uri_ != props.source_uri;
   if (uri_changed && is_safe_win_media_uri(props.source_uri)) {
     source_uri_.assign(props.source_uri);
-    if (backend_) backend_->set_source_uri(source_uri_);
+    backend_->set_source_uri(source_uri_);
   }
   autoplay_ = props.autoplay;
   muted_ = props.muted;
   looping_ = props.looping;
   controls_ = props.controls;
-  if (backend_) {
-    backend_->set_muted(muted_);
-    backend_->set_looping(looping_);
-    backend_->set_controls(controls_);
-  }
+  backend_->set_muted(muted_);
+  backend_->set_looping(looping_);
+  backend_->set_controls(controls_);
   if (autoplay_ && !source_uri_.empty() && !playing_) {
     playing_ = true;
-    ++play_count_;
-    if (backend_) backend_->play();
+    backend_->play();
   }
 }
 
 bool NveWinVideoPlayer::dispatch_command(const nve::VideoPlayerCommand& cmd) {
+  if (!backend_) return false;
   switch (cmd.kind) {
     case nve::VideoPlayerCommandKind::Play:
       playing_ = true;
-      ++play_count_;
-      if (backend_) backend_->play();
+      backend_->play();
       return true;
     case nve::VideoPlayerCommandKind::Pause:
       playing_ = false;
-      ++pause_count_;
-      if (backend_) backend_->pause();
+      backend_->pause();
       return true;
     case nve::VideoPlayerCommandKind::SeekMs:
       position_ms_ = cmd.seek_ms;
-      ++seek_count_;
-      if (backend_) backend_->seek_ms(position_ms_);
+      backend_->seek_ms(position_ms_);
       return true;
     case nve::VideoPlayerCommandKind::SetVolume:
       if (!std::isfinite(cmd.volume)) return false;
       volume_ = std::clamp(cmd.volume, 0.0f, 1.0f);
-      ++volume_change_count_;
-      if (backend_) backend_->set_volume(volume_);
+      backend_->set_volume(volume_);
       return true;
   }
   return false;

@@ -43,7 +43,7 @@ impl KeyDownEvent {
     }
 }
 
-/// Parses a `keydown` custom event payload from either zero-JSON binary `NK1` framing
+/// Parses a `keydown` custom event payload from either binary `NK1` framing
 /// (`[b'N', b'K', b'1', flags_u8, utf8_key...]`) or compact UTF-8 shorthand
 /// (`"Cmd+k"`, `"Ctrl+k"`, `"ArrowDown"`, `"ArrowUp"`, `"Enter"`, `"Escape"`).
 pub fn parse_keydown_payload(data: &[u8]) -> Option<KeyDownEvent> {

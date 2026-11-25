@@ -54,7 +54,7 @@ sealed class NveBinValueException(message: String) : IllegalArgumentException(me
 
 /**
  * Owned structured value matching Rust `NveValue` / Swift `NveBinValue` / Dart `NveBinValue`.
- * Encodes directly to the little-endian binary `NveBinValue` wire format with zero JSON.
+ * Encodes directly to the little-endian binary `NveBinValue` wire format with binary FFI.
  */
 sealed interface NveBinValue {
     data object Null : NveBinValue

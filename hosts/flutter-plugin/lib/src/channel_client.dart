@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 import 'nve_bin_value.dart';
 
-/// Imperative controller attached to [NveTextureHostWidget] or [NvePlatformViewWidget].
+/// Imperative controller for dispatching typed commands and requesting renders on an NVE surface.
 class NveSurfaceController {
   void Function(String name, Map<String, Object?> args)? _commandHandler;
   VoidCallback? _renderHandler;
@@ -154,7 +154,7 @@ class NveChannelClient {
     }
   }
 
-  /// Publishes a compact binary `NveBinValue` payload to `topic` (zero JSON).
+  /// Publishes a compact binary `NveBinValue` payload to `topic` (binary).
   Future<void> publishValue(
     String topic,
     Object? value, {

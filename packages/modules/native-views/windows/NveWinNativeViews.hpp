@@ -117,9 +117,10 @@ class NveWinWebViewBackend {
 };
 
 /// Windows WebView2 controller adapter for `"nve.web_view"` / `"nve.webview"`.
+/// Requires a non-null injected `NveWinWebViewBackend`; mounting without one returns `nullptr`.
 class NveWinWebView {
  public:
-  explicit NveWinWebView(std::unique_ptr<NveWinWebViewBackend> backend = nullptr);
+  explicit NveWinWebView(std::unique_ptr<NveWinWebViewBackend> backend);
   ~NveWinWebView();
 
   NveWinWebView(const NveWinWebView&) = delete;
@@ -131,12 +132,6 @@ class NveWinWebView {
 
   const std::string& last_requested_url() const noexcept { return last_requested_url_; }
   bool allows_back_forward() const noexcept { return allows_back_forward_; }
-  size_t navigation_count() const noexcept { return navigation_count_; }
-  size_t reload_count() const noexcept { return reload_count_; }
-  size_t go_back_count() const noexcept { return go_back_count_; }
-  size_t go_forward_count() const noexcept { return go_forward_count_; }
-  const std::string& last_evaluated_script() const noexcept { return last_evaluated_script_; }
-  size_t evaluate_script_count() const noexcept { return evaluate_script_count_; }
   bool unmounted() const noexcept { return unmounted_; }
   NveWinWebViewBackend* backend() const noexcept { return backend_.get(); }
 
@@ -146,12 +141,6 @@ class NveWinWebView {
   std::unique_ptr<NveWinWebViewBackend> backend_;
   std::string last_requested_url_;
   bool allows_back_forward_{true};
-  size_t navigation_count_{0u};
-  size_t reload_count_{0u};
-  size_t go_back_count_{0u};
-  size_t go_forward_count_{0u};
-  std::string last_evaluated_script_;
-  size_t evaluate_script_count_{0u};
   bool unmounted_{false};
 };
 #endif // NVE_NV_ENABLE_WEBVIEW
@@ -176,9 +165,10 @@ class NveWinVideoBackend {
 };
 
 /// Windows Media Foundation video playback adapter for `"nve.video_player"` / `"nve.video"`.
+/// Requires a non-null injected `NveWinVideoBackend`; mounting without one returns `nullptr`.
 class NveWinVideoPlayer {
  public:
-  explicit NveWinVideoPlayer(std::unique_ptr<NveWinVideoBackend> backend = nullptr);
+  explicit NveWinVideoPlayer(std::unique_ptr<NveWinVideoBackend> backend);
   ~NveWinVideoPlayer();
 
   NveWinVideoPlayer(const NveWinVideoPlayer&) = delete;
@@ -196,10 +186,6 @@ class NveWinVideoPlayer {
   bool is_playing() const noexcept { return playing_; }
   uint64_t position_ms() const noexcept { return position_ms_; }
   float volume() const noexcept { return volume_; }
-  size_t play_count() const noexcept { return play_count_; }
-  size_t pause_count() const noexcept { return pause_count_; }
-  size_t seek_count() const noexcept { return seek_count_; }
-  size_t volume_change_count() const noexcept { return volume_change_count_; }
   bool unmounted() const noexcept { return unmounted_; }
   NveWinVideoBackend* backend() const noexcept { return backend_.get(); }
 
@@ -213,10 +199,6 @@ class NveWinVideoPlayer {
   bool playing_{false};
   uint64_t position_ms_{0u};
   float volume_{1.0f};
-  size_t play_count_{0u};
-  size_t pause_count_{0u};
-  size_t seek_count_{0u};
-  size_t volume_change_count_{0u};
   bool unmounted_{false};
 };
 #endif // NVE_NV_ENABLE_VIDEO

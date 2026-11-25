@@ -78,7 +78,7 @@ class NveHostActivityTest {
         assertEquals(314, testBridge.createCalls[0].surfaceId)
         assertEquals("NveCounterDemo", testBridge.createCalls[0].componentName)
 
-        // Initial binary props were pushed with zero JSON
+        // Initial binary props were pushed with binary FFI
         assertTrue(testBridge.propsBinCalls.isNotEmpty())
         val propsView = NveBinValueView.parse(testBridge.propsBinCalls.first())
         assertEquals("robolectric", propsView.mapValue("host")!!.stringValue)

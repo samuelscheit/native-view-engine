@@ -54,7 +54,7 @@ pub struct NativeEvent {
     pub payload: EventPayload,
 }
 
-/// 3-byte ASCII wire magic identifying a compact zero-JSON binary keydown payload (`NK1`).
+/// 3-byte ASCII wire magic identifying a compact binary keydown payload (`NK1`).
 ///
 /// Layout: `[b'N', b'K', b'1', flags_u8, utf8_key...]`
 /// where `flags_u8` packs modifier bits:
@@ -68,7 +68,7 @@ pub const KEYDOWN_FLAG_CTRL: u8 = 1 << 1;
 pub const KEYDOWN_FLAG_SHIFT: u8 = 1 << 2;
 pub const KEYDOWN_FLAG_ALT: u8 = 1 << 3;
 
-/// Decoded zero-JSON keyboard event from `NativeEventKind::Custom` (`name: "keydown"`).
+/// Decoded binary keyboard event from `NativeEventKind::Custom` (`name: "keydown"`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DecodedKeyDown {
     pub key: String,
@@ -85,7 +85,7 @@ impl DecodedKeyDown {
     }
 }
 
-/// Encodes a keyboard event into the compact zero-JSON `NK1` binary payload:
+/// Encodes a keyboard event into the compact binary `NK1` binary payload:
 /// `[b'N', b'K', b'1', flags_u8, utf8_key...]`.
 pub fn encode_keydown_bytes(
     key: &str,

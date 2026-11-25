@@ -1,6 +1,6 @@
 //! `nve pair` — Unified dual-ALPN QUIC (`nve-wire-2`) + HTTP/3 WebTransport (`h3`) + TLS
 //! WebSocket (`wss://`) device pairing server with 13-day ECDSA P-256 cert pinning and
-//! zero-JSON bidirectional `EventBatch` ingestion back into the live app instance.
+//! binary bidirectional `EventBatch` ingestion back into the live app instance.
 
 use std::borrow::Cow;
 use std::io::Write as _;

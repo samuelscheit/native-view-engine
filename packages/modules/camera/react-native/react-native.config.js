@@ -3,18 +3,13 @@
 const path = require("path");
 
 /**
- * React Native / React Native Windows (0.88) / React Native macOS autolinking manifest
- * for `@nve/camera`. Points directly at the shared native sources in `../android`,
- * `../apple` (via `./NveCamera.podspec`), and `./windows/CMakeLists.txt` with zero
- * duplicated camera code.
+ * React Native autolinking manifest for `@nve/camera` (optional VisionCamera v5 adapter
+ * and `CameraPreview` binary codec).
  */
 module.exports = {
   dependency: {
     platforms: {
       ios: {
-        podspecPath: path.join(__dirname, "NveCamera.podspec"),
-      },
-      macos: {
         podspecPath: path.join(__dirname, "NveCamera.podspec"),
       },
       android: {
@@ -23,17 +18,6 @@ module.exports = {
         libraryName: "NveCamera",
         componentDescriptors: ["NveCameraPreviewComponentDescriptor"],
         cmakeListsPath: null,
-      },
-      windows: {
-        sourceDir: path.join(__dirname, "windows"),
-        cmakeListsPath: path.join(__dirname, "windows", "CMakeLists.txt"),
-        solutionFile: null,
-        projects: [
-          {
-            projectFile: "CMakeLists.txt",
-            directDependency: true,
-          },
-        ],
       },
     },
   },

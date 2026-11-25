@@ -99,10 +99,9 @@ nve::NativeViewAdapter make_webview_adapter(
   nve::NativeViewAdapter adapter{};
   adapter.create = [factory = std::move(factory)](
                        uint32_t node_id, std::string_view, const nve::NvnpDecoder*) -> void* {
-    std::unique_ptr<NveQtWebViewBackend> backend;
-    if (factory) {
-      backend = factory(node_id);
-    }
+    if (!factory) return nullptr;
+    auto backend = factory(node_id);
+    if (!backend) return nullptr;
     return new NveQtWebViewWidget(std::move(backend));
   };
   adapter.update_props = [](void* inst, uint32_t, const nve::NvnpDecoder& dec) {
@@ -142,10 +141,9 @@ nve::NativeViewAdapter make_video_adapter(
   nve::NativeViewAdapter adapter{};
   adapter.create = [factory = std::move(factory)](
                        uint32_t node_id, std::string_view, const nve::NvnpDecoder*) -> void* {
-    std::unique_ptr<NveQtVideoBackend> backend;
-    if (factory) {
-      backend = factory(node_id);
-    }
+    if (!factory) return nullptr;
+    auto backend = factory(node_id);
+    if (!backend) return nullptr;
     return new NveQtVideoPlayerWidget(std::move(backend));
   };
   adapter.update_props = [](void* inst, uint32_t, const nve::NvnpDecoder& dec) {
@@ -204,13 +202,9 @@ qreal base_qt_blur_radius(nve::BlurMaterial material) noexcept {
   return 20.0;
 }
 
-NveQtBlurSurfaceWidget::NveQtBlurSurfaceWidget(QWidget* parent)
-    : QWidget(parent), blur_effect_(new QGraphicsBlurEffect(this)) {
+NveQtBlurSurfaceWidget::NveQtBlurSurfaceWidget(QWidget* parent) : QWidget(parent) {
   setAttribute(Qt::WA_StyledBackground, true);
   setAutoFillBackground(true);
-  blur_effect_->setBlurHints(QGraphicsBlurEffect::PerformanceHint);
-  blur_effect_->setBlurRadius(blur_radius_);
-  setGraphicsEffect(blur_effect_);
   applyBlurProps(nve::BlurSurfaceProps{});
 }
 
@@ -225,9 +219,6 @@ void NveQtBlurSurfaceWidget::applyBlurProps(const nve::BlurSurfaceProps& props) 
   effective_tint_ = has_tint_ ? color_from_rrggbbaa(tint_rgba_)
                               : fallback_material_tint(props.material, clamped);
 
-  if (blur_effect_ != nullptr) {
-    blur_effect_->setBlurRadius(blur_radius_);
-  }
   QPalette pal = palette();
   pal.setColor(QPalette::Window, effective_tint_);
   setPalette(pal);
@@ -263,45 +254,37 @@ NveQtWebViewWidget::~NveQtWebViewWidget() {
 }
 
 bool NveQtWebViewWidget::loadSafeUrl(std::string_view url) {
-  if (!is_safe_qt_webview_url(url)) return false;
-  if (backend_ && !backend_->navigate(url)) return false;
+  if (!backend_ || !is_safe_qt_webview_url(url)) return false;
+  if (!backend_->navigate(url)) return false;
   last_requested_url_.assign(url);
-  ++navigation_count_;
   return true;
 }
 
 void NveQtWebViewWidget::applyWebViewProps(const nve::WebViewProps& props) {
+  if (!backend_) return;
   allows_back_forward_ = props.allows_back_forward;
-  if (backend_) {
-    backend_->setAllowsBackForward(allows_back_forward_);
-  }
+  backend_->setAllowsBackForward(allows_back_forward_);
   if (last_requested_url_ != props.url) {
     (void)loadSafeUrl(props.url);
   }
 }
 
 bool NveQtWebViewWidget::dispatchWebViewCommand(const nve::WebViewCommand& cmd) {
+  if (!backend_) return false;
   switch (cmd.kind) {
     case nve::WebViewCommandKind::Navigate:
       return loadSafeUrl(cmd.text);
     case nve::WebViewCommandKind::Reload:
-      ++reload_count_;
-      if (backend_) backend_->reload();
+      backend_->reload();
       return true;
     case nve::WebViewCommandKind::GoBack:
       if (!allows_back_forward_) return false;
-      ++go_back_count_;
-      if (backend_) (void)backend_->goBack();
-      return true;
+      return backend_->goBack();
     case nve::WebViewCommandKind::GoForward:
       if (!allows_back_forward_) return false;
-      ++go_forward_count_;
-      if (backend_) (void)backend_->goForward();
-      return true;
+      return backend_->goForward();
     case nve::WebViewCommandKind::EvaluateScript:
-      last_evaluated_script_.assign(cmd.text);
-      ++evaluate_script_count_;
-      if (backend_) backend_->evaluateScript(cmd.text);
+      backend_->evaluateScript(cmd.text);
       return true;
   }
   return false;
@@ -344,48 +327,43 @@ NveQtVideoPlayerWidget::~NveQtVideoPlayerWidget() {
 }
 
 void NveQtVideoPlayerWidget::applyVideoProps(const nve::VideoPlayerProps& props) {
+  if (!backend_) return;
   if (source_uri_ != props.source_uri && is_safe_qt_media_uri(props.source_uri)) {
     source_uri_.assign(props.source_uri);
-    if (backend_) backend_->setSourceUri(source_uri_);
+    backend_->setSourceUri(source_uri_);
   }
   autoplay_ = props.autoplay;
   muted_ = props.muted;
   looping_ = props.looping;
   controls_ = props.controls;
-  if (backend_) {
-    backend_->setMuted(muted_);
-    backend_->setLooping(looping_);
-    backend_->setControls(controls_);
-  }
+  backend_->setMuted(muted_);
+  backend_->setLooping(looping_);
+  backend_->setControls(controls_);
   if (autoplay_ && !source_uri_.empty() && !playing_) {
     playing_ = true;
-    ++play_count_;
-    if (backend_) backend_->play();
+    backend_->play();
   }
 }
 
 bool NveQtVideoPlayerWidget::dispatchVideoCommand(const nve::VideoPlayerCommand& cmd) {
+  if (!backend_) return false;
   switch (cmd.kind) {
     case nve::VideoPlayerCommandKind::Play:
       playing_ = true;
-      ++play_count_;
-      if (backend_) backend_->play();
+      backend_->play();
       return true;
     case nve::VideoPlayerCommandKind::Pause:
       playing_ = false;
-      ++pause_count_;
-      if (backend_) backend_->pause();
+      backend_->pause();
       return true;
     case nve::VideoPlayerCommandKind::SeekMs:
       position_ms_ = cmd.seek_ms;
-      ++seek_count_;
-      if (backend_) backend_->seekMs(position_ms_);
+      backend_->seekMs(position_ms_);
       return true;
     case nve::VideoPlayerCommandKind::SetVolume:
       if (!std::isfinite(cmd.volume)) return false;
       volume_ = std::clamp(cmd.volume, 0.0f, 1.0f);
-      ++volume_change_count_;
-      if (backend_) backend_->setVolume(volume_);
+      backend_->setVolume(volume_);
       return true;
   }
   return false;

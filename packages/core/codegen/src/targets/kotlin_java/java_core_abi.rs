@@ -138,7 +138,7 @@ pub fn generate_java_scene_buffer() -> String {
     let _ = writeln!(out, "/**");
     let _ = writeln!(
         out,
-        " * Zero-copy, zero-JSON reader over JNI `NewDirectByteBuffer` slabs for `NveSceneView`."
+        " * Zero-copy, binary FFI reader over JNI `NewDirectByteBuffer` slabs for `NveSceneView`."
     );
     let _ = writeln!(out, " */");
     let _ = writeln!(out, "public final class NveSceneBuffer {{");

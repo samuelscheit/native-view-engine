@@ -2,7 +2,7 @@
 
 use super::SignalValue;
 
-/// Typed conversion between Rust signal types and zero-JSON [`SignalValue`].
+/// Typed conversion between Rust signal types and direct binary FFI [`SignalValue`].
 pub trait SignalCodec: Sized {
     fn to_signal_value(&self) -> SignalValue;
     fn from_signal_value(value: &SignalValue) -> Option<Self>;

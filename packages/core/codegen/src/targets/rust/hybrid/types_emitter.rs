@@ -58,7 +58,7 @@ pub(super) fn emit_rust_struct(out: &mut String, s: &HybridStructSpec, spec: &Hy
     writeln!(out).unwrap();
 
     // Emit compact binary `NveBinValue` encode/decode and `NveValueRef` decode helpers on every struct
-    // so both non-POD structs and POD structs nested inside Vec/Option/Props/Events work zero-JSON.
+    // so both non-POD structs and POD structs nested inside Vec/Option/Props/Events work binary.
     writeln!(out, "impl {} {{", s.name).unwrap();
     writeln!(out, "    pub fn encode_bin(&self, out: &mut Vec<u8>) {{").unwrap();
     writeln!(
@@ -271,7 +271,7 @@ pub(super) fn emit_rust_view(out: &mut String, v: &HybridViewSpec, spec: &Hybrid
         // Compact binary `NveBinValue` encoder
         writeln!(
             out,
-            "    /// Encodes this typed event payload into compact binary `NveBinValue` (zero JSON)."
+            "    /// Encodes this typed event payload into compact binary `NveBinValue` (binary)."
         )
         .unwrap();
         writeln!(out, "    pub fn encode_bin(&self) -> Vec<u8> {{").unwrap();

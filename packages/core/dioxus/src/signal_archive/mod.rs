@@ -1,4 +1,4 @@
-//! Zero-JSON binary Dioxus Signal Table Archiver & incremental delta codec.
+//! Binary Dioxus Signal Table Archiver & incremental delta codec.
 //!
 //! Stores typed signal slots keyed by deterministic 64-bit XXH64 hashes of
 //! `(component_path, signal_name)` so `DioxusSurface` apps can snapshot state into

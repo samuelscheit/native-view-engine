@@ -327,7 +327,7 @@ class NveCanvasController extends ChangeNotifier {
     return events;
   }
 
-  /// Pushes structured props via `set_props_direct` (binary `NveBinValue` fallback), zero JSON.
+  /// Pushes structured props via `set_props_direct` (binary `NveBinValue` fallback), binary FFI.
   bool setPropsDirect(Map<String, Object?> props, {bool rerender = true}) {
     _ensureLive();
     final ok = _instance.setPropsDirect(props);

@@ -1,4 +1,4 @@
-//! Interactive `"canvas-draw1"` demo compiling real zero-JSON `NVE_DRAW1` binary draw-lists
+//! Interactive `"canvas-draw1"` demo compiling real binary `NVE_DRAW1` binary draw-lists
 //! rendered by `<skia_canvas>` across Skia GPU, HTML5 Canvas2D, CoreGraphics, and Flutter/Compose.
 
 use nve_abi::ColorRgba;
@@ -166,7 +166,7 @@ pub fn CanvasDraw1Demo() -> Element {
                 }
                 text {
                     style: "font-size: 11px; color: {theme.palette.text_muted};",
-                    "Zero-JSON vector stream"
+                    "Binary vector stream"
                 }
             }
 

@@ -1,6 +1,6 @@
 //! Minimal zero-dependency macOS Objective-C runtime & `NSString` FFI helpers shared by
 //! opt-in native capability modules (`nve-clipboard`, `nve-linking`, `nve-system-env`,
-//! `nve-notifications`, `nve-haptics`).
+//! `nve-haptics`).
 
 use std::ffi::{c_char, c_void, CStr};
 

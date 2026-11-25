@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use nve_abi::SurfaceId;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 use crate::error::InteropError;
 
@@ -30,7 +30,6 @@ const FIRST_CUSTOM_CHANNEL_ID: ChannelId = 100;
 #[serde(rename_all = "snake_case")]
 pub enum PayloadEncoding {
     Binary = 0,
-    Json = 1,
 }
 
 /// Zero-copy shared payload bytes delivered to every subscriber on a topic without per-subscriber clones.
@@ -83,11 +82,6 @@ impl ChannelMessage {
     pub fn as_bytes(&self) -> &[u8] {
         self.payload.as_bytes()
     }
-
-    pub fn decode_json<T: DeserializeOwned>(&self) -> Result<T, InteropError> {
-        serde_json::from_slice(self.payload.as_bytes())
-            .map_err(|e| InteropError::Serialization(e.to_string()))
-    }
 }
 
 type SubscriberCallback = Arc<dyn Fn(&ChannelMessage) + Send + Sync + 'static>;
@@ -106,7 +100,7 @@ struct ChannelState {
     subscribers: Vec<SubscriptionEntry>,
 }
 
-/// Typed binary & JSON pub/sub and shared-state channel registry.
+/// Binary pub/sub and shared-state channel registry.
 ///
 /// Replaces O(N^2) ad-hoc framework bridges with a single O(N) bus shared across
 /// Rust, React Native, Flutter, SwiftUI, Jetpack Compose, and Web WASM.
@@ -296,26 +290,6 @@ impl NveChannelBus {
             sender_surface,
             PayloadEncoding::Binary,
             payload,
-            retain,
-        )
-    }
-
-    /// Serializes `value` once as JSON and fans out the zero-copy byte buffer to all subscribers.
-    pub fn publish_json<T: Serialize>(
-        &mut self,
-        topic: &str,
-        sender_surface: Option<SurfaceId>,
-        value: &T,
-        retain: bool,
-    ) -> Result<usize, InteropError> {
-        let bytes =
-            serde_json::to_vec(value).map_err(|e| InteropError::Serialization(e.to_string()))?;
-        let channel_id = self.ensure_channel(topic)?;
-        self.publish_by_id(
-            channel_id,
-            sender_surface,
-            PayloadEncoding::Json,
-            ChannelPayload::from_vec(bytes),
             retain,
         )
     }

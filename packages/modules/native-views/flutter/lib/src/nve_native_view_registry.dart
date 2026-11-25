@@ -381,42 +381,28 @@ class NveNativeViewRegistry {
     registerAdapter(NveNativeViewConstants.kindBlurAlias, blur);
   }
 
-  /// Registers only `WebView` (`"nve.web_view"` / `"nve.webview"`).
-  void registerWebView({Widget Function(BuildContext context, NveFlutterWebViewState state)? webViewBuilder}) {
-    final NveNativeViewAdapter web = NveNativeViewAdapter(
-      create: (_, __, ___) => NveFlutterWebViewState(),
-      updateProps: (Object i, _, NvnpDecoder d) { if (i is NveFlutterWebViewState) i.apply(NveWebViewProps.decode(d)); },
-      dispatchCommand: (Object i, _, __, NvncDecoder d) => i is NveFlutterWebViewState && i.dispatch(NveWebViewCommand.decode(d)),
-      unmount: (Object i, _) { if (i is NveFlutterWebViewState) i.markUnmounted(); },
-      buildWidget: (BuildContext c, Object i) => webViewBuilder != null ? webViewBuilder(c, i as NveFlutterWebViewState) : const SizedBox.expand(),
-    );
-    registerAdapter(NveNativeViewConstants.kindWebView, web);
-    registerAdapter(NveNativeViewConstants.kindWebViewAlias, web);
+  /// Registers `WebView` (`"nve.web_view"` / `"nve.webview"`) backed by a host-supplied adapter.
+  void registerWebView(NveNativeViewAdapter adapter) {
+    registerAdapter(NveNativeViewConstants.kindWebView, adapter);
+    registerAdapter(NveNativeViewConstants.kindWebViewAlias, adapter);
   }
 
-  /// Registers only `VideoPlayer` (`"nve.video_player"` / `"nve.video"`).
-  void registerVideoPlayer({Widget Function(BuildContext context, NveFlutterVideoPlayerState state)? videoPlayerBuilder}) {
-    final NveNativeViewAdapter video = NveNativeViewAdapter(
-      create: (_, __, ___) => NveFlutterVideoPlayerState(),
-      updateProps: (Object i, _, NvnpDecoder d) { if (i is NveFlutterVideoPlayerState) i.apply(NveVideoPlayerProps.decode(d)); },
-      dispatchCommand: (Object i, _, __, NvncDecoder d) => i is NveFlutterVideoPlayerState && i.dispatch(NveVideoPlayerCommand.decode(d)),
-      unmount: (Object i, _) { if (i is NveFlutterVideoPlayerState) i.markUnmounted(); },
-      buildWidget: (BuildContext c, Object i) => videoPlayerBuilder != null ? videoPlayerBuilder(c, i as NveFlutterVideoPlayerState) : const SizedBox.expand(),
-    );
-    registerAdapter(NveNativeViewConstants.kindVideoPlayer, video);
-    registerAdapter(NveNativeViewConstants.kindVideoAlias, video);
+  /// Registers `VideoPlayer` (`"nve.video_player"` / `"nve.video"`) backed by a host-supplied adapter.
+  void registerVideoPlayer(NveNativeViewAdapter adapter) {
+    registerAdapter(NveNativeViewConstants.kindVideoPlayer, adapter);
+    registerAdapter(NveNativeViewConstants.kindVideoAlias, adapter);
   }
 
+  /// Registers built-in Flutter native views (`BlurSurface` via `BackdropFilter`).
+  /// WebView and VideoPlayer require explicit host-supplied adapters (`webview_flutter`, `video_player`, etc.).
   void registerDefaultFlutterNativeViews({
     bool enableBlur = true,
-    bool enableWebView = true,
-    bool enableVideo = true,
-    Widget Function(BuildContext context, NveFlutterWebViewState state)? webViewBuilder,
-    Widget Function(BuildContext context, NveFlutterVideoPlayerState state)? videoPlayerBuilder,
+    NveNativeViewAdapter? webViewAdapter,
+    NveNativeViewAdapter? videoPlayerAdapter,
   }) {
     if (enableBlur) registerBlurSurface();
-    if (enableWebView) registerWebView(webViewBuilder: webViewBuilder);
-    if (enableVideo) registerVideoPlayer(videoPlayerBuilder: videoPlayerBuilder);
+    if (webViewAdapter != null) registerWebView(webViewAdapter);
+    if (videoPlayerAdapter != null) registerVideoPlayer(videoPlayerAdapter);
   }
 }
 
@@ -443,46 +429,4 @@ class NveFlutterBlurSurfaceWidget extends StatelessWidget {
           );
         },
       );
-}
-
-class NveFlutterWebViewState extends ChangeNotifier {
-  String lastRequestedUrl = '', lastEvaluatedScript = '';
-  bool allowsBackForward = true, unmounted = false;
-  int navigationCount = 0, reloadCount = 0, goBackCount = 0, goForwardCount = 0;
-  bool _loadSafeUrl(String u) { if (!isSafeNveWebViewUrl(u)) return false; lastRequestedUrl = u; navigationCount += 1; notifyListeners(); return true; }
-  void apply(NveWebViewProps p) { allowsBackForward = p.allowsBackForward; if (lastRequestedUrl != p.url) { _loadSafeUrl(p.url); } else { notifyListeners(); } }
-  bool dispatch(NveWebViewCommand cmd) {
-    switch (cmd.kind) {
-      case NveWebViewCommandKind.navigate: return _loadSafeUrl(cmd.text);
-      case NveWebViewCommandKind.reload: reloadCount += 1; notifyListeners(); return true;
-      case NveWebViewCommandKind.goBack: if (!allowsBackForward) return false; goBackCount += 1; notifyListeners(); return true;
-      case NveWebViewCommandKind.goForward: if (!allowsBackForward) return false; goForwardCount += 1; notifyListeners(); return true;
-      case NveWebViewCommandKind.evaluateScript: lastEvaluatedScript = cmd.text; notifyListeners(); return true;
-    }
-  }
-  void markUnmounted() { unmounted = true; dispose(); }
-}
-
-class NveFlutterVideoPlayerState extends ChangeNotifier {
-  NveVideoPlayerProps props = const NveVideoPlayerProps();
-  bool isPlaying = false, unmounted = false;
-  int positionMs = 0, playCount = 0, pauseCount = 0, seekCount = 0;
-  double volume = 1.0;
-  void apply(NveVideoPlayerProps n) {
-    final String uri = isSafeNveMediaUri(n.sourceUri) ? n.sourceUri : props.sourceUri;
-    props = NveVideoPlayerProps(sourceUri: uri, autoplay: n.autoplay, muted: n.muted, looping: n.looping, controls: n.controls);
-    if (props.autoplay && props.sourceUri.isNotEmpty && !isPlaying) { isPlaying = true; playCount += 1; }
-    notifyListeners();
-  }
-  bool dispatch(NveVideoPlayerCommand cmd) {
-    switch (cmd.kind) {
-      case NveVideoPlayerCommandKind.play: isPlaying = true; playCount += 1; notifyListeners(); return true;
-      case NveVideoPlayerCommandKind.pause: isPlaying = false; pauseCount += 1; notifyListeners(); return true;
-      case NveVideoPlayerCommandKind.seekMs: positionMs = cmd.seekMs; seekCount += 1; notifyListeners(); return true;
-      case NveVideoPlayerCommandKind.setVolume:
-        if (!cmd.volume.isFinite) return false;
-        volume = cmd.volume.clamp(0.0, 1.0); notifyListeners(); return true;
-    }
-  }
-  void markUnmounted() { unmounted = true; isPlaying = false; dispose(); }
 }

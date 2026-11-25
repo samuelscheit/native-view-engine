@@ -1,5 +1,5 @@
 //! Verified benchmark baseline data (embedded from `benchmarks/baseline.json` at compile time),
-//! wave progression series, and zero-JSON `NVE_DRAW1` bar/line chart draw-list builders.
+//! wave progression series, and direct binary FFI `NVE_DRAW1` bar/line chart draw-list builders.
 
 use nve_abi::ColorRgba;
 use nve_components::canvas_ir::DrawList;

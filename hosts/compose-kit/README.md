@@ -1,6 +1,6 @@
 # `dev.nve.compose` — Native View Engine Host Kit for Jetpack Compose
 
-Android Library Gradle module (`dev.nve.compose`) for embedding **Native View Engine (NVE)** Rust components inside Jetpack Compose and Android `ComponentActivity` hosts with zero-JSON binary FFI.
+Android Library Gradle module (`dev.nve.compose`) for embedding **Native View Engine (NVE)** Rust components inside Jetpack Compose and Android `ComponentActivity` hosts with binary FFI.
 
 ## Architecture
 

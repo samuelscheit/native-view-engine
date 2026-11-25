@@ -3,7 +3,7 @@ package dev.nve.compose
 import java.nio.ByteBuffer
 
 /**
- * Zero-JSON binary bridge contract connecting Jetpack Compose hosts to NVE's native runtime.
+ * Binary bridge contract connecting Jetpack Compose hosts to NVE's native runtime.
  *
  * Production code uses [NveNativeBridge] (backed by JNI [NveJniBridge]); JVM & Robolectric unit
  * tests inject a deterministic in-memory implementation without requiring `libnve_android_shell.so`.

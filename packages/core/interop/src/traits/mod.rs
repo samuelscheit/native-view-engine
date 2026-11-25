@@ -1,7 +1,7 @@
 //! Unified Extensible Environment & `TraitKey` System.
 //!
 //! Combines SwiftUI `EnvironmentValues`, Jetpack Compose `CompositionLocal`, and CSS
-//! `@media`/`@container` queries into a zero-JSON, zero-allocation fast-path trait engine:
+//! `@media`/`@container` queries into a binary, zero-allocation fast-path trait engine:
 //! - 18 built-in traits live directly inside a compact `Copy` [`BuiltinTraits`] struct (`O(1)`
 //!   field access, zero hashing/boxing).
 //! - User-defined [`TraitKey`]s live in a persistent copy-on-write `TypeId` overlay map.

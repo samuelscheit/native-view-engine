@@ -22,7 +22,7 @@ namespace nve {
  * RN Fabric components whose `ValueFactoryEventPayload` only exposes `asJSIValue(jsi::Runtime&)`
  * are captured via `MockJsiRecorderRuntime` directly into `nve::BumpArena` for zero-copy direct
  * FFI dispatch (`dispatch_events_direct`), or encoded in-place into compact binary `NveBinValue`
- * inside this `EventRingWriter` for non-shared boundaries — zero Hermes, zero JSON.
+ * inside this `EventRingWriter` for non-shared boundaries — zero Hermes, binary FFI.
  */
 class EventRingWriter {
  public:
@@ -168,7 +168,7 @@ class EventRingWriter {
   }
 
   /// Encodes `value` directly into this `EventRingWriter`'s preallocated byte buffer using compact
-  /// binary `NveBinValue` (zero intermediate string/vector allocation, zero JSON).
+  /// binary `NveBinValue` (zero intermediate string/vector allocation, binary FFI).
   bool push_custom_value(
       uint32_t surface_id,
       uint32_t node_id,

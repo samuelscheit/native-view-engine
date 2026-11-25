@@ -1,4 +1,4 @@
-//! Zero-JSON C-ABI client (`FfiHostServices`) backing `NVE_IFACE_HOST = 5`.
+//! Binary C-ABI client (`FfiHostServices`) backing `NVE_IFACE_HOST = 5`.
 //!
 //! Uses a 4 KiB stack buffer fast-path on every `NveHostCallbacks::invoke` call, automatically
 //! retries once with an exact-sized heap buffer on `NVE_HOST_BUFFER_TOO_SMALL`, and resolves

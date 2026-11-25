@@ -1,9 +1,6 @@
 #[cfg(feature = "channel")]
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "channel")]
-use serde::{Deserialize, Serialize};
-
 use super::*;
 
 #[cfg(feature = "channel")]
@@ -29,37 +26,19 @@ fn nested_multi_framework_tree_env_propagation_and_cascading_teardown() {
         .surfaces
         .register_surface(
             SurfaceDescriptor::new(FrameworkKind::Nve, "NveCheckoutCard")
-                .with_parent(flutter_root)
-                .with_handoff(RenderHandoff::SharedGpuTexture(SharedGpuTexture {
-                    width: 1170,
-                    height: 600,
-                    scale_factor: 3.0,
-                    registry_texture_id: 42,
-                    handle: SharedGpuTextureKind::IoSurface {
-                        surface_id: 9001,
-                        pixel_format: GpuTextureFormat::Bgra8Unorm,
-                    },
-                })),
+                .with_parent(flutter_root),
         )
         .unwrap();
 
     let rn_island = runtime
         .surfaces
         .register_surface(
-            SurfaceDescriptor::new(FrameworkKind::ReactNativeFabric, "RnMapIsland")
-                .with_parent(nve_surface)
-                .with_island(IslandSpec::ReactNative(RnIslandSpec {
-                    module_name: "MapsModule".into(),
-                    component_name: "RNMapView".into(),
-                    initial_props_json: r#"{"zoom":14}"#.into(),
-                    fabric_enabled: true,
-                    hermes_bytecode_path: None,
-                    mount_policy: IslandMountPolicy::LazyOnVisible,
-                })),
+            SurfaceDescriptor::new(FrameworkKind::ReactNativeFabric, "RnMapSurface")
+                .with_parent(nve_surface),
         )
         .unwrap();
 
-    // SwiftUI island overrides its own theme to stay dark even when parent switches to light.
+    // SwiftUI surface overrides its own theme to stay dark even when parent switches to light.
     let swiftui_island = runtime
         .surfaces
         .register_surface(
@@ -68,14 +47,7 @@ fn nested_multi_framework_tree_env_propagation_and_cascading_teardown() {
                 .with_overrides(EnvironmentOverrides {
                     theme: Some(ThemeContext::dark()),
                     ..Default::default()
-                })
-                .with_island(IslandSpec::SwiftUI(SwiftUIIslandSpec {
-                    view_name: "ApplePayButton".into(),
-                    module_name: "PayKit".into(),
-                    initial_props_json: r#"{"amountCents":4999}"#.into(),
-                    use_intrinsic_sizing: true,
-                    mount_policy: IslandMountPolicy::OnFirstInteraction,
-                })),
+                }),
         )
         .unwrap();
 
@@ -373,17 +345,11 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
     assert_eq!(bus.channel_id(TOPIC_AUTH), Some(CHANNEL_ID_AUTH));
     assert_eq!(bus.channel_id(TOPIC_NAVIGATION), Some(CHANNEL_ID_NAVIGATION));
 
-    // Publish retained auth state BEFORE a late subscriber joins.
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    struct AuthState {
-        user_id: String,
-        authenticated: bool,
-    }
-    let sent = AuthState {
-        user_id: "usr_42".into(),
-        authenticated: true,
-    };
-    let delivered = bus.publish_json(TOPIC_AUTH, None, &sent, true).unwrap();
+    // Publish retained binary auth state BEFORE a late subscriber joins.
+    let sent_bytes = b"AUTH1:usr_42:1";
+    let delivered = bus
+        .publish_bytes(TOPIC_AUTH, None, ChannelPayload::from_slice(sent_bytes), true)
+        .unwrap();
     assert_eq!(delivered, 0);
 
     let received_a = Arc::new(Mutex::new(Vec::<ChannelMessage>::new()));
@@ -396,10 +362,9 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
         })
         .unwrap();
 
-    // Late subscriber with replay_retained=true receives the snapshot immediately.
+    // Late subscriber with replay_retained=true receives the retained binary snapshot immediately.
     assert_eq!(received_a.lock().unwrap().len(), 1);
-    let decoded: AuthState = received_a.lock().unwrap()[0].decode_json().unwrap();
-    assert_eq!(decoded, sent);
+    assert_eq!(received_a.lock().unwrap()[0].as_bytes(), sent_bytes);
 
     // Zero-copy binary broadcast across multiple subscribers on a custom topic.
     let custom_id = bus.ensure_channel("metrics.frame_timing").unwrap();

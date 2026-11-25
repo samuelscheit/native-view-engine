@@ -1,11 +1,9 @@
 /**
- * `@nve/camera` — Standalone React Native / RN-Windows (0.88) / RN-macOS / RN-Web camera package.
+ * `@nve/camera` — Optional React Native VisionCamera v5 adapter and typed `CameraPreview`
+ * binary wire codec (`NVNP`/`NVNC`/`NVCF`) for NVE.
  *
- * Zero duplicated camera logic:
- * - Native (iOS / macOS / Android / Windows): routes directly to the C++20 JSI `HostObject` /
- *   Nitro `HybridObjectRegistry` (`global.__nveCameraInstall` / `global.__nveCamera`) with zero-JSON
- *   binary `NVNP`/`NVNC`/`NVCF` buffers.
- * - Web / React Native Web: routes directly to `../../web/src/nve_web_camera.ts`.
+ * Routes directly to the installed native C++20 JSI `HostObject` / Nitro `HybridObjectRegistry`
+ * (`global.__nveCameraInstall` / `global.__nveCamera` / `NitroModules.createHybridObject("CameraSession")`).
  */
 
 import {
@@ -16,7 +14,6 @@ import {
   CameraFacing,
   CameraPixelFormat,
   CameraPropField,
-  NveWebCameraSession,
   StabilizationMode,
   TorchMode,
   decodeCameraCommand,
@@ -41,14 +38,7 @@ import {
   type StabilizationModeName,
   type TorchModeCode,
   type TorchModeName,
-  type VideoElementLike,
-  type WebCameraCommandInput,
-  type WebCameraEnvironment,
-  type WebCameraPropsInput,
-  type WebCameraSessionState,
-  type WebStartRecordingOptions,
-  type WebTakePhotoOptions,
-} from "../../web/src/nve_web_camera.ts";
+} from "./nve_camera_wire.ts";
 
 export {
   CAMERA_FRAME_DESCRIPTOR_SIZE,
@@ -58,7 +48,6 @@ export {
   CameraFacing,
   CameraPixelFormat,
   CameraPropField,
-  NveWebCameraSession,
   StabilizationMode,
   TorchMode,
   decodeCameraCommand,
@@ -83,8 +72,6 @@ export {
   type StabilizationModeName,
   type TorchModeCode,
   type TorchModeName,
-  type WebCameraEnvironment,
-  type WebCameraSessionState,
 };
 
 export interface CameraDevice {
@@ -120,7 +107,38 @@ export interface RecordedVideo {
   byteLength?: number;
 }
 
-export interface CameraProps extends WebCameraPropsInput {
+export interface CameraPropsInput {
+  deviceId?: string | null;
+  facing?: CameraFacingCode | CameraFacingName;
+  torch?: TorchModeCode | TorchModeName;
+  zoom?: number;
+  fps?: number;
+  hdr?: boolean;
+  stabilization?: StabilizationModeCode | StabilizationModeName;
+  enableFrameProcessor?: boolean;
+  audioEnabled?: boolean;
+  active?: boolean;
+}
+
+export interface TakePhotoOptions {
+  quality?: number;
+  flash?: number | "off" | "on" | "auto";
+}
+
+export interface StartRecordingOptions {
+  outputPath: string;
+}
+
+export type CameraCommandInput =
+  | { kind: "switch_facing"; facing: CameraFacingCode | CameraFacingName }
+  | { kind: "set_torch"; torch: TorchModeCode | TorchModeName }
+  | { kind: "set_zoom"; zoom: number }
+  | { kind: "focus_point"; x: number; y: number }
+  | { kind: "capture_photo"; quality: number; flash: number }
+  | { kind: "start_recording"; outputPath: string }
+  | { kind: "stop_recording" };
+
+export interface CameraProps extends CameraPropsInput {
   device?: CameraDevice | null;
   isActive?: boolean;
   photo?: boolean;
@@ -136,14 +154,14 @@ export interface NativeJsiCameraSessionHost {
   readonly frameCount: number;
   readonly isDisposed: boolean;
   listDevices(): CameraDevice[];
-  applyProps(props: CameraPreviewProps | WebCameraPropsInput | ArrayBuffer): boolean;
+  applyProps(props: CameraPreviewProps | CameraPropsInput | ArrayBuffer): boolean;
   applyEncodedProps(nvnp: ArrayBuffer): boolean;
-  dispatchCommand(cmd: WebCameraCommandInput | ArrayBuffer): boolean;
+  dispatchCommand(cmd: CameraCommandInput | ArrayBuffer): boolean;
   dispatchEncodedCommand?(nvnc: ArrayBuffer): boolean;
   start(): boolean;
   stop(): void;
-  takePhoto(options?: WebTakePhotoOptions): CapturedPhoto | Promise<CapturedPhoto>;
-  startRecording(outputPathOrOptions: string | WebStartRecordingOptions): boolean | Promise<void>;
+  takePhoto(options?: TakePhotoOptions): CapturedPhoto | Promise<CapturedPhoto>;
+  startRecording(outputPathOrOptions: string | StartRecordingOptions): boolean | Promise<void>;
   stopRecording(): RecordedVideo | Promise<RecordedVideo>;
   lastFrame(): ArrayBuffer | null;
   dispose(): void;
@@ -161,7 +179,6 @@ interface NveCameraGlobalScope {
   NitroModules?: {
     createHybridObject?: (name: string) => NativeJsiCameraSessionHost | null | undefined;
   };
-  navigator?: { mediaDevices?: unknown };
 }
 
 function getGlobalScope(): NveCameraGlobalScope {
@@ -196,7 +213,7 @@ function toArrayBufferCopy(bytes: Uint8Array): ArrayBuffer {
 }
 
 function normalizeCameraProps(
-  input: CameraProps | CameraPreviewProps | WebCameraPropsInput,
+  input: CameraProps | CameraPreviewProps | CameraPropsInput,
   base: CameraPreviewProps,
 ): CameraPreviewProps {
   const raw = input as CameraProps;
@@ -246,187 +263,126 @@ function normalizeCameraProps(
   return next;
 }
 
-export interface CameraSessionOptions {
-  /** Force `'native'` (JSI/Nitro) or `'web'` (`getUserMedia`); defaults to `'auto'`. */
-  backend?: "auto" | "native" | "web";
-  webEnv?: WebCameraEnvironment;
-  videoElement?: VideoElementLike;
-}
-
 /**
- * Unified VisionCamera v5-ergonomic `CameraSession` wrapping either the zero-JSON native JSI
- * `HybridCameraSession` host object (iOS / macOS / Android / Windows) or `NveWebCameraSession`
- * on Web / React Native Web.
+ * VisionCamera v5 adapter session wrapping the installed native JSI/Nitro `HybridCameraSession`.
  */
 export class CameraSession {
-  readonly backend: "native" | "web";
-  private readonly nativeHost: NativeJsiCameraSessionHost | null;
-  private readonly webSession: NveWebCameraSession | null;
+  readonly backend = "native" as const;
+  private readonly nativeHost: NativeJsiCameraSessionHost;
   private currentProps: CameraPreviewProps = defaultCameraPreviewProps();
 
-  constructor(options: CameraSessionOptions = {}) {
-    const mode = options.backend ?? "auto";
-    if (mode !== "web") {
-      const mod = resolveNativeJsiModule();
-      const host = mod ? mod.createSession() : resolveNitroSession();
-      if (host) {
-        this.backend = "native";
-        this.nativeHost = host;
-        this.webSession = null;
-        return;
-      }
-      if (mode === "native") {
-        throw new Error(
-          "NVE_CAMERA_NATIVE_UNAVAILABLE: global.__nveCameraInstall / NitroModules CameraSession not installed",
-        );
-      }
+  constructor() {
+    const mod = resolveNativeJsiModule();
+    const host = mod ? mod.createSession() : resolveNitroSession();
+    if (!host) {
+      throw new Error(
+        "NVE_CAMERA_NATIVE_UNAVAILABLE: global.__nveCameraInstall / NitroModules CameraSession not installed",
+      );
     }
-    this.backend = "web";
-    this.nativeHost = null;
-    this.webSession = new NveWebCameraSession(options.webEnv, options.videoElement);
+    this.nativeHost = host;
   }
 
   get isDisposed(): boolean {
-    return this.nativeHost ? this.nativeHost.isDisposed : this.webSession!.isDisposed;
+    return this.nativeHost.isDisposed;
   }
 
   get activeProps(): CameraPreviewProps {
-    return this.webSession ? this.webSession.activeProps : { ...this.currentProps };
-  }
-
-  get web(): NveWebCameraSession | null {
-    return this.webSession;
+    return { ...this.currentProps };
   }
 
   async listDevices(): Promise<CameraDevice[]> {
-    if (this.nativeHost) {
-      return this.nativeHost.listDevices();
-    }
-    return this.webSession!.listDevices();
+    return this.nativeHost.listDevices();
   }
 
   async applyProps(
-    props: CameraProps | CameraPreviewProps | WebCameraPropsInput | ArrayBuffer | ArrayBufferView,
+    props: CameraProps | CameraPreviewProps | CameraPropsInput | ArrayBuffer | ArrayBufferView,
   ): Promise<CameraPreviewProps> {
     if (props instanceof ArrayBuffer || ArrayBuffer.isView(props)) {
       const decoded = decodeCameraProps(props);
-      if (this.nativeHost) {
-        const ab =
-          props instanceof ArrayBuffer
-            ? props
-            : toArrayBufferCopy(new Uint8Array(props.buffer, props.byteOffset, props.byteLength));
-        const ok = this.nativeHost.applyEncodedProps(ab);
-        if (!ok) throw new Error("NVNP_APPLY_FAILED");
-        this.currentProps = decoded;
-        return { ...decoded };
-      }
-      return this.webSession!.applyEncodedProps(props);
+      const ab =
+        props instanceof ArrayBuffer
+          ? props
+          : toArrayBufferCopy(new Uint8Array(props.buffer, props.byteOffset, props.byteLength));
+      const ok = this.nativeHost.applyEncodedProps(ab);
+      if (!ok) throw new Error("NVNP_APPLY_FAILED");
+      this.currentProps = decoded;
+      return { ...decoded };
     }
 
     const normalized = normalizeCameraProps(props, this.currentProps);
-    if (this.nativeHost) {
-      const nvnp = encodeCameraProps(normalized);
-      const ok = this.nativeHost.applyEncodedProps(toArrayBufferCopy(nvnp));
-      if (!ok) throw new Error("NVNP_APPLY_FAILED");
-      this.currentProps = normalized;
-      return { ...normalized };
-    }
-    const applied = await this.webSession!.applyProps(normalized);
-    this.currentProps = applied;
-    return applied;
+    const nvnp = encodeCameraProps(normalized);
+    const ok = this.nativeHost.applyEncodedProps(toArrayBufferCopy(nvnp));
+    if (!ok) throw new Error("NVNP_APPLY_FAILED");
+    this.currentProps = normalized;
+    return { ...normalized };
   }
 
-  async dispatchCommand(
-    cmd: WebCameraCommandInput | ArrayBuffer | ArrayBufferView,
-  ): Promise<unknown> {
-    if (this.nativeHost) {
-      if (cmd instanceof ArrayBuffer || ArrayBuffer.isView(cmd)) {
-        const ab =
-          cmd instanceof ArrayBuffer
-            ? cmd
-            : toArrayBufferCopy(new Uint8Array(cmd.buffer, cmd.byteOffset, cmd.byteLength));
-        const ok = this.nativeHost.dispatchEncodedCommand
-          ? this.nativeHost.dispatchEncodedCommand(ab)
-          : this.nativeHost.dispatchCommand(ab);
-        if (!ok) throw new Error("NVNC_DISPATCH_FAILED");
-        return true;
-      }
-      const normalized: CameraPreviewCommand =
-        cmd.kind === "switch_facing"
-          ? { kind: "switch_facing", facing: parseFacing(cmd.facing) }
-          : cmd.kind === "set_torch"
-            ? { kind: "set_torch", torch: parseTorchMode(cmd.torch) }
-            : cmd;
-      const nvnc = encodeCameraCommand(normalized);
+  async dispatchCommand(cmd: CameraCommandInput | ArrayBuffer | ArrayBufferView): Promise<boolean> {
+    if (cmd instanceof ArrayBuffer || ArrayBuffer.isView(cmd)) {
+      const ab =
+        cmd instanceof ArrayBuffer
+          ? cmd
+          : toArrayBufferCopy(new Uint8Array(cmd.buffer, cmd.byteOffset, cmd.byteLength));
       const ok = this.nativeHost.dispatchEncodedCommand
-        ? this.nativeHost.dispatchEncodedCommand(toArrayBufferCopy(nvnc))
-        : this.nativeHost.dispatchCommand(toArrayBufferCopy(nvnc));
+        ? this.nativeHost.dispatchEncodedCommand(ab)
+        : this.nativeHost.dispatchCommand(ab);
       if (!ok) throw new Error("NVNC_DISPATCH_FAILED");
       return true;
     }
-    return this.webSession!.dispatchCommand(cmd);
+    const normalized: CameraPreviewCommand =
+      cmd.kind === "switch_facing"
+        ? { kind: "switch_facing", facing: parseFacing(cmd.facing) }
+        : cmd.kind === "set_torch"
+          ? { kind: "set_torch", torch: parseTorchMode(cmd.torch) }
+          : cmd;
+    const nvnc = encodeCameraCommand(normalized);
+    const ok = this.nativeHost.dispatchEncodedCommand
+      ? this.nativeHost.dispatchEncodedCommand(toArrayBufferCopy(nvnc))
+      : this.nativeHost.dispatchCommand(toArrayBufferCopy(nvnc));
+    if (!ok) throw new Error("NVNC_DISPATCH_FAILED");
+    return true;
   }
 
   async start(): Promise<boolean> {
-    return this.nativeHost ? this.nativeHost.start() : this.webSession!.start();
+    return this.nativeHost.start();
   }
 
   async stop(): Promise<void> {
-    if (this.nativeHost) {
-      this.nativeHost.stop();
-      return;
-    }
-    await this.webSession!.stop();
+    this.nativeHost.stop();
   }
 
-  async takePhoto(options?: WebTakePhotoOptions): Promise<CapturedPhoto> {
-    if (this.nativeHost) {
-      return await this.nativeHost.takePhoto(options);
-    }
-    return this.webSession!.takePhoto(options);
+  async takePhoto(options?: TakePhotoOptions): Promise<CapturedPhoto> {
+    return await this.nativeHost.takePhoto(options);
   }
 
-  async startRecording(outputPathOrOptions: string | WebStartRecordingOptions): Promise<void> {
-    if (this.nativeHost) {
-      await this.nativeHost.startRecording(outputPathOrOptions);
-      return;
-    }
-    await this.webSession!.startRecording(outputPathOrOptions);
+  async startRecording(outputPathOrOptions: string | StartRecordingOptions): Promise<void> {
+    await this.nativeHost.startRecording(outputPathOrOptions);
   }
 
   async stopRecording(): Promise<RecordedVideo> {
-    if (this.nativeHost) {
-      return await this.nativeHost.stopRecording();
-    }
-    return this.webSession!.stopRecording();
+    return await this.nativeHost.stopRecording();
   }
 
   lastFrame(): CameraFrameDescriptor | null {
-    const raw = this.nativeHost ? this.nativeHost.lastFrame() : this.webSession!.lastFrame();
+    const raw = this.nativeHost.lastFrame();
     return raw ? decodeCameraFrame(raw) : null;
   }
 
   async dispose(): Promise<void> {
-    if (this.nativeHost) {
-      this.nativeHost.dispose();
-      return;
-    }
-    await this.webSession!.dispose();
+    this.nativeHost.dispose();
   }
 }
 
-export function createCameraSession(options?: CameraSessionOptions): CameraSession {
-  return new CameraSession(options);
+export function createCameraSession(): CameraSession {
+  return new CameraSession();
 }
 
-export async function getAvailableCameraDevices(
-  options?: CameraSessionOptions,
-): Promise<CameraDevice[]> {
-  const nativeMod = options?.backend === "web" ? null : resolveNativeJsiModule();
+export async function getAvailableCameraDevices(): Promise<CameraDevice[]> {
+  const nativeMod = resolveNativeJsiModule();
   if (nativeMod) {
     return nativeMod.listDevices();
   }
-  const session = new CameraSession(options);
+  const session = new CameraSession();
   try {
     return await session.listDevices();
   } finally {
@@ -434,10 +390,6 @@ export async function getAvailableCameraDevices(
   }
 }
 
-/**
- * VisionCamera v5-style device selector helper & hook.
- * Pass `devices` directly for pure/SSR usage, or call inside React with a preloaded device array.
- */
 export function useCameraDevice(
   position: CameraFacingName | CameraFacingCode,
   devices: readonly CameraDevice[] = [],
@@ -456,17 +408,12 @@ export interface ReactLikeHooks {
   ): unknown;
 }
 
-/**
- * Creates and manages a `CameraSession` lifecycle (auto-applies props and disposes on unmount
- * when given React hooks; also usable directly without React).
- */
 export function useCameraSession(
   props?: CameraProps,
-  options?: CameraSessionOptions,
   react?: ReactLikeHooks,
 ): CameraSession {
   if (!react) {
-    const session = new CameraSession(options);
+    const session = new CameraSession();
     if (props) {
       void session.applyProps(props);
     }
@@ -474,7 +421,7 @@ export function useCameraSession(
   }
   const ref = react.useRef<CameraSession | null>(null);
   if (!ref.current) {
-    ref.current = new CameraSession(options);
+    ref.current = new CameraSession();
   }
   const session = ref.current;
   react.useEffect(() => {
@@ -507,36 +454,21 @@ export function useCameraSession(
 }
 
 /**
- * Cross-platform `<Camera />` element descriptor / React component adapter.
- * On Native hosts, encodes declarative props into zero-JSON binary `NVNP` bytes for
- * `"NveCameraPreview"`; on Web, binds a `<video autoplay playsInline muted>` element to
- * `NveWebCameraSession`.
+ * React Native `<Camera />` element descriptor encoding declarative props into binary `NVNP` bytes
+ * for `"NveCameraPreview"` backed by VisionCamera v5.
  */
 export function Camera(
-  props: CameraProps & { session?: CameraSession; react?: ReactLikeHooks },
+  props: CameraProps & { react?: ReactLikeHooks },
 ): unknown {
   const normalized = normalizeCameraProps(props, defaultCameraPreviewProps());
   const nvnpProps = encodeCameraProps(normalized);
-  const isNative = Boolean(resolveNativeJsiModule() || resolveNitroSession());
-  const elementType = isNative ? "NveCameraPreview" : "video";
-  const elementProps: Record<string, unknown> = isNative
-    ? {
-        nativeViewKind: CAMERA_PREVIEW_KIND,
-        nvnpProps,
-        style: props.style,
-      }
-    : {
-        autoPlay: true,
-        playsInline: true,
-        muted: true,
-        style: props.style,
-        ref: (el: VideoElementLike | null) => {
-          props.session?.web?.attachVideoElement(el);
-        },
-      };
-
+  const elementProps: Record<string, unknown> = {
+    nativeViewKind: CAMERA_PREVIEW_KIND,
+    nvnpProps,
+    style: props.style,
+  };
   if (props.react?.createElement) {
-    return props.react.createElement(elementType, elementProps);
+    return props.react.createElement("NveCameraPreview", elementProps);
   }
-  return { type: elementType, props: elementProps };
+  return { type: "NveCameraPreview", props: elementProps };
 }

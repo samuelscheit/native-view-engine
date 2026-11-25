@@ -64,7 +64,7 @@ impl KeyboardInsets {
         effective_bottom_inset(safe_area_bottom, self, os_adjusts_resize)
     }
 
-    /// Encodes `self` into a fixed 8-byte little-endian binary payload (zero JSON).
+    /// Encodes `self` into a fixed 8-byte little-endian binary payload (binary).
     #[inline]
     pub fn encode_bytes(self) -> [u8; 8] {
         let mut out = [0u8; 8];

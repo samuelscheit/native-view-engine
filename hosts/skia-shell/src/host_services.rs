@@ -2,7 +2,7 @@
 //!
 //! Combines `nve_host_services::NativeHostServices` with modular OS capability handlers
 //! (`nve-clipboard`, `nve-filesystem`, `nve-secure-store`, `nve-linking`, `nve-system-env`,
-//! `nve-notifications`, `nve-haptics`), direct typed [`WindowCommand`] submission
+//! `nve-haptics`), direct typed [`WindowCommand`] submission
 //! ([`WindowServiceBackend`]), and zero-serialization [`TypedEventBus`] / [`SkiaHostEvent`]
 //! delivery for live theme, locale, and multi-window lifecycle updates.
 
@@ -24,7 +24,6 @@ use nve_host_services::{
 };
 use nve_interop::{NveChannelBus, WindowCommand, WindowHandleId, WindowLifecycleEvent};
 use nve_linking::NativeLinking;
-use nve_notifications::NativeNotifications;
 use nve_secure_store::NativeSecureStore;
 use nve_system_env::{
     dispatch_system_env_ffi, ColorScheme, LocaleSnapshot, NativeSystemEnv, SystemEnvBackend,
@@ -168,7 +167,6 @@ impl SkiaHostServices {
         native.register(NativeSecureStore::new());
         native.register(NativeLinking::new());
         native.register(NativeSystemEnv::new());
-        native.register(NativeNotifications::new());
         native.register(NativeHaptics::new());
         let bus = native.channel_bus();
         Self::with_provider(native, bus)

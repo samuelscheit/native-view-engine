@@ -250,7 +250,7 @@ void test_gtk_native_views_registry_and_toggles() {
   NVE_CHECK(blur->material() == nve::BlurMaterial::Chrome);
   NVE_CHECK(approx_eq(blur->blur_radius(), 18.0, 0.1));
   NVE_CHECK(blur->active_css().find("rgba(51, 102, 153,") != std::string::npos);
-  NVE_CHECK(blur->backdrop_filter_spec().find("backdrop-filter: blur(18.00px);") != std::string::npos);
+  NVE_CHECK(blur->active_css().find("filter: blur") == std::string::npos);
 #endif
 
 #if NVE_NV_ENABLE_WEBVIEW
@@ -296,11 +296,17 @@ void test_gtk_native_views_registry_and_toggles() {
 #endif
 
 #if NVE_NV_ENABLE_WEBVIEW
-  NVE_CHECK(wv->last_requested_url() == "https://gtk-next.nve.dev" && wv->reload_count() == 1u);
-  NVE_CHECK(wv->last_evaluated_script() == "window.ok = 1");
+  auto* spy_web = static_cast<SpyGtkWebBackend*>(wv->backend());
+  NVE_CHECK(wv->last_requested_url() == "https://gtk-next.nve.dev" && spy_web->reloads == 1);
+  NVE_CHECK(spy_web->script == "window.ok = 1");
+
+  nve::NativeViewRegistry empty_reg;
+  nve::gtk::register_gtk_native_views(empty_reg);
+  NVE_CHECK(empty_reg.mount_or_update(99u, nve::kNativeKindWebView, web_p.finish()) == nullptr);
 #endif
 #if NVE_NV_ENABLE_VIDEO
-  NVE_CHECK(!vid->is_playing() && vid->position_ms() == 7777ULL && approx_eq(vid->volume(), 0.6, 1e-4));
+  auto* spy_vid = static_cast<SpyGtkVideoBackend*>(vid->backend());
+  NVE_CHECK(!vid->is_playing() && spy_vid->seek == 7777ULL && approx_eq(spy_vid->vol, 0.6, 1e-4));
 #endif
 
   registry.unmount_all();

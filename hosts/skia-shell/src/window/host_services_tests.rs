@@ -22,9 +22,6 @@ use nve_interop::{
     WindowLifecycleState, WindowRect,
 };
 use nve_linking::{LinkingClient, MemoryLinking};
-use nve_notifications::{
-    MemoryNotifications, NotificationPermission, NotificationRequest, NotificationsClient,
-};
 use nve_secure_store::{MemorySecureStore, SecureStoreClient};
 use nve_system_env::{
     ColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, SystemEnvBridge, SystemEnvClient,
@@ -48,8 +45,6 @@ pub(super) fn make_memory_services() -> (TestMemoryHandles, Arc<SkiaHostServices
     let fs = Arc::new(MemoryFilesystem::new());
     fs.set_standard_path(StandardPathKind::Cache, "/tmp/nve-test-cache");
     let linking = Arc::new(MemoryLinking::new());
-    let notifs = Arc::new(MemoryNotifications::new());
-    notifs.set_permission(NotificationPermission::Authorized);
     let haptics = Arc::new(MemoryHaptics::new());
     let sys_env = Arc::new(MemorySystemEnv::with_initial(
         ThemeSnapshot {
@@ -75,7 +70,6 @@ pub(super) fn make_memory_services() -> (TestMemoryHandles, Arc<SkiaHostServices
     mem.register(MemorySecureStore::new());
     mem.register_arc(linking.clone());
     mem.register_arc(sys_env);
-    mem.register_arc(notifs);
     mem.register_arc(haptics.clone());
 
     let bus = mem.channel_bus();
@@ -92,12 +86,11 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
     let secure_store = SecureStoreClient::new(&ffi);
     let linking = LinkingClient::new(&ffi);
     let system_env = SystemEnvClient::new(&ffi);
-    let notifications = NotificationsClient::new(&*services);
     let haptics = HapticsClient::new(&ffi);
 
     // 1. Clipboard round-trip (including > 4 KiB payload forcing BufferTooSmall retry).
     assert!(!clipboard.has_text().unwrap());
-    let large_text = "NVE-ZERO-JSON-CLIPBOARD-".repeat(300);
+    let large_text = "NVE-BINARY-CLIPBOARD-".repeat(300);
     clipboard.write_text(&large_text).unwrap();
     assert!(clipboard.has_text().unwrap());
     assert_eq!(
@@ -143,15 +136,7 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
     assert_eq!(locale.tag, "en-US");
     assert_eq!(locale.text_direction, TextDirection::Ltr);
 
-    // 6. Direct typed Notifications & Haptics
-    assert_eq!(
-        notifications.request_permission().unwrap(),
-        NotificationPermission::Authorized
-    );
-    let mut notif = NotificationRequest::new("n1", "Build Ready", "Hot swap completed");
-    notif.badge = Some(1);
-    notifications.show(&notif).unwrap();
-    notifications.cancel("n1").unwrap();
+    // 6. Direct typed Haptics
     haptics.impact(ImpactStyle::Medium).unwrap();
     haptics.notification(NotificationHaptic::Success).unwrap();
     haptics.selection().unwrap();

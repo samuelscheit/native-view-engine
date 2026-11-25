@@ -52,7 +52,7 @@ interface NveDrawOpSink {
 }
 
 /**
- * Zero-copy, zero-JSON binary `NVE_DRAW1` decoder and Jetpack Compose [DrawScope] renderer
+ * Zero-copy, binary `NVE_DRAW1` decoder and Jetpack Compose [DrawScope] renderer
  * matching `packages/core/components/src/canvas_ir.rs` byte-for-byte.
  *
  * Wire layout (all integers and IEEE-754 floats little-endian):

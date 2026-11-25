@@ -1,4 +1,4 @@
-//! First-class `<NativeView>` Dioxus component, registry context, and zero-JSON binary prop/handle
+//! First-class `<NativeView>` Dioxus component, registry context, and binary prop/handle
 //! forwarding into `NveMutationWriter`.
 
 use std::sync::Arc;
@@ -154,7 +154,7 @@ impl<P: NativeViewSpec> PartialEq for NativeViewProps<P> {
 /// - Checks the active [`NativeViewRegistry`] for `P::resolved_kind(&props)` (supporting exact
 ///   kinds like `"nve.blur_surface"` and prefix wildcards like `"web.*"`).
 /// - When supported: emits a standard `nve-abi` `ComponentKind::Custom` node with binary `NVNP`
-///   props (`RawPropValue::Bytes`, ZERO JSON) and binds `handle` on mount / unbinds on unmount.
+///   props (`RawPropValue::Bytes`, binary FFI) and binds `handle` on mount / unbinds on unmount.
 /// - When unsupported: gracefully renders `fallback` (or an empty node) and leaves `handle` unbound.
 #[allow(non_snake_case)]
 pub fn NativeView<P: NativeViewSpec>(nv_props: NativeViewProps<P>) -> Element {

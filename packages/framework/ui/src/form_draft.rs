@@ -1,4 +1,4 @@
-//! Zero-JSON automatic form draft persistence (`NVE_FORM_DRAFT_V1`), pluggable
+//! Binary automatic form draft persistence (`NVE_FORM_DRAFT_V1`), pluggable
 //! [`FormDraftStorage`] backends (crash-atomic [`NativeMmapFormDraftStorage`] over
 //! [`nve_engine::NativeStateStore`]/`MmapOffsetArena`, Web [`StringKvFormDraftAdapter`] /
 //! `localStorage`, and deterministic [`MemoryFormDraftStorage`]), and [`FormController`].
@@ -54,7 +54,7 @@ impl fmt::Display for FormDraftError {
 
 impl std::error::Error for FormDraftError {}
 
-/// Encodes `fields` into a compact, zero-JSON, XXH64-checksummed `NVE_FORM_DRAFT_V1` binary blob.
+/// Encodes `fields` into a compact, binary FFI, XXH64-checksummed `NVE_FORM_DRAFT_V1` binary blob.
 pub fn encode_form_draft(fields: &BTreeMap<String, String>) -> Vec<u8> {
     let payload_hint: usize = fields.iter().map(|(k, v)| 8 + k.len() + v.len()).sum();
     let mut out = Vec::with_capacity(FORM_DRAFT_MAGIC.len() + 8 + payload_hint + 8);
@@ -181,7 +181,7 @@ pub trait StringKeyValueDraftBackend {
 }
 
 /// Adapts any [`StringKeyValueDraftBackend`] (e.g. `MemorySnapshotStorage`, `BrowserLocalStorage`,
-/// `WebSnapshotStore`) into a zero-JSON [`FormDraftStorage`].
+/// `WebSnapshotStore`) into a binary [`FormDraftStorage`].
 #[derive(Debug, Clone)]
 pub struct StringKeyValueFormDraftStorage<S> {
     backend: S,

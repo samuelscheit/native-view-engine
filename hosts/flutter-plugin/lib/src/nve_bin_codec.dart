@@ -8,7 +8,7 @@ import 'dart:typed_data';
 
 import 'nve_core_abi.generated.dart';
 
-/// Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (zero JSON).
+/// Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (binary).
 class NveHybridDynamicValue {
   NveHybridDynamicValue([Uint8List? binBytes])
       : binBytes = binBytes ?? Uint8List.fromList(<int>[0]);

@@ -6,7 +6,7 @@ import Foundation
 // MARK: - Zero-Copy Direct C-ABI Props Writer
 
 /// Writes structured Swift props directly into C-ABI `NveMapEntry[]` + `NveValue` buffers
-/// backed by `NveDirectArena` for `set_props_direct` with zero JSON serialization.
+/// backed by `NveDirectArena` for `set_props_direct` with direct binary FFI.
 public enum NveDirectPropsWriter {
     /// Zero-boxing typed fast path: encodes `props` directly into a 4 KiB stack-slab bump arena
     /// using `StaticString` keys with zero `[String: Any]` boxing, zero `NveBinValue` tree
@@ -91,7 +91,7 @@ public enum NveDirectPropsWriter {
 // MARK: - Zero-Copy Direct C-ABI Event Batch Writer
 
 /// Writes typed `NveEvent` batches directly into C-ABI `NveDirectEvent[]` + `NveEventBatch`
-/// buffers for `NveSurfaceApi.dispatch_events_direct` with zero JSON serialization.
+/// buffers for `NveSurfaceApi.dispatch_events_direct` with direct binary FFI.
 public enum NveDirectEventWriter {
     public static func withBatch<R>(
         _ events: [NveEvent],

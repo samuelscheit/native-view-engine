@@ -1,6 +1,6 @@
 //! Interactive pointer, drag/double-click/triple-click range selection, focus/blur, keyboard,
 //! clipboard (`Ctrl/Cmd+C/X/V`), UAX #29 grapheme-safe UTF-8 editing, BiDi visual navigation,
-//! unified IME composition events, and zero-JSON binary `NK1` keydown dispatch for
+//! unified IME composition events, and binary `NK1` keydown dispatch for
 //! [`DesktopSession`].
 
 use std::time::{Duration, Instant};
@@ -269,7 +269,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let _ = self.handle_pointer_up_with_redraw();
     }
 
-    /// Dispatches a keyboard shortcut/navigation event using zero-JSON binary `NK1` framing.
+    /// Dispatches a keyboard shortcut/navigation event using binary `NK1` framing.
     pub fn handle_keydown(
         &mut self,
         key: &str,

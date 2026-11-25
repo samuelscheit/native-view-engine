@@ -123,7 +123,7 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   }
 
   /// Non-shared boundary path: capture `value` in the arena and encode it as compact binary
-  /// `NveBinValue` directly inside `EventRingWriter`'s preallocated buffer (zero JSON).
+  /// `NveBinValue` directly inside `EventRingWriter`'s preallocated buffer (binary).
   bool record_custom_event(
       EventRingWriter& ring,
       uint32_t surface_id,

@@ -3,7 +3,7 @@ name = "nve-host-services"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Zero-JSON NVE_IFACE_HOST = 5 host-service transport, FFI client, binary codec, and composable handler registry"
+description = "Binary NVE_IFACE_HOST = 5 host-service transport, FFI client, binary codec, and composable handler registry"
 
 [dependencies]
 nve-abi = { workspace = true }

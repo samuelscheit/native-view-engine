@@ -1,4 +1,4 @@
-//! Compact zero-JSON binary `NVN1` wire codec for cross-surface and host navigation messages.
+//! Compact binary `NVN1` wire codec for cross-surface and host navigation messages.
 
 use std::fmt;
 

@@ -1,4 +1,4 @@
-//! Zero-dependency, zero-JSON binary CRDT primitives and `NveCrdtDelta` (`XXH64`) wire protocol.
+//! Zero-dependency, binary CRDT primitives and `NveCrdtDelta` (`XXH64`) wire protocol.
 
 pub mod hlc;
 pub mod lww;

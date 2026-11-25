@@ -26,9 +26,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ahash"
-version = "0.8.13"
+version = "0.8.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fca89247609239eeb6915e6991111866b92d7b31025e69302bbf430cc4d2c38"
+checksum = "54dae3d1d7b8956f3506c4e999a74e77f932a59153ccf38ab8cf96db74bb9dc0"
 dependencies = [
  "cfg-if",
  "getrandom 0.4.3",
@@ -2220,14 +2220,6 @@ name = "nve-abi-macros"
 version = "0.1.0"
 
 [[package]]
-name = "nve-audio"
-version = "0.1.0"
-dependencies = [
- "nve-abi",
- "nve-host-services",
-]
-
-[[package]]
 name = "nve-backend-headless"
 version = "0.1.0"
 dependencies = [
@@ -2298,7 +2290,6 @@ version = "0.1.0"
 dependencies = [
  "nve-abi",
  "nve-components",
- "nve-host-services",
  "nve-interop",
  "serde",
 ]
@@ -2452,13 +2443,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nve-fonts"
-version = "0.1.0"
-dependencies = [
- "nve-host-services",
-]
-
-[[package]]
 name = "nve-haptics"
 version = "0.1.0"
 dependencies = [
@@ -2485,12 +2469,10 @@ dependencies = [
 name = "nve-interop"
 version = "0.1.0"
 dependencies = [
- "libloading 0.9.1",
  "nve-abi",
  "nve-components",
  "nve-engine",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2514,24 +2496,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "nve-location"
-version = "0.1.0"
-dependencies = [
- "nve-abi",
- "nve-host-services",
-]
-
-[[package]]
 name = "nve-mdx"
 version = "0.1.0"
-
-[[package]]
-name = "nve-notifications"
-version = "0.1.0"
-dependencies = [
- "nve-abi",
- "nve-host-services",
-]
 
 [[package]]
 name = "nve-router"
@@ -2556,21 +2522,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nve-sensors"
-version = "0.1.0"
-dependencies = [
- "nve-abi",
- "nve-host-services",
-]
-
-[[package]]
-name = "nve-share"
-version = "0.1.0"
-dependencies = [
- "nve-host-services",
-]
-
-[[package]]
 name = "nve-skia-shell"
 version = "0.1.0"
 dependencies = [
@@ -2584,11 +2535,9 @@ dependencies = [
  "nve-host-services",
  "nve-interop",
  "nve-linking",
- "nve-notifications",
  "nve-secure-store",
  "nve-system-env",
  "nve-wire",
- "serde_json",
  "softbuffer",
  "tungstenite",
  "winit",
@@ -2624,7 +2573,6 @@ dependencies = [
  "nve-ui",
  "nve-wire",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2655,14 +2603,6 @@ dependencies = [
  "nve-i18n",
  "nve-interop",
  "web-sys",
-]
-
-[[package]]
-name = "nve-web-auth"
-version = "0.1.0"
-dependencies = [
- "nve-abi",
- "nve-host-services",
 ]
 
 [[package]]
@@ -4500,9 +4440,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.2.2+spec-1.1.0"
+version = "1.2.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5426cb1b964690d913f6c5c1a1ae0b42f428ec506bb4d452876d7a209c9bca3b"
+checksum = "26b1f26e9485c1fa43ee89fe76e9f3fb9e2e52bb227f8594b4d687496b83d073"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -4536,9 +4476,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.1.6+spec-1.1.0"
+version = "1.1.7+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6769c452d71ba30696c6b37770c439a9cc9110f47f7d5cdbeda79840ef5ea31"
+checksum = "0bb28d6e049a9766c3bd91a8326e6179f5b132dec87906bb97018ef7a2f3431a"
 dependencies = [
  "winnow",
 ]

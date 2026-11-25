@@ -1,6 +1,6 @@
 //! Host prop parsing and application helpers for [`crate::StudioWorkspaceModule`].
 //!
-//! Supports direct zero-JSON `NvePropsRef`, binary `NveBinValue`, and UTF-8 JSON fallback props,
+//! Supports direct binary `NvePropsRef`, binary `NveBinValue`, and UTF-8 JSON fallback props,
 //! including deep-link `"route"` navigation and responsive viewport sizing.
 
 use crate::state::{AccentTheme, ActiveView, LayoutEngineMode, SyncTransportMode, WorkspaceState};

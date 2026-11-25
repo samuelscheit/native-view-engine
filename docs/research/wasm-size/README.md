@@ -55,7 +55,7 @@ available in Rust.
 |---|---|---|
 | wasm-bindgen + web-sys | 120 imports, a closure per listener, 64 KB glue | none in production: 0 imports and 5 raw exports, plus a 3.5 KB br `nve_dom.js` (*m*, byte-identical DOM) |
 | dioxus-core / -signals | VDOM, `anyhow` std, SipHash sets | short term: patch (`anyhow` without std, `FxHashSet`, subsecond's wasm deps opt-in). Long term: replace it with a compiled fine-grained runtime |
-| serde_json | hot-reload fallback, island/channel payloads | removed from wasm; binary NVP1 only, which the zero-JSON invariant already requires |
+| serde_json | hot-reload fallback, island/channel payloads | removed from wasm; binary NVP1 only, which the binary-wire invariant already requires |
 | std | panic/fmt/backtrace | keep std, rebuilt with `-Zbuild-std` (`optimize_for_size`); immediate-abort was reverted, so panic messages and locations ship (~23 KB) |
 | dlmalloc | 7 KB | talc (−2.5 KB), later a per-frame arena |
 | HashMap / BTreeMap | 23 KB hashbrown + ~37 KB of BTree instantiations (studio) | dense `NodeId` slabs plus one shared sorted `VecMap` |

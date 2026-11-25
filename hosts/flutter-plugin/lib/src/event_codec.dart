@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'nve_bin_value.dart';
 import 'nve_core_abi.generated.dart';
 
-/// Strongly typed zero-JSON event payload mirroring `EventPayload` in `packages/core/abi/src/events.rs`.
+/// Strongly typed binary event payload mirroring `EventPayload` in `packages/core/abi/src/events.rs`.
 sealed class NveEventPayload {
   const NveEventPayload();
 
@@ -120,7 +120,7 @@ final class NveBinValuePayload extends NveEventPayload {
   }
 }
 
-/// Decoded outbound or inbound NVE event with strongly typed payload (zero JSON).
+/// Decoded outbound or inbound NVE event with strongly typed payload (binary).
 class NveEvent {
   const NveEvent({
     required this.surfaceId,
@@ -408,7 +408,7 @@ class NveEventRingCodec {
     return events;
   }
 
-  /// Encodes a batch of typed events into the binary `EventRing` wire format (zero JSON).
+  /// Encodes a batch of typed events into the binary `EventRing` wire format (binary).
   static Uint8List encodeEvents(List<NveEvent> events) {
     final builder = BytesBuilder(copy: false);
     final header = ByteData(4)..setUint32(0, events.length, Endian.little);

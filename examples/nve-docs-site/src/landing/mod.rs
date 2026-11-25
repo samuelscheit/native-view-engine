@@ -179,7 +179,7 @@ pub(crate) fn SiteFooter() -> Element {
                     }
                     text {
                         style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
-                        "Zero-JSON Rust + C++20 multi-backend UI runtime driving real native views, GPU Skia canvases, and Web WASM SSR from one binary ABI."
+                        "Binary Rust + C++20 multi-backend UI runtime driving real native views, GPU Skia canvases, and Web WASM SSR from one binary ABI."
                     }
                 }
 

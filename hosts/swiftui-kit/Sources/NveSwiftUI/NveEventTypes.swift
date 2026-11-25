@@ -45,7 +45,7 @@ public enum NveEventPayload: Sendable, Equatable {
     }
 }
 
-/// Decoded outbound or inbound NVE event with strongly typed payload (zero JSON).
+/// Decoded outbound or inbound NVE event with strongly typed payload (binary).
 public struct NveEvent: Sendable, Equatable {
     public let surfaceId: UInt32
     public let nodeId: UInt32
@@ -85,7 +85,7 @@ public enum NveEventRingError: Error, Equatable, Sendable {
     case trailingBytes(Int)
 }
 
-// MARK: - Binary EventRing Codec (matches `packages/core/abi/src/events.rs`, Zero JSON)
+// MARK: - Binary EventRing Codec (matches `packages/core/abi/src/events.rs`, binary FFI)
 
 public enum NveEventRingCodec {
     /// Strictly decodes a binary `EventRing` buffer, throwing on truncation, unknown enums,

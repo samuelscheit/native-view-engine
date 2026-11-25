@@ -52,7 +52,7 @@ pub(super) fn emit_cpp_bin_codec(out: &mut String) {
         r#"#ifndef NVE_HYBRID_CPP_COMMON_DEFINED
 #define NVE_HYBRID_CPP_COMMON_DEFINED 1
 
-/// Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (zero JSON).
+/// Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (binary).
 struct DynamicValue {{
   std::vector<uint8_t> bin_bytes;
 }};

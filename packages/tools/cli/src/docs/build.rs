@@ -140,7 +140,7 @@ pub(crate) fn run_build(opts: &BuildOptions) -> Result<BuildSummary, String> {
         (
             "/",
             "Native View Engine — Native-speed UI in Rust",
-            "Write declarative UI once in Rust with zero JSON and one binary ABI across 10 native, GPU Skia, and Web WASM hosts.",
+            "Write declarative UI once in Rust with binary FFI and one binary ABI across 10 native, GPU Skia, and Web WASM hosts.",
         ),
         (
             "/examples",

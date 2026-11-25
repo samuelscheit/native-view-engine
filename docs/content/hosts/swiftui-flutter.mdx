@@ -6,7 +6,7 @@ order: 8
 
 # SwiftUI & Flutter Host Kits (`hosts/swiftui-kit`, `hosts/flutter-plugin`)
 
-When you want to embed NVE Rust components natively inside existing **SwiftUI** or **Flutter** apps — or build a full Flutter/SwiftUI shell over an NVE core — `NveSwiftUI` and `nve_flutter` bind straight to `nve_get_interface(1..=5)` with zero JSON serialization.
+When you want to embed NVE Rust components natively inside existing **SwiftUI** or **Flutter** apps — or build a full Flutter/SwiftUI shell over an NVE core — `NveSwiftUI` and `nve_flutter` bind straight to `nve_get_interface(1..=5)` over direct typed binary FFI.
 
 ## SwiftUI Host Kit (`hosts/swiftui-kit`)
 
@@ -50,13 +50,11 @@ swift test --package-path hosts/swiftui-kit
 
 ## Flutter Plugin (`hosts/flutter-plugin`)
 
-`nve_flutter` offers three embedding paths on macOS, Windows, Linux, iOS, and Android, using generated `nve_core_abi.generated.dart` and `nve_scene_abi.generated.dart` bindings over `dart:ffi`:
+`nve_flutter` binds directly to NVE Rust dynamic libraries over `dart:ffi` using generated `nve_core_abi.generated.dart` and `nve_scene_abi.generated.dart`:
 
-1. **Direct Impeller/Skia `Canvas` (`NveCanvasView`) — Zero `PlatformView`s** — A custom `LeafRenderObjectWidget` (`RenderNveCanvas`) decodes NVE's binary `CommandBuffer` via `dart:ffi`, lays out text with Flutter's native `TextPainter`, and paints directly onto Flutter's own Impeller/Skia `Canvas` (including `NVE_DRAW1` vector draw lists).
-2. **GPU Texture Compositing (`NveTextureHostWidget`)** — Zero-copy 120fps Skia texture sharing via `FlutterTextureRegistry` (`IOSurface`, `AHardwareBuffer`, `DXGI`, `DMA-BUF`).
-3. **Native Fabric Platform Views (`NvePlatformViewWidget`)** — `UiKitView` / `AndroidView` embedding when real OS controls are required inside a Flutter tree.
+- **Direct Impeller/Skia `Canvas` (`NveCanvasView`) — Zero `PlatformView`s** — A custom `LeafRenderObjectWidget` (`RenderNveCanvas`) decodes NVE's binary `CommandBuffer` via `dart:ffi`, lays out text with Flutter's native `TextPainter`, and paints directly onto Flutter's own Impeller/Skia `Canvas` (including `NVE_DRAW1` vector draw lists).
 
-Shared binary codecs **`NveBinWriter`** / **`NveBinReader`** and **`NveDirectEncodable`** replace duplicate generated writers so Dart prop/command encoding matches Rust's `BinValueView` bit-for-bit with zero JSON.
+Shared binary codecs **`NveBinWriter`** / **`NveBinReader`** and **`NveDirectEncodable`** keep Dart prop and command encoding aligned bit-for-bit with Rust's `BinValueView`.
 
 ```dart title="Mounting an NVE Rust cdylib directly on Flutter's Impeller Canvas" highlight="6-9,18"
 class DirectCounterScreen extends StatefulWidget {

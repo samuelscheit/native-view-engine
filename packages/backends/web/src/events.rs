@@ -1,4 +1,4 @@
-//! Zero-JSON `NK1` binary keyboard encoding, CJK IME composition guards, and single-root
+//! Binary `NK1` binary keyboard encoding, CJK IME composition guards, and single-root
 //! `wasm32` DOM event delegation (`closest('[data-nve-id]')` -> `NodeEventMeta` lookup).
 
 use nve_abi::events::encode_keydown_bytes;
@@ -92,7 +92,7 @@ pub fn should_intercept_anchor_click(
     true
 }
 
-/// Encodes a keyboard event into the zero-JSON compact `NK1` binary payload consumed by
+/// Encodes a keyboard event into the binary compact `NK1` binary payload consumed by
 /// `NativeEventKind::Custom` (`name: "keydown"`).
 pub fn encode_keydown_payload(
     key: &str,

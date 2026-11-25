@@ -1,4 +1,4 @@
-//! Zero-JSON host-capability C ABI (`NVE_IFACE_HOST = 5`), reserved service IDs,
+//! Binary host-capability C ABI (`NVE_IFACE_HOST = 5`), reserved service IDs,
 //! `NveHostStatus`, `NveHostCallbacks`, and `NveHostApi`.
 
 use std::ffi::c_void;
@@ -106,7 +106,7 @@ pub type NveHostInvokeFn = unsafe extern "C" fn(
     out_len: *mut usize,
 ) -> i32;
 
-/// Publishes a zero-JSON binary message onto the host's `NveChannelBus`.
+/// Publishes a binary message onto the host's `NveChannelBus`.
 pub type NveHostChannelPublishFn = unsafe extern "C" fn(
     host_ctx: *mut c_void,
     channel_id: u32,
@@ -114,7 +114,7 @@ pub type NveHostChannelPublishFn = unsafe extern "C" fn(
     payload: NveBufferSlice,
 ) -> i32;
 
-/// Host-provided zero-JSON callback table bound via `NveHostApi::bind_host`.
+/// Host-provided binary callback table bound via `NveHostApi::bind_host`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, NveAbi)]
 #[nve_abi(size_64 = 24)]
@@ -140,7 +140,7 @@ impl NveHostCallbacks {
     };
 }
 
-/// Optional zero-JSON host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`).
+/// Optional binary host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NveHostApi {

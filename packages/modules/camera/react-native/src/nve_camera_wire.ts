@@ -1,6 +1,6 @@
 /**
- * Zero-JSON binary wire codecs (`NVNP`, `NVNC`, 40-byte `NVCF`) byte-for-byte aligned with
- * `packages/modules/camera/src/{spec,wire}.rs` and `packages/modules/camera/cxx/include/nve_camera_codec.hpp`.
+ * Binary wire codecs (`NVNP`, `NVNC`, 40-byte `NVCF`) byte-for-byte aligned with
+ * `packages/modules/camera/src/{spec,frame}.rs` and `packages/modules/camera/cxx/include/nve_camera_codec.hpp`.
  */
 
 import {

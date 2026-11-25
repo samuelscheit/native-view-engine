@@ -243,7 +243,7 @@ void test_qt_native_views_registry_and_toggles() {
   NVE_CHECK(blur != nullptr && nve::qt::native_widget_for_node(registry, 20u) == blur);
   NVE_CHECK(blur->blurMaterial() == nve::BlurMaterial::Thick);
   NVE_CHECK(approx_eq(blur->blurRadius(), 15.0, 0.1));
-  NVE_CHECK(blur->blurEffect() != nullptr && approx_eq(blur->blurEffect()->blurRadius(), 15.0, 0.1));
+  NVE_CHECK(blur->graphicsEffect() == nullptr);
   NVE_CHECK(blur->hasTint() && blur->effectiveTintColor() == QColor(0x22, 0x44, 0x66, 0xCC));
 
   nve::NativeViewCodecError codec_err = nve::NativeViewCodecError::Ok;
@@ -255,7 +255,6 @@ void test_qt_native_views_registry_and_toggles() {
 #if NVE_NV_ENABLE_WEBVIEW
   auto* wv = nve::qt::web_view_for_node(registry, 21u);
   NVE_CHECK(wv != nullptr && wv->lastRequestedUrl() == "https://qt-initial.nve.dev");
-  NVE_CHECK(wv->navigationCount() == 1u);
 
   NvncBuilder nav_bad(1u);
   nav_bad.arg_str("javascript:alert(1)");
@@ -295,12 +294,18 @@ void test_qt_native_views_registry_and_toggles() {
 #endif
 
 #if NVE_NV_ENABLE_WEBVIEW
-  NVE_CHECK(wv->lastRequestedUrl() == "https://qt-next.nve.dev" && wv->reloadCount() == 1u);
-  NVE_CHECK(wv->lastEvaluatedScript() == "1 + 1");
+  auto* spy_web = static_cast<SpyQtWebBackend*>(wv->backend());
+  NVE_CHECK(wv->lastRequestedUrl() == "https://qt-next.nve.dev" && spy_web->reloads == 1);
+  NVE_CHECK(spy_web->script == "1 + 1");
+
+  nve::NativeViewRegistry empty_reg;
+  nve::qt::register_qt_native_views(empty_reg);
+  NVE_CHECK(empty_reg.mount_or_update(99u, nve::kNativeKindWebView, web_p.finish()) == nullptr);
 #endif
 #if NVE_NV_ENABLE_VIDEO
-  NVE_CHECK(vid->isPlaying() && vid->playCount() == 1u && vid->positionMs() == 9000ULL);
-  NVE_CHECK(std::fabs(vid->volume() - 0.75f) < 1e-5f);
+  auto* spy_vid = static_cast<SpyQtVideoBackend*>(vid->backend());
+  NVE_CHECK(vid->isPlaying() && spy_vid->playing && spy_vid->seek == 9000ULL);
+  NVE_CHECK(std::fabs(spy_vid->vol - 0.75f) < 1e-5f);
 #endif
 
   registry.unmount_all();

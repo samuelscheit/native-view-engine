@@ -4,7 +4,7 @@
 
 ## Big Goals
 
-1. **Zero-Overhead Binary Architecture**: Cross the Rust ↔ host boundary via a single modular C ABI (`nve_get_interface(uint32_t)`), one batched binary `CommandBuffer` per frame, and a zero-copy `#[repr(C)]` `NveValue` bump-arena FFI sink — zero Hermes/JS VM, zero JSON bridge, zero per-prop FFI chatter.
+1. **Zero-Overhead Binary Architecture**: Cross the Rust ↔ host boundary via a single modular C ABI (`nve_get_interface(uint32_t)`), one batched binary `CommandBuffer` per frame, and a zero-copy `#[repr(C)]` `NveValue` bump-arena FFI sink — zero Hermes/JS VM, direct binary bridge, zero per-prop FFI chatter.
 2. **Real Native Views Everywhere, From One Core**: Ship first-class native hosts on **macOS (AppKit)**, **iOS (UIKit / RN Fabric)**, **Windows (Win32 / Direct2D / DirectWrite + `react-native-windows` Fabric)**, **Linux (GTK4 / Pango)**, **Cross-Platform Qt 6**, **Android (JNI / Jetpack Compose)**, **SwiftUI**, **Flutter (`dart:ffi`)**, **Desktop/Mobile Skia**, and **Web (WASM DOM)** — all sharing one DRY C++20 host runtime (`nve_host_runtime.hpp`) and one Apple host core (`hosts/apple-common/`).
 3. **Composable, Switchable Layout Engines**: Zero-cost generic `LayoutEngine` + `TextMeasurer` traits so apps can choose pure-Rust **Taffy**, real **React Native Yoga** (`nve-layout-yoga`), or custom layout engines at compile time (zero vtable overhead) or runtime.
 4. **Instant Cold Start (`< 5 ms`) & Universal Native State Save/Restore**: Freeze-dry the last rendered binary `CommandBuffer` alongside a pointer-free `mmap` relocatable state arena (`MmapSnapshot` + `RelocatableStateArena`) so apps paint Frame 0 directly from virtual memory before logic even mounts — surviving crashes, reboots, ASLR, and app upgrades across every OS and WASM.
@@ -35,7 +35,7 @@ Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Relea
 ```text
 Rust App (Dioxus 0.7 rsx! via nve-dioxus, or any frontend implementing NveApp)
   │  Exposes nve_get_interface(uint32_t): Surface | Layout | Component | Dev
-  │  Zero-JSON binary CommandBuffer, 64B NveSceneView, NVE_DRAW1 vectors, NK1/NVP1/NVT1 wire codecs
+  │  Binary CommandBuffer, 64B NveSceneView, NVE_DRAW1 vectors, NK1/NVP1/NVT1 wire codecs
   ▼
 nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot + WAL, 2-Tier Hot Reload)
   ├──► cxx/nve-fabric-bridge (C++20 Yoga/JSI/Fabric, nve_host_runtime.hpp, nve_draw_list.hpp)

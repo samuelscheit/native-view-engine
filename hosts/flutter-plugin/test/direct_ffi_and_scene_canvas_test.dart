@@ -201,8 +201,8 @@ class _ScrollTestModule {
 }
 
 void main() {
-  group('Zero-JSON and modularity invariants for hosts/flutter-plugin/lib', () {
-    test('zero jsonEncode/jsonDecode in lib/ and every Dart file < 900 lines', () {
+  group('Binary-codec and modularity invariants for hosts/flutter-plugin/lib', () {
+    test('no jsonEncode/jsonDecode in lib/ and every Dart file < 900 lines', () {
       final libDir = Directory('lib');
       expect(libDir.existsSync(), isTrue);
       final dartFiles = libDir

@@ -113,7 +113,7 @@ class NveAppInstance {
     );
   }
 
-  /// Pushes structured props directly via `NveComponentApi.set_props_direct` (zero JSON),
+  /// Pushes structured props directly via `NveComponentApi.set_props_direct` (binary),
   /// falling back to binary `NveBinValue` on `set_props` if `set_props_direct == nullptr`.
   bool setPropsDirect(Map<String, Object?> props) {
     _ensureLive();
@@ -138,7 +138,7 @@ class NveAppInstance {
     return _copySlice(slice);
   }
 
-  /// Dispatches typed events via `NveSurfaceApi.dispatch_events_direct` (zero JSON),
+  /// Dispatches typed events via `NveSurfaceApi.dispatch_events_direct` (binary),
   /// falling back to binary `EventRing` on `dispatch_events` if `dispatch_events_direct == nullptr`.
   bool dispatchEventsDirect(List<NveEvent> events) {
     _ensureLive();

@@ -1,4 +1,4 @@
-//! Zero-JSON Rust `nve-dioxus` + `nve-abi` binary emitter for `import_rn`.
+//! Binary Rust `nve-dioxus` + `nve-abi` binary emitter for `import_rn`.
 
 mod types;
 
@@ -22,7 +22,7 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
     );
     let _ = writeln!(
         out,
-        "// Zero-JS, zero-JSON typed Rust `nve-dioxus` bindings + `nve-abi` binary prop builders."
+        "// Zero-JS, binary FFI typed Rust `nve-dioxus` bindings + `nve-abi` binary prop builders."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "#![allow(dead_code, clippy::all)]");

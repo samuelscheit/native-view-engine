@@ -22,7 +22,7 @@ mod wasm_intl;
 /// formatting, and locale calendar metadata.
 ///
 /// Designed for direct generic dispatch (`Translator<B = NativeI18nBackend>`)
-/// with zero JSON serialization and zero dynamic dispatch overhead by default.
+/// with direct binary FFI and zero dynamic dispatch overhead by default.
 pub trait I18nBackend {
     /// Evaluates the CLDR plural category for `locale`, `kind`, and `operands`.
     fn plural_category(

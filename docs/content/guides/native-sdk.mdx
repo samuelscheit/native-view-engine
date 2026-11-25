@@ -1,6 +1,6 @@
 ---
 title: "Host Capabilities (packages/modules)"
-description: "Modular zero-serialization host capabilities on nve-host-services: Clipboard, Filesystem, Secure Store, Linking, live Theme/Locale NVT2/NVL1, Notifications, Haptics, Storage, Fonts, Audio, Camera, Location, Sensors, Share, and Web Auth."
+description: "Modular zero-serialization host capabilities on nve-host-services: Clipboard, Filesystem, Secure Store, Linking, live Theme/Locale NVT2/NVL1, Haptics, Storage, CameraPreview VisionCamera adapter, and TV spatial focus."
 order: 4
 ---
 
@@ -9,7 +9,7 @@ order: 4
 Native platform capabilities are decomposed into a tiny shared core (`packages/core/host-services`) plus standalone opt-in capability crates under `packages/modules/<name>/`. Apps depend only on the exact modules they use — zero umbrella bloat.
 
 - **In-process Rust-to-Rust (`NativeHostServices`, `MemoryHostServices`, `SkiaHostServices`)**: Clients resolve each module's typed `*Backend` trait directly via `nve_host_services::resolve_typed` — **zero serialization, zero wire encoding, zero extra allocations**.
-- **Cross-language FFI (`FfiHostServices` over `NVE_IFACE_HOST = 5`)**: When a Rust module runs inside a C++/Swift/Kotlin/Dart host, clients fall back seamlessly to the compact zero-JSON binary wire protocol over `NVE_IFACE_HOST = 5` and `NveChannelBus`.
+- **Cross-language FFI (`FfiHostServices` over `NVE_IFACE_HOST = 5`)**: When a Rust module runs inside a C++/Swift/Kotlin/Dart host, clients fall back seamlessly to the compact binary wire protocol over `NVE_IFACE_HOST = 5` and `NveChannelBus`.
 
 ## Capability Matrix & Service IDs
 
@@ -20,16 +20,9 @@ Native platform capabilities are decomposed into a tiny shared core (`packages/c
 | `nve-secure-store` | `SecureStoreClient` | `0x0012` | `get(service, account)`, `set(...)`, `delete(...)` |
 | `nve-linking` | `LinkingClient` | `0x0013` | `open_url(&str)`, `can_open_url(&str)`, `initial_url()`, push `LinkingEvent` |
 | `nve-system-env` | `SystemEnvClient` | `0x0014` | `get_theme()` (`NVT2`), `get_locale()` (`NVL1`), live `SystemEnvBridge` pushes |
-| `nve-notifications` | `NotificationsClient` | `0x0015` | `request_permission()`, `show(NotificationRequest)`, `cancel(id)`, push `NotificationTapped` |
 | `nve-haptics` | `HapticsClient` | `0x0016` | `impact(ImpactStyle)`, `selection()`, `notification(NotificationHaptic)` |
 | `nve-storage` | `StorageClient` | `0x0020` | Crash-safe `NVK1` binary KV store (`open`, `get`, `put`, `delete`, `scan_prefix`, `commit_batch`, `compact`) |
-| `nve-fonts` | `FontClient` | `0x0021` | Custom TTF/OTF/WOFF/WOFF2/TTC magic-validated font registration & deduplication |
-| `nve-audio` | `AudioClient` | `0x0022` | Playback (`load_source`, `play`, `pause`, `stop`, `seek_ms`, `set_volume`, `set_looping`) & recording |
-| `nve-camera` | `CameraClient` | `0x0023` | Camera enumeration, still capture, preview sessions + `CameraPreview` native view (`NVNP`/`NVNC`/`NVCF`) |
-| `nve-location` | `LocationClient` | `0x0024` | Permissions, `current_position`, continuous `watch_position` / `stop_watch` |
-| `nve-sensors` | `SensorClient` | `0x0025` | Hardware inertial & environmental streams with zero-copy fixed `#[repr(C)]` `SensorSample` batches |
-| `nve-share` | `ShareClient` | `0x0026` | Native OS share sheet (`share_text`, `share_url`, `share_files`) |
-| `nve-web-auth` | `WebAuthClient` | `0x0027` | In-app browser (`open_in_app_browser`) & OAuth (`authenticate`) |
+| `nve-camera` | `CameraPreview` spec | — | Optional VisionCamera v5 adapter + typed `CameraPreview` `NativeViewSpec` (`NVNP`/`NVNC`/`NVCF`) |
 
 ## Composing Only What You Need
 

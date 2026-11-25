@@ -1,5 +1,5 @@
 //! Native `EventRing` and zero-copy direct FFI (`NveEventBatchRef`) event dispatch into Dioxus
-//! listeners, using zero-JSON binary `NK1` / shorthand `decode_keydown_bytes`.
+//! listeners, using binary `NK1` / shorthand `decode_keydown_bytes`.
 
 use std::any::Any;
 use std::rc::Rc;

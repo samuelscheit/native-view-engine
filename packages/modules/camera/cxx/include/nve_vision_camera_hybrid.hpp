@@ -21,9 +21,8 @@ inline constexpr std::string_view kHybridCameraSessionName = "CameraSession";
 
 /// VisionCamera v5 Nitro `HybridCameraSession` adapter inheriting `nve::nitro::HybridObject`.
 ///
-/// Runs standalone in NVE without React Native or any JS VM (backed by any `nve::NveCameraBackend`
-/// such as Windows MediaCapture, Linux PipeWire/V4L2, or custom hardware bridges) AND plugs
-/// directly into RN Fabric / Expo via `HybridObject::as_jsi_native_state()` when
+/// Wraps an injected host `nve::NveCameraBackend` (such as a VisionCamera v5 hardware bridge)
+/// and plugs into RN Fabric / Expo via `HybridObject::as_jsi_native_state()` when
 /// `NVE_WITH_RN_JSI=1`.
 class HybridCameraSession final : public nve::nitro::HybridObject, private nve::CameraEventListener {
  public:

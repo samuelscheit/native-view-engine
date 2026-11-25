@@ -569,7 +569,7 @@ impl EncodeNativeProps for WebElementProps {
         let count = u32::try_from(self.attrs.len())
             .map_err(|_| NativeViewCodecError::TooManyFields(self.attrs.len()))?;
         sink.u32_field(2, count)?;
-        // Pack attrs as a single binary byte slice (`(klen:u32, key, vlen:u32, val)*`) — zero JSON.
+        // Pack attrs as a single binary byte slice (`(klen:u32, key, vlen:u32, val)*`) — binary.
         let mut attr_buf = Vec::new();
         for (k, v) in &self.attrs {
             let kb = k.as_bytes();

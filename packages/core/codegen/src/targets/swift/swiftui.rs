@@ -56,7 +56,7 @@ fn emit_swiftui_view(spec: &NveExportSpec) -> String {
         emit_swift_aux_enum(&mut out, name, prop);
     }
 
-    // 2. Zero-JSON binary event payload structs (`NveBinValueView`)
+    // 2. Binary event payload structs (`NveBinValueView`)
     for ev in &spec.events {
         emit_swift_event_struct(&mut out, name, ev);
     }

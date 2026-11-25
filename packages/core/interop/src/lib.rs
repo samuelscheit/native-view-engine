@@ -1,9 +1,8 @@
 //! Universal Framework Compatibility Orchestration Layer for Native View Engine (NVE).
 //!
 //! Enables embedding NVE components natively inside any UI framework (React Native Fabric,
-//! Flutter, SwiftUI/UIKit, Jetpack Compose, Web DOM) AND hosting foreign frameworks as lazy
-//! `<Island>`s inside NVE with unified lifecycle, layout negotiation, gesture arbitration,
-//! shared state channels, and GPU/native view handoff.
+//! Flutter, SwiftUI/UIKit, Jetpack Compose, Web DOM) with unified surface lifecycle,
+//! layout negotiation, gesture arbitration, typed native views, and shared binary channels.
 
 #[cfg(feature = "channel")]
 pub mod channel;
@@ -12,7 +11,6 @@ pub mod crdt;
 pub mod error;
 #[cfg(feature = "gesture")]
 pub mod gesture;
-pub mod handoff;
 #[cfg(feature = "layout")]
 pub mod layout;
 #[cfg(feature = "native-view")]
@@ -38,11 +36,6 @@ pub use error::InteropError;
 pub use gesture::{
     ArbitrationDecision, ArbitrationReason, GestureArbitrator, GestureCapabilities,
     GestureDisposition, PointerPhase, PointerSample, ScrollAxes, ScrollEdgeState,
-};
-pub use handoff::{
-    ComposeIslandSpec, FlutterEngineGroupConfig, FlutterIslandSpec, GpuTextureFormat,
-    IslandMountPolicy, IslandSpec, NativeViewHandle, NativeViewHandleKind, RenderHandoff,
-    RnIslandSpec, SharedGpuTexture, SharedGpuTextureKind, SwiftUIIslandSpec,
 };
 #[cfg(feature = "layout")]
 pub use layout::{

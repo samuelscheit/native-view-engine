@@ -109,7 +109,7 @@ impl NveApp for DocsSiteModule {
     }
 
     fn snapshot_state(&mut self) -> &[u8] {
-        // Zero-JSON binary route snapshot: magic "NVDS" + UTF-8 route bytes.
+        // Binary route snapshot: magic "NVDS" + UTF-8 route bytes.
         self.last_state_buf.clear();
         self.last_state_buf.extend_from_slice(b"NVDS");
         self.last_state_buf.extend_from_slice(self.route.as_bytes());

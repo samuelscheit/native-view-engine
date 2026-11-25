@@ -1,6 +1,6 @@
 //! Flutter / Dart (`dart:ffi`) target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits a standalone, zero-JSON, zero-external-package Dart file (`<stem>_hybrid.generated.dart`):
+//! Emits a standalone, binary FFI, zero-external-package Dart file (`<stem>_hybrid.generated.dart`):
 //! - Uses only Dart SDK (`dart:convert` UTF-8, `dart:ffi`, `dart:typed_data`)
 //! - Exact `ffi.Struct` definitions for `NveStrSlice`, `NveBufferSlice`, `NveHybridOwnedBytes`,
 //!   `NveValue`, `NveMapEntry`, POD structs, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`
@@ -72,7 +72,7 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     .unwrap();
     writeln!(
         out,
-        "// Zero-JSON direct dart:ffi vtable bindings sharing `package:nve_flutter/nve_hybrid_runtime.dart`."
+        "// Binary direct dart:ffi vtable bindings sharing `package:nve_flutter/nve_hybrid_runtime.dart`."
     )
     .unwrap();
     writeln!(out).unwrap();

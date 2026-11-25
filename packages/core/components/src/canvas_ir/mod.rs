@@ -1,4 +1,4 @@
-//! Zero-JSON compact binary vector draw-list IR (`NVE_DRAW1`) for `SkiaCanvas` + image resize modes.
+//! Binary compact binary vector draw-list IR (`NVE_DRAW1`) for `SkiaCanvas` + image resize modes.
 //!
 //! Layout of a binary `NVE_DRAW1` buffer (all multi-byte integers and IEEE-754 floats little-endian):
 //! - `[0..9]`:   9-byte ASCII magic `b"NVE_DRAW1"`

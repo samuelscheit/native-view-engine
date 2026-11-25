@@ -346,7 +346,7 @@ The step was removed. Removing the source-side `wizer.initialize` export and `Pr
 
 - **Libraries/source**:
   - `serde_json` HotPatchMsg (11 KB fn + 23 KB serde_json) and `subsecond` (12.6 KB) are dev-only hot-reload code
-    in the release wasm. Gate them behind a feature, or use the existing binary codec (the zero-JSON rule).
+    in the release wasm. Gate them behind a feature, or use the existing binary codec (the binary-wire rule).
   - `anyhow` (via dioxus-core) keeps backtrace/demangle alive. The snip fixes it in the toolchain, but the root
     cause is anyhow's std backtrace.
   - Replace `dlmalloc` (5 KB) with a smaller allocator.

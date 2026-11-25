@@ -535,7 +535,7 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(ts.contains("export default codegenNativeComponent<NativeProps>('NveCounterCard');"));
     assert_balanced_delimiters("NveCounterCardNativeComponent.generated.ts", ts);
 
-    // 2. C++20 glue assertions (verbatim match with Slice 2 `nve_rn_component.hpp`, zero JSON)
+    // 2. C++20 glue assertions (verbatim match with Slice 2 `nve_rn_component.hpp`, binary FFI)
     let hpp = &out.cpp_bridge_hpp.content;
     let cpp = &out.cpp_bridge_cpp.content;
     assert!(hpp.contains("#include \"nve_rn_component.hpp\""));
@@ -561,7 +561,7 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(mm.contains("- (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload"));
     assert_balanced_delimiters("NveCounterCardComponentView.generated.mm", mm);
 
-    // 4. Android Kotlin assertions (zero-JSON binary NveBinValue wrapping `dev.nve.host.NveNativeBridge`)
+    // 4. Android Kotlin assertions (binary NveBinValue wrapping `dev.nve.host.NveNativeBridge`)
     let kt = &out.android_view_manager_kt.content;
     assert!(kt.contains("package dev.nve.components"));
     assert!(kt.contains("import dev.nve.host.NveNativeBridge"));
@@ -604,7 +604,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     let skia_spec = counter_card_export_spec(ExportBackend::Skia);
     let fabric_spec = counter_card_export_spec(ExportBackend::Fabric);
 
-    // 1. Flutter (Skia -> NveTextureHostWidget; Fabric -> NvePlatformViewWidget)
+    // 1. Flutter (`NveCanvasView` + `NveCanvasController` over direct dart:ffi)
     let fl_skia = export_flutter(&skia_spec).expect("export_flutter skia");
     assert_eq!(
         fl_skia.dart_widget.relative_path,
@@ -612,9 +612,10 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     );
     let dart_s = &fl_skia.dart_widget.content;
     assert!(dart_s.contains("import 'dart:ffi' as ffi;"));
+    assert!(dart_s.contains("import 'package:nve_flutter/nve_canvas.dart';"));
     assert!(dart_s.contains("import 'package:nve_flutter/nve_flutter.dart';"));
     assert!(dart_s.contains("class NveCounterCard extends StatefulWidget"));
-    assert!(dart_s.contains("return NveTextureHostWidget("));
+    assert!(dart_s.contains("child: NveCanvasView("));
     assert!(dart_s.contains("NveSurfaceController"));
     assert!(dart_s.contains("NveEventKind.custom"));
     assert!(dart_s.contains("NveCounterCardCountChangeEvent.fromBinView"));
@@ -631,7 +632,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(fl_fabric
         .dart_widget
         .content
-        .contains("return NvePlatformViewWidget("));
+        .contains("child: NveCanvasView("));
 
     // 2. SwiftUI (`NveSwiftUI.NveSurfaceRepresentable` via zero-boxing `NveDirectEncodable`)
     let sw_out = export_swiftui(&skia_spec).expect("export_swiftui");
@@ -652,7 +653,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(swift.contains("NveSurfaceController"));
     assert_balanced_delimiters("NveCounterCardView.generated.swift", swift);
 
-    // 3. Jetpack Compose (`dev.nve.compose.NveSurface` via zero-JSON `NveBinValue` direct writer)
+    // 3. Jetpack Compose (`dev.nve.compose.NveSurface` via binary `NveBinValue` direct writer)
     let cmp_out = export_compose(&fabric_spec).expect("export_compose");
     assert_eq!(
         cmp_out.compose_kt.relative_path,
@@ -674,7 +675,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(!compose.contains("buildMap<String, Any?>"));
     assert_balanced_delimiters("NveCounterCardComposable.generated.kt", compose);
 
-    // 4. Web Component (`<nve-counter-card>` + `.d.ts` wrapping `wasm-bindgen`, zero JSON)
+    // 4. Web Component (`<nve-counter-card>` + `.d.ts` wrapping `wasm-bindgen`, binary FFI)
     let web_out = export_web_component(&skia_spec).expect("export_web_component");
     assert_eq!(web_out.tag_name, "nve-counter-card");
     assert_eq!(

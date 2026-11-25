@@ -1,4 +1,4 @@
-//! Zero-JSON C++20 Fabric adapter emitter for `import_rn`.
+//! Binary C++20 Fabric adapter emitter for `import_rn`.
 
 use std::fmt::Write as _;
 
@@ -23,7 +23,7 @@ pub(crate) fn emit_component_cpp(spec: &RnComponentSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// Zero-JSON thin C++20 Fabric prop/event adapter compatible with `cxx/nve-fabric-bridge`."
+        "// Binary thin C++20 Fabric prop/event adapter compatible with `cxx/nve-fabric-bridge`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "#include \"nve_abi.generated.h\"");

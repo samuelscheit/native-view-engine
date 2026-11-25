@@ -238,7 +238,7 @@ NveWireEventRingFramedHeader? nveWireDecodeEventRingFramedHeader(Uint8List bytes
   return NveWireEventRingFramedHeader(version: version, count: count);
 }}
 
-/// Flat zero-JSON `EventRing` writer matching `packages/core/abi/src/events.rs`.
+/// Flat binary `EventRing` writer matching `packages/core/abi/src/events.rs`.
 final class NveWireEventRingWriter {{
   NveWireEventRingWriter({{this.framed = false}}) {{
     clear();

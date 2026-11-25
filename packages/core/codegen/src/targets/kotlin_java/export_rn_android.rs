@@ -1,4 +1,4 @@
-//! Zero-JSON `<Name>ViewManager.generated.kt` (Android Kotlin Fabric ViewManager) emitter for `export_rn`.
+//! Binary `<Name>ViewManager.generated.kt` (Android Kotlin Fabric ViewManager) emitter for `export_rn`.
 
 use std::fmt::Write as _;
 
@@ -21,7 +21,7 @@ pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// Zero-JSON Android Kotlin Fabric ViewManager wrapping `dev.nve.host.NveNativeBridge`."
+        "// Binary Android Kotlin Fabric ViewManager wrapping `dev.nve.host.NveNativeBridge`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "package {pkg}");
@@ -41,7 +41,7 @@ pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "import dev.nve.host.NveNativeBridge");
     let _ = writeln!(out);
 
-    // Host container view storing typed `NveBinValue` entries (zero JSONObject)
+    // Host container view storing typed `NveBinValue` entries (no JSONObject)
     let _ = writeln!(
         out,
         "class {name}HostView(context: Context) : FrameLayout(context) {{"
@@ -186,7 +186,7 @@ pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
         let _ = writeln!(out, "    }}");
     }
 
-    // Outbound binary `NveBinValue` event dispatch helpers (zero JSONObject)
+    // Outbound binary `NveBinValue` event dispatch helpers (no JSONObject)
     for ev in &spec.events {
         let emit_fn = format!("emit{}", to_pascal_case(&strip_on_prefix(&ev.name)));
         let top = ev

@@ -45,7 +45,7 @@ enum class NveGestureDisposition(val code: Int) {
 
 /**
  * Strictly typed binary payload carried by an [NveEvent] in `EventRing` wire format
- * (`packages/core/abi/src/events.rs`), with zero JSON conversion.
+ * (`packages/core/abi/src/events.rs`), with binary FFI conversion.
  */
 sealed interface NveEventPayload {
     val tag: Int

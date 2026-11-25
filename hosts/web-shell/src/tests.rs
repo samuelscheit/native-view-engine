@@ -148,7 +148,7 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     session.render_initial().unwrap();
     assert_scene_view_matches_backend(&session);
 
-    // Tier-1 TemplatePatch over zero-JSON binary NVP1 wire frame.
+    // Tier-1 TemplatePatch over binary NVP1 wire frame.
     let tpl = HotPatchMsg::TemplatePatch {
         generation: 3,
         template_id: "KitchenSinkApp".into(),

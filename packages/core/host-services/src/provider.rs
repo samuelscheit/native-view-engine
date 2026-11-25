@@ -120,7 +120,7 @@ pub fn resolve_typed<B: ?Sized + Send + Sync + 'static>(
     any.downcast_ref::<Arc<B>>().cloned()
 }
 
-/// Unified zero-JSON host capability transport implemented by FFI, registry, in-memory mock,
+/// Unified binary host capability transport implemented by FFI, registry, in-memory mock,
 /// and OS backends.
 pub trait HostServiceProvider: Send + Sync {
     /// Invokes `service_id::method_id` with a binary `request` slice (used across the

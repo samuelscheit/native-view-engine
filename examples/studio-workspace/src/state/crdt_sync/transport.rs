@@ -1,4 +1,4 @@
-//! Zero-JSON binary multi-peer CRDT transport layer (`NVC1` deltas + `NVCD` vector-clock digests)
+//! Binary multi-peer CRDT transport layer (`NVC1` deltas + `NVCD` vector-clock digests)
 //! over `nve_interop::sync_transport` and `nve_interop::NveChannelBus`.
 //!
 //! Provides:
@@ -104,7 +104,7 @@ pub struct CrdtPumpReport {
     pub bytes_sent: u64,
 }
 
-/// Zero-JSON binary frame exchanged between CRDT peers.
+/// Binary frame exchanged between CRDT peers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrdtWireFrame {
     /// Raw `NVC1` binary delta packet (zero wrapper overhead).

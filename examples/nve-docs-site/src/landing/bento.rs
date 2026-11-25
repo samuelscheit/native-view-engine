@@ -171,7 +171,7 @@ pub fn BentoArchitectureGrid() -> Element {
                         }
                         text {
                             style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
-                            "Stream 60fps binary deltas to zero-cdylib thin clients over UDP/WS, restore Frame 0 from MmapSnapshot in 82–136 µs, and converge offline state via zero-JSON NVC1 CRDTs."
+                            "Stream 60fps binary deltas to zero-cdylib thin clients over UDP/WS, restore Frame 0 from MmapSnapshot in 82–136 µs, and converge offline state via binary NVC1 CRDTs."
                         }
                     }
                     view {

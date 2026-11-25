@@ -4,7 +4,6 @@ use nve_abi::SurfaceId;
 use serde::{Deserialize, Serialize};
 
 use crate::error::InteropError;
-use crate::handoff::{IslandSpec, RenderHandoff};
 #[cfg(feature = "layout")]
 use crate::layout::IntrinsicSize;
 #[cfg(feature = "window")]
@@ -271,8 +270,6 @@ pub struct SurfaceDescriptor {
     pub parent: Option<SurfaceId>,
     pub framework: FrameworkKind,
     pub component_name: String,
-    pub handoff: RenderHandoff,
-    pub island: Option<IslandSpec>,
     pub environment: Option<SurfaceEnvironment>,
     pub overrides: EnvironmentOverrides,
     #[cfg(feature = "layout")]
@@ -288,8 +285,6 @@ impl SurfaceDescriptor {
             parent: None,
             framework,
             component_name: component_name.into(),
-            handoff: RenderHandoff::Headless,
-            island: None,
             environment: None,
             overrides: EnvironmentOverrides::default(),
             #[cfg(feature = "layout")]
@@ -306,16 +301,6 @@ impl SurfaceDescriptor {
 
     pub fn with_parent(mut self, parent: SurfaceId) -> Self {
         self.parent = Some(parent);
-        self
-    }
-
-    pub fn with_handoff(mut self, handoff: RenderHandoff) -> Self {
-        self.handoff = handoff;
-        self
-    }
-
-    pub fn with_island(mut self, island: IslandSpec) -> Self {
-        self.island = Some(island);
         self
     }
 
@@ -353,8 +338,6 @@ pub struct SurfaceRecord {
     pub state: LifecycleState,
     pub environment: SurfaceEnvironment,
     pub overrides: EnvironmentOverrides,
-    pub handoff: RenderHandoff,
-    pub island: Option<IslandSpec>,
     #[cfg(feature = "layout")]
     pub viewport_size: IntrinsicSize,
     #[cfg(feature = "window")]
@@ -436,10 +419,6 @@ impl SurfaceOrchestrator {
 
     /// Registers a surface (root or child), inheriting environment from its parent when present.
     pub fn register_surface(&mut self, desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
-        if let Some(island) = &desc.island {
-            island.validate()?;
-        }
-
         let id = match desc.id {
             Some(explicit) => {
                 if self.surfaces.contains_key(&explicit) {
@@ -486,8 +465,6 @@ impl SurfaceOrchestrator {
             state: LifecycleState::Mounted,
             environment: resolved_env,
             overrides: desc.overrides,
-            handoff: desc.handoff,
-            island: desc.island,
             #[cfg(feature = "layout")]
             viewport_size: desc.initial_size,
             #[cfg(feature = "window")]

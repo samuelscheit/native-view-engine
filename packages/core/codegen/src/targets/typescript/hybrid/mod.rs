@@ -3,7 +3,7 @@
 //! Emits `<stem>_hybrid.generated.ts` with:
 //! - Typed TypeScript enums, interfaces, props, and event payloads
 //! - Exact `INTERFACE_ID` and `SCHEMA_HASH` (`bigint`) constants
-//! - Zero-JSON `DataView` / `Uint8Array` compact binary `NveBinValue` encoder & decoder
+//! - Binary `DataView` / `Uint8Array` compact binary `NveBinValue` encoder & decoder
 //! - Direct WASM linear-memory client classes (`<Name>HybridClient`) calling WASM exports
 //!   without `JSON.parse` / `JSON.stringify`.
 
@@ -33,7 +33,7 @@ pub fn generate_hybrid_ts(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, C
     .unwrap();
     writeln!(
         out,
-        "// Zero-JSON direct DataView / Uint8Array WASM linear-memory bridge."
+        "// Binary direct DataView / Uint8Array WASM linear-memory bridge."
     )
     .unwrap();
     writeln!(out).unwrap();
@@ -74,7 +74,7 @@ fn emit_ts_common(out: &mut String, spec: &HybridFileSpec) {
 
     writeln!(
         out,
-        r#"/** Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (zero JSON). */
+        r#"/** Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (binary). */
 export interface NveHybridDynamicValue {{
   readonly binBytes: Uint8Array;
 }}
@@ -82,7 +82,7 @@ export interface NveHybridDynamicValue {{
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder('utf-8', {{ fatal: true }});
 
-/** Compact binary `NveBinValue` writer over `DataView`/`Uint8Array` (zero JSON). */
+/** Compact binary `NveBinValue` writer over `DataView`/`Uint8Array` (binary). */
 export class NveBinWriter {{
   private buf: Uint8Array;
   private view: DataView;

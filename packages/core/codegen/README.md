@@ -1,6 +1,6 @@
 # `nve-codegen` (`packages/core/codegen`)
 
-Zero-JSON, compile-time-verified multi-target code generator for `native-view-engine` (NVE).
+Binary, compile-time-verified multi-target code generator for `native-view-engine` (NVE).
 
 ## Compiler Architecture (`src/`)
 

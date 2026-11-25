@@ -6,7 +6,7 @@ order: 6
 
 # Android & Jetpack Compose (`hosts/android-shell` + `hosts/compose-kit`)
 
-Android hosts read NVE's 64-byte `NveRenderNode` slabs straight from native C++ memory into Java/Kotlin via persistent **`DirectByteBuffer`** views — zero JSON, zero per-frame JNI object allocations, and zero GC pressure at 120fps.
+Android hosts read NVE's 64-byte `NveRenderNode` slabs straight from native C++ memory into Java/Kotlin via persistent **`DirectByteBuffer`** views — binary, zero per-frame JNI object allocations, and zero GC pressure at 120fps.
 
 ## Zero-GC JNI Slab Transport (`hosts/android-shell`)
 

@@ -1,6 +1,6 @@
 /// Composable Native View Engine (NVE) Flutter native views module.
 ///
-/// Provides zero-JSON binary `NVNP` / `NVNC` decoders, `NveNativeViewRegistry`,
+/// Provides binary `NVNP` / `NVNC` decoders, `NveNativeViewRegistry`,
 /// and opt-in `BlurSurface`, `WebView`, and `VideoPlayer` adapters.
 library nve_native_views;
 

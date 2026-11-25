@@ -42,7 +42,7 @@ data class NveViewport(
 }
 
 /**
- * Zero-JSON reactive host state for an NVE surface.
+ * Binary reactive host state for an NVE surface.
  *
  * Holds the reusable zero-copy [sceneBuffer], incrementally updated [mountedNodes] keyed by
  * `nodeId`, current [viewport], and lifecycle metadata.
@@ -96,7 +96,7 @@ class NveSurfaceState(val surfaceId: Int) {
 
 /**
  * Shared-state & pub/sub client mirroring Rust's `NveChannelBus` for Jetpack Compose hosts.
- * Uses raw bytes and compact binary [NveBinValue] payloads with zero JSON serialization.
+ * Uses raw bytes and compact binary [NveBinValue] payloads with direct binary FFI.
  */
 class NveChannelClient {
     data class Message(
@@ -159,7 +159,7 @@ class NveChannelClient {
  *
  * Encodes props/commands with [NveBinValue], batches input/lifecycle events into binary
  * `EventRing` buffers via [NveEventRingCodec], and consumes frames directly through
- * [NveSceneBuffer] with zero JSON serialization.
+ * [NveSceneBuffer] with direct binary FFI.
  */
 class NveSurfaceController(
     val componentName: String,

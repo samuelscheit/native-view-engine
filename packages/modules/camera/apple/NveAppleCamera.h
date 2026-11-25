@@ -1,9 +1,6 @@
 #pragma once
 
 #import "NveAppleSupport.h"
-#import <AVFoundation/AVFoundation.h>
-#import <CoreMedia/CoreMedia.h>
-#import <CoreVideo/CoreVideo.h>
 
 #include "nve_native_view.hpp"
 
@@ -82,49 +79,14 @@ nve::NativeViewCodecError decode_camera_frame_descriptor(
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef void (^NveCameraFrameCallback)(const uint8_t *bytes, size_t length);
-typedef void (^NveCameraPhotoCallback)(NSData * _Nullable jpegData, NSError * _Nullable error);
-
-/// Pluggable zero-reflection bridge for `react-native-vision-camera` v5 (`HybridCameraSession` /
-/// `HybridCameraView`) on RN Fabric / Expo iOS hosts, falling back to `NveAppleCameraView`.
+/// Pluggable bridge for `react-native-vision-camera` v5 (`HybridCameraSession` /
+/// `HybridCameraView`) on Apple hosts. When no bridge is registered, mounting
+/// `"nve.camera.preview"` explicitly returns `nullptr` (unsupported).
 @protocol NveVisionCameraAppleBridge <NSObject>
 - (NvePlatformView *)createVisionCameraViewForNodeId:(uint32_t)nodeId frame:(CGRect)frame;
 - (void)updateVisionCameraView:(NvePlatformView *)view props:(const nve::apple::CameraPreviewProps &)props;
 - (BOOL)dispatchVisionCameraCommand:(NvePlatformView *)view command:(const nve::apple::CameraPreviewCommand &)cmd;
 - (void)unmountVisionCameraView:(NvePlatformView *)view;
-@end
-
-/// Shared Apple (AppKit & UIKit) hardware-backed `AVFoundation` camera preview view for
-/// `"nve.camera.preview"`, gracefully handling headless / no-camera environments.
-@interface NveAppleCameraView : NvePlatformView
-@property (nonatomic, readonly) AVCaptureSession *nveCaptureSession;
-@property (nonatomic, readonly) AVCaptureVideoPreviewLayer *nvePreviewLayer;
-@property (nonatomic, readonly) nve::apple::CameraPreviewFacing nveFacing;
-@property (nonatomic, readonly) nve::apple::TorchMode nveTorchMode;
-@property (nonatomic, readonly) float nveZoom;
-@property (nonatomic, readonly) uint16_t nveFps;
-@property (nonatomic, readonly) BOOL nveHdr;
-@property (nonatomic, readonly) nve::apple::StabilizationMode nveStabilization;
-@property (nonatomic, readonly) BOOL nveFrameProcessorEnabled;
-@property (nonatomic, readonly) BOOL nveAudioEnabled;
-@property (nonatomic, readonly) BOOL nveActive;
-@property (nonatomic, readonly) BOOL nveHasHardwareDevice;
-@property (nonatomic, readonly) BOOL nveIsRecording;
-@property (nonatomic, readonly) CGPoint nveLastFocusPoint;
-@property (nonatomic, readonly) NSUInteger nvePhotoCaptureCount;
-@property (nonatomic, readonly) NSUInteger nveFrameCount;
-@property (nonatomic, readonly, copy, nullable) NSString *nveDeviceId;
-@property (nonatomic, readonly, copy, nullable) NSString *nveLastRecordingPath;
-@property (nonatomic, readonly, copy, nullable) NSData *nveLastFrameDescriptor;
-@property (nonatomic, copy, nullable) NveCameraFrameCallback nveFrameCallback;
-@property (nonatomic, copy, nullable) NveCameraPhotoCallback nvePhotoCallback;
-
-- (void)applyCameraProps:(const nve::apple::CameraPreviewProps &)props;
-- (BOOL)dispatchCameraCommand:(const nve::apple::CameraPreviewCommand &)cmd;
-- (BOOL)emitFrameFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
-                     timestampNs:(uint64_t)timestampNs
-                     rotationDeg:(uint16_t)rotationDeg;
-- (void)stopSession;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -1,4 +1,4 @@
-//! `export_compose`: `NveExportSpec` -> typed zero-JSON Kotlin `@Composable` wrapping
+//! `export_compose`: `NveExportSpec` -> typed binary Kotlin `@Composable` wrapping
 //! `dev.nve.compose.NveSurface` via binary `NveBinValue` / `NveBinValueView` direct FFI encoding.
 
 use std::fmt::Write as _;
@@ -13,7 +13,7 @@ use crate::naming::{
     sanitize_block_comment, strip_on_prefix, to_pascal_case,
 };
 
-/// Generates a typed zero-JSON Jetpack Compose `@Composable` wrapper targeting `dev.nve.compose.NveSurface`.
+/// Generates a typed binary Jetpack Compose `@Composable` wrapper targeting `dev.nve.compose.NveSurface`.
 pub fn generate_export_compose(spec: &NveExportSpec) -> Result<ExportComposeOutput, CodegenError> {
     spec.validate()?;
     let content = emit_compose_kotlin(spec);
@@ -44,7 +44,7 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "// Zero-JSON typed Jetpack Compose @Composable wrapping `dev.nve.compose.NveSurface`."
+        "// Binary typed Jetpack Compose @Composable wrapping `dev.nve.compose.NveSurface`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "package {pkg}");
@@ -262,7 +262,7 @@ fn emit_kotlin_direct_props_writer(out: &mut String, spec: &NveExportSpec) {
     let name = &spec.name;
     let _ = writeln!(
         out,
-        "/** Typed zero-JSON binary encoder writing `{}` props directly into `NveBinValue` bytes. */",
+        "/** Typed binary encoder writing `{}` props directly into `NveBinValue` bytes. */",
         sanitize_block_comment(name)
     );
     let _ = writeln!(out, "object {name}DirectPropsWriter {{");

@@ -459,43 +459,7 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        // Fast path: zero-JSON binary `NveBinValue` map delegated directly to `set_props_direct`.
-        if let Some(changed) = nve_engine::app::try_dispatch_bin_props_direct(self, props_bytes) {
-            return changed;
-        }
-
-        // Fallback for UTF-8 JSON props from external hosts / dynamic plugin tests.
-        let Ok(val) = serde_json::from_slice::<serde_json::Value>(props_bytes) else {
-            return false;
-        };
-        let upd = PropUpdates {
-            studio_open: val.get("studioOpen").and_then(|v| v.as_bool()),
-            accent: val.get("accent").and_then(|v| v.as_str()),
-            layout_engine: val.get("layoutEngine").and_then(|v| v.as_str()),
-            view: val.get("view").and_then(|v| v.as_str()),
-            route: val.get("route").and_then(|v| v.as_str()),
-            viewport_width: val.get("viewportWidth").and_then(|v| v.as_f64()),
-            viewport_height: val.get("viewportHeight").and_then(|v| v.as_f64()),
-            stream_scroll_y: val.get("streamScrollY").and_then(|v| v.as_u64()),
-            sync_transport: val.get("syncTransport").and_then(|v| v.as_str()),
-            sync_peers: val
-                .get("syncPeers")
-                .and_then(|v| v.as_u64())
-                .and_then(|n| u16::try_from(n).ok()),
-            sync_kbps: val.get("syncKbps").and_then(|v| v.as_f64()),
-            sync_compression: val.get("syncCompression").and_then(|v| v.as_f64()),
-            sync_rtt_ms: val.get("syncRttMs").and_then(|v| v.as_f64()),
-        };
-        let changed = self
-            .store
-            .lock()
-            .map(|mut guard| apply_prop_updates(&mut guard, upd))
-            .unwrap_or(false);
-        if changed {
-            self.reset_surface_with_current_store();
-            self.persist_if_dirty();
-        }
-        changed
+        nve_engine::app::try_dispatch_bin_props_direct(self, props_bytes).unwrap_or(false)
     }
 
     fn drain_emitted_events(&mut self) -> &[u8] {

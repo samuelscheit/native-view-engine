@@ -1,4 +1,4 @@
-//! Zero-JSON `NveWireFrame` v2 thin-client pairing state machine and cross-target
+//! Binary `NveWireFrame` v2 thin-client pairing state machine and cross-target
 //! [`PairedWebSession`] backed by `nve-wire-core` (works identically in browser `wasm32`
 //! over `WebTransport` / `WebSocket` and in native tests).
 

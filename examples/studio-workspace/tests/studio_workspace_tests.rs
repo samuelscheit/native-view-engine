@@ -398,7 +398,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     assert_eq!((measured.width, measured.height), (960.0, 640.0));
     assert_eq!(app.hit_test(10.0, 10.0, 0), NveGestureDisposition::Claim);
 
-    // Direct zero-JSON `set_props_direct` via NveMapEntry / NveValue.
+    // Direct binary `set_props_direct` via NveMapEntry / NveValue.
     let direct_entries = [
         NveMapEntry::new("accent", NveValue::from_str("amber")),
         NveMapEntry::new("view", NveValue::from_str("metrics")),
@@ -428,7 +428,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     assert!(!saved.is_empty());
     assert!(
         saved.starts_with(&WORKSPACE_STATE_BIN_MAGIC),
-        "snapshot_state must emit zero-JSON NWS1 binary format"
+        "snapshot_state must emit binary NWS1 binary format"
     );
 
     let mut restored_app = StudioWorkspaceModule::create(1);
@@ -450,7 +450,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     assert_eq!(snap.sync_telemetry.compression_tenths, 72);
     assert_eq!(snap.sync_telemetry.rtt_ms_tenths, 8);
 
-    // Also verify zero-JSON binary `NveBinValue` props via `set_props`.
+    // Also verify binary `NveBinValue` props via `set_props`.
     let bin_entries = [NveMapEntry::new("accent", NveValue::from_str("green"))];
     let bin_map = NveValue::map(&bin_entries);
     let bin_bytes = encode_bin_value_to_vec(unsafe { bin_map.as_ref() }).unwrap();
@@ -1373,9 +1373,14 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     assert!(slot.capabilities().component);
     assert!(slot.capabilities().dev);
 
-    assert!(slot
-        .set_props(br#"{"accent":"green","layoutEngine":"yoga","view":"stream"}"#)
-        .unwrap());
+    let plugin_entries = [
+        NveMapEntry::new("accent", NveValue::from_str("green")),
+        NveMapEntry::new("layoutEngine", NveValue::from_str("yoga")),
+        NveMapEntry::new("view", NveValue::from_str("stream")),
+    ];
+    let plugin_map = NveValue::map(&plugin_entries);
+    let plugin_props = encode_bin_value_to_vec(unsafe { plugin_map.as_ref() }).unwrap();
+    assert!(slot.set_props(&plugin_props).unwrap());
     let pf1 = slot.render(1).unwrap().to_vec();
     assert!(pf1.len() > 24);
 
@@ -1471,7 +1476,7 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
         host.submit_frame(&frame).unwrap();
     };
 
-    // Open via zero-JSON NK1 binary keydown Cmd+k.
+    // Open via binary NK1 binary keydown Cmd+k.
     let nk1_cmd_k = encode_keydown_bytes("k", true, false, false, false);
     send_keydown(&mut app, &mut host, &nk1_cmd_k, 2);
     assert!(app.state_snapshot().palette.open);
@@ -1557,14 +1562,14 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
 
     // 3. Live TextInput chat composer in #engineering and #design-sync + Time-Travel Undo/Redo.
     h.press("nav-engineering");
-    h.type_text("chat-composer-input", "Zero-JSON NVE_DRAW1 sparkline is live!");
+    h.type_text("chat-composer-input", "Binary NVE_DRAW1 sparkline is live!");
     h.press("chat-composer-send");
-    assert!(h.ascii().contains("Zero-JSON NVE_DRAW1 sparkline is live!"));
+    assert!(h.ascii().contains("Binary NVE_DRAW1 sparkline is live!"));
 
     h.press("tt-undo");
-    assert!(!h.ascii().contains("Zero-JSON NVE_DRAW1 sparkline is live!"));
+    assert!(!h.ascii().contains("Binary NVE_DRAW1 sparkline is live!"));
     h.press("tt-redo");
-    assert!(h.ascii().contains("Zero-JSON NVE_DRAW1 sparkline is live!"));
+    assert!(h.ascii().contains("Binary NVE_DRAW1 sparkline is live!"));
 
     h.press("nav-design");
     h.type_text("chat-composer-input", "PNG avatars + Cmd+K contrast look crisp.");
@@ -1617,7 +1622,10 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     let _ = app.render(3);
 
     // Switch to #engineering, type + submit chat message.
-    assert!(app.set_props(br#"{"view":"engineering"}"#));
+    let eng_entries = [NveMapEntry::new("view", NveValue::from_str("engineering"))];
+    let eng_map = NveValue::map(&eng_entries);
+    let eng_props = encode_bin_value_to_vec(unsafe { eng_map.as_ref() }).unwrap();
+    assert!(app.set_props(&eng_props));
     let f4 = app.render(4).to_vec();
     host.submit_frame(&f4).unwrap();
     let chat_nid = host
@@ -1814,7 +1822,10 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
 
     // 3. Verify StudioWorkspaceModule::render emits true binary RawPropValue::Bytes starting with NVE_DRAW1!
     let mut app = StudioWorkspaceModule::create(1);
-    assert!(app.set_props(br#"{"view":"metrics"}"#));
+    let metrics_entries = [NveMapEntry::new("view", NveValue::from_str("metrics"))];
+    let metrics_map = NveValue::map(&metrics_entries);
+    let metrics_props = encode_bin_value_to_vec(unsafe { metrics_map.as_ref() }).unwrap();
+    assert!(app.set_props(&metrics_props));
     let cmd_bytes = app.render(1).to_vec();
     let (_, commands) = CommandDecoder::new(&cmd_bytes)
         .and_then(CommandDecoder::decode_all)
@@ -2087,7 +2098,13 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
         let mut app =
             StudioWorkspaceModule::create_with_persist_dir(1, &mod_dir).expect("create module");
         let _ = app.render(1);
-        assert!(app.set_props(br#"{"accent":"green","view":"docs"}"#));
+        let docs_entries = [
+            NveMapEntry::new("accent", NveValue::from_str("green")),
+            NveMapEntry::new("view", NveValue::from_str("docs")),
+        ];
+        let docs_map = NveValue::map(&docs_entries);
+        let docs_props = encode_bin_value_to_vec(unsafe { docs_map.as_ref() }).unwrap();
+        assert!(app.set_props(&docs_props));
         let _ = app.render(2);
         assert!(app.persist_store().expect("persist store").generation() >= 2);
     }

@@ -141,7 +141,7 @@ public struct NveDirectPropsBuilder {
 // MARK: - Dynamic `Any` -> `NveBinValue` Conversion (Strictly for Untyped Plugins)
 
 extension NveBinValue {
-    /// Converts a dynamic Swift value into a typed `NveBinValue` with zero JSON overhead.
+    /// Converts a dynamic Swift value into a typed `NveBinValue` with binary FFI overhead.
     public static func from(any value: Any, depth: Int = 0) throws -> NveBinValue {
         if depth > nveBinValueMaxDepth { throw NveDirectFfiError.maxDepthExceeded }
         switch value {

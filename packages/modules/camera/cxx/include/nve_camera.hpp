@@ -18,10 +18,8 @@
 namespace nve {
 
 enum class CameraBackendKind : uint8_t {
-  WindowsMediaCapture = 0,
-  LinuxPipeWire = 1,
-  LinuxV4l2 = 2,
-  Custom = 3,
+  VisionCameraV5 = 0,
+  Custom = 1,
 };
 
 enum class CameraSessionState : uint8_t {
@@ -168,8 +166,7 @@ class NveCameraRegistry {
 
   std::optional<CameraBackendKind> resolve_backend_kind() const {
     std::lock_guard<std::mutex> lock(mu_);
-    for (CameraBackendKind k : {CameraBackendKind::Custom, CameraBackendKind::WindowsMediaCapture,
-                                CameraBackendKind::LinuxPipeWire, CameraBackendKind::LinuxV4l2}) {
+    for (CameraBackendKind k : {CameraBackendKind::VisionCameraV5, CameraBackendKind::Custom}) {
       if (factories_.contains(static_cast<uint8_t>(k))) return k;
     }
     return std::nullopt;
@@ -187,8 +184,7 @@ class NveCameraRegistry {
         if (it == factories_.end()) return nullptr;
         factory = it->second;
       } else {
-        for (CameraBackendKind k : {CameraBackendKind::Custom, CameraBackendKind::WindowsMediaCapture,
-                                    CameraBackendKind::LinuxPipeWire, CameraBackendKind::LinuxV4l2}) {
+        for (CameraBackendKind k : {CameraBackendKind::VisionCameraV5, CameraBackendKind::Custom}) {
           auto it = factories_.find(static_cast<uint8_t>(k));
           if (it != factories_.end()) { factory = it->second; break; }
         }

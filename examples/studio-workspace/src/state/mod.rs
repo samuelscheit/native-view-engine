@@ -1,5 +1,5 @@
 //! Deterministic state machine, workspace domain model, bounded time-travel history,
-//! and zero-JSON binary snapshot codec for **Aether Workspace** + **NVE Studio**.
+//! and binary snapshot codec for **Aether Workspace** + **NVE Studio**.
 
 mod actions;
 mod codec;

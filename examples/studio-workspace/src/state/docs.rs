@@ -167,7 +167,7 @@ pub fn default_seed_docs() -> (Vec<WorkspaceDoc>, u32, u32, u32) {
             DocBlock {
                 id: 4,
                 kind: DocBlockKind::Paragraph,
-                text: "Every frame crosses the Rust/host boundary as one flat binary CommandBuffer with zero JSON serialization or per-prop FFI calls."
+                text: "Every frame crosses the Rust/host boundary as one flat binary CommandBuffer with direct binary FFI or per-prop FFI calls."
                     .into(),
             },
             DocBlock {

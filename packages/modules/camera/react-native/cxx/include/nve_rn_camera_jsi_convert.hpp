@@ -19,7 +19,7 @@
 namespace nve::rn::camera {
 
 // =============================================================================
-// Shared Zero-JSON Enum & Error Mapping Helpers
+// Shared Binary Enum & Error Mapping Helpers
 // =============================================================================
 
 inline constexpr std::string_view facing_to_string(nve::CameraFacing f) noexcept {

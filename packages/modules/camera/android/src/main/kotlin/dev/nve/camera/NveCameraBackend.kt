@@ -7,9 +7,6 @@ enum class NveCameraBackendKind {
     /** Margelo `react-native-vision-camera` v5 Nitro backend (preferred inside RN / Expo hosts). */
     VISION_CAMERA_V5,
 
-    /** Standalone Jetpack CameraX backend (zero React Native / VisionCamera dependencies). */
-    CAMERAX,
-
     /** Host-supplied custom camera backend. */
     CUSTOM,
 }
@@ -93,7 +90,7 @@ interface NveCameraEventListener {
  * Pluggable Android camera backend contract backing `<NativeView<CameraPreview>>`
  * (`"nve.camera.preview"`).
  *
- * Accepts typed Kotlin props/commands as well as raw zero-JSON `NVNP` / `NVNC` byte arrays
+ * Accepts typed Kotlin props/commands as well as raw binary `NVNP` / `NVNC` byte arrays
  * straight from the NVE `CommandBuffer`.
  */
 interface NveCameraBackend {
@@ -148,8 +145,8 @@ internal data class NegotiatedCameraSettings(
 )
 
 /**
- * Shared device selection, capability negotiation, and zero-copy `NVCF` frame dispatch helpers
- * reused across [NveVisionCameraAdapter] and [NveCameraXAdapter].
+ * Shared device selection, capability negotiation, and `NVCF` frame dispatch helpers
+ * used by [NveVisionCameraAdapter] and custom host camera backends.
  */
 internal object NveCameraNegotiation {
     fun selectDevice(
@@ -214,22 +211,15 @@ internal object NveCameraNegotiation {
  * Precedence (when `preferredKind == null`):
  * 1. [NveCameraBackendKind.VISION_CAMERA_V5] when registered by an RN / Expo host.
  * 2. [NveCameraBackendKind.CUSTOM] when registered by a custom host.
- * 3. [NveCameraBackendKind.CAMERAX] standalone fallback (always available with zero RN deps).
+ *
+ * Throws [IllegalStateException] when no camera backend has been registered.
  */
-class NveCameraRegistry(
-    defaultCameraXFactory: NveCameraBackendFactory = NveCameraBackendFactory { _, _ ->
-        NveCameraXAdapter()
-    },
-) {
+class NveCameraRegistry {
     private val lock = Any()
     private val factories = LinkedHashMap<NveCameraBackendKind, NveCameraBackendFactory>()
-    private var fallbackCameraXFactory: NveCameraBackendFactory = defaultCameraXFactory
 
     fun register(kind: NveCameraBackendKind, factory: NveCameraBackendFactory): NveCameraRegistry {
         synchronized(lock) {
-            if (kind == NveCameraBackendKind.CAMERAX) {
-                fallbackCameraXFactory = factory
-            }
             factories[kind] = factory
         }
         return this
@@ -241,15 +231,6 @@ class NveCameraRegistry(
         NveCameraBackendKind.VISION_CAMERA_V5,
         NveCameraBackendFactory { surfaceId, nodeId ->
             NveVisionCameraAdapter(bridgeFactory(surfaceId, nodeId))
-        },
-    )
-
-    fun registerCameraX(
-        bindingFactory: (surfaceId: Int, nodeId: Int) -> CameraXHostBinding,
-    ): NveCameraRegistry = register(
-        NveCameraBackendKind.CAMERAX,
-        NveCameraBackendFactory { surfaceId, nodeId ->
-            NveCameraXAdapter(bindingFactory(surfaceId, nodeId))
         },
     )
 
@@ -267,13 +248,13 @@ class NveCameraRegistry(
         factories.containsKey(NveCameraBackendKind.VISION_CAMERA_V5)
     }
 
-    fun resolveBackendKind(): NveCameraBackendKind = synchronized(lock) {
+    fun resolveBackendKind(): NveCameraBackendKind? = synchronized(lock) {
         when {
             factories.containsKey(NveCameraBackendKind.VISION_CAMERA_V5) ->
                 NveCameraBackendKind.VISION_CAMERA_V5
             factories.containsKey(NveCameraBackendKind.CUSTOM) ->
                 NveCameraBackendKind.CUSTOM
-            else -> NveCameraBackendKind.CAMERAX
+            else -> null
         }
     }
 
@@ -285,23 +266,18 @@ class NveCameraRegistry(
         val factory = synchronized(lock) {
             if (preferredKind != null) {
                 factories[preferredKind]
-                    ?: if (preferredKind == NveCameraBackendKind.CAMERAX) {
-                        fallbackCameraXFactory
-                    } else {
-                        throw IllegalStateException("Camera backend $preferredKind is not registered")
-                    }
+                    ?: throw IllegalStateException("Camera backend $preferredKind is not registered")
             } else {
                 factories[NveCameraBackendKind.VISION_CAMERA_V5]
                     ?: factories[NveCameraBackendKind.CUSTOM]
-                    ?: factories[NveCameraBackendKind.CAMERAX]
-                    ?: fallbackCameraXFactory
+                    ?: throw IllegalStateException("No camera backend registered in NveCameraRegistry")
             }
         }
         return factory.create(surfaceId, nodeId)
     }
 
     companion object {
-        /** Global default registry used by `compose-kit` camera hosts. */
+        /** Global default registry used by Android camera hosts. */
         val default: NveCameraRegistry = NveCameraRegistry()
     }
 }

@@ -1,5 +1,5 @@
 //! Typed cross-platform UI primitives (`View`, `Text`, `ScrollView`, `Pressable`, `SkiaCanvas`,
-//! and RN Codegen custom components) plus ergonomic style/layout builders and zero-JSON vector
+//! and RN Codegen custom components) plus ergonomic style/layout builders and direct binary FFI vector
 //! draw-list IR (`NVE_DRAW1`).
 
 pub mod canvas_ir;

@@ -250,7 +250,7 @@ pub fn generate_java_wire_codecs() -> String {
         return new EventRingFramedHeader(version, count);
     }}
 
-    /** Flat zero-JSON EventRing writer matching packages/core/abi/src/events.rs. */
+    /** Flat binary EventRing writer matching packages/core/abi/src/events.rs. */
     public static final class EventRingWriter {{
         private final boolean framed;
         private final ByteArrayOutputStream out = new ByteArrayOutputStream(256);

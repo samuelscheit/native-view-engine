@@ -1,7 +1,7 @@
 name: nve_native_views
 description: >-
   Composable Native View Engine (NVE) Flutter native view module providing
-  zero-JSON NVNP/NVNC codecs and opt-in BlurSurface, WebView, and VideoPlayer adapters.
+  binary NVNP/NVNC codecs and opt-in BlurSurface, WebView, and VideoPlayer adapters.
 version: 0.1.0
 publish_to: none
 

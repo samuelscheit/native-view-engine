@@ -25,7 +25,7 @@ pub(crate) enum CodegenAction {
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
-    /// Parse a declarative Rust `#[nve_hybrid_*]` spec file and emit zero-JSON FFI bindings.
+    /// Parse a declarative Rust `#[nve_hybrid_*]` spec file and emit binary FFI bindings.
     Hybrid {
         /// Path to the declarative Rust hybrid spec file (`.rs` or `.nve.rs`).
         spec: PathBuf,

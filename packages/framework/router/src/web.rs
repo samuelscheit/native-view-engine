@@ -1,4 +1,4 @@
-//! Portable, zero-JSON Browser History API adapter for `nve-router`.
+//! Portable, binary FFI Browser History API adapter for `nve-router`.
 //!
 //! Provides [`HistoryBackend`], [`MemoryHistoryBackend`] (all targets), [`BrowserHistoryBackend`]
 //! (`wasm32` `web-sys` with RAII `popstate` teardown on `Drop`), and [`WebHistoryAdapter`].

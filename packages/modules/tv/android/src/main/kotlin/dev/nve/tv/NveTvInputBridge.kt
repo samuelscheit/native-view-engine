@@ -9,7 +9,7 @@ import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 
 /**
- * Decoded zero-JSON `NK1` binary keydown payload.
+ * Decoded binary `NK1` binary keydown payload.
  */
 data class NveNk1KeyDown(
     val key: String,
@@ -20,7 +20,7 @@ data class NveNk1KeyDown(
 )
 
 /**
- * Zero-JSON `NK1` binary keydown codec matching `packages/core/codegen/src/wire_codecs/spec.rs` and
+ * Binary `NK1` binary keydown codec matching `packages/core/codegen/src/wire_codecs/spec.rs` and
  * `packages/core/abi/src/events.rs` byte-for-byte:
  *
  * Layout: `[0x4E ('N'), 0x4B ('K'), 0x31 ('1'), flags_u8, utf8_key...]`
@@ -214,7 +214,7 @@ object NveTvEventRingWire {
 
 /**
  * Android TV / Fire TV D-Pad & Leanback input bridge converting remote key events directly into
- * zero-JSON `NK1` binary payloads wrapped inside `EventRing` `CUSTOM` (`"keydown"`) events.
+ * binary `NK1` binary payloads wrapped inside `EventRing` `CUSTOM` (`"keydown"`) events.
  */
 class NveTvInputBridge(
     private val repeatThrottleUs: Long = DEFAULT_REPEAT_THROTTLE_US,

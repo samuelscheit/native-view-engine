@@ -1,8 +1,8 @@
-//! Title-safe TV overscan safe-area calculator and zero-JSON `NK1` binary keydown codec.
+//! Title-safe TV overscan safe-area calculator and direct binary FFI `NK1` binary keydown codec.
 
 use crate::spatial_focus::{RemoteAction, SpatialRect};
 
-/// Magic prefix bytes (`b"NK1"`) for zero-JSON NVE keydown wire payloads.
+/// Magic prefix bytes (`b"NK1"`) for binary NVE keydown wire payloads.
 pub const NK1_MAGIC: [u8; 3] = [0x4E, 0x4B, 0x31];
 pub const NK1_HEADER_SIZE: usize = 4;
 pub const NK1_MIN_LEN: usize = 5;
@@ -60,7 +60,7 @@ pub enum Nk1Error {
     InvalidUtf8,
 }
 
-/// Zero-JSON `NK1` binary keydown payload matching `packages/core/abi/src/events.rs` byte-for-byte.
+/// Binary `NK1` binary keydown payload matching `packages/core/abi/src/events.rs` byte-for-byte.
 ///
 /// Wire layout: `[0x4E ('N'), 0x4B ('K'), 0x31 ('1'), flags_u8, utf8_key...]`
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2,19 +2,16 @@
 
 Embed any compiled Rust **Native View Engine (NVE)** app or island inside Flutter on macOS, Windows, Linux, iOS, and Android:
 
-- **Path 1 — Direct `RenderBox` + Impeller/Skia `Canvas` (`NveCanvasView`)**: renders NVE's binary `CommandBuffer` straight onto Flutter's own `Canvas` via `dart:ffi` with **zero PlatformViews** and **zero native plugin boilerplate**.
-- **Path 2 — GPU Texture Compositing (`NveTextureHostWidget`)**: zero-copy 120fps Skia compositing via `FlutterTextureRegistry`.
-- **Path 3 — Native Fabric Platform Views (`NvePlatformViewWidget`)**: `UiKitView` / `AndroidView` embedding.
-- **Direct FFI & Channels**: `NveAppInstance` (modular `nve_get_interface`) and `NveChannelClient` (`NveChannelBus` Dart `Stream`s).
+- **Direct `RenderBox` + Impeller/Skia `Canvas` (`NveCanvasView`)**: renders NVE's binary `CommandBuffer` / `NveSceneView` straight onto Flutter's own `Canvas` via `dart:ffi` with zero PlatformViews and zero native plugin boilerplate.
+- **Direct FFI, Live Pairing & Channels**: `NveAppInstance` (modular `nve_get_interface`), `NvePairClient` / `NvePairedSurface`, and `NveChannelClient` (`NveChannelBus` Dart `Stream`s).
 
 ## Architecture
 
 ```
 Flutter Widget Tree
   ├── NveCanvasView         ──► Custom RenderBox + Impeller/Skia Canvas (zero PlatformViews)
-  │                             └── dart:ffi -> NveRetainedTree -> NveFlexLayoutSolver (TextPainter) -> Canvas
-  ├── NveTextureHostWidget  ──► FlutterTextureRegistry (IOSurface / AHardwareBuffer / DXGI / DMA-BUF)
-  ├── NvePlatformViewWidget ──► UiKitView (iOS) / AndroidView (Android) ──► NVE Fabric Bridge
+  │                             └── dart:ffi -> NveRetainedTree / NveSceneView -> Canvas
+  ├── NvePairedSurface      ──► NvePairClient live WebSocket/binary preview host
   ├── NveAppInstance        ──► Direct dart:ffi bindings to modular nve_get_interface
   └── NveChannelClient      ──► Dart Stream<NveChannelMessage> ◄──► NveChannelBus
 ```
@@ -76,62 +73,6 @@ class _DirectCounterScreenState extends State<DirectCounterScreen> {
 
 See [example/main.dart](example/main.dart) for a complete app with runtime library switching, hot-reload, and frame/node counters.
 
-## Texture / PlatformView Usage (`NveCounterCard`)
-
-```dart
-import 'package:flutter/material.dart';
-import 'package:nve_flutter/nve_flutter.dart';
-
-class CounterScreen extends StatefulWidget {
-  const CounterScreen({super.key});
-
-  @override
-  State<CounterScreen> createState() => _CounterScreenState();
-}
-
-class _CounterScreenState extends State<CounterScreen> {
-  final _controller = NveSurfaceController();
-  final _channels = NveChannelClient();
-  int _count = 0;
-
-  @override
-  void dispose() {
-    _channels.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('NVE in Flutter')),
-      body: Center(
-        child: NveTextureHostWidget(
-          componentName: 'NveCounterCard',
-          vtableSymbol: 'nve_get_interface',
-          controller: _controller,
-          channelClient: _channels,
-          width: 320,
-          height: 180,
-          props: <String, dynamic>{
-            'title': 'Rust Counter',
-            'count': _count,
-          },
-          onEvent: (NveEvent event) {
-            if (event.name == 'onIncrement') {
-              setState(() => _count += 1);
-            }
-          },
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _controller.dispatchCommand('reset'),
-        child: const Icon(Icons.refresh),
-      ),
-    );
-  }
-}
-```
-
 ## Verification
 
 ```bash
@@ -141,4 +82,4 @@ cargo build -p nve-example-kitchen-sink
 
 ## Codegen Integration
 
-Run `nve-codegen` (`export_flutter`) on any `NveExportSpec` to generate a strongly typed Dart `StatefulWidget` wrapping `NveCanvasView`, `NveTextureHostWidget`, or `NvePlatformViewWidget` with typed prop serialization, typed event callbacks, and typed controller commands.
+Run `nve-codegen` (`export_flutter`) on any `NveExportSpec` to generate a strongly typed Dart `StatefulWidget` wrapping `NveCanvasView` + `NveCanvasController` with typed prop serialization, typed event callbacks, and typed controller commands.

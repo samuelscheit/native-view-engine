@@ -192,7 +192,7 @@ impl DesktopApp for MockTextInputApp {
                 {
                     assert!(
                         data.starts_with(&nve_abi::events::KEYDOWN_WIRE_MAGIC),
-                        "keydown payload must use zero-JSON NK1 binary framing, got {data:?}"
+                        "keydown payload must use binary NK1 binary framing, got {data:?}"
                     );
                     let decoded = nve_abi::events::decode_keydown_bytes(&data)
                         .expect("valid NK1 keydown payload");
@@ -444,7 +444,7 @@ fn cjk_ime_preedit_commit_and_escape_behavior() {
     assert_eq!(session.app().title_value, "NVE 漢字");
     assert_eq!(session.backend().caret_byte_index(), "NVE 漢字".len());
 
-    // Cmd+K while focused forwards zero-JSON keydown shortcut instead of typing 'k'.
+    // Cmd+K while focused forwards binary keydown shortcut instead of typing 'k'.
     assert!(session
         .handle_keyboard_input(&Key::Character("k".into()), None, ModifiersState::SUPER)
         .unwrap());
@@ -557,7 +557,7 @@ impl DesktopApp for MockScrollAndKeyApp {
                 (NativeEventKind::Custom, EventPayload::Custom { name, data }) if name == "keydown" => {
                     assert!(
                         data.starts_with(&nve_abi::events::KEYDOWN_WIRE_MAGIC),
-                        "keydown payload must use zero-JSON NK1 binary framing, got {data:?}"
+                        "keydown payload must use binary NK1 binary framing, got {data:?}"
                     );
                     let decoded = nve_abi::events::decode_keydown_bytes(&data)
                         .expect("valid NK1 keydown payload");

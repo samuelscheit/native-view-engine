@@ -155,7 +155,7 @@ sealed class NveCameraCodecException(message: String) : IllegalArgumentException
 }
 
 /**
- * Pure-Kotlin zero-JSON binary `NVNP` / `NVNC` / `NVCF` codec matching
+ * Pure-Kotlin binary `NVNP` / `NVNC` / `NVCF` codec matching
  * `packages/core/interop/src/native_view/{wire,codec,camera}.rs` byte-for-byte.
  */
 object NveCameraCodec {

@@ -1332,7 +1332,7 @@ async function main() {
     );
 
     // Edit block #16 inline text and save.
-    const editedBlockText = "Verified zero-JSON binary NVD1 WebSocket streaming";
+    const editedBlockText = "Verified binary NVD1 WebSocket streaming";
     await clickElement(
       cdp,
       `document.querySelector('[testid="doc-block-edit-16"]')`,
@@ -1360,7 +1360,7 @@ async function main() {
       () =>
         !document.querySelector('[testid="doc-block-input-16"]') &&
         (document.querySelector('[testid="doc-block-16"]')?.innerText || "").includes(
-          "Verified zero-JSON binary NVD1 WebSocket streaming"
+          "Verified binary NVD1 WebSocket streaming"
         )
     );
 
@@ -1417,7 +1417,7 @@ async function main() {
           md.includes("MARKDOWN EXPORT") &&
           md.includes("# RFC-042: Zero-Copy NveSceneView") &&
           md.includes("- [x] Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio") &&
-          md.includes("Verified zero-JSON binary NVD1 WebSocket streaming")
+          md.includes("Verified binary NVD1 WebSocket streaming")
         );
       }
     );

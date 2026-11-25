@@ -239,7 +239,7 @@ impl SignalDelta {
         self.ops.is_empty()
     }
 
-    /// Encodes this delta into a checksummed, zero-JSON `NVE_SGD1` binary payload.
+    /// Encodes this delta into a checksummed, binary FFI `NVE_SGD1` binary payload.
     pub fn encode(&self) -> Result<Vec<u8>, SignalArchiveError> {
         let mut sorted_ops = self.ops.clone();
         sorted_ops.sort_unstable_by_key(SignalDeltaOp::slot_id);
@@ -389,7 +389,7 @@ impl SignalTableSnapshot {
         self.slots.iter().map(|(&id, v)| (id, v))
     }
 
-    /// Encodes the full signal table into a checksummed, zero-JSON `NVE_SIG1` binary buffer
+    /// Encodes the full signal table into a checksummed, binary FFI `NVE_SIG1` binary buffer
     /// suitable for [`nve_engine::NativeStateStore`] (`MmapOffsetArena`) persistence.
     pub fn encode(&self) -> Result<Vec<u8>, SignalArchiveError> {
         let slot_count = u32::try_from(self.slots.len())

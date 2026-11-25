@@ -97,7 +97,7 @@ fn update_paired_hud(session: &PairedWebSession) {
 ///
 /// Renders remote `NVD1` `CommandBuffer` deltas straight into `WebBackend::submit_frame()` and
 /// streams local DOM clicks, typing, scrolling, focus/blur, resize, and `NK1` keydowns upstream
-/// as zero-JSON `NVT1` `InputEvents = 11` binary frames.
+/// as binary `NVT1` `InputEvents = 11` binary frames.
 #[wasm_bindgen]
 pub struct NveWebHost {
     mount_id: String,
@@ -128,7 +128,7 @@ impl NveWebHost {
         *self.socket.borrow_mut() = Some(socket);
     }
 
-    /// Builds the initial zero-JSON `NVT1` `Hello` binary envelope to send on WebSocket open.
+    /// Builds the initial binary `NVT1` `Hello` binary envelope to send on WebSocket open.
     pub fn build_pair_hello(&self) -> Vec<u8> {
         self.session.borrow_mut().build_hello()
     }

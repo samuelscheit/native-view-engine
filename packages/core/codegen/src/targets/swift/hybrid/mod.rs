@@ -1,7 +1,7 @@
 //! Swift 5.9+ target emitter for NVE Hybrid FFI codegen.
 //!
 //! Emits `<Stem>HybridSpec.generated.swift` targeting direct C interop with `<Stem>HybridAbi.generated.h`:
-//! - Zero `@objc`, zero `NSObject`, zero `objc_msgSend`, zero JSON
+//! - Zero `@objc`, zero `NSObject`, zero `objc_msgSend`, binary FFI
 //! - Native Swift `enum`, `struct`, `public protocol Hybrid<Name>Spec`
 //! - `public final class <Name>HybridClient` invoking C vtable function pointers directly
 //!   using zero-copy `UnsafeBufferPointer` / `NveStrSlice` / `NveBufferSlice` / `NveValue`
@@ -38,7 +38,7 @@ pub fn generate_hybrid_swift(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>
     .unwrap();
     writeln!(
         out,
-        "// Direct C-ABI interop against `{stem}HybridAbi.generated.h`: zero Objective-C runtime bridging, zero JSON."
+        "// Direct C-ABI interop against `{stem}HybridAbi.generated.h`: zero Objective-C runtime bridging, binary FFI."
     )
     .unwrap();
     writeln!(out).unwrap();
@@ -100,7 +100,7 @@ fn emit_swift_common(out: &mut String, spec: &HybridFileSpec) {
     case remoteError(String)
 }}
 
-/// Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (zero JSON).
+/// Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (binary).
 public struct NveHybridDynamicValue: Equatable {{
     public var binBytes: [UInt8]
 

@@ -1,4 +1,4 @@
-//! Reusable zero-JSON little-endian binary reader/writer primitives with strict bounds checking.
+//! Reusable binary little-endian binary reader/writer primitives with strict bounds checking.
 
 use crate::error::ServiceError;
 

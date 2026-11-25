@@ -29,7 +29,7 @@ fn engine_module_options() -> Vec<ComboboxOption> {
         ComboboxOption::new("web", "Web DOM + SSR Backend"),
         ComboboxOption::new("i18n", "nve-i18n Platform ICU"),
         ComboboxOption::new("router", "nve-router Deep Links"),
-        ComboboxOption::new("audio", "nve-audio PCM Engine"),
+        ComboboxOption::new("wire", "nve-wire QUIC / WebTransport"),
     ]
 }
 

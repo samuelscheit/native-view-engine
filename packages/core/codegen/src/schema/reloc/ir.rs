@@ -2,7 +2,7 @@
 //! and deterministic FNV-1a64 schema hashing for NVE's zero-copy `RelocSlice` code generator.
 //!
 //! Schemas are constructed directly as typed Rust values (e.g. from `trait NveSchema` /
-//! `#[derive(NveAbi)]` in each owning crate) with zero `.nve.rs` text parsing and zero JSON.
+//! `#[derive(NveAbi)]` in each owning crate) with zero `.nve.rs` text parsing and direct binary FFI.
 
 use std::collections::{BTreeMap, BTreeSet};
 

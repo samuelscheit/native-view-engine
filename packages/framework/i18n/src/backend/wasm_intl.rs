@@ -1,6 +1,6 @@
 //! Browser `Intl.*` bindings for `wasm32` targets via a tiny `wasm_bindgen(inline_js = ...)` shim.
 //!
-//! All calls pass typed scalars/strings with zero JSON serialization and catch
+//! All calls pass typed scalars/strings with direct binary FFI and catch
 //! runtime errors gracefully so [`crate::backend::NativeI18nBackend`] can fall
 //! back cleanly when an `Intl` API is absent or rejects an input.
 

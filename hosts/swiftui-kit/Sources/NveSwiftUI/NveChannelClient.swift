@@ -62,7 +62,7 @@ public final class NveChannelClient: @unchecked Sendable {
         }
     }
 
-    /// Publishes a structured binary `NveBinValue` payload to `topic` (zero JSON).
+    /// Publishes a structured binary `NveBinValue` payload to `topic` (binary).
     public func publishValue(topic: String, value: NveBinValue, retain: Bool = false) throws {
         let data = try value.encode()
         publish(topic: topic, payload: data, retain: retain)

@@ -1,6 +1,6 @@
 ---
 title: "CommandBuffer & EventRing"
-description: "Binary wire specification of NVE1 CommandBuffers, all 10 mutation opcodes, EventRing batching, and compact zero-JSON NK1 keydown frames."
+description: "Binary wire specification of NVE1 CommandBuffers, all 10 mutation opcodes, EventRing batching, and compact binary NK1 keydown frames."
 order: 1
 ---
 
@@ -114,7 +114,7 @@ Host input events (`NativeEvent`) flow back into Rust in one length-prefixed bin
 
 Encoding 16 events takes **137.1 ns**; decoding 16 events takes **346.7 ns**.
 
-## Compact Zero-JSON Keydowns (`NK1`)
+## Compact Binary Keydowns (`NK1`)
 
 Keyboard shortcuts and key events travel inside `NativeEventKind::Custom` (`name = "keydown"`) using the 4-byte-header **`NK1`** binary format instead of JSON:
 

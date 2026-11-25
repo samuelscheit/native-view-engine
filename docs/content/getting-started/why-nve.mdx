@@ -49,7 +49,7 @@ NVE compiles native apps directly to platform machine code (`~15 MB` class binar
 
 Every crate in `native-view-engine` obeys four non-negotiable engineering invariants:
 
-1. **Zero JSON on hot paths** — Every wire protocol (`NVE1` commands, `EventRing`, `NK1` keydowns, `NVP1` hot patches, `NVH1` host events, `NVN1` routing, `NVW1` windows, `NVT2`/`NVL1` theme/locale, `NVE_DRAW1` vectors, `NVE_MET1` accessibility metadata, `NVC1` CRDTs, `NVD1`/`NVT1` live pairing) uses fixed-header little-endian binary encoding with bounds checks and FNV-1a64 integrity hashes.
+1. **Direct binary encoding on hot paths** — Every wire protocol (`NVE1` commands, `EventRing`, `NK1` keydowns, `NVP1` hot patches, `NVH1` host events, `NVN1` routing, `NVW1` windows, `NVT2`/`NVL1` theme/locale, `NVE_DRAW1` vectors, `NVE_MET1` accessibility metadata, `NVC1` CRDTs, `NVD1`/`NVT1` live pairing) uses fixed-header little-endian binary encoding with bounds checks and FNV-1a64 integrity hashes.
 2. **Framework-agnostic engine core** — `nve-engine` has zero dependency on `dioxus-core`. Dioxus (`nve-dioxus`) is an adapter, not a hard requirement.
 3. **Single source of truth for ABIs** — Core and Scene ABIs are defined once in declarative Rust specs (`packages/core/codegen/specs/nve_core_abi.nve.rs` and `nve_scene_abi.nve.rs`), locked by compile-time `offset_of!` assertions and 64-bit FNV-1a schema hashes (`0x5BE5D06CC7C01FEF` and `0x00F2CF037DB50CC8`), and verified in CI via `cargo nve codegen abi --check`.
 4. **Honest verification over smoke tests** — Every decoder and host boundary ships with truncated-buffer, fuzz/property, layout-parity, and state-preservation tests alongside Criterion and C++ statistical regression baselines.

@@ -1,6 +1,6 @@
 //! C11 & C++20 target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits two clean, zero-JSON headers:
+//! Emits two clean, binary FFI headers:
 //! 1. `<Stem>HybridAbi.generated.h`: pure C11 header including `nve_abi.generated.h`, declaring
 //!    `NVE_HYBRID_<NAME>_INTERFACE_ID`, `NVE_HYBRID_<NAME>_SCHEMA_HASH`, `#[repr(C)]` POD
 //!    structs/enums, `NveHybridOwnedBytes`, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`.

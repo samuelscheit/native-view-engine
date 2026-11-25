@@ -1,4 +1,4 @@
-//! Minimal zero-JSON `NVE_IFACE_HOST = 5` host-service transport, FFI client, binary codec,
+//! Minimal binary `NVE_IFACE_HOST = 5` host-service transport, FFI client, binary codec,
 //! and composable handler registry (`nve-host-services`).
 //!
 //! This crate intentionally has **zero** dependencies on any `packages/modules/*` capability

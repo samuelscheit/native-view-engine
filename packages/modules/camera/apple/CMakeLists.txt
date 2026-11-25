@@ -23,13 +23,7 @@ target_include_directories(nve_camera_apple
 )
 
 target_compile_options(nve_camera_apple PRIVATE -fobjc-arc -Wall -Wextra -Werror)
-target_link_libraries(nve_camera_apple
-  PUBLIC
-    "-framework AVFoundation"
-    "-framework CoreMedia"
-    "-framework CoreVideo"
-    "-framework QuartzCore"
-)
+target_link_libraries(nve_camera_apple PUBLIC "-framework Foundation")
 
 if(APPLE AND NOT IOS)
   target_link_libraries(nve_camera_apple PUBLIC "-framework Cocoa")

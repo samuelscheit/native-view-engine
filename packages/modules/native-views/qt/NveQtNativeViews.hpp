@@ -14,7 +14,6 @@
 
 #if NVE_NV_ENABLE_BLUR
 #include <QColor>
-#include <QGraphicsBlurEffect>
 #endif
 #include <QString>
 #include <QWidget>
@@ -34,8 +33,8 @@ QColor color_from_rrggbbaa(uint32_t rrggbbaa) noexcept;
 /// Maps `nve::BlurMaterial` to a base Gaussian blur radius in logical pixels.
 qreal base_qt_blur_radius(nve::BlurMaterial material) noexcept;
 
-/// Qt 6 native blur surface widget backed by `QGraphicsBlurEffect` and a translucent tinted
-/// `QWidget` for `"nve.blur_surface"` / `"nve.blur"`.
+/// Qt 6 translucent tinted surface widget for `"nve.blur_surface"` / `"nve.blur"`.
+/// Does not attach `QGraphicsBlurEffect` (which blurs the widget's own children rather than backdrop).
 class NveQtBlurSurfaceWidget : public QWidget {
  public:
   explicit NveQtBlurSurfaceWidget(QWidget* parent = nullptr);
@@ -48,10 +47,8 @@ class NveQtBlurSurfaceWidget : public QWidget {
   bool hasTint() const noexcept { return has_tint_; }
   uint32_t tintRgba() const noexcept { return tint_rgba_; }
   QColor effectiveTintColor() const noexcept { return effective_tint_; }
-  QGraphicsBlurEffect* blurEffect() const noexcept { return blur_effect_; }
 
  private:
-  QGraphicsBlurEffect* blur_effect_{nullptr};
   nve::BlurMaterial material_{nve::BlurMaterial::Regular};
   float intensity_{1.0f};
   qreal blur_radius_{20.0};
@@ -81,10 +78,11 @@ class NveQtWebViewBackend {
 };
 
 /// Qt 6 `QWidget` container adapter for `"nve.web_view"` / `"nve.webview"`.
+/// Requires a non-null injected `NveQtWebViewBackend`; mounting without one returns `nullptr`.
 class NveQtWebViewWidget : public QWidget {
  public:
   explicit NveQtWebViewWidget(
-      std::unique_ptr<NveQtWebViewBackend> backend = nullptr,
+      std::unique_ptr<NveQtWebViewBackend> backend,
       QWidget* parent = nullptr);
   ~NveQtWebViewWidget() override;
 
@@ -94,12 +92,6 @@ class NveQtWebViewWidget : public QWidget {
 
   const std::string& lastRequestedUrl() const noexcept { return last_requested_url_; }
   bool allowsBackForward() const noexcept { return allows_back_forward_; }
-  size_t navigationCount() const noexcept { return navigation_count_; }
-  size_t reloadCount() const noexcept { return reload_count_; }
-  size_t goBackCount() const noexcept { return go_back_count_; }
-  size_t goForwardCount() const noexcept { return go_forward_count_; }
-  const std::string& lastEvaluatedScript() const noexcept { return last_evaluated_script_; }
-  size_t evaluateScriptCount() const noexcept { return evaluate_script_count_; }
   NveQtWebViewBackend* backend() const noexcept { return backend_.get(); }
 
  private:
@@ -108,12 +100,6 @@ class NveQtWebViewWidget : public QWidget {
   std::unique_ptr<NveQtWebViewBackend> backend_;
   std::string last_requested_url_;
   bool allows_back_forward_{true};
-  size_t navigation_count_{0u};
-  size_t reload_count_{0u};
-  size_t go_back_count_{0u};
-  size_t go_forward_count_{0u};
-  std::string last_evaluated_script_;
-  size_t evaluate_script_count_{0u};
   bool unmounted_{false};
 };
 #endif // NVE_NV_ENABLE_WEBVIEW
@@ -139,10 +125,11 @@ class NveQtVideoBackend {
 };
 
 /// Qt 6 `QWidget` container adapter for `"nve.video_player"` / `"nve.video"`.
+/// Requires a non-null injected `NveQtVideoBackend`; mounting without one returns `nullptr`.
 class NveQtVideoPlayerWidget : public QWidget {
  public:
   explicit NveQtVideoPlayerWidget(
-      std::unique_ptr<NveQtVideoBackend> backend = nullptr,
+      std::unique_ptr<NveQtVideoBackend> backend,
       QWidget* parent = nullptr);
   ~NveQtVideoPlayerWidget() override;
 
@@ -158,10 +145,6 @@ class NveQtVideoPlayerWidget : public QWidget {
   bool isPlaying() const noexcept { return playing_; }
   uint64_t positionMs() const noexcept { return position_ms_; }
   float volume() const noexcept { return volume_; }
-  size_t playCount() const noexcept { return play_count_; }
-  size_t pauseCount() const noexcept { return pause_count_; }
-  size_t seekCount() const noexcept { return seek_count_; }
-  size_t volumeChangeCount() const noexcept { return volume_change_count_; }
   NveQtVideoBackend* backend() const noexcept { return backend_.get(); }
 
  private:
@@ -174,10 +157,6 @@ class NveQtVideoPlayerWidget : public QWidget {
   bool playing_{false};
   uint64_t position_ms_{0u};
   float volume_{1.0f};
-  size_t play_count_{0u};
-  size_t pause_count_{0u};
-  size_t seek_count_{0u};
-  size_t volume_change_count_{0u};
   bool unmounted_{false};
 };
 #endif // NVE_NV_ENABLE_VIDEO

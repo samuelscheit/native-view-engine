@@ -1,4 +1,4 @@
-//! Zero-JSON binary CRDT delta wire format (`NveCrdtDelta`) with `XXH64` integrity verification.
+//! Binary CRDT delta wire format (`NveCrdtDelta`) with `XXH64` integrity verification.
 //!
 //! Layout (little-endian): `magic("NVE_CRDT")` | `version(u16=2)` | `sender(u64)` |
 //! `vv_len(u32)` + `(peer:u64, seq:u64)*` | `record_count(u32)` + `(rec_len:u32, tag:u8, body)*` |

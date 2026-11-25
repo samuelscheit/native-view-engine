@@ -6,6 +6,20 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ## Docs, Web Foundations & Wave 14 (Zero-Copy, DRY & Production Docs)
 
+- **Cleanup & Truthfulness Pass (Step 1 Part B)** (`t3/cleanup-truthfulness-pass`)
+  - Deleted the 7 pure-L0 stub module crates (`audio`, `fonts`, `location`, `notifications`, `sensors`, `share`, `web-auth`) from the workspace, `hosts/skia-shell`, `examples/kitchen-sink`, and docs.
+  - Trimmed `packages/modules/camera` to the typed `CameraPreview` `NativeViewSpec`, 40B `CameraFrameWireLayout`, and pluggable VisionCamera v5 hybrid adapter contracts (`@protocol NveVisionCameraAppleBridge`, `NveVisionCameraAdapter.kt`, `HybridCameraSession`), deleting all incomplete standalone platform stubs (`host_service*`, `nve_camera_{linux,windows}.hpp`, standalone `AVCaptureSession`/`CameraX`/`getUserMedia`, `react-native/windows/`) and correcting `react-native/package.json`.
+  - Removed fake counter-only `nullptr` WebView/VideoPlayer stubs and GTK/Qt self-blur hacks in `packages/modules/native-views/{windows,gtk,qt,flutter}` while preserving real Apple `NveAppleNativeViews.mm`, Win32 DWM blur, Flutter `BackdropFilter`, and pluggable adapter hooks.
+  - Purged L0 `handoff.rs` (`IslandSpec`), `PayloadEncoding::Json`/`serde_json`, and duplicated dylib loading from `packages/core/interop` (deduplicated onto `nve_engine::loader::StagedDylib`), and removed phantom native plugin declarations + dead `NveTextureHostWidget`/`NvePlatformViewWidget` from `hosts/flutter-plugin` and `nve-codegen`'s Flutter emitter.
+  - Eliminated all production `serde_json` dependencies from `nve-engine` (hand-written `std::fmt::Write` Chrome trace exporter, `serde_json` dev-dep only), `examples/studio-workspace`, and `hosts/skia-shell`, stripped `"Zero-JSON"` marketing slogans repo-wide, and updated `docs/BACKLOG.md`, `docs/quality-audit.md`, and `docs/ui-maturity-audit.md`.
+- **Wave S2 — Unified QUIC/WebTransport `nve-wire` + `nve-wire-core` & `NveTimelineArchive`** (`752ea2e`)
+  - Replaced legacy hand-rolled UDP ARQ/fragmentation (`NVT1`/`NVD1`) and `packages/modules/pair` with sans-I/O `packages/core/wire-core` (`NveWireFrame` v2, `NveTimelineArchive`, `NveSceneArchive` keyframes, `XXH64`) and unified `packages/core/wire` (`quinn` QUIC + `web-transport-quinn` + WSS fallback).
+- **Code-Truth Quality & Maturity Audit (`docs/quality-audit.md`) & Stricter Engineering Bar** (`385cf47`)
+  - Completed a read-only L0–L4 code-truth audit across all workspace crates, backends, modules, C++ bridges, hosts, and examples, and tightened `AGENTS.md` around direct typed memory, self-documenting names, and real behavioral verification.
+- **Rich Graphics — Typed Linear/Radial Gradients & Cached Vector SVG Across Web & Skia** (`7cfa635`)
+  - Added typed `BackgroundFill` linear/radial gradients and `SvgPicture` rendering with cached vector paths across `nve-components`, `nve-dioxus`, `nve-backend-web`, and `nve-backend-skia`.
+- **Kitchen Sink `nve-ui` Showcase (`examples/kitchen-sink`, Replacing `examples/counter`)** (`1c37839`)
+  - Replaced `examples/counter` with a multi-section `nve-ui` showcase (`examples/kitchen-sink`) with Web SSG + WASM hydration and native host support.
 - **Default-On Native Instant-Boot & State Restore Across All Native Hosts & Apps** (`b5dabc3`)
   - Added cross-platform default snapshot & sidecar `frame0.nvereloc` resolvers in `cxx/nve-fabric-bridge/include/nve_snapshot.hpp` (`resolve_default_snapshot_path`, `resolve_sidecar_frame0_path`, auto-creating OS cache parent dirs) and `packages/core/engine/src/instant_boot/boot_store.rs` (`default_instant_boot_dir`), with `--no-snapshot`/`NVE_SNAPSHOT_DISABLE=1` and `--reset-state`/`NVE_RESET_STATE=1` overrides.
   - Enabled default-on Frame-0 instant-boot + `NveDevApi::snapshot_state`/`restore_state` across `hosts/macos-shell` (fixing window-close/resign-active/Cmd+Q/`SIGINT`+`SIGTERM` multi-trigger atomic save and painting Frame 0 before async `dlopen`), `hosts/skia-shell`, `hosts/gtk-shell`, `hosts/qt-shell`, and `hosts/ios-shell`.
