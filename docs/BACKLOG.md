@@ -25,20 +25,17 @@ Open roadmap for `native-view-engine`, ordered from active P0 foundations to P1 
 
 ## P1 — Architectural DRY, Single-Source ABI Lock & Zero-Copy Hot Paths (Wave 14)
 
-- [ ] **Complete ABI Field-Offset Verification & Zero-Copy Engine/Dioxus/Codegen Hot Paths (`nve-abi`, `nve-engine`, `nve-dioxus`, `nve-codegen`)**
-  - Add compile-time `size_of`/`align_of`/`offset_of!` assertions for every `#[repr(C)]` vtable and struct in `crates/nve-abi/src/{ffi.rs,host.rs,scene/types.rs}` cross-checked against `nve_abi.generated.h` / `nve_scene_abi.generated.h` `offsetof(...)`; add layout `static_assert`s for `NVE_SNAP` (`nve_snapshot.hpp`) and `nve_pair_client.hpp`; fix `TRANSPORT_MAGIC` (`"NT"` vs `"NVT1"`) doc mismatch in `sync_transport/protocol.rs`.
+- [ ] **Zero-Copy Loader & Typed `nve-dioxus` Style Props (`nve-engine`, `nve-dioxus`, `nve-ui`)** *(in flight)*
   - Eliminate per-frame `.to_vec()` copies in `crates/nve-engine/src/loader.rs` (`render` and `drain_emitted_events`).
-  - Add typed style props directly in `nve-dioxus` to eliminate the `StyleBuf` string-format → `apply_typed_attr_with_raw` string-reparse round-trip (keeping `nve-abi`'s fixed POD structs untouched).
-  - Remove `serde_json` / `JSONObject` from generated RN props/commands/events (`import_rn.rs`, `export_rn.rs`), replace `[String: Any]` / `buildMap<String, Any?>` in `export_swiftui.rs` & `export_compose.rs` with typed direct-FFI encoders, prune unused `export_*_json` dead entry points, and modularize >1,100-line codegen files (`core_abi.rs`, `parser.rs`, `emit_*.rs`).
+  - Add direct typed style props (`TypedStyle`) in `nve-dioxus` & `nve-ui` to eliminate the `StyleBuf` string-format → `apply_typed_attr_with_raw` string-reparse round-trip.
 
-- [ ] **Single-Source Cross-Language Wire Codecs & Delete Legacy Fallbacks (`nve-codegen`, `cxx`, `hosts/*`)**
+- [ ] **Single-Source Cross-Language Wire Codecs & Delete Legacy Fallbacks (`nve-codegen`, `cxx`, `hosts/*`)** *(in flight — Wave 14B)*
   - Make `*_direct` entry points required and delete legacy `set_props` / ring `dispatch_events` fallback paths (`NveSurfaceController.swift`, `nve_rn_component.cpp`, `macos-shell/main.mm`, `windows-shell/main.cpp`).
   - Remove redundant `MethodChannel.invokeMethod` in Flutter `surface_widgets.dart` when direct FFI already ran; unify Kotlin/Java `NVE_MET1` readers (`NveSceneBuffer.kt`, `NveMainActivity.java`) and fix Kotlin `NveBinValue.kt`/`NveSurfaceState.kt` per-update `ByteArrayOutputStream`/`copyOf` allocations; generate single-source `EventRing` / `NVE_DRAW1` codecs and deduplicate FNV-1a across languages.
 
-- [ ] **Apple Shell DRY Consolidation, Oversized C++ Splits & Build Hygiene (`hosts/apple-common`, `cxx`, `hosts/android-shell`)**
+- [ ] **Apple Shell DRY Consolidation & Oversized C++ Splits (`hosts/apple-common`, `cxx`, `hosts/android-shell`)** *(in flight — Wave 14B)*
   - Deduplicate `hosts/ios-shell/RCTNveComponentView.mm` & `hosts/macos-shell/RCTNveMacComponentView.mm` (plus shared `main.mm` CLI/pair/window plumbing) into `hosts/apple-common/`.
   - Split `mock_jsi_recorder.hpp` (1,250L), `nve_host_runtime.hpp` (1,170L), and `NveAndroidSurfaceJni.cpp` (1,229L) below 650 lines.
-  - Clear Cargo 1.100 manifest unused-dependency warnings (`hosts/web-shell/Cargo.toml` workspace dep ref for `nve-studio-workspace` + `crates/nve-bench/Cargo.toml` dev-deps) and add `.gitattributes` enforcing `eol=lf` for generated ABI artifacts.
 
 ---
 
