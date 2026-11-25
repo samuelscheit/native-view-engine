@@ -2,16 +2,21 @@
 //! Semantic HTML5 SSR, zero-flicker hydration, and root event delegation.
 
 use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask, FlexAlign,
-    FlexDirection, FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps, ROOT_NODE_ID,
+    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EventMask, LayoutProps, NodeId,
+    RawPropValue, StyleProps, ROOT_NODE_ID,
 };
+#[cfg(feature = "ssr")]
+use nve_abi::{EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_engine::RenderBackend;
 
+#[cfg(all(feature = "ssr", feature = "hydrate"))]
+use crate::HydrationMismatch;
+#[cfg(feature = "ssr")]
+use crate::{is_raw_style_prop, resolve_semantic_tag, SsrDocumentOptions, NVE_BASE_RESET_CSS};
 use crate::{
-    canonical_f32_bits, format_structural_class, hash_structural_style, is_raw_style_prop,
-    is_volatile_dimension, is_volatile_opacity, plan_keyed_child_ops, resolve_delegated_node,
-    resolve_semantic_tag, ChildDiffOp, HydrationMismatch, NodeEventMeta, RawStyleProps,
-    SsrDocumentOptions, StyleSheetCache, WebBackend, MAX_DYNAMIC_RULES, NVE_BASE_RESET_CSS,
+    canonical_f32_bits, format_structural_class, hash_structural_style, is_volatile_dimension,
+    is_volatile_opacity, plan_keyed_child_ops, resolve_delegated_node, ChildDiffOp, NodeEventMeta,
+    RawStyleProps, StyleSheetCache, WebBackend, MAX_DYNAMIC_RULES,
 };
 
 fn apply_child_diff_ops(old: &[NodeId], ops: &[ChildDiffOp]) -> Vec<NodeId> {
@@ -43,6 +48,7 @@ fn apply_child_diff_ops(old: &[NodeId], ops: &[ChildDiffOp]) -> Vec<NodeId> {
     list
 }
 
+#[cfg(feature = "ssr")]
 #[test]
 fn base_reset_css_and_compact_formatting_omit_defaults_and_avoid_font_shorthand() {
     assert!(NVE_BASE_RESET_CSS.contains(".nve{display:flex;box-sizing:border-box;"));
@@ -103,6 +109,7 @@ fn base_reset_css_and_compact_formatting_omit_defaults_and_avoid_font_shorthand(
     assert!(!ssr.html.contains("style=\""));
 }
 
+#[cfg(feature = "ssr")]
 #[test]
 fn raw_style_props_capture_typography_shadow_overflow_and_exclude_from_html_attrs() {
     for key in [
@@ -400,6 +407,7 @@ fn keyed_child_diff_planner_handles_edge_cases_with_minimal_ops() {
     }
 }
 
+#[cfg(feature = "ssr")]
 #[test]
 fn semantic_html5_ssr_and_document_emission_cover_all_tags_and_metadata() {
     let mut web = WebBackend::new();
@@ -503,6 +511,7 @@ fn semantic_html5_ssr_and_document_emission_cover_all_tags_and_metadata() {
     assert!(doc.contains("<script type=\"module\" src=\"/app.js\"></script>"));
 }
 
+#[cfg(all(feature = "ssr", feature = "hydrate"))]
 #[test]
 fn zero_flicker_hydration_adopts_semantic_nodes_and_replaces_only_mismatched_subtree() {
     let build_frame = |mismatch_node3: bool| -> Vec<u8> {
@@ -622,6 +631,19 @@ fn root_event_delegation_resolves_nearest_matching_ancestor() {
     );
 }
 
+#[cfg(all(
+    feature = "ssr",
+    feature = "hydrate",
+    any(
+        all(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+        ),
+        feature = "camera",
+    )
+))]
 fn nvnp_encode(fields: &[(u16, crate::NativeValueRef<'_>)]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&crate::native_view::NATIVE_PROPS_MAGIC);
@@ -670,6 +692,19 @@ fn nvnp_encode(fields: &[(u16, crate::NativeValueRef<'_>)]) -> Vec<u8> {
     buf
 }
 
+#[cfg(all(
+    feature = "ssr",
+    feature = "hydrate",
+    any(
+        all(
+            feature = "nv-blur",
+            feature = "nv-webview",
+            feature = "nv-video",
+            feature = "nv-web-element",
+        ),
+        feature = "camera",
+    )
+))]
 fn nvnc_encode(opcode: u16, args: &[crate::NativeValueRef<'_>]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&crate::native_view::NATIVE_CMD_MAGIC);
@@ -701,6 +736,14 @@ fn nvnc_encode(opcode: u16, args: &[crate::NativeValueRef<'_>]) -> Vec<u8> {
     buf
 }
 
+#[cfg(all(
+    feature = "ssr",
+    feature = "hydrate",
+    feature = "nv-blur",
+    feature = "nv-webview",
+    feature = "nv-video",
+    feature = "nv-web-element",
+))]
 fn pack_web_attrs(attrs: &[(&str, &str)]) -> Vec<u8> {
     let mut out = Vec::new();
     for &(k, v) in attrs {
@@ -712,6 +755,14 @@ fn pack_web_attrs(attrs: &[(&str, &str)]) -> Vec<u8> {
     out
 }
 
+#[cfg(all(
+    feature = "ssr",
+    feature = "hydrate",
+    feature = "nv-blur",
+    feature = "nv-webview",
+    feature = "nv-video",
+    feature = "nv-web-element",
+))]
 #[test]
 fn native_view_web_element_blur_webview_and_video_ssr_hydration_and_commands() {
     use crate::native_view::{
@@ -898,6 +949,7 @@ fn native_view_web_element_blur_webview_and_video_ssr_hydration_and_commands() {
     assert_eq!(backend.native_view(3).unwrap().current_url.as_deref(), Some("https://nve.dev/next"));
 }
 
+#[cfg(all(feature = "ssr", feature = "hydrate", feature = "camera"))]
 #[test]
 fn native_view_camera_preview_ssr_hydration_commands_and_corrupt_resilience() {
     use crate::native_view::{

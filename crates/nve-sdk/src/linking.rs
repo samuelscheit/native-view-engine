@@ -14,30 +14,7 @@ pub const METHOD_INITIAL_URL: u32 = 3;
 pub const EVENT_URL_RECEIVED: u32 = 1;
 
 /// Validates a non-empty URL containing a scheme (`scheme:...`) without control characters.
-pub fn validate_url(url: &str) -> Result<(), SdkError> {
-    let trimmed = url.trim();
-    if trimmed.is_empty() {
-        return Err(SdkError::InvalidArg("URL must not be empty".into()));
-    }
-    if trimmed.bytes().any(|b| b < 0x20 || b == 0x7F) {
-        return Err(SdkError::InvalidArg(
-            "URL must not contain ASCII control characters".into(),
-        ));
-    }
-    let Some((scheme, rest)) = trimmed.split_once(':') else {
-        return Err(SdkError::InvalidArg("URL must include a scheme".into()));
-    };
-    if scheme.is_empty()
-        || rest.is_empty()
-        || !scheme.as_bytes()[0].is_ascii_alphabetic()
-        || !scheme
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
-    {
-        return Err(SdkError::InvalidArg(format!("invalid URL scheme '{scheme}'")));
-    }
-    Ok(())
-}
+pub use crate::codec::validate_url;
 
 /// Push event emitted by the host when an incoming deep link opens the app.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -7,6 +7,7 @@ pub mod layout;
 pub mod overlays;
 pub mod tabs;
 pub mod toast;
+#[cfg(feature = "virtual-list")]
 pub mod virtual_list;
 
 pub use actions::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, IconButton};
@@ -19,6 +20,7 @@ pub use toast::{
     use_toast, ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue,
     ToastVariant, ToastViewport,
 };
+#[cfg(feature = "virtual-list")]
 pub use virtual_list::{
     FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
 };

@@ -2,8 +2,10 @@ use std::fmt;
 
 use nve_abi::SurfaceId;
 
-use crate::channel::SubscriptionId;
 use crate::surface::LifecycleState;
+
+/// Monotonic subscription identifier for `NveChannelBus` listeners.
+pub type SubscriptionId = u64;
 
 /// Unified error type for cross-framework surface orchestration, layout, gesture,
 /// channel bus, and island operations.
@@ -34,6 +36,7 @@ pub enum InteropError {
     Window(String),
 }
 
+#[cfg(feature = "window")]
 impl From<crate::window::WindowError> for InteropError {
     fn from(value: crate::window::WindowError) -> Self {
         Self::Window(value.to_string())

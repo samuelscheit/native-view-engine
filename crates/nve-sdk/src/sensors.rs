@@ -3,6 +3,7 @@
 
 use crate::codec::{BinReader, BinWriter, MAX_SEQ_ITEMS};
 use crate::error::SdkError;
+#[cfg(feature = "location")]
 pub use crate::location::*;
 use crate::provider::{HostPushEvent, HostServiceProvider};
 

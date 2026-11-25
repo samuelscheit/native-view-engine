@@ -20,8 +20,8 @@ nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-interop = { workspace = true }
 nve-router = { workspace = true }
-nve-sdk = { workspace = true }
-nve-ui = { workspace = true }
+nve-sdk = { path = "../../crates/nve-sdk", default-features = false, features = ["clipboard", "system-env"] }
+nve-ui = { path = "../../crates/nve-ui", default-features = false }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }

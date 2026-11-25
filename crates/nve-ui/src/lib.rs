@@ -3,21 +3,26 @@
 
 pub mod components;
 pub mod focus;
+#[cfg(feature = "spatial-focus")]
 pub mod spatial_focus;
 pub mod style_buf;
 pub mod theme;
 
+#[cfg(feature = "virtual-list")]
+pub use components::{
+    FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
+};
 pub use components::{
     use_toast, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Checkbox,
-    Col, Dialog, DropdownMenu, FenwickHeightTree, IconButton, Input, MenuItem, Modal, Popover, Row,
-    RowHeights, ScrollAlign, Separator, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot,
-    ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue, ToastVariant,
-    ToastViewport, Tooltip, VirtualList, VirtualListState, VirtualSlice,
+    Col, Dialog, DropdownMenu, IconButton, Input, MenuItem, Modal, Popover, Row, Separator, Stack,
+    Switch, TabList, TabPanel, TabTrigger, TabsRoot, ToastController, ToastItem, ToastLive,
+    ToastOptions, ToastProvider, ToastQueue, ToastVariant, ToastViewport, Tooltip,
 };
 pub use focus::{
     current_focused_id, notify_focus_scope, use_focus_scope, FocusScope, FocusScopeProvider,
     FocusTrap, FocusTrapAction, FocusableEntry, Orientation, RovingFocus,
 };
+#[cfg(feature = "spatial-focus")]
 pub use spatial_focus::{
     FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
     SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
@@ -35,18 +40,22 @@ pub use theme::{
 pub mod prelude {
     pub use dioxus_core_macro::Props;
     pub use nve_dioxus::TypedStyle;
+    #[cfg(feature = "virtual-list")]
+    pub use crate::components::{
+        FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
+    };
     pub use crate::components::{
         use_toast, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant,
-        Checkbox, Col, Dialog, DropdownMenu, FenwickHeightTree, IconButton, Input, MenuItem, Modal,
-        Popover, Row, RowHeights, ScrollAlign, Separator, Stack, Switch, TabList, TabPanel,
-        TabTrigger, TabsRoot, ToastController, ToastItem, ToastLive, ToastOptions, ToastProvider,
-        ToastQueue, ToastVariant, ToastViewport, Tooltip, VirtualList, VirtualListState,
-        VirtualSlice,
+        Checkbox, Col, Dialog, DropdownMenu, IconButton, Input, MenuItem, Modal, Popover, Row,
+        Separator, Stack, Switch, TabList, TabPanel, TabTrigger, TabsRoot, ToastController,
+        ToastItem, ToastLive, ToastOptions, ToastProvider, ToastQueue, ToastVariant, ToastViewport,
+        Tooltip,
     };
     pub use crate::focus::{
         use_focus_scope, FocusScope, FocusScopeProvider, FocusTrap, FocusTrapAction,
         FocusableEntry, Orientation, RovingFocus,
     };
+    #[cfg(feature = "spatial-focus")]
     pub use crate::spatial_focus::{
         FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
         SpatialFocusGroupId, SpatialFocusNode, SpatialRect,

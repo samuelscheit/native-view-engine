@@ -4,6 +4,30 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = [
+    "crdt",
+    "sync",
+    "native-view",
+    "camera",
+    "traits",
+    "window",
+    "plugin-host",
+    "gesture",
+    "channel",
+    "layout",
+]
+crdt = []
+sync = []
+native-view = []
+camera = ["native-view"]
+traits = []
+window = []
+plugin-host = []
+gesture = []
+channel = []
+layout = []
+
 [dependencies]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }
@@ -12,3 +36,23 @@ serde_json = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libloading = { workspace = true }
+
+[[test]]
+name = "camera_preview_tests"
+required-features = ["camera"]
+
+[[test]]
+name = "crdt_property_tests"
+required-features = ["crdt"]
+
+[[test]]
+name = "sync_transport_tests"
+required-features = ["sync"]
+
+[[test]]
+name = "traits_and_native_view_tests"
+required-features = ["traits", "native-view"]
+
+[[test]]
+name = "window_manager_tests"
+required-features = ["window"]

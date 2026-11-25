@@ -1,24 +1,31 @@
 //! Native Share Sheet (`SERVICE_SHARE = 0x0026`) and In-App WebBrowser / OAuth Authentication
 //! (`SERVICE_WEB_AUTH = 0x0027`) with zero-JSON binary codecs.
 
-use crate::codec::{BinReader, BinWriter};
+use crate::codec::{validate_url, BinReader, BinWriter};
 use crate::error::SdkError;
-use crate::linking::validate_url;
 use crate::provider::HostServiceProvider;
 
 /// Built-in service ID for the native OS share sheet.
+#[cfg(feature = "share")]
 pub const SERVICE_SHARE: u32 = 0x0026;
 /// Built-in service ID for in-app web browser & OAuth (`ASWebAuthenticationSession` / Custom Tabs).
+#[cfg(feature = "web-auth")]
 pub const SERVICE_WEB_AUTH: u32 = 0x0027;
 
+#[cfg(feature = "share")]
 pub const METHOD_SHARE_TEXT: u32 = 1;
+#[cfg(feature = "share")]
 pub const METHOD_SHARE_URL: u32 = 2;
+#[cfg(feature = "share")]
 pub const METHOD_SHARE_FILES: u32 = 3;
 
+#[cfg(feature = "web-auth")]
 pub const METHOD_OPEN_IN_APP_BROWSER: u32 = 1;
+#[cfg(feature = "web-auth")]
 pub const METHOD_AUTHENTICATE: u32 = 2;
 
 /// Outcome of presenting the native OS share sheet.
+#[cfg(feature = "share")]
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShareResult {
@@ -26,6 +33,7 @@ pub enum ShareResult {
     Dismissed = 1,
 }
 
+#[cfg(feature = "share")]
 impl ShareResult {
     pub const fn from_u8(raw: u8) -> Option<Self> {
         match raw {
@@ -37,6 +45,7 @@ impl ShareResult {
 }
 
 /// Presentation style for [`WebAuthClient::open_in_app_browser`].
+#[cfg(feature = "web-auth")]
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BrowserPresentation {
@@ -45,6 +54,7 @@ pub enum BrowserPresentation {
     Popover = 2,
 }
 
+#[cfg(feature = "web-auth")]
 impl BrowserPresentation {
     pub const fn from_u8(raw: u8) -> Option<Self> {
         match raw {
@@ -57,6 +67,7 @@ impl BrowserPresentation {
 }
 
 /// Configuration for [`WebAuthClient::open_in_app_browser`].
+#[cfg(feature = "web-auth")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InAppBrowserOptions {
     pub presentation: BrowserPresentation,
@@ -65,6 +76,7 @@ pub struct InAppBrowserOptions {
     pub show_title: bool,
 }
 
+#[cfg(feature = "web-auth")]
 impl Default for InAppBrowserOptions {
     fn default() -> Self {
         Self {
@@ -77,12 +89,14 @@ impl Default for InAppBrowserOptions {
 }
 
 /// Outcome of an OAuth / web authentication flow (`ASWebAuthenticationSession` / Custom Tabs / loopback).
+#[cfg(feature = "web-auth")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebAuthResult {
     CallbackUri(String),
     Cancelled,
 }
 
+#[cfg(feature = "web-auth")]
 fn validate_http_url(url: &str) -> Result<(), SdkError> {
     validate_url(url)?;
     let scheme = url
@@ -99,6 +113,7 @@ fn validate_http_url(url: &str) -> Result<(), SdkError> {
 }
 
 /// Validates an RFC 3986 callback URI scheme (e.g. `myapp`, `com.example.auth`).
+#[cfg(feature = "web-auth")]
 pub fn validate_callback_scheme(scheme: &str) -> Result<(), SdkError> {
     if scheme.is_empty()
         || !scheme.as_bytes()[0].is_ascii_alphabetic()
@@ -113,6 +128,7 @@ pub fn validate_callback_scheme(scheme: &str) -> Result<(), SdkError> {
     Ok(())
 }
 
+#[cfg(feature = "share")]
 pub fn encode_share_text_request(text: &str, subject: Option<&str>) -> Result<Vec<u8>, SdkError> {
     if text.is_empty() {
         return Err(SdkError::InvalidArg("share text must not be empty".into()));
@@ -123,6 +139,7 @@ pub fn encode_share_text_request(text: &str, subject: Option<&str>) -> Result<Ve
     Ok(w.into_bytes())
 }
 
+#[cfg(feature = "share")]
 pub fn decode_share_text_request(bytes: &[u8]) -> Result<(String, Option<String>), SdkError> {
     let mut r = BinReader::new(bytes);
     let text = r.read_string()?;
@@ -134,6 +151,7 @@ pub fn decode_share_text_request(bytes: &[u8]) -> Result<(String, Option<String>
     Ok((text, subject))
 }
 
+#[cfg(feature = "share")]
 pub fn encode_share_url_request(url: &str, title: Option<&str>) -> Result<Vec<u8>, SdkError> {
     validate_url(url)?;
     let mut w = BinWriter::with_capacity(8 + url.len());
@@ -142,6 +160,7 @@ pub fn encode_share_url_request(url: &str, title: Option<&str>) -> Result<Vec<u8
     Ok(w.into_bytes())
 }
 
+#[cfg(feature = "share")]
 pub fn decode_share_url_request(bytes: &[u8]) -> Result<(String, Option<String>), SdkError> {
     let mut r = BinReader::new(bytes);
     let url = r.read_string()?;
@@ -151,6 +170,7 @@ pub fn decode_share_url_request(bytes: &[u8]) -> Result<(String, Option<String>)
     Ok((url, title))
 }
 
+#[cfg(feature = "share")]
 pub fn encode_share_files_request<S: AsRef<str>>(paths: &[S]) -> Result<Vec<u8>, SdkError> {
     if paths.is_empty() {
         return Err(SdkError::InvalidArg(
@@ -173,6 +193,7 @@ pub fn encode_share_files_request<S: AsRef<str>>(paths: &[S]) -> Result<Vec<u8>,
     Ok(w.into_bytes())
 }
 
+#[cfg(feature = "share")]
 pub fn decode_share_files_request(bytes: &[u8]) -> Result<Vec<String>, SdkError> {
     let mut r = BinReader::new(bytes);
     let paths = r.read_string_vec()?;
@@ -185,10 +206,12 @@ pub fn decode_share_files_request(bytes: &[u8]) -> Result<Vec<String>, SdkError>
     Ok(paths)
 }
 
+#[cfg(feature = "share")]
 pub fn encode_share_result(result: ShareResult) -> Vec<u8> {
     vec![result as u8]
 }
 
+#[cfg(feature = "share")]
 pub fn decode_share_result(bytes: &[u8]) -> Result<ShareResult, SdkError> {
     let mut r = BinReader::new(bytes);
     let raw = r.read_u8()?;
@@ -197,6 +220,7 @@ pub fn decode_share_result(bytes: &[u8]) -> Result<ShareResult, SdkError> {
         .ok_or_else(|| SdkError::Codec(format!("invalid ShareResult {raw}")))
 }
 
+#[cfg(feature = "web-auth")]
 pub fn encode_open_browser_request(
     url: &str,
     options: &InAppBrowserOptions,
@@ -211,6 +235,7 @@ pub fn encode_open_browser_request(
     Ok(w.into_bytes())
 }
 
+#[cfg(feature = "web-auth")]
 pub fn decode_open_browser_request(
     bytes: &[u8],
 ) -> Result<(String, InAppBrowserOptions), SdkError> {
@@ -235,6 +260,7 @@ pub fn decode_open_browser_request(
     ))
 }
 
+#[cfg(feature = "web-auth")]
 pub fn encode_authenticate_request(
     auth_url: &str,
     callback_scheme: &str,
@@ -247,6 +273,7 @@ pub fn encode_authenticate_request(
     Ok(w.into_bytes())
 }
 
+#[cfg(feature = "web-auth")]
 pub fn decode_authenticate_request(bytes: &[u8]) -> Result<(String, String), SdkError> {
     let mut r = BinReader::new(bytes);
     let auth_url = r.read_string()?;
@@ -257,6 +284,7 @@ pub fn decode_authenticate_request(bytes: &[u8]) -> Result<(String, String), Sdk
     Ok((auth_url, callback_scheme))
 }
 
+#[cfg(feature = "web-auth")]
 pub fn encode_web_auth_result(result: &WebAuthResult) -> Result<Vec<u8>, SdkError> {
     let mut w = BinWriter::new();
     match result {
@@ -272,6 +300,7 @@ pub fn encode_web_auth_result(result: &WebAuthResult) -> Result<Vec<u8>, SdkErro
     Ok(w.into_bytes())
 }
 
+#[cfg(feature = "web-auth")]
 pub fn decode_web_auth_result(bytes: &[u8]) -> Result<WebAuthResult, SdkError> {
     let mut r = BinReader::new(bytes);
     let res = match r.read_u8()? {
@@ -292,11 +321,13 @@ pub fn decode_web_auth_result(bytes: &[u8]) -> Result<WebAuthResult, SdkError> {
 }
 
 /// Typed ergonomic client for the native OS share sheet.
+#[cfg(feature = "share")]
 #[derive(Debug, Clone, Copy)]
 pub struct ShareClient<'a, P: HostServiceProvider + ?Sized> {
     provider: &'a P,
 }
 
+#[cfg(feature = "share")]
 impl<'a, P: HostServiceProvider + ?Sized> ShareClient<'a, P> {
     pub const fn new(provider: &'a P) -> Self {
         Self { provider }
@@ -328,11 +359,13 @@ impl<'a, P: HostServiceProvider + ?Sized> ShareClient<'a, P> {
 }
 
 /// Typed ergonomic client for in-app web browsers and OAuth authentication sessions.
+#[cfg(feature = "web-auth")]
 #[derive(Debug, Clone, Copy)]
 pub struct WebAuthClient<'a, P: HostServiceProvider + ?Sized> {
     provider: &'a P,
 }
 
+#[cfg(feature = "web-auth")]
 impl<'a, P: HostServiceProvider + ?Sized> WebAuthClient<'a, P> {
     pub const fn new(provider: &'a P) -> Self {
         Self { provider }

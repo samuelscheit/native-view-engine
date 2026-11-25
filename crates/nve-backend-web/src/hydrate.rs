@@ -2,7 +2,7 @@
 //! `WebBackend::hydrate_from_ssr` headless hydration simulator on native targets),
 //! structured [`HydrationMismatch`] reporting, and selective mismatched-subtree replacement.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
 use nve_abi::hash::HashMap;
 use nve_abi::hash::HashSet;
 
@@ -13,7 +13,7 @@ use core::fmt::Write as _;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
 use crate::ssr::SsrOutput;
 use crate::WebBackend;
 
@@ -48,7 +48,7 @@ pub(crate) struct NativeSsrNode {
 
 /// Parses opening HTML tags containing `data-nve-id="..."` from an SSR HTML fragment for native
 /// hydration simulation tests.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
 fn parse_ssr_html_nodes(html: &str) -> (Option<String>, HashMap<NodeId, NativeSsrNode>) {
     let mut nodes = HashMap::default();
     let mut root_hash = None;
@@ -114,7 +114,7 @@ fn parse_ssr_html_nodes(html: &str) -> (Option<String>, HashMap<NodeId, NativeSs
     (root_hash, nodes)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
 fn extract_html_attr<'a>(attrs: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!("{name}=\"");
     let pos = attrs.find(&needle)?;
@@ -141,7 +141,7 @@ impl WebBackend {
     /// Headless native hydration simulator: seeds `StyleSheetCache` from `ssr.rule_hashes` and
     /// parses existing SSR DOM nodes so the next `submit_frame()` adopts matching nodes in-place
     /// (preserving `native_dom_instance_id`) and detects/replaces any mismatched tags.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "ssr"))]
     pub fn hydrate_from_ssr(ssr: &SsrOutput) -> Self {
         let mut backend = Self::new();
         backend.stylesheet.mark_base_mounted();

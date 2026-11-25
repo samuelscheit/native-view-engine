@@ -2,39 +2,52 @@
 //! POSIX locale env vars, and `xdg-open`, returning `SdkError::Unsupported` cleanly when
 //! headless or desktop services are unavailable.
 
+#[cfg(feature = "filesystem")]
 use std::path::PathBuf;
+#[cfg(feature = "linking")]
 use std::process::Command;
 
 use crate::error::SdkError;
+#[cfg(feature = "filesystem")]
 use crate::filesystem::{FilePickerOptions, SaveFileOptions, StandardPathKind};
+#[cfg(feature = "haptics")]
 use crate::haptics::{ImpactStyle, NotificationHaptic};
+#[cfg(feature = "notifications")]
 use crate::notifications::{NotificationPermission, NotificationRequest};
+#[cfg(feature = "system-env")]
 use crate::system_env::{ColorScheme, ContrastLevel, LocaleSnapshot, ThemeSnapshot};
 
+#[cfg(feature = "system-env")]
 use super::parse_locale_tag;
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_read_text() -> Result<Option<String>, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_write_text(_text: &str) -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_has_text() -> Result<bool, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "clipboard")]
 pub fn clipboard_clear() -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "filesystem")]
 fn non_empty_env(key: &str) -> Option<PathBuf> {
     std::env::var_os(key)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
 }
 
+#[cfg(feature = "filesystem")]
 pub fn standard_path(kind: StandardPathKind) -> Result<String, SdkError> {
     if kind == StandardPathKind::Temp {
         return Ok(std::env::temp_dir().to_string_lossy().into_owned());
@@ -62,26 +75,32 @@ pub fn standard_path(kind: StandardPathKind) -> Result<String, SdkError> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[cfg(feature = "filesystem")]
 pub fn pick_files(_opts: &FilePickerOptions) -> Result<Vec<String>, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "filesystem")]
 pub fn save_file(_opts: &SaveFileOptions) -> Result<Option<String>, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "secure-store")]
 pub fn secure_store_get(_service: &str, _account: &str) -> Result<Option<Vec<u8>>, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "secure-store")]
 pub fn secure_store_set(_service: &str, _account: &str, _secret: &[u8]) -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "secure-store")]
 pub fn secure_store_delete(_service: &str, _account: &str) -> Result<bool, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "linking")]
 fn has_xdg_open() -> bool {
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
@@ -89,6 +108,7 @@ fn has_xdg_open() -> bool {
     std::env::split_paths(&paths).any(|dir| dir.join("xdg-open").is_file())
 }
 
+#[cfg(feature = "linking")]
 pub fn linking_open_url(url: &str) -> Result<(), SdkError> {
     if !has_xdg_open() {
         return Err(SdkError::Unsupported);
@@ -104,10 +124,12 @@ pub fn linking_open_url(url: &str) -> Result<(), SdkError> {
     }
 }
 
+#[cfg(feature = "linking")]
 pub fn linking_can_open_url(url: &str) -> Result<bool, SdkError> {
     Ok(has_xdg_open() && crate::linking::validate_url(url).is_ok())
 }
 
+#[cfg(feature = "system-env")]
 pub fn system_env_get_theme() -> Result<ThemeSnapshot, SdkError> {
     let dark_hint = std::env::var("GTK_THEME")
         .ok()
@@ -127,6 +149,7 @@ pub fn system_env_get_theme() -> Result<ThemeSnapshot, SdkError> {
     })
 }
 
+#[cfg(feature = "system-env")]
 pub fn system_env_get_locale() -> Result<LocaleSnapshot, SdkError> {
     let raw = std::env::var("LC_ALL")
         .or_else(|_| std::env::var("LC_MESSAGES"))
@@ -136,26 +159,32 @@ pub fn system_env_get_locale() -> Result<LocaleSnapshot, SdkError> {
     Ok(parse_locale_tag(&raw, tz, true))
 }
 
+#[cfg(feature = "notifications")]
 pub fn notifications_request_permission() -> Result<NotificationPermission, SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "notifications")]
 pub fn notifications_show(_req: &NotificationRequest) -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "notifications")]
 pub fn notifications_cancel(_id: &str) -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "haptics")]
 pub fn haptics_impact(_style: ImpactStyle) -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "haptics")]
 pub fn haptics_notification(_kind: NotificationHaptic) -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }
 
+#[cfg(feature = "haptics")]
 pub fn haptics_selection() -> Result<(), SdkError> {
     Err(SdkError::Unsupported)
 }

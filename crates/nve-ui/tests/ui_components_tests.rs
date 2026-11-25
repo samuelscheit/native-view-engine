@@ -8,6 +8,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::UiHarness;
+#[cfg(feature = "virtual-list")]
 use dioxus_core::use_hook;
 use nve_abi::ColorRgba;
 use nve_dioxus::elements::backend::RenderBackend;
@@ -473,6 +474,7 @@ fn tabs_overlays_dropdown_and_toasts_end_to_end() {
     assert!(h.maybe_find("toasts-item-2").is_none());
 }
 
+#[cfg(feature = "virtual-list")]
 #[component]
 fn VirtualList100kApp() -> Element {
     let mut selected = use_signal(|| 0usize);
@@ -499,6 +501,7 @@ fn VirtualList100kApp() -> Element {
     }
 }
 
+#[cfg(feature = "virtual-list")]
 #[test]
 fn virtual_list_100k_rows_renders_o_viewport_with_scroll_and_keyboard() {
     let mut h = UiHarness::new(VirtualList100kApp);

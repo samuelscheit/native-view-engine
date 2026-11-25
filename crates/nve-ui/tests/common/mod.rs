@@ -171,6 +171,7 @@ impl UiHarness {
         self.render()
     }
 
+    #[cfg(feature = "virtual-list")]
     pub fn scroll(&mut self, tid: &str, y: f32) -> Vec<Command> {
         let id = self.find(tid);
         let ts = self.next_ts();

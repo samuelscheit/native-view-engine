@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::InteropError;
 use crate::handoff::{IslandSpec, RenderHandoff};
+#[cfg(feature = "layout")]
 use crate::layout::IntrinsicSize;
+#[cfg(feature = "window")]
 pub use crate::window::SurfacePresentation;
 
 /// UI framework hosting or rendered within an orchestrated surface.
@@ -46,6 +48,7 @@ impl FrameworkKind {
     }
 
     /// Maps this surface framework to its default [`crate::traits::HostToolkit`] trait value.
+    #[cfg(feature = "traits")]
     #[inline]
     pub const fn default_host_toolkit(self) -> crate::traits::HostToolkit {
         match self {
@@ -187,6 +190,7 @@ impl Default for SurfaceEnvironment {
     }
 }
 
+#[cfg(feature = "traits")]
 impl SurfaceEnvironment {
     /// Converts this cross-framework surface environment into a zero-alloc
     /// [`crate::traits::TraitEnvironment`] snapshot.
@@ -271,7 +275,9 @@ pub struct SurfaceDescriptor {
     pub island: Option<IslandSpec>,
     pub environment: Option<SurfaceEnvironment>,
     pub overrides: EnvironmentOverrides,
+    #[cfg(feature = "layout")]
     pub initial_size: IntrinsicSize,
+    #[cfg(feature = "window")]
     pub presentation: SurfacePresentation,
 }
 
@@ -286,7 +292,9 @@ impl SurfaceDescriptor {
             island: None,
             environment: None,
             overrides: EnvironmentOverrides::default(),
+            #[cfg(feature = "layout")]
             initial_size: IntrinsicSize::ZERO,
+            #[cfg(feature = "window")]
             presentation: SurfacePresentation::Embedded,
         }
     }
@@ -321,11 +329,13 @@ impl SurfaceDescriptor {
         self
     }
 
+    #[cfg(feature = "layout")]
     pub fn with_initial_size(mut self, size: IntrinsicSize) -> Self {
         self.initial_size = size;
         self
     }
 
+    #[cfg(feature = "window")]
     pub fn with_presentation(mut self, presentation: SurfacePresentation) -> Self {
         self.presentation = presentation;
         self
@@ -345,7 +355,9 @@ pub struct SurfaceRecord {
     pub overrides: EnvironmentOverrides,
     pub handoff: RenderHandoff,
     pub island: Option<IslandSpec>,
+    #[cfg(feature = "layout")]
     pub viewport_size: IntrinsicSize,
+    #[cfg(feature = "window")]
     #[serde(default)]
     pub presentation: SurfacePresentation,
 }
@@ -476,7 +488,9 @@ impl SurfaceOrchestrator {
             overrides: desc.overrides,
             handoff: desc.handoff,
             island: desc.island,
+            #[cfg(feature = "layout")]
             viewport_size: desc.initial_size,
+            #[cfg(feature = "window")]
             presentation: desc.presentation,
         };
 
@@ -677,6 +691,7 @@ impl SurfaceOrchestrator {
     }
 
     /// Updates a surface's viewport size after layout negotiation.
+    #[cfg(feature = "layout")]
     pub fn set_viewport_size(
         &mut self,
         surface_id: SurfaceId,

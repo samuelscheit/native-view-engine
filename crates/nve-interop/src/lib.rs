@@ -5,26 +5,38 @@
 //! `<Island>`s inside NVE with unified lifecycle, layout negotiation, gesture arbitration,
 //! shared state channels, and GPU/native view handoff.
 
+#[cfg(feature = "channel")]
 pub mod channel;
+#[cfg(feature = "crdt")]
 pub mod crdt;
 pub mod error;
+#[cfg(feature = "gesture")]
 pub mod gesture;
 pub mod handoff;
+#[cfg(feature = "layout")]
 pub mod layout;
+#[cfg(feature = "native-view")]
 pub mod native_view;
+#[cfg(feature = "plugin-host")]
 pub mod plugin_host;
 pub mod surface;
+#[cfg(feature = "sync")]
 pub mod sync_delta;
+#[cfg(feature = "sync")]
 pub mod sync_transport;
+#[cfg(feature = "traits")]
 pub mod traits;
+#[cfg(feature = "window")]
 pub mod window;
 
+#[cfg(feature = "channel")]
 pub use channel::{
     CHANNEL_ID_AUTH, CHANNEL_ID_LOCALE, CHANNEL_ID_NAVIGATION, CHANNEL_ID_THEME, ChannelId,
     ChannelMessage, ChannelPayload, NveChannelBus, PayloadEncoding, SubscriptionId, TOPIC_AUTH,
     TOPIC_LOCALE, TOPIC_NAVIGATION, TOPIC_THEME,
 };
 pub use error::InteropError;
+#[cfg(feature = "gesture")]
 pub use gesture::{
     ArbitrationDecision, ArbitrationReason, GestureArbitrator, GestureCapabilities,
     GestureDisposition, PointerPhase, PointerSample, ScrollAxes, ScrollEdgeState,
@@ -34,25 +46,31 @@ pub use handoff::{
     IslandMountPolicy, IslandSpec, NativeViewHandle, NativeViewHandleKind, RenderHandoff,
     RnIslandSpec, SharedGpuTexture, SharedGpuTextureKind, SwiftUIIslandSpec,
 };
+#[cfg(feature = "layout")]
 pub use layout::{
     BaselineMetrics, IntrinsicSize, LayoutNegotiator, LayoutProposal, LayoutResult,
     MeasurableSurface, SizeConstraints,
 };
+#[cfg(feature = "plugin-host")]
 pub use plugin_host::{
     DEFAULT_PLUGIN_SURFACE_BASE, NvePluginHost, NvePluginSlot, PluginCapabilities, PluginError,
     PluginId, PluginMetadata, PluginRequirement, PluginSourceKind,
 };
+#[cfg(feature = "window")]
+pub use surface::SurfacePresentation;
 pub use surface::{
     ColorScheme, EnvironmentOverrides, FrameworkKind, LifecycleState, SafeAreaInsets,
-    SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent, SurfaceOrchestrator, SurfacePresentation,
-    SurfaceRecord, TeardownRecord, ThemeContext,
+    SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent, SurfaceOrchestrator, SurfaceRecord,
+    TeardownRecord, ThemeContext,
 };
+#[cfg(feature = "window")]
 pub use window::{
     ManagedWindow, NVW1_HEADER_SIZE, NVW1_MAGIC, NVW1_VERSION, WindowCodecError, WindowCommand,
     WindowDescriptor, WindowError, WindowFlags, WindowHandleId, WindowLifecycleEvent,
     WindowLifecycleState, WindowManager, WindowRect, WindowState, decode_window_commands,
     decode_window_events, encode_window_commands, encode_window_events,
 };
+#[cfg(feature = "sync")]
 pub use sync_delta::{
     DEFAULT_SYNC_WINDOW, DELTA_HEADER_SIZE, DeltaPacketHeader, DeltaPacketRef, FLAG_RETRANSMIT,
     MAX_DECODED_FRAME_BYTES, PacketKind, ReceiveOutcome, SYNC_DELTA_MAGIC, SYNC_DELTA_VERSION,
@@ -60,6 +78,7 @@ pub use sync_delta::{
     decode_xor_rle_delta_into, encode_command_op_delta, encode_packet, encode_xor_rle_delta,
     encode_xor_rle_delta_into, fnv1a_64, fnv1a_64_pair, write_packet_into,
 };
+#[cfg(feature = "sync")]
 pub use sync_transport::{
     DEFAULT_MAX_WIRE_FRAME_BYTES, DEFAULT_SCHEMA_VERSION, FRAG_SUBHEADER_SIZE,
     MAX_ALLOWED_WIRE_FRAME_BYTES, MAX_INPUT_EVENT_BYTES, MAX_UDP_DATAGRAM_BYTES,
@@ -70,41 +89,47 @@ pub use sync_transport::{
     decode_ws_frame_slice, derive_session_id, derive_token_proof, encode_ws_frame,
     packetize_udp_datagrams,
 };
+#[cfg(feature = "camera")]
 pub use native_view::{
-    BlurMaterial, BlurSurface, BlurSurfaceProps, CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC,
-    CAMERA_FRAME_VERSION, CAMERA_PREVIEW_KIND, CameraFrameDescriptor, CameraPixelFormat,
-    CameraPreview, CameraPreviewCommand, CameraPreviewFacing, CameraPreviewProps,
-    DecodeNativeCommand, DecodeNativeProps, DecodedWebElementProps, EncodeNativeCommand,
-    EncodeNativeProps, MAX_CAMERA_FPS, MAX_NATIVE_CMD_ARGS, MAX_NATIVE_PROP_FIELDS,
-    NATIVE_CMD_HEADER_SIZE, NATIVE_CMD_MAGIC, NATIVE_CMD_VERSION, NATIVE_PROPS_HEADER_SIZE,
-    NATIVE_PROPS_MAGIC, NATIVE_PROPS_VERSION, NATIVE_VIEW_KIND_PROP_KEY,
+    CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC, CAMERA_FRAME_VERSION, CAMERA_PREVIEW_KIND,
+    CameraFrameDescriptor, CameraPixelFormat, CameraPreview, CameraPreviewCommand,
+    CameraPreviewFacing, CameraPreviewProps, MAX_CAMERA_FPS, StabilizationMode, TorchMode,
+};
+#[cfg(feature = "native-view")]
+pub use native_view::{
+    BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
+    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, MAX_NATIVE_CMD_ARGS,
+    MAX_NATIVE_PROP_FIELDS, NATIVE_CMD_HEADER_SIZE, NATIVE_CMD_MAGIC, NATIVE_CMD_VERSION,
+    NATIVE_PROPS_HEADER_SIZE, NATIVE_PROPS_MAGIC, NATIVE_PROPS_VERSION, NATIVE_VIEW_KIND_PROP_KEY,
     NATIVE_VIEW_PROPS_PROP_KEY, NativeCommandDecoder, NativeCommandEncoder, NativePropDecoder,
     NativePropEncoder, NativeValueRef, NativeViewCodecError,
     NativeViewHandle as TypedNativeViewHandle, NativeViewHandleBinder, NativeViewRegistry,
-    NativeViewSpec, NoCommand, QueuedNativeCommand, StabilizationMode, TorchMode, VideoPlayer,
-    VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand,
-    WebViewProps,
+    NativeViewSpec, NoCommand, QueuedNativeCommand, VideoPlayer, VideoPlayerCommand,
+    VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand, WebViewProps,
 };
+#[cfg(feature = "traits")]
 pub use traits::{
     BUILTIN_TRAIT_COUNT, BuiltinTraitSlot, BuiltinTraits, CanHover,
     ColorScheme as TraitColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard,
-    HighContrast, HostToolkit,
-    Locale, Orientation, PlatformOs, PointerKind, ReducedMotion, ScaleFactor, SizeClass, TextScale,
-    TraitEnvironment, TraitKey, TraitOverrides, TraitResolver, TraitStore, UiDensity,
-    VerticalSizeClass, ViewportChangeMask,
+    HighContrast, HostToolkit, Locale, Orientation, PlatformOs, PointerKind, ReducedMotion,
+    ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitResolver,
+    TraitStore, UiDensity, VerticalSizeClass, ViewportChangeMask,
 };
 
 use nve_abi::SurfaceId;
 
-/// Unified facade coordinating [`SurfaceOrchestrator`], [`LayoutNegotiator`],
-/// [`GestureArbitrator`], and [`NveChannelBus`] so teardown and arbitration stay
-/// strictly synchronized with zero leaked subscriptions or gesture locks.
+/// Unified facade coordinating [`SurfaceOrchestrator`] and any enabled interop subsystems
+/// so teardown and arbitration stay strictly synchronized with zero leaked subscriptions or locks.
 #[derive(Default)]
 pub struct InteropRuntime {
     pub surfaces: SurfaceOrchestrator,
+    #[cfg(feature = "layout")]
     pub layout: LayoutNegotiator,
+    #[cfg(feature = "gesture")]
     pub gestures: GestureArbitrator,
+    #[cfg(feature = "channel")]
     pub channels: NveChannelBus,
+    #[cfg(feature = "window")]
     pub windows: WindowManager,
 }
 
@@ -112,15 +137,20 @@ impl InteropRuntime {
     pub fn new() -> Self {
         Self {
             surfaces: SurfaceOrchestrator::new(),
+            #[cfg(feature = "layout")]
             layout: LayoutNegotiator::new(),
+            #[cfg(feature = "gesture")]
             gestures: GestureArbitrator::new(),
+            #[cfg(feature = "channel")]
             channels: NveChannelBus::new(),
+            #[cfg(feature = "window")]
             windows: WindowManager::new(),
         }
     }
 
     /// Arbitrates a pointer event starting at `innermost_surface` by resolving its live
     /// ancestor chain directly from [`SurfaceOrchestrator`].
+    #[cfg(feature = "gesture")]
     pub fn arbitrate_pointer(
         &mut self,
         innermost_surface: SurfaceId,
@@ -132,6 +162,7 @@ impl InteropRuntime {
 
     /// Negotiates layout for `surface_id` using its inherited display scale factor,
     /// updating the surface's recorded viewport size upon success.
+    #[cfg(feature = "layout")]
     pub fn negotiate_layout<S: MeasurableSurface + ?Sized>(
         &mut self,
         surface_id: SurfaceId,
@@ -159,10 +190,20 @@ impl InteropRuntime {
         surface_id: SurfaceId,
     ) -> Result<Vec<TeardownRecord>, InteropError> {
         let torn_down = self.surfaces.destroy_surface(surface_id)?;
+        #[cfg(any(
+            feature = "gesture",
+            feature = "layout",
+            feature = "channel",
+            feature = "window",
+        ))]
         for rec in &torn_down {
+            #[cfg(feature = "gesture")]
             self.gestures.unregister_surface(rec.surface_id);
+            #[cfg(feature = "layout")]
             self.layout.invalidate_surface(rec.surface_id);
+            #[cfg(feature = "channel")]
             self.channels.unsubscribe_surface(rec.surface_id);
+            #[cfg(feature = "window")]
             if let Some(handle) = self.windows.handle_for_surface(rec.surface_id) {
                 let _ = self.windows.close_window(handle);
             }
@@ -173,18 +214,22 @@ impl InteropRuntime {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "channel")]
     use std::sync::{Arc, Mutex};
 
+    #[cfg(feature = "channel")]
     use serde::{Deserialize, Serialize};
 
     use super::*;
 
+    #[cfg(feature = "layout")]
     struct TextBlockSurface {
         chars: usize,
         char_width: f32,
         line_height: f32,
     }
 
+    #[cfg(feature = "layout")]
     impl MeasurableSurface for TextBlockSurface {
         fn measure(&self, constraints: SizeConstraints) -> IntrinsicSize {
             let single_line_w = self.chars as f32 * self.char_width;
@@ -207,6 +252,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "channel")]
     #[test]
     fn nested_multi_framework_tree_env_propagation_and_cascading_teardown() {
         let mut runtime = InteropRuntime::new();
@@ -402,6 +448,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "gesture")]
     #[test]
     fn gesture_arbitration_nested_vertical_scroll_handoff_and_orthogonal_axis() {
         let mut runtime = InteropRuntime::new();
@@ -561,6 +608,7 @@ mod tests {
         assert_eq!(horiz.reason, ArbitrationReason::OrthogonalAxisPassThrough);
     }
 
+    #[cfg(feature = "channel")]
     #[test]
     fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
         let mut bus = NveChannelBus::new();
@@ -643,6 +691,7 @@ mod tests {
         assert_eq!(bus.subscriber_count("metrics.frame_timing"), 0);
     }
 
+    #[cfg(feature = "layout")]
     #[test]
     fn intrinsic_layout_negotiation_clamping_caching_and_invalidation() {
         let mut runtime = InteropRuntime::new();
@@ -751,6 +800,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "gesture")]
     #[test]
     fn gesture_edge_cases_slop_local_overscroll_multitouch_and_teardown() {
         let mut runtime = InteropRuntime::new();
@@ -858,6 +908,7 @@ mod tests {
         assert_eq!(end_outer.reason, ArbitrationReason::PointerEnded);
     }
 
+    #[cfg(feature = "layout")]
     #[test]
     fn constraints_deflate_swiftui_proposal_and_handoff_variants() {
         let c = SizeConstraints::new(40.0, 20.0, 200.0, f32::INFINITY);
@@ -928,6 +979,7 @@ mod tests {
         assert_eq!(decoded, handoffs);
     }
 
+    #[cfg(feature = "channel")]
     #[test]
     fn surface_registration_and_channel_error_guards() {
         let mut runtime = InteropRuntime::new();

@@ -7,36 +7,74 @@
 //!   strictly validate every binary request and return safe non-modal defaults or
 //!   `SdkError::Unsupported` on headless/unbundled native hosts without spawning OS modals.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "storage"))]
 use std::path::PathBuf;
 
+#[cfg(feature = "audio")]
 use crate::audio::{self, SERVICE_AUDIO};
+#[cfg(feature = "camera")]
 use crate::camera::{self, SERVICE_CAMERA};
 use crate::error::SdkError;
+#[cfg(feature = "fonts")]
 use crate::fonts::{self, FontRegistry, SERVICE_FONTS};
+#[cfg(feature = "location")]
+use crate::location::{self, SERVICE_LOCATION};
+#[cfg(feature = "storage")]
 use crate::native::storage::KvStoreManager;
-use crate::sensors::{self, SERVICE_LOCATION, SERVICE_SENSORS};
-use crate::share_web::{self, SERVICE_SHARE, SERVICE_WEB_AUTH};
+#[cfg(feature = "sensors")]
+use crate::sensors::{self, SERVICE_SENSORS};
+#[cfg(feature = "share")]
+use crate::share_web::{self, SERVICE_SHARE};
+#[cfg(feature = "web-auth")]
+use crate::share_web::{self as web_auth_mod, SERVICE_WEB_AUTH};
+#[cfg(feature = "storage")]
 use crate::storage::{self, SERVICE_STORAGE};
 
 pub struct NativeTier2State {
+    #[cfg(feature = "storage")]
     pub kv: KvStoreManager,
+    #[cfg(feature = "fonts")]
     pub fonts: FontRegistry,
 }
 
 impl NativeTier2State {
     pub fn in_memory() -> Self {
         Self {
+            #[cfg(feature = "storage")]
             kv: KvStoreManager::in_memory(),
+            #[cfg(feature = "fonts")]
             fonts: FontRegistry::new(),
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "storage"))]
     pub fn with_storage_root(root: PathBuf) -> Self {
         Self {
             kv: KvStoreManager::with_root_dir(root),
+            #[cfg(feature = "fonts")]
             fonts: FontRegistry::new(),
+        }
+    }
+
+    pub const fn handles_service(service_id: u32) -> bool {
+        match service_id {
+            #[cfg(feature = "storage")]
+            SERVICE_STORAGE => true,
+            #[cfg(feature = "fonts")]
+            SERVICE_FONTS => true,
+            #[cfg(feature = "audio")]
+            SERVICE_AUDIO => true,
+            #[cfg(feature = "camera")]
+            SERVICE_CAMERA => true,
+            #[cfg(feature = "location")]
+            SERVICE_LOCATION => true,
+            #[cfg(feature = "sensors")]
+            SERVICE_SENSORS => true,
+            #[cfg(feature = "share")]
+            SERVICE_SHARE => true,
+            #[cfg(feature = "web-auth")]
+            SERVICE_WEB_AUTH => true,
+            _ => false,
         }
     }
 
@@ -47,18 +85,27 @@ impl NativeTier2State {
         request: &[u8],
     ) -> Result<Vec<u8>, SdkError> {
         match service_id {
+            #[cfg(feature = "storage")]
             SERVICE_STORAGE => dispatch_storage_kv(&mut self.kv, method_id, request),
+            #[cfg(feature = "fonts")]
             SERVICE_FONTS => self.dispatch_fonts(method_id, request),
+            #[cfg(feature = "audio")]
             SERVICE_AUDIO => dispatch_audio_headless(method_id, request),
+            #[cfg(feature = "camera")]
             SERVICE_CAMERA => dispatch_camera_headless(method_id, request),
+            #[cfg(feature = "location")]
             SERVICE_LOCATION => dispatch_location_headless(method_id, request),
+            #[cfg(feature = "sensors")]
             SERVICE_SENSORS => dispatch_sensors_headless(method_id, request),
+            #[cfg(feature = "share")]
             SERVICE_SHARE => dispatch_share_headless(method_id, request),
+            #[cfg(feature = "web-auth")]
             SERVICE_WEB_AUTH => dispatch_web_auth_headless(method_id, request),
             _ => Err(SdkError::Unsupported),
         }
     }
 
+    #[cfg(feature = "fonts")]
     fn dispatch_fonts(&mut self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
         match method_id {
             fonts::METHOD_REGISTER_BYTES => {
@@ -86,7 +133,7 @@ impl NativeTier2State {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "fonts"))]
     fn register_font_file(
         &mut self,
         family: String,
@@ -107,7 +154,7 @@ impl NativeTier2State {
         Ok(fonts::encode_handle(handle))
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "fonts"))]
     fn register_font_file(
         &mut self,
         _family: String,
@@ -119,6 +166,7 @@ impl NativeTier2State {
     }
 }
 
+#[cfg(feature = "storage")]
 pub(crate) fn dispatch_storage_kv(
     kv: &mut KvStoreManager,
     method_id: u32,
@@ -164,6 +212,7 @@ pub(crate) fn dispatch_storage_kv(
     }
 }
 
+#[cfg(feature = "audio")]
 fn dispatch_audio_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
     match method_id {
         audio::METHOD_LOAD_SOURCE => {
@@ -198,6 +247,7 @@ fn dispatch_audio_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, Sd
     }
 }
 
+#[cfg(feature = "camera")]
 fn dispatch_camera_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
     match method_id {
         camera::METHOD_LIST_DEVICES => camera::encode_devices_response(&[]),
@@ -218,25 +268,27 @@ fn dispatch_camera_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, S
     }
 }
 
+#[cfg(feature = "location")]
 fn dispatch_location_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
     match method_id {
-        sensors::METHOD_LOC_REQUEST_PERMISSION => Err(SdkError::Unsupported),
-        sensors::METHOD_LOC_CURRENT_POSITION => {
-            let _ = sensors::decode_accuracy_request(request)?;
+        location::METHOD_LOC_REQUEST_PERMISSION => Err(SdkError::Unsupported),
+        location::METHOD_LOC_CURRENT_POSITION => {
+            let _ = location::decode_accuracy_request(request)?;
             Err(SdkError::Unsupported)
         }
-        sensors::METHOD_LOC_WATCH_POSITION => {
-            let _ = sensors::decode_watch_config(request)?;
+        location::METHOD_LOC_WATCH_POSITION => {
+            let _ = location::decode_watch_config(request)?;
             Err(SdkError::Unsupported)
         }
-        sensors::METHOD_LOC_STOP_WATCH => {
-            let _ = sensors::decode_watch_id(request)?;
+        location::METHOD_LOC_STOP_WATCH => {
+            let _ = location::decode_watch_id(request)?;
             Err(SdkError::Unsupported)
         }
         _ => Err(SdkError::Unsupported),
     }
 }
 
+#[cfg(feature = "sensors")]
 fn dispatch_sensors_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
     match method_id {
         sensors::METHOD_SENSOR_IS_AVAILABLE => {
@@ -255,6 +307,7 @@ fn dispatch_sensors_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, 
     }
 }
 
+#[cfg(feature = "share")]
 fn dispatch_share_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
     match method_id {
         share_web::METHOD_SHARE_TEXT => {
@@ -273,14 +326,15 @@ fn dispatch_share_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, Sd
     }
 }
 
+#[cfg(feature = "web-auth")]
 fn dispatch_web_auth_headless(method_id: u32, request: &[u8]) -> Result<Vec<u8>, SdkError> {
     match method_id {
-        share_web::METHOD_OPEN_IN_APP_BROWSER => {
-            let _ = share_web::decode_open_browser_request(request)?;
+        web_auth_mod::METHOD_OPEN_IN_APP_BROWSER => {
+            let _ = web_auth_mod::decode_open_browser_request(request)?;
             Err(SdkError::Unsupported)
         }
-        share_web::METHOD_AUTHENTICATE => {
-            let _ = share_web::decode_authenticate_request(request)?;
+        web_auth_mod::METHOD_AUTHENTICATE => {
+            let _ = web_auth_mod::decode_authenticate_request(request)?;
             Err(SdkError::Unsupported)
         }
         _ => Err(SdkError::Unsupported),

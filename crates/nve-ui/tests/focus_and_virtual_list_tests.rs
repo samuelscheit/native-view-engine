@@ -113,6 +113,7 @@ fn roving_focus_horizontal_vertical_disabled_and_non_looping() {
     assert_eq!(all_dis.tab_index_for(0), -1);
 }
 
+#[cfg(feature = "virtual-list")]
 #[test]
 fn fenwick_height_tree_100k_prefix_sums_lower_bound_and_live_updates() {
     let n = 100_000usize;
@@ -150,6 +151,7 @@ fn fenwick_height_tree_100k_prefix_sums_lower_bound_and_live_updates() {
     assert_eq!(tree.lower_bound(prefix_50001), 50_001);
 }
 
+#[cfg(feature = "virtual-list")]
 #[test]
 fn virtual_list_edge_cases_empty_single_nan_overscroll_and_scroll_to_index() {
     // 1. Empty list.

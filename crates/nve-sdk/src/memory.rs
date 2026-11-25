@@ -6,31 +6,55 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "clipboard")]
+use nve_abi::SERVICE_CLIPBOARD;
+#[cfg(feature = "filesystem")]
+use nve_abi::SERVICE_FILESYSTEM;
+#[cfg(feature = "haptics")]
+use nve_abi::SERVICE_HAPTICS;
+#[cfg(feature = "linking")]
+use nve_abi::SERVICE_LINKING;
+#[cfg(feature = "notifications")]
+use nve_abi::SERVICE_NOTIFICATIONS;
+#[cfg(feature = "secure-store")]
+use nve_abi::SERVICE_SECURE_STORE;
+#[cfg(feature = "system-env")]
+use nve_abi::SERVICE_SYSTEM_ENV;
 use nve_abi::{
     NveHostEventBatch, NveHostEventRecordRef, NveHostStatus, NVE_CHANNEL_FLAG_RETAIN,
-    SERVICE_CLIPBOARD, SERVICE_FILESYSTEM, SERVICE_HAPTICS, SERVICE_LINKING, SERVICE_NOTIFICATIONS,
-    SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV,
 };
 use nve_interop::{ChannelPayload, NveChannelBus, PayloadEncoding};
 
-use crate::audio::SERVICE_AUDIO;
-use crate::camera::SERVICE_CAMERA;
+#[cfg(feature = "clipboard")]
 use crate::clipboard;
 use crate::error::SdkError;
+#[cfg(feature = "filesystem")]
 use crate::filesystem::{self, StandardPathKind};
-use crate::fonts::SERVICE_FONTS;
+#[cfg(feature = "haptics")]
 use crate::haptics::{self, ImpactStyle, NotificationHaptic};
+#[cfg(feature = "linking")]
 use crate::linking;
+#[cfg(any(
+    feature = "storage",
+    feature = "fonts",
+    feature = "audio",
+    feature = "camera",
+    feature = "location",
+    feature = "sensors",
+    feature = "share",
+    feature = "web-auth",
+))]
 use crate::memory_tier2::MemoryTier2State;
+#[cfg(feature = "notifications")]
 use crate::notifications::{self, NotificationPermission, NotificationRequest};
 use crate::provider::{HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider, InvokeResult};
+#[cfg(feature = "secure-store")]
 use crate::secure_store;
-use crate::sensors::{SERVICE_LOCATION, SERVICE_SENSORS};
-use crate::share_web::{SERVICE_SHARE, SERVICE_WEB_AUTH};
-use crate::storage::SERVICE_STORAGE;
+#[cfg(feature = "system-env")]
 use crate::system_env::{self, LocaleSnapshot, ThemeSnapshot};
 
 /// Recorded haptic trigger for test assertions.
+#[cfg(feature = "haptics")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedHaptic {
     Impact(ImpactStyle),
@@ -45,61 +69,113 @@ enum InjectedFault {
 }
 
 pub(crate) struct MemoryState {
+    #[cfg(feature = "clipboard")]
     clipboard_text: Option<String>,
+    #[cfg(feature = "filesystem")]
     standard_paths: BTreeMap<u8, String>,
+    #[cfg(feature = "filesystem")]
     pick_files_result: Result<Vec<String>, SdkError>,
+    #[cfg(feature = "filesystem")]
     save_file_result: Result<Option<String>, SdkError>,
+    #[cfg(feature = "secure-store")]
     secrets: BTreeMap<(String, String), Vec<u8>>,
+    #[cfg(feature = "linking")]
     supported_url_schemes: Vec<String>,
+    #[cfg(feature = "linking")]
     initial_url: Option<String>,
+    #[cfg(feature = "linking")]
     opened_urls: Vec<String>,
+    #[cfg(feature = "system-env")]
     theme: ThemeSnapshot,
+    #[cfg(feature = "system-env")]
     locale: LocaleSnapshot,
+    #[cfg(feature = "notifications")]
     notification_permission: NotificationPermission,
+    #[cfg(feature = "notifications")]
     active_notifications: BTreeMap<String, NotificationRequest>,
+    #[cfg(feature = "notifications")]
     cancelled_notifications: Vec<String>,
+    #[cfg(feature = "haptics")]
     haptics_log: Vec<RecordedHaptic>,
     faults: BTreeMap<(u32, u32), VecDeque<InjectedFault>>,
     pending_async: BTreeMap<u64, Option<Result<Vec<u8>, SdkError>>>,
     events: VecDeque<HostEvent>,
     channel_bus: Arc<Mutex<NveChannelBus>>,
+    #[cfg(any(
+        feature = "storage",
+        feature = "fonts",
+        feature = "audio",
+        feature = "camera",
+        feature = "location",
+        feature = "sensors",
+        feature = "share",
+        feature = "web-auth",
+    ))]
     pub(crate) tier2: MemoryTier2State,
 }
 
 impl MemoryState {
     fn new() -> Self {
-        let mut standard_paths = BTreeMap::new();
-        standard_paths.insert(StandardPathKind::Data as u8, "/mem/data".into());
-        standard_paths.insert(StandardPathKind::Cache as u8, "/mem/cache".into());
-        standard_paths.insert(StandardPathKind::Config as u8, "/mem/config".into());
-        standard_paths.insert(StandardPathKind::Temp as u8, "/mem/tmp".into());
-        standard_paths.insert(StandardPathKind::Documents as u8, "/mem/documents".into());
-        standard_paths.insert(StandardPathKind::Downloads as u8, "/mem/downloads".into());
+        #[cfg(feature = "filesystem")]
+        let standard_paths = {
+            let mut m = BTreeMap::new();
+            m.insert(StandardPathKind::Data as u8, "/mem/data".into());
+            m.insert(StandardPathKind::Cache as u8, "/mem/cache".into());
+            m.insert(StandardPathKind::Config as u8, "/mem/config".into());
+            m.insert(StandardPathKind::Temp as u8, "/mem/tmp".into());
+            m.insert(StandardPathKind::Documents as u8, "/mem/documents".into());
+            m.insert(StandardPathKind::Downloads as u8, "/mem/downloads".into());
+            m
+        };
         Self {
+            #[cfg(feature = "clipboard")]
             clipboard_text: None,
+            #[cfg(feature = "filesystem")]
             standard_paths,
+            #[cfg(feature = "filesystem")]
             pick_files_result: Ok(vec!["/mem/documents/sample.txt".into()]),
+            #[cfg(feature = "filesystem")]
             save_file_result: Ok(Some("/mem/documents/output.bin".into())),
+            #[cfg(feature = "secure-store")]
             secrets: BTreeMap::new(),
+            #[cfg(feature = "linking")]
             supported_url_schemes: vec!["https".into(), "http".into(), "mailto".into(), "nve".into()],
+            #[cfg(feature = "linking")]
             initial_url: None,
+            #[cfg(feature = "linking")]
             opened_urls: Vec::new(),
+            #[cfg(feature = "system-env")]
             theme: ThemeSnapshot::default(),
+            #[cfg(feature = "system-env")]
             locale: LocaleSnapshot::default(),
+            #[cfg(feature = "notifications")]
             notification_permission: NotificationPermission::Authorized,
+            #[cfg(feature = "notifications")]
             active_notifications: BTreeMap::new(),
+            #[cfg(feature = "notifications")]
             cancelled_notifications: Vec::new(),
+            #[cfg(feature = "haptics")]
             haptics_log: Vec::new(),
             faults: BTreeMap::new(),
             pending_async: BTreeMap::new(),
             events: VecDeque::new(),
             channel_bus: Arc::new(Mutex::new(NveChannelBus::new())),
+            #[cfg(any(
+                feature = "storage",
+                feature = "fonts",
+                feature = "audio",
+                feature = "camera",
+                feature = "location",
+                feature = "sensors",
+                feature = "share",
+                feature = "web-auth",
+            ))]
             tier2: MemoryTier2State::new(),
         }
     }
 }
 
-/// Deterministic in-memory mock implementing all Tier-1/2/3 SDK capabilities + fault injection.
+/// Deterministic in-memory mock implementing enabled Tier-1/2/3 SDK capabilities + fault injection.
 pub struct MemoryHostServices {
     next_request_id: AtomicU64,
     pub(crate) state: Mutex<MemoryState>,
@@ -123,6 +199,7 @@ impl MemoryHostServices {
         self.state.lock().unwrap().channel_bus.clone()
     }
 
+    #[cfg(feature = "filesystem")]
     pub fn set_standard_path(&self, kind: StandardPathKind, path: impl Into<String>) {
         self.state
             .lock()
@@ -131,38 +208,47 @@ impl MemoryHostServices {
             .insert(kind as u8, path.into());
     }
 
+    #[cfg(feature = "filesystem")]
     pub fn set_pick_files_result(&self, res: Result<Vec<String>, SdkError>) {
         self.state.lock().unwrap().pick_files_result = res;
     }
 
+    #[cfg(feature = "filesystem")]
     pub fn set_save_file_result(&self, res: Result<Option<String>, SdkError>) {
         self.state.lock().unwrap().save_file_result = res;
     }
 
+    #[cfg(feature = "linking")]
     pub fn set_initial_url(&self, url: Option<String>) {
         self.state.lock().unwrap().initial_url = url;
     }
 
+    #[cfg(feature = "linking")]
     pub fn set_supported_url_schemes(&self, schemes: Vec<String>) {
         self.state.lock().unwrap().supported_url_schemes = schemes;
     }
 
+    #[cfg(feature = "linking")]
     pub fn opened_urls(&self) -> Vec<String> {
         self.state.lock().unwrap().opened_urls.clone()
     }
 
+    #[cfg(feature = "system-env")]
     pub fn set_theme(&self, theme: ThemeSnapshot) {
         self.state.lock().unwrap().theme = theme;
     }
 
+    #[cfg(feature = "system-env")]
     pub fn set_locale(&self, locale: LocaleSnapshot) {
         self.state.lock().unwrap().locale = locale;
     }
 
+    #[cfg(feature = "notifications")]
     pub fn set_notification_permission(&self, perm: NotificationPermission) {
         self.state.lock().unwrap().notification_permission = perm;
     }
 
+    #[cfg(feature = "notifications")]
     pub fn active_notifications(&self) -> Vec<NotificationRequest> {
         self.state
             .lock()
@@ -173,10 +259,12 @@ impl MemoryHostServices {
             .collect()
     }
 
+    #[cfg(feature = "notifications")]
     pub fn cancelled_notifications(&self) -> Vec<String> {
         self.state.lock().unwrap().cancelled_notifications.clone()
     }
 
+    #[cfg(feature = "haptics")]
     pub fn haptics_log(&self) -> Vec<RecordedHaptic> {
         self.state.lock().unwrap().haptics_log.clone()
     }
@@ -218,12 +306,7 @@ impl MemoryHostServices {
     }
 
     /// Completes an injected async pending request directly.
-    pub fn complete_async(
-        &self,
-        request_id: u64,
-        status: NveHostStatus,
-        payload: Vec<u8>,
-    ) {
+    pub fn complete_async(&self, request_id: u64, status: NveHostStatus, payload: Vec<u8>) {
         let outcome = if status.is_ok() {
             Ok(payload)
         } else {
@@ -310,6 +393,7 @@ impl HostServiceProvider for MemoryHostServices {
         method_id: u32,
         request: &[u8],
     ) -> Result<InvokeResult, SdkError> {
+        let _ = request;
         let mut st = self.state.lock().unwrap();
 
         if let Some(queue) = st.faults.get_mut(&(service_id, method_id))
@@ -331,135 +415,164 @@ impl HostServiceProvider for MemoryHostServices {
             }
         }
 
-        let payload = match (service_id, method_id) {
-            // Clipboard
-            (SERVICE_CLIPBOARD, clipboard::METHOD_READ_TEXT) => {
-                clipboard::encode_read_text_response(st.clipboard_text.as_deref())?
-            }
-            (SERVICE_CLIPBOARD, clipboard::METHOD_WRITE_TEXT) => {
-                let text = clipboard::decode_write_text_request(request)?;
-                st.clipboard_text = Some(text);
-                Vec::new()
-            }
-            (SERVICE_CLIPBOARD, clipboard::METHOD_HAS_TEXT) => {
-                clipboard::encode_has_text_response(
-                    st.clipboard_text.as_ref().is_some_and(|s| !s.is_empty()),
-                )
-            }
-            (SERVICE_CLIPBOARD, clipboard::METHOD_CLEAR) => {
-                st.clipboard_text = None;
-                Vec::new()
-            }
-
-            // Filesystem
-            (SERVICE_FILESYSTEM, filesystem::METHOD_STANDARD_PATH) => {
-                let kind = filesystem::decode_standard_path_request(request)?;
-                let path = st
-                    .standard_paths
-                    .get(&(kind as u8))
-                    .ok_or(SdkError::NotFound)?;
-                filesystem::encode_standard_path_response(path)?
-            }
-            (SERVICE_FILESYSTEM, filesystem::METHOD_PICK_FILES) => {
-                let _opts = filesystem::decode_file_picker_options(request)?;
-                let paths = st.pick_files_result.clone()?;
-                filesystem::encode_pick_files_response(&paths)?
-            }
-            (SERVICE_FILESYSTEM, filesystem::METHOD_SAVE_FILE) => {
-                let _opts = filesystem::decode_save_file_options(request)?;
-                let saved = st.save_file_result.clone()?;
-                filesystem::encode_save_file_response(saved.as_deref())?
-            }
-
-            // Secure Store
-            (SERVICE_SECURE_STORE, secure_store::METHOD_GET) => {
-                let (svc, acc) = secure_store::decode_key_request(request)?;
-                let found = st.secrets.get(&(svc, acc)).map(Vec::as_slice);
-                secure_store::encode_get_response(found)?
-            }
-            (SERVICE_SECURE_STORE, secure_store::METHOD_SET) => {
-                let (svc, acc, secret) = secure_store::decode_set_request(request)?;
-                st.secrets.insert((svc, acc), secret);
-                Vec::new()
-            }
-            (SERVICE_SECURE_STORE, secure_store::METHOD_DELETE) => {
-                let (svc, acc) = secure_store::decode_key_request(request)?;
-                let removed = st.secrets.remove(&(svc, acc)).is_some();
-                secure_store::encode_delete_response(removed)
-            }
-
-            // Linking
-            (SERVICE_LINKING, linking::METHOD_OPEN_URL) => {
-                let url = linking::decode_url_request(request)?;
-                let scheme = url.split(':').next().unwrap_or_default().to_ascii_lowercase();
-                if !st.supported_url_schemes.iter().any(|s| s == &scheme) {
-                    return Err(SdkError::Unsupported);
+        let payload: Result<Vec<u8>, SdkError> = match (service_id, method_id) {
+                // Clipboard
+                #[cfg(feature = "clipboard")]
+                (SERVICE_CLIPBOARD, clipboard::METHOD_READ_TEXT) => {
+                    clipboard::encode_read_text_response(st.clipboard_text.as_deref())
                 }
-                st.opened_urls.push(url);
-                Vec::new()
-            }
-            (SERVICE_LINKING, linking::METHOD_CAN_OPEN_URL) => {
-                let url = linking::decode_url_request(request)?;
-                let scheme = url.split(':').next().unwrap_or_default().to_ascii_lowercase();
-                let ok = st.supported_url_schemes.iter().any(|s| s == &scheme);
-                linking::encode_can_open_response(ok)
-            }
-            (SERVICE_LINKING, linking::METHOD_INITIAL_URL) => {
-                linking::encode_initial_url_response(st.initial_url.as_deref())?
-            }
-
-            // System Env
-            (SERVICE_SYSTEM_ENV, system_env::METHOD_GET_THEME) => {
-                st.theme.encode_nvt2().to_vec()
-            }
-            (SERVICE_SYSTEM_ENV, system_env::METHOD_GET_LOCALE) => st.locale.encode_nvl1()?,
-
-            // Notifications
-            (SERVICE_NOTIFICATIONS, notifications::METHOD_REQUEST_PERMISSION) => {
-                notifications::encode_permission_response(st.notification_permission)
-            }
-            (SERVICE_NOTIFICATIONS, notifications::METHOD_SHOW) => {
-                if st.notification_permission == NotificationPermission::Denied {
-                    return Err(SdkError::PermissionDenied);
+                #[cfg(feature = "clipboard")]
+                (SERVICE_CLIPBOARD, clipboard::METHOD_WRITE_TEXT) => {
+                    let text = clipboard::decode_write_text_request(request)?;
+                    st.clipboard_text = Some(text);
+                    Ok(Vec::new())
                 }
-                let req = notifications::decode_show_request(request)?;
-                st.active_notifications.insert(req.id.clone(), req);
-                Vec::new()
-            }
-            (SERVICE_NOTIFICATIONS, notifications::METHOD_CANCEL) => {
-                let id = notifications::decode_cancel_request(request)?;
-                st.active_notifications.remove(&id);
-                st.cancelled_notifications.push(id);
-                Vec::new()
-            }
+                #[cfg(feature = "clipboard")]
+                (SERVICE_CLIPBOARD, clipboard::METHOD_HAS_TEXT) => Ok(
+                    clipboard::encode_has_text_response(
+                        st.clipboard_text.as_ref().is_some_and(|s| !s.is_empty()),
+                    ),
+                ),
+                #[cfg(feature = "clipboard")]
+                (SERVICE_CLIPBOARD, clipboard::METHOD_CLEAR) => {
+                    st.clipboard_text = None;
+                    Ok(Vec::new())
+                }
 
-            // Haptics
-            (SERVICE_HAPTICS, haptics::METHOD_IMPACT) => {
-                let style = haptics::decode_impact_request(request)?;
-                st.haptics_log.push(RecordedHaptic::Impact(style));
-                Vec::new()
-            }
-            (SERVICE_HAPTICS, haptics::METHOD_NOTIFICATION) => {
-                let kind = haptics::decode_notification_haptic_request(request)?;
-                st.haptics_log.push(RecordedHaptic::Notification(kind));
-                Vec::new()
-            }
-            (SERVICE_HAPTICS, haptics::METHOD_SELECTION) => {
-                st.haptics_log.push(RecordedHaptic::Selection);
-                Vec::new()
-            }
+                // Filesystem
+                #[cfg(feature = "filesystem")]
+                (SERVICE_FILESYSTEM, filesystem::METHOD_STANDARD_PATH) => {
+                    let kind = filesystem::decode_standard_path_request(request)?;
+                    let path = st
+                        .standard_paths
+                        .get(&(kind as u8))
+                        .ok_or(SdkError::NotFound)?;
+                    filesystem::encode_standard_path_response(path)
+                }
+                #[cfg(feature = "filesystem")]
+                (SERVICE_FILESYSTEM, filesystem::METHOD_PICK_FILES) => {
+                    let _opts = filesystem::decode_file_picker_options(request)?;
+                    let paths = st.pick_files_result.clone()?;
+                    filesystem::encode_pick_files_response(&paths)
+                }
+                #[cfg(feature = "filesystem")]
+                (SERVICE_FILESYSTEM, filesystem::METHOD_SAVE_FILE) => {
+                    let _opts = filesystem::decode_save_file_options(request)?;
+                    let saved = st.save_file_result.clone()?;
+                    filesystem::encode_save_file_response(saved.as_deref())
+                }
 
-            // Tier-2/3 capabilities
-            (
-                SERVICE_STORAGE | SERVICE_FONTS | SERVICE_AUDIO | SERVICE_CAMERA
-                | SERVICE_LOCATION | SERVICE_SENSORS | SERVICE_SHARE | SERVICE_WEB_AUTH,
-                _,
-            ) => st.tier2.dispatch(service_id, method_id, request)?,
+                // Secure Store
+                #[cfg(feature = "secure-store")]
+                (SERVICE_SECURE_STORE, secure_store::METHOD_GET) => {
+                    let (svc, acc) = secure_store::decode_key_request(request)?;
+                    let found = st.secrets.get(&(svc, acc)).map(Vec::as_slice);
+                    secure_store::encode_get_response(found)
+                }
+                #[cfg(feature = "secure-store")]
+                (SERVICE_SECURE_STORE, secure_store::METHOD_SET) => {
+                    let (svc, acc, secret) = secure_store::decode_set_request(request)?;
+                    st.secrets.insert((svc, acc), secret);
+                    Ok(Vec::new())
+                }
+                #[cfg(feature = "secure-store")]
+                (SERVICE_SECURE_STORE, secure_store::METHOD_DELETE) => {
+                    let (svc, acc) = secure_store::decode_key_request(request)?;
+                    let removed = st.secrets.remove(&(svc, acc)).is_some();
+                    Ok(secure_store::encode_delete_response(removed))
+                }
 
-            _ => return Err(SdkError::Unsupported),
-        };
+                // Linking
+                #[cfg(feature = "linking")]
+                (SERVICE_LINKING, linking::METHOD_OPEN_URL) => {
+                    let url = linking::decode_url_request(request)?;
+                    let scheme = url.split(':').next().unwrap_or_default().to_ascii_lowercase();
+                    if !st.supported_url_schemes.iter().any(|s| s == &scheme) {
+                        return Err(SdkError::Unsupported);
+                    }
+                    st.opened_urls.push(url);
+                    Ok(Vec::new())
+                }
+                #[cfg(feature = "linking")]
+                (SERVICE_LINKING, linking::METHOD_CAN_OPEN_URL) => {
+                    let url = linking::decode_url_request(request)?;
+                    let scheme = url.split(':').next().unwrap_or_default().to_ascii_lowercase();
+                    let ok = st.supported_url_schemes.iter().any(|s| s == &scheme);
+                    Ok(linking::encode_can_open_response(ok))
+                }
+                #[cfg(feature = "linking")]
+                (SERVICE_LINKING, linking::METHOD_INITIAL_URL) => {
+                    linking::encode_initial_url_response(st.initial_url.as_deref())
+                }
 
-        Ok(InvokeResult::Ready(payload))
+                // System Env
+                #[cfg(feature = "system-env")]
+                (SERVICE_SYSTEM_ENV, system_env::METHOD_GET_THEME) => {
+                    Ok(st.theme.encode_nvt2().to_vec())
+                }
+                #[cfg(feature = "system-env")]
+                (SERVICE_SYSTEM_ENV, system_env::METHOD_GET_LOCALE) => st.locale.encode_nvl1(),
+
+                // Notifications
+                #[cfg(feature = "notifications")]
+                (SERVICE_NOTIFICATIONS, notifications::METHOD_REQUEST_PERMISSION) => Ok(
+                    notifications::encode_permission_response(st.notification_permission),
+                ),
+                #[cfg(feature = "notifications")]
+                (SERVICE_NOTIFICATIONS, notifications::METHOD_SHOW) => {
+                    if st.notification_permission == NotificationPermission::Denied {
+                        return Err(SdkError::PermissionDenied);
+                    }
+                    let req = notifications::decode_show_request(request)?;
+                    st.active_notifications.insert(req.id.clone(), req);
+                    Ok(Vec::new())
+                }
+                #[cfg(feature = "notifications")]
+                (SERVICE_NOTIFICATIONS, notifications::METHOD_CANCEL) => {
+                    let id = notifications::decode_cancel_request(request)?;
+                    st.active_notifications.remove(&id);
+                    st.cancelled_notifications.push(id);
+                    Ok(Vec::new())
+                }
+
+                // Haptics
+                #[cfg(feature = "haptics")]
+                (SERVICE_HAPTICS, haptics::METHOD_IMPACT) => {
+                    let style = haptics::decode_impact_request(request)?;
+                    st.haptics_log.push(RecordedHaptic::Impact(style));
+                    Ok(Vec::new())
+                }
+                #[cfg(feature = "haptics")]
+                (SERVICE_HAPTICS, haptics::METHOD_NOTIFICATION) => {
+                    let kind = haptics::decode_notification_haptic_request(request)?;
+                    st.haptics_log.push(RecordedHaptic::Notification(kind));
+                    Ok(Vec::new())
+                }
+                #[cfg(feature = "haptics")]
+                (SERVICE_HAPTICS, haptics::METHOD_SELECTION) => {
+                    st.haptics_log.push(RecordedHaptic::Selection);
+                    Ok(Vec::new())
+                }
+
+                // Tier-2/3 capabilities
+                #[cfg(any(
+                    feature = "storage",
+                    feature = "fonts",
+                    feature = "audio",
+                    feature = "camera",
+                    feature = "location",
+                    feature = "sensors",
+                    feature = "share",
+                    feature = "web-auth",
+                ))]
+                (svc, method) if MemoryTier2State::handles_service(svc) => {
+                    st.tier2.dispatch(svc, method, request)
+                }
+
+                _ => Err(SdkError::Unsupported),
+            };
+
+        payload.map(InvokeResult::Ready)
     }
 
     fn channel_publish(
