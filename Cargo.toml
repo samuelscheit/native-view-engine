@@ -11,6 +11,8 @@ members = [
     "crates/nve-sdk",
     "crates/nve-ui",
     "crates/nve-router",
+    "crates/nve-mdx",
+    "crates/nve-docs",
     "crates/nve-backend-headless",
     "crates/nve-backend-skia",
     "crates/nve-backend-web",
@@ -18,6 +20,7 @@ members = [
     "crates/nve-bench",
     "examples/counter",
     "examples/studio-workspace",
+    "examples/nve-docs-site",
     "hosts/skia-shell",
     "hosts/web-shell",
 ]
@@ -38,6 +41,8 @@ nve-interop = { path = "crates/nve-interop" }
 nve-sdk = { path = "crates/nve-sdk" }
 nve-ui = { path = "crates/nve-ui" }
 nve-router = { path = "crates/nve-router" }
+nve-mdx = { path = "crates/nve-mdx" }
+nve-docs = { path = "crates/nve-docs" }
 nve-backend-headless = { path = "crates/nve-backend-headless" }
 nve-backend-skia = { path = "crates/nve-backend-skia" }
 nve-backend-web = { path = "crates/nve-backend-web" }

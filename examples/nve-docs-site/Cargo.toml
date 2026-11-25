@@ -1,0 +1,27 @@
+[package]
+name = "nve-docs-site"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["cdylib-export"]
+cdylib-export = []
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-components = { workspace = true }
+nve-dioxus = { workspace = true }
+nve-docs = { workspace = true }
+nve-engine = { workspace = true }
+nve-interop = { workspace = true }
+nve-mdx = { workspace = true }
+nve-router = { workspace = true }
+nve-sdk = { workspace = true }
+nve-ui = { workspace = true }
+dioxus-core = { workspace = true }
+dioxus-core-macro = { workspace = true }
+dioxus-signals = { workspace = true }

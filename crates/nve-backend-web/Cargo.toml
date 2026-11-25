@@ -13,10 +13,15 @@ nve-engine = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = [
     "CanvasRenderingContext2d",
+    "CssStyleSheet",
     "DomRect",
     "FocusEvent",
     "HtmlCanvasElement",
     "HtmlInputElement",
+    "HtmlStyleElement",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
     "KeyboardEvent",
+    "NodeList",
     "Performance",
 ] }

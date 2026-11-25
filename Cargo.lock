@@ -1621,6 +1621,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-docs"
+version = "0.1.0"
+dependencies = [
+ "dioxus-core",
+ "dioxus-core-macro",
+ "dioxus-signals",
+ "nve-abi",
+ "nve-backend-headless",
+ "nve-backend-web",
+ "nve-dioxus",
+ "nve-interop",
+ "nve-mdx",
+ "nve-router",
+ "nve-sdk",
+ "nve-ui",
+]
+
+[[package]]
+name = "nve-docs-site"
+version = "0.1.0"
+dependencies = [
+ "dioxus-core",
+ "dioxus-core-macro",
+ "dioxus-signals",
+ "nve-abi",
+ "nve-components",
+ "nve-dioxus",
+ "nve-docs",
+ "nve-engine",
+ "nve-interop",
+ "nve-mdx",
+ "nve-router",
+ "nve-sdk",
+ "nve-ui",
+]
+
+[[package]]
 name = "nve-engine"
 version = "0.1.0"
 dependencies = [
@@ -1670,6 +1707,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-mdx"
+version = "0.1.0"
+
+[[package]]
 name = "nve-router"
 version = "0.1.0"
 dependencies = [
@@ -1679,6 +1720,8 @@ dependencies = [
  "nve-backend-headless",
  "nve-dioxus",
  "nve-interop",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
