@@ -42,7 +42,8 @@ use std::time::Instant;
 
 use nve_abi::{ColorRgba, NativeEvent, NodeId, SurfaceId, ROOT_NODE_ID};
 use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
-use nve_components::canvas_ir::{CanvasOp, ImageResizeMode};
+use nve_components::canvas_ir::{DrawList, ImageResizeMode};
+use nve_components::native_view::{NativeCommand, TypedNativeViewCommand, TypedNativeViewProps};
 use nve_engine::{
     BackendApplyStats, BackendError, LayoutEngine, LayoutRect, RenderBackend, TextMeasurer,
     Viewport,
@@ -152,7 +153,7 @@ pub enum PaintOp {
     CustomSkiaCanvas {
         node_id: NodeId,
         rect: LayoutRect,
-        ops: Vec<CanvasOp>,
+        ops: DrawList,
     },
 }
 
@@ -256,6 +257,61 @@ impl<L: LayoutEngine> SkiaBackend<L> {
 
     pub fn display_list(&self) -> &DisplayList {
         &self.display_list
+    }
+
+    pub fn layout_tree(&self) -> &HeadlessBackend<L> {
+        &self.layout_tree
+    }
+
+    /// Attaches or clears a zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) directly on
+    /// `node_id` and rebuilds the display list if changed (zero base64, zero `NVE_DRAW1` decode).
+    pub fn set_node_draw_list(&mut self, node_id: NodeId, draw_list: Option<DrawList>) {
+        if self.layout_tree.set_node_draw_list(node_id, draw_list) {
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Bulk-synchronizes zero-serialization [`DrawList`]s from any producer
+    /// (e.g. `DioxusSurface::iter_draw_lists`), rebuilding the display list only when changed.
+    pub fn sync_draw_lists_from<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (NodeId, &'a DrawList)>,
+    ) {
+        if self.layout_tree.sync_draw_lists_from(entries) {
+            self.rebuild_display_list();
+        }
+    }
+
+    /// Attaches or clears zero-serialization [`TypedNativeViewProps`] directly on `node_id`.
+    pub fn set_native_view_props(
+        &mut self,
+        node_id: NodeId,
+        props: Option<TypedNativeViewProps>,
+    ) {
+        let _ = self.layout_tree.set_native_view_props(node_id, props);
+    }
+
+    /// Bulk-synchronizes zero-serialization [`TypedNativeViewProps`] from any producer.
+    pub fn sync_native_views_from<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (NodeId, &'a TypedNativeViewProps)>,
+    ) {
+        let _ = self.layout_tree.sync_native_views_from(entries);
+    }
+
+    /// Records a zero-serialization [`NativeCommand`] dispatched directly in-process.
+    pub fn dispatch_native_command(&mut self, node_id: NodeId, cmd: NativeCommand) {
+        self.layout_tree.dispatch_native_command(node_id, cmd);
+    }
+
+    /// Records a zero-serialization [`TypedNativeViewCommand`] dispatched directly in-process.
+    pub fn dispatch_typed_native_command(
+        &mut self,
+        node_id: NodeId,
+        cmd: TypedNativeViewCommand,
+    ) {
+        self.layout_tree
+            .dispatch_typed_native_command(node_id, cmd);
     }
 
     /// Computes the visual (scroll-shifted + sticky-clamped) layout rectangle of `node_id` in

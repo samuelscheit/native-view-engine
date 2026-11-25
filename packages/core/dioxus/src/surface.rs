@@ -5,10 +5,12 @@ use std::time::Instant;
 
 use dioxus_core::{Element, VirtualDom};
 use nve_abi::{FrameId, NodeId, SurfaceId};
+use nve_components::canvas_ir::DrawList;
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
+use nve_components::native_view::TypedNativeViewProps;
 use nve_components::transform::Transform2D;
 use nve_engine::HotPatchMsg;
 
@@ -162,6 +164,49 @@ impl DioxusSurface {
     #[inline]
     pub fn iter_transforms(&self) -> impl Iterator<Item = (NodeId, Transform2D)> + '_ {
         self.writer.iter_transforms()
+    }
+
+    /// Enables or disables pure in-process mode (zero `NVE_DRAW1` and zero `NVNP` wire encoding
+    /// in `CommandBuffer`; backends receive direct typed [`DrawList`] & [`TypedNativeViewProps`]).
+    #[inline]
+    pub fn set_in_process_mode(&mut self, enabled: bool) {
+        self.writer.set_in_process_mode(enabled);
+    }
+
+    /// Builder-style variant of [`Self::set_in_process_mode`].
+    #[inline]
+    pub fn with_in_process_mode(mut self, enabled: bool) -> Self {
+        self.writer.set_in_process_mode(enabled);
+        self
+    }
+
+    #[inline]
+    pub fn in_process_mode(&self) -> bool {
+        self.writer.in_process_mode()
+    }
+
+    /// Direct zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) stored on `node_id`.
+    #[inline]
+    pub fn node_draw_list(&self, node_id: NodeId) -> Option<&DrawList> {
+        self.writer.node_draw_list(node_id)
+    }
+
+    /// Iterates over all active canvas nodes with a direct typed [`DrawList`].
+    #[inline]
+    pub fn iter_draw_lists(&self) -> impl Iterator<Item = (NodeId, &DrawList)> + '_ {
+        self.writer.iter_draw_lists()
+    }
+
+    /// Direct zero-serialization [`TypedNativeViewProps`] stored on `node_id`.
+    #[inline]
+    pub fn node_native_view_props(&self, node_id: NodeId) -> Option<&TypedNativeViewProps> {
+        self.writer.node_native_view_props(node_id)
+    }
+
+    /// Iterates over all active `<NativeView>` nodes with direct typed [`TypedNativeViewProps`].
+    #[inline]
+    pub fn iter_native_views(&self) -> impl Iterator<Item = (NodeId, &TypedNativeViewProps)> + '_ {
+        self.writer.iter_native_views()
     }
 
     /// Encodes all signals registered on this surface into a zero-JSON `NVE_SIG1` binary archive.

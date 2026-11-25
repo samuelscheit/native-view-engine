@@ -1,5 +1,5 @@
-//! Shared binary wire primitives (`NVNP` / `NVNC` constants, typed errors, `NativeValueRef`, and
-//! scalar/string/byte read-write helpers) for zero-JSON native view codecs.
+//! Canonical `NVNP`/`NVNC` constants, typed [`NativeViewCodecError`], borrowed
+//! [`NativeValueRef`], and single-source scalar/string/byte wire read-write helpers.
 
 use std::fmt;
 
@@ -19,8 +19,12 @@ pub const NATIVE_CMD_HEADER_SIZE: usize = 8;
 
 /// Standard `nve-abi` `SetRawProp` key carrying the concrete native view kind string.
 pub const NATIVE_VIEW_KIND_PROP_KEY: &str = "nve.native_kind";
-/// Standard `nve-abi` `SetRawProp` key carrying the binary `NVNP` encoded prop bytes.
+/// Shorthand alias accepted by host adapters for native view kind.
+pub const NATIVE_VIEW_KIND_PROP_ALIAS: &str = "nve.native.kind";
+/// Standard `nve-abi` `SetRawProp` key carrying binary `NVNP` prop bytes across FFI boundaries.
 pub const NATIVE_VIEW_PROPS_PROP_KEY: &str = "nve.native_props";
+/// Shorthand alias accepted by host adapters for native view props.
+pub const NATIVE_VIEW_PROPS_PROP_ALIAS: &str = "nve.native.props";
 
 /// Maximum permitted binary fields per native view prop payload (guards against OOM bombs).
 pub const MAX_NATIVE_PROP_FIELDS: usize = 1024;
@@ -29,7 +33,7 @@ pub const MAX_NATIVE_CMD_ARGS: usize = 64;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ValueTag {
+pub(crate) enum ValueTag {
     Null = 0,
     Bool = 1,
     U32 = 2,
@@ -43,7 +47,7 @@ enum ValueTag {
 
 impl ValueTag {
     #[inline]
-    fn from_u8(v: u8) -> Result<Self, NativeViewCodecError> {
+    pub(crate) fn from_u8(v: u8) -> Result<Self, NativeViewCodecError> {
         match v {
             0 => Ok(Self::Null),
             1 => Ok(Self::Bool),
@@ -59,7 +63,9 @@ impl ValueTag {
     }
 }
 
-/// Typed errors returned when encoding, decoding, or dispatching native view props and commands.
+/// Typed errors returned when validating, encoding, decoding, or dispatching native view
+/// props and commands (shared canonically across `nve-components`, `nve-interop`,
+/// `nve-camera`, `nve-dioxus`, and `nve-backend-web`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeViewCodecError {
     Truncated,
@@ -96,7 +102,7 @@ impl fmt::Display for NativeViewCodecError {
                 write!(f, "expected {expected} command args, got {actual}")
             }
             Self::TypeMismatch { expected } => {
-                write!(f, "native view binary type mismatch (expected {expected})")
+                write!(f, "native view type mismatch (expected {expected})")
             }
             Self::TrailingBytes(n) => {
                 write!(f, "{n} unexpected trailing bytes in native view buffer")
@@ -111,7 +117,8 @@ impl fmt::Display for NativeViewCodecError {
 
 impl std::error::Error for NativeViewCodecError {}
 
-/// Zero-copy borrowed scalar/string/byte value decoded from an `NVNP` or `NVNC` buffer.
+/// Zero-copy borrowed scalar/string/byte value shared by both in-process [`super::NativeProps`]
+/// and cross-language FFI `NVNP`/`NVNC` wire decoders.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NativeValueRef<'a> {
     Null,
@@ -149,6 +156,17 @@ impl<'a> NativeValueRef<'a> {
             Self::U32(v) => Ok(Some(v)),
             _ => Err(NativeViewCodecError::TypeMismatch {
                 expected: "Option<u32>",
+            }),
+        }
+    }
+
+    #[inline]
+    pub fn as_opt_str(self) -> Result<Option<&'a str>, NativeViewCodecError> {
+        match self {
+            Self::Null => Ok(None),
+            Self::Str(s) => Ok(Some(s)),
+            _ => Err(NativeViewCodecError::TypeMismatch {
+                expected: "Option<str>",
             }),
         }
     }
@@ -325,4 +343,15 @@ pub(crate) fn take_slice<'a>(
     let slice = bytes.get(*pos..end).ok_or(NativeViewCodecError::Truncated)?;
     *pos = end;
     Ok(slice)
+}
+
+#[inline]
+pub(crate) fn read_len_str<'a>(
+    bytes: &'a [u8],
+    pos: &mut usize,
+) -> Result<&'a str, NativeViewCodecError> {
+    let len_slice = take_slice(bytes, pos, 4)?;
+    let len = u32::from_le_bytes(len_slice.try_into().unwrap()) as usize;
+    let raw = take_slice(bytes, pos, len)?;
+    std::str::from_utf8(raw).map_err(|_| NativeViewCodecError::InvalidUtf8)
 }

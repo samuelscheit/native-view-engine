@@ -1,8 +1,11 @@
 //! `NVE_DRAW1` vector draw-list decoding and `CanvasRenderingContext2d` rendering for `<canvas>`
 //! (`ComponentKind::SkiaCanvas`) nodes in `nve-backend-web`.
 
-use nve_abi::RawPropValue;
-use nve_components::canvas_ir::{CanvasOp, DrawListDecoder, DrawListError};
+use nve_abi::hash::HashMap;
+use nve_abi::{NodeId, RawPropValue};
+use nve_components::canvas_ir::{CanvasOp, DrawList, DrawListDecoder, DrawListError};
+
+use crate::WebBackend;
 
 #[cfg(target_arch = "wasm32")]
 use nve_abi::ColorRgba;
@@ -22,6 +25,72 @@ pub fn decode_draw_list_prop(value: &RawPropValue) -> Result<Vec<CanvasOp>, Draw
         return Ok(Vec::new());
     }
     DrawListDecoder::decode_raw_prop(value)
+}
+
+impl WebBackend {
+    /// Directly attaches or clears a zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) on
+    /// `node_id` (zero base64, zero `NVE_DRAW1` binary decoding).
+    pub fn set_node_draw_list(&mut self, node_id: NodeId, draw_list: Option<DrawList>) {
+        let next = draw_list.unwrap_or_default();
+        let changed = if let Some(el) = self.nodes.get_mut(&node_id) {
+            if el.draw_ops.ptr_eq(&next) || el.draw_ops == next {
+                false
+            } else {
+                el.draw_op_count = next.len();
+                el.draw_ops = next;
+                true
+            }
+        } else {
+            false
+        };
+        if changed {
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.sync_dom_draw_ops_attr(node_id);
+                self.repaint_canvas_node(node_id);
+            }
+        }
+    }
+
+    /// Bulk-synchronizes zero-serialization [`DrawList`]s from any producer
+    /// (e.g. `DioxusSurface::iter_draw_lists`), updating `data-nve-draw-ops` and repainting only
+    /// canvases whose draw list changed.
+    pub fn sync_draw_lists_from<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (NodeId, &'a DrawList)>,
+    ) {
+        let map: HashMap<NodeId, &'a DrawList> = entries.into_iter().collect();
+        #[cfg(target_arch = "wasm32")]
+        let mut dirty: Vec<NodeId> = Vec::new();
+        for (&id, el) in &mut self.nodes {
+            match map.get(&id).copied() {
+                Some(next) => {
+                    if !(el.draw_ops.ptr_eq(next) || el.draw_ops == *next) {
+                        el.draw_op_count = next.len();
+                        el.draw_ops = next.clone();
+                        #[cfg(target_arch = "wasm32")]
+                        dirty.push(id);
+                    }
+                }
+                None => {
+                    // Only clear nodes that weren't populated via wire `raw_props["drawList"]`.
+                    let has_wire_prop = el.raw_props.contains_key("drawList")
+                        || el.raw_props.contains_key("draw_list");
+                    if !has_wire_prop && !el.draw_ops.is_empty() {
+                        el.draw_op_count = 0;
+                        el.draw_ops = DrawList::empty();
+                        #[cfg(target_arch = "wasm32")]
+                        dirty.push(id);
+                    }
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        for nid in dirty {
+            self.sync_dom_draw_ops_attr(nid);
+            self.repaint_canvas_node(nid);
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

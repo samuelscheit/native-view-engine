@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue};
 use nve_backend_headless::{HeadlessBackend, HeadlessNode};
-use nve_components::canvas_ir::{CanvasOp, DrawListDecoder, ImageResizeMode};
+use nve_components::canvas_ir::{DrawList, DrawListDecoder, ImageResizeMode};
 use nve_components::style_patch::{Display, Overflow, TextAlign as PatchTextAlign};
 use nve_engine::{LayoutEngine, LayoutRect};
 
@@ -148,15 +148,21 @@ fn extract_image_resize_mode(node: &HeadlessNode) -> ImageResizeMode {
     }
 }
 
-fn extract_canvas_ops(node: &HeadlessNode) -> Vec<CanvasOp> {
+fn extract_canvas_ops(node: &HeadlessNode) -> DrawList {
+    // Fast path: O(1) Arc clone with ZERO base64 and ZERO NVE_DRAW1 binary decoding.
+    if let Some(ref dl) = node.draw_list {
+        return dl.clone();
+    }
     let Some(raw) = node
         .raw_props
         .get("drawList")
         .or_else(|| node.raw_props.get("draw_list"))
     else {
-        return Vec::new();
+        return DrawList::empty();
     };
-    DrawListDecoder::decode_raw_prop(raw).unwrap_or_default()
+    DrawListDecoder::decode_raw_prop(raw)
+        .map(DrawList::from_ops)
+        .unwrap_or_default()
 }
 
 fn emit_box_shadows(

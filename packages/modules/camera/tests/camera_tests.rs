@@ -194,3 +194,73 @@ fn deterministic_fuzz_never_panics() {
         let _ = CameraFrameDescriptor::decode(&buf);
     }
 }
+
+#[test]
+fn zero_copy_inprocess_props_commands_and_ncvf_frame_descriptor() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use nve_camera::CameraFrameProcessor;
+
+    // 1. Zero-serialization in-process NativeProps & NativeCommand round-trips (no NVNP/NVNC bytes).
+    let props = CameraPreviewProps::new()
+        .with_device_id("back-tele")
+        .with_facing(CameraFacing::Front)
+        .with_torch(TorchMode::Auto)
+        .with_zoom(2.25)
+        .with_fps(120)
+        .with_hdr(true)
+        .with_stabilization(StabilizationMode::Standard)
+        .with_frame_processor(true)
+        .with_audio(true)
+        .with_active(true);
+    let typed_props = props.to_native_props().unwrap();
+    assert_eq!(CameraPreviewProps::from_native_props(&typed_props).unwrap(), props);
+
+    let cmd = CameraPreviewCommand::CapturePhoto { quality: 92, flash: 1 };
+    let typed_cmd = cmd.to_native_command().unwrap();
+    assert_eq!(typed_cmd.command_name(), "capture_photo");
+    assert_eq!(CameraPreviewCommand::from_native_command(&typed_cmd).unwrap(), cmd);
+
+    // 2. Zero-copy CameraFrameDescriptor::dispatch_to + CameraFrameWireLayout::as_bytes parity.
+    let desc = CameraFrameDescriptor {
+        width: 1920,
+        height: 1080,
+        stride_bytes: 1920,
+        pixel_format: CameraPixelFormat::Yuv420_888,
+        rotation_deg: 270,
+        timestamp_ns: 0x0102_0304_0506_0708,
+        native_handle_id: 0x1122_3344_5566_7788,
+    };
+    let seen_handle = AtomicU64::new(0);
+    let proc = |frame: &CameraFrameDescriptor| {
+        assert_eq!(frame.width, 1920);
+        assert_eq!(frame.height, 1080);
+        seen_handle.store(frame.native_handle_id, Ordering::SeqCst);
+    };
+    let proc_ref: &dyn CameraFrameProcessor = &proc;
+    desc.dispatch_to(proc_ref).unwrap();
+    assert_eq!(seen_handle.load(Ordering::SeqCst), 0x1122_3344_5566_7788);
+
+    // Invalid descriptor is rejected before invoking processor.
+    let bad_desc = CameraFrameDescriptor { width: 0, ..desc };
+    assert!(bad_desc.dispatch_to(proc_ref).is_err());
+
+    let wire = desc.to_wire_layout().unwrap();
+    assert_eq!(wire.to_descriptor().unwrap(), desc);
+    #[cfg(target_endian = "little")]
+    assert_eq!(wire.as_bytes(), &desc.encode().unwrap());
+
+    // Corrupt wire layout rejected cleanly without byte slicing.
+    let mut bad_wire = wire;
+    bad_wire.reserved = 7;
+    assert_eq!(
+        bad_wire.to_descriptor().unwrap_err(),
+        CameraCodecError::InvalidEnum("CameraFrameReserved", 7)
+    );
+    let mut bad_magic = wire;
+    bad_magic.magic = *b"NOPE";
+    assert_eq!(
+        bad_magic.to_descriptor().unwrap_err(),
+        CameraCodecError::InvalidMagic(*b"NOPE")
+    );
+}

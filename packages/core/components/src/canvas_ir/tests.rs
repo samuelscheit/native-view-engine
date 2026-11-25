@@ -298,3 +298,86 @@ fn fuzz_arbitrary_and_mutated_draw_list_buffers_never_panic() {
         let _ = DrawListDecoder::decode(&buf);
     }
 }
+
+#[test]
+fn zero_serialization_draw_list_and_recorder_match_nve_draw1_and_sanitize_edges() {
+    let mut rec = DrawListRecorder::with_capacity(8);
+    rec.clear(ColorRgba::rgba(11, 17, 32, 255))
+        .clip_rect(4.0, 4.0, 200.0, 80.0)
+        .fill_rect(8.0, 12.0, 40.0, 24.0, ColorRgba::rgb(30, 41, 59))
+        .fill_rounded_rect(10.0, 10.0, 180.0, 60.0, 12.0, ColorRgba::rgb(15, 23, 42))
+        .stroke_line(
+            12.0,
+            40.0,
+            188.0,
+            40.0,
+            1.5,
+            ColorRgba::rgba(148, 163, 184, 128),
+        )
+        .stroke_polyline(
+            &[(12.0, 50.0), (60.0, 32.0), (120.0, 42.0), (188.0, 18.0)],
+            2.5,
+            ColorRgba::rgb(56, 189, 248),
+        )
+        .fill_circle(188.0, 18.0, 4.0, ColorRgba::rgb(34, 197, 94))
+        .restore_clip();
+
+    let draw_list = rec.finish();
+    assert_eq!(draw_list.len(), 8);
+    let cloned = draw_list.clone();
+    assert!(draw_list.ptr_eq(&cloned));
+
+    // Byte-for-byte parity between DrawList::to_nve_draw1_bytes() and DrawListBuilder::finish().
+    let mut wire = DrawListBuilder::new();
+    wire.clear(ColorRgba::rgba(11, 17, 32, 255))
+        .clip_rect(4.0, 4.0, 200.0, 80.0)
+        .fill_rect(8.0, 12.0, 40.0, 24.0, ColorRgba::rgb(30, 41, 59))
+        .fill_rounded_rect(10.0, 10.0, 180.0, 60.0, 12.0, ColorRgba::rgb(15, 23, 42))
+        .stroke_line(
+            12.0,
+            40.0,
+            188.0,
+            40.0,
+            1.5,
+            ColorRgba::rgba(148, 163, 184, 128),
+        )
+        .stroke_polyline(
+            &[(12.0, 50.0), (60.0, 32.0), (120.0, 42.0), (188.0, 18.0)],
+            2.5,
+            ColorRgba::rgb(56, 189, 248),
+        )
+        .fill_circle(188.0, 18.0, 4.0, ColorRgba::rgb(34, 197, 94))
+        .restore_clip();
+    let expected_bytes = wire.finish();
+    assert_eq!(draw_list.to_nve_draw1_bytes(), expected_bytes);
+    assert_eq!(DrawList::from_nve_draw1_bytes(&expected_bytes).unwrap(), draw_list);
+
+    // Non-finite floats are sanitized to 0.0 and oversized polylines clamp to MAX_POLYLINE_POINTS.
+    let mut edge = DrawListRecorder::new();
+    let oversized: Vec<(f32, f32)> = (0..(MAX_POLYLINE_POINTS + 16))
+        .map(|i| (if i == 0 { f32::NAN } else { i as f32 }, f32::INFINITY))
+        .collect();
+    edge.fill_circle(f32::NAN, f32::NEG_INFINITY, f32::INFINITY, ColorRgba::WHITE)
+        .stroke_polyline(&oversized, f32::NAN, ColorRgba::WHITE);
+    let edge_list = edge.finish();
+    assert_eq!(
+        edge_list[0],
+        CanvasOp::FillCircle {
+            cx: 0.0,
+            cy: 0.0,
+            radius: 0.0,
+            color: ColorRgba::WHITE,
+        }
+    );
+    match &edge_list[1] {
+        CanvasOp::StrokePolyline { points, width, .. } => {
+            assert_eq!(points.len(), MAX_POLYLINE_POINTS);
+            assert_eq!(points[0], (0.0, 0.0));
+            assert_eq!(*width, 0.0);
+        }
+        other => panic!("expected StrokePolyline, got {other:?}"),
+    }
+    // Encoded sanitized DrawList round-trips cleanly with zero NonFiniteFloat errors.
+    let edge_bytes = edge_list.to_nve_draw1_bytes();
+    assert_eq!(DrawList::from_nve_draw1_bytes(&edge_bytes).unwrap(), edge_list);
+}

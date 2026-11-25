@@ -398,6 +398,8 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                     style,
                     has_explicit_style: sn.has_explicit_style(),
                     raw_props,
+                    draw_list: None,
+                    native_view_props: None,
                     event_mask: sn.event_mask,
                     cursor: None,
                     state_rules: Vec::new(),

@@ -227,7 +227,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                 test_id: "bench-latest-canvas",
                                 nve_style: bar_canvas_resp.clone(),
                                 accessibility_label: "Latest verified NVE benchmark latency bar chart",
-                                draw_list: "{bar_draw_list}",
+                                draw_list: CanvasDrawList(bar_draw_list),
                                 style: "width: {bar_canvas_w}px; max-width: 100%; flex-grow: 1; height: {bar_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",
                             }
                         }
@@ -342,7 +342,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                                 test_id: "bench-canvas-{series.id}",
                                                 nve_style: line_canvas_resp.clone(),
                                                 accessibility_label: "{series.title} progression chart",
-                                                draw_list: "{draw_list}",
+                                                draw_list: CanvasDrawList(draw_list),
                                                 style: "width: {line_canvas_w}px; max-width: 100%; flex-grow: 1; height: {line_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",
                                             }
                                         }

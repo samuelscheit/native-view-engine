@@ -2,18 +2,18 @@
 //! `feature = "camera"` so apps that do not use live camera streams pay zero bytes for codecs
 //! or `navigator.mediaDevices.getUserMedia` inline JS glue.
 //!
-//! Reuses canonical types and zero-JSON `NVNP`/`NVNC` codecs directly from `nve-camera`.
+//! Reuses canonical types and single-source codecs directly from `nve-camera` / `nve-components`.
 
 pub use nve_camera::{
     CameraFacing, CameraFacing as CameraPreviewFacing, CameraPreviewCommand, CameraPreviewProps,
     StabilizationMode, TorchMode, CAMERA_PREVIEW_KIND, MAX_CAMERA_FPS,
 };
 
-use nve_camera::CameraCodecError;
-
 #[cfg(target_arch = "wasm32")]
 use crate::native_view::sync_bool_attr;
-use crate::native_view::{push_escaped_attr, NativeViewCodecError, NativeViewNodeState};
+use crate::native_view::{
+    push_escaped_attr, DecodedNativeView, NativeViewCodecError, NativeViewNodeState,
+};
 
 pub const KIND_CAMERA_PREVIEW: &str = CAMERA_PREVIEW_KIND;
 pub const KIND_CAMERA_ALIAS: &str = "nve.camera";
@@ -81,39 +81,31 @@ impl Drop for CameraStreamGuard {
     }
 }
 
-fn map_camera_codec_error(err: CameraCodecError) -> NativeViewCodecError {
-    use CameraCodecError as C;
-    use NativeViewCodecError as N;
-    match err {
-        C::Truncated => N::Truncated,
-        C::InvalidMagic(m) => N::InvalidMagic(m),
-        C::UnsupportedVersion(v) => N::UnsupportedVersion(v),
-        C::InvalidTag(t) => N::InvalidTag(t),
-        C::InvalidBool(b) => N::InvalidBool(b),
-        C::InvalidEnum(ty, v) => N::InvalidEnum(ty, v),
-        C::InvalidUtf8 => N::InvalidUtf8,
-        C::MissingField(id) => N::MissingField(id),
-        C::MissingArg(idx) => N::MissingArg(idx),
-        C::UnexpectedArgCount { expected, actual } => N::UnexpectedArgCount { expected, actual },
-        C::TypeMismatch { expected } => N::TypeMismatch(expected),
-        C::TrailingBytes(n) => N::TrailingBytes(n),
-        C::UnknownCommandOpcode(op) => N::UnknownCommandOpcode(op),
-        C::TooManyFields(n) => N::TooManyFields(n),
-        C::PayloadTooLarge => N::TypeMismatch("payload exceeds u32 length"),
-    }
-}
-
+#[inline]
 pub fn decode_camera_preview_props(bytes: &[u8]) -> Result<CameraPreviewProps, NativeViewCodecError> {
-    CameraPreviewProps::from_prop_bytes(bytes).map_err(map_camera_codec_error)
+    CameraPreviewProps::from_prop_bytes(bytes)
 }
 
-pub fn decode_camera_preview_command(bytes: &[u8]) -> Result<CameraPreviewCommand, NativeViewCodecError> {
-    CameraPreviewCommand::from_command_bytes(bytes).map_err(map_camera_codec_error)
+#[inline]
+pub fn decode_camera_preview_command(
+    bytes: &[u8],
+) -> Result<CameraPreviewCommand, NativeViewCodecError> {
+    CameraPreviewCommand::from_command_bytes(bytes)
+}
+
+pub(crate) fn apply_camera_props(state: &mut NativeViewNodeState, props: CameraPreviewProps) {
+    state.camera.props = props.clone();
+    state.decoded = Some(DecodedNativeView::CameraPreview(props));
+    state.set_tag("video".to_owned(), Some("video"));
+    state.extra_css.clear();
 }
 
 pub(crate) fn format_camera_zoom(zoom: f32) -> String {
     let rounded = (zoom * 100.0).round() / 100.0;
-    format!("{rounded:.2}").trim_end_matches('0').trim_end_matches('.').to_owned()
+    format!("{rounded:.2}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
 }
 
 pub(crate) fn write_camera_html_attrs(cam: &CameraNodeState, out: &mut String) {
@@ -217,14 +209,11 @@ pub(crate) fn sync_camera_dom(el: &web_sys::Element, state: &mut NativeViewNodeS
     }
 }
 
-pub(crate) fn dispatch_camera_command(
+pub(crate) fn dispatch_camera_typed_command(
     state: &mut NativeViewNodeState,
     #[cfg(target_arch = "wasm32")] dom_el: Option<&web_sys::Element>,
-    payload: &[u8],
+    cmd: CameraPreviewCommand,
 ) -> bool {
-    let Ok(cmd) = decode_camera_preview_command(payload) else {
-        return false;
-    };
     match cmd {
         CameraPreviewCommand::SwitchFacing(facing) => {
             state.camera.facing = facing;

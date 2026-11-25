@@ -1,102 +1,37 @@
-//! `NativeViewSpec`, typed imperative `NativeViewHandle`, and wildcard-aware `NativeViewRegistry`.
+//! Typed imperative [`NativeViewHandle`] (zero-serialization in-process command queueing +
+//! on-demand cross-language `CommandBuffer` wire framing) and wildcard-aware
+//! [`NativeViewRegistry`].
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{CommandBufferBuilder, FrameId, NodeId, SurfaceId};
-
-use super::codec::{
-    NativeCommandDecoder, NativeCommandEncoder, NativePropDecoder, NativePropEncoder,
+use nve_components::native_view::{
+    BlurSurface, EncodeNativeCommand, NativeCommand, NativeViewCodecError, NativeViewSpec,
+    TypedNativeViewCommand, VideoPlayer, WebView,
 };
-use super::wire::NativeViewCodecError;
 
-/// Encodes typed native view props into a compact zero-JSON `NVNP` binary buffer.
-pub trait EncodeNativeProps {
-    fn encode_props(&self, enc: &mut NativePropEncoder) -> Result<(), NativeViewCodecError>;
-
-    /// Convenience helper encoding directly into a standalone `Vec<u8>`.
-    fn to_prop_bytes(&self) -> Result<Vec<u8>, NativeViewCodecError> {
-        let mut enc = NativePropEncoder::new();
-        self.encode_props(&mut enc)?;
-        Ok(enc.finish())
-    }
-}
-
-/// Decodes typed native view props from a validated zero-JSON `NVNP` binary buffer.
-pub trait DecodeNativeProps: Sized {
-    fn decode_props(dec: &NativePropDecoder<'_>) -> Result<Self, NativeViewCodecError>;
-
-    fn from_prop_bytes(bytes: &[u8]) -> Result<Self, NativeViewCodecError> {
-        let dec = NativePropDecoder::decode(bytes)?;
-        Self::decode_props(&dec)
-    }
-}
-
-/// Encodes typed imperative native view commands into a zero-JSON `NVNC` binary payload
-/// carried inside `nve_abi::Command::DispatchCommand`.
-pub trait EncodeNativeCommand {
-    /// Wire command name carried in `Command::DispatchCommand::command_name`.
-    fn command_name(&self) -> &'static str;
-
-    /// Encodes the command opcode and binary arguments into `NVNC` bytes.
-    fn encode_command(&self) -> Result<Vec<u8>, NativeViewCodecError>;
-}
-
-/// Decodes typed imperative native view commands from a validated `NVNC` binary payload.
-pub trait DecodeNativeCommand: Sized {
-    fn decode_command(dec: &NativeCommandDecoder<'_>) -> Result<Self, NativeViewCodecError>;
-
-    fn from_command_bytes(bytes: &[u8]) -> Result<Self, NativeViewCodecError> {
-        let dec = NativeCommandDecoder::decode(bytes)?;
-        Self::decode_command(&dec)
-    }
-}
-
-/// Marker command type for declarative native views that do not expose imperative commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoCommand {}
-
-impl EncodeNativeCommand for NoCommand {
-    fn command_name(&self) -> &'static str {
-        match *self {}
-    }
-
-    fn encode_command(&self) -> Result<Vec<u8>, NativeViewCodecError> {
-        match *self {}
-    }
-}
-
-impl DecodeNativeCommand for NoCommand {
-    fn decode_command(dec: &NativeCommandDecoder<'_>) -> Result<Self, NativeViewCodecError> {
-        Err(NativeViewCodecError::UnknownCommandOpcode(dec.opcode()))
-    }
-}
-
-/// First-class typed contract for a native platform view primitive mounted via `<NativeView>`.
-pub trait NativeViewSpec: 'static {
-    /// Canonical native view kind string (e.g. `"nve.blur_surface"`, `"nve.web_view"`, `"web.*"`).
-    const KIND: &'static str;
-    type Props: EncodeNativeProps + Clone + PartialEq + 'static;
-    type Command: EncodeNativeCommand + 'static;
-
-    /// Resolves the concrete native kind emitted for a specific props instance.
-    /// Defaults to [`Self::KIND`]; overridden by dynamic passthrough specs like `WebElement`.
-    #[inline]
-    fn resolved_kind(_props: &Self::Props) -> Cow<'static, str> {
-        Cow::Borrowed(Self::KIND)
-    }
-}
-
-/// Binary imperative command queued on a [`NativeViewHandle`] awaiting flush into a `CommandBuffer`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Imperative command queued on a [`NativeViewHandle`].
+///
+/// Stores zero-serialization [`NativeCommand`] + concrete [`TypedNativeViewCommand`] directly
+/// for in-process Rust hosts; encodes `NVNC` wire bytes only when flushed to an FFI `CommandBuffer`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct QueuedNativeCommand {
     pub surface_id: SurfaceId,
     pub node_id: NodeId,
     pub command_name: &'static str,
-    pub payload: Vec<u8>,
+    pub command: NativeCommand,
+    pub typed: TypedNativeViewCommand,
+}
+
+impl QueuedNativeCommand {
+    /// Encodes this command into cross-language `NVNC` binary wire bytes on demand.
+    #[inline]
+    pub fn to_wire_bytes(&self) -> Result<Vec<u8>, NativeViewCodecError> {
+        self.command.to_nvnc_bytes()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -142,7 +77,8 @@ impl fmt::Debug for NativeViewHandleBinder {
 
 /// Typed imperative command handle bound to a mounted `<NativeView<P>>` node.
 ///
-/// Emits compact binary `nve_abi::Command::DispatchCommand` frames without re-rendering RSX.
+/// Queues zero-serialization typed commands in-process and can also emit cross-language
+/// `nve_abi::Command::DispatchCommand` frames without re-rendering RSX.
 pub struct NativeViewHandle<P: NativeViewSpec> {
     inner: Arc<Mutex<HandleInner>>,
     _marker: PhantomData<fn() -> P>,
@@ -238,22 +174,25 @@ impl<P: NativeViewSpec> NativeViewHandle<P> {
         }
     }
 
-    /// Queues a typed imperative command encoded as binary `NVNC` bytes.
+    /// Queues a typed imperative command in-process with ZERO binary `NVNC` serialization.
     pub fn dispatch(&self, command: P::Command) -> Result<(), NativeViewCodecError> {
-        let payload = command.encode_command()?;
+        let command_name = command.command_name();
+        let native_cmd = command.to_native_command()?;
+        let typed = TypedNativeViewCommand::with_typed(native_cmd.clone(), Arc::new(command));
         let mut guard = self.inner.lock().unwrap();
         let (surface_id, node_id) = guard.binding.ok_or(NativeViewCodecError::UnboundHandle)?;
         guard.pending.push(QueuedNativeCommand {
             surface_id,
             node_id,
-            command_name: command.command_name(),
-            payload,
+            command_name,
+            command: native_cmd,
+            typed,
         });
         Ok(())
     }
 
     /// Immediately encodes a single typed imperative command into a standalone `nve-abi`
-    /// binary `CommandBuffer` frame (without touching RSX or VirtualDom).
+    /// binary `CommandBuffer` frame for cross-language FFI hosts.
     pub fn encode_command_frame(
         &self,
         frame_id: FrameId,
@@ -272,40 +211,39 @@ impl<P: NativeViewSpec> NativeViewHandle<P> {
         Ok(builder.into_bytes())
     }
 
-    /// Drains all queued commands into an existing [`CommandBufferBuilder`].
+    /// Drains all queued commands into an existing cross-language [`CommandBufferBuilder`].
     /// Returns the number of `Command::DispatchCommand` ops emitted.
     pub fn flush_into_builder(&self, builder: &mut CommandBufferBuilder) -> usize {
-        let drained: Vec<QueuedNativeCommand> = {
-            let mut guard = self.inner.lock().unwrap();
-            std::mem::take(&mut guard.pending)
-        };
-        let count = drained.len();
+        let drained = self.drain_queued();
+        let mut count = 0usize;
         for cmd in drained {
-            builder.dispatch_command(cmd.node_id, cmd.command_name, &cmd.payload);
+            if let Ok(payload) = cmd.to_wire_bytes() {
+                builder.dispatch_command(cmd.node_id, cmd.command_name, &payload);
+                count += 1;
+            }
         }
         count
     }
 
-    /// Drains all queued commands into a standalone binary `nve-abi` `CommandBuffer` frame.
+    /// Drains all queued commands into a standalone cross-language `nve-abi` `CommandBuffer` frame.
     /// Returns `None` if no commands are queued.
     pub fn take_command_frame(&self, frame_id: FrameId) -> Option<Vec<u8>> {
-        let drained: Vec<QueuedNativeCommand> = {
-            let mut guard = self.inner.lock().unwrap();
-            if guard.pending.is_empty() {
-                return None;
-            }
-            std::mem::take(&mut guard.pending)
-        };
+        let drained = self.drain_queued();
+        if drained.is_empty() {
+            return None;
+        }
         let surface_id = drained[0].surface_id;
         let mut builder = CommandBufferBuilder::with_capacity(surface_id, frame_id, 256);
         for cmd in drained {
-            builder.dispatch_command(cmd.node_id, cmd.command_name, &cmd.payload);
+            if let Ok(payload) = cmd.to_wire_bytes() {
+                builder.dispatch_command(cmd.node_id, cmd.command_name, &payload);
+            }
         }
         builder.commit(false);
         Some(builder.into_bytes())
     }
 
-    /// Drains queued commands directly for inspection or custom host forwarding.
+    /// Drains queued zero-serialization commands directly for in-process Rust backends.
     pub fn drain_queued(&self) -> Vec<QueuedNativeCommand> {
         let mut guard = self.inner.lock().unwrap();
         std::mem::take(&mut guard.pending)
@@ -333,37 +271,29 @@ pub struct NativeViewRegistry {
 }
 
 impl NativeViewRegistry {
-    /// Empty registry (every `<NativeView>` renders its graceful `fallback` slot).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Preset for headless test hosts (no native primitives registered).
     pub fn headless() -> Self {
         Self::new()
     }
 
-    /// Preset for Web DOM hosts supporting `"web.*"` passthrough elements.
     pub fn web_dom() -> Self {
         Self::new().with("web.*")
     }
 
-    /// Preset for Apple UIKit/AppKit hosts (`BlurSurface`, `WebView`, `VideoPlayer`).
     pub fn apple() -> Self {
         Self::new()
-            .with(super::specs::BlurSurface::KIND)
-            .with(super::specs::WebView::KIND)
-            .with(super::specs::VideoPlayer::KIND)
+            .with(BlurSurface::KIND)
+            .with(WebView::KIND)
+            .with(VideoPlayer::KIND)
     }
 
-    /// Preset for Android hosts (`WebView`, `VideoPlayer`).
     pub fn android() -> Self {
-        Self::new()
-            .with(super::specs::WebView::KIND)
-            .with(super::specs::VideoPlayer::KIND)
+        Self::new().with(WebView::KIND).with(VideoPlayer::KIND)
     }
 
-    /// Registers an exact kind or prefix wildcard pattern (e.g. `"web.*"`).
     pub fn register(&mut self, pattern: impl Into<String>) -> &mut Self {
         let raw = pattern.into();
         let trimmed = raw.trim();
@@ -382,24 +312,20 @@ impl NativeViewRegistry {
         self
     }
 
-    /// Builder-style variant of [`Self::register`].
     pub fn with(mut self, pattern: impl Into<String>) -> Self {
         self.register(pattern);
         self
     }
 
-    /// Registers `P::KIND` in this registry.
     pub fn register_spec<P: NativeViewSpec>(&mut self) -> &mut Self {
         self.register(P::KIND)
     }
 
-    /// Builder-style variant of [`Self::register_spec`].
     pub fn with_spec<P: NativeViewSpec>(mut self) -> Self {
         self.register_spec::<P>();
         self
     }
 
-    /// Removes a previously registered exact kind or prefix wildcard pattern.
     pub fn unregister(&mut self, pattern: &str) -> bool {
         let trimmed = pattern.trim();
         if let Some(prefix) = trimmed.strip_suffix('*') {
@@ -411,7 +337,6 @@ impl NativeViewRegistry {
         }
     }
 
-    /// Returns `true` if `kind` matches an exact entry or a registered prefix wildcard.
     pub fn supports(&self, kind: &str) -> bool {
         let trimmed = kind.trim();
         if trimmed.is_empty() {
@@ -429,13 +354,11 @@ impl NativeViewRegistry {
         })
     }
 
-    /// Returns `true` if `P::KIND` is registered (for static-kind specs).
     #[inline]
     pub fn supports_spec<P: NativeViewSpec>(&self) -> bool {
         self.supports(P::KIND)
     }
 
-    /// Returns `true` if the resolved kind for `(P, props)` is supported by this host.
     #[inline]
     pub fn supports_props<P: NativeViewSpec>(&self, props: &P::Props) -> bool {
         let kind = P::resolved_kind(props);
@@ -451,10 +374,4 @@ impl NativeViewRegistry {
     pub fn wildcard_prefixes(&self) -> &[String] {
         &self.prefix_wildcards
     }
-}
-
-/// Helper re-exported for specs implementing [`EncodeNativeCommand`].
-#[inline]
-pub(crate) fn cmd_encoder(opcode: u16) -> NativeCommandEncoder {
-    NativeCommandEncoder::new(opcode)
 }

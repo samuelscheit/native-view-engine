@@ -105,8 +105,9 @@ pub use state_css::{
     feature = "camera",
 ))]
 pub use native_view::{
-    DecodedNativeView, NativeCommandDecoder, NativePropDecoder, NativeValueRef,
-    NativeViewCodecError, NativeViewNodeState,
+    DecodedNativeView, NativeCommand, NativeCommandDecoder, NativePropDecoder, NativeProps,
+    NativeValueRef, NativeViewCodecError, NativeViewNodeState, TypedNativeViewCommand,
+    TypedNativeViewProps,
 };
 #[cfg(feature = "nv-blur")]
 pub use native_view::{BlurMaterial, BlurSurfaceProps};

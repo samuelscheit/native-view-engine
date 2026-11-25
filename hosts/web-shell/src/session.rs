@@ -476,6 +476,14 @@ impl WebAppSession {
         let timing = self
             .runner
             .submit_recorded_frame(frame_id, reconcile_us, encode_us, &bytes)?;
+        if let SessionApp::Dioxus(surface) = &self.app {
+            self.runner
+                .backend_mut()
+                .sync_draw_lists_from(surface.iter_draw_lists());
+            self.runner
+                .backend_mut()
+                .sync_native_views_from(surface.iter_native_views());
+        }
         self.sync_scene(frame_id);
         Ok(timing)
     }

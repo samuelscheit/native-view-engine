@@ -13,6 +13,7 @@ pub mod motion;
 pub mod motion_clock;
 #[cfg(test)]
 mod motion_tests;
+pub mod native_view;
 pub mod reconcile;
 pub mod spring;
 pub mod style_patch;
@@ -20,9 +21,9 @@ mod tracker;
 pub mod transform;
 
 pub use canvas_ir::{
-    CanvasOp, DrawListBuilder, DrawListDecoder, DrawListError, DrawListHeader, ImageResizeMode,
-    DRAW_LIST_ATTR_PREFIX, MAX_DRAW_OPS, MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC,
-    NVE_DRAW_VERSION,
+    CanvasOp, DrawList, DrawListBuilder, DrawListDecoder, DrawListError, DrawListHeader,
+    DrawListRecorder, ImageResizeMode, DRAW_LIST_ATTR_PREFIX, MAX_DRAW_OPS, MAX_POLYLINE_POINTS,
+    NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC, NVE_DRAW_VERSION,
 };
 pub use client_hints::{
     ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,

@@ -12,12 +12,14 @@
 
 mod base64;
 mod codec;
+mod draw_list;
 mod types;
 
 #[cfg(test)]
 mod tests;
 
 pub use codec::{DrawListBuilder, DrawListDecoder};
+pub use draw_list::{DrawList, DrawListRecorder};
 pub use types::{
     CanvasOp, DrawListError, DrawListHeader, ImageResizeMode, DRAW_LIST_ATTR_PREFIX, MAX_DRAW_OPS,
     MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC, NVE_DRAW_VERSION,

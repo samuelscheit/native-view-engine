@@ -4,6 +4,7 @@
 //! per frame — feeding Fabric (iOS/Android), Skia (Desktop/Mobile), Web (WASM), and Headless
 //! backends identically.
 
+pub mod canvas;
 pub mod dioxus_elements;
 pub use dioxus_elements as elements;
 pub mod error_boundary;
@@ -18,6 +19,7 @@ pub mod traits;
 pub mod typed_style;
 mod writer;
 
+pub use canvas::CanvasDrawList;
 pub use elements::{
     FocusEvent, FocusEventData, KeyEvent, KeyEventData, ScrollEvent, ScrollEventData, SubmitEvent,
     SubmitEventData,
@@ -26,16 +28,19 @@ pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
     ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
 };
+pub use nve_components::canvas_ir::{CanvasOp, DrawList, DrawListRecorder};
 pub use nve_components::input_hints::{AutofillHint, InputMode};
 pub use native_view::{
     use_native_view_handle, use_native_view_registry, use_provide_native_view_registry,
     BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
-    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, NativeCommandDecoder,
-    NativeCommandEncoder, NativePropDecoder, NativePropEncoder, NativeValueRef, NativeView,
-    NativeViewCodecError, NativeViewHandle, NativeViewProvider, NativeViewRegistry, NativeViewSpec,
-    NoCommand, QueuedNativeCommand, VideoPlayer, VideoPlayerCommand, VideoPlayerProps, WebElement,
-    WebElementProps, WebView, WebViewCommand, WebViewProps, NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC,
-    NATIVE_VIEW_KIND_PROP_KEY, NATIVE_VIEW_PROPS_PROP_KEY,
+    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, NativeCommand,
+    NativeCommandDecoder, NativeCommandEncoder, NativeProp, NativePropDecoder, NativePropEncoder,
+    NativePropValue, NativeProps, NativeValueRef, NativeView, NativeViewCodecError,
+    NativeViewHandle, NativeViewProvider, NativeViewRegistry, NativeViewSpec, NoCommand,
+    QueuedNativeCommand, TypedNativeViewCommand, TypedNativeViewProps, VideoPlayer,
+    VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand,
+    WebViewProps, NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC, NATIVE_VIEW_KIND_PROP_KEY,
+    NATIVE_VIEW_PROPS_PROP_KEY,
 };
 pub use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
@@ -99,17 +104,20 @@ pub struct CustomEventData {
 pub type CustomEvent = Event<CustomEventData>;
 
 pub mod prelude {
+    pub use crate::canvas::CanvasDrawList;
     pub use crate::elements::{
         self as dioxus_elements, events::*, KeyEvent, KeyEventData, PressEvent, SubmitEvent,
         SubmitEventData, TextEvent,
     };
     pub use crate::native_view::{
         use_native_view_handle, use_native_view_registry, use_provide_native_view_registry,
-        BlurMaterial, BlurSurface, BlurSurfaceProps, NativeView, NativeViewCodecError,
-        NativeViewHandle, NativeViewProvider, NativeViewRegistry, NativeViewSpec, VideoPlayer,
+        BlurMaterial, BlurSurface, BlurSurfaceProps, NativeCommand, NativeProps, NativeView,
+        NativeViewCodecError, NativeViewHandle, NativeViewProvider, NativeViewRegistry,
+        NativeViewSpec, TypedNativeViewCommand, TypedNativeViewProps, VideoPlayer,
         VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand,
         WebViewProps,
     };
+    pub use nve_components::canvas_ir::{CanvasOp, DrawList, DrawListRecorder};
     pub use crate::error_boundary::{
         throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
         ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
