@@ -43,6 +43,10 @@ typedef void (^RCTNveEventHandler)(NSString *eventName, NSDictionary<NSString *,
                  surfaceId:(uint32_t)surfaceId
                      error:(NSError * _Nullable * _Nullable)error;
 
+/// Reload a previously-loaded `cdylib`, preserving component state via `NveDevApi::snapshot_state`/`restore_state`.
+- (BOOL)reloadNveDylibAtPath:(NSString *)dylibPath
+                       error:(NSError * _Nullable * _Nullable)error;
+
 /// Update component props from a UTF-8 JSON object string and re-render if needed.
 - (BOOL)applyPropsJson:(NSString *)propsJson;
 
@@ -56,6 +60,12 @@ typedef void (^RCTNveEventHandler)(NSString *eventName, NSDictionary<NSString *,
 /// Flush pending outbound events from `NveComponentApi::drain_emitted_events` into
 /// `-handleNveEvent:payload:`.
 - (void)drainNveEmittedEvents;
+
+/// Programmatically dispatch a native press event on a rendered node.
+- (void)simulatePressOnNodeId:(uint32_t)nodeId atPoint:(CGPoint)point;
+
+/// Inspect the live UIKit `UIView` mounted for a given NVE shadow `nodeId` (or `nil` if absent).
+- (nullable UIView *)nativeViewForNodeId:(uint32_t)nodeId;
 
 /// Override point for `nve-codegen`-generated subclasses to return their statically-linked
 /// `nve_get_interface` function pointer (return `NULL` when attached manually).

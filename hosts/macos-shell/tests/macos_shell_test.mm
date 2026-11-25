@@ -337,7 +337,7 @@ int main() {
     // New inner width = 460; label = 120; gap = 10 -> button = 330
     assert(approx_eq(buttonView.frame.size.width, 330.0));
 
-    // 5. Test NveMacFabricHostController standalone lifecycle + error reporting
+    // 5. Test NveMacFabricHostController standalone lifecycle + shared error codes (1/2/3)
     NveSurfaceConfig cfg{.surface_id = 3, .width = 320.0f, .height = 240.0f, .scale_factor = 2.0f};
     NveMacFabricHostController *ctrl =
         [[NveMacFabricHostController alloc] initWithSurfaceConfig:cfg];
@@ -346,33 +346,164 @@ int main() {
     assert(ctrl.nodeCount == 4);
     assert([ctrl applyHotPatchJson:@"Patched"]);
 
+    NSString *noEntryPath = @NVE_TEST_NO_ENTRY_DYLIB;
+    NSString *noSurfacePath = @NVE_TEST_NO_SURFACE_DYLIB;
+    NSString *statefulPath = @NVE_TEST_STATEFUL_DYLIB;
+
+    auto assertDylibError = [](NSError *err, NSString *expectedDomain, NSInteger expectedCode) {
+      assert(err != nil);
+      assert([err.domain isEqualToString:expectedDomain]);
+      assert(err.code == expectedCode);
+      assert(err.localizedDescription.length > 0);
+    };
+
+    // Error code 1: missing path and empty path
     NSError *loadErr = nil;
     assert([ctrl loadRustAppDylibAtPath:@"/nonexistent/libmissing.dylib" error:&loadErr] == NO);
-    assert(loadErr != nil);
+    assertDylibError(loadErr, @"nve.macos.shell", 1);
+    loadErr = nil;
+    assert([ctrl loadRustAppDylibAtPath:@"" error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.shell", 1);
+
+    // Error code 2: valid dylib missing `nve_get_interface`
+    loadErr = nil;
+    assert([ctrl loadRustAppDylibAtPath:noEntryPath error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.shell", 2);
+
+    // Error code 3: exports `nve_get_interface` but missing `NVE_IFACE_SURFACE`
+    loadErr = nil;
+    assert([ctrl loadRustAppDylibAtPath:noSurfacePath error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.shell", 3);
+
+    // Prior statically-attached app must still be alive after all failed dylib loads.
+    assert(ctrl.isAppLoaded == YES);
+    assert(ctrl.nodeCount == 4);
+
+    // 5b. Test NveMacFabricHostController hot-reload edge cases:
+    //     cold reload, state preservation across warm reload, failed reload preserves live app,
+    //     and fresh load resets state.
+    NveMacFabricHostController *reloadCtrl =
+        [[NveMacFabricHostController alloc] initWithSurfaceConfig:cfg];
+    assert(reloadCtrl.isAppLoaded == NO);
+    loadErr = nil;
+    assert([reloadCtrl reloadRustAppDylibAtPath:statefulPath error:&loadErr] == YES);
+    assert(loadErr == nil);
+    assert(reloadCtrl.isAppLoaded == YES);
+    assert(reloadCtrl.nodeCount == 3);
+
+    auto findSnapshotText = [](NveFabricHostHandle host, uint32_t nodeId) -> std::string {
+      for (const auto &snap : nve::fabric_host_snapshot_nodes(host)) {
+        if (snap.node_id == nodeId) {
+          return snap.text;
+        }
+      }
+      return "";
+    };
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=0");
+
+    // Mutate state via hot patch, then reload -> snapshot_state/restore_state preserves "state=77"
+    assert([reloadCtrl applyHotPatchJson:@"77"] == YES);
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=77");
+
+    // Failed reloads (codes 1/2/3) must leave the live app and its state intact
+    loadErr = nil;
+    assert([reloadCtrl reloadRustAppDylibAtPath:@"/nonexistent/fail.dylib" error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.shell", 1);
+    assert(reloadCtrl.isAppLoaded == YES);
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=77");
+
+    loadErr = nil;
+    assert([reloadCtrl reloadRustAppDylibAtPath:noEntryPath error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.shell", 2);
+    assert(reloadCtrl.isAppLoaded == YES);
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=77");
+
+    loadErr = nil;
+    assert([reloadCtrl reloadRustAppDylibAtPath:noSurfacePath error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.shell", 3);
+    assert(reloadCtrl.isAppLoaded == YES);
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=77");
+
+    // Successful warm reload preserves state=77
+    loadErr = nil;
+    assert([reloadCtrl reloadRustAppDylibAtPath:statefulPath error:&loadErr] == YES);
+    assert(loadErr == nil);
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=77");
+
+    // Fresh load (non-reload) resets state back to 0
+    loadErr = nil;
+    assert([reloadCtrl loadRustAppDylibAtPath:statefulPath error:&loadErr] == YES);
+    assert(loadErr == nil);
+    assert(findSnapshotText(reloadCtrl.fabricHost, 2) == "state=0");
+
+    // 5c. Test RCTNveMacComponentView shared error codes (1/2/3) & hot-reload edge cases
+    RCTNveMacComponentView *reloadView =
+        [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 320, 200)];
+    loadErr = nil;
+    assert([reloadView loadNveDylibAtPath:@"" surfaceId:5 error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.rncomponent", 1);
+    loadErr = nil;
+    assert([reloadView loadNveDylibAtPath:noEntryPath surfaceId:5 error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.rncomponent", 2);
+    loadErr = nil;
+    assert([reloadView loadNveDylibAtPath:noSurfacePath surfaceId:5 error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.rncomponent", 3);
+
+    // Cold reload on component view
+    loadErr = nil;
+    assert([reloadView reloadNveDylibAtPath:statefulPath error:&loadErr] == YES);
+    assert(loadErr == nil);
+    NSTextField *stateLabel = (NSTextField *)[reloadView nativeViewForNodeId:2];
+    assert(stateLabel != nil && [stateLabel isKindOfClass:[NSTextField class]]);
+    assert([stateLabel.stringValue isEqualToString:@"state=0"]);
+
+    // Dispatch press events to advance state to 2
+    [reloadView simulatePressOnNodeId:3 atPoint:NSMakePoint(4.0, 4.0)];
+    [reloadView simulatePressOnNodeId:3 atPoint:NSMakePoint(4.0, 4.0)];
+    assert([stateLabel.stringValue isEqualToString:@"state=2"]);
+
+    // Failed reload leaves mounted views and state intact
+    loadErr = nil;
+    assert([reloadView reloadNveDylibAtPath:noSurfacePath error:&loadErr] == NO);
+    assertDylibError(loadErr, @"nve.macos.rncomponent", 3);
+    NSTextField *stillMounted = (NSTextField *)[reloadView nativeViewForNodeId:2];
+    assert(stillMounted != nil && [stillMounted.stringValue isEqualToString:@"state=2"]);
+
+    // Warm reload preserves state=2
+    loadErr = nil;
+    assert([reloadView reloadNveDylibAtPath:statefulPath error:&loadErr] == YES);
+    assert(loadErr == nil);
+    NSTextField *reloadedLabel = (NSTextField *)[reloadView nativeViewForNodeId:2];
+    assert(reloadedLabel != nil && [reloadedLabel.stringValue isEqualToString:@"state=2"]);
 
     // 6. Real Rust Dioxus cdylib test: verify nested Text->Text inheritance, visible colors,
-    //    non-zero AppKit label frames, live click -> Count: 1, and optional PNG render.
+    //    non-zero AppKit label frames, live reload state preservation, and optional PNG render.
     const char *dylibEnv = std::getenv("NVE_TEST_COUNTER_DYLIB");
     if (dylibEnv && dylibEnv[0] != '\0') {
+      NSString *counterPath = [NSString stringWithUTF8String:dylibEnv];
       RCTNveMacComponentView *counterView =
           [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 640, 420)];
       NSError *counterErr = nil;
-      assert([counterView loadNveDylibAtPath:[NSString stringWithUTF8String:dylibEnv]
+      assert([counterView loadNveDylibAtPath:counterPath
                                    surfaceId:1
                                        error:&counterErr]);
       assert(counterErr == nil);
 
       // Collect all leaf NSTextField labels recursively.
-      std::vector<NSTextField *> labels;
-      std::function<void(NSView *)> walk = [&](NSView *v) {
-        if ([v isKindOfClass:[NSTextField class]]) {
-          labels.push_back((NSTextField *)v);
-        }
-        for (NSView *sub in v.subviews) {
-          walk(sub);
-        }
+      auto collectLabels = [](NSView *root) {
+        std::vector<NSTextField *> out;
+        std::function<void(NSView *)> walk = [&](NSView *v) {
+          if ([v isKindOfClass:[NSTextField class]]) {
+            out.push_back((NSTextField *)v);
+          }
+          for (NSView *sub in v.subviews) {
+            walk(sub);
+          }
+        };
+        walk(root);
+        return out;
       };
-      walk(counterView);
+      std::vector<NSTextField *> labels = collectLabels(counterView);
       assert(labels.size() >= 4);
 
       bool sawTitle = false, sawCount0 = false, sawInc = false, sawReset = false;
@@ -390,6 +521,23 @@ int main() {
         if ([lbl.stringValue isEqualToString:@"Reset"]) sawReset = true;
       }
       assert(sawTitle && sawCount0 && sawInc && sawReset);
+
+      // Verify state preservation across live Rust dylib hot-reload
+      assert([counterView applyPropsDictionary:@{@"initialCount" : @5}]);
+      bool sawCount5 = false;
+      for (NSTextField *lbl : collectLabels(counterView)) {
+        if ([lbl.stringValue isEqualToString:@"Count: 5"]) sawCount5 = true;
+      }
+      assert(sawCount5);
+
+      counterErr = nil;
+      assert([counterView reloadNveDylibAtPath:counterPath error:&counterErr] == YES);
+      assert(counterErr == nil);
+      bool sawCount5AfterReload = false;
+      for (NSTextField *lbl : collectLabels(counterView)) {
+        if ([lbl.stringValue isEqualToString:@"Count: 5"]) sawCount5AfterReload = true;
+      }
+      assert(sawCount5AfterReload);
 
       const char *shotPath = std::getenv("NVE_TEST_SCREENSHOT_PATH");
       if (shotPath && shotPath[0] != '\0') {

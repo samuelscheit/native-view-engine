@@ -1,5 +1,9 @@
 #import <Foundation/Foundation.h>
-#include "nve_abi.h"
+#if __has_include("NveAppleFabricHost.h")
+#import "NveAppleFabricHost.h"
+#else
+#import "../apple-common/NveAppleFabricHost.h"
+#endif
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -8,14 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Built once against prebuilt React Native Fabric XCFrameworks + `nve_fabric_bridge`.
 /// Loads and hot-swaps the user's Rust app `cdylib` on iOS Simulator (Tier 2, ~200-400ms)
 /// and applies WebSocket template patches on both Simulator and physical iOS devices (Tier 1, <50ms).
-@interface NveFabricHostController : NSObject
-
-- (instancetype)initWithSurfaceConfig:(NveSurfaceConfig)config;
-- (BOOL)loadRustAppDylibAtPath:(NSString *)dylibPath error:(NSError **)error;
-- (BOOL)reloadRustAppDylibAtPath:(NSString *)dylibPath error:(NSError **)error;
-- (void)renderNextFrame;
-- (void)applyHotPatchJson:(NSString *)patchJson;
-
+@interface NveFabricHostController : NveAppleFabricHostController
 @end
 
 NS_ASSUME_NONNULL_END
