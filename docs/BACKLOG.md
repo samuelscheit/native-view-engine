@@ -4,9 +4,6 @@ Prioritized roadmap for `native-view-engine`, ordered from remaining host harden
 
 ## P1 — Host & Runtime Hardening
 
-- [ ] **Standalone Flexbox (`cxx/nve-fabric-bridge`)**
-  - Implement post-flex wrapping text re-measurement and true `Baseline` alignment in standalone `fabric_adapter.cpp`.
-
 - [ ] **Bi-directional codegen (`crates/nve-codegen`)**
   - Support zero-copy `NveValue` typed props and event bindings.
 
