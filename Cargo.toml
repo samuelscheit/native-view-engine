@@ -8,6 +8,9 @@ members = [
     "crates/nve-dioxus",
     "crates/nve-codegen",
     "crates/nve-interop",
+    "crates/nve-sdk",
+    "crates/nve-ui",
+    "crates/nve-router",
     "crates/nve-backend-headless",
     "crates/nve-backend-skia",
     "crates/nve-backend-web",
@@ -32,6 +35,9 @@ nve-layout-yoga = { path = "crates/nve-layout-yoga" }
 nve-dioxus = { path = "crates/nve-dioxus" }
 nve-codegen = { path = "crates/nve-codegen" }
 nve-interop = { path = "crates/nve-interop" }
+nve-sdk = { path = "crates/nve-sdk" }
+nve-ui = { path = "crates/nve-ui" }
+nve-router = { path = "crates/nve-router" }
 nve-backend-headless = { path = "crates/nve-backend-headless" }
 nve-backend-skia = { path = "crates/nve-backend-skia" }
 nve-backend-web = { path = "crates/nve-backend-web" }

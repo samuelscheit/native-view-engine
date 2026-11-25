@@ -20,4 +20,4 @@ nve-studio-workspace = { path = "../../examples/studio-workspace", default-featu
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
-web-sys = { workspace = true, features = ["BinaryType", "Location", "Performance", "ErrorEvent", "CloseEvent", "ResizeObserver"] }
+web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "Performance", "ResizeObserver"] }
