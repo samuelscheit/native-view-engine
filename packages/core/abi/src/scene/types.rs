@@ -280,7 +280,7 @@ const _: () = {
 };
 
 /// Fixed-stride 64-byte per-node accessibility, input, image, and draw-list metadata record
-/// indexing into a flat companion UTF-8/binary blob slab (replaces custom `NVE_MET1` parsing).
+/// indexing into a flat companion UTF-8/binary blob slab.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, NveAbi)]
 #[nve_abi(size = 64)]

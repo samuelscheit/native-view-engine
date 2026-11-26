@@ -35,7 +35,7 @@ Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Relea
 ```text
 Rust App (Dioxus 0.7 rsx! via nve-dioxus, or any frontend implementing NveApp)
   │  Exposes nve_get_interface(uint32_t): Surface | Layout | Component | Dev
-  │  Binary CommandBuffer, 64B NveSceneView, NVE_DRAW1 vectors, NK1/NVP1/NVT1 wire codecs
+  │  Binary CommandBuffer, 64B NveSceneView + NveNodeMeta, direct NveDirectEvent / NveMapEntry FFI, NVE_DRAW1 vectors
   ▼
 nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot + WAL, 2-Tier Hot Reload)
   ├──► cxx/nve-fabric-bridge (C++20 Yoga/JSI/Fabric, nve_host_runtime.hpp, nve_draw_list.hpp)

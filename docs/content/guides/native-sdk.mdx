@@ -8,7 +8,7 @@ order: 4
 
 Native platform capabilities are decomposed into a tiny shared core (`packages/core/host-services`) plus standalone opt-in capability crates under `packages/modules/<name>/`. Apps depend only on the exact modules they use — zero umbrella bloat.
 
-- **In-process Rust-to-Rust (`NativeHostServices`, `MemoryHostServices`, `SkiaHostServices`)**: Clients resolve each module's typed `*Backend` trait directly via `nve_host_services::resolve_typed` — **zero serialization, zero wire encoding, zero extra allocations**.
+- **In-process Rust-to-Rust (`HostServiceRegistry`, `MemoryHostServices`, `SkiaHostServices`)**: Clients resolve each module's typed `*Backend` trait directly via `nve_host_services::resolve_typed` — **zero serialization, zero wire encoding, zero extra allocations**.
 - **Cross-language FFI (`FfiHostServices` over `NVE_IFACE_HOST = 5`)**: When a Rust module runs inside a C++/Swift/Kotlin/Dart host, clients fall back seamlessly to the compact binary wire protocol over `NVE_IFACE_HOST = 5` and `NveChannelBus`.
 
 ## Capability Matrix & Service IDs
@@ -26,7 +26,7 @@ Native platform capabilities are decomposed into a tiny shared core (`packages/c
 
 ## Composing Only What You Need
 
-Every module's client borrows `&dyn HostServiceProvider` — backed by `FfiHostServices` in hosted `NveApp` modules, `NativeHostServices` on desktop, or `MemoryHostServices` in tests:
+Every module's client borrows `&dyn HostServiceProvider` — backed by `FfiHostServices` in hosted `NveApp` modules, `HostServiceRegistry` on desktop, or `MemoryHostServices` in tests:
 
 ```rust title="Direct typed clients from standalone capability crates" highlight="1-5,8-18"
 use nve_clipboard::ClipboardClient;

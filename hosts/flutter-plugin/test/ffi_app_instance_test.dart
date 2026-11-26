@@ -617,40 +617,16 @@ void main() {
     test('throws StateError when NVE_IFACE_SURFACE is missing or create returns NULL', () {
       final missingSurface = _MockNativeModule(includeSurface: false);
       addTearDown(missingSurface.close);
-      expect(
-        () => NveAppInstance.fromInterfaceResolver(
-          surfaceId: 1,
-          getInterface: missingSurface.getInterface,
-        ),
-        throwsStateError,
-      );
+      expect(() => NveAppInstance.fromInterfaceResolver(surfaceId: 1, getInterface: missingSurface.getInterface), throwsStateError);
 
       final nullCreate = _MockNativeModule(createReturnsNull: true);
       addTearDown(nullCreate.close);
-      expect(
-        () => NveAppInstance.fromInterfaceResolver(
-          surfaceId: 2,
-          getInterface: nullCreate.getInterface,
-        ),
-        throwsStateError,
-      );
+      expect(() => NveAppInstance.fromInterfaceResolver(surfaceId: 2, getInterface: nullCreate.getInterface), throwsStateError);
     });
 
     test('NveAppInstance.open rejects missing dynamic library or symbol', () {
-      expect(
-        () => NveAppInstance.open(
-          surfaceId: 1,
-          libraryPath: '/nonexistent/libnve_missing.dylib',
-        ),
-        throwsArgumentError,
-      );
-      expect(
-        () => NveAppInstance.open(
-          surfaceId: 1,
-          vtableSymbol: 'nve_nonexistent_symbol_xyz',
-        ),
-        throwsArgumentError,
-      );
+      expect(() => NveAppInstance.open(surfaceId: 1, libraryPath: '/nonexistent/libnve_missing.dylib'), throwsArgumentError);
+      expect(() => NveAppInstance.open(surfaceId: 1, vtableSymbol: 'nve_nonexistent_symbol_xyz'), throwsArgumentError);
     });
   });
 }

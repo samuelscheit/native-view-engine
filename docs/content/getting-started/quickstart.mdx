@@ -160,14 +160,8 @@ impl NveApp for CounterModule {
         &self.last_frame
     }
 
-    fn dispatch_events(&mut self, encoded: &[u8]) -> bool {
-        decode_events(encoded)
-            .map(|evs| self.surface.dispatch_events(&evs))
-            .unwrap_or(false)
-    }
-
-    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
-        self.surface.dispatch_events_direct(events)
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        self.surface.dispatch_events_batch(events)
     }
 }
 ```

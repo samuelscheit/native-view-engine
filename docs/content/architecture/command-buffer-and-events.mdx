@@ -1,6 +1,6 @@
 ---
 title: "CommandBuffer & EventRing"
-description: "Binary wire specification of NVE1 CommandBuffers, all 10 mutation opcodes, EventRing batching, and compact binary NK1 keydown frames."
+description: "Binary wire specification of NVE1 CommandBuffers, all 10 mutation opcodes, direct NveEventBatch FFI, and typed keyboard/pointer events."
 order: 1
 ---
 
@@ -95,13 +95,13 @@ On Apple Silicon (`benchmarks/baseline.json`), encoding 1,000 nodes takes **21.1
 In C++, `cxx/nve-fabric-bridge/src/command_decoder.hpp` validates every `f32` layout scalar (`is_valid_scalar`) to reject `NaN`, `Inf`, and magnitudes `|v| > 1e7f` before calling Yoga setters, preventing signed integer overflow UB inside Yoga's `StyleValuePool`.
 </Callout>
 
-## `EventRing` Binary Batching
+## Direct `NveEventBatch` FFI & `EventRing` Transport
 
-Host input events (`NativeEvent`) flow back into Rust in one length-prefixed binary buffer via `encode_events` / `decode_events` (`packages/core/abi/src/events.rs`), or zero-copy in-process via `NveSurfaceApi::dispatch_events_direct(handle, NveEventBatch)`.
+Host input events (`NativeEvent`) cross the in-process C ABI directly via `NveSurfaceApi::dispatch_events(handle, NveEventBatch)` using 96-byte `#[repr(C)]` `NveDirectEvent` records (zero serialization). For network/wire transport (`nve-wire`), `encode_events` / `decode_events` (`packages/core/abi/src/events.rs`) pack the same `NativeEvent` slice into a length-prefixed binary buffer.
 
 ### Subscription Bitmask (`EventMask`) & Event Kinds (`NativeEventKind`)
 
-| Bit / Enum | Name | Payload Variant | Wire Tag |
+| Bit / Enum | Name | Payload Variant | Payload Tag |
 | :--- | :--- | :--- | :--- |
 | `1 << 0` / `1` | `Press` | `EventPayload::Point { x, y }` | `1` |
 | `1 << 1` / `2` | `LongPress` | `EventPayload::Point { x, y }` | `1` |
@@ -111,33 +111,18 @@ Host input events (`NativeEvent`) flow back into Rust in one length-prefixed bin
 | `1 << 5` / `6` | `Blur` | `EventPayload::Empty` | `0` |
 | `1 << 6` / `7` | `Layout` | `EventPayload::Layout { x, y, width, height }` | `4` |
 | `1 << 7` / `8` | `Custom` | `EventPayload::Custom { name, data }` | `5` |
+| `1 << 9`..`1 << 11` / `12`..`14` | `KeyDown`, `KeyUp`, `Submit` | `EventPayload::Key` / `Text` | `6` / `3` |
+| `1 << 12`..`1 << 16` / `15`..`19` | `PointerDown`, `PointerMove`, `PointerUp`, `PointerEnter`, `PointerLeave` | `EventPayload::Pointer` | `7` |
+| `1 << 17` / `20` | `Wheel` | `EventPayload::Wheel` | `8` |
 
-Encoding 16 events takes **137.1 ns**; decoding 16 events takes **346.7 ns**.
+## Direct Typed Keyboard & Pointer Events
 
-## Compact Binary Keydowns (`NK1`)
+Keyboard (`KeyDown`, `KeyUp`), pointer (`PointerDown`..`PointerLeave`), and `Wheel` events are carried directly in `NveDirectEvent`'s packed header fields (`modifiers: u8`, `event_flags: u8`, `key_code: u32`) alongside `text` (W3C key), `name` (physical key code), and `x`/`y`/`width`/`height` (pointer coordinates or wheel deltas) — with zero size growth (`96 B` on 64-bit) and zero sideband byte encoding.
 
-Keyboard shortcuts and key events travel inside `NativeEventKind::Custom` (`name = "keydown"`) using the 4-byte-header **`NK1`** binary format instead of JSON:
+Modifier bits in `modifiers: u8`:
 
-```text
-Offset:  0    1    2    3          4..N
-Bytes:  'N'  'K'  '1'  flags_u8   utf8_key_bytes
-```
-
-Modifier bits packed into `flags_u8`:
-
-- `0x01` (`KEYDOWN_FLAG_META`) — Command / Meta / Super
-- `0x02` (`KEYDOWN_FLAG_CTRL`) — Control
-- `0x04` (`KEYDOWN_FLAG_SHIFT`) — Shift
-- `0x08` (`KEYDOWN_FLAG_ALT`) — Alt / Option
-
-```rust title="Encode and decode NK1 keydown events"
-use nve_abi::{decode_keydown_bytes, encode_keydown_bytes};
-
-let wire = encode_keydown_bytes("k", true, false, false, false);
-assert_eq!(&wire[..4], &[b'N', b'K', b'1', 0x01]);
-
-let ev = decode_keydown_bytes(&wire).expect("valid NK1 keydown");
-assert!(ev.meta && ev.key == "k");
-```
-
-`decode_keydown_bytes` also accepts compact UTF-8 shorthand strings such as `"Cmd+k"`, `"Ctrl+Shift+Enter"`, or `"Cmd++"` for CLI/test ergonomics without ever touching a JSON parser.
+- `0x01` (`NVE_KEY_MOD_META`) — Command / Meta / Super
+- `0x02` (`NVE_KEY_MOD_CTRL`) — Control
+- `0x04` (`NVE_KEY_MOD_SHIFT`) — Shift
+- `0x08` (`NVE_KEY_MOD_ALT`) — Alt / Option
+- `0x10` (`NVE_KEY_MOD_REPEAT`) — Auto-repeat keydown
