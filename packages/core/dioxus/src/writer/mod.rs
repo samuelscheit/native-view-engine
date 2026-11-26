@@ -30,16 +30,10 @@ use nve_interop::native_view::NativeViewHandleBinder;
 use crate::native_view::NATIVE_VIEW_TAG;
 use crate::typed_style::TypedStyle;
 
-#[derive(Debug, Clone)]
-pub(crate) struct NodeRecord {
-    pub(crate) kind: ComponentKind,
-    pub(crate) parent: Option<NodeId>,
-    pub(crate) children: Vec<NodeId>,
-    pub(crate) layout: LayoutProps,
-    pub(crate) style: StyleProps,
-    pub(crate) has_explicit_style: bool,
-    pub(crate) has_explicit_font_weight: bool,
-    pub(crate) has_explicit_text_align: bool,
+/// Cold optional per-node metadata boxed behind `Option<Box<NodeExtras>>` so hot `NodeRecord`
+/// entries stay compact (`<= 200` bytes).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NodeExtras {
     pub(crate) typed_style: Option<TypedStyle>,
     pub(crate) inline_style_override: Option<String>,
     pub(crate) font_weight: Option<Cow<'static, str>>,
@@ -47,11 +41,8 @@ pub(crate) struct NodeRecord {
     pub(crate) box_shadow: Option<Cow<'static, str>>,
     pub(crate) overflow: Option<Cow<'static, str>>,
     pub(crate) object_fit: Option<Cow<'static, str>>,
-    pub(crate) event_mask: u64,
-    pub(crate) dioxus_id: Option<ElementId>,
     pub(crate) test_id: Option<String>,
     pub(crate) text: Option<String>,
-    pub(crate) deferred_native_create: bool,
     pub(crate) native_kind: Option<String>,
     pub(crate) native_props: Option<TypedNativeViewProps>,
     pub(crate) native_handle_binder: Option<NativeViewHandleBinder>,
@@ -62,49 +53,121 @@ pub(crate) struct NodeRecord {
     pub(crate) cursor: Option<CursorKind>,
     pub(crate) state_rules: Vec<StateStyleRule>,
     pub(crate) transitions: Vec<TransitionSpec>,
-    pub(crate) layout_ext: Option<Box<LayoutExt>>,
+    pub(crate) layout_ext: Option<LayoutExt>,
     pub(crate) transform: Option<Transform2D>,
     pub(crate) background_fill: Option<BackgroundFill>,
     pub(crate) svg_picture: Option<SvgPicture>,
 }
 
+const FLAG_EXPLICIT_STYLE: u8 = 1 << 0;
+const FLAG_EXPLICIT_FONT_WEIGHT: u8 = 1 << 1;
+const FLAG_EXPLICIT_TEXT_ALIGN: u8 = 1 << 2;
+const FLAG_DEFERRED_NATIVE_CREATE: u8 = 1 << 3;
+
+#[derive(Debug, Clone)]
+pub(crate) struct NodeRecord {
+    pub(crate) layout: LayoutProps,
+    pub(crate) style: StyleProps,
+    pub(crate) children: Vec<NodeId>,
+    pub(crate) dioxus_id: Option<ElementId>,
+    pub(crate) event_mask: u64,
+    pub(crate) extras: Option<Box<NodeExtras>>,
+    /// `0` means no parent (valid node IDs start at `ROOT_NODE_ID == 1`).
+    parent_raw: NodeId,
+    pub(crate) kind: ComponentKind,
+    flags: u8,
+}
+
 impl Default for NodeRecord {
     fn default() -> Self {
         Self {
-            kind: ComponentKind::View,
-            parent: None,
-            children: Vec::new(),
             layout: LayoutProps::default(),
             style: StyleProps::default(),
-            has_explicit_style: false,
-            has_explicit_font_weight: false,
-            has_explicit_text_align: false,
-            typed_style: None,
-            inline_style_override: None,
-            font_weight: None,
-            text_align: None,
-            box_shadow: None,
-            overflow: None,
-            object_fit: None,
-            event_mask: 0,
+            children: Vec::new(),
             dioxus_id: None,
-            test_id: None,
-            text: None,
-            deferred_native_create: false,
-            native_kind: None,
-            native_props: None,
-            native_handle_binder: None,
-            draw_list: None,
-            explicit_show_on: None,
-            show_on: None,
-            responsive_rules: Vec::new(),
-            cursor: None,
-            state_rules: Vec::new(),
-            transitions: Vec::new(),
-            layout_ext: None,
-            transform: None,
-            background_fill: None,
-            svg_picture: None,
+            event_mask: 0,
+            extras: None,
+            parent_raw: 0,
+            kind: ComponentKind::View,
+            flags: 0,
+        }
+    }
+}
+
+impl NodeRecord {
+    #[inline]
+    pub(crate) fn parent(&self) -> Option<NodeId> {
+        (self.parent_raw != 0).then_some(self.parent_raw)
+    }
+
+    #[inline]
+    pub(crate) fn set_parent(&mut self, parent: Option<NodeId>) {
+        self.parent_raw = parent.unwrap_or(0);
+    }
+
+    #[inline]
+    pub(crate) fn extras(&self) -> Option<&NodeExtras> {
+        self.extras.as_deref()
+    }
+
+    #[inline]
+    pub(crate) fn extras_mut(&mut self) -> &mut NodeExtras {
+        self.extras.get_or_insert_with(|| Box::new(NodeExtras::default()))
+    }
+
+    #[inline]
+    pub(crate) fn has_explicit_style(&self) -> bool {
+        (self.flags & FLAG_EXPLICIT_STYLE) != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_has_explicit_style(&mut self, v: bool) {
+        if v {
+            self.flags |= FLAG_EXPLICIT_STYLE;
+        } else {
+            self.flags &= !FLAG_EXPLICIT_STYLE;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn has_explicit_font_weight(&self) -> bool {
+        (self.flags & FLAG_EXPLICIT_FONT_WEIGHT) != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_has_explicit_font_weight(&mut self, v: bool) {
+        if v {
+            self.flags |= FLAG_EXPLICIT_FONT_WEIGHT;
+        } else {
+            self.flags &= !FLAG_EXPLICIT_FONT_WEIGHT;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn has_explicit_text_align(&self) -> bool {
+        (self.flags & FLAG_EXPLICIT_TEXT_ALIGN) != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_has_explicit_text_align(&mut self, v: bool) {
+        if v {
+            self.flags |= FLAG_EXPLICIT_TEXT_ALIGN;
+        } else {
+            self.flags &= !FLAG_EXPLICIT_TEXT_ALIGN;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn deferred_native_create(&self) -> bool {
+        (self.flags & FLAG_DEFERRED_NATIVE_CREATE) != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_deferred_native_create(&mut self, v: bool) {
+        if v {
+            self.flags |= FLAG_DEFERRED_NATIVE_CREATE;
+        } else {
+            self.flags &= !FLAG_DEFERRED_NATIVE_CREATE;
         }
     }
 }
@@ -216,7 +279,7 @@ impl NveMutationWriter {
     /// Returns the direct typed [`MediaQuery`] visibility gate for `node_id` (zero serialization).
     #[inline]
     pub fn node_show_on(&self, node_id: NodeId) -> Option<MediaQuery> {
-        self.nodes.get(&node_id).and_then(|r| r.show_on)
+        self.nodes.get(&node_id).and_then(|r| r.extras()?.show_on)
     }
 
     /// Returns the direct typed [`ResponsiveRule`] slice for `node_id` (zero serialization).
@@ -224,7 +287,8 @@ impl NveMutationWriter {
     pub fn node_responsive_rules(&self, node_id: NodeId) -> &[ResponsiveRule] {
         self.nodes
             .get(&node_id)
-            .map(|r| r.responsive_rules.as_slice())
+            .and_then(|r| r.extras())
+            .map(|e| e.responsive_rules.as_slice())
             .unwrap_or(&[])
     }
 
@@ -233,21 +297,22 @@ impl NveMutationWriter {
     pub fn iter_show_on(&self) -> impl Iterator<Item = (NodeId, MediaQuery)> + '_ {
         self.nodes
             .iter()
-            .filter_map(|(&id, rec)| rec.show_on.map(|q| (id, q)))
+            .filter_map(|(&id, rec)| rec.extras()?.show_on.map(|q| (id, q)))
     }
 
     /// Iterates over all active nodes with one or more [`ResponsiveRule`] style overrides.
     #[inline]
     pub fn iter_responsive_rules(&self) -> impl Iterator<Item = (NodeId, &[ResponsiveRule])> + '_ {
         self.nodes.iter().filter_map(|(&id, rec)| {
-            (!rec.responsive_rules.is_empty()).then_some((id, rec.responsive_rules.as_slice()))
+            let rules = rec.extras()?.responsive_rules.as_slice();
+            (!rules.is_empty()).then_some((id, rules))
         })
     }
 
     /// Returns the direct typed [`CursorKind`] for `node_id` (zero serialization).
     #[inline]
     pub fn node_cursor(&self, node_id: NodeId) -> Option<CursorKind> {
-        self.nodes.get(&node_id).and_then(|r| r.cursor)
+        self.nodes.get(&node_id).and_then(|r| r.extras()?.cursor)
     }
 
     /// Returns the direct typed [`StateStyleRule`] slice for `node_id` (zero serialization).
@@ -255,7 +320,8 @@ impl NveMutationWriter {
     pub fn node_state_rules(&self, node_id: NodeId) -> &[StateStyleRule] {
         self.nodes
             .get(&node_id)
-            .map(|r| r.state_rules.as_slice())
+            .and_then(|r| r.extras())
+            .map(|e| e.state_rules.as_slice())
             .unwrap_or(&[])
     }
 
@@ -264,14 +330,15 @@ impl NveMutationWriter {
     pub fn iter_cursors(&self) -> impl Iterator<Item = (NodeId, CursorKind)> + '_ {
         self.nodes
             .iter()
-            .filter_map(|(&id, rec)| rec.cursor.map(|c| (id, c)))
+            .filter_map(|(&id, rec)| rec.extras()?.cursor.map(|c| (id, c)))
     }
 
     /// Iterates over all active nodes with one or more interactive [`StateStyleRule`] overrides.
     #[inline]
     pub fn iter_state_rules(&self) -> impl Iterator<Item = (NodeId, &[StateStyleRule])> + '_ {
         self.nodes.iter().filter_map(|(&id, rec)| {
-            (!rec.state_rules.is_empty()).then_some((id, rec.state_rules.as_slice()))
+            let rules = rec.extras()?.state_rules.as_slice();
+            (!rules.is_empty()).then_some((id, rules))
         })
     }
 
@@ -280,7 +347,8 @@ impl NveMutationWriter {
     pub fn node_transitions(&self, node_id: NodeId) -> &[TransitionSpec] {
         self.nodes
             .get(&node_id)
-            .map(|r| r.transitions.as_slice())
+            .and_then(|r| r.extras())
+            .map(|e| e.transitions.as_slice())
             .unwrap_or(&[])
     }
 
@@ -288,22 +356,26 @@ impl NveMutationWriter {
     #[inline]
     pub fn iter_transitions(&self) -> impl Iterator<Item = (NodeId, &[TransitionSpec])> + '_ {
         self.nodes.iter().filter_map(|(&id, rec)| {
-            (!rec.transitions.is_empty()).then_some((id, rec.transitions.as_slice()))
+            let tr = rec.extras()?.transitions.as_slice();
+            (!tr.is_empty()).then_some((id, tr))
         })
     }
 
     /// Returns the direct typed [`LayoutExt`] for `node_id` (zero serialization).
     #[inline]
     pub fn node_layout_ext(&self, node_id: NodeId) -> Option<&LayoutExt> {
-        self.nodes.get(&node_id).and_then(|r| r.layout_ext.as_deref())
+        self.nodes
+            .get(&node_id)
+            .and_then(|r| r.extras()?.layout_ext.as_ref())
     }
 
     /// Iterates over all active nodes with non-default [`LayoutExt`] metadata.
     #[inline]
     pub fn iter_layout_ext(&self) -> impl Iterator<Item = (NodeId, &LayoutExt)> + '_ {
         self.nodes.iter().filter_map(|(&id, rec)| {
-            rec.layout_ext
-                .as_deref()
+            rec.extras()?
+                .layout_ext
+                .as_ref()
                 .filter(|ext| !ext.is_default())
                 .map(|ext| (id, ext))
         })
@@ -312,7 +384,7 @@ impl NveMutationWriter {
     /// Returns the direct typed [`Transform2D`] for `node_id` (zero serialization).
     #[inline]
     pub fn node_transform(&self, node_id: NodeId) -> Option<Transform2D> {
-        self.nodes.get(&node_id).and_then(|r| r.transform)
+        self.nodes.get(&node_id).and_then(|r| r.extras()?.transform)
     }
 
     /// Iterates over all active nodes with an explicit [`Transform2D`].
@@ -320,13 +392,15 @@ impl NveMutationWriter {
     pub fn iter_transforms(&self) -> impl Iterator<Item = (NodeId, Transform2D)> + '_ {
         self.nodes
             .iter()
-            .filter_map(|(&id, rec)| rec.transform.map(|tf| (id, tf)))
+            .filter_map(|(&id, rec)| rec.extras()?.transform.map(|tf| (id, tf)))
     }
 
     /// Returns the direct zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) stored on `node_id`.
     #[inline]
     pub fn node_draw_list(&self, node_id: NodeId) -> Option<&DrawList> {
-        self.nodes.get(&node_id).and_then(|r| r.draw_list.as_ref())
+        self.nodes
+            .get(&node_id)
+            .and_then(|r| r.extras()?.draw_list.as_ref())
     }
 
     /// Iterates over all active canvas nodes with a direct typed [`DrawList`].
@@ -334,7 +408,7 @@ impl NveMutationWriter {
     pub fn iter_draw_lists(&self) -> impl Iterator<Item = (NodeId, &DrawList)> + '_ {
         self.nodes
             .iter()
-            .filter_map(|(&id, rec)| rec.draw_list.as_ref().map(|dl| (id, dl)))
+            .filter_map(|(&id, rec)| rec.extras()?.draw_list.as_ref().map(|dl| (id, dl)))
     }
 
     /// Returns the direct zero-serialization [`TypedNativeViewProps`] stored on `node_id`.
@@ -342,7 +416,7 @@ impl NveMutationWriter {
     pub fn node_native_view_props(&self, node_id: NodeId) -> Option<&TypedNativeViewProps> {
         self.nodes
             .get(&node_id)
-            .and_then(|r| r.native_props.as_ref())
+            .and_then(|r| r.extras()?.native_props.as_ref())
     }
 
     /// Iterates over all active `<NativeView>` nodes with direct typed [`TypedNativeViewProps`].
@@ -350,7 +424,7 @@ impl NveMutationWriter {
     pub fn iter_native_views(&self) -> impl Iterator<Item = (NodeId, &TypedNativeViewProps)> + '_ {
         self.nodes
             .iter()
-            .filter_map(|(&id, rec)| rec.native_props.as_ref().map(|p| (id, p)))
+            .filter_map(|(&id, rec)| rec.extras()?.native_props.as_ref().map(|p| (id, p)))
     }
 
     /// Returns the direct zero-serialization [`BackgroundFill`] stored on `node_id`.
@@ -358,15 +432,15 @@ impl NveMutationWriter {
     pub fn node_background_fill(&self, node_id: NodeId) -> Option<&BackgroundFill> {
         self.nodes
             .get(&node_id)
-            .and_then(|r| r.background_fill.as_ref())
+            .and_then(|r| r.extras()?.background_fill.as_ref())
     }
 
     /// Iterates over all active nodes with a direct typed [`BackgroundFill`].
     #[inline]
     pub fn iter_background_fills(&self) -> impl Iterator<Item = (NodeId, &BackgroundFill)> + '_ {
-        self.nodes
-            .iter()
-            .filter_map(|(&id, rec)| rec.background_fill.as_ref().map(|fill| (id, fill)))
+        self.nodes.iter().filter_map(|(&id, rec)| {
+            rec.extras()?.background_fill.as_ref().map(|fill| (id, fill))
+        })
     }
 
     /// Returns the direct zero-serialization [`SvgPicture`] stored on `node_id`.
@@ -374,7 +448,7 @@ impl NveMutationWriter {
     pub fn node_svg_picture(&self, node_id: NodeId) -> Option<&SvgPicture> {
         self.nodes
             .get(&node_id)
-            .and_then(|r| r.svg_picture.as_ref())
+            .and_then(|r| r.extras()?.svg_picture.as_ref())
     }
 
     /// Iterates over all active nodes with a direct typed [`SvgPicture`].
@@ -382,7 +456,7 @@ impl NveMutationWriter {
     pub fn iter_svg_pictures(&self) -> impl Iterator<Item = (NodeId, &SvgPicture)> + '_ {
         self.nodes
             .iter()
-            .filter_map(|(&id, rec)| rec.svg_picture.as_ref().map(|svg| (id, svg)))
+            .filter_map(|(&id, rec)| rec.extras()?.svg_picture.as_ref().map(|svg| (id, svg)))
     }
 
     pub(crate) fn has_event_mask(&self, node_id: NodeId, bit: u64) -> bool {
@@ -396,7 +470,7 @@ impl NveMutationWriter {
             if (rec.event_mask & bit) != 0 {
                 return true;
             }
-            match rec.parent {
+            match rec.parent() {
                 Some(parent) => node_id = parent,
                 None => break,
             }
@@ -421,14 +495,12 @@ impl NveMutationWriter {
     pub(super) fn alloc_deferred_native_node(&mut self) -> NodeId {
         let id = self.next_node_id;
         self.next_node_id += 1;
-        self.nodes.insert(
-            id,
-            NodeRecord {
-                kind: ComponentKind::Custom,
-                deferred_native_create: true,
-                ..Default::default()
-            },
-        );
+        let mut rec = NodeRecord {
+            kind: ComponentKind::Custom,
+            ..Default::default()
+        };
+        rec.set_deferred_native_create(true);
+        self.nodes.insert(id, rec);
         self.deferred_native_nodes.push(id);
         id
     }
@@ -441,12 +513,12 @@ impl NveMutationWriter {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
-        if !rec.deferred_native_create {
+        if !rec.deferred_native_create() {
             return;
         }
-        rec.deferred_native_create = false;
+        rec.set_deferred_native_create(false);
         let resolved = kind_override.unwrap_or(NATIVE_VIEW_TAG);
-        rec.native_kind = Some(resolved.to_owned());
+        rec.extras_mut().native_kind = Some(resolved.to_owned());
         self.builder
             .create_node(node_id, ComponentKind::Custom, Some(resolved));
     }
@@ -473,19 +545,19 @@ impl NveMutationWriter {
     }
 
     pub(super) fn detach_from_parent(&mut self, node_id: NodeId) {
-        if let Some(parent_id) = self.nodes.get(&node_id).and_then(|r| r.parent) {
+        if let Some(parent_id) = self.nodes.get(&node_id).and_then(NodeRecord::parent) {
             if let Some(parent) = self.nodes.get_mut(&parent_id) {
                 parent.children.retain(|&c| c != node_id);
             }
             self.dirty_children.push(parent_id);
         }
         if let Some(rec) = self.nodes.get_mut(&node_id) {
-            rec.parent = None;
+            rec.set_parent(None);
         }
     }
 
     pub(super) fn replace_node_in_parent_from_stack(&mut self, target_id: NodeId, split: usize) {
-        let Some(parent_id) = self.nodes.get(&target_id).and_then(|r| r.parent) else {
+        let Some(parent_id) = self.nodes.get(&target_id).and_then(NodeRecord::parent) else {
             self.stack.truncate(split);
             return;
         };
@@ -493,7 +565,7 @@ impl NveMutationWriter {
             let r = self.stack[i];
             self.detach_from_parent(r);
             if let Some(rec) = self.nodes.get_mut(&r) {
-                rec.parent = Some(parent_id);
+                rec.set_parent(Some(parent_id));
             }
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
@@ -511,7 +583,7 @@ impl NveMutationWriter {
 
     pub(super) fn remove_subtree(&mut self, node_id: NodeId) {
         if let Some(rec) = self.nodes.remove(&node_id) {
-            if let Some(binder) = rec.native_handle_binder {
+            if let Some(binder) = rec.extras.and_then(|e| e.native_handle_binder) {
                 binder.unbind();
             }
             if let Some(el_id) = rec.dioxus_id {

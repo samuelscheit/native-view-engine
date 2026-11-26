@@ -37,7 +37,7 @@ impl NveMutationWriter {
                     for child in *children {
                         let cid = self.instantiate_template_node(child);
                         if let Some(crec) = self.nodes.get_mut(&cid) {
-                            crec.parent = Some(id);
+                            crec.set_parent(Some(id));
                         }
                         child_ids.push(cid);
                     }
@@ -73,7 +73,7 @@ impl WriteMutations for NveMutationWriter {
             let cid = self.stack[i];
             self.detach_from_parent(cid);
             if let Some(crec) = self.nodes.get_mut(&cid) {
-                crec.parent = Some(parent_id);
+                crec.set_parent(Some(parent_id));
             }
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
@@ -143,7 +143,7 @@ impl WriteMutations for NveMutationWriter {
             self.stack.truncate(split);
             return;
         };
-        let Some(parent_id) = self.nodes.get(&anchor).and_then(|r| r.parent) else {
+        let Some(parent_id) = self.nodes.get(&anchor).and_then(super::NodeRecord::parent) else {
             self.stack.truncate(split);
             return;
         };
@@ -151,7 +151,7 @@ impl WriteMutations for NveMutationWriter {
             let n = self.stack[i];
             self.detach_from_parent(n);
             if let Some(rec) = self.nodes.get_mut(&n) {
-                rec.parent = Some(parent_id);
+                rec.set_parent(Some(parent_id));
             }
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
@@ -174,7 +174,7 @@ impl WriteMutations for NveMutationWriter {
             self.stack.truncate(split);
             return;
         };
-        let Some(parent_id) = self.nodes.get(&anchor).and_then(|r| r.parent) else {
+        let Some(parent_id) = self.nodes.get(&anchor).and_then(super::NodeRecord::parent) else {
             self.stack.truncate(split);
             return;
         };
@@ -182,7 +182,7 @@ impl WriteMutations for NveMutationWriter {
             let n = self.stack[i];
             self.detach_from_parent(n);
             if let Some(rec) = self.nodes.get_mut(&n) {
-                rec.parent = Some(parent_id);
+                rec.set_parent(Some(parent_id));
             }
         }
         if let Some(parent) = self.nodes.get_mut(&parent_id) {

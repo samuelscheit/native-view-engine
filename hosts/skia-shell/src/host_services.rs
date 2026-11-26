@@ -1,6 +1,6 @@
 //! Direct zero-serialization host-capability bridge for `hosts/skia-shell`.
 //!
-//! Combines `nve_host_services::NativeHostServices` with modular OS capability handlers
+//! Combines `nve_host_services::HostServiceRegistry` with modular OS capability handlers
 //! (`nve-clipboard`, `nve-filesystem`, `nve-secure-store`, `nve-linking`, `nve-system-env`,
 //! `nve-haptics`), direct typed [`WindowCommand`] submission
 //! ([`WindowServiceBackend`]), and zero-serialization [`TypedEventBus`] / [`SkiaHostEvent`]
@@ -19,7 +19,7 @@ use nve_clipboard::NativeClipboard;
 use nve_filesystem::NativeFilesystem;
 use nve_haptics::NativeHaptics;
 use nve_host_services::{
-    pack_typed, HostEvent, HostServiceProvider, InvokeResult, NativeHostServices, ServiceError,
+    pack_typed, HostEvent, HostServiceProvider, HostServiceRegistry, InvokeResult, ServiceError,
     TypedEventBus,
 };
 use nve_interop::{NveChannelBus, WindowCommand, WindowHandleId, WindowLifecycleEvent};
@@ -157,11 +157,11 @@ pub struct SkiaHostServices {
 }
 
 impl SkiaHostServices {
-    /// Creates a host service backed by live OS [`NativeHostServices`] with all Tier-1 native
+    /// Creates a host service backed by live OS [`HostServiceRegistry`] with all Tier-1 native
     /// capability modules registered, seeding retained typed theme and locale snapshots onto
     /// the [`TypedEventBus`].
     pub fn new() -> Arc<Self> {
-        let native = Arc::new(NativeHostServices::new());
+        let native = Arc::new(HostServiceRegistry::new());
         native.register(NativeClipboard::new());
         native.register(NativeFilesystem::new());
         native.register(NativeSecureStore::new());
@@ -404,7 +404,7 @@ impl HostServiceProvider for SkiaHostServices {
         }
         if service_id == SERVICE_SYSTEM_ENV {
             return dispatch_system_env_ffi(&*self.cached_env, method_id, request)
-                .map(InvokeResult::Ready);
+                .map(|bytes| InvokeResult::Ready(bytes.into()));
         }
         self.inner.invoke_raw(service_id, method_id, request)
     }

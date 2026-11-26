@@ -37,15 +37,15 @@ impl NveMutationWriter {
                 let was_deferred = self
                     .nodes
                     .get(&node_id)
-                    .is_some_and(|r| r.deferred_native_create);
+                    .is_some_and(super::NodeRecord::deferred_native_create);
                 if was_deferred {
                     self.ensure_native_node_created(node_id, Some(kind_str));
                     self.builder
                         .set_raw_prop_str(node_id, NATIVE_VIEW_KIND_PROP_KEY, kind_str);
                 } else if let Some(rec) = self.nodes.get_mut(&node_id)
-                    && rec.native_kind.as_deref() != Some(kind_str.as_str())
+                    && rec.extras().and_then(|e| e.native_kind.as_deref()) != Some(kind_str.as_str())
                 {
-                    rec.native_kind = Some(kind_str.clone());
+                    rec.extras_mut().native_kind = Some(kind_str.clone());
                     self.builder
                         .set_raw_prop_str(node_id, NATIVE_VIEW_KIND_PROP_KEY, kind_str);
                 }
@@ -55,7 +55,7 @@ impl NveMutationWriter {
         if self
             .nodes
             .get(&node_id)
-            .is_some_and(|r| r.deferred_native_create)
+            .is_some_and(super::NodeRecord::deferred_native_create)
         {
             self.ensure_native_node_created(node_id, None);
         }
@@ -88,23 +88,29 @@ impl NveMutationWriter {
                     return;
                 }
                 if name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR {
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        rec.explicit_show_on = None;
-                        rec.show_on = rec.typed_style.as_ref().and_then(|t| t.show_on);
+                    if let Some(rec) = self.nodes.get_mut(&node_id)
+                        && let Some(ext) = rec.extras.as_deref_mut()
+                    {
+                        ext.explicit_show_on = None;
+                        ext.show_on = ext.typed_style.as_ref().and_then(|t| t.show_on);
                     }
                     return;
                 }
                 if matches!(name, "drawList" | "draw_list") {
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        rec.draw_list = None;
+                    if let Some(rec) = self.nodes.get_mut(&node_id)
+                        && let Some(ext) = rec.extras.as_deref_mut()
+                    {
+                        ext.draw_list = None;
                     }
                     if self.in_process_mode {
                         return;
                     }
                 }
                 if name == NVE_SVG_PICTURE_ATTR || name == "picture" {
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        rec.svg_picture = None;
+                    if let Some(rec) = self.nodes.get_mut(&node_id)
+                        && let Some(ext) = rec.extras.as_deref_mut()
+                    {
+                        ext.svg_picture = None;
                     }
                     return;
                 }
@@ -125,7 +131,8 @@ impl NveMutationWriter {
                     if self
                         .nodes
                         .get(&node_id)
-                        .is_some_and(|rec| rec.typed_style.as_ref() == Some(typed))
+                        .and_then(|rec| rec.extras())
+                        .is_some_and(|ext| ext.typed_style.as_ref() == Some(typed))
                     {
                         return;
                     }
@@ -138,19 +145,21 @@ impl NveMutationWriter {
                         .or_else(|| any.as_any().downcast_ref::<ShowOn>().map(|s| s.0))
                 {
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        rec.explicit_show_on = Some(query);
-                        rec.show_on = Some(query);
+                        let ext = rec.extras_mut();
+                        ext.explicit_show_on = Some(query);
+                        ext.show_on = Some(query);
                     }
                 } else if let Some(draw_list) = any.as_any().downcast_ref::<DrawList>() {
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        if rec
+                        let ext = rec.extras_mut();
+                        if ext
                             .draw_list
                             .as_ref()
                             .is_some_and(|prev| prev.ptr_eq(draw_list) || prev == draw_list)
                         {
                             return;
                         }
-                        rec.draw_list = Some(draw_list.clone());
+                        ext.draw_list = Some(draw_list.clone());
                     }
                     if !self.in_process_mode {
                         let bytes = draw_list.to_nve_draw1_bytes();
@@ -159,10 +168,11 @@ impl NveMutationWriter {
                     }
                 } else if let Some(typed_nv) = any.as_any().downcast_ref::<NativeTypedPropsAttr>() {
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        if rec.native_props.as_ref() == Some(&typed_nv.0) {
+                        let ext = rec.extras_mut();
+                        if ext.native_props.as_ref() == Some(&typed_nv.0) {
                             return;
                         }
-                        rec.native_props = Some(typed_nv.0.clone());
+                        ext.native_props = Some(typed_nv.0.clone());
                     }
                     if !self.in_process_mode
                         && let Ok(bytes) = typed_nv.0.to_nvnp_bytes()
@@ -175,7 +185,8 @@ impl NveMutationWriter {
                 {
                     let surface_id = self.surface_id;
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        if let Some(prev) = rec.native_handle_binder.take()
+                        let ext = rec.extras_mut();
+                        if let Some(prev) = ext.native_handle_binder.take()
                             && !handle_attr
                                 .0
                                 .as_ref()
@@ -185,7 +196,7 @@ impl NveMutationWriter {
                         }
                         if let Some(ref binder) = handle_attr.0 {
                             binder.bind(surface_id, node_id);
-                            rec.native_handle_binder = Some(binder.clone());
+                            ext.native_handle_binder = Some(binder.clone());
                         }
                     }
                 } else if let Some(svg) = any
@@ -194,14 +205,15 @@ impl NveMutationWriter {
                     .or_else(|| any.as_any().downcast_ref::<SvgPictureAttr>().map(|a| &a.0))
                 {
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        if rec
+                        let ext = rec.extras_mut();
+                        if ext
                             .svg_picture
                             .as_ref()
                             .is_some_and(|prev| prev.ptr_eq(svg) || prev == svg)
                         {
                             return;
                         }
-                        rec.svg_picture = Some(svg.clone());
+                        ext.svg_picture = Some(svg.clone());
                     }
                 } else if let Some(hint) = any.as_any().downcast_ref::<AutofillHint>() {
                     self.builder
@@ -221,23 +233,24 @@ impl NveMutationWriter {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
-        let reset_layout = rec.typed_style.as_ref().is_some_and(|t| t.has_layout)
-            || rec.inline_style_override.is_some();
-        let reset_style = rec.typed_style.as_ref().is_some_and(|t| t.has_style)
-            || rec.inline_style_override.is_some();
-        rec.show_on = rec.explicit_show_on.or(typed.show_on);
-        rec.responsive_rules.clone_from(&typed.responsive);
-        rec.cursor = typed.cursor;
-        rec.state_rules.clone_from(&typed.state_rules);
-        rec.transitions.clone_from(&typed.transitions);
-        rec.layout_ext = typed
+        let ext = rec.extras_mut();
+        let reset_layout = ext.typed_style.as_ref().is_some_and(|t| t.has_layout)
+            || ext.inline_style_override.is_some();
+        let reset_style = ext.typed_style.as_ref().is_some_and(|t| t.has_style)
+            || ext.inline_style_override.is_some();
+        ext.show_on = ext.explicit_show_on.or(typed.show_on);
+        ext.responsive_rules.clone_from(&typed.responsive);
+        ext.cursor = typed.cursor;
+        ext.state_rules.clone_from(&typed.state_rules);
+        ext.transitions.clone_from(&typed.transitions);
+        ext.layout_ext = typed
             .layout_ext
             .as_deref()
-            .filter(|ext| !ext.is_default())
-            .map(|ext| Box::new(ext.clone()));
-        rec.transform = typed.transform;
-        rec.background_fill = typed.background_fill.clone();
-        rec.typed_style = Some(typed);
+            .filter(|e| !e.is_default())
+            .cloned();
+        ext.transform = typed.transform;
+        ext.background_fill = typed.background_fill.clone();
+        ext.typed_style = Some(typed);
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
 
@@ -245,19 +258,22 @@ impl NveMutationWriter {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
-        let Some(prev) = rec.typed_style.take() else {
+        let Some(ext) = rec.extras.as_deref_mut() else {
             return;
         };
-        let reset_layout = prev.has_layout || rec.inline_style_override.is_some();
-        let reset_style = prev.has_style || rec.inline_style_override.is_some();
-        rec.show_on = rec.explicit_show_on;
-        rec.responsive_rules.clear();
-        rec.cursor = None;
-        rec.state_rules.clear();
-        rec.transitions.clear();
-        rec.layout_ext = None;
-        rec.transform = None;
-        rec.background_fill = None;
+        let Some(prev) = ext.typed_style.take() else {
+            return;
+        };
+        let reset_layout = prev.has_layout || ext.inline_style_override.is_some();
+        let reset_style = prev.has_style || ext.inline_style_override.is_some();
+        ext.show_on = ext.explicit_show_on;
+        ext.responsive_rules.clear();
+        ext.cursor = None;
+        ext.state_rules.clear();
+        ext.transitions.clear();
+        ext.layout_ext = None;
+        ext.transform = None;
+        ext.background_fill = None;
         self.recompute_typed_style(node_id, reset_layout, reset_style);
     }
 
@@ -265,7 +281,11 @@ impl NveMutationWriter {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
-        if rec.inline_style_override.take().is_some() && rec.typed_style.is_some() {
+        let should_recompute = rec
+            .extras
+            .as_deref_mut()
+            .is_some_and(|ext| ext.inline_style_override.take().is_some() && ext.typed_style.is_some());
+        if should_recompute {
             self.recompute_typed_style(node_id, true, true);
         }
     }
@@ -278,7 +298,7 @@ impl NveMutationWriter {
         let prev_style = rec.style;
 
         let (mut next_layout, mut next_style, typed_has_style, mut next_fw, mut next_ta, mut next_bs, mut next_ov, mut next_of) =
-            if let Some(ref typed) = rec.typed_style {
+            if let Some(typed) = rec.extras().and_then(|e| e.typed_style.as_ref()) {
                 (
                     if typed.has_layout {
                         typed.layout
@@ -323,7 +343,7 @@ impl NveMutationWriter {
             };
 
         let mut extra_raw: Vec<(String, String)> = Vec::new();
-        if let Some(ref override_css) = rec.inline_style_override {
+        if let Some(override_css) = rec.extras().and_then(|e| e.inline_style_override.as_deref()) {
             let _ = apply_typed_attr_with_raw(
                 &mut next_layout,
                 &mut next_style,
@@ -346,20 +366,32 @@ impl NveMutationWriter {
         }
         if next_style != prev_style {
             rec.style = next_style;
-            rec.has_explicit_style = true;
+            rec.set_has_explicit_style(true);
             self.dirty_style.push(node_id);
         } else if typed_has_style {
-            rec.has_explicit_style = true;
+            rec.set_has_explicit_style(true);
         }
 
         let builder = &mut self.builder;
-        let fw_changed = sync_raw_style_prop(builder, node_id, "font-weight", &mut rec.font_weight, next_fw);
-        rec.has_explicit_font_weight = rec.font_weight.is_some();
-        let ta_changed = sync_raw_style_prop(builder, node_id, "text-align", &mut rec.text_align, next_ta);
-        rec.has_explicit_text_align = rec.text_align.is_some();
-        let _ = sync_raw_style_prop(builder, node_id, "box-shadow", &mut rec.box_shadow, next_bs);
-        let _ = sync_raw_style_prop(builder, node_id, "overflow", &mut rec.overflow, next_ov);
-        let _ = sync_raw_style_prop(builder, node_id, "object-fit", &mut rec.object_fit, next_of);
+        let has_any_raw_style = next_fw.is_some()
+            || next_ta.is_some()
+            || next_bs.is_some()
+            || next_ov.is_some()
+            || next_of.is_some()
+            || rec.extras.is_some();
+        let (fw_changed, ta_changed, has_fw, has_ta) = if has_any_raw_style {
+            let ext = rec.extras_mut();
+            let fw_c = sync_raw_style_prop(builder, node_id, "font-weight", &mut ext.font_weight, next_fw);
+            let ta_c = sync_raw_style_prop(builder, node_id, "text-align", &mut ext.text_align, next_ta);
+            let _ = sync_raw_style_prop(builder, node_id, "box-shadow", &mut ext.box_shadow, next_bs);
+            let _ = sync_raw_style_prop(builder, node_id, "overflow", &mut ext.overflow, next_ov);
+            let _ = sync_raw_style_prop(builder, node_id, "object-fit", &mut ext.object_fit, next_of);
+            (fw_c, ta_c, ext.font_weight.is_some(), ext.text_align.is_some())
+        } else {
+            (false, false, false, false)
+        };
+        rec.set_has_explicit_font_weight(has_fw);
+        rec.set_has_explicit_text_align(has_ta);
 
         for (k, v) in extra_raw {
             builder.set_raw_prop_str(node_id, &k, &v);
@@ -378,21 +410,27 @@ impl NveMutationWriter {
             let trimmed = value.trim();
             if let Some(rec) = self.nodes.get_mut(&node_id) {
                 let next_override = (!trimmed.is_empty()).then(|| trimmed.to_owned());
-                if rec.typed_style.is_some() {
-                    if rec.inline_style_override != next_override {
-                        rec.inline_style_override = next_override;
+                if rec.extras().is_some_and(|e| e.typed_style.is_some()) {
+                    let ext = rec.extras_mut();
+                    if ext.inline_style_override != next_override {
+                        ext.inline_style_override = next_override;
                         self.recompute_typed_style(node_id, true, true);
                     }
                     return;
                 }
-                rec.inline_style_override = next_override;
+                if next_override.is_some() || rec.extras.is_some() {
+                    rec.extras_mut().inline_style_override = next_override;
+                }
             }
         }
         if let Some(rec) = self.nodes.get_mut(&node_id) {
             let prev_layout = rec.layout;
             let prev_style = rec.style;
             let mut text_prop_changed = false;
+            let mut set_fw_flag = false;
+            let mut set_ta_flag = false;
             let builder = &mut self.builder;
+            let extras_slot = &mut rec.extras;
             let handled = apply_typed_attr_with_raw(
                 &mut rec.layout,
                 &mut rec.style,
@@ -401,39 +439,50 @@ impl NveMutationWriter {
                 |raw_k, raw_v| {
                     match raw_k {
                         "font-weight" => {
-                            rec.has_explicit_font_weight = true;
-                            if rec.font_weight.as_deref() != Some(raw_v) {
-                                rec.font_weight = Some(Cow::Owned(raw_v.to_owned()));
+                            set_fw_flag = true;
+                            let e = extras_slot.get_or_insert_with(Box::default);
+                            if e.font_weight.as_deref() != Some(raw_v) {
+                                e.font_weight = Some(Cow::Owned(raw_v.to_owned()));
                                 text_prop_changed = true;
                             }
                         }
                         "text-align" => {
-                            rec.has_explicit_text_align = true;
-                            if rec.text_align.as_deref() != Some(raw_v) {
-                                rec.text_align = Some(Cow::Owned(raw_v.to_owned()));
+                            set_ta_flag = true;
+                            let e = extras_slot.get_or_insert_with(Box::default);
+                            if e.text_align.as_deref() != Some(raw_v) {
+                                e.text_align = Some(Cow::Owned(raw_v.to_owned()));
                                 text_prop_changed = true;
                             }
                         }
                         "box-shadow" => {
-                            rec.box_shadow = Some(Cow::Owned(raw_v.to_owned()));
+                            extras_slot.get_or_insert_with(Box::default).box_shadow =
+                                Some(Cow::Owned(raw_v.to_owned()));
                         }
                         "overflow" => {
-                            rec.overflow = Some(Cow::Owned(raw_v.to_owned()));
+                            extras_slot.get_or_insert_with(Box::default).overflow =
+                                Some(Cow::Owned(raw_v.to_owned()));
                         }
                         "object-fit" => {
-                            rec.object_fit = Some(Cow::Owned(raw_v.to_owned()));
+                            extras_slot.get_or_insert_with(Box::default).object_fit =
+                                Some(Cow::Owned(raw_v.to_owned()));
                         }
                         _ => {}
                     }
                     builder.set_raw_prop_str(node_id, raw_k, raw_v);
                 },
             );
+            if set_fw_flag {
+                rec.set_has_explicit_font_weight(true);
+            }
+            if set_ta_flag {
+                rec.set_has_explicit_text_align(true);
+            }
             if handled {
                 if rec.layout != prev_layout {
                     self.dirty_layout.push(node_id);
                 }
                 if rec.style != prev_style {
-                    rec.has_explicit_style = true;
+                    rec.set_has_explicit_style(true);
                     self.dirty_style.push(node_id);
                 }
                 if text_prop_changed {
@@ -444,20 +493,20 @@ impl NveMutationWriter {
             if let Some(canonical) = canonical_raw_style_key(name) {
                 match canonical {
                     "font-weight" => {
-                        rec.has_explicit_font_weight = true;
-                        rec.font_weight = Some(Cow::Owned(value.to_owned()));
+                        rec.set_has_explicit_font_weight(true);
+                        rec.extras_mut().font_weight = Some(Cow::Owned(value.to_owned()));
                         self.dirty_text_props.push(node_id);
                     }
                     "text-align" => {
-                        rec.has_explicit_text_align = true;
-                        rec.text_align = Some(Cow::Owned(value.to_owned()));
+                        rec.set_has_explicit_text_align(true);
+                        rec.extras_mut().text_align = Some(Cow::Owned(value.to_owned()));
                         self.dirty_text_props.push(node_id);
                     }
                     "box-shadow" => {
-                        rec.box_shadow = Some(Cow::Owned(value.to_owned()));
+                        rec.extras_mut().box_shadow = Some(Cow::Owned(value.to_owned()));
                     }
                     "overflow" => {
-                        rec.overflow = Some(Cow::Owned(value.to_owned()));
+                        rec.extras_mut().overflow = Some(Cow::Owned(value.to_owned()));
                     }
                     _ => {}
                 }

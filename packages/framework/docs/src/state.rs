@@ -1,7 +1,6 @@
-//! Reactive documentation application state, responsive breakpoints, and surface bootstrap handoff.
+//! Reactive documentation application state and responsive breakpoints.
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use dioxus_core::consume_context;
@@ -483,22 +482,4 @@ pub fn sync_route_from_router(mut state: Signal<DocsAppState>, route: &DocsRoute
     if state.read().active_route != *route {
         state.write().navigate(route.clone());
     }
-}
-
-// ---------------------------------------------------------------------------
-// Thread-local FIFO bootstrap queue for `DioxusSurface::new(surface_id, fn)`
-// ---------------------------------------------------------------------------
-
-thread_local! {
-    static PENDING_BOOTSTRAPS: RefCell<VecDeque<DocsAppState>> = const { RefCell::new(VecDeque::new()) };
-}
-
-pub(crate) fn push_bootstrap(initial: DocsAppState) {
-    PENDING_BOOTSTRAPS.with(|queue| {
-        queue.borrow_mut().push_back(initial);
-    });
-}
-
-pub(crate) fn take_bootstrap() -> Option<DocsAppState> {
-    PENDING_BOOTSTRAPS.with(|queue| queue.borrow_mut().pop_front())
 }

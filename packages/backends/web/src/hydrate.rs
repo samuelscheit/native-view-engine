@@ -374,6 +374,23 @@ impl WebBackend {
                         .hydrated_controls
                         .insert(nid, HydratedControlState { base, local });
                 }
+                // Record pre-existing SSR child order once at hydration boot so `reconcile_dom_children`
+                // never reads back `data-nve-id` attributes across the WASM->DOM bridge.
+                if let Some(parent_el) = el.parent_element() {
+                    let logical_parent = if parent_el.has_attribute("data-nve-id") {
+                        Some(parent_el)
+                    } else if parent_el.tag_name().eq_ignore_ascii_case("code") {
+                        parent_el.parent_element()
+                    } else {
+                        None
+                    };
+                    if let Some(pel) = logical_parent
+                        && let Some(raw_pid) = pel.get_attribute("data-nve-id")
+                        && let Ok(pid) = raw_pid.parse::<NodeId>()
+                    {
+                        backend.hydrated_children.entry(pid).or_default().push(nid);
+                    }
+                }
                 backend.hydrated_dom_tags.insert(nid, tag);
                 backend.dom_nodes.insert(nid, el);
             }
@@ -608,6 +625,8 @@ impl WebBackend {
 
         self.hydrated_dom_tags.clear();
         self.hydrated_inline_nodes.clear();
+        #[cfg(target_arch = "wasm32")]
+        self.hydrated_children.clear();
         self.hydrating = false;
 
         if !hydrated_events.is_empty() {

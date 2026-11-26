@@ -6,7 +6,7 @@ use nve_filesystem::{
     encode_file_picker_options, FileFilter, FilePickerOptions, FilesystemClient, MemoryFilesystem,
     NativeFilesystem, SaveFileOptions, StandardPathKind,
 };
-use nve_host_services::{MemoryHostServices, NativeHostServices, ServiceError};
+use nve_host_services::{HostServiceRegistry, MemoryHostServices, ServiceError};
 
 #[test]
 fn filesystem_memory_native_and_truncation_fuzz() {
@@ -51,7 +51,7 @@ fn filesystem_memory_native_and_truncation_fuzz() {
     );
 
     // Safe non-modal native standard paths.
-    let native = NativeHostServices::new().with_handler(NativeFilesystem::new());
+    let native = HostServiceRegistry::new().with_handler(NativeFilesystem::new());
     let native_client = FilesystemClient::new(&native);
     for kind in [
         StandardPathKind::Data,

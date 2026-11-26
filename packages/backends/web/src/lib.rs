@@ -236,6 +236,8 @@ pub struct WebBackend {
     pub(crate) hydrated_inline_nodes: HashSet<NodeId>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydrated_controls: HashMap<NodeId, HydratedControlState>,
+    #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+    pub(crate) hydrated_children: HashMap<NodeId, Vec<NodeId>>,
     #[cfg(feature = "hydrate")]
     pub(crate) pending_pre_hydration_events: Vec<CapturedPreHydrationEvent>,
     #[cfg(feature = "hydrate")]
@@ -326,6 +328,8 @@ impl WebBackend {
             hydrated_inline_nodes: HashSet::default(),
             #[cfg(feature = "hydrate")]
             hydrated_controls: HashMap::default(),
+            #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+            hydrated_children: HashMap::default(),
             #[cfg(feature = "hydrate")]
             pending_pre_hydration_events: Vec::new(),
             #[cfg(feature = "hydrate")]
