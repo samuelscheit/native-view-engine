@@ -57,7 +57,7 @@ fn base_reset_css_and_compact_formatting_omit_defaults_and_avoid_font_shorthand(
     assert!(!NVE_BASE_RESET_CSS.contains("font:inherit"));
     assert!(NVE_BASE_RESET_CSS.contains(".nve-i{font-family:inherit;outline:none}"));
     assert!(NVE_BASE_RESET_CSS.contains(".nve-p{cursor:pointer}"));
-    assert!(NVE_BASE_RESET_CSS.contains(".nve-tl{color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}"));
+    assert!(NVE_BASE_RESET_CSS.contains(".nve-tl{display:inline;color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}"));
 
     let mut web = WebBackend::new();
     let mut b = CommandBufferBuilder::new(1, 1);

@@ -203,7 +203,7 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                         navigate_to(state, target.clone());
                     },
                     view {
-                        style: "flex-direction: row; align-items: center; gap: 8px; flex-grow: 1; padding-horizontal: {indent_px}px;",
+                        style: "flex-direction: row; align-items: center; gap: 8px; flex-grow: 1; min-width: 0px; padding-horizontal: {indent_px}px;",
                         view {
                             style: "width: 2px; height: 16px; border-radius: 2px; background-color: {rail_color};",
                         }

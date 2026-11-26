@@ -70,7 +70,7 @@ pub fn HighlightedCodeView(
             test_id: "{frame_tid}",
             accessibility_role: "codeblock",
             accessibility_label: title.clone().or_else(|| lang_badge.clone()).unwrap_or_else(|| "Code block".to_string()),
-            style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.code_bg};",
+            style: "width: 100%; min-width: 0px; overflow: hidden; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.code_bg};",
 
             // Top bar: optional filename title, language pill, Copy button
             view {
@@ -114,12 +114,12 @@ pub fn HighlightedCodeView(
             // Highlighted code lines
             scrollview {
                 accessibility_role: "code",
-                style: "width: 100%; flex-direction: column; padding-vertical: 10px;",
+                style: "width: 100%; min-width: 0px; flex-direction: column; padding-vertical: 10px;",
                 if lines.is_empty() {
                     view {
                         style: "padding-horizontal: 14px;",
                         text {
-                            style: "font-size: 13px; font-family: monospace; color: {theme.syntax.plain};",
+                            style: "font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain};",
                             "{code}"
                         }
                     }
@@ -146,22 +146,22 @@ pub fn HighlightedCodeView(
                                     style: "width: 100%; flex-direction: row; align-items: center; padding-horizontal: 10px; padding-vertical: 2px; gap: 8px; background-color: {line_bg};",
 
                                     view {
-                                        style: "width: 2px; height: 16px; background-color: {marker_color}; border-radius: 1px;",
+                                        style: "width: 2px; height: 16px; flex-shrink: 0; background-color: {marker_color}; border-radius: 1px;",
                                     }
 
                                     if display_line_numbers {
                                         text {
-                                            style: "min-width: 26px; font-size: 12px; font-family: monospace; color: {theme.muted}; text-align: right;",
+                                            style: "min-width: 26px; flex-shrink: 0; font-size: 12px; font-family: monospace; color: {theme.muted}; text-align: right;",
                                             "{line_no_str}"
                                         }
                                     }
 
                                     view {
                                         test_id: "docs-code-tokens",
-                                        style: "flex-direction: row; flex-grow: 1;",
+                                        style: "display: block; flex-direction: row; flex-grow: 1; white-space: pre; line-height: 1.55;",
                                         if line.tokens.is_empty() {
                                             text {
-                                                style: "font-size: 13px; font-family: monospace; color: {theme.syntax.plain};",
+                                                style: "display: inline; font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain};",
                                                 " "
                                             }
                                         } else {
@@ -173,7 +173,7 @@ pub fn HighlightedCodeView(
                                                         text {
                                                             key: "{block_key}-ln-{line.line_no}-tok-{tok_idx}",
                                                             "data-token": "{tok_kind}",
-                                                            style: "font-size: 13px; font-family: monospace; color: {tok_color};",
+                                                            style: "display: inline; font-size: 13px; font-family: monospace; white-space: pre; color: {tok_color};",
                                                             "{span.text}"
                                                         }
                                                     }

@@ -104,10 +104,10 @@ pub fn CalloutView(
             "data-callout-kind": "{kind.as_str()}",
             style: "width: 100%; flex-direction: row; gap: 12px; padding: 14px; border-radius: 10px; background-color: {tone.bg}; border-width: 1px; border-color: {tone.border};",
             view {
-                style: "width: 3px; border-radius: 2px; background-color: {tone.border};",
+                style: "width: 3px; flex-shrink: 0; border-radius: 2px; background-color: {tone.border};",
             }
             view {
-                style: "flex-grow: 1; flex-direction: column; gap: 8px;",
+                style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 8px;",
                 view {
                     style: "flex-direction: row; align-items: center; gap: 8px;",
                     view {
@@ -163,11 +163,11 @@ pub fn TabsDirectiveView(
     rsx! {
         view {
             test_id: "docs-tabs-{clean_key}",
-            style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+            style: "width: 100%; min-width: 0px; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
 
             view {
                 accessibility_role: "tablist",
-                style: "width: 100%; flex-direction: row; align-items: center; gap: 4px; padding: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                 for (idx, item) in items.iter().enumerate() {
                     {
                         let is_selected = item.label == active_label;
@@ -205,7 +205,7 @@ pub fn TabsDirectiveView(
             view {
                 test_id: "docs-tab-panel-{clean_key}",
                 accessibility_role: "tabpanel",
-                style: "width: 100%; flex-direction: column; padding: 14px; gap: 10px;",
+                style: "width: 100%; min-width: 0px; flex-direction: column; padding: 14px; gap: 10px;",
                 BlocksView {
                     blocks: active_blocks,
                     scope_prefix: format!("{clean_key}-panel-{active_label}"),
@@ -224,14 +224,14 @@ pub fn StepsView(items: Vec<StepItem>, start: usize, scope_key: String) -> Eleme
     rsx! {
         view {
             test_id: "docs-steps-{scope_key}",
-            style: "width: 100%; flex-direction: column; gap: 14px;",
+            style: "width: 100%; min-width: 0px; flex-direction: column; gap: 14px;",
             for (idx, step) in items.into_iter().enumerate() {
                 {
                     let step_no = start + idx;
                     rsx! {
                         view {
                             key: "{scope_key}-step-{idx}",
-                            style: "width: 100%; flex-direction: row; align-items: flex-start; gap: 12px;",
+                            style: "width: 100%; min-width: 0px; flex-direction: row; align-items: flex-start; gap: 12px;",
                             view {
                                 style: "width: 26px; height: 26px; border-radius: 999px; justify-content: center; align-items: center; background-color: {theme.accent_surface}; border-width: 1px; border-color: {theme.accent}; flex-shrink: 0;",
                                 text {
@@ -240,7 +240,7 @@ pub fn StepsView(items: Vec<StepItem>, start: usize, scope_key: String) -> Eleme
                                 }
                             }
                             view {
-                                style: "flex-grow: 1; flex-direction: column; gap: 8px; padding-vertical: 2px;",
+                                style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 8px; padding-vertical: 2px;",
                                 text {
                                     style: "font-size: 15px; font-weight: 700; color: {theme.text};",
                                     "{step.title}"

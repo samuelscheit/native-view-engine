@@ -204,10 +204,21 @@ pub fn hash_structural_style_full(
     h = fnv1a_f32(h, op);
     h = fnv1a_u32(h, style.z_index as u32);
 
+    h = fnv1a_opt_str(h, raw.effective_display());
     h = fnv1a_opt_str(h, if leaf_text { None } else { raw.effective_font_weight() });
+    h = fnv1a_opt_str(h, if leaf_text { None } else { raw.effective_font_family() });
+    h = fnv1a_opt_str(h, if leaf_text { None } else { raw.effective_font_style() });
     h = fnv1a_opt_str(h, if leaf_text { None } else { raw.effective_text_align() });
+    h = fnv1a_opt_str(h, if leaf_text { None } else { raw.effective_text_decoration() });
+    h = fnv1a_opt_str(h, if leaf_text { None } else { raw.effective_line_height() });
     h = fnv1a_opt_str(h, raw.effective_box_shadow());
     h = fnv1a_opt_str(h, raw.effective_overflow());
+    h = fnv1a_opt_str(h, raw.effective_overflow_x());
+    h = fnv1a_opt_str(h, raw.effective_overflow_wrap());
+    h = fnv1a_opt_str(h, raw.effective_word_break());
+    h = fnv1a_opt_str(h, raw.effective_white_space());
+    h = fnv1a_opt_str(h, raw.effective_vertical_align());
+    h = fnv1a_opt_str(h, raw.effective_border_collapse());
     h = fnv1a_opt_str(h, raw.effective_flex_wrap());
     h = fnv1a_opt_str(h, raw.object_fit);
     let h = hash_background_fill(h, background_fill);

@@ -123,7 +123,7 @@ pub fn PageFooter() -> Element {
                                     accessibility_role: "link",
                                     accessibility_label: "Previous page: {prev.title}",
                                     "href": "{prev_href}",
-                                    style: "flex-grow: 1; flex-direction: column; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                                     onpress: move |_| {
                                         navigate_to(state, prev_route.clone());
                                     },
@@ -152,7 +152,7 @@ pub fn PageFooter() -> Element {
                                     accessibility_role: "link",
                                     accessibility_label: "Next page: {next.title}",
                                     "href": "{next_href}",
-                                    style: "flex-grow: 1; flex-direction: column; align-items: flex-end; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; align-items: flex-end; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                                     onpress: move |_| {
                                         navigate_to(state, next_route.clone());
                                     },

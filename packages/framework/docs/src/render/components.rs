@@ -188,7 +188,7 @@ pub fn ComponentBlockView(comp: ComponentNode, scope_key: String) -> Element {
             rsx! {
                 view {
                     test_id: "docs-api-table-{scope_key}",
-                    style: "width: 100%; flex-direction: column; gap: 10px; padding: 14px; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+                    style: "width: 100%; min-width: 0px; flex-direction: column; gap: 10px; padding: 14px; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
                     if let Some(t) = title {
                         text {
                             style: "font-size: 14px; font-weight: 700; color: {theme.text};",
@@ -253,9 +253,9 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             };
             rsx! {
                 view {
-                    style: "padding-horizontal: 7px; padding-vertical: 2px; border-radius: 999px; background-color: {bg}; border-width: 1px; border-color: {border};",
+                    style: "display: inline-flex; align-items: center; vertical-align: baseline; padding-horizontal: 7px; padding-vertical: 2px; border-radius: 999px; background-color: {bg}; border-width: 1px; border-color: {border};",
                     text {
-                        style: "font-size: 11px; font-weight: 600; color: {fg};",
+                        style: "display: inline; font-size: 11px; font-weight: 600; color: {fg};",
                         "{label}"
                     }
                 }
@@ -265,9 +265,10 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             let keys = prop_str(&comp, "keys").unwrap_or("").to_string();
             rsx! {
                 view {
-                    style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                    "semanticTag": "kbd",
+                    style: "display: inline-flex; align-items: center; vertical-align: baseline; padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                     text {
-                        style: "font-size: 11px; font-weight: 600; font-family: monospace; color: {theme.text};",
+                        style: "display: inline; font-size: 11px; font-weight: 600; font-family: monospace; color: {theme.text};",
                         "{keys}"
                     }
                 }
@@ -277,7 +278,7 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             let tag_label = format!("<{} />", comp.name);
             rsx! {
                 text {
-                    style: "font-size: 13px; color: {theme.muted};",
+                    style: "display: inline; font-size: 13px; color: {theme.muted};",
                     "{tag_label}"
                 }
             }
