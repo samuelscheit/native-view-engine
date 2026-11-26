@@ -10,6 +10,8 @@
 //! to `true` (or run with `NVE_STRICT_INVARIANTS=1` / `NVE_STRICT_INVARIANTS=nodestore,1b1d,1b1e`)
 //! to make each stage a hard failure as each track lands.
 
+#[path = "arch_invariants/content_purity.rs"]
+mod content_purity;
 #[path = "arch_invariants/json_meta.rs"]
 mod json_meta;
 #[path = "arch_invariants/rust_items.rs"]

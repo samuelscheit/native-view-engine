@@ -487,3 +487,103 @@ fn unit_duplicate_enums_converters_and_strict_macro_rules() {
         "wire decoders and multi-arg struct constructors must not false-positive: {v_wire:?}"
     );
 }
+
+#[test]
+fn unit_content_based_purity_split_booleans_word_enum_and_unset_variants() {
+    use crate::content_purity::scan_content_based_platform_purity;
+    use crate::rust_lex::strip_rust_comments_and_strings;
+
+    // 1. Split booleans (`_set`, `_present`, `has_<sibling>`), legacy `word_enum!`, and `Unset` variant.
+    let interaction_like = r#"
+        #[derive(NveTable)]
+        pub struct Interaction {
+            pub disabled: bool,
+            pub has_focus: bool,
+            pub tab_index_set: bool,
+            pub tab_index: i16,
+            pub has_label: bool,
+            pub label: Str,
+            pub tint_present: bool,
+        }
+        word_enum! {
+            pub enum AriaLive: 2 { Unset = 0, Off = 1, Polite = 2, Assertive = 3 }
+        }
+        pub enum CleanEnum {
+            Alpha = 0,
+            Beta = 1,
+        }
+    "#;
+    let mut v_macro = Vec::new();
+    scan_macro_and_converter_str(
+        "packages/core/tables/src/interaction.rs",
+        interaction_like,
+        &mut v_macro,
+    );
+    assert_eq!(
+        v_macro.len(),
+        5,
+        "expected tab_index_set + has_label + tint_present + word_enum! + Unset (and NOT disabled/has_focus): {v_macro:?}"
+    );
+    assert!(!v_macro.iter().any(|v| v.reason.contains("disabled")));
+    assert!(!v_macro.iter().any(|v| v.reason.contains("has_focus")));
+
+    // 2. Content-based platform purity catches renamed enum->str tables, str->enum parsers,
+    //    CSS/ARIA format payloads, and `.to_ascii_lowercase()` regardless of function name.
+    let sneaky_core = r#"
+        impl AriaRole {
+            pub const fn totally_innocent_name(self) -> &'static str {
+                match self {
+                    Self::Button => "button",
+                    Self::Link => "link",
+                    Self::Dialog => "dialog",
+                }
+            }
+            pub fn sneaky_reader(raw: &str) -> Self {
+                match raw.trim().to_ascii_lowercase().as_str() {
+                    "button" => Self::Button,
+                    "link" => Self::Link,
+                    "dialog" => Self::Dialog,
+                    _ => Self::Button,
+                }
+            }
+            pub fn build_grad(out: &mut String) {
+                out.push_str("linear-gradient(90deg, red, blue)");
+            }
+        }
+        // Clean negative cases: Display/Error impls and Key64::of table keys MUST NOT fire.
+        pub enum CodecError { Bad, Short, Trailing }
+        impl core::fmt::Display for CodecError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                let msg = match self {
+                    Self::Bad => "bad",
+                    Self::Short => "short",
+                    Self::Trailing => "trailing",
+                };
+                f.write_str(msg)
+            }
+        }
+        impl CodecError {
+            pub const fn describe(self) -> &'static str {
+                match self {
+                    Self::Bad => "bad",
+                    Self::Short => "short",
+                    Self::Trailing => "trailing",
+                }
+            }
+        }
+    "#;
+    let clean = strip_rust_comments_and_strings(sneaky_core);
+    let mut v_purity = Vec::new();
+    scan_content_based_platform_purity(
+        "packages/core/tables/src/interaction.rs",
+        sneaky_core,
+        &clean,
+        &mut v_purity,
+    );
+    assert_eq!(
+        v_purity.len(),
+        4,
+        "expected .to_ascii_lowercase + enum->str table + str->enum parser + linear-gradient (and 0 Error/Display false positives): {v_purity:?}"
+    );
+    assert!(!v_purity.iter().any(|v| v.reason.contains("CodecError") || v.reason.contains("describe") || v.reason.contains("fmt")));
+}
