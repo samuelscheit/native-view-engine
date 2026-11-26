@@ -593,24 +593,19 @@ fn hydration_three_way_reconciler_preserves_dirty_controls_and_replays_events_in
     assert_eq!(events[2].payload, EventPayload::Point { x: 42.0, y: 18.0 });
 
     assert_eq!(events[3].node_id, ROOT_NODE_ID);
-    assert_eq!(events[3].kind, NativeEventKind::Custom);
-    match &events[3].payload {
-        EventPayload::Custom { name, data } => {
-            assert_eq!(name, "keydown");
-            let decoded = nve_abi::events::decode_keydown_bytes(data).expect("valid NK1 payload");
-            assert_eq!(decoded.key, "k");
-            assert!(decoded.meta && !decoded.ctrl && !decoded.shift && !decoded.alt);
-        }
-        other => panic!("expected Custom keydown, got {other:?}"),
-    }
-
-    assert_eq!(events[4].node_id, 4);
-    assert_eq!(events[4].kind, NativeEventKind::Custom);
+    assert_eq!(events[3].kind, NativeEventKind::KeyDown);
     assert_eq!(
-        events[4].payload,
-        EventPayload::Custom {
-            name: "submit".into(),
-            data: b"rust query".to_vec(),
+        events[3].payload,
+        EventPayload::Key {
+            key: "k".into(),
+            code: String::new(),
+            key_code: 0,
+            modifiers: nve_abi::NVE_KEY_MOD_META,
+            is_composing: false,
         }
     );
+
+    assert_eq!(events[4].node_id, 4);
+    assert_eq!(events[4].kind, NativeEventKind::Submit);
+    assert_eq!(events[4].payload, EventPayload::Text("rust query".into()));
 }

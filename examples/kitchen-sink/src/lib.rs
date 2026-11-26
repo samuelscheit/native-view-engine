@@ -14,8 +14,8 @@ pub mod state;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    decode_events, encode_events, FrameId, NveEventBatchRef, NveGestureDisposition,
-    NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
+    FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
+    NveSizeConstraints, SurfaceId,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -51,7 +51,6 @@ pub struct KitchenSinkModule {
     mounted: bool,
     last_frame_buf: Vec<u8>,
     last_state_buf: Vec<u8>,
-    last_emitted_events_buf: Vec<u8>,
 }
 
 impl KitchenSinkModule {
@@ -101,7 +100,6 @@ impl NveApp for KitchenSinkModule {
             mounted: false,
             last_frame_buf: Vec::new(),
             last_state_buf,
-            last_emitted_events_buf: Vec::new(),
         }
     }
 
@@ -120,15 +118,8 @@ impl NveApp for KitchenSinkModule {
         &self.last_frame_buf
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        let Ok(decoded) = decode_events(encoded_events) else {
-            return false;
-        };
-        self.surface.dispatch_events(&decoded)
-    }
-
-    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
-        self.surface.dispatch_events_direct(events)
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        self.surface.dispatch_direct_events(events)
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {
@@ -144,7 +135,7 @@ impl NveApp for KitchenSinkModule {
         NveGestureDisposition::Claim
     }
 
-    fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {
+    fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
         if let Some(c) = props
             .get("initialCount")
             .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
@@ -157,11 +148,6 @@ impl NveApp for KitchenSinkModule {
             return true;
         }
         false
-    }
-
-    fn drain_emitted_events(&mut self) -> &[u8] {
-        self.last_emitted_events_buf = encode_events(&[]);
-        &self.last_emitted_events_buf
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {

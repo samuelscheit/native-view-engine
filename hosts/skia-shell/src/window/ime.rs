@@ -1,7 +1,7 @@
 //! Unified IME composition (`CompositionStart` / `CompositionUpdate` / `CompositionEnd`)
 //! lifecycle dispatch for [`DesktopSession`].
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{native_events_to_direct, EventPayload, NativeEvent, NativeEventKind, NodeId};
 use winit::event::Ime;
 
 use super::session::{now_us, DesktopSession};
@@ -13,8 +13,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         &mut self,
         events: &[NativeEvent],
     ) -> Result<(), DesktopHostError> {
-        let encoded = encode_events(events);
-        if self.app.dispatch_events(&encoded) {
+        let mut direct = Vec::with_capacity(events.len());
+        native_events_to_direct(events, &mut direct);
+        if self.app.dispatch_events(&direct) {
             self.render_and_rasterize()?;
         } else {
             self.rasterize_current();

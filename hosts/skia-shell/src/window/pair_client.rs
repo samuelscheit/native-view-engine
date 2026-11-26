@@ -9,7 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use nve_abi::{FrameId, SurfaceId};
+use nve_abi::{direct_event_to_native, encode_events, FrameId, NveDirectEvent, SurfaceId};
 use nve_wire::{
     parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireKind, NveWireMetrics,
     NveWireTransportKind, NveWireUri, DEFAULT_WIRE_WSS_PATH,
@@ -315,11 +315,18 @@ impl DesktopApp for PairedRemoteApp {
         }
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        if encoded_events.is_empty() || !self.connected.load(Ordering::Relaxed) {
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+        if events.is_empty() || !self.connected.load(Ordering::Relaxed) {
             return false;
         }
-        self.event_tx.send(encoded_events.to_vec()).is_ok()
+        let owned: Vec<_> = events
+            .iter()
+            .filter_map(|raw| direct_event_to_native(unsafe { nve_abi::NveDirectEventRef::from_raw(raw) }))
+            .collect();
+        if owned.is_empty() {
+            return false;
+        }
+        self.event_tx.send(encode_events(&owned)).is_ok()
     }
 
     fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {

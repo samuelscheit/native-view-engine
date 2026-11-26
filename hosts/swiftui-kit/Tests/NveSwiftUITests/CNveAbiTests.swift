@@ -10,8 +10,7 @@ private enum AbiTestFixtures {
                 create: { sid in UnsafeMutableRawPointer(bitPattern: Int(sid) + 0x1000) },
                 destroy: { _ in },
                 render: { _, _ in NveBufferSlice(ptr: nil, len: 0) },
-                dispatch_events: { _, _ in 0 },
-                dispatch_events_direct: { _, batch in batch.len > 0 ? 1 : 0 }
+                dispatch_events: { _, batch in batch.len > 0 ? 1 : 0 }
             )
         )
         return UnsafePointer(ptr)
@@ -34,9 +33,8 @@ private enum AbiTestFixtures {
         let ptr = UnsafeMutablePointer<NveComponentApi>.allocate(capacity: 1)
         ptr.initialize(
             to: NveComponentApi(
-                set_props: { _, _ in 1 },
-                drain_emitted_events: { _ in NveBufferSlice(ptr: nil, len: 0) },
-                set_props_direct: { _, _, count in count > 0 ? 1 : 0 }
+                set_props: { _, _, count in count > 0 ? 1 : 0 },
+                drain_emitted_events: { _ in NveEventBatch(ptr: nil, len: 0, _pad: 0) }
             )
         )
         return UnsafePointer(ptr)

@@ -120,6 +120,84 @@ final class NveBinValuePayload extends NveEventPayload {
   }
 }
 
+final class NveKeyPayload extends NveEventPayload {
+  const NveKeyPayload({
+    required this.key,
+    this.code = '',
+    this.modifiers = 0,
+    this.keyCode = 0,
+    this.isComposing = false,
+  });
+
+  final String key;
+  final String code;
+  final int modifiers;
+  final int keyCode;
+  final bool isComposing;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is NveKeyPayload &&
+          other.key == key &&
+          other.code == code &&
+          other.modifiers == modifiers &&
+          other.keyCode == keyCode &&
+          other.isComposing == isComposing);
+
+  @override
+  int get hashCode => Object.hash(key, code, modifiers, keyCode, isComposing);
+}
+
+final class NvePointerPayload extends NveEventPayload {
+  const NvePointerPayload({
+    required this.x,
+    required this.y,
+    this.modifiers = 0,
+    this.flags = 0,
+  });
+
+  final double x;
+  final double y;
+  final int modifiers;
+  final int flags;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is NvePointerPayload &&
+          other.x == x &&
+          other.y == y &&
+          other.modifiers == modifiers &&
+          other.flags == flags);
+
+  @override
+  int get hashCode => Object.hash(x, y, modifiers, flags);
+}
+
+final class NveWheelPayload extends NveEventPayload {
+  const NveWheelPayload({
+    required this.deltaX,
+    required this.deltaY,
+    this.modifiers = 0,
+  });
+
+  final double deltaX;
+  final double deltaY;
+  final int modifiers;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is NveWheelPayload &&
+          other.deltaX == deltaX &&
+          other.deltaY == deltaY &&
+          other.modifiers == modifiers);
+
+  @override
+  int get hashCode => Object.hash(deltaX, deltaY, modifiers);
+}
+
 /// Decoded outbound or inbound NVE event with strongly typed payload (binary).
 class NveEvent {
   const NveEvent({
@@ -387,6 +465,38 @@ class NveEventRingCodec {
           final rawData = Uint8List.fromList(Uint8List.sublistView(bytes, pos, pos + dataLen));
           pos += dataLen;
           payload = NveBinValuePayload(rawData);
+        case 6: // Key
+          if (pos + 8 > bytes.length) { truncated = true; break; }
+          final modifiers = bytes[pos++];
+          final isComposing = bytes[pos++] != 0;
+          final keyCode = bd.getUint32(pos, Endian.little);
+          pos += 4;
+          final klen = bd.getUint16(pos, Endian.little);
+          pos += 2;
+          if (klen + 2 > bytes.length - pos) { truncated = true; break; }
+          final key = utf8.decode(Uint8List.sublistView(bytes, pos, pos + klen), allowMalformed: true);
+          pos += klen;
+          final clen = bd.getUint16(pos, Endian.little);
+          pos += 2;
+          if (clen > bytes.length - pos) { truncated = true; break; }
+          final code = utf8.decode(Uint8List.sublistView(bytes, pos, pos + clen), allowMalformed: true);
+          pos += clen;
+          payload = NveKeyPayload(key: key, code: code, modifiers: modifiers, keyCode: keyCode, isComposing: isComposing);
+        case 7: // Pointer
+          if (pos + 10 > bytes.length) { truncated = true; break; }
+          final x = bd.getFloat32(pos, Endian.little);
+          final y = bd.getFloat32(pos + 4, Endian.little);
+          final modifiers = bytes[pos + 8];
+          final flags = bytes[pos + 9];
+          pos += 10;
+          payload = NvePointerPayload(x: x, y: y, modifiers: modifiers, flags: flags);
+        case 8: // Wheel
+          if (pos + 9 > bytes.length) { truncated = true; break; }
+          final dx = bd.getFloat32(pos, Endian.little);
+          final dy = bd.getFloat32(pos + 4, Endian.little);
+          final modifiers = bytes[pos + 8];
+          pos += 9;
+          payload = NveWheelPayload(deltaX: dx, deltaY: dy, modifiers: modifiers);
         default:
           truncated = true;
       }
@@ -422,6 +532,9 @@ class NveEventRingCodec {
         NveTextPayload() => NveEventPayloadTag.text.code,
         NveLayoutPayload() => NveEventPayloadTag.layout.code,
         NveBinValuePayload() => NveEventPayloadTag.custom.code,
+        NveKeyPayload() => NveEventPayloadTag.key.code,
+        NvePointerPayload() => NveEventPayloadTag.pointer.code,
+        NveWheelPayload() => NveEventPayloadTag.wheel.code,
       };
       final meta = ByteData(18)
         ..setUint32(0, ev.surfaceId, Endian.little)
@@ -466,6 +579,32 @@ class NveEventRingCodec {
           final dataLen = ByteData(4)..setUint32(0, bytes.length, Endian.little);
           builder.add(dataLen.buffer.asUint8List());
           builder.add(bytes);
+        case NveKeyPayload(:final key, :final code, :final modifiers, :final keyCode, :final isComposing):
+          final keyBytes = utf8.encode(key);
+          final codeBytes = utf8.encode(code);
+          final hdr = ByteData(8)
+            ..setUint8(0, modifiers)
+            ..setUint8(1, isComposing ? 1 : 0)
+            ..setUint32(2, keyCode, Endian.little)
+            ..setUint16(6, keyBytes.length, Endian.little);
+          builder.add(hdr.buffer.asUint8List());
+          builder.add(keyBytes);
+          final codeLen = ByteData(2)..setUint16(0, codeBytes.length, Endian.little);
+          builder.add(codeLen.buffer.asUint8List());
+          builder.add(codeBytes);
+        case NvePointerPayload(:final x, :final y, :final modifiers, :final flags):
+          final ptr = ByteData(10)
+            ..setFloat32(0, x, Endian.little)
+            ..setFloat32(4, y, Endian.little)
+            ..setUint8(8, modifiers)
+            ..setUint8(9, flags);
+          builder.add(ptr.buffer.asUint8List());
+        case NveWheelPayload(:final deltaX, :final deltaY, :final modifiers):
+          final wh = ByteData(9)
+            ..setFloat32(0, deltaX, Endian.little)
+            ..setFloat32(4, deltaY, Endian.little)
+            ..setUint8(8, modifiers);
+          builder.add(wh.buffer.asUint8List());
       }
     }
 

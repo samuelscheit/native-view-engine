@@ -13,14 +13,20 @@ use crate::ffi::{
 };
 use crate::host::{NveHostCallbacks, NVE_CHANNEL_FLAG_RETAIN};
 use crate::scene::{
-    NveRenderNode, NveSceneView, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_CUSTOM,
+    NveNodeMeta, NveRenderNode, NveSceneView, NVE_META_FLAG_ACCESSIBILITY_HIDDEN,
+    NVE_META_FLAG_DISABLED, NVE_META_FLAG_DRAW_LIST_CORRUPT, NVE_META_FLAG_HAS_DRAW_LIST,
+    NVE_META_FLAG_MULTILINE, NVE_META_FLAG_SECURE_TEXT_ENTRY, NVE_META_RESIZE_MODE_MASK,
+    NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_CUSTOM,
     NVE_NODE_KIND_IMAGE, NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT, NVE_NODE_KIND_SCROLL_VIEW,
     NVE_NODE_KIND_SKIA_CANVAS, NVE_NODE_KIND_TEXT, NVE_NODE_KIND_TEXT_INPUT, NVE_NODE_KIND_VIEW,
-    NVE_NODE_LEAF_TEXT, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
+    NVE_NODE_LEAF_TEXT, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE, NVE_RENDER_NODE_ALIGN,
+    NVE_RENDER_NODE_SIZE,
 };
 use crate::value::{
     NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry, NvePropSlice,
     NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap, NveValueTag,
+    NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE, NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT,
+    NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
 };
 use crate::ROOT_NODE_ID;
 
@@ -233,6 +239,14 @@ const CORE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_ROOT_NODE_ID", ROOT_NODE_ID as u64, false, Some("Reserved root node ID for every surface.")),
     abi_const("NVE_BIN_VALUE_MAX_DEPTH", 64, false, Some("Maximum permitted container nesting depth for `NveBinValue`.")),
     abi_const("NVE_CHANNEL_FLAG_RETAIN", NVE_CHANNEL_FLAG_RETAIN as u64, false, Some("Flag bit on `channel_publish` / `ChannelMessage` requesting retained channel state.")),
+    abi_const("NVE_KEY_MOD_META", NVE_KEY_MOD_META as u64, true, Some("Meta / Command modifier flag in `NveDirectEvent::modifiers`.")),
+    abi_const("NVE_KEY_MOD_CTRL", NVE_KEY_MOD_CTRL as u64, true, Some("Control modifier flag in `NveDirectEvent::modifiers`.")),
+    abi_const("NVE_KEY_MOD_SHIFT", NVE_KEY_MOD_SHIFT as u64, true, Some("Shift modifier flag in `NveDirectEvent::modifiers`.")),
+    abi_const("NVE_KEY_MOD_ALT", NVE_KEY_MOD_ALT as u64, true, Some("Alt / Option modifier flag in `NveDirectEvent::modifiers`.")),
+    abi_const("NVE_KEY_MOD_REPEAT", NVE_KEY_MOD_REPEAT as u64, true, Some("Key auto-repeat flag in `NveDirectEvent::modifiers`.")),
+    abi_const("NVE_EVENT_FLAG_BUTTON_MASK", NVE_EVENT_FLAG_BUTTON_MASK as u64, true, Some("Pointer button bitmask (bits 0..=2) in `NveDirectEvent::event_flags`.")),
+    abi_const("NVE_EVENT_FLAG_CAPTURE", NVE_EVENT_FLAG_CAPTURE as u64, true, Some("Pointer capture active flag in `NveDirectEvent::event_flags`.")),
+    abi_const("NVE_EVENT_FLAG_COMPOSING", NVE_EVENT_FLAG_COMPOSING as u64, true, Some("IME composition active flag in `NveDirectEvent::event_flags`.")),
 ];
 
 const CORE_ALIASES: &[AbiAliasDescriptor] = &[
@@ -282,8 +296,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
             abi_method("create", &[abi_param("surface_id", "u32")], "NveAppHandle", false, false, None),
             abi_method("destroy", &[], "()", true, false, None),
             abi_method("render", &[abi_param("frame_id", "u64")], "NveBufferSlice", true, false, None),
-            abi_method("dispatch_events", &[abi_param("events", "NveBufferSlice")], "u32", true, false, None),
-            abi_method("dispatch_events_direct", &[abi_param("batch", "NveEventBatch")], "u32", true, true, Some("Optional zero-copy direct event dispatch (may be NULL).")),
+            abi_method("dispatch_events", &[abi_param("batch", "NveEventBatch")], "u32", true, false, None),
         ],
     },
     AbiModuleDescriptor {
@@ -304,9 +317,8 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
         c_name: "NveComponentApi",
         doc: Some("Optional embedded component props & outbound event interface (`NVE_IFACE_COMPONENT = 3`)."),
         methods: &[
-            abi_method("set_props", &[abi_param("props", "NveBufferSlice")], "u32", true, false, None),
-            abi_method("drain_emitted_events", &[], "NveBufferSlice", true, false, None),
-            abi_method("set_props_direct", &[abi_param("entries", "*const NveMapEntry"), abi_param("count", "u32")], "u32", true, true, Some("Optional zero-copy structured props update (may be NULL).")),
+            abi_method("set_props", &[abi_param("entries", "*const NveMapEntry"), abi_param("count", "u32")], "u32", true, false, None),
+            abi_method("drain_emitted_events", &[], "NveEventBatch", true, false, None),
         ],
     },
     AbiModuleDescriptor {
@@ -366,6 +378,8 @@ const CORE_C_FUNCTIONS: &[AbiCFunctionDescriptor] = &[
 const SCENE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_RENDER_NODE_SIZE", NVE_RENDER_NODE_SIZE as u64, false, Some("Exact byte stride of one `NveRenderNode` record (one 64-byte cache line).")),
     abi_const("NVE_RENDER_NODE_ALIGN", NVE_RENDER_NODE_ALIGN as u64, false, Some("Required cache-line alignment of `NveRenderNode` backing slabs in Rust.")),
+    abi_const("NVE_NODE_META_SIZE", NVE_NODE_META_SIZE as u64, false, Some("Exact byte stride of one `NveNodeMeta` record (64 bytes).")),
+    abi_const("NVE_NODE_META_ALIGN", NVE_NODE_META_ALIGN as u64, false, Some("Natural alignment of `NveNodeMeta` (4 bytes).")),
     abi_const("NVE_NODE_LEAF_TEXT", NVE_NODE_LEAF_TEXT as u64, false, Some("Bit flags on `NveRenderNode::flags`.")),
     abi_const("NVE_NODE_INTERACTIVE", NVE_NODE_INTERACTIVE as u64, false, None),
     abi_const("NVE_NODE_CLIP_BOUNDS", NVE_NODE_CLIP_BOUNDS as u64, false, None),
@@ -378,11 +392,20 @@ const SCENE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_NODE_KIND_PRESSABLE", NVE_NODE_KIND_PRESSABLE as u64, false, None),
     abi_const("NVE_NODE_KIND_SKIA_CANVAS", NVE_NODE_KIND_SKIA_CANVAS as u64, false, None),
     abi_const("NVE_NODE_KIND_CUSTOM", NVE_NODE_KIND_CUSTOM as u64, false, None),
+    abi_const("NVE_META_FLAG_DISABLED", NVE_META_FLAG_DISABLED as u64, true, Some("Bit flags on `NveNodeMeta::flags`.")),
+    abi_const("NVE_META_FLAG_SECURE_TEXT_ENTRY", NVE_META_FLAG_SECURE_TEXT_ENTRY as u64, true, None),
+    abi_const("NVE_META_FLAG_MULTILINE", NVE_META_FLAG_MULTILINE as u64, true, None),
+    abi_const("NVE_META_FLAG_HAS_DRAW_LIST", NVE_META_FLAG_HAS_DRAW_LIST as u64, true, None),
+    abi_const("NVE_META_FLAG_DRAW_LIST_CORRUPT", NVE_META_FLAG_DRAW_LIST_CORRUPT as u64, true, None),
+    abi_const("NVE_META_FLAG_ACCESSIBILITY_HIDDEN", NVE_META_FLAG_ACCESSIBILITY_HIDDEN as u64, true, None),
+    abi_const("NVE_META_RESIZE_MODE_SHIFT", NVE_META_RESIZE_MODE_SHIFT as u64, false, None),
+    abi_const("NVE_META_RESIZE_MODE_MASK", NVE_META_RESIZE_MODE_MASK as u64, true, None),
 ];
 
 const SCENE_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveRenderNode as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveSceneView as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveNodeMeta as NveStructSchema>::SCHEMA),
 ];
 
 /// Returns the single-source-of-truth Core C ABI descriptor derived directly from the real

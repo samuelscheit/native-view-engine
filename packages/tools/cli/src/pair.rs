@@ -12,8 +12,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use nve_abi::{
-    decode_events, encode_events, EventPayload, NativeEvent, NativeEventKind, NveMapEntry,
-    NveValue, ROOT_NODE_ID,
+    decode_events, native_events_to_direct, NveDirectEvent, NveMapEntry, NveValue, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
@@ -46,8 +45,8 @@ pub(crate) enum PairControlMsg {
 /// Runtime abstraction over a live NVE app hosted by [`PairSession`].
 pub(crate) trait PairedApp {
     fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]>;
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
-    fn set_props_direct(&mut self, _entries: &[NveMapEntry]) -> bool {
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool;
+    fn set_props(&mut self, _entries: &[NveMapEntry]) -> bool {
         false
     }
     fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
@@ -62,11 +61,11 @@ impl PairedApp for HotAppInstance {
     fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
         Cow::Borrowed(HotAppInstance::render(self, frame_id))
     }
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        HotAppInstance::dispatch_events(self, encoded_events)
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+        HotAppInstance::dispatch_events(self, events)
     }
-    fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
-        HotAppInstance::set_props_direct(self, entries)
+    fn set_props(&mut self, entries: &[NveMapEntry]) -> bool {
+        HotAppInstance::set_props(self, entries)
     }
     fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
         HotAppInstance::apply_hot_patch(self, patch_nvp1)
@@ -82,10 +81,10 @@ impl PairedApp for DioxusSurface {
     fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
         Cow::Owned(self.render_frame(frame_id).2)
     }
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        decode_events(encoded_events)
-            .map(|events| DioxusSurface::dispatch_events(self, &events))
-            .unwrap_or(false)
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+        DioxusSurface::dispatch_direct_events(self, unsafe {
+            nve_abi::NveEventBatchRef::from_slice(events)
+        })
     }
 }
 
@@ -334,18 +333,7 @@ impl<A: PairedApp> PairSession<A> {
             .map_err(|e| format!("bind NveWireServer on quic={quic_bind} wss={wss_bind}: {e}"))?;
 
         if width > 0.0 && height > 0.0 {
-            let layout_ev = encode_events(&[NativeEvent {
-                surface_id: 1,
-                node_id: ROOT_NODE_ID,
-                timestamp_us: 0,
-                kind: NativeEventKind::Layout,
-                payload: EventPayload::Layout {
-                    x: 0.0,
-                    y: 0.0,
-                    width,
-                    height,
-                },
-            }]);
+            let layout_ev = [NveDirectEvent::layout(1, ROOT_NODE_ID, 0, 0.0, 0.0, width, height)];
             let _ = app.dispatch_events(&layout_ev);
         }
 
@@ -404,7 +392,7 @@ impl<A: PairedApp> PairSession<A> {
         self.last_telemetry = Some(snapshot);
         self.last_telemetry_push = Instant::now();
         let entries = snapshot.as_prop_entries();
-        self.app.set_props_direct(&entries)
+        self.app.set_props(&entries)
     }
 
     pub(crate) fn render_and_broadcast(&mut self, force: bool) -> Result<bool, String> {
@@ -459,7 +447,13 @@ impl<A: PairedApp> PairSession<A> {
         }
         while let Some(msg) = self.server.try_recv_inbound() {
             if msg.frame.kind == NveWireKind::EventBatch {
-                let handled = self.app.dispatch_events(&msg.frame.payload);
+                let handled = decode_events(&msg.frame.payload)
+                    .map(|decoded| {
+                        let mut direct = Vec::with_capacity(decoded.len());
+                        native_events_to_direct(&decoded, &mut direct);
+                        self.app.dispatch_events(&direct)
+                    })
+                    .unwrap_or(false);
                 outcome.events_dispatched += 1;
                 if self.render_and_broadcast(handled).unwrap_or(false) {
                     outcome.frames_broadcast += 1;

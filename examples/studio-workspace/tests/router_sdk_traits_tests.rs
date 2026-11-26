@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    encode_bin_value_to_vec, encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId,
+    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
     NveMapEntry, NvePropsRef, NveValue, RawPropValue, ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
@@ -264,21 +264,18 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     assert!(restored.can_navigate_forward());
     assert_eq!(restored.current_route(), &StudioRoute::Doc { id: 2 });
 
-    // 4. Deep-link navigation via `StudioWorkspaceModule` direct binary & binary props.
+    // 4. Deep-link navigation via `StudioWorkspaceModule` direct props.
     let mut module = StudioWorkspaceModule::create(1);
     let _ = module.render(1);
     let entries = [NveMapEntry::new("route", NveValue::from_str("aether://studio/doc/2"))];
-    let direct_props = unsafe { NvePropsRef::from_slice(&entries) };
-    assert!(module.set_props_direct(direct_props));
+    assert!(module.set_props(unsafe { NvePropsRef::from_slice(&entries) }));
     let snap = module.state_snapshot();
     assert_eq!(snap.current.active_view, ActiveView::Docs);
     assert_eq!(snap.current.active_doc_id, 2);
     assert_eq!(snap.current_route(), &StudioRoute::Doc { id: 2 });
 
-    let bin_entries = [NveMapEntry::new("route", NveValue::from_str("/stream"))];
-    let bin_map = NveValue::map(&bin_entries);
-    let bin_props = encode_bin_value_to_vec(unsafe { bin_map.as_ref() }).unwrap();
-    assert!(module.set_props(&bin_props));
+    let stream_entries = [NveMapEntry::new("route", NveValue::from_str("/stream"))];
+    assert!(module.set_props(unsafe { NvePropsRef::from_slice(&stream_entries) }));
     let snap2 = module.state_snapshot();
     assert_eq!(snap2.current.active_view, ActiveView::Stream100k);
     assert_eq!(snap2.current_route(), &StudioRoute::Stream);
@@ -331,32 +328,22 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     // 2. Live `StudioWorkspaceModule::dispatch_events`: 1px desktop drags do NOT churn surface.
     let mut app = StudioWorkspaceModule::create(1);
     let _ = app.render(1);
-    let resize = |w: f32, h: f32, ts: u64| {
-        encode_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: ROOT_NODE_ID,
-            timestamp_us: ts,
-            kind: NativeEventKind::Layout,
-            payload: EventPayload::Layout {
-                x: 0.0,
-                y: 0.0,
-                width: w,
-                height: h,
-            },
-        }])
+    let dispatch_resize = |app: &mut StudioWorkspaceModule, w: f32, h: f32, ts: u64| {
+        let ev = [NveDirectEvent::layout(1, ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
+        app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) })
     };
 
     // Initial default is 960x640 (Medium) -> 1200x800 (Expanded) crosses breakpoint.
-    assert!(app.dispatch_events(&resize(1200.0, 800.0, 1000)));
+    assert!(dispatch_resize(&mut app, 1200.0, 800.0, 1000));
     assert_eq!(app.state_snapshot().size_class(), SizeClass::Expanded);
 
     // 1px drag 1200 -> 1201 -> 1202 stays Expanded: returns `false` (zero layout churn!).
-    assert!(!app.dispatch_events(&resize(1201.0, 800.0, 2000)));
-    assert!(!app.dispatch_events(&resize(1202.0, 800.0, 3000)));
+    assert!(!dispatch_resize(&mut app, 1201.0, 800.0, 2000));
+    assert!(!dispatch_resize(&mut app, 1202.0, 800.0, 3000));
     assert_eq!(app.state_snapshot().size_class(), SizeClass::Expanded);
 
     // Cross into Compact mobile portrait (`393x852`): triggers collapse!
-    assert!(app.dispatch_events(&resize(393.0, 852.0, 4000)));
+    assert!(dispatch_resize(&mut app, 393.0, 852.0, 4000));
     assert_eq!(app.state_snapshot().size_class(), SizeClass::Compact);
     assert!(app.state_snapshot().is_mobile_portrait());
 

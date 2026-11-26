@@ -24,8 +24,8 @@ namespace nve {
  * All JSI objects, arrays, strings, `PropNameID`s, `NveValue`s, and `NveMapEntry` arrays are
  * allocated directly inside a frame-reusable `nve::BumpArena`:
  * - Primary in-process hot path: `record_direct_event(...)` + `dispatch_direct(...)` passes an
- *   `NveEventBatch` pointer directly across `NveSurfaceApi::dispatch_events_direct` with **0 bytes
- *   serialized, 0 heap allocations after warmup, and 0 JSON**.
+ *   `NveEventBatch` pointer directly across `NveSurfaceApi::dispatch_events` with 0 bytes
+ *   serialized and 0 heap allocations after warmup.
  * - Non-shared boundary path: `record_custom_event(EventRingWriter&, ...)` encodes captured
  *   `NveValue` trees directly into `EventRingWriter`'s preallocated buffer as compact binary
  *   `NveBinValue` (readable with zero-copy `nve::BinValueView` / Rust `BinValueView`).
@@ -100,17 +100,17 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
     return NveEventBatch{
         direct_events_.empty() ? nullptr : direct_events_.data(),
         static_cast<uint32_t>(direct_events_.size()),
+        0u,
     };
   }
 
-  /// Dispatch the recorded `NveEventBatch` directly into `NveSurfaceApi::dispatch_events_direct`
-  /// (zero serialization, zero copy). Returns 0 when `dispatch_events_direct` is absent.
+  /// Dispatch the recorded `NveEventBatch` directly into `NveSurfaceApi::dispatch_events`.
   uint32_t dispatch_direct(const NveSurfaceApi* surface, NveAppHandle app) const {
     if (surface == nullptr || app == nullptr || direct_events_.empty() ||
-        surface->dispatch_events_direct == nullptr) {
+        surface->dispatch_events == nullptr) {
       return 0u;
     }
-    return surface->dispatch_events_direct(app, direct_event_batch());
+    return surface->dispatch_events(app, direct_event_batch());
   }
 
   /// Dispatch the recorded `NveEventBatch` directly to any callable sink (`uint32_t(NveEventBatch)`).

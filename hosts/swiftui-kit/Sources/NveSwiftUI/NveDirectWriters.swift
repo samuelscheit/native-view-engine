@@ -6,7 +6,7 @@ import Foundation
 // MARK: - Zero-Copy Direct C-ABI Props Writer
 
 /// Writes structured Swift props directly into C-ABI `NveMapEntry[]` + `NveValue` buffers
-/// backed by `NveDirectArena` for `set_props_direct` with direct binary FFI.
+/// backed by `NveDirectArena` for `NveComponentApi.set_props`.
 public enum NveDirectPropsWriter {
     /// Zero-boxing typed fast path: encodes `props` directly into a 4 KiB stack-slab bump arena
     /// using `StaticString` keys with zero `[String: Any]` boxing, zero `NveBinValue` tree
@@ -44,29 +44,12 @@ public enum NveDirectPropsWriter {
         return try withEntries(entries, body)
     }
 
-    /// Fallback binary encoder used only when a legacy C vtable has `set_props_direct == nil`.
-    internal static func encodeFallbackBinData<P: NveDirectEncodable>(from props: P) throws -> Data {
-        try withEncodedProps(props) { ptr, count in
-            try encodeCMapToBin(ptr: ptr, count: Int(count)).encode()
-        }
-    }
-
-    private static func encodeCMapToBin(ptr: UnsafePointer<NveMapEntry>?, count: Int) -> NveBinValue {
-        guard let ptr, count > 0 else { return .map([]) }
-        var entries: [(String, NveBinValue)] = []
-        entries.reserveCapacity(count)
-        for i in 0 ..< count {
-            entries.append((decodeStrSlice(ptr[i].key), decodeCValue(ptr[i].value)))
-        }
-        return .map(entries)
-    }
-
-    private static func decodeStrSlice(_ slice: NveStrSlice) -> String {
+    internal static func decodeStrSlice(_ slice: NveStrSlice) -> String {
         guard let p = slice.ptr, slice.len > 0 else { return "" }
         return String(decoding: UnsafeBufferPointer(start: p, count: slice.len), as: UTF8.self)
     }
 
-    private static func decodeCValue(_ value: NveValue) -> NveBinValue {
+    internal static func decodeCValue(_ value: NveValue) -> NveBinValue {
         switch value.tag {
         case UInt32(NVE_VAL_BOOL.rawValue): return .bool(value.data.bool_val != 0)
         case UInt32(NVE_VAL_I64.rawValue): return .int64(value.data.i64_val)
@@ -81,33 +64,34 @@ public enum NveDirectPropsWriter {
             return .array((0 ..< a.len).map { decodeCValue(p[$0]) })
         case UInt32(NVE_VAL_MAP.rawValue):
             let m = value.data.map_val
-            return encodeCMapToBin(ptr: m.ptr, count: m.len)
+            guard let p = m.ptr, m.len > 0 else { return .map([]) }
+            return .map((0 ..< m.len).map { (decodeStrSlice(p[$0].key), decodeCValue(p[$0].value)) })
         default:
             return .null
         }
     }
 }
 
-// MARK: - Zero-Copy Direct C-ABI Event Batch Writer
+// MARK: - Zero-Copy Direct C-ABI Event Batch Writer & Reader
 
-/// Writes typed `NveEvent` batches directly into C-ABI `NveDirectEvent[]` + `NveEventBatch`
-/// buffers for `NveSurfaceApi.dispatch_events_direct` with direct binary FFI.
+/// Writes and decodes typed `NveEvent` batches directly against C-ABI `NveDirectEvent[]` +
+/// `NveEventBatch` buffers for `NveSurfaceApi.dispatch_events` and `drain_emitted_events`.
 public enum NveDirectEventWriter {
     public static func withBatch<R>(
         _ events: [NveEvent],
         _ body: (NveEventBatch) throws -> R
     ) throws -> R {
         guard !events.isEmpty else {
-            return try body(NveEventBatch(ptr: nil, len: 0))
+            return try body(NveEventBatch(ptr: nil, len: 0, _pad: 0))
         }
         return try NveDirectArena.withArena { arena in
             guard let buf = arena.allocateTyped(NveDirectEvent.self, count: events.count) else {
-                return try body(NveEventBatch(ptr: nil, len: 0))
+                return try body(NveEventBatch(ptr: nil, len: 0, _pad: 0))
             }
             for (idx, event) in events.enumerated() {
                 buf.advanced(by: idx).initialize(to: try encodeEvent(event, into: arena))
             }
-            return try body(NveEventBatch(ptr: UnsafePointer(buf), len: UInt32(events.count)))
+            return try body(NveEventBatch(ptr: UnsafePointer(buf), len: UInt32(events.count), _pad: 0))
         }
     }
 
@@ -130,7 +114,7 @@ public enum NveDirectEventWriter {
                 value: try arena.writeValue(value)
             )
             return try withUnsafePointer(to: &event) { ptr in
-                try body(NveEventBatch(ptr: ptr, len: 1))
+                try body(NveEventBatch(ptr: ptr, len: 1, _pad: 0))
             }
         }
     }
@@ -141,6 +125,9 @@ public enum NveDirectEventWriter {
         timestampUs: UInt64,
         kind: UInt8,
         payloadTag: UInt8,
+        modifiers: UInt8 = 0,
+        eventFlags: UInt8 = 0,
+        keyCode: UInt32 = 0,
         name: NveStrSlice = NveStrSlice(ptr: nil, len: 0),
         x: Float = 0,
         y: Float = 0,
@@ -155,6 +142,9 @@ public enum NveDirectEventWriter {
             timestamp_us: timestampUs,
             kind: kind,
             payload_tag: payloadTag,
+            modifiers: modifiers,
+            event_flags: eventFlags,
+            key_code: keyCode,
             name: name,
             x: x,
             y: y,
@@ -240,6 +230,42 @@ public enum NveDirectEventWriter {
                 payloadTag: UInt8(NVE_EVENT_PAYLOAD_CUSTOM.rawValue),
                 name: arena.copyString(event.name ?? ""),
                 value: cVal
+            )
+        case let .key(key, code, modifiers, keyCode, isComposing):
+            return makeDirectEvent(
+                surfaceId: event.surfaceId,
+                nodeId: event.nodeId,
+                timestampUs: event.timestampUs,
+                kind: event.kind.rawValue,
+                payloadTag: UInt8(NVE_EVENT_PAYLOAD_KEY.rawValue),
+                modifiers: modifiers,
+                eventFlags: isComposing ? UInt8(NVE_EVENT_FLAG_COMPOSING) : 0,
+                keyCode: keyCode,
+                name: arena.copyString(code),
+                text: arena.copyString(key)
+            )
+        case let .pointer(x, y, modifiers, flags):
+            return makeDirectEvent(
+                surfaceId: event.surfaceId,
+                nodeId: event.nodeId,
+                timestampUs: event.timestampUs,
+                kind: event.kind.rawValue,
+                payloadTag: UInt8(NVE_EVENT_PAYLOAD_POINTER.rawValue),
+                modifiers: modifiers,
+                eventFlags: flags,
+                x: x,
+                y: y
+            )
+        case let .wheel(deltaX, deltaY, modifiers):
+            return makeDirectEvent(
+                surfaceId: event.surfaceId,
+                nodeId: event.nodeId,
+                timestampUs: event.timestampUs,
+                kind: event.kind.rawValue,
+                payloadTag: UInt8(NVE_EVENT_PAYLOAD_WHEEL.rawValue),
+                modifiers: modifiers,
+                x: deltaX,
+                y: deltaY
             )
         }
     }

@@ -9,9 +9,8 @@ use std::any::Any;
 use std::cell::RefCell;
 
 use nve_abi::{
-    encode_bin_value_to_vec, encode_events, BinValueView, EventPayload, FrameId, NativeEvent,
-    NativeEventKind, NveEventBatchRef, NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize,
-    NveMapEntry, NvePropsRef, NveSizeConstraints, NveValue, NveValueTag, SurfaceId,
+    FrameId, NveDirectEvent, NveEventBatchRef, NveGestureDisposition, NveHostCallbacks,
+    NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
 };
 
 thread_local! {
@@ -88,66 +87,8 @@ pub trait NveApp: Sized + 'static {
     /// Renders pending mutations into a binary `nve_abi::CommandBuffer` slice valid until the next call.
     fn render(&mut self, frame_id: FrameId) -> &[u8];
 
-    /// Processes a binary `EventRing` batch (`nve_abi::decode_events`); returns `true` if re-render is needed.
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
-
-    /// Processes a zero-copy direct FFI event batch (`NveEventBatchRef`) with zero deserialization.
-    ///
-    /// Default implementation bridges to `dispatch_events` via binary `EventRing` encoding so
-    /// existing `NveApp` implementations continue working; override for true zero-allocation
-    /// in-process direct event handling.
-    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
-        if events.is_empty() {
-            return false;
-        }
-        let mut owned = Vec::with_capacity(events.len());
-        for ev in events.iter() {
-            let Some(kind) = ev.kind() else {
-                continue;
-            };
-            let payload = match ev.payload_tag() {
-                0 => EventPayload::Empty,
-                1 => EventPayload::Point {
-                    x: ev.x(),
-                    y: ev.y(),
-                },
-                2 => EventPayload::Scroll {
-                    x: ev.x(),
-                    y: ev.y(),
-                    content_width: ev.width(),
-                    content_height: ev.height(),
-                },
-                3 => EventPayload::Text(ev.text().to_owned()),
-                4 => EventPayload::Layout {
-                    x: ev.x(),
-                    y: ev.y(),
-                    width: ev.width(),
-                    height: ev.height(),
-                },
-                5 => EventPayload::Custom {
-                    name: ev.name().to_owned(),
-                    data: encode_bin_value_to_vec(ev.value()).unwrap_or_default(),
-                },
-                _ => continue,
-            };
-            owned.push(NativeEvent {
-                surface_id: ev.surface_id(),
-                node_id: ev.node_id(),
-                timestamp_us: ev.timestamp_us(),
-                kind: if ev.payload_tag() == 5 {
-                    NativeEventKind::Custom
-                } else {
-                    kind
-                },
-                payload,
-            });
-        }
-        if owned.is_empty() {
-            return false;
-        }
-        let encoded = encode_events(&owned);
-        self.dispatch_events(&encoded)
-    }
+    /// Processes a direct typed event batch (`NveEventBatchRef`); returns `true` if re-render is needed.
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool;
 
     /// Intrinsic size measurement for embedded hosts (RN Yoga, Flutter RenderBox, SwiftUI, Compose).
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {
@@ -172,23 +113,13 @@ pub trait NveApp: Sized + 'static {
         NveGestureDisposition::PassThrough
     }
 
-    /// Applies host-supplied encoded props (for embedded components in RN/Flutter/SwiftUI/Compose).
-    ///
-    /// Default implementation decodes binary `NveBinValue` maps once into borrowed `NveMapEntry`
-    /// views and delegates directly to [`Self::set_props_direct`] so apps implement only
-    /// `set_props_direct` without duplicating `BinValueView::parse` boilerplate.
-    fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        try_dispatch_bin_props_direct(self, props_bytes).unwrap_or(false)
-    }
-
-    /// Primary direct zero-copy prop API: reads typed props straight from borrowed `NvePropsRef`
-    /// (`NveValueRef` entries) with zero serialization or heap decoding.
-    fn set_props_direct(&mut self, _props: NvePropsRef<'_>) -> bool {
+    /// Applies host-supplied direct typed props (`NvePropsRef`); returns `true` if re-render is needed.
+    fn set_props(&mut self, _props: NvePropsRef<'_>) -> bool {
         false
     }
 
-    /// Drains component-emitted outbound events as an `EventRing` byte slice.
-    fn drain_emitted_events(&mut self) -> &[u8] {
+    /// Drains component-emitted outbound events as a direct borrowed `NveDirectEvent` slice.
+    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         &[]
     }
 
@@ -275,29 +206,15 @@ macro_rules! export_nve_app {
 
             unsafe extern "C" fn __nve_dispatch_events(
                 handle: NveAppHandle,
-                events: NveBufferSlice,
+                batch: NveEventBatch,
             ) -> u32 {
                 if handle.is_null() {
                     return 0;
                 }
                 $crate::app::ffi_catch_unwind("NveSurfaceApi::dispatch_events", 0, || {
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
-                    let bytes = unsafe { events.as_slice() };
-                    u32::from(app.dispatch_events(bytes))
-                })
-            }
-
-            unsafe extern "C" fn __nve_dispatch_events_direct(
-                handle: NveAppHandle,
-                batch: NveEventBatch,
-            ) -> u32 {
-                if handle.is_null() {
-                    return 0;
-                }
-                $crate::app::ffi_catch_unwind("NveSurfaceApi::dispatch_events_direct", 0, || {
-                    let app = unsafe { &mut *(handle as *mut $app_ty) };
                     let events = unsafe { NveEventBatchRef::from_raw(batch) };
-                    u32::from(app.dispatch_events_direct(events))
+                    u32::from(app.dispatch_events(events))
                 })
             }
 
@@ -345,45 +262,31 @@ macro_rules! export_nve_app {
 
             unsafe extern "C" fn __nve_set_props(
                 handle: NveAppHandle,
-                props: NveBufferSlice,
-            ) -> u32 {
-                if handle.is_null() {
-                    return 0;
-                }
-                $crate::app::ffi_catch_unwind("NveComponentApi::set_props", 0, || {
-                    let app = unsafe { &mut *(handle as *mut $app_ty) };
-                    let bytes = unsafe { props.as_slice() };
-                    u32::from(app.set_props(bytes))
-                })
-            }
-
-            unsafe extern "C" fn __nve_set_props_direct(
-                handle: NveAppHandle,
                 entries: *const NveMapEntry,
                 count: u32,
             ) -> u32 {
                 if handle.is_null() {
                     return 0;
                 }
-                $crate::app::ffi_catch_unwind("NveComponentApi::set_props_direct", 0, || {
+                $crate::app::ffi_catch_unwind("NveComponentApi::set_props", 0, || {
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
                     let props = unsafe { NvePropsRef::from_raw_parts(entries, count) };
-                    u32::from(app.set_props_direct(props))
+                    u32::from(app.set_props(props))
                 })
             }
 
             unsafe extern "C" fn __nve_drain_emitted_events(
                 handle: NveAppHandle,
-            ) -> NveBufferSlice {
+            ) -> NveEventBatch {
                 if handle.is_null() {
-                    return NveBufferSlice::EMPTY;
+                    return NveEventBatch::EMPTY;
                 }
                 $crate::app::ffi_catch_unwind(
                     "NveComponentApi::drain_emitted_events",
-                    NveBufferSlice::EMPTY,
+                    NveEventBatch::EMPTY,
                     || {
                         let app = unsafe { &mut *(handle as *mut $app_ty) };
-                        NveBufferSlice::from_slice(app.drain_emitted_events())
+                        NveEventBatch::from_slice(app.drain_emitted_events())
                     },
                 )
             }
@@ -469,7 +372,6 @@ macro_rules! export_nve_app {
                 destroy: __nve_destroy,
                 render: __nve_render,
                 dispatch_events: __nve_dispatch_events,
-                dispatch_events_direct: Some(__nve_dispatch_events_direct),
             };
 
             static __NVE_LAYOUT_API: NveLayoutApi = NveLayoutApi {
@@ -480,7 +382,6 @@ macro_rules! export_nve_app {
             static __NVE_COMPONENT_API: NveComponentApi = NveComponentApi {
                 set_props: __nve_set_props,
                 drain_emitted_events: __nve_drain_emitted_events,
-                set_props_direct: Some(__nve_set_props_direct),
             };
 
             static __NVE_DEV_API: NveDevApi = NveDevApi {
@@ -509,74 +410,6 @@ macro_rules! export_nve_app {
             }
         };
     };
-}
-
-/// Stable backing arena used only when bridging a binary `NveBinValue` byte slice into
-/// zero-copy `NveMapEntry` / `NveValue` views for `NveApp::set_props_direct`.
-#[derive(Default)]
-struct BinValueArena {
-    arrays: Vec<Box<[NveValue]>>,
-    maps: Vec<Box<[NveMapEntry]>>,
-}
-
-impl BinValueArena {
-    fn convert_value<'a>(&mut self, view: BinValueView<'a>) -> NveValue {
-        match view.tag() {
-            NveValueTag::Null => NveValue::null(),
-            NveValueTag::Bool => NveValue::bool(view.as_bool().unwrap_or(false)),
-            NveValueTag::I64 => NveValue::i64(view.as_i64().unwrap_or(0)),
-            NveValueTag::F64 => NveValue::f64(view.as_f64().unwrap_or(0.0)),
-            NveValueTag::Str => NveValue::from_str(view.as_str().unwrap_or("")),
-            NveValueTag::Bytes => NveValue::from_bytes(view.as_bytes().unwrap_or(&[])),
-            NveValueTag::Array => {
-                let Some(iter) = view.as_array() else {
-                    return NveValue::array(&[]);
-                };
-                let mut elems = Vec::with_capacity(iter.len());
-                for item in iter {
-                    elems.push(self.convert_value(item));
-                }
-                let boxed = elems.into_boxed_slice();
-                let val = NveValue::array(&boxed);
-                self.arrays.push(boxed);
-                val
-            }
-            NveValueTag::Map => {
-                let Some(iter) = view.as_map() else {
-                    return NveValue::map(&[]);
-                };
-                let mut entries = Vec::with_capacity(iter.len());
-                for (k, v) in iter {
-                    entries.push(NveMapEntry::new(k, self.convert_value(v)));
-                }
-                let boxed = entries.into_boxed_slice();
-                let val = NveValue::map(&boxed);
-                self.maps.push(boxed);
-                val
-            }
-        }
-    }
-}
-
-/// Parses a binary `NveBinValue` map and dispatches it zero-copy to `app.set_props_direct`.
-///
-/// Returns `Some(changed)` when `props_bytes` is a valid binary `NveBinValue` map, or `None`
-/// when `props_bytes` is not a binary map (allowing callers to skip or handle other encodings).
-pub fn try_dispatch_bin_props_direct<A: NveApp>(
-    app: &mut A,
-    props_bytes: &[u8],
-) -> Option<bool> {
-    let view = BinValueView::parse(props_bytes).ok()?;
-    let map_iter = view.as_map()?;
-    let mut arena = BinValueArena::default();
-    let mut entries = Vec::with_capacity(map_iter.len());
-    for (k, v) in map_iter {
-        entries.push(NveMapEntry::new(k, arena.convert_value(v)));
-    }
-    // SAFETY: Every string/bytes pointer borrows directly from `props_bytes` and every nested
-    // array/map pointer lives inside `arena`, both of which outlive the `set_props_direct` call.
-    let props = unsafe { NvePropsRef::from_slice(&entries) };
-    Some(app.set_props_direct(props))
 }
 
 #[cfg(test)]

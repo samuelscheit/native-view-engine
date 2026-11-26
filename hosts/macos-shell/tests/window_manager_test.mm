@@ -82,12 +82,11 @@ struct MultiWinMockApp {
     return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto *self = static_cast<MultiWinMockApp *>(h);
-    std::vector<nve::DecodedEvent> dec;
-    if (!nve::decode_event_ring(events, dec)) return 0u;
-    for (const auto &ev : dec) {
-      if (ev.kind == nve::EventKind::Press && ev.node_id == 3u) {
+    if (!batch.ptr) return 0u;
+    for (uint32_t i = 0; i < batch.len; ++i) {
+      if (batch.ptr[i].kind == NVE_EVENT_PRESS && batch.ptr[i].node_id == 3u) {
         ++self->clicks;
         return 1u;
       }
@@ -96,7 +95,7 @@ struct MultiWinMockApp {
   }
 
   static const void *get_interface(uint32_t iface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, nullptr};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
     return iface_id == NVE_IFACE_SURFACE ? &kSurface : nullptr;
   }
 };

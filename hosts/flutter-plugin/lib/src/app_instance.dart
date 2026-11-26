@@ -5,7 +5,6 @@ import 'package:flutter/rendering.dart';
 
 import 'direct_ffi.dart';
 import 'event_codec.dart';
-import 'nve_bin_value.dart';
 import 'nve_core_abi.generated.dart';
 
 /// Managed Dart wrapper around a native NVE module resolved via `nve_get_interface`.
@@ -21,21 +20,18 @@ class NveAppInstance {
         _handle = handle,
         _destroy = surface.ref.destroy.asFunction(),
         _render = surface.ref.render.asFunction(),
-        _dispatchEvents = surface.ref.dispatchEvents.asFunction(),
-        _dispatchEventsDirect = surface.ref.dispatchEventsDirect != ffi.nullptr
-            ? surface.ref.dispatchEventsDirect
+        _dispatchEvents = surface.ref.dispatchEvents != ffi.nullptr
+            ? surface.ref.dispatchEvents
                 .asFunction<int Function(ffi.Pointer<ffi.Void>, NveEventBatch)>()
             : null,
         _setProps = component != ffi.nullptr && component.ref.setProps != ffi.nullptr
-            ? component.ref.setProps.asFunction()
-            : null,
-        _setPropsDirect = component != ffi.nullptr && component.ref.setPropsDirect != ffi.nullptr
-            ? component.ref.setPropsDirect
+            ? component.ref.setProps
                 .asFunction<int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<NveMapEntry>, int)>()
             : null,
         _drainEmittedEvents =
             component != ffi.nullptr && component.ref.drainEmittedEvents != ffi.nullptr
-                ? component.ref.drainEmittedEvents.asFunction()
+                ? component.ref.drainEmittedEvents
+                    .asFunction<NveEventBatch Function(ffi.Pointer<ffi.Void>)>()
                 : null,
         _applyHotPatch = dev != ffi.nullptr && dev.ref.applyHotPatch != ffi.nullptr
             ? dev.ref.applyHotPatch.asFunction()
@@ -55,19 +51,15 @@ class NveAppInstance {
 
   final void Function(ffi.Pointer<ffi.Void>) _destroy;
   final NveBufferSlice Function(ffi.Pointer<ffi.Void>, int) _render;
-  final int Function(ffi.Pointer<ffi.Void>, NveBufferSlice) _dispatchEvents;
-  final int Function(ffi.Pointer<ffi.Void>, NveEventBatch)? _dispatchEventsDirect;
-  final int Function(ffi.Pointer<ffi.Void>, NveBufferSlice)? _setProps;
-  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<NveMapEntry>, int)? _setPropsDirect;
-  final NveBufferSlice Function(ffi.Pointer<ffi.Void>)? _drainEmittedEvents;
+  final int Function(ffi.Pointer<ffi.Void>, NveEventBatch)? _dispatchEvents;
+  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<NveMapEntry>, int)? _setProps;
+  final NveEventBatch Function(ffi.Pointer<ffi.Void>)? _drainEmittedEvents;
   final int Function(ffi.Pointer<ffi.Void>, NveBufferSlice)? _applyHotPatch;
   final NveBufferSlice Function(ffi.Pointer<ffi.Void>)? _snapshotState;
   final void Function(ffi.Pointer<ffi.Void>, NveBufferSlice)? _restoreState;
 
   bool get isDisposed => _disposed;
   bool get supportsLayoutAndHitTest => _layout != ffi.nullptr;
-  bool get supportsDirectProps => _setPropsDirect != null;
-  bool get supportsDirectEvents => _dispatchEventsDirect != null;
 
   /// Loads `vtableSymbol` (`nve_get_interface`) from `libraryPath` (or the current process)
   /// and creates a surface.
@@ -113,21 +105,15 @@ class NveAppInstance {
     );
   }
 
-  /// Pushes structured props directly via `NveComponentApi.set_props_direct` (binary),
-  /// falling back to binary `NveBinValue` on `set_props` if `set_props_direct == nullptr`.
+  /// Pushes structured props directly via `NveComponentApi.set_props`.
   bool setPropsDirect(Map<String, Object?> props) {
     _ensureLive();
-    final directFn = _setPropsDirect;
-    if (directFn != null) {
-      return NveDirectPropsWriter.withProps(
-        props,
-        (ffi.Pointer<NveMapEntry> entries, int count) => directFn(_handle, entries, count) != 0,
-      );
-    }
-    final setProps = _setProps;
-    if (setProps == null) return false;
-    final binBytes = NveBinValueEncoder.encode(props);
-    return _withSlice(binBytes, (NveBufferSlice slice) => setProps(_handle, slice) != 0);
+    final directFn = _setProps;
+    if (directFn == null) return false;
+    return NveDirectPropsWriter.withProps(
+      props,
+      (ffi.Pointer<NveMapEntry> entries, int count) => directFn(_handle, entries, count) != 0,
+    );
   }
 
   /// Renders the next CommandBuffer frame and returns a copy of its bytes.
@@ -138,26 +124,15 @@ class NveAppInstance {
     return _copySlice(slice);
   }
 
-  /// Dispatches typed events via `NveSurfaceApi.dispatch_events_direct` (binary),
-  /// falling back to binary `EventRing` on `dispatch_events` if `dispatch_events_direct == nullptr`.
+  /// Dispatches typed events directly via `NveSurfaceApi.dispatch_events`.
   bool dispatchEventsDirect(List<NveEvent> events) {
     _ensureLive();
-    final directFn = _dispatchEventsDirect;
-    if (directFn != null) {
-      return NveDirectEventWriter.withBatch(
-        events,
-        (NveEventBatch batch) => directFn(_handle, batch) != 0,
-      );
-    }
-    if (events.isEmpty) return false;
-    final encoded = NveEventRingCodec.encodeEvents(events);
-    return dispatchEvents(encoded);
-  }
-
-  /// Dispatches an encoded binary `EventRing` batch into the Rust app.
-  bool dispatchEvents(Uint8List eventRingBytes) {
-    _ensureLive();
-    return _withSlice(eventRingBytes, (NveBufferSlice slice) => _dispatchEvents(_handle, slice) != 0);
+    final directFn = _dispatchEvents;
+    if (directFn == null) return false;
+    return NveDirectEventWriter.withBatch(
+      events,
+      (NveEventBatch batch) => directFn(_handle, batch) != 0,
+    );
   }
 
   /// Applies one binary `NVP1` Tier-1 hot-patch frame, as broadcast by `nve dev`
@@ -193,9 +168,7 @@ class NveAppInstance {
     _ensureLive();
     final fn = _drainEmittedEvents;
     if (fn == null) return const <NveEvent>[];
-    final slice = fn(_handle);
-    final raw = _copySlice(slice);
-    return NveEventRingCodec.decode(raw);
+    return NveDirectEventWriter.decodeBatch(fn(_handle));
   }
 
   /// Negotiates intrinsic dimensions via zero-cost `NveLayoutApi.measure`.

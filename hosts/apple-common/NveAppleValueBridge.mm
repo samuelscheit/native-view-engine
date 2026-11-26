@@ -144,10 +144,34 @@ NSDictionary<NSString *, id> *payload_dictionary_from_event(const nve::DecodedEv
       dict[@"contentHeight"] = @(ev.height);
       break;
     case nve::EventKind::TextChange:
+    case nve::EventKind::Submit:
     case nve::EventKind::CompositionStart:
     case nve::EventKind::CompositionUpdate:
     case nve::EventKind::CompositionEnd:
       dict[@"text"] = nsstring_from_sv(ev.text);
+      break;
+    case nve::EventKind::KeyDown:
+    case nve::EventKind::KeyUp:
+      dict[@"key"] = nsstring_from_sv(ev.text);
+      dict[@"code"] = nsstring_from_sv(ev.code);
+      dict[@"modifiers"] = @(ev.modifiers);
+      dict[@"keyCode"] = @(ev.key_code);
+      dict[@"isComposing"] = @((ev.event_flags & NVE_EVENT_FLAG_COMPOSING) != 0u);
+      break;
+    case nve::EventKind::PointerDown:
+    case nve::EventKind::PointerMove:
+    case nve::EventKind::PointerUp:
+    case nve::EventKind::PointerEnter:
+    case nve::EventKind::PointerLeave:
+      dict[@"x"] = @(ev.x);
+      dict[@"y"] = @(ev.y);
+      dict[@"modifiers"] = @(ev.modifiers);
+      dict[@"flags"] = @(ev.event_flags);
+      break;
+    case nve::EventKind::Wheel:
+      dict[@"deltaX"] = @(ev.x);
+      dict[@"deltaY"] = @(ev.y);
+      dict[@"modifiers"] = @(ev.modifiers);
       break;
     case nve::EventKind::Layout:
       dict[@"x"] = @(ev.x);

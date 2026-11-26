@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use nve_abi::{
-    decode_events, ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets,
-    EventMask, EventPayload, FlexDirection, FrameId, LayoutProps, NativeEventKind, NodeId,
-    RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
+    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
+    FlexDirection, FrameId, LayoutProps, NativeEventKind, NodeId, NveDirectEvent,
+    NveDirectEventRef, RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
 };
 use nve_backend_skia::is_grapheme_boundary;
 use nve_engine::{RenderBackend, Viewport};
@@ -122,31 +122,34 @@ impl DesktopApp for TextMaturityApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        let events = decode_events(encoded_events).expect("valid encoded events");
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         let mut handled = false;
-        for ev in events {
-            match (ev.kind, ev.payload) {
-                (NativeEventKind::TextChange, EventPayload::Text(t)) => {
-                    if ev.node_id == 10 {
+        for raw in events {
+            let ev = unsafe { NveDirectEventRef::from_raw(raw) };
+            match (ev.kind(), ev.payload_tag()) {
+                (Some(NativeEventKind::TextChange), 3) => {
+                    let t = ev.text().to_owned();
+                    if ev.node_id() == 10 {
                         self.single_val = t.clone();
-                    } else if ev.node_id == 11 {
+                    } else if ev.node_id() == 11 {
                         self.multi_val = t.clone();
                     }
-                    self.events_log.push((ev.node_id, ev.kind, t));
+                    self.events_log.push((ev.node_id(), NativeEventKind::TextChange, t));
                     handled = true;
                 }
                 (
-                    NativeEventKind::CompositionStart
-                    | NativeEventKind::CompositionUpdate
-                    | NativeEventKind::CompositionEnd,
-                    EventPayload::Text(t),
+                    Some(
+                        kind @ (NativeEventKind::CompositionStart
+                        | NativeEventKind::CompositionUpdate
+                        | NativeEventKind::CompositionEnd),
+                    ),
+                    0 | 3,
                 ) => {
-                    self.events_log.push((ev.node_id, ev.kind, t));
+                    self.events_log.push((ev.node_id(), kind, ev.text().to_owned()));
                     handled = true;
                 }
-                (NativeEventKind::Focus | NativeEventKind::Blur, EventPayload::Empty) => {
-                    self.events_log.push((ev.node_id, ev.kind, String::new()));
+                (Some(kind @ (NativeEventKind::Focus | NativeEventKind::Blur)), 0) => {
+                    self.events_log.push((ev.node_id(), kind, String::new()));
                     handled = true;
                 }
                 _ => {}

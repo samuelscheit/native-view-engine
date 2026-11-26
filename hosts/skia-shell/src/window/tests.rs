@@ -6,8 +6,8 @@ use std::thread;
 use std::time::Duration;
 
 use nve_abi::{
-    decode_events, ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets,
-    EventMask, FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps, SurfaceId,
+    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
+    FlexDirection, FrameId, LayoutProps, NativeEventKind, NveDirectEvent, StyleProps, SurfaceId,
     ROOT_NODE_ID,
 };
 use nve_backend_skia::gpu::{
@@ -111,11 +111,10 @@ impl DesktopApp for MockCounterApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        let events = decode_events(encoded_events).expect("valid encoded events");
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         let mut handled = false;
         for ev in events {
-            if ev.node_id == 4 && ev.kind == NativeEventKind::Press {
+            if ev.node_id == 4 && ev.kind == NativeEventKind::Press as u8 {
                 self.count += 1;
                 self.button_color = ColorRgba::rgb(16, 185, 129);
                 handled = true;

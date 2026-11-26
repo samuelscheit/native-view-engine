@@ -84,22 +84,23 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         self.hit_test_scroll_rec(ROOT_NODE_ID, x, y, (0.0, 0.0), None, 0)
     }
 
-    /// Returns `true` if any retained node subscribes to `EventMask::CUSTOM`.
+    /// Returns `true` if any retained node subscribes to `EventMask::KEY_DOWN` or `EventMask::CUSTOM`.
     pub fn has_custom_event_listener(&self) -> bool {
-        self.find_event_mask_rec(ROOT_NODE_ID, EventMask::CUSTOM, 0)
+        self.find_event_mask_rec(ROOT_NODE_ID, EventMask::KEY_DOWN | EventMask::CUSTOM, 0)
             .is_some()
     }
 
-    /// Returns the first retained node subscribed to `EventMask::CUSTOM` (e.g. `onkeydown`),
-    /// falling back to `ROOT_NODE_ID` when no specific node declares custom listeners.
+    /// Returns the first retained node subscribed to `EventMask::KEY_DOWN` or `EventMask::CUSTOM`,
+    /// falling back to `ROOT_NODE_ID` when no specific node declares keyboard/custom listeners.
     pub fn find_custom_event_target(&self) -> NodeId {
-        self.find_event_mask_rec(ROOT_NODE_ID, EventMask::CUSTOM, 0)
+        self.find_event_mask_rec(ROOT_NODE_ID, EventMask::KEY_DOWN | EventMask::CUSTOM, 0)
             .unwrap_or(ROOT_NODE_ID)
     }
 
-    /// Resolves the nearest ancestor (including `start`) subscribed to `EventMask::CUSTOM`,
-    /// falling back to [`Self::find_custom_event_target`].
+    /// Resolves the nearest ancestor (including `start`) subscribed to `EventMask::KEY_DOWN` or
+    /// `EventMask::CUSTOM`, falling back to [`Self::find_custom_event_target`].
     pub fn find_custom_event_target_from(&self, start: NodeId) -> NodeId {
+        let mask = EventMask::KEY_DOWN | EventMask::CUSTOM;
         let mut cursor = Some(start);
         let mut steps = 0usize;
         while let Some(id) = cursor {
@@ -110,7 +111,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             let Some(node) = self.layout_tree.node(id) else {
                 break;
             };
-            if (node.event_mask & EventMask::CUSTOM) != 0 {
+            if (node.event_mask & mask) != 0 {
                 return id;
             }
             cursor = node.parent;

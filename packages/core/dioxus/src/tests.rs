@@ -1,9 +1,8 @@
 use dioxus_core::{Attribute, AttributeValue, Element, VNode};
-use nve_abi::events::encode_keydown_bytes;
 use nve_abi::{
-    ColorRgba, Command, CommandDecoder, ComponentKind, EventPayload, NativeEvent, NativeEventKind,
-    NodeId, NveBufferSlice, NveDirectEvent, NveEventBatch, NveEventBatchRef, NveStrSlice, NveValue,
-    RawPropValue,
+    pack_key_modifiers, ColorRgba, Command, CommandDecoder, ComponentKind, EventPayload,
+    NativeEvent, NativeEventKind, NodeId, NveBufferSlice, NveDirectEvent, NveEventBatch,
+    NveEventBatchRef, RawPropValue, NveValue,
 };
 use nve_components::{DrawListBuilder, DrawListDecoder, NVE_DRAW_MAGIC};
 
@@ -179,85 +178,29 @@ fn dispatches_scroll_focus_blur_longpress_and_custom_via_ring_and_direct_ffi() {
         .contains(&"custom:onmetrics:4".to_owned()));
 
     // 6. Direct FFI path: Scroll, Focus, Blur, LongPress, Custom
-    let direct_scroll = [NveDirectEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 60,
-        kind: NativeEventKind::Scroll as u8,
-        payload_tag: 2,
-        name: NveStrSlice::EMPTY,
-        x: 5.0,
-        y: 99.0,
-        width: 320.0,
-        height: 1200.0,
-        text: NveStrSlice::EMPTY,
-        value: NveValue::null(),
-    }];
-    let batch_scroll = unsafe {
-        NveEventBatchRef::from_raw(NveEventBatch {
-            ptr: direct_scroll.as_ptr(),
-            len: 1,
-        })
-    };
-    assert!(surface.dispatch_events_direct(batch_scroll));
+    let direct_scroll = [NveDirectEvent::scroll(1, target, 60, 5.0, 99.0, 320.0, 1200.0)];
+    let batch_scroll = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_scroll)) };
+    assert!(surface.dispatch_direct_events(batch_scroll));
     let (_, _, f7) = surface.render_frame(7);
     assert!(extract_target_and_text(&f7)
         .1
         .contains(&"scroll:5,99,320,1200".to_owned()));
 
-    let direct_focus = [NveDirectEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 70,
-        kind: NativeEventKind::Focus as u8,
-        payload_tag: 0,
-        ..Default::default()
-    }];
-    let batch_focus = unsafe {
-        NveEventBatchRef::from_raw(NveEventBatch {
-            ptr: direct_focus.as_ptr(),
-            len: 1,
-        })
-    };
-    assert!(surface.dispatch_events_direct(batch_focus));
+    let direct_focus = [NveDirectEvent::empty(1, target, 70, NativeEventKind::Focus)];
+    let batch_focus = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_focus)) };
+    assert!(surface.dispatch_direct_events(batch_focus));
     let (_, _, f8) = surface.render_frame(8);
     assert!(extract_target_and_text(&f8).1.contains(&"focus".to_owned()));
 
-    let direct_blur = [NveDirectEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 80,
-        kind: NativeEventKind::Blur as u8,
-        payload_tag: 0,
-        ..Default::default()
-    }];
-    let batch_blur = unsafe {
-        NveEventBatchRef::from_raw(NveEventBatch {
-            ptr: direct_blur.as_ptr(),
-            len: 1,
-        })
-    };
-    assert!(surface.dispatch_events_direct(batch_blur));
+    let direct_blur = [NveDirectEvent::empty(1, target, 80, NativeEventKind::Blur)];
+    let batch_blur = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_blur)) };
+    assert!(surface.dispatch_direct_events(batch_blur));
     let (_, _, f9) = surface.render_frame(9);
     assert!(extract_target_and_text(&f9).1.contains(&"blur".to_owned()));
 
-    let direct_lp = [NveDirectEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 90,
-        kind: NativeEventKind::LongPress as u8,
-        payload_tag: 1,
-        x: 11.0,
-        y: 22.0,
-        ..Default::default()
-    }];
-    let batch_lp = unsafe {
-        NveEventBatchRef::from_raw(NveEventBatch {
-            ptr: direct_lp.as_ptr(),
-            len: 1,
-        })
-    };
-    assert!(surface.dispatch_events_direct(batch_lp));
+    let direct_lp = [NveDirectEvent::long_press(1, target, 90, 11.0, 22.0)];
+    let batch_lp = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_lp)) };
+    assert!(surface.dispatch_direct_events(batch_lp));
     let (_, _, f10) = surface.render_frame(10);
     assert!(extract_target_and_text(&f10)
         .1
@@ -271,43 +214,37 @@ fn dispatches_scroll_focus_blur_longpress_and_custom_via_ring_and_direct_ffi() {
         "metrics",
         NveValue::bytes(NveBufferSlice::from_slice(&custom_bytes)),
     )];
-    let batch_custom = unsafe {
-        NveEventBatchRef::from_raw(NveEventBatch {
-            ptr: direct_custom.as_ptr(),
-            len: 1,
-        })
-    };
-    assert!(surface.dispatch_events_direct(batch_custom));
+    let batch_custom = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_custom)) };
+    assert!(surface.dispatch_direct_events(batch_custom));
     let (_, _, f11) = surface.render_frame(11);
     assert!(extract_target_and_text(&f11)
         .1
         .contains(&"custom:metrics:3".to_owned()));
 
-    // 7. Typed Submit & KeyDown (both EventRing & direct FFI; binary NK1 & UTF-8 shorthand)
+    // 7. Typed Submit & KeyDown (both NativeEvent & direct FFI)
     assert!(surface.dispatch_events(&[NativeEvent {
         surface_id: 1,
         node_id: target,
         timestamp_us: 110,
-        kind: NativeEventKind::Custom,
-        payload: EventPayload::Custom {
-            name: "submit".into(),
-            data: b"ship v2".to_vec(),
-        },
+        kind: NativeEventKind::Submit,
+        payload: EventPayload::Text("ship v2".into()),
     }]));
     let (_, _, f12) = surface.render_frame(12);
     assert!(extract_target_and_text(&f12)
         .1
         .contains(&"submit:ship v2".to_owned()));
 
-    let nk1_keydown = encode_keydown_bytes("k", true, false, true, false);
     assert!(surface.dispatch_events(&[NativeEvent {
         surface_id: 1,
         node_id: target,
         timestamp_us: 120,
-        kind: NativeEventKind::Custom,
-        payload: EventPayload::Custom {
-            name: "keydown".into(),
-            data: nk1_keydown,
+        kind: NativeEventKind::KeyDown,
+        payload: EventPayload::Key {
+            key: "k".into(),
+            code: "KeyK".into(),
+            key_code: 75,
+            modifiers: pack_key_modifiers(true, false, true, false, false),
+            is_composing: false,
         },
     }]));
     let f13 = surface.render_frame_slice(13).to_vec();
@@ -315,39 +252,26 @@ fn dispatches_scroll_focus_blur_longpress_and_custom_via_ring_and_direct_ffi() {
         .1
         .contains(&"keydown:k:true:false:true:false".to_owned()));
 
-    let direct_submit = [NveDirectEvent::custom(
-        1,
-        target,
-        130,
-        "onsubmit",
-        NveValue::str(NveStrSlice::from_str("direct-msg")),
-    )];
-    let batch_submit = unsafe {
-        NveEventBatchRef::from_raw(NveEventBatch {
-            ptr: direct_submit.as_ptr(),
-            len: 1,
-        })
-    };
-    assert!(surface.dispatch_events_direct(batch_submit));
+    let direct_submit = [NveDirectEvent::submit(1, target, 130, "direct-msg")];
+    let batch_submit = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_submit)) };
+    assert!(surface.dispatch_direct_events(batch_submit));
     let (_, _, f14) = surface.render_frame(14);
     assert!(extract_target_and_text(&f14)
         .1
         .contains(&"submit:direct-msg".to_owned()));
 
-    let direct_keydown = [NveDirectEvent::custom(
+    let direct_keydown = [NveDirectEvent::key_down(
         1,
         target,
         140,
-        "keydown",
-        NveValue::str(NveStrSlice::from_str("Ctrl+Alt+Enter")),
+        "Enter",
+        "Enter",
+        pack_key_modifiers(false, true, false, true, false),
+        13,
+        false,
     )];
-    let batch_keydown = unsafe {
-        NveEventBatchRef::from_raw(NveEventBatch {
-            ptr: direct_keydown.as_ptr(),
-            len: 1,
-        })
-    };
-    assert!(surface.dispatch_events_direct(batch_keydown));
+    let batch_keydown = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_keydown)) };
+    assert!(surface.dispatch_direct_events(batch_keydown));
     let f15 = surface.render_frame_slice(15).to_vec();
     assert!(extract_target_and_text(&f15)
         .1

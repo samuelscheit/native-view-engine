@@ -84,7 +84,7 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     let _ = writeln!(out, "    }}");
     let _ = writeln!(
         out,
-        "    const bool dirty = host_.session().bridge()->update_props({name}NveBridge::to_prop_map(props), true);"
+        "    const bool dirty = {name}NveBridge::apply_props(*host_.session().bridge(), props, true);"
     );
     let _ = writeln!(out, "    if (dirty) {{");
     let _ = writeln!(out, "      (void)host_.render_frame(nullptr);");

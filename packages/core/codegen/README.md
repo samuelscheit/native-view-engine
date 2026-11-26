@@ -13,7 +13,7 @@ Binary, compile-time-verified multi-target code generator for `native-view-engin
 | `schema/export.rs` | Shared export & RN IR (`GeneratedFile`, `NveExportSpec`, `ParsedRnSpec`, `RnComponentSpec`, `TurboModuleSpec`, `ExportTarget`, output bundles). |
 | `schema/hybrid/` | Hybrid FFI IR (`mod.rs`, `file_spec.rs`, `validate.rs`), colocated `#[derive(NveAbi)]` descriptor bridge (`schema_bridge.rs`), and Core/Scene ABI specs & hashes (`core_abi.rs`). |
 | `schema/reloc/` | Zero-copy aligned `RelocSlice<T>` / `RelocStr` IR, layout calculation, and cycle/alignment validation (`mod.rs`, `ir.rs`, `validate.rs`). |
-| `schema/wire.rs` | Single-source binary wire specification (`FNV-1a64`, `EventRing`, `NK1` keydown, `NVE_DRAW1` opcodes & schema hash). |
+| `schema/wire.rs` | Single-source binary wire specification (`FNV-1a64`, `EventRing`, `NVE_DRAW1` opcodes & schema hash). |
 | `frontend/` | All input specification lexers and recursive-descent parsers: |
 | `frontend/rn_spec/` | React Native Fabric `*NativeComponent.{ts,js}` & TurboModule `Native*.{ts,js}` lexer and parser (`mod.rs`, `lexer.rs`, `syntax.rs`, `calls.rs`, `lowering.rs`). |
 | `frontend/hybrid_rust/` | Pure-Rust declarative Hybrid FFI `.rs` lexer and parser (`mod.rs`, `lexer.rs`, `items.rs`, `traits.rs`). |

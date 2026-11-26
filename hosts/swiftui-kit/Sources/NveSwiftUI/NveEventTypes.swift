@@ -18,6 +18,18 @@ public enum NveEventKind: UInt8, Sendable, Hashable {
     case blur = 6
     case layout = 7
     case custom = 8
+    case compositionStart = 9
+    case compositionUpdate = 10
+    case compositionEnd = 11
+    case keyDown = 12
+    case keyUp = 13
+    case submit = 14
+    case pointerDown = 15
+    case pointerMove = 16
+    case pointerUp = 17
+    case pointerEnter = 18
+    case pointerLeave = 19
+    case wheel = 20
 }
 
 /// Gesture arbitration outcome mirroring `GestureDisposition` in `packages/core/interop`.
@@ -35,6 +47,9 @@ public enum NveEventPayload: Sendable, Equatable {
     case text(String)
     case layout(x: Float = 0, y: Float = 0, width: Float, height: Float)
     case binValue(Data)
+    case key(key: String, code: String = "", modifiers: UInt8 = 0, keyCode: UInt32 = 0, isComposing: Bool = false)
+    case pointer(x: Float, y: Float, modifiers: UInt8 = 0, flags: UInt8 = 0)
+    case wheel(deltaX: Float, deltaY: Float, modifiers: UInt8 = 0)
 
     /// Zero-copy view over `.binValue(Data)` payloads encoded in `NveBinValue` format.
     public func withBinValueView<R>(_ body: (NveBinValueView) throws -> R) throws -> R? {
@@ -194,6 +209,26 @@ public enum NveEventRingCodec {
                     let slice = Data(raw[pos ..< (pos + dataLen)])
                     pos += dataLen
                     payload = .binValue(slice)
+                case 6:
+                    let modifiers = try readU8()
+                    let isComposing = try readU8() != 0
+                    let keyCode = try readU32()
+                    let keyLen = Int(try readU16())
+                    let key = try readUtf8(length: keyLen)
+                    let codeLen = Int(try readU16())
+                    let code = try readUtf8(length: codeLen)
+                    payload = .key(key: key, code: code, modifiers: modifiers, keyCode: keyCode, isComposing: isComposing)
+                case 7:
+                    let x = try readF32()
+                    let y = try readF32()
+                    let modifiers = try readU8()
+                    let flags = try readU8()
+                    payload = .pointer(x: x, y: y, modifiers: modifiers, flags: flags)
+                case 8:
+                    let dx = try readF32()
+                    let dy = try readF32()
+                    let modifiers = try readU8()
+                    payload = .wheel(deltaX: dx, deltaY: dy, modifiers: modifiers)
                 default:
                     throw NveEventRingError.invalidPayloadTag(payloadTag)
                 }
@@ -307,6 +342,31 @@ public enum NveEventRingCodec {
                     guard let dataLen = readU32(), Int(dataLen) <= raw.count - pos else { return events }
                     payload = .binValue(Data(raw[pos ..< (pos + Int(dataLen))]))
                     pos += Int(dataLen)
+                case 6:
+                    guard
+                        let modifiers = readU8(),
+                        let composingByte = readU8(),
+                        let keyCode = readU32(),
+                        let keyLen = readU16(), Int(keyLen) <= raw.count - pos
+                    else { return events }
+                    let keySlice = UnsafeRawBufferPointer(rebasing: raw[pos ..< (pos + Int(keyLen))])
+                    pos += Int(keyLen)
+                    guard
+                        let key = String(bytes: keySlice, encoding: .utf8),
+                        let codeLen = readU16(), Int(codeLen) <= raw.count - pos
+                    else { return events }
+                    let codeSlice = UnsafeRawBufferPointer(rebasing: raw[pos ..< (pos + Int(codeLen))])
+                    pos += Int(codeLen)
+                    guard let code = String(bytes: codeSlice, encoding: .utf8) else { return events }
+                    payload = .key(key: key, code: code, modifiers: modifiers, keyCode: keyCode, isComposing: composingByte != 0)
+                case 7:
+                    guard let x = readF32(), let y = readF32(), let modifiers = readU8(), let flags = readU8() else {
+                        return events
+                    }
+                    payload = .pointer(x: x, y: y, modifiers: modifiers, flags: flags)
+                case 8:
+                    guard let dx = readF32(), let dy = readF32(), let modifiers = readU8() else { return events }
+                    payload = .wheel(deltaX: dx, deltaY: dy, modifiers: modifiers)
                 default:
                     return events
                 }
@@ -379,6 +439,28 @@ public enum NveEventRingCodec {
                 out.append(nameBytes)
                 appendLE(UInt32(payload.count), to: &out)
                 out.append(payload)
+            case let .key(key, code, modifiers, keyCode, isComposing):
+                out.append(6)
+                out.append(modifiers)
+                out.append(isComposing ? 1 : 0)
+                appendLE(keyCode, to: &out)
+                let keyBytes = Data(key.utf8)
+                appendLE(UInt16(keyBytes.count), to: &out)
+                out.append(keyBytes)
+                let codeBytes = Data(code.utf8)
+                appendLE(UInt16(codeBytes.count), to: &out)
+                out.append(codeBytes)
+            case let .pointer(x, y, modifiers, flags):
+                out.append(7)
+                appendF32(x, to: &out)
+                appendF32(y, to: &out)
+                out.append(modifiers)
+                out.append(flags)
+            case let .wheel(deltaX, deltaY, modifiers):
+                out.append(8)
+                appendF32(deltaX, to: &out)
+                appendF32(deltaY, to: &out)
+                out.append(modifiers)
             }
         }
         return out

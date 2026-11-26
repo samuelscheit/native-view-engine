@@ -5,10 +5,7 @@
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use nve_abi::{
-    encode_events, ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId,
-    SurfaceId, ROOT_NODE_ID,
-};
+use nve_abi::{ColorRgba, FrameId, NodeId, NveDirectEvent, SurfaceId, ROOT_NODE_ID};
 use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceError, GpuSwapchain,
 };
@@ -294,20 +291,16 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// Dispatches the current logical viewport dimensions to the mounted app as a `Layout` event
     /// so responsive layouts (e.g. mobile portrait vs. desktop) react immediately.
     pub fn notify_viewport_resize(&mut self) -> bool {
-        let event = NativeEvent {
-            surface_id: self.surface_id,
-            node_id: ROOT_NODE_ID,
-            timestamp_us: now_us(),
-            kind: NativeEventKind::Layout,
-            payload: EventPayload::Layout {
-                x: 0.0,
-                y: 0.0,
-                width: self.viewport.width,
-                height: self.viewport.height,
-            },
-        };
-        let encoded = encode_events(&[event]);
-        self.app.dispatch_events(&encoded)
+        let event = [NveDirectEvent::layout(
+            self.surface_id,
+            ROOT_NODE_ID,
+            now_us(),
+            0.0,
+            0.0,
+            self.viewport.width,
+            self.viewport.height,
+        )];
+        self.app.dispatch_events(&event)
     }
 
     /// Presents the current retained `DisplayList` directly through a hardware or offscreen
@@ -364,20 +357,16 @@ impl<A: DesktopApp> DesktopSession<A> {
             .scroll_content_size(scroll_node_id)
             .unwrap_or((self.viewport.width, self.viewport.height));
 
-        let event = NativeEvent {
-            surface_id: self.surface_id,
-            node_id: scroll_node_id,
-            timestamp_us: now_us(),
-            kind: NativeEventKind::Scroll,
-            payload: EventPayload::Scroll {
-                x: new_x,
-                y: new_y,
-                content_width,
-                content_height,
-            },
-        };
-        let encoded = encode_events(&[event]);
-        let handled = self.app.dispatch_events(&encoded);
+        let event = [NveDirectEvent::scroll(
+            self.surface_id,
+            scroll_node_id,
+            now_us(),
+            new_x,
+            new_y,
+            content_width,
+            content_height,
+        )];
+        let handled = self.app.dispatch_events(&event);
         if handled {
             self.render_and_rasterize()?;
         } else if offset_changed {

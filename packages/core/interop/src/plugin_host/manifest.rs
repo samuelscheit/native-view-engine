@@ -195,8 +195,8 @@ pub(super) fn resolve_and_validate_tables(
         layout: layout.is_some(),
         component: component.is_some(),
         dev: dev.is_some(),
-        direct_events: surface.dispatch_events_direct.is_some(),
-        direct_props: component.and_then(|c| c.set_props_direct).is_some(),
+        direct_events: true,
+        direct_props: component.is_some(),
     };
 
     Ok(ResolvedTables {

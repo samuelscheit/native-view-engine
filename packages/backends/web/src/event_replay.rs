@@ -11,9 +11,7 @@
 //! - `window.__nveReplayDrain()` atomically detaches every listener, freezes & clears the queue,
 //!   and returns the captured events once — guaranteeing zero double-firing across hydration.
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
-
-use crate::events::encode_keydown_payload;
+use nve_abi::{pack_key_modifiers, EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
 
 /// Maximum age (in milliseconds) of a pre-hydration event eligible for replay.
 /// Events older than this threshold are dropped as stale.
@@ -149,21 +147,21 @@ pub fn pre_hydration_event_to_native(
             surface_id,
             node_id: target_node_id,
             timestamp_us,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "keydown".into(),
-                data: encode_keydown_payload(&key, meta, ctrl, shift, alt),
+            kind: NativeEventKind::KeyDown,
+            payload: EventPayload::Key {
+                key,
+                code: String::new(),
+                modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
+                key_code: 0,
+                is_composing: false,
             },
         },
         CapturedPreHydrationEvent::Submit { value, .. } => NativeEvent {
             surface_id,
             node_id: target_node_id,
             timestamp_us,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "submit".into(),
-                data: value.into_bytes(),
-            },
+            kind: NativeEventKind::Submit,
+            payload: EventPayload::Text(value),
         },
     }
 }

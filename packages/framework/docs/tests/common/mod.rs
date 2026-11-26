@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue, encode_keydown_bytes,
+    EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue, pack_key_modifiers,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_dioxus::DioxusSurface;
@@ -335,15 +335,17 @@ impl DocsHarness {
     pub fn keydown(&mut self, tid: &str, key: &str, meta: bool, ctrl: bool, shift: bool, alt: bool) {
         let id = self.find(tid);
         let ts = self.next_ts();
-        let data = encode_keydown_bytes(key, meta, ctrl, shift, alt);
         let handled = self.surface.dispatch_events(&[NativeEvent {
             surface_id: 1,
             node_id: id,
             timestamp_us: ts,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "keydown".to_string(),
-                data,
+            kind: NativeEventKind::KeyDown,
+            payload: EventPayload::Key {
+                key: key.to_string(),
+                code: String::new(),
+                key_code: 0,
+                modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
+                is_composing: false,
             },
         }]);
         assert!(handled, "keydown '{key}' on '{tid}' should be handled");

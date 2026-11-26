@@ -2,10 +2,10 @@ use std::cell::Cell;
 use std::ffi::c_void;
 
 use nve_abi::{
-    encode_bin_value_to_vec, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
-    NveEventBatch, NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize,
-    NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
+    NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi,
+    NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, NVE_IFACE_COMPONENT,
+    NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
 use super::*;
@@ -16,11 +16,9 @@ enum PanicTarget {
     Create,
     Render,
     DispatchEvents,
-    DispatchEventsDirect,
     Measure,
     HitTest,
     SetProps,
-    SetPropsDirect,
     DrainEmittedEvents,
     ApplyHotPatch,
     SnapshotState,
@@ -46,7 +44,7 @@ fn current_panic_target() -> PanicTarget {
 struct PanickingTestApp {
     surface_id: SurfaceId,
     frame_buf: Vec<u8>,
-    emitted_buf: Vec<u8>,
+    emitted_buf: Vec<NveDirectEvent>,
     state_buf: Vec<u8>,
 }
 
@@ -66,7 +64,7 @@ impl NveApp for PanickingTestApp {
             _ => Self {
                 surface_id,
                 frame_buf: vec![0xAA, 0xBB],
-                emitted_buf: vec![0xCC],
+                emitted_buf: vec![NveDirectEvent::press(surface_id, 1, 10, 1.0, 2.0)],
                 state_buf: vec![1, 2, 3],
             },
         }
@@ -79,16 +77,9 @@ impl NveApp for PanickingTestApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
         if current_panic_target() == PanicTarget::DispatchEvents {
             panic!("boom in dispatch_events");
-        }
-        true
-    }
-
-    fn dispatch_events_direct(&mut self, _events: NveEventBatchRef<'_>) -> bool {
-        if current_panic_target() == PanicTarget::DispatchEventsDirect {
-            panic!("boom in dispatch_events_direct");
         }
         true
     }
@@ -110,21 +101,14 @@ impl NveApp for PanickingTestApp {
         NveGestureDisposition::Claim
     }
 
-    fn set_props(&mut self, _props_bytes: &[u8]) -> bool {
+    fn set_props(&mut self, _props: NvePropsRef<'_>) -> bool {
         if current_panic_target() == PanicTarget::SetProps {
             panic!("boom in set_props");
         }
         true
     }
 
-    fn set_props_direct(&mut self, _props: NvePropsRef<'_>) -> bool {
-        if current_panic_target() == PanicTarget::SetPropsDirect {
-            panic!("boom in set_props_direct");
-        }
-        true
-    }
-
-    fn drain_emitted_events(&mut self) -> &[u8] {
+    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         if current_panic_target() == PanicTarget::DrainEmittedEvents {
             panic!("boom in drain_emitted_events");
         }
@@ -173,7 +157,7 @@ unsafe extern "C" {
 }
 
 #[test]
-fn export_nve_app_catches_panics_across_all_13_shims_and_null_handles() {
+fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
     clear_last_ffi_panic();
     set_panic_target(PanicTarget::None);
 
@@ -190,19 +174,12 @@ fn export_nve_app_catches_panics_across_all_13_shims_and_null_handles() {
         unsafe { &*(test_panicking_app_get_interface(NVE_IFACE_DEV) as *const NveDevApi) };
     let host =
         unsafe { &*(test_panicking_app_get_interface(NVE_IFACE_HOST) as *const NveHostApi) };
-    let dispatch_direct = surface
-        .dispatch_events_direct
-        .expect("dispatch_events_direct exported");
-    let set_props_direct = component
-        .set_props_direct
-        .expect("set_props_direct exported");
 
-    // 0. Null handle guards across all 14 handle-taking shims (no dereference, no panic).
+    // 0. Null handle guards across all 12 handle-taking shims (no dereference, no panic).
     let null_h = std::ptr::null_mut();
     unsafe {
         assert_eq!((surface.render)(null_h, 1).len, 0);
-        assert_eq!((surface.dispatch_events)(null_h, NveBufferSlice::EMPTY), 0);
-        assert_eq!(dispatch_direct(null_h, NveEventBatch::EMPTY), 0);
+        assert_eq!((surface.dispatch_events)(null_h, NveEventBatch::EMPTY), 0);
         assert_eq!(
             (layout.measure)(null_h, NveSizeConstraints::loose(100.0, 100.0)),
             NveIntrinsicSize {
@@ -214,8 +191,7 @@ fn export_nve_app_catches_panics_across_all_13_shims_and_null_handles() {
             (layout.hit_test)(null_h, 0.0, 0.0, 0),
             NveGestureDisposition::PassThrough as u8
         );
-        assert_eq!((component.set_props)(null_h, NveBufferSlice::EMPTY), 0);
-        assert_eq!(set_props_direct(null_h, std::ptr::null(), 0), 0);
+        assert_eq!((component.set_props)(null_h, std::ptr::null(), 0), 0);
         assert_eq!((component.drain_emitted_events)(null_h).len, 0);
         assert_eq!((dev.apply_hot_patch)(null_h, NveBufferSlice::EMPTY), 0);
         assert_eq!((dev.snapshot_state)(null_h).len, 0);
@@ -268,24 +244,13 @@ fn export_nve_app_catches_panics_across_all_13_shims_and_null_handles() {
     assert!(msg.contains("NveSurfaceApi::render") && msg.contains("boom in render frame 99"));
 
     set_panic_target(PanicTarget::DispatchEvents);
+    let direct_ev = [NveDirectEvent::press(42, 2, 100, 1.0, 2.0)];
     assert_eq!(
-        unsafe { (surface.dispatch_events)(handle, NveBufferSlice::from_slice(b"ev")) },
+        unsafe { (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_ev)) },
         0
     );
     let msg = take_last_ffi_panic().unwrap();
     assert!(msg.contains("NveSurfaceApi::dispatch_events") && msg.contains("boom in dispatch_events"));
-
-    set_panic_target(PanicTarget::DispatchEventsDirect);
-    let direct_ev = [NveDirectEvent::press(42, 2, 100, 1.0, 2.0)];
-    assert_eq!(
-        unsafe { dispatch_direct(handle, NveEventBatch::from_slice(&direct_ev)) },
-        0
-    );
-    let msg = take_last_ffi_panic().unwrap();
-    assert!(
-        msg.contains("NveSurfaceApi::dispatch_events_direct")
-            && msg.contains("boom in dispatch_events_direct")
-    );
 
     set_panic_target(PanicTarget::Measure);
     assert_eq!(
@@ -307,24 +272,13 @@ fn export_nve_app_catches_panics_across_all_13_shims_and_null_handles() {
     assert!(msg.contains("NveLayoutApi::hit_test") && msg.contains("boom in hit_test"));
 
     set_panic_target(PanicTarget::SetProps);
+    let entries = [NveMapEntry::new("k", NveValue::i64(1))];
     assert_eq!(
-        unsafe { (component.set_props)(handle, NveBufferSlice::from_slice(b"props")) },
+        unsafe { (component.set_props)(handle, entries.as_ptr(), entries.len() as u32) },
         0
     );
     let msg = take_last_ffi_panic().unwrap();
     assert!(msg.contains("NveComponentApi::set_props") && msg.contains("boom in set_props"));
-
-    set_panic_target(PanicTarget::SetPropsDirect);
-    let entries = [NveMapEntry::new("k", NveValue::i64(1))];
-    assert_eq!(
-        unsafe { set_props_direct(handle, entries.as_ptr(), entries.len() as u32) },
-        0
-    );
-    let msg = take_last_ffi_panic().unwrap();
-    assert!(
-        msg.contains("NveComponentApi::set_props_direct")
-            && msg.contains("boom in set_props_direct")
-    );
 
     set_panic_target(PanicTarget::DrainEmittedEvents);
     let drained = unsafe { (component.drain_emitted_events)(handle) };
@@ -404,11 +358,11 @@ impl NveApp for DirectOnlyPropsApp {
         &[]
     }
 
-    fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
         false
     }
 
-    fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {
+    fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
         let mut changed = false;
         if let Some(c) = props.get("count").and_then(|v| v.as_i64()) {
             self.count = c;
@@ -435,7 +389,7 @@ impl NveApp for DirectOnlyPropsApp {
 }
 
 #[test]
-fn default_set_props_bridges_bin_value_maps_to_set_props_direct() {
+fn direct_set_props_reads_nested_maps_and_arrays_zero_copy() {
     let mut app = DirectOnlyPropsApp::create(1);
     let nested_entries = [NveMapEntry::new("active", NveValue::bool(true))];
     let tag_elems = [NveValue::from_str("a"), NveValue::from_str("b")];
@@ -445,18 +399,11 @@ fn default_set_props_bridges_bin_value_maps_to_set_props_direct() {
         NveMapEntry::new("meta", NveValue::map(&nested_entries)),
         NveMapEntry::new("tags", NveValue::array(&tag_elems)),
     ];
-    let map_val = NveValue::map(&entries);
-    let bin_bytes = encode_bin_value_to_vec(unsafe { map_val.as_ref() }).unwrap();
 
-    assert!(app.set_props(&bin_bytes));
+    assert!(app.set_props(unsafe { NvePropsRef::from_slice(&entries) }));
     assert_eq!(app.count, 77);
     assert_eq!(app.route, "/docs/abi");
     assert!(app.nested_flag);
     assert_eq!(app.tag_count, 2);
-
-    // Malformed / non-map bytes return false cleanly.
-    assert!(!app.set_props(b"not-valid-bin"));
-    let scalar_val = NveValue::i64(1);
-    let scalar_bin = encode_bin_value_to_vec(unsafe { scalar_val.as_ref() }).unwrap();
-    assert!(!app.set_props(&scalar_bin));
+    assert!(!app.set_props(NvePropsRef::EMPTY));
 }

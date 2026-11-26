@@ -17,9 +17,7 @@ enum HostPanicMode {
     PanicCreate,
     PanicRender,
     PanicDispatchEvents,
-    PanicDispatchEventsDirect,
     PanicSetProps,
-    PanicSetPropsDirect,
     PanicMeasure,
     PanicHitTest,
     PanicDrainEvents,
@@ -46,7 +44,7 @@ struct ExportedFlakyPlugin {
     surface_id: SurfaceId,
     counter: u32,
     frame_buf: Vec<u8>,
-    out_events: Vec<u8>,
+    out_events: Vec<NveDirectEvent>,
     state_buf: Vec<u8>,
 }
 
@@ -67,7 +65,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
             surface_id,
             counter: 10,
             frame_buf: Vec::new(),
-            out_events: vec![1, 2, 3],
+            out_events: vec![NveDirectEvent::press(surface_id, 1, 0, 0.0, 0.0)],
             state_buf: Vec::new(),
         }
     }
@@ -85,17 +83,9 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+    fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
         if get_host_panic_mode() == HostPanicMode::PanicDispatchEvents {
             panic!("flaky plugin exploded in dispatch_events");
-        }
-        self.counter += 1;
-        true
-    }
-
-    fn dispatch_events_direct(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
-        if get_host_panic_mode() == HostPanicMode::PanicDispatchEventsDirect {
-            panic!("flaky plugin exploded in dispatch_events_direct");
         }
         self.counter += 1;
         true
@@ -118,7 +108,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         NveGestureDisposition::Claim
     }
 
-    fn set_props(&mut self, _props_bytes: &[u8]) -> bool {
+    fn set_props(&mut self, _props: nve_abi::NvePropsRef<'_>) -> bool {
         if get_host_panic_mode() == HostPanicMode::PanicSetProps {
             panic!("flaky plugin exploded in set_props");
         }
@@ -126,15 +116,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         true
     }
 
-    fn set_props_direct(&mut self, _props: nve_abi::NvePropsRef<'_>) -> bool {
-        if get_host_panic_mode() == HostPanicMode::PanicSetPropsDirect {
-            panic!("flaky plugin exploded in set_props_direct");
-        }
-        self.counter += 5;
-        true
-    }
-
-    fn drain_emitted_events(&mut self) -> &[u8] {
+    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         if get_host_panic_mode() == HostPanicMode::PanicDrainEvents {
             panic!("flaky plugin exploded in drain_emitted_events");
         }
@@ -191,7 +173,7 @@ impl nve_engine::NveApp for ExportedHealthyPlugin {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+    fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
         self.ticks += 1;
         true
     }
@@ -266,12 +248,13 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
         InteropError::Plugin(ref m) if m.contains("flaky plugin exploded in render frame 7")
     ));
 
-    // 4. Panicking `dispatch_events` and `dispatch_events_direct`.
+    // 4. Panicking `dispatch_events`.
     set_host_panic_mode(HostPanicMode::PanicDispatchEvents);
+    let direct_ev = [NveDirectEvent::press(30_001, 2, 100, 1.0, 2.0)];
     let ev_err: InteropError = host
         .get_mut(flaky_id)
         .unwrap()
-        .dispatch_events(b"tap")
+        .dispatch_events(&direct_ev)
         .unwrap_err()
         .into();
     assert!(matches!(
@@ -279,43 +262,18 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
         InteropError::Plugin(ref m) if m.contains("flaky plugin exploded in dispatch_events")
     ));
 
-    set_host_panic_mode(HostPanicMode::PanicDispatchEventsDirect);
-    let direct_ev = [NveDirectEvent::press(30_001, 2, 100, 1.0, 2.0)];
-    let dev_err: InteropError = host
-        .get_mut(flaky_id)
-        .unwrap()
-        .dispatch_events_direct(&direct_ev)
-        .unwrap_err()
-        .into();
-    assert!(matches!(
-        dev_err,
-        InteropError::Plugin(ref m) if m.contains("flaky plugin exploded in dispatch_events_direct")
-    ));
-
-    // 5. Panicking `set_props` and `set_props_direct`.
+    // 5. Panicking `set_props`.
     set_host_panic_mode(HostPanicMode::PanicSetProps);
+    let entries = [NveMapEntry::new("k", nve_abi::NveValue::i64(1))];
     let props_err: InteropError = host
         .get_mut(flaky_id)
         .unwrap()
-        .set_props(b"props")
+        .set_props(&entries)
         .unwrap_err()
         .into();
     assert!(matches!(
         props_err,
         InteropError::Plugin(ref m) if m.contains("flaky plugin exploded in set_props")
-    ));
-
-    set_host_panic_mode(HostPanicMode::PanicSetPropsDirect);
-    let entries = [NveMapEntry::new("k", nve_abi::NveValue::i64(1))];
-    let dprops_err: InteropError = host
-        .get_mut(flaky_id)
-        .unwrap()
-        .set_props_direct(&entries)
-        .unwrap_err()
-        .into();
-    assert!(matches!(
-        dprops_err,
-        InteropError::Plugin(ref m) if m.contains("flaky plugin exploded in set_props_direct")
     ));
 
     // 6. Optional layout/dev/component methods return safe fallbacks without leaking TLS panic.
@@ -349,7 +307,7 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     // 7. Transactional hot-swap onto a plugin whose `restore_state` panics fails cleanly and
     // preserves the existing mounted plugin!
     set_host_panic_mode(HostPanicMode::Healthy);
-    assert!(host.get_mut(flaky_id).unwrap().dispatch_events(b"ok").unwrap()); // counter -> 11
+    assert!(host.get_mut(flaky_id).unwrap().dispatch_events(&direct_ev).unwrap()); // counter -> 11
     set_host_panic_mode(HostPanicMode::PanicRestore);
     let swap_err = host
         .hot_swap_in_process(
@@ -373,8 +331,8 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
 
     // 8. Healthy sibling plugin stayed 100% healthy throughout all flaky panics!
     let sibling = host.get_mut(healthy_id).unwrap();
-    assert!(sibling.dispatch_events(b"tick1").unwrap());
-    assert!(sibling.dispatch_events(b"tick2").unwrap());
+    assert!(sibling.dispatch_events(&direct_ev).unwrap());
+    assert!(sibling.dispatch_events(&direct_ev).unwrap());
     let sibling_frame = sibling.render(1).unwrap().to_vec();
     let (hdr, sibling_cmds) = CommandDecoder::new(&sibling_frame)
         .unwrap()

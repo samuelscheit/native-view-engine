@@ -28,8 +28,8 @@ pub use codec::{
 };
 #[cfg(feature = "wire")]
 pub use events::{
-    decode_events, decode_keydown_bytes, encode_events, encode_keydown_bytes, DecodedKeyDown,
-    EventMask, EventPayload, NativeEvent, KEYDOWN_WIRE_MAGIC,
+    decode_events, direct_event_to_native, encode_events, native_events_to_direct,
+    pack_key_modifiers, EventMask, EventPayload, NativeEvent,
 };
 pub use ffi::{
     ComponentKind, DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi,
@@ -45,11 +45,15 @@ pub use host::{
     SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 pub use scene::{
-    component_kind_to_scene_u8, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView,
-    SceneError, SceneNodeInput, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_CUSTOM,
+    component_kind_to_scene_u8, NveNodeMeta, NveRenderNode, NveSceneRef, NveSceneTable,
+    NveSceneView, SceneError, SceneNodeInput, NVE_META_FLAG_ACCESSIBILITY_HIDDEN,
+    NVE_META_FLAG_DISABLED, NVE_META_FLAG_DRAW_LIST_CORRUPT, NVE_META_FLAG_HAS_DRAW_LIST,
+    NVE_META_FLAG_MULTILINE, NVE_META_FLAG_SECURE_TEXT_ENTRY, NVE_META_RESIZE_MODE_MASK,
+    NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_CUSTOM,
     NVE_NODE_KIND_IMAGE, NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT, NVE_NODE_KIND_SCROLL_VIEW,
     NVE_NODE_KIND_SKIA_CANVAS, NVE_NODE_KIND_TEXT, NVE_NODE_KIND_TEXT_INPUT, NVE_NODE_KIND_VIEW,
-    NVE_NODE_LEAF_TEXT, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
+    NVE_NODE_LEAF_TEXT, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE, NVE_RENDER_NODE_ALIGN,
+    NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
 };
 #[cfg(feature = "wire")]
 pub use value::{
@@ -60,7 +64,9 @@ pub use value::{
     NveArrayRef, NveCommandSlice, NveCommandSliceRef, NveDirectEvent, NveDirectEventRef,
     NveEventBatch, NveEventBatchRef, NveMapEntry, NveMapRef, NvePropEntry, NvePropSlice,
     NvePropSliceRef, NvePropsRef, NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap,
-    NveValueRef, NveValueTag,
+    NveValueRef, NveValueTag, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE,
+    NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
+    NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
 };
 
 pub type SurfaceId = u32;

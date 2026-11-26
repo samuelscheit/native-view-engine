@@ -3,19 +3,16 @@
 //! - Incremental tree diffing (insert, remove, reorder, text updates, conditional mount/unmount)
 //! - Event dispatch (`Press`, `TextChange`, unknown nodes, mismatched payloads)
 //! - Tier-1 `TemplatePatch` persistence across frames and non-template rejection
-//! - State snapshot/restore edge cases through `NveApp` + `DioxusSurface`
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use nve_abi::{
-    encode_events, ColorRgba, Command, CommandDecoder, ComponentKind, EventMask, EventPayload,
-    FrameId, NativeEvent, NativeEventKind, NodeId, RawPropValue, StyleProps, SurfaceId,
-    ROOT_NODE_ID,
+    ColorRgba, Command, CommandDecoder, ComponentKind, EventMask, EventPayload, NativeEvent,
+    NativeEventKind, NodeId, RawPropValue, StyleProps, ROOT_NODE_ID,
 };
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_engine::{HotPatchMsg, NveApp};
+use nve_engine::HotPatchMsg;
 
 #[derive(Debug, Clone)]
 struct DecodedNode {
@@ -590,192 +587,4 @@ fn tier1_template_patch_persists_across_frames_and_ignores_non_template_messages
         "expected persisted opacity=0.5 & border_radius=14.0 on frame 3 SetStyle, got {cmds3:?}"
     );
     assert!(tree.find_by_text("Step: 1").is_some());
-}
-
-// Thread-local state bridge for parallel-safe NveApp + DioxusSurface snapshot/restore tests.
-thread_local! {
-    static SNAPSHOT_SEED: RefCell<(i32, String)> = const { RefCell::new((0, String::new())) };
-    static SNAPSHOT_LIVE: RefCell<(i32, String)> = const { RefCell::new((0, String::new())) };
-}
-
-#[component]
-fn SnapshotCounterApp() -> Element {
-    let (init_count, init_note) = SNAPSHOT_SEED.with(|s| s.borrow().clone());
-    let mut count = use_signal(|| init_count);
-    let mut note = use_signal(|| init_note);
-    SNAPSHOT_LIVE.with(|s| {
-        *s.borrow_mut() = (count(), note());
-    });
-
-    rsx! {
-        view {
-            text { "SnapCount:{count}" }
-            text { "SnapNote:{note}" }
-            pressable {
-                test_id: "snap-inc",
-                onpress: move |_| count += 1,
-            }
-            textinput {
-                test_id: "snap-note",
-                onchange: move |ev| note.set(ev.data().value.clone()),
-            }
-        }
-    }
-}
-
-struct SnapshotTestApp {
-    surface_id: SurfaceId,
-    surface: DioxusSurface,
-    frame_buf: Vec<u8>,
-    state_buf: Vec<u8>,
-}
-
-impl SnapshotTestApp {
-    fn encode_state(count: i32, note: &str) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"SNAP");
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&(note.len() as u32).to_le_bytes());
-        out.extend_from_slice(note.as_bytes());
-        out
-    }
-
-    fn decode_state(bytes: &[u8]) -> Option<(i32, String)> {
-        if bytes.len() < 12 || &bytes[0..4] != b"SNAP" {
-            return None;
-        }
-        let count = i32::from_le_bytes(bytes[4..8].try_into().ok()?);
-        let len = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
-        if bytes.len() != 12 + len {
-            return None;
-        }
-        let note = std::str::from_utf8(&bytes[12..]).ok()?.to_owned();
-        Some((count, note))
-    }
-}
-
-impl NveApp for SnapshotTestApp {
-    fn create(surface_id: SurfaceId) -> Self {
-        Self {
-            surface_id,
-            surface: DioxusSurface::new(surface_id, SnapshotCounterApp),
-            frame_buf: Vec::new(),
-            state_buf: Vec::new(),
-        }
-    }
-
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let (_, _, bytes) = self.surface.render_frame(frame_id);
-        self.frame_buf = bytes;
-        &self.frame_buf
-    }
-
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        let Ok(events) = nve_abi::decode_events(encoded_events) else {
-            return false;
-        };
-        self.surface.dispatch_events(&events)
-    }
-
-    fn snapshot_state(&mut self) -> &[u8] {
-        let (count, note) = SNAPSHOT_LIVE.with(|s| s.borrow().clone());
-        self.state_buf = Self::encode_state(count, &note);
-        &self.state_buf
-    }
-
-    fn restore_state(&mut self, state: &[u8]) {
-        if let Some((count, note)) = Self::decode_state(state) {
-            SNAPSHOT_SEED.with(|s| *s.borrow_mut() = (count, note.clone()));
-            SNAPSHOT_LIVE.with(|s| *s.borrow_mut() = (count, note));
-            self.surface = DioxusSurface::new(self.surface_id, SnapshotCounterApp);
-        }
-    }
-}
-
-#[test]
-fn state_snapshot_and_restore_edge_cases() {
-    SNAPSHOT_SEED.with(|s| *s.borrow_mut() = (0, "init".into()));
-    SNAPSHOT_LIVE.with(|s| *s.borrow_mut() = (0, "init".into()));
-
-    let mut app1 = SnapshotTestApp::create(1);
-    let mut tree1 = WireTree::new();
-    tree1.apply(app1.render(1));
-    assert!(tree1.find_by_text("SnapCount:0").is_some());
-    assert!(tree1.find_by_text("SnapNote:init").is_some());
-
-    // Mutate state via encoded EventRing (2 presses + 1 text change).
-    let inc_id = tree1.find_by_test_id("snap-inc").unwrap().0;
-    let note_id = tree1.find_by_test_id("snap-note").unwrap().0;
-    let evs = encode_events(&[
-        NativeEvent {
-            surface_id: 1,
-            node_id: inc_id,
-            timestamp_us: 100,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 1.0, y: 1.0 },
-        },
-        NativeEvent {
-            surface_id: 1,
-            node_id: inc_id,
-            timestamp_us: 200,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 1.0, y: 1.0 },
-        },
-        NativeEvent {
-            surface_id: 1,
-            node_id: note_id,
-            timestamp_us: 300,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text("persisted".into()),
-        },
-    ]);
-    assert!(app1.dispatch_events(&evs));
-    tree1.apply(app1.render(2));
-    assert!(tree1.find_by_text("SnapCount:2").is_some());
-    assert!(tree1.find_by_text("SnapNote:persisted").is_some());
-
-    let snapshot = app1.snapshot_state().to_vec();
-
-    // Reset seed to verify restore actually comes from snapshot bytes.
-    SNAPSHOT_SEED.with(|s| *s.borrow_mut() = (0, "reset".into()));
-    SNAPSHOT_LIVE.with(|s| *s.borrow_mut() = (0, "reset".into()));
-
-    // Edge cases: empty, truncated, bad-magic, invalid-UTF8 snapshots must not panic or corrupt defaults.
-    let mut app_bad = SnapshotTestApp::create(1);
-    app_bad.restore_state(&[]);
-    app_bad.restore_state(b"SNAP\x01\x02");
-    app_bad.restore_state(b"NOPE\x05\x00\x00\x00\x00\x00\x00\x00");
-    app_bad.restore_state(b"SNAP\x05\x00\x00\x00\x02\x00\x00\x00\xFF\xFE");
-    let mut tree_bad = WireTree::new();
-    tree_bad.apply(app_bad.render(1));
-    assert!(tree_bad.find_by_text("SnapCount:0").is_some());
-    assert!(tree_bad.find_by_text("SnapNote:reset").is_some());
-
-    // Valid restore BEFORE first render.
-    let mut app2 = SnapshotTestApp::create(1);
-    app2.restore_state(&snapshot);
-    let mut tree2 = WireTree::new();
-    tree2.apply(app2.render(1));
-    assert!(tree2.find_by_text("SnapCount:2").is_some());
-    assert!(tree2.find_by_text("SnapNote:persisted").is_some());
-
-    // Subsequent event after restore increments from restored baseline (2 -> 3).
-    let inc_id2 = tree2.find_by_test_id("snap-inc").unwrap().0;
-    let ev3 = encode_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: inc_id2,
-        timestamp_us: 400,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 1.0, y: 1.0 },
-    }]);
-    assert!(app2.dispatch_events(&ev3));
-    tree2.apply(app2.render(2));
-    assert!(tree2.find_by_text("SnapCount:3").is_some());
-
-    // Valid restore AFTER initial render replaces state cleanly.
-    app2.restore_state(&snapshot);
-    let mut tree3 = WireTree::new();
-    tree3.apply(app2.render(3));
-    assert!(tree3.find_by_text("SnapCount:2").is_some());
-    assert!(tree3.find_by_text("SnapNote:persisted").is_some());
 }

@@ -73,60 +73,13 @@ public struct NveAppleDeviceProfile: Equatable, Sendable {
     }
 }
 
-// MARK: - Binary `NK1` Binary KeyDown Codec & tvOS Siri Remote Mapping
+// MARK: - tvOS Siri Remote Direct KeyDown Mapping
 
-/// Decoded binary `NK1` binary keydown payload matching `packages/core/abi/src/events.rs`.
-public struct NveNk1KeyDown: Equatable, Sendable {
-    public let key: String
-    public let meta, ctrl, shift, alt: Bool
-
-    public init(key: String, meta: Bool = false, ctrl: Bool = false, shift: Bool = false, alt: Bool = false) {
-        self.key = key; self.meta = meta; self.ctrl = ctrl; self.shift = shift; self.alt = alt
-    }
-}
-
-/// Binary `NK1` wire codec (`[0x4E, 0x4B, 0x31, flags_u8, utf8_key...]`).
-public enum NveNk1BinaryCodec {
-    public static let magic: [UInt8] = [0x4E, 0x4B, 0x31]
-    public static let flagMeta: UInt8 = 1 << 0, flagCtrl: UInt8 = 1 << 1
-    public static let flagShift: UInt8 = 1 << 2, flagAlt: UInt8 = 1 << 3
-    public static let keydownEventName = "keydown"
-
-    public static func encode(
-        key: String, meta: Bool = false, ctrl: Bool = false, shift: Bool = false, alt: Bool = false
-    ) -> Data? {
-        let keyBytes = Array(key.utf8)
-        guard !keyBytes.isEmpty else { return nil }
-        var flags: UInt8 = 0
-        if meta { flags |= flagMeta }
-        if ctrl { flags |= flagCtrl }
-        if shift { flags |= flagShift }
-        if alt { flags |= flagAlt }
-        var out = Data(capacity: 4 + keyBytes.count)
-        out.append(contentsOf: magic)
-        out.append(flags)
-        out.append(contentsOf: keyBytes)
-        return out
-    }
-
-    public static func decode(_ data: Data) -> NveNk1KeyDown? {
-        guard data.count >= 5 else { return nil }
-        let b = Array(data)
-        guard b[0] == magic[0], b[1] == magic[1], b[2] == magic[2] else { return nil }
-        guard let key = String(bytes: b[4...], encoding: .utf8), !key.isEmpty else { return nil }
-        let f = b[3]
-        return NveNk1KeyDown(
-            key: key, meta: (f & flagMeta) != 0, ctrl: (f & flagCtrl) != 0,
-            shift: (f & flagShift) != 0, alt: (f & flagAlt) != 0
-        )
-    }
-}
-
-/// Siri Remote / Apple TV command mapped directly to W3C & NVE `NK1` keydown events.
+/// Siri Remote / Apple TV command mapped directly to typed `NveEventKind.keyDown` events.
 public enum NveTvRemoteCommand: Equatable, Hashable, Sendable {
     case up, down, left, right, select, playPause, exit
 
-    public var nk1KeyName: String {
+    public var keyName: String {
         switch self {
         case .up: return "ArrowUp"
         case .down: return "ArrowDown"
@@ -145,8 +98,7 @@ public enum NveTvRemoteCommand: Equatable, Hashable, Sendable {
     ) -> NveEvent {
         NveEvent(
             surfaceId: surfaceId, nodeId: nodeId, timestampUs: timestampUs,
-            kind: .custom, name: NveNk1BinaryCodec.keydownEventName,
-            payload: .binValue(NveNk1BinaryCodec.encode(key: nk1KeyName) ?? Data())
+            kind: .keyDown, payload: .key(key: keyName)
         )
     }
 }

@@ -17,8 +17,8 @@ pub use wasm_bundle_size::{
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
     EventPayload, FlexAlign, FlexDirection, FlexJustify, FrameId, LayoutProps, NativeEvent,
-    NativeEventKind, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, RawPropValue,
-    StyleProps, SurfaceId, ROOT_NODE_ID,
+    NativeEventKind, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize,
+    NveSizeConstraints, RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
 };
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -365,8 +365,8 @@ impl NveApp for BenchFfiApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        !encoded_events.is_empty()
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+        !events.is_empty()
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {

@@ -15,6 +15,12 @@ pub const NVE_RENDER_NODE_SIZE: usize = nve_abi::NVE_RENDER_NODE_SIZE;
 /// Required cache-line alignment of `NveRenderNode`.
 pub const NVE_RENDER_NODE_ALIGN: usize = nve_abi::NVE_RENDER_NODE_ALIGN;
 
+/// Exact byte stride of one fixed-stride `NveNodeMeta` record (64 bytes).
+pub const NVE_NODE_META_SIZE: usize = nve_abi::NVE_NODE_META_SIZE;
+
+/// Natural alignment of `NveNodeMeta` (4 bytes).
+pub const NVE_NODE_META_ALIGN: usize = nve_abi::NVE_NODE_META_ALIGN;
+
 /// Deterministic FNV-1a 64-bit Core ABI schema hash (must match `packages/core/abi/src/ffi.rs`
 /// and `core_abi_schema_hash()` verbatim).
 pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = nve_abi::NVE_CORE_ABI_SCHEMA_HASH;
@@ -49,9 +55,15 @@ pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
     let scene_view = spec
         .find_struct("NveSceneView")
         .expect("scene_abi_descriptor must declare NveSceneView");
+    let node_meta = spec
+        .find_struct("NveNodeMeta")
+        .expect("scene_abi_descriptor must declare NveNodeMeta");
     let node_size = render_node
         .expected_size
         .expect("NveRenderNode must declare size = 64");
+    let meta_size = node_meta
+        .expected_size
+        .expect("NveNodeMeta must declare size = 64");
 
     let mut h = FNV1A_64_OFFSET_BASIS;
     h = fnv1a_64_update(h, b"NveRenderNode");
@@ -82,6 +94,20 @@ pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
             h = fnv1a_64_update(h, b"#");
             h = fnv1a_64_update(h, &(idx as u64).to_le_bytes());
         }
+    }
+
+    h = fnv1a_64_update(h, b";NveNodeMeta");
+    h = fnv1a_64_update(h, &(meta_size as u64).to_le_bytes());
+    for f in &node_meta.fields {
+        h = fnv1a_64_update(h, b"|");
+        h = fnv1a_64_update(h, f.name.as_bytes());
+        h = fnv1a_64_update(h, b":");
+        h = fnv1a_64_update(h, scene_canonical_type_name(&f.ty).as_bytes());
+        h = fnv1a_64_update(h, b"@");
+        let off = f
+            .offset
+            .expect("NveNodeMeta fields must declare explicit #[offset(N)]");
+        h = fnv1a_64_update(h, &(off as u64).to_le_bytes());
     }
     h
 }

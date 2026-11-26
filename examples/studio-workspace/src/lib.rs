@@ -33,9 +33,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    decode_events, encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind,
-    NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
-    SurfaceId, ROOT_NODE_ID,
+    FrameId, NativeEventKind, NveDirectEvent, NveEventBatchRef, NveGestureDisposition,
+    NveHostCallbacks, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, NveValue, SurfaceId,
+    ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -78,8 +78,7 @@ pub use ui_islands::{
 };
 pub use ui_palette::{
     build_palette_items, dispatch_keydown, filter_palette_items, fuzzy_score,
-    parse_keydown_payload, CommandPaletteAction, CommandPaletteItem, CommandPaletteState,
-    KeyDownEvent,
+    CommandPaletteAction, CommandPaletteItem, CommandPaletteState, KeyDownEvent,
 };
 pub use virtual_list::{
     FenwickHeightTree, StreamVirtualEngine, VirtualListIndex, VirtualRowMeta, VirtualWindow,
@@ -137,7 +136,7 @@ pub struct StudioWorkspaceModule {
     mounted: bool,
     last_reported_layout_engine: LayoutEngineMode,
     last_state_buf: Vec<u8>,
-    last_emitted_events_buf: Vec<u8>,
+    last_emitted_events: Vec<NveDirectEvent>,
     persist_store: Option<WorkspaceStore>,
     last_persisted_frame_count: u64,
 }
@@ -169,7 +168,7 @@ impl StudioWorkspaceModule {
             mounted: false,
             last_reported_layout_engine: layout_engine,
             last_state_buf: Vec::new(),
-            last_emitted_events_buf: Vec::new(),
+            last_emitted_events: Vec::new(),
             persist_store: Some(persist),
             last_persisted_frame_count: initial_frame_count,
         })
@@ -282,7 +281,7 @@ impl NveApp for StudioWorkspaceModule {
             mounted: false,
             last_reported_layout_engine: layout_engine,
             last_state_buf: Vec::new(),
-            last_emitted_events_buf: Vec::new(),
+            last_emitted_events: Vec::new(),
             persist_store,
             last_persisted_frame_count: initial_frame_count,
         }
@@ -302,19 +301,16 @@ impl NveApp for StudioWorkspaceModule {
         }
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        let Ok(decoded) = decode_events(encoded_events) else {
-            return false;
-        };
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
         let mut handled_host_event = false;
-        for ev in &decoded {
-            match (ev.kind, &ev.payload) {
-                (NativeEventKind::Layout, EventPayload::Layout { width, height, .. })
-                    if ev.node_id == ROOT_NODE_ID && *width > 0.0 =>
+        for ev in events.iter() {
+            match (ev.kind(), ev.payload_tag()) {
+                (Some(NativeEventKind::Layout), 4)
+                    if ev.node_id() == ROOT_NODE_ID && ev.width() > 0.0 =>
                 {
                     if let Ok(mut guard) = self.store.lock() {
                         let prev_stream_h = guard.current.stream.viewport_height;
-                        let mask = guard.update_viewport_with_mask(*width, *height);
+                        let mask = guard.update_viewport_with_mask(ev.width(), ev.height());
                         let stream_h_changed = guard.current.active_view == ActiveView::Stream100k
                             && guard.current.stream.viewport_height != prev_stream_h;
                         if mask.any_breakpoint_changed() || stream_h_changed {
@@ -322,12 +318,13 @@ impl NveApp for StudioWorkspaceModule {
                         }
                     }
                 }
-                (NativeEventKind::Scroll, EventPayload::Scroll { y, .. }) => {
+                (Some(NativeEventKind::Scroll), 2) => {
                     if let Ok(mut guard) = self.store.lock()
                         && guard.current.active_view == ActiveView::Stream100k
                     {
-                        let target_y = if y.is_finite() && *y >= 0.0 {
-                            *y as u32
+                        let y = ev.y();
+                        let target_y = if y.is_finite() && y >= 0.0 {
+                            y as u32
                         } else {
                             0
                         };
@@ -335,19 +332,15 @@ impl NveApp for StudioWorkspaceModule {
                         handled_host_event = true;
                     }
                 }
-                (NativeEventKind::Custom, EventPayload::Custom { name, data })
-                    if name == "keydown" =>
-                {
-                    if let Some(kd) = parse_keydown_payload(data)
+                (Some(NativeEventKind::KeyDown), 6) => {
+                    if !ev.key().is_empty()
                         && let Ok(mut guard) = self.store.lock()
-                        && dispatch_keydown(&mut guard, &kd.key, kd.has_primary_modifier())
+                        && dispatch_keydown(&mut guard, ev.key(), ev.has_primary_modifier())
                     {
                         handled_host_event = true;
                     }
                 }
-                (NativeEventKind::Custom, EventPayload::Custom { name, .. })
-                    if name == "submit" =>
-                {
+                (Some(NativeEventKind::Submit), 0 | 3) => {
                     if let Ok(mut guard) = self.store.lock() {
                         let submitted = if guard.palette.open {
                             guard.execute_palette_selected()
@@ -381,7 +374,7 @@ impl NveApp for StudioWorkspaceModule {
         if handled_host_event {
             self.reset_surface_with_current_store();
         }
-        let handled_ui = self.surface.dispatch_events(&decoded);
+        let handled_ui = self.surface.dispatch_direct_events(events);
         if handled_host_event || handled_ui {
             self.persist_if_dirty();
         }
@@ -423,7 +416,7 @@ impl NveApp for StudioWorkspaceModule {
         NveGestureDisposition::Claim
     }
 
-    fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {
+    fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
         let upd = PropUpdates {
             studio_open: props.get("studioOpen").and_then(|v| v.as_bool()),
             accent: props.get("accent").and_then(|v| v.as_str()),
@@ -458,33 +451,24 @@ impl NveApp for StudioWorkspaceModule {
         changed
     }
 
-    fn set_props(&mut self, props_bytes: &[u8]) -> bool {
-        nve_engine::app::try_dispatch_bin_props_direct(self, props_bytes).unwrap_or(false)
-    }
-
-    fn drain_emitted_events(&mut self) -> &[u8] {
+    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         let current_engine = self
             .store
             .lock()
             .map(|g| g.current.studio.layout_engine)
             .unwrap_or(self.last_reported_layout_engine);
+        self.last_emitted_events.clear();
         if current_engine != self.last_reported_layout_engine {
             self.last_reported_layout_engine = current_engine;
-            let ev = NativeEvent {
-                surface_id: self.surface_id,
-                node_id: ROOT_NODE_ID,
-                timestamp_us: 0,
-                kind: NativeEventKind::Custom,
-                payload: EventPayload::Custom {
-                    name: "layout_engine_changed".into(),
-                    data: current_engine.as_str().as_bytes().to_vec(),
-                },
-            };
-            self.last_emitted_events_buf = encode_events(&[ev]);
-        } else {
-            self.last_emitted_events_buf = encode_events(&[]);
+            self.last_emitted_events.push(NveDirectEvent::custom(
+                self.surface_id,
+                ROOT_NODE_ID,
+                0,
+                "layout_engine_changed",
+                NveValue::from_str(current_engine.as_str()),
+            ));
         }
-        &self.last_emitted_events_buf
+        &self.last_emitted_events
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {

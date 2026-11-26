@@ -11,8 +11,8 @@ use crate::schema::wire::{
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
     EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEYDOWN_FLAG_ALT, KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_META, KEYDOWN_FLAG_SHIFT,
-    KEYDOWN_HEADER_SIZE, KEYDOWN_MIN_LEN, KEYDOWN_WIRE_MAGIC, NVE_WIRE_CODECS_SCHEMA_HASH,
+    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
 fn format_cpp_byte_array(bytes: &[u8]) -> String {
@@ -129,9 +129,9 @@ constexpr uint64_t fnv1a64_str(std::string_view text) noexcept {{
     }
     writeln!(s).unwrap();
 
-    // EventRing (`NVEV`) + NK1 constants
+    // EventRing (`NVEV`) constants
     writeln!(s, "// ============================================================================").unwrap();
-    writeln!(s, "// EventRing (`NVEV` / event framing) & `NK1` KeyDown").unwrap();
+    writeln!(s, "// EventRing (`NVEV` / network event framing)").unwrap();
     writeln!(s, "// ============================================================================\n").unwrap();
     writeln!(
         s,
@@ -200,20 +200,13 @@ constexpr uint64_t fnv1a64_str(std::string_view text) noexcept {{
     }
     writeln!(s, "}}  // namespace EventMask\n").unwrap();
 
-    writeln!(
-        s,
-        "inline constexpr std::array<uint8_t, 3> kKeyDownMagic = {{{}}};",
-        format_cpp_byte_array(&KEYDOWN_WIRE_MAGIC)
-    )
-    .unwrap();
-    writeln!(s, "inline constexpr size_t kKeyDownHeaderSize = {KEYDOWN_HEADER_SIZE}u;").unwrap();
-    writeln!(s, "inline constexpr size_t kKeyDownMinLen = {KEYDOWN_MIN_LEN}u;").unwrap();
-    writeln!(s, "inline constexpr uint8_t kKeyDownFlagMeta = 0x{KEYDOWN_FLAG_META:02X}u;").unwrap();
-    writeln!(s, "inline constexpr uint8_t kKeyDownFlagCtrl = 0x{KEYDOWN_FLAG_CTRL:02X}u;").unwrap();
-    writeln!(s, "inline constexpr uint8_t kKeyDownFlagShift = 0x{KEYDOWN_FLAG_SHIFT:02X}u;").unwrap();
-    writeln!(s, "inline constexpr uint8_t kKeyDownFlagAlt = 0x{KEYDOWN_FLAG_ALT:02X}u;\n").unwrap();
+    writeln!(s, "inline constexpr uint8_t kKeyModMeta = 0x{KEY_MOD_META:02X}u;").unwrap();
+    writeln!(s, "inline constexpr uint8_t kKeyModCtrl = 0x{KEY_MOD_CTRL:02X}u;").unwrap();
+    writeln!(s, "inline constexpr uint8_t kKeyModShift = 0x{KEY_MOD_SHIFT:02X}u;").unwrap();
+    writeln!(s, "inline constexpr uint8_t kKeyModAlt = 0x{KEY_MOD_ALT:02X}u;").unwrap();
+    writeln!(s, "inline constexpr uint8_t kKeyModRepeat = 0x{KEY_MOD_REPEAT:02X}u;\n").unwrap();
 
-    // Little-endian helpers + NK1 encoder + EventRingHeader + EventRingWriter
+    // Little-endian helpers + EventRingHeader + EventRingWriter
     writeln!(
         s,
         r#"inline uint16_t read_le_u16(const uint8_t* p) noexcept {{
@@ -246,27 +239,6 @@ inline void append_le_u64(std::vector<uint8_t>& out, uint64_t v) {{
 
 inline void append_le_f32(std::vector<uint8_t>& out, float v) {{
   append_le_u32(out, std::bit_cast<uint32_t>(v));
-}}
-
-inline std::vector<uint8_t> encode_keydown_nk1(
-    std::string_view key,
-    bool meta,
-    bool ctrl,
-    bool shift,
-    bool alt) {{
-  uint8_t flags = 0u;
-  if (meta) flags |= kKeyDownFlagMeta;
-  if (ctrl) flags |= kKeyDownFlagCtrl;
-  if (shift) flags |= kKeyDownFlagShift;
-  if (alt) flags |= kKeyDownFlagAlt;
-  std::vector<uint8_t> out;
-  out.reserve(kKeyDownHeaderSize + key.size());
-  out.insert(out.end(), kKeyDownMagic.begin(), kKeyDownMagic.end());
-  out.push_back(flags);
-  for (const char ch : key) {{
-    out.push_back(static_cast<uint8_t>(ch));
-  }}
-  return out;
 }}
 
 struct EventRingFramedHeader {{
@@ -411,12 +383,37 @@ class EventRingWriter {{
       uint32_t node_id,
       uint64_t ts_us,
       std::string_view key,
-      bool meta,
-      bool ctrl,
-      bool shift,
-      bool alt) {{
-    const auto payload = encode_keydown_nk1(key, meta, ctrl, shift, alt);
-    return push_custom(surface_id, node_id, ts_us, "keydown", payload);
+      bool meta = false,
+      bool ctrl = false,
+      bool shift = false,
+      bool alt = false,
+      std::string_view code = {{}},
+      uint32_t key_code = 0u,
+      bool is_composing = false) {{
+    if (count_ == std::numeric_limits<uint32_t>::max() ||
+        key.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max()) ||
+        code.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max())) {{
+      return false;
+    }}
+    uint8_t modifiers = 0u;
+    if (meta) modifiers |= kKeyModMeta;
+    if (ctrl) modifiers |= kKeyModCtrl;
+    if (shift) modifiers |= kKeyModShift;
+    if (alt) modifiers |= kKeyModAlt;
+    write_entry_header(surface_id, node_id, ts_us, EventKind::KeyDown, EventPayloadTag::Key);
+    buf_.push_back(modifiers);
+    buf_.push_back(is_composing ? 1u : 0u);
+    append_le_u32(buf_, key_code);
+    append_le_u16(buf_, static_cast<uint16_t>(key.size()));
+    for (const char ch : key) {{
+      buf_.push_back(static_cast<uint8_t>(ch));
+    }}
+    append_le_u16(buf_, static_cast<uint16_t>(code.size()));
+    for (const char ch : code) {{
+      buf_.push_back(static_cast<uint8_t>(ch));
+    }}
+    ++count_;
+    return true;
   }}
 
   std::span<const uint8_t> finish() noexcept {{

@@ -176,6 +176,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     let null_batch = NveEventBatch {
         ptr: std::ptr::null(),
         len: 2,
+        _pad: 0,
     };
     assert!(unsafe { null_batch.try_as_slice() }.is_none());
     assert!(unsafe { null_batch.as_slice() }.is_empty());
@@ -185,6 +186,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     let misaligned_batch = NveEventBatch {
         ptr: std::ptr::without_provenance(1),
         len: 1,
+        _pad: 0,
     };
     assert!(unsafe { misaligned_batch.try_as_slice() }.is_none());
     assert!(unsafe { misaligned_batch.as_slice() }.is_empty());
@@ -195,6 +197,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     let valid_batch = NveEventBatch {
         ptr: &valid_ev as *const NveDirectEvent,
         len: 1,
+        _pad: 0,
     };
     let batch_ref = unsafe { NveEventBatchRef::try_from_raw(valid_batch) }.expect("valid batch");
     assert_eq!(batch_ref.len(), 1);

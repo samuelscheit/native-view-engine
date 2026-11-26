@@ -20,9 +20,9 @@ namespace nve {
  * intercepts `facebook::react::RawEvent` in C++ before JSI (returning `true` to suppress JS
  * dispatch). Built-in events downcast `EventPayload::getType()` directly; arbitrary 3rd-party
  * RN Fabric components whose `ValueFactoryEventPayload` only exposes `asJSIValue(jsi::Runtime&)`
- * are captured via `MockJsiRecorderRuntime` directly into `nve::BumpArena` for zero-copy direct
- * FFI dispatch (`dispatch_events_direct`), or encoded in-place into compact binary `NveBinValue`
- * inside this `EventRingWriter` for non-shared boundaries — zero Hermes, binary FFI.
+ * are captured via `MockJsiRecorderRuntime` directly into `nve::BumpArena` for direct FFI
+ * dispatch (`dispatch_events`), or encoded in-place into compact binary `NveBinValue` inside
+ * this `EventRingWriter` for network/IPC transport.
  */
 class EventRingWriter {
  public:
@@ -204,11 +204,132 @@ class EventRingWriter {
         push_layout(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y, ev.width, ev.height);
         return true;
       case 5u:
+        if (ev.value.tag == NVE_VAL_BYTES) {
+          return push_custom(
+              ev.surface_id,
+              ev.node_id,
+              ev.timestamp_us,
+              str_slice_view(ev.name),
+              ev.value.data.bytes_val.ptr,
+              ev.value.data.bytes_val.len);
+        }
         return push_custom_value(
             ev.surface_id, ev.node_id, ev.timestamp_us, str_slice_view(ev.name), ev.value);
+      case 6u:
+        return push_key_event(
+            ev.surface_id,
+            ev.node_id,
+            ev.timestamp_us,
+            ev.kind,
+            str_slice_view(ev.text),
+            str_slice_view(ev.name),
+            ev.modifiers,
+            ev.key_code,
+            (ev.event_flags & NVE_EVENT_FLAG_COMPOSING) != 0u);
+      case 7u:
+        push_pointer_event(
+            ev.surface_id,
+            ev.node_id,
+            ev.timestamp_us,
+            ev.kind,
+            ev.x,
+            ev.y,
+            ev.modifiers,
+            ev.event_flags);
+        return true;
+      case 8u:
+        push_wheel_event(
+            ev.surface_id,
+            ev.node_id,
+            ev.timestamp_us,
+            ev.x,
+            ev.y,
+            ev.modifiers);
+        return true;
       default:
         return false;
     }
+  }
+
+  bool push_key_event(
+      uint32_t surface_id,
+      uint32_t node_id,
+      uint64_t ts_us,
+      uint8_t kind,
+      std::string_view key,
+      std::string_view code,
+      uint8_t modifiers,
+      uint32_t key_code,
+      bool is_composing) {
+    if (count_ == std::numeric_limits<uint32_t>::max() ||
+        key.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max()) ||
+        code.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max()) ||
+        (!key.empty() && key.data() == nullptr) ||
+        (!code.empty() && code.data() == nullptr)) {
+      return false;
+    }
+    write_event_header(surface_id, node_id, ts_us, kind, 6u /* EventPayload::Key */);
+    buf_.push_back(modifiers);
+    buf_.push_back(is_composing ? 1u : 0u);
+    write_le<uint32_t>(key_code);
+    write_le<uint16_t>(static_cast<uint16_t>(key.size()));
+    if (!key.empty()) {
+      buf_.insert(
+          buf_.end(),
+          reinterpret_cast<const uint8_t*>(key.data()),
+          reinterpret_cast<const uint8_t*>(key.data()) + key.size());
+    }
+    write_le<uint16_t>(static_cast<uint16_t>(code.size()));
+    if (!code.empty()) {
+      buf_.insert(
+          buf_.end(),
+          reinterpret_cast<const uint8_t*>(code.data()),
+          reinterpret_cast<const uint8_t*>(code.data()) + code.size());
+    }
+    ++count_;
+    return true;
+  }
+
+  void push_pointer_event(
+      uint32_t surface_id,
+      uint32_t node_id,
+      uint64_t ts_us,
+      uint8_t kind,
+      float x,
+      float y,
+      uint8_t modifiers,
+      uint8_t flags) {
+    if (count_ == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
+    write_event_header(surface_id, node_id, ts_us, kind, 7u /* EventPayload::Pointer */);
+    write_le<float>(x);
+    write_le<float>(y);
+    buf_.push_back(modifiers);
+    buf_.push_back(flags);
+    ++count_;
+  }
+
+  void push_wheel_event(
+      uint32_t surface_id,
+      uint32_t node_id,
+      uint64_t ts_us,
+      float delta_x,
+      float delta_y,
+      uint8_t modifiers) {
+    if (count_ == std::numeric_limits<uint32_t>::max()) {
+      return;
+    }
+    write_event_header(
+        surface_id,
+        node_id,
+        ts_us,
+        NVE_EVENT_WHEEL,
+        8u /* EventPayload::Wheel */);
+    write_le<float>(delta_x);
+    write_le<float>(delta_y);
+    buf_.push_back(modifiers);
+    ++count_;
   }
 
   const std::vector<uint8_t>& finalize() {

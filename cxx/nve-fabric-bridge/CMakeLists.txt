@@ -121,6 +121,8 @@ target_include_directories(nve_bridge_fixture_no_surface PRIVATE ${CMAKE_CURRENT
 add_executable(nve_fabric_bridge_test
   tests/test_main.cpp
   tests/test_abi_and_bridge.cpp
+  tests/test_bridge_and_jsi.cpp
+  tests/test_arena_and_text.cpp
   tests/test_flexbox_layout.cpp
   tests/test_flexbox_parity.cpp
   tests/test_fuzz.cpp

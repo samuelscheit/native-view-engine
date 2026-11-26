@@ -1,14 +1,10 @@
-//! Deep unit & integration tests for `nve-engine`:
+//! Unit & integration tests for `nve-engine`:
 //! - `HotPatchMsg` protocol serialization, deserialization, error paths, and C ABI routing
-//! - `HotAppInstance` (`AppLoader`) error paths (missing file, invalid dylib, missing symbol,
-//!   null surface interface), optional interface fallback, full dylib load, and state-preserving hot-swap
 //! - `FrameProfiler` span recording, ring eviction, percentiles, and Chrome Trace JSON output
 //! - `SurfaceRunner` frame sequencing and error propagation
-//! - `NveApp` default implementations and `export_nve_app!` C ABI null-safety
+//! - `NveApp` default implementations, `export_nve_app!` C ABI null-safety, and `NVE_IFACE_HOST`
 
 use std::ffi::c_void;
-use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
 use nve_abi::{
     CommandBufferBuilder, DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice,
@@ -17,71 +13,10 @@ use nve_abi::{
     NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId,
     NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
-use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{
     BackendApplyStats, BackendError, FrameProfiler, FrameTiming, HotPatchMsg, LayoutRect, NveApp,
     RenderBackend, SurfaceRunner, Viewport,
 };
-
-struct TempDirGuard(PathBuf);
-
-impl TempDirGuard {
-    fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "nve-engine-test-{tag}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp test dir");
-        Self(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn dylib_ext() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "dylib"
-    } else if cfg!(target_os = "windows") {
-        "dll"
-    } else {
-        "so"
-    }
-}
-
-fn compile_test_cdylib(dir: &Path, name: &str, rust_source: &str) -> PathBuf {
-    let src_path = dir.join(format!("{name}.rs"));
-    let out_path = dir.join(format!("lib{name}.{}", dylib_ext()));
-    std::fs::write(&src_path, rust_source).expect("write test cdylib source");
-    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
-    let output = ProcessCommand::new(rustc)
-        .args([
-            "--crate-type=cdylib",
-            "--edition=2024",
-            "-C",
-            "opt-level=0",
-            "-o",
-        ])
-        .arg(&out_path)
-        .arg(&src_path)
-        .output()
-        .expect("invoke rustc for test cdylib");
-    assert!(
-        output.status.success(),
-        "rustc failed for {name}:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    out_path
-}
 
 // ============================================================================
 // 1. Hot-reload protocol serialization / deserialization & patch routing
@@ -164,7 +99,7 @@ struct RoutingTestApp {
     patches_received: Vec<HotPatchMsg>,
     state: Vec<u8>,
     frame_buf: Vec<u8>,
-    emitted: Vec<u8>,
+    emitted: Vec<NveDirectEvent>,
 }
 
 impl NveApp for RoutingTestApp {
@@ -176,7 +111,7 @@ impl NveApp for RoutingTestApp {
             patches_received: Vec::new(),
             state: b"initial".to_vec(),
             frame_buf: b.into_bytes(),
-            emitted: vec![1, 2, 3],
+            emitted: vec![NveDirectEvent::press(surface_id, 2, 10, 1.0, 2.0)],
         }
     }
 
@@ -187,25 +122,17 @@ impl NveApp for RoutingTestApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        !encoded_events.is_empty()
-    }
-
-    fn set_props(&mut self, props_json: &[u8]) -> bool {
-        !props_json.is_empty()
-    }
-
-    fn set_props_direct(&mut self, props: NvePropsRef<'_>) -> bool {
-        props.get("count").and_then(|v| v.as_i64()).is_some()
-    }
-
-    fn dispatch_events_direct(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
         events
             .iter()
             .any(|ev| ev.name() == "onPing" && ev.value().get("ok").and_then(|v| v.as_bool()) == Some(true))
     }
 
-    fn drain_emitted_events(&mut self) -> &[u8] {
+    fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
+        props.get("count").and_then(|v| v.as_i64()).is_some()
+    }
+
+    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         &self.emitted
     }
 
@@ -252,28 +179,19 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
     unsafe {
         (surface.destroy)(null);
         assert_eq!((surface.render)(null, 1).len, 0);
-        assert_eq!((surface.dispatch_events)(null, NveBufferSlice::EMPTY), 0);
-        assert_eq!(
-            (surface.dispatch_events_direct.unwrap())(null, NveEventBatch::EMPTY),
-            0
-        );
+        assert_eq!((surface.dispatch_events)(null, NveEventBatch::EMPTY), 0);
         assert_eq!(
             (layout.measure)(null, NveSizeConstraints::loose(100.0, 200.0)),
             NveIntrinsicSize::default()
         );
         assert_eq!((layout.hit_test)(null, 10.0, 20.0, 1), 2);
-        assert_eq!((component.set_props)(null, NveBufferSlice::EMPTY), 0);
-        assert_eq!(
-            (component.set_props_direct.unwrap())(null, std::ptr::null(), 0),
-            0
-        );
+        assert_eq!((component.set_props)(null, std::ptr::null(), 0), 0);
         assert_eq!((component.drain_emitted_events)(null).len, 0);
         assert_eq!((dev.apply_hot_patch)(null, NveBufferSlice::EMPTY), 0);
         assert_eq!((dev.snapshot_state)(null).len, 0);
         (dev.restore_state)(null, NveBufferSlice::EMPTY);
     }
 
-    // Live handle exercises patch routing, invalid UTF-8 rejection, default measure/hit_test, state snapshot.
     let handle = unsafe { (surface.create)(7) };
     assert!(!handle.is_null());
 
@@ -289,20 +207,15 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
     let prop_entries = [NveMapEntry::new("count", NveValue::i64(99))];
     unsafe {
         assert_eq!(
-            (surface.dispatch_events_direct.unwrap())(
-                handle,
-                NveEventBatch::from_slice(&direct_events)
-            ),
+            (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_events)),
             1
         );
         assert_eq!(
-            (component.set_props_direct.unwrap())(
-                handle,
-                prop_entries.as_ptr(),
-                prop_entries.len() as u32
-            ),
+            (component.set_props)(handle, prop_entries.as_ptr(), prop_entries.len() as u32),
             1
         );
+        let emitted = (component.drain_emitted_events)(handle);
+        assert_eq!(emitted.len, 1);
     }
 
     // Default NveApp::measure handles finite and infinite constraints properly.
@@ -379,451 +292,7 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
 }
 
 // ============================================================================
-// 2. AppLoader (`HotAppInstance`) error paths & valid load / hot-swap
-// ============================================================================
-
-#[test]
-fn loader_reports_io_error_for_missing_dylib_and_load_error_for_invalid_binary() {
-    let dir = TempDirGuard::new("loader-errors");
-
-    let missing = dir.path().join("does_not_exist.dylib");
-    let err = HotAppInstance::load(&missing, 1, 1, None)
-        .err()
-        .expect("missing dylib must fail");
-    assert!(matches!(err, LoaderError::Io(_)), "got {err:?}");
-    assert!(!err.to_string().is_empty());
-
-    let bogus = dir.path().join("not_a_dylib.dylib");
-    std::fs::write(&bogus, b"definitely not a Mach-O / ELF / PE library").unwrap();
-    let err = HotAppInstance::load(&bogus, 1, 1, None)
-        .err()
-        .expect("corrupt binary must fail");
-    assert!(matches!(err, LoaderError::Load(_)), "got {err:?}");
-}
-
-#[test]
-fn loader_rejects_dylib_with_missing_symbol_or_null_surface_interface() {
-    let dir = TempDirGuard::new("loader-symbols");
-
-    // 1. Valid cdylib with no `nve_get_interface` symbol.
-    let no_sym_path = compile_test_cdylib(
-        dir.path(),
-        "no_sym_app",
-        r#"
-        #[unsafe(no_mangle)]
-        pub extern "C" fn unrelated_symbol() -> u32 { 42 }
-        "#,
-    );
-    let err = HotAppInstance::load(&no_sym_path, 1, 1, None)
-        .err()
-        .expect("missing symbol must fail");
-    assert!(matches!(err, LoaderError::Load(_)), "got {err:?}");
-
-    // 2. Valid cdylib exporting `nve_get_interface` returning NULL for NVE_IFACE_SURFACE.
-    let null_surface_path = compile_test_cdylib(
-        dir.path(),
-        "null_surface_app",
-        r#"
-        use std::ffi::c_void;
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn nve_get_interface(_id: u32) -> *const c_void {
-            std::ptr::null()
-        }
-        "#,
-    );
-    let err = HotAppInstance::load(&null_surface_path, 1, 1, None)
-        .err()
-        .expect("null surface interface must fail");
-    assert!(
-        matches!(err, LoaderError::MissingSurfaceInterface),
-        "got {err:?}"
-    );
-}
-
-#[test]
-fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
-    let dir = TempDirGuard::new("loader-surface-only");
-    let path = compile_test_cdylib(
-        dir.path(),
-        "surface_only_app",
-        r#"
-        use std::ffi::c_void;
-
-        #[repr(C)]
-        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
-
-        #[repr(C)]
-        pub struct NveSurfaceApi {
-            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
-            pub destroy: unsafe extern "C" fn(*mut c_void),
-            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
-            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
-        }
-
-        struct MinimalApp { buf: Vec<u8> }
-
-        unsafe extern "C" fn create(surface_id: u32) -> *mut c_void {
-            Box::into_raw(Box::new(MinimalApp { buf: surface_id.to_le_bytes().to_vec() })) as *mut c_void
-        }
-        unsafe extern "C" fn destroy(h: *mut c_void) {
-            if !h.is_null() { unsafe { drop(Box::from_raw(h as *mut MinimalApp)); } }
-        }
-        unsafe extern "C" fn render(h: *mut c_void, frame_id: u64) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut MinimalApp) };
-            app.buf = frame_id.to_le_bytes().to_vec();
-            NveBufferSlice { ptr: app.buf.as_ptr(), len: app.buf.len() }
-        }
-        unsafe extern "C" fn dispatch_events(_h: *mut c_void, ev: NveBufferSlice) -> u32 {
-            u32::from(ev.len > 0)
-        }
-
-        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
-            create,
-            destroy,
-            render,
-            dispatch_events,
-            dispatch_events_direct: None,
-        };
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
-            if id == 1 {
-                &SURFACE_API as *const NveSurfaceApi as *const c_void
-            } else {
-                std::ptr::null()
-            }
-        }
-        "#,
-    );
-
-    let mut inst = HotAppInstance::load(&path, 5, 1, Some(b"ignored")).expect("load surface-only");
-    assert_eq!(inst.generation(), 1);
-    assert_eq!(inst.render(9), 9u64.to_le_bytes());
-    assert!(inst.dispatch_events(b"ev"));
-    assert!(!inst.dispatch_events(b""));
-
-    // All optional interfaces are NULL -> clean fallback defaults.
-    assert_eq!(inst.measure(NveSizeConstraints::loose(300.0, 400.0)), None);
-    assert_eq!(
-        inst.hit_test(10.0, 20.0, 1),
-        NveGestureDisposition::PassThrough
-    );
-    assert!(!inst.set_props(b"{}"));
-    assert!(inst.drain_emitted_events().is_empty());
-    assert!(!inst.apply_hot_patch(b"NVP1"));
-    assert!(inst.snapshot_state().is_empty());
-}
-
-#[test]
-fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
-    let dir = TempDirGuard::new("loader-hotswap");
-    let cdylib_src = r#"
-        use std::ffi::c_void;
-
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
-
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        pub struct NveSizeConstraints { pub min_w: f32, pub min_h: f32, pub max_w: f32, pub max_h: f32 }
-
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        pub struct NveIntrinsicSize { pub width: f32, pub height: f32 }
-
-        #[repr(C)]
-        pub struct NveSurfaceApi {
-            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
-            pub destroy: unsafe extern "C" fn(*mut c_void),
-            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
-            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
-        }
-
-        #[repr(C)]
-        pub struct NveLayoutApi {
-            pub measure: unsafe extern "C" fn(*mut c_void, NveSizeConstraints) -> NveIntrinsicSize,
-            pub hit_test: unsafe extern "C" fn(*mut c_void, f32, f32, u8) -> u8,
-        }
-
-        #[repr(C)]
-        pub struct NveComponentApi {
-            pub set_props: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub drain_emitted_events: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
-            pub set_props_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
-        }
-
-        #[repr(C)]
-        pub struct NveDevApi {
-            pub apply_hot_patch: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub snapshot_state: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
-            pub restore_state: unsafe extern "C" fn(*mut c_void, NveBufferSlice),
-        }
-
-        struct FullApp {
-            counter: u32,
-            render_buf: Vec<u8>,
-            state_buf: Vec<u8>,
-            emitted_buf: Vec<u8>,
-        }
-
-        unsafe extern "C" fn create(_surface_id: u32) -> *mut c_void {
-            Box::into_raw(Box::new(FullApp {
-                counter: 0,
-                render_buf: Vec::new(),
-                state_buf: Vec::new(),
-                emitted_buf: Vec::new(),
-            })) as *mut c_void
-        }
-        unsafe extern "C" fn destroy(h: *mut c_void) {
-            if !h.is_null() { unsafe { drop(Box::from_raw(h as *mut FullApp)); } }
-        }
-        unsafe extern "C" fn render(h: *mut c_void, frame_id: u64) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut FullApp) };
-            app.render_buf = format!("frame={frame_id};counter={}", app.counter).into_bytes();
-            NveBufferSlice { ptr: app.render_buf.as_ptr(), len: app.render_buf.len() }
-        }
-        unsafe extern "C" fn dispatch_events(h: *mut c_void, ev: NveBufferSlice) -> u32 {
-            let app = unsafe { &mut *(h as *mut FullApp) };
-            if ev.len > 0 {
-                app.counter += 1;
-                app.emitted_buf = vec![0xEE, app.counter as u8];
-                1
-            } else {
-                0
-            }
-        }
-        unsafe extern "C" fn measure(_h: *mut c_void, c: NveSizeConstraints) -> NveIntrinsicSize {
-            NveIntrinsicSize { width: c.max_w.min(250.0), height: c.max_h.min(120.0) }
-        }
-        unsafe extern "C" fn hit_test(_h: *mut c_void, x: f32, _y: f32, _phase: u8) -> u8 {
-            if x >= 0.0 { 1 } else { 3 }
-        }
-        unsafe extern "C" fn set_props(h: *mut c_void, props: NveBufferSlice) -> u32 {
-            let app = unsafe { &mut *(h as *mut FullApp) };
-            if props.len == 4 {
-                let s = unsafe { std::slice::from_raw_parts(props.ptr, 4) };
-                app.counter = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
-                1
-            } else {
-                0
-            }
-        }
-        unsafe extern "C" fn drain_emitted_events(h: *mut c_void) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut FullApp) };
-            NveBufferSlice { ptr: app.emitted_buf.as_ptr(), len: app.emitted_buf.len() }
-        }
-        unsafe extern "C" fn apply_hot_patch(h: *mut c_void, patch: NveBufferSlice) -> u32 {
-            let app = unsafe { &mut *(h as *mut FullApp) };
-            if patch.len > 0 {
-                app.counter += 10;
-                1
-            } else {
-                0
-            }
-        }
-        unsafe extern "C" fn snapshot_state(h: *mut c_void) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut FullApp) };
-            app.state_buf = app.counter.to_le_bytes().to_vec();
-            NveBufferSlice { ptr: app.state_buf.as_ptr(), len: app.state_buf.len() }
-        }
-        unsafe extern "C" fn restore_state(h: *mut c_void, state: NveBufferSlice) {
-            let app = unsafe { &mut *(h as *mut FullApp) };
-            if state.len == 4 {
-                let s = unsafe { std::slice::from_raw_parts(state.ptr, 4) };
-                app.counter = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
-            }
-        }
-
-        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
-            create,
-            destroy,
-            render,
-            dispatch_events,
-            dispatch_events_direct: None,
-        };
-        static LAYOUT_API: NveLayoutApi = NveLayoutApi { measure, hit_test };
-        static COMPONENT_API: NveComponentApi = NveComponentApi {
-            set_props,
-            drain_emitted_events,
-            set_props_direct: None,
-        };
-        static DEV_API: NveDevApi = NveDevApi { apply_hot_patch, snapshot_state, restore_state };
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
-            match id {
-                1 => &SURFACE_API as *const NveSurfaceApi as *const c_void,
-                2 => &LAYOUT_API as *const NveLayoutApi as *const c_void,
-                3 => &COMPONENT_API as *const NveComponentApi as *const c_void,
-                4 => &DEV_API as *const NveDevApi as *const c_void,
-                _ => std::ptr::null(),
-            }
-        }
-    "#;
-
-    let dylib_path = compile_test_cdylib(dir.path(), "full_hotswap_app", cdylib_src);
-
-    let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
-    let gen1_copy = inst.loaded_copy_path().to_path_buf();
-    assert!(gen1_copy.exists(), "gen 1 temp copy must exist while loaded");
-    assert_eq!(inst.generation(), 1);
-    assert_eq!(inst.render(1), b"frame=1;counter=0");
-
-    assert_eq!(
-        inst.measure(NveSizeConstraints::loose(500.0, 500.0)),
-        Some(NveIntrinsicSize {
-            width: 250.0,
-            height: 120.0
-        })
-    );
-    assert_eq!(inst.hit_test(10.0, 5.0, 1), NveGestureDisposition::Claim);
-    assert_eq!(
-        inst.hit_test(-1.0, 5.0, 1),
-        NveGestureDisposition::DeferToParent
-    );
-
-    assert!(inst.set_props(&5u32.to_le_bytes()));
-    assert!(inst.dispatch_events(b"tap"));
-    assert_eq!(inst.drain_emitted_events(), &[0xEE, 6]);
-    let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }.to_bytes();
-    assert!(inst.apply_hot_patch(&patch));
-    assert_eq!(inst.render(2), b"frame=2;counter=16");
-    assert_eq!(inst.snapshot_state(), 16u32.to_le_bytes());
-
-    // Hot-swap gen 1 -> gen 2 -> gen 3 preserving state across reloads and cleaning up old copies.
-    let outcome2 = inst.reload(&dylib_path).expect("reload gen 2");
-    assert_eq!(outcome2.previous_generation, 1);
-    assert_eq!(outcome2.generation, 2);
-    assert_eq!(outcome2.preserved_state_bytes, 4);
-    assert!(
-        !gen1_copy.exists(),
-        "gen 1 temp copy must be deleted on drop after unloading library"
-    );
-    let gen2_copy = inst.loaded_copy_path().to_path_buf();
-    assert_ne!(gen2_copy, gen1_copy);
-    assert!(gen2_copy.exists(), "gen 2 temp copy must exist while loaded");
-    assert_eq!(inst.generation(), 2);
-    assert_eq!(inst.render(3), b"frame=3;counter=16");
-    assert!(inst.dispatch_events(b"tap2"));
-    assert_eq!(inst.render(4), b"frame=4;counter=17");
-
-    // Transactional failure safety: missing file, corrupt binary, missing symbol, missing
-    // NVE_IFACE_SURFACE, and null handle must ALL fail while keeping gen 2 live and untouched!
-    let missing_path = dir.path().join("missing_gen3.dylib");
-    assert!(matches!(
-        inst.reload(&missing_path),
-        Err(LoaderError::Io(_))
-    ));
-    assert_eq!(inst.generation(), 2);
-    assert!(gen2_copy.exists());
-    assert_eq!(inst.render(40), b"frame=40;counter=17");
-
-    let corrupt_path = dir.path().join("corrupt_gen3.dylib");
-    std::fs::write(&corrupt_path, b"not a valid shared object").unwrap();
-    assert!(matches!(
-        inst.reload(&corrupt_path),
-        Err(LoaderError::Load(_))
-    ));
-    assert_eq!(inst.generation(), 2);
-    assert_eq!(inst.render(41), b"frame=41;counter=17");
-
-    let no_sym_path = compile_test_cdylib(
-        dir.path(),
-        "reload_no_sym",
-        r#"
-        #[unsafe(no_mangle)]
-        pub extern "C" fn not_nve_get_interface() -> u32 { 1 }
-        "#,
-    );
-    assert!(matches!(
-        inst.reload(&no_sym_path),
-        Err(LoaderError::Load(_))
-    ));
-    assert_eq!(inst.generation(), 2);
-    assert_eq!(inst.render(42), b"frame=42;counter=17");
-
-    let no_surface_path = compile_test_cdylib(
-        dir.path(),
-        "reload_no_surface",
-        r#"
-        use std::ffi::c_void;
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn nve_get_interface(_id: u32) -> *const c_void {
-            std::ptr::null()
-        }
-        "#,
-    );
-    assert!(matches!(
-        inst.reload(&no_surface_path),
-        Err(LoaderError::MissingSurfaceInterface)
-    ));
-    assert_eq!(inst.generation(), 2);
-    assert_eq!(inst.render(43), b"frame=43;counter=17");
-
-    let null_handle_path = compile_test_cdylib(
-        dir.path(),
-        "reload_null_handle",
-        r#"
-        use std::ffi::c_void;
-        #[repr(C)]
-        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
-        #[repr(C)]
-        pub struct NveSurfaceApi {
-            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
-            pub destroy: unsafe extern "C" fn(*mut c_void),
-            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
-            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
-        }
-        unsafe extern "C" fn create(_: u32) -> *mut c_void { std::ptr::null_mut() }
-        unsafe extern "C" fn destroy(_: *mut c_void) {}
-        unsafe extern "C" fn render(_: *mut c_void, _: u64) -> NveBufferSlice {
-            NveBufferSlice { ptr: std::ptr::null(), len: 0 }
-        }
-        unsafe extern "C" fn dispatch(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
-        static SURFACE: NveSurfaceApi = NveSurfaceApi {
-            create, destroy, render, dispatch_events: dispatch, dispatch_events_direct: None
-        };
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
-            if id == 1 { &SURFACE as *const _ as *const c_void } else { std::ptr::null() }
-        }
-        "#,
-    );
-    assert!(matches!(
-        inst.reload(&null_handle_path),
-        Err(LoaderError::NullHandle)
-    ));
-    assert_eq!(inst.generation(), 2);
-    assert_eq!(inst.snapshot_state(), 17u32.to_le_bytes());
-    assert_eq!(inst.render(44), b"frame=44;counter=17");
-
-    // Subsequent valid reload to gen 3 still succeeds cleanly and preserves counter == 17!
-    let outcome3 = inst.reload(&dylib_path).expect("reload gen 3");
-    assert_eq!(outcome3.previous_generation, 2);
-    assert_eq!(outcome3.generation, 3);
-    assert_eq!(outcome3.preserved_state_bytes, 4);
-    assert!(
-        !gen2_copy.exists(),
-        "gen 2 temp copy must be deleted on drop after unloading library"
-    );
-    let gen3_copy = inst.loaded_copy_path().to_path_buf();
-    assert!(gen3_copy.exists(), "gen 3 temp copy must exist while loaded");
-    assert_eq!(inst.generation(), 3);
-    assert_eq!(inst.render(5), b"frame=5;counter=17");
-
-    drop(inst);
-    assert!(
-        !gen3_copy.exists(),
-        "gen 3 temp copy must be deleted when HotAppInstance is dropped"
-    );
-}
-
-// ============================================================================
-// 3. FrameProfiler & SurfaceRunner tests
+// 2. FrameProfiler & SurfaceRunner tests
 // ============================================================================
 
 #[test]
@@ -862,7 +331,6 @@ fn profiler_empty_capacity_eviction_and_percentiles() {
             ..Default::default()
         });
     }
-    // Last 5 recorded frames have totals [10, 40, 20, 30, 1000] -> sorted [10, 20, 30, 40, 1000].
     assert_eq!(profiler.frames().len(), 5);
     assert_eq!(profiler.frames()[0].frame_id, 3);
     assert_eq!(profiler.frames()[4].frame_id, 7);
@@ -889,12 +357,7 @@ fn profiler_chrome_trace_json_emits_valid_spans_and_monotonic_timestamps() {
         frame_id: 2,
         op_count: 2,
         mutation_count: 1,
-        reconcile_us: 0,
-        encode_us: 0,
-        decode_us: 0,
-        layout_us: 0,
-        diff_us: 0,
-        mount_us: 0,
+        ..Default::default()
     };
     profiler.record(f1);
     profiler.record(f2);
@@ -928,7 +391,6 @@ fn profiler_chrome_trace_json_emits_valid_spans_and_monotonic_timestamps() {
         prev_ts = ts;
     }
 
-    // Frame 2 starts after frame 1 + 100us gap, and zero-dur spans still advance by 1us.
     let f2_start = arr[6]["ts"].as_u64().unwrap();
     assert_eq!(f2_start, 87 + 100);
     for (offset, ev) in arr[7..12].iter().enumerate() {
@@ -1003,7 +465,6 @@ fn surface_runner_sequences_frames_records_profiler_and_propagates_errors() {
     assert_eq!(t1.total_us(), 13 + 4 + 11 + 22 + 5 + 9);
     assert_eq!(runner.profiler().frames().len(), 1);
 
-    // Failed frame propagates BackendError and does NOT pollute profiler history.
     runner.backend_mut().fail_next = true;
     let err = runner.submit_recorded_frame(f2, 1, 1, &[]).unwrap_err();
     assert!(matches!(err, BackendError::Decode(DecodeError::Truncated)));
@@ -1011,7 +472,7 @@ fn surface_runner_sequences_frames_records_profiler_and_propagates_errors() {
 }
 
 // ============================================================================
-// 4. Modular NVE_IFACE_HOST = 5 (`bind_host`, `dispatch_host_events`, loader)
+// 3. Modular NVE_IFACE_HOST = 5 (`bind_host`, `dispatch_host_events`)
 // ============================================================================
 
 struct HostCapableApp {
@@ -1034,7 +495,7 @@ impl NveApp for HostCapableApp {
         &self.state_buf
     }
 
-    fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
         false
     }
 
@@ -1068,7 +529,6 @@ fn export_nve_app_host_interface_bind_unbind_and_dispatch() {
     let handle = unsafe { (surface.create)(1) };
     assert!(!handle.is_null());
 
-    // Bind non-null host callbacks with sentinel context pointer.
     let cb = NveHostCallbacks {
         host_ctx: 0x1234usize as *mut c_void,
         invoke: None,
@@ -1090,272 +550,9 @@ fn export_nve_app_host_interface_bind_unbind_and_dispatch() {
     let rendered = unsafe { (surface.render)(handle, 1).as_slice().to_vec() };
     assert_eq!(rendered, format!("ctx={};batches=2", 0x1234usize).into_bytes());
 
-    // Unbind via NULL pointer resets host_ctx cleanly.
     unsafe { (host.bind_host)(handle, std::ptr::null()) };
     let rendered2 = unsafe { (surface.render)(handle, 2).as_slice().to_vec() };
     assert_eq!(rendered2, b"ctx=0;batches=2");
 
     unsafe { (surface.destroy)(handle) };
-}
-
-#[test]
-fn loader_resolves_host_interface_and_rebinds_across_hotswap() {
-    let dir = TempDirGuard::new("loader-host-iface");
-    let cdylib_src = r#"
-        use std::ffi::c_void;
-
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
-
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        pub struct NveHostCallbacks {
-            pub host_ctx: *mut c_void,
-            pub invoke: Option<unsafe extern "C" fn(*mut c_void, u32, u32, u64, NveBufferSlice, *mut u8, usize, *mut usize) -> i32>,
-            pub channel_publish: Option<unsafe extern "C" fn(*mut c_void, u32, u32, NveBufferSlice) -> i32>,
-        }
-
-        #[repr(C)]
-        pub struct NveSurfaceApi {
-            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
-            pub destroy: unsafe extern "C" fn(*mut c_void),
-            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
-            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
-        }
-
-        #[repr(C)]
-        pub struct NveHostApi {
-            pub bind_host: unsafe extern "C" fn(*mut c_void, *const NveHostCallbacks),
-            pub dispatch_host_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-        }
-
-        struct HostDylibApp {
-            host_ctx: usize,
-            event_bytes: usize,
-            buf: Vec<u8>,
-        }
-
-        unsafe extern "C" fn create(_: u32) -> *mut c_void {
-            Box::into_raw(Box::new(HostDylibApp { host_ctx: 0, event_bytes: 0, buf: Vec::new() })) as *mut c_void
-        }
-        unsafe extern "C" fn destroy(h: *mut c_void) {
-            if !h.is_null() { unsafe { drop(Box::from_raw(h as *mut HostDylibApp)); } }
-        }
-        unsafe extern "C" fn render(h: *mut c_void, _: u64) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut HostDylibApp) };
-            app.buf = format!("ctx={};ev={}", app.host_ctx, app.event_bytes).into_bytes();
-            NveBufferSlice { ptr: app.buf.as_ptr(), len: app.buf.len() }
-        }
-        unsafe extern "C" fn dispatch_events(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
-        unsafe extern "C" fn bind_host(h: *mut c_void, cb: *const NveHostCallbacks) {
-            let app = unsafe { &mut *(h as *mut HostDylibApp) };
-            app.host_ctx = if cb.is_null() { 0 } else { unsafe { (*cb).host_ctx as usize } };
-        }
-        unsafe extern "C" fn dispatch_host_events(h: *mut c_void, batch: NveBufferSlice) -> u32 {
-            let app = unsafe { &mut *(h as *mut HostDylibApp) };
-            app.event_bytes += batch.len;
-            u32::from(batch.len > 0)
-        }
-
-        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
-            create, destroy, render, dispatch_events, dispatch_events_direct: None,
-        };
-        static HOST_API: NveHostApi = NveHostApi { bind_host, dispatch_host_events };
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
-            match id {
-                1 => &SURFACE_API as *const NveSurfaceApi as *const c_void,
-                5 => &HOST_API as *const NveHostApi as *const c_void,
-                _ => std::ptr::null(),
-            }
-        }
-    "#;
-    let dylib = compile_test_cdylib(dir.path(), "host_iface_app", cdylib_src);
-    let mut inst = HotAppInstance::load(&dylib, 1, 1, None).expect("load host-capable dylib");
-    assert!(inst.has_host_interface());
-
-    let cb = NveHostCallbacks {
-        host_ctx: 0xBEEFusize as *mut c_void,
-        invoke: None,
-        channel_publish: None,
-    };
-    assert!(inst.bind_host(Some(cb)));
-    assert!(inst.dispatch_host_events(b"hostpayload"));
-    assert_eq!(inst.render(1), format!("ctx={};ev=11", 0xBEEFusize).as_bytes());
-
-    // Reloading automatically re-binds the saved NveHostCallbacks onto generation 2!
-    let outcome = inst.reload(&dylib).expect("reload gen 2");
-    assert_eq!(outcome.generation, 2);
-    assert_eq!(inst.render(2), format!("ctx={};ev=0", 0xBEEFusize).as_bytes());
-}
-
-#[test]
-fn loader_zero_copy_borrows_dylib_buffers_directly_and_handles_null_or_empty_slices() {
-    let dir = TempDirGuard::new("loader-zerocopy-ptr");
-    let cdylib_src = r#"
-        use std::ffi::c_void;
-
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
-
-        #[repr(C)]
-        pub struct NveSurfaceApi {
-            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
-            pub destroy: unsafe extern "C" fn(*mut c_void),
-            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
-            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub dispatch_events_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
-        }
-
-        #[repr(C)]
-        pub struct NveComponentApi {
-            pub set_props: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub drain_emitted_events: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
-            pub set_props_direct: Option<unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32>,
-        }
-
-        #[repr(C)]
-        pub struct NveDevApi {
-            pub apply_hot_patch: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
-            pub snapshot_state: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
-            pub restore_state: unsafe extern "C" fn(*mut c_void, NveBufferSlice),
-        }
-
-        struct ZeroCopyApp {
-            frame_buf: Box<[u8; 16]>,
-            emitted_buf: Box<[u8; 16]>,
-            state_buf: Box<[u8; 16]>,
-            mode: u64,
-        }
-
-        unsafe extern "C" fn create(_: u32) -> *mut c_void {
-            let mut app = Box::new(ZeroCopyApp {
-                frame_buf: Box::new([0u8; 16]),
-                emitted_buf: Box::new([0u8; 16]),
-                state_buf: Box::new([0u8; 16]),
-                mode: 0,
-            });
-            // Stamp each buffer's own raw address into its first 8 bytes so the caller can prove
-            // `HotAppInstance` borrows directly from the dylib's internal allocation (zero copy).
-            let f_addr = app.frame_buf.as_ptr() as usize;
-            app.frame_buf[0..8].copy_from_slice(&(f_addr as u64).to_le_bytes());
-            let e_addr = app.emitted_buf.as_ptr() as usize;
-            app.emitted_buf[0..8].copy_from_slice(&(e_addr as u64).to_le_bytes());
-            let s_addr = app.state_buf.as_ptr() as usize;
-            app.state_buf[0..8].copy_from_slice(&(s_addr as u64).to_le_bytes());
-            Box::into_raw(app) as *mut c_void
-        }
-
-        unsafe extern "C" fn destroy(h: *mut c_void) {
-            if !h.is_null() { unsafe { drop(Box::from_raw(h as *mut ZeroCopyApp)); } }
-        }
-
-        unsafe extern "C" fn render(h: *mut c_void, frame_id: u64) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut ZeroCopyApp) };
-            app.mode = frame_id;
-            match frame_id {
-                // Edge case: null ptr with len == 0
-                0 => NveBufferSlice { ptr: std::ptr::null(), len: 0 },
-                // Edge case: null ptr with non-zero len (must safely degrade to empty slice)
-                99 => NveBufferSlice { ptr: std::ptr::null(), len: 128 },
-                // Edge case: non-null ptr with len == 0
-                100 => NveBufferSlice { ptr: app.frame_buf.as_ptr(), len: 0 },
-                // Normal zero-copy borrow of fixed internal buffer
-                _ => {
-                    app.frame_buf[8..16].copy_from_slice(&frame_id.to_le_bytes());
-                    NveBufferSlice { ptr: app.frame_buf.as_ptr(), len: 16 }
-                }
-            }
-        }
-
-        unsafe extern "C" fn dispatch_events(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
-        unsafe extern "C" fn set_props(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
-
-        unsafe extern "C" fn drain_emitted_events(h: *mut c_void) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut ZeroCopyApp) };
-            match app.mode {
-                0 => NveBufferSlice { ptr: std::ptr::null(), len: 0 },
-                99 => NveBufferSlice { ptr: std::ptr::null(), len: 64 },
-                100 => NveBufferSlice { ptr: app.emitted_buf.as_ptr(), len: 0 },
-                _ => NveBufferSlice { ptr: app.emitted_buf.as_ptr(), len: 16 },
-            }
-        }
-
-        unsafe extern "C" fn apply_hot_patch(_: *mut c_void, _: NveBufferSlice) -> u32 { 0 }
-
-        unsafe extern "C" fn snapshot_state(h: *mut c_void) -> NveBufferSlice {
-            let app = unsafe { &mut *(h as *mut ZeroCopyApp) };
-            match app.mode {
-                0 => NveBufferSlice { ptr: std::ptr::null(), len: 0 },
-                99 => NveBufferSlice { ptr: std::ptr::null(), len: 32 },
-                100 => NveBufferSlice { ptr: app.state_buf.as_ptr(), len: 0 },
-                _ => NveBufferSlice { ptr: app.state_buf.as_ptr(), len: 16 },
-            }
-        }
-
-        unsafe extern "C" fn restore_state(_: *mut c_void, _: NveBufferSlice) {}
-
-        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
-            create, destroy, render, dispatch_events, dispatch_events_direct: None,
-        };
-        static COMPONENT_API: NveComponentApi = NveComponentApi {
-            set_props, drain_emitted_events, set_props_direct: None,
-        };
-        static DEV_API: NveDevApi = NveDevApi {
-            apply_hot_patch, snapshot_state, restore_state,
-        };
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
-            match id {
-                1 => &SURFACE_API as *const NveSurfaceApi as *const c_void,
-                3 => &COMPONENT_API as *const NveComponentApi as *const c_void,
-                4 => &DEV_API as *const NveDevApi as *const c_void,
-                _ => std::ptr::null(),
-            }
-        }
-    "#;
-
-    let dylib = compile_test_cdylib(dir.path(), "zerocopy_ptr_app", cdylib_src);
-    let mut inst = HotAppInstance::load(&dylib, 1, 1, None).expect("load zerocopy dylib");
-
-    // 1. Direct pointer-identity proof for render(), drain_emitted_events(), and snapshot_state().
-    let frame = inst.render(7);
-    assert_eq!(frame.len(), 16);
-    let expected_frame_ptr = u64::from_le_bytes(frame[0..8].try_into().unwrap()) as usize;
-    assert_eq!(
-        frame.as_ptr() as usize,
-        expected_frame_ptr,
-        "HotAppInstance::render must return a zero-copy borrow of the dylib's frame buffer"
-    );
-    assert_eq!(u64::from_le_bytes(frame[8..16].try_into().unwrap()), 7);
-
-    let emitted = inst.drain_emitted_events();
-    assert_eq!(emitted.len(), 16);
-    let expected_emitted_ptr = u64::from_le_bytes(emitted[0..8].try_into().unwrap()) as usize;
-    assert_eq!(
-        emitted.as_ptr() as usize,
-        expected_emitted_ptr,
-        "HotAppInstance::drain_emitted_events must return a zero-copy borrow of the dylib's event buffer"
-    );
-
-    let state = inst.snapshot_state();
-    assert_eq!(state.len(), 16);
-    let expected_state_ptr = u64::from_le_bytes(state[0..8].try_into().unwrap()) as usize;
-    assert_eq!(
-        state.as_ptr() as usize,
-        expected_state_ptr,
-        "HotAppInstance::snapshot_state must return a zero-copy borrow of the dylib's snapshot buffer"
-    );
-
-    // 2. Empty / null / corrupt-len-with-null slices safely yield `&[]` without UB.
-    for edge_frame in [0u64, 99, 100] {
-        assert!(inst.render(edge_frame).is_empty());
-        assert!(inst.drain_emitted_events().is_empty());
-        assert!(inst.snapshot_state().is_empty());
-    }
 }

@@ -34,12 +34,10 @@ class NativeHostSession {
         pending_snapshot_state_(std::move(other.pending_snapshot_state_)),
         text_measurer_(std::move(other.text_measurer_)),
         event_callback_(std::move(other.event_callback_)),
-        config_(other.config_),
-        has_legacy_dispatch_events_(other.has_legacy_dispatch_events_) {
+        config_(other.config_) {
     other.paired_host_ = nullptr;
     other.paired_frame_count_ = 0u;
     other.frame0_host_ = nullptr;
-    other.has_legacy_dispatch_events_ = false;
   }
 
   NativeHostSession& operator=(NativeHostSession&& other) noexcept {
@@ -59,8 +57,6 @@ class NativeHostSession {
       text_measurer_ = std::move(other.text_measurer_);
       event_callback_ = std::move(other.event_callback_);
       config_ = other.config_;
-      has_legacy_dispatch_events_ = other.has_legacy_dispatch_events_;
-      other.has_legacy_dispatch_events_ = false;
     }
     return *this;
   }
@@ -68,7 +64,6 @@ class NativeHostSession {
   void reset() noexcept {
     disconnect_paired();
     bridge_.reset();
-    has_legacy_dispatch_events_ = false;
     destroy_frame0_host();
     pending_snapshot_state_.clear();
     lib_.close();
@@ -105,7 +100,6 @@ class NativeHostSession {
     // Tear down any previous local or paired session before committing atomically.
     disconnect_paired();
     bridge_.reset();
-    has_legacy_dispatch_events_ = false;
     destroy_frame0_host();
     pending_snapshot_state_.clear();
     lib_.close();
@@ -377,12 +371,12 @@ class NativeHostSession {
     }
   }
 
-  bool update_props_json(std::string_view props_json, bool auto_render = true) {
-    return is_valid() && bridge_->update_props_json(props_json, auto_render);
+  bool update_props(const PropMap& props, bool auto_render = true) {
+    return is_valid() && bridge_->update_props(props, auto_render);
   }
 
-  bool update_props_direct(const NveMapEntry* entries, uint32_t count, bool auto_render = true) {
-    return is_valid() && bridge_->update_props_direct(entries, count, auto_render);
+  bool update_props(const NveMapEntry* entries, uint32_t count, bool auto_render = true) {
+    return is_valid() && bridge_->update_props(entries, count, auto_render);
   }
 
   int32_t render(NveFrameStats* out_stats = nullptr) {
@@ -398,21 +392,16 @@ class NativeHostSession {
 
   uint32_t dispatch_press(uint32_t node_id, float x, float y, bool auto_render = true) {
     if (is_valid()) {
-      if (!has_legacy_dispatch_events_ && bridge_->has_direct_events()) {
-        NveDirectEvent ev{};
-        ev.surface_id = config_.surface_id;
-        ev.node_id = node_id;
-        ev.timestamp_us = current_timestamp_us();
-        ev.kind = static_cast<uint8_t>(EventKind::Press);
-        ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
-        ev.x = x;
-        ev.y = y;
-        ev.value = make_null_value();
-        return bridge_->dispatch_direct_events(NveEventBatch{&ev, 1u}, auto_render);
-      }
-      fabric_host_enqueue_press(bridge_->fabric_host(), node_id, current_timestamp_us(), x, y);
-      const NveBufferSlice inbound = nve_fabric_host_drain_events(bridge_->fabric_host());
-      return bridge_->dispatch_native_events(inbound, auto_render);
+      NveDirectEvent ev{};
+      ev.surface_id = config_.surface_id;
+      ev.node_id = node_id;
+      ev.timestamp_us = current_timestamp_us();
+      ev.kind = static_cast<uint8_t>(EventKind::Press);
+      ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
+      ev.x = x;
+      ev.y = y;
+      ev.value = make_null_value();
+      return bridge_->dispatch_events(NveEventBatch{&ev, 1u, 0u}, auto_render);
     }
     if (is_paired()) {
       fabric_host_enqueue_press(paired_host_, node_id, current_timestamp_us(), x, y);
@@ -422,9 +411,9 @@ class NativeHostSession {
     return 0;
   }
 
-  uint32_t dispatch_direct_events(NveEventBatch batch, bool auto_render = true) {
+  uint32_t dispatch_events(NveEventBatch batch, bool auto_render = true) {
     if (is_valid()) {
-      return bridge_->dispatch_direct_events(batch, auto_render);
+      return bridge_->dispatch_events(batch, auto_render);
     }
     if (is_paired() && batch.ptr != nullptr && batch.len > 0u) {
       std::vector<uint8_t> ring;
@@ -529,7 +518,6 @@ class NativeHostSession {
     lib_.close();
     lib_ = std::move(new_lib);
     config_ = config;
-    has_legacy_dispatch_events_ = (mod.surface != nullptr && mod.surface->dispatch_events != nullptr);
     bridge_ = std::move(next_bridge);
     (void)bridge_->render(nullptr);
     return true;
@@ -546,7 +534,6 @@ class NativeHostSession {
   TextMeasurerCallback text_measurer_;
   EventCallback event_callback_;
   NveSurfaceConfig config_{};
-  bool has_legacy_dispatch_events_{false};
 };
 
 } // namespace nve

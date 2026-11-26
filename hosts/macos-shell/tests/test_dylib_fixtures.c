@@ -106,10 +106,10 @@ static NveBufferSlice fixture_render(NveAppHandle h, uint64_t frame_id) {
   return out;
 }
 
-static uint32_t fixture_dispatch_events(NveAppHandle h, NveBufferSlice events) {
+static uint32_t fixture_dispatch_events(NveAppHandle h, NveEventBatch batch) {
   StatefulFixtureApp *app = (StatefulFixtureApp *)h;
-  if (events.ptr && events.len > 0) {
-    app->counter += 1;
+  if (batch.ptr && batch.len > 0) {
+    app->counter += (int32_t)batch.len;
     return 1;
   }
   return 0;
@@ -148,7 +148,6 @@ const void *nve_get_interface(uint32_t interface_id) {
       .destroy = &fixture_destroy,
       .render = &fixture_render,
       .dispatch_events = &fixture_dispatch_events,
-      .dispatch_events_direct = NULL,
   };
   static const NveDevApi kDev = {
       .apply_hot_patch = &fixture_apply_hot_patch,
@@ -183,9 +182,9 @@ static NveBufferSlice fail_render(NveAppHandle h, uint64_t frame_id) {
   return empty;
 }
 
-static uint32_t fail_dispatch_events(NveAppHandle h, NveBufferSlice events) {
+static uint32_t fail_dispatch_events(NveAppHandle h, NveEventBatch batch) {
   (void)h;
-  (void)events;
+  (void)batch;
   return 0;
 }
 
@@ -195,7 +194,6 @@ const void *nve_get_interface(uint32_t interface_id) {
       .destroy = &fail_destroy,
       .render = &fail_render,
       .dispatch_events = &fail_dispatch_events,
-      .dispatch_events_direct = NULL,
   };
   return interface_id == NVE_IFACE_SURFACE ? &kSurface : NULL;
 }

@@ -36,31 +36,16 @@ Object? _readNveValue(NveValue v) {
 
 class _RecordedDirectEvent {
   const _RecordedDirectEvent({
-    required this.surfaceId,
-    required this.nodeId,
-    required this.timestampUs,
-    required this.kind,
-    required this.payloadTag,
-    required this.name,
-    required this.x,
-    required this.y,
-    required this.width,
-    required this.height,
-    required this.text,
-    required this.value,
+    required this.surfaceId, required this.nodeId, required this.timestampUs,
+    required this.kind, required this.payloadTag, required this.modifiers,
+    required this.eventFlags, required this.keyCode, required this.name,
+    required this.x, required this.y, required this.width, required this.height,
+    required this.text, required this.value,
   });
 
-  final int surfaceId;
-  final int nodeId;
-  final int timestampUs;
-  final int kind;
-  final int payloadTag;
-  final String name;
-  final double x;
-  final double y;
-  final double width;
-  final double height;
-  final String text;
+  final int surfaceId, nodeId, timestampUs, kind, payloadTag, modifiers, eventFlags, keyCode;
+  final String name, text;
+  final double x, y, width, height;
   final Object? value;
 }
 
@@ -68,28 +53,24 @@ class _TestAlloc {
   static final ffi.DynamicLibrary _libc = Platform.isWindows
       ? ffi.DynamicLibrary.open('ucrtbase.dll')
       : ffi.DynamicLibrary.process();
-
-  static final ffi.Pointer<ffi.Void> Function(int) _malloc = _libc.lookupFunction<
-      ffi.Pointer<ffi.Void> Function(ffi.Size), ffi.Pointer<ffi.Void> Function(int)>('malloc');
+  static final ffi.Pointer<ffi.Void> Function(int, int) _calloc = _libc.lookupFunction<
+      ffi.Pointer<ffi.Void> Function(ffi.Size, ffi.Size),
+      ffi.Pointer<ffi.Void> Function(int, int)>('calloc');
   static final void Function(ffi.Pointer<ffi.Void>) _free = _libc.lookupFunction<
       ffi.Void Function(ffi.Pointer<ffi.Void>), void Function(ffi.Pointer<ffi.Void>)>('free');
 
   final List<ffi.Pointer<ffi.Void>> _allocations = <ffi.Pointer<ffi.Void>>[];
 
   ffi.Pointer<T> allocate<T extends ffi.NativeType>(int byteCount) {
-    final ptr = _malloc(byteCount == 0 ? 1 : byteCount);
-    if (ptr == ffi.nullptr) {
-      throw StateError('malloc($byteCount) failed');
-    }
+    final ptr = _calloc(1, byteCount == 0 ? 1 : byteCount);
+    if (ptr == ffi.nullptr) throw StateError('calloc($byteCount) failed');
     _allocations.add(ptr);
     return ptr.cast<T>();
   }
 
   ffi.Pointer<ffi.Uint8> copyBytes(Uint8List bytes) {
     final ptr = allocate<ffi.Uint8>(bytes.length);
-    if (bytes.isNotEmpty) {
-      ptr.asTypedList(bytes.length).setAll(0, bytes);
-    }
+    if (bytes.isNotEmpty) ptr.asTypedList(bytes.length).setAll(0, bytes);
     return ptr;
   }
 
@@ -107,21 +88,17 @@ class _MockNativeModule {
     this.includeComponent = true,
     this.includeDev = true,
     this.includeSurface = true,
-    this.includeDirectApis = true,
     this.createReturnsNull = false,
   }) {
     _scratchSlice = _alloc.allocate<NveBufferSlice>(ffi.sizeOf<NveBufferSlice>());
     _scratchSize = _alloc.allocate<NveIntrinsicSize>(ffi.sizeOf<NveIntrinsicSize>());
+    _scratchBatch = _alloc.allocate<NveEventBatch>(ffi.sizeOf<NveEventBatch>());
 
     _createCb = ffi.NativeCallable<NveCreateNative>.isolateLocal(_onCreate);
     _destroyCb = ffi.NativeCallable<NveDestroyNative>.isolateLocal(_onDestroy);
     _renderCb = ffi.NativeCallable<NveRenderNative>.isolateLocal(_onRender);
-    _dispatchEventsCb = ffi.NativeCallable<NveDispatchEventsNative>.isolateLocal(
+    _dispatchCb = ffi.NativeCallable<NveDispatchEventsNative>.isolateLocal(
       _onDispatchEvents,
-      exceptionalReturn: 0,
-    );
-    _dispatchDirectCb = ffi.NativeCallable<NveDispatchEventsDirectNative>.isolateLocal(
-      _onDispatchEventsDirect,
       exceptionalReturn: 0,
     );
     _measureCb = ffi.NativeCallable<NveMeasureNative>.isolateLocal(_onMeasure);
@@ -131,10 +108,6 @@ class _MockNativeModule {
     );
     _setPropsCb = ffi.NativeCallable<NveSetPropsNative>.isolateLocal(
       _onSetProps,
-      exceptionalReturn: 0,
-    );
-    _setPropsDirectCb = ffi.NativeCallable<NveSetPropsDirectNative>.isolateLocal(
-      _onSetPropsDirect,
       exceptionalReturn: 0,
     );
     _drainCb = ffi.NativeCallable<NveDrainEmittedEventsNative>.isolateLocal(_onDrain);
@@ -150,8 +123,7 @@ class _MockNativeModule {
       ..create = _createCb.nativeFunction
       ..destroy = _destroyCb.nativeFunction
       ..render = _renderCb.nativeFunction
-      ..dispatchEvents = _dispatchEventsCb.nativeFunction
-      ..dispatchEventsDirect = includeDirectApis ? _dispatchDirectCb.nativeFunction : ffi.nullptr;
+      ..dispatchEvents = _dispatchCb.nativeFunction;
 
     _layoutApi = _alloc.allocate<NveLayoutApi>(ffi.sizeOf<NveLayoutApi>());
     _layoutApi.ref
@@ -161,8 +133,7 @@ class _MockNativeModule {
     _componentApi = _alloc.allocate<NveComponentApi>(ffi.sizeOf<NveComponentApi>());
     _componentApi.ref
       ..setProps = _setPropsCb.nativeFunction
-      ..drainEmittedEvents = _drainCb.nativeFunction
-      ..setPropsDirect = includeDirectApis ? _setPropsDirectCb.nativeFunction : ffi.nullptr;
+      ..drainEmittedEvents = _drainCb.nativeFunction;
 
     _devApi = _alloc.allocate<NveDevApi>(ffi.sizeOf<NveDevApi>());
     _devApi.ref
@@ -175,12 +146,12 @@ class _MockNativeModule {
   final bool includeLayout;
   final bool includeComponent;
   final bool includeDev;
-  final bool includeDirectApis;
   final bool createReturnsNull;
 
   final _TestAlloc _alloc = _TestAlloc();
   late final ffi.Pointer<NveBufferSlice> _scratchSlice;
   late final ffi.Pointer<NveIntrinsicSize> _scratchSize;
+  late final ffi.Pointer<NveEventBatch> _scratchBatch;
   late final ffi.Pointer<NveSurfaceApi> _surfaceApi;
   late final ffi.Pointer<NveLayoutApi> _layoutApi;
   late final ffi.Pointer<NveComponentApi> _componentApi;
@@ -189,12 +160,10 @@ class _MockNativeModule {
   late final ffi.NativeCallable<NveCreateNative> _createCb;
   late final ffi.NativeCallable<NveDestroyNative> _destroyCb;
   late final ffi.NativeCallable<NveRenderNative> _renderCb;
-  late final ffi.NativeCallable<NveDispatchEventsNative> _dispatchEventsCb;
-  late final ffi.NativeCallable<NveDispatchEventsDirectNative> _dispatchDirectCb;
+  late final ffi.NativeCallable<NveDispatchEventsNative> _dispatchCb;
   late final ffi.NativeCallable<NveMeasureNative> _measureCb;
   late final ffi.NativeCallable<NveHitTestNative> _hitTestCb;
   late final ffi.NativeCallable<NveSetPropsNative> _setPropsCb;
-  late final ffi.NativeCallable<NveSetPropsDirectNative> _setPropsDirectCb;
   late final ffi.NativeCallable<NveDrainEmittedEventsNative> _drainCb;
   late final ffi.NativeCallable<NveApplyHotPatchNative> _hotPatchCb;
   late final ffi.NativeCallable<NveSnapshotStateNative> _snapshotCb;
@@ -204,13 +173,11 @@ class _MockNativeModule {
   int destroyCount = 0;
   final List<int> renderedFrameIds = <int>[];
   Uint8List nextRenderBytes = Uint8List.fromList(<int>[0x4E, 0x56, 0x45, 0x31]);
-  final List<Uint8List> dispatchedEvents = <Uint8List>[];
   final List<List<_RecordedDirectEvent>> dispatchedDirectBatches = <List<_RecordedDirectEvent>>[];
   int dispatchReturn = 1;
-  final List<Uint8List> propsBinHistory = <Uint8List>[];
   final List<Map<String, Object?>> propsDirectHistory = <Map<String, Object?>>[];
   int setPropsReturn = 1;
-  Uint8List outboundEvents = Uint8List(0);
+  List<NveEvent> outboundEvents = <NveEvent>[];
   final List<Uint8List> hotPatches = <Uint8List>[];
   int hotPatchReturn = 1;
   Uint8List savedState = Uint8List.fromList(utf8.encode('state-v1'));
@@ -262,15 +229,7 @@ class _MockNativeModule {
     return _scratchSlice.ref;
   }
 
-  int _onDispatchEvents(ffi.Pointer<ffi.Void> handle, NveBufferSlice slice) {
-    final copied = slice.ptr == ffi.nullptr || slice.len == 0
-        ? Uint8List(0)
-        : Uint8List.fromList(slice.ptr.asTypedList(slice.len));
-    dispatchedEvents.add(copied);
-    return dispatchReturn;
-  }
-
-  int _onDispatchEventsDirect(ffi.Pointer<ffi.Void> handle, NveEventBatch batch) {
+  int _onDispatchEvents(ffi.Pointer<ffi.Void> handle, NveEventBatch batch) {
     final captured = <_RecordedDirectEvent>[];
     if (batch.ptr != ffi.nullptr && batch.len > 0) {
       for (var i = 0; i < batch.len; i++) {
@@ -282,6 +241,9 @@ class _MockNativeModule {
             timestampUs: ev.timestampUs,
             kind: ev.kind,
             payloadTag: ev.payloadTag,
+            modifiers: ev.modifiers,
+            eventFlags: ev.eventFlags,
+            keyCode: ev.keyCode,
             name: _readStrSlice(ev.name),
             x: ev.x,
             y: ev.y,
@@ -315,15 +277,7 @@ class _MockNativeModule {
     return nextHitDisposition;
   }
 
-  int _onSetProps(ffi.Pointer<ffi.Void> handle, NveBufferSlice slice) {
-    final bytes = slice.ptr == ffi.nullptr || slice.len == 0
-        ? Uint8List(0)
-        : Uint8List.fromList(slice.ptr.asTypedList(slice.len));
-    propsBinHistory.add(bytes);
-    return setPropsReturn;
-  }
-
-  int _onSetPropsDirect(
+  int _onSetProps(
     ffi.Pointer<ffi.Void> handle,
     ffi.Pointer<NveMapEntry> entries,
     int count,
@@ -338,20 +292,45 @@ class _MockNativeModule {
     return setPropsReturn;
   }
 
-  NveBufferSlice _onDrain(ffi.Pointer<ffi.Void> handle) {
-    final bytes = outboundEvents;
-    outboundEvents = Uint8List(0);
-    if (bytes.isEmpty) {
-      _scratchSlice.ref
+  NveEventBatch _onDrain(ffi.Pointer<ffi.Void> handle) {
+    final events = outboundEvents;
+    outboundEvents = <NveEvent>[];
+    if (events.isEmpty) {
+      _scratchBatch.ref
         ..ptr = ffi.nullptr
-        ..len = 0;
-      return _scratchSlice.ref;
+        ..len = 0
+        ..pad = 0;
+      return _scratchBatch.ref;
     }
-    final buf = _alloc.copyBytes(bytes);
-    _scratchSlice.ref
-      ..ptr = buf
-      ..len = bytes.length;
-    return _scratchSlice.ref;
+    final ptr = _alloc.allocate<NveDirectEvent>(ffi.sizeOf<NveDirectEvent>() * events.length);
+    for (var i = 0; i < events.length; i++) {
+      final ev = events[i];
+      final dst = ptr[i]
+        ..surfaceId = ev.surfaceId
+        ..nodeId = ev.nodeId
+        ..timestampUs = ev.timestampUs
+        ..kind = ev.kind.code;
+      if (ev.payload case NveBinValuePayload(:final bytes)) {
+        dst.payloadTag = NveEventPayloadTag.custom.code;
+        if (ev.name != null && ev.name!.isNotEmpty) {
+          final nameBytes = Uint8List.fromList(utf8.encode(ev.name!));
+          dst.name
+            ..ptr = _alloc.copyBytes(nameBytes)
+            ..len = nameBytes.length;
+        }
+        if (bytes.isNotEmpty) {
+          dst.value.tag = NveValueTag.bytes.code;
+          dst.value.data.bytesVal
+            ..ptr = _alloc.copyBytes(bytes)
+            ..len = bytes.length;
+        }
+      }
+    }
+    _scratchBatch.ref
+      ..ptr = ptr
+      ..len = events.length
+      ..pad = 0;
+    return _scratchBatch.ref;
   }
 
   int _onHotPatch(ffi.Pointer<ffi.Void> handle, NveBufferSlice slice) {
@@ -386,12 +365,10 @@ class _MockNativeModule {
     _createCb.close();
     _destroyCb.close();
     _renderCb.close();
-    _dispatchEventsCb.close();
-    _dispatchDirectCb.close();
+    _dispatchCb.close();
     _measureCb.close();
     _hitTestCb.close();
     _setPropsCb.close();
-    _setPropsDirectCb.close();
     _drainCb.close();
     _hotPatchCb.close();
     _snapshotCb.close();
@@ -420,8 +397,6 @@ void main() {
       expect(instance.surfaceId, 42);
       expect(instance.isDisposed, isFalse);
       expect(instance.supportsLayoutAndHitTest, isTrue);
-      expect(instance.supportsDirectProps, isTrue);
-      expect(instance.supportsDirectEvents, isTrue);
       expect(mock.createdSurfaceId, 42);
 
       // setPropsDirect with all types including nested arrays/maps & bytes
@@ -442,7 +417,6 @@ void main() {
         }),
         isTrue,
       );
-      expect(mock.propsBinHistory, isEmpty);
       expect(mock.propsDirectHistory, hasLength(1));
       expect(mock.propsDirectHistory.single['nullVal'], isNull);
       expect(mock.propsDirectHistory.single['flag'], isTrue);
@@ -464,7 +438,7 @@ void main() {
       expect(instance.renderNextFrame(), isEmpty);
       expect(mock.renderedFrameIds, <int>[1, 2]);
 
-      // dispatchEventsDirect roundtrips all event kinds
+      // dispatchEventsDirect roundtrips point, scroll, key, pointer, wheel, and custom events
       mock.dispatchReturn = 1;
       expect(
         instance.dispatchEventsDirect(<NveEvent>[
@@ -482,6 +456,33 @@ void main() {
             kind: NveEventKind.scroll,
             payload: NveScrollPayload(x: 0.0, y: 80.0, contentWidth: 320.0, contentHeight: 900.0),
           ),
+          const NveEvent(
+            surfaceId: 42,
+            nodeId: 4,
+            timestampUs: 300,
+            kind: NveEventKind.keyDown,
+            payload: NveKeyPayload(
+              key: 'k',
+              code: 'KeyK',
+              modifiers: nveKeyModMeta | nveKeyModShift,
+              keyCode: 75,
+              isComposing: true,
+            ),
+          ),
+          const NveEvent(
+            surfaceId: 42,
+            nodeId: 5,
+            timestampUs: 350,
+            kind: NveEventKind.pointerDown,
+            payload: NvePointerPayload(x: 12.0, y: 34.0, modifiers: nveKeyModAlt, flags: 1),
+          ),
+          const NveEvent(
+            surfaceId: 42,
+            nodeId: 6,
+            timestampUs: 400,
+            kind: NveEventKind.wheel,
+            payload: NveWheelPayload(deltaX: -4.0, deltaY: 120.0, modifiers: nveKeyModCtrl),
+          ),
           NveEvent.custom(
             surfaceId: 42,
             nodeId: 1,
@@ -492,21 +493,36 @@ void main() {
         ]),
         isTrue,
       );
-      expect(mock.dispatchedEvents, isEmpty);
       expect(mock.dispatchedDirectBatches, hasLength(1));
       final batch = mock.dispatchedDirectBatches.single;
-      expect(batch, hasLength(3));
+      expect(batch, hasLength(6));
       expect(batch[0].kind, NveEventKind.press.code);
       expect(batch[0].x, closeTo(10.5, 1e-3));
       expect(batch[0].y, closeTo(20.25, 1e-3));
       expect(batch[1].kind, NveEventKind.scroll.code);
       expect(batch[1].y, closeTo(80.0, 1e-3));
       expect(batch[1].height, closeTo(900.0, 1e-3));
-      expect(batch[2].name, 'reset');
-      expect(batch[2].value, <String, Object?>{'hard': true});
+      expect(batch[2].kind, NveEventKind.keyDown.code);
+      expect(batch[2].payloadTag, NveEventPayloadTag.key.code);
+      expect(batch[2].text, 'k');
+      expect(batch[2].name, 'KeyK');
+      expect(batch[2].modifiers, nveKeyModMeta | nveKeyModShift);
+      expect(batch[2].eventFlags, nveEventFlagComposing);
+      expect(batch[2].keyCode, 75);
+      expect(batch[3].kind, NveEventKind.pointerDown.code);
+      expect(batch[3].x, closeTo(12.0, 1e-3));
+      expect(batch[3].y, closeTo(34.0, 1e-3));
+      expect(batch[3].modifiers, nveKeyModAlt);
+      expect(batch[3].eventFlags, 1);
+      expect(batch[4].kind, NveEventKind.wheel.code);
+      expect(batch[4].x, closeTo(-4.0, 1e-3));
+      expect(batch[4].y, closeTo(120.0, 1e-3));
+      expect(batch[4].modifiers, nveKeyModCtrl);
+      expect(batch[5].name, 'reset');
+      expect(batch[5].value, <String, Object?>{'hard': true});
 
       // drainEmittedEvents
-      mock.outboundEvents = NveEventRingCodec.encodeEvents(<NveEvent>[
+      mock.outboundEvents = <NveEvent>[
         NveEvent.custom(
           surfaceId: 42,
           nodeId: 3,
@@ -514,7 +530,7 @@ void main() {
           name: 'onIncrement',
           value: <String, Object?>{'count': 6},
         ),
-      ]);
+      ];
       final drained = instance.drainEmittedEvents();
       expect(drained, hasLength(1));
       expect(drained.single.name, 'onIncrement');
@@ -565,7 +581,6 @@ void main() {
       // Post-disposal calls throw StateError
       expect(() => instance.setPropsDirect(<String, Object?>{}), throwsStateError);
       expect(instance.renderNextFrame, throwsStateError);
-      expect(() => instance.dispatchEvents(Uint8List(0)), throwsStateError);
       expect(() => instance.dispatchEventsDirect(const <NveEvent>[]), throwsStateError);
       expect(() => instance.applyHotPatch(_nvp1DevStatus), throwsStateError);
       expect(instance.snapshotState, throwsStateError);
@@ -573,46 +588,6 @@ void main() {
       expect(instance.drainEmittedEvents, throwsStateError);
       expect(() => instance.measure(const BoxConstraints()), throwsStateError);
       expect(() => instance.hitTest(Offset.zero), throwsStateError);
-    });
-
-    test('falls back to binary NveBinValue set_props and EventRing dispatch_events when direct pointers are null', () {
-      final mock = _MockNativeModule(includeDirectApis: false);
-      addTearDown(mock.close);
-
-      final instance = NveAppInstance.fromInterfaceResolver(
-        surfaceId: 7,
-        getInterface: mock.getInterface,
-      );
-      addTearDown(instance.dispose);
-
-      expect(instance.supportsDirectProps, isFalse);
-      expect(instance.supportsDirectEvents, isFalse);
-
-      expect(instance.setPropsDirect(<String, Object?>{'count': 9, 'mode': 'bin'}), isTrue);
-      expect(mock.propsDirectHistory, isEmpty);
-      expect(mock.propsBinHistory, hasLength(1));
-      final view = NveBinValueView.parse(mock.propsBinHistory.single);
-      expect(view.get('count')?.asInt64(), 9);
-      expect(view.get('mode')?.asString(), 'bin');
-
-      expect(
-        instance.dispatchEventsDirect(<NveEvent>[
-          NveEvent.custom(
-            surfaceId: 7,
-            nodeId: 2,
-            timestampUs: 123,
-            name: 'ping',
-            value: <String, Object?>{'ok': true},
-          ),
-        ]),
-        isTrue,
-      );
-      expect(mock.dispatchedDirectBatches, isEmpty);
-      expect(mock.dispatchedEvents, hasLength(1));
-      final decoded = NveEventRingCodec.decode(mock.dispatchedEvents.single);
-      expect(decoded, hasLength(1));
-      expect(decoded.single.name, 'ping');
-      expect(decoded.single.parseBinValue()?.get('ok')?.asBool(), isTrue);
     });
 
     test('optional interfaces (layout, component, dev) degrade cleanly when NULL', () {

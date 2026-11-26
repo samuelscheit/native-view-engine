@@ -1,7 +1,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use nve_abi::events::{decode_keydown_bytes, DecodedKeyDown, KEYDOWN_WIRE_MAGIC};
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask, EventPayload,
     FlexAlign, FlexDirection, FlexJustify, LayoutProps, NativeEvent, NativeEventKind, RawPropValue,
@@ -12,8 +11,8 @@ use nve_engine::RenderBackend;
 
 use crate::events::IME_PROCESS_KEY_CODE;
 use crate::{
-    encode_keydown_payload, layout_to_css, layout_to_css_into, map_a11y_or_input_attr,
-    style_to_css, style_to_css_into, ImeCompositionGuard, MappedHtmlAttr, WebBackend,
+    layout_to_css, layout_to_css_into, map_a11y_or_input_attr, style_to_css, style_to_css_into,
+    ImeCompositionGuard, MappedHtmlAttr, WebBackend,
 };
 
 #[test]
@@ -582,31 +581,7 @@ fn ime_composition_guard_suppresses_preedit_input_and_commit_enter() {
 }
 
 #[test]
-fn encodes_binary_nk1_keydown_payload_and_prunes_orphans_on_full_rebuild() {
-    let payload = encode_keydown_payload("k", true, false, false, false);
-    assert_eq!(&payload[..3], &KEYDOWN_WIRE_MAGIC);
-    assert_eq!(
-        decode_keydown_bytes(&payload),
-        Some(DecodedKeyDown {
-            key: "k".into(),
-            meta: true,
-            ctrl: false,
-            shift: false,
-            alt: false,
-        })
-    );
-    let special = encode_keydown_payload("\"\\", false, true, true, false);
-    assert_eq!(
-        decode_keydown_bytes(&special),
-        Some(DecodedKeyDown {
-            key: "\"\\".into(),
-            meta: false,
-            ctrl: true,
-            shift: true,
-            alt: false,
-        })
-    );
-
+fn prunes_orphans_on_full_rebuild() {
     let mut web = WebBackend::new();
     let mut b1 = CommandBufferBuilder::new(1, 1);
     b1.create_node(2, ComponentKind::View, None);

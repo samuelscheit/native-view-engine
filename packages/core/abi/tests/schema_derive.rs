@@ -9,7 +9,7 @@ use nve_abi::schema::{
     NveEnumSchema, NveSchema, NveStructSchema, NveUnionSchema,
 };
 use nve_abi::{
-    NveAbi, NveBufferSlice, NveRenderNode, NveSceneView, NveValueData, Opcode,
+    NveAbi, NveBufferSlice, NveNodeMeta, NveRenderNode, NveSceneView, NveValueData, Opcode,
 };
 
 /// Custom aligned POD struct exercising all `#[nve_abi(...)]` struct & field options.
@@ -89,7 +89,7 @@ fn derive_nve_abi_handles_downstream_struct_union_and_signed_enum() {
 fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     let core = core_abi_descriptor();
     assert_eq!(core.namespace, Some("NveCoreAbi"));
-    assert_eq!(core.consts.len(), 5);
+    assert_eq!(core.consts.len(), 13);
     assert_eq!(core.aliases.len(), 4);
     assert_eq!(core.enums.len(), 6);
     assert_eq!(core.records.len(), 17);
@@ -104,8 +104,8 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
 
     let scene = scene_abi_descriptor();
     assert_eq!(scene.namespace, Some("NveSceneAbi"));
-    assert_eq!(scene.consts.len(), 14);
-    assert_eq!(scene.records.len(), 2);
+    assert_eq!(scene.consts.len(), 24);
+    assert_eq!(scene.records.len(), 3);
 
     let render = <NveRenderNode as NveStructSchema>::SCHEMA;
     assert_eq!(render.size, size_of::<NveRenderNode>());
@@ -121,6 +121,14 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     assert_eq!(view.fields[8].name, "nodes");
     assert_eq!(view.fields[8].offset, offset_of!(NveSceneView, nodes));
     assert_eq!(view.fields[8].expected_offset, None);
+
+    let meta = <NveNodeMeta as NveStructSchema>::SCHEMA;
+    assert_eq!(meta.size, size_of::<NveNodeMeta>());
+    assert_eq!(meta.align, align_of::<NveNodeMeta>());
+    assert_eq!(meta.expected_size, Some(64));
+    assert_eq!(meta.fields.len(), 17);
+    assert_eq!(meta.fields[16].name, "_reserved");
+    assert_eq!(meta.fields[16].offset, offset_of!(NveNodeMeta, _reserved));
 
     let union_desc = <NveValueData as NveUnionSchema>::SCHEMA;
     assert_eq!(union_desc.size, size_of::<NveValueData>());

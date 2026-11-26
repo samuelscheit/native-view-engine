@@ -265,6 +265,15 @@ fn event_name_to_mask(name: &str) -> u64 {
         | "oncompositionupdate"
         | "compositionend"
         | "oncompositionend" => EventMask::COMPOSITION,
+        "keydown" | "onkeydown" => EventMask::KEY_DOWN,
+        "keyup" | "onkeyup" => EventMask::KEY_UP,
+        "submit" | "onsubmit" => EventMask::SUBMIT,
+        "pointerdown" | "onpointerdown" => EventMask::POINTER_DOWN,
+        "pointermove" | "onpointermove" => EventMask::POINTER_MOVE,
+        "pointerup" | "onpointerup" => EventMask::POINTER_UP,
+        "pointerenter" | "onpointerenter" => EventMask::POINTER_ENTER,
+        "pointerleave" | "onpointerleave" => EventMask::POINTER_LEAVE,
+        "wheel" | "onwheel" => EventMask::WHEEL,
         _ => EventMask::CUSTOM,
     }
 }

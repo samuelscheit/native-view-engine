@@ -261,10 +261,6 @@ DefaultNativeViewHooks &default_native_view_hooks() {
   return [_nveHost saveSnapshotAtPath:snapshotPath schemaVersion:schemaVersion];
 }
 
-- (BOOL)applyPropsJson:(NSString *)propsJson {
-  return [_nveHost applyPropsJson:propsJson];
-}
-
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {
   return [_nveHost applyPropsDictionary:props];
 }

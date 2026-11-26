@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nve_abi::{
-    encode_events, ColorRgba, ComponentKind, EventPayload, FrameId, NativeEvent, NativeEventKind,
-    NodeId, RawPropValue, SurfaceId, ROOT_NODE_ID,
+    ColorRgba, ComponentKind, FrameId, NodeId, NveDirectEvent, NveEventBatchRef, RawPropValue,
+    SurfaceId, ROOT_NODE_ID,
 };
 use nve_components::canvas_ir::{DrawListDecoder, ImageResizeMode};
 use nve_components::style_patch::{Display, Overflow, TextAlign as PatchTextAlign};
@@ -499,19 +499,16 @@ fn prerender_native_frame0_into<A: NveApp, L: LayoutEngine>(
         && viewport.width > 0.0
         && viewport.height > 0.0
     {
-        let layout_ev = encode_events(&[NativeEvent {
+        let layout_ev = [NveDirectEvent::layout(
             surface_id,
-            node_id: ROOT_NODE_ID,
-            timestamp_us: 0,
-            kind: NativeEventKind::Layout,
-            payload: EventPayload::Layout {
-                x: 0.0,
-                y: 0.0,
-                width: viewport.width,
-                height: viewport.height,
-            },
-        }]);
-        let _ = app.dispatch_events(&layout_ev);
+            ROOT_NODE_ID,
+            0,
+            0.0,
+            0.0,
+            viewport.width,
+            viewport.height,
+        )];
+        let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
     }
 
     let frame0_cmd = app.render(1).to_vec();

@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::NativeEventKind;
-use crate::{DecodeError, NodeId, SurfaceId};
+use crate::{
+    DecodeError, NodeId, NveDirectEvent, NveDirectEventRef, NveEventPayloadTag, NveValue,
+    SurfaceId, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT,
+    NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
+};
 
 /// Event subscription bitflags encoded in `Command::SetEventMask`.
 pub struct EventMask;
@@ -17,6 +21,15 @@ impl EventMask {
     pub const LAYOUT: u64 = 1 << 6;
     pub const CUSTOM: u64 = 1 << 7;
     pub const COMPOSITION: u64 = 1 << 8;
+    pub const KEY_DOWN: u64 = 1 << 9;
+    pub const KEY_UP: u64 = 1 << 10;
+    pub const SUBMIT: u64 = 1 << 11;
+    pub const POINTER_DOWN: u64 = 1 << 12;
+    pub const POINTER_MOVE: u64 = 1 << 13;
+    pub const POINTER_UP: u64 = 1 << 14;
+    pub const POINTER_ENTER: u64 = 1 << 15;
+    pub const POINTER_LEAVE: u64 = 1 << 16;
+    pub const WHEEL: u64 = 1 << 17;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +56,40 @@ pub enum EventPayload {
         name: String,
         data: Vec<u8>,
     },
+    Key {
+        key: String,
+        code: String,
+        modifiers: u8,
+        key_code: u32,
+        is_composing: bool,
+    },
+    Pointer {
+        x: f32,
+        y: f32,
+        modifiers: u8,
+        flags: u8,
+    },
+    Wheel {
+        delta_x: f32,
+        delta_y: f32,
+        modifiers: u8,
+    },
+}
+
+/// Packs keyboard modifier flags into the `NveDirectEvent::modifiers` bitmask.
+#[inline]
+pub const fn pack_key_modifiers(
+    meta: bool,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    repeat: bool,
+) -> u8 {
+    (if meta { NVE_KEY_MOD_META } else { 0 })
+        | (if ctrl { NVE_KEY_MOD_CTRL } else { 0 })
+        | (if shift { NVE_KEY_MOD_SHIFT } else { 0 })
+        | (if alt { NVE_KEY_MOD_ALT } else { 0 })
+        | (if repeat { NVE_KEY_MOD_REPEAT } else { 0 })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,120 +101,191 @@ pub struct NativeEvent {
     pub payload: EventPayload,
 }
 
-/// 3-byte ASCII wire magic identifying a compact binary keydown payload (`NK1`).
-///
-/// Layout: `[b'N', b'K', b'1', flags_u8, utf8_key...]`
-/// where `flags_u8` packs modifier bits:
-/// - bit 0 (`0x01`): `meta`
-/// - bit 1 (`0x02`): `ctrl`
-/// - bit 2 (`0x04`): `shift`
-/// - bit 3 (`0x08`): `alt`
-pub const KEYDOWN_WIRE_MAGIC: [u8; 3] = *b"NK1";
-pub const KEYDOWN_FLAG_META: u8 = 1 << 0;
-pub const KEYDOWN_FLAG_CTRL: u8 = 1 << 1;
-pub const KEYDOWN_FLAG_SHIFT: u8 = 1 << 2;
-pub const KEYDOWN_FLAG_ALT: u8 = 1 << 3;
-
-/// Decoded binary keyboard event from `NativeEventKind::Custom` (`name: "keydown"`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct DecodedKeyDown {
-    pub key: String,
-    pub meta: bool,
-    pub ctrl: bool,
-    pub shift: bool,
-    pub alt: bool,
-}
-
-impl DecodedKeyDown {
+impl NativeEvent {
+    /// Borrows this owned `NativeEvent` as a zero-copy `NveDirectEvent` whose string/byte
+    /// pointers remain valid for as long as `self` is borrowed and unmodified.
     #[inline]
-    pub fn has_primary_modifier(&self) -> bool {
-        self.meta || self.ctrl
+    pub fn as_direct_event(&self) -> NveDirectEvent {
+        match &self.payload {
+            EventPayload::Empty => {
+                NveDirectEvent::empty(self.surface_id, self.node_id, self.timestamp_us, self.kind)
+            }
+            EventPayload::Point { x, y } => NveDirectEvent {
+                kind: self.kind as u8,
+                payload_tag: NveEventPayloadTag::Point as u8,
+                x: *x,
+                y: *y,
+                ..NveDirectEvent::empty(self.surface_id, self.node_id, self.timestamp_us, self.kind)
+            },
+            EventPayload::Scroll {
+                x,
+                y,
+                content_width,
+                content_height,
+            } => NveDirectEvent::scroll(
+                self.surface_id,
+                self.node_id,
+                self.timestamp_us,
+                *x,
+                *y,
+                *content_width,
+                *content_height,
+            ),
+            EventPayload::Text(text) => NveDirectEvent {
+                kind: self.kind as u8,
+                payload_tag: NveEventPayloadTag::Text as u8,
+                text: crate::NveStrSlice::from_str(text),
+                ..NveDirectEvent::empty(self.surface_id, self.node_id, self.timestamp_us, self.kind)
+            },
+            EventPayload::Layout {
+                x,
+                y,
+                width,
+                height,
+            } => NveDirectEvent::layout(
+                self.surface_id,
+                self.node_id,
+                self.timestamp_us,
+                *x,
+                *y,
+                *width,
+                *height,
+            ),
+            EventPayload::Custom { name, data } => NveDirectEvent::custom(
+                self.surface_id,
+                self.node_id,
+                self.timestamp_us,
+                name,
+                NveValue::from_bytes(data),
+            ),
+            EventPayload::Key {
+                key,
+                code,
+                modifiers,
+                key_code,
+                is_composing,
+            } => NveDirectEvent {
+                kind: self.kind as u8,
+                payload_tag: NveEventPayloadTag::Key as u8,
+                modifiers: *modifiers,
+                event_flags: if *is_composing {
+                    NVE_EVENT_FLAG_COMPOSING
+                } else {
+                    0
+                },
+                key_code: *key_code,
+                name: crate::NveStrSlice::from_str(code),
+                text: crate::NveStrSlice::from_str(key),
+                ..NveDirectEvent::empty(self.surface_id, self.node_id, self.timestamp_us, self.kind)
+            },
+            EventPayload::Pointer {
+                x,
+                y,
+                modifiers,
+                flags,
+            } => NveDirectEvent::pointer(
+                self.surface_id,
+                self.node_id,
+                self.timestamp_us,
+                self.kind,
+                *x,
+                *y,
+                *modifiers,
+                *flags,
+            ),
+            EventPayload::Wheel {
+                delta_x,
+                delta_y,
+                modifiers,
+            } => NveDirectEvent::wheel(
+                self.surface_id,
+                self.node_id,
+                self.timestamp_us,
+                *delta_x,
+                *delta_y,
+                *modifiers,
+            ),
+        }
     }
 }
 
-/// Encodes a keyboard event into the compact binary `NK1` binary payload:
-/// `[b'N', b'K', b'1', flags_u8, utf8_key...]`.
-pub fn encode_keydown_bytes(
-    key: &str,
-    meta: bool,
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-) -> Vec<u8> {
-    let flags = (u8::from(meta) * KEYDOWN_FLAG_META)
-        | (u8::from(ctrl) * KEYDOWN_FLAG_CTRL)
-        | (u8::from(shift) * KEYDOWN_FLAG_SHIFT)
-        | (u8::from(alt) * KEYDOWN_FLAG_ALT);
-    let mut out = Vec::with_capacity(4 + key.len());
-    out.extend_from_slice(&KEYDOWN_WIRE_MAGIC);
-    out.push(flags);
-    out.extend_from_slice(key.as_bytes());
-    out
+/// Converts a slice of owned `NativeEvent`s into zero-copy `NveDirectEvent` records borrowing
+/// directly from `events`.
+#[inline]
+pub fn native_events_to_direct(events: &[NativeEvent], out: &mut Vec<NveDirectEvent>) {
+    out.clear();
+    out.reserve(events.len());
+    for ev in events {
+        out.push(ev.as_direct_event());
+    }
 }
 
-/// Decodes a `keydown` payload from either:
-/// 1. Compact binary `NK1` framing (`[b'N', b'K', b'1', flags_u8, utf8_key...]`), or
-/// 2. Compact UTF-8 shorthand (`"Cmd+k"`, `"Ctrl+Shift+Enter"`, `"Escape"`, `"Enter"`, `"+"`).
-pub fn decode_keydown_bytes(data: &[u8]) -> Option<DecodedKeyDown> {
-    if data.starts_with(&KEYDOWN_WIRE_MAGIC) {
-        if data.len() < 5 {
-            return None;
-        }
-        let flags = data[3];
-        let key = std::str::from_utf8(&data[4..]).ok()?;
-        if key.is_empty() {
-            return None;
-        }
-        return Some(DecodedKeyDown {
-            key: key.to_owned(),
-            meta: (flags & KEYDOWN_FLAG_META) != 0,
-            ctrl: (flags & KEYDOWN_FLAG_CTRL) != 0,
-            shift: (flags & KEYDOWN_FLAG_SHIFT) != 0,
-            alt: (flags & KEYDOWN_FLAG_ALT) != 0,
-        });
-    }
-
-    let raw_text = std::str::from_utf8(data).ok()?;
-    let trimmed = raw_text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if trimmed == "+" {
-        return Some(DecodedKeyDown {
-            key: "+".to_owned(),
-            ..DecodedKeyDown::default()
-        });
-    }
-
-    if trimmed.contains('+') {
-        let mut out = DecodedKeyDown::default();
-        // Preserve trailing literal `+` key in combinations like `"Cmd++"`.
-        let (mod_section, key_part) = if let Some(prefix) = trimmed.strip_suffix("++") {
-            (prefix, "+")
-        } else {
-            let split_at = trimmed.rfind('+')?;
-            (&trimmed[..split_at], trimmed[split_at + 1..].trim())
-        };
-        if key_part.is_empty() {
-            return None;
-        }
-        for tok in mod_section.split('+').map(str::trim).filter(|s| !s.is_empty()) {
-            match tok.to_ascii_lowercase().as_str() {
-                "cmd" | "meta" | "super" => out.meta = true,
-                "ctrl" | "control" => out.ctrl = true,
-                "shift" => out.shift = true,
-                "alt" | "opt" | "option" => out.alt = true,
-                _ => {}
+/// Converts a borrowed `NveDirectEventRef` into an owned `NativeEvent` (used at network wire
+/// boundaries and in-memory test harnesses).
+pub fn direct_event_to_native(ev: NveDirectEventRef<'_>) -> Option<NativeEvent> {
+    let kind = ev.kind()?;
+    let payload = match ev.payload_tag() {
+        0 => EventPayload::Empty,
+        1 => EventPayload::Point {
+            x: ev.x(),
+            y: ev.y(),
+        },
+        2 => EventPayload::Scroll {
+            x: ev.x(),
+            y: ev.y(),
+            content_width: ev.width(),
+            content_height: ev.height(),
+        },
+        3 => EventPayload::Text(ev.text().to_owned()),
+        4 => EventPayload::Layout {
+            x: ev.x(),
+            y: ev.y(),
+            width: ev.width(),
+            height: ev.height(),
+        },
+        5 => {
+            let data = if let Some(b) = ev.value().as_bytes() {
+                b.to_vec()
+            } else if let Some(s) = ev.value().as_str() {
+                s.as_bytes().to_vec()
+            } else if !ev.value().is_null() {
+                crate::encode_bin_value_to_vec(ev.value()).unwrap_or_default()
+            } else if !ev.text().is_empty() {
+                ev.text().as_bytes().to_vec()
+            } else {
+                Vec::new()
+            };
+            EventPayload::Custom {
+                name: ev.name().to_owned(),
+                data,
             }
         }
-        out.key = key_part.to_owned();
-        return Some(out);
-    }
-
-    Some(DecodedKeyDown {
-        key: trimmed.to_owned(),
-        ..DecodedKeyDown::default()
+        6 => EventPayload::Key {
+            key: ev.key().to_owned(),
+            code: ev.code().to_owned(),
+            modifiers: ev.modifiers(),
+            key_code: ev.key_code(),
+            is_composing: ev.is_composing(),
+        },
+        7 => EventPayload::Pointer {
+            x: ev.x(),
+            y: ev.y(),
+            modifiers: ev.modifiers(),
+            flags: ev.event_flags() & (NVE_EVENT_FLAG_BUTTON_MASK | (1 << 3) | (1 << 4)),
+        },
+        8 => EventPayload::Wheel {
+            delta_x: ev.delta_x(),
+            delta_y: ev.delta_y(),
+            modifiers: ev.modifiers(),
+        },
+        _ => return None,
+    };
+    Some(NativeEvent {
+        surface_id: ev.surface_id(),
+        node_id: ev.node_id(),
+        timestamp_us: ev.timestamp_us(),
+        kind,
+        payload,
     })
 }
 
@@ -223,6 +341,46 @@ pub fn encode_events(events: &[NativeEvent]) -> Vec<u8> {
                 out.extend_from_slice(nb);
                 out.extend_from_slice(&(data.len() as u32).to_le_bytes());
                 out.extend_from_slice(data);
+            }
+            EventPayload::Key {
+                key,
+                code,
+                modifiers,
+                key_code,
+                is_composing,
+            } => {
+                out.push(6);
+                out.push(*modifiers);
+                out.push(u8::from(*is_composing));
+                out.extend_from_slice(&key_code.to_le_bytes());
+                let kb = key.as_bytes();
+                out.extend_from_slice(&(kb.len() as u16).to_le_bytes());
+                out.extend_from_slice(kb);
+                let cb = code.as_bytes();
+                out.extend_from_slice(&(cb.len() as u16).to_le_bytes());
+                out.extend_from_slice(cb);
+            }
+            EventPayload::Pointer {
+                x,
+                y,
+                modifiers,
+                flags,
+            } => {
+                out.push(7);
+                out.extend_from_slice(&x.to_le_bytes());
+                out.extend_from_slice(&y.to_le_bytes());
+                out.push(*modifiers);
+                out.push(*flags);
+            }
+            EventPayload::Wheel {
+                delta_x,
+                delta_y,
+                modifiers,
+            } => {
+                out.push(8);
+                out.extend_from_slice(&delta_x.to_le_bytes());
+                out.extend_from_slice(&delta_y.to_le_bytes());
+                out.push(*modifiers);
             }
         }
     }
@@ -291,6 +449,37 @@ pub fn decode_events(bytes: &[u8]) -> Result<Vec<NativeEvent>, DecodeError> {
                 let data = take(&mut pos, dlen)?.to_vec();
                 EventPayload::Custom { name, data }
             }
+            6 => {
+                let modifiers = take(&mut pos, 1)?[0];
+                let is_composing = take(&mut pos, 1)?[0] != 0;
+                let key_code = read_u32(&mut pos)?;
+                let klen = u16::from_le_bytes(take(&mut pos, 2)?.try_into().unwrap()) as usize;
+                let key = std::str::from_utf8(take(&mut pos, klen)?)
+                    .map_err(|_| DecodeError::InvalidUtf8)?
+                    .to_owned();
+                let clen = u16::from_le_bytes(take(&mut pos, 2)?.try_into().unwrap()) as usize;
+                let code = std::str::from_utf8(take(&mut pos, clen)?)
+                    .map_err(|_| DecodeError::InvalidUtf8)?
+                    .to_owned();
+                EventPayload::Key {
+                    key,
+                    code,
+                    modifiers,
+                    key_code,
+                    is_composing,
+                }
+            }
+            7 => EventPayload::Pointer {
+                x: read_f32(&mut pos)?,
+                y: read_f32(&mut pos)?,
+                modifiers: take(&mut pos, 1)?[0],
+                flags: take(&mut pos, 1)?[0],
+            },
+            8 => EventPayload::Wheel {
+                delta_x: read_f32(&mut pos)?,
+                delta_y: read_f32(&mut pos)?,
+                modifiers: take(&mut pos, 1)?[0],
+            },
             other => return Err(DecodeError::InvalidEnum("EventPayload", other as u32)),
         };
         out.push(NativeEvent {
@@ -367,101 +556,57 @@ mod tests {
     }
 
     #[test]
-    fn keydown_binary_nk1_and_shorthand_roundtrip_and_edge_cases() {
-        // Every single modifier flag combination roundtrips through NK1 binary framing.
-        for mask in 0u8..16 {
-            let meta = (mask & KEYDOWN_FLAG_META) != 0;
-            let ctrl = (mask & KEYDOWN_FLAG_CTRL) != 0;
-            let shift = (mask & KEYDOWN_FLAG_SHIFT) != 0;
-            let alt = (mask & KEYDOWN_FLAG_ALT) != 0;
-            let encoded = encode_keydown_bytes("k", meta, ctrl, shift, alt);
-            assert_eq!(&encoded[..3], &KEYDOWN_WIRE_MAGIC);
-            assert_eq!(encoded[3], mask);
-            assert_eq!(&encoded[4..], b"k");
-            let decoded = decode_keydown_bytes(&encoded).expect("valid NK1");
-            assert_eq!(
-                decoded,
-                DecodedKeyDown {
+    fn direct_typed_key_pointer_wheel_roundtrip_zero_size_growth() {
+        let events = vec![
+            NativeEvent {
+                surface_id: 1,
+                node_id: 20,
+                timestamp_us: 200_000,
+                kind: NativeEventKind::KeyDown,
+                payload: EventPayload::Key {
                     key: "k".into(),
-                    meta,
-                    ctrl,
-                    shift,
-                    alt,
-                }
-            );
-            assert_eq!(decoded.has_primary_modifier(), meta || ctrl);
-        }
+                    code: "KeyK".into(),
+                    modifiers: pack_key_modifiers(true, false, true, false, false),
+                    key_code: 75,
+                    is_composing: false,
+                },
+            },
+            NativeEvent {
+                surface_id: 1,
+                node_id: 21,
+                timestamp_us: 200_100,
+                kind: NativeEventKind::PointerMove,
+                payload: EventPayload::Pointer {
+                    x: 120.5,
+                    y: 44.25,
+                    modifiers: NVE_KEY_MOD_SHIFT,
+                    flags: 1,
+                },
+            },
+            NativeEvent {
+                surface_id: 1,
+                node_id: 22,
+                timestamp_us: 200_200,
+                kind: NativeEventKind::Wheel,
+                payload: EventPayload::Wheel {
+                    delta_x: -4.0,
+                    delta_y: 24.0,
+                    modifiers: NVE_KEY_MOD_CTRL,
+                },
+            },
+        ];
+        assert_eq!(EventMask::KEY_DOWN, 1 << 9);
+        assert_eq!(EventMask::WHEEL, 1 << 17);
+        let encoded = encode_events(&events);
+        let decoded = decode_events(&encoded).unwrap();
+        assert_eq!(events, decoded);
 
-        // Multi-byte UTF-8 and space keys survive NK1 verbatim without trimming.
-        let space = encode_keydown_bytes(" ", false, false, true, false);
-        assert_eq!(
-            decode_keydown_bytes(&space),
-            Some(DecodedKeyDown {
-                key: " ".into(),
-                shift: true,
-                ..Default::default()
-            })
-        );
-        let cjk = encode_keydown_bytes("漢", true, false, false, true);
-        assert_eq!(
-            decode_keydown_bytes(&cjk),
-            Some(DecodedKeyDown {
-                key: "漢".into(),
-                meta: true,
-                alt: true,
-                ..Default::default()
-            })
-        );
-
-        // Compact UTF-8 shorthand works seamlessly.
-        assert_eq!(
-            decode_keydown_bytes(b"Cmd+k"),
-            Some(DecodedKeyDown {
-                key: "k".into(),
-                meta: true,
-                ..Default::default()
-            })
-        );
-        assert_eq!(
-            decode_keydown_bytes(b"Ctrl+Shift+Alt+Enter"),
-            Some(DecodedKeyDown {
-                key: "Enter".into(),
-                ctrl: true,
-                shift: true,
-                alt: true,
-                ..Default::default()
-            })
-        );
-        assert_eq!(
-            decode_keydown_bytes(b"Escape"),
-            Some(DecodedKeyDown {
-                key: "Escape".into(),
-                ..Default::default()
-            })
-        );
-        assert_eq!(
-            decode_keydown_bytes(b"+"),
-            Some(DecodedKeyDown {
-                key: "+".into(),
-                ..Default::default()
-            })
-        );
-        assert_eq!(
-            decode_keydown_bytes(b"Cmd++"),
-            Some(DecodedKeyDown {
-                key: "+".into(),
-                meta: true,
-                ..Default::default()
-            })
-        );
-
-        // Truncated / empty / invalid UTF-8 inputs return None safely.
-        assert_eq!(decode_keydown_bytes(&[]), None);
-        assert_eq!(decode_keydown_bytes(b"   "), None);
-        assert_eq!(decode_keydown_bytes(b"NK1"), None);
-        assert_eq!(decode_keydown_bytes(b"NK1\x01"), None);
-        assert_eq!(decode_keydown_bytes(&[b'N', b'K', b'1', 0, 0xFF, 0xFE]), None);
-        assert_eq!(decode_keydown_bytes(&[0xFF, 0xFE]), None);
-        assert_eq!(decode_keydown_bytes(b"Cmd+"), None);
+        let mut direct = Vec::new();
+        native_events_to_direct(&events, &mut direct);
+        let roundtripped: Vec<NativeEvent> = direct
+            .iter()
+            .map(|d| direct_event_to_native(unsafe { NveDirectEventRef::from_raw(d) }).unwrap())
+            .collect();
+        assert_eq!(events, roundtripped);
     }
 }

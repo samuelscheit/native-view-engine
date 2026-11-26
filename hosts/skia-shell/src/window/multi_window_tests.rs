@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use nve_abi::{
-    decode_events, ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets,
-    EventMask, FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps, SurfaceId,
+    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
+    FlexDirection, FrameId, LayoutProps, NativeEventKind, NveDirectEvent, StyleProps, SurfaceId,
     ROOT_NODE_ID,
 };
 use nve_engine::{RenderBackend, Viewport};
@@ -69,13 +69,12 @@ impl DesktopApp for SurfaceCounterApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
-        let events = decode_events(encoded_events).expect("valid encoded events");
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         let mut handled = false;
         for ev in events {
             if ev.surface_id == self.surface_id
                 && ev.node_id == 4
-                && ev.kind == NativeEventKind::Press
+                && ev.kind == NativeEventKind::Press as u8
             {
                 self.presses += 1;
                 handled = true;

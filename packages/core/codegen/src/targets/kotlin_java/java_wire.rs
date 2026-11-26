@@ -11,8 +11,8 @@ use crate::schema::wire::{
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
     EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEYDOWN_FLAG_ALT, KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_META, KEYDOWN_FLAG_SHIFT,
-    KEYDOWN_HEADER_SIZE, KEYDOWN_MIN_LEN, KEYDOWN_WIRE_MAGIC, NVE_WIRE_CODECS_SCHEMA_HASH,
+    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
 fn format_java_bytes(bytes: &[u8]) -> String {
@@ -42,7 +42,7 @@ pub fn generate_java_wire_codecs() -> String {
 
     writeln!(
         s,
-        "/** Single-source wire codec constants, canonical FNV-1a64, EventRing writer, NK1 keydown, and NVE_DRAW1 decoder. */"
+        "/** Single-source wire codec constants, canonical FNV-1a64, EventRing writer, and NVE_DRAW1 decoder. */"
     )
     .unwrap();
     writeln!(s, "public final class NveWireCodecs {{").unwrap();
@@ -127,8 +127,8 @@ pub fn generate_java_wire_codecs() -> String {
     )
     .unwrap();
 
-    // EventRing + NK1
-    writeln!(s, "    // EventRing (`NVEV` / event framing) & `NK1` KeyDown").unwrap();
+    // EventRing
+    writeln!(s, "    // EventRing (`NVEV` / network event framing)").unwrap();
     writeln!(
         s,
         "    public static final byte[] EVENT_RING_MAGIC_BYTES = new byte[] {{{}}};",
@@ -191,41 +191,15 @@ pub fn generate_java_wire_codecs() -> String {
     }
     writeln!(s).unwrap();
 
-    writeln!(
-        s,
-        "    public static final byte[] KEYDOWN_WIRE_MAGIC = new byte[] {{{}}};",
-        format_java_bytes(&KEYDOWN_WIRE_MAGIC)
-    )
-    .unwrap();
-    writeln!(s, "    public static final int KEYDOWN_HEADER_SIZE = {KEYDOWN_HEADER_SIZE};").unwrap();
-    writeln!(s, "    public static final int KEYDOWN_MIN_LEN = {KEYDOWN_MIN_LEN};").unwrap();
-    writeln!(s, "    public static final int KEYDOWN_FLAG_META = 0x{KEYDOWN_FLAG_META:02X};").unwrap();
-    writeln!(s, "    public static final int KEYDOWN_FLAG_CTRL = 0x{KEYDOWN_FLAG_CTRL:02X};").unwrap();
-    writeln!(s, "    public static final int KEYDOWN_FLAG_SHIFT = 0x{KEYDOWN_FLAG_SHIFT:02X};").unwrap();
-    writeln!(s, "    public static final int KEYDOWN_FLAG_ALT = 0x{KEYDOWN_FLAG_ALT:02X};\n").unwrap();
+    writeln!(s, "    public static final int KEY_MOD_META = 0x{KEY_MOD_META:02X};").unwrap();
+    writeln!(s, "    public static final int KEY_MOD_CTRL = 0x{KEY_MOD_CTRL:02X};").unwrap();
+    writeln!(s, "    public static final int KEY_MOD_SHIFT = 0x{KEY_MOD_SHIFT:02X};").unwrap();
+    writeln!(s, "    public static final int KEY_MOD_ALT = 0x{KEY_MOD_ALT:02X};").unwrap();
+    writeln!(s, "    public static final int KEY_MOD_REPEAT = 0x{KEY_MOD_REPEAT:02X};\n").unwrap();
 
     writeln!(
         s,
-        r#"    public static byte[] encodeKeyDownNk1(
-            String key,
-            boolean meta,
-            boolean ctrl,
-            boolean shift,
-            boolean alt) {{
-        int flags = 0;
-        if (meta) flags |= KEYDOWN_FLAG_META;
-        if (ctrl) flags |= KEYDOWN_FLAG_CTRL;
-        if (shift) flags |= KEYDOWN_FLAG_SHIFT;
-        if (alt) flags |= KEYDOWN_FLAG_ALT;
-        byte[] utf8 = key.getBytes(StandardCharsets.UTF_8);
-        byte[] out = new byte[KEYDOWN_HEADER_SIZE + utf8.length];
-        System.arraycopy(KEYDOWN_WIRE_MAGIC, 0, out, 0, KEYDOWN_WIRE_MAGIC.length);
-        out[3] = (byte) flags;
-        System.arraycopy(utf8, 0, out, KEYDOWN_HEADER_SIZE, utf8.length);
-        return out;
-    }}
-
-    public static final class EventRingFramedHeader {{
+        r#"    public static final class EventRingFramedHeader {{
         public final int version;
         public final long count;
 
@@ -361,7 +335,39 @@ pub fn generate_java_wire_codecs() -> String {
                 boolean ctrl,
                 boolean shift,
                 boolean alt) {{
-            return pushCustom(surfaceId, nodeId, timestampUs, "keydown", encodeKeyDownNk1(key, meta, ctrl, shift, alt));
+            return pushKeyDown(surfaceId, nodeId, timestampUs, key, meta, ctrl, shift, alt, "", 0, false);
+        }}
+
+        public boolean pushKeyDown(
+                int surfaceId,
+                int nodeId,
+                long timestampUs,
+                String key,
+                boolean meta,
+                boolean ctrl,
+                boolean shift,
+                boolean alt,
+                String code,
+                int keyCode,
+                boolean isComposing) {{
+            byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+            byte[] codeBytes = code.getBytes(StandardCharsets.UTF_8);
+            if (keyBytes.length > 0xFFFF || codeBytes.length > 0xFFFF) return false;
+            int modifiers = 0;
+            if (meta) modifiers |= KEY_MOD_META;
+            if (ctrl) modifiers |= KEY_MOD_CTRL;
+            if (shift) modifiers |= KEY_MOD_SHIFT;
+            if (alt) modifiers |= KEY_MOD_ALT;
+            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_KEY_DOWN, EVENT_PAYLOAD_KEY);
+            out.write(modifiers & 0xFF);
+            out.write(isComposing ? 1 : 0);
+            writeLeU32(keyCode);
+            writeLeU16(keyBytes.length);
+            out.write(keyBytes, 0, keyBytes.length);
+            writeLeU16(codeBytes.length);
+            out.write(codeBytes, 0, codeBytes.length);
+            count++;
+            return true;
         }}
 
         public byte[] finish() {{

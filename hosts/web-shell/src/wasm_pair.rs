@@ -96,7 +96,7 @@ fn update_paired_hud(session: &PairedWebSession) {
 /// Live `NVT1`/`NVD1` binary WebSocket thin-client host for browser WASM.
 ///
 /// Renders remote `NVD1` `CommandBuffer` deltas straight into `WebBackend::submit_frame()` and
-/// streams local DOM clicks, typing, scrolling, focus/blur, resize, and `NK1` keydowns upstream
+/// streams local DOM clicks, typing, scrolling, focus/blur, resize, and typed keydowns upstream
 /// as binary `NVT1` `InputEvents = 11` binary frames.
 #[wasm_bindgen]
 pub struct NveWebHost {
@@ -185,7 +185,7 @@ impl NveWebHost {
         Ok(pkt)
     }
 
-    /// Dispatches a synthetic `NK1` keydown event upstream as an `NVT1` `InputEvents = 11` frame.
+    /// Dispatches a synthetic typed `KeyDown` event upstream as an `NveWireKind::EventBatch` frame.
     pub fn dispatch_keydown(
         &self,
         key: &str,

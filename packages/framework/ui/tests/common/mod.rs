@@ -1,8 +1,8 @@
 //! Shared headless integration test harness driving real `DioxusSurface` + `HeadlessBackend`.
 
-use nve_abi::events::encode_keydown_bytes;
 use nve_abi::{
-    Command, CommandDecoder, EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue,
+    pack_key_modifiers, Command, CommandDecoder, EventPayload, NativeEvent, NativeEventKind,
+    NodeId, RawPropValue,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_dioxus::elements::backend::{RenderBackend, Viewport};
@@ -119,15 +119,17 @@ impl UiHarness {
     pub fn keydown(&mut self, tid: &str, key: &str, shift: bool) -> Vec<Command> {
         let id = self.find(tid);
         let ts = self.next_ts();
-        let data = encode_keydown_bytes(key, false, false, shift, false);
         assert!(self.surface.dispatch_events(&[NativeEvent {
             surface_id: 1,
             node_id: id,
             timestamp_us: ts,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "keydown".into(),
-                data,
+            kind: NativeEventKind::KeyDown,
+            payload: EventPayload::Key {
+                key: key.to_owned(),
+                code: String::new(),
+                key_code: 0,
+                modifiers: pack_key_modifiers(false, false, shift, false, false),
+                is_composing: false,
             },
         }]));
         self.render()

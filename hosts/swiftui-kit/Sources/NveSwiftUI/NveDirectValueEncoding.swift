@@ -19,7 +19,7 @@ public protocol NveDirectEncodable {
     func encodeDirect(into builder: inout NveDirectPropsBuilder) throws
 }
 
-/// Arena-backed builder populating contiguous `NveMapEntry` slots for `set_props_direct`.
+/// Arena-backed builder populating contiguous `NveMapEntry` slots for `NveComponentApi.set_props`.
 public struct NveDirectPropsBuilder {
     public let arena: NveDirectArena
     private let buffer: UnsafeMutablePointer<NveMapEntry>?

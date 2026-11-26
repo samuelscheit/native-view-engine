@@ -87,8 +87,8 @@ pub use event_replay::{
     MAX_REPLAY_QUEUE_LEN, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
 pub use events::{
-    encode_keydown_payload, resolve_delegated_node, should_intercept_anchor_click,
-    ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
+    resolve_delegated_node, should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker,
+    NodeEventMeta,
 };
 pub use visual_viewport::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,

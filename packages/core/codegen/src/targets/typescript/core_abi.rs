@@ -93,7 +93,9 @@ pub fn generate_ts_scene_view() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);
     let render_node = spec.find_struct("NveRenderNode").unwrap();
+    let node_meta = spec.find_struct("NveNodeMeta").unwrap();
     let node_size = render_node.expected_size.unwrap();
+    let meta_size = node_meta.expected_size.unwrap();
 
     let mut out = String::with_capacity(5120);
     let _ = writeln!(
@@ -113,6 +115,10 @@ pub fn generate_ts_scene_view() -> String {
         out,
         "export const NVE_RENDER_NODE_STRIDE = {node_size} as const;"
     );
+    let _ = writeln!(
+        out,
+        "export const NVE_NODE_META_STRIDE = {meta_size} as const;"
+    );
     let _ = writeln!(out);
     let _ = writeln!(out, "export const NVE_NODE_FLAG = {{");
     let _ = writeln!(out, "  LEAF_TEXT: 1 << 0,");
@@ -128,8 +134,36 @@ pub fn generate_ts_scene_view() -> String {
     }
     let _ = writeln!(out, "}} as const;");
     let _ = writeln!(out);
+    let _ = writeln!(out, "export const NVE_META_FLAG = {{");
+    for c in &spec.consts {
+        if let Some(suffix) = c.name.strip_prefix("NVE_META_FLAG_") {
+            let _ = writeln!(out, "  {suffix}: {},", c.value);
+        }
+    }
+    let _ = writeln!(out, "}} as const;");
+    for c in &spec.consts {
+        if c.name.starts_with("NVE_META_RESIZE_MODE_") {
+            if c.hex {
+                let _ = writeln!(out, "export const {} = 0x{:X} as const;", c.name, c.value);
+            } else {
+                let _ = writeln!(out, "export const {} = {} as const;", c.name, c.value);
+            }
+        }
+    }
+    let _ = writeln!(out);
     let _ = writeln!(out, "export const NVE_NODE_OFFSET = {{");
     for f in &render_node.fields {
+        let _ = writeln!(
+            out,
+            "  {}: {},",
+            snake_to_screaming(&f.name),
+            f.offset.unwrap()
+        );
+    }
+    let _ = writeln!(out, "}} as const;");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "export const NVE_META_OFFSET = {{");
+    for f in &node_meta.fields {
         let _ = writeln!(
             out,
             "  {}: {},",
