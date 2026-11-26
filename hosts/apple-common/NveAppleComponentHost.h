@@ -63,7 +63,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly) BOOL hasReplayedFrame0;
 
-- (BOOL)applyPropsJson:(NSString *)propsJson;
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;
 - (void)renderFrame;
 - (void)drainEmittedEvents;

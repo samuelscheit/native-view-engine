@@ -162,7 +162,9 @@ object NveJniBridge {
 
     external fun nativeGetRemovedIdsBuffer(handlePtr: Long): ByteBuffer?
 
-    external fun nativeGetMetadataBuffer(handlePtr: Long): ByteBuffer?
+    external fun nativeGetMetaRecordsBuffer(handlePtr: Long): ByteBuffer?
+
+    external fun nativeGetMetaBlobBuffer(handlePtr: Long): ByteBuffer?
 
     external fun nativeDrainEmittedEvents(handlePtr: Long): ByteArray?
 
@@ -245,7 +247,8 @@ object NveNativeBridge : NveBridgeBackend {
         childrenSlab = NveJniBridge.nativeGetChildrenSlabBuffer(handlePtr),
         dirtyIndices = NveJniBridge.nativeGetDirtyIndicesBuffer(handlePtr),
         removedIds = NveJniBridge.nativeGetRemovedIdsBuffer(handlePtr),
-        metadataSlab = NveJniBridge.nativeGetMetadataBuffer(handlePtr),
+        metaRecords = NveJniBridge.nativeGetMetaRecordsBuffer(handlePtr),
+        metaBlob = NveJniBridge.nativeGetMetaBlobBuffer(handlePtr),
     )
 
     override fun drainEmittedEvents(handlePtr: Long): ByteArray? =

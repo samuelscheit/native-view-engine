@@ -9,9 +9,11 @@ pub mod hybrid;
 pub mod import_rn;
 pub mod reloc;
 mod reloc_runtime;
+pub mod scene_abi;
 pub mod wire;
 
-pub use core_abi::{generate_c_core_abi_h, generate_c_scene_abi_h};
+pub use core_abi::generate_c_core_abi_h;
+pub use scene_abi::generate_c_scene_abi_h;
 pub use hybrid::generate_hybrid_cpp;
 pub use reloc::generate_reloc_cpp;
 pub use wire::generate_cpp_wire_codecs;

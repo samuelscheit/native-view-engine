@@ -1,3 +1,4 @@
+use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind};
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{RenderBackend, Viewport};
 use nve_wire::{
@@ -186,11 +187,11 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
             Cow::Owned(b.into_bytes())
         }
 
-        fn dispatch_events(&mut self, _encoded_events: &[u8]) -> bool {
+        fn dispatch_events(&mut self, _events: &[NveDirectEvent]) -> bool {
             false
         }
 
-        fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
+        fn set_props(&mut self, entries: &[NveMapEntry]) -> bool {
             let mut transport = String::new();
             let mut peers = -1i64;
             for entry in entries {

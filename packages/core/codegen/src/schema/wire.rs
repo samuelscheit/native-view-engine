@@ -1,8 +1,7 @@
 //! Declarative single-source specification for NVE cross-language wire codecs:
 //! - Canonical 64-bit FNV-1a (`0xcbf29ce484222325` / `0x00000100000001b3`) + reference vectors
 //! - Binary `EventRing` framing (`NVEV` / count header, 18-byte entry layout, `NativeEventKind`,
-//!   `EventPayloadTag`, `EventMask`)
-//! - Compact binary `NK1` keydown wire framing (`[b'N', b'K', b'1', flags, utf8_key...]`)
+//!   `EventPayloadTag`, `EventMask`, typed key modifier bits)
 //! - Binary `NVE_DRAW1` vector canvas stream constants, opcodes, fixed payload sizes, and header layout
 
 /// Canonical 64-bit FNV-1a offset basis (`14695981039346656037`).
@@ -69,11 +68,6 @@ pub const FNV1A64_TEST_VECTORS: &[Fnv1a64TestVector] = &[
         label: "nve_draw1",
         bytes: b"NVE_DRAW1",
         expected: fnv1a64(b"NVE_DRAW1"),
-    },
-    Fnv1a64TestVector {
-        label: "nk1",
-        bytes: b"NK1",
-        expected: fnv1a64(b"NK1"),
     },
     Fnv1a64TestVector {
         label: "high_bits",
@@ -187,6 +181,60 @@ pub const EVENT_KINDS: &[WireEnumVariant] = &[
         screaming: "COMPOSITION_END",
         value: 11,
     },
+    WireEnumVariant {
+        pascal: "KeyDown",
+        camel: "keyDown",
+        screaming: "KEY_DOWN",
+        value: 12,
+    },
+    WireEnumVariant {
+        pascal: "KeyUp",
+        camel: "keyUp",
+        screaming: "KEY_UP",
+        value: 13,
+    },
+    WireEnumVariant {
+        pascal: "Submit",
+        camel: "submit",
+        screaming: "SUBMIT",
+        value: 14,
+    },
+    WireEnumVariant {
+        pascal: "PointerDown",
+        camel: "pointerDown",
+        screaming: "POINTER_DOWN",
+        value: 15,
+    },
+    WireEnumVariant {
+        pascal: "PointerMove",
+        camel: "pointerMove",
+        screaming: "POINTER_MOVE",
+        value: 16,
+    },
+    WireEnumVariant {
+        pascal: "PointerUp",
+        camel: "pointerUp",
+        screaming: "POINTER_UP",
+        value: 17,
+    },
+    WireEnumVariant {
+        pascal: "PointerEnter",
+        camel: "pointerEnter",
+        screaming: "POINTER_ENTER",
+        value: 18,
+    },
+    WireEnumVariant {
+        pascal: "PointerLeave",
+        camel: "pointerLeave",
+        screaming: "POINTER_LEAVE",
+        value: 19,
+    },
+    WireEnumVariant {
+        pascal: "Wheel",
+        camel: "wheel",
+        screaming: "WHEEL",
+        value: 20,
+    },
 ];
 
 /// Payload tag descriptor for `EventPayload` wire framing.
@@ -243,6 +291,27 @@ pub const EVENT_PAYLOAD_TAGS: &[EventPayloadTagSpec] = &[
         screaming: "CUSTOM",
         tag: 5,
         fixed_payload_bytes: None,
+    },
+    EventPayloadTagSpec {
+        pascal: "Key",
+        camel: "key",
+        screaming: "KEY",
+        tag: 6,
+        fixed_payload_bytes: None,
+    },
+    EventPayloadTagSpec {
+        pascal: "Pointer",
+        camel: "pointer",
+        screaming: "POINTER",
+        tag: 7,
+        fixed_payload_bytes: Some(10),
+    },
+    EventPayloadTagSpec {
+        pascal: "Wheel",
+        camel: "wheel",
+        screaming: "WHEEL",
+        tag: 8,
+        fixed_payload_bytes: Some(9),
     },
 ];
 
@@ -317,20 +386,68 @@ pub const EVENT_MASKS: &[WireBitflag] = &[
         screaming: "COMPOSITION",
         value: 1 << 8,
     },
+    WireBitflag {
+        pascal: "KeyDown",
+        camel: "keyDown",
+        screaming: "KEY_DOWN",
+        value: 1 << 9,
+    },
+    WireBitflag {
+        pascal: "KeyUp",
+        camel: "keyUp",
+        screaming: "KEY_UP",
+        value: 1 << 10,
+    },
+    WireBitflag {
+        pascal: "Submit",
+        camel: "submit",
+        screaming: "SUBMIT",
+        value: 1 << 11,
+    },
+    WireBitflag {
+        pascal: "PointerDown",
+        camel: "pointerDown",
+        screaming: "POINTER_DOWN",
+        value: 1 << 12,
+    },
+    WireBitflag {
+        pascal: "PointerMove",
+        camel: "pointerMove",
+        screaming: "POINTER_MOVE",
+        value: 1 << 13,
+    },
+    WireBitflag {
+        pascal: "PointerUp",
+        camel: "pointerUp",
+        screaming: "POINTER_UP",
+        value: 1 << 14,
+    },
+    WireBitflag {
+        pascal: "PointerEnter",
+        camel: "pointerEnter",
+        screaming: "POINTER_ENTER",
+        value: 1 << 15,
+    },
+    WireBitflag {
+        pascal: "PointerLeave",
+        camel: "pointerLeave",
+        screaming: "POINTER_LEAVE",
+        value: 1 << 16,
+    },
+    WireBitflag {
+        pascal: "Wheel",
+        camel: "wheel",
+        screaming: "WHEEL",
+        value: 1 << 17,
+    },
 ];
 
-// ============================================================================
-// `NK1` KeyDown binary wire framing — matches `packages/core/abi/src/events.rs`
-// ============================================================================
-
-/// 3-byte ASCII wire magic identifying compact binary keydown payloads (`NK1`).
-pub const KEYDOWN_WIRE_MAGIC: [u8; 3] = *b"NK1";
-pub const KEYDOWN_HEADER_SIZE: usize = 4;
-pub const KEYDOWN_MIN_LEN: usize = 5;
-pub const KEYDOWN_FLAG_META: u8 = 1 << 0;
-pub const KEYDOWN_FLAG_CTRL: u8 = 1 << 1;
-pub const KEYDOWN_FLAG_SHIFT: u8 = 1 << 2;
-pub const KEYDOWN_FLAG_ALT: u8 = 1 << 3;
+/// Typed keyboard modifier bitflags shared with `NveDirectEvent::modifiers`.
+pub const KEY_MOD_META: u8 = 1 << 0;
+pub const KEY_MOD_CTRL: u8 = 1 << 1;
+pub const KEY_MOD_SHIFT: u8 = 1 << 2;
+pub const KEY_MOD_ALT: u8 = 1 << 3;
+pub const KEY_MOD_REPEAT: u8 = 1 << 4;
 
 // ============================================================================
 // `NVE_DRAW1` vector canvas stream — matches `packages/core/components/src/canvas_ir`
@@ -458,8 +575,7 @@ pub const fn wire_codecs_schema_hash() -> u64 {
     h = fnv1a64_update(h, &(EVENT_RING_COUNT_HEADER_SIZE as u64).to_le_bytes());
     h = fnv1a64_update(h, &(EVENT_RING_FRAMED_HEADER_SIZE as u64).to_le_bytes());
     h = fnv1a64_update(h, &(EVENT_ENTRY_HEADER_SIZE as u64).to_le_bytes());
-    h = fnv1a64_update(h, &KEYDOWN_WIRE_MAGIC);
-    h = fnv1a64_update(h, &[KEYDOWN_FLAG_META, KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_SHIFT, KEYDOWN_FLAG_ALT]);
+    h = fnv1a64_update(h, &[KEY_MOD_META, KEY_MOD_CTRL, KEY_MOD_SHIFT, KEY_MOD_ALT, KEY_MOD_REPEAT]);
     h = fnv1a64_update(h, &DRAW_LIST_MAGIC);
     h = fnv1a64_update(h, &DRAW_LIST_VERSION.to_le_bytes());
     h = fnv1a64_update(h, &(DRAW_LIST_HEADER_SIZE as u64).to_le_bytes());

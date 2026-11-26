@@ -1,7 +1,7 @@
 package dev.nve.tv
 
 /**
- * Typed TV remote & D-Pad action with stable numeric code and W3C/NVE `NK1` key name.
+ * Typed TV remote & D-Pad action with stable numeric code and W3C key name.
  */
 enum class NveTvAction(
     val code: Int,

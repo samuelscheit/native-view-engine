@@ -19,26 +19,28 @@ impl NveMutationWriter {
     #[inline]
     pub(crate) fn record_test_id(&mut self, node_id: NodeId, test_id: &str) {
         if let Some(rec) = self.nodes.get_mut(&node_id) {
-            rec.test_id = Some(test_id.to_owned());
+            rec.extras_mut().test_id = Some(test_id.to_owned());
         }
     }
 
     #[inline]
     pub(crate) fn clear_test_id(&mut self, node_id: NodeId) {
-        if let Some(rec) = self.nodes.get_mut(&node_id) {
-            rec.test_id = None;
+        if let Some(rec) = self.nodes.get_mut(&node_id)
+            && let Some(ext) = rec.extras.as_deref_mut()
+        {
+            ext.test_id = None;
         }
     }
 
     #[inline]
     pub(crate) fn record_text(&mut self, node_id: NodeId, text: &str) {
         if let Some(rec) = self.nodes.get_mut(&node_id) {
-            match &mut rec.text {
+            match &mut rec.extras_mut().text {
                 Some(existing) => {
                     existing.clear();
                     existing.push_str(text);
                 }
-                None => rec.text = Some(text.to_owned()),
+                None => rec.extras_mut().text = Some(text.to_owned()),
             }
         }
     }
@@ -48,7 +50,7 @@ impl NveMutationWriter {
     fn collect_nodes_by_test_id(&self, tid: &str, out: &mut Vec<NodeId>) {
         out.clear();
         for (&nid, rec) in &self.nodes {
-            if nid != ROOT_NODE_ID && rec.test_id.as_deref() == Some(tid) {
+            if nid != ROOT_NODE_ID && rec.extras().and_then(|e| e.test_id.as_deref()) == Some(tid) {
                 out.push(nid);
             }
         }
@@ -123,7 +125,8 @@ impl NveMutationWriter {
                         if self
                             .nodes
                             .get(&nid)
-                            .is_some_and(|n| n.text.as_deref() == Some(old_text.as_str()))
+                            .and_then(|n| n.extras())
+                            .is_some_and(|e| e.text.as_deref() == Some(old_text.as_str()))
                         {
                             targets.push(nid);
                         }
@@ -136,7 +139,8 @@ impl NveMutationWriter {
                         if self
                             .nodes
                             .get(&nid)
-                            .is_some_and(|n| n.text.as_deref() == Some(old_text.as_str()))
+                            .and_then(|n| n.extras())
+                            .is_some_and(|e| e.text.as_deref() == Some(old_text.as_str()))
                         {
                             targets.push(nid);
                         }
@@ -227,7 +231,7 @@ impl NveMutationWriter {
                 // element when Dioxus wraps a leaf text node inside `text { ... }`).
                 for &nid in &matched_text_nodes {
                     attr_targets.push(nid);
-                    if let Some(parent) = self.nodes.get(&nid).and_then(|n| n.parent)
+                    if let Some(parent) = self.nodes.get(&nid).and_then(crate::writer::NodeRecord::parent)
                         && self
                             .nodes
                             .get(&parent)

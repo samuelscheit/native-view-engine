@@ -21,11 +21,18 @@ unsafe extern "C" {
 #[link(name = "Foundation", kind = "framework")]
 unsafe extern "C" {}
 
+struct AutoreleasePoolGuard(*mut c_void);
+
+impl Drop for AutoreleasePoolGuard {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe { objc_autoreleasePoolPop(self.0) };
+    }
+}
+
 pub fn with_autorelease_pool<T>(f: impl FnOnce() -> T) -> T {
-    let pool = unsafe { objc_autoreleasePoolPush() };
-    let result = f();
-    unsafe { objc_autoreleasePoolPop(pool) };
-    result
+    let _guard = AutoreleasePoolGuard(unsafe { objc_autoreleasePoolPush() });
+    f()
 }
 
 /// # Safety

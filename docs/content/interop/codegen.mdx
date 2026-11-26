@@ -15,7 +15,7 @@ order: 1
 
 ## Single-Source Core & Scene ABI (`--check` Lock)
 
-Every language binding for `nve_get_interface(1..=5)` and the 64-byte `NveRenderNode` / `NveSceneView` slab is generated from one declarative Rust spec and locked by deterministic 64-bit FNV-1a schema hashes (`NVE_CORE_ABI_SCHEMA_HASH = 0x5BE5D06CC7C01FEF`, `NVE_SCENE_SCHEMA_HASH = 0x00F2CF037DB50CC8`).
+Every language binding for `nve_get_interface(1..=5)` and the 64-byte `NveRenderNode` / `NveSceneView` / `NveNodeMeta` slabs is generated from colocated Rust `#[derive(NveAbi)]` descriptors and locked by deterministic 64-bit FNV-1a schema hashes (`NVE_CORE_ABI_SCHEMA_HASH = 0x053543B32C5D959C`, `NVE_SCENE_SCHEMA_HASH = 0x6D45E53E0D9535D1`).
 
 Generated artifacts follow the `.generated.<ext>` convention (and Java `dev.nve.android.generated` package):
 

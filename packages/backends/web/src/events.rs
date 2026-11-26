@@ -1,7 +1,6 @@
-//! Binary `NK1` binary keyboard encoding, CJK IME composition guards, and single-root
+//! Direct typed keyboard/submit event construction, CJK IME composition guards, and single-root
 //! `wasm32` DOM event delegation (`closest('[data-nve-id]')` -> `NodeEventMeta` lookup).
 
-use nve_abi::events::encode_keydown_bytes;
 use nve_abi::{ComponentKind, EventMask, NodeId};
 
 pub use crate::input_attrs::{ImeCompositionGuard, InputSyncTracker};
@@ -92,17 +91,6 @@ pub fn should_intercept_anchor_click(
     true
 }
 
-/// Encodes a keyboard event into the binary compact `NK1` binary payload consumed by
-/// `NativeEventKind::Custom` (`name: "keydown"`).
-pub fn encode_keydown_payload(
-    key: &str,
-    meta: bool,
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-) -> Vec<u8> {
-    encode_keydown_bytes(key, meta, ctrl, shift, alt)
-}
 
 #[cfg(target_arch = "wasm32")]
 fn read_dom_input_value(el: &web_sys::Element) -> String {
@@ -377,13 +365,10 @@ impl WebBackend {
                                 &on_event,
                                 NativeEvent {
                                     surface_id: surface_id.get(),
-                                    node_id: ROOT_NODE_ID,
+                                    node_id,
                                     timestamp_us: now_us(),
-                                    kind: NativeEventKind::Custom,
-                                    payload: EventPayload::Custom {
-                                        name: "submit".into(),
-                                        data: value.into_bytes(),
-                                    },
+                                    kind: NativeEventKind::Submit,
+                                    payload: EventPayload::Text(value),
                                 },
                             );
                         }
@@ -537,114 +522,70 @@ impl WebBackend {
             })
         };
 
-        let make_custom_listener = |event_name: &'static str, prevent_default: bool| {
-            let root = container.clone();
-            let meta = Rc::clone(&self.node_event_meta);
-            let events = Rc::clone(&self.events);
-            let on_event = Rc::clone(&self.on_event);
-            let surface_id = Rc::clone(&self.surface_id);
+        let make_simple_listener = |mask: u64, kind: NativeEventKind, event_name: Option<&'static str>, prevent_default: bool| {
+            let (root, meta, events, on_event, surface_id) = (
+                container.clone(), Rc::clone(&self.node_event_meta), Rc::clone(&self.events),
+                Rc::clone(&self.on_event), Rc::clone(&self.surface_id),
+            );
             Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let found = {
-                    let map = meta.borrow();
-                    find_delegated_ancestor(&root, ev.target(), &map, |m| {
-                        (m.mask & EventMask::CUSTOM) != 0
-                    })
-                };
+                let found = find_delegated_ancestor(&root, ev.target(), &meta.borrow(), |m| (m.mask & mask) != 0);
                 if let Some((node_id, _)) = found {
-                    if prevent_default {
-                        ev.prevent_default();
-                    }
-                    emit_event(
-                        &events,
-                        &on_event,
-                        NativeEvent {
-                            surface_id: surface_id.get(),
-                            node_id,
-                            timestamp_us: now_us(),
-                            kind: NativeEventKind::Custom,
-                            payload: EventPayload::Custom { name: event_name.into(), data: Vec::new() },
-                        },
-                    );
+                    if prevent_default { ev.prevent_default(); }
+                    let payload = match event_name {
+                        Some(name) => EventPayload::Custom { name: name.into(), data: Vec::new() },
+                        None => EventPayload::Text(String::new()),
+                    };
+                    emit_event(&events, &on_event, NativeEvent {
+                        surface_id: surface_id.get(), node_id, timestamp_us: now_us(), kind, payload,
+                    });
                 }
             })
         };
-        let submit = make_custom_listener("submit", true);
-        let close = make_custom_listener("close", false);
+        let submit = make_simple_listener(EventMask::SUBMIT | EventMask::CUSTOM, NativeEventKind::Submit, None, true);
+        let close = make_simple_listener(EventMask::CUSTOM, NativeEventKind::Custom, Some("close"), false);
 
-        let _ = container.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback("submit", submit.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback_and_bool("close", close.as_ref().unchecked_ref(), true);
-        let _ = container.add_event_listener_with_callback("input", input.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback("change", change.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback("focusin", focusin.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback("focusout", focusout.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback_and_bool("scroll", scroll.as_ref().unchecked_ref(), true);
-        let _ = container.add_event_listener_with_callback("compositionstart", compositionstart.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback("compositionupdate", compositionupdate.as_ref().unchecked_ref());
-        let _ = container.add_event_listener_with_callback("compositionend", compositionend.as_ref().unchecked_ref());
+        for (ev_name, cb, capture) in [
+            ("click", click.as_ref().unchecked_ref(), false),
+            ("submit", submit.as_ref().unchecked_ref(), false),
+            ("close", close.as_ref().unchecked_ref(), true),
+            ("input", input.as_ref().unchecked_ref(), false),
+            ("change", change.as_ref().unchecked_ref(), false),
+            ("keydown", keydown.as_ref().unchecked_ref(), false),
+            ("focusin", focusin.as_ref().unchecked_ref(), false),
+            ("focusout", focusout.as_ref().unchecked_ref(), false),
+            ("scroll", scroll.as_ref().unchecked_ref(), true),
+            ("compositionstart", compositionstart.as_ref().unchecked_ref(), false),
+            ("compositionupdate", compositionupdate.as_ref().unchecked_ref(), false),
+            ("compositionend", compositionend.as_ref().unchecked_ref(), false),
+        ] {
+            let _ = container.add_event_listener_with_callback_and_bool(ev_name, cb, capture);
+        }
 
         self.root_delegator = Some(RootEventDelegator {
-            container,
-            click,
-            submit,
-            close,
-            input,
-            change,
-            keydown,
-            focusin,
-            focusout,
-            scroll,
-            compositionstart,
-            compositionupdate,
-            compositionend,
+            container, click, submit, close, input, change, keydown, focusin, focusout,
+            scroll, compositionstart, compositionupdate, compositionend,
         });
     }
 
     pub(crate) fn attach_window_keydown_listener(&mut self) {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let events = Rc::clone(&self.events);
-        let on_event = Rc::clone(&self.on_event);
-        let surface_id = Rc::clone(&self.surface_id);
-        let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
-            move |ev: web_sys::KeyboardEvent| {
-                if ev.is_composing() || ev.key_code() == IME_PROCESS_KEY_CODE {
-                    return;
-                }
-                let key = ev.key();
-                let meta = ev.meta_key();
-                let ctrl = ev.ctrl_key();
-                let shift = ev.shift_key();
-                let alt = ev.alt_key();
-                let is_cmd_k = (meta || ctrl) && key.eq_ignore_ascii_case("k");
-                let is_nav = matches!(key.as_str(), "ArrowUp" | "ArrowDown" | "Enter" | "Escape");
-                if !is_cmd_k && !is_nav {
-                    return;
-                }
-                if is_cmd_k {
-                    ev.prevent_default();
-                }
-                let data = encode_keydown_payload(&key, meta, ctrl, shift, alt);
-                emit_event(
-                    &events,
-                    &on_event,
-                    NativeEvent {
-                        surface_id: surface_id.get(),
-                        node_id: ROOT_NODE_ID,
-                        timestamp_us: now_us(),
-                        kind: NativeEventKind::Custom,
-                        payload: EventPayload::Custom {
-                            name: "keydown".into(),
-                            data,
-                        },
-                    },
-                );
-            },
+        let Some(window) = web_sys::window() else { return; };
+        let (events, on_event, surface_id) = (
+            Rc::clone(&self.events), Rc::clone(&self.on_event), Rc::clone(&self.surface_id),
         );
-        let _ =
-            window.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+        let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+            if ev.is_composing() || ev.key_code() == IME_PROCESS_KEY_CODE { return; }
+            let (key, meta, ctrl) = (ev.key(), ev.meta_key(), ev.ctrl_key());
+            let is_cmd_k = (meta || ctrl) && key.eq_ignore_ascii_case("k");
+            if !is_cmd_k && !matches!(key.as_str(), "ArrowUp" | "ArrowDown" | "Enter" | "Escape") { return; }
+            if is_cmd_k { ev.prevent_default(); }
+            let modifiers = nve_abi::pack_key_modifiers(meta, ctrl, ev.shift_key(), ev.alt_key(), ev.repeat());
+            emit_event(&events, &on_event, NativeEvent {
+                surface_id: surface_id.get(), node_id: ROOT_NODE_ID, timestamp_us: now_us(),
+                kind: NativeEventKind::KeyDown,
+                payload: EventPayload::Key { key, code: ev.code(), modifiers, key_code: ev.key_code(), is_composing: false },
+            });
+        });
+        let _ = window.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
         self.window_keydown = Some(closure);
     }
 }

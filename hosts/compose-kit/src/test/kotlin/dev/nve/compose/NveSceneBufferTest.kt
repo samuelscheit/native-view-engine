@@ -282,77 +282,86 @@ class NveSceneBufferTest {
     }
 
     @Test
-    fun decodesMetadataSlabWithLittleEndianBufferAndReusableScratch() {
+    fun decodesFixedStrideNodeMetaAndBlobWithReusableScratch() {
         val label = "Save 🚀".toByteArray(Charsets.UTF_8)
         val role = "button".toByteArray(Charsets.UTF_8)
         val hint = "Persists state".toByteArray(Charsets.UTF_8)
         val stateDesc = "ready".toByteArray(Charsets.UTF_8)
         val placeholder = "Enter value".toByteArray(Charsets.UTF_8)
         val testId = "btn-save".toByteArray(Charsets.UTF_8)
-        val totalBytes = NveNodeMetadataCodec.HEADER_SIZE +
-            NveNodeMetadataCodec.RECORD_HEADER_SIZE +
-            label.size + role.size + hint.size + stateDesc.size + placeholder.size + testId.size
 
-        val buf = ByteBuffer.allocateDirect(totalBytes).order(ByteOrder.LITTLE_ENDIAN)
-        buf.put("NVE_MET1".toByteArray(Charsets.US_ASCII))
-        buf.putShort(NveNodeMetadataCodec.FORMAT_VERSION.toShort())
-        buf.putShort(0)
-        buf.putInt(1) // recordCount
-        buf.putLong(42L) // frameId
-        buf.putInt(totalBytes)
-        buf.putInt(0)
+        val totalBlobBytes = label.size + role.size + hint.size + stateDesc.size + placeholder.size + testId.size
+        val blobBuf = ByteBuffer.allocateDirect(totalBlobBytes).order(ByteOrder.LITTLE_ENDIAN)
+        var off = 0
+        fun putSlice(bytes: ByteArray): Int {
+            val start = off
+            blobBuf.put(bytes)
+            off += bytes.size
+            return start
+        }
+        val labelOff = putSlice(label)
+        val roleOff = putSlice(role)
+        val hintOff = putSlice(hint)
+        val stateOff = putSlice(stateDesc)
+        val placeholderOff = putSlice(placeholder)
+        val testIdOff = putSlice(testId)
+        blobBuf.flip()
 
         val flags = NveNodeMetadataCodec.FLAG_DISABLED or
             NveNodeMetadataCodec.FLAG_MULTILINE or
             (NveNodeMetadata.RESIZE_MODE_CONTAIN shl NveNodeMetadataCodec.RESIZE_MODE_SHIFT)
-        buf.putInt(7) // nodeId
-        buf.putInt(flags)
-        buf.putShort(label.size.toShort())
-        buf.putShort(role.size.toShort())
-        buf.putShort(hint.size.toShort())
-        buf.putShort(stateDesc.size.toShort())
-        buf.putShort(placeholder.size.toShort())
-        buf.putShort(testId.size.toShort())
-        buf.putInt(0) // drawListLen
-        buf.putInt(0) // reserved
-        buf.put(label)
-        buf.put(role)
-        buf.put(hint)
-        buf.put(stateDesc)
-        buf.put(placeholder)
-        buf.put(testId)
-        buf.flip()
+
+        val recBuf = ByteBuffer.allocateDirect(NveNodeMetadataCodec.META_STRIDE).order(ByteOrder.LITTLE_ENDIAN)
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_NODE_ID, 7)
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_FLAGS, flags)
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_LABEL_OFFSET, labelOff)
+        recBuf.putShort(NveNodeMetadataCodec.META_OFFSET_LABEL_LEN, label.size.toShort())
+        recBuf.putShort(NveNodeMetadataCodec.META_OFFSET_ROLE_LEN, role.size.toShort())
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_ROLE_OFFSET, roleOff)
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_HINT_OFFSET, hintOff)
+        recBuf.putShort(NveNodeMetadataCodec.META_OFFSET_HINT_LEN, hint.size.toShort())
+        recBuf.putShort(NveNodeMetadataCodec.META_OFFSET_STATE_DESC_LEN, stateDesc.size.toShort())
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_STATE_DESC_OFFSET, stateOff)
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_PLACEHOLDER_OFFSET, placeholderOff)
+        recBuf.putShort(NveNodeMetadataCodec.META_OFFSET_PLACEHOLDER_LEN, placeholder.size.toShort())
+        recBuf.putShort(NveNodeMetadataCodec.META_OFFSET_TEST_ID_LEN, testId.size.toShort())
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_TEST_ID_OFFSET, testIdOff)
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_DRAW_LIST_OFFSET, 0)
+        recBuf.putInt(NveNodeMetadataCodec.META_OFFSET_DRAW_LIST_LEN, 0)
 
         val scratch = NveNodeMetadataCodec.Utf8Scratch(initialCapacity = 8)
         val target = HashMap<Int, NveNodeMetadata>()
 
-        // Mismatched expectedFrameId is ignored cleanly.
-        val skipped = NveNodeMetadataCodec.decodeInto(
-            buf,
-            target,
-            declaredBytes = totalBytes,
-            expectedFrameId = 99L,
+        // Over-declared recordCount is rejected cleanly.
+        val tooMany = NveNodeMetadataCodec.decodeInto(
+            recordsBuf = recBuf,
+            blobBuf = blobBuf,
+            target = target,
+            recordCount = 2,
+            blobUsedBytes = totalBlobBytes,
             scratch = scratch,
         )
-        assertEquals(0, skipped.size)
+        assertEquals(0, tooMany.size)
         assertTrue(target.isEmpty())
 
-        // Truncated declaredBytes is rejected cleanly.
-        val truncated = NveNodeMetadataCodec.decodeInto(
-            buf,
-            target,
-            declaredBytes = totalBytes - 1,
-            expectedFrameId = 42L,
+        // Over-declared blobUsedBytes is rejected cleanly.
+        val badBlobBound = NveNodeMetadataCodec.decodeInto(
+            recordsBuf = recBuf,
+            blobBuf = blobBuf,
+            target = target,
+            recordCount = 1,
+            blobUsedBytes = totalBlobBytes + 1,
             scratch = scratch,
         )
-        assertEquals(0, truncated.size)
+        assertEquals(0, badBlobBound.size)
 
-        // Matching frameId and declaredBytes decodes all fields cleanly.
+        // Valid fixed-stride 64B NveNodeMeta + companion blob decodes all fields cleanly.
         val updated = NveNodeMetadataCodec.decodeInto(
-            buf,
-            target,
-            declaredBytes = totalBytes,
-            expectedFrameId = 42L,
+            recordsBuf = recBuf,
+            blobBuf = blobBuf,
+            target = target,
+            recordCount = 1,
+            blobUsedBytes = totalBlobBytes,
             scratch = scratch,
         )
         assertArrayEquals(intArrayOf(7), updated)

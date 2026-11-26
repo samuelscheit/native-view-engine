@@ -69,7 +69,7 @@ fn inline_style_forwards_font_weight_text_align_box_shadow_and_inherits_text_pro
     writer.builder.set_text(leaf_text, "Title");
 
     writer.nodes.get_mut(&parent_text).unwrap().children.push(leaf_text);
-    writer.nodes.get_mut(&leaf_text).unwrap().parent = Some(parent_text);
+    writer.nodes.get_mut(&leaf_text).unwrap().set_parent(Some(parent_text));
     writer.dirty_children.push(parent_text);
 
     let cmds = decode_cmds(writer.finish_frame(true));
@@ -102,7 +102,7 @@ fn typed_style_matches_string_css_identically_including_leaf_text_inheritance() 
     str_writer.record_text(s_leaf, "Heading");
     str_writer.builder.set_text(s_leaf, "Heading");
     str_writer.nodes.get_mut(&s_parent).unwrap().children.push(s_leaf);
-    str_writer.nodes.get_mut(&s_leaf).unwrap().parent = Some(s_parent);
+    str_writer.nodes.get_mut(&s_leaf).unwrap().set_parent(Some(s_parent));
     str_writer.dirty_children.push(s_parent);
     let str_cmds = decode_cmds(str_writer.finish_frame(true));
 
@@ -152,7 +152,7 @@ fn typed_style_matches_string_css_identically_including_leaf_text_inheritance() 
     typed_writer.record_text(t_leaf, "Heading");
     typed_writer.builder.set_text(t_leaf, "Heading");
     typed_writer.nodes.get_mut(&t_parent).unwrap().children.push(t_leaf);
-    typed_writer.nodes.get_mut(&t_leaf).unwrap().parent = Some(t_parent);
+    typed_writer.nodes.get_mut(&t_leaf).unwrap().set_parent(Some(t_parent));
     typed_writer.dirty_children.push(t_parent);
     let typed_cmds = decode_cmds(typed_writer.finish_frame(true));
 
@@ -327,4 +327,65 @@ fn typed_style_stores_zero_serialization_transitions_on_node_record() {
     let _ = writer.finish_frame(true);
     assert!(writer.node_transitions(nid).is_empty());
     assert_eq!(writer.iter_transitions().count(), 0);
+}
+
+#[test]
+fn node_record_size_budget() {
+    use core::mem::size_of;
+    let sz = size_of::<super::NodeRecord>();
+    println!(
+        "NodeRecord={sz} LayoutProps={} StyleProps={}",
+        size_of::<LayoutProps>(),
+        size_of::<StyleProps>(),
+    );
+    assert!(sz <= 200, "NodeRecord grew to {sz} bytes (budget <= 200)");
+}
+
+#[test]
+fn dioxus_surface_new_with_props_and_new_with_context_render_cleanly() {
+    use crate::prelude::*;
+    use crate::DioxusSurface;
+    use dioxus_core::consume_context;
+
+    #[derive(Clone, PartialEq)]
+    struct GreetingProps {
+        title: String,
+    }
+
+    fn props_root(props: GreetingProps) -> Element {
+        rsx! {
+            text { "{props.title}" }
+        }
+    }
+
+    #[derive(Clone)]
+    struct ThemeLabel(&'static str);
+
+    fn context_root() -> Element {
+        let label = consume_context::<ThemeLabel>();
+        rsx! {
+            text { "{label.0}" }
+        }
+    }
+
+    let mut props_surface = DioxusSurface::new_with_props(
+        1,
+        props_root,
+        GreetingProps {
+            title: "typed-props-ok".into(),
+        },
+    );
+    let (_, _, f1) = props_surface.render_frame(1);
+    let cmds1 = decode_cmds(&f1);
+    assert!(cmds1
+        .iter()
+        .any(|c| matches!(c, Command::SetText { text, .. } if text == "typed-props-ok")));
+
+    let mut ctx_surface =
+        DioxusSurface::new_with_context(2, context_root, ThemeLabel("typed-ctx-ok"));
+    let (_, _, f2) = ctx_surface.render_frame(1);
+    let cmds2 = decode_cmds(&f2);
+    assert!(cmds2
+        .iter()
+        .any(|c| matches!(c, Command::SetText { text, .. } if text == "typed-ctx-ok")));
 }

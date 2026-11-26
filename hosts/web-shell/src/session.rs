@@ -3,13 +3,14 @@
 //! (feature `scene-view`).
 
 #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
-use nve_abi::encode_events;
+use nve_abi::{native_events_to_direct, NveDirectEvent, NveEventBatchRef};
 use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId, ROOT_NODE_ID,
+    pack_key_modifiers, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId,
+    ROOT_NODE_ID,
 };
 #[cfg(feature = "scene-view")]
 use crate::scene::SceneMirror;
-use nve_backend_web::{encode_keydown_payload, WebBackend, WebSnapshotPayload};
+use nve_backend_web::{WebBackend, WebSnapshotPayload};
 use nve_dioxus::DioxusSurface;
 #[cfg(feature = "dev")]
 use nve_engine::HotPatchMsg;
@@ -115,9 +116,17 @@ impl SessionApp {
         match self {
             Self::Dioxus(surface) => surface.dispatch_events(events),
             #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.dispatch_events(&encode_events(events)),
+            Self::Studio(module) => {
+                let mut direct = Vec::with_capacity(events.len());
+                native_events_to_direct(events, &mut direct);
+                module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&direct) })
+            }
             #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.dispatch_events(&encode_events(events)),
+            Self::KitchenSink(module) => {
+                let mut direct = Vec::with_capacity(events.len());
+                native_events_to_direct(events, &mut direct);
+                module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&direct) })
+            }
         }
     }
 
@@ -226,8 +235,16 @@ impl WebAppSession {
         let mut module = StudioWorkspaceModule::create(surface_id);
         let restored = state_bytes.is_some_and(|bytes| module.try_restore_state(bytes));
         if viewport.width > 0.0 && viewport.height > 0.0 {
-            let layout_bytes = encode_events(&[layout_event(surface_id, viewport)]);
-            let _ = module.dispatch_events(&layout_bytes);
+            let layout_ev = [NveDirectEvent::layout(
+                surface_id,
+                ROOT_NODE_ID,
+                0,
+                0.0,
+                0.0,
+                viewport.width,
+                viewport.height,
+            )];
+            let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
         }
         (
             Self::with_app(surface_id, SessionApp::Studio(Box::new(module)), backend, viewport),
@@ -406,15 +423,17 @@ impl WebAppSession {
         ctrl: bool,
     ) -> Result<Option<FrameTiming>, BackendError> {
         let surface_id = self.runner.surface_id();
-        let data = encode_keydown_payload(key, meta, ctrl, false, false);
         let ev = NativeEvent {
             surface_id,
             node_id: ROOT_NODE_ID,
             timestamp_us: 0,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "keydown".into(),
-                data,
+            kind: NativeEventKind::KeyDown,
+            payload: EventPayload::Key {
+                key: key.to_owned(),
+                code: String::new(),
+                key_code: 0,
+                modifiers: pack_key_modifiers(meta, ctrl, false, false, false),
+                is_composing: false,
             },
         };
         if !self.app.dispatch_events(&[ev]) {

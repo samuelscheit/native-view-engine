@@ -17,7 +17,7 @@ use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
 /// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.generated.h`).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0xFB51_2A2A_DD6F_AF57;
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x0535_43B3_2C5D_959C;
 
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
@@ -237,6 +237,15 @@ pub enum NativeEventKind {
     CompositionStart = 9,
     CompositionUpdate = 10,
     CompositionEnd = 11,
+    KeyDown = 12,
+    KeyUp = 13,
+    Submit = 14,
+    PointerDown = 15,
+    PointerMove = 16,
+    PointerUp = 17,
+    PointerEnter = 18,
+    PointerLeave = 19,
+    Wheel = 20,
 }
 
 impl NativeEventKind {
@@ -254,6 +263,15 @@ impl NativeEventKind {
             9 => Some(Self::CompositionStart),
             10 => Some(Self::CompositionUpdate),
             11 => Some(Self::CompositionEnd),
+            12 => Some(Self::KeyDown),
+            13 => Some(Self::KeyUp),
+            14 => Some(Self::Submit),
+            15 => Some(Self::PointerDown),
+            16 => Some(Self::PointerMove),
+            17 => Some(Self::PointerUp),
+            18 => Some(Self::PointerEnter),
+            19 => Some(Self::PointerLeave),
+            20 => Some(Self::Wheel),
             _ => None,
         }
     }
@@ -278,6 +296,9 @@ pub enum NveEventPayloadTag {
     Text = 3,
     Layout = 4,
     Custom = 5,
+    Key = 6,
+    Pointer = 7,
+    Wheel = 8,
 }
 
 /// Validation / decoding errors shared across zero-copy FFI views and binary wire codecs.
@@ -314,11 +335,7 @@ pub struct NveSurfaceApi {
     pub create: unsafe extern "C" fn(surface_id: u32) -> NveAppHandle,
     pub destroy: unsafe extern "C" fn(handle: NveAppHandle),
     pub render: unsafe extern "C" fn(handle: NveAppHandle, frame_id: u64) -> NveBufferSlice,
-    pub dispatch_events:
-        unsafe extern "C" fn(handle: NveAppHandle, events: NveBufferSlice) -> u32,
-    /// Optional zero-copy direct event dispatch (may be NULL).
-    pub dispatch_events_direct:
-        Option<unsafe extern "C" fn(handle: NveAppHandle, batch: NveEventBatch) -> u32>,
+    pub dispatch_events: unsafe extern "C" fn(handle: NveAppHandle, batch: NveEventBatch) -> u32,
 }
 
 /// Optional layout & gesture negotiation interface (`NVE_IFACE_LAYOUT = 2`).
@@ -340,16 +357,9 @@ pub struct NveLayoutApi {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NveComponentApi {
-    pub set_props: unsafe extern "C" fn(handle: NveAppHandle, props: NveBufferSlice) -> u32,
-    pub drain_emitted_events: unsafe extern "C" fn(handle: NveAppHandle) -> NveBufferSlice,
-    /// Optional zero-copy structured props update (may be NULL).
-    pub set_props_direct: Option<
-        unsafe extern "C" fn(
-            handle: NveAppHandle,
-            entries: *const NveMapEntry,
-            count: u32,
-        ) -> u32,
-    >,
+    pub set_props:
+        unsafe extern "C" fn(handle: NveAppHandle, entries: *const NveMapEntry, count: u32) -> u32,
+    pub drain_emitted_events: unsafe extern "C" fn(handle: NveAppHandle) -> NveEventBatch,
 }
 
 /// Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds).

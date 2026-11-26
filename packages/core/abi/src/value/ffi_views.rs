@@ -1,8 +1,12 @@
 use crate::NativeEventKind;
 
+use super::ffi_events::{
+    NveDirectEvent, NveEventBatch, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE,
+    NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
+    NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
+};
 use super::ffi_types::{
-    guarded_slice, NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry,
-    NvePropSlice, NveValue, NveValueTag,
+    guarded_slice, NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveValue, NveValueTag,
 };
 
 /// Zero-copy, zero-allocation borrowed view of an FFI `NveValue`.
@@ -152,16 +156,32 @@ impl<'a> NveDirectEventRef<'a> {
     #[inline] pub const fn timestamp_us(&self) -> u64 { self.raw.timestamp_us }
     #[inline] pub const fn kind(&self) -> Option<NativeEventKind> { NativeEventKind::from_u8_opt(self.raw.kind) }
     #[inline] pub const fn payload_tag(&self) -> u8 { self.raw.payload_tag }
+    #[inline] pub const fn modifiers(&self) -> u8 { self.raw.modifiers }
+    #[inline] pub const fn event_flags(&self) -> u8 { self.raw.event_flags }
+    #[inline] pub const fn key_code(&self) -> u32 { self.raw.key_code }
+    #[inline] pub const fn meta(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_META) != 0 }
+    #[inline] pub const fn ctrl(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_CTRL) != 0 }
+    #[inline] pub const fn shift(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_SHIFT) != 0 }
+    #[inline] pub const fn alt(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_ALT) != 0 }
+    #[inline] pub const fn repeat(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_REPEAT) != 0 }
+    #[inline] pub const fn has_primary_modifier(&self) -> bool { self.meta() || self.ctrl() }
+    #[inline] pub const fn pointer_button(&self) -> u8 { self.raw.event_flags & NVE_EVENT_FLAG_BUTTON_MASK }
+    #[inline] pub const fn is_capture(&self) -> bool { (self.raw.event_flags & NVE_EVENT_FLAG_CAPTURE) != 0 }
+    #[inline] pub const fn is_composing(&self) -> bool { (self.raw.event_flags & NVE_EVENT_FLAG_COMPOSING) != 0 }
     #[inline] pub fn name(&self) -> &'a str { unsafe { self.raw.name.as_str() }.unwrap_or("") }
+    #[inline] pub fn code(&self) -> &'a str { self.name() }
     #[inline] pub const fn x(&self) -> f32 { self.raw.x }
     #[inline] pub const fn y(&self) -> f32 { self.raw.y }
+    #[inline] pub const fn delta_x(&self) -> f32 { self.raw.x }
+    #[inline] pub const fn delta_y(&self) -> f32 { self.raw.y }
     #[inline] pub const fn width(&self) -> f32 { self.raw.width }
     #[inline] pub const fn height(&self) -> f32 { self.raw.height }
     #[inline] pub fn text(&self) -> &'a str { unsafe { self.raw.text.as_str() }.unwrap_or("") }
+    #[inline] pub fn key(&self) -> &'a str { self.text() }
     #[inline] pub const fn value(&self) -> NveValueRef<'a> { NveValueRef { raw: &self.raw.value } }
 }
 
-/// Zero-copy borrowed batch of `NveDirectEvent`s passed into `NveApp::dispatch_events_direct`.
+/// Zero-copy borrowed batch of `NveDirectEvent`s passed into `NveApp::dispatch_events`.
 #[derive(Clone, Copy)]
 pub struct NveEventBatchRef<'a> {
     events: &'a [NveDirectEvent],

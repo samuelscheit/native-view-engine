@@ -3,7 +3,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use dioxus_core::{Element, VirtualDom};
+use dioxus_core::{ComponentFunction, Element, ScopeId, VirtualDom};
 use nve_abi::{FrameId, NodeId, SurfaceId};
 use nve_components::canvas_ir::DrawList;
 use nve_components::interaction::{CursorKind, StateStyleRule};
@@ -58,10 +58,10 @@ pub struct DioxusSurface {
 }
 
 impl DioxusSurface {
-    pub fn new(surface_id: SurfaceId, root: fn() -> Element) -> Self {
+    fn from_vdom(surface_id: SurfaceId, vdom: VirtualDom) -> Self {
         Self {
             surface_id,
-            vdom: VirtualDom::new(root),
+            vdom,
             writer: NveMutationWriter::new(surface_id),
             initialized: false,
             pending_hot_patches: Vec::new(),
@@ -69,11 +69,43 @@ impl DioxusSurface {
         }
     }
 
+    pub fn new(surface_id: SurfaceId, root: fn() -> Element) -> Self {
+        Self::from_vdom(surface_id, VirtualDom::new(root))
+    }
+
+    /// Creates a surface with typed root props passed directly to `root` without thread-local
+    /// bootstrap queues.
+    pub fn new_with_props<P: Clone + 'static, M: 'static>(
+        surface_id: SurfaceId,
+        root: impl ComponentFunction<P, M>,
+        props: P,
+    ) -> Self {
+        Self::from_vdom(surface_id, VirtualDom::new_with_props(root, props))
+    }
+
+    /// Creates a surface and injects a typed initial context into `ScopeId::ROOT` before the
+    /// first render so root and descendant components can read it via `consume_context::<C>()`.
+    pub fn new_with_context<C: Clone + 'static>(
+        surface_id: SurfaceId,
+        root: fn() -> Element,
+        context: C,
+    ) -> Self {
+        Self::new(surface_id, root).with_context(context)
+    }
+
+    /// Injects an additional typed context value into `ScopeId::ROOT` before initial mount.
+    pub fn with_context<C: Clone + 'static>(self, context: C) -> Self {
+        self.vdom.in_scope(ScopeId::ROOT, || {
+            dioxus_core::provide_context(context);
+        });
+        self
+    }
+
     /// Runs `f` inside `VirtualDom`'s `ScopeId::ROOT` runtime context (e.g. for host callbacks
     /// updating a [`crate::ReactiveTraitStore`] or root signals).
     #[inline]
     pub fn in_root_scope<R>(&mut self, f: impl FnOnce() -> R) -> R {
-        self.vdom.in_scope(dioxus_core::ScopeId::ROOT, f)
+        self.vdom.in_scope(ScopeId::ROOT, f)
     }
 
     pub fn signal_registry(&self) -> &SignalRegistry {

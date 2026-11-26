@@ -134,12 +134,10 @@ class NveQtQuickItem : public QQuickItem {
   /// Configures automatic atomic snapshot persistence on item teardown / window close.
   Q_INVOKABLE void setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion = 1);
 
-  /// Forward UTF-8 JSON props to `NveComponentApi::set_props`, re-render if dirty, sync scene,
-  /// and drain outbound events.
-  bool applyPropsJson(std::string_view propsJson);
-
-  /// Forward structured zero-copy props to `NveComponentApi::set_props_direct`.
-  bool applyPropsDirect(const NveMapEntry* entries, uint32_t count);
+  /// Forward structured typed props to `NveComponentApi::set_props`, re-render if dirty,
+  /// sync scene, and drain outbound events.
+  bool applyProps(const nve::PropMap& props);
+  bool applyProps(const NveMapEntry* entries, uint32_t count);
 
   /// Apply one binary `NVP1` Tier-1 hot-patch frame (`NveDevApi::apply_hot_patch`) and sync scene.
   bool applyHotPatch(std::span<const uint8_t> patchNvp1);

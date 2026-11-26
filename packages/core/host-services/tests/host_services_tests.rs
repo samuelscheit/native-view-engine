@@ -14,8 +14,8 @@ use nve_abi::{
 use nve_host_services::{
     fnv1a64, pack_typed, resolve_typed, validate_url, BinReader, BinWriter, FfiHostServices,
     HostCallbackBridge, HostServiceHandler, HostServiceProvider, HostServiceRegistry, InvokeResult,
-    MemoryHostServices, NativeHostServices, PermissionStatus, ServiceError, TypedEventBus,
-    FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE,
+    MemoryHostServices, PermissionStatus, ServiceError, TypedEventBus, FFI_MAX_RESPONSE_BYTES,
+    FFI_STACK_BUF_SIZE,
 };
 use nve_interop::CHANNEL_ID_THEME;
 
@@ -79,11 +79,11 @@ fn registry_and_native_host_services_compose_handlers_cleanly() {
     assert!(reg.unregister(TEST_SERVICE_ECHO));
     assert!(!reg.unregister(TEST_SERVICE_ECHO));
 
-    let native = NativeHostServices::new().with_handler(EchoHandler {
+    let composed = HostServiceRegistry::new().with_handler(EchoHandler {
         big_payload: vec![1, 2, 3],
     });
     assert_eq!(
-        native
+        composed
             .invoke_sync(TEST_SERVICE_ECHO, TEST_METHOD_BIG, &[])
             .unwrap(),
         vec![1, 2, 3]
@@ -326,13 +326,14 @@ fn ffi_host_services_fast_path_buffer_too_small_retry_and_typed_events() {
 
     let ffi = FfiHostServices::with_callbacks(callbacks);
 
-    assert_eq!(ffi.invoke_sync(TEST_SERVICE_ECHO, 1, &[]).unwrap(), vec![1]);
+    let small = ffi.invoke_sync(TEST_SERVICE_ECHO, 1, &[]).unwrap();
+    assert!(small.is_inline(), "<=4 KiB sync response must stay inline");
+    assert_eq!(small, vec![1]);
     assert_eq!(host.invoke_calls.load(Ordering::SeqCst), 1);
 
-    assert_eq!(
-        ffi.invoke_sync(TEST_SERVICE_ECHO, 2, &[]).unwrap(),
-        large_payload
-    );
+    let big = ffi.invoke_sync(TEST_SERVICE_ECHO, 2, &[]).unwrap();
+    assert!(!big.is_inline(), ">4 KiB sync response must use heap fallback");
+    assert_eq!(big, large_payload);
     assert_eq!(host.invoke_calls.load(Ordering::SeqCst), 3);
 
     assert!(matches!(
@@ -551,4 +552,78 @@ fn typed_in_process_dispatch_bypasses_wire_serialization_completely() {
     // Once one-shot fault is consumed, zero-serialization direct dispatch resumes immediately!
     assert!(resolve_typed::<dyn DirectGreetBackend>(&mem, 0x1099, 1).is_some());
     assert_eq!(handler.wire_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn ffi_async_callback_concurrent_immediate_resolution_never_drops_or_hangs() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct RacingHost {
+        ffi: Arc<FfiHostServices>,
+        mode_reentrant: AtomicUsize,
+    }
+
+    unsafe extern "C" fn racing_invoke(
+        host_ctx: *mut c_void,
+        _service_id: u32,
+        method_id: u32,
+        request_id: u64,
+        _request: NveBufferSlice,
+        _out_buf: *mut u8,
+        _out_cap: usize,
+        out_len: *mut usize,
+    ) -> i32 {
+        let host = unsafe { &*(host_ctx as *const RacingHost) };
+        unsafe { *out_len = 0 };
+        let payload = request_id.to_le_bytes().to_vec();
+        if method_id == 1 {
+            // Re-entrant synchronous resolution before returning Pending.
+            host.mode_reentrant.fetch_add(1, Ordering::Relaxed);
+            host.ffi
+                .resolve_async_response(request_id, NveHostStatus::Ok, payload);
+        } else {
+            // Cross-thread immediate resolution racing against `invoke_with_callback` return.
+            let ffi = Arc::clone(&host.ffi);
+            let handle = std::thread::spawn(move || {
+                ffi.resolve_async_response(request_id, NveHostStatus::Ok, payload);
+            });
+            // Let the worker thread resolve BEFORE this FFI call returns Pending on half the runs.
+            if request_id.is_multiple_of(2) {
+                let _ = handle.join();
+            }
+        }
+        NveHostStatus::Pending.as_i32()
+    }
+
+    let ffi = Arc::new(FfiHostServices::new());
+    let host = Box::new(RacingHost {
+        ffi: Arc::clone(&ffi),
+        mode_reentrant: AtomicUsize::new(0),
+    });
+    ffi.bind(Some(NveHostCallbacks {
+        host_ctx: (&*host as *const RacingHost) as *mut c_void,
+        invoke: Some(racing_invoke),
+        channel_publish: None,
+    }));
+
+    const ITERATIONS: usize = 64;
+    for i in 0..ITERATIONS {
+        let (tx, rx) = mpsc::channel();
+        let method_id = if i % 3 == 0 { 1 } else { 2 };
+        let pending_id = ffi
+            .invoke_with_callback(TEST_SERVICE_ECHO, method_id, &[], move |res| {
+                let _ = tx.send(res);
+            })
+            .expect("invoke_with_callback must succeed")
+            .expect("must return Pending request_id");
+
+        let received = rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|e| panic!("iteration {i} dropped async callback: {e}"))
+            .expect("async response must be Ok");
+        assert_eq!(received, pending_id.to_le_bytes());
+    }
+    assert_eq!(ffi.pending_request_count(), 0);
+    assert!(host.mode_reentrant.load(Ordering::Relaxed) > 0);
 }

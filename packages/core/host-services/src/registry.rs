@@ -1,5 +1,5 @@
-//! Zero-overhead composable [`HostServiceRegistry`], [`NativeHostServices`], and
-//! [`MemoryHostServices`] dispatching `service_id` calls to opt-in [`HostServiceHandler`]s.
+//! Zero-overhead composable [`HostServiceRegistry`] and [`MemoryHostServices`] dispatching
+//! `service_id` calls to opt-in [`HostServiceHandler`]s.
 
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, VecDeque};
@@ -195,7 +195,7 @@ impl HostServiceProvider for HostServiceRegistry {
         request: &[u8],
     ) -> Result<InvokeResult, ServiceError> {
         self.dispatch(service_id, method_id, request)
-            .map(InvokeResult::Ready)
+            .map(|bytes| InvokeResult::Ready(bytes.into()))
     }
 
     fn typed_service(
@@ -235,115 +235,6 @@ impl HostServiceProvider for HostServiceRegistry {
 
     fn typed_event_bus(&self) -> Option<&TypedEventBus> {
         Some(&self.typed_events)
-    }
-}
-
-/// Composable native OS host service provider backed by [`HostServiceRegistry`].
-///
-/// Hosts register only the exact native capability handlers they expose (for example
-/// `NativeClipboard`, `NativeSystemEnv`, `NativeFilesystem`, etc.).
-pub struct NativeHostServices {
-    registry: HostServiceRegistry,
-}
-
-impl Default for NativeHostServices {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl NativeHostServices {
-    pub fn new() -> Self {
-        Self {
-            registry: HostServiceRegistry::new(),
-        }
-    }
-
-    pub fn with_channel_bus(channel_bus: Arc<Mutex<NveChannelBus>>) -> Self {
-        Self {
-            registry: HostServiceRegistry::with_channel_bus(channel_bus),
-        }
-    }
-
-    pub fn registry(&self) -> &HostServiceRegistry {
-        &self.registry
-    }
-
-    pub fn register<H: HostServiceHandler + 'static>(&self, handler: H) -> &Self {
-        self.registry.register(handler);
-        self
-    }
-
-    pub fn register_arc(&self, handler: Arc<dyn HostServiceHandler>) -> &Self {
-        self.registry.register_arc(handler);
-        self
-    }
-
-    pub fn with_handler<H: HostServiceHandler + 'static>(self, handler: H) -> Self {
-        self.registry.register(handler);
-        self
-    }
-
-    pub fn with_handler_arc(self, handler: Arc<dyn HostServiceHandler>) -> Self {
-        self.registry.register_arc(handler);
-        self
-    }
-
-    pub fn channel_bus(&self) -> Arc<Mutex<NveChannelBus>> {
-        self.registry.channel_bus()
-    }
-
-    pub fn typed_events(&self) -> &Arc<TypedEventBus> {
-        self.registry.typed_events()
-    }
-
-    pub fn emit_typed<E: Send + Sync + 'static>(&self, event: E) -> usize {
-        self.registry.emit_typed(event)
-    }
-
-    pub fn emit_typed_retained<E: Send + Sync + 'static>(&self, event: E) -> usize {
-        self.registry.emit_typed_retained(event)
-    }
-
-    pub fn push_event(&self, event: HostEvent) {
-        self.registry.push_event(event);
-    }
-}
-
-impl HostServiceProvider for NativeHostServices {
-    fn invoke_raw(
-        &self,
-        service_id: u32,
-        method_id: u32,
-        request: &[u8],
-    ) -> Result<InvokeResult, ServiceError> {
-        self.registry.invoke_raw(service_id, method_id, request)
-    }
-
-    fn typed_service(
-        &self,
-        service_id: u32,
-        method_id: u32,
-        type_id: TypeId,
-    ) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.registry.typed_service(service_id, method_id, type_id)
-    }
-
-    fn channel_publish(
-        &self,
-        channel_id: u32,
-        retain: bool,
-        payload: &[u8],
-    ) -> Result<(), ServiceError> {
-        self.registry.channel_publish(channel_id, retain, payload)
-    }
-
-    fn poll_host_events(&self) -> Vec<HostEvent> {
-        self.registry.poll_host_events()
-    }
-
-    fn typed_event_bus(&self) -> Option<&TypedEventBus> {
-        self.registry.typed_event_bus()
     }
 }
 
@@ -550,7 +441,7 @@ impl HostServiceProvider for MemoryHostServices {
             return match fault {
                 InjectedFault::Status(status) => {
                     if status.is_ok() {
-                        Ok(InvokeResult::Ready(Vec::new()))
+                        Ok(InvokeResult::Ready(crate::ResponseBuf::empty()))
                     } else {
                         Err(ServiceError::from_status(status))
                     }

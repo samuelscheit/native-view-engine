@@ -301,8 +301,12 @@ void test_native_host_session() {
   assert(text_rect.has_value() && approx_eq(text_rect->height, 44.0f, 1.0f));
 #endif
 
-  // Update props via JSON -> emits onPropsApplied
-  assert(session.update_props_json("{\"title\":\"HostSession\"}"));
+  // Update props directly -> emits onPropsApplied
+  const NveMapEntry host_prop = {
+      nve::make_str_slice("title"),
+      nve::make_str_value("HostSession"),
+  };
+  assert(session.update_props(&host_prop, 1u));
   auto props_evs = session.drain_events();
   assert(props_evs.size() == 1);
   assert(props_evs[0].name == "onPropsApplied");
@@ -352,7 +356,8 @@ void test_native_host_session() {
     assert(dylib_session.is_valid());
     assert(dylib_session.dispatch_press(2, 10.0f, 10.0f) == 1);
     assert(dylib_session.dispatch_press(2, 10.0f, 10.0f) == 1);
-    assert(dylib_session.update_props_json("{\"v\":1}"));
+    const NveMapEntry v_prop = {nve::make_str_slice("v"), nve::make_i64_value(1)};
+    assert(dylib_session.update_props(&v_prop, 1u));
 
     const int calls_before_reload = dylib_measurer_calls;
     int reload_err = -1;

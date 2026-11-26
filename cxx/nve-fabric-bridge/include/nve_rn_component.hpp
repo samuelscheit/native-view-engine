@@ -39,9 +39,18 @@ enum class EventKind : uint8_t {
   CompositionStart = 9,
   CompositionUpdate = 10,
   CompositionEnd = 11,
+  KeyDown = 12,
+  KeyUp = 13,
+  Submit = 14,
+  PointerDown = 15,
+  PointerMove = 16,
+  PointerUp = 17,
+  PointerEnter = 18,
+  PointerLeave = 19,
+  Wheel = 20,
 };
 
-/// Decoded event from an `EventRing` (`nve_abi::encode_events`).
+/// Decoded event materialized from an `NveEventBatch` or network `EventRing`.
 struct DecodedEvent {
   uint32_t surface_id{0};
   uint32_t node_id{0};
@@ -49,7 +58,7 @@ struct DecodedEvent {
   EventKind kind{EventKind::Custom};
   /// For EventKind::Custom this is the custom event name (e.g. "onIncrement");
   /// for built-in kinds it is the canonical RN name ("onPress", "onLongPress",
-  /// "onScroll", "onChangeText", "onFocus", "onBlur", "onLayout").
+  /// "onScroll", "onChangeText", "onFocus", "onBlur", "onLayout", "onKeyDown", ...).
   std::string name;
   /// Raw payload bytes (compact binary `NveBinValue` for custom events, UTF-8 text for TextChange).
   std::vector<uint8_t> payload_bytes;
@@ -59,6 +68,11 @@ struct DecodedEvent {
   float width{0.0f};
   float height{0.0f};
   std::string text;
+  /// Typed key/pointer/wheel fields populated for KeyDown/KeyUp/Pointer*/Wheel events.
+  uint8_t modifiers{0};
+  uint8_t event_flags{0};
+  uint32_t key_code{0};
+  std::string code;
 
   std::string_view payload_as_string() const noexcept {
     if (payload_bytes.empty()) {
@@ -111,6 +125,9 @@ struct RenderedNodeSnapshot {
 
 /// Decode an `EventRing` byte slice (`nve_abi::encode_events`) into `DecodedEvent` records.
 bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_events);
+
+/// Materialize an in-process `NveEventBatch` into owned `DecodedEvent` records.
+bool decode_direct_events(NveEventBatch batch, std::vector<DecodedEvent>& out_events);
 
 /// Host inspection & control helpers implemented by `nve_fabric_bridge`.
 bool fabric_host_get_node_layout(NveFabricHostHandle host, uint32_t node_id, LayoutRect* out_rect);
@@ -166,10 +183,11 @@ std::vector<uint8_t> fabric_host_serialize_frame0(
 /// component (iOS/macOS `RCTViewComponentView`, Android `ViewGroupManager`, or headless C++ host).
 ///
 /// Bridges:
-/// - RN props (`update_props` / `update_props_json`) -> `NveComponentApi::set_props`
+/// - RN props (`update_props`) -> `NveComponentApi::set_props` (`NveMapEntry*`, `uint32_t`)
 /// - Render pass (`render`) -> `NveSurfaceApi::render` -> `nve_fabric_host_submit_frame`
-/// - Intrinsic sizing & hit testing -> `NveLayoutApi::measure` / `hit_test` (zero-serialization)
-/// - Outbound events (`drain_emitted_events`) -> `NveComponentApi::drain_emitted_events` -> callback
+/// - Direct inbound events (`dispatch_events`) -> `NveSurfaceApi::dispatch_events` (`NveEventBatch`)
+/// - Intrinsic sizing & hit testing -> `NveLayoutApi::measure` / `hit_test` (direct scalars)
+/// - Outbound events (`drain_emitted_events`) -> `NveComponentApi::drain_emitted_events` (`NveEventBatch`)
 class NveRnComponentBridge {
  public:
   NveRnComponentBridge(
@@ -193,38 +211,19 @@ class NveRnComponentBridge {
   /// Update viewport dimensions (e.g. from Fabric `updateLayoutMetrics:`).
   void set_surface_size(float width, float height, float scale_factor = 0.0f);
 
-  /// Push a raw encoded prop payload to `NveComponentApi::set_props`.
-  /// Returns true if the Rust component signaled a re-render is needed (auto-renders when `auto_render` is true).
-  bool update_props_json(std::string_view props_json, bool auto_render = true);
-
-  /// Push a structured key/value prop map directly via `NveComponentApi::set_props_direct`
-  /// using an internal zero-allocation `BumpArena` (falling back to binary `NveBinValue` via
-  /// `set_props` if `set_props_direct` is NULL).
+  /// Push a structured key/value prop map directly via `NveComponentApi::set_props`
+  /// using an internal reusable `BumpArena`.
   bool update_props(const PropMap& props, bool auto_render = true);
 
-  /// Zero-copy direct props update via `NveComponentApi::set_props_direct` (falls back to
-  /// binary `NveBinValue` via `set_props` when `set_props_direct` is NULL).
-  bool update_props_direct(const NveMapEntry* entries, uint32_t count, bool auto_render = true);
+  /// Direct typed props update via `NveComponentApi::set_props(app, entries, count)`.
+  bool update_props(const NveMapEntry* entries, uint32_t count, bool auto_render = true);
 
   /// Invoke `NveSurfaceApi::render(app, next_frame_id)` and submit the binary CommandBuffer to the
   /// internal `NveFabricHostHandle`. Returns 0 on success or a negative error code.
   int32_t render(NveFrameStats* out_stats = nullptr);
 
-  /// Dispatch an inbound binary EventRing (e.g. native touch/press) into `NveSurfaceApi::dispatch_events`,
-  /// re-rendering if the Rust component requests it and `auto_render` is true.
-  uint32_t dispatch_native_events(NveBufferSlice events, bool auto_render = true);
-
-  /// Zero-copy direct event batch dispatch via `NveSurfaceApi::dispatch_events_direct`
-  /// (falls back to binary `EventRing` via `dispatch_events` if `dispatch_events_direct` is NULL).
-  uint32_t dispatch_direct_events(NveEventBatch batch, bool auto_render = true);
-
-  /// Query whether the attached module exposes zero-copy direct event / prop FFI entry points.
-  bool has_direct_events() const noexcept {
-    return module_.surface != nullptr && module_.surface->dispatch_events_direct != nullptr;
-  }
-  bool has_direct_props() const noexcept {
-    return module_.component != nullptr && module_.component->set_props_direct != nullptr;
-  }
+  /// Direct typed event batch dispatch via `NveSurfaceApi::dispatch_events(app, batch)`.
+  uint32_t dispatch_events(NveEventBatch batch, bool auto_render = true);
 
   /// Zero-cost scalar layout measurement via `NveLayoutApi::measure` (if provided).
   std::optional<NveIntrinsicSize> measure(NveSizeConstraints constraints) const;
@@ -263,7 +262,6 @@ class NveRnComponentBridge {
   uint64_t next_frame_id_{1};
   EventEmitterCallback on_event_;
   BumpArena prop_arena_{8192u};
-  std::vector<uint8_t> fallback_props_buf_;
 };
 
 } // namespace nve

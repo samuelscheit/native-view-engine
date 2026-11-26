@@ -52,13 +52,13 @@ struct MockMacRustComponent {
   int count{0};
   std::string title{"Initial"};
   std::vector<uint8_t> cmd_buf;
-  nve::EventRingWriter outbound;
-  std::vector<uint8_t> outbound_snap;
+  nve::BumpArena outbound_arena{1024u};
+  std::vector<NveDirectEvent> outbound_pending;
+  std::vector<NveDirectEvent> outbound_drained;
 
   static NveAppHandle create(uint32_t sid) {
     auto *self = new MockMacRustComponent();
     self->surface_id = sid;
-    self->outbound.clear();
     return self;
   }
 
@@ -188,40 +188,27 @@ struct MockMacRustComponent {
     return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
-    auto *self = static_cast<MockMacRustComponent *>(h);
-    std::vector<nve::DecodedEvent> decoded;
-    if (!nve::decode_event_ring(events, decoded)) return 0;
-    for (const auto &ev : decoded) {
-      if (ev.kind == nve::EventKind::Press && ev.node_id == 4) {
-        ++self->count;
-        const NveMapEntry entry{
-            nve::make_str_slice("count"),
-            nve::make_i64_value(static_cast<int64_t>(self->count)),
-        };
-        const NveValue payload = nve::make_map_value(&entry, 1);
-        self->outbound.push_custom_value(
-            self->surface_id, 4, ev.timestamp_us, "onIncrement", payload);
-        return 1;
-      }
-    }
-    return 0;
-  }
-
-  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto *self = static_cast<MockMacRustComponent *>(h);
     if (batch.ptr == nullptr) return 0;
     for (uint32_t i = 0; i < batch.len; ++i) {
       const NveDirectEvent &ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4) {
+      if (ev.kind == NVE_EVENT_PRESS && ev.node_id == 4) {
         ++self->count;
-        const NveMapEntry entry{
-            nve::make_str_slice("count"),
+        NveMapEntry *entry = self->outbound_arena.alloc_array<NveMapEntry>(1u);
+        entry[0] = NveMapEntry{
+            self->outbound_arena.copy_str("count"),
             nve::make_i64_value(static_cast<int64_t>(self->count)),
         };
-        const NveValue payload = nve::make_map_value(&entry, 1);
-        self->outbound.push_custom_value(
-            self->surface_id, 4, ev.timestamp_us, "onIncrement", payload);
+        NveDirectEvent out{};
+        out.surface_id = self->surface_id;
+        out.node_id = 4;
+        out.timestamp_us = ev.timestamp_us;
+        out.kind = NVE_EVENT_CUSTOM;
+        out.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
+        out.name = self->outbound_arena.copy_str("onIncrement");
+        out.value = nve::make_map_value(entry, 1u);
+        self->outbound_pending.push_back(out);
         return 1;
       }
     }
@@ -237,26 +224,7 @@ struct MockMacRustComponent {
   static NveBufferSlice snapshot_state(NveAppHandle) { return {nullptr, 0}; }
   static void restore_state(NveAppHandle, NveBufferSlice) {}
 
-  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
-    auto *self = static_cast<MockMacRustComponent *>(h);
-    if (const auto view = nve::BinValueView::parse(props)) {
-      if (const auto title = view->map_get("title"); title && title->as_str()) {
-        self->title = std::string(*title->as_str());
-      }
-    } else if (props.ptr && props.len > 0) {
-      std::string raw(reinterpret_cast<const char *>(props.ptr), props.len);
-      if (raw.find("Updated") != std::string::npos) {
-        self->title = "Updated";
-      }
-    }
-    const NveMapEntry entry{nve::make_str_slice("ok"), nve::make_bool_value(true)};
-    const NveValue payload = nve::make_map_value(&entry, 1);
-    self->outbound.push_custom_value(
-        self->surface_id, NVE_ROOT_NODE_ID, 500, "onPropsApplied", payload);
-    return 1;
-  }
-
-  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+  static uint32_t set_props(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
     auto *self = static_cast<MockMacRustComponent *>(h);
     for (uint32_t i = 0; i < count; ++i) {
       if (nve::str_slice_view(entries[i].key) == "title" &&
@@ -264,18 +232,29 @@ struct MockMacRustComponent {
         self->title = std::string(nve::str_slice_view(entries[i].value.data.str_val));
       }
     }
-    const NveMapEntry entry{nve::make_str_slice("ok"), nve::make_bool_value(true)};
-    const NveValue payload = nve::make_map_value(&entry, 1);
-    self->outbound.push_custom_value(
-        self->surface_id, NVE_ROOT_NODE_ID, 500, "onPropsApplied", payload);
+    NveMapEntry *entry = self->outbound_arena.alloc_array<NveMapEntry>(1u);
+    entry[0] = NveMapEntry{self->outbound_arena.copy_str("ok"), nve::make_bool_value(true)};
+    NveDirectEvent out{};
+    out.surface_id = self->surface_id;
+    out.node_id = NVE_ROOT_NODE_ID;
+    out.timestamp_us = 500;
+    out.kind = NVE_EVENT_CUSTOM;
+    out.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
+    out.name = self->outbound_arena.copy_str("onPropsApplied");
+    out.value = nve::make_map_value(entry, 1u);
+    self->outbound_pending.push_back(out);
     return 1;
   }
 
-  static NveBufferSlice drain_emitted_events(NveAppHandle h) {
+  static NveEventBatch drain_emitted_events(NveAppHandle h) {
     auto *self = static_cast<MockMacRustComponent *>(h);
-    self->outbound_snap = self->outbound.finalize();
-    self->outbound.clear();
-    return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
+    self->outbound_drained = std::move(self->outbound_pending);
+    self->outbound_pending.clear();
+    return NveEventBatch{
+        self->outbound_drained.empty() ? nullptr : self->outbound_drained.data(),
+        static_cast<uint32_t>(self->outbound_drained.size()),
+        0u,
+    };
   }
 
   static const void *get_interface(uint32_t interface_id) {
@@ -284,12 +263,10 @@ struct MockMacRustComponent {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
-        .dispatch_events_direct = &dispatch_events_direct,
     };
     static const NveComponentApi kComponent{
         .set_props = &set_props,
         .drain_emitted_events = &drain_emitted_events,
-        .set_props_direct = &set_props_direct,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = &apply_hot_patch,
@@ -310,13 +287,13 @@ struct HostEdgeApp {
   int stage{0};
   std::string last_typed;
   std::vector<uint8_t> cmd_buf;
-  nve::EventRingWriter outbound;
-  std::vector<uint8_t> outbound_snap;
+  nve::BumpArena outbound_arena{1024u};
+  std::vector<NveDirectEvent> outbound_pending;
+  std::vector<NveDirectEvent> outbound_drained;
 
   static NveAppHandle create(uint32_t sid) {
     auto *self = new HostEdgeApp();
     self->surface_id = sid;
-    self->outbound.clear();
     return self;
   }
   static void destroy(NveAppHandle h) { delete static_cast<HostEdgeApp *>(h); }
@@ -395,64 +372,34 @@ struct HostEdgeApp {
     return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
-    auto *self = static_cast<HostEdgeApp *>(h);
-    std::vector<nve::DecodedEvent> decoded;
-    if (!nve::decode_event_ring(events, decoded)) return 0;
-    for (const auto &ev : decoded) {
-      if (ev.kind == nve::EventKind::TextChange && ev.node_id == 5) {
-        self->last_typed = ev.text;
-        const NveMapEntry entry{
-            nve::make_str_slice("typed"),
-            nve::make_str_value(nve::make_str_slice(ev.text)),
-        };
-        const NveValue payload = nve::make_map_value(&entry, 1);
-        self->outbound.push_custom_value(
-            self->surface_id, 5, ev.timestamp_us, "onTextTyped", payload);
-        return 0;
-      }
-    }
-    return 0;
-  }
-
-  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto *self = static_cast<HostEdgeApp *>(h);
     if (batch.ptr == nullptr) return 0;
     for (uint32_t i = 0; i < batch.len; ++i) {
       const NveDirectEvent &ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange) && ev.node_id == 5) {
+      if (ev.kind == NVE_EVENT_TEXT_CHANGE && ev.node_id == 5) {
         self->last_typed = std::string(nve::str_slice_view(ev.text));
-        const NveMapEntry entry{
-            nve::make_str_slice("typed"),
-            nve::make_str_value(nve::make_str_slice(self->last_typed)),
+        NveMapEntry *entry = self->outbound_arena.alloc_array<NveMapEntry>(1u);
+        entry[0] = NveMapEntry{
+            self->outbound_arena.copy_str("typed"),
+            nve::make_str_value(self->outbound_arena.copy_str(self->last_typed)),
         };
-        const NveValue payload = nve::make_map_value(&entry, 1);
-        self->outbound.push_custom_value(
-            self->surface_id, 5, ev.timestamp_us, "onTextTyped", payload);
+        NveDirectEvent out{};
+        out.surface_id = self->surface_id;
+        out.node_id = 5;
+        out.timestamp_us = ev.timestamp_us;
+        out.kind = NVE_EVENT_CUSTOM;
+        out.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
+        out.name = self->outbound_arena.copy_str("onTextTyped");
+        out.value = nve::make_map_value(entry, 1u);
+        self->outbound_pending.push_back(out);
         return 0;
       }
     }
     return 0;
   }
 
-  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
-    auto *self = static_cast<HostEdgeApp *>(h);
-    if (const auto view = nve::BinValueView::parse(props)) {
-      if (const auto stage = view->map_get("stage"); stage && stage->as_i64() == 1) {
-        self->stage = 1;
-        return 1;
-      }
-    } else if (props.ptr && props.len > 0) {
-      std::string json(reinterpret_cast<const char *>(props.ptr), props.len);
-      if (json.find("\"stage\":1") != std::string::npos) {
-        self->stage = 1;
-        return 1;
-      }
-    }
-    return 0;
-  }
-
-  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+  static uint32_t set_props(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
     auto *self = static_cast<HostEdgeApp *>(h);
     for (uint32_t i = 0; i < count; ++i) {
       if (nve::str_slice_view(entries[i].key) == "stage") {
@@ -466,16 +413,20 @@ struct HostEdgeApp {
     return 0;
   }
 
-  static NveBufferSlice drain_emitted_events(NveAppHandle h) {
+  static NveEventBatch drain_emitted_events(NveAppHandle h) {
     auto *self = static_cast<HostEdgeApp *>(h);
-    self->outbound_snap = self->outbound.finalize();
-    self->outbound.clear();
-    return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
+    self->outbound_drained = std::move(self->outbound_pending);
+    self->outbound_pending.clear();
+    return NveEventBatch{
+        self->outbound_drained.empty() ? nullptr : self->outbound_drained.data(),
+        static_cast<uint32_t>(self->outbound_drained.size()),
+        0u,
+    };
   }
 
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
-    static const NveComponentApi kComp{&set_props, &drain_emitted_events, &set_props_direct};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+    static const NveComponentApi kComp{&set_props, &drain_emitted_events};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
     return nullptr;
@@ -494,14 +445,11 @@ struct A11yImeMacApp {
   std::string last_text;
   std::string last_submit;
   std::vector<uint8_t> cmd_buf;
-  nve::EventRingWriter outbound;
-  std::vector<uint8_t> outbound_snap;
   static inline A11yImeMacApp *last_instance = nullptr;
 
   static NveAppHandle create(uint32_t sid) {
     auto *self = new A11yImeMacApp();
     self->surface_id = sid;
-    self->outbound.clear();
     last_instance = self;
     return self;
   }
@@ -630,61 +578,29 @@ struct A11yImeMacApp {
     return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
-    auto *self = static_cast<A11yImeMacApp *>(h);
-    std::vector<nve::DecodedEvent> decoded;
-    if (!nve::decode_event_ring(events, decoded)) return 0;
-    for (const auto &ev : decoded) {
-      if (ev.node_id == 6) {
-        if (ev.kind == nve::EventKind::Focus) {
-          ++self->focus_count;
-        } else if (ev.kind == nve::EventKind::Blur) {
-          ++self->blur_count;
-        } else if (ev.kind == nve::EventKind::TextChange) {
-          ++self->text_change_count;
-          self->last_text = ev.text;
-        } else if (ev.kind == nve::EventKind::Custom && ev.name == "onSubmit") {
-          ++self->submit_count;
-          if (const auto v = nve::BinValueView::parse(ev.payload_bytes.data(), ev.payload_bytes.size());
-              v && v->as_str()) {
-            self->last_submit = std::string(*v->as_str());
-          } else {
-            self->last_submit = std::string(ev.payload_as_string());
-          }
-        }
-      }
-    }
-    return 0;
-  }
-
-  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto *self = static_cast<A11yImeMacApp *>(h);
     if (batch.ptr == nullptr) return 0;
     for (uint32_t i = 0; i < batch.len; ++i) {
       const NveDirectEvent &ev = batch.ptr[i];
       if (ev.node_id == 6) {
-        if (ev.kind == static_cast<uint8_t>(nve::EventKind::Focus)) {
+        if (ev.kind == NVE_EVENT_FOCUS) {
           ++self->focus_count;
-        } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Blur)) {
+        } else if (ev.kind == NVE_EVENT_BLUR) {
           ++self->blur_count;
-        } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
+        } else if (ev.kind == NVE_EVENT_TEXT_CHANGE) {
           ++self->text_change_count;
           self->last_text = std::string(nve::str_slice_view(ev.text));
-        } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) &&
-                   nve::str_slice_view(ev.name) == "onSubmit") {
+        } else if (ev.kind == NVE_EVENT_SUBMIT) {
           ++self->submit_count;
-          if (ev.value.tag == NVE_VAL_STR) {
-            self->last_submit = std::string(nve::str_slice_view(ev.value.data.str_val));
-          } else {
-            self->last_submit.clear();
-          }
+          self->last_submit = std::string(nve::str_slice_view(ev.text));
         }
       }
     }
     return 0;
   }
 
-  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+  static uint32_t set_props(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
     auto *self = static_cast<A11yImeMacApp *>(h);
     for (uint32_t i = 0; i < count; ++i) {
       const auto k = nve::str_slice_view(entries[i].key);
@@ -699,16 +615,11 @@ struct A11yImeMacApp {
     return 1;
   }
 
-  static NveBufferSlice drain_emitted_events(NveAppHandle h) {
-    auto *self = static_cast<A11yImeMacApp *>(h);
-    self->outbound_snap = self->outbound.finalize();
-    self->outbound.clear();
-    return NveBufferSlice{self->outbound_snap.data(), self->outbound_snap.size()};
-  }
+  static NveEventBatch drain_emitted_events(NveAppHandle) { return NveEventBatch{nullptr, 0u, 0u}; }
 
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
-    static const NveComponentApi kComp{nullptr, &drain_emitted_events, &set_props_direct};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+    static const NveComponentApi kComp{&set_props, &drain_emitted_events};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
     return nullptr;
@@ -846,12 +757,12 @@ struct ImageScrollIncrementalApp {
     return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
   }
 
-  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto *self = static_cast<ImageScrollIncrementalApp *>(h);
     if (batch.ptr == nullptr) return 0;
     for (uint32_t i = 0; i < batch.len; ++i) {
       const NveDirectEvent &ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll) && ev.node_id == 3) {
+      if (ev.kind == NVE_EVENT_SCROLL && ev.node_id == 3) {
         ++self->scroll_count;
         self->last_scroll_x = ev.x;
         self->last_scroll_y = ev.y;
@@ -862,23 +773,7 @@ struct ImageScrollIncrementalApp {
     return 0;
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
-    auto *self = static_cast<ImageScrollIncrementalApp *>(h);
-    std::vector<nve::DecodedEvent> decoded;
-    if (!nve::decode_event_ring(events, decoded)) return 0;
-    for (const auto &ev : decoded) {
-      if (ev.kind == nve::EventKind::Scroll && ev.node_id == 3) {
-        ++self->scroll_count;
-        self->last_scroll_x = ev.x;
-        self->last_scroll_y = ev.y;
-        self->last_scroll_cw = ev.width;
-        self->last_scroll_ch = ev.height;
-      }
-    }
-    return 0;
-  }
-
-  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+  static uint32_t set_props(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
     auto *self = static_cast<ImageScrollIncrementalApp *>(h);
     for (uint32_t i = 0; i < count; ++i) {
       const auto k = nve::str_slice_view(entries[i].key);
@@ -896,9 +791,8 @@ struct ImageScrollIncrementalApp {
   }
 
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{
-        &create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
-    static const NveComponentApi kComp{nullptr, nullptr, &set_props_direct};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+    static const NveComponentApi kComp{&set_props, nullptr};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
     return nullptr;
@@ -1015,9 +909,8 @@ struct CanvasSparklineApp {
     return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle, NveBufferSlice) { return 0u; }
-  static uint32_t dispatch_events_direct(NveAppHandle, NveEventBatch) { return 0u; }
-  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
+  static uint32_t dispatch_events(NveAppHandle, NveEventBatch) { return 0u; }
+  static uint32_t set_props(NveAppHandle h, const NveMapEntry *entries, uint32_t count) {
     auto *self = static_cast<CanvasSparklineApp *>(h);
     for (uint32_t i = 0u; i < count; ++i) {
       const auto k = nve::str_slice_view(entries[i].key);
@@ -1032,10 +925,10 @@ struct CanvasSparklineApp {
     }
     return 1u;
   }
-  static NveBufferSlice drain_emitted_events(NveAppHandle) { return {nullptr, 0u}; }
+  static NveEventBatch drain_emitted_events(NveAppHandle) { return NveEventBatch{nullptr, 0u, 0u}; }
   static const void *get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events, &dispatch_events_direct};
-    static const NveComponentApi kComp{nullptr, &drain_emitted_events, &set_props_direct};
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+    static const NveComponentApi kComp{&set_props, &drain_emitted_events};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_COMPONENT) return &kComp;
     return nullptr;
@@ -1578,7 +1471,8 @@ int main() {
             [[RCTNveMacComponentView alloc] initWithFrame:NSMakeRect(0, 0, 960, 640)];
         NSError *studioErr = nil;
         assert([studioWriter loadNveDylibAtPath:studioPath surfaceId:1 error:&studioErr]);
-        assert([studioWriter applyPropsJson:@"{\"accent\":\"violet\",\"view\":\"metrics\"}"]);
+        NSDictionary *studioProps = @{@"accent" : @"violet", @"view" : @"metrics"};
+        assert([studioWriter applyPropsDictionary:studioProps]);
         assert(hasLabelText(studioWriter, @"Live Metrics"));
         assert([studioWriter saveSnapshotAtPath:studioSnap schemaVersion:1]);
 

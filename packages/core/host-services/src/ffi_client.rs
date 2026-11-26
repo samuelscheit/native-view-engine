@@ -14,11 +14,9 @@ use nve_interop::{ChannelPayload, NveChannelBus, PayloadEncoding};
 use crate::error::ServiceError;
 use crate::events::TypedEventBus;
 use crate::provider::{
-    HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider, InvokeResult,
+    HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider, InvokeResult, ResponseBuf,
 };
-
-/// 4 KiB stack-allocated response buffer avoiding heap allocation on the fast path.
-pub const FFI_STACK_BUF_SIZE: usize = 4096;
+pub use crate::provider::FFI_STACK_BUF_SIZE;
 
 /// Defensive cap (64 MiB) against a buggy or hostile host requesting unbounded retry allocation.
 pub const FFI_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -42,8 +40,20 @@ impl RequestTable {
     }
 
     pub fn register_pending(&mut self, request_id: u64, callback: Option<AsyncCallback>) {
+        if matches!(self.slots.get(&request_id), Some(RequestSlot::Completed(_))) {
+            return;
+        }
         self.slots
             .insert(request_id, RequestSlot::Pending { callback });
+    }
+
+    /// Removes a pre-registered pending slot after synchronous completion or error, returning any
+    /// uninvoked callback so the caller can fire it outside the lock.
+    pub fn cancel_pending(&mut self, request_id: u64) -> Option<AsyncCallback> {
+        match self.slots.remove(&request_id) {
+            Some(RequestSlot::Pending { callback }) => callback,
+            Some(RequestSlot::Completed(_)) | None => None,
+        }
     }
 
     /// Resolves `request_id` from a completed async host response.
@@ -169,6 +179,15 @@ impl FfiHostServices {
             return Err(ServiceError::Unsupported);
         };
 
+        // Register pending BEFORE calling across FFI so a fast cross-thread or re-entrant
+        // `resolve_async_response` can never race ahead and be overwritten.
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            guard
+                .requests
+                .register_pending(request_id, Some(Box::new(on_complete)));
+        }
+
         match self.exec_invoke_with_retry(
             cb.host_ctx,
             invoke_fn,
@@ -178,18 +197,24 @@ impl FfiHostServices {
             request,
         ) {
             Ok(InvokeResult::Ready(bytes)) => {
-                on_complete(Ok(bytes));
+                let callback = {
+                    let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.requests.cancel_pending(request_id)
+                };
+                if let Some(cb) = callback {
+                    cb(Ok(bytes.into_vec()));
+                }
                 Ok(None)
             }
-            Ok(InvokeResult::Pending { request_id }) => {
-                let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                guard
-                    .requests
-                    .register_pending(request_id, Some(Box::new(on_complete)));
-                Ok(Some(request_id))
-            }
+            Ok(InvokeResult::Pending { request_id }) => Ok(Some(request_id)),
             Err(err) => {
-                on_complete(Err(err.clone()));
+                let callback = {
+                    let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.requests.cancel_pending(request_id)
+                };
+                if let Some(cb) = callback {
+                    cb(Err(err.clone()));
+                }
                 Err(err)
             }
         }
@@ -291,7 +316,9 @@ impl FfiHostServices {
                         stack_buf.len()
                     )));
                 }
-                Ok(InvokeResult::Ready(stack_buf[..out_len].to_vec()))
+                Ok(InvokeResult::Ready(ResponseBuf::from_inline(
+                    stack_buf, out_len,
+                )))
             }
             NveHostStatus::Pending => Ok(InvokeResult::Pending { request_id }),
             NveHostStatus::BufferTooSmall => {
@@ -322,7 +349,7 @@ impl FfiHostServices {
                             )));
                         }
                         heap_buf.truncate(retry_len);
-                        Ok(InvokeResult::Ready(heap_buf))
+                        Ok(InvokeResult::Ready(ResponseBuf::Heap(heap_buf)))
                     }
                     NveHostStatus::Pending => Ok(InvokeResult::Pending { request_id }),
                     NveHostStatus::BufferTooSmall => Err(ServiceError::BufferTooSmall {
@@ -347,6 +374,10 @@ impl HostServiceProvider for FfiHostServices {
         let Some(invoke_fn) = cb.invoke else {
             return Err(ServiceError::Unsupported);
         };
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            guard.requests.register_pending(request_id, None);
+        }
         let res = self.exec_invoke_with_retry(
             cb.host_ctx,
             invoke_fn,
@@ -354,12 +385,12 @@ impl HostServiceProvider for FfiHostServices {
             method_id,
             request_id,
             request,
-        )?;
-        if let InvokeResult::Pending { request_id } = res {
+        );
+        if !matches!(res, Ok(InvokeResult::Pending { .. })) {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            guard.requests.register_pending(request_id, None);
+            let _ = guard.requests.cancel_pending(request_id);
         }
-        Ok(res)
+        res
     }
 
     fn channel_publish(

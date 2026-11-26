@@ -118,7 +118,9 @@ pub fn generate_java_scene_buffer() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);
     let render_node = spec.find_struct("NveRenderNode").unwrap();
+    let node_meta = spec.find_struct("NveNodeMeta").unwrap();
     let node_size = render_node.expected_size.unwrap();
+    let meta_size = node_meta.expected_size.unwrap();
 
     let mut out = String::with_capacity(6144);
     let _ = writeln!(
@@ -147,6 +149,7 @@ pub fn generate_java_scene_buffer() -> String {
         "    public static final long SCHEMA_HASH = 0x{schema_hash:016X}L;"
     );
     let _ = writeln!(out, "    public static final int NODE_STRIDE = {node_size};");
+    let _ = writeln!(out, "    public static final int META_STRIDE = {meta_size};");
     let _ = writeln!(out);
     let _ = writeln!(out, "    // NveRenderNode::flags bits");
     let _ = writeln!(out, "    public static final int FLAG_LEAF_TEXT = 1 << 0;");
@@ -160,11 +163,32 @@ pub fn generate_java_scene_buffer() -> String {
         }
     }
     let _ = writeln!(out);
+    let _ = writeln!(out, "    // NveNodeMeta::flags bits & resize-mode shift/mask");
+    for c in &spec.consts {
+        if let Some(suffix) = c.name.strip_prefix("NVE_META_") {
+            if c.hex {
+                let _ = writeln!(out, "    public static final int META_{suffix} = 0x{:X};", c.value);
+            } else {
+                let _ = writeln!(out, "    public static final int META_{suffix} = {};", c.value);
+            }
+        }
+    }
+    let _ = writeln!(out);
     let _ = writeln!(out, "    // Exact byte offsets within one 64-byte NveRenderNode");
     for f in &render_node.fields {
         let _ = writeln!(
             out,
             "    public static final int OFFSET_{} = {};",
+            snake_to_screaming(&f.name),
+            f.offset.unwrap()
+        );
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "    // Exact byte offsets within one 64-byte NveNodeMeta");
+    for f in &node_meta.fields {
+        let _ = writeln!(
+            out,
+            "    public static final int META_OFFSET_{} = {};",
             snake_to_screaming(&f.name),
             f.offset.unwrap()
         );

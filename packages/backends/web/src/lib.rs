@@ -87,8 +87,8 @@ pub use event_replay::{
     MAX_REPLAY_QUEUE_LEN, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
 pub use events::{
-    encode_keydown_payload, resolve_delegated_node, should_intercept_anchor_click,
-    ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
+    resolve_delegated_node, should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker,
+    NodeEventMeta,
 };
 pub use visual_viewport::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
@@ -236,6 +236,8 @@ pub struct WebBackend {
     pub(crate) hydrated_inline_nodes: HashSet<NodeId>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydrated_controls: HashMap<NodeId, HydratedControlState>,
+    #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+    pub(crate) hydrated_children: HashMap<NodeId, Vec<NodeId>>,
     #[cfg(feature = "hydrate")]
     pub(crate) pending_pre_hydration_events: Vec<CapturedPreHydrationEvent>,
     #[cfg(feature = "hydrate")]
@@ -326,6 +328,8 @@ impl WebBackend {
             hydrated_inline_nodes: HashSet::default(),
             #[cfg(feature = "hydrate")]
             hydrated_controls: HashMap::default(),
+            #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+            hydrated_children: HashMap::default(),
             #[cfg(feature = "hydrate")]
             pending_pre_hydration_events: Vec::new(),
             #[cfg(feature = "hydrate")]

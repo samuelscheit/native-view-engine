@@ -10,6 +10,21 @@ pub const NVE_RENDER_NODE_SIZE: usize = 64;
 /// Required alignment of `NveRenderNode` (64 bytes).
 pub const NVE_RENDER_NODE_ALIGN: usize = 64;
 
+/// Exact byte size of one fixed-stride `NveNodeMeta` record (64 bytes).
+pub const NVE_NODE_META_SIZE: usize = 64;
+/// Natural alignment of `NveNodeMeta` (4 bytes).
+pub const NVE_NODE_META_ALIGN: usize = 4;
+
+/// Bit flags packed into `NveNodeMeta::flags`.
+pub const NVE_META_FLAG_DISABLED: u32 = 1 << 0;
+pub const NVE_META_FLAG_SECURE_TEXT_ENTRY: u32 = 1 << 1;
+pub const NVE_META_FLAG_MULTILINE: u32 = 1 << 2;
+pub const NVE_META_FLAG_HAS_DRAW_LIST: u32 = 1 << 3;
+pub const NVE_META_FLAG_DRAW_LIST_CORRUPT: u32 = 1 << 4;
+pub const NVE_META_FLAG_ACCESSIBILITY_HIDDEN: u32 = 1 << 5;
+pub const NVE_META_RESIZE_MODE_SHIFT: u32 = 8;
+pub const NVE_META_RESIZE_MODE_MASK: u32 = 0x3;
+
 /// Node is a leaf text node (`kind == Text` and `child_count == 0`).
 pub const NVE_NODE_LEAF_TEXT: u8 = 1 << 0;
 /// Node handles interactive pointer/press events (`kind == Pressable` or `event_mask != 0`).
@@ -264,6 +279,70 @@ const _: () = {
     assert!(offset_of!(NveSceneView, nodes) == 40);
 };
 
+/// Fixed-stride 64-byte per-node accessibility, input, image, and draw-list metadata record
+/// indexing into a flat companion UTF-8/binary blob slab.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, NveAbi)]
+#[nve_abi(size = 64)]
+pub struct NveNodeMeta {
+    #[nve_abi(offset = 0)]
+    pub node_id: u32,
+    #[nve_abi(offset = 4)]
+    pub flags: u32,
+    #[nve_abi(offset = 8)]
+    pub label_offset: u32,
+    #[nve_abi(offset = 12)]
+    pub label_len: u16,
+    #[nve_abi(offset = 14)]
+    pub role_len: u16,
+    #[nve_abi(offset = 16)]
+    pub role_offset: u32,
+    #[nve_abi(offset = 20)]
+    pub hint_offset: u32,
+    #[nve_abi(offset = 24)]
+    pub hint_len: u16,
+    #[nve_abi(offset = 26)]
+    pub state_desc_len: u16,
+    #[nve_abi(offset = 28)]
+    pub state_desc_offset: u32,
+    #[nve_abi(offset = 32)]
+    pub placeholder_offset: u32,
+    #[nve_abi(offset = 36)]
+    pub placeholder_len: u16,
+    #[nve_abi(offset = 38)]
+    pub test_id_len: u16,
+    #[nve_abi(offset = 40)]
+    pub test_id_offset: u32,
+    #[nve_abi(offset = 44)]
+    pub draw_list_offset: u32,
+    #[nve_abi(offset = 48)]
+    pub draw_list_len: u32,
+    #[nve_abi(offset = 52)]
+    pub _reserved: [u32; 3],
+}
+
+const _: () = {
+    assert!(size_of::<NveNodeMeta>() == NVE_NODE_META_SIZE);
+    assert!(align_of::<NveNodeMeta>() == NVE_NODE_META_ALIGN);
+    assert!(offset_of!(NveNodeMeta, node_id) == 0);
+    assert!(offset_of!(NveNodeMeta, flags) == 4);
+    assert!(offset_of!(NveNodeMeta, label_offset) == 8);
+    assert!(offset_of!(NveNodeMeta, label_len) == 12);
+    assert!(offset_of!(NveNodeMeta, role_len) == 14);
+    assert!(offset_of!(NveNodeMeta, role_offset) == 16);
+    assert!(offset_of!(NveNodeMeta, hint_offset) == 20);
+    assert!(offset_of!(NveNodeMeta, hint_len) == 24);
+    assert!(offset_of!(NveNodeMeta, state_desc_len) == 26);
+    assert!(offset_of!(NveNodeMeta, state_desc_offset) == 28);
+    assert!(offset_of!(NveNodeMeta, placeholder_offset) == 32);
+    assert!(offset_of!(NveNodeMeta, placeholder_len) == 36);
+    assert!(offset_of!(NveNodeMeta, test_id_len) == 38);
+    assert!(offset_of!(NveNodeMeta, test_id_offset) == 40);
+    assert!(offset_of!(NveNodeMeta, draw_list_offset) == 44);
+    assert!(offset_of!(NveNodeMeta, draw_list_len) == 48);
+    assert!(offset_of!(NveNodeMeta, _reserved) == 52);
+};
+
 // ============================================================================
 // Deterministic FNV-1a 64-bit Schema Hash (must match `nve-codegen::abi_schema`)
 // ============================================================================
@@ -347,6 +426,26 @@ const fn compute_scene_schema_hash() -> u64 {
     h = hash_ptr_field(h, "children_slab", "*const u32", 10);
     h = hash_ptr_field(h, "dirty_indices", "*const u32", 11);
     h = hash_ptr_field(h, "removed_ids", "*const u32", 12);
+
+    h = fnv1a_bytes(h, b";NveNodeMeta");
+    h = fnv1a_u64(h, size_of::<NveNodeMeta>() as u64);
+    h = hash_fixed_field(h, "node_id", "u32", offset_of!(NveNodeMeta, node_id));
+    h = hash_fixed_field(h, "flags", "u32", offset_of!(NveNodeMeta, flags));
+    h = hash_fixed_field(h, "label_offset", "u32", offset_of!(NveNodeMeta, label_offset));
+    h = hash_fixed_field(h, "label_len", "u16", offset_of!(NveNodeMeta, label_len));
+    h = hash_fixed_field(h, "role_len", "u16", offset_of!(NveNodeMeta, role_len));
+    h = hash_fixed_field(h, "role_offset", "u32", offset_of!(NveNodeMeta, role_offset));
+    h = hash_fixed_field(h, "hint_offset", "u32", offset_of!(NveNodeMeta, hint_offset));
+    h = hash_fixed_field(h, "hint_len", "u16", offset_of!(NveNodeMeta, hint_len));
+    h = hash_fixed_field(h, "state_desc_len", "u16", offset_of!(NveNodeMeta, state_desc_len));
+    h = hash_fixed_field(h, "state_desc_offset", "u32", offset_of!(NveNodeMeta, state_desc_offset));
+    h = hash_fixed_field(h, "placeholder_offset", "u32", offset_of!(NveNodeMeta, placeholder_offset));
+    h = hash_fixed_field(h, "placeholder_len", "u16", offset_of!(NveNodeMeta, placeholder_len));
+    h = hash_fixed_field(h, "test_id_len", "u16", offset_of!(NveNodeMeta, test_id_len));
+    h = hash_fixed_field(h, "test_id_offset", "u32", offset_of!(NveNodeMeta, test_id_offset));
+    h = hash_fixed_field(h, "draw_list_offset", "u32", offset_of!(NveNodeMeta, draw_list_offset));
+    h = hash_fixed_field(h, "draw_list_len", "u32", offset_of!(NveNodeMeta, draw_list_len));
+    h = hash_fixed_field(h, "_reserved", "[u32;3]", offset_of!(NveNodeMeta, _reserved));
     h
 }
 

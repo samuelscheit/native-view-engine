@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use nve_host_services::{MemoryHostServices, NativeHostServices, TypedEventBus};
+use nve_host_services::{HostServiceRegistry, MemoryHostServices, TypedEventBus};
 use nve_system_env::{
     parse_locale_tag, ColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, NativeSystemEnv,
     SystemEnvBridge, SystemEnvClient, SystemEnvEvent, TextDirection, ThemeSnapshot,
@@ -120,7 +120,7 @@ fn system_env_direct_typed_bridge_retained_replay_listeners_and_native() {
     assert_eq!(ar.text_direction, TextDirection::Rtl);
     assert_eq!(parse_locale_tag("POSIX", None, false).tag, "en-US");
 
-    let native = NativeHostServices::new().with_handler(NativeSystemEnv::new());
+    let native = HostServiceRegistry::new().with_handler(NativeSystemEnv::new());
     let native_client = SystemEnvClient::new(&native);
     let nt = native_client.get_theme().unwrap();
     let repr_c = nt.to_repr_c_bytes();

@@ -9,11 +9,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nve_abi::events::{decode_keydown_bytes, KEYDOWN_WIRE_MAGIC};
 use nve_abi::{
     decode_events, ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets,
     EventMask, EventPayload, FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps,
-    ROOT_NODE_ID,
+    NVE_KEY_MOD_META, ROOT_NODE_ID,
 };
 use nve_engine::{HotPatchMsg, Viewport};
 use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig};
@@ -62,7 +61,7 @@ impl RemoteServerApp {
                 ..Default::default()
             },
         );
-        b.set_event_mask(2, EventMask::CUSTOM);
+        b.set_event_mask(2, EventMask::KEY_DOWN | EventMask::CUSTOM);
 
         b.create_node(4, ComponentKind::Pressable, None);
         b.set_layout(
@@ -105,17 +104,11 @@ impl RemoteServerApp {
                     self.clicks += 1;
                     changed = true;
                 }
-                (NativeEventKind::Custom, EventPayload::Custom { name, data })
-                    if name == "keydown" =>
+                (NativeEventKind::KeyDown, EventPayload::Key { key, modifiers, .. })
+                    if (modifiers & NVE_KEY_MOD_META) != 0 && key == "k" =>
                 {
-                    assert!(data.starts_with(&KEYDOWN_WIRE_MAGIC));
-                    if let Some(dk) = decode_keydown_bytes(&data)
-                        && dk.meta
-                        && dk.key == "k"
-                    {
-                        self.palette_open = !self.palette_open;
-                        changed = true;
-                    }
+                    self.palette_open = !self.palette_open;
+                    changed = true;
                 }
                 _ => {}
             }

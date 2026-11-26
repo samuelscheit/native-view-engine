@@ -10,8 +10,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, ROOT_NODE_ID, RawPropValue, SurfaceId,
-    events::decode_keydown_bytes,
+    EventPayload, FrameId, NativeEvent, NativeEventKind, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
+    ROOT_NODE_ID, RawPropValue, SurfaceId,
 };
 use nve_backend_web::{HydrationReport, WebBackend};
 use nve_dioxus::DioxusSurface;
@@ -111,13 +111,11 @@ impl DocsWebSession {
 
         for ev in events {
             if ev.node_id == ROOT_NODE_ID
-                && ev.kind == NativeEventKind::Custom
-                && let EventPayload::Custom { name, data } = &ev.payload
-                && name == "keydown"
+                && ev.kind == NativeEventKind::KeyDown
+                && let EventPayload::Key { key, modifiers, .. } = &ev.payload
             {
-                let is_cmd_k = decode_keydown_bytes(data).is_some_and(|kd| {
-                    (kd.meta || kd.ctrl) && kd.key.eq_ignore_ascii_case("k")
-                });
+                let has_primary = (*modifiers & (NVE_KEY_MOD_META | NVE_KEY_MOD_CTRL)) != 0;
+                let is_cmd_k = has_primary && key.eq_ignore_ascii_case("k");
                 if is_cmd_k {
                     if let Some(root_id) = docs_root_id {
                         ev.node_id = root_id;

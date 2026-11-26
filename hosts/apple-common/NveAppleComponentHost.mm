@@ -260,20 +260,6 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   return nve::apple::host_save_snapshot(self, snapshotPath, schemaVersion);
 }
 
-- (BOOL)applyPropsJson:(NSString *)propsJson {
-  if (!_bridge) return NO;
-  NSData *utf8 = [propsJson dataUsingEncoding:NSUTF8StringEncoding];
-  if (!utf8) return NO;
-  const std::string_view sv(reinterpret_cast<const char *>(utf8.bytes), utf8.length);
-  const bool dirty = _bridge->update_props_json(sv, /*auto_render=*/false);
-  if (dirty) {
-    [self renderFrame];
-  } else {
-    [self drainEmittedEvents];
-  }
-  return dirty ? YES : NO;
-}
-
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {
   if (!_bridge || !props) return NO;
   _propsArena.reset();
@@ -281,7 +267,7 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   const NveMapEntry *entries = (mapVal.tag == NVE_VAL_MAP) ? mapVal.data.map_val.ptr : nullptr;
   const uint32_t count =
       (mapVal.tag == NVE_VAL_MAP) ? static_cast<uint32_t>(mapVal.data.map_val.len) : 0u;
-  const bool dirty = _bridge->update_props_direct(entries, count, /*auto_render=*/false);
+  const bool dirty = _bridge->update_props(entries, count, /*auto_render=*/false);
   if (dirty) {
     [self renderFrame];
   } else {
@@ -306,20 +292,10 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   (void)_bridge->drain_emitted_events();
 }
 
-- (void)_dispatchInboundEventsAndRender {
-  const NveBufferSlice inbound = nve_fabric_host_drain_events(_bridge->fabric_host());
-  const uint32_t dirty = _bridge->dispatch_native_events(inbound, /*auto_render=*/false);
-  if (dirty != 0) {
-    [self renderFrame];
-  } else {
-    [self drainEmittedEvents];
-  }
-}
-
 - (void)_dispatchDirectEvent:(const NveDirectEvent &)ev {
   if (_bridge) {
     const uint32_t dirty =
-        _bridge->dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/false);
+        _bridge->dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/false);
     if (dirty != 0) {
       [self renderFrame];
     } else {
@@ -327,37 +303,24 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
     }
   } else if (_pairClient && _pairedHost != nullptr) {
     std::vector<uint8_t> ring;
-    if (nve::encode_direct_event_batch(NveEventBatch{&ev, 1u}, ring)) {
+    if (nve::encode_direct_event_batch(NveEventBatch{&ev, 1u, 0u}, ring)) {
       (void)_pairClient->send_events(ring);
     }
   }
 }
 
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
-  if (_bridge) {
-    if (_bridge->has_direct_events()) {
-      NveDirectEvent ev{};
-      ev.surface_id = _surfaceId;
-      ev.node_id = nodeId;
-      ev.timestamp_us = nve::apple::current_timestamp_us();
-      ev.kind = static_cast<uint8_t>(nve::EventKind::Press);
-      ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
-      ev.x = x;
-      ev.y = y;
-      ev.value = nve::make_null_value();
-      [self _dispatchDirectEvent:ev];
-      return;
-    }
-    nve::fabric_host_enqueue_press(
-        _bridge->fabric_host(), nodeId, nve::apple::current_timestamp_us(), x, y);
-    [self _dispatchInboundEventsAndRender];
-  } else if (_pairClient && _pairedHost != nullptr) {
-    nve::fabric_host_enqueue_press(_pairedHost, nodeId, nve::apple::current_timestamp_us(), x, y);
-    const NveBufferSlice inbound = nve_fabric_host_drain_events(_pairedHost);
-    if (inbound.ptr != nullptr && inbound.len >= 4u) {
-      (void)_pairClient->send_events(std::span<const uint8_t>(inbound.ptr, inbound.len));
-    }
-  }
+  if (!_bridge && !(_pairClient && _pairedHost != nullptr)) return;
+  NveDirectEvent ev{};
+  ev.surface_id = _surfaceId;
+  ev.node_id = nodeId;
+  ev.timestamp_us = nve::apple::current_timestamp_us();
+  ev.kind = NVE_EVENT_PRESS;
+  ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
+  ev.x = x;
+  ev.y = y;
+  ev.value = nve::make_null_value();
+  [self _dispatchDirectEvent:ev];
 }
 
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text {
@@ -366,30 +329,15 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   const std::string_view sv =
       utf8 ? std::string_view(reinterpret_cast<const char *>(utf8.bytes), utf8.length)
            : std::string_view{};
-  if (_bridge) {
-    if (_bridge->has_direct_events()) {
-      NveDirectEvent ev{};
-      ev.surface_id = _surfaceId;
-      ev.node_id = nodeId;
-      ev.timestamp_us = nve::apple::current_timestamp_us();
-      ev.kind = static_cast<uint8_t>(nve::EventKind::TextChange);
-      ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
-      ev.text = nve::make_str_slice(sv);
-      ev.value = nve::make_null_value();
-      [self _dispatchDirectEvent:ev];
-      return;
-    }
-    nve::fabric_host_enqueue_text_change(
-        _bridge->fabric_host(), nodeId, nve::apple::current_timestamp_us(), sv);
-    [self _dispatchInboundEventsAndRender];
-  } else {
-    nve::fabric_host_enqueue_text_change(
-        _pairedHost, nodeId, nve::apple::current_timestamp_us(), sv);
-    const NveBufferSlice inbound = nve_fabric_host_drain_events(_pairedHost);
-    if (inbound.ptr != nullptr && inbound.len >= 4u) {
-      (void)_pairClient->send_events(std::span<const uint8_t>(inbound.ptr, inbound.len));
-    }
-  }
+  NveDirectEvent ev{};
+  ev.surface_id = _surfaceId;
+  ev.node_id = nodeId;
+  ev.timestamp_us = nve::apple::current_timestamp_us();
+  ev.kind = NVE_EVENT_TEXT_CHANGE;
+  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
+  ev.text = nve::make_str_slice(sv);
+  ev.value = nve::make_null_value();
+  [self _dispatchDirectEvent:ev];
 }
 
 - (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text {
@@ -402,11 +350,10 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   ev.surface_id = _surfaceId;
   ev.node_id = nodeId;
   ev.timestamp_us = nve::apple::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(nve::EventKind::Custom);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-  ev.name = nve::make_str_slice("onSubmit");
+  ev.kind = NVE_EVENT_SUBMIT;
+  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
   ev.text = nve::make_str_slice(sv);
-  ev.value = nve::make_str_value(sv);
+  ev.value = nve::make_null_value();
   [self _dispatchDirectEvent:ev];
 }
 

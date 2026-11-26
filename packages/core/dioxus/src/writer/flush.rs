@@ -95,8 +95,8 @@ impl NveMutationWriter {
         }
         let root_color = root.style.text_color;
         let root_font_size = root.style.font_size;
-        let root_font_weight = root.font_weight.clone();
-        let root_text_align = root.text_align.clone();
+        let root_font_weight = root.extras().and_then(|e| e.font_weight.clone());
+        let root_text_align = root.extras().and_then(|e| e.text_align.clone());
         for &cid in &root.children {
             self.style_walk_stack.push(TextStyleWalkEntry {
                 node_id: cid,
@@ -112,7 +112,7 @@ impl NveMutationWriter {
             if let Some(child) = self.nodes.get_mut(&cid)
                 && child.kind == ComponentKind::Text
             {
-                if !child.has_explicit_style
+                if !child.has_explicit_style()
                     && (child.style.text_color != entry.color
                         || (child.style.font_size - entry.font_size).abs() > f32::EPSILON)
                 {
@@ -120,8 +120,9 @@ impl NveMutationWriter {
                     child.style.font_size = entry.font_size;
                     self.dirty_style.push(cid);
                 }
-                if !child.has_explicit_font_weight
-                    && child.font_weight.as_deref() != entry.font_weight.as_deref()
+                if !child.has_explicit_font_weight()
+                    && child.extras().and_then(|e| e.font_weight.as_deref())
+                        != entry.font_weight.as_deref()
                 {
                     match &entry.font_weight {
                         Some(w) => self.builder.set_raw_prop_str(cid, "font-weight", w),
@@ -129,10 +130,13 @@ impl NveMutationWriter {
                             .builder
                             .set_raw_prop(cid, "font-weight", &RawPropValue::Null),
                     }
-                    child.font_weight = entry.font_weight.clone();
+                    if entry.font_weight.is_some() || child.extras.is_some() {
+                        child.extras_mut().font_weight = entry.font_weight.clone();
+                    }
                 }
-                if !child.has_explicit_text_align
-                    && child.text_align.as_deref() != entry.text_align.as_deref()
+                if !child.has_explicit_text_align()
+                    && child.extras().and_then(|e| e.text_align.as_deref())
+                        != entry.text_align.as_deref()
                 {
                     match &entry.text_align {
                         Some(a) => self.builder.set_raw_prop_str(cid, "text-align", a),
@@ -140,12 +144,14 @@ impl NveMutationWriter {
                             .builder
                             .set_raw_prop(cid, "text-align", &RawPropValue::Null),
                     }
-                    child.text_align = entry.text_align.clone();
+                    if entry.text_align.is_some() || child.extras.is_some() {
+                        child.extras_mut().text_align = entry.text_align.clone();
+                    }
                 }
                 let next_color = child.style.text_color;
                 let next_font_size = child.style.font_size;
-                let next_weight = child.font_weight.clone();
-                let next_align = child.text_align.clone();
+                let next_weight = child.extras().and_then(|e| e.font_weight.clone());
+                let next_align = child.extras().and_then(|e| e.text_align.clone());
                 for &grandchild in &child.children {
                     self.style_walk_stack.push(TextStyleWalkEntry {
                         node_id: grandchild,

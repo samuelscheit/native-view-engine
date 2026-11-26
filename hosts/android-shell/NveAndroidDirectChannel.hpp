@@ -23,6 +23,7 @@ struct AndroidSurfaceSession final : public AndroidSurfaceState {
   CachedDirectBuffer event_scratch_buf;
   std::vector<uint8_t> prop_scratch;
   CachedDirectBuffer prop_scratch_buf;
+  nve::BumpArena props_arena;
 };
 
 inline AndroidSurfaceSession* as_surface_session(jlong handle_ptr) noexcept {

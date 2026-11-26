@@ -15,7 +15,8 @@ data class NveSceneSlabs(
     val childrenSlab: ByteBuffer? = null,
     val dirtyIndices: ByteBuffer? = null,
     val removedIds: ByteBuffer? = null,
-    val metadataSlab: ByteBuffer? = null,
+    val metaRecords: ByteBuffer? = null,
+    val metaBlob: ByteBuffer? = null,
 )
 
 /**
@@ -171,9 +172,10 @@ data class NveSceneDiff(
  */
 class NveSceneBuffer {
     companion object {
-        const val SCHEMA_HASH: Long = 0x00F2CF037DB50CC8L
+        const val SCHEMA_HASH: Long = 0x6D45E53E0D9535D1L
         const val NODE_STRIDE: Int = 64
         const val META_FIELD_COUNT: Int = 7
+        const val FULL_META_FIELD_COUNT: Int = 9
 
         // NveRenderNode::flags bits
         const val FLAG_LEAF_TEXT: Int = 1 shl 0
@@ -226,6 +228,10 @@ class NveSceneBuffer {
         private set
     var childrenSlabLen: Int = 0
         private set
+    var metaRecordCount: Int = -1
+        private set
+    var metaBlobUsedBytes: Int = -1
+        private set
 
     private var nodesBuf: ByteBuffer? = null
     private var textSlabBuf: ByteBuffer? = null
@@ -262,6 +268,8 @@ class NveSceneBuffer {
             dirtyIndicesBuf = slabs.dirtyIndices,
             removedIdsBuf = slabs.removedIds,
         )
+        metaRecordCount = if (meta.size >= 8) meta[7].toIntExact("metaRecordCount") else -1
+        metaBlobUsedBytes = if (meta.size >= 9) meta[8].toIntExact("metaBlobUsedBytes") else -1
     }
 
     /**
@@ -374,6 +382,8 @@ class NveSceneBuffer {
         removedCount = 0
         textSlabLen = 0
         childrenSlabLen = 0
+        metaRecordCount = -1
+        metaBlobUsedBytes = -1
         nodesBuf = null
         textSlabBuf = null
         childrenSlabBuf = null
@@ -506,13 +516,15 @@ class NveSceneBuffer {
     }
 
     /**
-     * Applies only `removedIds`, `dirtyIndices`, and optional batched `metadataSlab` updates onto
-     * [mountedNodes] without iterating clean nodes, returning the frame's incremental [NveSceneDiff].
+     * Applies only `removedIds`, `dirtyIndices`, and optional fixed-stride `metaRecords` +
+     * `metaBlob` updates onto [mountedNodes] without iterating clean nodes, returning the frame's
+     * incremental [NveSceneDiff].
      */
     fun applyIncrementalDiff(
         mountedNodes: MutableMap<Int, NveRenderNodeSnapshot>,
         metadataById: MutableMap<Int, NveNodeMetadata>? = null,
-        metadataSlab: ByteBuffer? = null,
+        metaRecords: ByteBuffer? = null,
+        metaBlob: ByteBuffer? = null,
     ): NveSceneDiff {
         val removed = IntArray(removedCount) { i ->
             val id = removedId(i)
@@ -520,8 +532,15 @@ class NveSceneBuffer {
             metadataById?.remove(id)
             id
         }
-        val metaUpdatedIds = if (metadataSlab != null && metadataById != null) {
-            NveNodeMetadataCodec.decodeInto(metadataSlab, metadataById, scratch = metadataScratch)
+        val metaUpdatedIds = if (metaRecords != null && metadataById != null) {
+            NveNodeMetadataCodec.decodeInto(
+                recordsBuf = metaRecords,
+                blobBuf = metaBlob,
+                target = metadataById,
+                recordCount = metaRecordCount,
+                blobUsedBytes = metaBlobUsedBytes,
+                scratch = metadataScratch,
+            )
         } else {
             IntArray(0)
         }

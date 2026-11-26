@@ -231,93 +231,79 @@ impl WebBackend {
         // 2. Flush any newly queued CSS rules to the browser stylesheet ONCE.
         self.stylesheet.flush_to_dom();
 
-        // 3. Commit class & inline-style state to mirror and browser DOM.
+        // 3. Commit class & inline-style state to mirror and browser DOM using Rust's retained
+        //    state directly (zero WASM->DOM `className` / `cssText` readbacks).
         for (node_id, class_name, inline_style) in updates {
-            let had_inline = self
-                .nodes
-                .get(&node_id)
-                .is_some_and(|n| n.has_inline_style);
             let now_has_inline = !inline_style.is_empty();
+            let Some(node) = self.nodes.get_mut(&node_id) else {
+                continue;
+            };
+            let class_changed = node.class_name != class_name;
+            let inline_changed = node.inline_style != inline_style;
+            let had_inline = node.has_inline_style;
 
             #[cfg(target_arch = "wasm32")]
             if let Some(dom_el) = self.dom_nodes.get(&node_id) {
-                if dom_el.class_name() != class_name {
+                if class_changed {
                     dom_el.set_class_name(&class_name);
                 }
                 if let Some(html_el) = dom_el.dyn_ref::<web_sys::HtmlElement>() {
                     if now_has_inline {
-                        if html_el.style().css_text() != inline_style {
+                        if inline_changed {
                             html_el.style().set_css_text(&inline_style);
                         }
-                    } else if had_inline || !html_el.style().css_text().is_empty() {
+                    } else if had_inline {
                         html_el.style().set_css_text("");
                     }
                 }
             }
 
             #[cfg(not(target_arch = "wasm32"))]
-            let _ = had_inline;
+            let _ = (class_changed, inline_changed, had_inline);
 
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                node.class_name = class_name;
-                node.inline_style = inline_style;
-                node.has_inline_style = now_has_inline;
-            }
+            node.class_name = class_name;
+            node.inline_style = inline_style;
+            node.has_inline_style = now_has_inline;
         }
     }
 
     /// Reconciles `parent_id`'s live browser DOM children using O(N) head/tail trimming + LIS,
-    /// calling `remove_child` and `insert_before` ONLY for removed, inserted, or moved children.
+    /// diffing directly against Rust's retained `children` list with zero `get_attribute("data-nve-id")`
+    /// readbacks across the WASM->DOM bridge.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn reconcile_dom_children(&self, parent_id: NodeId, new_children: &[NodeId]) {
         let Some(parent_dom) = self.dom_nodes.get(&parent_id) else {
             return;
         };
-        let wrap_code = self.nodes.get(&parent_id).is_some_and(|n| n.wrap_code);
+        let parent_mirror = self.nodes.get(&parent_id);
+        let wrap_code = parent_mirror.is_some_and(|n| n.wrap_code);
         let container = self.text_or_child_mount_target(parent_dom, wrap_code);
-        let desired_set: HashSet<NodeId> = new_children.iter().copied().collect();
 
-        // Read existing DOM children, removing stray/obsolete nodes in-place without touching survivors.
-        let child_nodes = container.child_nodes();
-        let len = child_nodes.length();
-        let mut to_remove: Vec<web_sys::Node> = Vec::new();
-        let mut old_ids: Vec<NodeId> = Vec::with_capacity(len as usize);
-        let mut seen_old: HashSet<NodeId> = HashSet::with_capacity_and_hasher(len as usize, Default::default());
-        let restore_text = self
-            .nodes
-            .get(&parent_id)
+        #[cfg(feature = "hydrate")]
+        let prev_children: &[NodeId] = if self.hydrating {
+            self.hydrated_children
+                .get(&parent_id)
+                .map(Vec::as_slice)
+                .unwrap_or_else(|| parent_mirror.map(|n| n.children.as_slice()).unwrap_or(&[]))
+        } else {
+            parent_mirror.map(|n| n.children.as_slice()).unwrap_or(&[])
+        };
+        #[cfg(not(feature = "hydrate"))]
+        let prev_children: &[NodeId] = parent_mirror.map(|n| n.children.as_slice()).unwrap_or(&[]);
+
+        let had_text = parent_mirror
+            .is_some_and(|n| n.kind != ComponentKind::TextInput && n.text.is_some());
+        let restore_text = parent_mirror
             .filter(|n| new_children.is_empty() && n.kind != ComponentKind::TextInput)
             .and_then(|n| n.text.as_deref());
-        let keep_text_node = restore_text.is_some();
 
-        for i in 0..len {
-            let Some(child) = child_nodes.item(i) else {
-                continue;
-            };
-            if let Some(el) = child.dyn_ref::<web_sys::Element>()
-                && let Some(raw_id) = el.get_attribute("data-nve-id")
-                && let Ok(nid) = raw_id.parse::<NodeId>()
-                && desired_set.contains(&nid)
-                && self
-                    .dom_nodes
-                    .get(&nid)
-                    .is_some_and(|live| live.is_same_node(Some(&child)))
-                && seen_old.insert(nid)
-            {
-                old_ids.push(nid);
-            } else if keep_text_node && child.node_type() == web_sys::Node::TEXT_NODE {
-                continue;
-            } else {
-                to_remove.push(child);
-            }
+        // Clear a previous leaf text node when transitioning from text-only to element children.
+        if prev_children.is_empty() && !new_children.is_empty() && had_text {
+            container.set_text_content(None);
         }
 
-        for dead in to_remove {
-            let _ = container.remove_child(&dead);
-        }
-
-        // Plan minimal moves/insertions among surviving & new children.
-        let ops = plan_keyed_child_ops(&old_ids, new_children);
+        // Plan minimal removals, moves, and insertions directly from Rust's retained child order.
+        let ops = plan_keyed_child_ops(prev_children, new_children);
         for op in ops {
             match op {
                 ChildDiffOp::Remove(nid) => {
@@ -342,10 +328,10 @@ impl WebBackend {
                 }
             }
         }
-        if new_children.is_empty() && self.nodes.get(&parent_id).is_some_and(|n| n.svg.is_some()) {
+        if new_children.is_empty() && parent_mirror.is_some_and(|n| n.svg.is_some()) {
             self.sync_dom_svg_node(parent_id);
         } else if let Some(text) = restore_text
-            && container.text_content().as_deref() != Some(text)
+            && !prev_children.is_empty()
         {
             container.set_text_content(Some(text));
         }
@@ -546,6 +532,11 @@ impl WebBackend {
             let _ = parent.replace_child(&new_el, &old_el);
         }
         self.dom_nodes.insert(node_id, new_el);
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.class_name.clear();
+            node.inline_style.clear();
+            node.has_inline_style = false;
+        }
 
         // Re-sync attributes & text onto the upgraded element.
         if let Some(props) = self.nodes.get(&node_id).map(|n| n.raw_props.clone()) {

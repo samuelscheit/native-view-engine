@@ -1,6 +1,6 @@
 ---
 title: "Android & Jetpack Compose"
-description: "Zero-GC Android JNI DirectByteBuffer slabs, NveCanvasView, NVE_MET1 TalkBack metadata, zero-Gradle APK launcher, and Jetpack Compose NveSceneCanvas."
+description: "Zero-GC Android JNI DirectByteBuffer slabs, NveCanvasView, 64-byte NveNodeMeta TalkBack metadata, zero-Gradle APK launcher, and Jetpack Compose NveSceneCanvas."
 order: 6
 ---
 
@@ -12,11 +12,11 @@ Android hosts read NVE's 64-byte `NveRenderNode` slabs straight from native C++ 
 
 `hosts/android-shell/NveAndroidSurfaceJni.cpp` exposes `nve::NativeHostSession` to Android using `CachedDirectBuffer`:
 
-- Each scene slab (`nodes`, `text_slab`, `children_slab`, `dirty_indices`, `removed_ids`) and the dirty metadata slab (`NVE_MET1`) is wrapped in a `GlobalRef` `java.nio.ByteBuffer` via `NewDirectByteBuffer`.
+- Each scene slab (`nodes`, `text_slab`, `children_slab`, `dirty_indices`, `removed_ids`) plus the fixed-stride 64-byte `NveNodeMeta` record slab and companion `meta_blob` slab is wrapped in a `GlobalRef` `java.nio.ByteBuffer` via `NewDirectByteBuffer`.
 - `CachedDirectBuffer::sync` re-allocates the `DirectByteBuffer` **only** when a native slab pointer or capacity grows; empty slabs bind to a non-null sentinel with capacity `0` to avoid ART null-address quirks.
-- Generated bindings live in package **`dev.nve.android.generated`**: `dev.nve.android.generated.NveCoreAbi` and `dev.nve.android.generated.NveSceneBuffer` (verifying `SCHEMA_HASH = 0x00F2CF037DB50CC8`).
-- **`NveCanvasView.java`** paints layout rects, rounded borders, images, text, and `NVE_DRAW1` vector draw lists directly onto `android.graphics.Canvas`, while dispatching native touches and `TextInput` IME changes back via binary `EventRing`.
-- **TalkBack accessibility (`NVE_MET1`)** — `NveAndroidSurfaceJni.cpp` packs sparse accessibility metadata (`accessibilityLabel`, `accessibilityRole`, `accessibilityHint`, ARIA states) exclusively for dirty nodes into the flat `NVE_MET1` slab, consumed directly by Android's `AccessibilityNodeProvider`.
+- Generated bindings live in package **`dev.nve.android.generated`**: `dev.nve.android.generated.NveCoreAbi` and `dev.nve.android.generated.NveSceneBuffer` (verifying `SCHEMA_HASH = 0x6D45E53E0D9535D1`).
+- **`NveCanvasView.java`** paints layout rects, rounded borders, images, text, and `NVE_DRAW1` vector draw lists directly onto `android.graphics.Canvas`, while dispatching native touches and `TextInput` IME changes back via `NveEventBatch` / `DirectByteBuffer`.
+- **TalkBack accessibility (`NveNodeMeta`)** — `NveAndroidMetadataPacker.cpp` packs sparse accessibility metadata (`accessibilityLabel`, `accessibilityRole`, `accessibilityHint`, ARIA states) exclusively for dirty nodes into fixed-stride 64-byte `NveNodeMeta` records plus a companion `meta_blob` slab, consumed directly by Android's `AccessibilityNodeProvider`.
 - **Live pairing (`NveAndroidPairJni.cpp`)** — Connects the Android shell to `cargo nve pair` over UDP/TCP/WS without re-pushing `.so` binaries.
 
 ### Standalone Zero-Gradle APK & Emulator Launcher
@@ -45,7 +45,7 @@ On macOS arm64, running Android `build-tools/36.0.0/d8` under Eclipse OpenJ9 tri
 `dev.nve.compose` is a drop-in Android Library Gradle module for embedding NVE Rust surfaces directly inside Jetpack Compose apps:
 
 - **`NveSceneBuffer.kt` & `NveBinValue.kt`** — Zero-GC `DirectByteBuffer` reader over 64-byte `NveRenderNode` slabs and compact little-endian binary `NveBinValue` prop/command codec (tags `0..7`, O(1) container skipping).
-- **`NveSurfaceComposable.kt` (`@Composable fun NveSurface` & `NveSceneCanvas`)** — Renders `NveSceneView`, `NVE_DRAW1` vector ops, `Image`, and `TextInput` inside Compose `Canvas`, maps `NVE_MET1` nodes onto `Modifier.semantics` (`Role.Button`, `Role.Image`, content descriptions), and wires `requestDisallowInterceptTouchEvent` gesture arbitration.
+- **`NveSurfaceComposable.kt` (`@Composable fun NveSurface` & `NveSceneCanvas`)** — Renders `NveSceneView`, `NVE_DRAW1` vector ops, `Image`, and `TextInput` inside Compose `Canvas`, maps 64-byte `NveNodeMeta` records onto `Modifier.semantics` (`Role.Button`, `Role.Image`, content descriptions), and wires `requestDisallowInterceptTouchEvent` gesture arbitration.
 - **`NveHostActivity.kt`** — Reusable `ComponentActivity` preserving `surfaceId` across lifecycle transitions and supporting Tier-2 `.so` hot-reload.
 
 ```kotlin title="Embedding an NVE component in Jetpack Compose" highlight="6-18"

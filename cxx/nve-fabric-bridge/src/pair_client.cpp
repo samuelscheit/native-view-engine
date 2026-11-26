@@ -1,3 +1,4 @@
+#include "event_ring_writer.hpp"
 #include "nve_pair_client.hpp"
 #include "nve_wire_codecs.generated.hpp"
 
@@ -208,59 +209,14 @@ bool parse_pair_endpoint(
 bool encode_direct_event_batch(NveEventBatch batch, std::vector<uint8_t>& out_ring) {
   out_ring.clear();
   if (batch.len == 0u || batch.ptr == nullptr) return false;
-  wire::EventRingWriter enc;
+  EventRingWriter enc;
+  enc.clear();
   for (uint32_t i = 0; i < batch.len; ++i) {
-    const NveDirectEvent& ev = batch.ptr[i];
-    switch (ev.payload_tag) {
-      case NVE_EVENT_PAYLOAD_EMPTY:
-        enc.push_empty(
-            ev.surface_id, ev.node_id, ev.timestamp_us, static_cast<wire::EventKind>(ev.kind));
-        break;
-      case NVE_EVENT_PAYLOAD_POINT:
-        if (ev.kind == NVE_EVENT_LONG_PRESS) {
-          enc.push_long_press(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y);
-        } else {
-          enc.push_press(ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y);
-        }
-        break;
-      case NVE_EVENT_PAYLOAD_SCROLL:
-        enc.push_scroll(
-            ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y, ev.width, ev.height);
-        break;
-      case NVE_EVENT_PAYLOAD_TEXT: {
-        const std::string_view text =
-            (ev.text.ptr != nullptr && ev.text.len > 0u)
-                ? std::string_view(reinterpret_cast<const char*>(ev.text.ptr), ev.text.len)
-                : std::string_view{};
-        enc.push_text_change(ev.surface_id, ev.node_id, ev.timestamp_us, text);
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_LAYOUT:
-        enc.push_layout(
-            ev.surface_id, ev.node_id, ev.timestamp_us, ev.x, ev.y, ev.width, ev.height);
-        break;
-      case NVE_EVENT_PAYLOAD_CUSTOM: {
-        const NveStrSlice name_slice = (ev.name.ptr != nullptr && ev.name.len > 0u) ? ev.name : ev.text;
-        const std::string_view name =
-            (name_slice.ptr != nullptr && name_slice.len > 0u)
-                ? std::string_view(reinterpret_cast<const char*>(name_slice.ptr), name_slice.len)
-                : std::string_view{};
-        const std::span<const uint8_t> data =
-            (ev.value.tag == NVE_VAL_BYTES && ev.value.data.bytes_val.ptr != nullptr &&
-             ev.value.data.bytes_val.len > 0u)
-                ? std::span<const uint8_t>(ev.value.data.bytes_val.ptr, ev.value.data.bytes_val.len)
-                : std::span<const uint8_t>{};
-        enc.push_custom(ev.surface_id, ev.node_id, ev.timestamp_us, name, data);
-        break;
-      }
-      default:
-        enc.push_empty(
-            ev.surface_id, ev.node_id, ev.timestamp_us, static_cast<wire::EventKind>(ev.kind));
-        break;
+    if (!enc.push_direct_event(batch.ptr[i])) {
+      enc.push_empty(batch.ptr[i].surface_id, batch.ptr[i].node_id, batch.ptr[i].timestamp_us, batch.ptr[i].kind);
     }
   }
-  const auto bytes = enc.finish();
-  out_ring.assign(bytes.begin(), bytes.end());
+  out_ring = enc.finalize();
   return !out_ring.empty();
 }
 

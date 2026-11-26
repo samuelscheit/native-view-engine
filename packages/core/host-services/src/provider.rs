@@ -1,13 +1,153 @@
 //! Core [`HostServiceProvider`] and [`HostServiceHandler`] traits shared by
-//! [`crate::FfiHostServices`], [`crate::HostServiceRegistry`], [`crate::MemoryHostServices`],
-//! and [`crate::NativeHostServices`].
+//! [`crate::FfiHostServices`], [`crate::HostServiceRegistry`], and [`crate::MemoryHostServices`].
 
 use std::any::{Any, TypeId};
+use std::fmt;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::codec::BinReader;
 use crate::error::ServiceError;
 use crate::events::TypedEventBus;
+
+/// 4 KiB inline response buffer capacity avoiding heap allocation on the synchronous FFI fast path.
+pub const FFI_STACK_BUF_SIZE: usize = 4096;
+
+/// Stack-or-heap byte buffer returned by synchronous host service invocations.
+///
+/// Responses of `<= 4096` bytes stay inline with zero heap allocation; larger payloads fall back
+/// to a heap `Vec<u8>`. Implements `Deref<Target = [u8]>` so callers read bytes directly.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
+pub enum ResponseBuf {
+    Inline {
+        buf: [u8; FFI_STACK_BUF_SIZE],
+        len: usize,
+    },
+    Heap(Vec<u8>),
+}
+
+impl ResponseBuf {
+    #[inline]
+    pub const fn empty() -> Self {
+        Self::Heap(Vec::new())
+    }
+
+    #[inline]
+    pub fn from_inline(buf: [u8; FFI_STACK_BUF_SIZE], len: usize) -> Self {
+        debug_assert!(len <= FFI_STACK_BUF_SIZE);
+        Self::Inline {
+            buf,
+            len: len.min(FFI_STACK_BUF_SIZE),
+        }
+    }
+
+    #[inline]
+    pub fn from_vec(bytes: Vec<u8>) -> Self {
+        Self::Heap(bytes)
+    }
+
+    #[inline]
+    pub fn is_inline(&self) -> bool {
+        matches!(self, Self::Inline { .. })
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Inline { buf, len } => &buf[..*len],
+            Self::Heap(v) => v.as_slice(),
+        }
+    }
+
+    #[inline]
+    pub fn into_vec(self) -> Vec<u8> {
+        match self {
+            Self::Inline { buf, len } => buf[..len].to_vec(),
+            Self::Heap(v) => v,
+        }
+    }
+}
+
+impl Deref for ResponseBuf {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for ResponseBuf {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl fmt::Debug for ResponseBuf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_slice(), f)
+    }
+}
+
+impl PartialEq for ResponseBuf {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for ResponseBuf {}
+
+impl PartialEq<[u8]> for ResponseBuf {
+    #[inline]
+    fn eq(&self, other: &[u8]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl PartialEq<&[u8]> for ResponseBuf {
+    #[inline]
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for ResponseBuf {
+    #[inline]
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for ResponseBuf {
+    #[inline]
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<Vec<u8>> for ResponseBuf {
+    #[inline]
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl From<Vec<u8>> for ResponseBuf {
+    #[inline]
+    fn from(v: Vec<u8>) -> Self {
+        Self::Heap(v)
+    }
+}
+
+impl From<ResponseBuf> for Vec<u8> {
+    #[inline]
+    fn from(buf: ResponseBuf) -> Self {
+        buf.into_vec()
+    }
+}
 
 /// Shared hardware/capability permission state used across Camera, Location, and Audio services.
 #[repr(u8)]
@@ -44,10 +184,11 @@ impl PermissionStatus {
 }
 
 /// Immediate or asynchronous result from [`HostServiceProvider::invoke_raw`].
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvokeResult {
     /// Host completed synchronously and returned the binary response payload.
-    Ready(Vec<u8>),
+    Ready(ResponseBuf),
     /// Host accepted the call asynchronously; completion arrives under `request_id`.
     Pending { request_id: u64 },
 }
@@ -76,8 +217,8 @@ pub enum HostEvent {
     Channel(HostChannelEvent),
 }
 
-/// Pluggable per-service handler registered on [`crate::HostServiceRegistry`],
-/// [`crate::MemoryHostServices`], or [`crate::NativeHostServices`].
+/// Pluggable per-service handler registered on [`crate::HostServiceRegistry`]
+/// or [`crate::MemoryHostServices`].
 ///
 /// Standalone capability crates in `packages/modules/*` implement this trait for their own
 /// `service_id` so `nve-host-services` has zero dependency on any capability module.
@@ -138,7 +279,7 @@ pub trait HostServiceProvider: Send + Sync {
         service_id: u32,
         method_id: u32,
         request: &[u8],
-    ) -> Result<Vec<u8>, ServiceError> {
+    ) -> Result<ResponseBuf, ServiceError> {
         match self.invoke_raw(service_id, method_id, request)? {
             InvokeResult::Ready(bytes) => Ok(bytes),
             InvokeResult::Pending { request_id } => Err(ServiceError::Pending { request_id }),

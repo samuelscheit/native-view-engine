@@ -29,6 +29,7 @@ pub(crate) fn emit_cpp_bridge_hpp(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "#include \"nve_abi.generated.h\"");
     let _ = writeln!(out, "#include \"nve_rn_component.hpp\"");
     let _ = writeln!(out);
+    let _ = writeln!(out, "#include <array>");
     let _ = writeln!(out, "#include <cstdint>");
     let _ = writeln!(out, "#include <functional>");
     let _ = writeln!(out, "#include <memory>");
@@ -92,7 +93,7 @@ pub(crate) fn emit_cpp_bridge_hpp(spec: &NveExportSpec) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "  static nve::PropMap to_prop_map(const {name}Props& props);"
+        "  static bool apply_props(\n      nve::NveRnComponentBridge& bridge,\n      const {name}Props& props,\n      bool auto_render = true);"
     );
     let _ = writeln!(
         out,
@@ -100,7 +101,7 @@ pub(crate) fn emit_cpp_bridge_hpp(spec: &NveExportSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "  bool update_props_direct(const NveMapEntry* entries, uint32_t count, bool auto_render = true);"
+        "  bool update_props(const NveMapEntry* entries, uint32_t count, bool auto_render = true);"
     );
     let _ = writeln!(
         out,
@@ -167,29 +168,51 @@ pub(crate) fn emit_cpp_bridge_cpp(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
 
-    let _ = writeln!(
-        out,
-        "nve::PropMap {name}NveBridge::to_prop_map(const {name}Props& props) {{"
-    );
-    let _ = writeln!(out, "  nve::PropMap map;");
-    for prop in &spec.props {
-        let key = escape_c_like_string(&prop.name);
-        let field = cpp_ident(&prop.name);
-        let is_opt = prop.optional && export_cpp_default(prop).is_none();
-        if is_opt {
-            let _ = writeln!(out, "  if (props.{field}.has_value()) {{");
-            let val_expr = cpp_prop_to_variant(&format!("*props.{field}"), &prop.prop_type);
-            let _ = writeln!(out, "    map.emplace(\"{key}\", {val_expr});");
-            let _ = writeln!(out, "  }}");
-        } else {
-            let val_expr = cpp_prop_to_variant(&format!("props.{field}"), &prop.prop_type);
-            let _ = writeln!(out, "  map.emplace(\"{key}\", {val_expr});");
+    if spec.props.is_empty() {
+        let _ = writeln!(
+            out,
+            "bool {name}NveBridge::apply_props(\n    nve::NveRnComponentBridge& bridge,\n    const {name}Props& /*props*/,\n    bool auto_render) {{"
+        );
+        let _ = writeln!(out, "  return bridge.update_props(nullptr, 0u, auto_render);");
+        let _ = writeln!(out, "}}");
+    } else {
+        let _ = writeln!(
+            out,
+            "bool {name}NveBridge::apply_props(\n    nve::NveRnComponentBridge& bridge,\n    const {name}Props& props,\n    bool auto_render) {{"
+        );
+        let _ = writeln!(
+            out,
+            "  std::array<NveMapEntry, {}u> entries{{}};",
+            spec.props.len()
+        );
+        let _ = writeln!(out, "  uint32_t count = 0u;");
+        for prop in &spec.props {
+            let key = escape_c_like_string(&prop.name);
+            let field = cpp_ident(&prop.name);
+            let is_opt = prop.optional && export_cpp_default(prop).is_none();
+            if is_opt {
+                let _ = writeln!(out, "  if (props.{field}.has_value()) {{");
+                let val_expr = cpp_prop_to_nve_value(&format!("*props.{field}"), &prop.prop_type);
+                let _ = writeln!(
+                    out,
+                    "    entries[count++] = NveMapEntry{{nve::make_str_slice(\"{key}\"), {val_expr}}};"
+                );
+                let _ = writeln!(out, "  }}");
+            } else {
+                let val_expr = cpp_prop_to_nve_value(&format!("props.{field}"), &prop.prop_type);
+                let _ = writeln!(
+                    out,
+                    "  entries[count++] = NveMapEntry{{nve::make_str_slice(\"{key}\"), {val_expr}}};"
+                );
+            }
         }
+        let _ = writeln!(
+            out,
+            "  return bridge.update_props(entries.data(), count, auto_render);"
+        );
+        let _ = writeln!(out, "}}");
     }
-    let _ = writeln!(out, "  return map;");
-    let _ = writeln!(out, "}}");
     let _ = writeln!(out);
-
     let _ = writeln!(
         out,
         "bool {name}NveBridge::update_props(const {name}Props& props, bool auto_render) {{"
@@ -197,21 +220,21 @@ pub(crate) fn emit_cpp_bridge_cpp(spec: &NveExportSpec) -> String {
     let _ = writeln!(out, "  if (!bridge_) return false;");
     let _ = writeln!(
         out,
-        "  const bool dirty = bridge_->update_props(to_prop_map(props), auto_render);"
+        "  const bool dirty = apply_props(*bridge_, props, auto_render);"
     );
-    let _ = writeln!(out, "  (void)drain_and_dispatch_events();");
+    let _ = writeln!(out, "  (void)bridge_->drain_emitted_events();");
     let _ = writeln!(out, "  return dirty;");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
 
     let _ = writeln!(
         out,
-        "bool {name}NveBridge::update_props_direct(const NveMapEntry* entries, uint32_t count, bool auto_render) {{"
+        "bool {name}NveBridge::update_props(const NveMapEntry* entries, uint32_t count, bool auto_render) {{"
     );
     let _ = writeln!(out, "  if (!bridge_) return false;");
     let _ = writeln!(
         out,
-        "  const bool dirty = bridge_->update_props_direct(entries, count, auto_render);"
+        "  const bool dirty = bridge_->update_props(entries, count, auto_render);"
     );
     let _ = writeln!(out, "  (void)drain_and_dispatch_events();");
     let _ = writeln!(out, "  return dirty;");
@@ -333,15 +356,15 @@ fn export_cpp_default(prop: &PropSpec) -> Option<String> {
     }
 }
 
-fn cpp_prop_to_variant(expr: &str, ty: &PropType) -> String {
+fn cpp_prop_to_nve_value(expr: &str, ty: &PropType) -> String {
     match ty {
-        PropType::Bool => format!("nve::PropValue{{{expr}}}"),
+        PropType::Bool => format!("nve::make_bool_value({expr})"),
         PropType::Int32 | PropType::IntEnum { .. } => {
-            format!("nve::PropValue{{static_cast<int64_t>({expr})}}")
+            format!("nve::make_i64_value(static_cast<int64_t>({expr}))")
         }
         PropType::Float | PropType::Double => {
-            format!("nve::PropValue{{static_cast<double>({expr})}}")
+            format!("nve::make_f64_value(static_cast<double>({expr}))")
         }
-        _ => format!("nve::PropValue{{{expr}}}"),
+        _ => format!("nve::make_str_value({expr})"),
     }
 }

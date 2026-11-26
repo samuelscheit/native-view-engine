@@ -253,7 +253,8 @@ class NveRnwComponentHost {
   void set_on_visual_tree_changed(std::function<void()> cb);
   void set_surface_size(float width, float height, float scale_factor = 0.0f);
 
-  bool update_props_json(std::string_view props_json);
+  bool update_props(const nve::PropMap& props);
+  bool update_props(const NveMapEntry* entries, uint32_t count);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   int32_t render_frame(NveFrameStats* out_stats = nullptr);
 

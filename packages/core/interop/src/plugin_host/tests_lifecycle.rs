@@ -2,9 +2,10 @@ use std::ffi::c_void;
 
 use nve_abi::{
     CommandBufferBuilder, CommandDecoder, ComponentKind, NveAppHandle, NveBufferSlice,
-    NveComponentApi, NveDevApi, NveGestureDisposition, NveIntrinsicSize, NveLayoutApi,
-    NveSizeConstraints, NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE, ROOT_NODE_ID,
+    NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch, NveGestureDisposition,
+    NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi,
+    NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    ROOT_NODE_ID,
 };
 
 use super::*;
@@ -16,7 +17,7 @@ struct MockPluginState {
     counter: u32,
     frame_buf: Vec<u8>,
     state_buf: Vec<u8>,
-    out_events: Vec<u8>,
+    out_events: Vec<NveDirectEvent>,
 }
 
 unsafe extern "C" fn p1_create(surface_id: u32) -> NveAppHandle {
@@ -58,7 +59,7 @@ unsafe extern "C" fn p_render(handle: NveAppHandle, frame_id: u64) -> NveBufferS
     NveBufferSlice::from_slice(&st.frame_buf)
 }
 
-unsafe extern "C" fn p_dispatch(handle: NveAppHandle, _events: NveBufferSlice) -> u32 {
+unsafe extern "C" fn p_dispatch(handle: NveAppHandle, _events: NveEventBatch) -> u32 {
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
     st.counter += 1;
     1
@@ -78,20 +79,24 @@ unsafe extern "C" fn p_hit_test(_: NveAppHandle, _: f32, _: f32, _: u8) -> u8 {
     NveGestureDisposition::Claim as u8
 }
 
-unsafe extern "C" fn p_set_props(handle: NveAppHandle, props: NveBufferSlice) -> u32 {
+unsafe extern "C" fn p_set_props(
+    handle: NveAppHandle,
+    entries: *const NveMapEntry,
+    count: u32,
+) -> u32 {
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    let raw = unsafe { props.as_slice() };
-    if raw.len() == 4 {
-        st.counter = u32::from_le_bytes(raw.try_into().unwrap());
+    let props = unsafe { NvePropsRef::from_raw_parts(entries, count) };
+    if let Some(c) = props.get("counter").and_then(|v| v.as_i64()) {
+        st.counter = c as u32;
         return 1;
     }
     0
 }
 
-unsafe extern "C" fn p_drain_events(handle: NveAppHandle) -> NveBufferSlice {
+unsafe extern "C" fn p_drain_events(handle: NveAppHandle) -> NveEventBatch {
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    st.out_events = st.counter.to_le_bytes().to_vec();
-    NveBufferSlice::from_slice(&st.out_events)
+    st.out_events = vec![NveDirectEvent::press(st.surface_id, st.counter, 0, 0.0, 0.0)];
+    NveEventBatch::from_slice(&st.out_events)
 }
 
 unsafe extern "C" fn p_hot_patch(_: NveAppHandle, _: NveBufferSlice) -> u32 {
@@ -117,14 +122,12 @@ static P1_SURFACE: NveSurfaceApi = NveSurfaceApi {
     destroy: p_destroy,
     render: p_render,
     dispatch_events: p_dispatch,
-    dispatch_events_direct: None,
 };
 static P2_SURFACE: NveSurfaceApi = NveSurfaceApi {
     create: p2_create,
     destroy: p_destroy,
     render: p_render,
     dispatch_events: p_dispatch,
-    dispatch_events_direct: None,
 };
 static P_LAYOUT: NveLayoutApi = NveLayoutApi {
     measure: p_measure,
@@ -133,7 +136,6 @@ static P_LAYOUT: NveLayoutApi = NveLayoutApi {
 static P_COMPONENT: NveComponentApi = NveComponentApi {
     set_props: p_set_props,
     drain_emitted_events: p_drain_events,
-    set_props_direct: None,
 };
 static P_DEV: NveDevApi = NveDevApi {
     apply_hot_patch: p_hot_patch,
@@ -181,7 +183,6 @@ static BROKEN_NULL_HANDLE_SURFACE: NveSurfaceApi = NveSurfaceApi {
     destroy: p_destroy,
     render: p_render,
     dispatch_events: p_dispatch,
-    dispatch_events_direct: None,
 };
 
 unsafe extern "C" fn broken_null_handle_get_interface(id: u32) -> *const c_void {
@@ -255,7 +256,8 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     assert_eq!(slot.hit_test(10.0, 10.0, 0), NveGestureDisposition::Claim);
 
     // Mutate plugin state via props + events before hot-swap.
-    assert!(slot.set_props(&42u32.to_le_bytes()).unwrap());
+    let props = [NveMapEntry::new("counter", NveValue::i64(42))];
+    assert!(slot.set_props(&props).unwrap());
     assert!(slot.dispatch_events(&[]).unwrap()); // counter -> 43
     let f1 = slot.render(1).unwrap().to_vec();
     let (hdr1, cmds1) = CommandDecoder::new(&f1).unwrap().decode_all().unwrap();

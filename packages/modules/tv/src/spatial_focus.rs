@@ -81,66 +81,7 @@ impl SpatialRect {
     }
 }
 
-/// Cardinal 2D directional focus movement.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FocusDirection {
-    Up = 0,
-    Down = 1,
-    Left = 2,
-    Right = 3,
-}
-
-/// High-level TV remote, gamepad, or keyboard action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RemoteAction {
-    Move(FocusDirection),
-    Select,
-    Back,
-    PlayPause,
-    Menu,
-    ContextMenu,
-    ChannelUp,
-    ChannelDown,
-}
-
-impl RemoteAction {
-    /// Maps standard W3C / NVE `NK1` keydown names to a typed [`RemoteAction`].
-    pub fn from_key_name(key: &str) -> Option<Self> {
-        match key {
-            "ArrowUp" => Some(Self::Move(FocusDirection::Up)),
-            "ArrowDown" => Some(Self::Move(FocusDirection::Down)),
-            "ArrowLeft" => Some(Self::Move(FocusDirection::Left)),
-            "ArrowRight" => Some(Self::Move(FocusDirection::Right)),
-            "Enter" | "Select" => Some(Self::Select),
-            "Escape" | "Back" | "GoBack" => Some(Self::Back),
-            "MediaPlayPause" => Some(Self::PlayPause),
-            "ContextMenu" => Some(Self::ContextMenu),
-            "Menu" => Some(Self::Menu),
-            "ChannelUp" => Some(Self::ChannelUp),
-            "ChannelDown" => Some(Self::ChannelDown),
-            _ => None,
-        }
-    }
-
-    /// Canonical W3C / NVE `NK1` key name for this remote action.
-    #[inline]
-    pub const fn key_name(self) -> &'static str {
-        match self {
-            Self::Move(FocusDirection::Up) => "ArrowUp",
-            Self::Move(FocusDirection::Down) => "ArrowDown",
-            Self::Move(FocusDirection::Left) => "ArrowLeft",
-            Self::Move(FocusDirection::Right) => "ArrowRight",
-            Self::Select => "Select",
-            Self::Back => "Back",
-            Self::PlayPause => "MediaPlayPause",
-            Self::Menu => "Menu",
-            Self::ContextMenu => "ContextMenu",
-            Self::ChannelUp => "ChannelUp",
-            Self::ChannelDown => "ChannelDown",
-        }
-    }
-}
+pub use crate::overscan::{FocusDirection, RemoteAction};
 
 /// Logical focus group identifier (e.g. sidebar, hero banner, horizontal shelf, modal dialog).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

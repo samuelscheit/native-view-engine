@@ -34,7 +34,7 @@ Event handlers bind strongly typed payloads decoded directly from `EventRing` or
 - `oninput` / `onchange` → `TextEvent` (`TextEventData { value: String }`)
 - `onsubmit` → `SubmitEvent` (`SubmitEventData { value: String }`)
 - `onfocus` / `onblur` → `FocusEvent` (`FocusEventData`)
-- `onkeydown` → `KeyEvent` (`KeyEventData { key: String, meta, ctrl, shift, alt }`) — decoded from binary `NK1` payloads
+- `onkeydown` → `KeyEvent` (`KeyEventData { key: String, meta, ctrl, shift, alt }`) — delivered directly via typed `NativeEventKind::KeyDown` (`EventPayload::Key` / `NveDirectEvent`)
 
 <Callout kind="info" title="Automatic Dioxus 0.7 workarounds built in">
 `nve-dioxus` handles two upstream `dioxus-core 0.7.10` quirks transparently: it strips the `"on"` prefix from event attributes before invoking `VirtualDom::runtime().handle_event`, and it propagates `text_color` and `font_size` from styled parent `text` wrappers down to unstyled literal leaf nodes. On `wasm32`, a target-gated `FrameTimer` avoids `std::time::Instant::now()` panics.

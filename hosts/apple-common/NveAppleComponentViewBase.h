@@ -93,10 +93,7 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
 - (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
              schemaVersion:(uint32_t)schemaVersion;
 
-/// Update component props from a UTF-8 JSON object string and re-render if needed.
-- (BOOL)applyPropsJson:(NSString *)propsJson;
-
-/// Update component props from an NSDictionary via direct FFI (`set_props_direct`) and re-render.
+/// Update component props from an NSDictionary via direct FFI (`set_props`) and re-render.
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;
 
 /// Trigger a render pass (`NveRnComponentBridge::render`), reconcile native child views, and flush events.

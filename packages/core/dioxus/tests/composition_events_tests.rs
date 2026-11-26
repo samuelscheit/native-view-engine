@@ -83,7 +83,7 @@ fn composition_events_set_mask_and_dispatch_via_event_ring_and_direct_ffi() {
         "完",
     )];
     let batch = NveEventBatch::from_slice(&direct);
-    assert!(surface.dispatch_events_direct(unsafe { NveEventBatchRef::from_raw(batch) }));
+    assert!(surface.dispatch_direct_events(unsafe { NveEventBatchRef::from_raw(batch) }));
 
     COMP_LOG.with(|l| {
         assert_eq!(

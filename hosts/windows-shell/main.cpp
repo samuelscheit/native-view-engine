@@ -27,7 +27,7 @@ class BuiltinWinDemoApp {
     return NveBufferSlice{self->cmd_buf_.data(), self->cmd_buf_.size()};
   }
 
-  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<BuiltinWinDemoApp*>(h);
     if (batch.ptr == nullptr) {
       return 0;
@@ -69,8 +69,7 @@ class BuiltinWinDemoApp {
         .create = &create,
         .destroy = &destroy,
         .render = &render,
-        .dispatch_events = nullptr,
-        .dispatch_events_direct = &dispatch_events_direct,
+        .dispatch_events = &dispatch_events,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = nullptr,

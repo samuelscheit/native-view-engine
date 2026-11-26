@@ -32,7 +32,7 @@ public final class NveHostContainerView: NvePlatformView {
 ///
 /// Supports:
 /// - `sizeThatFits` intrinsic layout negotiation on iOS 16+ and macOS 13+
-/// - Binary direct prop updates via `set_props_direct` (with binary `NveBinValue` fallback)
+/// - Direct typed prop updates via `NveComponentApi.set_props`
 /// - Imperative commands via `NveSurfaceController`
 /// - Strongly typed outbound event callbacks via `onEvent`
 public struct NveSurfaceRepresentable {

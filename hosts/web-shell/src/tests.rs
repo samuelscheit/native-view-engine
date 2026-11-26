@@ -378,11 +378,8 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         surface_id: 1,
         node_id: ROOT_NODE_ID,
         timestamp_us: 1600,
-        kind: NativeEventKind::Custom,
-        payload: EventPayload::Custom {
-            name: "submit".into(),
-            data: Vec::new(),
-        },
+        kind: NativeEventKind::Submit,
+        payload: EventPayload::Text(String::new()),
     });
     assert!(session.pump_events().unwrap().is_none());
 
@@ -397,13 +394,10 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     session.pump_events().unwrap().expect("draft update");
     session.backend().push_event(NativeEvent {
         surface_id: 1,
-        node_id: ROOT_NODE_ID,
+        node_id: new_task_id,
         timestamp_us: 1800,
-        kind: NativeEventKind::Custom,
-        payload: EventPayload::Custom {
-            name: "submit".into(),
-            data: b"Web Canvas Parity".to_vec(),
-        },
+        kind: NativeEventKind::Submit,
+        payload: EventPayload::Text("Web Canvas Parity".into()),
     });
     session.pump_events().unwrap().expect("submit custom task");
     assert!(session.backend().render_html().contains("Web Canvas Parity"));

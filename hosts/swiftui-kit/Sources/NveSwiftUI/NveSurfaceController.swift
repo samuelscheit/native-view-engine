@@ -128,7 +128,7 @@ public final class NveSurfaceController: ObservableObject {
     }
 
     private func applyDirectProps<P: NveDirectEncodable>(_ props: P) -> Bool? {
-        guard let handle, let directFn = module.component?.pointee.set_props_direct else {
+        guard let handle, let directFn = module.component?.pointee.set_props else {
             return nil
         }
         guard let needsRender = try? NveDirectPropsWriter.withEncodedProps(props, { ptr, count in
@@ -144,14 +144,14 @@ public final class NveSurfaceController: ObservableObject {
         return needsRender != 0
     }
 
-    /// Pushes typed props via required `NveComponentApi.set_props_direct` (binary FFI, no legacy fallback).
+    /// Pushes typed props via `NveComponentApi.set_props`.
     @discardableResult
     public func setProps(_ entries: [(String, NveBinValue)]) -> Bool {
         let canonical = NveBinValue.map(entries)
         if lastPropsValue == canonical {
             return false
         }
-        guard let handle, let directFn = module.component?.pointee.set_props_direct else {
+        guard let handle, let directFn = module.component?.pointee.set_props else {
             return false
         }
         guard let needsRender = try? NveDirectPropsWriter.withEntries(entries, { ptr, count in
@@ -170,7 +170,7 @@ public final class NveSurfaceController: ObservableObject {
         return needsRender != 0
     }
 
-    /// Pushes `[String: Any]` props into the mounted component via binary direct C-ABI structs.
+    /// Pushes `[String: Any]` props into the mounted component via direct C-ABI structs.
     @discardableResult
     public func setProps(_ props: [String: Any]) -> Bool {
         guard let entries = try? NveBinValue.canonicalEntries(from: props) else {
@@ -179,10 +179,10 @@ public final class NveSurfaceController: ObservableObject {
         return setProps(entries)
     }
 
-    /// Dispatches a batch of typed events via required `NveSurfaceApi.dispatch_events_direct`.
+    /// Dispatches a batch of typed events via `NveSurfaceApi.dispatch_events`.
     @discardableResult
     public func dispatchEvents(_ events: [NveEvent]) -> Bool {
-        guard !events.isEmpty, let handle, let directFn = module.surface?.pointee.dispatch_events_direct else {
+        guard !events.isEmpty, let handle, let directFn = module.surface?.pointee.dispatch_events else {
             return false
         }
         guard let needsRender = try? NveDirectEventWriter.withBatch(events, { batch in
@@ -211,7 +211,7 @@ public final class NveSurfaceController: ObservableObject {
         nodeId: UInt32 = 1,
         timestampUs: UInt64 = UInt64(Date().timeIntervalSince1970 * 1_000_000)
     ) {
-        guard let handle, let directFn = module.surface?.pointee.dispatch_events_direct else { return }
+        guard let handle, let directFn = module.surface?.pointee.dispatch_events else { return }
         guard let needsRender = try? NveDirectEventWriter.withCustomEvent(
             surfaceId: surfaceId,
             nodeId: nodeId,
@@ -267,9 +267,7 @@ public final class NveSurfaceController: ObservableObject {
     /// Drains all queued outbound events via `NveComponentApi.drain_emitted_events`.
     public func drainEmittedEvents() -> [NveEvent] {
         guard let handle, let drainFn = module.component?.pointee.drain_emitted_events else { return [] }
-        let slice = drainFn(handle)
-        guard let ptr = slice.ptr, slice.len > 0 else { return [] }
-        return NveEventRingCodec.decode(Data(bytes: ptr, count: slice.len))
+        return NveDirectEventWriter.decodeBatch(drainFn(handle))
     }
 
     public func drainAndForwardEvents() {

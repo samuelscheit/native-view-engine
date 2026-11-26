@@ -63,15 +63,27 @@ struct MockEmbeddedRustComponent {
   std::string last_direct_event_name;
   int count{0};
   std::vector<uint8_t> last_cmd_buf;
-  nve::EventRingWriter outbound_events;
-  std::vector<uint8_t> outbound_snapshot;
+  nve::BumpArena outbound_arena{2048u};
+  std::vector<NveDirectEvent> outbound_pending;
+  std::vector<NveDirectEvent> outbound_drained;
   std::string saved_state_buf;
 
   static NveAppHandle create(uint32_t sid) {
     auto* self = new MockEmbeddedRustComponent();
     self->surface_id = sid;
-    self->outbound_events.clear();
     return self;
+  }
+
+  void push_outbound_custom(uint32_t node_id, uint64_t ts_us, std::string_view name, NveValue val) {
+    NveDirectEvent ev{};
+    ev.surface_id = surface_id;
+    ev.node_id = node_id;
+    ev.timestamp_us = ts_us;
+    ev.kind = NVE_EVENT_CUSTOM;
+    ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
+    ev.name = outbound_arena.copy_str(name);
+    ev.value = val;
+    outbound_pending.push_back(ev);
   }
 
   static void destroy(NveAppHandle h) {
@@ -96,38 +108,24 @@ struct MockEmbeddedRustComponent {
     return NveBufferSlice{self->last_cmd_buf.data(), self->last_cmd_buf.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
-    auto* self = static_cast<MockEmbeddedRustComponent*>(h);
-    std::vector<nve::DecodedEvent> decoded;
-    if (!nve::decode_event_ring(events, decoded)) return 0;
-    uint32_t dirty = 0;
-    for (const auto& ev : decoded) {
-      if (ev.kind == nve::EventKind::Press && ev.node_id == 2) {
-        self->count += 1;
-        const NveMapEntry entry{
-            nve::make_str_slice("count"),
-            nve::make_i64_value(static_cast<int64_t>(self->count)),
-        };
-        const NveValue payload = nve::make_map_value(&entry, 1);
-        self->outbound_events.push_custom_value(
-            self->surface_id, 2, ev.timestamp_us, "onIncrement", payload);
-        dirty = 1;
-      }
-    }
-    return dirty;
-  }
-
-  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockEmbeddedRustComponent*>(h);
     if (!self || !batch.ptr || batch.len == 0) return 0;
     uint32_t dirty = 0;
     for (uint32_t i = 0; i < batch.len; ++i) {
       const NveDirectEvent& ev = batch.ptr[i];
       ++self->direct_event_calls;
-      if (ev.kind == 1 && ev.node_id == 2) {
+      if (ev.kind == NVE_EVENT_PRESS && ev.node_id == 2) {
         self->count += 1;
+        NveMapEntry* entry = self->outbound_arena.alloc_array<NveMapEntry>(1u);
+        entry[0] = NveMapEntry{
+            self->outbound_arena.copy_str("count"),
+            nve::make_i64_value(static_cast<int64_t>(self->count)),
+        };
+        self->push_outbound_custom(
+            2, ev.timestamp_us, "onIncrement", nve::make_map_value(entry, 1u));
         dirty = 1;
-      } else if (ev.kind == 8) {
+      } else if (ev.kind == NVE_EVENT_CUSTOM) {
         self->last_direct_event_name = std::string(nve::str_slice_view(ev.name));
         dirty = 1;
       }
@@ -156,17 +154,7 @@ struct MockEmbeddedRustComponent {
     self->count = std::stoi(s);
   }
 
-  static uint32_t set_props(NveAppHandle h, NveBufferSlice props) {
-    auto* self = static_cast<MockEmbeddedRustComponent*>(h);
-    self->last_props_json.assign(reinterpret_cast<const char*>(props.ptr), props.len);
-    const NveMapEntry entry{nve::make_str_slice("accepted"), nve::make_bool_value(true)};
-    const NveValue payload = nve::make_map_value(&entry, 1);
-    self->outbound_events.push_custom_value(
-        self->surface_id, NVE_ROOT_NODE_ID, 1000, "onPropsApplied", payload);
-    return 1;
-  }
-
-  static uint32_t set_props_direct(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
+  static uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
     auto* self = static_cast<MockEmbeddedRustComponent*>(h);
     ++self->direct_props_calls;
     for (uint32_t i = 0; i < count; ++i) {
@@ -184,18 +172,25 @@ struct MockEmbeddedRustComponent {
         self->saw_direct_null = true;
       }
     }
-    const NveMapEntry entry{nve::make_str_slice("accepted"), nve::make_bool_value(true)};
-    const NveValue payload = nve::make_map_value(&entry, 1);
-    self->outbound_events.push_custom_value(
-        self->surface_id, NVE_ROOT_NODE_ID, 1000, "onPropsApplied", payload);
+    NveMapEntry* entry = self->outbound_arena.alloc_array<NveMapEntry>(1u);
+    entry[0] = NveMapEntry{
+        self->outbound_arena.copy_str("accepted"),
+        nve::make_bool_value(true),
+    };
+    self->push_outbound_custom(
+        NVE_ROOT_NODE_ID, 1000, "onPropsApplied", nve::make_map_value(entry, 1u));
     return 1;
   }
 
-  static NveBufferSlice drain_emitted_events(NveAppHandle h) {
+  static NveEventBatch drain_emitted_events(NveAppHandle h) {
     auto* self = static_cast<MockEmbeddedRustComponent*>(h);
-    self->outbound_snapshot = self->outbound_events.finalize();
-    self->outbound_events.clear();
-    return NveBufferSlice{self->outbound_snapshot.data(), self->outbound_snapshot.size()};
+    self->outbound_drained = std::move(self->outbound_pending);
+    self->outbound_pending.clear();
+    return NveEventBatch{
+        self->outbound_drained.empty() ? nullptr : self->outbound_drained.data(),
+        static_cast<uint32_t>(self->outbound_drained.size()),
+        0u,
+    };
   }
 
   static NveIntrinsicSize measure(NveAppHandle, NveSizeConstraints c) {
@@ -215,7 +210,6 @@ struct MockEmbeddedRustComponent {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
-        .dispatch_events_direct = &dispatch_events_direct,
     };
     static const NveLayoutApi kLayout{
         .measure = &measure,
@@ -224,7 +218,6 @@ struct MockEmbeddedRustComponent {
     static const NveComponentApi kComponent{
         .set_props = &set_props,
         .drain_emitted_events = &drain_emitted_events,
-        .set_props_direct = &set_props_direct,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = &apply_hot_patch,

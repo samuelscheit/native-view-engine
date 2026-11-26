@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nve_host_services::{
-    FfiHostServices, HostCallbackBridge, MemoryHostServices, NativeHostServices, ServiceError,
+    FfiHostServices, HostCallbackBridge, MemoryHostServices, HostServiceRegistry, ServiceError,
     FFI_STACK_BUF_SIZE,
 };
 use nve_storage::{
@@ -32,7 +32,7 @@ fn nvk1_storage_persistence_atomic_batch_rollback_prefix_scan_and_compaction() {
     let root = unique_temp_dir("kv_persist");
 
     {
-        let native = NativeHostServices::new().with_handler(NativeStorage::with_root_dir(&root));
+        let native = HostServiceRegistry::new().with_handler(NativeStorage::with_root_dir(&root));
         let client = StorageClient::new(&native);
         let store = client.open("app_state").unwrap();
         assert_eq!(store.namespace(), "app_state");
@@ -126,7 +126,7 @@ fn nvk1_storage_persistence_atomic_batch_rollback_prefix_scan_and_compaction() {
     assert_eq!(&raw[0..4], &NVK1_MAGIC);
 
     {
-        let native = NativeHostServices::new().with_handler(NativeStorage::with_root_dir(&root));
+        let native = HostServiceRegistry::new().with_handler(NativeStorage::with_root_dir(&root));
         let (store, info) = StorageClient::new(&native)
             .open_with_info("app_state")
             .unwrap();
@@ -170,7 +170,7 @@ fn nvk1_crash_recovery_torn_tail_checksum_corruption_c_abi_and_fuzz() {
     }
 
     {
-        let native = NativeHostServices::new().with_handler(NativeStorage::with_root_dir(&root));
+        let native = HostServiceRegistry::new().with_handler(NativeStorage::with_root_dir(&root));
         let (store, info) = StorageClient::new(&native).open_with_info("wal").unwrap();
         assert!(info.recovered_torn_tail);
         assert_eq!(info.key_count, 2);

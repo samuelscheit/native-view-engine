@@ -16,7 +16,7 @@
 //! - [`inject_ssg_into_shell_html`] / [`inject_ssg_with_scripts_into_shell_html`] inject the exact
 //!   same build-time SSG + bootstrap scripts into any existing host `index.html` shell template.
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, ROOT_NODE_ID};
+use nve_abi::{NveDirectEvent, NveEventBatchRef, ROOT_NODE_ID};
 use nve_engine::{BackendError, NveApp, RenderBackend, Viewport};
 
 use crate::html::{push_attr_escaped, push_text_escaped};
@@ -49,19 +49,16 @@ pub fn prerender_nve_app_frame0<A: NveApp>(viewport: Viewport) -> Result<WebBack
         && viewport.width > 0.0
         && viewport.height > 0.0
     {
-        let layout = encode_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: ROOT_NODE_ID,
-            timestamp_us: 0,
-            kind: NativeEventKind::Layout,
-            payload: EventPayload::Layout {
-                x: 0.0,
-                y: 0.0,
-                width: viewport.width,
-                height: viewport.height,
-            },
-        }]);
-        let _ = app.dispatch_events(&layout);
+        let layout = [NveDirectEvent::layout(
+            1,
+            ROOT_NODE_ID,
+            0,
+            0.0,
+            0.0,
+            viewport.width,
+            viewport.height,
+        )];
+        let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout) });
     }
     let frame_bytes = app.render(1).to_vec();
     let mut backend = WebBackend::new();

@@ -26,6 +26,8 @@ mod multi_window_tests;
 #[cfg(test)]
 mod pair_tests;
 #[cfg(test)]
+mod scroll_keydown_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod text_maturity_tests;
@@ -34,7 +36,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nve_abi::{ColorRgba, FrameId, SurfaceId};
+use nve_abi::{ColorRgba, FrameId, NveDirectEvent, SurfaceId};
 use nve_backend_skia::encode_rgb_png;
 use nve_backend_skia::gpu::GpuBackendKind;
 use nve_backend_skia::raster::PixelBuffer;
@@ -169,7 +171,7 @@ impl Default for DesktopPreviewOptions {
 pub trait DesktopApp {
     fn generation(&self) -> u64;
     fn render(&mut self, frame_id: FrameId) -> &[u8];
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool;
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool;
     /// Forwards one binary `NVP1` hot-patch frame to the app's `NveDevApi::apply_hot_patch`.
     fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool;
     fn reload(
@@ -274,9 +276,9 @@ impl DesktopApp for HotAppSlot {
         }
     }
 
-    fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
+    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         match self.instance.as_mut() {
-            Some(inst) => inst.dispatch_events(encoded_events),
+            Some(inst) => inst.dispatch_events(events),
             None => false,
         }
     }

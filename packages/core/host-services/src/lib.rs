@@ -3,8 +3,7 @@
 //!
 //! This crate intentionally has **zero** dependencies on any `packages/modules/*` capability
 //! crate. Each standalone capability module implements [`HostServiceHandler`] for its own
-//! `service_id` and registers cleanly onto [`HostServiceRegistry`], [`MemoryHostServices`],
-//! or [`NativeHostServices`].
+//! `service_id` and registers cleanly onto [`HostServiceRegistry`] or [`MemoryHostServices`].
 
 #[cfg(target_os = "macos")]
 pub mod apple_objc;
@@ -28,6 +27,6 @@ pub use events::{TypedAsyncTable, TypedEventBus, TypedEventSubscription, TypedHo
 pub use ffi_client::{FfiHostServices, RequestTable, FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE};
 pub use provider::{
     pack_typed, resolve_typed, HostChannelEvent, HostEvent, HostPushEvent, HostServiceHandler,
-    HostServiceProvider, InvokeResult, PermissionStatus,
+    HostServiceProvider, InvokeResult, PermissionStatus, ResponseBuf,
 };
-pub use registry::{HostServiceRegistry, MemoryHostServices, NativeHostServices};
+pub use registry::{HostServiceRegistry, MemoryHostServices};

@@ -4,155 +4,83 @@ import android.content.Context
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.charset.CharacterCodingException
-import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 
 /**
- * Decoded binary `NK1` binary keydown payload.
+ * Typed TV keydown event matching `NativeEventKind::KeyDown = 12` / `PayloadTag::Key = 6`.
  */
-data class NveNk1KeyDown(
+data class NveTvKeyEvent(
+    val surfaceId: Int,
+    val nodeId: Int,
+    val timestampUs: Long,
     val key: String,
-    val meta: Boolean = false,
-    val ctrl: Boolean = false,
-    val shift: Boolean = false,
-    val alt: Boolean = false,
-)
+    val code: String = "",
+    val keyCode: Int = 0,
+    val modifiers: Int = 0,
+) {
+    val meta: Boolean get() = (modifiers and NveTvEventRingWire.KEY_MOD_META) != 0
+    val ctrl: Boolean get() = (modifiers and NveTvEventRingWire.KEY_MOD_CTRL) != 0
+    val shift: Boolean get() = (modifiers and NveTvEventRingWire.KEY_MOD_SHIFT) != 0
+    val alt: Boolean get() = (modifiers and NveTvEventRingWire.KEY_MOD_ALT) != 0
+    val repeat: Boolean get() = (modifiers and NveTvEventRingWire.KEY_MOD_REPEAT) != 0
+}
 
 /**
- * Binary `NK1` binary keydown codec matching `packages/core/codegen/src/wire_codecs/spec.rs` and
- * `packages/core/abi/src/events.rs` byte-for-byte:
- *
- * Layout: `[0x4E ('N'), 0x4B ('K'), 0x31 ('1'), flags_u8, utf8_key...]`
- * - `flags_u8` bit 0 (`0x01`): `meta`
- * - `flags_u8` bit 1 (`0x02`): `ctrl`
- * - `flags_u8` bit 2 (`0x04`): `shift`
- * - `flags_u8` bit 3 (`0x08`): `alt`
+ * Minimal standalone `EventRing` typed `KeyDown` wire encoder/decoder matching
+ * `packages/core/abi/src/events.rs` byte-for-byte without depending on `hosts/compose-kit`.
  */
-object NveNk1Codec {
-    const val MAGIC_0: Byte = 0x4E // 'N'
-    const val MAGIC_1: Byte = 0x4B // 'K'
-    const val MAGIC_2: Byte = 0x31 // '1'
-    const val HEADER_SIZE: Int = 4
-    const val MIN_LEN: Int = 5
+object NveTvEventRingWire {
+    const val EVENT_KIND_KEY_DOWN: Int = 12
+    const val PAYLOAD_TAG_KEY: Int = 6
+    const val KEY_MOD_META: Int = 1 shl 0
+    const val KEY_MOD_CTRL: Int = 1 shl 1
+    const val KEY_MOD_SHIFT: Int = 1 shl 2
+    const val KEY_MOD_ALT: Int = 1 shl 3
+    const val KEY_MOD_REPEAT: Int = 1 shl 4
+    private const val EVENT_HEADER_BYTES: Int = 18
 
-    const val FLAG_META: Int = 1 shl 0
-    const val FLAG_CTRL: Int = 1 shl 1
-    const val FLAG_SHIFT: Int = 1 shl 2
-    const val FLAG_ALT: Int = 1 shl 3
-
-    const val KEYDOWN_EVENT_NAME: String = "keydown"
-
-    fun encode(
-        key: String,
+    fun packModifiers(
         meta: Boolean = false,
         ctrl: Boolean = false,
         shift: Boolean = false,
         alt: Boolean = false,
-    ): ByteArray {
-        val keyBytes = key.toByteArray(StandardCharsets.UTF_8)
-        require(keyBytes.isNotEmpty()) { "NK1 key name must not be empty" }
-        var flags = 0
-        if (meta) flags = flags or FLAG_META
-        if (ctrl) flags = flags or FLAG_CTRL
-        if (shift) flags = flags or FLAG_SHIFT
-        if (alt) flags = flags or FLAG_ALT
-
-        val out = ByteArray(HEADER_SIZE + keyBytes.size)
-        out[0] = MAGIC_0
-        out[1] = MAGIC_1
-        out[2] = MAGIC_2
-        out[3] = (flags and 0xFF).toByte()
-        keyBytes.copyInto(out, destinationOffset = HEADER_SIZE)
-        return out
+        repeat: Boolean = false,
+    ): Int {
+        var bits = 0
+        if (meta) bits = bits or KEY_MOD_META
+        if (ctrl) bits = bits or KEY_MOD_CTRL
+        if (shift) bits = bits or KEY_MOD_SHIFT
+        if (alt) bits = bits or KEY_MOD_ALT
+        if (repeat) bits = bits or KEY_MOD_REPEAT
+        return bits
     }
 
-    fun decode(bytes: ByteArray): NveNk1KeyDown? {
-        if (bytes.size < MIN_LEN) return null
-        if (bytes[0] != MAGIC_0 || bytes[1] != MAGIC_1 || bytes[2] != MAGIC_2) return null
-        val flags = bytes[3].toInt() and 0xFF
-        val decoder = StandardCharsets.UTF_8
-            .newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-        val key = try {
-            decoder.decode(ByteBuffer.wrap(bytes, HEADER_SIZE, bytes.size - HEADER_SIZE)).toString()
-        } catch (_: CharacterCodingException) {
-            return null
-        }
-        if (key.isEmpty()) return null
-        return NveNk1KeyDown(
-            key = key,
-            meta = (flags and FLAG_META) != 0,
-            ctrl = (flags and FLAG_CTRL) != 0,
-            shift = (flags and FLAG_SHIFT) != 0,
-            alt = (flags and FLAG_ALT) != 0,
-        )
-    }
-}
+    fun encodeSingle(event: NveTvKeyEvent): ByteArray = encode(listOf(event))
 
-/**
- * Standalone TV keydown event envelope serialized directly into the NVE `EventRing` binary wire
- * format (`NativeEventKind::Custom = 8`, `PayloadTag::Custom = 5`, name `"keydown"`).
- */
-data class NveTvCustomEvent(
-    val surfaceId: Int,
-    val nodeId: Int,
-    val timestampUs: Long,
-    val name: String,
-    val data: ByteArray,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is NveTvCustomEvent) return false
-        return surfaceId == other.surfaceId &&
-            nodeId == other.nodeId &&
-            timestampUs == other.timestampUs &&
-            name == other.name &&
-            data.contentEquals(other.data)
-    }
-
-    override fun hashCode(): Int {
-        var result = surfaceId
-        result = 31 * result + nodeId
-        result = 31 * result + timestampUs.hashCode()
-        result = 31 * result + name.hashCode()
-        result = 31 * result + data.contentHashCode()
-        return result
-    }
-}
-
-/**
- * Minimal standalone `EventRing` custom-event wire encoder/decoder matching
- * `packages/core/abi/src/events.rs` byte-for-byte without depending on `hosts/compose-kit`.
- */
-object NveTvEventRingWire {
-    const val EVENT_KIND_CUSTOM: Int = 8
-    const val PAYLOAD_TAG_CUSTOM: Int = 5
-    private const val EVENT_HEADER_BYTES: Int = 18
-
-    fun encodeSingle(event: NveTvCustomEvent): ByteArray = encode(listOf(event))
-
-    fun encode(events: List<NveTvCustomEvent>): ByteArray {
+    fun encode(events: List<NveTvKeyEvent>): ByteArray {
         val out = ByteArrayOutputStream(4 + events.size * 36)
         writeI32Le(out, events.size)
         for (event in events) {
+            val keyBytes = event.key.toByteArray(StandardCharsets.UTF_8)
+            val codeBytes = event.code.toByteArray(StandardCharsets.UTF_8)
+            require(keyBytes.size <= 0xFFFF) { "Key name exceeds uint16 limit" }
+            require(codeBytes.size <= 0xFFFF) { "Key code exceeds uint16 limit" }
             writeI32Le(out, event.surfaceId)
             writeI32Le(out, event.nodeId)
             writeI64Le(out, event.timestampUs)
-            out.write(EVENT_KIND_CUSTOM)
-            out.write(PAYLOAD_TAG_CUSTOM)
-            val nameBytes = event.name.toByteArray(StandardCharsets.UTF_8)
-            require(nameBytes.size <= 0xFFFF) { "Custom event name exceeds uint16 limit" }
-            writeU16Le(out, nameBytes.size)
-            out.write(nameBytes)
-            writeI32Le(out, event.data.size)
-            out.write(event.data)
+            out.write(EVENT_KIND_KEY_DOWN)
+            out.write(PAYLOAD_TAG_KEY)
+            out.write(event.modifiers and 0xFF)
+            writeI32Le(out, event.keyCode)
+            writeU16Le(out, keyBytes.size)
+            out.write(keyBytes)
+            writeU16Le(out, codeBytes.size)
+            out.write(codeBytes)
         }
         return out.toByteArray()
     }
 
-    fun decode(bytes: ByteArray): List<NveTvCustomEvent> {
+    fun decode(bytes: ByteArray): List<NveTvKeyEvent> {
         if (bytes.isEmpty()) return emptyList()
         val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         require(buf.remaining() >= 4) { "Truncated EventRing header" }
@@ -160,7 +88,7 @@ object NveTvEventRingWire {
         require(count >= 0 && count.toLong() * EVENT_HEADER_BYTES <= buf.remaining().toLong()) {
             "Truncated EventRing body for $count events"
         }
-        val out = ArrayList<NveTvCustomEvent>(count)
+        val out = ArrayList<NveTvKeyEvent>(count)
         repeat(count) {
             require(buf.remaining() >= EVENT_HEADER_BYTES) { "Truncated EventRing event header" }
             val surfaceId = buf.int
@@ -168,21 +96,23 @@ object NveTvEventRingWire {
             val timestampUs = buf.long
             val kind = buf.get().toInt() and 0xFF
             val tag = buf.get().toInt() and 0xFF
-            require(kind == EVENT_KIND_CUSTOM && tag == PAYLOAD_TAG_CUSTOM) {
-                "Unexpected EventRing kind=$kind tag=$tag in TV custom ring"
+            require(kind == EVENT_KIND_KEY_DOWN && tag == PAYLOAD_TAG_KEY) {
+                "Unexpected EventRing kind=$kind tag=$tag in TV keydown ring"
             }
-            require(buf.remaining() >= 2) { "Truncated custom name length" }
-            val nameLen = buf.short.toInt() and 0xFFFF
-            require(buf.remaining() >= nameLen) { "Truncated custom name bytes" }
-            val nameBytes = ByteArray(nameLen)
-            buf.get(nameBytes)
-            val name = String(nameBytes, StandardCharsets.UTF_8)
-            require(buf.remaining() >= 4) { "Truncated custom data length" }
-            val dataLen = buf.int
-            require(dataLen >= 0 && buf.remaining() >= dataLen) { "Truncated custom data bytes" }
-            val data = ByteArray(dataLen)
-            buf.get(data)
-            out.add(NveTvCustomEvent(surfaceId, nodeId, timestampUs, name, data))
+            require(buf.remaining() >= 7) { "Truncated key payload header" }
+            val modifiers = buf.get().toInt() and 0xFF
+            val keyCode = buf.int
+            val keyLen = buf.short.toInt() and 0xFFFF
+            require(buf.remaining() >= keyLen + 2) { "Truncated key string bytes" }
+            val keyBytes = ByteArray(keyLen)
+            buf.get(keyBytes)
+            val key = String(keyBytes, StandardCharsets.UTF_8)
+            val codeLen = buf.short.toInt() and 0xFFFF
+            require(buf.remaining() >= codeLen) { "Truncated key code bytes" }
+            val codeBytes = ByteArray(codeLen)
+            buf.get(codeBytes)
+            val code = String(codeBytes, StandardCharsets.UTF_8)
+            out.add(NveTvKeyEvent(surfaceId, nodeId, timestampUs, key, code, keyCode, modifiers))
         }
         require(!buf.hasRemaining()) { "Trailing bytes in EventRing: ${buf.remaining()}" }
         return out
@@ -214,7 +144,7 @@ object NveTvEventRingWire {
 
 /**
  * Android TV / Fire TV D-Pad & Leanback input bridge converting remote key events directly into
- * binary `NK1` binary payloads wrapped inside `EventRing` `CUSTOM` (`"keydown"`) events.
+ * typed `KeyDown` (`NativeEventKind::KeyDown = 12`, `PayloadTag::Key = 6`) events.
  */
 class NveTvInputBridge(
     private val repeatThrottleUs: Long = DEFAULT_REPEAT_THROTTLE_US,
@@ -231,7 +161,7 @@ class NveTvInputBridge(
         ctrl: Boolean = false,
         shift: Boolean = false,
         alt: Boolean = false,
-    ): NveTvCustomEvent? {
+    ): NveTvKeyEvent? {
         val action = NveTvKeyMapper.mapKeyCode(keyCode) ?: return null
         if (repeatCount > 0 && repeatThrottleUs > 0L) {
             val prevUs = lastDispatchByAction[action]
@@ -244,11 +174,13 @@ class NveTvInputBridge(
             surfaceId = surfaceId,
             nodeId = nodeId,
             action = action,
+            keyCode = keyCode,
             timestampUs = timestampUs,
             meta = meta,
             ctrl = ctrl,
             shift = shift,
             alt = alt,
+            repeat = repeatCount > 0,
         )
     }
 
@@ -256,27 +188,22 @@ class NveTvInputBridge(
         surfaceId: Int,
         nodeId: Int,
         action: NveTvAction,
+        keyCode: Int = 0,
         timestampUs: Long = 0L,
         meta: Boolean = false,
         ctrl: Boolean = false,
         shift: Boolean = false,
         alt: Boolean = false,
-    ): NveTvCustomEvent {
-        val nk1 = NveNk1Codec.encode(
-            key = action.keyName,
-            meta = meta,
-            ctrl = ctrl,
-            shift = shift,
-            alt = alt,
-        )
-        return NveTvCustomEvent(
-            surfaceId = surfaceId,
-            nodeId = nodeId,
-            timestampUs = timestampUs,
-            name = NveNk1Codec.KEYDOWN_EVENT_NAME,
-            data = nk1,
-        )
-    }
+        repeat: Boolean = false,
+    ): NveTvKeyEvent = NveTvKeyEvent(
+        surfaceId = surfaceId,
+        nodeId = nodeId,
+        timestampUs = timestampUs,
+        key = action.keyName,
+        code = action.keyName,
+        keyCode = keyCode,
+        modifiers = NveTvEventRingWire.packModifiers(meta, ctrl, shift, alt, repeat),
+    )
 
     fun encodeKeyDownToRing(
         surfaceId: Int,
@@ -303,7 +230,7 @@ class NveTvInputBridge(
         return NveTvEventRingWire.encodeSingle(event)
     }
 
-    fun encodeBatchToRing(events: List<NveTvCustomEvent>): ByteArray =
+    fun encodeBatchToRing(events: List<NveTvKeyEvent>): ByteArray =
         NveTvEventRingWire.encode(events)
 
     fun resetThrottle() {

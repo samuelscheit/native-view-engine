@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue};
+use nve_abi::{
+    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
+    RawPropValue,
+};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
@@ -224,14 +227,8 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
     headless.submit_frame(&f1).unwrap();
 
     let inc_id = find_node_by_test_id(&headless, "ks-counter-inc");
-    let press_bytes = encode_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: inc_id,
-        timestamp_us: 1_000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 4.0, y: 4.0 },
-    }]);
-    assert!(m1.dispatch_events(&press_bytes));
+    let press_ev = [NveDirectEvent::press(1, inc_id, 1_000, 4.0, 4.0)];
+    assert!(m1.dispatch_events(unsafe { NveEventBatchRef::from_slice(&press_ev) }));
     let _ = m1.render(2);
     assert_eq!(m1.count(), 1);
 
@@ -279,18 +276,12 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
     assert!(host.render_ascii_tree().contains("Count: 0"));
 
     let inc_node = find_node_by_test_id(&host, "ks-counter-inc");
-    let press_bytes = encode_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: inc_node,
-        timestamp_us: 1000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
-    }]);
+    let press_ev = [NveDirectEvent::press(1, inc_node, 1000, 10.0, 10.0)];
 
-    assert!(inst.dispatch_events(&press_bytes));
+    assert!(inst.dispatch_events(&press_ev));
     let f2 = inst.render(2);
     host.submit_frame(f2).unwrap();
-    assert!(inst.dispatch_events(&press_bytes));
+    assert!(inst.dispatch_events(&press_ev));
     let f3 = inst.render(3);
     host.submit_frame(f3).unwrap();
     assert!(host.render_ascii_tree().contains("Count: 2"));

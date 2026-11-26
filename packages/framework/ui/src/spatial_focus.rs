@@ -103,7 +103,7 @@ pub enum RemoteAction {
 }
 
 impl RemoteAction {
-    /// Maps standard W3C / NVE `NK1` keydown names to a typed [`RemoteAction`].
+    /// Maps standard W3C / TV remote keydown names to a typed [`RemoteAction`].
     pub fn from_key_name(key: &str) -> Option<Self> {
         match key {
             "ArrowUp" => Some(Self::Move(FocusDirection::Up)),

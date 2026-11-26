@@ -206,19 +206,9 @@ impl HotAppInstance {
         unsafe { (self.surface.render)(self.handle, frame_id).as_slice() }
     }
 
-    pub fn dispatch_events(&mut self, encoded_events: &[u8]) -> bool {
+    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         unsafe {
-            (self.surface.dispatch_events)(
-                self.handle,
-                NveBufferSlice::from_slice(encoded_events),
-            ) != 0
-        }
-    }
-
-    pub fn dispatch_events_direct(&mut self, events: &[NveDirectEvent]) -> bool {
-        match self.surface.dispatch_events_direct {
-            Some(f) => unsafe { f(self.handle, NveEventBatch::from_slice(events)) != 0 },
-            None => false,
+            (self.surface.dispatch_events)(self.handle, NveEventBatch::from_slice(events)) != 0
         }
     }
 
@@ -236,19 +226,10 @@ impl HotAppInstance {
         }
     }
 
-    pub fn set_props(&mut self, props_bytes: &[u8]) -> bool {
+    pub fn set_props(&mut self, entries: &[NveMapEntry]) -> bool {
         match self.component {
             Some(api) => unsafe {
-                (api.set_props)(self.handle, NveBufferSlice::from_slice(props_bytes)) != 0
-            },
-            None => false,
-        }
-    }
-
-    pub fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> bool {
-        match self.component.and_then(|api| api.set_props_direct) {
-            Some(f) => unsafe {
-                f(
+                (api.set_props)(
                     self.handle,
                     entries.as_ptr(),
                     entries.len().min(u32::MAX as usize) as u32,
@@ -258,9 +239,8 @@ impl HotAppInstance {
         }
     }
 
-    /// Drains outbound component events and borrows the encoded slice directly from the loaded
-    /// app module's internal buffer without copying.
-    pub fn drain_emitted_events(&mut self) -> &[u8] {
+    /// Drains outbound component events as a direct borrowed `NveDirectEvent` slice without copying.
+    pub fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         match self.component {
             Some(api) => unsafe { (api.drain_emitted_events)(self.handle).as_slice() },
             None => &[],

@@ -1,6 +1,5 @@
 package dev.nve.tv
 
-import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -10,7 +9,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.charset.StandardCharsets
 
 class NveTvInputBridgeTest {
     @Test
@@ -56,7 +54,7 @@ class NveTvInputBridgeTest {
     }
 
     @Test
-    fun nk1BinaryEncodingAndEventRingRoundtripMatchRustWireLayoutByteForByte() {
+    fun typedKeyDownEncodingAndEventRingRoundtripMatchRustWireLayoutByteForByte() {
         val bridge = NveTvInputBridge()
         val ringBytes = bridge.encodeKeyDownToRing(
             surfaceId = 3,
@@ -71,22 +69,20 @@ class NveTvInputBridgeTest {
         assertNotNull(ringBytes)
         val encoded = ringBytes!!
 
-        // Verify exact NK1 payload bytes: [0x4E, 0x4B, 0x31, 0x01|0x04|0x08=0x0D, "ArrowRight"]
-        val expectedNk1 = byteArrayOf(
-            0x4E,
-            0x4B,
-            0x31,
-            (NveNk1Codec.FLAG_META or NveNk1Codec.FLAG_SHIFT or NveNk1Codec.FLAG_ALT).toByte(),
-        ) + "ArrowRight".toByteArray(StandardCharsets.UTF_8)
-
         val decodedEvents = NveTvEventRingWire.decode(encoded)
         assertEquals(1, decodedEvents.size)
         val evt = decodedEvents[0]
         assertEquals(3, evt.surfaceId)
         assertEquals(42, evt.nodeId)
         assertEquals(0x0011223344556677L, evt.timestampUs)
-        assertEquals("keydown", evt.name)
-        assertArrayEquals(expectedNk1, evt.data)
+        assertEquals("ArrowRight", evt.key)
+        assertEquals("ArrowRight", evt.code)
+        assertEquals(NveTvKeyMapper.KEYCODE_DPAD_RIGHT, evt.keyCode)
+        assertTrue(evt.meta)
+        assertFalse(evt.ctrl)
+        assertTrue(evt.shift)
+        assertTrue(evt.alt)
+        assertFalse(evt.repeat)
 
         // Verify little-endian EventRing envelope bytes directly
         val buf = ByteBuffer.wrap(encoded).order(ByteOrder.LITTLE_ENDIAN)
@@ -94,22 +90,13 @@ class NveTvInputBridgeTest {
         assertEquals(3, buf.int) // surface_id
         assertEquals(42, buf.int) // node_id
         assertEquals(0x0011223344556677L, buf.long) // timestamp_us
-        assertEquals(NveTvEventRingWire.EVENT_KIND_CUSTOM, buf.get().toInt() and 0xFF)
-        assertEquals(NveTvEventRingWire.PAYLOAD_TAG_CUSTOM, buf.get().toInt() and 0xFF)
-
-        // Decode NK1 payload back into typed struct
-        val nk1 = NveNk1Codec.decode(evt.data)
+        assertEquals(NveTvEventRingWire.EVENT_KIND_KEY_DOWN, buf.get().toInt() and 0xFF)
+        assertEquals(NveTvEventRingWire.PAYLOAD_TAG_KEY, buf.get().toInt() and 0xFF)
         assertEquals(
-            NveNk1KeyDown(key = "ArrowRight", meta = true, ctrl = false, shift = true, alt = true),
-            nk1,
+            NveTvEventRingWire.KEY_MOD_META or NveTvEventRingWire.KEY_MOD_SHIFT or NveTvEventRingWire.KEY_MOD_ALT,
+            buf.get().toInt() and 0xFF,
         )
-
-        // Malformed NK1 payloads rejected strictly
-        assertThrows(IllegalArgumentException::class.java) { NveNk1Codec.encode("") }
-        assertNull(NveNk1Codec.decode(ByteArray(0)))
-        assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x31, 0x00)))
-        assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x32, 0x00, 0x41)))
-        assertNull(NveNk1Codec.decode(byteArrayOf(0x4E, 0x4B, 0x31, 0x00, 0xFF.toByte(), 0xFE.toByte())))
+        assertEquals(NveTvKeyMapper.KEYCODE_DPAD_RIGHT, buf.int)
 
         // Malformed EventRing rejected strictly
         assertThrows(IllegalArgumentException::class.java) { NveTvEventRingWire.decode(byteArrayOf(1, 0)) }
@@ -157,9 +144,9 @@ class NveTvInputBridgeTest {
         )
         val decoded = NveTvEventRingWire.decode(batch)
         assertEquals(3, decoded.size)
-        assertEquals("Select", NveNk1Codec.decode(decoded[0].data)?.key)
-        assertEquals("Back", NveNk1Codec.decode(decoded[1].data)?.key)
-        assertEquals("MediaPlayPause", NveNk1Codec.decode(decoded[2].data)?.key)
+        assertEquals("Select", decoded[0].key)
+        assertEquals("Back", decoded[1].key)
+        assertEquals("MediaPlayPause", decoded[2].key)
     }
 
     @Test

@@ -11,8 +11,8 @@ use crate::schema::wire::{
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
     EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEYDOWN_FLAG_ALT, KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_META, KEYDOWN_FLAG_SHIFT,
-    KEYDOWN_HEADER_SIZE, KEYDOWN_MIN_LEN, KEYDOWN_WIRE_MAGIC, NVE_WIRE_CODECS_SCHEMA_HASH,
+    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
 fn format_dart_bytes(bytes: &[u8]) -> String {
@@ -112,9 +112,9 @@ bool nveWireVerifyFnv1a64TestVectors() {{
     )
     .unwrap();
 
-    // EventRing + NK1
+    // EventRing
     writeln!(s, "// ============================================================================").unwrap();
-    writeln!(s, "// EventRing (`NVEV` / event framing) & `NK1` KeyDown").unwrap();
+    writeln!(s, "// EventRing (`NVEV` / network event framing)").unwrap();
     writeln!(s, "// ============================================================================\n").unwrap();
     writeln!(
         s,
@@ -183,42 +183,15 @@ bool nveWireVerifyFnv1a64TestVectors() {{
     }
     writeln!(s, "}}\n").unwrap();
 
-    writeln!(
-        s,
-        "const List<int> nveWireKeyDownMagic = <int>[{}];",
-        format_dart_bytes(&KEYDOWN_WIRE_MAGIC)
-    )
-    .unwrap();
-    writeln!(s, "const int nveWireKeyDownHeaderSize = {KEYDOWN_HEADER_SIZE};").unwrap();
-    writeln!(s, "const int nveWireKeyDownMinLen = {KEYDOWN_MIN_LEN};").unwrap();
-    writeln!(s, "const int nveWireKeyDownFlagMeta = 0x{KEYDOWN_FLAG_META:02X};").unwrap();
-    writeln!(s, "const int nveWireKeyDownFlagCtrl = 0x{KEYDOWN_FLAG_CTRL:02X};").unwrap();
-    writeln!(s, "const int nveWireKeyDownFlagShift = 0x{KEYDOWN_FLAG_SHIFT:02X};").unwrap();
-    writeln!(s, "const int nveWireKeyDownFlagAlt = 0x{KEYDOWN_FLAG_ALT:02X};\n").unwrap();
+    writeln!(s, "const int nveWireKeyModMeta = 0x{KEY_MOD_META:02X};").unwrap();
+    writeln!(s, "const int nveWireKeyModCtrl = 0x{KEY_MOD_CTRL:02X};").unwrap();
+    writeln!(s, "const int nveWireKeyModShift = 0x{KEY_MOD_SHIFT:02X};").unwrap();
+    writeln!(s, "const int nveWireKeyModAlt = 0x{KEY_MOD_ALT:02X};").unwrap();
+    writeln!(s, "const int nveWireKeyModRepeat = 0x{KEY_MOD_REPEAT:02X};\n").unwrap();
 
     writeln!(
         s,
-        r#"Uint8List nveWireEncodeKeyDownNk1(
-  String key, {{
-  bool meta = false,
-  bool ctrl = false,
-  bool shift = false,
-  bool alt = false,
-}}) {{
-  int flags = 0;
-  if (meta) flags |= nveWireKeyDownFlagMeta;
-  if (ctrl) flags |= nveWireKeyDownFlagCtrl;
-  if (shift) flags |= nveWireKeyDownFlagShift;
-  if (alt) flags |= nveWireKeyDownFlagAlt;
-  final List<int> utf8Bytes = utf8.encode(key);
-  final Uint8List out = Uint8List(nveWireKeyDownHeaderSize + utf8Bytes.length);
-  out.setRange(0, nveWireKeyDownMagic.length, nveWireKeyDownMagic);
-  out[3] = flags;
-  out.setRange(nveWireKeyDownHeaderSize, out.length, utf8Bytes);
-  return out;
-}}
-
-final class NveWireEventRingFramedHeader {{
+        r#"final class NveWireEventRingFramedHeader {{
   const NveWireEventRingFramedHeader({{
     required this.version,
     required this.count,
@@ -351,15 +324,28 @@ final class NveWireEventRingWriter {{
     bool ctrl = false,
     bool shift = false,
     bool alt = false,
+    String code = '',
+    int keyCode = 0,
+    bool isComposing = false,
   }}) {{
-    final Uint8List payload = nveWireEncodeKeyDownNk1(
-      key,
-      meta: meta,
-      ctrl: ctrl,
-      shift: shift,
-      alt: alt,
-    );
-    return pushCustom(surfaceId, nodeId, timestampUs, 'keydown', payload);
+    final List<int> keyBytes = utf8.encode(key);
+    final List<int> codeBytes = utf8.encode(code);
+    if (keyBytes.length > 0xFFFF || codeBytes.length > 0xFFFF) return false;
+    int modifiers = 0;
+    if (meta) modifiers |= nveWireKeyModMeta;
+    if (ctrl) modifiers |= nveWireKeyModCtrl;
+    if (shift) modifiers |= nveWireKeyModShift;
+    if (alt) modifiers |= nveWireKeyModAlt;
+    _writeEntryHeader(surfaceId, nodeId, timestampUs, NveWireEventKind.keyDown, NveWireEventPayloadTag.key);
+    _builder.addByte(modifiers & 0xFF);
+    _builder.addByte(isComposing ? 1 : 0);
+    _writeU32(keyCode);
+    _writeU16(keyBytes.length);
+    _builder.add(keyBytes);
+    _writeU16(codeBytes.length);
+    _builder.add(codeBytes);
+    _count++;
+    return true;
   }}
 
   Uint8List finish() {{

@@ -55,8 +55,8 @@ class NveNativeMem {
   }
 }
 
-/// Zero-copy chunked bump arena backing synchronous `dart:ffi` calls (`set_props_direct` and
-/// `dispatch_events_direct`).
+/// Zero-copy chunked bump arena backing synchronous `dart:ffi` calls (`set_props` and
+/// `dispatch_events`).
 ///
 /// Allocates one zero-initialized 4 KiB slab for typical calls and chains larger chunks only
 /// when needed; existing pointers never move until [dispose].
@@ -331,13 +331,13 @@ class NveNativeArena {
 }
 
 /// Strongly typed Dart prop records implement [NveDirectEncodable] to write directly into
-/// [NveNativeArena] for `set_props_direct` with zero per-field FFI allocations or `Map` boxing.
+/// [NveNativeArena] for `set_props` with zero per-field FFI allocations or `Map` boxing.
 abstract interface class NveDirectEncodable {
   int get directPropCount;
   void encodeDirect(NveDirectPropsBuilder builder);
 }
 
-/// Arena-backed builder populating contiguous `NveMapEntry` slots for `set_props_direct`.
+/// Arena-backed builder populating contiguous `NveMapEntry` slots for `set_props`.
 class NveDirectPropsBuilder {
   NveDirectPropsBuilder._(this.arena, this._entries, this._capacity);
 
@@ -416,7 +416,7 @@ class NveDirectPropsBuilder {
 }
 
 /// Binary direct writer populating `NveMapEntry[]` + `NveValue` structs for
-/// `NveComponentApi.set_props_direct`.
+/// `NveComponentApi.set_props`.
 class NveDirectPropsWriter {
   const NveDirectPropsWriter._();
 
@@ -457,7 +457,7 @@ class NveDirectPropsWriter {
 }
 
 /// Binary direct writer populating `NveDirectEvent[]` + `NveEventBatch` structs for
-/// `NveSurfaceApi.dispatch_events_direct`.
+/// `NveSurfaceApi.dispatch_events`.
 class NveDirectEventWriter {
   const NveDirectEventWriter._();
 
@@ -471,7 +471,8 @@ class NveDirectEventWriter {
       if (events.isEmpty) {
         batchPtr.ref
           ..ptr = ffi.nullptr
-          ..len = 0;
+          ..len = 0
+          ..pad = 0;
         return body(batchPtr.ref);
       }
       final eventsPtr = arena.allocStructArray<NveDirectEvent>(
@@ -483,7 +484,8 @@ class NveDirectEventWriter {
       }
       batchPtr.ref
         ..ptr = eventsPtr
-        ..len = events.length;
+        ..len = events.length
+        ..pad = 0;
       return body(batchPtr.ref);
     } finally {
       arena.dispose();
@@ -543,6 +545,103 @@ class NveDirectEventWriter {
             arena.writeBytesSlice(dst.value.data.bytesVal, bytes);
           }
         }
+      case NveKeyPayload(:final key, :final code, :final modifiers, :final keyCode, :final isComposing):
+        dst
+          ..payloadTag = NveEventPayloadTag.key.code
+          ..modifiers = modifiers
+          ..eventFlags = isComposing ? nveEventFlagComposing : 0
+          ..keyCode = keyCode;
+        arena.writeStrSlice(dst.name, code);
+        arena.writeStrSlice(dst.text, key);
+        dst.value.tag = NveValueTag.nullValue.code;
+      case NvePointerPayload(:final x, :final y, :final modifiers, :final flags):
+        dst
+          ..payloadTag = NveEventPayloadTag.pointer.code
+          ..modifiers = modifiers
+          ..eventFlags = flags
+          ..x = x
+          ..y = y;
+        dst.value.tag = NveValueTag.nullValue.code;
+      case NveWheelPayload(:final deltaX, :final deltaY, :final modifiers):
+        dst
+          ..payloadTag = NveEventPayloadTag.wheel.code
+          ..modifiers = modifiers
+          ..x = deltaX
+          ..y = deltaY;
+        dst.value.tag = NveValueTag.nullValue.code;
     }
   }
+
+  static List<NveEvent> decodeBatch(NveEventBatch batch) {
+    if (batch.ptr == ffi.nullptr || batch.len == 0) return const <NveEvent>[];
+    final out = <NveEvent>[];
+    for (var i = 0; i < batch.len; i++) {
+      final ev = batch.ptr[i];
+      final kind = NveEventKind.fromCode(ev.kind);
+      String? name;
+      final NveEventPayload payload;
+      switch (NveEventPayloadTag.fromCode(ev.payloadTag)) {
+        case NveEventPayloadTag.empty:
+          payload = const NveEmptyPayload();
+        case NveEventPayloadTag.point:
+          payload = NvePointPayload(x: ev.x, y: ev.y);
+        case NveEventPayloadTag.scroll:
+          payload = NveScrollPayload(x: ev.x, y: ev.y, contentWidth: ev.width, contentHeight: ev.height);
+        case NveEventPayloadTag.text:
+          payload = NveTextPayload(_readStr(ev.text));
+        case NveEventPayloadTag.layout:
+          payload = NveLayoutPayload(x: ev.x, y: ev.y, width: ev.width, height: ev.height);
+        case NveEventPayloadTag.custom:
+          name = _readStr(ev.name);
+          payload = NveBinValuePayload(_readValueBytes(ev.value));
+        case NveEventPayloadTag.key:
+          payload = NveKeyPayload(
+            key: _readStr(ev.text),
+            code: _readStr(ev.name),
+            modifiers: ev.modifiers,
+            keyCode: ev.keyCode,
+            isComposing: (ev.eventFlags & nveEventFlagComposing) != 0,
+          );
+        case NveEventPayloadTag.pointer:
+          payload = NvePointerPayload(x: ev.x, y: ev.y, modifiers: ev.modifiers, flags: ev.eventFlags);
+        case NveEventPayloadTag.wheel:
+          payload = NveWheelPayload(deltaX: ev.x, deltaY: ev.y, modifiers: ev.modifiers);
+        case null:
+          continue;
+      }
+      out.add(NveEvent(
+        surfaceId: ev.surfaceId, nodeId: ev.nodeId, timestampUs: ev.timestampUs,
+        kind: kind, name: name, payload: payload,
+      ));
+    }
+    return out;
+  }
+
+  static String _readStr(NveStrSlice s) =>
+      (s.ptr == ffi.nullptr || s.len == 0) ? '' : utf8.decode(s.ptr.asTypedList(s.len), allowMalformed: true);
+
+  static Uint8List _readValueBytes(NveValue v) {
+    final tag = NveValueTag.fromCode(v.tag);
+    if (tag == NveValueTag.bytes) {
+      final b = v.data.bytesVal;
+      return (b.ptr == ffi.nullptr || b.len == 0) ? Uint8List(0) : Uint8List.fromList(b.ptr.asTypedList(b.len));
+    }
+    if (tag == null || tag == NveValueTag.nullValue) return Uint8List(0);
+    return NveBinValueEncoder.encode(_decodeValue(v));
+  }
+
+  static Object? _decodeValue(NveValue v) => switch (NveValueTag.fromCode(v.tag)) {
+    NveValueTag.nullValue || null => null,
+    NveValueTag.boolValue => v.data.boolVal != 0,
+    NveValueTag.i64 => v.data.i64Val,
+    NveValueTag.f64 => v.data.f64Val,
+    NveValueTag.str => _readStr(v.data.strVal),
+    NveValueTag.bytes => (v.data.bytesVal.ptr == ffi.nullptr || v.data.bytesVal.len == 0)
+        ? Uint8List(0)
+        : Uint8List.fromList(v.data.bytesVal.ptr.asTypedList(v.data.bytesVal.len)),
+    NveValueTag.array => List<Object?>.generate(v.data.arrayVal.len, (i) => _decodeValue(v.data.arrayVal.ptr[i])),
+    NveValueTag.map => <String, Object?>{
+      for (var i = 0; i < v.data.mapVal.len; i++) _readStr(v.data.mapVal.ptr[i].key): _decodeValue(v.data.mapVal.ptr[i].value),
+    },
+  };
 }

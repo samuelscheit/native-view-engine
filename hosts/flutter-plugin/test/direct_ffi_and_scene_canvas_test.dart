@@ -73,7 +73,7 @@ class _SceneHostWidget extends LeafRenderObjectWidget {
 }
 
 class _ScrollTestModule {
-  _ScrollTestModule({required this.useDirectEvents}) {
+  _ScrollTestModule() {
     _scratchSlice = _alloc.allocate<NveBufferSlice>(ffi.sizeOf<NveBufferSlice>());
     _createCb = ffi.NativeCallable<NveCreateNative>.isolateLocal(
       (int sid) => ffi.Pointer<ffi.Void>.fromAddress(0x5000 + sid),
@@ -81,10 +81,6 @@ class _ScrollTestModule {
     _destroyCb = ffi.NativeCallable<NveDestroyNative>.isolateLocal((ffi.Pointer<ffi.Void> _) {});
     _renderCb = ffi.NativeCallable<NveRenderNative>.isolateLocal(_onRender);
     _dispatchCb = ffi.NativeCallable<NveDispatchEventsNative>.isolateLocal(
-      _onDispatchRing,
-      exceptionalReturn: 0,
-    );
-    _dispatchDirectCb = ffi.NativeCallable<NveDispatchEventsDirectNative>.isolateLocal(
       _onDispatchDirect,
       exceptionalReturn: 0,
     );
@@ -94,11 +90,9 @@ class _ScrollTestModule {
       ..create = _createCb.nativeFunction
       ..destroy = _destroyCb.nativeFunction
       ..render = _renderCb.nativeFunction
-      ..dispatchEvents = _dispatchCb.nativeFunction
-      ..dispatchEventsDirect = useDirectEvents ? _dispatchDirectCb.nativeFunction : ffi.nullptr;
+      ..dispatchEvents = _dispatchCb.nativeFunction;
   }
 
-  final bool useDirectEvents;
   final _NativeSlabAlloc _alloc = _NativeSlabAlloc();
   late final ffi.Pointer<NveBufferSlice> _scratchSlice;
   late final ffi.Pointer<NveSurfaceApi> _surfaceApi;
@@ -106,9 +100,7 @@ class _ScrollTestModule {
   late final ffi.NativeCallable<NveDestroyNative> _destroyCb;
   late final ffi.NativeCallable<NveRenderNative> _renderCb;
   late final ffi.NativeCallable<NveDispatchEventsNative> _dispatchCb;
-  late final ffi.NativeCallable<NveDispatchEventsDirectNative> _dispatchDirectCb;
 
-  final List<NveEvent> ringEvents = <NveEvent>[];
   final List<NveEvent> directEvents = <NveEvent>[];
 
   ffi.Pointer<ffi.Void> getInterface(int id) =>
@@ -157,36 +149,8 @@ class _ScrollTestModule {
     return _scratchSlice.ref;
   }
 
-  int _onDispatchRing(ffi.Pointer<ffi.Void> _, NveBufferSlice slice) {
-    if (slice.ptr == ffi.nullptr || slice.len == 0) return 0;
-    ringEvents.addAll(NveEventRingCodec.decode(Uint8List.fromList(slice.ptr.asTypedList(slice.len))));
-    return 1;
-  }
-
   int _onDispatchDirect(ffi.Pointer<ffi.Void> _, NveEventBatch batch) {
-    for (var i = 0; i < batch.len; i++) {
-      final ev = batch.ptr[i];
-      final kind = NveEventKind.fromCode(ev.kind);
-      final NveEventPayload payload = switch (NveEventPayloadTag.fromCode(ev.payloadTag)) {
-        NveEventPayloadTag.point => NvePointPayload(x: ev.x, y: ev.y),
-        NveEventPayloadTag.scroll => NveScrollPayload(
-            x: ev.x,
-            y: ev.y,
-            contentWidth: ev.width,
-            contentHeight: ev.height,
-          ),
-        _ => const NveEmptyPayload(),
-      };
-      directEvents.add(
-        NveEvent(
-          surfaceId: ev.surfaceId,
-          nodeId: ev.nodeId,
-          timestampUs: ev.timestampUs,
-          kind: kind,
-          payload: payload,
-        ),
-      );
-    }
+    directEvents.addAll(NveDirectEventWriter.decodeBatch(batch));
     return 1;
   }
 
@@ -195,7 +159,6 @@ class _ScrollTestModule {
     _destroyCb.close();
     _renderCb.close();
     _dispatchCb.close();
-    _dispatchDirectCb.close();
     _alloc.dispose();
   }
 }
@@ -442,10 +405,10 @@ void main() {
   });
 
   group('ScrollView wheel & drag scrolling in RenderNveCanvas (retained tree)', () {
-    testWidgets('wheel and drag scroll dispatch via dispatchEventsDirect and clamp bounds', (
+    testWidgets('wheel and drag scroll dispatch via direct NveEventBatch and clamp bounds', (
       WidgetTester tester,
     ) async {
-      final module = _ScrollTestModule(useDirectEvents: true);
+      final module = _ScrollTestModule();
       addTearDown(module.close);
 
       final controller = NveCanvasController.fromInterfaceResolver(
@@ -481,7 +444,6 @@ void main() {
       await tester.pump();
 
       expect(renderBox.scrollOffsetOf(2).dy, closeTo(60.0, 0.1));
-      expect(module.ringEvents, isEmpty);
       expect(module.directEvents, hasLength(1));
       expect(module.directEvents.single.kind, NveEventKind.scroll);
       expect(module.directEvents.single.nodeId, 2);
@@ -505,45 +467,6 @@ void main() {
       await tester.pump();
       expect(module.directEvents.last.kind, NveEventKind.press);
       expect(module.directEvents.last.nodeId, 5);
-    });
-
-    testWidgets('wheel scroll falls back to encodeScrollEvent EventRing when dispatch_events_direct is null', (
-      WidgetTester tester,
-    ) async {
-      final module = _ScrollTestModule(useDirectEvents: false);
-      addTearDown(module.close);
-
-      final controller = NveCanvasController.fromInterfaceResolver(
-        surfaceId: 1,
-        getInterface: module.getInterface,
-      );
-      addTearDown(controller.dispose);
-
-      await tester.pumpWidget(
-        Directionality(
-          textDirection: TextDirection.ltr,
-          child: Align(
-            alignment: Alignment.topLeft,
-            child: SizedBox(
-              width: 240,
-              height: 120,
-              child: NveCanvasView(controller: controller),
-            ),
-          ),
-        ),
-      );
-      await tester.pump();
-
-      final mouse = TestPointer(2, PointerDeviceKind.mouse);
-      await tester.sendEventToBinding(mouse.hover(const Offset(100, 60)));
-      await tester.sendEventToBinding(mouse.scroll(const Offset(0, 45)));
-      await tester.pump();
-
-      expect(module.directEvents, isEmpty);
-      expect(module.ringEvents, hasLength(1));
-      expect(module.ringEvents.single.kind, NveEventKind.scroll);
-      expect(module.ringEvents.single.nodeId, 2);
-      expect((module.ringEvents.single.payload as NveScrollPayload).y, closeTo(45.0, 0.1));
     });
   });
 }

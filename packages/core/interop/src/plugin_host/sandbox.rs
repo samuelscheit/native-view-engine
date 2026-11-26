@@ -165,29 +165,13 @@ impl NvePluginSlot {
         Ok(unsafe { slice.as_slice() })
     }
 
-    /// Dispatches an encoded `EventRing` slice into the plugin.
-    pub fn dispatch_events(&mut self, encoded_events: &[u8]) -> Result<bool, PluginError> {
+    /// Dispatches direct typed FFI events (`NveEventBatch`) into the plugin.
+    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
         nve_engine::clear_last_ffi_panic();
         let handled = catch_unwind(AssertUnwindSafe(|| unsafe {
-            (self.surface.dispatch_events)(self.handle, NveBufferSlice::from_slice(encoded_events))
+            (self.surface.dispatch_events)(self.handle, NveEventBatch::from_slice(events))
         }))
         .map_err(|_| PluginError::PluginPanicked("NveSurfaceApi::dispatch_events".into()))?;
-        if let Some(msg) = nve_engine::take_last_ffi_panic() {
-            return Err(PluginError::PluginPanicked(msg));
-        }
-        Ok(handled != 0)
-    }
-
-    /// Dispatches zero-copy direct FFI events if the plugin supports `dispatch_events_direct`.
-    pub fn dispatch_events_direct(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
-        let Some(f) = self.surface.dispatch_events_direct else {
-            return Err(PluginError::UnsupportedCapability("dispatch_events_direct"));
-        };
-        nve_engine::clear_last_ffi_panic();
-        let handled = catch_unwind(AssertUnwindSafe(|| unsafe {
-            f(self.handle, NveEventBatch::from_slice(events))
-        }))
-        .map_err(|_| PluginError::PluginPanicked("NveSurfaceApi::dispatch_events_direct".into()))?;
         if let Some(msg) = nve_engine::take_last_ffi_panic() {
             return Err(PluginError::PluginPanicked(msg));
         }
@@ -227,14 +211,18 @@ impl NvePluginSlot {
         }
     }
 
-    /// Updates plugin props via `NVE_IFACE_COMPONENT`.
-    pub fn set_props(&mut self, props_bytes: &[u8]) -> Result<bool, PluginError> {
+    /// Updates plugin props via direct structured `NveMapEntry` slice (`NVE_IFACE_COMPONENT`).
+    pub fn set_props(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
         let Some(api) = self.component else {
             return Err(PluginError::UnsupportedCapability("NVE_IFACE_COMPONENT"));
         };
         nve_engine::clear_last_ffi_panic();
         let changed = catch_unwind(AssertUnwindSafe(|| unsafe {
-            (api.set_props)(self.handle, NveBufferSlice::from_slice(props_bytes))
+            (api.set_props)(
+                self.handle,
+                entries.as_ptr(),
+                entries.len().min(u32::MAX as usize) as u32,
+            )
         }))
         .map_err(|_| PluginError::PluginPanicked("NveComponentApi::set_props".into()))?;
         if let Some(msg) = nve_engine::take_last_ffi_panic() {
@@ -243,28 +231,8 @@ impl NvePluginSlot {
         Ok(changed != 0)
     }
 
-    /// Updates plugin props via zero-copy structured `NveMapEntry` array if exported.
-    pub fn set_props_direct(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
-        let Some(f) = self.component.and_then(|c| c.set_props_direct) else {
-            return Err(PluginError::UnsupportedCapability("set_props_direct"));
-        };
-        nve_engine::clear_last_ffi_panic();
-        let changed = catch_unwind(AssertUnwindSafe(|| unsafe {
-            f(
-                self.handle,
-                entries.as_ptr(),
-                entries.len().min(u32::MAX as usize) as u32,
-            )
-        }))
-        .map_err(|_| PluginError::PluginPanicked("NveComponentApi::set_props_direct".into()))?;
-        if let Some(msg) = nve_engine::take_last_ffi_panic() {
-            return Err(PluginError::PluginPanicked(msg));
-        }
-        Ok(changed != 0)
-    }
-
-    /// Drains component-emitted outbound events via `NVE_IFACE_COMPONENT` if exported.
-    pub fn drain_emitted_events(&mut self) -> &[u8] {
+    /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported.
+    pub fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         let Some(api) = self.component else {
             return &[];
         };
@@ -272,7 +240,7 @@ impl NvePluginSlot {
         match catch_unwind(AssertUnwindSafe(|| unsafe {
             (api.drain_emitted_events)(self.handle)
         })) {
-            Ok(slice) if nve_engine::take_last_ffi_panic().is_none() => unsafe { slice.as_slice() },
+            Ok(batch) if nve_engine::take_last_ffi_panic().is_none() => unsafe { batch.as_slice() },
             _ => {
                 nve_engine::clear_last_ffi_panic();
                 &[]

@@ -49,9 +49,9 @@ NVE compiles native apps directly to platform machine code (`~15 MB` class binar
 
 Every crate in `native-view-engine` obeys four non-negotiable engineering invariants:
 
-1. **Direct binary encoding on hot paths** — Every wire protocol (`NVE1` commands, `EventRing`, `NK1` keydowns, `NVP1` hot patches, `NVH1` host events, `NVN1` routing, `NVW1` windows, `NVT2`/`NVL1` theme/locale, `NVE_DRAW1` vectors, `NVE_MET1` accessibility metadata, `NVC1` CRDTs, `NVD1`/`NVT1` live pairing) uses fixed-header little-endian binary encoding with bounds checks and FNV-1a64 integrity hashes.
+1. **Direct typed memory on FFI boundaries, compact binary on wire** — In-process FFI uses direct `#[repr(C)]` structs and slices (`NveDirectEvent` / `NveEventBatch`, `NveMapEntry`, `NveSceneView`, 64-byte `NveNodeMeta`) with zero serialization; network and disk persistence use compact binary codecs (`NVE1` commands, `nve-wire-core`, `NVERELOC`, `MmapOffsetArena`) with bounds checks and `XXH64`/FNV-1a64 integrity hashes.
 2. **Framework-agnostic engine core** — `nve-engine` has zero dependency on `dioxus-core`. Dioxus (`nve-dioxus`) is an adapter, not a hard requirement.
-3. **Single source of truth for ABIs** — Core and Scene ABIs are defined once in declarative Rust specs (`packages/core/codegen/specs/nve_core_abi.nve.rs` and `nve_scene_abi.nve.rs`), locked by compile-time `offset_of!` assertions and 64-bit FNV-1a schema hashes (`0x5BE5D06CC7C01FEF` and `0x00F2CF037DB50CC8`), and verified in CI via `cargo nve codegen abi --check`.
+3. **Single source of truth for ABIs** — Core and Scene ABIs are derived directly from Rust `#[derive(NveAbi)]` descriptors in `packages/core/abi`, locked by compile-time `offset_of!` assertions and 64-bit FNV-1a schema hashes (`0x053543B32C5D959C` and `0x6D45E53E0D9535D1`), and verified in CI via `cargo nve codegen abi --check`.
 4. **Honest verification over smoke tests** — Every decoder and host boundary ships with truncated-buffer, fuzz/property, layout-parity, and state-preservation tests alongside Criterion and C++ statistical regression baselines.
 
 ## Where to Go Next

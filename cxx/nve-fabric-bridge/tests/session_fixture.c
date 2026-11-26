@@ -125,35 +125,35 @@ static NveBufferSlice fixture_render(NveAppHandle handle, uint64_t frame_id) {
   return out;
 }
 
-static uint32_t fixture_dispatch_events(NveAppHandle handle, NveBufferSlice events) {
+static uint32_t fixture_dispatch_events(NveAppHandle handle, NveEventBatch batch) {
   SessionFixtureApp* app = (SessionFixtureApp*)handle;
-  if (!app || !events.ptr || events.len < 4) {
+  if (!app || !batch.ptr || batch.len == 0) {
     return 0u;
   }
-  uint32_t count = 0;
-  memcpy(&count, events.ptr, sizeof(count));
-  if (count == 0) {
-    return 0u;
-  }
-  app->count += 1;
+  app->count += (int32_t)batch.len;
   return 1u;
 }
 
-static uint32_t fixture_set_props(NveAppHandle handle, NveBufferSlice props) {
+static uint32_t fixture_set_props(
+    NveAppHandle handle,
+    const NveMapEntry* entries,
+    uint32_t count) {
   SessionFixtureApp* app = (SessionFixtureApp*)handle;
-  if (!app || !props.ptr || props.len == 0) {
+  if (!app || !entries || count == 0) {
     return 0u;
   }
-  if (props.len >= 4 && memcmp(props.ptr, "{\"v\"", 4) == 0) {
-    snprintf(app->label_prefix, sizeof(app->label_prefix), "Updated");
-    return 1u;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (entries[i].key.len == 1 && entries[i].key.ptr && entries[i].key.ptr[0] == 'v') {
+      snprintf(app->label_prefix, sizeof(app->label_prefix), "Updated");
+      return 1u;
+    }
   }
   return 0u;
 }
 
-static NveBufferSlice fixture_drain_events(NveAppHandle handle) {
+static NveEventBatch fixture_drain_events(NveAppHandle handle) {
   (void)handle;
-  NveBufferSlice empty = {NULL, 0};
+  NveEventBatch empty = {NULL, 0u, 0u};
   return empty;
 }
 
@@ -185,44 +185,16 @@ static void fixture_restore_state(NveAppHandle handle, NveBufferSlice state) {
   app->count = (int32_t)atoi(tmp);
 }
 
-static uint32_t fixture_dispatch_events_direct(NveAppHandle handle, NveEventBatch batch) {
-  SessionFixtureApp* app = (SessionFixtureApp*)handle;
-  if (!app || !batch.ptr || batch.len == 0) {
-    return 0u;
-  }
-  app->count += (int32_t)batch.len;
-  return 1u;
-}
-
-static uint32_t fixture_set_props_direct(
-    NveAppHandle handle,
-    const NveMapEntry* entries,
-    uint32_t count) {
-  SessionFixtureApp* app = (SessionFixtureApp*)handle;
-  if (!app || !entries || count == 0) {
-    return 0u;
-  }
-  for (uint32_t i = 0; i < count; ++i) {
-    if (entries[i].key.len == 1 && entries[i].key.ptr && entries[i].key.ptr[0] == 'v') {
-      snprintf(app->label_prefix, sizeof(app->label_prefix), "Updated");
-      return 1u;
-    }
-  }
-  return 0u;
-}
-
 static const NveSurfaceApi kSurfaceApi = {
     fixture_create,
     fixture_destroy,
     fixture_render,
     fixture_dispatch_events,
-    fixture_dispatch_events_direct,
 };
 
 static const NveComponentApi kComponentApi = {
     fixture_set_props,
     fixture_drain_events,
-    fixture_set_props_direct,
 };
 
 static const NveDevApi kDevApi = {

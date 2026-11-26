@@ -1,4 +1,5 @@
 #include "nve_scene_abi.generated.h"
+#include "nve_value.hpp"
 
 #include <jni.h>
 
@@ -466,26 +467,48 @@ void test_direct_event_and_prop_channels(const std::string& mock_scene_so) {
           &env, nullptr, handle, reinterpret_cast<jbyteArray>(&tiny_arr)) == JNI_FALSE);
   NVE_CHECK(Java_dev_nve_android_NveMainActivity_nativeSetPropsBinary(&env, nullptr, handle, nullptr) == JNI_FALSE);
 
-  // Zero-copy direct prop submission (no ByteArray borrow!).
-  const uint8_t direct_props[5] = {0x7Au, 0x01u, 0x02u, 0x03u, 0x04u};
-  std::memcpy(prop_buf->address, direct_props, sizeof(direct_props));
+  // Reject malformed non-NveBinValue prop payload cleanly.
+  const uint8_t bad_props[5] = {0x7Au, 0x01u, 0x02u, 0x03u, 0x04u};
+  std::memcpy(prop_buf->address, bad_props, sizeof(bad_props));
+  NVE_CHECK(
+      Java_dev_nve_compose_NveJniBridge_nativeSetPropsDirect(&env, nullptr, handle, 5) == JNI_FALSE);
+
+  // Zero-copy direct prop submission using NveBinValue map (no ByteArray borrow!).
+  std::vector<uint8_t> direct_props;
+  {
+    const NveMapEntry entry{nve::make_str_slice("count"), nve::make_i64_value(42)};
+    NVE_CHECK(nve::encode_bin_value(direct_props, nve::make_map_value(&entry, 1u)));
+  }
+  std::memcpy(prop_buf->address, direct_props.data(), direct_props.size());
   const int borrows_before_direct_props = g_total_byte_array_borrows;
   NVE_CHECK(
-      Java_dev_nve_compose_NveJniBridge_nativeSetPropsDirect(&env, nullptr, handle, 5) == JNI_TRUE);
+      Java_dev_nve_compose_NveJniBridge_nativeSetPropsDirect(
+          &env, nullptr, handle, static_cast<jint>(direct_props.size())) == JNI_TRUE);
   NVE_CHECK(g_total_byte_array_borrows == borrows_before_direct_props);
-  NVE_CHECK(read_node2_text(&env, handle) == "Props: len=5 b0=122");
+  NVE_CHECK(read_node2_text(&env, handle) == "Props: count=1 k0=count i64=42");
 
-  // Oversized (> 64 KiB) prop fallback via jbyteArray.
+  // Oversized (> 64 KiB) NveBinValue map prop fallback via jbyteArray.
+  std::vector<uint8_t> big_blob(68u * 1024u, 0x55u);
+  std::vector<uint8_t> big_props_bin;
+  {
+    const NveMapEntry entry{
+        nve::make_str_slice("payload"),
+        nve::make_bytes_value(NveBufferSlice{big_blob.data(), big_blob.size()}),
+    };
+    NVE_CHECK(nve::encode_bin_value(big_props_bin, nve::make_map_value(&entry, 1u)));
+  }
+  NVE_CHECK(big_props_bin.size() > 64u * 1024u);
   FakeByteArray big_props{};
-  big_props.data.assign(68 * 1024, static_cast<jbyte>(0x55));
+  big_props.data.resize(big_props_bin.size());
+  std::memcpy(big_props.data.data(), big_props_bin.data(), big_props_bin.size());
   NVE_CHECK(
       Java_dev_nve_android_NveMainActivity_nativeSetPropsBinary(
           &env, nullptr, handle, reinterpret_cast<jbyteArray>(&big_props)) == JNI_TRUE);
   NVE_CHECK(g_total_byte_array_borrows == borrows_before_direct_props + 1);
   NVE_CHECK(g_active_byte_array_borrows == 0);
-  NVE_CHECK(read_node2_text(&env, handle) == "Props: len=69632 b0=85");
+  NVE_CHECK(read_node2_text(&env, handle) == "Props: count=1 k0=payload blen=69632");
 
-  // Destroying surface releases BOTH scratch GlobalRefs + all 6 scene slab GlobalRefs cleanly!
+  // Destroying surface releases BOTH scratch GlobalRefs + all 7 scene slab GlobalRefs cleanly!
   Java_dev_nve_android_NveMainActivity_nativeDestroySurface(&env, nullptr, handle);
   NVE_CHECK(g_live_global_refs.empty());
   NVE_CHECK(g_active_utf_borrows == 0);

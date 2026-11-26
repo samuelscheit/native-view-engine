@@ -20,24 +20,13 @@ enum SlabSlot : size_t {
   kSlabChildren = 2,
   kSlabDirtyIndices = 3,
   kSlabRemovedIds = 4,
-  kSlabMetadata = 5,
-  kSlabCount = 6,
+  kSlabMetaRecords = 5,
+  kSlabMetaBlob = 6,
+  kSlabCount = 7,
 };
 
-inline constexpr size_t kMetaHeaderSize = 32u;
-inline constexpr size_t kMetaRecordHeaderSize = 28u;
-inline constexpr uint16_t kMetaFormatVersion = 1u;
-inline constexpr size_t kMetaInitialCapacity = 4096u;
-
-inline constexpr uint32_t kMetaFlagDisabled = 1u << 0;
-inline constexpr uint32_t kMetaFlagSecureTextEntry = 1u << 1;
-inline constexpr uint32_t kMetaFlagMultiline = 1u << 2;
-inline constexpr uint32_t kMetaFlagHasDrawList = 1u << 3;
-inline constexpr uint32_t kMetaFlagDrawListCorrupt = 1u << 4;
-inline constexpr uint32_t kMetaFlagAccessibilityHidden = 1u << 5;
-inline constexpr uint32_t kMetaResizeModeShift = 8u;
-inline constexpr uint32_t kMetaResizeModeMask = 0x3u;
-inline constexpr std::string_view kMetaMagic = "NVE_MET1";
+inline constexpr size_t kMetaRecordsInitialCapacity = 64u;
+inline constexpr size_t kMetaBlobInitialCapacity = 4096u;
 
 // Non-null sentinel passed to `NewDirectByteBuffer` with capacity 0 when a slab is empty,
 // avoiding NULL address edge cases across JVMs / ART.
@@ -126,12 +115,14 @@ struct AndroidSurfaceState {
   std::array<CachedDirectBuffer, kSlabCount> slab_buffers{};
   uint32_t slab_epoch_mask{0u};
 
-  // High-water-mark flat binary `NVE_MET1` buffer holding ONLY dirty/changed node metadata
-  // for the current frame. Never shrinks until reload/destroy so `kSlabMetadata` DirectByteBuffer
-  // GlobalRef stays pinned across steady-state frames with zero JNI allocation churn.
-  std::vector<uint8_t> metadata_slab;
-  uint32_t metadata_used_bytes{0u};
-  uint32_t metadata_record_count{0u};
+  // High-water-mark fixed-stride 64-byte `NveNodeMeta` array + flat companion byte blob holding
+  // ONLY dirty/changed node metadata for the current frame. Neither buffer shrinks until
+  // reload/destroy so `kSlabMetaRecords` and `kSlabMetaBlob` DirectByteBuffer GlobalRefs stay
+  // pinned across steady-state frames with zero JNI allocation churn.
+  std::vector<NveNodeMeta> meta_records;
+  std::vector<uint8_t> meta_blob;
+  uint32_t meta_record_count{0u};
+  uint32_t meta_blob_used_bytes{0u};
   uint64_t metadata_cache_frame{0u};
   bool metadata_cache_valid{false};
   std::unordered_map<uint32_t, NodeMetadataEntry> metadata_cache;
@@ -143,7 +134,7 @@ inline bool is_session_active(const AndroidSurfaceState* state) noexcept {
 }
 
 /// Packs accessibility, `TextInput`, `Image` (`resizeMode`), and `SkiaCanvas` (`drawList`)
-/// metadata for ONLY dirty/changed nodes into ONE reusable flat `NVE_MET1` binary buffer.
+/// metadata for ONLY dirty/changed nodes into fixed-stride `NveNodeMeta` records + companion blob.
 void pack_dirty_metadata(AndroidSurfaceState* state, const NveSceneView& view);
 
 } // namespace nve::android_internal

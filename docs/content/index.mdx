@@ -39,8 +39,8 @@ Measured on Apple Silicon (`arm64`, `Darwin`, 20 cores) from `benchmarks/baselin
 :::cards
 ::card{title="Quickstart" href="/getting-started/quickstart" description="Run NVE Studio on Skia, Web, macOS, or Windows and compile your first NveApp cdylib in under 5 minutes."}
 ::card{title="Why NVE?" href="/getting-started/why-nve" description="Deep comparison against React Native, Flutter, and Electron with verified latency, binary size, and memory numbers."}
-::card{title="CommandBuffer & EventRing" href="/architecture/command-buffer-and-events" description="Binary wire layout of NVE1 frames, 10 opcodes, EventRing batching, and compact NK1 keydown encoding."}
-::card{title="64-Byte Scene ABI" href="/architecture/scene-abi" description="Cache-line NveRenderNode layout, zero-copy text_slab, NVE_DRAW1 vectors, and NVE_MET1 metadata slabs."}
+::card{title="CommandBuffer & Direct Events" href="/architecture/command-buffer-and-events" description="Binary wire layout of NVE1 frames, 10 opcodes, direct NveDirectEvent / NveEventBatch FFI, and typed keyboard/pointer events."}
+::card{title="64-Byte Scene ABI" href="/architecture/scene-abi" description="Cache-line NveRenderNode layout, zero-copy text_slab, NVE_DRAW1 vectors, and 64B NveNodeMeta metadata slabs."}
 ::card{title="Accessible UI Components" href="/guides/ui-components" description="15 zero-CSS nve-ui components, UiTheme, FocusTrap, and 100k-row Fenwick VirtualList with live playgrounds."}
 ::card{title="Platform Hosts Matrix" href="/hosts/overview" description="Compare rendering pipelines, text shaping, accessibility, IME, and multi-window support across all 10 targets."}
 :::

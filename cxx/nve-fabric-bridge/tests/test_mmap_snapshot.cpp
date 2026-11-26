@@ -597,53 +597,37 @@ void test_mmap_snapshot_and_session_instant_boot() {
       assert(saw_count6_live);
     }
 
-    // Optional real `libnve_studio_workspace.dylib` 2-launch state restore verification!
     if (const std::string studio_dylib = read_env("NVE_TEST_STUDIO_DYLIB"); !studio_dylib.empty()) {
       const fs::path studio_snap = tmp.dir / "studio" / "cache" / "studio.nvereloc";
-      const NveSurfaceConfig studio_cfg{
-          .surface_id = 1, .width = 960.0f, .height = 640.0f, .scale_factor = 1.0f};
+      const NveSurfaceConfig studio_cfg{.surface_id = 1, .width = 960.0f, .height = 640.0f, .scale_factor = 1.0f};
       {
         nve::NativeHostSession s1;
         assert(s1.load_dylib(studio_dylib, studio_cfg));
-        // Mutate state via direct props (`view: "docs"`, `studioOpen: true`, `accent: "emerald"`).
-        assert(s1.update_props_json(
-            R"({"view":"docs","studioOpen":true,"accent":"emerald"})", /*auto_render=*/true));
+        const NveMapEntry studio_props[3] = {
+            {nve::make_str_slice("view"), nve::make_str_value("docs")},
+            {nve::make_str_slice("studioOpen"), nve::make_bool_value(true)},
+            {nve::make_str_slice("accent"), nve::make_str_value("emerald")},
+        };
+        assert(s1.update_props(studio_props, 3u, /*auto_render=*/true));
         assert(s1.save_snapshot(studio_snap.string(), 1u));
       }
-
       nve::MmapSnapshot verify_snap;
       assert(nve::MmapSnapshot::open_with_schema(studio_snap.string(), 1u, verify_snap));
-      assert(verify_snap.frame0_slice().len > 64u);
-      assert(verify_snap.state_slice().len > 4u);
-      // Studio state begins with `NWS1` magic!
+      assert(verify_snap.frame0_slice().len > 64u && verify_snap.state_slice().len > 4u);
       assert(std::memcmp(verify_snap.state_slice().ptr, "NWS1", 4u) == 0);
       const std::vector<uint8_t> saved_state_bytes(
-          verify_snap.state_slice().ptr,
-          verify_snap.state_slice().ptr + verify_snap.state_slice().len);
+          verify_snap.state_slice().ptr, verify_snap.state_slice().ptr + verify_snap.state_slice().len);
       verify_snap.close();
-
       {
         nve::NativeHostSession s2;
         s2.set_surface_config(studio_cfg);
         assert(s2.replay_frame0_snapshot(studio_snap.string(), 1u));
         assert(!s2.is_valid() && s2.has_replayed_frame0() && s2.has_pending_snapshot_state());
-        const uint32_t frame0_nodes = s2.node_count();
-        assert(frame0_nodes > 20u);
-
-        // Now load real libnve_studio_workspace.dylib — must restore NWS1 state BEFORE first render!
-        assert(s2.load_dylib(studio_dylib, studio_cfg));
-        assert(s2.is_valid() && !s2.has_pending_snapshot_state());
         assert(s2.node_count() > 20u);
-
-        // Snapshot state from Launch 2 and confirm it matches Launch 1's mutated state!
-        const std::vector<uint8_t> restored_state_bytes = s2.bridge()->snapshot_state();
-        assert(restored_state_bytes.size() == saved_state_bytes.size());
-        assert(std::memcmp(
-                   restored_state_bytes.data(),
-                   saved_state_bytes.data(),
-                   saved_state_bytes.size()) == 0);
-        std::cout << "[bridge_test] Real libnve_studio_workspace.dylib 2-launch Frame-0 + NWS1 state restore verified (frame0_nodes="
-                  << frame0_nodes << ", state_bytes=" << restored_state_bytes.size() << ")\n";
+        assert(s2.load_dylib(studio_dylib, studio_cfg));
+        assert(s2.is_valid() && !s2.has_pending_snapshot_state() && s2.node_count() > 20u);
+        const std::vector<uint8_t> restored = s2.bridge()->snapshot_state();
+        assert(restored == saved_state_bytes);
       }
     }
   }

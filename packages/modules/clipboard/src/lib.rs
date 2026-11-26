@@ -97,7 +97,7 @@ pub fn dispatch_clipboard_wire(
 /// Typed ergonomic client for system clipboard operations.
 ///
 /// Uses zero-serialization direct [`ClipboardBackend`] calls for in-process Rust providers
-/// (`MemoryHostServices`, `NativeHostServices`, `SkiaHostServices`) and falls back seamlessly
+/// (`MemoryHostServices`, `HostServiceRegistry`, `SkiaHostServices`) and falls back seamlessly
 /// to `NVE_IFACE_HOST = 5` C-ABI framing on `FfiHostServices`.
 #[derive(Debug, Clone, Copy)]
 pub struct ClipboardClient<'a, P: HostServiceProvider + ?Sized> {

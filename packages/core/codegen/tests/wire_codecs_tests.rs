@@ -1,17 +1,15 @@
 //! Cross-language verification tests for single-source wire codecs (`EventRing`/`NVEV`,
-//! `NK1` keydown, `NVE_DRAW1` vector canvas, and canonical 64-bit FNV-1a).
+//! typed `KeyDown`, `NVE_DRAW1` vector canvas, and canonical 64-bit FNV-1a).
 
 mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nve_abi::events::{
-    KEYDOWN_FLAG_ALT, KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_META, KEYDOWN_FLAG_SHIFT,
-};
 use nve_abi::{
-    decode_events, decode_keydown_bytes, encode_events, encode_keydown_bytes, DecodedKeyDown,
-    EventMask, EventPayload, NativeEvent, NativeEventKind, KEYDOWN_WIRE_MAGIC,
+    decode_events, encode_events, pack_key_modifiers, EventMask, EventPayload, NativeEvent,
+    NativeEventKind, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_REPEAT,
+    NVE_KEY_MOD_SHIFT,
 };
 use nve_codegen::schema::hybrid::{fnv1a_64, FNV1A_64_OFFSET_BASIS};
 use nve_codegen::schema::wire as wc;
@@ -87,26 +85,17 @@ fn assert_decoded_cross_language_event_ring(raw: &[u8]) {
             surface_id: 1,
             node_id: 16,
             timestamp_us: 7000,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "keydown".into(),
-                data: encode_keydown_bytes("k", true, false, true, false),
+            kind: NativeEventKind::KeyDown,
+            payload: EventPayload::Key {
+                key: "k".into(),
+                code: String::new(),
+                modifiers: pack_key_modifiers(true, false, true, false, false),
+                key_code: 0,
+                is_composing: false,
             },
         },
     ];
     assert_eq!(decoded, expected);
-    if let EventPayload::Custom { data, .. } = &decoded[6].payload {
-        assert_eq!(
-            decode_keydown_bytes(data),
-            Some(DecodedKeyDown {
-                key: "k".into(),
-                meta: true,
-                ctrl: false,
-                shift: true,
-                alt: false,
-            })
-        );
-    }
 }
 
 #[test]
@@ -130,7 +119,7 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
     assert_eq!(wc::wire_codecs_schema_hash(), wc::NVE_WIRE_CODECS_SCHEMA_HASH);
     assert_ne!(wc::NVE_WIRE_CODECS_SCHEMA_HASH, 0);
 
-    // 2. EventRing framing + NativeEventKind + EventMask + NK1 against `packages/core/abi`
+    // 2. EventRing framing + NativeEventKind + EventMask against `packages/core/abi`
     assert_eq!(&wc::EVENT_RING_MAGIC_BYTES, b"NVEV");
     assert_eq!(wc::EVENT_RING_MAGIC, u32::from_le_bytes(*b"NVEV"));
     assert_eq!(wc::EVENT_RING_VERSION, 1);
@@ -155,6 +144,15 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
         ("COMPOSITION_START", NativeEventKind::CompositionStart as u8),
         ("COMPOSITION_UPDATE", NativeEventKind::CompositionUpdate as u8),
         ("COMPOSITION_END", NativeEventKind::CompositionEnd as u8),
+        ("KEY_DOWN", NativeEventKind::KeyDown as u8),
+        ("KEY_UP", NativeEventKind::KeyUp as u8),
+        ("SUBMIT", NativeEventKind::Submit as u8),
+        ("POINTER_DOWN", NativeEventKind::PointerDown as u8),
+        ("POINTER_MOVE", NativeEventKind::PointerMove as u8),
+        ("POINTER_UP", NativeEventKind::PointerUp as u8),
+        ("POINTER_ENTER", NativeEventKind::PointerEnter as u8),
+        ("POINTER_LEAVE", NativeEventKind::PointerLeave as u8),
+        ("WHEEL", NativeEventKind::Wheel as u8),
     ];
     assert_eq!(wc::EVENT_KINDS.len(), expected_kinds.len());
     for (spec_v, (name, abi_val)) in wc::EVENT_KINDS.iter().zip(expected_kinds.iter()) {
@@ -172,17 +170,26 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
         ("LAYOUT", EventMask::LAYOUT),
         ("CUSTOM", EventMask::CUSTOM),
         ("COMPOSITION", EventMask::COMPOSITION),
+        ("KEY_DOWN", EventMask::KEY_DOWN),
+        ("KEY_UP", EventMask::KEY_UP),
+        ("SUBMIT", EventMask::SUBMIT),
+        ("POINTER_DOWN", EventMask::POINTER_DOWN),
+        ("POINTER_MOVE", EventMask::POINTER_MOVE),
+        ("POINTER_UP", EventMask::POINTER_UP),
+        ("POINTER_ENTER", EventMask::POINTER_ENTER),
+        ("POINTER_LEAVE", EventMask::POINTER_LEAVE),
+        ("WHEEL", EventMask::WHEEL),
     ];
     assert_eq!(wc::EVENT_MASKS.len(), expected_masks.len());
     for (spec_m, (name, abi_val)) in wc::EVENT_MASKS.iter().zip(expected_masks.iter()) {
         assert_eq!((spec_m.screaming, spec_m.value), (*name, *abi_val));
     }
 
-    assert_eq!(wc::KEYDOWN_WIRE_MAGIC, KEYDOWN_WIRE_MAGIC);
-    assert_eq!(wc::KEYDOWN_FLAG_META, KEYDOWN_FLAG_META);
-    assert_eq!(wc::KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_CTRL);
-    assert_eq!(wc::KEYDOWN_FLAG_SHIFT, KEYDOWN_FLAG_SHIFT);
-    assert_eq!(wc::KEYDOWN_FLAG_ALT, KEYDOWN_FLAG_ALT);
+    assert_eq!(wc::KEY_MOD_META, NVE_KEY_MOD_META);
+    assert_eq!(wc::KEY_MOD_CTRL, NVE_KEY_MOD_CTRL);
+    assert_eq!(wc::KEY_MOD_SHIFT, NVE_KEY_MOD_SHIFT);
+    assert_eq!(wc::KEY_MOD_ALT, NVE_KEY_MOD_ALT);
+    assert_eq!(wc::KEY_MOD_REPEAT, NVE_KEY_MOD_REPEAT);
 
     // Cross-check binary layout of `encode_events` against spec offsets & payload tags.
     let single = encode_events(&[NativeEvent {

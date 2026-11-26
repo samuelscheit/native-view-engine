@@ -1,7 +1,6 @@
 use nve_tv::{
-    FocusDirection, NK1_FLAG_ALT, NK1_FLAG_META, NK1_FLAG_SHIFT, Nk1Error, Nk1Flags, Nk1KeyDown,
-    RemoteAction, ScrollRegion, SpatialFocusEngine, SpatialFocusGroupId, SpatialFocusNode,
-    SpatialRect, TvOverscanInsets,
+    FocusDirection, RemoteAction, ScrollRegion, SpatialFocusEngine, SpatialFocusGroupId,
+    SpatialFocusNode, SpatialRect, TvOverscanInsets,
 };
 
 #[test]
@@ -99,7 +98,7 @@ fn wrap_axis_and_scroll_into_view_handle_boundaries() {
 }
 
 #[test]
-fn overscan_insets_and_nk1_wire_codec_match_cross_platform_spec() {
+fn overscan_insets_and_remote_action_keys_match_cross_platform_spec() {
     let std1080 = TvOverscanInsets::for_viewport_px(
         1920,
         1080,
@@ -116,25 +115,12 @@ fn overscan_insets_and_nk1_wire_codec_match_cross_platform_spec() {
     let nan_insets = TvOverscanInsets::for_viewport(f32::NAN, -50.0, f32::INFINITY);
     assert_eq!(nan_insets, TvOverscanInsets { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 });
 
-    let flags = Nk1Flags { meta: true, ctrl: false, shift: true, alt: true };
-    let wire = Nk1KeyDown::encode_action(RemoteAction::Move(FocusDirection::Right), flags);
-    assert_eq!(wire[0..3], [0x4E, 0x4B, 0x31]);
-    assert_eq!(wire[3], NK1_FLAG_META | NK1_FLAG_SHIFT | NK1_FLAG_ALT);
-    assert_eq!(&wire[4..], b"ArrowRight");
-
-    let decoded = Nk1KeyDown::decode(&wire).expect("valid NK1");
-    assert_eq!(decoded.key, "ArrowRight");
-    assert_eq!(decoded.flags, flags);
-    assert_eq!(decoded.as_remote_action(), Some(RemoteAction::Move(FocusDirection::Right)));
-
+    assert_eq!(RemoteAction::Move(FocusDirection::Right).key_name(), "ArrowRight");
+    assert_eq!(
+        RemoteAction::from_key_name("ArrowRight"),
+        Some(RemoteAction::Move(FocusDirection::Right))
+    );
     assert_eq!(RemoteAction::from_key_name("ChannelUp"), Some(RemoteAction::ChannelUp));
     assert_eq!(RemoteAction::from_key_name("ChannelDown"), Some(RemoteAction::ChannelDown));
-    assert_eq!(Nk1KeyDown::new("", Nk1Flags::default()).encode(), Err(Nk1Error::EmptyKey));
-    assert_eq!(Nk1KeyDown::decode(&[]), Err(Nk1Error::Truncated));
-    assert_eq!(Nk1KeyDown::decode(&[0x4E, 0x4B, 0x31, 0x00]), Err(Nk1Error::Truncated));
-    assert_eq!(Nk1KeyDown::decode(&[0x4E, 0x4B, 0x32, 0x00, 0x41]), Err(Nk1Error::InvalidMagic));
-    assert_eq!(
-        Nk1KeyDown::decode(&[0x4E, 0x4B, 0x31, 0x00, 0xFF, 0xFE]),
-        Err(Nk1Error::InvalidUtf8)
-    );
+    assert_eq!(RemoteAction::from_key_name("UnknownKey"), None);
 }

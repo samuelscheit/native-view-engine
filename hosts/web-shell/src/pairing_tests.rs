@@ -3,8 +3,9 @@
 
 use std::time::Duration;
 
-use nve_abi::events::{decode_keydown_bytes, KEYDOWN_WIRE_MAGIC};
-use nve_abi::{decode_events, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{
+    decode_events, EventPayload, NativeEvent, NativeEventKind, NodeId, NVE_KEY_MOD_META,
+};
 use nve_backend_web::WebBackend;
 use nve_engine::Viewport;
 use nve_wire::{
@@ -136,14 +137,13 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
         .recv_inbound_timeout(Duration::from_secs(2))
         .expect("server received keydown");
     let kd_evs = decode_events(&kd_in.frame.payload).expect("decode keydown EventRing");
+    assert_eq!(kd_evs[0].kind, NativeEventKind::KeyDown);
     match &kd_evs[0].payload {
-        EventPayload::Custom { name, data } => {
-            assert_eq!(name, "keydown");
-            assert!(data.starts_with(&KEYDOWN_WIRE_MAGIC));
-            let decoded = decode_keydown_bytes(data).expect("valid keydown");
-            assert!(decoded.meta && decoded.key == "k");
+        EventPayload::Key { key, modifiers, .. } => {
+            assert_eq!(key, "k");
+            assert_ne!(*modifiers & NVE_KEY_MOD_META, 0);
         }
-        other => panic!("expected Custom keydown event, got {other:?}"),
+        other => panic!("expected Key payload, got {other:?}"),
     }
 
     if let Some(bye) = web_session.build_bye() {

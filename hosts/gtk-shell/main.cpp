@@ -31,14 +31,14 @@ class BuiltinGtkDemoApp {
     return NveBufferSlice{self->cmd_buf_.data(), self->cmd_buf_.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<BuiltinGtkDemoApp*>(h);
-    std::vector<nve::DecodedEvent> decoded;
-    if (!nve::decode_event_ring(events, decoded)) {
+    if (batch.ptr == nullptr) {
       return 0u;
     }
-    for (const auto& ev : decoded) {
-      if (ev.kind == nve::EventKind::Press && ev.node_id == 4u) {
+    for (uint32_t i = 0u; i < batch.len; ++i) {
+      const NveDirectEvent& ev = batch.ptr[i];
+      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4u) {
         ++self->count_;
         return 1u;
       }
@@ -70,7 +70,6 @@ class BuiltinGtkDemoApp {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
-        .dispatch_events_direct = nullptr,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = nullptr,

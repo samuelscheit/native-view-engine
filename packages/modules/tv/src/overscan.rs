@@ -1,123 +1,65 @@
-//! Title-safe TV overscan safe-area calculator and direct binary FFI `NK1` binary keydown codec.
+//! Title-safe TV overscan safe-area calculator and typed remote action key mapping.
 
-use crate::spatial_focus::{RemoteAction, SpatialRect};
+use crate::spatial_focus::SpatialRect;
 
-/// Magic prefix bytes (`b"NK1"`) for binary NVE keydown wire payloads.
-pub const NK1_MAGIC: [u8; 3] = [0x4E, 0x4B, 0x31];
-pub const NK1_HEADER_SIZE: usize = 4;
-pub const NK1_MIN_LEN: usize = 5;
-
-pub const NK1_FLAG_META: u8 = 1 << 0;
-pub const NK1_FLAG_CTRL: u8 = 1 << 1;
-pub const NK1_FLAG_SHIFT: u8 = 1 << 2;
-pub const NK1_FLAG_ALT: u8 = 1 << 3;
-
-/// Modifier bitflags for an `NK1` binary keydown payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
-pub struct Nk1Flags {
-    pub meta: bool,
-    pub ctrl: bool,
-    pub shift: bool,
-    pub alt: bool,
+/// Cardinal 2D directional focus movement.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FocusDirection {
+    Up = 0,
+    Down = 1,
+    Left = 2,
+    Right = 3,
 }
 
-impl Nk1Flags {
+/// High-level TV remote, gamepad, or keyboard action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RemoteAction {
+    Move(FocusDirection),
+    Select,
+    Back,
+    PlayPause,
+    Menu,
+    ContextMenu,
+    ChannelUp,
+    ChannelDown,
+}
+
+impl RemoteAction {
+    /// Maps standard W3C / TV remote keydown names to a typed [`RemoteAction`].
+    pub fn from_key_name(key: &str) -> Option<Self> {
+        match key {
+            "ArrowUp" => Some(Self::Move(FocusDirection::Up)),
+            "ArrowDown" => Some(Self::Move(FocusDirection::Down)),
+            "ArrowLeft" => Some(Self::Move(FocusDirection::Left)),
+            "ArrowRight" => Some(Self::Move(FocusDirection::Right)),
+            "Enter" | "Select" => Some(Self::Select),
+            "Escape" | "Back" | "GoBack" => Some(Self::Back),
+            "MediaPlayPause" => Some(Self::PlayPause),
+            "ContextMenu" => Some(Self::ContextMenu),
+            "Menu" => Some(Self::Menu),
+            "ChannelUp" => Some(Self::ChannelUp),
+            "ChannelDown" => Some(Self::ChannelDown),
+            _ => None,
+        }
+    }
+
+    /// Canonical W3C / TV remote key name for this remote action.
     #[inline]
-    pub const fn to_byte(self) -> u8 {
-        let mut bits = 0u8;
-        if self.meta {
-            bits |= NK1_FLAG_META;
+    pub const fn key_name(self) -> &'static str {
+        match self {
+            Self::Move(FocusDirection::Up) => "ArrowUp",
+            Self::Move(FocusDirection::Down) => "ArrowDown",
+            Self::Move(FocusDirection::Left) => "ArrowLeft",
+            Self::Move(FocusDirection::Right) => "ArrowRight",
+            Self::Select => "Select",
+            Self::Back => "Back",
+            Self::PlayPause => "MediaPlayPause",
+            Self::Menu => "Menu",
+            Self::ContextMenu => "ContextMenu",
+            Self::ChannelUp => "ChannelUp",
+            Self::ChannelDown => "ChannelDown",
         }
-        if self.ctrl {
-            bits |= NK1_FLAG_CTRL;
-        }
-        if self.shift {
-            bits |= NK1_FLAG_SHIFT;
-        }
-        if self.alt {
-            bits |= NK1_FLAG_ALT;
-        }
-        bits
-    }
-
-    #[inline]
-    pub const fn from_byte(bits: u8) -> Self {
-        Self {
-            meta: (bits & NK1_FLAG_META) != 0,
-            ctrl: (bits & NK1_FLAG_CTRL) != 0,
-            shift: (bits & NK1_FLAG_SHIFT) != 0,
-            alt: (bits & NK1_FLAG_ALT) != 0,
-        }
-    }
-}
-
-/// Validation errors returned when encoding or decoding `NK1` payloads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Nk1Error {
-    EmptyKey,
-    Truncated,
-    InvalidMagic,
-    InvalidUtf8,
-}
-
-/// Binary `NK1` binary keydown payload matching `packages/core/abi/src/events.rs` byte-for-byte.
-///
-/// Wire layout: `[0x4E ('N'), 0x4B ('K'), 0x31 ('1'), flags_u8, utf8_key...]`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Nk1KeyDown {
-    pub key: String,
-    pub flags: Nk1Flags,
-}
-
-impl Nk1KeyDown {
-    pub fn new(key: impl Into<String>, flags: Nk1Flags) -> Self {
-        Self { key: key.into(), flags }
-    }
-
-    /// Encodes a [`RemoteAction`] directly into `NK1` wire bytes.
-    pub fn encode_action(action: RemoteAction, flags: Nk1Flags) -> Vec<u8> {
-        let key_bytes = action.key_name().as_bytes();
-        let mut out = Vec::with_capacity(NK1_HEADER_SIZE + key_bytes.len());
-        out.extend_from_slice(&NK1_MAGIC);
-        out.push(flags.to_byte());
-        out.extend_from_slice(key_bytes);
-        out
-    }
-
-    /// Encodes this keydown event into `NK1` wire bytes.
-    pub fn encode(&self) -> Result<Vec<u8>, Nk1Error> {
-        if self.key.is_empty() {
-            return Err(Nk1Error::EmptyKey);
-        }
-        let key_bytes = self.key.as_bytes();
-        let mut out = Vec::with_capacity(NK1_HEADER_SIZE + key_bytes.len());
-        out.extend_from_slice(&NK1_MAGIC);
-        out.push(self.flags.to_byte());
-        out.extend_from_slice(key_bytes);
-        Ok(out)
-    }
-
-    /// Decodes a raw `NK1` wire payload with strict UTF-8 and header validation.
-    pub fn decode(bytes: &[u8]) -> Result<Self, Nk1Error> {
-        if bytes.len() < NK1_MIN_LEN {
-            return Err(Nk1Error::Truncated);
-        }
-        if bytes[0..3] != NK1_MAGIC {
-            return Err(Nk1Error::InvalidMagic);
-        }
-        let flags = Nk1Flags::from_byte(bytes[3]);
-        let key = std::str::from_utf8(&bytes[NK1_HEADER_SIZE..])
-            .map_err(|_| Nk1Error::InvalidUtf8)?;
-        if key.is_empty() {
-            return Err(Nk1Error::EmptyKey);
-        }
-        Ok(Self { key: key.to_owned(), flags })
-    }
-
-    /// Maps the decoded key name to a typed [`RemoteAction`], if applicable.
-    #[inline]
-    pub fn as_remote_action(&self) -> Option<RemoteAction> {
-        RemoteAction::from_key_name(&self.key)
     }
 }
 

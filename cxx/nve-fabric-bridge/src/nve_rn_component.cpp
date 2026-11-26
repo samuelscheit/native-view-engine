@@ -22,6 +22,15 @@ const char* canonical_event_name(EventKind kind) noexcept {
     case EventKind::CompositionStart: return "onCompositionStart";
     case EventKind::CompositionUpdate: return "onCompositionUpdate";
     case EventKind::CompositionEnd: return "onCompositionEnd";
+    case EventKind::KeyDown: return "onKeyDown";
+    case EventKind::KeyUp: return "onKeyUp";
+    case EventKind::Submit: return "onSubmit";
+    case EventKind::PointerDown: return "onPointerDown";
+    case EventKind::PointerMove: return "onPointerMove";
+    case EventKind::PointerUp: return "onPointerUp";
+    case EventKind::PointerEnter: return "onPointerEnter";
+    case EventKind::PointerLeave: return "onPointerLeave";
+    case EventKind::Wheel: return "onWheel";
   }
   return "onUnknown";
 }
@@ -53,7 +62,7 @@ bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_even
       out_events.clear();
       return false;
     }
-    if (raw_kind < 1 || raw_kind > 11) {
+    if (raw_kind < 1 || raw_kind > 20) {
       out_events.clear();
       return false;
     }
@@ -106,6 +115,35 @@ bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_even
         ev.name.assign(name.begin(), name.end());
         break;
       }
+      case 6: { /* Key */
+        uint8_t is_composing = 0;
+        uint16_t klen = 0;
+        uint16_t clen = 0;
+        std::string_view key;
+        std::string_view code;
+        if (!r.read(ev.modifiers) || !r.read(is_composing) || !r.read(ev.key_code) ||
+            !r.read(klen) || !r.read_string(klen, key) || !r.read(clen) ||
+            !r.read_string(clen, code)) {
+          out_events.clear();
+          return false;
+        }
+        ev.event_flags = is_composing != 0 ? NVE_EVENT_FLAG_COMPOSING : 0u;
+        ev.text.assign(key.begin(), key.end());
+        ev.code.assign(code.begin(), code.end());
+        break;
+      }
+      case 7: /* Pointer */
+        if (!r.read(ev.x) || !r.read(ev.y) || !r.read(ev.modifiers) || !r.read(ev.event_flags)) {
+          out_events.clear();
+          return false;
+        }
+        break;
+      case 8: /* Wheel */
+        if (!r.read(ev.x) || !r.read(ev.y) || !r.read(ev.modifiers)) {
+          out_events.clear();
+          return false;
+        }
+        break;
       default:
         out_events.clear();
         return false;
@@ -115,6 +153,90 @@ bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_even
   if (r.remaining() != 0) {
     out_events.clear();
     return false;
+  }
+  return true;
+}
+
+bool decode_direct_events(NveEventBatch batch, std::vector<DecodedEvent>& out_events) {
+  out_events.clear();
+  if (batch.len == 0u) {
+    return true;
+  }
+  if (batch.ptr == nullptr) {
+    return false;
+  }
+  out_events.reserve(batch.len < 4096u ? batch.len : 4096u);
+  for (uint32_t i = 0u; i < batch.len; ++i) {
+    const NveDirectEvent& src = batch.ptr[i];
+    if (src.kind < 1u || src.kind > 20u) {
+      out_events.clear();
+      return false;
+    }
+    DecodedEvent ev{};
+    ev.surface_id = src.surface_id;
+    ev.node_id = src.node_id;
+    ev.timestamp_us = src.timestamp_us;
+    ev.kind = static_cast<EventKind>(src.kind);
+    ev.name = canonical_event_name(ev.kind);
+    ev.modifiers = src.modifiers;
+    ev.event_flags = src.event_flags;
+    ev.key_code = src.key_code;
+
+    switch (src.payload_tag) {
+      case NVE_EVENT_PAYLOAD_EMPTY:
+        break;
+      case NVE_EVENT_PAYLOAD_POINT:
+      case NVE_EVENT_PAYLOAD_POINTER:
+      case NVE_EVENT_PAYLOAD_WHEEL:
+        ev.x = src.x;
+        ev.y = src.y;
+        break;
+      case NVE_EVENT_PAYLOAD_SCROLL:
+      case NVE_EVENT_PAYLOAD_LAYOUT:
+        ev.x = src.x;
+        ev.y = src.y;
+        ev.width = src.width;
+        ev.height = src.height;
+        break;
+      case NVE_EVENT_PAYLOAD_TEXT: {
+        const std::string_view sv = str_slice_view(src.text);
+        ev.text.assign(sv.begin(), sv.end());
+        ev.payload_bytes.assign(
+            reinterpret_cast<const uint8_t*>(sv.data()),
+            reinterpret_cast<const uint8_t*>(sv.data()) + sv.size());
+        break;
+      }
+      case NVE_EVENT_PAYLOAD_CUSTOM: {
+        const std::string_view name = str_slice_view(src.name);
+        ev.name.assign(name.begin(), name.end());
+        if (src.value.tag == NVE_VAL_BYTES) {
+          if (src.value.data.bytes_val.ptr != nullptr && src.value.data.bytes_val.len > 0u) {
+            ev.payload_bytes.assign(
+                src.value.data.bytes_val.ptr,
+                src.value.data.bytes_val.ptr + src.value.data.bytes_val.len);
+          }
+        } else if (src.value.tag != NVE_VAL_NULL) {
+          if (!encode_bin_value(ev.payload_bytes, src.value)) {
+            out_events.clear();
+            return false;
+          }
+        } else if (src.text.ptr != nullptr && src.text.len > 0u) {
+          ev.payload_bytes.assign(src.text.ptr, src.text.ptr + src.text.len);
+        }
+        break;
+      }
+      case NVE_EVENT_PAYLOAD_KEY: {
+        const std::string_view key = str_slice_view(src.text);
+        const std::string_view code = str_slice_view(src.name);
+        ev.text.assign(key.begin(), key.end());
+        ev.code.assign(code.begin(), code.end());
+        break;
+      }
+      default:
+        out_events.clear();
+        return false;
+    }
+    out_events.push_back(std::move(ev));
   }
   return true;
 }
@@ -152,8 +274,7 @@ NveRnComponentBridge::NveRnComponentBridge(NveRnComponentBridge&& other) noexcep
       app_handle_(other.app_handle_),
       next_frame_id_(other.next_frame_id_),
       on_event_(std::move(other.on_event_)),
-      prop_arena_(std::move(other.prop_arena_)),
-      fallback_props_buf_(std::move(other.fallback_props_buf_)) {
+      prop_arena_(std::move(other.prop_arena_)) {
   other.fabric_host_ = nullptr;
   other.app_handle_ = nullptr;
   other.module_ = {};
@@ -169,7 +290,6 @@ NveRnComponentBridge& NveRnComponentBridge::operator=(NveRnComponentBridge&& oth
     next_frame_id_ = other.next_frame_id_;
     on_event_ = std::move(other.on_event_);
     prop_arena_ = std::move(other.prop_arena_);
-    fallback_props_buf_ = std::move(other.fallback_props_buf_);
     other.fabric_host_ = nullptr;
     other.app_handle_ = nullptr;
     other.module_ = {};
@@ -203,27 +323,14 @@ void NveRnComponentBridge::set_surface_size(float width, float height, float sca
   }
 }
 
-bool NveRnComponentBridge::update_props_json(std::string_view props_json, bool auto_render) {
-  if (!is_valid() || !module_.component || !module_.component->set_props) {
-    return false;
-  }
-  const NveBufferSlice slice{
-      reinterpret_cast<const uint8_t*>(props_json.data()), props_json.size()};
-  const uint32_t dirty = module_.component->set_props(app_handle_, slice);
-  if (dirty != 0 && auto_render) {
-    render(nullptr);
-  }
-  return dirty != 0;
-}
-
-bool NveRnComponentBridge::update_props_direct(
+bool NveRnComponentBridge::update_props(
     const NveMapEntry* entries,
     uint32_t count,
     bool auto_render) {
-  if (!is_valid() || !module_.component || module_.component->set_props_direct == nullptr) {
+  if (!is_valid() || !module_.component || module_.component->set_props == nullptr) {
     return false;
   }
-  const uint32_t dirty = module_.component->set_props_direct(app_handle_, entries, count);
+  const uint32_t dirty = module_.component->set_props(app_handle_, entries, count);
   if (dirty != 0 && auto_render) {
     render(nullptr);
   }
@@ -258,7 +365,7 @@ bool NveRnComponentBridge::update_props(const PropMap& props, bool auto_render) 
         val);
     entries[idx++] = NveMapEntry{make_str_slice(key), nv};
   }
-  return update_props_direct(entries, count, auto_render);
+  return update_props(entries, count, auto_render);
 }
 
 int32_t NveRnComponentBridge::render(NveFrameStats* out_stats) {
@@ -269,22 +376,11 @@ int32_t NveRnComponentBridge::render(NveFrameStats* out_stats) {
   return nve_fabric_host_submit_frame(fabric_host_, cmd, out_stats);
 }
 
-uint32_t NveRnComponentBridge::dispatch_native_events(NveBufferSlice events, bool auto_render) {
-  if (!is_valid() || !module_.surface || !module_.surface->dispatch_events) {
+uint32_t NveRnComponentBridge::dispatch_events(NveEventBatch batch, bool auto_render) {
+  if (!is_valid() || !module_.surface || module_.surface->dispatch_events == nullptr) {
     return 0;
   }
-  const uint32_t dirty = module_.surface->dispatch_events(app_handle_, events);
-  if (dirty != 0 && auto_render) {
-    render(nullptr);
-  }
-  return dirty;
-}
-
-uint32_t NveRnComponentBridge::dispatch_direct_events(NveEventBatch batch, bool auto_render) {
-  if (!is_valid() || !module_.surface || module_.surface->dispatch_events_direct == nullptr) {
-    return 0;
-  }
-  const uint32_t dirty = module_.surface->dispatch_events_direct(app_handle_, batch);
+  const uint32_t dirty = module_.surface->dispatch_events(app_handle_, batch);
   if (dirty != 0 && auto_render) {
     render(nullptr);
   }
@@ -317,8 +413,8 @@ std::vector<DecodedEvent> NveRnComponentBridge::drain_emitted_events() {
   if (!is_valid() || !module_.component || !module_.component->drain_emitted_events) {
     return events;
   }
-  const NveBufferSlice slice = module_.component->drain_emitted_events(app_handle_);
-  if (!decode_event_ring(slice, events)) {
+  const NveEventBatch batch = module_.component->drain_emitted_events(app_handle_);
+  if (!decode_direct_events(batch, events)) {
     return {};
   }
   if (on_event_) {

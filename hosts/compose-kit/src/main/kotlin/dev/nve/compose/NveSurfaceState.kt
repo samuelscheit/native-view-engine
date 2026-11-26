@@ -78,7 +78,8 @@ class NveSurfaceState(val surfaceId: Int) {
         val diff = sceneBuffer.applyIncrementalDiff(
             mountedNodes = _mountedNodes,
             metadataById = _nodeMetadata,
-            metadataSlab = slabs.metadataSlab,
+            metaRecords = slabs.metaRecords,
+            metaBlob = slabs.metaBlob,
         )
         lastFrameId = diff.frameId
         lastDiff = diff
@@ -183,7 +184,7 @@ class NveSurfaceController(
     private var lastPropsBuf: ByteArray = ByteArray(0)
     private var lastPropsLen: Int = -1
     private val pendingEvents = ArrayList<NveEvent>()
-    private val frameMetaScratch = LongArray(NveSceneBuffer.META_FIELD_COUNT)
+    private val frameMetaScratch = LongArray(NveSceneBuffer.FULL_META_FIELD_COUNT)
     internal var onEventCallback: ((NveEvent) -> Unit)? = null
 
     val isMounted: Boolean

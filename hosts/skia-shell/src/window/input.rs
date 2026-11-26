@@ -1,12 +1,14 @@
 //! Interactive pointer, drag/double-click/triple-click range selection, focus/blur, keyboard,
 //! clipboard (`Ctrl/Cmd+C/X/V`), UAX #29 grapheme-safe UTF-8 editing, BiDi visual navigation,
-//! unified IME composition events, and binary `NK1` keydown dispatch for
+//! unified IME composition events, and direct typed `KeyDown`/`Submit` dispatch for
 //! [`DesktopSession`].
 
 use std::time::{Duration, Instant};
 
-use nve_abi::events::encode_keydown_bytes;
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{
+    native_events_to_direct, pack_key_modifiers, EventPayload, NativeEvent, NativeEventKind,
+    NodeId, NveDirectEvent,
+};
 use winit::keyboard::{Key, ModifiersState};
 
 use super::session::{now_us, DesktopSession};
@@ -208,8 +210,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         let handled = if events.is_empty() {
             false
         } else {
-            let encoded = encode_events(&events);
-            self.app.dispatch_events(&encoded)
+            let mut direct = Vec::with_capacity(events.len());
+            native_events_to_direct(&events, &mut direct);
+            self.app.dispatch_events(&direct)
         };
         if handled {
             self.render_and_rasterize()?;
@@ -269,7 +272,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let _ = self.handle_pointer_up_with_redraw();
     }
 
-    /// Dispatches a keyboard shortcut/navigation event using binary `NK1` framing.
+    /// Dispatches a direct typed `NativeEventKind::KeyDown` event.
     pub fn handle_keydown(
         &mut self,
         key: &str,
@@ -281,23 +284,21 @@ impl<A: DesktopApp> DesktopSession<A> {
         if key.is_empty() {
             return Ok(false);
         }
-        let payload = encode_keydown_bytes(key, meta, ctrl, shift, alt);
         let node_id = match self.backend.focused_node() {
             Some(focused) => self.backend.find_custom_event_target_from(focused),
             None => self.backend.find_custom_event_target(),
         };
-        let event = NativeEvent {
-            surface_id: self.surface_id,
+        let event = [NveDirectEvent::key_down(
+            self.surface_id,
             node_id,
-            timestamp_us: now_us(),
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "keydown".to_string(),
-                data: payload,
-            },
-        };
-        let encoded = encode_events(&[event]);
-        let handled = self.app.dispatch_events(&encoded);
+            now_us(),
+            key,
+            "",
+            pack_key_modifiers(meta, ctrl, shift, alt, false),
+            0,
+            false,
+        )];
+        let handled = self.app.dispatch_events(&event);
         if handled {
             self.render_and_rasterize()?;
         }
@@ -523,14 +524,12 @@ impl<A: DesktopApp> DesktopSession<A> {
                     surface_id: self.surface_id,
                     node_id: focused_id,
                     timestamp_us: ts,
-                    kind: NativeEventKind::Custom,
-                    payload: EventPayload::Custom {
-                        name: "submit".to_string(),
-                        data: current.into_bytes(),
-                    },
+                    kind: NativeEventKind::Submit,
+                    payload: EventPayload::Text(current),
                 });
-                let encoded = encode_events(&events);
-                if self.app.dispatch_events(&encoded) {
+                let mut direct = Vec::with_capacity(events.len());
+                native_events_to_direct(&events, &mut direct);
+                if self.app.dispatch_events(&direct) {
                     self.render_and_rasterize()?;
                     Ok(true)
                 } else {
@@ -566,15 +565,17 @@ impl<A: DesktopApp> DesktopSession<A> {
                     payload: EventPayload::Empty,
                 });
                 if has_custom {
-                    let payload = encode_keydown_bytes("Escape", meta, ctrl, shift, alt);
                     events.push(NativeEvent {
                         surface_id: self.surface_id,
                         node_id: custom_target,
                         timestamp_us: ts,
-                        kind: NativeEventKind::Custom,
-                        payload: EventPayload::Custom {
-                            name: "keydown".to_string(),
-                            data: payload,
+                        kind: NativeEventKind::KeyDown,
+                        payload: EventPayload::Key {
+                            key: "Escape".to_string(),
+                            code: String::new(),
+                            key_code: 0,
+                            modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
+                            is_composing: false,
                         },
                     });
                 }

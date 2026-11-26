@@ -44,8 +44,7 @@ private enum StaticMockVtable {
                 create: { sid in StaticMockCounter.shared.onCreate(sid) },
                 destroy: { handle in StaticMockCounter.shared.onDestroy(handle) },
                 render: { _, _ in NveBufferSlice(ptr: nil, len: 0) },
-                dispatch_events: { _, _ in 0 },
-                dispatch_events_direct: { _, _ in 0 }
+                dispatch_events: { _, _ in 0 }
             )
         )
         return UnsafePointer(ptr)
@@ -170,7 +169,7 @@ final class NveMultiApplePlatformTests: XCTestCase {
         XCTAssertEqual(vision.recommendedMinimumHitTargetPt, 60.0)
     }
 
-    func testTvOsSiriRemoteNk1MappingAndOverscanInsets() throws {
+    func testTvOsSiriRemoteKeyDownMappingAndOverscanInsets() throws {
         let cases: [(NveTvRemoteCommand, String)] = [
             (.up, "ArrowUp"),
             (.down, "ArrowDown"),
@@ -182,19 +181,13 @@ final class NveMultiApplePlatformTests: XCTestCase {
         ]
 
         for (command, expectedKey) in cases {
-            XCTAssertEqual(command.nk1KeyName, expectedKey)
+            XCTAssertEqual(command.keyName, expectedKey)
             let event = command.makeKeyDownEvent(surfaceId: 7, nodeId: 19, timestampUs: 123_456)
             XCTAssertEqual(event.surfaceId, 7)
             XCTAssertEqual(event.nodeId, 19)
-            XCTAssertEqual(event.kind, .custom)
-            XCTAssertEqual(event.name, "keydown")
-
-            guard case let .binValue(payload) = event.payload else {
-                XCTFail("Expected .binValue payload for NK1 event")
-                return
-            }
-            let decoded = try XCTUnwrap(NveNk1BinaryCodec.decode(payload))
-            XCTAssertEqual(decoded, NveNk1KeyDown(key: expectedKey))
+            XCTAssertEqual(event.kind, .keyDown)
+            XCTAssertNil(event.name)
+            XCTAssertEqual(event.payload, .key(key: expectedKey))
 
             // Full EventRing binary wire roundtrip.
             let ring = NveEventRingCodec.encode([event])
@@ -202,20 +195,19 @@ final class NveMultiApplePlatformTests: XCTestCase {
             XCTAssertEqual(roundtripped, [event])
         }
 
-        // Modifier bitflags and strict malformed rejection.
-        let modified = try XCTUnwrap(
-            NveNk1BinaryCodec.encode(key: "ArrowRight", meta: true, ctrl: false, shift: true, alt: true)
+        // Typed KeyDown with modifiers + code roundtrips cleanly through EventRing and NveDirectEvent.
+        let modified = NveEvent(
+            surfaceId: 7,
+            nodeId: 19,
+            timestampUs: 999,
+            kind: .keyDown,
+            payload: .key(key: "ArrowRight", code: "ArrowRight", modifiers: 0x0D, keyCode: 39, isComposing: true)
         )
-        XCTAssertEqual(Array(modified.prefix(4)), [0x4E, 0x4B, 0x31, 0x0D])
-        XCTAssertEqual(
-            NveNk1BinaryCodec.decode(modified),
-            NveNk1KeyDown(key: "ArrowRight", meta: true, ctrl: false, shift: true, alt: true)
-        )
-        XCTAssertNil(NveNk1BinaryCodec.encode(key: ""))
-        XCTAssertNil(NveNk1BinaryCodec.decode(Data()))
-        XCTAssertNil(NveNk1BinaryCodec.decode(Data([0x4E, 0x4B, 0x31, 0x00])))
-        XCTAssertNil(NveNk1BinaryCodec.decode(Data([0x4E, 0x4B, 0x32, 0x00, 0x41])))
-        XCTAssertNil(NveNk1BinaryCodec.decode(Data([0x4E, 0x4B, 0x31, 0x00, 0xFF, 0xFE])))
+        let ring = NveEventRingCodec.encode([modified])
+        XCTAssertEqual(try NveEventRingCodec.decodeStrict(ring), [modified])
+        try NveDirectEventWriter.withBatch([modified]) { batch in
+            XCTAssertEqual(NveDirectEventWriter.decodeBatch(batch), [modified])
+        }
 
         // 5% title-safe overscan on 1080p tvOS logical viewport (1920x1080) => 96pt H / 54pt V.
         let insets1080 = NveTvOverscanInsets.forViewport(size: CGSize(width: 1920, height: 1080))

@@ -72,22 +72,13 @@ fn unescape_html_attr(val: &str) -> String {
     if !val.contains('&') {
         return val.to_owned();
     }
-    let mut out = String::with_capacity(val.len());
-    let mut rest = val;
+    const ENTITIES: [(&str, char); 4] = [("&quot;", '"'), ("&lt;", '<'), ("&gt;", '>'), ("&amp;", '&')];
+    let (mut out, mut rest) = (String::with_capacity(val.len()), val);
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         rest = &rest[amp..];
-        if let Some(after) = rest.strip_prefix("&quot;") {
-            out.push('"');
-            rest = after;
-        } else if let Some(after) = rest.strip_prefix("&lt;") {
-            out.push('<');
-            rest = after;
-        } else if let Some(after) = rest.strip_prefix("&gt;") {
-            out.push('>');
-            rest = after;
-        } else if let Some(after) = rest.strip_prefix("&amp;") {
-            out.push('&');
+        if let Some((after, ch)) = ENTITIES.iter().find_map(|&(p, c)| rest.strip_prefix(p).map(|a| (a, c))) {
+            out.push(ch);
             rest = after;
         } else {
             out.push('&');
@@ -374,6 +365,23 @@ impl WebBackend {
                         .hydrated_controls
                         .insert(nid, HydratedControlState { base, local });
                 }
+                // Record pre-existing SSR child order once at hydration boot so `reconcile_dom_children`
+                // never reads back `data-nve-id` attributes across the WASM->DOM bridge.
+                if let Some(parent_el) = el.parent_element() {
+                    let logical_parent = if parent_el.has_attribute("data-nve-id") {
+                        Some(parent_el)
+                    } else if parent_el.tag_name().eq_ignore_ascii_case("code") {
+                        parent_el.parent_element()
+                    } else {
+                        None
+                    };
+                    if let Some(pel) = logical_parent
+                        && let Some(raw_pid) = pel.get_attribute("data-nve-id")
+                        && let Ok(pid) = raw_pid.parse::<NodeId>()
+                    {
+                        backend.hydrated_children.entry(pid).or_default().push(nid);
+                    }
+                }
                 backend.hydrated_dom_tags.insert(nid, tag);
                 backend.dom_nodes.insert(nid, el);
             }
@@ -570,16 +578,13 @@ impl WebBackend {
                     kind: NativeEventKind::TextChange,
                     payload: EventPayload::Text(decision.resolved),
                 });
-            } else if decision.apply_local {
+            } else {
                 #[cfg(target_arch = "wasm32")]
-                if let Some(dom_el) = self.dom_nodes.get(&nid) {
+                if decision.apply_local
+                    && let Some(dom_el) = self.dom_nodes.get(&nid)
+                {
                     write_dom_control_value(dom_el, &decision.resolved);
                 }
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(ssr_node) = self.native_ssr_nodes.get_mut(&nid) {
-                    ssr_node.control_value = Some(decision.resolved);
-                }
-            } else {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(ssr_node) = self.native_ssr_nodes.get_mut(&nid) {
                     ssr_node.control_value = Some(decision.resolved);
@@ -587,7 +592,6 @@ impl WebBackend {
             }
         }
 
-        // Atomic replay of valid pre-hydration user interactions.
         let raw_replay = std::mem::take(&mut self.pending_pre_hydration_events);
         if !raw_replay.is_empty() {
             let valid = drain_valid_pre_hydration_events(raw_replay, |id| self.nodes.contains_key(&id));
@@ -608,12 +612,13 @@ impl WebBackend {
 
         self.hydrated_dom_tags.clear();
         self.hydrated_inline_nodes.clear();
+        #[cfg(target_arch = "wasm32")]
+        self.hydrated_children.clear();
         self.hydrating = false;
 
         if !hydrated_events.is_empty() {
             self.events.borrow_mut().extend(hydrated_events);
-            let cb = self.on_event.borrow().clone();
-            if let Some(cb) = cb {
+            if let Some(cb) = self.on_event.borrow().clone() {
                 cb();
             }
         }
@@ -621,9 +626,7 @@ impl WebBackend {
 
     fn replace_mismatched_hydrated_node(&mut self, node_id: NodeId) {
         #[cfg(target_arch = "wasm32")]
-        {
-            self.upgrade_dom_element_tag(node_id);
-        }
+        self.upgrade_dom_element_tag(node_id);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(expected_tag) = self.nodes.get(&node_id).map(|n| n.tag) {
             let new_id = self.next_native_instance_id;

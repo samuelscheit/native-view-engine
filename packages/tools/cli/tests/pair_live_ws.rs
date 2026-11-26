@@ -76,17 +76,15 @@ fn kitchen_sink_cdylib_path() -> PathBuf {
             let path = target_dir(&root)
                 .join("debug")
                 .join(format!("{prefix}nve_example_kitchen_sink.{ext}"));
-            if !path.exists() {
-                let status = Command::new("cargo")
-                    .args(["build", "--locked", "-p", "nve-example-kitchen-sink"])
-                    .current_dir(&root)
-                    .status()
-                    .expect("invoke cargo build -p nve-example-kitchen-sink");
-                assert!(
-                    status.success(),
-                    "cargo build --locked -p nve-example-kitchen-sink failed with {status}"
-                );
-            }
+            let status = Command::new("cargo")
+                .args(["build", "--locked", "-p", "nve-example-kitchen-sink"])
+                .current_dir(&root)
+                .status()
+                .expect("invoke cargo build -p nve-example-kitchen-sink");
+            assert!(
+                status.success(),
+                "cargo build --locked -p nve-example-kitchen-sink failed with {status}"
+            );
             assert!(
                 path.exists(),
                 "expected kitchen-sink cdylib at {}",

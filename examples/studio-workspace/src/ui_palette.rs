@@ -4,7 +4,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use nve_abi::events::decode_keydown_bytes;
 use nve_dioxus::prelude::*;
 use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Dialog, Input, Separator};
 use serde::{Deserialize, Serialize};
@@ -27,7 +26,7 @@ pub struct CommandPaletteState {
     pub selected: usize,
 }
 
-/// Decoded keyboard event arriving via `NativeEventKind::Custom { name: "keydown", .. }`.
+/// Keyboard event descriptor for command palette and workspace shortcuts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyDownEvent {
     pub key: String,
@@ -41,20 +40,6 @@ impl KeyDownEvent {
     pub fn has_primary_modifier(&self) -> bool {
         self.meta || self.ctrl
     }
-}
-
-/// Parses a `keydown` custom event payload from either binary `NK1` framing
-/// (`[b'N', b'K', b'1', flags_u8, utf8_key...]`) or compact UTF-8 shorthand
-/// (`"Cmd+k"`, `"Ctrl+k"`, `"ArrowDown"`, `"ArrowUp"`, `"Enter"`, `"Escape"`).
-pub fn parse_keydown_payload(data: &[u8]) -> Option<KeyDownEvent> {
-    let kd = decode_keydown_bytes(data)?;
-    Some(KeyDownEvent {
-        key: kd.key,
-        meta: kd.meta,
-        ctrl: kd.ctrl,
-        shift: kd.shift,
-        alt: kd.alt,
-    })
 }
 
 /// Executable action represented by one Command Palette row.

@@ -168,40 +168,27 @@ class NveCanvasController extends ChangeNotifier {
     return result;
   }
 
-  /// Dispatches a pointer `Press` event via `dispatch_events_direct` (with binary `EventRing`
-  /// fallback) and immediately renders the updated frame.
+  /// Dispatches a pointer `Press` event directly via `NveSurfaceApi.dispatch_events`
+  /// and immediately renders the updated frame.
   bool dispatchPress(int nodeId, Offset position, {int? timestampUs, bool rerender = true}) {
     _ensureLive();
     final ts = timestampUs ?? DateTime.now().microsecondsSinceEpoch;
-    final bool ok;
-    if (_instance.supportsDirectEvents) {
-      ok = _instance.dispatchEventsDirect(<NveEvent>[
-        NveEvent(
-          surfaceId: surfaceId,
-          nodeId: nodeId,
-          timestampUs: ts,
-          kind: NveEventKind.press,
-          payload: NvePointPayload(x: position.dx, y: position.dy),
-        ),
-      ]);
-    } else {
-      final encoded = encodePressEvent(
+    final ok = _instance.dispatchEventsDirect(<NveEvent>[
+      NveEvent(
         surfaceId: surfaceId,
         nodeId: nodeId,
-        x: position.dx,
-        y: position.dy,
         timestampUs: ts,
-      );
-      ok = _instance.dispatchEvents(encoded);
-    }
+        kind: NveEventKind.press,
+        payload: NvePointPayload(x: position.dx, y: position.dy),
+      ),
+    ]);
     if (rerender) {
       renderNextFrame();
     }
     return ok;
   }
 
-  /// Dispatches a `Scroll` event via `dispatch_events_direct` (with binary `encodeScrollEvent`
-  /// `EventRing` fallback).
+  /// Dispatches a `Scroll` event directly via `NveSurfaceApi.dispatch_events`.
   bool dispatchScroll(
     int nodeId, {
     required double x,
@@ -213,34 +200,20 @@ class NveCanvasController extends ChangeNotifier {
   }) {
     _ensureLive();
     final ts = timestampUs ?? DateTime.now().microsecondsSinceEpoch;
-    final bool ok;
-    if (_instance.supportsDirectEvents) {
-      ok = _instance.dispatchEventsDirect(<NveEvent>[
-        NveEvent(
-          surfaceId: surfaceId,
-          nodeId: nodeId,
-          timestampUs: ts,
-          kind: NveEventKind.scroll,
-          payload: NveScrollPayload(
-            x: x,
-            y: y,
-            contentWidth: contentWidth,
-            contentHeight: contentHeight,
-          ),
-        ),
-      ]);
-    } else {
-      final encoded = encodeScrollEvent(
+    final ok = _instance.dispatchEventsDirect(<NveEvent>[
+      NveEvent(
         surfaceId: surfaceId,
         nodeId: nodeId,
-        x: x,
-        y: y,
-        contentWidth: contentWidth,
-        contentHeight: contentHeight,
         timestampUs: ts,
-      );
-      ok = _instance.dispatchEvents(encoded);
-    }
+        kind: NveEventKind.scroll,
+        payload: NveScrollPayload(
+          x: x,
+          y: y,
+          contentWidth: contentWidth,
+          contentHeight: contentHeight,
+        ),
+      ),
+    ]);
     if (rerender) {
       renderNextFrame();
     }
@@ -294,17 +267,7 @@ class NveCanvasController extends ChangeNotifier {
     return Size(maxW, maxH);
   }
 
-  /// Dispatches raw binary `EventRing` bytes into the Rust app.
-  bool dispatchEvents(Uint8List eventRingBytes, {bool rerender = true}) {
-    _ensureLive();
-    final ok = _instance.dispatchEvents(eventRingBytes);
-    if (rerender) {
-      renderNextFrame();
-    }
-    return ok;
-  }
-
-  /// Dispatches typed events via `dispatch_events_direct` (with binary `EventRing` fallback).
+  /// Dispatches typed events directly via `NveSurfaceApi.dispatch_events`.
   bool dispatchEventsDirect(List<NveEvent> events, {bool rerender = true}) {
     _ensureLive();
     final ok = _instance.dispatchEventsDirect(events);

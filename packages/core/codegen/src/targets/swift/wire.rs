@@ -11,8 +11,8 @@ use crate::schema::wire::{
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
     EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEYDOWN_FLAG_ALT, KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_META, KEYDOWN_FLAG_SHIFT,
-    KEYDOWN_HEADER_SIZE, KEYDOWN_MIN_LEN, KEYDOWN_WIRE_MAGIC, NVE_WIRE_CODECS_SCHEMA_HASH,
+    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
 fn format_swift_bytes(bytes: &[u8]) -> String {
@@ -45,7 +45,7 @@ pub fn generate_swift_wire_codecs() -> String {
     .unwrap();
     writeln!(
         s,
-        "/// `NK1` keydown encoder, and `NVE_DRAW1` opcode/header decoder."
+        "/// typed key modifiers, and `NVE_DRAW1` opcode/header decoder."
     )
     .unwrap();
     writeln!(s, "public enum NveWireCodecs {{").unwrap();
@@ -127,8 +127,8 @@ pub fn generate_swift_wire_codecs() -> String {
     )
     .unwrap();
 
-    // EventRing + NK1
-    writeln!(s, "    // MARK: - EventRing (`NVEV`) & `NK1` KeyDown\n").unwrap();
+    // EventRing
+    writeln!(s, "    // MARK: - EventRing (`NVEV`)\n").unwrap();
     writeln!(s, "    public enum EventKind: UInt8, Sendable, Hashable, CaseIterable {{").unwrap();
     for v in EVENT_KINDS {
         writeln!(s, "        case {} = {}", v.camel, v.value).unwrap();
@@ -202,43 +202,16 @@ pub fn generate_swift_wire_codecs() -> String {
     .unwrap();
     writeln!(s, "    }}\n").unwrap();
 
-    writeln!(s, "    public enum KeyDown {{").unwrap();
+    writeln!(s, "    public enum KeyModifiers {{").unwrap();
+    writeln!(s, "        public static let meta: UInt8 = 0x{KEY_MOD_META:02X}").unwrap();
+    writeln!(s, "        public static let ctrl: UInt8 = 0x{KEY_MOD_CTRL:02X}").unwrap();
+    writeln!(s, "        public static let shift: UInt8 = 0x{KEY_MOD_SHIFT:02X}").unwrap();
+    writeln!(s, "        public static let alt: UInt8 = 0x{KEY_MOD_ALT:02X}").unwrap();
+    writeln!(s, "        public static let repeatKey: UInt8 = 0x{KEY_MOD_REPEAT:02X}").unwrap();
+    writeln!(s, "    }}\n").unwrap();
     writeln!(
         s,
-        "        public static let magic: [UInt8] = [{}]",
-        format_swift_bytes(&KEYDOWN_WIRE_MAGIC)
-    )
-    .unwrap();
-    writeln!(s, "        public static let headerSize: Int = {KEYDOWN_HEADER_SIZE}").unwrap();
-    writeln!(s, "        public static let minLen: Int = {KEYDOWN_MIN_LEN}").unwrap();
-    writeln!(s, "        public static let flagMeta: UInt8 = 0x{KEYDOWN_FLAG_META:02X}").unwrap();
-    writeln!(s, "        public static let flagCtrl: UInt8 = 0x{KEYDOWN_FLAG_CTRL:02X}").unwrap();
-    writeln!(s, "        public static let flagShift: UInt8 = 0x{KEYDOWN_FLAG_SHIFT:02X}").unwrap();
-    writeln!(s, "        public static let flagAlt: UInt8 = 0x{KEYDOWN_FLAG_ALT:02X}\n").unwrap();
-    writeln!(
-        s,
-        r#"        public static func encode(
-            key: String,
-            meta: Bool = false,
-            ctrl: Bool = false,
-            shift: Bool = false,
-            alt: Bool = false
-        ) -> Data {{
-            var flags: UInt8 = 0
-            if meta {{ flags |= flagMeta }}
-            if ctrl {{ flags |= flagCtrl }}
-            if shift {{ flags |= flagShift }}
-            if alt {{ flags |= flagAlt }}
-            let utf8 = Array(key.utf8)
-            var out = Data(capacity: headerSize + utf8.count)
-            out.append(contentsOf: magic)
-            out.append(flags)
-            out.append(contentsOf: utf8)
-            return out
-        }}
-    }}
-
-    public struct EventRingFramedHeader: Equatable, Sendable {{
+        r#"    public struct EventRingFramedHeader: Equatable, Sendable {{
         public let version: UInt16
         public let count: UInt32
     }}
@@ -370,10 +343,31 @@ pub fn generate_swift_wire_codecs() -> String {
             meta: Bool = false,
             ctrl: Bool = false,
             shift: Bool = false,
-            alt: Bool = false
+            alt: Bool = false,
+            code: String = "",
+            keyCode: UInt32 = 0,
+            isComposing: Bool = false
         ) -> Bool {{
-            let payload = KeyDown.encode(key: key, meta: meta, ctrl: ctrl, shift: shift, alt: alt)
-            return pushCustom(surfaceId: surfaceId, nodeId: nodeId, timestampUs: timestampUs, name: "keydown", data: payload)
+            let keyBytes = Array(key.utf8)
+            let codeBytes = Array(code.utf8)
+            guard keyBytes.count <= Int(UInt16.max), codeBytes.count <= Int(UInt16.max) else {{
+                return false
+            }}
+            var modifiers: UInt8 = 0
+            if meta {{ modifiers |= KeyModifiers.meta }}
+            if ctrl {{ modifiers |= KeyModifiers.ctrl }}
+            if shift {{ modifiers |= KeyModifiers.shift }}
+            if alt {{ modifiers |= KeyModifiers.alt }}
+            writeEntryHeader(surfaceId: surfaceId, nodeId: nodeId, timestampUs: timestampUs, kind: .keyDown, payloadTag: .key)
+            buffer.append(modifiers)
+            buffer.append(isComposing ? 1 : 0)
+            appendU32(keyCode)
+            appendU16(UInt16(keyBytes.count))
+            buffer.append(contentsOf: keyBytes)
+            appendU16(UInt16(codeBytes.count))
+            buffer.append(contentsOf: codeBytes)
+            count &+= 1
+            return true
         }}
 
         public mutating func finish() -> Data {{

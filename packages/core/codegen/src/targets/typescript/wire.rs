@@ -11,8 +11,8 @@ use crate::schema::wire::{
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
     EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEYDOWN_FLAG_ALT, KEYDOWN_FLAG_CTRL, KEYDOWN_FLAG_META, KEYDOWN_FLAG_SHIFT,
-    KEYDOWN_HEADER_SIZE, KEYDOWN_MIN_LEN, KEYDOWN_WIRE_MAGIC, NVE_WIRE_CODECS_SCHEMA_HASH,
+    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
 fn format_ts_bytes(bytes: &[u8]) -> String {
@@ -108,9 +108,9 @@ export function verifyFnv1a64TestVectors(): boolean {{
     )
     .unwrap();
 
-    // EventRing + NK1
+    // EventRing
     writeln!(s, "// ============================================================================").unwrap();
-    writeln!(s, "// EventRing (`NVEV` / event framing) & `NK1` KeyDown").unwrap();
+    writeln!(s, "// EventRing (`NVEV` / network event framing)").unwrap();
     writeln!(s, "// ============================================================================\n").unwrap();
     writeln!(
         s,
@@ -197,42 +197,15 @@ export function verifyFnv1a64TestVectors(): boolean {{
     }
     writeln!(s, "}} as const;\n").unwrap();
 
-    writeln!(
-        s,
-        "export const NVE_KEYDOWN_WIRE_MAGIC: ReadonlyArray<number> = [{}];",
-        format_ts_bytes(&KEYDOWN_WIRE_MAGIC)
-    )
-    .unwrap();
-    writeln!(s, "export const NVE_KEYDOWN_HEADER_SIZE = {KEYDOWN_HEADER_SIZE} as const;").unwrap();
-    writeln!(s, "export const NVE_KEYDOWN_MIN_LEN = {KEYDOWN_MIN_LEN} as const;").unwrap();
-    writeln!(s, "export const NVE_KEYDOWN_FLAG_META = 0x{KEYDOWN_FLAG_META:02X} as const;").unwrap();
-    writeln!(s, "export const NVE_KEYDOWN_FLAG_CTRL = 0x{KEYDOWN_FLAG_CTRL:02X} as const;").unwrap();
-    writeln!(s, "export const NVE_KEYDOWN_FLAG_SHIFT = 0x{KEYDOWN_FLAG_SHIFT:02X} as const;").unwrap();
-    writeln!(s, "export const NVE_KEYDOWN_FLAG_ALT = 0x{KEYDOWN_FLAG_ALT:02X} as const;\n").unwrap();
+    writeln!(s, "export const NVE_KEY_MOD_META = 0x{KEY_MOD_META:02X} as const;").unwrap();
+    writeln!(s, "export const NVE_KEY_MOD_CTRL = 0x{KEY_MOD_CTRL:02X} as const;").unwrap();
+    writeln!(s, "export const NVE_KEY_MOD_SHIFT = 0x{KEY_MOD_SHIFT:02X} as const;").unwrap();
+    writeln!(s, "export const NVE_KEY_MOD_ALT = 0x{KEY_MOD_ALT:02X} as const;").unwrap();
+    writeln!(s, "export const NVE_KEY_MOD_REPEAT = 0x{KEY_MOD_REPEAT:02X} as const;\n").unwrap();
 
     writeln!(
         s,
         r#"const utf8Encoder = new TextEncoder();
-
-export function encodeKeyDownNk1(
-  key: string,
-  meta = false,
-  ctrl = false,
-  shift = false,
-  alt = false,
-): Uint8Array {{
-  let flags = 0;
-  if (meta) flags |= NVE_KEYDOWN_FLAG_META;
-  if (ctrl) flags |= NVE_KEYDOWN_FLAG_CTRL;
-  if (shift) flags |= NVE_KEYDOWN_FLAG_SHIFT;
-  if (alt) flags |= NVE_KEYDOWN_FLAG_ALT;
-  const keyBytes = utf8Encoder.encode(key);
-  const out = new Uint8Array(NVE_KEYDOWN_HEADER_SIZE + keyBytes.length);
-  out.set(NVE_KEYDOWN_WIRE_MAGIC, 0);
-  out[3] = flags;
-  out.set(keyBytes, NVE_KEYDOWN_HEADER_SIZE);
-  return out;
-}}
 
 export interface NveEventRingFramedHeader {{
   readonly version: number;
@@ -360,8 +333,28 @@ export class NveWireEventRingWriter {{
     ctrl = false,
     shift = false,
     alt = false,
+    code = '',
+    keyCode = 0,
+    isComposing = false,
   ): boolean {{
-    return this.pushCustom(surfaceId, nodeId, timestampUs, 'keydown', encodeKeyDownNk1(key, meta, ctrl, shift, alt));
+    const keyBytes = utf8Encoder.encode(key);
+    const codeBytes = utf8Encoder.encode(code);
+    if (keyBytes.byteLength > 0xFFFF || codeBytes.byteLength > 0xFFFF) return false;
+    let modifiers = 0;
+    if (meta) modifiers |= NVE_KEY_MOD_META;
+    if (ctrl) modifiers |= NVE_KEY_MOD_CTRL;
+    if (shift) modifiers |= NVE_KEY_MOD_SHIFT;
+    if (alt) modifiers |= NVE_KEY_MOD_ALT;
+    this.writeEntryHeader(surfaceId, nodeId, timestampUs, NVE_WIRE_EVENT_KIND.KEY_DOWN, NVE_WIRE_EVENT_PAYLOAD_TAG.KEY);
+    this.appendU8(modifiers);
+    this.appendU8(isComposing ? 1 : 0);
+    this.appendU32(keyCode);
+    this.appendU16(keyBytes.byteLength);
+    this.appendBytes(keyBytes);
+    this.appendU16(codeBytes.byteLength);
+    this.appendBytes(codeBytes);
+    this.eventCount++;
+    return true;
   }}
 
   finish(): Uint8Array {{

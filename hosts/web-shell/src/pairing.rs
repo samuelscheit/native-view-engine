@@ -5,9 +5,10 @@
 use std::collections::VecDeque;
 
 use nve_abi::{
-    encode_events, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId, ROOT_NODE_ID,
+    encode_events, pack_key_modifiers, EventPayload, FrameId, NativeEvent, NativeEventKind,
+    SurfaceId, ROOT_NODE_ID,
 };
-use nve_backend_web::{encode_keydown_payload, WebBackend};
+use nve_backend_web::WebBackend;
 use nve_engine::{BackendError, RenderBackend, SurfaceRunner, Viewport};
 use nve_wire_core::{
     NveWireClientSession, NveWireClientState, NveWireIngestOutcome, DEFAULT_MAX_WIRE_FRAME_BYTES,
@@ -323,15 +324,17 @@ impl PairedWebSession {
             return Ok(None);
         }
         let surface_id = self.runner.surface_id();
-        let data = encode_keydown_payload(key, meta, ctrl, false, false);
         let ev = NativeEvent {
             surface_id,
             node_id: ROOT_NODE_ID,
             timestamp_us: 0,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: "keydown".into(),
-                data,
+            kind: NativeEventKind::KeyDown,
+            payload: EventPayload::Key {
+                key: key.to_owned(),
+                code: String::new(),
+                key_code: 0,
+                modifiers: pack_key_modifiers(meta, ctrl, false, false, false),
+                is_composing: false,
             },
         };
         let pkt = self.client.encode_input_events(&[ev])?;
