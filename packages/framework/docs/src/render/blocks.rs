@@ -76,7 +76,7 @@ fn BlockView(block: Block, scope_key: String) -> Element {
         }
         Block::Paragraph { content, .. } => rsx! {
             view {
-                style: "width: 100%;",
+                style: "width: 100%; min-width: 0px;",
                 InlinesView {
                     inlines: content,
                     font_size: 15,
@@ -118,12 +118,12 @@ fn BlockView(block: Block, scope_key: String) -> Element {
         Block::Blockquote { blocks, .. } => rsx! {
             view {
                 accessibility_role: "blockquote",
-                style: "width: 100%; flex-direction: row; gap: 12px; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 6px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; min-width: 0px; flex-direction: row; gap: 12px; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 6px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
                 view {
-                    style: "width: 3px; border-radius: 2px; background-color: {theme.accent_alt};",
+                    style: "width: 3px; flex-shrink: 0; border-radius: 2px; background-color: {theme.accent_alt};",
                 }
                 view {
-                    style: "flex-grow: 1; flex-direction: column; gap: 8px;",
+                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 8px;",
                     BlocksView {
                         blocks: blocks,
                         scope_prefix: format!("{scope_key}-bq"),
@@ -183,11 +183,11 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
                             aria_checked: checked_attr,
                             style: "width: 100%; flex-direction: row; align-items: flex-start; gap: 10px;",
                             text {
-                                style: "font-size: 14px; font-weight: 600; color: {marker_color}; min-width: 18px;",
+                                style: "font-size: 14px; font-weight: 600; line-height: 1.65; color: {marker_color}; min-width: 18px;",
                                 "{marker}"
                             }
                             view {
-                                style: "flex-grow: 1; flex-direction: column; gap: 6px;",
+                                style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 6px;",
                                 BlocksView {
                                     blocks: item.blocks,
                                     scope_prefix: format!("{scope_prefix}-li-{idx}"),
@@ -201,14 +201,13 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
     }
 }
 
-/// Shared flex sizing for table header and body cells.
+/// Shared flex sizing for table header and body cells on native Taffy/Yoga backends.
 ///
-/// `nve-abi::LayoutProps` has `width`, `min_width`, `flex_grow`, and `flex_shrink` (with
-/// `flex-basis: auto`), so setting `width: 0px; min-width: 0px;` gives every cell a `0px`
-/// flex base size across CSS Flexbox (§9.2), Taffy/Skia, and Yoga — preventing columns with
-/// different text lengths from misaligning horizontally between header and body rows.
+/// On Web, `th.nve, td.nve` in `NVE_BASE_RESET_CSS` uses `display: table-cell; width: auto;`
+/// (higher specificity than generated `.s*` classes), so browsers allocate proportional column
+/// widths via CSS table layout while Taffy/Skia and Yoga still get an exact `0px` flex base size.
 const TABLE_CELL_FLEX_STYLE: &str =
-    "flex-grow: 1; flex-shrink: 1; width: 0px; min-width: 0px;";
+    "flex-grow: 1; flex-shrink: 1; width: 0px; min-width: 0px; overflow-wrap: break-word;";
 
 #[component]
 fn TableView(
@@ -235,63 +234,94 @@ fn TableView(
         }
     };
 
+    let col_count = headers.len().max(rows.first().map_or(0, Vec::len));
+    let min_table_w = if col_count >= 3 {
+        (col_count as u32).saturating_mul(135).min(680)
+    } else {
+        0
+    };
+    let table_style = if min_table_w > 0 {
+        format!("width: 100%; min-width: {min_table_w}px; flex-direction: column;")
+    } else {
+        "width: 100%; flex-direction: column;".to_string()
+    };
+
     rsx! {
         view {
-            test_id: "docs-table-{scope_key}",
-            accessibility_role: "table",
-            style: "width: 100%; flex-direction: column; border-radius: 8px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+            test_id: "docs-table-wrap-{scope_key}",
+            style: "width: 100%; min-width: 0px; overflow-x: auto; border-radius: 8px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+            view {
+                test_id: "docs-table-{scope_key}",
+                "semanticTag": "table",
+                accessibility_role: "table",
+                style: "{table_style}",
 
-            // Table header row
-            if !headers.is_empty() {
-                view {
-                    accessibility_role: "row",
-                    style: "width: 100%; flex-direction: row; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
-                    for (col_idx, cell) in headers.into_iter().enumerate() {
-                        {
-                            let ta = align_css(col_idx);
-                            let af = align_flex(col_idx);
-                            rsx! {
-                                view {
-                                    key: "{scope_key}-th-{col_idx}",
-                                    accessibility_role: "columnheader",
-                                    style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 9px; align-items: {af}; text-align: {ta};",
-                                    InlinesView {
-                                        inlines: cell,
-                                        font_size: 13,
-                                        bold: true,
+                // Table header
+                if !headers.is_empty() {
+                    view {
+                        "semanticTag": "thead",
+                        style: "width: 100%; flex-direction: column;",
+                        view {
+                            "semanticTag": "tr",
+                            accessibility_role: "row",
+                            style: "width: 100%; flex-direction: row; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                            for (col_idx, cell) in headers.into_iter().enumerate() {
+                                {
+                                    let ta = align_css(col_idx);
+                                    let af = align_flex(col_idx);
+                                    rsx! {
+                                        view {
+                                            key: "{scope_key}-th-{col_idx}",
+                                            "semanticTag": "th",
+                                            accessibility_role: "columnheader",
+                                            style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 9px; align-items: {af}; text-align: {ta};",
+                                            InlinesView {
+                                                inlines: cell,
+                                                font_size: 13,
+                                                bold: true,
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Table body rows
-            for (row_idx, row) in rows.into_iter().enumerate() {
-                {
-                    let row_bg = if row_idx % 2 == 1 {
-                        theme.canvas
-                    } else {
-                        theme.surface
-                    };
-                    rsx! {
-                        view {
-                            key: "{scope_key}-tr-{row_idx}",
-                            accessibility_role: "row",
-                            style: "width: 100%; flex-direction: row; background-color: {row_bg}; border-width: 1px; border-color: {theme.border};",
-                            for (col_idx, cell) in row.into_iter().enumerate() {
-                                {
-                                    let ta = align_css(col_idx);
-                                    let af = align_flex(col_idx);
-                                    rsx! {
-                                        view {
-                                            key: "{scope_key}-td-{row_idx}-{col_idx}",
-                                            accessibility_role: "cell",
-                                            style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 8px; align-items: {af}; text-align: {ta};",
-                                            InlinesView {
-                                                inlines: cell,
-                                                font_size: 13,
+                // Table body
+                if !rows.is_empty() {
+                    view {
+                        "semanticTag": "tbody",
+                        style: "width: 100%; flex-direction: column;",
+                        for (row_idx, row) in rows.into_iter().enumerate() {
+                            {
+                                let row_bg = if row_idx % 2 == 1 {
+                                    theme.canvas
+                                } else {
+                                    theme.surface
+                                };
+                                rsx! {
+                                    view {
+                                        key: "{scope_key}-tr-{row_idx}",
+                                        "semanticTag": "tr",
+                                        accessibility_role: "row",
+                                        style: "width: 100%; flex-direction: row; background-color: {row_bg}; border-width: 1px; border-color: {theme.border};",
+                                        for (col_idx, cell) in row.into_iter().enumerate() {
+                                            {
+                                                let ta = align_css(col_idx);
+                                                let af = align_flex(col_idx);
+                                                rsx! {
+                                                    view {
+                                                        key: "{scope_key}-td-{row_idx}-{col_idx}",
+                                                        "semanticTag": "td",
+                                                        accessibility_role: "cell",
+                                                        style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 8px; align-items: {af}; text-align: {ta};",
+                                                        InlinesView {
+                                                            inlines: cell,
+                                                            font_size: 13,
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -309,7 +339,7 @@ fn TableView(
 mod tests {
     use std::sync::Arc;
 
-    use nve_abi::{Dimension, RawPropValue};
+    use nve_abi::{Dimension, NodeId, RawPropValue};
     use nve_backend_headless::HeadlessBackend;
     use nve_backend_web::WebBackend;
     use nve_dioxus::dioxus_elements::backend::{RenderBackend, Viewport};
@@ -374,18 +404,27 @@ description: "Table column alignment verification."
                 .nodes()
                 .values()
                 .find_map(|n| match n.raw_props.get("testID") {
-                    Some(RawPropValue::String(s)) if s.starts_with("docs-table-") => Some(n.id),
+                    Some(RawPropValue::String(s))
+                        if s.starts_with("docs-table-") && !s.starts_with("docs-table-wrap-") =>
+                    {
+                        Some(n.id)
+                    }
                     _ => None,
                 })
                 .expect("rendered docs-table node");
 
-            let rows = &headless.node(table_id).expect("table node").children;
+            let sections = &headless.node(table_id).expect("table node").children;
+            assert_eq!(sections.len(), 2, "expected thead + tbody sections");
+            let rows: Vec<NodeId> = sections
+                .iter()
+                .flat_map(|&sec_id| headless.node(sec_id).expect("section").children.iter().copied())
+                .collect();
             assert_eq!(rows.len(), 3, "expected 1 header row + 2 body rows");
 
             let header_cells = &headless.node(rows[0]).expect("header row").children;
             assert_eq!(header_cells.len(), 4);
 
-            for &row_id in rows {
+            for &row_id in &rows {
                 let cells = &headless.node(row_id).expect("row node").children;
                 assert_eq!(cells.len(), 4);
                 for (col_idx, &cell_id) in cells.iter().enumerate() {
@@ -414,21 +453,29 @@ description: "Table column alignment verification."
                 }
             }
 
-            // 2. Verify WebBackend emits consistent `width:0;min-width:0;flex-grow:1;` CSS.
+            // 2. Verify WebBackend emits semantic table tags, overflow-x wrapper, and cell wrapping.
             let mut web = WebBackend::new();
             web.submit_frame(&frame_bytes).expect("web submit_frame");
             let ssr = web.render_ssr();
             assert!(
-                ssr.style_css.contains("flex-grow:1;width:0;min-width:0;"),
-                "expected zero-basis flex cell rule in SSR CSS:\n{}",
+                ssr.style_css.contains("overflow-wrap:break-word;"),
+                "expected overflow-wrap:break-word in SSR CSS:\n{}",
                 ssr.style_css
             );
+            assert!(
+                ssr.style_css.contains("overflow-x:auto;"),
+                "expected overflow-x:auto wrapper in SSR CSS:\n{}",
+                ssr.style_css
+            );
+            assert!(ssr.html.contains("<table "), "expected semantic <table>");
+            assert!(ssr.html.contains("<thead "), "expected semantic <thead>");
+            assert!(ssr.html.contains("<tbody "), "expected semantic <tbody>");
+            assert!(ssr.html.contains("<tr "), "expected semantic <tr>");
+            assert!(ssr.html.contains("<th "), "expected semantic <th>");
+            assert!(ssr.html.contains("<td "), "expected semantic <td>");
             let html = web.render_html();
             assert!(html.contains("role=\"columnheader\""));
             assert!(html.contains("role=\"cell\""));
-            assert!(html.contains("flex-grow:1;flex-shrink:1;"));
-            assert!(html.contains("width:0px;"));
-            assert!(html.contains("min-width:0px;"));
         }
     }
 }

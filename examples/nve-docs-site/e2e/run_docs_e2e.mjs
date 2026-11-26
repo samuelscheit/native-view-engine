@@ -816,6 +816,97 @@ async function run() {
     deskBench.close();
     console.log("    ✓ Desktop /docs/reference/benchmarks captured + post-hydration <a href> SPA nav preserved window.__nveSpaMarker === 42");
 
+    // 3f. Deep Table & Inline Flow Layout Audit on why-nve, quickstart & benchmarks (1440, 1100, 390)
+    const { cdp: layoutCdp } = await createPageCdp(chrome.debugPort);
+    const layoutExpr = `(() => {
+      const docOverflow = document.documentElement.scrollWidth - window.innerWidth;
+      const main = document.querySelector('[testid="docs-main-scroll"]');
+      const mainOverflow = main ? main.scrollWidth - main.clientWidth : 0;
+      const cellOverlaps = [];
+      const textOverflows = [];
+      for (const tbl of document.querySelectorAll('table, [role="table"]')) {
+        const rows = tbl.querySelectorAll('tr, [role="row"]');
+        rows.forEach((row, ri) => {
+          const cells = Array.from(row.children).filter(
+            (c) => ["TH", "TD"].includes(c.tagName) || ["columnheader", "cell"].includes(c.getAttribute("role"))
+          );
+          for (let i = 0; i < cells.length; i++) {
+            const c = cells[i];
+            const cr = c.getBoundingClientRect();
+            if (i + 1 < cells.length) {
+              const nr = cells[i + 1].getBoundingClientRect();
+              if (cr.right > nr.left + 1) {
+                cellOverlaps.push({ row: ri, col: i, right: Math.round(cr.right), nextLeft: Math.round(nr.left) });
+              }
+            }
+            for (const child of c.querySelectorAll("span, code, a, strong, em, s")) {
+              for (const r of child.getClientRects()) {
+                if (r.width > 0 && r.right > cr.right + 2) {
+                  textOverflows.push({
+                    row: ri,
+                    col: i,
+                    text: (child.textContent || "").slice(0, 32),
+                    childRight: Math.round(r.right),
+                    cellRight: Math.round(cr.right),
+                  });
+                }
+              }
+            }
+          }
+        });
+      }
+      const danglingPunct = [];
+      for (const code of document.querySelectorAll('[testid="docs-inline-code"]')) {
+        const cRects = code.getClientRects();
+        if (!cRects.length) continue;
+        const cFirst = cRects[0];
+        const cLast = cRects[cRects.length - 1];
+        const prev = code.previousElementSibling;
+        if (prev && /[(\\[]$/.test(prev.textContent || "")) {
+          const pRects = prev.getClientRects();
+          const pLast = pRects[pRects.length - 1];
+          if (pLast && Math.abs(cFirst.top - pLast.top) > 12) {
+            danglingPunct.push({ kind: "open", prev: (prev.textContent || "").slice(-12), code: code.textContent, dy: Math.round(cFirst.top - pLast.top) });
+          }
+        }
+        const next = code.nextElementSibling;
+        if (next && /^[)\\],.;:!?]/.test(next.textContent || "")) {
+          const nRects = next.getClientRects();
+          const nFirst = nRects[0];
+          if (nFirst && Math.abs(nFirst.top - cLast.top) > 12) {
+            danglingPunct.push({ kind: "close", code: code.textContent, next: (next.textContent || "").slice(0, 12), dy: Math.round(nFirst.top - cLast.top) });
+          }
+        }
+      }
+      return {
+        docOverflow,
+        mainOverflow,
+        cellOverlaps,
+        textOverflows: textOverflows.slice(0, 8),
+        danglingPunct: danglingPunct.slice(0, 8),
+        mismatches: window.__NVE_DOCS__?.mismatches ?? -1,
+      };
+    })()`;
+
+    for (const [vw, vh, mob] of [[1440, 900, false], [1100, 900, false], [390, 844, true]]) {
+      await layoutCdp.setViewport(vw, vh, mob, mob ? 2 : 1);
+      for (const route of ["/docs/getting-started/why-nve/", "/docs/getting-started/quickstart/", "/docs/reference/benchmarks/"]) {
+        await layoutCdp.navigate(`${origin}${route}`);
+        await layoutCdp.waitFor(`!!window.__NVE_DOCS__ || !!window.__NVE_DOCS_ERROR__`, 12000, `${vw}x${vh} ${route} hydration`);
+        const res = await layoutCdp.eval(layoutExpr);
+        assert(res.mismatches === 0, `${vw}x${vh} ${route}: hydration mismatches=${res.mismatches}`);
+        assert(res.docOverflow <= 1, `${vw}x${vh} ${route}: document horizontal overflow ${res.docOverflow}px`);
+        assert(res.mainOverflow <= 1, `${vw}x${vh} ${route}: main scroll horizontal overflow ${res.mainOverflow}px`);
+        assert(res.cellOverlaps.length === 0, `${vw}x${vh} ${route}: overlapping table cells: ${JSON.stringify(res.cellOverlaps)}`);
+        assert(res.textOverflows.length === 0, `${vw}x${vh} ${route}: table cell text overflows: ${JSON.stringify(res.textOverflows)}`);
+        assert(res.danglingPunct.length === 0, `${vw}x${vh} ${route}: dangling punctuation around inline code: ${JSON.stringify(res.danglingPunct)}`);
+      }
+    }
+    assert(layoutCdp.consoleErrors.length === 0, `Layout audit console errors: ${layoutCdp.consoleErrors.join(" | ")}`);
+    assert(layoutCdp.pageErrors.length === 0, `Layout audit page errors: ${layoutCdp.pageErrors.join(" | ")}`);
+    layoutCdp.close();
+    console.log("    ✓ Table overlap, overflow & inline-code cohesion audit passed across 1440/1100/390px");
+
     // -----------------------------------------------------------------------
     // 4. LIVE LAZY-LOADED WASM EXAMPLE APPS (/examples/studio/ & /examples/kitchen-sink/)
     // -----------------------------------------------------------------------

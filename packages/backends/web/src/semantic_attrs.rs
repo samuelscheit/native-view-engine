@@ -69,6 +69,20 @@ pub fn resolve_semantic_tag(
             "details" => return SemanticTag { tag: "details", wrap_code: false },
             "summary" => return SemanticTag { tag: "summary", wrap_code: false },
             "form" => return SemanticTag { tag: "form", wrap_code: false },
+            "p" => return SemanticTag { tag: "p", wrap_code: false },
+            "span" => return SemanticTag { tag: "span", wrap_code: false },
+            "strong" => return SemanticTag { tag: "strong", wrap_code: false },
+            "em" => return SemanticTag { tag: "em", wrap_code: false },
+            "s" => return SemanticTag { tag: "s", wrap_code: false },
+            "code" => return SemanticTag { tag: "code", wrap_code: false },
+            "kbd" => return SemanticTag { tag: "kbd", wrap_code: false },
+            "br" => return SemanticTag { tag: "br", wrap_code: false },
+            "table" => return SemanticTag { tag: "table", wrap_code: false },
+            "thead" => return SemanticTag { tag: "thead", wrap_code: false },
+            "tbody" => return SemanticTag { tag: "tbody", wrap_code: false },
+            "tr" => return SemanticTag { tag: "tr", wrap_code: false },
+            "th" => return SemanticTag { tag: "th", wrap_code: false },
+            "td" => return SemanticTag { tag: "td", wrap_code: false },
             _ => {}
         }
     }

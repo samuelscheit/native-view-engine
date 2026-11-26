@@ -102,10 +102,21 @@ pub fn resolve_tag(tag: &str) -> (ComponentKind, Option<&str>) {
 #[inline]
 pub fn canonical_raw_style_key(key: &str) -> Option<&'static str> {
     match key {
+        "display" => Some("display"),
         "font-weight" | "fontWeight" => Some("font-weight"),
+        "font-family" | "fontFamily" => Some("font-family"),
+        "font-style" | "fontStyle" => Some("font-style"),
         "text-align" | "textAlign" => Some("text-align"),
+        "text-decoration" | "textDecoration" => Some("text-decoration"),
+        "line-height" | "lineHeight" => Some("line-height"),
         "box-shadow" | "boxShadow" => Some("box-shadow"),
         "overflow" => Some("overflow"),
+        "overflow-x" | "overflowX" => Some("overflow-x"),
+        "overflow-wrap" | "overflowWrap" | "word-wrap" | "wordWrap" => Some("overflow-wrap"),
+        "word-break" | "wordBreak" => Some("word-break"),
+        "white-space" | "whiteSpace" => Some("white-space"),
+        "vertical-align" | "verticalAlign" => Some("vertical-align"),
+        "border-collapse" | "borderCollapse" => Some("border-collapse"),
         "flex-wrap" | "flexWrap" => Some("flex-wrap"),
         _ => None,
     }

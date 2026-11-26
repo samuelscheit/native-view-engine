@@ -27,13 +27,14 @@ pub fn inlines_plain_text(inlines: &[Inline]) -> String {
     out
 }
 
-/// Renders a slice of [`Inline`] AST nodes in a wrapping horizontal row.
+/// Renders a slice of [`Inline`] AST nodes as true inline rich text on Web (and wrapping row on native).
 #[component]
 pub fn InlinesView(
     inlines: Vec<Inline>,
     #[props(default = 15)] font_size: u32,
     #[props(default)] bold: bool,
     #[props(default)] color_override: Option<String>,
+    #[props(default)] line_height: Option<String>,
 ) -> Element {
     let state = use_docs_state();
     let snap = state.read();
@@ -43,29 +44,20 @@ pub fn InlinesView(
 
     let text_color = color_override.unwrap_or_else(|| theme.text.to_string());
     let base_weight = if bold { "700" } else { "400" };
-
-    if inlines.len() == 1
-        && matches!(
-            inlines[0],
-            Inline::Text(_) | Inline::Strong(_) | Inline::Emphasis(_) | Inline::Strikethrough(_)
-        )
-    {
-        let single = inlines.into_iter().next().unwrap();
-        return rsx! {
-            InlineNodeView {
-                inline: single,
-                font_size: font_size,
-                base_weight: base_weight.to_string(),
-                text_color: text_color,
-                base_path: base_path,
-            }
-        };
-    }
+    let lh = line_height.unwrap_or_else(|| {
+        if font_size >= 18 {
+            "1.25".to_string()
+        } else if font_size <= 13 {
+            "1.45".to_string()
+        } else {
+            "1.65".to_string()
+        }
+    });
 
     rsx! {
         view {
             test_id: "docs-inlines",
-            style: "flex-direction: row; align-items: center; gap: 2px; flex-wrap: wrap;",
+            style: "display: block; width: 100%; min-width: 0px; flex-direction: row; align-items: center; flex-wrap: wrap; line-height: {lh}; overflow-wrap: break-word;",
             for (idx, inline) in inlines.into_iter().enumerate() {
                 InlineNodeView {
                     key: "inl-{idx}",
@@ -94,48 +86,66 @@ fn InlineNodeView(
     match inline {
         Inline::Text(content) => rsx! {
             text {
-                style: "font-size: {font_size}px; font-weight: {base_weight}; color: {text_color};",
+                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; color: {text_color};",
                 "{content}"
             }
         },
-        Inline::Strong(children) => {
-            let txt = inlines_plain_text(&children);
-            rsx! {
-                text {
-                    style: "font-size: {font_size}px; font-weight: 700; color: {text_color};",
-                    "{txt}"
+        Inline::Strong(children) => rsx! {
+            text {
+                "semanticTag": "strong",
+                style: "display: inline; font-size: {font_size}px; font-weight: 700; color: {text_color};",
+                for (idx, child) in children.into_iter().enumerate() {
+                    InlineNodeView {
+                        key: "strong-{idx}",
+                        inline: child,
+                        font_size: font_size,
+                        base_weight: "700".to_string(),
+                        text_color: text_color.clone(),
+                        base_path: base_path.clone(),
+                    }
                 }
             }
-        }
-        Inline::Emphasis(children) => {
-            let txt = inlines_plain_text(&children);
-            rsx! {
-                text {
-                    style: "font-size: {font_size}px; font-weight: {base_weight}; font-style: italic; color: {text_color};",
-                    "{txt}"
+        },
+        Inline::Emphasis(children) => rsx! {
+            text {
+                "semanticTag": "em",
+                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; font-style: italic; color: {text_color};",
+                for (idx, child) in children.into_iter().enumerate() {
+                    InlineNodeView {
+                        key: "em-{idx}",
+                        inline: child,
+                        font_size: font_size,
+                        base_weight: base_weight.clone(),
+                        text_color: text_color.clone(),
+                        base_path: base_path.clone(),
+                    }
                 }
             }
-        }
-        Inline::Strikethrough(children) => {
-            let txt = inlines_plain_text(&children);
-            rsx! {
-                text {
-                    style: "font-size: {font_size}px; text-decoration: line-through; color: {theme.muted};",
-                    "{txt}"
+        },
+        Inline::Strikethrough(children) => rsx! {
+            text {
+                "semanticTag": "s",
+                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; text-decoration: line-through; color: {theme.muted};",
+                for (idx, child) in children.into_iter().enumerate() {
+                    InlineNodeView {
+                        key: "del-{idx}",
+                        inline: child,
+                        font_size: font_size,
+                        base_weight: base_weight.clone(),
+                        text_color: theme.muted.to_string(),
+                        base_path: base_path.clone(),
+                    }
                 }
             }
-        }
+        },
         Inline::Code(code) => {
             let code_size = font_size.saturating_sub(1).max(11);
             rsx! {
-                view {
+                text {
                     test_id: "docs-inline-code",
                     accessibility_role: "code",
-                    style: "flex-shrink: 0; padding-horizontal: 5px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
-                    text {
-                        style: "font-size: {code_size}px; font-family: monospace; color: {theme.accent};",
-                        "{code}"
-                    }
+                    style: "display: inline; font-size: {code_size}px; font-family: monospace; color: {theme.accent}; padding-horizontal: 4px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                    "{code}"
                 }
             }
         }
@@ -147,6 +157,7 @@ fn InlineNodeView(
         } => {
             let label = inlines_plain_text(&link_children);
             let display = if label.is_empty() { url.clone() } else { label };
+            let has_children = !link_children.is_empty();
             let config = state.read().config.clone();
             let internal_target = DocsRoute::parse_link_target(&url).map(|(route, anchor)| {
                 let mapped = route.map(|r| config.docs_route_for_content(r.as_str()));
@@ -160,7 +171,6 @@ fn InlineNodeView(
                 Some((None, Some(anchor))) => format!("#{anchor}"),
                 _ => url.clone(),
             };
-            let _ = &base_path;
             let tid = internal_target.as_ref().and_then(|(route, _)| {
                 route
                     .as_ref()
@@ -173,15 +183,28 @@ fn InlineNodeView(
                     accessibility_role: "link",
                     accessibility_label: title.unwrap_or_else(|| display.clone()),
                     "href": "{href}",
-                    style: "flex-shrink: 0; padding-horizontal: 1px;",
+                    style: "display: inline; font-size: {font_size}px; font-weight: 500; color: {theme.accent}; text-decoration: underline;",
                     onpress: move |_| {
                         if let Some((route, anchor)) = internal_target.clone() {
                             navigate_to_target(state, route, anchor);
                         }
                     },
-                    text {
-                        style: "font-size: {font_size}px; font-weight: 500; color: {theme.accent}; text-decoration: underline;",
-                        "{display}"
+                    if has_children {
+                        for (idx, child) in link_children.into_iter().enumerate() {
+                            InlineNodeView {
+                                key: "link-{idx}",
+                                inline: child,
+                                font_size: font_size,
+                                base_weight: "500".to_string(),
+                                text_color: theme.accent.to_string(),
+                                base_path: base_path.clone(),
+                            }
+                        }
+                    } else {
+                        text {
+                            style: "display: inline; font-size: {font_size}px; font-weight: 500; color: {theme.accent};",
+                            "{display}"
+                        }
                     }
                 }
             }
@@ -193,13 +216,14 @@ fn InlineNodeView(
                 pressable {
                     accessibility_role: "link",
                     "href": "{href}",
+                    style: "display: inline; font-size: {font_size}px; color: {theme.accent}; text-decoration: underline;",
                     onpress: move |_| {
                         if let Some((route, anchor)) = internal_target.clone() {
                             navigate_to_target(state, route, anchor);
                         }
                     },
                     text {
-                        style: "font-size: {font_size}px; color: {theme.accent}; text-decoration: underline;",
+                        style: "display: inline; font-size: {font_size}px; color: {theme.accent};",
                         "{url}"
                     }
                 }
@@ -222,7 +246,10 @@ fn InlineNodeView(
             }
         }
         Inline::HardBreak => rsx! {
-            view { style: "width: 100%; height: 4px;" }
+            view {
+                "semanticTag": "br",
+                style: "width: 100%; height: 4px;",
+            }
         },
         Inline::InlineComponent(comp) => rsx! {
             InlineComponentView { comp: comp }

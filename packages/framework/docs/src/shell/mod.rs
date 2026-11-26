@@ -104,7 +104,7 @@ pub fn DocsShell() -> Element {
                         scrollview {
                             test_id: "docs-main-scroll",
                             accessibility_role: "main",
-                            style: "flex-grow: 1; flex-shrink: 1; height: 100%; flex-direction: column; background-color: {theme.canvas};",
+                            style: "flex-grow: 1; flex-shrink: 1; min-width: 0px; height: 100%; flex-direction: column; background-color: {theme.canvas};",
                             view {
                                 test_id: "docs-article-container",
                                 nve_style: article_container_style,
