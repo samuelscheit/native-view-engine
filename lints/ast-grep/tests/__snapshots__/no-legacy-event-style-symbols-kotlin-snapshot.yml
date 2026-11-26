@@ -1,0 +1,26 @@
+id: no-legacy-event-style-symbols-kotlin
+snapshots:
+  "class StylePatch\n":
+    labels:
+    - source: StylePatch
+      style: primary
+      start: 6
+      end: 16
+  "fun send(kind: NativeEventKind) {}\n":
+    labels:
+    - source: NativeEventKind
+      style: primary
+      start: 15
+      end: 30
+  "val payload: EventPayload? = null\n":
+    labels:
+    - source: EventPayload
+      style: primary
+      start: 13
+      end: 25
+  "val tag = NveEventPayloadTag.POINT\n":
+    labels:
+    - source: NveEventPayloadTag
+      style: primary
+      start: 10
+      end: 28

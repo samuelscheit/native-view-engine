@@ -1,0 +1,20 @@
+id: no-legacy-nodestore-symbols-typescript
+snapshots:
+  "const cls = NVE_HOST_CLASS_TEXT;\n":
+    labels:
+    - source: NVE_HOST_CLASS_TEXT
+      style: primary
+      start: 12
+      end: 31
+  "function render(kind: ComponentKind): void {}\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 22
+      end: 35
+  "interface RenderSink { flush(): void }\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 10
+      end: 20

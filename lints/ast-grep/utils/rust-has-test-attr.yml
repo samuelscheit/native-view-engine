@@ -1,0 +1,14 @@
+# Matches a Rust item whose immediately preceding attribute/comment chain contains `rust-test-attr`.
+# In tree-sitter-rust, outer `attribute_item` nodes are preceding siblings (`follows`), not parents.
+
+id: rust-has-test-attr
+language: rust
+rule:
+  follows:
+    matches: rust-test-attr
+    stopBy:
+      not:
+        any:
+          - kind: attribute_item
+          - kind: line_comment
+          - kind: block_comment

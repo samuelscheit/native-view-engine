@@ -1,0 +1,17 @@
+# Matches Rust test-only outer attributes: `#[cfg(test)]`, `#[cfg(all(test, ...))]`,
+# `#[cfg(any(test, ...))]`, `#[test]`, `#[tokio::test]`, `#[wasm_bindgen_test]`, etc.
+# Explicitly excludes `#[cfg(not(test))]` and `#[cfg(all(not(test), ...))]`.
+
+id: rust-test-attr
+language: rust
+rule:
+  kind: attribute_item
+  any:
+    - regex: '^#\[\s*cfg\s*\(\s*test\s*\)\s*\]$'
+    - all:
+        - regex: '^#\[\s*cfg\s*\(\s*(?:all|any)\s*\('
+        - regex: '\btest\b'
+        - not:
+            regex: '\bnot\s*\(\s*test\s*\)'
+    - regex: '^#\[\s*(?:[a-zA-Z0-9_]+::)*test(?:\s*\([^)]*\))?\s*\]$'
+    - regex: '^#\[\s*(?:[a-zA-Z0-9_]+::)*wasm_bindgen_test(?:\s*\([^)]*\))?\s*\]$'

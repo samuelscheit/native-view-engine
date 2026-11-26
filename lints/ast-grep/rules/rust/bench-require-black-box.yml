@@ -1,0 +1,26 @@
+id: rust-bench-require-black-box
+language: rust
+severity: error
+message: "Benchmark target is missing `black_box`; LLVM may optimize measured work away."
+note: "Enforces anti-stub benchmark quality on every Rust benchmark file defining a runner/entrypoint (`criterion_main!`, `criterion_group!`, `Criterion`, `divan`, or `fn main`) under `**/benches/**/*.rs`."
+files:
+  - "**/benches/**/*.rs"
+rule:
+  kind: source_file
+  has:
+    stopBy: end
+    any:
+      - kind: identifier
+        regex: '^(?:criterion_main|criterion_group|divan)$'
+      - kind: type_identifier
+        regex: '^Criterion$'
+      - kind: function_item
+        has:
+          field: name
+          kind: identifier
+          regex: '^main$'
+  not:
+    has:
+      stopBy: end
+      kind: identifier
+      regex: '^black_box$'

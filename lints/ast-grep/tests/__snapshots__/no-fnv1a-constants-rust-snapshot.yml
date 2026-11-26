@@ -1,0 +1,32 @@
+id: no-fnv1a-constants-rust
+snapshots:
+  "const OFFSET32: u32 = 0x811c9dc5;\n":
+    labels:
+    - source: "0x811c9dc5"
+      style: primary
+      start: 22
+      end: 32
+  "const OFFSET64: u64 = 0xcbf2_9ce4_8422_2325u64;\n":
+    labels:
+    - source: 0xcbf2_9ce4_8422_2325u64
+      style: primary
+      start: 22
+      end: 46
+  "const PRIME32: u32 = 0x01000193;\n":
+    labels:
+    - source: "0x01000193"
+      style: primary
+      start: 21
+      end: 31
+  "const PRIME64_FULL: u64 = 0x0000_0100_0000_01b3;\n":
+    labels:
+    - source: "0x0000_0100_0000_01b3"
+      style: primary
+      start: 26
+      end: 47
+  "const PRIME64_SHORT: u64 = 0x100000001B3;\n":
+    labels:
+    - source: "0x100000001B3"
+      style: primary
+      start: 27
+      end: 40

@@ -1,0 +1,60 @@
+id: rust-no-manual-impl-word-value
+snapshots:
+  "#[cfg(not(test))]\nimpl WordValue for NotTestIsProd {}\n":
+    labels:
+    - source: impl WordValue for NotTestIsProd {}
+      style: primary
+      start: 18
+      end: 53
+    - source: WordValue
+      style: secondary
+      start: 23
+      end: 32
+  "#[cfg(test)]\nmod tests {\n    impl WordValue for AllowedMock {}\n}\n\nimpl WordValue for ProdAfterTestMod {}\n":
+    labels:
+    - source: impl WordValue for ProdAfterTestMod {}
+      style: primary
+      start: 66
+      end: 104
+    - source: WordValue
+      style: secondary
+      start: 71
+      end: 80
+  "impl WordValue for CustomProp {}\n":
+    labels:
+    - source: impl WordValue for CustomProp {}
+      style: primary
+      start: 0
+      end: 32
+    - source: WordValue
+      style: secondary
+      start: 5
+      end: 14
+  "impl crate::WordValue for CratePathProp {}\n":
+    labels:
+    - source: impl crate::WordValue for CratePathProp {}
+      style: primary
+      start: 0
+      end: 42
+    - source: WordValue
+      style: secondary
+      start: 12
+      end: 21
+    - source: crate::WordValue
+      style: secondary
+      start: 5
+      end: 21
+  "impl<T> nve_store::WordValue for GenericProp<T> {}\n":
+    labels:
+    - source: impl<T> nve_store::WordValue for GenericProp<T> {}
+      style: primary
+      start: 0
+      end: 50
+    - source: WordValue
+      style: secondary
+      start: 19
+      end: 28
+    - source: nve_store::WordValue
+      style: secondary
+      start: 8
+      end: 28

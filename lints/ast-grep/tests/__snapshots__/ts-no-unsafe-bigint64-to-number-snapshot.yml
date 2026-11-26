@@ -1,0 +1,26 @@
+id: ts-no-unsafe-bigint64-to-number
+snapshots:
+  "const id = Number(view.getBigUint64(0, true));\n":
+    labels:
+    - source: Number(view.getBigUint64(0, true))
+      style: primary
+      start: 11
+      end: 45
+  "const ts = Number(this.view.getBigUint64(24, true));\n":
+    labels:
+    - source: Number(this.view.getBigUint64(24, true))
+      style: primary
+      start: 11
+      end: 51
+  "const v = Number(dv.getBigInt64(state.off, true));\n":
+    labels:
+    - source: Number(dv.getBigInt64(state.off, true))
+      style: primary
+      start: 10
+      end: 49
+  "const x = Number(getView().getBigInt64(0, false));\n":
+    labels:
+    - source: Number(getView().getBigInt64(0, false))
+      style: primary
+      start: 10
+      end: 49

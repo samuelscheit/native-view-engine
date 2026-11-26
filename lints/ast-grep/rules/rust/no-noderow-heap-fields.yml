@@ -1,0 +1,50 @@
+id: rust-no-noderow-heap-fields
+language: rust
+severity: error
+message: "`NodeRow` must stay flat/SoA without heap-container fields (`Vec`, `String`, `Box`, `HashMap`, `BTreeMap`, `Arc`, `Rc`)."
+note: "[stage: PostNodeStore] Enforced as `error` immediately because `main` has 0 violations."
+files:
+  - "packages/**/*.rs"
+ignores:
+  - "packages/tools/cli/tests/arch_invariants/**"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  any:
+    - kind: field_declaration
+      inside:
+        stopBy: end
+        kind: struct_item
+        has:
+          field: name
+          kind: type_identifier
+          regex: '^NodeRow$'
+        not:
+          matches: rust-in-test-code
+      has:
+        field: type
+        any:
+          - kind: type_identifier
+            regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc)$'
+          - has:
+              stopBy: end
+              kind: type_identifier
+              regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc)$'
+    - kind: ordered_field_declaration_list
+      inside:
+        stopBy: neighbor
+        kind: struct_item
+        has:
+          field: name
+          kind: type_identifier
+          regex: '^NodeRow$'
+        not:
+          matches: rust-in-test-code
+      has:
+        stopBy: end
+        kind: type_identifier
+        regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc)$'
+  not:
+    matches: rust-in-test-code

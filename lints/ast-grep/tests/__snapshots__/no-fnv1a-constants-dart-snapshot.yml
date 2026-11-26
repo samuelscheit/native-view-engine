@@ -1,0 +1,32 @@
+id: no-fnv1a-constants-dart
+snapshots:
+  "const int offset32 = 0x811c9dc5;\n":
+    labels:
+    - source: "0x811c9dc5"
+      style: primary
+      start: 21
+      end: 31
+  "const int offset64 = 0xcbf29ce484222325;\n":
+    labels:
+    - source: "0xcbf29ce484222325"
+      style: primary
+      start: 21
+      end: 39
+  "const int prime32 = 0x01000193;\n":
+    labels:
+    - source: "0x01000193"
+      style: primary
+      start: 20
+      end: 30
+  "const int prime64 = 0x00000100000001b3;\n":
+    labels:
+    - source: "0x00000100000001b3"
+      style: primary
+      start: 20
+      end: 38
+  "const int prime64Short = 0x100000001b3;\n":
+    labels:
+    - source: "0x100000001b3"
+      style: primary
+      start: 25
+      end: 38

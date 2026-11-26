@@ -1,0 +1,32 @@
+id: no-legacy-event-style-symbols-rust
+snapshots:
+  "#[cfg(test)]\nmod tests {}\n\npub fn leaked(patch: StylePatch) {}\n":
+    labels:
+    - source: StylePatch
+      style: primary
+      start: 48
+      end: 58
+  "pub fn apply(patch: &StylePatch) {}\n":
+    labels:
+    - source: StylePatch
+      style: primary
+      start: 21
+      end: 31
+  "pub fn handle(payload: EventPayload) {}\n":
+    labels:
+    - source: EventPayload
+      style: primary
+      start: 23
+      end: 35
+  "pub fn on_event(kind: NativeEventKind) {}\n":
+    labels:
+    - source: NativeEventKind
+      style: primary
+      start: 22
+      end: 37
+  "pub fn tag() -> NveEventPayloadTag { todo!() }\n":
+    labels:
+    - source: NveEventPayloadTag
+      style: primary
+      start: 16
+      end: 34

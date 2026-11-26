@@ -1,0 +1,26 @@
+# Matches a Rust item whose preceding outer attribute chain derives `NveAbi` (or `path::NveAbi`).
+
+id: rust-has-derive-nve-abi
+language: rust
+rule:
+  follows:
+    kind: attribute_item
+    has:
+      kind: attribute
+      all:
+        - has:
+            kind: identifier
+            regex: '^derive$'
+        - has:
+            field: arguments
+            kind: token_tree
+            has:
+              stopBy: end
+              kind: identifier
+              regex: '^NveAbi$'
+    stopBy:
+      not:
+        any:
+          - kind: attribute_item
+          - kind: line_comment
+          - kind: block_comment

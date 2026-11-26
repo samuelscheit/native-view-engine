@@ -1,0 +1,26 @@
+id: no-legacy-event-style-symbols-swift
+snapshots:
+  "func send(kind: NativeEventKind) {}\n":
+    labels:
+    - source: NativeEventKind
+      style: primary
+      start: 16
+      end: 31
+  "let payload: EventPayload\n":
+    labels:
+    - source: EventPayload
+      style: primary
+      start: 13
+      end: 25
+  "let tag = NveEventPayloadTag.point\n":
+    labels:
+    - source: NveEventPayloadTag
+      style: primary
+      start: 10
+      end: 28
+  "struct StylePatch {}\n":
+    labels:
+    - source: StylePatch
+      style: primary
+      start: 7
+      end: 17

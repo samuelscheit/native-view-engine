@@ -1,0 +1,43 @@
+id: rust-bench-require-black-box
+valid:
+  - |
+    use criterion::{criterion_group, criterion_main, Criterion};
+    use std::hint::black_box;
+
+    fn bench_add(c: &mut Criterion) {
+        c.bench_function("add", |b| b.iter(|| black_box(black_box(1) + 2)));
+    }
+    criterion_group!(benches, bench_add);
+    criterion_main!(benches);
+  - |
+    fn main() {
+        let out = std::hint::black_box(42);
+        let _ = out;
+    }
+  - |
+    // Pure fixture/adapter helper submodule (not a benchmark runner/entrypoint).
+    pub struct FixtureTask {
+        pub id: u64,
+    }
+    pub fn encode_fixture(t: &FixtureTask) -> u64 {
+        t.id
+    }
+invalid:
+  - |
+    use criterion::{criterion_group, criterion_main, Criterion};
+
+    fn bench_stub(c: &mut Criterion) {
+        c.bench_function("stub", |b| b.iter(|| 1 + 2));
+    }
+    criterion_group!(benches, bench_stub);
+    criterion_main!(benches);
+  - |
+    fn main() {
+        let _x = 1 + 2;
+    }
+  - |
+    use criterion::Criterion;
+
+    pub fn bench_helper(c: &mut Criterion) {
+        c.bench_function("no_black_box", |b| b.iter(|| 42));
+    }

@@ -1,0 +1,44 @@
+id: rust-no-untyped-span-or-str-arena-alias
+valid:
+  - |
+    pub struct Span<T> {
+        pub off: u32,
+        pub len: u32,
+        _marker: core::marker::PhantomData<T>,
+    }
+  - |
+    pub struct Span<T>(u32, u32, core::marker::PhantomData<T>);
+  - |
+    pub struct StrArena(SpanPool<u8>);
+  - |
+    pub type ByteArena = SpanPool<u8>;
+  - |
+    #[cfg(test)]
+    mod tests {
+        struct Span { off: u32, len: u32 }
+        type StrArena = SpanPool<u8>;
+    }
+  - |
+    #[cfg(test)]
+    struct Span(u32, u32);
+invalid:
+  - |
+    pub struct Span {
+        pub off: u32,
+        pub len: u32,
+    }
+  - |
+    struct Span(u32, u32);
+  - |
+    pub type StrArena = SpanPool<u8>;
+  - |
+    type StrArena =
+        crate::span_pool::SpanPool<u8>;
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    pub struct Span { off: u32 }
+  - |
+    #[cfg(not(test))]
+    pub type StrArena = SpanPool<u8>;

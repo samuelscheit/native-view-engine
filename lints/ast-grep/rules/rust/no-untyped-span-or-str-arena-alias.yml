@@ -1,0 +1,38 @@
+id: rust-no-untyped-span-or-str-arena-alias
+language: rust
+severity: error
+message: "Untyped `struct Span` and transparent `type StrArena = SpanPool<u8>` aliases are banned; use typed `Span<T>` and a sealed UTF-8 `StrArena` newtype."
+note: "[stage: PostNodeStore] Enforced as `error` immediately because `main` has 0 violations."
+files:
+  - "packages/core/abi/**/*.rs"
+  - "packages/core/store/**/*.rs"
+  - "packages/core/engine/**/*.rs"
+  - "packages/core/tables/**/*.rs"
+ignores:
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  any:
+    - all:
+        - kind: struct_item
+        - has:
+            field: name
+            kind: type_identifier
+            regex: '^Span$'
+        - not:
+            has:
+              field: type_parameters
+              kind: type_parameters
+    - all:
+        - kind: type_item
+        - has:
+            field: name
+            kind: type_identifier
+            regex: '^StrArena$'
+        - has:
+            field: type
+            regex: '\bSpanPool\s*<\s*u8\s*>'
+  not:
+    matches: rust-in-test-code

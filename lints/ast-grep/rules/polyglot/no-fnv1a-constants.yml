@@ -1,0 +1,69 @@
+# Polyglot FNV-1a magic constant bans (32-bit and 64-bit offset basis & prime).
+# Standardize on `const fn xxh64` (`nve-hash` / `nve-abi`).
+
+id: no-fnv1a-constants-rust
+language: rust
+severity: warning
+message: "FNV-1a magic constant is banned [stage: PostNodeStore]; standardize on `const fn xxh64` (`nve-hash` / `nve-abi`)."
+note: "[stage: PostNodeStore] Matches 32-bit (`0x811c9dc5`, `0x01000193`) and 64-bit (`0xcbf29ce484222325`, `0x00000100000001b3` / `0x100000001b3`) FNV-1a constants. Flip to `error` when NodeStore/nve-hash lands."
+ignores:
+  - "packages/tools/cli/tests/arch_invariants/**"
+  - "**/*.generated.*"
+rule:
+  kind: integer_literal
+  regex: '(?i)^0x[_'']*(?:8[_'']*1[_'']*1[_'']*c[_'']*9[_'']*d[_'']*c[_'']*5|(?:0[_'']*)*1[_'']*0[_'']*0[_'']*0[_'']*1[_'']*9[_'']*3|c[_'']*b[_'']*f[_'']*2[_'']*9[_'']*c[_'']*e[_'']*4[_'']*8[_'']*4[_'']*2[_'']*2[_'']*2[_'']*3[_'']*2[_'']*5|(?:0[_'']*)*1[_'']*0[_'']*0[_'']*0[_'']*0[_'']*0[_'']*0[_'']*0[_'']*1[_'']*b[_'']*3)[_'']*(?:u32|u64|u128|usize|i32|i64)?$'
+---
+id: no-fnv1a-constants-cpp
+language: cpp
+severity: error
+message: "FNV-1a magic constant is banned; standardize on `xxh64` (`nve-abi` / generated schema hashes)."
+note: "Matches 32-bit (`0x811c9dc5`, `0x01000193`) and 64-bit (`0xcbf29ce484222325`, `0x00000100000001b3` / `0x100000001b3`) FNV-1a constants."
+ignores:
+  - "**/*.generated.*"
+rule:
+  kind: number_literal
+  regex: '(?i)^0x[_'']*(?:8[_'']*1[_'']*1[_'']*c[_'']*9[_'']*d[_'']*c[_'']*5|(?:0[_'']*)*1[_'']*0[_'']*0[_'']*0[_'']*1[_'']*9[_'']*3|c[_'']*b[_'']*f[_'']*2[_'']*9[_'']*c[_'']*e[_'']*4[_'']*8[_'']*4[_'']*2[_'']*2[_'']*2[_'']*3[_'']*2[_'']*5|(?:0[_'']*)*1[_'']*0[_'']*0[_'']*0[_'']*0[_'']*0[_'']*0[_'']*0[_'']*1[_'']*b[_'']*3)[_'']*(?:ull|ul|ll|u|l)?$'
+---
+id: no-fnv1a-constants-typescript
+language: typescript
+severity: error
+message: "FNV-1a magic constant is banned; standardize on `xxh64`."
+note: "Matches 32-bit (`0x811c9dc5`, `0x01000193`) and 64-bit (`0xcbf29ce484222325`, `0x00000100000001b3` / `0x100000001b3`) FNV-1a constants (Number and BigInt)."
+ignores:
+  - "**/*.generated.*"
+rule:
+  kind: number
+  regex: '(?i)^0x_*(?:8_*1_*1_*c_*9_*d_*c_*5|(?:0_*)*1_*0_*0_*0_*1_*9_*3|c_*b_*f_*2_*9_*c_*e_*4_*8_*4_*2_*2_*2_*3_*2_*5|(?:0_*)*1_*0_*0_*0_*0_*0_*0_*0_*1_*b_*3)_*n?$'
+---
+id: no-fnv1a-constants-swift
+language: swift
+severity: error
+message: "FNV-1a magic constant is banned; standardize on `xxh64`."
+note: "Matches 32-bit (`0x811c9dc5`, `0x01000193`) and 64-bit (`0xcbf29ce484222325`, `0x00000100000001b3` / `0x100000001b3`) FNV-1a constants."
+ignores:
+  - "**/*.generated.*"
+rule:
+  kind: hex_literal
+  regex: '(?i)^0x_*(?:8_*1_*1_*c_*9_*d_*c_*5|(?:0_*)*1_*0_*0_*0_*1_*9_*3|c_*b_*f_*2_*9_*c_*e_*4_*8_*4_*2_*2_*2_*3_*2_*5|(?:0_*)*1_*0_*0_*0_*0_*0_*0_*0_*1_*b_*3)_*$'
+---
+id: no-fnv1a-constants-kotlin
+language: kotlin
+severity: error
+message: "FNV-1a magic constant is banned; standardize on `xxh64`."
+note: "Matches 32-bit (`0x811c9dc5`, `0x01000193`) and 64-bit (`0xcbf29ce484222325`, `0x00000100000001b3` / `0x100000001b3`) FNV-1a constants."
+ignores:
+  - "**/*.generated.*"
+rule:
+  kind: hex_literal
+  regex: '(?i)^0x_*(?:8_*1_*1_*c_*9_*d_*c_*5|(?:0_*)*1_*0_*0_*0_*1_*9_*3|c_*b_*f_*2_*9_*c_*e_*4_*8_*4_*2_*2_*2_*3_*2_*5|(?:0_*)*1_*0_*0_*0_*0_*0_*0_*0_*1_*b_*3)_*l?$'
+---
+id: no-fnv1a-constants-dart
+language: dart
+severity: error
+message: "FNV-1a magic constant is banned; standardize on `xxh64`."
+note: "Matches 32-bit (`0x811c9dc5`, `0x01000193`) and 64-bit (`0xcbf29ce484222325`, `0x00000100000001b3` / `0x100000001b3`) FNV-1a constants."
+ignores:
+  - "**/*.generated.*"
+rule:
+  kind: hex_integer_literal
+  regex: '(?i)^0x_*(?:8_*1_*1_*c_*9_*d_*c_*5|(?:0_*)*1_*0_*0_*0_*1_*9_*3|c_*b_*f_*2_*9_*c_*e_*4_*8_*4_*2_*2_*2_*3_*2_*5|(?:0_*)*1_*0_*0_*0_*0_*0_*0_*0_*1_*b_*3)_*$'

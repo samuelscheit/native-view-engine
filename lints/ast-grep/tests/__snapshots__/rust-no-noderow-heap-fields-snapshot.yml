@@ -1,0 +1,237 @@
+id: rust-no-noderow-heap-fields
+snapshots:
+  "#[cfg(not(test))]\npub struct NodeRow {\n    pub label: String,\n}\n":
+    labels:
+    - source: "pub label: String"
+      style: primary
+      start: 43
+      end: 60
+    - source: NodeRow
+      style: secondary
+      start: 29
+      end: 36
+    - source: |-
+        pub struct NodeRow {
+            pub label: String,
+        }
+      style: secondary
+      start: 18
+      end: 63
+    - source: String
+      style: secondary
+      start: 54
+      end: 60
+  "#[cfg(test)]\nmod tests {}\n\npub struct NodeRow {\n    pub leaked: Vec<u32>,\n}\n":
+    labels:
+    - source: "pub leaked: Vec<u32>"
+      style: primary
+      start: 52
+      end: 72
+    - source: NodeRow
+      style: secondary
+      start: 38
+      end: 45
+    - source: |-
+        pub struct NodeRow {
+            pub leaked: Vec<u32>,
+        }
+      style: secondary
+      start: 27
+      end: 75
+    - source: Vec
+      style: secondary
+      start: 64
+      end: 67
+    - source: Vec<u32>
+      style: secondary
+      start: 64
+      end: 72
+  "pub struct NodeRow {\n    pub children: Vec<NodeId>,\n}\n":
+    labels:
+    - source: "pub children: Vec<NodeId>"
+      style: primary
+      start: 25
+      end: 50
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: |-
+        pub struct NodeRow {
+            pub children: Vec<NodeId>,
+        }
+      style: secondary
+      start: 0
+      end: 53
+    - source: Vec
+      style: secondary
+      start: 39
+      end: 42
+    - source: Vec<NodeId>
+      style: secondary
+      start: 39
+      end: 50
+  "pub struct NodeRow {\n    pub extra: Option<Box<ColdData>>,\n}\n":
+    labels:
+    - source: "pub extra: Option<Box<ColdData>>"
+      style: primary
+      start: 25
+      end: 57
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: |-
+        pub struct NodeRow {
+            pub extra: Option<Box<ColdData>>,
+        }
+      style: secondary
+      start: 0
+      end: 60
+    - source: Box
+      style: secondary
+      start: 43
+      end: 46
+    - source: Option<Box<ColdData>>
+      style: secondary
+      start: 36
+      end: 57
+  "pub struct NodeRow {\n    pub label: String,\n}\n":
+    labels:
+    - source: "pub label: String"
+      style: primary
+      start: 25
+      end: 42
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: |-
+        pub struct NodeRow {
+            pub label: String,
+        }
+      style: secondary
+      start: 0
+      end: 45
+    - source: String
+      style: secondary
+      start: 36
+      end: 42
+  "pub struct NodeRow {\n    pub local: std::rc::Rc<u32>,\n}\n":
+    labels:
+    - source: "pub local: std::rc::Rc<u32>"
+      style: primary
+      start: 25
+      end: 52
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: |-
+        pub struct NodeRow {
+            pub local: std::rc::Rc<u32>,
+        }
+      style: secondary
+      start: 0
+      end: 55
+    - source: Rc
+      style: secondary
+      start: 45
+      end: 47
+    - source: std::rc::Rc<u32>
+      style: secondary
+      start: 36
+      end: 52
+  "pub struct NodeRow {\n    pub ordered: BTreeMap<u32, u32>,\n}\n":
+    labels:
+    - source: "pub ordered: BTreeMap<u32, u32>"
+      style: primary
+      start: 25
+      end: 56
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: |-
+        pub struct NodeRow {
+            pub ordered: BTreeMap<u32, u32>,
+        }
+      style: secondary
+      start: 0
+      end: 59
+    - source: BTreeMap
+      style: secondary
+      start: 38
+      end: 46
+    - source: BTreeMap<u32, u32>
+      style: secondary
+      start: 38
+      end: 56
+  "pub struct NodeRow {\n    pub props: std::collections::HashMap<u32, u32>,\n}\n":
+    labels:
+    - source: "pub props: std::collections::HashMap<u32, u32>"
+      style: primary
+      start: 25
+      end: 71
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: |-
+        pub struct NodeRow {
+            pub props: std::collections::HashMap<u32, u32>,
+        }
+      style: secondary
+      start: 0
+      end: 74
+    - source: HashMap
+      style: secondary
+      start: 54
+      end: 61
+    - source: std::collections::HashMap<u32, u32>
+      style: secondary
+      start: 36
+      end: 71
+  "pub struct NodeRow {\n    pub shared: std::sync::Arc<u32>,\n}\n":
+    labels:
+    - source: "pub shared: std::sync::Arc<u32>"
+      style: primary
+      start: 25
+      end: 56
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: |-
+        pub struct NodeRow {
+            pub shared: std::sync::Arc<u32>,
+        }
+      style: secondary
+      start: 0
+      end: 59
+    - source: Arc
+      style: secondary
+      start: 48
+      end: 51
+    - source: std::sync::Arc<u32>
+      style: secondary
+      start: 37
+      end: 56
+  "pub struct NodeRow(pub Vec<NodeId>);\n":
+    labels:
+    - source: (pub Vec<NodeId>)
+      style: primary
+      start: 18
+      end: 35
+    - source: NodeRow
+      style: secondary
+      start: 11
+      end: 18
+    - source: pub struct NodeRow(pub Vec<NodeId>);
+      style: secondary
+      start: 0
+      end: 36
+    - source: Vec
+      style: secondary
+      start: 23
+      end: 26

@@ -1,0 +1,106 @@
+id: no-legacy-event-style-symbols-rust
+valid:
+  - |
+    pub struct NveEvent;
+    pub struct NveEventPayload;
+  - |
+    // NativeEventKind, StylePatch in comments are ignored.
+    const MSG: &str = "NveEventPayloadTag EventPayload";
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn check(_k: NativeEventKind, _p: EventPayload, _s: StylePatch) {
+            let _ = NveEventPayloadTag::Point;
+        }
+    }
+invalid:
+  - |
+    pub fn on_event(kind: NativeEventKind) {}
+  - |
+    pub fn tag() -> NveEventPayloadTag { todo!() }
+  - |
+    pub fn handle(payload: EventPayload) {}
+  - |
+    pub fn apply(patch: &StylePatch) {}
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    pub fn leaked(patch: StylePatch) {}
+---
+id: no-legacy-event-style-symbols-cpp
+valid:
+  - |
+    struct NveEvent {};
+    struct NveEventPayload {};
+    // NativeEventKind in comment
+invalid:
+  - |
+    NativeEventKind kind;
+  - |
+    NveEventPayloadTag tag;
+  - |
+    EventPayload payload;
+  - |
+    StylePatch patch;
+---
+id: no-legacy-event-style-symbols-typescript
+valid:
+  - |
+    interface NveEvent { kind: number }
+    interface NveEventPayload { x: number }
+    // StylePatch in comment
+invalid:
+  - |
+    type K = NativeEventKind;
+  - |
+    type T = NveEventPayloadTag;
+  - |
+    type P = EventPayload;
+  - |
+    type S = StylePatch;
+---
+id: no-legacy-event-style-symbols-swift
+valid:
+  - |
+    public enum NveEventPayload { case empty }
+    // NativeEventKind in comment
+invalid:
+  - |
+    func send(kind: NativeEventKind) {}
+  - |
+    let tag = NveEventPayloadTag.point
+  - |
+    let payload: EventPayload
+  - |
+    struct StylePatch {}
+---
+id: no-legacy-event-style-symbols-kotlin
+valid:
+  - |
+    sealed class NveEventPayload
+    // NativeEventKind in comment
+invalid:
+  - |
+    fun send(kind: NativeEventKind) {}
+  - |
+    val tag = NveEventPayloadTag.POINT
+  - |
+    val payload: EventPayload? = null
+  - |
+    class StylePatch
+---
+id: no-legacy-event-style-symbols-dart
+valid:
+  - |
+    sealed class NveEventPayload {}
+    // NveEventPayloadTag in comment
+invalid:
+  - |
+    void send(NativeEventKind kind) {}
+  - |
+    final tag = NveEventPayloadTag.point;
+  - |
+    void handle(EventPayload payload) {}
+  - |
+    class StylePatch {}

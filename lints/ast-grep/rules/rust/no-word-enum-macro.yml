@@ -1,0 +1,27 @@
+id: rust-no-word-enum-macro
+language: rust
+severity: error
+message: "Legacy manual-bit-width `word_enum!` macro is banned; use `#[derive(WordEnum)]`."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
+files:
+  - "packages/**/*.rs"
+ignores:
+  - "packages/tools/cli/tests/arch_invariants/**"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  kind: macro_invocation
+  has:
+    field: macro
+    any:
+      - kind: identifier
+        regex: '^word_enum$'
+      - kind: scoped_identifier
+        has:
+          field: name
+          kind: identifier
+          regex: '^word_enum$'
+  not:
+    matches: rust-in-test-code

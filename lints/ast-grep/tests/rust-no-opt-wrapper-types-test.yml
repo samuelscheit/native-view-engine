@@ -1,0 +1,42 @@
+id: rust-no-opt-wrapper-types
+valid:
+  - |
+    pub struct Opt<T>(Option<T>);
+  - |
+    pub struct Options {
+        pub enabled: bool,
+    }
+  - |
+    pub enum Optionality {
+        Present,
+        Absent,
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        pub struct OptAutofillHint(pub u8);
+        pub enum OptAlign { Unset, Start }
+    }
+  - |
+    #[cfg(test)]
+    pub struct OptDirectTest(u8);
+invalid:
+  - |
+    pub struct OptAutofillHint(pub u8);
+  - |
+    struct OptColor {
+        raw: u32,
+    }
+  - |
+    pub enum OptTextAlign {
+        Unset,
+        Left,
+    }
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    pub struct OptAfterTestMod(u8);
+  - |
+    #[cfg(not(test))]
+    pub enum OptNotTest { Unset }

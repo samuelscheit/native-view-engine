@@ -1,0 +1,63 @@
+id: rust-no-word-enum-macro
+valid:
+  - |
+    #[derive(WordEnum)]
+    #[repr(u8)]
+    pub enum Align {
+        Start,
+        Center,
+    }
+  - |
+    macro_rules! word_enum {
+        ($name:ident) => {};
+    }
+  - |
+    // word_enum!(InComment);
+    const DOC: &str = "word_enum!(InString)";
+  - |
+    #[cfg(test)]
+    mod tests {
+        word_enum!(TestOnly);
+    }
+  - |
+    #[cfg(test)]
+    #[allow(dead_code)]
+    /// Stacked attributes and doc comment before test module.
+    mod tests {
+        fn helper() {
+            word_enum!(StackedAttrTest);
+        }
+    }
+  - |
+    #[cfg(all(test, feature = "extra"))]
+    fn test_helper() {
+        word_enum!(AllCfgTest);
+    }
+  - |
+    #[test]
+    fn unit_test_fn() {
+        word_enum!(DirectTestFn);
+    }
+invalid:
+  - |
+    word_enum! {
+        pub enum Align: 2 {
+            Start = 0,
+            End = 1,
+        }
+    }
+  - |
+    crate::word_enum!(pub enum FlexDir: 2 { Row = 0 });
+  - |
+    #[cfg(test)]
+    mod tests {
+        word_enum!(AllowedInTest);
+    }
+
+    // Production item AFTER #[cfg(test)] mod tests MUST still be flagged.
+    word_enum!(LeakedIntoProd);
+  - |
+    #[cfg(not(test))]
+    mod prod {
+        word_enum!(NotTestIsProd);
+    }

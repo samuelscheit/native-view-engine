@@ -1,0 +1,39 @@
+id: rust-no-manual-impl-word-value
+language: rust
+severity: error
+message: "Manual `impl WordValue` outside `packages/core/store/` is banned; derive via `#[derive(WordEnum)]`, `word_flags!`, or `#[derive(NveTable)]`."
+note: "[stage: PostNodeStore] Enforced as `error` immediately because `main` has 0 violations."
+files:
+  - "packages/**/*.rs"
+ignores:
+  - "packages/core/store/**"
+  - "packages/tools/cli/tests/arch_invariants/**"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  kind: impl_item
+  has:
+    field: trait
+    any:
+      - kind: type_identifier
+        regex: '^WordValue$'
+      - kind: scoped_type_identifier
+        has:
+          field: name
+          kind: type_identifier
+          regex: '^WordValue$'
+      - kind: generic_type
+        has:
+          field: type
+          any:
+            - kind: type_identifier
+              regex: '^WordValue$'
+            - kind: scoped_type_identifier
+              has:
+                field: name
+                kind: type_identifier
+                regex: '^WordValue$'
+  not:
+    matches: rust-in-test-code

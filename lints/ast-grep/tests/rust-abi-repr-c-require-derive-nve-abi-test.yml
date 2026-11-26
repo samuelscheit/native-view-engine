@@ -1,0 +1,82 @@
+id: rust-abi-repr-c-require-derive-nve-abi
+valid:
+  - |
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, NveAbi)]
+    #[nve_abi(size = 16)]
+    pub struct NveSurfaceConfig {
+        pub surface_id: u32,
+    }
+  - |
+    #[derive(Clone, Copy, nve_abi::NveAbi)]
+    /// Doc comment between derive and repr.
+    #[repr(C, align(64))]
+    pub struct NveRenderNode {
+        pub flags: u32,
+    }
+  - |
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct NodeId(pub u32);
+  - |
+    #[repr(C)]
+    struct PrivateScratch {
+        x: u32,
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        #[repr(C)]
+        pub struct TestLayout {
+            pub x: u32,
+        }
+    }
+  - |
+    #[cfg(test)]
+    #[repr(C)]
+    pub struct DirectTestLayout {
+        pub x: u32,
+    }
+invalid:
+  - |
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct NveSurfaceApi {
+        pub version: u32,
+    }
+  - |
+    #[repr(C, align(64))]
+    pub struct MissingDerive {
+        pub x: u32,
+    }
+  - |
+    #[repr(align(64), C)]
+    pub struct MissingDeriveReversed {
+        pub x: u32,
+    }
+  - |
+    #[repr(C)]
+    #[derive(NveAbi)]
+    pub struct GoodStruct {
+        pub a: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Debug)]
+    pub struct BadFollowingGood {
+        pub b: u32,
+    }
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    #[repr(C)]
+    pub struct ProdAfterTestMod {
+        pub x: u32,
+    }
+  - |
+    #[cfg(not(test))]
+    #[repr(C)]
+    pub struct NotTestStruct {
+        pub x: u32,
+    }

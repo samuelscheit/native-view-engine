@@ -1,0 +1,96 @@
+# Polyglot legacy Track 1B-1d event/style symbol bans (`NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, `StylePatch`).
+# Rust and Dart stay `warning` (`[stage: Post1B1D]`) while pre-migration code exists on `main`;
+# C++, TypeScript, Swift, and Kotlin already have 0 violations on `main` and enforce `error` immediately.
+
+id: no-legacy-event-style-symbols-rust
+language: rust
+severity: warning
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in production Rust code. Flip to `error` once Track 1B-1d lands."
+ignores:
+  - "packages/tools/cli/tests/arch_invariants/**"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "**/*.generated.*"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+  not:
+    matches: rust-in-test-code
+---
+id: no-legacy-event-style-symbols-cpp
+language: cpp
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in C++ hosts/bridges. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/tests/**"
+  - "**/bench/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+    - kind: field_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+---
+id: no-legacy-event-style-symbols-typescript
+language: typescript
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in TypeScript hosts/bindings. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/tests/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+    - kind: property_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+---
+id: no-legacy-event-style-symbols-swift
+language: swift
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in Swift hosts. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/Tests/**"
+rule:
+  any:
+    - kind: simple_identifier
+    - kind: type_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+---
+id: no-legacy-event-style-symbols-kotlin
+language: kotlin
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in Kotlin hosts. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/src/test/**"
+rule:
+  any:
+    - kind: simple_identifier
+    - kind: type_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+---
+id: no-legacy-event-style-symbols-dart
+language: dart
+severity: warning
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in Dart/Flutter hosts. Flip to `error` once Flutter host migrates off `NveEventPayloadTag`."
+ignores:
+  - "**/*.generated.*"
+  - "**/test/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'

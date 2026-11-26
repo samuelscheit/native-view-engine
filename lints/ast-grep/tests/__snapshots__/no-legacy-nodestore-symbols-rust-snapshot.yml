@@ -1,0 +1,32 @@
+id: no-legacy-nodestore-symbols-rust
+snapshots:
+  "#[cfg(not(test))]\npub fn prod_only<S: RenderSink>(s: &mut S) {}\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 38
+      end: 48
+  "#[cfg(test)]\nmod tests {}\n\npub fn leaked(kind: ComponentKind) {}\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 47
+      end: 60
+  "pub const VIEW: u32 = NVE_HOST_CLASS_VIEW;\n":
+    labels:
+    - source: NVE_HOST_CLASS_VIEW
+      style: primary
+      start: 22
+      end: 41
+  "pub fn classify(kind: ComponentKind) {}\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 22
+      end: 35
+  "pub fn flush<S: RenderSink>(sink: &mut S) {}\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 16
+      end: 26

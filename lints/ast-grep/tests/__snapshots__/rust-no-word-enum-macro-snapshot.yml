@@ -1,0 +1,52 @@
+id: rust-no-word-enum-macro
+snapshots:
+  "#[cfg(not(test))]\nmod prod {\n    word_enum!(NotTestIsProd);\n}\n":
+    labels:
+    - source: word_enum!(NotTestIsProd)
+      style: primary
+      start: 33
+      end: 58
+    - source: word_enum
+      style: secondary
+      start: 33
+      end: 42
+  "#[cfg(test)]\nmod tests {\n    word_enum!(AllowedInTest);\n}\n\n// Production item AFTER #[cfg(test)] mod tests MUST still be flagged.\nword_enum!(LeakedIntoProd);\n":
+    labels:
+    - source: word_enum!(LeakedIntoProd)
+      style: primary
+      start: 130
+      end: 156
+    - source: word_enum
+      style: secondary
+      start: 130
+      end: 139
+  "crate::word_enum!(pub enum FlexDir: 2 { Row = 0 });\n":
+    labels:
+    - source: "crate::word_enum!(pub enum FlexDir: 2 { Row = 0 })"
+      style: primary
+      start: 0
+      end: 50
+    - source: word_enum
+      style: secondary
+      start: 7
+      end: 16
+    - source: crate::word_enum
+      style: secondary
+      start: 0
+      end: 16
+  "word_enum! {\n    pub enum Align: 2 {\n        Start = 0,\n        End = 1,\n    }\n}\n":
+    labels:
+    - source: |-
+        word_enum! {
+            pub enum Align: 2 {
+                Start = 0,
+                End = 1,
+            }
+        }
+      style: primary
+      start: 0
+      end: 80
+    - source: word_enum
+      style: secondary
+      start: 0
+      end: 9

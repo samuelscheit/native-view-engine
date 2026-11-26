@@ -1,0 +1,11 @@
+id: ts-no-unsafe-bigint64-to-number
+language: typescript
+severity: error
+message: "Converting 64-bit DataView BigInt to JS `Number` silently truncates above 2^53 - 1; keep as `bigint` or split into `(lo, hi)` u32."
+note: "JavaScript IEEE-754 doubles only represent 53-bit integers accurately. Never wrap `getBigUint64(...)` or `getBigInt64(...)` in `Number(...)`."
+ignores:
+  - "**/*.generated.*"
+rule:
+  any:
+    - pattern: Number($X.getBigUint64($$$))
+    - pattern: Number($X.getBigInt64($$$))

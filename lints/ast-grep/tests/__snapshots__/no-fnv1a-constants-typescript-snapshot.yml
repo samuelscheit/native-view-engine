@@ -1,0 +1,32 @@
+id: no-fnv1a-constants-typescript
+snapshots:
+  "const OFFSET = 0x811c9dc5;\n":
+    labels:
+    - source: "0x811c9dc5"
+      style: primary
+      start: 15
+      end: 25
+  "const OFFSET64 = 0xcbf29ce484222325n;\n":
+    labels:
+    - source: 0xcbf29ce484222325n
+      style: primary
+      start: 17
+      end: 36
+  "const PRIME = 0x01000193;\n":
+    labels:
+    - source: "0x01000193"
+      style: primary
+      start: 14
+      end: 24
+  "const PRIME64 = 0x00000100000001b3n;\n":
+    labels:
+    - source: 0x00000100000001b3n
+      style: primary
+      start: 16
+      end: 35
+  "const PRIME64_SHORT = 0x100000001b3n;\n":
+    labels:
+    - source: 0x100000001b3n
+      style: primary
+      start: 22
+      end: 36

@@ -1,0 +1,40 @@
+id: rust-no-manual-impl-word-value
+valid:
+  - |
+    #[derive(WordEnum)]
+    pub enum DisplayMode { Flex, None }
+  - |
+    impl MyTrait for Foo {}
+  - |
+    impl Foo {
+        fn word_value(&self) -> u32 { 0 }
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        impl WordValue for MockVal {}
+    }
+  - |
+    #[cfg(test)]
+    impl nve_store::WordValue for DirectCfgTest {}
+  - |
+    #[cfg(all(test, unix))]
+    #[allow(dead_code)]
+    impl WordValue for StackedCfgTest {}
+invalid:
+  - |
+    impl WordValue for CustomProp {}
+  - |
+    impl<T> nve_store::WordValue for GenericProp<T> {}
+  - |
+    impl crate::WordValue for CratePathProp {}
+  - |
+    #[cfg(test)]
+    mod tests {
+        impl WordValue for AllowedMock {}
+    }
+
+    impl WordValue for ProdAfterTestMod {}
+  - |
+    #[cfg(not(test))]
+    impl WordValue for NotTestIsProd {}

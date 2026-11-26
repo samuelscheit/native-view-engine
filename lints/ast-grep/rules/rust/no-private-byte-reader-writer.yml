@@ -1,0 +1,26 @@
+id: rust-no-private-byte-reader-writer
+language: rust
+severity: error
+message: "Private `ByteReader`/`ByteWriter` definition outside `packages/core/codec/` is banned; use `nve-codec` / `#[derive(NveCodec)]`."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
+files:
+  - "packages/**/*.rs"
+ignores:
+  - "packages/core/codec/**"
+  - "packages/tools/cli/tests/arch_invariants/**"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  kind: struct_item
+  has:
+    field: name
+    kind: type_identifier
+    regex: '^Byte(?:Reader|Writer)$'
+  not:
+    any:
+      - has:
+          kind: visibility_modifier
+          regex: '^pub$'
+      - matches: rust-in-test-code

@@ -1,0 +1,69 @@
+id: rust-no-codegen-large-raw-strings
+valid:
+  - |
+    const SHORT: &str = r#"line 1
+    line 2
+    line 3
+    line 4
+    line 5
+    line 6
+    line 7"#;
+  - |
+    const ONE_LINE: &str = r"single line";
+  - |
+    #[cfg(test)]
+    mod tests {
+        const TEST_FIXTURE: &str = r#"1
+    2
+    3
+    4
+    5
+    6
+    7
+    8
+    9"#;
+    }
+  - |
+    #[cfg(test)]
+    const DIRECT_TEST: &str = r#"1
+    2
+    3
+    4
+    5
+    6
+    7
+    8"#;
+invalid:
+  - |
+    const EXACT_EIGHT_LINES: &str = r#"1
+    2
+    3
+    4
+    5
+    6
+    7
+    8"#;
+  - |
+    fn emit(out: &mut String) {
+        out.push_str(r##"line 1
+    line 2
+    line 3
+    line 4
+    line 5
+    line 6
+    line 7
+    line 8
+    line 9"##);
+    }
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    const PROD_AFTER_TEST: &str = r#"1
+    2
+    3
+    4
+    5
+    6
+    7
+    8"#;

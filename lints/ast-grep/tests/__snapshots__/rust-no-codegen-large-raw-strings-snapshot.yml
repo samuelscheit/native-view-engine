@@ -1,0 +1,45 @@
+id: rust-no-codegen-large-raw-strings
+snapshots:
+  "#[cfg(test)]\nmod tests {}\n\nconst PROD_AFTER_TEST: &str = r#\"1\n2\n3\n4\n5\n6\n7\n8\"#;\n":
+    labels:
+    - source: |-
+        r#"1
+        2
+        3
+        4
+        5
+        6
+        7
+        8"#
+      style: primary
+      start: 57
+      end: 77
+  "const EXACT_EIGHT_LINES: &str = r#\"1\n2\n3\n4\n5\n6\n7\n8\"#;\n":
+    labels:
+    - source: |-
+        r#"1
+        2
+        3
+        4
+        5
+        6
+        7
+        8"#
+      style: primary
+      start: 32
+      end: 52
+  "fn emit(out: &mut String) {\n    out.push_str(r##\"line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\"##);\n}\n":
+    labels:
+    - source: |-
+        r##"line 1
+        line 2
+        line 3
+        line 4
+        line 5
+        line 6
+        line 7
+        line 8
+        line 9"##
+      style: primary
+      start: 45
+      end: 114

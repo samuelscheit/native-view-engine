@@ -1,0 +1,32 @@
+id: no-fnv1a-constants-cpp
+snapshots:
+  "constexpr uint32_t kOffset = 0x811c9dc5u;\n":
+    labels:
+    - source: 0x811c9dc5u
+      style: primary
+      start: 29
+      end: 40
+  "constexpr uint32_t kPrime = 0x01000193u;\n":
+    labels:
+    - source: 0x01000193u
+      style: primary
+      start: 28
+      end: 39
+  "constexpr uint64_t kOffset64 = 0xcbf2'9ce4'8422'2325ULL;\n":
+    labels:
+    - source: 0xcbf2'9ce4'8422'2325ULL
+      style: primary
+      start: 31
+      end: 55
+  "constexpr uint64_t kPrime64 = 0x00000100000001b3ULL;\n":
+    labels:
+    - source: 0x00000100000001b3ULL
+      style: primary
+      start: 30
+      end: 51
+  "constexpr uint64_t kPrime64Short = 0x100000001b3ULL;\n":
+    labels:
+    - source: 0x100000001b3ULL
+      style: primary
+      start: 35
+      end: 51

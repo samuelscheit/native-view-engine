@@ -1,0 +1,20 @@
+id: no-legacy-nodestore-symbols-cpp
+snapshots:
+  "class RenderSink {};\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 6
+      end: 16
+  "int c = NVE_HOST_CLASS_VIEW;\n":
+    labels:
+    - source: NVE_HOST_CLASS_VIEW
+      style: primary
+      start: 8
+      end: 27
+  "void draw(ComponentKind kind);\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 10
+      end: 23

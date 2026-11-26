@@ -1,0 +1,9 @@
+# ast-grep configuration for native-view-engine (L2 hybrid lint layer)
+# Run `ast-grep test` to verify all rule unit tests and `ast-grep scan` to lint the repo.
+
+ruleDirs:
+  - lints/ast-grep/rules
+utilDirs:
+  - lints/ast-grep/utils
+testConfigs:
+  - testDir: lints/ast-grep/tests

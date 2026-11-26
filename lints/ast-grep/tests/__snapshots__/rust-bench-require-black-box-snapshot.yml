@@ -1,0 +1,54 @@
+id: rust-bench-require-black-box
+snapshots:
+  "fn main() {\n    let _x = 1 + 2;\n}\n":
+    labels:
+    - source: |
+        fn main() {
+            let _x = 1 + 2;
+        }
+      style: primary
+      start: 0
+      end: 34
+    - source: main
+      style: secondary
+      start: 3
+      end: 7
+    - source: |-
+        fn main() {
+            let _x = 1 + 2;
+        }
+      style: secondary
+      start: 0
+      end: 33
+  "use criterion::Criterion;\n\npub fn bench_helper(c: &mut Criterion) {\n    c.bench_function(\"no_black_box\", |b| b.iter(|| 42));\n}\n":
+    labels:
+    - source: |
+        use criterion::Criterion;
+
+        pub fn bench_helper(c: &mut Criterion) {
+            c.bench_function("no_black_box", |b| b.iter(|| 42));
+        }
+      style: primary
+      start: 0
+      end: 127
+    - source: Criterion
+      style: secondary
+      start: 55
+      end: 64
+  "use criterion::{criterion_group, criterion_main, Criterion};\n\nfn bench_stub(c: &mut Criterion) {\n    c.bench_function(\"stub\", |b| b.iter(|| 1 + 2));\n}\ncriterion_group!(benches, bench_stub);\ncriterion_main!(benches);\n":
+    labels:
+    - source: |
+        use criterion::{criterion_group, criterion_main, Criterion};
+
+        fn bench_stub(c: &mut Criterion) {
+            c.bench_function("stub", |b| b.iter(|| 1 + 2));
+        }
+        criterion_group!(benches, bench_stub);
+        criterion_main!(benches);
+      style: primary
+      start: 0
+      end: 216
+    - source: criterion_group
+      style: secondary
+      start: 16
+      end: 31

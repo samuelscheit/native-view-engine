@@ -1,0 +1,63 @@
+# cargo-deny configuration for native-view-engine
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+ignore = [
+    # Transitive via hax-lib-macros -> rind -> web-transport-quinn -> nve-wire; no safe upstream upgrade yet.
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is pulled transitively via rind/web-transport-quinn with no safe upgrade available" },
+    # Transitive via fontdb/cosmic-text (nve-backend-skia) and ab_glyph/sctk-adwaita/winit (nve-skia-shell); no safe upstream upgrade yet.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is pulled transitively via cosmic-text and winit/sctk-adwaita with no safe upgrade available" },
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+]
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+# Temporarily "warn" because internal `[workspace.dependencies]` omit `version` and member
+# manifests omit `publish = false` (which we cannot touch under the NodeStore zero-conflict
+# boundary). Flip to "deny" once root Cargo.toml adds `version = "0.1.0"` on internal path deps.
+wildcards = "warn"
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = [
+    { crate = "fnv", reason = "Standardize on const fn xxh64 via nve-hash" },
+]
+
+[bans.workspace-dependencies]
+duplicates = "warn"
+include-path-dependencies = false
+unused = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    # Workspace [patch.crates-io] for Dioxus 0.7.10 WASM-size fixes (see docs/UPSTREAM.md).
+    "https://github.com/samuelscheit/dioxus",
+]

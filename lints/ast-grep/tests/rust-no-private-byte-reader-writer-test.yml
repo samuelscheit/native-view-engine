@@ -1,0 +1,38 @@
+id: rust-no-private-byte-reader-writer
+valid:
+  - |
+    pub struct ByteReader<'a>(&'a [u8]);
+  - |
+    pub struct ByteWriter(Vec<u8>);
+  - |
+    struct FrameReader<'a>(&'a [u8]);
+  - |
+    #[cfg(test)]
+    mod tests {
+        struct ByteReader<'a>(&'a [u8]);
+        struct ByteWriter(Vec<u8>);
+    }
+  - |
+    #[cfg(test)]
+    struct ByteReader<'a>(&'a [u8]);
+invalid:
+  - |
+    struct ByteReader<'a>(&'a [u8]);
+  - |
+    struct ByteWriter {
+        buf: Vec<u8>,
+    }
+  - |
+    pub(crate) struct ByteReader<'a> {
+        data: &'a [u8],
+    }
+  - |
+    pub(super) struct ByteWriter(Vec<u8>);
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    struct ByteReader<'a>(&'a [u8]);
+  - |
+    #[cfg(not(test))]
+    struct ByteWriter(Vec<u8>);

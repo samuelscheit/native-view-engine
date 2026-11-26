@@ -1,0 +1,73 @@
+# Standalone Dart/Flutter static analysis configuration for `nve_flutter`.
+# Note: `pubspec.yaml` intentionally carries zero third-party lint package dependencies,
+# so rules are declared directly here.
+
+analyzer:
+  exclude:
+    # Track 1B-1e: remove once nve-codegen stops emitting 64-bit `const int` schema/hash
+    # literals in generated Dart bindings (switch to `(lo, hi)` u32 pairs or `BigInt`).
+    - "**/*.generated.dart"
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+  language:
+    strict-raw-types: false
+  errors:
+    # Hard error: JS Number precision is 53 bits; prevent silent truncation in Dart-web bindings.
+    avoid_js_rounded_ints: error
+
+linter:
+  rules:
+    # 53-bit Dart-web / JS integer safety
+    - avoid_js_rounded_ints
+
+    # Correctness & type safety
+    - annotate_overrides
+    - avoid_empty_else
+    - avoid_relative_lib_imports
+    - avoid_shadowing_type_parameters
+    - avoid_types_as_parameter_names
+    - await_only_futures
+    - collection_methods_unrelated_type
+    - control_flow_in_finally
+    - empty_statements
+    - hash_and_equals
+    - no_duplicate_case_values
+    - no_logic_in_create_state
+    - null_check_on_nullable_type_parameter
+    - null_closures
+    - overridden_fields
+    - recursive_getters
+    - unrelated_type_equality_checks
+    - use_build_context_synchronously
+    - valid_regexps
+
+    # Idiomatic Dart & Flutter hygiene
+    - camel_case_extensions
+    - camel_case_types
+    - curly_braces_in_flow_control_structures
+    - empty_catches
+    - empty_constructor_bodies
+    - exhaustive_cases
+    - file_names
+    - library_prefixes
+    - non_constant_identifier_names
+    - prefer_contains
+    - prefer_generic_function_type_aliases
+    - prefer_is_empty
+    - prefer_is_not_empty
+    - prefer_iterable_whereType
+    - type_init_formals
+    - unnecessary_const
+    - unnecessary_new
+    - unnecessary_null_in_if_null_operators
+    - unnecessary_overrides
+    - unnecessary_string_escapes
+    - unnecessary_string_interpolations
+    - unnecessary_this
+    - use_function_type_syntax_for_parameters
+    - use_rethrow_when_possible

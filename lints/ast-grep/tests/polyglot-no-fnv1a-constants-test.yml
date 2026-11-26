@@ -1,0 +1,115 @@
+id: no-fnv1a-constants-rust
+valid:
+  - |
+    const XXH64_PRIME1: u64 = 0x9E37_79B1_85EB_CA87;
+  - |
+    const MAGIC: u32 = 0x3145_564E;
+  - |
+    // Historical comment: 0xcbf29ce484222325
+    const DOC: &str = "0x811c9dc5";
+invalid:
+  - |
+    const OFFSET32: u32 = 0x811c9dc5;
+  - |
+    const PRIME32: u32 = 0x01000193;
+  - |
+    const OFFSET64: u64 = 0xcbf2_9ce4_8422_2325u64;
+  - |
+    const PRIME64_FULL: u64 = 0x0000_0100_0000_01b3;
+  - |
+    const PRIME64_SHORT: u64 = 0x100000001B3;
+---
+id: no-fnv1a-constants-cpp
+valid:
+  - |
+    constexpr uint64_t XXH_PRIME = 0x9E3779B185EBCA87ULL;
+  - |
+    // 0xcbf29ce484222325 in comment is ignored
+    const char* s = "0x811c9dc5";
+invalid:
+  - |
+    constexpr uint32_t kOffset = 0x811c9dc5u;
+  - |
+    constexpr uint32_t kPrime = 0x01000193u;
+  - |
+    constexpr uint64_t kOffset64 = 0xcbf2'9ce4'8422'2325ULL;
+  - |
+    constexpr uint64_t kPrime64 = 0x00000100000001b3ULL;
+  - |
+    constexpr uint64_t kPrime64Short = 0x100000001b3ULL;
+---
+id: no-fnv1a-constants-typescript
+valid:
+  - |
+    const SCHEMA_HASH = 0x9e3779b185ebca87n;
+  - |
+    // 0x811c9dc5 in comment
+    const note = "0xcbf29ce484222325";
+invalid:
+  - |
+    const OFFSET = 0x811c9dc5;
+  - |
+    const PRIME = 0x01000193;
+  - |
+    const OFFSET64 = 0xcbf29ce484222325n;
+  - |
+    const PRIME64 = 0x00000100000001b3n;
+  - |
+    const PRIME64_SHORT = 0x100000001b3n;
+---
+id: no-fnv1a-constants-swift
+valid:
+  - |
+    let xxhPrime: UInt64 = 0x9E37_79B1_85EB_CA87
+  - |
+    // 0xcbf29ce484222325
+    let label = "0x811c9dc5"
+invalid:
+  - |
+    let offset32: UInt32 = 0x811c9dc5
+  - |
+    let prime32: UInt32 = 0x01000193
+  - |
+    let offset64: UInt64 = 0xcbf2_9ce4_8422_2325
+  - |
+    let prime64: UInt64 = 0x0000_0100_0000_01b3
+  - |
+    let prime64Short: UInt64 = 0x100000001b3
+---
+id: no-fnv1a-constants-kotlin
+valid:
+  - |
+    const val XXH_PRIME: ULong = 0x9E37_79B1_85EB_CA87uL
+  - |
+    // 0xcbf29ce484222325
+    val text = "0x01000193"
+invalid:
+  - |
+    val offset32 = 0x811c9dc5
+  - |
+    val prime32 = 0x01000193
+  - |
+    val offset64 = 0xcbf2_9ce4_8422_2325uL
+  - |
+    val prime64 = 0x00000100000001b3L
+  - |
+    val prime64Short = 0x100000001b3uL
+---
+id: no-fnv1a-constants-dart
+valid:
+  - |
+    const int magic = 0x3145564E;
+  - |
+    // 0xcbf29ce484222325
+    const String s = '0x811c9dc5';
+invalid:
+  - |
+    const int offset32 = 0x811c9dc5;
+  - |
+    const int prime32 = 0x01000193;
+  - |
+    const int offset64 = 0xcbf29ce484222325;
+  - |
+    const int prime64 = 0x00000100000001b3;
+  - |
+    const int prime64Short = 0x100000001b3;

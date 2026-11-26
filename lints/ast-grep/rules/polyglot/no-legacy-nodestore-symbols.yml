@@ -1,0 +1,96 @@
+# Polyglot legacy NodeStore-era host/component symbol bans (`NVE_HOST_CLASS_*`, `ComponentKind`, `RenderSink`).
+# Rust stays `warning` (`[stage: PostNodeStore]`) while pre-migration code exists on `main`;
+# foreign hosts already have 0 violations on `main` and enforce `error` immediately.
+
+id: no-legacy-nodestore-symbols-rust
+language: rust
+severity: warning
+message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to typed NodeStore tables/handles."
+note: "[stage: PostNodeStore] Bans `NVE_HOST_CLASS_*`, `ComponentKind`, and `RenderSink` in production Rust code. Flip to `error` once NodeStore lands."
+ignores:
+  - "packages/tools/cli/tests/arch_invariants/**"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "**/*.generated.*"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+  regex: '^(?:NVE_HOST_CLASS_.*|ComponentKind|RenderSink)$'
+  not:
+    matches: rust-in-test-code
+---
+id: no-legacy-nodestore-symbols-cpp
+language: cpp
+severity: error
+message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to typed NodeStore ABI handles."
+note: "[stage: PostNodeStore] Bans `NVE_HOST_CLASS_*`, `ComponentKind`, and `RenderSink` in C++ hosts/bridges. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/tests/**"
+  - "**/bench/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+    - kind: field_identifier
+  regex: '^(?:NVE_HOST_CLASS_.*|ComponentKind|RenderSink)$'
+---
+id: no-legacy-nodestore-symbols-typescript
+language: typescript
+severity: error
+message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to typed NodeStore ABI handles."
+note: "[stage: PostNodeStore] Bans `NVE_HOST_CLASS_*`, `ComponentKind`, and `RenderSink` in TypeScript hosts/bindings. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/tests/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+    - kind: property_identifier
+  regex: '^(?:NVE_HOST_CLASS_.*|ComponentKind|RenderSink)$'
+---
+id: no-legacy-nodestore-symbols-swift
+language: swift
+severity: error
+message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to typed NodeStore ABI handles."
+note: "[stage: PostNodeStore] Bans `NVE_HOST_CLASS_*`, `ComponentKind`, and `RenderSink` in Swift hosts. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/Tests/**"
+rule:
+  any:
+    - kind: simple_identifier
+    - kind: type_identifier
+  regex: '^(?:NVE_HOST_CLASS_.*|ComponentKind|RenderSink)$'
+---
+id: no-legacy-nodestore-symbols-kotlin
+language: kotlin
+severity: error
+message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to typed NodeStore ABI handles."
+note: "[stage: PostNodeStore] Bans `NVE_HOST_CLASS_*`, `ComponentKind`, and `RenderSink` in Kotlin hosts. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/src/test/**"
+rule:
+  any:
+    - kind: simple_identifier
+    - kind: type_identifier
+  regex: '^(?:NVE_HOST_CLASS_.*|ComponentKind|RenderSink)$'
+---
+id: no-legacy-nodestore-symbols-dart
+language: dart
+severity: error
+message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to typed NodeStore ABI handles."
+note: "[stage: PostNodeStore] Bans `NVE_HOST_CLASS_*`, `ComponentKind`, and `RenderSink` in Dart/Flutter hosts. Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/test/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+  regex: '^(?:NVE_HOST_CLASS_.*|ComponentKind|RenderSink)$'

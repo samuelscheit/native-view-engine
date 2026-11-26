@@ -1,0 +1,20 @@
+id: no-legacy-nodestore-symbols-swift
+snapshots:
+  "func mount(kind: ComponentKind) {}\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 17
+      end: 30
+  "let cls = NVE_HOST_CLASS_VIEW\n":
+    labels:
+    - source: NVE_HOST_CLASS_VIEW
+      style: primary
+      start: 10
+      end: 29
+  "protocol RenderSink {}\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 9
+      end: 19

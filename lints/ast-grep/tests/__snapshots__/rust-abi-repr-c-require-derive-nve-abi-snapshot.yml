@@ -1,0 +1,80 @@
+id: rust-abi-repr-c-require-derive-nve-abi
+snapshots:
+  "#[cfg(not(test))]\n#[repr(C)]\npub struct NotTestStruct {\n    pub x: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct NotTestStruct {
+            pub x: u32,
+        }
+      style: primary
+      start: 29
+      end: 73
+    - source: pub
+      style: secondary
+      start: 29
+      end: 32
+  "#[cfg(test)]\nmod tests {}\n\n#[repr(C)]\npub struct ProdAfterTestMod {\n    pub x: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct ProdAfterTestMod {
+            pub x: u32,
+        }
+      style: primary
+      start: 38
+      end: 85
+    - source: pub
+      style: secondary
+      start: 38
+      end: 41
+  "#[repr(C)]\n#[derive(Debug, Clone, Copy)]\npub struct NveSurfaceApi {\n    pub version: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct NveSurfaceApi {
+            pub version: u32,
+        }
+      style: primary
+      start: 41
+      end: 91
+    - source: pub
+      style: secondary
+      start: 41
+      end: 44
+  "#[repr(C)]\n#[derive(NveAbi)]\npub struct GoodStruct {\n    pub a: u32,\n}\n\n#[repr(C)]\n#[derive(Debug)]\npub struct BadFollowingGood {\n    pub b: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct BadFollowingGood {
+            pub b: u32,
+        }
+      style: primary
+      start: 100
+      end: 147
+    - source: pub
+      style: secondary
+      start: 100
+      end: 103
+  "#[repr(C, align(64))]\npub struct MissingDerive {\n    pub x: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct MissingDerive {
+            pub x: u32,
+        }
+      style: primary
+      start: 22
+      end: 66
+    - source: pub
+      style: secondary
+      start: 22
+      end: 25
+  "#[repr(align(64), C)]\npub struct MissingDeriveReversed {\n    pub x: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct MissingDeriveReversed {
+            pub x: u32,
+        }
+      style: primary
+      start: 22
+      end: 74
+    - source: pub
+      style: secondary
+      start: 22
+      end: 25

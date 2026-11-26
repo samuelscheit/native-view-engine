@@ -1,0 +1,32 @@
+id: no-fnv1a-constants-kotlin
+snapshots:
+  "val offset32 = 0x811c9dc5\n":
+    labels:
+    - source: "0x811c9dc5"
+      style: primary
+      start: 15
+      end: 25
+  "val offset64 = 0xcbf2_9ce4_8422_2325uL\n":
+    labels:
+    - source: "0xcbf2_9ce4_8422_2325"
+      style: primary
+      start: 15
+      end: 36
+  "val prime32 = 0x01000193\n":
+    labels:
+    - source: "0x01000193"
+      style: primary
+      start: 14
+      end: 24
+  "val prime64 = 0x00000100000001b3L\n":
+    labels:
+    - source: "0x00000100000001b3"
+      style: primary
+      start: 14
+      end: 32
+  "val prime64Short = 0x100000001b3uL\n":
+    labels:
+    - source: "0x100000001b3"
+      style: primary
+      start: 19
+      end: 32

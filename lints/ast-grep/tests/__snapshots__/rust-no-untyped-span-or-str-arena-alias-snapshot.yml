@@ -1,0 +1,80 @@
+id: rust-no-untyped-span-or-str-arena-alias
+snapshots:
+  "#[cfg(not(test))]\npub type StrArena = SpanPool<u8>;\n":
+    labels:
+    - source: pub type StrArena = SpanPool<u8>;
+      style: primary
+      start: 18
+      end: 51
+    - source: StrArena
+      style: secondary
+      start: 27
+      end: 35
+    - source: SpanPool<u8>
+      style: secondary
+      start: 38
+      end: 50
+  "#[cfg(test)]\nmod tests {}\n\npub struct Span { off: u32 }\n":
+    labels:
+    - source: "pub struct Span { off: u32 }"
+      style: primary
+      start: 27
+      end: 55
+    - source: Span
+      style: secondary
+      start: 38
+      end: 42
+  "pub struct Span {\n    pub off: u32,\n    pub len: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct Span {
+            pub off: u32,
+            pub len: u32,
+        }
+      style: primary
+      start: 0
+      end: 55
+    - source: Span
+      style: secondary
+      start: 11
+      end: 15
+  "pub type StrArena = SpanPool<u8>;\n":
+    labels:
+    - source: pub type StrArena = SpanPool<u8>;
+      style: primary
+      start: 0
+      end: 33
+    - source: StrArena
+      style: secondary
+      start: 9
+      end: 17
+    - source: SpanPool<u8>
+      style: secondary
+      start: 20
+      end: 32
+  "struct Span(u32, u32);\n":
+    labels:
+    - source: struct Span(u32, u32);
+      style: primary
+      start: 0
+      end: 22
+    - source: Span
+      style: secondary
+      start: 7
+      end: 11
+  "type StrArena =\n    crate::span_pool::SpanPool<u8>;\n":
+    labels:
+    - source: |-
+        type StrArena =
+            crate::span_pool::SpanPool<u8>;
+      style: primary
+      start: 0
+      end: 51
+    - source: StrArena
+      style: secondary
+      start: 5
+      end: 13
+    - source: crate::span_pool::SpanPool<u8>
+      style: secondary
+      start: 20
+      end: 50

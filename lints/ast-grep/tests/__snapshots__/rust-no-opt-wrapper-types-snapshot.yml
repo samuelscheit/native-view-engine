@@ -1,0 +1,59 @@
+id: rust-no-opt-wrapper-types
+snapshots:
+  "#[cfg(not(test))]\npub enum OptNotTest { Unset }\n":
+    labels:
+    - source: pub enum OptNotTest { Unset }
+      style: primary
+      start: 18
+      end: 47
+    - source: OptNotTest
+      style: secondary
+      start: 27
+      end: 37
+  "#[cfg(test)]\nmod tests {}\n\npub struct OptAfterTestMod(u8);\n":
+    labels:
+    - source: pub struct OptAfterTestMod(u8);
+      style: primary
+      start: 27
+      end: 58
+    - source: OptAfterTestMod
+      style: secondary
+      start: 38
+      end: 53
+  "pub enum OptTextAlign {\n    Unset,\n    Left,\n}\n":
+    labels:
+    - source: |-
+        pub enum OptTextAlign {
+            Unset,
+            Left,
+        }
+      style: primary
+      start: 0
+      end: 46
+    - source: OptTextAlign
+      style: secondary
+      start: 9
+      end: 21
+  "pub struct OptAutofillHint(pub u8);\n":
+    labels:
+    - source: pub struct OptAutofillHint(pub u8);
+      style: primary
+      start: 0
+      end: 35
+    - source: OptAutofillHint
+      style: secondary
+      start: 11
+      end: 26
+  "struct OptColor {\n    raw: u32,\n}\n":
+    labels:
+    - source: |-
+        struct OptColor {
+            raw: u32,
+        }
+      style: primary
+      start: 0
+      end: 33
+    - source: OptColor
+      style: secondary
+      start: 7
+      end: 15

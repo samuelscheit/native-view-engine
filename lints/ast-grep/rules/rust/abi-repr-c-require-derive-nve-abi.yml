@@ -1,0 +1,23 @@
+id: rust-abi-repr-c-require-derive-nve-abi
+language: rust
+severity: warning
+message: "`#[repr(C)]` struct in `packages/core/abi/` should derive `NveAbi` [stage: Post1B1D]."
+note: "[stage: Post1B1D] Matches public `#[repr(C)]` structs in `packages/core/abi/src/` missing `#[derive(..., NveAbi, ...)]`. Flip to `error` once remaining C vtables/structs carry `NveAbi` in Track 1B-1d."
+files:
+  - "packages/core/abi/src/**/*.rs"
+ignores:
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  kind: struct_item
+  has:
+    kind: visibility_modifier
+    regex: '^pub$'
+  all:
+    - matches: rust-has-repr-c
+    - not:
+        matches: rust-has-derive-nve-abi
+    - not:
+        matches: rust-in-test-code

@@ -1,0 +1,73 @@
+id: rust-no-noderow-heap-fields
+valid:
+  - |
+    #[repr(C)]
+    pub struct NodeRow {
+        pub parent: NodeId,
+        pub first_child: NodeId,
+        pub next_sibling: NodeId,
+        pub flags: u32,
+    }
+  - |
+    pub struct NodeRow(pub NodeId, pub u32);
+  - |
+    pub struct OtherRow {
+        pub children: Vec<NodeId>,
+        pub name: String,
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        struct NodeRow {
+            children: Vec<u32>,
+            label: String,
+        }
+    }
+  - |
+    #[cfg(test)]
+    struct NodeRow {
+        boxed: Box<u32>,
+    }
+invalid:
+  - |
+    pub struct NodeRow {
+        pub children: Vec<NodeId>,
+    }
+  - |
+    pub struct NodeRow {
+        pub label: String,
+    }
+  - |
+    pub struct NodeRow {
+        pub extra: Option<Box<ColdData>>,
+    }
+  - |
+    pub struct NodeRow {
+        pub props: std::collections::HashMap<u32, u32>,
+    }
+  - |
+    pub struct NodeRow {
+        pub ordered: BTreeMap<u32, u32>,
+    }
+  - |
+    pub struct NodeRow {
+        pub shared: std::sync::Arc<u32>,
+    }
+  - |
+    pub struct NodeRow {
+        pub local: std::rc::Rc<u32>,
+    }
+  - |
+    pub struct NodeRow(pub Vec<NodeId>);
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    pub struct NodeRow {
+        pub leaked: Vec<u32>,
+    }
+  - |
+    #[cfg(not(test))]
+    pub struct NodeRow {
+        pub label: String,
+    }

@@ -1,0 +1,20 @@
+id: no-legacy-nodestore-symbols-kotlin
+snapshots:
+  "fun mount(kind: ComponentKind) {}\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 16
+      end: 29
+  "interface RenderSink\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 10
+      end: 20
+  "val cls = NVE_HOST_CLASS_VIEW\n":
+    labels:
+    - source: NVE_HOST_CLASS_VIEW
+      style: primary
+      start: 10
+      end: 29

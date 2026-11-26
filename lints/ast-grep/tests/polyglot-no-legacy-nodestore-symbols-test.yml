@@ -1,0 +1,105 @@
+id: no-legacy-nodestore-symbols-rust
+valid:
+  - |
+    pub struct NodeStore;
+    pub struct MyComponentKind;
+  - |
+    // ComponentKind and RenderSink in comments are ignored.
+    const MSG: &str = "NVE_HOST_CLASS_VIEW";
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn check(_k: ComponentKind, _s: &dyn RenderSink) {
+            let _ = NVE_HOST_CLASS_VIEW;
+        }
+    }
+  - |
+    #[test]
+    fn test_legacy() {
+        let _ = ComponentKind::View;
+    }
+invalid:
+  - |
+    pub fn classify(kind: ComponentKind) {}
+  - |
+    pub fn flush<S: RenderSink>(sink: &mut S) {}
+  - |
+    pub const VIEW: u32 = NVE_HOST_CLASS_VIEW;
+  - |
+    #[cfg(test)]
+    mod tests {}
+
+    pub fn leaked(kind: ComponentKind) {}
+  - |
+    #[cfg(not(test))]
+    pub fn prod_only<S: RenderSink>(s: &mut S) {}
+---
+id: no-legacy-nodestore-symbols-cpp
+valid:
+  - |
+    struct NodeHandle {};
+    // ComponentKind in comment
+    const char* s = "RenderSink";
+invalid:
+  - |
+    int c = NVE_HOST_CLASS_VIEW;
+  - |
+    void draw(ComponentKind kind);
+  - |
+    class RenderSink {};
+---
+id: no-legacy-nodestore-symbols-typescript
+valid:
+  - |
+    type NodeHandle = number;
+    // RenderSink in comment
+    const s = "ComponentKind";
+invalid:
+  - |
+    const cls = NVE_HOST_CLASS_TEXT;
+  - |
+    function render(kind: ComponentKind): void {}
+  - |
+    interface RenderSink { flush(): void }
+---
+id: no-legacy-nodestore-symbols-swift
+valid:
+  - |
+    struct NodeHandle {}
+    // ComponentKind in comment
+    let s = "NVE_HOST_CLASS_VIEW"
+invalid:
+  - |
+    let cls = NVE_HOST_CLASS_VIEW
+  - |
+    func mount(kind: ComponentKind) {}
+  - |
+    protocol RenderSink {}
+---
+id: no-legacy-nodestore-symbols-kotlin
+valid:
+  - |
+    class NodeHandle
+    // RenderSink in comment
+    val s = "ComponentKind"
+invalid:
+  - |
+    val cls = NVE_HOST_CLASS_VIEW
+  - |
+    fun mount(kind: ComponentKind) {}
+  - |
+    interface RenderSink
+---
+id: no-legacy-nodestore-symbols-dart
+valid:
+  - |
+    class NodeHandle {}
+    // RenderSink in comment
+    const s = 'NVE_HOST_CLASS_VIEW';
+invalid:
+  - |
+    const cls = NVE_HOST_CLASS_VIEW;
+  - |
+    void mount(ComponentKind kind) {}
+  - |
+    abstract class RenderSink {}

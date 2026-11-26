@@ -1,0 +1,68 @@
+id: rust-no-private-byte-reader-writer
+snapshots:
+  "#[cfg(not(test))]\nstruct ByteWriter(Vec<u8>);\n":
+    labels:
+    - source: struct ByteWriter(Vec<u8>);
+      style: primary
+      start: 18
+      end: 45
+    - source: ByteWriter
+      style: secondary
+      start: 25
+      end: 35
+  "#[cfg(test)]\nmod tests {}\n\nstruct ByteReader<'a>(&'a [u8]);\n":
+    labels:
+    - source: struct ByteReader<'a>(&'a [u8]);
+      style: primary
+      start: 27
+      end: 59
+    - source: ByteReader
+      style: secondary
+      start: 34
+      end: 44
+  "pub(crate) struct ByteReader<'a> {\n    data: &'a [u8],\n}\n":
+    labels:
+    - source: |-
+        pub(crate) struct ByteReader<'a> {
+            data: &'a [u8],
+        }
+      style: primary
+      start: 0
+      end: 56
+    - source: ByteReader
+      style: secondary
+      start: 18
+      end: 28
+  "pub(super) struct ByteWriter(Vec<u8>);\n":
+    labels:
+    - source: pub(super) struct ByteWriter(Vec<u8>);
+      style: primary
+      start: 0
+      end: 38
+    - source: ByteWriter
+      style: secondary
+      start: 18
+      end: 28
+  "struct ByteReader<'a>(&'a [u8]);\n":
+    labels:
+    - source: struct ByteReader<'a>(&'a [u8]);
+      style: primary
+      start: 0
+      end: 32
+    - source: ByteReader
+      style: secondary
+      start: 7
+      end: 17
+  "struct ByteWriter {\n    buf: Vec<u8>,\n}\n":
+    labels:
+    - source: |-
+        struct ByteWriter {
+            buf: Vec<u8>,
+        }
+      style: primary
+      start: 0
+      end: 39
+    - source: ByteWriter
+      style: secondary
+      start: 7
+      end: 17
