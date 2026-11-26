@@ -6,17 +6,15 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ## P1 — Direct Typed Render ABI, Interaction Primitives & Host Parity (from [quality-audit.md](./quality-audit.md))
 
-- [ ] **Track 1B-1c — Mechanical Invariant Gates (`tests/arch_invariants.rs`), Pervasive Benchmarks & 4-Lens Dual Review**
+- [ ] **Track 1B-1c — Mechanical Invariant Gates (`tests/arch_invariants.rs` + Workspace Lints), Pervasive Benchmarks & 4-Lens Dual Review**
   - Run fresh-eyes 4-lens dual review (`gemini-4-neon` + `anthropic/claude-opus-5-5`) over the landed Word-table `NodeStore` / `NVE2` / `nve-hash` / standalone modules work and fix all real findings.
-  - Add a fast `syn`-based `tests/arch_invariants.rs` suite wired into `cargo test --workspace` and `./scripts/check-all.sh` that mechanically fails CI on:
-    - Bare primitive domain fields (`*_id`, `*_key`, `*_slot`, `*_index`, `*_off`, `*_len`, `*_mask`, `*_flags`, `*_us`, `parent`, `surface`, `node`) in `packages/core/{abi,store,engine}` structs (must be `#[repr(transparent)]`/`#[repr(C)]` newtypes unless explicitly justified).
-    - Hardcoded `*_SCHEMA_HASH = 0x...` hex literals in Rust or raw hex schema hashes in `docs/content/**/*.mdx`.
-    - Any FNV-1a functions/constants anywhere in the repository.
-    - Any `packages/core/*` or `packages/backends/*` crate depending on `packages/modules/*`.
-    - Regressions of `ComponentKind`, `NVE_HOST_CLASS_*`, or `NativeEventKind::Custom`.
-    - `from_utf8` inside `StrArena` read methods or outside explicit ingress/wire decoders.
-    - Platform-specific CSS/HTML formatters (`write_css*`, `as_css`, `as_html*`) inside `packages/core/*`.
-    - Any workspace crate under `packages/` missing a non-empty `README.md`.
+  - Enforce strict `[workspace.lints.clippy]` across production code (`undocumented_unsafe_blocks = "deny"`, `todo = "deny"`, `unimplemented = "deny"`, `dbg_macro = "deny"`, and `unwrap_used` / `panic` denied on core/backend library targets).
+  - Add a fast `syn` + `Cargo.toml` + filesystem `tests/arch_invariants.rs` suite wired into `cargo test --workspace` and `./scripts/check-all.sh` that mechanically fails CI on:
+    - **Crate DAG & Layering**: `nve-abi`/`nve-hash`/`nve-store`/`nve-engine` depending on `dioxus*`; `packages/core/*` or `packages/backends/*` depending on `packages/modules/*`; `packages/core/*` depending on `web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`, or `serde_json`; `packages/modules/<cap>/` root spec crates depending on `nve-backend-*`/`web-sys`/`skia-safe`; library SDK code placed in `hosts/`; any workspace crate under `packages/` missing a non-empty `README.md`.
+    - **Types, ABI & Legacy Regressions**: bare primitive domain fields (`*_id`, `*_key`, `*_slot`, `*_index`, `*_off`, `*_len`, `*_mask`, `*_flags`, `*_us`, `*_ms`, `parent`, `surface`, `node`, `rel`) in `packages/core/{abi,store,engine,tables}` structs; `#[repr(C)]` structs in `nve-abi` missing compile-time `size_of`/`align_of`/`offset_of!` asserts; regressions of `ComponentKind`, `NVE_HOST_CLASS_*`, `NativeEventKind::Custom`, `Opcode::SetRawProp`, `RawPropValue`, `RawStyleProps`, `NativeViewSpec`, `RenderSink`, or `BatchSink`; `serde_json` in core/backend/module runtime dependencies.
+    - **Performance & Hot Paths**: `from_utf8` inside `StrArena` read methods or outside explicit ingress/wire decoders; `.to_ascii_lowercase()` / `format!(` allocations inside hot parsing/style/render functions; `HashMap`/`Box<` creeping onto per-node store structs (`NodeRow`/columns); core/backend crates lacking benchmarks.
+    - **Hashing & Generated Files**: any FNV-1a symbol or offset/prime constant anywhere in the repo; hardcoded `*_SCHEMA_HASH = 0x...` hex literals in Rust; raw hex schema hashes in `docs/content/**/*.mdx`; `@generated` non-Java files lacking `.generated.` in their filename; tracked build/trace/screenshot/generated artifacts (`*.generated.*`, `*.trace.json`, `cxx/build*`, `hosts/*/build`).
+    - **Platform Purity, Modularity & Anti-Slop**: Web CSS/HTML formatters (`write_css*`, `as_css`, `as_html*`) inside `packages/core/*`; non-test production Rust files exceeding `650` lines; banned cryptic 4-letter format acronyms (`NVH1`, `NVW1`, `NVT1`, `NVD1`, `NVC1`, `NVWS1`, `NVB1`, `NVNP`, `NVNC`, `NVERELOC`) or marketing buzzwords (`Zero-JSON`) outside historical `docs/CHANGELOG.md`; hardcoded personal endpoints/hosts.
   - Expand `CountingAlloc` zero-allocation steady-state hot-path tests and pervasive Criterion micro + macro benchmarks (reporting latency + allocation counts + sizes across small/realistic/stress inputs) plus release ASM checks on hot primitives.
 
 - [ ] **Track 1B-1d — Uniform 64-Byte Typed `NveEvent`, Zero-Boilerplate Table/Codec Macros, Core/Motion Cleanup & Crate READMEs**
