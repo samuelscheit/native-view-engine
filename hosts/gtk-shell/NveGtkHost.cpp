@@ -323,11 +323,23 @@ bool NveGtkHost::save_snapshot(
   return session_.save_snapshot(path, schema_version, meta, out_status);
 }
 
-bool NveGtkHost::apply_props_json(std::string_view props_json) {
+bool NveGtkHost::apply_props(const PropMap& props) {
   if (!session_.is_valid()) {
     return false;
   }
-  const bool dirty = session_.update_props_json(props_json, /*auto_render=*/true);
+  const bool dirty = session_.update_props(props, /*auto_render=*/true);
+  if (dirty) {
+    sync_views(/*check_raw_props=*/true);
+  }
+  (void)session_.drain_events();
+  return dirty;
+}
+
+bool NveGtkHost::apply_props(const NveMapEntry* entries, uint32_t count) {
+  if (!session_.is_valid()) {
+    return false;
+  }
+  const bool dirty = session_.update_props(entries, count, /*auto_render=*/true);
   if (dirty) {
     sync_views(/*check_raw_props=*/true);
   }
@@ -387,7 +399,7 @@ uint32_t NveGtkHost::dispatch_single_direct_event(const NveDirectEvent& ev) {
     return 0u;
   }
   const uint32_t dirty =
-      session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
+      session_.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
   if (dirty != 0u && !session_.is_paired()) {
     sync_views(/*check_raw_props=*/false);
   }

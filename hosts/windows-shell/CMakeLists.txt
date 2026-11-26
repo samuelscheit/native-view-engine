@@ -19,6 +19,7 @@ if(NOT TARGET nve_fabric_bridge)
 endif()
 
 set(NVE_WIN_SHELL_SOURCES
+  NveWinVisualTree.cpp
   NveRnwComponentView.cpp
   NveWinWindowManager.cpp
 )
@@ -108,7 +109,11 @@ add_library(nve_win_fixture_stateful SHARED tests/test_dylib_fixtures.c)
 target_compile_definitions(nve_win_fixture_stateful PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_STATEFUL=1)
 target_include_directories(nve_win_fixture_stateful PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
 
-add_executable(nve_windows_shell_test tests/windows_shell_test.cpp)
+add_executable(nve_windows_shell_test
+  tests/windows_shell_test.cpp
+  tests/windows_shell_media_test.cpp
+  tests/windows_shell_canvas_pair_test.cpp
+)
 target_include_directories(nve_windows_shell_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/src")
 if(MSVC)
   target_compile_options(nve_windows_shell_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)

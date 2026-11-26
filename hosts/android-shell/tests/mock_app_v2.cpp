@@ -50,7 +50,7 @@ NveBufferSlice v2_render(NveAppHandle handle, uint64_t frame_id) {
   return NveBufferSlice{app->frame.data(), app->frame.size()};
 }
 
-uint32_t v2_dispatch_events(NveAppHandle, NveBufferSlice) {
+uint32_t v2_dispatch_events(NveAppHandle, NveEventBatch) {
   return 0;
 }
 
@@ -81,7 +81,6 @@ extern "C" const void* nve_get_interface(uint32_t interface_id) {
       .destroy = &v2_destroy,
       .render = &v2_render,
       .dispatch_events = &v2_dispatch_events,
-      .dispatch_events_direct = nullptr,
   };
   static const NveDevApi kDev{
       .apply_hot_patch = &v2_apply_hot_patch,

@@ -39,22 +39,7 @@ class BuiltinQtDemoApp {
     return NveBufferSlice{self->cmd_buf_.data(), self->cmd_buf_.size()};
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveBufferSlice events) {
-    auto* self = static_cast<BuiltinQtDemoApp*>(h);
-    std::vector<nve::DecodedEvent> decoded;
-    if (!nve::decode_event_ring(events, decoded)) {
-      return 0;
-    }
-    for (const auto& ev : decoded) {
-      if (ev.kind == nve::EventKind::Press && ev.node_id == 4) {
-        ++self->count_;
-        return 1;
-      }
-    }
-    return 0;
-  }
-
-  static uint32_t dispatch_events_direct(NveAppHandle h, NveEventBatch batch) {
+  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<BuiltinQtDemoApp*>(h);
     if (batch.ptr == nullptr) {
       return 0;
@@ -93,7 +78,6 @@ class BuiltinQtDemoApp {
         .destroy = &destroy,
         .render = &render,
         .dispatch_events = &dispatch_events,
-        .dispatch_events_direct = &dispatch_events_direct,
     };
     static const NveDevApi kDev{
         .apply_hot_patch = nullptr,

@@ -84,7 +84,7 @@ uint32_t NveQtWidget::Impl::dispatchSingleDirectEvent(const NveDirectEvent& ev) 
     return 0;
   }
   const uint32_t dirty =
-      session_.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
+      session_.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
   if (dirty != 0 && !session_.is_paired()) {
     syncViews(/*check_raw_props=*/false);
   }
@@ -355,11 +355,11 @@ void NveQtWidget::setAutoSnapshotPath(const QString& snapshotPath, uint32_t sche
   impl_->auto_snapshot_schema_ = schemaVersion;
 }
 
-bool NveQtWidget::applyPropsJson(std::string_view propsJson) {
+bool NveQtWidget::applyProps(const nve::PropMap& props) {
   if (!impl_->session_.is_valid()) {
     return false;
   }
-  const bool dirty = impl_->session_.update_props_json(propsJson, /*auto_render=*/true);
+  const bool dirty = impl_->session_.update_props(props, /*auto_render=*/true);
   if (dirty) {
     impl_->syncViews(/*check_raw_props=*/true);
   }
@@ -367,11 +367,11 @@ bool NveQtWidget::applyPropsJson(std::string_view propsJson) {
   return dirty;
 }
 
-bool NveQtWidget::applyPropsDirect(const NveMapEntry* entries, uint32_t count) {
+bool NveQtWidget::applyProps(const NveMapEntry* entries, uint32_t count) {
   if (!impl_->session_.is_valid()) {
     return false;
   }
-  const bool dirty = impl_->session_.update_props_direct(entries, count, /*auto_render=*/true);
+  const bool dirty = impl_->session_.update_props(entries, count, /*auto_render=*/true);
   if (dirty) {
     impl_->syncViews(/*check_raw_props=*/true);
   }

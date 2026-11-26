@@ -4,7 +4,7 @@ Android Library Gradle module (`dev.nve.compose`) for embedding **Native View En
 
 ## Architecture
 
-- **`NveSceneBuffer.kt`**: Zero-copy, zero-GC direct `ByteBuffer` reader over 64-byte `NveRenderNode` + `NveSceneView` slabs (`SCHEMA_HASH = 0x00F2CF037DB50CC8`), with schema/bounds/UTF-8 validation and incremental dirty-index diffing.
+- **`NveSceneBuffer.kt`**: Zero-copy, zero-GC direct `ByteBuffer` reader over 64-byte `NveRenderNode` + `NveNodeMeta` + `NveSceneView` slabs (`SCHEMA_HASH = 0x6D45E53E0D9535D1`), with schema/bounds/UTF-8 validation and incremental dirty-index diffing.
 - **`NveBinValue.kt`**: Compact little-endian binary `NveBinValue` encoder and zero-copy `NveBinValueView` (tags `0..7`, O(1) container skipping, max depth `64`) replacing JSON for props, commands, and channel messages.
 - **`NveEventRingCodec.kt`**: Binary `EventRing` encoder & decoder matching `packages/core/abi/src/events.rs` for press, long-press, scroll, text change, focus/blur, layout, and custom binary events.
 - **`NveSurfaceState.kt` & `NveNativeBridge.kt`**: Pluggable `NveBridgeBackend`, reactive `NveSurfaceState`, `NveSurfaceController`, and binary `NveChannelClient`.

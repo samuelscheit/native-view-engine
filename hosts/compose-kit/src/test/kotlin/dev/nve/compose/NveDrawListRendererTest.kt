@@ -89,12 +89,22 @@ internal object TestDrawListBuilder {
         }
     }
 
-    fun buildMetadataSlab(
-        frameId: Long,
+    fun buildMetadataSlabs(
         records: List<Pair<Int, NveNodeMetadata>>,
-    ): ByteBuffer {
-        val body = ByteArrayOutputStream()
-        for ((nodeId, meta) in records) {
+    ): Pair<ByteBuffer, ByteBuffer> {
+        val blob = ByteArrayOutputStream()
+        val recBuf = ByteBuffer.allocateDirect(records.size * NveNodeMetadataCodec.META_STRIDE)
+            .order(ByteOrder.LITTLE_ENDIAN)
+
+        fun appendBlob(bytes: ByteArray): Int {
+            if (bytes.isEmpty()) return 0
+            val off = blob.size()
+            blob.write(bytes)
+            return off
+        }
+
+        for (i in records.indices) {
+            val (nodeId, meta) = records[i]
             val labelB = meta.accessibilityLabel.toByteArray(StandardCharsets.UTF_8)
             val roleB = meta.accessibilityRole.toByteArray(StandardCharsets.UTF_8)
             val hintB = meta.accessibilityHint.toByteArray(StandardCharsets.UTF_8)
@@ -113,40 +123,31 @@ internal object TestDrawListBuilder {
             flags = flags or ((meta.resizeMode and NveNodeMetadataCodec.RESIZE_MODE_MASK) shl
                 NveNodeMetadataCodec.RESIZE_MODE_SHIFT)
 
-            writeI32(body, nodeId)
-            writeI32(body, flags)
-            writeU16(body, labelB.size)
-            writeU16(body, roleB.size)
-            writeU16(body, hintB.size)
-            writeU16(body, stateB.size)
-            writeU16(body, placeholderB.size)
-            writeU16(body, testIdB.size)
-            writeI32(body, drawB.size)
-            writeI32(body, 0)
-            body.write(labelB)
-            body.write(roleB)
-            body.write(hintB)
-            body.write(stateB)
-            body.write(placeholderB)
-            body.write(testIdB)
-            body.write(drawB)
+            val base = i * NveNodeMetadataCodec.META_STRIDE
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_NODE_ID, nodeId)
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_FLAGS, flags)
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_LABEL_OFFSET, appendBlob(labelB))
+            recBuf.putShort(base + NveNodeMetadataCodec.META_OFFSET_LABEL_LEN, labelB.size.toShort())
+            recBuf.putShort(base + NveNodeMetadataCodec.META_OFFSET_ROLE_LEN, roleB.size.toShort())
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_ROLE_OFFSET, appendBlob(roleB))
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_HINT_OFFSET, appendBlob(hintB))
+            recBuf.putShort(base + NveNodeMetadataCodec.META_OFFSET_HINT_LEN, hintB.size.toShort())
+            recBuf.putShort(base + NveNodeMetadataCodec.META_OFFSET_STATE_DESC_LEN, stateB.size.toShort())
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_STATE_DESC_OFFSET, appendBlob(stateB))
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_PLACEHOLDER_OFFSET, appendBlob(placeholderB))
+            recBuf.putShort(base + NveNodeMetadataCodec.META_OFFSET_PLACEHOLDER_LEN, placeholderB.size.toShort())
+            recBuf.putShort(base + NveNodeMetadataCodec.META_OFFSET_TEST_ID_LEN, testIdB.size.toShort())
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_TEST_ID_OFFSET, appendBlob(testIdB))
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_DRAW_LIST_OFFSET, appendBlob(drawB))
+            recBuf.putInt(base + NveNodeMetadataCodec.META_OFFSET_DRAW_LIST_LEN, drawB.size)
         }
-        val bodyBytes = body.toByteArray()
-        val totalBytes = NveNodeMetadataCodec.HEADER_SIZE + bodyBytes.size
-        val full = ByteArrayOutputStream(totalBytes)
-        full.write("NVE_MET1".toByteArray(StandardCharsets.US_ASCII))
-        writeU16(full, NveNodeMetadataCodec.FORMAT_VERSION)
-        writeU16(full, 0)
-        writeI32(full, records.size)
-        writeI64(full, frameId)
-        writeI32(full, totalBytes)
-        writeI32(full, 0)
-        full.write(bodyBytes)
-        val raw = full.toByteArray()
-        return ByteBuffer.allocateDirect(raw.size).order(ByteOrder.LITTLE_ENDIAN).apply {
-            put(raw)
+
+        val blobBytes = blob.toByteArray()
+        val blobBuf = ByteBuffer.allocateDirect(blobBytes.size).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put(blobBytes)
             flip()
         }
+        return recBuf to blobBuf
     }
 }
 
@@ -355,8 +356,7 @@ class NveDrawListRendererTest {
             putInt(0); putInt(1); flip()
         }
 
-        val metaSlab = TestDrawListBuilder.buildMetadataSlab(
-            frameId = 1L,
+        val (metaRecords, metaBlob) = TestDrawListBuilder.buildMetadataSlabs(
             records = listOf(
                 8 to NveNodeMetadata(
                     accessibilityLabel = "Telemetry sparkline",
@@ -376,6 +376,8 @@ class NveDrawListRendererTest {
             0L,
             drawBytes.size.toLong(),
             1L,
+            1L,
+            metaBlob.limit().toLong(),
         )
         state.applySceneFrame(
             meta,
@@ -385,7 +387,8 @@ class NveDrawListRendererTest {
                 childrenSlab = childBuf,
                 dirtyIndices = dirtyBuf,
                 removedIds = null,
-                metadataSlab = metaSlab,
+                metaRecords = metaRecords,
+                metaBlob = metaBlob,
             ),
         )
 

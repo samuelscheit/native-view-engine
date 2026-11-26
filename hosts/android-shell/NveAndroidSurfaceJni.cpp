@@ -17,10 +17,12 @@ void release_all_slab_buffers(AndroidSurfaceState* state, JNIEnv* env) noexcept 
     slot.release(env);
   }
   state->slab_epoch_mask = 0u;
-  state->metadata_slab.clear();
-  state->metadata_slab.shrink_to_fit();
-  state->metadata_used_bytes = 0u;
-  state->metadata_record_count = 0u;
+  state->meta_records.clear();
+  state->meta_records.shrink_to_fit();
+  state->meta_blob.clear();
+  state->meta_blob.shrink_to_fit();
+  state->meta_record_count = 0u;
+  state->meta_blob_used_bytes = 0u;
   state->metadata_cache_frame = 0u;
   state->metadata_cache_valid = false;
   state->metadata_cache.clear();
@@ -356,22 +358,16 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchTextChange(
     }
   }
 
-  auto* bridge = state->session.bridge();
-  if (!bridge) {
-    NveFabricHostHandle host = state->session.active_fabric_host();
-    if (!host) return 0;
-    nve::fabric_host_enqueue_text_change(
-        host, static_cast<uint32_t>(node_id), nve::current_timestamp_us(), utf8);
-    const NveBufferSlice inbound = nve_fabric_host_drain_events(host);
-    return state->session.send_paired_event_ring(inbound) ? 1 : 0;
-  }
-  nve::fabric_host_enqueue_text_change(
-      bridge->fabric_host(),
-      static_cast<uint32_t>(node_id),
-      nve::current_timestamp_us(),
-      utf8);
-  const NveBufferSlice inbound = nve_fabric_host_drain_events(bridge->fabric_host());
-  const uint32_t dirty = bridge->dispatch_native_events(inbound, /*auto_render=*/true);
+  NveDirectEvent ev{};
+  ev.surface_id = state->config.surface_id;
+  ev.node_id = static_cast<uint32_t>(node_id);
+  ev.timestamp_us = nve::current_timestamp_us();
+  ev.kind = static_cast<uint8_t>(nve::EventKind::TextChange);
+  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
+  ev.text = nve::make_str_slice(utf8);
+  ev.value = nve::make_null_value();
+  const uint32_t dirty =
+      state->session.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
   (void)state->session.drain_events();
   return static_cast<jint>(dirty);
 }
@@ -408,29 +404,19 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
     }
   }
 
-  auto* bridge = state->session.bridge();
-  if (!bridge) {
-    NveFabricHostHandle host = state->session.active_fabric_host();
-    if (!host) return 0;
-    nve::fabric_host_enqueue_custom_event(
-        host,
-        static_cast<uint32_t>(node_id),
-        nve::current_timestamp_us(),
-        event_name,
-        reinterpret_cast<const uint8_t*>(utf8_payload.data()),
-        utf8_payload.size());
-    const NveBufferSlice inbound = nve_fabric_host_drain_events(host);
-    return state->session.send_paired_event_ring(inbound) ? 1 : 0;
-  }
-  nve::fabric_host_enqueue_custom_event(
-      bridge->fabric_host(),
-      static_cast<uint32_t>(node_id),
-      nve::current_timestamp_us(),
-      event_name,
-      reinterpret_cast<const uint8_t*>(utf8_payload.data()),
-      utf8_payload.size());
-  const NveBufferSlice inbound = nve_fabric_host_drain_events(bridge->fabric_host());
-  const uint32_t dirty = bridge->dispatch_native_events(inbound, /*auto_render=*/true);
+  NveDirectEvent ev{};
+  ev.surface_id = state->config.surface_id;
+  ev.node_id = static_cast<uint32_t>(node_id);
+  ev.timestamp_us = nve::current_timestamp_us();
+  ev.kind = static_cast<uint8_t>(nve::EventKind::Custom);
+  ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
+  ev.name = nve::make_str_slice(event_name);
+  ev.value = nve::make_bytes_value(NveBufferSlice{
+      utf8_payload.empty() ? nullptr : reinterpret_cast<const uint8_t*>(utf8_payload.data()),
+      utf8_payload.size(),
+  });
+  const uint32_t dirty =
+      state->session.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
   (void)state->session.drain_events();
   return static_cast<jint>(dirty);
 }
@@ -459,16 +445,17 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchScroll(
   ev.height = 0.0f;
   ev.value = nve::make_null_value();
   const uint32_t dirty =
-      state->session.dispatch_direct_events(NveEventBatch{&ev, 1u}, /*auto_render=*/true);
+      state->session.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
   (void)state->session.drain_events();
   return static_cast<jint>(dirty);
 }
 
 /// Reads the live zero-copy `NveSceneView` directly from `FabricHost`, packs dirty/changed
-/// accessibility/`TextInput`/`Image`/`SkiaCanvas` metadata into ONE flat binary `NVE_MET1` buffer,
-/// updates cached JNI `GlobalRef` `DirectByteBuffer` slabs ONLY when `(ptr, byte_len)` changes,
-/// and writes `[schema_hash, frame_id, node_count, dirty_count, removed_count, text_slab_len,
-/// children_slab_len (, metadata_used_bytes)]` into `out_meta`.
+/// accessibility/`TextInput`/`Image`/`SkiaCanvas` metadata into fixed-stride 64B `NveNodeMeta`
+/// records + flat companion byte blob, updates cached JNI `GlobalRef` `DirectByteBuffer` slabs
+/// ONLY when `(ptr, byte_len)` changes, and writes `[schema_hash, frame_id, node_count,
+/// dirty_count, removed_count, text_slab_len, children_slab_len, meta_record_count,
+/// meta_blob_used_bytes]` into `out_meta`.
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
     JNIEnv* env,
@@ -513,16 +500,20 @@ Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
           env, view.removed_ids, static_cast<size_t>(view.removed_count) * sizeof(uint32_t))) {
     mask |= (1u << kSlabRemovedIds);
   }
-  if (state->slab_buffers[kSlabMetadata].sync(
-          env, state->metadata_slab.data(), state->metadata_slab.size())) {
-    mask |= (1u << kSlabMetadata);
+  if (state->slab_buffers[kSlabMetaRecords].sync(
+          env, state->meta_records.data(), state->meta_records.size() * sizeof(NveNodeMeta))) {
+    mask |= (1u << kSlabMetaRecords);
+  }
+  if (state->slab_buffers[kSlabMetaBlob].sync(
+          env, state->meta_blob.data(), state->meta_blob.size())) {
+    mask |= (1u << kSlabMetaBlob);
   }
   state->slab_epoch_mask = mask;
 
   if (env != nullptr && out_meta != nullptr) {
     const jsize arr_len = env->GetArrayLength(out_meta);
     if (arr_len >= 7) {
-      const jlong meta[8] = {
+      const jlong meta[9] = {
           static_cast<jlong>(view.schema_hash),
           static_cast<jlong>(view.frame_id),
           static_cast<jlong>(view.node_count),
@@ -530,9 +521,10 @@ Java_dev_nve_android_NveMainActivity_nativeRenderFrame(
           static_cast<jlong>(view.removed_count),
           static_cast<jlong>(view.text_slab_len),
           static_cast<jlong>(view.children_slab_len),
-          static_cast<jlong>(state->metadata_used_bytes),
+          static_cast<jlong>(state->meta_record_count),
+          static_cast<jlong>(state->meta_blob_used_bytes),
       };
-      env->SetLongArrayRegion(out_meta, 0, arr_len >= 8 ? 8 : 7, meta);
+      env->SetLongArrayRegion(out_meta, 0, std::min<jsize>(arr_len, 9), meta);
     }
   }
   return static_cast<jint>(view.node_count);
@@ -608,10 +600,37 @@ Java_dev_nve_android_NveMainActivity_nativeGetRemovedIdsBuffer(
 }
 
 extern "C" JNIEXPORT jobject JNICALL
-Java_dev_nve_android_NveMainActivity_nativeGetMetadataBuffer(
+Java_dev_nve_android_NveMainActivity_nativeGetMetaRecordsBuffer(
     JNIEnv* env,
     jclass /*clazz*/,
     jlong handle_ptr) {
   return return_cached_slab(
-      reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabMetadata);
+      reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabMetaRecords);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_android_NveMainActivity_nativeGetMetaBlobBuffer(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle_ptr) {
+  return return_cached_slab(
+      reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabMetaBlob);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_compose_NveJniBridge_nativeGetMetaRecordsBuffer(
+    JNIEnv* env,
+    jobject /*thiz*/,
+    jlong handle_ptr) {
+  return return_cached_slab(
+      reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabMetaRecords);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_dev_nve_compose_NveJniBridge_nativeGetMetaBlobBuffer(
+    JNIEnv* env,
+    jobject /*thiz*/,
+    jlong handle_ptr) {
+  return return_cached_slab(
+      reinterpret_cast<AndroidSurfaceState*>(handle_ptr), env, kSlabMetaBlob);
 }

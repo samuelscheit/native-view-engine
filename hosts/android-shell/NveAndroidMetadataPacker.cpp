@@ -18,24 +18,6 @@ namespace nve::android_internal {
 
 namespace {
 
-inline void write_u16_le(uint8_t* dst, uint16_t v) noexcept {
-  dst[0] = static_cast<uint8_t>(v & 0xFFu);
-  dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
-}
-
-inline void write_u32_le(uint8_t* dst, uint32_t v) noexcept {
-  dst[0] = static_cast<uint8_t>(v & 0xFFu);
-  dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
-  dst[2] = static_cast<uint8_t>((v >> 16) & 0xFFu);
-  dst[3] = static_cast<uint8_t>((v >> 24) & 0xFFu);
-}
-
-inline void write_u64_le(uint8_t* dst, uint64_t v) noexcept {
-  for (size_t i = 0; i < 8u; ++i) {
-    dst[i] = static_cast<uint8_t>((v >> (i * 8u)) & 0xFFu);
-  }
-}
-
 uint16_t clamp_u16(size_t n) noexcept {
   return static_cast<uint16_t>(std::min<size_t>(n, std::numeric_limits<uint16_t>::max()));
 }
@@ -278,48 +260,59 @@ void pack_dirty_metadata(AndroidSurfaceState* state, const NveSceneView& view) {
     }
   }
 
-  size_t total_bytes = kMetaHeaderSize;
+  size_t total_blob_bytes = 0u;
   for (const auto& [nid, entry] : changed) {
     (void)nid;
-    total_bytes += kMetaRecordHeaderSize +
-                   static_cast<size_t>(clamp_u16(entry.label.size())) +
-                   static_cast<size_t>(clamp_u16(entry.role.size())) +
-                   static_cast<size_t>(clamp_u16(entry.hint.size())) +
-                   static_cast<size_t>(clamp_u16(entry.state_desc.size())) +
-                   static_cast<size_t>(clamp_u16(entry.placeholder.size())) +
-                   static_cast<size_t>(clamp_u16(entry.test_id.size())) +
-                   entry.draw_list.size();
+    total_blob_bytes += static_cast<size_t>(clamp_u16(entry.label.size())) +
+                        static_cast<size_t>(clamp_u16(entry.role.size())) +
+                        static_cast<size_t>(clamp_u16(entry.hint.size())) +
+                        static_cast<size_t>(clamp_u16(entry.state_desc.size())) +
+                        static_cast<size_t>(clamp_u16(entry.placeholder.size())) +
+                        static_cast<size_t>(clamp_u16(entry.test_id.size())) +
+                        entry.draw_list.size();
   }
 
-  const size_t min_backing = std::max(kMetaInitialCapacity, total_bytes);
-  if (state->metadata_slab.size() < min_backing) {
-    size_t next_cap = std::max(kMetaInitialCapacity, state->metadata_slab.size());
-    while (next_cap < min_backing) {
+  const size_t min_records = std::max(kMetaRecordsInitialCapacity, changed.size());
+  if (state->meta_records.size() < min_records) {
+    size_t next_cap = std::max(kMetaRecordsInitialCapacity, state->meta_records.size());
+    while (next_cap < min_records) {
       next_cap *= 2u;
     }
-    state->metadata_slab.resize(next_cap, 0u);
+    state->meta_records.resize(next_cap);
   }
 
-  uint8_t* dst = state->metadata_slab.data();
-  std::memcpy(dst, kMetaMagic.data(), kMetaMagic.size());
-  write_u16_le(dst + 8u, kMetaFormatVersion);
-  write_u16_le(dst + 10u, is_full_sync ? 1u : 0u);
-  write_u32_le(dst + 12u, static_cast<uint32_t>(changed.size()));
-  write_u64_le(dst + 16u, view.frame_id);
-  write_u32_le(dst + 24u, static_cast<uint32_t>(total_bytes));
-  write_u32_le(dst + 28u, 0u);
+  const size_t min_blob = std::max(kMetaBlobInitialCapacity, total_blob_bytes);
+  if (state->meta_blob.size() < min_blob) {
+    size_t next_cap = std::max(kMetaBlobInitialCapacity, state->meta_blob.size());
+    while (next_cap < min_blob) {
+      next_cap *= 2u;
+    }
+    state->meta_blob.resize(next_cap, 0u);
+  }
 
-  size_t pos = kMetaHeaderSize;
+  uint8_t* blob_dst = state->meta_blob.data();
+  size_t blob_pos = 0u;
+  size_t rec_idx = 0u;
   for (const auto& [nid, entry] : changed) {
     uint32_t flags = 0u;
-    if (entry.disabled) flags |= kMetaFlagDisabled;
-    if (entry.secure_text_entry) flags |= kMetaFlagSecureTextEntry;
-    if (entry.multiline) flags |= kMetaFlagMultiline;
-    if (!entry.draw_list.empty()) flags |= kMetaFlagHasDrawList;
-    if (entry.draw_list_corrupt) flags |= kMetaFlagDrawListCorrupt;
-    if (entry.accessibility_hidden) flags |= kMetaFlagAccessibilityHidden;
-    flags |= (static_cast<uint32_t>(entry.resize_mode) & kMetaResizeModeMask)
-             << kMetaResizeModeShift;
+    if (entry.disabled) flags |= NVE_META_FLAG_DISABLED;
+    if (entry.secure_text_entry) flags |= NVE_META_FLAG_SECURE_TEXT_ENTRY;
+    if (entry.multiline) flags |= NVE_META_FLAG_MULTILINE;
+    if (!entry.draw_list.empty()) flags |= NVE_META_FLAG_HAS_DRAW_LIST;
+    if (entry.draw_list_corrupt) flags |= NVE_META_FLAG_DRAW_LIST_CORRUPT;
+    if (entry.accessibility_hidden) flags |= NVE_META_FLAG_ACCESSIBILITY_HIDDEN;
+    flags |= (static_cast<uint32_t>(entry.resize_mode) & NVE_META_RESIZE_MODE_MASK)
+             << NVE_META_RESIZE_MODE_SHIFT;
+
+    auto append_blob = [&](const void* src, size_t n) -> uint32_t {
+      if (n == 0u) {
+        return 0u;
+      }
+      const uint32_t offset = static_cast<uint32_t>(blob_pos);
+      std::memcpy(blob_dst + blob_pos, src, n);
+      blob_pos += n;
+      return offset;
+    };
 
     const uint16_t label_len = clamp_u16(entry.label.size());
     const uint16_t role_len = clamp_u16(entry.role.size());
@@ -329,35 +322,28 @@ void pack_dirty_metadata(AndroidSurfaceState* state, const NveSceneView& view) {
     const uint16_t test_id_len = clamp_u16(entry.test_id.size());
     const uint32_t draw_len = static_cast<uint32_t>(entry.draw_list.size());
 
-    write_u32_le(dst + pos + 0u, nid);
-    write_u32_le(dst + pos + 4u, flags);
-    write_u16_le(dst + pos + 8u, label_len);
-    write_u16_le(dst + pos + 10u, role_len);
-    write_u16_le(dst + pos + 12u, hint_len);
-    write_u16_le(dst + pos + 14u, state_len);
-    write_u16_le(dst + pos + 16u, placeholder_len);
-    write_u16_le(dst + pos + 18u, test_id_len);
-    write_u32_le(dst + pos + 20u, draw_len);
-    write_u32_le(dst + pos + 24u, 0u);
-    pos += kMetaRecordHeaderSize;
-
-    auto copy_slice = [&](const void* src, size_t n) {
-      if (n > 0u) {
-        std::memcpy(dst + pos, src, n);
-        pos += n;
-      }
-    };
-    copy_slice(entry.label.data(), label_len);
-    copy_slice(entry.role.data(), role_len);
-    copy_slice(entry.hint.data(), hint_len);
-    copy_slice(entry.state_desc.data(), state_len);
-    copy_slice(entry.placeholder.data(), placeholder_len);
-    copy_slice(entry.test_id.data(), test_id_len);
-    copy_slice(entry.draw_list.data(), draw_len);
+    NveNodeMeta rec{};
+    rec.node_id = nid;
+    rec.flags = flags;
+    rec.label_offset = append_blob(entry.label.data(), label_len);
+    rec.label_len = label_len;
+    rec.role_len = role_len;
+    rec.role_offset = append_blob(entry.role.data(), role_len);
+    rec.hint_offset = append_blob(entry.hint.data(), hint_len);
+    rec.hint_len = hint_len;
+    rec.state_desc_len = state_len;
+    rec.state_desc_offset = append_blob(entry.state_desc.data(), state_len);
+    rec.placeholder_offset = append_blob(entry.placeholder.data(), placeholder_len);
+    rec.placeholder_len = placeholder_len;
+    rec.test_id_len = test_id_len;
+    rec.test_id_offset = append_blob(entry.test_id.data(), test_id_len);
+    rec.draw_list_offset = append_blob(entry.draw_list.data(), draw_len);
+    rec.draw_list_len = draw_len;
+    state->meta_records[rec_idx++] = rec;
   }
 
-  state->metadata_used_bytes = static_cast<uint32_t>(pos);
-  state->metadata_record_count = static_cast<uint32_t>(changed.size());
+  state->meta_record_count = static_cast<uint32_t>(rec_idx);
+  state->meta_blob_used_bytes = static_cast<uint32_t>(blob_pos);
   state->metadata_cache_frame = view.frame_id;
   state->metadata_cache_valid = true;
 }

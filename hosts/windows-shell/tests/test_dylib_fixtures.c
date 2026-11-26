@@ -106,30 +106,38 @@ static NveBufferSlice fixture_render(NveAppHandle h, uint64_t frame_id) {
   return out;
 }
 
-static uint32_t fixture_dispatch_events(NveAppHandle h, NveBufferSlice events) {
+static uint32_t fixture_dispatch_events(NveAppHandle h, NveEventBatch batch) {
   WinStatefulFixtureApp* app = (WinStatefulFixtureApp*)h;
-  if (app != NULL && events.ptr != NULL && events.len > 0) {
+  if (app != NULL && batch.ptr != NULL && batch.len > 0u) {
     app->counter += 1;
     return 1u;
   }
   return 0u;
 }
 
-static uint32_t fixture_set_props(NveAppHandle h, NveBufferSlice props) {
+static uint32_t fixture_set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
   WinStatefulFixtureApp* app = (WinStatefulFixtureApp*)h;
-  if (app == NULL || props.ptr == NULL || props.len == 0) {
+  if (app == NULL || entries == NULL || count == 0u) {
     return 0u;
   }
-  if (strstr((const char*)props.ptr, "Updated") != NULL) {
-    snprintf(app->prefix, sizeof(app->prefix), "Updated");
-    return 1u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (entries[i].key.len == 6u && entries[i].key.ptr != NULL &&
+        memcmp(entries[i].key.ptr, "prefix", 6u) == 0 &&
+        entries[i].value.tag == NVE_VAL_STR &&
+        entries[i].value.data.str_val.ptr != NULL) {
+      size_t n = entries[i].value.data.str_val.len;
+      if (n >= sizeof(app->prefix)) n = sizeof(app->prefix) - 1u;
+      memcpy(app->prefix, entries[i].value.data.str_val.ptr, n);
+      app->prefix[n] = '\0';
+      return 1u;
+    }
   }
   return 0u;
 }
 
-static NveBufferSlice fixture_drain_emitted_events(NveAppHandle h) {
+static NveEventBatch fixture_drain_emitted_events(NveAppHandle h) {
   (void)h;
-  NveBufferSlice empty = {NULL, 0};
+  NveEventBatch empty = {NULL, 0u, 0u};
   return empty;
 }
 
@@ -166,12 +174,10 @@ NVE_API const void* nve_get_interface(uint32_t interface_id) {
       fixture_destroy,
       fixture_render,
       fixture_dispatch_events,
-      NULL,
   };
   static const NveComponentApi kComponent = {
       fixture_set_props,
       fixture_drain_emitted_events,
-      NULL,
   };
   static const NveDevApi kDev = {
       fixture_apply_hot_patch,

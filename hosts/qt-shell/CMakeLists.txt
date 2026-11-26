@@ -98,7 +98,9 @@ if(TARGET Qt6::Quick AND TARGET Qt6::Qml)
       NveQtSGBuilder.hpp
       NveQtSGBuilder.cpp
       NveQtQuickItem.hpp
+      NveQtQuickItemInternal.hpp
       NveQtQuickItem.cpp
+      NveQtQuickItemInput.cpp
   )
   target_compile_definitions(nve_qt_shell_lib PUBLIC NVE_QT_HAS_QUICK=1)
   target_link_libraries(nve_qt_shell_lib
@@ -122,6 +124,8 @@ enable_testing()
 
 add_executable(nve_qt_shell_test
   tests/qt_shell_test.cpp
+  tests/qt_shell_a11y_media_test.cpp
+  tests/qt_shell_canvas_pair_test.cpp
   tests/qt_window_manager_test.cpp
 )
 if(MSVC)
@@ -148,7 +152,11 @@ add_test(NAME qt_shell_test COMMAND nve_qt_shell_test)
 set_tests_properties(qt_shell_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 if(NVE_QT_HAS_QUICK)
-  add_executable(nve_qt_quick_test tests/qt_quick_test.cpp)
+  add_executable(nve_qt_quick_test
+    tests/qt_quick_test.cpp
+    tests/qt_quick_extra_test.cpp
+    tests/qt_quick_media_canvas_test.cpp
+  )
   if(MSVC)
     target_compile_options(nve_qt_quick_test PRIVATE /Zc:__cplusplus /utf-8 /W4 /DNOMINMAX /DWIN32_LEAN_AND_MEAN)
   else()

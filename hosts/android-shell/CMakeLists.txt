@@ -69,6 +69,24 @@ if(NOT ANDROID)
         $<TARGET_FILE:nve_jni_test_recorder>
     )
 
+    add_executable(nve_android_pair_test tests/android_pair_jni_test.cpp)
+    if(NOT MSVC)
+      target_compile_options(nve_android_pair_test PRIVATE -Wall -Wextra -Werror)
+    endif()
+    target_include_directories(nve_android_pair_test PRIVATE
+      ${JNI_INCLUDE_DIRS}
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/src"
+    )
+    target_link_libraries(nve_android_pair_test
+      PRIVATE
+        nve_android_shell
+        nve_fabric_bridge
+    )
+    add_test(
+      NAME android_pair_jni_test
+      COMMAND nve_android_pair_test
+    )
+
     add_executable(nve_android_direct_channel_test tests/android_direct_channel_test.cpp)
     if(NOT MSVC)
       target_compile_options(nve_android_direct_channel_test PRIVATE -Wall -Wextra -Werror)

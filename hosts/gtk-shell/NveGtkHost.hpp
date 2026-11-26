@@ -186,9 +186,10 @@ class NveGtkHost {
 
   bool has_replayed_frame0() const noexcept { return session_.has_replayed_frame0(); }
 
-  /// Push UTF-8 JSON props to `NveComponentApi::set_props`, sync GTK widgets if dirty,
+  /// Push typed props to `NveComponentApi::set_props`, sync GTK widgets if dirty,
   /// and drain outbound events.
-  bool apply_props_json(std::string_view props_json);
+  bool apply_props(const PropMap& props);
+  bool apply_props(const NveMapEntry* entries, uint32_t count);
 
   /// Apply one binary `NVP1` Tier-1 hot-patch frame (`NveDevApi::apply_hot_patch`) and sync GTK widgets.
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
