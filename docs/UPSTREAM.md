@@ -30,6 +30,11 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **`subsecond` / `tracing` look heavy in twiggy but cost 0 bytes in release**: `HotFn::try_call` short-circuits on `!cfg!(debug_assertions)` and twiggy names component bodies `<C as subsecond::HotFunction>::call_it`; tracing callsites fold away without a subscriber. No action needed.
 - **wasm-split (`0.7.x` / `0.8.0-alpha.1`) crashes under fat LTO + `codegen-units = 1`** (walrus GC assertion `!self.dead.contains(&id)`, open PR DioxusLabs/dioxus#5795), and split routes render twice under SSR hydration (discussion #5287). Mitigation: none adopted; per-panel splitting needs a pinned fixed `wasm-split-cli` or an own split tool.
 
+### rust-analyzer (`0.4.3133`): string-parsed proc-macro output gets out-of-file spans
+
+- **Observed**: `codeLens/resolve` (impls lens) panics `line-index … invalid offset` on every `#[derive(NveAbi)]` type whose expansion is long. rust-analyzer's proc-macro server `TokenStream::from_str` (`crates/proc-macro-api/src/token_stream.rs`, `SpanLike::derive_ranged`) keeps the call-site anchor but sets each token's range to its byte offset inside the parsed string, so ranges point past the derive and often past EOF. rustc gives such tokens `Span::call_site()`.
+- **Mitigation**: `packages/core/abi-macros/src/lib.rs` (`parse_at_call_site`) re-spans every parsed token to `Span::call_site()`. Any new proc-macro that emits via `str::parse::<TokenStream>()` must do the same.
+
 ### Rust `std` on `wasm32-unknown-unknown`
 
 - **`std::time::Instant::now()` panics at runtime**

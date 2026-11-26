@@ -6,7 +6,7 @@ extern crate proc_macro;
 mod emit;
 mod parse;
 
-use proc_macro::TokenStream;
+use proc_macro::{Group, LexError, Span, TokenStream, TokenTree};
 
 pub(crate) enum ParsedItem {
     Struct(ParsedRecord),
@@ -57,15 +57,36 @@ pub(crate) struct ParsedVariant {
 #[proc_macro_derive(NveAbi, attributes(nve_abi))]
 pub fn derive_nve_abi(input: TokenStream) -> TokenStream {
     match parse::parse_item(input) {
-        Ok(item) => emit::emit_item(&item)
-            .parse::<TokenStream>()
+        Ok(item) => parse_at_call_site(&emit::emit_item(&item))
             .unwrap_or_else(|e| compile_error(&format!("nve-abi-macros emit error: {e}"))),
         Err(msg) => compile_error(&msg),
     }
 }
 
 fn compile_error(msg: &str) -> TokenStream {
-    format!("::core::compile_error!({});", emit::quote_str(msg))
-        .parse()
+    parse_at_call_site(&format!("::core::compile_error!({});", emit::quote_str(msg)))
         .expect("compile_error! must parse as TokenStream")
+}
+
+/// Parses emitted source and pins every token to `Span::call_site()`.
+///
+/// rustc already gives string-parsed tokens the call-site span, but rust-analyzer's proc-macro
+/// server keeps the call-site anchor while replacing each range with the token's byte offset in
+/// `src`. Those ranges point past the derive (often past EOF) and panic IDE features such as the
+/// impls code lens (`line-index: invalid offset`). See docs/UPSTREAM.md.
+fn parse_at_call_site(src: &str) -> Result<TokenStream, LexError> {
+    Ok(respan(src.parse()?, Span::call_site()))
+}
+
+fn respan(stream: TokenStream, span: Span) -> TokenStream {
+    stream
+        .into_iter()
+        .map(|mut tt| {
+            if let TokenTree::Group(g) = &tt {
+                tt = TokenTree::Group(Group::new(g.delimiter(), respan(g.stream(), span)));
+            }
+            tt.set_span(span);
+            tt
+        })
+        .collect()
 }
