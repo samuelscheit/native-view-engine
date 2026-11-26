@@ -44,3 +44,7 @@ High-signal invariants, engineering practices, and workflow rules for agents wor
 cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 cargo run --locked -p nve-cli -- codegen abi && cargo run --locked -p nve-cli -- codegen abi --check  # Generate + 15/15 parity check
 ```
+
+## Learned rules
+
+- **Delegates land their own work**: Each delegate merges, verifies and pushes its own finished branch onto `main` as soon as it is done, rebasing onto the latest `main` and resolving conflicts itself. Do not collect finished branches for the coordinator to merge in a batch, which makes everyone wait on the slowest agent.
