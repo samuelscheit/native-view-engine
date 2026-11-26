@@ -6,8 +6,39 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ## P1 — Direct Typed Render ABI, Interaction Primitives & Host Parity (from [quality-audit.md](./quality-audit.md))
 
+- [ ] **Track 1B-1c — Mechanical Invariant Gates (`tests/arch_invariants.rs`), Pervasive Benchmarks & 4-Lens Dual Review**
+  - Run fresh-eyes 4-lens dual review (`gemini-4-neon` + `anthropic/claude-opus-5-5`) over the landed Word-table `NodeStore` / `NVE2` / `nve-hash` / standalone modules work and fix all real findings.
+  - Add a fast `syn`-based `tests/arch_invariants.rs` suite wired into `cargo test --workspace` and `./scripts/check-all.sh` that mechanically fails CI on:
+    - Bare primitive domain fields (`*_id`, `*_key`, `*_slot`, `*_index`, `*_off`, `*_len`, `*_mask`, `*_flags`, `*_us`, `parent`, `surface`, `node`) in `packages/core/{abi,store,engine}` structs (must be `#[repr(transparent)]`/`#[repr(C)]` newtypes unless explicitly justified).
+    - Hardcoded `*_SCHEMA_HASH = 0x...` hex literals in Rust or raw hex schema hashes in `docs/content/**/*.mdx`.
+    - Any FNV-1a functions/constants anywhere in the repository.
+    - Any `packages/core/*` or `packages/backends/*` crate depending on `packages/modules/*`.
+    - Regressions of `ComponentKind`, `NVE_HOST_CLASS_*`, or `NativeEventKind::Custom`.
+    - `from_utf8` inside `StrArena` read methods or outside explicit ingress/wire decoders.
+    - Platform-specific CSS/HTML formatters (`write_css*`, `as_css`, `as_html*`) inside `packages/core/*`.
+    - Any workspace crate under `packages/` missing a non-empty `README.md`.
+  - Expand `CountingAlloc` zero-allocation steady-state hot-path tests and pervasive Criterion micro + macro benchmarks (reporting latency + allocation counts + sizes across small/realistic/stress inputs) plus release ASM checks on hot primitives.
+
+- [ ] **Track 1B-1d — Uniform 64-Byte Typed `NveEvent`, Zero-Boilerplate Table/Codec Macros, Core/Motion Cleanup & Crate READMEs**
+  - **Uniform 64-byte `NveEvent` (`#[repr(C, align(64))]`)**: Replace `NativeEventKind`, `NveEventPayloadTag`, heap-allocating `EventPayload`, global `EventMask`, and 96 B `NveDirectEvent` with one typed 1-cache-line `NveEvent` (`TimestampUs`, `TableKey`, `SurfaceId`, `NodeId`, `EventId`, `EventFlags`, `[Word; 4]` zero-alloc inline payload, `RawEventBytes`), moving event listener masks onto individual tables (`Interaction`, `Scroll`, `TextInput`, modules) so state, commands, and events are 100% uniform table operations with zero closed enums in `nve-abi`.
+  - **Zero-boilerplate table, enum & wire macros (`nve-abi-macros` / `nve-store`)**:
+    - Upgrade `#[derive(NveTable)]` to compute bit-packing offsets at compile time via `const` expressions over `<T as WordValue>::BITS` (deleting redundant `#[bits(N)]` on `bool`/`u8`/`u16`/enums everywhere).
+    - Add auto-sized `#[derive(WordEnum)]` + first-class `Opt<T>` (`Opt<f32>`, `Opt<u16>`, `Opt<Rgba>`, `Opt<Enum>`) to delete manual wrapper structs (`OptAutofillHint`), magic sentinel comments (`u16::MAX`, `f32::NAN`), and split bool+value pairs (`tint_enabled`).
+    - Add `word_flags!` for typed bitfields (`LinkRel`, `TextDecoration`) and `#[nve_table(inherited)]` to auto-generate `Typography`'s explicit-field mask (deleting manual `SET_*` constants).
+    - Add one reusable `#[derive(NveCodec)]` for genuine Tier 2 binary codecs (`signal_codec.rs`, `crdt/hlc.rs`, `wire-core/frame.rs`), delete unnecessary byte codecs on Tier 1 in-memory structs (`KeyboardInsets::encode_bytes`/`decode_bytes`), and collapse duplicate internal NVE types (`PatchTextAlign` vs `TextAlign`, `schema_bridge.rs`).
+  - **Core purity & standalone `packages/modules/motion/`**:
+    - Move all Web CSS/HTML formatting & string parsing (`layout_ext.rs`, `motion.rs`, `paint.rs`, `transform.rs`, `media.rs`, `tables/*.rs` `write_css*`/`as_css`/`as_html*`/`parse`) out of `packages/core/*` strictly into `nve-backend-web` (zero-alloc `eq_ignore_ascii_case` / kebab macro where needed).
+    - Extract `motion` out of the `components` crate into a uniform standalone capability module **`packages/modules/motion/`** (`nve-motion` with clean `src/{easing,spring,clock,interpolate}.rs` + thin leaf `web/` and `skia/` adapters, matching `svg`/`canvas`).
+    - Clean up remaining `packages/core/components` into pure stateless core tables (`packages/core/tables` or trimmed `nve-components`).
+  - **Lean `README.md` for every crate under `packages/`** (15–30 lines: role & layer, key public API + 5-line example, dependency invariants, test/bench commands).
+
+- [ ] **Track 1B-1e — Codegen Modernization (Templates + Static Native Files)**
+  - Delete dead legacy codegen targets and hand-duplicated schema definitions superseded by `#[derive(NveAbi)]` / `#[derive(NveTable)]` (`wire.rs` old `NVE_DRAW1`/old `EventRing`, `schema_bridge.rs`, duplicated schema specs).
+  - Move static, unchanging foreign runtime helpers (`NVE_API` macros, XXH64 helpers, EventRing/Reloc helpers) out of escaped Rust `writeln!` string literals into real checked-in `.h`/`.hpp`/`.ts`/`.swift`/`.dart`/`.java` files (with native IDE highlighting, linting, and formatting).
+  - Migrate remaining schema-derived multi-language emitters to **Askama** or **MiniJinja** templates (keeping type-name lowering as thin Rust IR helpers).
+
 - [ ] **Track 1B-2 — Host-Owned `packages/core/runtime` (Model A + 5→2 Layout Unification, ADR-003/ADR-004)**
-  - Track 1B-1 (zero-overhead monomorphized `RenderSink` + single `BatchSink` + deletion of all out-of-band `sync_*_from`/`iter_*`/`in_process_mode` side-channels) is landed; remaining Track 1B work is building host-owned `packages/core/runtime` (`libnve_runtime`: `TaffyLayoutEngine` default + opt-in `Yoga`, LRU-cached OS `TextMeasurer` C callback with batch mode, `InteractionTracker`, `MotionDriver`, extended `NveSceneView`, Model A `measure_surface` with baselines/dry-run/invalidation callback) and binding all native hosts (`swiftui-kit`, `flutter-plugin`, `apple-common`, `android-shell`/`compose-kit`, `gtk-shell`, `qt-shell`, `windows-shell`) to it.
+  - Build host-owned `packages/core/runtime` (`libnve_runtime`: direct `TaffyStoreLayout` default + opt-in `Yoga`, LRU-cached OS `TextMeasurer` C callback with batch mode, `InteractionTracker`, `MotionDriver`, finalized `NveSceneView`/`NveTableView`/`NveEvent`, Model A `measure_surface` with baselines/dry-run/invalidation callback) and bind all native hosts (`swiftui-kit`, `flutter-plugin`, `apple-common`, `android-shell`/`compose-kit`, `gtk-shell`, `qt-shell`, `windows-shell`) to it.
   - Delete ~8,000–11,500 LOC of duplicated C++/Dart layout & decoder code (`flexbox_solver.cpp`, `yoga_layout.cpp`, `shadow_tree.cpp`, `scene_publisher.cpp`, `fabric_c_api.cpp`, `command_{en,de}coder.hpp`, `nve_snapshot.hpp`, `flex_layout.dart`, `command_decoder.dart`), shrink C++ helpers into header-only `packages/core/host-cxx`, and extract optional Model A RN Fabric `ComponentView` adapters into `packages/modules/react-native-fabric`.
 
 - [ ] **Track 2 — Real `nve-ui` Interaction Primitives, Floating Overlays & Behavioral E2E**
@@ -15,7 +46,7 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
   - Delete duplicate `packages/framework/ui/src/style_buf/` builders and wire real `:hover`/`:active`/`:focus-visible`, `CursorKind`, pointer dragging (`SplitPane`, `BottomSheet`), hover/anchored floating overlays (`Tooltip`, `Popover`, `DropdownMenu`, `Dialog`), and real scroll sync (`VirtualList`) across `nve-ui` and `examples/kitchen-sink`, verified with live browser/window behavioral assertions.
 
 - [ ] **Track 3 — Hardware Skia Performance & Broken Host Linkage Fixes**
-  - Fix GPU Skia per-frame image/font churn (`gpu/skia_renderer.rs`: GPU texture cache, bold `Typeface` cache, `CosmicTextEngine` shaping) and add real Vulkan/D3D12 parity tests.
+  - Fix Skia full display-list rebuild on every commit & motion tick (retained per-node display-list / compositor-layer caching for 120 Hz opacity/transform updates) plus GPU Skia per-frame image/font churn (`gpu/skia_renderer.rs`: GPU texture cache, bold `Typeface` cache, `CosmicTextEngine` shaping) and add real Vulkan/D3D12 parity tests.
   - Fix `compose-kit` 15 missing JNI exports in `hosts/android-shell`, `swiftui-kit` empty `NveSurfaceRepresentable` + `TextInput`, `windows-shell` keyboard/IME/UIA, `skia-shell` AccessKit, and bind `NVE_IFACE_HOST = 5` across real hosts (`web-shell`, Apple, Android, Qt, GTK, Windows).
 
 - [ ] **Adopt `FrameArena` on Hot `nve-dioxus` / `nve-engine` Per-Frame Allocation Paths**
