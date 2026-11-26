@@ -1,15 +1,28 @@
-//! Shared std-only utilities for `arch_invariants`: repo traversal, `git ls-files`,
-//! violation formatting, and lightweight `Cargo.toml` manifest parsing.
+//! Shared std-only utilities and `OnceLock<RepoIndex>` cache for `arch_invariants`.
+//!
+//! Runs `git ls-files` and `cargo metadata --format-version 1 --offline --locked` ONCE per
+//! test binary invocation and caches file contents + stripped Rust views so every test runs fast.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{OnceLock, RwLock};
 
+pub use crate::json_meta::WorkspaceGraph;
 pub use crate::rust_lex::{
-    contains_ident, parse_rust_structs, production_code_prefix, strip_rust_comments_and_strings,
+    contains_ident, extract_raw_string_spans, parse_rust_enums, parse_rust_structs,
+    strip_cfg_test_items, strip_rust_comments_and_strings,
 };
 use crate::Stage;
+
+/// Shared exclusion list for documentation files that legitimately cite historical acronyms,
+/// FNV-1a history, or retired buzzwords.
+pub const DOC_EXCLUDES: &[&str] = &[
+    "docs/CHANGELOG.md",
+    "docs/BACKLOG.md",
+    "docs/quality-audit.md",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
@@ -44,6 +57,98 @@ impl Violation {
             reason: reason.into(),
         }
     }
+}
+
+/// Cached views of a Rust source file with 1-based line alignment preserved across all views.
+#[derive(Debug, Clone)]
+pub struct CachedRustFile {
+    pub raw: String,
+    /// Original source with `#[cfg(test)]` items blanked (newlines preserved).
+    pub prod_raw: String,
+    /// `prod_raw` with comments and string/char literals blanked (newlines preserved).
+    pub prod_clean: String,
+    /// Full file with comments and string/char literals blanked (newlines preserved).
+    pub all_clean: String,
+}
+
+pub struct RepoIndex {
+    pub root: PathBuf,
+    pub tracked: Vec<String>,
+    pub graph: WorkspaceGraph,
+    text_cache: RwLock<BTreeMap<String, Option<String>>>,
+    rust_cache: RwLock<BTreeMap<String, Option<CachedRustFile>>>,
+}
+
+impl RepoIndex {
+    fn build() -> Self {
+        let root = repo_root();
+        let tracked = git_tracked_files_uncached(&root);
+        let graph = WorkspaceGraph::load_from_cargo(&root);
+        Self {
+            root,
+            tracked,
+            graph,
+            text_cache: RwLock::new(BTreeMap::new()),
+            rust_cache: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn read_text(&self, rel: &str) -> Option<String> {
+        if let Ok(guard) = self.text_cache.read()
+            && let Some(cached) = guard.get(rel)
+        {
+            return cached.clone();
+        }
+        let val = fs::read_to_string(self.root.join(rel)).ok();
+        if let Ok(mut guard) = self.text_cache.write() {
+            guard.insert(rel.to_string(), val.clone());
+        }
+        val
+    }
+
+    pub fn read_rust(&self, rel: &str) -> Option<CachedRustFile> {
+        if let Ok(guard) = self.rust_cache.read()
+            && let Some(cached) = guard.get(rel)
+        {
+            return cached.clone();
+        }
+        let val = self.read_text(rel).map(|raw| {
+            let prod_raw = strip_cfg_test_items(&raw);
+            let prod_clean = strip_rust_comments_and_strings(&prod_raw);
+            let all_clean = strip_rust_comments_and_strings(&raw);
+            CachedRustFile {
+                raw,
+                prod_raw,
+                prod_clean,
+                all_clean,
+            }
+        });
+        if let Ok(mut guard) = self.rust_cache.write() {
+            guard.insert(rel.to_string(), val.clone());
+        }
+        val
+    }
+
+    /// Returns sorted workspace-relative paths of `.rs` files under `dir_prefix` (e.g. `"packages/"`),
+    /// combining tracked files with any untracked on-disk files while ignoring symlinks & build dirs.
+    pub fn rs_files_under(&self, dir_prefix: &str) -> Vec<String> {
+        let target_dir = self.root.join(dir_prefix.trim_end_matches('/'));
+        if !target_dir.exists() {
+            return Vec::new();
+        }
+        let mut all = Vec::new();
+        walk_files_no_symlinks(&target_dir, &mut all);
+        all.into_iter()
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+            .map(|p| rel_path(&self.root, &p))
+            .collect()
+    }
+}
+
+static REPO_INDEX: OnceLock<RepoIndex> = OnceLock::new();
+
+pub fn repo_index() -> &'static RepoIndex {
+    REPO_INDEX.get_or_init(RepoIndex::build)
 }
 
 pub fn repo_root() -> PathBuf {
@@ -97,10 +202,38 @@ pub fn assert_no_violations(invariant: &str, violations: &[Violation]) {
 pub fn assert_staged_violations(stage: Stage, invariant: &str, violations: &[Violation]) {
     if stage.is_enforced() {
         assert_no_violations(&format!("{invariant} [{}]", stage.label()), violations);
+        return;
+    }
+    let report = std::env::var("NVE_REPORT_INVARIANTS").is_ok_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "all"
+        )
+    });
+    if report {
+        eprintln!(
+            "\n[NVE_REPORT_INVARIANTS][{}] {} — {} violation(s):",
+            stage.label(),
+            invariant,
+            violations.len()
+        );
+        for v in violations.iter().take(40) {
+            if v.line > 0 {
+                eprintln!("  - {}:{}: {}", v.path, v.line, v.reason);
+            } else {
+                eprintln!("  - {}: {}", v.path, v.reason);
+            }
+            if !v.snippet.is_empty() {
+                eprintln!("      snippet: {}", v.snippet);
+            }
+        }
+        if violations.len() > 40 {
+            eprintln!("  ... and {} more violation(s)", violations.len() - 40);
+        }
     }
 }
 
-pub fn git_tracked_files(root: &Path) -> Vec<String> {
+fn git_tracked_files_uncached(root: &Path) -> Vec<String> {
     let output = Command::new("git")
         .arg("ls-files")
         .current_dir(root)
@@ -117,22 +250,40 @@ pub fn git_tracked_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-pub fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Walks files without following symlinks and skips build/dependency directories.
+pub fn walk_files_no_symlinks(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str == "target" || name_str == ".git" || name_str == "node_modules" {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_symlink() {
             continue;
         }
-        if path.is_dir() {
-            walk_files(&path, out);
-        } else if path.is_file() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if matches!(
+            name_str.as_ref(),
+            "target"
+                | ".git"
+                | "node_modules"
+                | "build"
+                | ".build"
+                | ".gradle"
+                | "DerivedData"
+                | "Pods"
+                | ".dart_tool"
+        ) {
+            continue;
+        }
+        let path = entry.path();
+        if ft.is_dir() {
+            walk_files_no_symlinks(&path, out);
+        } else if ft.is_file() {
             out.push(path);
         }
     }
@@ -140,27 +291,20 @@ pub fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 pub fn find_files_named(dir: &Path, exact_name: &str) -> Vec<PathBuf> {
     let mut all = Vec::new();
-    walk_files(dir, &mut all);
+    walk_files_no_symlinks(dir, &mut all);
     all.into_iter()
         .filter(|p| p.file_name().and_then(|n| n.to_str()) == Some(exact_name))
         .collect()
 }
 
-pub fn find_rs_files(dir: &Path) -> Vec<PathBuf> {
-    let mut all = Vec::new();
-    walk_files(dir, &mut all);
-    all.into_iter()
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
-        .collect()
-}
-
+/// Returns `true` only for dedicated test/bench files (`tests/`, `benches/`, `tests.rs`,
+/// `*_tests.rs`). Does NOT match `*_test.rs` (e.g., production `hit_test.rs`).
 pub fn is_test_or_bench_rs(rel: &str) -> bool {
-    let parts: Vec<&str> = rel.split('/').collect();
-    if parts.iter().any(|p| *p == "tests" || *p == "benches") {
+    if rel.split('/').any(|p| p == "tests" || p == "benches") {
         return true;
     }
-    let file = parts.last().copied().unwrap_or("");
-    file == "tests.rs" || file.ends_with("_test.rs") || file.ends_with("_tests.rs")
+    let file = rel.rsplit('/').next().unwrap_or(rel);
+    file == "tests.rs" || file.ends_with("_tests.rs")
 }
 
 pub fn is_binary_ext(rel: &str) -> bool {
@@ -171,79 +315,4 @@ pub fn is_binary_ext(rel: &str) -> bool {
     ];
     let lower = rel.to_ascii_lowercase();
     EXTS.iter().any(|ext| lower.ends_with(ext))
-}
-
-/// Lightweight parsed `Cargo.toml` focusing on `[package]`, `[features]`, and dependency tables.
-#[derive(Debug, Default)]
-pub struct ParsedManifest {
-    pub package_name: Option<String>,
-    pub has_bench_table: bool,
-    pub features: BTreeMap<String, (usize, String)>,
-    /// Regular `[dependencies]` and `[target.<cfg>.dependencies]`: `(dep_name, line, section, rhs)`.
-    pub runtime_deps: Vec<(String, usize, String, String)>,
-    /// `[dev-dependencies]` and `[target.<cfg>.dev-dependencies]`.
-    pub dev_deps: Vec<(String, usize, String, String)>,
-}
-
-pub fn parse_cargo_toml(content: &str) -> ParsedManifest {
-    let mut out = ParsedManifest::default();
-    let mut section = String::new();
-    for (idx, raw_line) in content.lines().enumerate() {
-        let line_no = idx + 1;
-        let line = strip_toml_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with("[[") && line.ends_with("]]") {
-            let tbl = line[2..line.len() - 2].trim();
-            if tbl == "bench" {
-                out.has_bench_table = true;
-            }
-            section = line.to_string();
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            section = line[1..line.len() - 1].trim().to_string();
-            continue;
-        }
-        let Some((lhs, rhs)) = line.split_once('=') else {
-            continue;
-        };
-        let key = lhs.trim().trim_matches('"').to_string();
-        let val = rhs.trim().to_string();
-        if section == "package" && key == "name" {
-            out.package_name = Some(val.trim_matches('"').to_string());
-        } else if section == "features" {
-            out.features.insert(key, (line_no, val));
-        } else if section == "dependencies"
-            || (section.starts_with("target.") && section.ends_with(".dependencies"))
-        {
-            out.runtime_deps.push((key, line_no, section.clone(), val));
-        } else if section == "dev-dependencies"
-            || (section.starts_with("target.") && section.ends_with(".dev-dependencies"))
-        {
-            out.dev_deps.push((key, line_no, section.clone(), val));
-        }
-    }
-    out
-}
-
-fn strip_toml_comment(line: &str) -> &str {
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-    for (i, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_double => escaped = true,
-            '"' if !in_single => in_double = !in_double,
-            '\'' if !in_double => in_single = !in_single,
-            '#' if !in_single && !in_double => return &line[..i],
-            _ => {}
-        }
-    }
-    line
 }

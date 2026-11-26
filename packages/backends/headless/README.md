@@ -13,7 +13,7 @@ use nve_backend_headless::HeadlessBackend;
 use nve_engine::{RenderBackend, Viewport};
 
 let mut backend = HeadlessBackend::new();
-backend.set_viewport(Viewport { width: 800.0, height: 600.0, scale_factor: 1.0 });
+backend.set_viewport(1, Viewport { width: 800.0, height: 600.0, scale_factor: 1.0 });
 ```
 
 ## Dependency Invariants

@@ -12,7 +12,7 @@ Universal framework-compatibility orchestration layer (`packages/core/interop`, 
 use nve_interop::{ChannelId, NveChannelBus};
 
 let mut bus = NveChannelBus::new();
-let _ch = ChannelId(1);
+let _ch: ChannelId = 1;
 let _ = &mut bus;
 ```
 

@@ -11,7 +11,7 @@ Reusable documentation site framework (`packages/framework/docs`, **Framework la
 ```rust
 use nve_docs::{DocsRoute, DocsSiteConfig};
 
-let route = DocsRoute::from_path("/getting-started");
+let route = DocsRoute::new("/getting-started");
 let _ = (route, DocsSiteConfig::default);
 ```
 

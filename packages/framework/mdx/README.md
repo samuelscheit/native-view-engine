@@ -9,9 +9,9 @@ Zero-dependency pure-Rust Markdown & declarative `.mdx` compiler, syntax highlig
 - `highlight::{highlight_code, Language, TokenKind}`, `nav::{build_navigation, NavTree}`, `search::SearchIndex`, `codegen::generate_rust_module`
 
 ```rust
-use nve_mdx::{compile_document, CompileOptions};
+use nve_mdx::compile_document;
 
-let page = compile_document("/intro", "# Hello\n\nBody.", &CompileOptions::default()).unwrap();
+let page = compile_document("/intro", "intro.mdx", "# Hello\n\nBody.");
 assert!(!page.blocks.is_empty());
 ```
 

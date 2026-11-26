@@ -13,7 +13,7 @@ use nve_haptics::{HapticsBackend, ImpactStyle, MemoryHaptics};
 
 let haptics = MemoryHaptics::new();
 haptics.impact(ImpactStyle::Medium).unwrap();
-assert_eq!(haptics.recorded().len(), 1);
+assert_eq!(haptics.log().len(), 1);
 ```
 
 ## Dependency Invariants

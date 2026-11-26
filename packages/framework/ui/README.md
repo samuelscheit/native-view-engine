@@ -9,10 +9,10 @@ Accessible, themeable Dioxus UI component library (`packages/framework/ui`, **Fr
 - `form::{FormState, FieldHandle, FieldState, ValidationToken}`, `theme`, `positioning`, `spatial_focus`, `history`
 
 ```rust
-use nve_ui::{FenwickHeightTree, RowHeights};
+use nve_ui::FenwickHeightTree;
 
-let heights = RowHeights::uniform(1_000, 40.0);
-let _tree = FenwickHeightTree::from_heights(&heights);
+let tree = FenwickHeightTree::from_heights(vec![40; 1_000]);
+assert_eq!(tree.len(), 1_000);
 ```
 
 ## Dependency Invariants

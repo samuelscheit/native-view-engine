@@ -13,12 +13,12 @@ use nve_backend_skia::SkiaBackend;
 use nve_engine::{RenderBackend, Viewport};
 
 let mut backend = SkiaBackend::new();
-backend.set_viewport(Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
+backend.set_viewport(1, Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
 ```
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `nve-backend-headless`, `cosmic-text`, `unicode-segmentation`, optional `skia-safe`/`nve-layout-yoga`/platform GPU crates.
+- **Key dependencies**: `nve-abi`, `nve-components`, `nve-engine`, `nve-backend-headless`, `cosmic-text`, `unicode-segmentation`, `flate2`, `raw-window-handle`, plus optional `skia-safe`, `nve-layout-yoga`, and platform GPU crates (`ash`, `objc2-*`, `windows`).
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

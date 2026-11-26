@@ -1,15 +1,18 @@
-//! Lightweight std-only Rust lexer and braced `struct` field parser.
+//! Lightweight std-only Rust lexer, raw-string span extractor, and `#[cfg(test)]` item stripper.
 //!
-//! Preserves 1-based line numbers when stripping comments and string/char literals so every
-//! invariant diagnostic points to the exact `file:line`.
+//! Every transformation preserves exact byte alignment for newlines (`\n`) so 1-based line
+//! numbers stay accurate even on CRLF files.
 
-/// Strips Rust comments (`//`, nested `/* ... */`) and string/char literals while preserving
-/// exact line counts so line numbers stay aligned with the original source.
+pub use crate::rust_items::{parse_rust_enums, parse_rust_structs, ParsedStruct};
+
+/// Strips Rust comments (`//`, nested `/* ... */`) and string/c-string/raw-string/char literals
+/// while preserving exact `\n` counts and byte positions.
 pub fn strip_rust_comments_and_strings(src: &str) -> String {
     let bytes = src.as_bytes();
     let len = bytes.len();
     let mut out = Vec::with_capacity(len);
     let mut i = 0;
+
     while i < len {
         // Line comment
         if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
@@ -40,45 +43,31 @@ pub fn strip_rust_comments_and_strings(src: &str) -> String {
             }
             continue;
         }
-        // Raw string literal: r#"..."# / br#"..."#
-        if (bytes[i] == b'r' || (bytes[i] == b'b' && i + 1 < len && bytes[i + 1] == b'r'))
-            && is_raw_string_start(bytes, i)
-        {
-            if bytes[i] == b'b' {
-                out.push(b' ');
-                i += 1;
-            }
-            out.push(b' ');
-            i += 1; // 'r'
-            let mut hashes = 0usize;
-            while i < len && bytes[i] == b'#' {
-                hashes += 1;
-                out.push(b' ');
-                i += 1;
-            }
-            if i < len && bytes[i] == b'"' {
-                out.push(b' ');
-                i += 1;
-                while i < len {
-                    if bytes[i] == b'"' {
-                        let mut matched = 0usize;
-                        while matched < hashes
-                            && i + 1 + matched < len
-                            && bytes[i + 1 + matched] == b'#'
-                        {
-                            matched += 1;
-                        }
-                        if matched == hashes {
-                            out.extend(std::iter::repeat_n(b' ', hashes + 1));
-                            i += 1 + hashes;
-                            break;
-                        }
-                    }
-                    out.push(if bytes[i] == b'\n' { b'\n' } else { b' ' });
-                    i += 1;
+        // Raw string literal: r"...", r#"..."#, br#"..."#, cr#"..."#
+        if let Some((prefix_len, hashes)) = match_raw_string_prefix(bytes, i) {
+            let start_quote = i + prefix_len;
+            out.extend(std::iter::repeat_n(b' ', prefix_len + 1));
+            i = start_quote + 1;
+            while i < len {
+                if bytes[i] == b'"' && has_n_hashes(bytes, i + 1, hashes) {
+                    out.extend(std::iter::repeat_n(b' ', hashes + 1));
+                    i += 1 + hashes;
+                    break;
                 }
-                continue;
+                out.push(if bytes[i] == b'\n' { b'\n' } else { b' ' });
+                i += 1;
             }
+            continue;
+        }
+        // Byte/C regular string prefix (`b"..."`, `c"..."`)
+        if (bytes[i] == b'b' || bytes[i] == b'c')
+            && i + 1 < len
+            && bytes[i + 1] == b'"'
+            && !is_ident_before(bytes, i)
+        {
+            out.push(b' ');
+            i += 1;
+            continue;
         }
         // Regular string literal
         if bytes[i] == b'"' {
@@ -101,9 +90,22 @@ pub fn strip_rust_comments_and_strings(src: &str) -> String {
             }
             continue;
         }
-        // Char literal (avoid lifetimes like `'a`)
+        // Byte char literal `b'x'`
+        if bytes[i] == b'b'
+            && i + 1 < len
+            && bytes[i + 1] == b'\''
+            && !is_ident_before(bytes, i)
+            && let Some(end_idx) = match_char_literal(src, i + 1)
+        {
+            for &b in &bytes[i..end_idx] {
+                out.push(if b == b'\n' { b'\n' } else { b' ' });
+            }
+            i = end_idx;
+            continue;
+        }
+        // Char literal (handles `'\''`, `'\u{1234}'`, multi-byte UTF-8 `'—'`, ignores lifetimes `'a`)
         if bytes[i] == b'\''
-            && let Some(end_idx) = match_char_literal(bytes, i)
+            && let Some(end_idx) = match_char_literal(src, i)
         {
             for &b in &bytes[i..end_idx] {
                 out.push(if b == b'\n' { b'\n' } else { b' ' });
@@ -114,35 +116,140 @@ pub fn strip_rust_comments_and_strings(src: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8(out).expect("ASCII/UTF-8 preserved")
+    String::from_utf8(out).expect("UTF-8 preserved")
 }
 
-fn is_raw_string_start(bytes: &[u8], i: usize) -> bool {
-    if i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
-        return false;
+/// Returns `(start_line, end_line, line_span)` for every raw string literal (`r"..."`, `r#"..."#`,
+/// `br#"..."#`, `cr#"..."#`) outside comments and regular strings.
+pub fn extract_raw_string_spans(src: &str) -> Vec<(usize, usize, usize)> {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    let mut line = 1usize;
+
+    while i < len {
+        if bytes[i] == b'\n' {
+            line += 1;
+            i += 1;
+            continue;
+        }
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            let mut depth = 1usize;
+            i += 2;
+            while i < len && depth > 0 {
+                if bytes[i] == b'\n' {
+                    line += 1;
+                    i += 1;
+                } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                    depth += 1;
+                    i += 2;
+                } else if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if let Some((prefix_len, hashes)) = match_raw_string_prefix(bytes, i) {
+            let start_line = line;
+            i += prefix_len + 1;
+            while i < len {
+                if bytes[i] == b'\n' {
+                    line += 1;
+                    i += 1;
+                } else if bytes[i] == b'"' && has_n_hashes(bytes, i + 1, hashes) {
+                    i += 1 + hashes;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            spans.push((start_line, line, line - start_line + 1));
+            continue;
+        }
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    if bytes[i + 1] == b'\n' {
+                        line += 1;
+                    }
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                } else {
+                    if bytes[i] == b'\n' {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'\''
+            && let Some(end_idx) = match_char_literal(src, i)
+        {
+            i = end_idx;
+            continue;
+        }
+        i += 1;
+    }
+    spans
+}
+
+fn is_ident_before(bytes: &[u8], i: usize) -> bool {
+    i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')
+}
+
+fn match_raw_string_prefix(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    if is_ident_before(bytes, i) {
+        return None;
     }
     let mut j = i;
-    if bytes[j] == b'b' {
+    if bytes[j] == b'b' || bytes[j] == b'c' {
         j += 1;
     }
     if j >= bytes.len() || bytes[j] != b'r' {
-        return false;
+        return None;
     }
     j += 1;
+    let hash_start = j;
     while j < bytes.len() && bytes[j] == b'#' {
         j += 1;
     }
-    j < bytes.len() && bytes[j] == b'"'
+    if j < bytes.len() && bytes[j] == b'"' {
+        Some((j - i, j - hash_start))
+    } else {
+        None
+    }
 }
 
-fn match_char_literal(bytes: &[u8], start: usize) -> Option<usize> {
+fn has_n_hashes(bytes: &[u8], start: usize, n: usize) -> bool {
+    start + n <= bytes.len() && bytes[start..start + n].iter().all(|&b| b == b'#')
+}
+
+fn match_char_literal(src: &str, start: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
     let len = bytes.len();
-    if start + 2 >= len {
+    if start + 2 >= len || bytes[start] != b'\'' {
         return None;
     }
     if bytes[start + 1] == b'\\' {
+        if start + 3 < len && bytes[start + 2] == b'\'' && bytes[start + 3] == b'\'' {
+            return Some(start + 4);
+        }
         let mut j = start + 2;
-        while j < len && j < start + 12 {
+        while j < len && j < start + 14 {
             if bytes[j] == b'\'' {
                 return Some(j + 1);
             }
@@ -153,289 +260,171 @@ fn match_char_literal(bytes: &[u8], start: usize) -> Option<usize> {
         }
         return None;
     }
-    if bytes[start + 2] == b'\'' {
-        return Some(start + 3);
+    let ch = src[start + 1..].chars().next()?;
+    if ch == '\'' || ch == '\n' || ch == '\r' {
+        return None;
     }
-    None
-}
-
-/// Returns the non-test prefix of a Rust source file (everything before `#[cfg(test)]`).
-pub fn production_code_prefix(src: &str) -> &str {
-    let stripped = strip_rust_comments_and_strings(src);
-    let mut byte_offset = 0usize;
-    for (orig_line, clean_line) in src.lines().zip(stripped.lines()) {
-        if clean_line.replace(' ', "").contains("#[cfg(test)]") {
-            return &src[..byte_offset];
-        }
-        byte_offset += orig_line.len() + 1;
-        if byte_offset >= src.len() {
-            break;
-        }
+    let after_ch = start + 1 + ch.len_utf8();
+    if after_ch < len && bytes[after_ch] == b'\'' {
+        Some(after_ch + 1)
+    } else {
+        None
     }
-    src
 }
 
-#[derive(Debug, Clone)]
-pub struct ParsedStruct {
-    pub name: String,
-    pub is_pub: bool,
-    pub line: usize,
-    pub attrs: Vec<String>,
-    pub fields: Vec<ParsedField>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ParsedField {
-    pub name: String,
-    pub ty: String,
-    pub line: usize,
-    pub attrs: Vec<String>,
-}
-
-/// Lightweight std-only Rust parser extracting braced `struct` definitions, their attributes,
-/// and their named fields with exact 1-based line numbers.
-pub fn parse_rust_structs(src: &str) -> Vec<ParsedStruct> {
+/// Blanks every item guarded by an outer `#[cfg(...)]` attribute that requires `test`
+/// (e.g. `#[cfg(test)]`, `#[cfg(all(test, ...))]`, `#[cfg(any(test, ...))]`, multiline
+/// `#[cfg(\n  test\n)]`), while leaving `#[cfg(not(test))]` and ALL subsequent production items
+/// completely intact. Preserves exact `\n` alignment (CRLF-safe).
+pub fn strip_cfg_test_items(src: &str) -> String {
     let clean = strip_rust_comments_and_strings(src);
-    let bytes = clean.as_bytes();
-    let len = bytes.len();
-    let mut structs = Vec::new();
-    let mut attrs: Vec<String> = Vec::new();
+    let clean_bytes = clean.as_bytes();
+    let mut out = src.as_bytes().to_vec();
+    let len = clean_bytes.len();
     let mut i = 0;
-    let mut line = 1usize;
+    let mut pending_attrs: Vec<(usize, usize)> = Vec::new();
 
     while i < len {
-        match bytes[i] {
-            b'\n' => {
-                line += 1;
-                i += 1;
-            }
-            b'#' if i + 1 < len && bytes[i + 1] == b'[' => {
-                let start = i;
-                let (end, newlines) = scan_balanced(bytes, i + 1, b'[', b']');
-                attrs.push(clean[start..end].to_string());
-                line += newlines;
-                i = end;
-            }
-            b'{' => {
-                let (end, newlines) = scan_balanced(bytes, i, b'{', b'}');
-                attrs.clear();
-                line += newlines;
-                i = end;
-            }
-            b';' => {
-                attrs.clear();
-                i += 1;
-            }
-            c if c.is_ascii_alphabetic() || c == b'_' => {
-                let start = i;
-                while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                    i += 1;
-                }
-                let word = &clean[start..i];
-                if word == "pub" {
-                    let saved_i = i;
-                    let saved_line = line;
-                    skip_ws_and_vis(bytes, &mut i, &mut line);
-                    if peek_word(bytes, i) == Some("struct") {
-                        let struct_line = line;
-                        i += "struct".len();
-                        if let Some(parsed) = parse_struct_after_keyword(
-                            &clean,
-                            true,
-                            struct_line,
-                            &attrs,
-                            &mut i,
-                            &mut line,
-                        ) {
-                            structs.push(parsed);
-                        }
-                        attrs.clear();
+        let b = clean_bytes[i];
+        if b.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if b == b'#' && i + 1 < len && clean_bytes[i + 1] == b'[' {
+            let attr_start = i;
+            let (attr_end, _) = scan_balanced(clean_bytes, i + 1, b'[', b']');
+            pending_attrs.push((attr_start, attr_end));
+            i = attr_end;
+
+            if is_cfg_test_attr(&clean[attr_start..attr_end]) {
+                let mut item_pos = i;
+                loop {
+                    while item_pos < len && clean_bytes[item_pos].is_ascii_whitespace() {
+                        item_pos += 1;
+                    }
+                    if item_pos + 1 < len
+                        && clean_bytes[item_pos] == b'#'
+                        && clean_bytes[item_pos + 1] == b'['
+                    {
+                        let (next_end, _) = scan_balanced(clean_bytes, item_pos + 1, b'[', b']');
+                        item_pos = next_end;
                     } else {
-                        i = saved_i;
-                        line = saved_line;
+                        break;
                     }
-                } else if word == "struct" {
-                    let struct_line = line;
-                    if let Some(parsed) = parse_struct_after_keyword(
-                        &clean,
-                        false,
-                        struct_line,
-                        &attrs,
-                        &mut i,
-                        &mut line,
-                    ) {
-                        structs.push(parsed);
-                    }
-                    attrs.clear();
-                } else if matches!(
-                    word,
-                    "fn" | "impl" | "enum" | "trait" | "mod" | "use" | "const" | "static" | "type"
-                ) {
-                    attrs.clear();
+                }
+                let item_end = scan_rust_item_end(clean_bytes, item_pos);
+                let blank_start = pending_attrs.first().map(|(s, _)| *s).unwrap_or(attr_start);
+                blank_range(&mut out, blank_start, item_end);
+                pending_attrs.clear();
+                i = item_end;
+            }
+            continue;
+        }
+        pending_attrs.clear();
+        i += 1;
+    }
+
+    String::from_utf8(out).expect("UTF-8 preserved")
+}
+
+fn is_cfg_test_attr(attr: &str) -> bool {
+    let inner = attr
+        .trim()
+        .strip_prefix("#[")
+        .and_then(|s| s.strip_suffix(']'))
+        .map(str::trim);
+    let Some(inner) = inner else {
+        return false;
+    };
+    let Some(rest) = inner.strip_prefix("cfg") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !rest.starts_with('(') || !rest.ends_with(')') {
+        return false;
+    }
+    cfg_expr_contains_positive_test(&rest[1..rest.len() - 1])
+}
+
+fn cfg_expr_contains_positive_test(expr: &str) -> bool {
+    let bytes = expr.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let ident = &expr[start..i];
+            if ident == "not" {
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'(' {
+                    let (end, _) = scan_balanced(bytes, j, b'(', b')');
+                    i = end;
+                    continue;
+                }
+            } else if ident == "test" {
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j >= bytes.len() || bytes[j] != b'=' {
+                    return true;
                 }
             }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+fn scan_rust_item_end(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                paren += 1;
+                i += 1;
+            }
+            b')' => {
+                paren = paren.saturating_sub(1);
+                i += 1;
+            }
+            b'[' => {
+                bracket += 1;
+                i += 1;
+            }
+            b']' => {
+                bracket = bracket.saturating_sub(1);
+                i += 1;
+            }
+            b'{' if paren == 0 && bracket == 0 => {
+                let (end, _) = scan_balanced(bytes, i, b'{', b'}');
+                return end;
+            }
+            b';' if paren == 0 && bracket == 0 => return i + 1,
             _ => i += 1,
         }
     }
-    structs
+    i
 }
 
-fn parse_struct_after_keyword(
-    clean: &str,
-    is_pub: bool,
-    struct_line: usize,
-    attrs: &[String],
-    i: &mut usize,
-    line: &mut usize,
-) -> Option<ParsedStruct> {
-    let bytes = clean.as_bytes();
-    skip_ws(bytes, i, line);
-    let name_start = *i;
-    while *i < bytes.len() && (bytes[*i].is_ascii_alphanumeric() || bytes[*i] == b'_') {
-        *i += 1;
-    }
-    if *i == name_start {
-        return None;
-    }
-    let name = clean[name_start..*i].to_string();
-    let mut angle_depth = 0usize;
-    while *i < bytes.len() {
-        match bytes[*i] {
-            b'\n' => {
-                *line += 1;
-                *i += 1;
-            }
-            b'<' => {
-                angle_depth += 1;
-                *i += 1;
-            }
-            b'>' if angle_depth > 0 => {
-                angle_depth -= 1;
-                *i += 1;
-            }
-            b'{' if angle_depth == 0 => {
-                let body_start = *i + 1;
-                let body_start_line = *line;
-                let (end, newlines) = scan_balanced(bytes, *i, b'{', b'}');
-                let body = &clean[body_start..end.saturating_sub(1)];
-                let fields = parse_struct_fields(body, body_start_line);
-                *i = end;
-                *line += newlines;
-                return Some(ParsedStruct {
-                    name,
-                    is_pub,
-                    line: struct_line,
-                    attrs: attrs.to_vec(),
-                    fields,
-                });
-            }
-            b';' | b'(' if angle_depth == 0 => return None,
-            _ => *i += 1,
+fn blank_range(buf: &mut [u8], start: usize, end: usize) {
+    let clamped_end = end.min(buf.len());
+    for b in &mut buf[start..clamped_end] {
+        if *b != b'\n' && *b != b'\r' {
+            *b = b' ';
         }
     }
-    None
 }
 
-fn parse_struct_fields(body: &str, start_line: usize) -> Vec<ParsedField> {
-    let mut fields = Vec::new();
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    let mut line = start_line;
-    let mut field_attrs = Vec::new();
-
-    while i < bytes.len() {
-        skip_ws(bytes, &mut i, &mut line);
-        if i >= bytes.len() {
-            break;
-        }
-        if bytes[i] == b'#' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            let start = i;
-            let (end, newlines) = scan_balanced(bytes, i + 1, b'[', b']');
-            field_attrs.push(body[start..end].to_string());
-            line += newlines;
-            i = end;
-            continue;
-        }
-        if peek_word(bytes, i) == Some("pub") {
-            i += 3;
-            skip_ws_and_vis(bytes, &mut i, &mut line);
-        }
-        let field_line = line;
-        let name_start = i;
-        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-            i += 1;
-        }
-        if i == name_start {
-            if bytes[i] == b'\n' {
-                line += 1;
-            }
-            i += 1;
-            continue;
-        }
-        let name = body[name_start..i].to_string();
-        skip_ws(bytes, &mut i, &mut line);
-        if i >= bytes.len() || bytes[i] != b':' {
-            field_attrs.clear();
-            continue;
-        }
-        i += 1;
-        skip_ws(bytes, &mut i, &mut line);
-        let ty_start = i;
-        let mut depth_angle = 0usize;
-        let mut depth_bracket = 0usize;
-        let mut depth_paren = 0usize;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\n' => {
-                    line += 1;
-                    i += 1;
-                }
-                b'<' => {
-                    depth_angle += 1;
-                    i += 1;
-                }
-                b'>' if depth_angle > 0 => {
-                    depth_angle -= 1;
-                    i += 1;
-                }
-                b'[' => {
-                    depth_bracket += 1;
-                    i += 1;
-                }
-                b']' if depth_bracket > 0 => {
-                    depth_bracket -= 1;
-                    i += 1;
-                }
-                b'(' => {
-                    depth_paren += 1;
-                    i += 1;
-                }
-                b')' if depth_paren > 0 => {
-                    depth_paren -= 1;
-                    i += 1;
-                }
-                b',' if depth_angle == 0 && depth_bracket == 0 && depth_paren == 0 => break,
-                _ => i += 1,
-            }
-        }
-        let ty = body[ty_start..i]
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        fields.push(ParsedField {
-            name,
-            ty,
-            line: field_line,
-            attrs: std::mem::take(&mut field_attrs),
-        });
-        if i < bytes.len() && bytes[i] == b',' {
-            i += 1;
-        }
-    }
-    fields
-}
-
-fn scan_balanced(bytes: &[u8], start: usize, open: u8, close: u8) -> (usize, usize) {
+pub fn scan_balanced(bytes: &[u8], start: usize, open: u8, close: u8) -> (usize, usize) {
     let mut depth = 0usize;
     let mut i = start;
     let mut newlines = 0usize;
@@ -454,37 +443,6 @@ fn scan_balanced(bytes: &[u8], start: usize, open: u8, close: u8) -> (usize, usi
         i += 1;
     }
     (i, newlines)
-}
-
-fn skip_ws(bytes: &[u8], i: &mut usize, line: &mut usize) {
-    while *i < bytes.len() && bytes[*i].is_ascii_whitespace() {
-        if bytes[*i] == b'\n' {
-            *line += 1;
-        }
-        *i += 1;
-    }
-}
-
-fn skip_ws_and_vis(bytes: &[u8], i: &mut usize, line: &mut usize) {
-    skip_ws(bytes, i, line);
-    if *i < bytes.len() && bytes[*i] == b'(' {
-        let (end, newlines) = scan_balanced(bytes, *i, b'(', b')');
-        *i = end;
-        *line += newlines;
-        skip_ws(bytes, i, line);
-    }
-}
-
-fn peek_word(bytes: &[u8], start: usize) -> Option<&str> {
-    let mut j = start;
-    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-        j += 1;
-    }
-    if j == start {
-        None
-    } else {
-        std::str::from_utf8(&bytes[start..j]).ok()
-    }
 }
 
 pub fn contains_ident(line: &str, needle: &str) -> bool {

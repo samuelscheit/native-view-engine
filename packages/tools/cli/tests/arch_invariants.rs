@@ -1,26 +1,37 @@
 //! Mechanical Architectural Invariant Suite for `native-view-engine` (Track 1B-1c).
 //!
-//! Enforces crate DAG boundaries, generated-file & git hygiene, production file size ratchets,
-//! ABI/type invariants, regression bans, zero-boilerplate macro hygiene, hot-path performance
-//! rules, hashing/codegen discipline, and platform purity using only `std`.
+//! Enforces crate DAG boundaries (via `cargo metadata --format-version 1 --offline --locked`),
+//! generated-file & git hygiene, production file size ratchets, ABI/type invariants, legacy
+//! regression bans, zero-boilerplate macro hygiene, hot-path performance rules, hashing/codegen
+//! discipline, and platform purity using only `std`.
 //!
 //! Staged checks behind `ENFORCE_POST_*` run their real scanners on every test invocation and
 //! are verified against synthetic positive/negative cases today. Flip the corresponding `const`
 //! to `true` (or run with `NVE_STRICT_INVARIANTS=1` / `NVE_STRICT_INVARIANTS=nodestore,1b1d,1b1e`)
 //! to make each stage a hard failure as each track lands.
 
-#[path = "arch_invariants/crate_dag.rs"]
-mod crate_dag;
-#[path = "arch_invariants/dag_and_hygiene.rs"]
-mod dag_and_hygiene;
-#[path = "arch_invariants/perf_hashing_codegen_purity.rs"]
-mod perf_hashing_codegen_purity;
+#[path = "arch_invariants/json_meta.rs"]
+mod json_meta;
+#[path = "arch_invariants/rust_items.rs"]
+mod rust_items;
 #[path = "arch_invariants/rust_lex.rs"]
 mod rust_lex;
 #[path = "arch_invariants/support.rs"]
 mod support;
-#[path = "arch_invariants/types_abi_and_regressions.rs"]
-mod types_abi_and_regressions;
+
+/// Test modules grouped under `arch_inv::` so `scripts/check-all.sh` Suite 0 runs
+/// `cargo test --locked -p nve-cli --test arch_invariants` once and Suite 1 skips duplicates
+/// via `cargo test --workspace -- --skip arch_inv::`.
+#[path = "arch_invariants"]
+mod arch_inv {
+    pub mod bench_and_alloc;
+    pub mod crate_dag;
+    pub mod dag_and_hygiene;
+    pub mod enum_and_macro_hygiene;
+    pub mod perf_hashing_codegen_purity;
+    pub mod types_abi_and_regressions;
+    pub mod unit_tests;
+}
 
 /// Flip to `true` when the `NodeStore` / `NVE2` / `nve-hash` branch lands on `main`.
 pub const ENFORCE_POST_NODESTORE: bool = false;

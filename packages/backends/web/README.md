@@ -4,16 +4,16 @@ Web DOM, SSR, hydration, and WASM `RenderBackend` (`packages/backends/web`, **Ba
 
 ## Key Public API
 
-- `WebBackend`, `HydrationReport`, `HydrationMismatch`
-- `css::{layout_to_css, style_to_css}`, `dom::{map_a11y_or_input_attr, raw_prop_route}`
-- `events::{resolve_delegated_node, ImeCompositionGuard}`, `streaming`, `canvas`, `visual_viewport`
+- `WebBackend`, `HydrationReport`, `HydrationMismatch`, `SsrOutput`, `SsrDocumentOptions`
+- Crate-root re-exports: `layout_to_css`, `style_to_css`, `raw_prop_route`, `ImeCompositionGuard`, `KeyboardInsets`
+- Public submodules: `canvas`, `native_view`, `streaming`
 
 ```rust
 use nve_backend_web::WebBackend;
 use nve_engine::{RenderBackend, Viewport};
 
 let mut backend = WebBackend::new();
-backend.set_viewport(Viewport { width: 1024.0, height: 768.0, scale_factor: 1.0 });
+backend.set_viewport(1, Viewport { width: 1024.0, height: 768.0, scale_factor: 1.0 });
 ```
 
 ## Dependency Invariants

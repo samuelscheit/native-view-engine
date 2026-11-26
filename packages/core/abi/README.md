@@ -9,9 +9,9 @@ Zero-copy `#[repr(C)]` C ABI and binary wire definitions (`packages/core/abi`, *
 - `codec::{CommandBufferBuilder, CommandDecoder, ColorRgba, Dimension, EdgeInsets}`, `events`, `schema`, `NveAbi`
 
 ```rust
-use nve_abi::{CommandBufferBuilder, ComponentKind, FrameId};
+use nve_abi::{CommandBufferBuilder, ComponentKind};
 
-let mut builder = CommandBufferBuilder::new(FrameId(1));
+let mut builder = CommandBufferBuilder::new(1, 1);
 builder.create_node(1, ComponentKind::View, None);
 let bytes = builder.finish();
 ```

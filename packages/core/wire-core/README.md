@@ -4,16 +4,16 @@ Sans-I/O binary wire framing (`NveWireFrame` v2), Bearer-token handshake, compac
 
 ## Key Public API
 
-- `frame::{encode_frame, decode_frame, WireFrameHeader}`, `handshake`, `session`
-- `patch::{NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NVE_NODE_PATCH_DELTA_HEADER_LEN}`
+- `frame::{NveWireFrame, NveWireFrameRef, NveWireHeader, NveWireChannel, NveWireKind, NveWireError}`, `handshake`, `session`
+- `patch::{NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NVE_NODE_PATCH_DELTA_HEADER_SIZE}`
 - `uri`, `NveCommandBatch`
 
 ```rust
 use nve_wire_core::NveNodePatchDeltaBuilder;
 
-let builder = NveNodePatchDeltaBuilder::new(1);
-let bytes = builder.finish();
-assert!(!bytes.is_empty());
+let mut builder = NveNodePatchDeltaBuilder::new();
+builder.set_text(1, "hello");
+let bytes = builder.encode().unwrap();
 ```
 
 ## Dependency Invariants

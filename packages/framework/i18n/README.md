@@ -9,10 +9,11 @@ Platform-first, `wasm32`-ready CLDR internationalization and localization crate 
 - `format::{CalendarDate, Currency, DateStyle, NumberFormatOptions, format_currency_minor, format_relative_time_auto}`
 
 ```rust
-use nve_i18n::{BuiltinI18nBackend, MessageCatalog, Translator};
+use nve_i18n::{BuiltinI18nBackend, LocaleId, MessageCatalog, Translator};
 
-let catalog = MessageCatalog::new("en");
-let _tr = Translator::new(catalog, BuiltinI18nBackend);
+let en = LocaleId::parse("en").unwrap();
+let catalog = MessageCatalog::new(en.clone());
+let _tr = Translator::with_backend(catalog, en, BuiltinI18nBackend);
 ```
 
 ## Dependency Invariants

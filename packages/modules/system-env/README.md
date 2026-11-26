@@ -1,6 +1,6 @@
 # `nve-system-env`
 
-Standalone opt-in live system theme and locale capability module (`packages/modules/system-env`, **Capability Module layer**, `SERVICE_SYSTEM_ENV = 0x0014`) with direct `SystemEnvBackend` dispatch and `NveChannelBus` bridge.
+Standalone opt-in live system theme and locale capability module (`packages/modules/system-env`, **Capability Module layer**, `SERVICE_SYSTEM_ENV = 0x0014`) with direct `SystemEnvBackend` dispatch and `TypedEventBus` bridge.
 
 ## Key Public API
 

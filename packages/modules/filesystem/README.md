@@ -11,8 +11,12 @@ Standalone opt-in file picker and standard OS paths capability module (`packages
 ```rust
 use nve_filesystem::{FileFilter, FilePickerOptions};
 
-let opts = FilePickerOptions { multiple: true, filters: vec![FileFilter { name: "Images".into(), extensions: vec!["png".into()] }], ..Default::default() };
-assert!(opts.multiple);
+let opts = FilePickerOptions {
+    allow_multiple: true,
+    filters: vec![FileFilter::new("Images", ["png"])],
+    ..Default::default()
+};
+assert!(opts.allow_multiple);
 ```
 
 ## Dependency Invariants

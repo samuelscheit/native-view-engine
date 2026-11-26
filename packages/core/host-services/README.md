@@ -4,7 +4,7 @@ Minimal binary `NVE_IFACE_HOST = 5` host-service transport, FFI client, binary c
 
 ## Key Public API
 
-- `HostServiceProvider`, `HostServiceHandler`, `ServiceRegistry`, `HostCallbackBridge`
+- `HostServiceProvider`, `HostServiceHandler`, `HostServiceRegistry`, `MemoryHostServices`, `HostCallbackBridge`
 - `FfiHostServices`, `RequestTable`, `TypedEventBus`, `TypedAsyncTable`
 - `codec::{BinReader, BinWriter, validate_url}`, `error::ServiceError`
 

@@ -1,13 +1,13 @@
 //! Staged Track 1B-1 / 1B-1d invariants: typed domain fields, sealed arenas, `#[repr(C)]` ABI
 //! layout locks, legacy regression bans, and zero-boilerplate macro & converter hygiene.
 
-use std::fs;
-use std::path::Path;
+use std::collections::BTreeMap;
 
+use crate::rust_lex::ParsedStruct;
 use crate::support::{
-    assert_staged_violations, contains_ident, find_rs_files, is_self_invariant_file,
-    is_test_or_bench_rs, parse_rust_structs, production_code_prefix, rel_path, repo_root,
-    strip_rust_comments_and_strings, Violation,
+    assert_staged_violations, contains_ident, is_self_invariant_file, is_test_or_bench_rs,
+    parse_rust_structs, repo_index, strip_cfg_test_items, strip_rust_comments_and_strings,
+    Violation,
 };
 use crate::Stage;
 
@@ -39,59 +39,90 @@ const BANNED_LEGACY_SYMBOLS_1B1D: &[&str] = &[
     "NveEventPayloadTag",
     "EventPayload",
     "EventMask",
+    "NveDirectEvent",
+    "TypedTableEvent",
+    "StylePatch",
 ];
 
 #[test]
 fn bare_primitive_domain_fields_in_core_structs() {
-    let root = repo_root();
-    let violations = scan_bare_primitive_domain_fields(&root);
+    let idx = repo_index();
+    let mut violations = Vec::new();
+    let mut scanned = 0usize;
+
+    for dir in ["abi", "store", "engine", "tables", "components", "codec"] {
+        for rel in idx.rs_files_under(&format!("packages/core/{dir}/src")) {
+            if is_test_or_bench_rs(&rel) {
+                continue;
+            }
+            let Some(cached) = idx.read_rust(&rel) else {
+                continue;
+            };
+            scanned += 1;
+            scan_bare_primitive_domain_fields_in_str(&rel, &cached.prod_raw, &mut violations);
+        }
+    }
+    // Also scan root spec crates `packages/modules/<cap>/src` (excluding leaf backend sub-crates).
+    for pkg in idx.graph.workspace_packages() {
+        if pkg.rel_dir.starts_with("packages/modules/") && pkg.rel_dir.matches('/').count() == 2 {
+            for rel in idx.rs_files_under(&format!("{}/src", pkg.rel_dir)) {
+                if is_test_or_bench_rs(&rel) {
+                    continue;
+                }
+                if let Some(cached) = idx.read_rust(&rel) {
+                    scanned += 1;
+                    scan_bare_primitive_domain_fields_in_str(
+                        &rel,
+                        &cached.prod_raw,
+                        &mut violations,
+                    );
+                }
+            }
+        }
+    }
+    assert!(scanned > 0, "bare_primitive_domain_fields must scan > 0 files");
     if !Stage::PostNodeStore.is_enforced() {
-        // Verify real scanner detects known pre-migration bare primitive fields in packages/core/abi today.
         assert!(
             !violations.is_empty(),
-            "Expected bare primitive domain field scanner to find pre-NodeStore fields in packages/core/abi"
+            "Expected bare primitive domain field scanner to detect pre-NodeStore fields in packages/core/abi"
         );
     }
     assert_staged_violations(
         Stage::PostNodeStore,
-        "Zero bare primitive domain fields in packages/core/{abi,store,engine,tables} pub structs",
+        "Zero bare primitive domain fields in core/{abi,store,engine,tables,components,codec} & modules/<cap> pub structs",
         &violations,
     );
 }
 
-fn scan_bare_primitive_domain_fields(root: &Path) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    for dir in ["abi", "store", "engine", "tables"] {
-        let base = root.join("packages/core").join(dir).join("src");
-        if !base.exists() {
-            continue;
-        }
-        for file in find_rs_files(&base) {
-            let rel = rel_path(root, &file);
-            if is_test_or_bench_rs(&rel) {
-                continue;
-            }
-            let content = fs::read_to_string(&file).unwrap_or_default();
-            scan_bare_primitive_domain_fields_in_str(&rel, production_code_prefix(&content), &mut violations);
-        }
-    }
-    violations
-}
-
-fn scan_bare_primitive_domain_fields_in_str(rel: &str, src: &str, out: &mut Vec<Violation>) {
+pub fn scan_bare_primitive_domain_fields_in_str(rel: &str, src: &str, out: &mut Vec<Violation>) {
     let lines: Vec<&str> = src.lines().collect();
     for st in parse_rust_structs(src) {
-        if !st.is_pub {
-            continue;
-        }
-        // Skip transparent newtype wrappers (single-field wrappers aren't braced anyway, or #[repr(transparent)])
-        if st.attrs.iter().any(|a| a.contains("transparent")) {
+        if !st.is_pub || has_repr_token(&st.attrs, "transparent") {
             continue;
         }
         for field in &st.fields {
+            if st.is_tuple {
+                // Tuple struct field name is positional ("0"), check struct name for domain suffix.
+                let is_domain_struct = DOMAIN_FIELD_SUFFIXES
+                    .iter()
+                    .any(|s| st.name.to_ascii_lowercase().ends_with(s));
+                if is_domain_struct && is_bare_or_wrapped_primitive(&field.ty) {
+                    let snippet = lines.get(field.line.saturating_sub(1)).copied().unwrap_or("");
+                    out.push(Violation::new(
+                        rel,
+                        field.line,
+                        snippet,
+                        format!(
+                            "pub tuple struct `{}` wraps bare primitive `{}` without #[repr(transparent)]",
+                            st.name, field.ty
+                        ),
+                    ));
+                }
+                continue;
+            }
             let is_domain_name = DOMAIN_FIELD_EXACT.contains(&field.name.as_str())
                 || DOMAIN_FIELD_SUFFIXES.iter().any(|s| field.name.ends_with(s));
-            if is_domain_name && is_bare_primitive(&field.ty) {
+            if is_domain_name && is_bare_or_wrapped_primitive(&field.ty) {
                 let snippet = lines
                     .get(field.line.saturating_sub(1))
                     .copied()
@@ -110,78 +141,221 @@ fn scan_bare_primitive_domain_fields_in_str(rel: &str, src: &str, out: &mut Vec<
     }
 }
 
-fn is_bare_primitive(ty: &str) -> bool {
-    let norm = ty.trim();
-    if BARE_PRIMITIVES.contains(&norm) {
+fn is_bare_or_wrapped_primitive(ty: &str) -> bool {
+    let compact: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
+    if BARE_PRIMITIVES.contains(&compact.as_str()) {
         return true;
     }
-    if let Some(inner) = norm.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-        return BARE_PRIMITIVES.contains(&inner.trim());
+    // Option<prim>, core::option::Option<prim>, std::option::Option<prim>, Vec<prim>
+    for prefix in [
+        "Option<",
+        "core::option::Option<",
+        "std::option::Option<",
+        "Vec<",
+        "std::vec::Vec<",
+        "alloc::vec::Vec<",
+    ] {
+        if let Some(inner) = compact
+            .strip_prefix(prefix)
+            .and_then(|s| s.strip_suffix('>'))
+            && BARE_PRIMITIVES.contains(&inner)
+        {
+            return true;
+        }
+    }
+    // &[prim] or &mut [prim]
+    if let Some(slice_inner) = compact
+        .strip_prefix("&[")
+        .or_else(|| compact.strip_prefix("&mut["))
+        .and_then(|s| s.strip_suffix(']'))
+        && BARE_PRIMITIVES.contains(&slice_inner)
+    {
+        return true;
+    }
+    // [prim; N]
+    if let Some(arr_inner) = compact.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+        && let Some((elem, _len)) = arr_inner.split_once(';')
+        && BARE_PRIMITIVES.contains(&elem)
+    {
+        return true;
+    }
+    false
+}
+
+/// Checks whether any `#[repr(...)]` attribute contains `token` as an exact identifier
+/// (handles `#[repr(C)]`, `#[repr(align(64), C)]`, `#[repr(transparent)]`, etc.).
+pub fn has_repr_token(attrs: &[String], token: &str) -> bool {
+    for attr in attrs {
+        let Some(inner) = attr
+            .trim()
+            .strip_prefix("#[")
+            .and_then(|s| s.strip_suffix(']'))
+            .map(str::trim)
+        else {
+            continue;
+        };
+        let Some(rest) = inner.strip_prefix("repr") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(args) = rest.strip_prefix('(').and_then(|s| s.strip_suffix(')')) else {
+            continue;
+        };
+        if args
+            .split(',')
+            .any(|part| part.trim() == token)
+        {
+            return true;
+        }
     }
     false
 }
 
 #[test]
 fn untyped_span_and_transparent_arena_alias_guard() {
-    let root = repo_root();
-    let violations = scan_untyped_span_and_arena_aliases(&root);
+    let idx = repo_index();
+    let mut violations = Vec::new();
+    let mut scanned = 0usize;
+    for dir in ["abi", "store", "engine", "tables"] {
+        for rel in idx.rs_files_under(&format!("packages/core/{dir}/src")) {
+            if is_test_or_bench_rs(&rel) {
+                continue;
+            }
+            let Some(cached) = idx.read_rust(&rel) else {
+                continue;
+            };
+            scanned += 1;
+            scan_untyped_span_in_str(&rel, &cached.prod_raw, &mut violations);
+        }
+    }
+    assert!(scanned > 0, "untyped_span_and_transparent_arena_alias_guard must scan > 0 files");
     assert_staged_violations(
         Stage::PostNodeStore,
-        "No untyped `Span` or transparent `pub type StrArena = SpanPool<u8>` aliases",
+        "No untyped `Span` or transparent `StrArena = SpanPool<u8>` aliases",
         &violations,
     );
 }
 
-fn scan_untyped_span_and_arena_aliases(root: &Path) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    for dir in ["abi", "store", "engine", "tables"] {
-        let base = root.join("packages/core").join(dir).join("src");
-        if !base.exists() {
-            continue;
-        }
-        for file in find_rs_files(&base) {
-            let rel = rel_path(root, &file);
-            if is_test_or_bench_rs(&rel) {
-                continue;
-            }
-            let content = fs::read_to_string(&file).unwrap_or_default();
-            scan_untyped_span_in_str(&rel, production_code_prefix(&content), &mut violations);
-        }
-    }
-    violations
-}
-
-fn scan_untyped_span_in_str(rel: &str, src: &str, out: &mut Vec<Violation>) {
+pub fn scan_untyped_span_in_str(rel: &str, src: &str, out: &mut Vec<Violation>) {
     let clean = strip_rust_comments_and_strings(src);
-    for (idx, (orig, line)) in src.lines().zip(clean.lines()).enumerate() {
-        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-        if compact.contains("pubtypeStrArena=SpanPool<u8>")
-            || compact.contains("typeStrArena=SpanPool<u8>")
-        {
+    let lines: Vec<&str> = src.lines().collect();
+
+    // 1. Check multi-line `type StrArena = ...SpanPool<u8>;` declarations.
+    for (line_no, stmt) in iter_keyword_statements(&clean, "type", b';') {
+        let compact: String = stmt.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.contains("typeStrArena=") && compact.contains("SpanPool<u8>") {
+            let snippet = lines.get(line_no.saturating_sub(1)).copied().unwrap_or("");
             out.push(Violation::new(
                 rel,
-                idx + 1,
-                orig,
+                line_no,
+                snippet,
                 "StrArena must be a sealed UTF-8 newtype, never a transparent `SpanPool<u8>` alias",
             ));
         }
-        if (compact.contains("pubstructSpan{") || compact.contains("pubstructSpan("))
-            && !compact.contains("Span<")
-        {
+    }
+
+    // 2. Check ALL structs (pub or private, braced or tuple) for untyped `struct Span` (non-generic).
+    for (line_no, stmt) in iter_keyword_statements(&clean, "struct", b'{') {
+        let trimmed = stmt.trim();
+        let after_kw = trimmed.strip_prefix("struct").unwrap_or("").trim_start();
+        let ident: String = after_kw
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let rest = after_kw[ident.len()..].trim_start();
+        if ident == "Span" && !rest.starts_with('<') {
+            let snippet = lines.get(line_no.saturating_sub(1)).copied().unwrap_or("");
             out.push(Violation::new(
                 rel,
-                idx + 1,
-                orig,
-                "Untyped `pub struct Span` is banned; use typed `Span<T>` / `Utf8Span` handles",
+                line_no,
+                snippet,
+                "Untyped `struct Span` is banned; use typed `Span<T>` / `Utf8Span` handles",
             ));
         }
     }
+}
+
+/// Yields `(1-based start line, statement slice)` for every occurrence of identifier `kw`
+/// up to the next `terminator` (`;` or `{` / `(` for structs).
+pub fn iter_keyword_statements<'a>(clean: &'a str, kw: &str, terminator: u8) -> Vec<(usize, &'a str)> {
+    let bytes = clean.as_bytes();
+    let mut results = Vec::new();
+    let mut pos = 0usize;
+    let kw_len = kw.len();
+
+    while let Some(rel_idx) = clean[pos..].find(kw) {
+        let abs = pos + rel_idx;
+        let before_ok =
+            abs == 0 || !(bytes[abs - 1].is_ascii_alphanumeric() || bytes[abs - 1] == b'_');
+        let after = abs + kw_len;
+        let after_ok = after < bytes.len()
+            && !(bytes[after].is_ascii_alphanumeric() || bytes[after] == b'_');
+        if before_ok && after_ok {
+            let line_no = clean[..abs].bytes().filter(|&b| b == b'\n').count() + 1;
+            let mut end = after;
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b == terminator
+                    || (terminator == b'{' && (b == b';' || (kw == "struct" && b == b'(')))
+                {
+                    end += 1;
+                    break;
+                }
+                end += 1;
+            }
+            results.push((line_no, &clean[abs..end]));
+            pos = end;
+        } else {
+            pos = after;
+        }
+    }
+    results
 }
 
 #[test]
 fn repr_c_abi_layout_asserts_and_cache_line_locks() {
-    let root = repo_root();
-    let violations = scan_repr_c_abi_locks(&root);
+    let idx = repo_index();
+    let mut abi_files: Vec<(String, String)> = Vec::new();
+    for rel in idx.rs_files_under("packages/core/abi/src") {
+        if is_test_or_bench_rs(&rel) {
+            continue;
+        }
+        if let Some(cached) = idx.read_rust(&rel) {
+            abi_files.push((rel, cached.prod_raw));
+        }
+    }
+    assert!(
+        !abi_files.is_empty(),
+        "expected production Rust files under packages/core/abi/src"
+    );
+
+    let mut store_files: Vec<(String, String)> = Vec::new();
+    for rel in idx.rs_files_under("packages/core/store/src") {
+        if is_test_or_bench_rs(&rel) {
+            continue;
+        }
+        if let Some(cached) = idx.read_rust(&rel) {
+            store_files.push((rel, cached.prod_raw));
+        }
+    }
+
+    let violations = scan_repr_c_abi_locks(&abi_files, &store_files);
+    if !Stage::Post1B1D.is_enforced() {
+        // Canary: on pre-migration `main`, `NveEvent` and `NodeRow` do NOT exist yet, so the
+        // scanner MUST report missing locks for both (never false-pass on `NveEventBatch`!),
+        // while `NveSurfaceApi`..`NveDevApi` MUST have zero false positives.
+        assert!(
+            violations.iter().any(|v| v.reason.contains("`NveEvent`")),
+            "Expected missing cache-line lock violation for `NveEvent` on pre-1B-1d main"
+        );
+        assert!(
+            !violations.iter().any(|v| v.snippet.contains("NveSurfaceApi")
+                || v.snippet.contains("NveLayoutApi")
+                || v.snippet.contains("NveComponentApi")
+                || v.snippet.contains("NveDevApi")),
+            "NveSurfaceApi..NveDevApi layout asserts in layout_asserts.rs must not be falsely flagged: {violations:?}"
+        );
+    }
     assert_staged_violations(
         Stage::Post1B1D,
         "#[repr(C)] ABI structs have compile-time layout assertions & cache-line locks (NodeRow=32, NveRenderNode=64, NveEvent=64)",
@@ -189,80 +363,200 @@ fn repr_c_abi_layout_asserts_and_cache_line_locks() {
     );
 }
 
-fn scan_repr_c_abi_locks(root: &Path) -> Vec<Violation> {
+pub fn scan_repr_c_abi_locks(
+    abi_files: &[(String, String)],
+    store_files: &[(String, String)],
+) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let abi_src = root.join("packages/core/abi/src");
-    let mut all_abi_text = String::new();
-    for file in find_rs_files(&abi_src) {
-        let rel = rel_path(root, &file);
-        if is_test_or_bench_rs(&rel) {
-            continue;
+    let mut all_clean = String::new();
+    let mut abi_structs: Vec<(String, ParsedStruct)> = Vec::new();
+    let mut store_structs: Vec<(String, ParsedStruct)> = Vec::new();
+
+    for (rel, prod_raw) in abi_files {
+        let clean = strip_rust_comments_and_strings(&strip_cfg_test_items(prod_raw));
+        all_clean.push_str(&clean);
+        all_clean.push('\n');
+        for st in parse_rust_structs(&clean) {
+            abi_structs.push((rel.clone(), st));
         }
-        let content = fs::read_to_string(&file).unwrap_or_default();
-        all_abi_text.push_str(&content);
-        all_abi_text.push('\n');
-        scan_repr_c_structs_in_file(&rel, &content, &mut violations);
+    }
+    for (rel, prod_raw) in store_files {
+        let clean = strip_rust_comments_and_strings(&strip_cfg_test_items(prod_raw));
+        all_clean.push_str(&clean);
+        all_clean.push('\n');
+        for st in parse_rust_structs(&clean) {
+            store_structs.push((rel.clone(), st));
+        }
     }
 
-    // Cache-line size locks across core/{abi,store}.
-    let store_src = root.join("packages/core/store/src");
-    let mut all_core_text = all_abi_text;
-    if store_src.exists() {
-        for file in find_rs_files(&store_src) {
-            if let Ok(c) = fs::read_to_string(&file) {
-                all_core_text.push_str(&c);
-                all_core_text.push('\n');
-            }
+    let compact_clean: String = all_clean.chars().filter(|c| !c.is_whitespace()).collect();
+    let usize_consts = extract_usize_consts(&all_clean);
+
+    // 1. Every `pub` `#[repr(C)]` struct in `nve-abi` must derive `NveAbi` OR have compile-time
+    //    `size_of`, `align_of`, and `offset_of!` assertions for every named field in `all_clean`.
+    for (rel, st) in &abi_structs {
+        if !st.is_pub || !has_repr_token(&st.attrs, "C") {
+            continue;
+        }
+        let has_derive_nve_abi = has_derive_token(&st.attrs, "NveAbi");
+        if has_derive_nve_abi {
+            continue;
+        }
+        let has_size = compact_clean.contains(&format!("size_of::<{}>()", st.name));
+        let has_align = compact_clean.contains(&format!("align_of::<{}>()", st.name));
+        let missing_offsets: Vec<&str> = if st.is_tuple {
+            Vec::new()
+        } else {
+            st.fields
+                .iter()
+                .filter(|f| !compact_clean.contains(&format!("offset_of!({},{})", st.name, f.name)))
+                .map(|f| f.name.as_str())
+                .collect()
+        };
+        if !(has_size && has_align && missing_offsets.is_empty()) {
+            violations.push(Violation::new(
+                rel,
+                st.line,
+                format!("pub struct {}", st.name),
+                format!(
+                    "#[repr(C)] ABI struct must derive `NveAbi` or declare compile-time size_of/align_of/offset_of! assertions (size={has_size}, align={has_align}, missing_offsets={missing_offsets:?})"
+                ),
+            ));
         }
     }
-    let compact: String = all_core_text.chars().filter(|c| !c.is_whitespace()).collect();
-    for (ty, bytes) in [("NodeRow", "32"), ("NveRenderNode", "64"), ("NveEvent", "64")] {
-        let has_lock = compact.contains(&format!("size_of::<{ty}>()=={bytes}"))
-            || compact.contains(&format!("size={bytes}"))
-                && compact.contains(&format!("struct{ty}"));
-        if !has_lock {
+
+    // 2. Cache-line size locks: require exact `ParsedStruct` match AND exact size lock.
+    for (ty, expected_bytes) in [("NodeRow", 32usize), ("NveRenderNode", 64), ("NveEvent", 64)] {
+        let exact_struct = abi_structs
+            .iter()
+            .chain(store_structs.iter())
+            .find(|(_, st)| st.name == ty);
+        let locked = exact_struct.is_some_and(|(_, st)| {
+            has_nve_abi_size_attr(&st.attrs, expected_bytes)
+                || has_const_size_of_eq(&compact_clean, &usize_consts, ty, expected_bytes)
+        });
+        if !locked {
             violations.push(Violation::new(
                 "packages/core/abi/src",
                 0,
-                format!("expected compile-time lock size_of::<{ty}>() == {bytes}"),
-                format!("Missing compile-time cache-line size lock for `{ty}` ({bytes} bytes)"),
+                format!("expected exact struct `{ty}` with compile-time lock == {expected_bytes} bytes"),
+                format!("Missing exact struct or compile-time cache-line size lock for `{ty}` ({expected_bytes} bytes)"),
             ));
         }
     }
     violations
 }
 
-fn scan_repr_c_structs_in_file(rel: &str, src: &str, out: &mut Vec<Violation>) {
-    let compact: String = src.chars().filter(|c| !c.is_whitespace()).collect();
-    for st in parse_rust_structs(production_code_prefix(src)) {
-        if !st.is_pub {
+pub fn has_derive_token(attrs: &[String], token: &str) -> bool {
+    for attr in attrs {
+        let Some(inner) = attr
+            .trim()
+            .strip_prefix("#[")
+            .and_then(|s| s.strip_suffix(']'))
+            .map(str::trim)
+        else {
             continue;
-        }
-        let is_repr_c = st.attrs.iter().any(|a| a.contains("repr(") && a.contains('C'));
-        if !is_repr_c {
+        };
+        let Some(rest) = inner.strip_prefix("derive") else {
             continue;
-        }
-        let has_derive_nve_abi = st.attrs.iter().any(|a| a.contains("NveAbi"));
-        let has_size_assert = compact.contains(&format!("size_of::<{}>()", st.name));
-        let has_align_assert = compact.contains(&format!("align_of::<{}>()", st.name));
-        let has_offset_assert =
-            st.fields.is_empty() || compact.contains(&format!("offset_of!({},", st.name));
-        if !has_derive_nve_abi && !(has_size_assert && has_align_assert && has_offset_assert) {
-            out.push(Violation::new(
-                rel,
-                st.line,
-                format!("pub struct {}", st.name),
-                "#[repr(C)] ABI struct must derive `NveAbi` or declare compile-time `size_of`, `align_of`, and `offset_of!` assertions",
-            ));
+        };
+        let rest = rest.trim_start();
+        let Some(args) = rest.strip_prefix('(').and_then(|s| s.strip_suffix(')')) else {
+            continue;
+        };
+        if args
+            .split(',')
+            .any(|p| p.trim().rsplit("::").next() == Some(token))
+        {
+            return true;
         }
     }
+    false
+}
+
+fn has_nve_abi_size_attr(attrs: &[String], expected: usize) -> bool {
+    for attr in attrs {
+        let Some(inner) = attr
+            .trim()
+            .strip_prefix("#[")
+            .and_then(|s| s.strip_suffix(']'))
+            .map(str::trim)
+        else {
+            continue;
+        };
+        let Some(rest) = inner.strip_prefix("nve_abi") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(args) = rest.strip_prefix('(').and_then(|s| s.strip_suffix(')')) else {
+            continue;
+        };
+        for item in args.split(',') {
+            if let Some((k, v)) = item.split_once('=') {
+                let k = k.trim();
+                let v = v.trim().replace('_', "");
+                if (k == "size" || k == "size_64") && v.parse::<usize>().ok() == Some(expected) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn extract_usize_consts(clean: &str) -> BTreeMap<String, usize> {
+    let mut map = BTreeMap::new();
+    for (_, stmt) in iter_keyword_statements(clean, "const", b';') {
+        let body = stmt.trim_start_matches("const").trim_end_matches(';').trim();
+        let Some((lhs, rhs)) = body.split_once('=') else {
+            continue;
+        };
+        let Some((name, ty)) = lhs.split_once(':') else {
+            continue;
+        };
+        if ty.trim() != "usize" {
+            continue;
+        }
+        let val_str = rhs.trim().replace('_', "");
+        if let Ok(val) = val_str.parse::<usize>() {
+            map.insert(name.trim().to_string(), val);
+        }
+    }
+    map
+}
+
+fn has_const_size_of_eq(
+    compact_clean: &str,
+    usize_consts: &BTreeMap<String, usize>,
+    ty: &str,
+    expected: usize,
+) -> bool {
+    let needle = format!("size_of::<{ty}>()==");
+    let mut pos = 0;
+    while let Some(idx) = compact_clean[pos..].find(&needle) {
+        let start = pos + idx + needle.len();
+        let rhs: String = compact_clean[start..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if rhs.replace('_', "").parse::<usize>().ok() == Some(expected) {
+            return true;
+        }
+        if usize_consts.get(&rhs).copied() == Some(expected) {
+            return true;
+        }
+        pos = start;
+    }
+    false
 }
 
 #[test]
 fn legacy_regression_bans_post_nodestore_and_1b1d() {
-    let root = repo_root();
-    let v_nodestore = scan_banned_symbols(&root, BANNED_LEGACY_SYMBOLS_NODESTORE, true);
-    let v_1b1d = scan_banned_symbols(&root, BANNED_LEGACY_SYMBOLS_1B1D, false);
+    let idx = repo_index();
+    let (v_nodestore, scanned_ns) = scan_banned_symbols(BANNED_LEGACY_SYMBOLS_NODESTORE, true);
+    let (v_1b1d, scanned_1d) = scan_banned_symbols(BANNED_LEGACY_SYMBOLS_1B1D, false);
+    assert!(scanned_ns > 0 && scanned_1d > 0, "legacy scanners must scan > 0 files");
+    let _ = idx;
 
     if !Stage::PostNodeStore.is_enforced() {
         assert!(
@@ -288,218 +582,58 @@ fn legacy_regression_bans_post_nodestore_and_1b1d() {
     );
 }
 
-fn scan_banned_symbols(root: &Path, symbols: &[&str], check_downcast: bool) -> Vec<Violation> {
+fn scan_banned_symbols(symbols: &[&str], check_downcast: bool) -> (Vec<Violation>, usize) {
+    let idx = repo_index();
     let mut violations = Vec::new();
-    for file in find_rs_files(&root.join("packages")) {
-        let rel = rel_path(root, &file);
+    let mut scanned = 0usize;
+    for rel in idx.rs_files_under("packages") {
         if is_test_or_bench_rs(&rel) || is_self_invariant_file(&rel) {
             continue;
         }
-        let content = fs::read_to_string(&file).unwrap_or_default();
-        let prod = production_code_prefix(&content);
-        let clean = strip_rust_comments_and_strings(prod);
-        for (idx, (orig, line)) in prod.lines().zip(clean.lines()).enumerate() {
-            for &sym in symbols {
-                let matched = if sym.contains(' ') || sym.contains("::") || sym.ends_with('_') {
-                    line.contains(sym)
-                } else {
-                    contains_ident(line, sym)
-                };
-                if matched {
-                    violations.push(Violation::new(
-                        &rel,
-                        idx + 1,
-                        orig,
-                        format!("Legacy symbol `{sym}` is banned after migration"),
-                    ));
-                }
-            }
-            if check_downcast
-                && (line.contains("Any::downcast_ref") || line.contains(".downcast_ref::<"))
-            {
-                violations.push(Violation::new(
-                    &rel,
-                    idx + 1,
-                    orig,
-                    "Per-node `Any::downcast_ref` is banned; use typed tables/handles",
-                ));
-            }
-        }
-    }
-    violations
-}
-
-#[test]
-fn zero_boilerplate_macros_and_converters() {
-    let root = repo_root();
-    let violations = scan_macro_and_converter_hygiene(&root);
-    assert_staged_violations(
-        Stage::Post1B1D,
-        "Zero-boilerplate WordValue/NveTable macros, no Tier-1 byte codecs, no numeric String round-trips",
-        &violations,
-    );
-}
-
-fn scan_macro_and_converter_hygiene(root: &Path) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    for file in find_rs_files(&root.join("packages")) {
-        let rel = rel_path(root, &file);
-        if is_test_or_bench_rs(&rel) || is_self_invariant_file(&rel) {
+        let Some(cached) = idx.read_rust(&rel) else {
             continue;
-        }
-        let content = fs::read_to_string(&file).unwrap_or_default();
-        scan_macro_and_converter_str(&rel, production_code_prefix(&content), &mut violations);
+        };
+        scanned += 1;
+        scan_banned_symbols_in_str(&rel, &cached.prod_raw, &cached.prod_clean, symbols, check_downcast, &mut violations);
     }
-    violations
+    (violations, scanned)
 }
 
-fn scan_macro_and_converter_str(rel: &str, src: &str, out: &mut Vec<Violation>) {
-    let clean = strip_rust_comments_and_strings(src);
-    let in_store = rel.starts_with("packages/core/store/");
-    let in_dioxus = rel.starts_with("packages/core/dioxus/");
-    let lines: Vec<&str> = src.lines().collect();
-
-    // 1. Manual `impl WordValue` outside nve-store
-    if !in_store {
-        for (idx, (orig, line)) in src.lines().zip(clean.lines()).enumerate() {
-            if line.contains("impl WordValue for ") || line.contains("impl nve_store::WordValue for ") {
+pub fn scan_banned_symbols_in_str(
+    rel: &str,
+    prod_raw: &str,
+    prod_clean: &str,
+    symbols: &[&str],
+    check_downcast: bool,
+    out: &mut Vec<Violation>,
+) {
+    for (idx, (orig, line)) in prod_raw.lines().zip(prod_clean.lines()).enumerate() {
+        for &sym in symbols {
+            let matched = if sym.contains(' ') || sym.contains("::") || sym.ends_with('_') {
+                line.contains(sym)
+            } else {
+                contains_ident(line, sym)
+            };
+            if matched {
                 out.push(Violation::new(
                     rel,
                     idx + 1,
                     orig,
-                    "Manual `impl WordValue` outside `nve-store` is banned; derive via `#[derive(WordEnum)]`, `word_flags!`, or `#[derive(NveTable)]`",
+                    format!("Legacy symbol `{sym}` is banned after migration"),
                 ));
             }
         }
-    }
-
-    // 2. Inspect `#[derive(NveTable)]` structs for redundant `#[bits(N)]`, sentinel defaults, split `*_enabled: bool`.
-    for st in parse_rust_structs(src) {
-        let is_table = st.attrs.iter().any(|a| a.contains("NveTable"));
-        if !is_table {
-            continue;
-        }
-        for field in &st.fields {
-            let snippet = lines.get(field.line.saturating_sub(1)).copied().unwrap_or("");
-            if field.attrs.iter().any(|a| a.contains("bits("))
-                && matches!(field.ty.as_str(), "bool" | "u8" | "u16")
-            {
-                out.push(Violation::new(
-                    rel,
-                    field.line,
-                    snippet,
-                    format!(
-                        "Redundant `#[bits(...)]` on `{}: {}` in #[derive(NveTable)]; bit width is derived from `<T as WordValue>::BITS`",
-                        field.name, field.ty
-                    ),
-                ));
-            }
-            if field.attrs.iter().any(|a| {
-                a.contains("default(u16::MAX)") || a.contains("default(f32::NAN)")
-            }) {
-                out.push(Violation::new(
-                    rel,
-                    field.line,
-                    snippet,
-                    "Magic sentinel `#[default(u16::MAX)]`/`#[default(f32::NAN)]` in NveTable is banned; use `Opt<T>`",
-                ));
-            }
-            if field.ty == "bool" && field.name.ends_with("_enabled") {
-                out.push(Violation::new(
-                    rel,
-                    field.line,
-                    snippet,
-                    format!(
-                        "Split boolean sentinel `{}` in NveTable is banned; fold into `Opt<T>`",
-                        field.name
-                    ),
-                ));
-            }
-        }
-    }
-
-    // 3. Manual `SET_*` constants in core tables, manual `encode_bytes`/`to_le_bytes` on Tier-1 repr(C) PODs,
-    //    and `f64`/`i64` -> `String` -> parse round-trips in nve-dioxus.
-    let has_repr_c = clean.contains("#[repr(C");
-    for (idx, (orig, line)) in src.lines().zip(clean.lines()).enumerate() {
-        if (rel.starts_with("packages/core/tables/") || rel.starts_with("packages/core/components/"))
-            && (line.contains("const SET_") || line.contains("pub const SET_"))
+        if check_downcast
+            && (line.contains("Any::downcast_ref")
+                || line.contains(".downcast_ref::<")
+                || line.contains(".downcast_ref("))
         {
             out.push(Violation::new(
                 rel,
                 idx + 1,
                 orig,
-                "Manual `SET_*` mask constants are banned; use `#[nve_table(inherited)]`",
-            ));
-        }
-        if has_repr_c && rel.starts_with("packages/core/") && line.contains("fn encode_bytes(") {
-            out.push(Violation::new(
-                rel,
-                idx + 1,
-                orig,
-                "Hand-written `encode_bytes` on Tier 1 `#[repr(C)]` POD is banned; pass typed memory or derive `#[derive(NveCodec)]`",
-            ));
-        }
-        if in_dioxus
-            && ((line.contains(".to_string()") && (line.contains("f64") || line.contains("i64")))
-                || (line.contains("AttributeValue::Float(") && line.contains("format!("))
-                || (line.contains("AttributeValue::Int(") && line.contains("format!(")))
-        {
-            out.push(Violation::new(
-                rel,
-                idx + 1,
-                orig,
-                "Numeric RSX `f64`/`i64` -> `String` -> parse round-trip in `nve-dioxus` is banned; write typed numeric value directly",
+                "Per-node `Any::downcast_ref` is banned; use typed tables/handles",
             ));
         }
     }
-}
-
-#[test]
-fn unit_type_and_macro_scanners_catch_exact_violations() {
-    let sample_bad = r#"
-        #[derive(NveTable)]
-        pub struct BadTable {
-            #[bits(1)]
-            pub tint_enabled: bool,
-            #[default(f32::NAN)]
-            pub opacity: f32,
-            pub node_id: u32,
-            pub parent: u64,
-        }
-        impl WordValue for BadTable {}
-        pub type StrArena = SpanPool<u8>;
-        pub struct Span { pub off: u32, pub len: u32 }
-        #[repr(C)]
-        pub struct UncheckedAbi { pub x: u32 }
-    "#;
-    let mut v_fields = Vec::new();
-    scan_bare_primitive_domain_fields_in_str("synthetic.rs", sample_bad, &mut v_fields);
-    assert_eq!(v_fields.len(), 2, "expected node_id + parent violations: {v_fields:?}");
-
-    let mut v_span = Vec::new();
-    scan_untyped_span_in_str("synthetic.rs", sample_bad, &mut v_span);
-    assert_eq!(v_span.len(), 2, "expected StrArena alias + untyped Span: {v_span:?}");
-
-    let mut v_abi = Vec::new();
-    scan_repr_c_structs_in_file("synthetic.rs", sample_bad, &mut v_abi);
-    assert_eq!(v_abi.len(), 1, "expected unchecked #[repr(C)] violation: {v_abi:?}");
-
-    let mut v_macro = Vec::new();
-    scan_macro_and_converter_str("packages/core/tables/src/bad.rs", sample_bad, &mut v_macro);
-    assert_eq!(v_macro.len(), 4, "expected WordValue + bits + sentinel + _enabled: {v_macro:?}");
-
-    let sample_clean = r#"
-        #[derive(NveAbi)]
-        #[repr(C)]
-        pub struct CleanAbi {
-            pub node_id: NodeId,
-            pub parent: Option<NodeId>,
-            pub width: f32,
-        }
-    "#;
-    let mut v_clean = Vec::new();
-    scan_bare_primitive_domain_fields_in_str("clean.rs", sample_clean, &mut v_clean);
-    scan_repr_c_structs_in_file("clean.rs", sample_clean, &mut v_clean);
-    assert!(v_clean.is_empty(), "clean code must have 0 violations: {v_clean:?}");
 }
