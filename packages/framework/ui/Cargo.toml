@@ -23,9 +23,11 @@ dioxus-signals = { workspace = true }
 web-sys = { workspace = true, features = ["Storage"] }
 
 [dev-dependencies]
-criterion = { workspace = true }
 nve-backend-headless = { workspace = true }
 nve-backend-web = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
 
 [[test]]
 name = "spatial_focus_tests"

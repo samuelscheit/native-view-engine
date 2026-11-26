@@ -3,11 +3,18 @@
 use std::mem::size_of;
 
 #[inline]
-pub(super) fn sanitize_height_f32_to_u32(h: f32) -> u32 {
-    if h.is_finite() && h >= 1.0 {
-        h.round().min(u32::MAX as f32) as u32
-    } else {
-        1
+fn accumulate_bit_entry(bit: &mut [u64], total: &mut u64, idx: usize, h: u32, n: usize) {
+    let h64 = u64::from(h);
+    debug_assert!(
+        total.checked_add(h64).is_some(),
+        "FenwickHeightTree total height overflowed u64::MAX"
+    );
+    *total = total.saturating_add(h64);
+    let i = idx + 1;
+    bit[i] = bit[i].saturating_add(h64);
+    let parent = i + i.isolate_lowest_one();
+    if parent <= n {
+        bit[parent] = bit[parent].saturating_add(bit[i]);
     }
 }
 
@@ -15,12 +22,15 @@ pub(super) fn sanitize_height_f32_to_u32(h: f32) -> u32 {
 /// O(N) construction, O(1) total height, and O(log N) prefix sums, height updates, and
 /// bit-lifting `lower_bound_with_offset` queries.
 ///
-/// # Memory Footprint
+/// # Invariants & Memory Footprint
 ///
-/// Stores `heights: Vec<u32>` (4 B/row, supporting tall rows up to `u32::MAX` px) and
-/// `bit: Vec<u64>` (8 B/row, overflow-proof `u64` prefix sums across millions of rows), for an
-/// exact heap footprint of **12 bytes/row** (+ 8 B sentinel `bit[0]` + `size_of::<Self>()`).
-/// At 100,000 rows this is `1,200,008` bytes (~1.14 MiB); an empty tree allocates `0` bytes.
+/// - Every stored row height is clamped to `>= 1` px so prefix sums are strictly increasing.
+/// - Callers must keep cumulative document height strictly below `u64::MAX` (checked via
+///   `debug_assert!`; supports >4 billion rows at 4 billion px each).
+/// - Stores `heights: Vec<u32>` (4 B/row, supporting tall rows up to `u32::MAX` px) and
+///   `bit: Vec<u64>` (8 B/row, overflow-proof `u64` prefix sums across millions of rows), for an
+///   exact heap footprint of **12 bytes/row** (+ 8 B sentinel `bit[0]` + `size_of::<Self>()`).
+///   At 100,000 rows this is `1,200,008` heap bytes (~1.14 MiB); an empty tree allocates `0` bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FenwickHeightTree {
     heights: Vec<u32>,
@@ -36,7 +46,7 @@ impl FenwickHeightTree {
         let n = heights.len();
         if n == 0 {
             return Self {
-                heights,
+                heights: Vec::new(),
                 bit: Vec::new(),
                 total: 0,
             };
@@ -47,14 +57,7 @@ impl FenwickHeightTree {
         for (idx, slot) in heights.iter_mut().enumerate() {
             let h = (*slot).max(1);
             *slot = h;
-            let h64 = u64::from(h);
-            total = total.saturating_add(h64);
-            let i = idx + 1;
-            bit[i] = bit[i].saturating_add(h64);
-            let parent = i + i.isolate_lowest_one();
-            if parent <= n {
-                bit[parent] = bit[parent].saturating_add(bit[i]);
-            }
+            accumulate_bit_entry(&mut bit, &mut total, idx, h, n);
         }
 
         Self {
@@ -81,14 +84,7 @@ impl FenwickHeightTree {
         for idx in 0..len {
             let h = height_at(idx).max(1);
             heights.push(h);
-            let h64 = u64::from(h);
-            total = total.saturating_add(h64);
-            let i = idx + 1;
-            bit[i] = bit[i].saturating_add(h64);
-            let parent = i + i.isolate_lowest_one();
-            if parent <= len {
-                bit[parent] = bit[parent].saturating_add(bit[i]);
-            }
+            accumulate_bit_entry(&mut bit, &mut total, idx, h, len);
         }
 
         Self {
@@ -96,18 +92,6 @@ impl FenwickHeightTree {
             bit,
             total,
         }
-    }
-
-    /// Builds a Fenwick tree from floating-point row heights in one pass, sanitizing
-    /// NaN/negative/zero values to `1`.
-    pub fn from_f32_heights(heights: &[f32]) -> Self {
-        Self::from_fn(heights.len(), |idx| sanitize_height_f32_to_u32(heights[idx]))
-    }
-
-    /// Builds a uniform-height Fenwick tree of `len` rows in **O(N)** time.
-    pub fn uniform(len: usize, row_height: u32) -> Self {
-        let h = row_height.max(1);
-        Self::from_fn(len, |_| h)
     }
 
     #[inline]
@@ -164,6 +148,10 @@ impl FenwickHeightTree {
         let mut i = index + 1;
         if new64 > old64 {
             let diff = new64 - old64;
+            debug_assert!(
+                self.total.checked_add(diff).is_some(),
+                "FenwickHeightTree total height overflowed u64::MAX"
+            );
             self.total = self.total.saturating_add(diff);
             while i <= n {
                 self.bit[i] = self.bit[i].saturating_add(diff);

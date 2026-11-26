@@ -9,8 +9,8 @@ use nve_ui::{
 };
 
 pub const VIRTUAL_LIST_TOTAL_ROWS: usize = 100_000;
-const ROW_HEIGHT_PX: f32 = 34.0;
-const VIEWPORT_HEIGHT_PX: f32 = 204.0;
+const ROW_HEIGHT_PX: u32 = 34;
+const VIEWPORT_HEIGHT_PX: f64 = 204.0;
 const OVERSCAN_ROWS: usize = 2;
 
 pub const VIRTUAL_LIST_SOURCE: &str = r#"use nve_dioxus::prelude::*;
@@ -18,7 +18,7 @@ use nve_ui::{RowHeights, VirtualList};
 
 #[component]
 pub fn VirtualList100kDemo() -> Element {
-    let heights = RowHeights::uniform(100_000, 34.0);
+    let heights = RowHeights::uniform(100_000, 34);
     let render_row = Callback::new(move |(idx, selected): (usize, bool)| {
         rsx! {
             view {
@@ -96,7 +96,7 @@ pub fn VirtualList100kDemo() -> Element {
     let current_filter = filter();
     let total_rows = current_filter.count();
     let clamped_jump = jump_target().min(total_rows.saturating_sub(1));
-    let scroll_offset = (clamped_jump as f32) * ROW_HEIGHT_PX;
+    let scroll_offset = (clamped_jump as f64) * f64::from(ROW_HEIGHT_PX);
     let heights = RowHeights::uniform(total_rows, ROW_HEIGHT_PX);
 
     let mut preview_state = VirtualListState::new(heights.clone(), VIEWPORT_HEIGHT_PX, OVERSCAN_ROWS);
@@ -242,9 +242,9 @@ pub fn VirtualList100kDemo() -> Element {
                     test_id: Some("pg-vlist-list".to_string()),
                     accessibility_label: Some("100,000 row virtualized telemetry list".to_string()),
                     heights: heights.clone(),
-                    viewport_height: VIEWPORT_HEIGHT_PX,
+                    viewport_height: VIEWPORT_HEIGHT_PX as f32,
                     overscan: OVERSCAN_ROWS,
-                    initial_scroll_offset: scroll_offset,
+                    initial_scroll_offset: scroll_offset as f32,
                     initial_selected: selected_row(),
                     on_select: move |idx| selected_row.set(Some(idx)),
                     render_row: render_row,

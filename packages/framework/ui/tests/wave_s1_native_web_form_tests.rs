@@ -173,16 +173,19 @@ fn native_overlays_disclosure_accordion_and_form_emit_exact_html5_and_hydrate_ze
     }
 
     // Zero-flicker hydration must adopt every node with 0 mismatches.
-    let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
-    hydrated.submit_frame(&frame0).unwrap();
-    let report = hydrated.hydration_report();
-    assert!(
-        report.mismatches.is_empty(),
-        "expected 0 hydration mismatches, got {:?}",
-        report.mismatches
-    );
-    assert_eq!(report.replaced_nodes, 0);
-    assert!(report.adopted_nodes >= 20);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
+        hydrated.submit_frame(&frame0).unwrap();
+        let report = hydrated.hydration_report();
+        assert!(
+            report.mismatches.is_empty(),
+            "expected 0 hydration mismatches, got {:?}",
+            report.mismatches
+        );
+        assert_eq!(report.replaced_nodes, 0);
+        assert!(report.adopted_nodes >= 20);
+    }
 }
 
 #[test]

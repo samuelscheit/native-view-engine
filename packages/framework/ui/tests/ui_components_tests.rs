@@ -8,8 +8,6 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::UiHarness;
-#[cfg(feature = "virtual-list")]
-use dioxus_core::use_hook;
 use nve_abi::ColorRgba;
 use nve_dioxus::elements::backend::RenderBackend;
 use nve_dioxus::prelude::*;
@@ -478,11 +476,8 @@ fn tabs_overlays_dropdown_and_toasts_end_to_end() {
 #[component]
 fn VirtualList100kApp() -> Element {
     let mut selected = use_signal(|| 0usize);
-    let heights = use_hook(|| {
-        let raw: Vec<u32> = (0..100_000usize)
-            .map(|i| 32 + ((i % 4) as u32) * 8)
-            .collect();
-        RowHeights::variable(raw)
+    let heights = use_signal(|| {
+        RowHeights::variable_from_fn(100_000, |i| 32 + ((i % 4) as u32) * 8)
     });
 
     rsx! {

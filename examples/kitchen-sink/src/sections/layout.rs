@@ -29,7 +29,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
     let mut selected_row = use_signal(|| Some(0usize));
     let mut simulated_kb_px = use_signal(|| 0.0f32);
 
-    let row_heights = dioxus_core::use_hook(|| {
+    let row_heights = use_signal(|| {
         RowHeights::variable_from_fn(VIRTUAL_ROW_COUNT, |i| match i % 4 {
             0 => 38,
             1 => 48,
@@ -37,7 +37,13 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
             _ => 44,
         })
     });
-    let total_height_px = row_heights.total_height_u64();
+    let (total_height_px, jump_targets) = {
+        let h = row_heights.read();
+        (
+            h.total_height(),
+            [0usize, 250, 500, 999].map(|idx| (idx, h.offset_of(idx) as f32)),
+        )
+    };
 
     let text_primary = p.text_primary.as_ref();
     let text_secondary = p.text_secondary.as_ref();
@@ -54,8 +60,6 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
     let effective_kb = effective_bottom_inset(0.0, kb_insets, false);
 
     let selected_label = selected_row().map_or_else(|| "None".to_owned(), |i| format!("#{i}"));
-    let jump_targets: [(usize, f32); 4] = [0usize, 250, 500, 999]
-        .map(|idx| (idx, row_heights.offset_of(idx)));
     let row_accent = accent.to_owned();
     let row_primary = text_primary.to_owned();
     let row_muted = text_muted.to_owned();
@@ -218,7 +222,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                     VirtualList {
                         key: "vl-{epoch}",
                         test_id: Some("ks-virtual-list".to_owned()),
-                        heights: row_heights.clone(),
+                        heights: row_heights,
                         viewport_height: 240.0,
                         overscan: 3,
                         initial_scroll_offset: target_offset(),

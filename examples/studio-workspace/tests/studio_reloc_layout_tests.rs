@@ -309,7 +309,7 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
     let mut acc_rows = 0usize;
     for step in 0..1_000usize {
         let target = (step * 97) % nve_studio_workspace::DEFAULT_STREAM_ROW_COUNT;
-        let off = v_idx.offset_of(target);
+        let off = v_idx.offset_of(target) as f64;
         let w = v_idx.slice(off, 480.0, 2);
         acc_rows += w.visible_count;
     }

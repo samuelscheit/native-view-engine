@@ -81,8 +81,8 @@ pub use ui_palette::{
     CommandPaletteAction, CommandPaletteItem, CommandPaletteState, KeyDownEvent,
 };
 pub use virtual_list::{
-    stream_row_heights, FenwickHeightTree, HeightsRevision, RowHeights, StreamVirtualEngine,
-    VirtualRowMeta, VirtualSlice, DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT,
+    stream_row_heights, uniform_row_height, RowHeights, StreamVirtualEngine, VirtualRowMeta,
+    VirtualSlice, DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT,
 };
 
 use props::{apply_prop_updates, PropUpdates};

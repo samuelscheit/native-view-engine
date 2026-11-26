@@ -1,98 +1,114 @@
 //! Pure virtualized list geometry (`HeightsRevision` and `RowHeights`).
 //!
 //! Supports 100,000+ uniform or variable-height rows with:
-//! - Strictly **O(1)** `Clone`, `PartialEq`, and revision checks on [`RowHeights`] (zero per-render
-//!   O(N) deep tree compares or clones).
-//! - At most **2 O(log N)** bit-lifting walks per variable-height [`RowHeights::slice`] (down from
-//!   5) with exact `u64` pixel accounting (`top_spacer_px + rendered_height_px + bottom_spacer_px
-//!   == total_height_px`).
+//! - Sealed invariants: both uniform and variable tables store exact integer `u32 >= 1` row heights
+//!   and exact `u64` offsets/totals/spacers, making uniform↔variable promotion completely lossless.
+//! - Strictly **O(1)** `Clone`, `PartialEq`, `Eq`, and revision checks on [`RowHeights`] with zero
+//!   hashing and zero per-render O(N) deep scans or clones.
+//! - At most **2 O(log N)** bit-lifting walks per variable-height [`RowHeights::slice`] when
+//!   `overscan <= 32` (stepping small overscan windows via sequential `heights` reads), or up to
+//!   **2** bit-lifts plus **2** `prefix_sum` walks when `overscan > 32`, with exact `u64` pixel
+//!   conservation (`top_spacer_px + rendered_height_px + bottom_spacer_px == total_height_px`).
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::fenwick::{sanitize_height_f32_to_u32, FenwickHeightTree};
+use super::fenwick::FenwickHeightTree;
 use super::state::VirtualSlice;
 
 /// Overscan window threshold below which spacer offsets are stepped via sequential O(1) `heights`
 /// reads instead of an O(log N) Fenwick `prefix_sum` walk.
 const SMALL_OVERSCAN_LINEAR_THRESHOLD: usize = 32;
 
-/// High bit reserved for deterministic [`RowHeights::Uniform`] revisions so monotonic
-/// [`RowHeights::Variable`] revisions can never collide with them.
-const UNIFORM_REVISION_TAG: u64 = 1u64 << 63;
-
 static NEXT_HEIGHTS_REVISION: AtomicU64 = AtomicU64::new(1);
 
 #[inline]
-fn next_variable_revision() -> HeightsRevision {
-    let raw = NEXT_HEIGHTS_REVISION.fetch_add(1, Ordering::Relaxed) & !UNIFORM_REVISION_TAG;
-    HeightsRevision(raw.max(1))
+fn next_variable_revision_id() -> u64 {
+    NEXT_HEIGHTS_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Sanitizes a viewport or extent value: non-finite or `<= 0.0` maps to `0.0`.
 #[inline]
-fn uniform_revision(count: usize, row_height: f32) -> HeightsRevision {
-    let mut buf = [0u8; 12];
-    buf[..8].copy_from_slice(&(count as u64).to_le_bytes());
-    buf[8..12].copy_from_slice(&row_height.to_bits().to_le_bytes());
-    HeightsRevision(nve_engine::xxh64(&buf, 0) | UNIFORM_REVISION_TAG)
-}
-
-/// Typed O(1) revision token identifying a specific [`RowHeights`] dataset or mutation version.
-///
-/// Every newly created variable height table receives a monotonically increasing revision, and
-/// every mutating [`RowHeights::set_row_height`] call bumps it, enabling O(1) change detection
-/// without scanning `O(N)` row heights on every render frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(transparent)]
-pub struct HeightsRevision(u64);
-
-impl HeightsRevision {
-    #[inline]
-    pub const fn raw(self) -> u64 {
-        self.0
+pub(super) fn sanitize_extent(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        0.0
     }
 }
 
-/// Row height model supporting both zero-allocation uniform lists and variable-height Fenwick lists.
+/// Clamps a raw scroll offset to `[0.0, max(0.0, total_height - sanitize_extent(viewport_height))]`.
+#[inline]
+pub(super) fn clamp_scroll(raw_offset: f64, total_height: u64, viewport_height: f64) -> f64 {
+    let vp = sanitize_extent(viewport_height);
+    let max_scroll = ((total_height as f64) - vp).max(0.0);
+    if !raw_offset.is_finite() || raw_offset <= 0.0 {
+        0.0
+    } else {
+        raw_offset.min(max_scroll)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RevisionInner {
+    Uniform { count: usize, row_height: u32 },
+    Variable(u64),
+}
+
+/// Opaque O(1) revision token identifying a specific [`RowHeights`] dataset or mutation version.
 ///
-/// `Clone` and `PartialEq` are strictly **O(1)** with zero heap allocations: `Variable` wraps an
-/// `Arc<FenwickHeightTree>` paired with a monotonic [`HeightsRevision`] so props diffing and
+/// Two [`RowHeights`] values share a revision iff they have identical uniform `(count, row_height)`
+/// parameters or refer to the same unmutated variable-height table revision. Comparing revisions
+/// is strictly **O(1)** with zero hashing and zero collisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HeightsRevision(RevisionInner);
+
+#[derive(Debug, Clone)]
+enum RowHeightsInner {
+    Uniform {
+        count: usize,
+        row_height: u32,
+    },
+    Variable {
+        tree: Arc<FenwickHeightTree>,
+        revision: u64,
+    },
+}
+
+/// Sealed row height model supporting both zero-allocation uniform lists and variable-height
+/// Fenwick lists.
+///
+/// Both uniform and variable representations use exact integer `u32 >= 1` pixel heights and exact
+/// `u64` totals/offsets so uniform→variable promotion changes zero row heights by zero pixels.
+///
+/// `Clone`, `PartialEq`, and `Eq` are strictly **O(1)** with zero heap allocations: variable tables
+/// wrap an `Arc<FenwickHeightTree>` paired with a monotonic revision so props diffing and
 /// component re-renders never clone or scan the underlying `O(N)` table. Use
 /// [`RowHeights::content_eq`] when an explicit value-level comparison is required.
 #[derive(Debug, Clone)]
-pub enum RowHeights {
-    /// Constant row height in logical pixels — strictly O(1) offset/slice math, zero allocation.
-    Uniform { count: usize, row_height: f32 },
-    /// Variable per-row heights backed by a shared [`FenwickHeightTree`] and monotonic
-    /// [`HeightsRevision`] — O(1) `Clone`/`PartialEq`, O(log N) prefix sums & lookups, and
-    /// zero-allocation O(log N) in-place updates via `Arc::make_mut` when uniquely owned.
-    Variable {
-        tree: Arc<FenwickHeightTree>,
-        revision: HeightsRevision,
-    },
-}
+pub struct RowHeights(RowHeightsInner);
 
 impl PartialEq for RowHeights {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
+        match (&self.0, &other.0) {
             (
-                Self::Uniform {
+                RowHeightsInner::Uniform {
                     count: c1,
                     row_height: h1,
                 },
-                Self::Uniform {
+                RowHeightsInner::Uniform {
                     count: c2,
                     row_height: h2,
                 },
-            ) => c1 == c2 && h1.to_bits() == h2.to_bits(),
+            ) => c1 == c2 && h1 == h2,
             (
-                Self::Variable {
+                RowHeightsInner::Variable {
                     tree: t1,
                     revision: r1,
                 },
-                Self::Variable {
+                RowHeightsInner::Variable {
                     tree: t2,
                     revision: r2,
                 },
@@ -102,19 +118,20 @@ impl PartialEq for RowHeights {
     }
 }
 
+impl Eq for RowHeights {}
+
 impl RowHeights {
-    pub fn uniform(count: usize, row_height: f32) -> Self {
-        let h = if row_height.is_finite() && row_height >= 1.0 {
-            row_height
-        } else {
-            1.0
-        };
-        Self::Uniform {
+    /// Creates a zero-allocation O(1) uniform-height table (`row_height < 1` is clamped to `1`).
+    #[inline]
+    pub fn uniform(count: usize, row_height: u32) -> Self {
+        Self(RowHeightsInner::Uniform {
             count,
-            row_height: h,
-        }
+            row_height: row_height.max(1),
+        })
     }
 
+    /// Creates a variable-height table backed by [`FenwickHeightTree`], normalizing `heights` in
+    /// place in O(N) time (`< 1` clamped to `1`).
     pub fn variable(heights: Vec<u32>) -> Self {
         Self::from_tree(FenwickHeightTree::from_heights(heights))
     }
@@ -124,78 +141,86 @@ impl RowHeights {
         Self::from_tree(FenwickHeightTree::from_fn(len, height_at))
     }
 
-    /// Wraps an existing [`FenwickHeightTree`] with a fresh [`HeightsRevision`].
+    /// Wraps an existing [`FenwickHeightTree`] with a fresh monotonic revision.
     pub fn from_tree(tree: FenwickHeightTree) -> Self {
-        Self::Variable {
+        Self(RowHeightsInner::Variable {
             tree: Arc::new(tree),
-            revision: next_variable_revision(),
-        }
+            revision: next_variable_revision_id(),
+        })
     }
 
     #[inline]
     pub fn is_variable(&self) -> bool {
-        matches!(self, Self::Variable { .. })
+        matches!(self.0, RowHeightsInner::Variable { .. })
     }
 
-    /// Returns an O(1) revision token for change detection.
+    /// Returns an exact, collision-free O(1) revision token for change detection.
     #[inline]
     pub fn revision(&self) -> HeightsRevision {
-        match self {
-            Self::Uniform { count, row_height } => uniform_revision(*count, *row_height),
-            Self::Variable { revision, .. } => *revision,
+        match &self.0 {
+            RowHeightsInner::Uniform { count, row_height } => {
+                HeightsRevision(RevisionInner::Uniform {
+                    count: *count,
+                    row_height: *row_height,
+                })
+            }
+            RowHeightsInner::Variable { revision, .. } => {
+                HeightsRevision(RevisionInner::Variable(*revision))
+            }
         }
     }
 
     /// Explicit value-level equality check (may run in **O(N)** for independently constructed
-    /// `Variable` tables or `Uniform` vs `Variable` comparisons).
+    /// variable tables or uniform-vs-variable comparisons).
     pub fn content_eq(&self, other: &Self) -> bool {
-        match (self, other) {
+        match (&self.0, &other.0) {
             (
-                Self::Uniform {
+                RowHeightsInner::Uniform {
                     count: c1,
                     row_height: h1,
                 },
-                Self::Uniform {
+                RowHeightsInner::Uniform {
                     count: c2,
                     row_height: h2,
                 },
-            ) => c1 == c2 && h1.to_bits() == h2.to_bits(),
-            (Self::Variable { tree: t1, .. }, Self::Variable { tree: t2, .. }) => {
-                Arc::ptr_eq(t1, t2) || t1 == t2
-            }
-            (Self::Uniform { count, row_height }, Self::Variable { tree, .. })
-            | (Self::Variable { tree, .. }, Self::Uniform { count, row_height }) => {
-                if *count != tree.len() || row_height.fract() != 0.0 {
-                    return false;
-                }
-                let expected = sanitize_height_f32_to_u32(*row_height);
-                tree.heights_slice().iter().all(|&h| h == expected)
-            }
+            ) => c1 == c2 && h1 == h2,
+            (
+                RowHeightsInner::Variable { tree: t1, .. },
+                RowHeightsInner::Variable { tree: t2, .. },
+            ) => Arc::ptr_eq(t1, t2) || t1 == t2,
+            (
+                RowHeightsInner::Uniform { count, row_height },
+                RowHeightsInner::Variable { tree, .. },
+            )
+            | (
+                RowHeightsInner::Variable { tree, .. },
+                RowHeightsInner::Uniform { count, row_height },
+            ) => *count == tree.len() && tree.heights_slice().iter().all(|&h| h == *row_height),
         }
     }
 
     #[inline]
     pub fn as_tree(&self) -> Option<&FenwickHeightTree> {
-        match self {
-            Self::Uniform { .. } => None,
-            Self::Variable { tree, .. } => Some(tree),
+        match &self.0 {
+            RowHeightsInner::Uniform { .. } => None,
+            RowHeightsInner::Variable { tree, .. } => Some(tree),
         }
     }
 
-    /// Approximate total memory footprint (stack enum + shared Fenwick buffers) in bytes.
+    /// Approximate total memory footprint (stack struct + shared Fenwick buffers) in bytes.
     #[inline]
     pub fn memory_bytes(&self) -> usize {
-        match self {
-            Self::Uniform { .. } => size_of::<Self>(),
-            Self::Variable { tree, .. } => size_of::<Self>() + tree.memory_bytes(),
+        match &self.0 {
+            RowHeightsInner::Uniform { .. } => size_of::<Self>(),
+            RowHeightsInner::Variable { tree, .. } => size_of::<Self>() + tree.memory_bytes(),
         }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        match self {
-            Self::Uniform { count, .. } => *count,
-            Self::Variable { tree, .. } => tree.len(),
+        match &self.0 {
+            RowHeightsInner::Uniform { count, .. } => *count,
+            RowHeightsInner::Variable { tree, .. } => tree.len(),
         }
     }
 
@@ -204,55 +229,46 @@ impl RowHeights {
         self.len() == 0
     }
 
+    /// Exact total document height in logical pixels (`u64`, overflow-proof across millions of
+    /// rows) in **O(1)** time.
     #[inline]
-    pub fn total_height(&self) -> f32 {
-        match self {
-            Self::Uniform { count, row_height } => (*count as f32) * *row_height,
-            Self::Variable { tree, .. } => tree.total_height() as f32,
-        }
-    }
-
-    /// Exact total height in integer logical pixels (`u64`, overflow-proof across millions of rows).
-    #[inline]
-    pub fn total_height_u64(&self) -> u64 {
-        match self {
-            Self::Uniform { count, row_height } => {
-                ((*count as f64) * f64::from(*row_height)).round() as u64
+    pub fn total_height(&self) -> u64 {
+        match &self.0 {
+            RowHeightsInner::Uniform { count, row_height } => {
+                let total = (*count as u64).checked_mul(u64::from(*row_height));
+                debug_assert!(
+                    total.is_some(),
+                    "RowHeights::Uniform total height overflowed u64::MAX"
+                );
+                total.unwrap_or(u64::MAX)
             }
-            Self::Variable { tree, .. } => tree.total_height(),
+            RowHeightsInner::Variable { tree, .. } => tree.total_height(),
         }
     }
 
+    /// Exact height of row `index` in logical pixels (`0` if out of bounds) in **O(1)** time.
     #[inline]
-    pub fn row_height(&self, index: usize) -> f32 {
-        match self {
-            Self::Uniform { count, row_height } => {
+    pub fn row_height(&self, index: usize) -> u32 {
+        match &self.0 {
+            RowHeightsInner::Uniform { count, row_height } => {
                 if index < *count {
                     *row_height
                 } else {
-                    0.0
+                    0
                 }
             }
-            Self::Variable { tree, .. } => tree.height_at(index).unwrap_or(0) as f32,
+            RowHeightsInner::Variable { tree, .. } => tree.height_at(index).unwrap_or(0),
         }
     }
 
+    /// Exact Y pixel offset of row `index` as `u64` (**O(1)** uniform, **O(log N)** variable).
     #[inline]
-    pub fn offset_of(&self, index: usize) -> f32 {
-        match self {
-            Self::Uniform { count, row_height } => (index.min(*count) as f32) * *row_height,
-            Self::Variable { tree, .. } => tree.prefix_sum(index) as f32,
-        }
-    }
-
-    /// Exact Y pixel offset of row `index` as `u64` (O(1) uniform, O(log N) variable).
-    #[inline]
-    pub fn offset_of_u64(&self, index: usize) -> u64 {
-        match self {
-            Self::Uniform { count, row_height } => {
-                ((index.min(*count) as f64) * f64::from(*row_height)).round() as u64
+    pub fn offset_of(&self, index: usize) -> u64 {
+        match &self.0 {
+            RowHeightsInner::Uniform { count, row_height } => {
+                (index.min(*count) as u64).saturating_mul(u64::from(*row_height))
             }
-            Self::Variable { tree, .. } => tree.prefix_sum(index),
+            RowHeightsInner::Variable { tree, .. } => tree.prefix_sum(index),
         }
     }
 
@@ -262,37 +278,36 @@ impl RowHeights {
     ///
     /// # Complexity & Uniform→Variable Promotion
     ///
-    /// - In `Uniform` mode: out-of-bounds calls and no-op calls (`new_height.max(1)` equal to an
-    ///   integer `row_height`) return in **O(1)** with zero allocations and keep `self` in
-    ///   `Uniform` mode. The **first heterogeneous height change** performs a **one-time O(N)**
-    ///   promotion to `Variable` (`FenwickHeightTree`, rounding any fractional uniform height to
-    ///   nearest `u32 >= 1` px), after which all subsequent updates run in **O(log N)** with zero
-    ///   heap allocations when uniquely owned.
+    /// - In `Uniform` mode: out-of-bounds calls and no-op calls (`new_height.max(1) == row_height`)
+    ///   return in **O(1)** with zero allocations and keep `self` in `Uniform` mode. The **first
+    ///   heterogeneous height change** performs a **one-time O(N)** lossless promotion to
+    ///   `Variable` (`FenwickHeightTree`), after which all subsequent updates run in **O(log N)**
+    ///   with zero heap allocations when uniquely owned.
     /// - In `Variable` mode: unchanged heights return in **O(1)** without cloning the `Arc` or
     ///   bumping [`Self::revision`]. Mutating updates run in **O(log N)** via `Arc::make_mut`
     ///   (zero heap allocations when uniquely owned; copy-on-write when shared) and bump
     ///   [`Self::revision`].
     pub fn set_row_height(&mut self, index: usize, new_height: u32) -> bool {
         let clamped = new_height.max(1);
-        match self {
-            Self::Uniform { count, row_height } => {
+        match &mut self.0 {
+            RowHeightsInner::Uniform { count, row_height } => {
                 if index >= *count {
                     return false;
                 }
-                let base_h = sanitize_height_f32_to_u32(*row_height);
-                if row_height.fract() == 0.0 && clamped == base_h {
+                if clamped == *row_height {
                     return true;
                 }
+                let base_h = *row_height;
                 let tree = FenwickHeightTree::from_fn(*count, |i| {
                     if i == index { clamped } else { base_h }
                 });
-                *self = Self::Variable {
+                self.0 = RowHeightsInner::Variable {
                     tree: Arc::new(tree),
-                    revision: next_variable_revision(),
+                    revision: next_variable_revision_id(),
                 };
                 true
             }
-            Self::Variable { tree, revision } => {
+            RowHeightsInner::Variable { tree, revision } => {
                 let Some(old_h) = tree.height_at(index) else {
                     return false;
                 };
@@ -300,7 +315,7 @@ impl RowHeights {
                     return true;
                 }
                 Arc::make_mut(tree).set_height(index, clamped);
-                *revision = next_variable_revision();
+                *revision = next_variable_revision_id();
                 true
             }
         }
@@ -310,79 +325,71 @@ impl RowHeights {
     /// when `offset_px >= total_height()`).
     ///
     /// Runs in **O(1)** for `Uniform` and a single **O(log N)** bit-lift for `Variable`.
-    pub fn index_and_offset_at(&self, offset_px: f32) -> (usize, f32) {
+    pub fn index_and_offset_at(&self, offset_px: f64) -> (usize, u64) {
         let len = self.len();
         if len == 0 || !offset_px.is_finite() || offset_px <= 0.0 {
-            return (0, 0.0);
+            return (0, 0);
         }
-        match self {
-            Self::Uniform { count, row_height } => {
-                let idx = ((f64::from(offset_px) / f64::from(*row_height)).floor() as usize)
-                    .min(*count);
-                (idx, (idx as f32) * *row_height)
+        let target_u64 = offset_px.floor() as u64;
+        match &self.0 {
+            RowHeightsInner::Uniform { count, row_height } => {
+                let rh = u64::from(*row_height);
+                let idx = (target_u64 / rh).min(*count as u64) as usize;
+                (idx, (idx as u64).saturating_mul(rh))
             }
-            Self::Variable { tree, .. } => {
-                let (idx, top_u64) = tree.lower_bound_with_offset(offset_px.floor() as u64);
-                (idx, top_u64 as f32)
-            }
+            RowHeightsInner::Variable { tree, .. } => tree.lower_bound_with_offset(target_u64),
         }
     }
 
     #[inline]
-    pub fn index_at_offset(&self, offset_px: f32) -> usize {
+    pub fn index_at_offset(&self, offset_px: f64) -> usize {
         self.index_and_offset_at(offset_px).0
     }
 
-    /// Computes the O(viewport) visible + overscan slice with exact top/rendered/bottom pixel
-    /// accounting.
+    /// Computes the O(viewport) visible + overscan slice with exact `u64` top/rendered/bottom pixel
+    /// conservation (`top_spacer_px + rendered_height_px + bottom_spacer_px == total_height_px`).
     ///
-    /// Runs in **O(1)** for `Uniform` and at most **2 O(log N)** bit-lifting walks for `Variable`
-    /// (stepping across small overscan windows `<= 32` via direct `heights` reads instead of extra
-    /// Fenwick prefix-sum traversals).
-    pub fn slice(&self, scroll_offset: f32, viewport_height: f32, overscan: usize) -> VirtualSlice {
+    /// Runs in **O(1)** for `Uniform`. For `Variable`, performs at most **2 O(log N)** bit-lifting
+    /// walks when `overscan <= 32` (stepping small overscan windows via sequential `heights`
+    /// reads), or up to **2** bit-lifts plus **2** `prefix_sum` walks when `overscan > 32`.
+    pub fn slice(&self, scroll_offset: f64, viewport_height: f64, overscan: usize) -> VirtualSlice {
         let len = self.len();
         if len == 0 {
             return VirtualSlice::EMPTY;
         }
 
-        let vp = if viewport_height.is_finite() && viewport_height > 0.0 {
-            viewport_height
-        } else {
-            0.0
-        };
+        let vp = sanitize_extent(viewport_height);
+        let total_u64 = self.total_height();
+        let offset = clamp_scroll(scroll_offset, total_u64, vp);
+        let offset_u64 = offset.floor() as u64;
+        let end_px_f64 = offset + vp;
+        let end_px_u64 = end_px_f64.floor() as u64;
 
-        match self {
-            Self::Uniform { count, row_height } => {
-                let total = (*count as f32) * *row_height;
-                let max_scroll = (total - vp).max(0.0);
-                let offset = if !scroll_offset.is_finite() || scroll_offset <= 0.0 {
-                    0.0
+        match &self.0 {
+            RowHeightsInner::Uniform { count, row_height } => {
+                let rh_u64 = u64::from(*row_height);
+                let first_visible = (offset_u64 / rh_u64).min((*count - 1) as u64) as usize;
+                let end_visible = if end_px_u64 >= total_u64 {
+                    *count
                 } else {
-                    scroll_offset.min(max_scroll)
-                };
-
-                let row_h_f64 = f64::from(*row_height);
-                let first_visible =
-                    ((f64::from(offset) / row_h_f64).floor() as usize).min(*count - 1);
-                let end_px = f64::from(offset) + f64::from(vp);
-                let raw_end = ((end_px / row_h_f64).floor() as usize).min(*count);
-                let end_visible = if raw_end < *count {
-                    let row_top = (raw_end as f64) * row_h_f64;
-                    if row_top < end_px || raw_end == first_visible {
+                    let raw_end = (end_px_u64 / rh_u64).min(*count as u64) as usize;
+                    let row_top = (raw_end as u64).saturating_mul(rh_u64);
+                    if row_top < end_px_u64
+                        || end_px_f64 > (end_px_u64 as f64)
+                        || raw_end == first_visible
+                    {
                         (raw_end + 1).min(*count)
                     } else {
-                        raw_end.max(first_visible + 1).min(*count)
+                        raw_end
                     }
-                } else {
-                    *count
                 };
 
                 let start = first_visible.saturating_sub(overscan);
                 let end = end_visible.saturating_add(overscan).min(*count);
-                let top_spacer_px = (start as f32) * *row_height;
-                let end_offset_px = (end as f32) * *row_height;
-                let rendered_height_px = (end_offset_px - top_spacer_px).max(0.0);
-                let bottom_spacer_px = (total - end_offset_px).max(0.0);
+                let top_spacer_px = (start as u64).saturating_mul(rh_u64);
+                let end_offset_px = (end as u64).saturating_mul(rh_u64);
+                let rendered_height_px = end_offset_px.saturating_sub(top_spacer_px);
+                let bottom_spacer_px = total_u64.saturating_sub(end_offset_px);
 
                 VirtualSlice {
                     start,
@@ -393,22 +400,12 @@ impl RowHeights {
                     top_spacer_px,
                     rendered_height_px,
                     bottom_spacer_px,
-                    total_height_px: total,
+                    total_height_px: total_u64,
                     visible_count: end.saturating_sub(start),
                 }
             }
-            Self::Variable { tree, .. } => {
+            RowHeightsInner::Variable { tree, .. } => {
                 let heights = tree.heights_slice();
-                let total_u64 = tree.total_height();
-                let total_f32 = total_u64 as f32;
-                let max_scroll = (total_f32 - vp).max(0.0);
-                let offset = if !scroll_offset.is_finite() || scroll_offset <= 0.0 {
-                    0.0
-                } else {
-                    scroll_offset.min(max_scroll)
-                };
-
-                let offset_u64 = offset.floor() as u64;
                 let (raw_first, raw_first_top) = tree.lower_bound_with_offset(offset_u64);
                 let (first_visible, first_top_u64) = if raw_first < len {
                     (raw_first, raw_first_top)
@@ -417,8 +414,6 @@ impl RowHeights {
                     (last, total_u64.saturating_sub(u64::from(heights[last])))
                 };
 
-                let end_px_f64 = f64::from(offset) + f64::from(vp);
-                let end_px_u64 = end_px_f64.floor() as u64;
                 let (raw_end, raw_end_top) = tree.lower_bound_with_offset(end_px_u64);
                 let (end_visible, end_visible_top_u64) = if raw_end < len {
                     if raw_end_top < end_px_u64
@@ -437,7 +432,7 @@ impl RowHeights {
                 let start = first_visible.saturating_sub(overscan);
                 let end = end_visible.saturating_add(overscan).min(len);
 
-                let top_spacer_u64 = if start == 0 {
+                let top_spacer_px = if start == 0 {
                     0
                 } else if first_visible - start <= SMALL_OVERSCAN_LINEAR_THRESHOLD {
                     let mut top = first_top_u64;
@@ -449,7 +444,7 @@ impl RowHeights {
                     tree.prefix_sum(start)
                 };
 
-                let end_offset_u64 = if end == len {
+                let end_offset_px = if end == len {
                     total_u64
                 } else if end - end_visible <= SMALL_OVERSCAN_LINEAR_THRESHOLD {
                     let mut bottom = end_visible_top_u64;
@@ -461,8 +456,8 @@ impl RowHeights {
                     tree.prefix_sum(end)
                 };
 
-                let rendered_u64 = end_offset_u64.saturating_sub(top_spacer_u64);
-                let bottom_spacer_u64 = total_u64.saturating_sub(end_offset_u64);
+                let rendered_height_px = end_offset_px.saturating_sub(top_spacer_px);
+                let bottom_spacer_px = total_u64.saturating_sub(end_offset_px);
 
                 VirtualSlice {
                     start,
@@ -470,10 +465,10 @@ impl RowHeights {
                     first_visible,
                     end_visible,
                     clamped_scroll_offset: offset,
-                    top_spacer_px: top_spacer_u64 as f32,
-                    rendered_height_px: rendered_u64 as f32,
-                    bottom_spacer_px: bottom_spacer_u64 as f32,
-                    total_height_px: total_f32,
+                    top_spacer_px,
+                    rendered_height_px,
+                    bottom_spacer_px,
+                    total_height_px: total_u64,
                     visible_count: end.saturating_sub(start),
                 }
             }

@@ -2,7 +2,7 @@
 
 use crate::state::{DensityMode, Priority, TaskStatus};
 
-use super::{stream_row_heights, RowHeights, VirtualSlice};
+use super::{stream_row_heights, uniform_row_height, RowHeights, VirtualSlice};
 
 /// Zero-allocation deterministic metadata for a single row in the 100,000-row Aether stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub struct VirtualRowMeta {
     pub priority: Priority,
     pub status: TaskStatus,
     pub latency_us: u16,
-    pub height_px: u16,
+    pub height_px: u32,
     pub is_expanded: bool,
 }
 
@@ -86,7 +86,7 @@ pub const fn expanded_row_height(density: DensityMode) -> u16 {
 #[inline]
 pub fn synthesize_stream_row(
     index: usize,
-    height_px: u16,
+    height_px: u32,
     is_expanded: bool,
 ) -> VirtualRowMeta {
     let mix = (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((index as u64) >> 7);
@@ -123,6 +123,13 @@ pub fn synthesize_stream_row(
     }
 }
 
+fn normalize_expanded_rows(expanded_rows: &[usize], row_count: usize, out: &mut Vec<usize>) {
+    out.clear();
+    out.extend(expanded_rows.iter().copied().filter(|&idx| idx < row_count));
+    out.sort_unstable();
+    out.dedup();
+}
+
 /// Cached virtual list engine kept across frames in `StudioWorkspaceApp` so scrolling or jumping
 /// across 100,000 rows performs zero index rebuilds and zero dataset allocations.
 #[derive(Debug, Clone)]
@@ -130,6 +137,7 @@ pub struct StreamVirtualEngine {
     row_count: usize,
     density: DensityMode,
     variable_heights: bool,
+    /// Sorted, deduplicated in-bounds expanded row indices for O(log k) membership checks.
     expanded_rows: Vec<usize>,
     heights: RowHeights,
 }
@@ -141,20 +149,24 @@ impl StreamVirtualEngine {
         variable_heights: bool,
         expanded_rows: &[usize],
     ) -> Self {
-        let heights = stream_row_heights(row_count, density, variable_heights, expanded_rows);
+        let mut normalized = Vec::new();
+        normalize_expanded_rows(expanded_rows, row_count, &mut normalized);
+        let heights = stream_row_heights(row_count, density, variable_heights, &normalized);
         Self {
             row_count,
             density,
             variable_heights,
-            expanded_rows: expanded_rows.to_vec(),
+            expanded_rows: normalized,
             heights,
         }
     }
 
     /// Synchronizes configuration with minimal work:
     /// - Identical config: **O(1)** no-op.
+    /// - All expanded rows collapsed in fixed-height mode: demotes back to O(1) zero-allocation
+    ///   [`RowHeights::uniform`], immediately freeing the Fenwick tree.
     /// - Only `expanded_rows` changed: **O(k log N)** incremental Fenwick updates (with one-time
-    ///   uniform→variable promotion if starting from fixed height)!
+    ///   uniform→variable promotion if starting from fixed height) via sorted `binary_search`.
     /// - `density` or `variable_heights` toggled: rebuilds heights in one O(N) pass.
     pub fn sync_config(
         &mut self,
@@ -169,54 +181,62 @@ impl StreamVirtualEngine {
             return;
         }
 
+        let mut next_expanded = Vec::with_capacity(expanded_rows.len());
+        normalize_expanded_rows(expanded_rows, self.row_count, &mut next_expanded);
+
+        if self.density == density
+            && self.variable_heights == variable_heights
+            && self.expanded_rows == next_expanded
+        {
+            return;
+        }
+
+        if !variable_heights && next_expanded.is_empty() {
+            self.density = density;
+            self.variable_heights = false;
+            self.expanded_rows.clear();
+            self.heights = RowHeights::uniform(self.row_count, uniform_row_height(density));
+            return;
+        }
+
         if self.density == density && self.variable_heights == variable_heights {
+            let uniform_h = uniform_row_height(density);
             for &old_row in &self.expanded_rows {
-                if !expanded_rows.contains(&old_row) {
+                if next_expanded.binary_search(&old_row).is_err() {
                     let base_h = if variable_heights {
                         u32::from(deterministic_row_height(old_row, density))
                     } else {
-                        match density {
-                            DensityMode::Normal => 44,
-                            DensityMode::Compact => 34,
-                        }
+                        uniform_h
                     };
                     self.heights.set_row_height(old_row, base_h);
                 }
             }
             let exp_h = u32::from(expanded_row_height(density));
-            for &new_row in expanded_rows {
-                if !self.expanded_rows.contains(&new_row) {
+            for &new_row in &next_expanded {
+                if self.expanded_rows.binary_search(&new_row).is_err() {
                     self.heights.set_row_height(new_row, exp_h);
                 }
             }
-            self.expanded_rows.clear();
-            self.expanded_rows.extend_from_slice(expanded_rows);
+            self.expanded_rows = next_expanded;
             return;
         }
 
         self.density = density;
         self.variable_heights = variable_heights;
-        self.expanded_rows.clear();
-        self.expanded_rows.extend_from_slice(expanded_rows);
-        self.heights =
-            stream_row_heights(self.row_count, density, variable_heights, expanded_rows);
-    }
-
-    #[inline]
-    pub fn heights(&self) -> &RowHeights {
-        &self.heights
+        self.heights = stream_row_heights(self.row_count, density, variable_heights, &next_expanded);
+        self.expanded_rows = next_expanded;
     }
 
     #[inline]
     pub fn offset_for_row(&self, row_index: usize) -> u32 {
-        self.heights.offset_of_u64(row_index).min(u32::MAX as u64) as u32
+        self.heights.offset_of(row_index).min(u32::MAX as u64) as u32
     }
 
     #[inline]
     pub fn slice(
         &self,
-        scroll_offset_y: f32,
-        viewport_height: f32,
+        scroll_offset_y: f64,
+        viewport_height: f64,
         overscan: usize,
     ) -> VirtualSlice {
         self.heights
@@ -225,63 +245,76 @@ impl StreamVirtualEngine {
 
     #[inline]
     pub fn row_meta(&self, index: usize) -> VirtualRowMeta {
-        let h = self.heights.row_height(index) as u16;
-        let is_expanded = self.expanded_rows.contains(&index);
+        let h = self.heights.row_height(index);
+        let is_expanded = self.expanded_rows.binary_search(&index).is_ok();
         synthesize_stream_row(index, h, is_expanded)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{FenwickHeightTree, DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT};
+    use super::super::{DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT};
     use super::*;
 
     #[test]
-    fn fenwick_tree_exact_prefix_sums_lower_bound_and_live_updates() {
-        let heights = vec![40u32, 50, 30, 60, 20];
-        let mut bit = FenwickHeightTree::from_heights(heights);
-        assert_eq!(bit.len(), 5);
-        assert_eq!(bit.total_height(), 200);
+    fn stream_engine_sync_config_promotes_demotes_ignores_oob_and_handles_toggles() {
+        let n = 1_000usize;
+        let mut eng = StreamVirtualEngine::new(n, DensityMode::Normal, false, &[n, n + 5]);
+        // OOB expanded indices must not promote fixed-height mode.
+        assert!(!eng.heights.is_variable());
+        assert_eq!(eng.heights.total_height(), (n as u64) * 44);
+        assert!(!eng.row_meta(0).is_expanded);
 
-        assert_eq!(bit.prefix_sum(0), 0);
-        assert_eq!(bit.prefix_sum(1), 40);
-        assert_eq!(bit.prefix_sum(2), 90);
-        assert_eq!(bit.prefix_sum(3), 120);
-        assert_eq!(bit.prefix_sum(4), 180);
-        assert_eq!(bit.prefix_sum(5), 200);
+        // Expanding rows promotes Uniform -> Variable and updates offsets + metadata.
+        eng.sync_config(DensityMode::Normal, false, &[500, 10, 500, n + 1]);
+        assert!(eng.heights.is_variable());
+        assert_eq!(eng.expanded_rows, vec![10, 500]);
+        assert!(eng.row_meta(10).is_expanded);
+        assert!(eng.row_meta(500).is_expanded);
+        assert_eq!(
+            eng.row_meta(500).height_px,
+            u32::from(expanded_row_height(DensityMode::Normal))
+        );
+        let exp_delta = u64::from(expanded_row_height(DensityMode::Normal)) - 44;
+        assert_eq!(eng.heights.total_height(), (n as u64) * 44 + 2 * exp_delta);
 
-        assert_eq!(bit.lower_bound(0), 0);
-        assert_eq!(bit.lower_bound(39), 0);
-        assert_eq!(bit.lower_bound(40), 1);
-        assert_eq!(bit.lower_bound(89), 1);
-        assert_eq!(bit.lower_bound(90), 2);
-        assert_eq!(bit.lower_bound(119), 2);
-        assert_eq!(bit.lower_bound(120), 3);
-        assert_eq!(bit.lower_bound(179), 3);
-        assert_eq!(bit.lower_bound(180), 4);
-        assert_eq!(bit.lower_bound(199), 4);
-        assert_eq!(bit.lower_bound(200), 5);
-        assert_eq!(bit.lower_bound(999), 5);
+        // Partial collapse keeps Variable mode and restores exact collapsed row height.
+        eng.sync_config(DensityMode::Normal, false, &[500]);
+        assert!(eng.heights.is_variable());
+        assert!(!eng.row_meta(10).is_expanded);
+        assert_eq!(eng.row_meta(10).height_px, 44);
+        assert_eq!(eng.heights.total_height(), (n as u64) * 44 + exp_delta);
 
-        assert!(bit.set_height(1, 100));
-        assert_eq!(bit.total_height(), 250);
-        assert_eq!(bit.prefix_sum(2), 140);
-        assert_eq!(bit.lower_bound(139), 1);
-        assert_eq!(bit.lower_bound(140), 2);
+        // Collapsing all rows in fixed-height mode demotes back to O(1) Uniform!
+        eng.sync_config(DensityMode::Normal, false, &[]);
+        assert!(!eng.heights.is_variable());
+        assert_eq!(eng.heights.total_height(), (n as u64) * 44);
 
-        assert!(bit.set_height(3, 10));
-        assert_eq!(bit.total_height(), 200);
-        assert_eq!(bit.prefix_sum(4), 180);
-        assert_eq!(bit.lower_bound(179), 3);
-        assert_eq!(bit.lower_bound(180), 4);
+        // Toggling density and variable heights rebuilds cleanly and preserves expanded rows.
+        eng.sync_config(DensityMode::Compact, true, &[25]);
+        assert!(eng.heights.is_variable());
+        assert!(eng.row_meta(25).is_expanded);
+        assert_eq!(
+            eng.row_meta(25).height_px,
+            u32::from(expanded_row_height(DensityMode::Compact))
+        );
+        assert_eq!(
+            eng.row_meta(26).height_px,
+            u32::from(deterministic_row_height(26, DensityMode::Compact))
+        );
+
+        // Switching back to Compact fixed-height with no expanded rows demotes to Uniform(34).
+        eng.sync_config(DensityMode::Compact, false, &[]);
+        assert!(!eng.heights.is_variable());
+        assert_eq!(eng.heights.total_height(), (n as u64) * 34);
     }
 
     #[test]
     fn virtual_list_100k_rows_spacer_invariant_and_uniform_variable_parity() {
-        let uniform = RowHeights::uniform(DEFAULT_STREAM_ROW_COUNT, 44.0);
-        assert_eq!(uniform.total_height_u64(), 4_400_000);
+        let uniform = RowHeights::uniform(DEFAULT_STREAM_ROW_COUNT, 44);
+        assert_eq!(uniform.total_height(), 4_400_000);
         for &target_row in &[0usize, 1, 50_000, 99_999] {
-            let offset = uniform.offset_of(target_row);
+            let offset = uniform.offset_of(target_row) as f64;
             let w = uniform.slice(offset, 520.0, DEFAULT_OVERSCAN);
             assert!(w.visible_count <= 22, "too many rows rendered: {w:?}");
             assert!(w.visible_count >= 10, "too few rows rendered: {w:?}");
@@ -300,19 +333,19 @@ mod tests {
             &[50_000],
         );
         assert_eq!(
-            var.row_height(50_000) as u16,
-            expanded_row_height(DensityMode::Normal)
+            var.row_height(50_000),
+            u32::from(expanded_row_height(DensityMode::Normal))
         );
         for &target_row in &[0usize, 12_345, 50_000, 99_999] {
-            let offset = var.offset_of(target_row);
+            let offset = var.offset_of(target_row) as f64;
             let w = var.slice(offset, 520.0, DEFAULT_OVERSCAN);
             let sum_slice: u64 = (w.start..w.end)
-                .map(|i| var.row_height(i) as u64)
+                .map(|i| u64::from(var.row_height(i)))
                 .sum();
-            assert_eq!(w.rendered_height_px as u64, sum_slice);
+            assert_eq!(w.rendered_height_px, sum_slice);
             assert_eq!(
-                (w.top_spacer_px + w.rendered_height_px + w.bottom_spacer_px) as u64,
-                var.total_height_u64()
+                w.top_spacer_px + w.rendered_height_px + w.bottom_spacer_px,
+                var.total_height()
             );
             assert!(
                 w.visible_count <= 26,
@@ -324,13 +357,13 @@ mod tests {
 
     #[test]
     fn edge_cases_empty_nan_negative_and_overscrolled_offsets() {
-        let empty = RowHeights::uniform(0, 44.0);
+        let empty = RowHeights::uniform(0, 44);
         let w = empty.slice(100.0, 500.0, 3);
         assert_eq!(w.visible_count, 0);
-        assert_eq!(w.total_height_px, 0.0);
+        assert_eq!(w.total_height_px, 0);
 
-        let idx = RowHeights::uniform(100, 40.0);
-        let w_nan = idx.slice(f32::NAN, 400.0, 2);
+        let idx = RowHeights::uniform(100, 40);
+        let w_nan = idx.slice(f64::NAN, 400.0, 2);
         assert_eq!(w_nan.first_visible, 0);
         assert_eq!(w_nan.clamped_scroll_offset, 0.0);
 
@@ -340,6 +373,6 @@ mod tests {
         let w_past = idx.slice(9_999_999.0, 400.0, 2);
         assert_eq!(w_past.end_visible, 100);
         assert_eq!(w_past.end, 100);
-        assert_eq!(w_past.bottom_spacer_px, 0.0);
+        assert_eq!(w_past.bottom_spacer_px, 0);
     }
 }
