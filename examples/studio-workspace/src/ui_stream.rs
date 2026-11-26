@@ -79,9 +79,9 @@ pub(crate) fn Stream100kPanel(
     let (window, rows_meta, offset_50k, offset_end, page_step) = {
         let mut eng = engine_cell.borrow_mut();
         eng.sync_config(density, stream.variable_heights, &stream.expanded_rows);
-        let win = eng.slice_window(stream.scroll_offset_y as f32, viewport_h, stream.overscan);
-        let mut items = Vec::with_capacity(win.rendered_count());
-        for idx in win.render_start..win.render_end {
+        let win = eng.slice(stream.scroll_offset_y as f32, viewport_h, stream.overscan);
+        let mut items = Vec::with_capacity(win.visible_count);
+        for idx in win.start..win.end {
             items.push(eng.row_meta(idx));
         }
         let off_50k = eng.offset_for_row(50_000);
@@ -98,24 +98,24 @@ pub(crate) fn Stream100kPanel(
     let readout_text = if is_mobile {
         format!(
             "#{}-#{} / 100k | {} rows | {}",
-            window.render_start,
-            window.render_end.saturating_sub(1),
-            window.rendered_count(),
+            window.start,
+            window.end.saturating_sub(1),
+            window.visible_count,
             mode_lbl
         )
     } else {
         format!(
             "Rows #{}..#{} / 100,000 | Mounted: {} | Y={}px / {}px | {}",
-            window.render_start,
-            window.render_end.saturating_sub(1),
-            window.rendered_count(),
-            window.clamped_scroll_y as u32,
+            window.start,
+            window.end.saturating_sub(1),
+            window.visible_count,
+            window.clamped_scroll_offset as u32,
             window.total_height_px as u32,
             mode_lbl
         )
     };
 
-    let current_scroll_y = window.clamped_scroll_y as u32;
+    let current_scroll_y = window.clamped_scroll_offset as u32;
     let max_scroll_y = (window.total_height_px as u32).saturating_sub(viewport_h as u32);
     let page_up_y = current_scroll_y.saturating_sub(page_step);
     let page_down_y = current_scroll_y.saturating_add(page_step).min(max_scroll_y);
@@ -123,7 +123,7 @@ pub(crate) fn Stream100kPanel(
     let top_spacer_attr = format!("{}", window.top_spacer_px as u32);
     let bottom_spacer_attr = format!("{}", window.bottom_spacer_px as u32);
     let total_height_attr = format!("{}", window.total_height_px as u32);
-    let mounted_count_attr = format!("{}", window.rendered_count());
+    let mounted_count_attr = format!("{}", window.visible_count);
     let scroll_y_attr = format!("{current_scroll_y}");
 
     let (vh_bw, vh_bc) = control_border(xray, stream.variable_heights, accent_hex);
@@ -222,8 +222,8 @@ pub(crate) fn Stream100kPanel(
             }
         }
 
-        // O(viewport) Recycled-Slot Virtualized Container — mounts ONLY `[render_start..render_end)`
-        // with exact 1:1 row pitch (`gap: 0px`) matching `VirtualListIndex` heights and zero
+        // O(viewport) Recycled-Slot Virtualized Container — mounts ONLY `[start..end)`
+        // with exact 1:1 row pitch (`gap: 0px`) matching `RowHeights` heights and zero
         // node churn across 100,000-row jumps.
         scrollview {
             test_id: "stream-viewport",

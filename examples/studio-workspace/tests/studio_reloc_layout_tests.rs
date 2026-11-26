@@ -299,7 +299,7 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
     let fe_median_us = frontend_frame_us[frontend_frame_us.len() / 2];
     let e2e_median_us = e2e_frame_us[e2e_frame_us.len() / 2];
 
-    let v_idx = nve_studio_workspace::VirtualListIndex::for_stream(
+    let v_idx = nve_studio_workspace::stream_row_heights(
         nve_studio_workspace::DEFAULT_STREAM_ROW_COUNT,
         DensityMode::Normal,
         true,
@@ -309,9 +309,9 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
     let mut acc_rows = 0usize;
     for step in 0..1_000usize {
         let target = (step * 97) % nve_studio_workspace::DEFAULT_STREAM_ROW_COUNT;
-        let off = v_idx.row_offset(target) as f32;
-        let w = v_idx.slice_window(off, 480.0, 2);
-        acc_rows += w.rendered_count();
+        let off = v_idx.offset_of(target);
+        let w = v_idx.slice(off, 480.0, 2);
+        acc_rows += w.visible_count;
     }
     let slice_1k_us = t_slice.elapsed().as_micros();
     assert!(acc_rows > 10_000);

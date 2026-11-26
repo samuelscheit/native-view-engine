@@ -2592,6 +2592,7 @@ version = "0.1.0"
 name = "nve-ui"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "dioxus-core",
  "dioxus-core-macro",
  "dioxus-signals",

@@ -23,7 +23,7 @@ nve-router = { workspace = true }
 nve-host-services = { workspace = true }
 nve-clipboard = { workspace = true }
 nve-system-env = { workspace = true }
-nve-ui = { path = "../../packages/framework/ui", default-features = false }
+nve-ui = { path = "../../packages/framework/ui", default-features = false, features = ["virtual-list"] }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }

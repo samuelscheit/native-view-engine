@@ -161,7 +161,11 @@ fn virtual_list_edge_cases_empty_single_nan_overscroll_and_scroll_to_index() {
         VirtualSlice {
             start: 0,
             end: 0,
+            first_visible: 0,
+            end_visible: 0,
+            clamped_scroll_offset: 0.0,
             top_spacer_px: 0.0,
+            rendered_height_px: 0.0,
             bottom_spacer_px: 0.0,
             total_height_px: 0.0,
             visible_count: 0,
@@ -217,7 +221,332 @@ fn virtual_list_edge_cases_empty_single_nan_overscroll_and_scroll_to_index() {
     let u_sl = uniform.slice();
     assert_eq!(u_sl.start, 49_997);
     assert_eq!(u_sl.end, 50_013);
+    assert_eq!(u_sl.first_visible, 50_000);
+    assert_eq!(u_sl.end_visible, 50_010);
     assert_eq!(u_sl.top_spacer_px, 49_997.0 * 40.0);
+    assert_eq!(u_sl.rendered_height_px, 16.0 * 40.0);
+}
+
+#[cfg(feature = "virtual-list")]
+#[test]
+fn row_heights_uniform_to_variable_promotion_revisions_and_cow() {
+    let mut heights = RowHeights::uniform(1_000, 40.0);
+    assert!(!heights.is_variable());
+    let rev_initial = heights.revision();
+
+    // 1. Out-of-bounds update returns false, keeps Uniform mode, and keeps revision unchanged.
+    assert!(!heights.set_row_height(1_000, 80));
+    assert!(!heights.set_row_height(usize::MAX, 80));
+    assert!(!heights.is_variable());
+    assert_eq!(heights.revision(), rev_initial);
+
+    // 2. No-op update matching uniform height stays Uniform with unchanged revision.
+    assert!(heights.set_row_height(500, 40));
+    assert!(!heights.is_variable());
+    assert_eq!(heights.revision(), rev_initial);
+
+    // 3. First heterogeneous update performs one-time O(N) promotion to Variable.
+    assert!(heights.set_row_height(500, 96));
+    assert!(heights.is_variable());
+    let rev_promoted = heights.revision();
+    assert_ne!(rev_promoted, rev_initial);
+    assert_eq!(heights.total_height_u64(), 999 * 40 + 96);
+    assert_eq!(heights.row_height(499), 40.0);
+    assert_eq!(heights.row_height(500), 96.0);
+    assert_eq!(heights.row_height(501), 40.0);
+    assert_eq!(heights.offset_of_u64(500), 500 * 40);
+    assert_eq!(heights.offset_of_u64(501), 500 * 40 + 96);
+    assert_eq!(heights.index_and_offset_at((500 * 40 + 95) as f32), (500, (500 * 40) as f32));
+    assert_eq!(heights.index_and_offset_at((500 * 40 + 96) as f32), (501, (500 * 40 + 96) as f32));
+
+    // 4. Subsequent no-op & OOB updates in Variable mode keep revision unchanged.
+    assert!(heights.set_row_height(500, 96));
+    assert!(!heights.set_row_height(1_000, 50));
+    assert_eq!(heights.revision(), rev_promoted);
+
+    // 5. Subsequent mutating update bumps revision and updates exact offsets & slices.
+    assert!(heights.set_row_height(10, 120));
+    let rev_mutated = heights.revision();
+    assert_ne!(rev_mutated, rev_promoted);
+    assert_eq!(heights.total_height_u64(), 998 * 40 + 96 + 120);
+    assert_eq!(heights.offset_of_u64(501), 499 * 40 + 120 + 96);
+
+    // 6. O(1) Clone + PartialEq + copy-on-write isolation + explicit content_eq.
+    let snapshot = heights.clone();
+    assert_eq!(heights, snapshot);
+    assert_eq!(heights.revision(), snapshot.revision());
+    assert!(heights.content_eq(&snapshot));
+
+    // Mutating shared handle COW-clones without affecting `snapshot`.
+    assert!(heights.set_row_height(10, 40));
+    assert_ne!(heights, snapshot);
+    assert_ne!(heights.revision(), snapshot.revision());
+    assert!(!heights.content_eq(&snapshot));
+    assert_eq!(snapshot.row_height(10), 120.0);
+    assert_eq!(heights.row_height(10), 40.0);
+
+    // Two independently built identical Variable tables compare != in O(1) PartialEq,
+    // while content_eq compares true.
+    let indep_a = RowHeights::variable(vec![40; 16]);
+    let indep_b = RowHeights::variable(vec![40; 16]);
+    let uniform_16 = RowHeights::uniform(16, 40.0);
+    assert_ne!(indep_a, indep_b);
+    assert!(indep_a.content_eq(&indep_b));
+    assert!(indep_a.content_eq(&uniform_16));
+    assert!(uniform_16.content_eq(&indep_a));
+    assert_eq!(RowHeights::uniform(16, 40.0), uniform_16);
+    assert_eq!(RowHeights::uniform(16, 40.0).revision(), uniform_16.revision());
+    assert_ne!(RowHeights::uniform(16, 40.0).revision(), RowHeights::uniform(17, 40.0).revision());
+    assert_ne!(RowHeights::uniform(16, 40.0).revision(), indep_a.revision());
+}
+
+#[cfg(feature = "virtual-list")]
+struct XorShift64(u64);
+
+#[cfg(feature = "virtual-list")]
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        Self(seed.max(1))
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn range(&mut self, bound: usize) -> usize {
+        if bound == 0 {
+            0
+        } else {
+            (self.next_u64() as usize) % bound
+        }
+    }
+}
+
+#[cfg(feature = "virtual-list")]
+fn naive_prefix(heights: &[u32]) -> Vec<u64> {
+    let mut prefix = Vec::with_capacity(heights.len() + 1);
+    prefix.push(0);
+    let mut running = 0u64;
+    for &h in heights {
+        running = running.saturating_add(u64::from(h.max(1)));
+        prefix.push(running);
+    }
+    prefix
+}
+
+#[cfg(feature = "virtual-list")]
+fn naive_lower_bound_with_offset(prefix: &[u64], offset_px: u64) -> (usize, u64) {
+    let n = prefix.len().saturating_sub(1);
+    if n == 0 {
+        return (0, 0);
+    }
+    for i in 0..n {
+        if prefix[i + 1] > offset_px {
+            return (i, prefix[i]);
+        }
+    }
+    (n, prefix[n])
+}
+
+#[cfg(feature = "virtual-list")]
+fn naive_slice(
+    prefix: &[u64],
+    scroll_offset: f32,
+    viewport_height: f32,
+    overscan: usize,
+) -> VirtualSlice {
+    let n = prefix.len().saturating_sub(1);
+    if n == 0 {
+        return VirtualSlice::EMPTY;
+    }
+    let total_u64 = prefix[n];
+    let total_f32 = total_u64 as f32;
+    let vp = if viewport_height.is_finite() && viewport_height > 0.0 {
+        viewport_height
+    } else {
+        0.0
+    };
+    let max_scroll = (total_f32 - vp).max(0.0);
+    let offset = if !scroll_offset.is_finite() || scroll_offset <= 0.0 {
+        0.0
+    } else {
+        scroll_offset.min(max_scroll)
+    };
+
+    let offset_u64 = offset.floor() as u64;
+    let (raw_first, _) = naive_lower_bound_with_offset(prefix, offset_u64);
+    let first_visible = raw_first.min(n - 1);
+
+    let end_px_f64 = f64::from(offset) + f64::from(vp);
+    let mut end_visible = 0usize;
+    while end_visible < n && (prefix[end_visible] as f64) < end_px_f64 {
+        end_visible += 1;
+    }
+    end_visible = end_visible.max(first_visible + 1).min(n);
+
+    let start = first_visible.saturating_sub(overscan);
+    let end = end_visible.saturating_add(overscan).min(n);
+    let top_u64 = prefix[start];
+    let end_u64 = prefix[end];
+    let rendered_u64 = end_u64 - top_u64;
+    let bottom_u64 = total_u64 - end_u64;
+
+    VirtualSlice {
+        start,
+        end,
+        first_visible,
+        end_visible,
+        clamped_scroll_offset: offset,
+        top_spacer_px: top_u64 as f32,
+        rendered_height_px: rendered_u64 as f32,
+        bottom_spacer_px: bottom_u64 as f32,
+        total_height_px: total_f32,
+        visible_count: end - start,
+    }
+}
+
+#[cfg(feature = "virtual-list")]
+#[test]
+fn property_500_random_trees_match_naive_reference_prefix_lower_bound_and_slice() {
+    let mut rng = XorShift64::new(0x5EED_CAFE_BEEF_1234);
+    let edge_sizes: [usize; 16] = [
+        0, 1, 2, 3, 7, 8, 15, 16, 17, 63, 64, 65, 255, 256, 1024, 10_000,
+    ];
+
+    let total_cases = 520usize;
+    for case_idx in 0..total_cases {
+        let n = if case_idx < edge_sizes.len() * 2 {
+            edge_sizes[case_idx % edge_sizes.len()]
+        } else {
+            rng.range(300)
+        };
+
+        // Mix uniform->variable promotion cases with direct from_fn / from_heights trees.
+        let use_promotion = case_idx % 5 == 0 && n > 0;
+        let (mut expected_heights, mut row_heights) = if use_promotion {
+            let base = (1 + rng.range(80)) as u32;
+            (vec![base; n], RowHeights::uniform(n, base as f32))
+        } else {
+            let mut raw = Vec::with_capacity(n);
+            for _ in 0..n {
+                let h = match rng.range(10) {
+                    0 => 0, // tests clamping < 1 to 1
+                    1 => 1,
+                    2 => 70_000 + (rng.range(50_000) as u32), // > u16::MAX tall row
+                    _ => (1 + rng.range(120)) as u32,
+                };
+                raw.push(h);
+            }
+            let normalized: Vec<u32> = raw.iter().map(|&h| h.max(1)).collect();
+            let rh = if case_idx % 2 == 0 {
+                RowHeights::variable(raw)
+            } else {
+                RowHeights::variable_from_fn(n, |i| raw[i])
+            };
+            (normalized, rh)
+        };
+
+        // Apply random updates (triggers uniform->variable promotion on first differing height).
+        let update_count = if n == 0 { 2 } else { (1 + rng.range(12)).min(n + 2) };
+        for _ in 0..update_count {
+            let idx = if rng.range(8) == 0 {
+                n + rng.range(3) // OOB probe
+            } else {
+                rng.range(n.max(1))
+            };
+            let new_h = match rng.range(6) {
+                0 => 0,
+                1 => 85_000,
+                _ => (1 + rng.range(140)) as u32,
+            };
+            let ok = row_heights.set_row_height(idx, new_h);
+            assert_eq!(ok, idx < n, "case {case_idx}: OOB return mismatch");
+            if idx < n {
+                expected_heights[idx] = new_h.max(1);
+            }
+        }
+
+        let prefix = naive_prefix(&expected_heights);
+        let expected_total = *prefix.last().unwrap();
+        assert_eq!(
+            row_heights.total_height_u64(),
+            expected_total,
+            "case {case_idx} (n={n}): total_height mismatch"
+        );
+
+        // Verify prefix_sum & lower_bound_with_offset at exact boundaries.
+        if let Some(tree) = row_heights.as_tree() {
+            assert_eq!(tree.total_height(), expected_total);
+            let stride = (n / 32).max(1);
+            for i in (0..n).step_by(stride).chain(n.checked_sub(1)) {
+                assert_eq!(tree.prefix_sum(i), prefix[i], "case {case_idx} i={i}");
+                for probe in [
+                    prefix[i].saturating_sub(1),
+                    prefix[i],
+                    prefix[i].saturating_add(1),
+                ] {
+                    assert_eq!(
+                        tree.lower_bound_with_offset(probe),
+                        naive_lower_bound_with_offset(&prefix, probe),
+                        "case {case_idx} n={n} probe={probe}"
+                    );
+                }
+            }
+            for probe in [
+                0,
+                expected_total.saturating_sub(1),
+                expected_total,
+                expected_total.saturating_add(100),
+            ] {
+                assert_eq!(
+                    tree.lower_bound_with_offset(probe),
+                    naive_lower_bound_with_offset(&prefix, probe),
+                    "case {case_idx} n={n} tail probe={probe}"
+                );
+            }
+        }
+
+        // Verify RowHeights::slice matches naive_slice across offsets, viewports, and overscans
+        // (including overscan values on both sides of the 32-row linear-step threshold).
+        let overscans = [0usize, 1, 3, 31, 32, 33, 64];
+        let viewports = [0.0f32, 1.0, 37.5, 250.0, 1_500.0];
+        let probe_offsets = [
+            f32::NAN,
+            -25.0,
+            0.0,
+            0.5,
+            (expected_total as f32) * 0.25 + 0.25,
+            (expected_total as f32) * 0.5,
+            (expected_total as f32) * 0.9,
+            expected_total as f32,
+            (expected_total as f32) + 5_000.0,
+        ];
+
+        let overscan = overscans[case_idx % overscans.len()];
+        let vp = viewports[case_idx % viewports.len()];
+        for &off in &probe_offsets {
+            let actual = row_heights.slice(off, vp, overscan);
+            let expected = naive_slice(&prefix, off, vp, overscan);
+            assert_eq!(
+                actual, expected,
+                "case {case_idx} (n={n}, var={}, off={off}, vp={vp}, overscan={overscan})",
+                row_heights.is_variable()
+            );
+            // Exact pixel conservation when total fits within exact f32 mantissa (2^24).
+            if expected_total <= (1u64 << 24) {
+                assert_eq!(
+                    actual.top_spacer_px + actual.rendered_height_px + actual.bottom_spacer_px,
+                    actual.total_height_px,
+                    "case {case_idx}: spacer conservation"
+                );
+            }
+        }
+    }
 }
 
 #[test]

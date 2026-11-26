@@ -6,8 +6,8 @@ use dioxus_core::Callback;
 use nve_dioxus::prelude::*;
 use nve_ui::{
     effective_bottom_inset, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
-    Card, CardVariant, FenwickHeightTree, KeyboardAvoidingView, KeyboardInsets, Orientation,
-    RowHeights, SplitBound, SplitPane, TabList, TabPanel, TabTrigger, TabsRoot, VirtualList,
+    Card, CardVariant, KeyboardAvoidingView, KeyboardInsets, Orientation, RowHeights, SplitBound,
+    SplitPane, TabList, TabPanel, TabTrigger, TabsRoot, VirtualList,
 };
 
 use crate::i18n_copy::copy;
@@ -15,17 +15,6 @@ use crate::sections::SectionHeader;
 use crate::shell::AppHandle;
 
 const VIRTUAL_ROW_COUNT: usize = 1_000;
-
-fn build_variable_heights() -> Vec<u32> {
-    (0..VIRTUAL_ROW_COUNT)
-        .map(|i| match i % 4 {
-            0 => 38,
-            1 => 48,
-            2 => 58,
-            _ => 44,
-        })
-        .collect()
-}
 
 #[component]
 pub fn LayoutSection(handle: AppHandle) -> Element {
@@ -40,10 +29,15 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
     let mut selected_row = use_signal(|| Some(0usize));
     let mut simulated_kb_px = use_signal(|| 0.0f32);
 
-    let heights_vec = dioxus_core::use_hook(build_variable_heights);
-    let fenwick = dioxus_core::use_hook(|| FenwickHeightTree::from_heights(heights_vec.clone()));
-    let row_heights = RowHeights::variable(heights_vec.clone());
-    let total_height_px = fenwick.total_height();
+    let row_heights = dioxus_core::use_hook(|| {
+        RowHeights::variable_from_fn(VIRTUAL_ROW_COUNT, |i| match i % 4 {
+            0 => 38,
+            1 => 48,
+            2 => 58,
+            _ => 44,
+        })
+    });
+    let total_height_px = row_heights.total_height_u64();
 
     let text_primary = p.text_primary.as_ref();
     let text_secondary = p.text_secondary.as_ref();
@@ -61,7 +55,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
 
     let selected_label = selected_row().map_or_else(|| "None".to_owned(), |i| format!("#{i}"));
     let jump_targets: [(usize, f32); 4] = [0usize, 250, 500, 999]
-        .map(|idx| (idx, fenwick.prefix_sum(idx) as f32));
+        .map(|idx| (idx, row_heights.offset_of(idx)));
     let row_accent = accent.to_owned();
     let row_primary = text_primary.to_owned();
     let row_muted = text_muted.to_owned();

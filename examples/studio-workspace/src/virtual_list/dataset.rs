@@ -2,7 +2,7 @@
 
 use crate::state::{DensityMode, Priority, TaskStatus};
 
-use super::{VirtualListIndex, VirtualWindow};
+use super::{stream_row_heights, RowHeights, VirtualSlice};
 
 /// Zero-allocation deterministic metadata for a single row in the 100,000-row Aether stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub struct StreamVirtualEngine {
     density: DensityMode,
     variable_heights: bool,
     expanded_rows: Vec<usize>,
-    index: VirtualListIndex,
+    heights: RowHeights,
 }
 
 impl StreamVirtualEngine {
@@ -141,21 +141,21 @@ impl StreamVirtualEngine {
         variable_heights: bool,
         expanded_rows: &[usize],
     ) -> Self {
-        let index =
-            VirtualListIndex::for_stream(row_count, density, variable_heights, expanded_rows);
+        let heights = stream_row_heights(row_count, density, variable_heights, expanded_rows);
         Self {
             row_count,
             density,
             variable_heights,
             expanded_rows: expanded_rows.to_vec(),
-            index,
+            heights,
         }
     }
 
     /// Synchronizes configuration with minimal work:
     /// - Identical config: **O(1)** no-op.
-    /// - Only `expanded_rows` changed: **O(k log N)** incremental Fenwick updates!
-    /// - `density` or `variable_heights` toggled: rebuilds index in O(N) once.
+    /// - Only `expanded_rows` changed: **O(k log N)** incremental Fenwick updates (with one-time
+    ///   uniform→variable promotion if starting from fixed height)!
+    /// - `density` or `variable_heights` toggled: rebuilds heights in one O(N) pass.
     pub fn sync_config(
         &mut self,
         density: DensityMode,
@@ -173,20 +173,20 @@ impl StreamVirtualEngine {
             for &old_row in &self.expanded_rows {
                 if !expanded_rows.contains(&old_row) {
                     let base_h = if variable_heights {
-                        deterministic_row_height(old_row, density)
+                        u32::from(deterministic_row_height(old_row, density))
                     } else {
                         match density {
                             DensityMode::Normal => 44,
                             DensityMode::Compact => 34,
                         }
                     };
-                    self.index.set_row_height(old_row, base_h);
+                    self.heights.set_row_height(old_row, base_h);
                 }
             }
-            let exp_h = expanded_row_height(density);
+            let exp_h = u32::from(expanded_row_height(density));
             for &new_row in expanded_rows {
                 if !self.expanded_rows.contains(&new_row) {
-                    self.index.set_row_height(new_row, exp_h);
+                    self.heights.set_row_height(new_row, exp_h);
                 }
             }
             self.expanded_rows.clear();
@@ -198,38 +198,34 @@ impl StreamVirtualEngine {
         self.variable_heights = variable_heights;
         self.expanded_rows.clear();
         self.expanded_rows.extend_from_slice(expanded_rows);
-        self.index = VirtualListIndex::for_stream(
-            self.row_count,
-            density,
-            variable_heights,
-            expanded_rows,
-        );
+        self.heights =
+            stream_row_heights(self.row_count, density, variable_heights, expanded_rows);
     }
 
     #[inline]
-    pub fn index(&self) -> &VirtualListIndex {
-        &self.index
+    pub fn heights(&self) -> &RowHeights {
+        &self.heights
     }
 
     #[inline]
     pub fn offset_for_row(&self, row_index: usize) -> u32 {
-        self.index.row_offset(row_index)
+        self.heights.offset_of_u64(row_index).min(u32::MAX as u64) as u32
     }
 
     #[inline]
-    pub fn slice_window(
+    pub fn slice(
         &self,
         scroll_offset_y: f32,
         viewport_height: f32,
         overscan: usize,
-    ) -> VirtualWindow {
-        self.index
-            .slice_window(scroll_offset_y, viewport_height, overscan)
+    ) -> VirtualSlice {
+        self.heights
+            .slice(scroll_offset_y, viewport_height, overscan)
     }
 
     #[inline]
     pub fn row_meta(&self, index: usize) -> VirtualRowMeta {
-        let h = self.index.row_height(index);
+        let h = self.heights.row_height(index) as u16;
         let is_expanded = self.expanded_rows.contains(&index);
         synthesize_stream_row(index, h, is_expanded)
     }
@@ -242,7 +238,7 @@ mod tests {
 
     #[test]
     fn fenwick_tree_exact_prefix_sums_lower_bound_and_live_updates() {
-        let heights = vec![40u16, 50, 30, 60, 20];
+        let heights = vec![40u32, 50, 30, 60, 20];
         let mut bit = FenwickHeightTree::from_heights(heights);
         assert_eq!(bit.len(), 5);
         assert_eq!(bit.total_height(), 200);
@@ -254,96 +250,96 @@ mod tests {
         assert_eq!(bit.prefix_sum(4), 180);
         assert_eq!(bit.prefix_sum(5), 200);
 
-        assert_eq!(bit.find_row_at_offset(0), 0);
-        assert_eq!(bit.find_row_at_offset(39), 0);
-        assert_eq!(bit.find_row_at_offset(40), 1);
-        assert_eq!(bit.find_row_at_offset(89), 1);
-        assert_eq!(bit.find_row_at_offset(90), 2);
-        assert_eq!(bit.find_row_at_offset(119), 2);
-        assert_eq!(bit.find_row_at_offset(120), 3);
-        assert_eq!(bit.find_row_at_offset(179), 3);
-        assert_eq!(bit.find_row_at_offset(180), 4);
-        assert_eq!(bit.find_row_at_offset(199), 4);
-        assert_eq!(bit.find_row_at_offset(200), 5);
-        assert_eq!(bit.find_row_at_offset(999), 5);
+        assert_eq!(bit.lower_bound(0), 0);
+        assert_eq!(bit.lower_bound(39), 0);
+        assert_eq!(bit.lower_bound(40), 1);
+        assert_eq!(bit.lower_bound(89), 1);
+        assert_eq!(bit.lower_bound(90), 2);
+        assert_eq!(bit.lower_bound(119), 2);
+        assert_eq!(bit.lower_bound(120), 3);
+        assert_eq!(bit.lower_bound(179), 3);
+        assert_eq!(bit.lower_bound(180), 4);
+        assert_eq!(bit.lower_bound(199), 4);
+        assert_eq!(bit.lower_bound(200), 5);
+        assert_eq!(bit.lower_bound(999), 5);
 
-        bit.set_height(1, 100);
+        assert!(bit.set_height(1, 100));
         assert_eq!(bit.total_height(), 250);
         assert_eq!(bit.prefix_sum(2), 140);
-        assert_eq!(bit.find_row_at_offset(139), 1);
-        assert_eq!(bit.find_row_at_offset(140), 2);
+        assert_eq!(bit.lower_bound(139), 1);
+        assert_eq!(bit.lower_bound(140), 2);
 
-        bit.set_height(3, 10);
+        assert!(bit.set_height(3, 10));
         assert_eq!(bit.total_height(), 200);
         assert_eq!(bit.prefix_sum(4), 180);
-        assert_eq!(bit.find_row_at_offset(179), 3);
-        assert_eq!(bit.find_row_at_offset(180), 4);
+        assert_eq!(bit.lower_bound(179), 3);
+        assert_eq!(bit.lower_bound(180), 4);
     }
 
     #[test]
     fn virtual_list_100k_rows_spacer_invariant_and_uniform_variable_parity() {
-        let uniform = VirtualListIndex::uniform(DEFAULT_STREAM_ROW_COUNT, 44);
-        assert_eq!(uniform.total_height(), 4_400_000);
+        let uniform = RowHeights::uniform(DEFAULT_STREAM_ROW_COUNT, 44.0);
+        assert_eq!(uniform.total_height_u64(), 4_400_000);
         for &target_row in &[0usize, 1, 50_000, 99_999] {
-            let offset = uniform.row_offset(target_row) as f32;
-            let w = uniform.slice_window(offset, 520.0, DEFAULT_OVERSCAN);
-            assert!(w.rendered_count() <= 22, "too many rows rendered: {w:?}");
-            assert!(w.rendered_count() >= 10, "too few rows rendered: {w:?}");
+            let offset = uniform.offset_of(target_row);
+            let w = uniform.slice(offset, 520.0, DEFAULT_OVERSCAN);
+            assert!(w.visible_count <= 22, "too many rows rendered: {w:?}");
+            assert!(w.visible_count >= 10, "too few rows rendered: {w:?}");
             assert_eq!(
                 w.top_spacer_px + w.rendered_height_px + w.bottom_spacer_px,
                 w.total_height_px,
                 "spacer sum must equal exact total height"
             );
-            assert!(target_row >= w.render_start && target_row < w.render_end);
+            assert!(target_row >= w.start && target_row < w.end);
         }
 
-        let var = VirtualListIndex::for_stream(
+        let var = stream_row_heights(
             DEFAULT_STREAM_ROW_COUNT,
             DensityMode::Normal,
             true,
             &[50_000],
         );
         assert_eq!(
-            var.row_height(50_000),
+            var.row_height(50_000) as u16,
             expanded_row_height(DensityMode::Normal)
         );
         for &target_row in &[0usize, 12_345, 50_000, 99_999] {
-            let offset = var.row_offset(target_row) as f32;
-            let w = var.slice_window(offset, 520.0, DEFAULT_OVERSCAN);
-            let sum_slice: u32 = (w.render_start..w.render_end)
-                .map(|i| u32::from(var.row_height(i)))
+            let offset = var.offset_of(target_row);
+            let w = var.slice(offset, 520.0, DEFAULT_OVERSCAN);
+            let sum_slice: u64 = (w.start..w.end)
+                .map(|i| var.row_height(i) as u64)
                 .sum();
-            assert_eq!(w.rendered_height_px as u32, sum_slice);
+            assert_eq!(w.rendered_height_px as u64, sum_slice);
             assert_eq!(
-                (w.top_spacer_px + w.rendered_height_px + w.bottom_spacer_px) as u32,
-                var.total_height()
+                (w.top_spacer_px + w.rendered_height_px + w.bottom_spacer_px) as u64,
+                var.total_height_u64()
             );
             assert!(
-                w.rendered_count() <= 26,
+                w.visible_count <= 26,
                 "window should stay O(viewport): {w:?}"
             );
-            assert!(target_row >= w.render_start && target_row < w.render_end);
+            assert!(target_row >= w.start && target_row < w.end);
         }
     }
 
     #[test]
     fn edge_cases_empty_nan_negative_and_overscrolled_offsets() {
-        let empty = VirtualListIndex::uniform(0, 44);
-        let w = empty.slice_window(100.0, 500.0, 3);
-        assert_eq!(w.rendered_count(), 0);
+        let empty = RowHeights::uniform(0, 44.0);
+        let w = empty.slice(100.0, 500.0, 3);
+        assert_eq!(w.visible_count, 0);
         assert_eq!(w.total_height_px, 0.0);
 
-        let idx = VirtualListIndex::uniform(100, 40);
-        let w_nan = idx.slice_window(f32::NAN, 400.0, 2);
+        let idx = RowHeights::uniform(100, 40.0);
+        let w_nan = idx.slice(f32::NAN, 400.0, 2);
         assert_eq!(w_nan.first_visible, 0);
-        assert_eq!(w_nan.clamped_scroll_y, 0.0);
+        assert_eq!(w_nan.clamped_scroll_offset, 0.0);
 
-        let w_neg = idx.slice_window(-500.0, 400.0, 2);
+        let w_neg = idx.slice(-500.0, 400.0, 2);
         assert_eq!(w_neg.first_visible, 0);
 
-        let w_past = idx.slice_window(9_999_999.0, 400.0, 2);
-        assert_eq!(w_past.last_visible, 100);
-        assert_eq!(w_past.render_end, 100);
+        let w_past = idx.slice(9_999_999.0, 400.0, 2);
+        assert_eq!(w_past.end_visible, 100);
+        assert_eq!(w_past.end, 100);
         assert_eq!(w_past.bottom_spacer_px, 0.0);
     }
 }

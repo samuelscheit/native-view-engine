@@ -63,5 +63,6 @@ pub use toast::{
 };
 #[cfg(feature = "virtual-list")]
 pub use virtual_list::{
-    FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
+    FenwickHeightTree, HeightsRevision, RowHeights, ScrollAlign, VirtualList, VirtualListState,
+    VirtualSlice,
 };

@@ -15,7 +15,8 @@ pub mod theme;
 
 #[cfg(feature = "virtual-list")]
 pub use components::{
-    FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
+    FenwickHeightTree, HeightsRevision, RowHeights, ScrollAlign, VirtualList, VirtualListState,
+    VirtualSlice,
 };
 pub use components::{
     add_days, add_months_clamped, add_years_clamped, civil_from_days, days_from_civil,
@@ -74,7 +75,8 @@ pub mod prelude {
     pub use nve_dioxus::TypedStyle;
     #[cfg(feature = "virtual-list")]
     pub use crate::components::{
-        FenwickHeightTree, RowHeights, ScrollAlign, VirtualList, VirtualListState, VirtualSlice,
+        FenwickHeightTree, HeightsRevision, RowHeights, ScrollAlign, VirtualList, VirtualListState,
+        VirtualSlice,
     };
     pub use crate::components::{
         add_days, add_months_clamped, add_years_clamped, civil_from_days, days_from_civil,

@@ -23,9 +23,19 @@ dioxus-signals = { workspace = true }
 web-sys = { workspace = true, features = ["Storage"] }
 
 [dev-dependencies]
+criterion = { workspace = true }
 nve-backend-headless = { workspace = true }
 nve-backend-web = { workspace = true }
 
 [[test]]
 name = "spatial_focus_tests"
 required-features = ["spatial-focus"]
+
+[[test]]
+name = "virtual_list_perf_tests"
+required-features = ["virtual-list"]
+
+[[bench]]
+name = "virtual_list_bench"
+harness = false
+required-features = ["virtual-list"]
