@@ -7,6 +7,10 @@ valid:
         _marker: core::marker::PhantomData<T>,
     }
   - |
+    pub struct Span<'a, T> {
+        pub slice: &'a [T],
+    }
+  - |
     pub struct Span<T>(u32, u32, core::marker::PhantomData<T>);
   - |
     pub struct StrArena(SpanPool<u8>);
@@ -30,7 +34,13 @@ invalid:
   - |
     struct Span(u32, u32);
   - |
+    pub struct Span<'a> {
+        pub bytes: &'a [u8],
+    }
+  - |
     pub type StrArena = SpanPool<u8>;
+  - |
+    pub type StrArena = SpanPool<u8, 64>;
   - |
     type StrArena =
         crate::span_pool::SpanPool<u8>;

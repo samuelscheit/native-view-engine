@@ -1,8 +1,8 @@
 id: rust-no-noderow-heap-fields
 language: rust
-severity: error
-message: "`NodeRow` must stay flat/SoA without heap-container fields (`Vec`, `String`, `Box`, `HashMap`, `BTreeMap`, `Arc`, `Rc`)."
-note: "[stage: PostNodeStore] Enforced as `error` immediately because `main` has 0 violations."
+severity: warning
+message: "Per-node struct (`NodeRow`/`NodeRecord`/`NodeData`/`NodeColdData`/`NodeEntry`) must stay flat/SoA without heap-container fields [stage: PostNodeStore]."
+note: "[stage: PostNodeStore] Bans `Vec`, `String`, `Box`, `HashMap`, `BTreeMap`, `Arc`, `Rc`, `HashSet`, `BTreeSet`, `VecDeque`, `SmallVec`, `Cow`, and `IndexVec` in per-node structs (excluding `PhantomData<...>` and raw pointers `*const`/`*mut`). Staged as `warning` while pre-NodeStore `NodeRecord` in `nve-dioxus` still carries `Vec`/`Box`."
 files:
   - "packages/**/*.rs"
 ignores:
@@ -11,40 +11,39 @@ ignores:
   - "**/benches/**"
   - "**/*_tests.rs"
   - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
 rule:
-  any:
-    - kind: field_declaration
-      inside:
-        stopBy: end
-        kind: struct_item
-        has:
-          field: name
-          kind: type_identifier
-          regex: '^NodeRow$'
-        not:
-          matches: rust-in-test-code
+  kind: type_identifier
+  regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc|HashSet|BTreeSet|VecDeque|SmallVec|Cow|IndexVec)$'
+  inside:
+    stopBy: end
+    any:
+      - kind: field_declaration
+      - kind: ordered_field_declaration_list
+    inside:
+      stopBy: end
+      kind: struct_item
       has:
-        field: type
-        any:
-          - kind: type_identifier
-            regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc)$'
-          - has:
-              stopBy: end
-              kind: type_identifier
-              regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc)$'
-    - kind: ordered_field_declaration_list
-      inside:
-        stopBy: neighbor
-        kind: struct_item
-        has:
-          field: name
-          kind: type_identifier
-          regex: '^NodeRow$'
-        not:
-          matches: rust-in-test-code
-      has:
-        stopBy: end
+        field: name
         kind: type_identifier
-        regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc)$'
+        regex: '^(?:NodeRow|NodeRecord|NodeData|NodeColdData|NodeEntry)$'
   not:
-    matches: rust-in-test-code
+    any:
+      - matches: rust-in-test-code
+      - inside:
+          stopBy: end
+          kind: pointer_type
+      - inside:
+          stopBy: end
+          kind: generic_type
+          has:
+            field: type
+            any:
+              - kind: type_identifier
+                regex: '^PhantomData$'
+              - kind: scoped_type_identifier
+                has:
+                  field: name
+                  kind: type_identifier
+                  regex: '^PhantomData$'

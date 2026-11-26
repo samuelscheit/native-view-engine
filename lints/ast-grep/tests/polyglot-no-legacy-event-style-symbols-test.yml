@@ -9,7 +9,7 @@ valid:
   - |
     #[cfg(test)]
     mod tests {
-        fn check(_k: NativeEventKind, _p: EventPayload, _s: StylePatch) {
+        fn check(_k: NativeEventKind, _p: EventPayload, _s: StylePatch, _m: EventMask) {
             let _ = NveEventPayloadTag::Point;
         }
     }
@@ -23,10 +23,15 @@ invalid:
   - |
     pub fn apply(patch: &StylePatch) {}
   - |
+    pub fn direct(mask: EventMask, ev: NveDirectEvent, t: TypedTableEvent) {}
+  - |
     #[cfg(test)]
     mod tests {}
 
     pub fn leaked(patch: StylePatch) {}
+  - |
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub fn wasm_event(ev: EventPayload) {}
 ---
 id: no-legacy-event-style-symbols-cpp
 valid:
@@ -34,15 +39,39 @@ valid:
     struct NveEvent {};
     struct NveEventPayload {};
     // NativeEventKind in comment
+  - |
+    void dispatch(const facebook::react::EventPayload& payload);
+  - |
+    void dispatchShort(react::EventPayload payload);
+  - |
+    using facebook::react::EventPayload;
+  - |
+    namespace facebook::react {
+        struct EventPayload {};
+    }
 invalid:
   - |
-    NativeEventKind kind;
+    auto k = NativeEventKind::Press;
   - |
-    NveEventPayloadTag tag;
+    auto t = NveEventPayloadTag::Point;
   - |
     EventPayload payload;
   - |
+    nve::EventPayload payload;
+  - |
     StylePatch patch;
+  - |
+    NveDirectEvent ev{};
+---
+id: no-legacy-event-style-symbols-c
+valid:
+  - |
+    struct NveEvent { int kind; };
+invalid:
+  - |
+    struct NveDirectEvent ev;
+  - |
+    typedef int NativeEventKind;
 ---
 id: no-legacy-event-style-symbols-typescript
 valid:
@@ -59,6 +88,32 @@ invalid:
     type P = EventPayload;
   - |
     type S = StylePatch;
+  - |
+    const obj = { StylePatch };
+  - |
+    const { EventPayload } = ev;
+---
+id: no-legacy-event-style-symbols-tsx
+valid:
+  - |
+    const el = <div />;
+invalid:
+  - |
+    const el = <div data-patch={StylePatch} />;
+  - |
+    const { NativeEventKind } = props;
+---
+id: no-legacy-event-style-symbols-javascript
+valid:
+  - |
+    const name = "NveDirectEvent";
+invalid:
+  - |
+    const tag = NveEventPayloadTag.POINT;
+  - |
+    const obj = { EventPayload };
+  - |
+    const { StylePatch } = msg;
 ---
 id: no-legacy-event-style-symbols-swift
 valid:
@@ -74,6 +129,8 @@ invalid:
     let payload: EventPayload
   - |
     struct StylePatch {}
+  - |
+    func write(ev: NveDirectEvent) {}
 ---
 id: no-legacy-event-style-symbols-kotlin
 valid:
@@ -104,3 +161,13 @@ invalid:
     void handle(EventPayload payload) {}
   - |
     class StylePatch {}
+---
+id: no-legacy-event-style-symbols-java
+valid:
+  - |
+    class NveEvent {}
+invalid:
+  - |
+    class Bridge { NveDirectEvent ev; }
+  - |
+    enum NativeEventKind { PRESS }

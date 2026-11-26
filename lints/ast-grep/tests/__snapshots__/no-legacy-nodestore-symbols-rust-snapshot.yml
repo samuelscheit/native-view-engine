@@ -1,5 +1,11 @@
 id: no-legacy-nodestore-symbols-rust
 snapshots:
+  "#[cfg(any(target_arch = \"wasm32\", test))]\npub fn wasm_or_test<S: RenderSink>(s: &mut S) {}\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 65
+      end: 75
   "#[cfg(not(test))]\npub fn prod_only<S: RenderSink>(s: &mut S) {}\n":
     labels:
     - source: RenderSink
@@ -24,9 +30,21 @@ snapshots:
       style: primary
       start: 22
       end: 35
+  "pub fn ext(b: BatchSink, u: ExtensionUpdate, e: &dyn ErasedExtension) {\n    let _ = Opcode::SetRawProp;\n}\n":
+    labels:
+    - source: BatchSink
+      style: primary
+      start: 14
+      end: 23
   "pub fn flush<S: RenderSink>(sink: &mut S) {}\n":
     labels:
     - source: RenderSink
       style: primary
       start: 16
       end: 26
+  "pub fn prop(v: RawPropValue, s: RawStyleProps, spec: NativeViewSpec) {}\n":
+    labels:
+    - source: RawPropValue
+      style: primary
+      start: 15
+      end: 27

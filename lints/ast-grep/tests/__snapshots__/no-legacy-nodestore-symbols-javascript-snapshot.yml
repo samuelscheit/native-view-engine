@@ -1,0 +1,20 @@
+id: no-legacy-nodestore-symbols-javascript
+snapshots:
+  "const cls = NVE_HOST_CLASS_VIEW;\n":
+    labels:
+    - source: NVE_HOST_CLASS_VIEW
+      style: primary
+      start: 12
+      end: 31
+  "const obj = { ComponentKind };\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 14
+      end: 27
+  "const { RenderSink } = host;\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 8
+      end: 18

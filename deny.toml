@@ -2,11 +2,7 @@
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
-all-features = false
-no-default-features = false
-
-[output]
-feature-depth = 1
+all-features = true
 
 [advisories]
 ignore = [
@@ -31,19 +27,13 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 
-[licenses.private]
-ignore = false
-
 [bans]
 multiple-versions = "warn"
 # Temporarily "warn" because internal `[workspace.dependencies]` omit `version` and member
-# manifests omit `publish = false` (which we cannot touch under the NodeStore zero-conflict
-# boundary). Flip to "deny" once root Cargo.toml adds `version = "0.1.0"` on internal path deps.
+# manifests omit `publish = false` (untouchable under the NodeStore zero-conflict boundary).
+# Flip to "deny" once root Cargo.toml adds `version = "0.1.0"` on internal path deps.
 wildcards = "warn"
-allow-wildcard-paths = true
-highlight = "all"
-workspace-default-features = "allow"
-external-default-features = "allow"
+highlight = "simplest-path"
 deny = [
     { crate = "fnv", reason = "Standardize on const fn xxh64 via nve-hash" },
 ]

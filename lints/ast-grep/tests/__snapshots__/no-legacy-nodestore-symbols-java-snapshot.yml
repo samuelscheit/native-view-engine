@@ -1,0 +1,14 @@
+id: no-legacy-nodestore-symbols-java
+snapshots:
+  "class Host { int cls = NVE_HOST_CLASS_VIEW; }\n":
+    labels:
+    - source: NVE_HOST_CLASS_VIEW
+      style: primary
+      start: 23
+      end: 42
+  "interface RenderSink {}\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 10
+      end: 20

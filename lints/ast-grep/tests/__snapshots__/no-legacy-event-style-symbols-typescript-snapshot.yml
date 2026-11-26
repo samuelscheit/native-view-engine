@@ -1,5 +1,17 @@
 id: no-legacy-event-style-symbols-typescript
 snapshots:
+  "const obj = { StylePatch };\n":
+    labels:
+    - source: StylePatch
+      style: primary
+      start: 14
+      end: 24
+  "const { EventPayload } = ev;\n":
+    labels:
+    - source: EventPayload
+      style: primary
+      start: 8
+      end: 20
   "type K = NativeEventKind;\n":
     labels:
     - source: NativeEventKind

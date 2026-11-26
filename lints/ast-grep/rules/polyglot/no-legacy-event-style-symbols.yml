@@ -1,48 +1,86 @@
-# Polyglot legacy Track 1B-1d event/style symbol bans (`NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, `StylePatch`).
-# Rust and Dart stay `warning` (`[stage: Post1B1D]`) while pre-migration code exists on `main`;
-# C++, TypeScript, Swift, and Kotlin already have 0 violations on `main` and enforce `error` immediately.
+# Polyglot legacy Track 1B-1d event/style symbol bans (synced with `arch_invariants/types_abi_and_regressions.rs`):
+# `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, `EventMask`,
+# `NveDirectEvent`, `TypedTableEvent`, `StylePatch`.
 
 id: no-legacy-event-style-symbols-rust
 language: rust
 severity: warning
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in production Rust code. Flip to `error` once Track 1B-1d lands."
+note: "[stage: Post1B1D] Synced with `BANNED_LEGACY_SYMBOLS_1B1D` in `arch_invariants`. Flip to `error` once Track 1B-1d lands."
 ignores:
   - "packages/tools/cli/tests/arch_invariants/**"
   - "**/tests/**"
   - "**/benches/**"
   - "**/*_tests.rs"
   - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
   - "**/*.generated.*"
 rule:
   any:
     - kind: identifier
     - kind: type_identifier
-  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
   not:
     matches: rust-in-test-code
 ---
 id: no-legacy-event-style-symbols-cpp
 language: cpp
-severity: error
+severity: warning
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in C++ hosts/bridges. Enforced as `error` immediately because `main` has 0 violations."
+note: "[stage: Post1B1D] Includes `namespace_identifier` scopes and exempts React Native Fabric's `facebook::react::EventPayload` / `react::EventPayload`. Staged as `warning` while Apple/C++ hosts still reference `NveDirectEvent`."
 ignores:
   - "**/*.generated.*"
   - "**/tests/**"
   - "**/bench/**"
+  - "**/benches/**"
 rule:
   any:
     - kind: identifier
     - kind: type_identifier
     - kind: field_identifier
-  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+    - kind: namespace_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
+  not:
+    all:
+      - regex: '^EventPayload$'
+      - any:
+          - inside:
+              stopBy: neighbor
+              kind: qualified_identifier
+              has:
+                field: scope
+                kind: namespace_identifier
+                regex: '^react$'
+          - inside:
+              stopBy: end
+              kind: namespace_definition
+              has:
+                field: name
+                regex: '(?:^|::)react$'
+---
+id: no-legacy-event-style-symbols-c
+language: c
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/tests/**"
+  - "**/bench/**"
+  - "**/benches/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+    - kind: field_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
 ---
 id: no-legacy-event-style-symbols-typescript
 language: typescript
 severity: error
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in TypeScript hosts/bindings. Enforced as `error` immediately because `main` has 0 violations."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
 ignores:
   - "**/*.generated.*"
   - "**/tests/**"
@@ -51,13 +89,48 @@ rule:
     - kind: identifier
     - kind: type_identifier
     - kind: property_identifier
-  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+    - kind: shorthand_property_identifier
+    - kind: shorthand_property_identifier_pattern
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
+---
+id: no-legacy-event-style-symbols-tsx
+language: tsx
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/tests/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+    - kind: property_identifier
+    - kind: shorthand_property_identifier
+    - kind: shorthand_property_identifier_pattern
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
+---
+id: no-legacy-event-style-symbols-javascript
+language: javascript
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/tests/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: property_identifier
+    - kind: shorthand_property_identifier
+    - kind: shorthand_property_identifier_pattern
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
 ---
 id: no-legacy-event-style-symbols-swift
 language: swift
-severity: error
+severity: warning
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in Swift hosts. Enforced as `error` immediately because `main` has 0 violations."
+note: "[stage: Post1B1D] Staged as `warning` while `NveDirectWriters.swift` still references `NveDirectEvent`."
 ignores:
   - "**/*.generated.*"
   - "**/Tests/**"
@@ -65,27 +138,28 @@ rule:
   any:
     - kind: simple_identifier
     - kind: type_identifier
-  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
 ---
 id: no-legacy-event-style-symbols-kotlin
 language: kotlin
 severity: error
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in Kotlin hosts. Enforced as `error` immediately because `main` has 0 violations."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
 ignores:
   - "**/*.generated.*"
   - "**/src/test/**"
+  - "**/src/androidTest/**"
 rule:
   any:
     - kind: simple_identifier
     - kind: type_identifier
-  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
 ---
 id: no-legacy-event-style-symbols-dart
 language: dart
 severity: warning
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Bans `NativeEventKind`, `NveEventPayloadTag`, `EventPayload`, and `StylePatch` in Dart/Flutter hosts. Flip to `error` once Flutter host migrates off `NveEventPayloadTag`."
+note: "[stage: Post1B1D] Staged as `warning` while Flutter host still references `NveEventPayloadTag` / `NveDirectEvent`."
 ignores:
   - "**/*.generated.*"
   - "**/test/**"
@@ -93,4 +167,20 @@ rule:
   any:
     - kind: identifier
     - kind: type_identifier
-  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|StylePatch)$'
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'
+---
+id: no-legacy-event-style-symbols-java
+language: java
+severity: error
+message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
+note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
+ignores:
+  - "**/*.generated.*"
+  - "**/dev/nve/android/generated/**"
+  - "**/src/test/**"
+  - "**/src/androidTest/**"
+rule:
+  any:
+    - kind: identifier
+    - kind: type_identifier
+  regex: '^(?:NativeEventKind|NveEventPayloadTag|EventPayload|EventMask|NveDirectEvent|TypedTableEvent|StylePatch)$'

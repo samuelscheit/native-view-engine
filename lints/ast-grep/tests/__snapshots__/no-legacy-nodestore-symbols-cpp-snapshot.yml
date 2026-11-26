@@ -1,5 +1,17 @@
 id: no-legacy-nodestore-symbols-cpp
 snapshots:
+  "auto t = nve::ComponentKind::Text;\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 14
+      end: 27
+  "auto v = ComponentKind::View;\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 9
+      end: 22
   "class RenderSink {};\n":
     labels:
     - source: RenderSink
@@ -12,9 +24,21 @@ snapshots:
       style: primary
       start: 8
       end: 27
+  "namespace RenderSink {}\n":
+    labels:
+    - source: RenderSink
+      style: primary
+      start: 10
+      end: 20
   "void draw(ComponentKind kind);\n":
     labels:
     - source: ComponentKind
       style: primary
       start: 10
       end: 23
+  "void set(RawPropValue v);\n":
+    labels:
+    - source: RawPropValue
+      style: primary
+      start: 9
+      end: 21

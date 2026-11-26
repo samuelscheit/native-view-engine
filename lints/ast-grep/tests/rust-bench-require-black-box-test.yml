@@ -15,6 +15,12 @@ valid:
         let _ = out;
     }
   - |
+    fn bench_turbofish() {
+        let t = std::time::Instant::now();
+        let _ = std::hint::black_box::<u64>(42);
+        let _ = t.elapsed();
+    }
+  - |
     // Pure fixture/adapter helper submodule (not a benchmark runner/entrypoint).
     pub struct FixtureTask {
         pub id: u64,
@@ -32,8 +38,25 @@ invalid:
     criterion_group!(benches, bench_stub);
     criterion_main!(benches);
   - |
+    use criterion::{criterion_group, criterion_main, Criterion};
+    use std::hint::black_box;
+
+    fn bench_unused_import(c: &mut Criterion) {
+        c.bench_function("unused_import", |b| b.iter(|| 1 + 2));
+    }
+    criterion_group!(benches, bench_unused_import);
+    criterion_main!(benches);
+  - |
     fn main() {
         let _x = 1 + 2;
+    }
+  - |
+    use std::time::Instant;
+
+    pub fn bench_custom_timer() {
+        let start = Instant::now();
+        let _x = 1 + 2;
+        let _ = start.elapsed();
     }
   - |
     use criterion::Criterion;

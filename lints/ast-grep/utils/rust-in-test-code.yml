@@ -1,5 +1,5 @@
-# Matches any Rust AST node that is itself annotated with a test attribute (`#[cfg(test)]`, `#[test]`, ...)
-# or nested inside an item so annotated (e.g. `#[cfg(test)] mod tests { ... }`).
+# Matches any Rust AST node that is itself annotated with a test attribute (`#[cfg(test)]`, `#[test]`, ...),
+# nested inside an item so annotated, or inside a file/module carrying `#![cfg(test)]` / `#![cfg(all(test, ...))]`.
 
 id: rust-in-test-code
 language: rust
@@ -9,3 +9,12 @@ rule:
     - inside:
         stopBy: end
         matches: rust-has-test-attr
+    - inside:
+        stopBy: end
+        any:
+          - kind: source_file
+          - kind: declaration_list
+        has:
+          kind: inner_attribute_item
+          has:
+            matches: rust-cfg-test-attribute

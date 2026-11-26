@@ -38,6 +38,33 @@ snapshots:
       style: secondary
       start: 11
       end: 15
+  "pub struct Span<'a> {\n    pub bytes: &'a [u8],\n}\n":
+    labels:
+    - source: |-
+        pub struct Span<'a> {
+            pub bytes: &'a [u8],
+        }
+      style: primary
+      start: 0
+      end: 48
+    - source: Span
+      style: secondary
+      start: 11
+      end: 15
+  "pub type StrArena = SpanPool<u8, 64>;\n":
+    labels:
+    - source: pub type StrArena = SpanPool<u8, 64>;
+      style: primary
+      start: 0
+      end: 37
+    - source: StrArena
+      style: secondary
+      start: 9
+      end: 17
+    - source: SpanPool<u8, 64>
+      style: secondary
+      start: 20
+      end: 36
   "pub type StrArena = SpanPool<u8>;\n":
     labels:
     - source: pub type StrArena = SpanPool<u8>;

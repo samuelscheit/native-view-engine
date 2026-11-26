@@ -8,11 +8,25 @@ valid:
         pub surface_id: u32,
     }
   - |
+    #[repr(C)]
+    #[derive(Clone, Copy, NveAbi)]
+    pub union NveValueData {
+        pub i64_val: i64,
+        pub f64_val: f64,
+    }
+  - |
     #[derive(Clone, Copy, nve_abi::NveAbi)]
     /// Doc comment between derive and repr.
     #[repr(C, align(64))]
     pub struct NveRenderNode {
         pub flags: u32,
+    }
+  - |
+    // C function-pointer vtable `*Api` structs are layout-asserted in `layout_asserts.rs`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct NveSurfaceApi {
+        pub create: unsafe extern "C" fn(surface_id: u32) -> u64,
     }
   - |
     #[repr(transparent)]
@@ -41,8 +55,14 @@ invalid:
   - |
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
-    pub struct NveSurfaceApi {
+    pub struct NvePodStruct {
         pub version: u32,
+    }
+  - |
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub union MissingUnionDerive {
+        pub raw: u64,
     }
   - |
     #[repr(C, align(64))]

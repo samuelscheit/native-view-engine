@@ -36,3 +36,49 @@ invalid:
   - |
     #[cfg(not(test))]
     struct ByteWriter(Vec<u8>);
+---
+id: rust-no-private-legacy-byte-readers
+valid:
+  - |
+    pub struct BinReader<'a>(&'a [u8]);
+    impl<'a> BinReader<'a> {
+        pub fn read_u32(&mut self) -> u32 { 0 }
+    }
+  - |
+    // Text/JSX parser Cursor without binary integer decoding is NOT a byte reader.
+    struct Cursor<'a> {
+        src: &'a str,
+        pos: usize,
+    }
+    impl<'a> Cursor<'a> {
+        fn peek(&self) -> Option<u8> { None }
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        struct WireReader<'a>(&'a [u8]);
+        impl<'a> WireReader<'a> {
+            fn read_u32(&mut self) -> u32 { u32::from_le_bytes([0; 4]) }
+        }
+    }
+invalid:
+  - |
+    struct WireReader<'a> {
+        buf: &'a [u8],
+    }
+    impl<'a> WireReader<'a> {
+        fn read_u32(&mut self) -> u32 { 0 }
+    }
+  - |
+    pub(crate) struct WireReader<'a>(&'a [u8]);
+    fn decode(b: [u8; 2]) -> u16 { u16::from_le_bytes(b) }
+  - |
+    struct Cursor<'a> {
+        buf: &'a [u8],
+    }
+    impl<'a> Cursor<'a> {
+        fn read_u16(&mut self) -> u16 { u16::from_le_bytes([0; 2]) }
+    }
+  - |
+    struct BinWriter(Vec<u8>);
+    fn read_u32() -> u32 { 0 }

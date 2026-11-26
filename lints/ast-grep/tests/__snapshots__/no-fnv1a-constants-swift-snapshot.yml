@@ -1,5 +1,23 @@
 id: no-fnv1a-constants-swift
 snapshots:
+  "let dec32: UInt32 = 2_166_136_261\n":
+    labels:
+    - source: "2_166_136_261"
+      style: primary
+      start: 20
+      end: 33
+  "let decPrime64: UInt64 = 1_099_511_628_211\n":
+    labels:
+    - source: "1_099_511_628_211"
+      style: primary
+      start: 25
+      end: 42
+  "let offset32: UInt32 = 0x00811c9dc5\n":
+    labels:
+    - source: "0x00811c9dc5"
+      style: primary
+      start: 23
+      end: 35
   "let offset32: UInt32 = 0x811c9dc5\n":
     labels:
     - source: "0x811c9dc5"

@@ -26,6 +26,32 @@ snapshots:
       style: secondary
       start: 38
       end: 41
+  "#[repr(C)]\n#[derive(Clone, Copy)]\npub union MissingUnionDerive {\n    pub raw: u64,\n}\n":
+    labels:
+    - source: |-
+        pub union MissingUnionDerive {
+            pub raw: u64,
+        }
+      style: primary
+      start: 34
+      end: 84
+    - source: pub
+      style: secondary
+      start: 34
+      end: 37
+  "#[repr(C)]\n#[derive(Debug, Clone, Copy)]\npub struct NvePodStruct {\n    pub version: u32,\n}\n":
+    labels:
+    - source: |-
+        pub struct NvePodStruct {
+            pub version: u32,
+        }
+      style: primary
+      start: 41
+      end: 90
+    - source: pub
+      style: secondary
+      start: 41
+      end: 44
   "#[repr(C)]\n#[derive(Debug, Clone, Copy)]\npub struct NveSurfaceApi {\n    pub version: u32,\n}\n":
     labels:
     - source: |-

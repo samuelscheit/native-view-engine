@@ -11,6 +11,8 @@ ignores:
   - "**/benches/**"
   - "**/*_tests.rs"
   - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
 rule:
   kind: macro_invocation
   has:

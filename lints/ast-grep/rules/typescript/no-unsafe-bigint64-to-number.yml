@@ -1,11 +1,145 @@
+# 53-bit JS integer precision guard across TypeScript, TSX, and JavaScript (.js/.mjs).
+# Catches `Number(...)` and `globalThis.Number(...)` wrapping any `getBigUint64`/`getBigInt64` call,
+# including optional chaining (`?.`), non-null assertions (`!`), type assertions (`as bigint`),
+# parenthesized/bitwise expressions, and bracket indexing (`view['getBigUint64'](...)`).
+
 id: ts-no-unsafe-bigint64-to-number
 language: typescript
 severity: error
 message: "Converting 64-bit DataView BigInt to JS `Number` silently truncates above 2^53 - 1; keep as `bigint` or split into `(lo, hi)` u32."
-note: "JavaScript IEEE-754 doubles only represent 53-bit integers accurately. Never wrap `getBigUint64(...)` or `getBigInt64(...)` in `Number(...)`."
+note: "JavaScript IEEE-754 doubles only represent 53-bit integers accurately. Never wrap `getBigUint64(...)` or `getBigInt64(...)` in `Number(...)` or `globalThis.Number(...)`."
 ignores:
   - "**/*.generated.*"
 rule:
-  any:
-    - pattern: Number($X.getBigUint64($$$))
-    - pattern: Number($X.getBigInt64($$$))
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        any:
+          - kind: identifier
+            regex: '^Number$'
+          - kind: member_expression
+            all:
+              - has:
+                  field: object
+                  kind: identifier
+                  regex: '^(?:globalThis|window)$'
+              - has:
+                  field: property
+                  kind: property_identifier
+                  regex: '^Number$'
+    - has:
+        field: arguments
+        kind: arguments
+        has:
+          stopBy: end
+          kind: call_expression
+          has:
+            field: function
+            any:
+              - kind: member_expression
+                has:
+                  field: property
+                  kind: property_identifier
+                  regex: '^getBig(?:Uint|Int)64$'
+              - kind: subscript_expression
+                has:
+                  field: index
+                  kind: string
+                  has:
+                    kind: string_fragment
+                    regex: '^getBig(?:Uint|Int)64$'
+---
+id: tsx-no-unsafe-bigint64-to-number
+language: tsx
+severity: error
+message: "Converting 64-bit DataView BigInt to JS `Number` silently truncates above 2^53 - 1; keep as `bigint` or split into `(lo, hi)` u32."
+note: "JavaScript IEEE-754 doubles only represent 53-bit integers accurately. Never wrap `getBigUint64(...)` or `getBigInt64(...)` in `Number(...)` or `globalThis.Number(...)`."
+ignores:
+  - "**/*.generated.*"
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        any:
+          - kind: identifier
+            regex: '^Number$'
+          - kind: member_expression
+            all:
+              - has:
+                  field: object
+                  kind: identifier
+                  regex: '^(?:globalThis|window)$'
+              - has:
+                  field: property
+                  kind: property_identifier
+                  regex: '^Number$'
+    - has:
+        field: arguments
+        kind: arguments
+        has:
+          stopBy: end
+          kind: call_expression
+          has:
+            field: function
+            any:
+              - kind: member_expression
+                has:
+                  field: property
+                  kind: property_identifier
+                  regex: '^getBig(?:Uint|Int)64$'
+              - kind: subscript_expression
+                has:
+                  field: index
+                  kind: string
+                  has:
+                    kind: string_fragment
+                    regex: '^getBig(?:Uint|Int)64$'
+---
+id: js-no-unsafe-bigint64-to-number
+language: javascript
+severity: error
+message: "Converting 64-bit DataView BigInt to JS `Number` silently truncates above 2^53 - 1; keep as `bigint` or split into `(lo, hi)` u32."
+note: "JavaScript IEEE-754 doubles only represent 53-bit integers accurately. Never wrap `getBigUint64(...)` or `getBigInt64(...)` in `Number(...)` or `globalThis.Number(...)`."
+ignores:
+  - "**/*.generated.*"
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        any:
+          - kind: identifier
+            regex: '^Number$'
+          - kind: member_expression
+            all:
+              - has:
+                  field: object
+                  kind: identifier
+                  regex: '^(?:globalThis|window)$'
+              - has:
+                  field: property
+                  kind: property_identifier
+                  regex: '^Number$'
+    - has:
+        field: arguments
+        kind: arguments
+        has:
+          stopBy: end
+          kind: call_expression
+          has:
+            field: function
+            any:
+              - kind: member_expression
+                has:
+                  field: property
+                  kind: property_identifier
+                  regex: '^getBig(?:Uint|Int)64$'
+              - kind: subscript_expression
+                has:
+                  field: index
+                  kind: string
+                  has:
+                    kind: string_fragment
+                    regex: '^getBig(?:Uint|Int)64$'

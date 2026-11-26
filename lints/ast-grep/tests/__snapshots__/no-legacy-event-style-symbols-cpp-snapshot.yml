@@ -12,6 +12,12 @@ snapshots:
       style: primary
       start: 0
       end: 15
+  "NveDirectEvent ev{};\n":
+    labels:
+    - source: NveDirectEvent
+      style: primary
+      start: 0
+      end: 14
   "NveEventPayloadTag tag;\n":
     labels:
     - source: NveEventPayloadTag
@@ -24,3 +30,21 @@ snapshots:
       style: primary
       start: 0
       end: 10
+  "auto k = NativeEventKind::Press;\n":
+    labels:
+    - source: NativeEventKind
+      style: primary
+      start: 9
+      end: 24
+  "auto t = NveEventPayloadTag::Point;\n":
+    labels:
+    - source: NveEventPayloadTag
+      style: primary
+      start: 9
+      end: 27
+  "nve::EventPayload payload;\n":
+    labels:
+    - source: EventPayload
+      style: primary
+      start: 5
+      end: 17

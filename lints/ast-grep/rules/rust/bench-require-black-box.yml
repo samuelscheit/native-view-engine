@@ -1,8 +1,8 @@
 id: rust-bench-require-black-box
 language: rust
 severity: error
-message: "Benchmark target is missing `black_box`; LLVM may optimize measured work away."
-note: "Enforces anti-stub benchmark quality on every Rust benchmark file defining a runner/entrypoint (`criterion_main!`, `criterion_group!`, `Criterion`, `divan`, or `fn main`) under `**/benches/**/*.rs`."
+message: "Benchmark target is missing a `black_box(...)` call; LLVM may optimize measured work away."
+note: "Enforces anti-stub benchmark quality on every Rust benchmark file defining a runner/entrypoint (`criterion_main!`, `criterion_group!`, `Criterion`, `divan`, `Instant::now`, or `fn main`) under `**/benches/**/*.rs`. Requires an actual `black_box(...)` call expression (unused imports do not satisfy the check)."
 files:
   - "**/benches/**/*.rs"
 rule:
@@ -19,8 +19,47 @@ rule:
           field: name
           kind: identifier
           regex: '^main$'
+      - kind: call_expression
+        has:
+          field: function
+          kind: scoped_identifier
+          all:
+            - has:
+                field: name
+                kind: identifier
+                regex: '^now$'
+            - has:
+                field: path
+                any:
+                  - kind: identifier
+                    regex: '^Instant$'
+                  - kind: scoped_identifier
+                    has:
+                      field: name
+                      kind: identifier
+                      regex: '^Instant$'
   not:
     has:
       stopBy: end
-      kind: identifier
-      regex: '^black_box$'
+      kind: call_expression
+      has:
+        field: function
+        any:
+          - kind: identifier
+            regex: '^black_box$'
+          - kind: scoped_identifier
+            has:
+              field: name
+              kind: identifier
+              regex: '^black_box$'
+          - kind: generic_function
+            has:
+              field: function
+              any:
+                - kind: identifier
+                  regex: '^black_box$'
+                - kind: scoped_identifier
+                  has:
+                    field: name
+                    kind: identifier
+                    regex: '^black_box$'

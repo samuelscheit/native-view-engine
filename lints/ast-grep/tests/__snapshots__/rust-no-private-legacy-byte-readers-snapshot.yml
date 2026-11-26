@@ -1,0 +1,108 @@
+id: rust-no-private-legacy-byte-readers
+snapshots:
+  "pub(crate) struct WireReader<'a>(&'a [u8]);\nfn decode(b: [u8; 2]) -> u16 { u16::from_le_bytes(b) }\n":
+    labels:
+    - source: pub(crate) struct WireReader<'a>(&'a [u8]);
+      style: primary
+      start: 0
+      end: 43
+    - source: from_le_bytes
+      style: secondary
+      start: 80
+      end: 93
+    - source: |
+        pub(crate) struct WireReader<'a>(&'a [u8]);
+        fn decode(b: [u8; 2]) -> u16 { u16::from_le_bytes(b) }
+      style: secondary
+      start: 0
+      end: 99
+    - source: WireReader
+      style: secondary
+      start: 18
+      end: 28
+  "struct BinWriter(Vec<u8>);\nfn read_u32() -> u32 { 0 }\n":
+    labels:
+    - source: struct BinWriter(Vec<u8>);
+      style: primary
+      start: 0
+      end: 26
+    - source: read_u32
+      style: secondary
+      start: 30
+      end: 38
+    - source: fn read_u32() -> u32 { 0 }
+      style: secondary
+      start: 27
+      end: 53
+    - source: |
+        struct BinWriter(Vec<u8>);
+        fn read_u32() -> u32 { 0 }
+      style: secondary
+      start: 0
+      end: 54
+    - source: BinWriter
+      style: secondary
+      start: 7
+      end: 16
+  "struct Cursor<'a> {\n    buf: &'a [u8],\n}\nimpl<'a> Cursor<'a> {\n    fn read_u16(&mut self) -> u16 { u16::from_le_bytes([0; 2]) }\n}\n":
+    labels:
+    - source: |-
+        struct Cursor<'a> {
+            buf: &'a [u8],
+        }
+      style: primary
+      start: 0
+      end: 40
+    - source: read_u16
+      style: secondary
+      start: 70
+      end: 78
+    - source: fn read_u16(&mut self) -> u16 { u16::from_le_bytes([0; 2]) }
+      style: secondary
+      start: 67
+      end: 127
+    - source: |
+        struct Cursor<'a> {
+            buf: &'a [u8],
+        }
+        impl<'a> Cursor<'a> {
+            fn read_u16(&mut self) -> u16 { u16::from_le_bytes([0; 2]) }
+        }
+      style: secondary
+      start: 0
+      end: 130
+    - source: Cursor
+      style: secondary
+      start: 7
+      end: 13
+  "struct WireReader<'a> {\n    buf: &'a [u8],\n}\nimpl<'a> WireReader<'a> {\n    fn read_u32(&mut self) -> u32 { 0 }\n}\n":
+    labels:
+    - source: |-
+        struct WireReader<'a> {
+            buf: &'a [u8],
+        }
+      style: primary
+      start: 0
+      end: 44
+    - source: read_u32
+      style: secondary
+      start: 78
+      end: 86
+    - source: fn read_u32(&mut self) -> u32 { 0 }
+      style: secondary
+      start: 75
+      end: 110
+    - source: |
+        struct WireReader<'a> {
+            buf: &'a [u8],
+        }
+        impl<'a> WireReader<'a> {
+            fn read_u32(&mut self) -> u32 { 0 }
+        }
+      style: secondary
+      start: 0
+      end: 113
+    - source: WireReader
+      style: secondary
+      start: 7
+      end: 17

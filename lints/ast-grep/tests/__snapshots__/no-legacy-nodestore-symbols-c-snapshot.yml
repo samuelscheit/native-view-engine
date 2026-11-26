@@ -1,0 +1,14 @@
+id: no-legacy-nodestore-symbols-c
+snapshots:
+  "int c = NVE_HOST_CLASS_VIEW;\n":
+    labels:
+    - source: NVE_HOST_CLASS_VIEW
+      style: primary
+      start: 8
+      end: 27
+  "typedef int ComponentKind;\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 12
+      end: 25

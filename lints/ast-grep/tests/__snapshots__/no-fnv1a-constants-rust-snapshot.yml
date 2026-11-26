@@ -1,11 +1,41 @@
 id: no-fnv1a-constants-rust
 snapshots:
+  "const DEC_OFFSET32: u32 = 2_166_136_261u32;\n":
+    labels:
+    - source: 2_166_136_261u32
+      style: primary
+      start: 26
+      end: 42
+  "const DEC_OFFSET64: u64 = 14695981039346656037;\n":
+    labels:
+    - source: "14695981039346656037"
+      style: primary
+      start: 26
+      end: 46
+  "const DEC_PRIME32: i128 = 16777619i128;\n":
+    labels:
+    - source: 16777619i128
+      style: primary
+      start: 26
+      end: 38
+  "const DEC_PRIME64: isize = 1_099_511_628_211isize;\n":
+    labels:
+    - source: 1_099_511_628_211isize
+      style: primary
+      start: 27
+      end: 49
   "const OFFSET32: u32 = 0x811c9dc5;\n":
     labels:
     - source: "0x811c9dc5"
       style: primary
       start: 22
       end: 32
+  "const OFFSET32_PAD: u32 = 0x00811c9dc5;\n":
+    labels:
+    - source: "0x00811c9dc5"
+      style: primary
+      start: 26
+      end: 38
   "const OFFSET64: u64 = 0xcbf2_9ce4_8422_2325u64;\n":
     labels:
     - source: 0xcbf2_9ce4_8422_2325u64

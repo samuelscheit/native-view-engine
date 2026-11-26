@@ -6,6 +6,12 @@ snapshots:
       style: primary
       start: 16
       end: 31
+  "func write(ev: NveDirectEvent) {}\n":
+    labels:
+    - source: NveDirectEvent
+      style: primary
+      start: 15
+      end: 29
   "let payload: EventPayload\n":
     labels:
     - source: EventPayload

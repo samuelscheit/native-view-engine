@@ -11,6 +11,14 @@ valid:
   - |
     pub struct NodeRow(pub NodeId, pub u32);
   - |
+    pub struct NodeRow {
+        pub _marker: core::marker::PhantomData<Vec<u8>>,
+        pub _marker2: PhantomData<String>,
+        pub raw_const: *const Vec<u8>,
+        pub raw_mut: *mut String,
+        pub maybe_ptr: Option<*const Box<u8>>,
+    }
+  - |
     pub struct OtherRow {
         pub children: Vec<NodeId>,
         pub name: String,
@@ -38,24 +46,48 @@ invalid:
         pub label: String,
     }
   - |
-    pub struct NodeRow {
+    pub struct NodeRecord {
         pub extra: Option<Box<ColdData>>,
     }
   - |
-    pub struct NodeRow {
+    pub struct NodeData {
         pub props: std::collections::HashMap<u32, u32>,
     }
   - |
-    pub struct NodeRow {
+    pub struct NodeColdData {
         pub ordered: BTreeMap<u32, u32>,
     }
   - |
-    pub struct NodeRow {
+    pub struct NodeEntry {
         pub shared: std::sync::Arc<u32>,
     }
   - |
     pub struct NodeRow {
         pub local: std::rc::Rc<u32>,
+    }
+  - |
+    pub struct NodeRow {
+        pub tags: HashSet<u32>,
+    }
+  - |
+    pub struct NodeRow {
+        pub sorted: BTreeSet<u32>,
+    }
+  - |
+    pub struct NodeRow {
+        pub queue: VecDeque<u32>,
+    }
+  - |
+    pub struct NodeRow {
+        pub small: SmallVec<[u32; 4]>,
+    }
+  - |
+    pub struct NodeRow<'a> {
+        pub text: std::borrow::Cow<'a, str>,
+    }
+  - |
+    pub struct NodeRow {
+        pub slots: IndexVec<NodeId, u32>,
     }
   - |
     pub struct NodeRow(pub Vec<NodeId>);

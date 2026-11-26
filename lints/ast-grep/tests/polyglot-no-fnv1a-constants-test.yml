@@ -5,11 +5,18 @@ valid:
   - |
     const MAGIC: u32 = 0x3145_564E;
   - |
-    // Historical comment: 0xcbf29ce484222325
+    // Historical comment: 0xcbf29ce484222325 14695981039346656037
     const DOC: &str = "0x811c9dc5";
+  - |
+    #[cfg(test)]
+    mod tests {
+        const TEST_FNV: u64 = 0xcbf29ce484222325;
+    }
 invalid:
   - |
     const OFFSET32: u32 = 0x811c9dc5;
+  - |
+    const OFFSET32_PAD: u32 = 0x00811c9dc5;
   - |
     const PRIME32: u32 = 0x01000193;
   - |
@@ -18,25 +25,58 @@ invalid:
     const PRIME64_FULL: u64 = 0x0000_0100_0000_01b3;
   - |
     const PRIME64_SHORT: u64 = 0x100000001B3;
+  - |
+    const DEC_OFFSET32: u32 = 2_166_136_261u32;
+  - |
+    const DEC_PRIME32: i128 = 16777619i128;
+  - |
+    const DEC_OFFSET64: u64 = 14695981039346656037;
+  - |
+    const DEC_PRIME64: isize = 1_099_511_628_211isize;
 ---
 id: no-fnv1a-constants-cpp
 valid:
   - |
     constexpr uint64_t XXH_PRIME = 0x9E3779B185EBCA87ULL;
   - |
-    // 0xcbf29ce484222325 in comment is ignored
+    // 0xcbf29ce484222325 14695981039346656037 in comment is ignored
     const char* s = "0x811c9dc5";
 invalid:
   - |
-    constexpr uint32_t kOffset = 0x811c9dc5u;
+    constexpr uint32_t kOffset = 0x00811c9dc5u;
   - |
-    constexpr uint32_t kPrime = 0x01000193u;
+    constexpr uint32_t kPrime = 0x01000193LU;
   - |
-    constexpr uint64_t kOffset64 = 0xcbf2'9ce4'8422'2325ULL;
+    constexpr uint64_t kOffset64 = 0xcbf2'9ce4'8422'2325LLU;
   - |
     constexpr uint64_t kPrime64 = 0x00000100000001b3ULL;
   - |
     constexpr uint64_t kPrime64Short = 0x100000001b3ULL;
+  - |
+    uint32_t dec32 = 2166136261u;
+  - |
+    uint32_t decPrime32 = 16'777'619lu;
+  - |
+    uint64_t h = 14695981039346656037ull;
+  - |
+    uint64_t p = 1099511628211llu;
+---
+id: no-fnv1a-constants-c
+valid:
+  - |
+    unsigned long long xxh = 0x9E3779B185EBCA87ULL;
+  - |
+    // 0x811c9dc5 in comment
+    const char *s = "2166136261";
+invalid:
+  - |
+    unsigned int offset = 0x811c9dc5u;
+  - |
+    unsigned int prime = 16777619LU;
+  - |
+    unsigned long long off64 = 14695981039346656037LLU;
+  - |
+    unsigned long long prime64 = 0x100000001b3ULL;
 ---
 id: no-fnv1a-constants-typescript
 valid:
@@ -47,7 +87,7 @@ valid:
     const note = "0xcbf29ce484222325";
 invalid:
   - |
-    const OFFSET = 0x811c9dc5;
+    const OFFSET = 0x00811c9dc5;
   - |
     const PRIME = 0x01000193;
   - |
@@ -55,7 +95,33 @@ invalid:
   - |
     const PRIME64 = 0x00000100000001b3n;
   - |
-    const PRIME64_SHORT = 0x100000001b3n;
+    const DEC_OFF32 = 2166136261;
+  - |
+    const DEC_OFF64 = 14695981039346656037n;
+  - |
+    const DEC_PRIME64 = 1_099_511_628_211n;
+---
+id: no-fnv1a-constants-tsx
+valid:
+  - |
+    const el = <span>{0x9e3779b185ebca87n.toString()}</span>;
+invalid:
+  - |
+    const el = <span>{0x811c9dc5}</span>;
+  - |
+    const el = <span>{1099511628211n.toString()}</span>;
+---
+id: no-fnv1a-constants-javascript
+valid:
+  - |
+    const SCHEMA_HASH = 0x9e3779b185ebca87n;
+invalid:
+  - |
+    const OFFSET = 0x811c9dc5;
+  - |
+    const DEC_OFFSET64 = 14695981039346656037n;
+  - |
+    const DEC_PRIME32 = 16777619;
 ---
 id: no-fnv1a-constants-swift
 valid:
@@ -66,7 +132,7 @@ valid:
     let label = "0x811c9dc5"
 invalid:
   - |
-    let offset32: UInt32 = 0x811c9dc5
+    let offset32: UInt32 = 0x00811c9dc5
   - |
     let prime32: UInt32 = 0x01000193
   - |
@@ -74,7 +140,9 @@ invalid:
   - |
     let prime64: UInt64 = 0x0000_0100_0000_01b3
   - |
-    let prime64Short: UInt64 = 0x100000001b3
+    let dec32: UInt32 = 2_166_136_261
+  - |
+    let decPrime64: UInt64 = 1_099_511_628_211
 ---
 id: no-fnv1a-constants-kotlin
 valid:
@@ -93,7 +161,9 @@ invalid:
   - |
     val prime64 = 0x00000100000001b3L
   - |
-    val prime64Short = 0x100000001b3uL
+    val dec32 = 2166136261u
+  - |
+    val decPrime64 = 1_099_511_628_211L
 ---
 id: no-fnv1a-constants-dart
 valid:
@@ -104,7 +174,7 @@ valid:
     const String s = '0x811c9dc5';
 invalid:
   - |
-    const int offset32 = 0x811c9dc5;
+    const int offset32 = 0x00811c9dc5;
   - |
     const int prime32 = 0x01000193;
   - |
@@ -112,4 +182,26 @@ invalid:
   - |
     const int prime64 = 0x00000100000001b3;
   - |
-    const int prime64Short = 0x100000001b3;
+    const int dec32 = 2166136261;
+  - |
+    const int decPrime64 = 1099511628211;
+---
+id: no-fnv1a-constants-java
+valid:
+  - |
+    class Hash {
+      static final long MAGIC = 0x9E3779B185EBCA87L;
+    }
+invalid:
+  - |
+    class Hash {
+      static final int OFFSET32 = 0x811c9dc5;
+    }
+  - |
+    class Hash {
+      static final long OFFSET64 = 0xcbf29ce484222325L;
+    }
+  - |
+    class Hash {
+      static final long PRIME64 = 1099511628211L;
+    }

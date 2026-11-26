@@ -1,10 +1,22 @@
 id: no-fnv1a-constants-cpp
 snapshots:
+  "constexpr uint32_t kOffset = 0x00811c9dc5u;\n":
+    labels:
+    - source: 0x00811c9dc5u
+      style: primary
+      start: 29
+      end: 42
   "constexpr uint32_t kOffset = 0x811c9dc5u;\n":
     labels:
     - source: 0x811c9dc5u
       style: primary
       start: 29
+      end: 40
+  "constexpr uint32_t kPrime = 0x01000193LU;\n":
+    labels:
+    - source: 0x01000193LU
+      style: primary
+      start: 28
       end: 40
   "constexpr uint32_t kPrime = 0x01000193u;\n":
     labels:
@@ -12,6 +24,12 @@ snapshots:
       style: primary
       start: 28
       end: 39
+  "constexpr uint64_t kOffset64 = 0xcbf2'9ce4'8422'2325LLU;\n":
+    labels:
+    - source: 0xcbf2'9ce4'8422'2325LLU
+      style: primary
+      start: 31
+      end: 55
   "constexpr uint64_t kOffset64 = 0xcbf2'9ce4'8422'2325ULL;\n":
     labels:
     - source: 0xcbf2'9ce4'8422'2325ULL
@@ -30,3 +48,27 @@ snapshots:
       style: primary
       start: 35
       end: 51
+  "uint32_t dec32 = 2166136261u;\n":
+    labels:
+    - source: 2166136261u
+      style: primary
+      start: 17
+      end: 28
+  "uint32_t decPrime32 = 16'777'619lu;\n":
+    labels:
+    - source: 16'777'619lu
+      style: primary
+      start: 22
+      end: 34
+  "uint64_t h = 14695981039346656037ull;\n":
+    labels:
+    - source: 14695981039346656037ull
+      style: primary
+      start: 13
+      end: 36
+  "uint64_t p = 1099511628211llu;\n":
+    labels:
+    - source: 1099511628211llu
+      style: primary
+      start: 13
+      end: 29

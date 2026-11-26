@@ -1,0 +1,26 @@
+id: no-fnv1a-constants-c
+snapshots:
+  "unsigned int offset = 0x811c9dc5u;\n":
+    labels:
+    - source: 0x811c9dc5u
+      style: primary
+      start: 22
+      end: 33
+  "unsigned int prime = 16777619LU;\n":
+    labels:
+    - source: 16777619LU
+      style: primary
+      start: 21
+      end: 31
+  "unsigned long long off64 = 14695981039346656037LLU;\n":
+    labels:
+    - source: 14695981039346656037LLU
+      style: primary
+      start: 27
+      end: 50
+  "unsigned long long prime64 = 0x100000001b3ULL;\n":
+    labels:
+    - source: 0x100000001b3ULL
+      style: primary
+      start: 29
+      end: 45

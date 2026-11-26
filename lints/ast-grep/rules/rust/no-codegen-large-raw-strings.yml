@@ -10,8 +10,10 @@ ignores:
   - "**/benches/**"
   - "**/*_tests.rs"
   - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
 rule:
   kind: raw_string_literal
-  regex: '(?s)(?:[^\n]*\n){7}'
+  regex: '(?:[^\n]*\n){7}'
   not:
     matches: rust-in-test-code

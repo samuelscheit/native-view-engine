@@ -1,0 +1,92 @@
+id: js-no-unsafe-bigint64-to-number
+snapshots:
+  "const globalCall = globalThis.Number(view[\"getBigInt64\"](8, true));\n":
+    labels:
+    - source: globalThis.Number(view["getBigInt64"](8, true))
+      style: primary
+      start: 19
+      end: 66
+    - source: globalThis
+      style: secondary
+      start: 19
+      end: 29
+    - source: Number
+      style: secondary
+      start: 30
+      end: 36
+    - source: globalThis.Number
+      style: secondary
+      start: 19
+      end: 36
+    - source: getBigInt64
+      style: secondary
+      start: 43
+      end: 54
+    - source: "\"getBigInt64\""
+      style: secondary
+      start: 42
+      end: 55
+    - source: view["getBigInt64"]
+      style: secondary
+      start: 37
+      end: 56
+    - source: view["getBigInt64"](8, true)
+      style: secondary
+      start: 37
+      end: 65
+    - source: (view["getBigInt64"](8, true))
+      style: secondary
+      start: 36
+      end: 66
+  "const id = Number(view.getBigUint64(0, true));\n":
+    labels:
+    - source: Number(view.getBigUint64(0, true))
+      style: primary
+      start: 11
+      end: 45
+    - source: Number
+      style: secondary
+      start: 11
+      end: 17
+    - source: getBigUint64
+      style: secondary
+      start: 23
+      end: 35
+    - source: view.getBigUint64
+      style: secondary
+      start: 18
+      end: 35
+    - source: view.getBigUint64(0, true)
+      style: secondary
+      start: 18
+      end: 44
+    - source: (view.getBigUint64(0, true))
+      style: secondary
+      start: 17
+      end: 45
+  "const opt = Number((view?.getBigUint64(0, true)) >> 1n);\n":
+    labels:
+    - source: Number((view?.getBigUint64(0, true)) >> 1n)
+      style: primary
+      start: 12
+      end: 55
+    - source: Number
+      style: secondary
+      start: 12
+      end: 18
+    - source: getBigUint64
+      style: secondary
+      start: 26
+      end: 38
+    - source: view?.getBigUint64
+      style: secondary
+      start: 20
+      end: 38
+    - source: view?.getBigUint64(0, true)
+      style: secondary
+      start: 20
+      end: 47
+    - source: ((view?.getBigUint64(0, true)) >> 1n)
+      style: secondary
+      start: 18
+      end: 55

@@ -1,11 +1,199 @@
 id: ts-no-unsafe-bigint64-to-number
 snapshots:
+  "const asserted = Number(view.getBigInt64(8, true) as bigint);\n":
+    labels:
+    - source: Number(view.getBigInt64(8, true) as bigint)
+      style: primary
+      start: 17
+      end: 60
+    - source: Number
+      style: secondary
+      start: 17
+      end: 23
+    - source: getBigInt64
+      style: secondary
+      start: 29
+      end: 40
+    - source: view.getBigInt64
+      style: secondary
+      start: 24
+      end: 40
+    - source: view.getBigInt64(8, true)
+      style: secondary
+      start: 24
+      end: 49
+    - source: (view.getBigInt64(8, true) as bigint)
+      style: secondary
+      start: 23
+      end: 60
+  "const bracketed = Number(view['getBigInt64'](0, true));\n":
+    labels:
+    - source: Number(view['getBigInt64'](0, true))
+      style: primary
+      start: 18
+      end: 54
+    - source: Number
+      style: secondary
+      start: 18
+      end: 24
+    - source: getBigInt64
+      style: secondary
+      start: 31
+      end: 42
+    - source: "'getBigInt64'"
+      style: secondary
+      start: 30
+      end: 43
+    - source: view['getBigInt64']
+      style: secondary
+      start: 25
+      end: 44
+    - source: view['getBigInt64'](0, true)
+      style: secondary
+      start: 25
+      end: 53
+    - source: (view['getBigInt64'](0, true))
+      style: secondary
+      start: 24
+      end: 54
+  "const globalCall = globalThis.Number(view.getBigUint64(24, true));\n":
+    labels:
+    - source: globalThis.Number(view.getBigUint64(24, true))
+      style: primary
+      start: 19
+      end: 65
+    - source: globalThis
+      style: secondary
+      start: 19
+      end: 29
+    - source: Number
+      style: secondary
+      start: 30
+      end: 36
+    - source: globalThis.Number
+      style: secondary
+      start: 19
+      end: 36
+    - source: getBigUint64
+      style: secondary
+      start: 42
+      end: 54
+    - source: view.getBigUint64
+      style: secondary
+      start: 37
+      end: 54
+    - source: view.getBigUint64(24, true)
+      style: secondary
+      start: 37
+      end: 64
+    - source: (view.getBigUint64(24, true))
+      style: secondary
+      start: 36
+      end: 65
   "const id = Number(view.getBigUint64(0, true));\n":
     labels:
     - source: Number(view.getBigUint64(0, true))
       style: primary
       start: 11
       end: 45
+    - source: Number
+      style: secondary
+      start: 11
+      end: 17
+    - source: getBigUint64
+      style: secondary
+      start: 23
+      end: 35
+    - source: view.getBigUint64
+      style: secondary
+      start: 18
+      end: 35
+    - source: view.getBigUint64(0, true)
+      style: secondary
+      start: 18
+      end: 44
+    - source: (view.getBigUint64(0, true))
+      style: secondary
+      start: 17
+      end: 45
+  "const masked = Number((view.getBigUint64(0, true) & 0xffffffffn));\n":
+    labels:
+    - source: Number((view.getBigUint64(0, true) & 0xffffffffn))
+      style: primary
+      start: 15
+      end: 65
+    - source: Number
+      style: secondary
+      start: 15
+      end: 21
+    - source: getBigUint64
+      style: secondary
+      start: 28
+      end: 40
+    - source: view.getBigUint64
+      style: secondary
+      start: 23
+      end: 40
+    - source: view.getBigUint64(0, true)
+      style: secondary
+      start: 23
+      end: 49
+    - source: ((view.getBigUint64(0, true) & 0xffffffffn))
+      style: secondary
+      start: 21
+      end: 65
+  "const nonNull = Number(view.getBigUint64(0, true)!);\n":
+    labels:
+    - source: Number(view.getBigUint64(0, true)!)
+      style: primary
+      start: 16
+      end: 51
+    - source: Number
+      style: secondary
+      start: 16
+      end: 22
+    - source: getBigUint64
+      style: secondary
+      start: 28
+      end: 40
+    - source: view.getBigUint64
+      style: secondary
+      start: 23
+      end: 40
+    - source: view.getBigUint64(0, true)
+      style: secondary
+      start: 23
+      end: 49
+    - source: (view.getBigUint64(0, true)!)
+      style: secondary
+      start: 22
+      end: 51
+  "const opt = Number(view?.getBigUint64(0, true));\n":
+    labels:
+    - source: Number(view?.getBigUint64(0, true))
+      style: primary
+      start: 12
+      end: 47
+    - source: Number
+      style: secondary
+      start: 12
+      end: 18
+    - source: getBigUint64
+      style: secondary
+      start: 25
+      end: 37
+    - source: view?.getBigUint64
+      style: secondary
+      start: 19
+      end: 37
+    - source: view?.getBigUint64(0, true)
+      style: secondary
+      start: 19
+      end: 46
+    - source: (view?.getBigUint64(0, true))
+      style: secondary
+      start: 18
+      end: 47
   "const ts = Number(this.view.getBigUint64(24, true));\n":
     labels:
     - source: Number(this.view.getBigUint64(24, true))
@@ -17,6 +205,26 @@ snapshots:
     - source: Number(dv.getBigInt64(state.off, true))
       style: primary
       start: 10
+      end: 49
+    - source: Number
+      style: secondary
+      start: 10
+      end: 16
+    - source: getBigInt64
+      style: secondary
+      start: 20
+      end: 31
+    - source: dv.getBigInt64
+      style: secondary
+      start: 17
+      end: 31
+    - source: dv.getBigInt64(state.off, true)
+      style: secondary
+      start: 17
+      end: 48
+    - source: (dv.getBigInt64(state.off, true))
+      style: secondary
+      start: 16
       end: 49
   "const x = Number(getView().getBigInt64(0, false));\n":
     labels:

@@ -1,8 +1,8 @@
 id: rust-abi-repr-c-require-derive-nve-abi
 language: rust
-severity: warning
-message: "`#[repr(C)]` struct in `packages/core/abi/` should derive `NveAbi` [stage: Post1B1D]."
-note: "[stage: Post1B1D] Matches public `#[repr(C)]` structs in `packages/core/abi/src/` missing `#[derive(..., NveAbi, ...)]`. Flip to `error` once remaining C vtables/structs carry `NveAbi` in Track 1B-1d."
+severity: error
+message: "`#[repr(C)]` POD struct/union in `packages/core/abi/` must derive `NveAbi`."
+note: "Matches public `#[repr(C)]` structs and unions in `packages/core/abi/src/` missing `#[derive(..., NveAbi, ...)]`. Exempts `*Api` C function-pointer vtable structs (`NveSurfaceApi`, `NveLayoutApi`, `NveComponentApi`, `NveDevApi`, `NveHostApi`), which cannot derive `NveAbi` over `unsafe extern \"C\" fn` fields and are compile-time layout-asserted in `packages/core/abi/src/layout_asserts.rs`."
 files:
   - "packages/core/abi/src/**/*.rs"
 ignores:
@@ -10,8 +10,12 @@ ignores:
   - "**/benches/**"
   - "**/*_tests.rs"
   - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
 rule:
-  kind: struct_item
+  any:
+    - kind: struct_item
+    - kind: union_item
   has:
     kind: visibility_modifier
     regex: '^pub$'
@@ -19,5 +23,10 @@ rule:
     - matches: rust-has-repr-c
     - not:
         matches: rust-has-derive-nve-abi
+    - not:
+        has:
+          field: name
+          kind: type_identifier
+          regex: 'Api$'
     - not:
         matches: rust-in-test-code

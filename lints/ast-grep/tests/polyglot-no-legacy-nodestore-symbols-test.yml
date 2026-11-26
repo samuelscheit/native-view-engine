@@ -4,12 +4,12 @@ valid:
     pub struct NodeStore;
     pub struct MyComponentKind;
   - |
-    // ComponentKind and RenderSink in comments are ignored.
+    // ComponentKind, RenderSink, RawPropValue in comments are ignored.
     const MSG: &str = "NVE_HOST_CLASS_VIEW";
   - |
     #[cfg(test)]
     mod tests {
-        fn check(_k: ComponentKind, _s: &dyn RenderSink) {
+        fn check(_k: ComponentKind, _s: &dyn RenderSink, _p: RawPropValue) {
             let _ = NVE_HOST_CLASS_VIEW;
         }
     }
@@ -26,13 +26,19 @@ invalid:
   - |
     pub const VIEW: u32 = NVE_HOST_CLASS_VIEW;
   - |
+    pub fn prop(v: RawPropValue, s: RawStyleProps, spec: NativeViewSpec) {}
+  - |
+    pub fn ext(b: BatchSink, u: ExtensionUpdate, e: &dyn ErasedExtension) {
+        let _ = Opcode::SetRawProp;
+    }
+  - |
     #[cfg(test)]
     mod tests {}
 
     pub fn leaked(kind: ComponentKind) {}
   - |
-    #[cfg(not(test))]
-    pub fn prod_only<S: RenderSink>(s: &mut S) {}
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub fn wasm_or_test<S: RenderSink>(s: &mut S) {}
 ---
 id: no-legacy-nodestore-symbols-cpp
 valid:
@@ -44,9 +50,24 @@ invalid:
   - |
     int c = NVE_HOST_CLASS_VIEW;
   - |
-    void draw(ComponentKind kind);
+    auto v = ComponentKind::View;
   - |
-    class RenderSink {};
+    auto t = nve::ComponentKind::Text;
+  - |
+    namespace RenderSink {}
+  - |
+    void set(RawPropValue v);
+---
+id: no-legacy-nodestore-symbols-c
+valid:
+  - |
+    struct NodeHandle { int id; };
+    const char *s = "NVE_HOST_CLASS_VIEW";
+invalid:
+  - |
+    int c = NVE_HOST_CLASS_VIEW;
+  - |
+    typedef int ComponentKind;
 ---
 id: no-legacy-nodestore-symbols-typescript
 valid:
@@ -61,6 +82,32 @@ invalid:
     function render(kind: ComponentKind): void {}
   - |
     interface RenderSink { flush(): void }
+  - |
+    const obj = { ComponentKind };
+  - |
+    const { RenderSink } = mod;
+---
+id: no-legacy-nodestore-symbols-tsx
+valid:
+  - |
+    const el = <div />;
+invalid:
+  - |
+    const el = <div data-kind={ComponentKind} />;
+  - |
+    const props = { RawStyleProps };
+---
+id: no-legacy-nodestore-symbols-javascript
+valid:
+  - |
+    const s = "RawStyleProps";
+invalid:
+  - |
+    const cls = NVE_HOST_CLASS_VIEW;
+  - |
+    const obj = { ComponentKind };
+  - |
+    const { RenderSink } = host;
 ---
 id: no-legacy-nodestore-symbols-swift
 valid:
@@ -103,3 +150,13 @@ invalid:
     void mount(ComponentKind kind) {}
   - |
     abstract class RenderSink {}
+---
+id: no-legacy-nodestore-symbols-java
+valid:
+  - |
+    class NodeHandle {}
+invalid:
+  - |
+    class Host { int cls = NVE_HOST_CLASS_VIEW; }
+  - |
+    interface RenderSink {}

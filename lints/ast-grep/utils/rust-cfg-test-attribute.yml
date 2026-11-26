@@ -1,0 +1,41 @@
+# Matches a Rust `attribute` node representing strictly test-only cfg predicates:
+#   - `cfg(test)`
+#   - `cfg(all(..., test, ...))` where `test` is a direct, un-negated identifier child of `all(...)`
+#
+# Never matches `cfg(any(..., test))`, `cfg(not(test))`, `cfg(all(feature = "test"))`,
+# `cfg(all(feature = "test-utils"))`, or `cfg(all(unix, not(any(test, doc))))`.
+
+id: rust-cfg-test-attribute
+language: rust
+rule:
+  kind: attribute
+  all:
+    - has:
+        kind: identifier
+        regex: '^cfg$'
+    - has:
+        field: arguments
+        kind: token_tree
+        any:
+          # cfg(test)
+          - regex: '^\(\s*test\s*\)$'
+          # cfg(all(..., test, ...)) with a direct, un-negated `test` identifier inside `all(...)`
+          - all:
+              - has:
+                  kind: identifier
+                  regex: '^all$'
+              - has:
+                  kind: token_tree
+                  follows:
+                    kind: identifier
+                    regex: '^all$'
+                    stopBy: neighbor
+                  has:
+                    kind: identifier
+                    regex: '^test$'
+                    not:
+                      precedes:
+                        any:
+                          - kind: token_tree
+                          - kind: string_literal
+                        stopBy: neighbor

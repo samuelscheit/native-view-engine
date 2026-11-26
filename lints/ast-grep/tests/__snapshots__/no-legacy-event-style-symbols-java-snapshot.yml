@@ -1,0 +1,14 @@
+id: no-legacy-event-style-symbols-java
+snapshots:
+  "class Bridge { NveDirectEvent ev; }\n":
+    labels:
+    - source: NveDirectEvent
+      style: primary
+      start: 15
+      end: 29
+  "enum NativeEventKind { PRESS }\n":
+    labels:
+    - source: NativeEventKind
+      style: primary
+      start: 5
+      end: 20

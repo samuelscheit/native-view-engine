@@ -1,5 +1,17 @@
 id: no-fnv1a-constants-kotlin
 snapshots:
+  "val dec32 = 2166136261u\n":
+    labels:
+    - source: "2166136261"
+      style: primary
+      start: 12
+      end: 22
+  "val decPrime64 = 1_099_511_628_211L\n":
+    labels:
+    - source: "1_099_511_628_211"
+      style: primary
+      start: 17
+      end: 34
   "val offset32 = 0x811c9dc5\n":
     labels:
     - source: "0x811c9dc5"

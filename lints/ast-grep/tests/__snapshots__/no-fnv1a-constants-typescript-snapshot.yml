@@ -1,5 +1,29 @@
 id: no-fnv1a-constants-typescript
 snapshots:
+  "const DEC_OFF32 = 2166136261;\n":
+    labels:
+    - source: "2166136261"
+      style: primary
+      start: 18
+      end: 28
+  "const DEC_OFF64 = 14695981039346656037n;\n":
+    labels:
+    - source: 14695981039346656037n
+      style: primary
+      start: 18
+      end: 39
+  "const DEC_PRIME64 = 1_099_511_628_211n;\n":
+    labels:
+    - source: 1_099_511_628_211n
+      style: primary
+      start: 20
+      end: 38
+  "const OFFSET = 0x00811c9dc5;\n":
+    labels:
+    - source: "0x00811c9dc5"
+      style: primary
+      start: 15
+      end: 27
   "const OFFSET = 0x811c9dc5;\n":
     labels:
     - source: "0x811c9dc5"

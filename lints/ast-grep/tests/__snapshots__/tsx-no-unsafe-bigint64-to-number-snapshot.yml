@@ -1,0 +1,62 @@
+id: tsx-no-unsafe-bigint64-to-number
+snapshots:
+  "const el = <span>{Number(view.getBigUint64(0, true))}</span>;\n":
+    labels:
+    - source: Number(view.getBigUint64(0, true))
+      style: primary
+      start: 18
+      end: 52
+    - source: Number
+      style: secondary
+      start: 18
+      end: 24
+    - source: getBigUint64
+      style: secondary
+      start: 30
+      end: 42
+    - source: view.getBigUint64
+      style: secondary
+      start: 25
+      end: 42
+    - source: view.getBigUint64(0, true)
+      style: secondary
+      start: 25
+      end: 51
+    - source: (view.getBigUint64(0, true))
+      style: secondary
+      start: 24
+      end: 52
+  "const el = <span>{globalThis.Number(view?.getBigInt64(8, true)!)}</span>;\n":
+    labels:
+    - source: globalThis.Number(view?.getBigInt64(8, true)!)
+      style: primary
+      start: 18
+      end: 64
+    - source: globalThis
+      style: secondary
+      start: 18
+      end: 28
+    - source: Number
+      style: secondary
+      start: 29
+      end: 35
+    - source: globalThis.Number
+      style: secondary
+      start: 18
+      end: 35
+    - source: getBigInt64
+      style: secondary
+      start: 42
+      end: 53
+    - source: view?.getBigInt64
+      style: secondary
+      start: 36
+      end: 53
+    - source: view?.getBigInt64(8, true)
+      style: secondary
+      start: 36
+      end: 62
+    - source: (view?.getBigInt64(8, true)!)
+      style: secondary
+      start: 35
+      end: 64

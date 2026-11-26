@@ -29,14 +29,37 @@ valid:
         }
     }
   - |
-    #[cfg(all(test, feature = "extra"))]
+    #[cfg(all(test, unix))]
     fn test_helper() {
         word_enum!(AllCfgTest);
+    }
+  - |
+    #[cfg(all(unix, test))]
+    mod reversed_all_cfg_test {
+        word_enum!(ReversedAllCfgTest);
+    }
+  - |
+    #![cfg(test)]
+    word_enum!(InnerFileCfgTest);
+  - |
+    mod inner {
+        #![cfg(test)]
+        word_enum!(InnerModCfgTest);
     }
   - |
     #[test]
     fn unit_test_fn() {
         word_enum!(DirectTestFn);
+    }
+  - |
+    #[::tokio::test]
+    async fn tokio_rooted_test() {
+        word_enum!(RootedTokioTest);
+    }
+  - |
+    #[::core::prelude::v1::test]
+    fn core_rooted_test() {
+        word_enum!(RootedCoreTest);
     }
 invalid:
   - |
@@ -57,7 +80,35 @@ invalid:
     // Production item AFTER #[cfg(test)] mod tests MUST still be flagged.
     word_enum!(LeakedIntoProd);
   - |
+    mod inner {
+        #![cfg(test)]
+        word_enum!(AllowedInsideInner);
+    }
+
+    // Production item OUTSIDE inner `#![cfg(test)]` module MUST still be flagged.
+    word_enum!(OutsideInnerCfgTest);
+  - |
     #[cfg(not(test))]
     mod prod {
         word_enum!(NotTestIsProd);
+    }
+  - |
+    #[cfg(any(target_arch = "wasm32", test))]
+    mod wasm_or_test_is_prod {
+        word_enum!(WasmOrTestProd);
+    }
+  - |
+    #[cfg(all(feature = "test-utils"))]
+    mod feature_test_utils_is_prod {
+        word_enum!(FeatureTestUtilsProd);
+    }
+  - |
+    #[cfg(all(feature = "test", unix))]
+    mod feature_test_is_prod {
+        word_enum!(FeatureTestProd);
+    }
+  - |
+    #[cfg(all(unix, not(any(test, doc))))]
+    mod negated_any_test_is_prod {
+        word_enum!(NegatedAnyTestProd);
     }

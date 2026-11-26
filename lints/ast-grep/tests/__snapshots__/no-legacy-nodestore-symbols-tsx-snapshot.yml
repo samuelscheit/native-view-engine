@@ -1,0 +1,14 @@
+id: no-legacy-nodestore-symbols-tsx
+snapshots:
+  "const el = <div data-kind={ComponentKind} />;\n":
+    labels:
+    - source: ComponentKind
+      style: primary
+      start: 27
+      end: 40
+  "const props = { RawStyleProps };\n":
+    labels:
+    - source: RawStyleProps
+      style: primary
+      start: 16
+      end: 29

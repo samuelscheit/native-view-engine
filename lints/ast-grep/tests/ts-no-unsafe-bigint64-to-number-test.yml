@@ -15,6 +15,39 @@ invalid:
   - |
     const v = Number(dv.getBigInt64(state.off, true));
   - |
-    const ts = Number(this.view.getBigUint64(24, true));
+    const opt = Number(view?.getBigUint64(0, true));
   - |
-    const x = Number(getView().getBigInt64(0, false));
+    const nonNull = Number(view.getBigUint64(0, true)!);
+  - |
+    const asserted = Number(view.getBigInt64(8, true) as bigint);
+  - |
+    const masked = Number((view.getBigUint64(0, true) & 0xffffffffn));
+  - |
+    const globalCall = globalThis.Number(view.getBigUint64(24, true));
+  - |
+    const bracketed = Number(view['getBigInt64'](0, true));
+---
+id: tsx-no-unsafe-bigint64-to-number
+valid:
+  - |
+    const id: bigint = view.getBigUint64(0, true);
+    const el = <span>{id.toString()}</span>;
+invalid:
+  - |
+    const el = <span>{Number(view.getBigUint64(0, true))}</span>;
+  - |
+    const el = <span>{globalThis.Number(view?.getBigInt64(8, true)!)}</span>;
+---
+id: js-no-unsafe-bigint64-to-number
+valid:
+  - |
+    const schemaHash = view.getBigUint64(0, true);
+  - |
+    const small = Number(view.getUint32(0, true));
+invalid:
+  - |
+    const id = Number(view.getBigUint64(0, true));
+  - |
+    const globalCall = globalThis.Number(view["getBigInt64"](8, true));
+  - |
+    const opt = Number((view?.getBigUint64(0, true)) >> 1n);

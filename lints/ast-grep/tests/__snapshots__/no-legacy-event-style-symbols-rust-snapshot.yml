@@ -1,5 +1,11 @@
 id: no-legacy-event-style-symbols-rust
 snapshots:
+  "#[cfg(any(target_arch = \"wasm32\", test))]\npub fn wasm_event(ev: EventPayload) {}\n":
+    labels:
+    - source: EventPayload
+      style: primary
+      start: 64
+      end: 76
   "#[cfg(test)]\nmod tests {}\n\npub fn leaked(patch: StylePatch) {}\n":
     labels:
     - source: StylePatch
@@ -12,6 +18,12 @@ snapshots:
       style: primary
       start: 21
       end: 31
+  "pub fn direct(mask: EventMask, ev: NveDirectEvent, t: TypedTableEvent) {}\n":
+    labels:
+    - source: EventMask
+      style: primary
+      start: 20
+      end: 29
   "pub fn handle(payload: EventPayload) {}\n":
     labels:
     - source: EventPayload

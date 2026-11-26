@@ -1,5 +1,45 @@
 id: rust-no-word-enum-macro
 snapshots:
+  "#[cfg(all(feature = \"test\", unix))]\nmod feature_test_is_prod {\n    word_enum!(FeatureTestProd);\n}\n":
+    labels:
+    - source: word_enum!(FeatureTestProd)
+      style: primary
+      start: 67
+      end: 94
+    - source: word_enum
+      style: secondary
+      start: 67
+      end: 76
+  "#[cfg(all(feature = \"test-utils\"))]\nmod feature_test_utils_is_prod {\n    word_enum!(FeatureTestUtilsProd);\n}\n":
+    labels:
+    - source: word_enum!(FeatureTestUtilsProd)
+      style: primary
+      start: 73
+      end: 105
+    - source: word_enum
+      style: secondary
+      start: 73
+      end: 82
+  "#[cfg(all(unix, not(any(test, doc))))]\nmod negated_any_test_is_prod {\n    word_enum!(NegatedAnyTestProd);\n}\n":
+    labels:
+    - source: word_enum!(NegatedAnyTestProd)
+      style: primary
+      start: 74
+      end: 104
+    - source: word_enum
+      style: secondary
+      start: 74
+      end: 83
+  "#[cfg(any(target_arch = \"wasm32\", test))]\nmod wasm_or_test_is_prod {\n    word_enum!(WasmOrTestProd);\n}\n":
+    labels:
+    - source: word_enum!(WasmOrTestProd)
+      style: primary
+      start: 73
+      end: 99
+    - source: word_enum
+      style: secondary
+      start: 73
+      end: 82
   "#[cfg(not(test))]\nmod prod {\n    word_enum!(NotTestIsProd);\n}\n":
     labels:
     - source: word_enum!(NotTestIsProd)
@@ -34,6 +74,16 @@ snapshots:
       style: secondary
       start: 0
       end: 16
+  "mod inner {\n    #![cfg(test)]\n    word_enum!(AllowedInsideInner);\n}\n\n// Production item OUTSIDE inner `#![cfg(test)]` module MUST still be flagged.\nword_enum!(OutsideInnerCfgTest);\n":
+    labels:
+    - source: word_enum!(OutsideInnerCfgTest)
+      style: primary
+      start: 148
+      end: 179
+    - source: word_enum
+      style: secondary
+      start: 148
+      end: 157
   "word_enum! {\n    pub enum Align: 2 {\n        Start = 0,\n        End = 1,\n    }\n}\n":
     labels:
     - source: |-

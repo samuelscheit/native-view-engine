@@ -52,3 +52,50 @@ snapshots:
       style: secondary
       start: 16
       end: 31
+  "use criterion::{criterion_group, criterion_main, Criterion};\nuse std::hint::black_box;\n\nfn bench_unused_import(c: &mut Criterion) {\n    c.bench_function(\"unused_import\", |b| b.iter(|| 1 + 2));\n}\ncriterion_group!(benches, bench_unused_import);\ncriterion_main!(benches);\n":
+    labels:
+    - source: |
+        use criterion::{criterion_group, criterion_main, Criterion};
+        use std::hint::black_box;
+
+        fn bench_unused_import(c: &mut Criterion) {
+            c.bench_function("unused_import", |b| b.iter(|| 1 + 2));
+        }
+        criterion_group!(benches, bench_unused_import);
+        criterion_main!(benches);
+      style: primary
+      start: 0
+      end: 269
+    - source: criterion_group
+      style: secondary
+      start: 16
+      end: 31
+  "use std::time::Instant;\n\npub fn bench_custom_timer() {\n    let start = Instant::now();\n    let _x = 1 + 2;\n    let _ = start.elapsed();\n}\n":
+    labels:
+    - source: |
+        use std::time::Instant;
+
+        pub fn bench_custom_timer() {
+            let start = Instant::now();
+            let _x = 1 + 2;
+            let _ = start.elapsed();
+        }
+      style: primary
+      start: 0
+      end: 138
+    - source: now
+      style: secondary
+      start: 80
+      end: 83
+    - source: Instant
+      style: secondary
+      start: 71
+      end: 78
+    - source: Instant::now
+      style: secondary
+      start: 71
+      end: 83
+    - source: Instant::now()
+      style: secondary
+      start: 71
+      end: 85

@@ -1,0 +1,20 @@
+id: no-fnv1a-constants-javascript
+snapshots:
+  "const DEC_OFFSET64 = 14695981039346656037n;\n":
+    labels:
+    - source: 14695981039346656037n
+      style: primary
+      start: 21
+      end: 42
+  "const DEC_PRIME32 = 16777619;\n":
+    labels:
+    - source: "16777619"
+      style: primary
+      start: 20
+      end: 28
+  "const OFFSET = 0x811c9dc5;\n":
+    labels:
+    - source: "0x811c9dc5"
+      style: primary
+      start: 15
+      end: 25
