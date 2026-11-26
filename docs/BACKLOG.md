@@ -6,10 +6,14 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ## P1 — Direct Typed Render ABI, Interaction Primitives & Host Parity (from [quality-audit.md](./quality-audit.md))
 
-- [ ] **Track 1 — Wave C1: Direct `#[repr(C)]` Frame ABI & Zero Out-of-Band Side-Channels**
-  - Wave S2 (`packages/core/wire` + `packages/core/wire-core` QUIC/WebTransport, `NveTimelineArchive`, deleting `packages/modules/pair` & `NVT1`/`NVD1`, `752ea2e`) is landed.
-  - Replace in-process `NVE1`/`NVEV`/`NK1`/`NVE_MET1` byte streams with unified `#[repr(C)]` `NveFrameCommandBatch`, `NveDirectEvent`, `NveEventBatch`, `NvePropsRef`, and `NveNodeMeta`, and fold interactive pseudo-states, `CursorKind`, `TransitionSpec`, `BackgroundFill`, `SvgPicture`, and `DrawList` into the single canonical render ABI (deleting every `sync_*_from` side-channel).
-  - Fix `DioxusSurface` root-props injection (removing `nve-docs` thread-local bootstrap), slim `NodeRecord` via boxed cold extras, fix the `FfiHostServices` async callback registration race + ObjC RAII pool, and eliminate `WebBackend` WASM→DOM readbacks.
+- [ ] **Track 1A — Direct Events/Props FFI (Wave C1a), `NveNodeMeta` & Core Fixes** *(in progress)*
+  - Wave S2 (`packages/core/wire` + `packages/core/wire-core` QUIC/WebTransport, `NveTimelineArchive`, deleting `packages/modules/pair` & `NVT1`/`NVD1`, `752ea2e`) and Step 1B Cleanup (`501b0d8`) are landed.
+  - Extend `#[repr(C)]` `NveDirectEvent` (`KeyDown`/`KeyUp`/`Submit` + `PointerDown`/`PointerMove`/`PointerUp`/`PointerEnter`/`PointerLeave`/`Wheel`), delete `NK1` / legacy `set_props(&[u8])` / `dispatch_events(&[u8])` / `NVE_MET1` (fixed-stride 64B `NveNodeMeta`), fix `FfiHostServices` async race + ObjC RAII pool, eliminate `WebBackend` WASM→DOM readbacks, add `DioxusSurface` root-props injection (removing `nve-docs` thread-local bootstrap), and slim `NodeRecord` via boxed cold extras.
+
+- [ ] **Track 1B — `NveFrameCommandBatch` + Host-Owned `packages/core/runtime` (Model A + 5→2 Layout Unification, ADR-003/ADR-004)**
+  - Replace `NVE1` `CommandBuffer` with direct `#[repr(C)]` `NveFrameCommandBatch` folding `:hover`/`:active`/`:focus-visible`, `CursorKind`, `TransitionSpec`, `BackgroundFill`, `SvgPicture`, `DrawList`, and `LayoutExt` into the single canonical render ABI (deleting every `sync_*_from` side-channel).
+  - Build host-owned `packages/core/runtime` (`libnve_runtime`: `TaffyLayoutEngine` default + opt-in `Yoga`, LRU-cached OS `TextMeasurer` C callback with batch mode, `InteractionTracker`, `MotionDriver`, extended `NveSceneView`, Model A `measure_surface` with baselines/dry-run/invalidation callback) and bind all native hosts (`swiftui-kit`, `flutter-plugin`, `apple-common`, `android-shell`/`compose-kit`, `gtk-shell`, `qt-shell`, `windows-shell`) to it.
+  - Delete ~8,000–11,500 LOC of duplicated C++/Dart layout & decoder code (`flexbox_solver.cpp`, `yoga_layout.cpp`, `shadow_tree.cpp`, `scene_publisher.cpp`, `fabric_c_api.cpp`, `command_{en,de}coder.hpp`, `nve_snapshot.hpp`, `flex_layout.dart`, `command_decoder.dart`), shrink C++ helpers into header-only `packages/core/host-cxx`, and extract optional Model A RN Fabric `ComponentView` adapters into `packages/modules/react-native-fabric`.
 
 - [ ] **Track 2 — Real `nve-ui` Interaction Primitives, Floating Overlays & Behavioral E2E**
   - Wire real pointer events (`onpointerdown`/`onpointermove`/`onpointerup` + pointer capture), hover/enter/leave, real `position: fixed`/top-layer floating portals with live `getBoundingClientRect()` trigger anchoring, and live controlled scroll sync across `nve-dioxus`, `nve-backend-web`, and `nve-backend-skia`.
