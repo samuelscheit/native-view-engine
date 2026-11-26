@@ -5,6 +5,85 @@
 
 pub use crate::rust_items::{parse_rust_enums, parse_rust_structs, ParsedStruct};
 
+/// Strips Rust comments (`//`, nested `/* ... */`) while preserving string/raw-string/char
+/// literals and exact `\n` counts + byte positions.
+pub fn strip_rust_comments_keep_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            let mut depth = 1usize;
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+            while i < len && depth > 0 {
+                if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                    depth += 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                } else if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    depth -= 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                } else {
+                    if bytes[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if let Some((prefix_len, hashes)) = match_raw_string_prefix(bytes, i) {
+            i += prefix_len + 1;
+            while i < len {
+                if bytes[i] == b'"' && has_n_hashes(bytes, i + 1, hashes) {
+                    i += 1 + hashes;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'\''
+            && let Some(end_idx) = match_char_literal(src, i)
+        {
+            i = end_idx;
+            continue;
+        }
+        i += 1;
+    }
+
+    String::from_utf8(out).expect("ASCII comment blanking preserves UTF-8")
+}
+
 /// Strips Rust comments (`//`, nested `/* ... */`) and string/c-string/raw-string/char literals
 /// while preserving exact `\n` counts and byte positions.
 pub fn strip_rust_comments_and_strings(src: &str) -> String {

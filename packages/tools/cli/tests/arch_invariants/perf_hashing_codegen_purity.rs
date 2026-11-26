@@ -2,7 +2,7 @@
 //! hot-path allocation & UTF-8 guards, codegen hygiene & 53-bit JS/Dart-web safety, platform
 //! purity, banned 4-letter format acronyms, and core/backend benchmark presence.
 
-use crate::content_purity::scan_content_based_platform_purity;
+use crate::content_purity::scan_core_table_string_tables;
 use crate::support::{
     assert_staged_violations, contains_ident, extract_raw_string_spans, is_binary_ext,
     is_self_invariant_file, is_test_or_bench_rs, parse_rust_structs, repo_index,
@@ -533,7 +533,7 @@ pub fn scan_platform_purity_str(
             ));
         }
     }
-    scan_content_based_platform_purity(rel, prod_raw, prod_clean, out);
+    scan_core_table_string_tables(rel, prod_raw, prod_clean, out);
 }
 
 pub fn scan_banned_acronyms_str(rel: &str, content: &str, out: &mut Vec<Violation>) {

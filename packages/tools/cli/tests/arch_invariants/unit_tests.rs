@@ -490,7 +490,9 @@ fn unit_duplicate_enums_converters_and_strict_macro_rules() {
 
 #[test]
 fn unit_content_based_purity_split_booleans_word_enum_and_unset_variants() {
-    use crate::content_purity::scan_content_based_platform_purity;
+    use crate::content_purity::{
+        scan_core_table_string_tables, scan_general_codec_duplication_and_lowercase,
+    };
     use crate::rust_lex::strip_rust_comments_and_strings;
 
     // 1. Split booleans (`_set`, `_present`, `has_<sibling>`), legacy `word_enum!`, and `Unset` variant.
@@ -527,9 +529,76 @@ fn unit_content_based_purity_split_booleans_word_enum_and_unset_variants() {
     assert!(!v_macro.iter().any(|v| v.reason.contains("disabled")));
     assert!(!v_macro.iter().any(|v| v.reason.contains("has_focus")));
 
-    // 2. Content-based platform purity catches renamed enum->str tables, str->enum parsers,
-    //    CSS/ARIA format payloads, and `.to_ascii_lowercase()` regardless of function name.
-    let sneaky_core = r#"
+    // 2. General mirrored `<->` encoder/decoder detection works ANYWHERE in `packages/` regardless
+    //    of function name (enum <-> str, enum <-> int, enum <-> enum) + repo-wide `.to_ascii_lowercase()`.
+    let mirrored_any_crate = r#"
+        impl MyToken {
+            pub const fn forward_fn(self) -> &'static str {
+                match self {
+                    Self::Alpha => "alpha",
+                    Self::Beta => "beta",
+                    Self::Gamma => "gamma",
+                }
+            }
+            pub fn reverse_fn(raw: &str) -> Option<Self> {
+                match raw.trim().to_ascii_lowercase().as_str() {
+                    "alpha" => Some(Self::Alpha),
+                    "beta" => Some(Self::Beta),
+                    "gamma" => Some(Self::Gamma),
+                    _ => None,
+                }
+            }
+            pub fn single_int_decode(code: u8) -> Option<Self> {
+                match code {
+                    0 => Some(Self::Alpha),
+                    1 => Some(Self::Beta),
+                    2 => Some(Self::Gamma),
+                    _ => None,
+                }
+            }
+            pub fn documented_lowercase(c: char) -> char {
+                // allow(to_ascii_lowercase): single char by value, zero heap allocation
+                c.to_ascii_lowercase()
+            }
+        }
+        // Clean negative cases: GPU priority scoring on external `vk::` enum & Display impl MUST NOT fire.
+        fn pick_gpu(ty: vk::PhysicalDeviceType) -> u32 {
+            match ty {
+                vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
+                vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
+                vk::PhysicalDeviceType::VIRTUAL_GPU => 100,
+                vk::PhysicalDeviceType::CPU => 10,
+                _ => 0,
+            }
+        }
+        impl core::fmt::Display for MyError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                let s = match self {
+                    Self::A => "a",
+                    Self::B => "b",
+                    Self::C => "c",
+                };
+                f.write_str(s)
+            }
+        }
+    "#;
+    let clean_any = strip_rust_comments_and_strings(mirrored_any_crate);
+    let mut v_general = Vec::new();
+    scan_general_codec_duplication_and_lowercase(
+        "packages/backends/web/src/keywords.rs",
+        mirrored_any_crate,
+        &clean_any,
+        &mut v_general,
+    );
+    assert_eq!(
+        v_general.len(),
+        3,
+        "expected unexplained .to_ascii_lowercase + mirrored forward/reverse pair + single_int_decode (and NOT documented_lowercase or Display): {v_general:?}"
+    );
+    assert!(!v_general.iter().any(|v| v.snippet.contains("c.to_ascii_lowercase()")));
+
+    // 3. Inside core tables, even one-way enum <-> str keyword tables are banned (and Error impls exempt).
+    let core_one_way = r#"
         impl AriaRole {
             pub const fn totally_innocent_name(self) -> &'static str {
                 match self {
@@ -537,29 +606,6 @@ fn unit_content_based_purity_split_booleans_word_enum_and_unset_variants() {
                     Self::Link => "link",
                     Self::Dialog => "dialog",
                 }
-            }
-            pub fn sneaky_reader(raw: &str) -> Self {
-                match raw.trim().to_ascii_lowercase().as_str() {
-                    "button" => Self::Button,
-                    "link" => Self::Link,
-                    "dialog" => Self::Dialog,
-                    _ => Self::Button,
-                }
-            }
-            pub fn build_grad(out: &mut String) {
-                out.push_str("linear-gradient(90deg, red, blue)");
-            }
-        }
-        // Clean negative cases: Display/Error impls and Key64::of table keys MUST NOT fire.
-        pub enum CodecError { Bad, Short, Trailing }
-        impl core::fmt::Display for CodecError {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                let msg = match self {
-                    Self::Bad => "bad",
-                    Self::Short => "short",
-                    Self::Trailing => "trailing",
-                };
-                f.write_str(msg)
             }
         }
         impl CodecError {
@@ -572,18 +618,13 @@ fn unit_content_based_purity_split_booleans_word_enum_and_unset_variants() {
             }
         }
     "#;
-    let clean = strip_rust_comments_and_strings(sneaky_core);
-    let mut v_purity = Vec::new();
-    scan_content_based_platform_purity(
+    let clean_core = strip_rust_comments_and_strings(core_one_way);
+    let mut v_core = Vec::new();
+    scan_core_table_string_tables(
         "packages/core/tables/src/interaction.rs",
-        sneaky_core,
-        &clean,
-        &mut v_purity,
+        core_one_way,
+        &clean_core,
+        &mut v_core,
     );
-    assert_eq!(
-        v_purity.len(),
-        4,
-        "expected .to_ascii_lowercase + enum->str table + str->enum parser + linear-gradient (and 0 Error/Display false positives): {v_purity:?}"
-    );
-    assert!(!v_purity.iter().any(|v| v.reason.contains("CodecError") || v.reason.contains("describe") || v.reason.contains("fmt")));
+    assert_eq!(v_core.len(), 1, "expected only AriaRole enum->str table (not CodecError): {v_core:?}");
 }

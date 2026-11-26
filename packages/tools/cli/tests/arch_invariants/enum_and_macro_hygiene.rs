@@ -6,7 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::arch_inv::types_abi_and_regressions::{
     has_derive_token, has_repr_token, iter_keyword_statements,
 };
-use crate::content_purity::{is_split_bool_sentinel, scan_word_enum_and_unset_variants};
+use crate::content_purity::{
+    is_split_bool_sentinel, scan_general_codec_duplication_and_lowercase,
+    scan_word_enum_and_unset_variants,
+};
 use crate::support::{
     assert_staged_violations, contains_ident, is_self_invariant_file, is_test_or_bench_rs,
     parse_rust_enums, parse_rust_structs, repo_index, strip_rust_comments_and_strings, Violation,
@@ -506,8 +509,11 @@ pub fn scan_macro_and_converter_str(rel: &str, src: &str, out: &mut Vec<Violatio
         }
     }
 
-    // 2b. Legacy `word_enum!` manual bit-width macro & hand-rolled `Unset` sentinel enum variants.
+    // 2b. Legacy `word_enum!` macro, hand-rolled `Unset` variants, general mirrored `<->`
+    //     encoder/decoder duplication, manual int-discriminant matches, and repo-wide
+    //     `.to_ascii_lowercase()` checks.
     scan_word_enum_and_unset_variants(rel, src, &clean, out);
+    scan_general_codec_duplication_and_lowercase(rel, src, &clean, out);
 
     // 3. Manual `SET_*` constants and Tier-1 `#[repr(C)]` `encode_bytes`/`decode_bytes`.
     for (idx, (orig, line)) in src.lines().zip(clean.lines()).enumerate() {
