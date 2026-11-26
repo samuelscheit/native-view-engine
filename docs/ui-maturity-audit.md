@@ -1,6 +1,6 @@
 # UI & Framework Maturity Audit (`native-view-engine`)
 
-Clean-slate capability inventory produced via [`.agents/skills/unbiased-feature-brainstorm/SKILL.md`](../.agents/skills/unbiased-feature-brainstorm/SKILL.md) (zero codebase priming, web-search grounded), diffed against NVE at `0335ca0` and cross-referenced with [docs/CHANGELOG.md](./CHANGELOG.md) (shipped) and [docs/BACKLOG.md](./BACKLOG.md) (open roadmap).
+Clean-slate capability inventory produced via the zero-priming feature discovery workflow in [`AGENTS.md`](../AGENTS.md) (zero codebase priming, web-search grounded), diffed against NVE at `0335ca0` and cross-referenced with [docs/CHANGELOG.md](./CHANGELOG.md) (shipped) and [docs/BACKLOG.md](./BACKLOG.md) (open roadmap).
 
 Legend: **Done** = production foundation shipped (see [CHANGELOG.md](./CHANGELOG.md)) · **Partial** = core exists, key edge cases or cross-platform parity missing · **Missing** = not yet implemented (tracked in [BACKLOG.md](./BACKLOG.md)).
 
