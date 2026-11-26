@@ -242,12 +242,12 @@ impl LinkingBackend for MemoryLinking {
     fn open_url(&self, url: &str) -> Result<(), ServiceError> {
         validate_url(url)?;
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let scheme = url
-            .split(':')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !st.supported_url_schemes.iter().any(|s| s == &scheme) {
+        let scheme = url.split(':').next().unwrap_or_default();
+        if !st
+            .supported_url_schemes
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(scheme))
+        {
             return Err(ServiceError::Unsupported);
         }
         st.opened_urls.push(url.to_owned());
@@ -257,12 +257,11 @@ impl LinkingBackend for MemoryLinking {
     fn can_open_url(&self, url: &str) -> Result<bool, ServiceError> {
         validate_url(url)?;
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let scheme = url
-            .split(':')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        Ok(st.supported_url_schemes.iter().any(|s| s == &scheme))
+        let scheme = url.split(':').next().unwrap_or_default();
+        Ok(st
+            .supported_url_schemes
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(scheme)))
     }
 
     fn initial_url(&self) -> Result<Option<String>, ServiceError> {

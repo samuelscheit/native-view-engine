@@ -58,14 +58,18 @@ Options:
   -h, --help                Show this help message";
 
 fn infer_transport_from_addr(addr: &str) -> Option<PairTransport> {
-    let lower = addr.trim().to_ascii_lowercase();
-    if lower.starts_with("quic://") || lower.starts_with("udp://") {
+    let trimmed = addr.trim();
+    let has_prefix = |p: &str| {
+        trimmed.len() >= p.len()
+            && trimmed.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
+    };
+    if has_prefix("quic://") || has_prefix("udp://") {
         Some(PairTransport::Quic)
-    } else if lower.starts_with("https://") || lower.starts_with("wt://") {
+    } else if has_prefix("https://") || has_prefix("wt://") {
         Some(PairTransport::WebTransport)
-    } else if lower.starts_with("wss://") {
+    } else if has_prefix("wss://") {
         Some(PairTransport::Wss)
-    } else if lower.starts_with("ws://") || lower.starts_with("tcp://") {
+    } else if has_prefix("ws://") || has_prefix("tcp://") {
         Some(PairTransport::Ws)
     } else {
         None

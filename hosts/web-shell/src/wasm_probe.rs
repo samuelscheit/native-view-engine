@@ -226,6 +226,10 @@ pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
 /// Panics with `message`, so the E2E can check that a release bundle prints the panic message and
 /// its `file:line`. Dev bundle only: production bundles carry no trigger.
 #[wasm_bindgen]
+#[expect(
+    clippy::panic,
+    reason = "intentional E2E panic_probe trigger in dev-only wasm_probe"
+)]
 pub fn panic_probe(message: &str) {
     panic!("{message}");
 }

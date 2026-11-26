@@ -23,7 +23,7 @@ impl TempDir {
             "nve_instant_boot_{tag}_{}_{seq}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).expect("create temp instant-boot test dir");
         Self(dir)
     }
 
@@ -82,7 +82,7 @@ fn make_sample_scene(schema_version: u32, title: &str) -> Vec<u8> {
         app_tag: "test-app",
         nodes: &nodes,
     })
-    .unwrap()
+    .expect("encode scene reloc fixture")
     .as_slice()
     .to_vec()
 }

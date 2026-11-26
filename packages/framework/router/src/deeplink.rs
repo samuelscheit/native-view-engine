@@ -91,6 +91,10 @@ impl DeepLinkConfig {
     }
 
     /// Registers a custom URL scheme (e.g. `"nve"` for `nve://app/issues/42`).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "RFC 3986 deep-link config owns canonical lowercase scheme strings"
+    )]
     pub fn with_scheme(mut self, scheme: impl AsRef<str>) -> Self {
         let lower = scheme.as_ref().trim().to_ascii_lowercase();
         if !lower.is_empty() && !self.schemes.contains(&lower) {
@@ -101,6 +105,10 @@ impl DeepLinkConfig {
 
     /// Registers a host/authority prefix stripped for custom URL schemes (e.g. `"app"` so
     /// `nve://app/issues/42` resolves directly to `"/issues/42"`).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "RFC 3986 deep-link config owns canonical lowercase scheme host strings"
+    )]
     pub fn with_scheme_host(mut self, host: impl AsRef<str>) -> Self {
         let lower = host.as_ref().trim().to_ascii_lowercase();
         if !lower.is_empty() && !self.scheme_hosts.contains(&lower) {
@@ -110,6 +118,10 @@ impl DeepLinkConfig {
     }
 
     /// Registers an allowed universal-link hostname (e.g. `"app.example.com"`).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "RFC 3986 deep-link config owns canonical lowercase universal host strings"
+    )]
     pub fn with_universal_host(mut self, host: impl AsRef<str>) -> Self {
         let lower = host.as_ref().trim().to_ascii_lowercase();
         if !lower.is_empty() && !self.universal_hosts.contains(&lower) {
@@ -179,9 +191,12 @@ impl DeepLinkConfig {
             if let Some((scheme, _)) = raw_uri.split_once(':')
                 && is_valid_scheme(scheme)
             {
-                return Err(DeepLinkError::UnsupportedScheme(
-                    scheme.to_ascii_lowercase(),
-                ));
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "cold deep-link error payload owns canonical lowercase scheme"
+                )]
+                let lower = scheme.to_ascii_lowercase();
+                return Err(DeepLinkError::UnsupportedScheme(lower));
             }
             return Err(DeepLinkError::InvalidUri(
                 "URI must start with '/' or '<scheme>://'",
@@ -217,6 +232,10 @@ impl DeepLinkConfig {
         if !is_valid_scheme(scheme_raw) {
             return Err(DeepLinkError::InvalidUri("invalid RFC 3986 scheme"));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "RFC 3986 DeepLinkOrigin owns canonical lowercase scheme"
+        )]
         let scheme = scheme_raw.to_ascii_lowercase();
         let after_scheme = &raw_uri[sep_pos + 3..];
 
@@ -257,9 +276,12 @@ impl DeepLinkConfig {
             ));
         }
 
-        let lower_auth = authority.to_ascii_lowercase();
-        let resolved_path =
-            if authority.is_empty() || self.scheme_hosts.iter().any(|h| h == &lower_auth) {
+        let resolved_path = if authority.is_empty()
+            || self
+                .scheme_hosts
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case(authority))
+        {
                 path_part.to_owned()
             } else if parts.path.is_empty() || parts.path == "/" {
                 format!("/{authority}")
@@ -333,5 +355,9 @@ fn parse_host(authority: &str) -> Result<String, DeepLinkError> {
     if host_part.is_empty() {
         return Err(DeepLinkError::InvalidUri("empty host in authority"));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "RFC 3986 DeepLinkOrigin owns canonical lowercase host"
+    )]
     Ok(host_part.to_ascii_lowercase())
 }

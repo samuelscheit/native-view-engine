@@ -47,3 +47,6 @@ winit = { workspace = true }
 softbuffer = { workspace = true }
 tungstenite = { workspace = true }
 crossbeam-channel = { workspace = true }
+
+[lints]
+workspace = true

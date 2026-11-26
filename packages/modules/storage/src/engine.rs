@@ -433,7 +433,19 @@ fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
             "unsupported NVK2 version {version}"
         )));
     }
-    let stored_hdr_crc = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+    let le64 = |o: usize| {
+        u64::from_le_bytes([
+            bytes[o],
+            bytes[o + 1],
+            bytes[o + 2],
+            bytes[o + 3],
+            bytes[o + 4],
+            bytes[o + 5],
+            bytes[o + 6],
+            bytes[o + 7],
+        ])
+    };
+    let stored_hdr_crc = le64(8);
     if xxh64(&bytes[0..8], 0) != stored_hdr_crc {
         return Err(ServiceError::Codec(
             "corrupt NVK2 file header checksum".into(),
@@ -452,9 +464,13 @@ fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
             break;
         }
         let kind = bytes[cursor];
-        let seq_no = u64::from_le_bytes(bytes[cursor + 4..cursor + 12].try_into().unwrap());
-        let payload_len =
-            u32::from_le_bytes(bytes[cursor + 12..cursor + 16].try_into().unwrap()) as usize;
+        let seq_no = le64(cursor + 4);
+        let payload_len = u32::from_le_bytes([
+            bytes[cursor + 12],
+            bytes[cursor + 13],
+            bytes[cursor + 14],
+            bytes[cursor + 15],
+        ]) as usize;
         let Some(frame_len) = RECORD_HEADER_LEN
             .checked_add(payload_len)
             .and_then(|v| v.checked_add(RECORD_TRAILER_LEN))
@@ -475,7 +491,7 @@ fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
             recovered_torn_tail = true;
             break;
         }
-        let stored_crc = u64::from_le_bytes(bytes[payload_end..checksum_end].try_into().unwrap());
+        let stored_crc = le64(payload_end);
         let computed_crc = xxh64(&bytes[cursor..payload_end], 0);
         if stored_crc != computed_crc {
             recovered_torn_tail = true;

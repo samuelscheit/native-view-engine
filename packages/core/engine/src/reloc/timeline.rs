@@ -174,9 +174,11 @@ pub struct NveTimelineRoot {
     pub expires_at_unix_ms: u64,
 }
 
-// SAFETY: All three structs are `#[repr(C)]` with fixed-width fields and zero implicit padding.
+// SAFETY: `NveNodePatch` is `#[repr(C)]` (24 bytes) with fixed-width fields and zero implicit padding.
 unsafe impl RelocPod for NveNodePatch {}
+// SAFETY: `NveTimelineEntry` is `#[repr(C)]` with fixed-width fields and zero implicit padding.
 unsafe impl RelocPod for NveTimelineEntry {}
+// SAFETY: `NveTimelineRoot` is `#[repr(C)]` composed solely of `RelocPod` fields with zero implicit padding.
 unsafe impl RelocPod for NveTimelineRoot {}
 
 const _: () = {

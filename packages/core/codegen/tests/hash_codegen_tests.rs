@@ -22,7 +22,7 @@ fn write_mirror(dir: &Path, suffix: &str, name: &str) {
     let file = generate_all_hash_files()
         .into_iter()
         .find(|f| f.relative_path.ends_with(suffix))
-        .unwrap_or_else(|| panic!("no generated hash mirror ending in {suffix}"));
+        .expect("generated hash mirror should exist for suffix");
     std::fs::write(dir.join(name), file.content).expect("write mirror");
 }
 
@@ -34,7 +34,12 @@ fn run(cmd: &mut Command) -> Option<String> {
             eprintln!("skipping: {:?} not installed", cmd.get_program());
             return None;
         }
-        Err(e) => panic!("spawn {:?}: {e}", cmd.get_program()),
+        Err(e) => {
+            #[expect(clippy::panic, reason = "test helper fails when external tool spawn fails")]
+            {
+                panic!("spawn {:?}: {e}", cmd.get_program());
+            }
+        }
     };
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(

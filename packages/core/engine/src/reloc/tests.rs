@@ -29,6 +29,7 @@ struct SampleRecord {
     name: RelocStr,
 }
 
+// SAFETY: `#[repr(C)]` POD struct composed solely of `ArenaPod` fields.
 unsafe impl crate::mmap_arena::ArenaPod for SampleRecord {}
 
 #[repr(C)]
@@ -39,6 +40,7 @@ struct SampleRoot {
     label: RelocStr,
 }
 
+// SAFETY: `#[repr(C)]` POD struct composed solely of `ArenaPod` fields.
 unsafe impl crate::mmap_arena::ArenaPod for SampleRoot {}
 
 #[test]

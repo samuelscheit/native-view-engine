@@ -133,6 +133,8 @@ pub struct NveHostCallbacks {
 // SAFETY: `NveHostCallbacks` is a plain C function-pointer + opaque host context table;
 // the host guarantees thread-safe invocation or single-threaded host-loop confinement.
 unsafe impl Send for NveHostCallbacks {}
+// SAFETY: `NveHostCallbacks` is a plain C function-pointer + opaque host context table;
+// the host guarantees synchronized shared invocation across threads.
 unsafe impl Sync for NveHostCallbacks {}
 
 impl NveHostCallbacks {

@@ -37,15 +37,24 @@ pub enum ComboboxAction {
     RemovedLastTag(String),
 }
 
+#[inline]
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// Default case-insensitive substring matcher over option label and value.
 pub fn default_combobox_filter(option: &ComboboxOption, query: &str) -> bool {
     let q = query.trim();
     if q.is_empty() {
         return true;
     }
-    let q_lower = q.to_ascii_lowercase();
-    option.label.to_ascii_lowercase().contains(&q_lower)
-        || option.value.to_ascii_lowercase().contains(&q_lower)
+    contains_ignore_ascii_case(&option.label, q) || contains_ignore_ascii_case(&option.value, q)
 }
 
 /// Headless searchable single-select & multi-select combobox state machine.

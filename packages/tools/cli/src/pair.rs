@@ -82,6 +82,7 @@ impl PairedApp for DioxusSurface {
         Cow::Borrowed(self.render_nve2_slice(frame_id))
     }
     fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+        // SAFETY: `events` is a valid borrowed slice whose nested pointers outlive this call.
         DioxusSurface::dispatch_direct_events(self, unsafe {
             nve_abi::NveEventBatchRef::from_slice(events)
         })

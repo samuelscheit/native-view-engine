@@ -32,7 +32,10 @@ fn find_node_by_test_id(store: &NodeStore, test_id: &str) -> NodeId {
         }
         stack.extend_from_slice(store.children(id));
     }
-    panic!("node with testID='{test_id}' not found")
+    #[expect(clippy::panic, reason = "test helper fails when expected testID is missing")]
+    {
+        panic!("node with testID='{test_id}' not found")
+    }
 }
 
 fn press_test_id(
@@ -54,7 +57,9 @@ fn press_test_id(
         },
     }]);
     assert!(handled, "expected press on '{test_id}' to be handled");
-    surface.commit_to(frame_id, backend).unwrap();
+    surface
+        .commit_to(frame_id, backend)
+        .expect("commit test press frame");
 }
 
 #[test]
@@ -241,6 +246,7 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
 
     let inc_id = find_node_by_test_id(rep1.store(), "ks-counter-inc");
     let press_ev = [NveDirectEvent::press(1, inc_id, 1_000, 4.0, 4.0)];
+    // SAFETY: `press_ev` stack array outlives the synchronous `dispatch_events` call.
     assert!(m1.dispatch_events(unsafe { NveEventBatchRef::from_slice(&press_ev) }));
     let _ = m1.render(2);
     assert_eq!(m1.count(), 1);

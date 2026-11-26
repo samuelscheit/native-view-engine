@@ -23,43 +23,74 @@ impl<'a> NveValueRef<'a> {
     #[inline] pub const fn tag(&self) -> Option<NveValueTag> { NveValueTag::from_u32(self.raw.tag) }
     #[inline] pub const fn is_null(&self) -> bool { self.raw.tag == NveValueTag::Null as u32 }
     #[inline] pub const fn as_bool(&self) -> Option<bool> {
-        if self.raw.tag == NveValueTag::Bool as u32 { Some(unsafe { self.raw.data.bool_val } != 0) } else { None }
+        if self.raw.tag == NveValueTag::Bool as u32 {
+            // SAFETY: Tag checked equal to `Bool`, selecting the active union field.
+            Some(unsafe { self.raw.data.bool_val } != 0)
+        } else {
+            None
+        }
     }
     #[inline] pub const fn as_i64(&self) -> Option<i64> {
-        if self.raw.tag == NveValueTag::I64 as u32 { Some(unsafe { self.raw.data.i64_val }) } else { None }
+        if self.raw.tag == NveValueTag::I64 as u32 {
+            // SAFETY: Tag checked equal to `I64`, selecting the active union field.
+            Some(unsafe { self.raw.data.i64_val })
+        } else {
+            None
+        }
     }
     #[inline] pub const fn as_f64(&self) -> Option<f64> {
-        if self.raw.tag == NveValueTag::F64 as u32 { Some(unsafe { self.raw.data.f64_val }) } else { None }
+        if self.raw.tag == NveValueTag::F64 as u32 {
+            // SAFETY: Tag checked equal to `F64`, selecting the active union field.
+            Some(unsafe { self.raw.data.f64_val })
+        } else {
+            None
+        }
     }
     /// Returns numeric value as `f64` for either `F64` or `I64` tags.
     #[inline] pub const fn as_number(&self) -> Option<f64> {
         match self.tag() {
+            // SAFETY: Tag matched as `F64`, selecting the active union field.
             Some(NveValueTag::F64) => Some(unsafe { self.raw.data.f64_val }),
+            // SAFETY: Tag matched as `I64`, selecting the active union field.
             Some(NveValueTag::I64) => Some(unsafe { self.raw.data.i64_val } as f64),
             _ => None,
         }
     }
     #[inline] pub fn as_str(&self) -> Option<&'a str> {
         (self.raw.tag == NveValueTag::Str as u32)
-            .then(|| unsafe { self.raw.data.str_val.as_str() }.ok())
+            .then(|| {
+                // SAFETY: Tag checked equal to `Str` and `NveValueRef` guarantees valid nested pointers for `'a`.
+                unsafe { self.raw.data.str_val.as_str() }.ok()
+            })
             .flatten()
     }
     #[inline] pub fn as_bytes(&self) -> Option<&'a [u8]> {
         (self.raw.tag == NveValueTag::Bytes as u32).then(|| {
-            let s = unsafe { self.raw.data.bytes_val };
-            unsafe { guarded_slice(s.ptr, s.len) }
+            // SAFETY: Tag checked equal to `Bytes` and `NveValueRef` guarantees valid nested pointers for `'a`.
+            unsafe {
+                let s = self.raw.data.bytes_val;
+                guarded_slice(s.ptr, s.len)
+            }
         })?
     }
     #[inline] pub fn as_array(&self) -> Option<NveArrayRef<'a>> {
         (self.raw.tag == NveValueTag::Array as u32).then(|| {
-            let a = unsafe { self.raw.data.array_val };
-            unsafe { guarded_slice(a.ptr, a.len) }.map(|elems| NveArrayRef { elems })
+            // SAFETY: Tag checked equal to `Array` and `NveValueRef` guarantees valid nested pointers for `'a`.
+            unsafe {
+                let a = self.raw.data.array_val;
+                guarded_slice(a.ptr, a.len)
+            }
+            .map(|elems| NveArrayRef { elems })
         })?
     }
     #[inline] pub fn as_map(&self) -> Option<NveMapRef<'a>> {
         (self.raw.tag == NveValueTag::Map as u32).then(|| {
-            let m = unsafe { self.raw.data.map_val };
-            unsafe { guarded_slice(m.ptr, m.len) }.map(|entries| NveMapRef { entries })
+            // SAFETY: Tag checked equal to `Map` and `NveValueRef` guarantees valid nested pointers for `'a`.
+            unsafe {
+                let m = self.raw.data.map_val;
+                guarded_slice(m.ptr, m.len)
+            }
+            .map(|entries| NveMapRef { entries })
         })?
     }
     /// Zero-copy key lookup when this value is a map.
@@ -114,11 +145,13 @@ impl<'a> NveMapRef<'a> {
     /// # Safety
     /// `ptr` must be valid for `count` initialized `NveMapEntry` items and nested pointers for `'a`.
     #[inline] pub unsafe fn try_from_raw_parts(ptr: *const NveMapEntry, count: u32) -> Option<Self> {
+        // SAFETY: Caller guarantees `ptr` is valid for `count` `NveMapEntry` items for `'a`.
         Some(Self { entries: unsafe { guarded_slice(ptr, count as usize) }? })
     }
     /// # Safety
     /// `ptr` must be valid for `count` initialized `NveMapEntry` items and nested pointers for `'a`.
     #[inline] pub unsafe fn from_raw_parts(ptr: *const NveMapEntry, count: u32) -> Self {
+        // SAFETY: Caller guarantees `ptr` is valid for `count` `NveMapEntry` items for `'a`.
         unsafe { Self::try_from_raw_parts(ptr, count) }.unwrap_or(Self::EMPTY)
     }
     /// # Safety
@@ -129,12 +162,14 @@ impl<'a> NveMapRef<'a> {
     #[inline] pub fn get(&self, key: &str) -> Option<NveValueRef<'a>> {
         let key_bytes = key.as_bytes();
         self.entries.iter().find_map(|entry| {
+            // SAFETY: `NveMapRef` guarantees entry key pointers remain valid for `'a`.
             (unsafe { entry.key.try_as_bytes() } == Some(key_bytes))
                 .then_some(NveValueRef { raw: &entry.value })
         })
     }
     #[inline] pub fn iter(&self) -> impl Iterator<Item = (&'a str, NveValueRef<'a>)> + 'a {
         self.entries.iter().filter_map(|entry| {
+            // SAFETY: `NveMapRef` guarantees entry key pointers remain valid for `'a`.
             Some((unsafe { entry.key.as_str() }.ok()?, NveValueRef { raw: &entry.value }))
         })
     }
@@ -168,7 +203,10 @@ impl<'a> NveDirectEventRef<'a> {
     #[inline] pub const fn pointer_button(&self) -> u8 { self.raw.event_flags & NVE_EVENT_FLAG_BUTTON_MASK }
     #[inline] pub const fn is_capture(&self) -> bool { (self.raw.event_flags & NVE_EVENT_FLAG_CAPTURE) != 0 }
     #[inline] pub const fn is_composing(&self) -> bool { (self.raw.event_flags & NVE_EVENT_FLAG_COMPOSING) != 0 }
-    #[inline] pub fn name(&self) -> &'a str { unsafe { self.raw.name.as_str() }.unwrap_or("") }
+    #[inline] pub fn name(&self) -> &'a str {
+        // SAFETY: `NveDirectEventRef` guarantees `raw.name` pointer remains valid for `'a`.
+        unsafe { self.raw.name.as_str() }.unwrap_or("")
+    }
     #[inline] pub fn code(&self) -> &'a str { self.name() }
     #[inline] pub const fn x(&self) -> f32 { self.raw.x }
     #[inline] pub const fn y(&self) -> f32 { self.raw.y }
@@ -176,7 +214,10 @@ impl<'a> NveDirectEventRef<'a> {
     #[inline] pub const fn delta_y(&self) -> f32 { self.raw.y }
     #[inline] pub const fn width(&self) -> f32 { self.raw.width }
     #[inline] pub const fn height(&self) -> f32 { self.raw.height }
-    #[inline] pub fn text(&self) -> &'a str { unsafe { self.raw.text.as_str() }.unwrap_or("") }
+    #[inline] pub fn text(&self) -> &'a str {
+        // SAFETY: `NveDirectEventRef` guarantees `raw.text` pointer remains valid for `'a`.
+        unsafe { self.raw.text.as_str() }.unwrap_or("")
+    }
     #[inline] pub fn key(&self) -> &'a str { self.text() }
     #[inline] pub const fn value(&self) -> NveValueRef<'a> { NveValueRef { raw: &self.raw.value } }
     /// Table identity key for `NativeEventKind::TableEvent`.
@@ -192,6 +233,7 @@ impl<'a> NveDirectEventRef<'a> {
     /// Raw payload bytes for `NativeEventKind::TableEvent`.
     #[inline]
     pub fn table_payload(&self) -> &'a [u8] {
+        // SAFETY: `NveDirectEventRef` guarantees `raw.text` pointer remains valid for `'a`.
         unsafe { self.raw.text.as_bytes() }
     }
 }
@@ -208,11 +250,13 @@ impl<'a> NveEventBatchRef<'a> {
     /// # Safety
     /// Caller must ensure `batch.ptr` and all nested pointers are valid for `'a`.
     #[inline] pub unsafe fn try_from_raw(batch: NveEventBatch) -> Option<Self> {
+        // SAFETY: Caller guarantees `batch.ptr` and nested pointers are valid for `'a`.
         Some(Self { events: unsafe { batch.try_as_slice() }? })
     }
     /// # Safety
     /// Caller must ensure `batch.ptr` and all nested pointers are valid for `'a`.
     #[inline] pub unsafe fn from_raw(batch: NveEventBatch) -> Self {
+        // SAFETY: Caller guarantees `batch.ptr` and nested pointers are valid for `'a`.
         unsafe { Self::try_from_raw(batch) }.unwrap_or(Self::EMPTY)
     }
     /// # Safety
@@ -241,11 +285,13 @@ impl<'a> NvePropSliceRef<'a> {
     /// # Safety
     /// Caller must ensure `slice.entries` and all nested pointers are valid for `'a`.
     #[inline] pub unsafe fn try_from_raw(slice: NvePropSlice) -> Option<Self> {
+        // SAFETY: Caller guarantees `slice.entries` and nested pointers are valid for `'a`.
         Some(Self { entries: unsafe { slice.try_as_slice() }? })
     }
     /// # Safety
     /// Caller must ensure `slice.entries` and all nested pointers are valid for `'a`.
     #[inline] pub unsafe fn from_raw(slice: NvePropSlice) -> Self {
+        // SAFETY: Caller guarantees `slice.entries` and nested pointers are valid for `'a`.
         unsafe { Self::try_from_raw(slice) }.unwrap_or(Self::EMPTY)
     }
     /// # Safety
@@ -276,11 +322,13 @@ impl<'a> NveCommandSliceRef<'a> {
     /// # Safety
     /// Caller must ensure `cmd.args` and all nested pointers are valid for `'a`.
     #[inline] pub unsafe fn try_from_raw(cmd: NveCommandSlice) -> Option<Self> {
+        // SAFETY: Caller guarantees `cmd.args` and nested pointers are valid for `'a`.
         Some(Self { opcode: cmd.opcode, args: unsafe { cmd.try_args_slice() }? })
     }
     /// # Safety
     /// Caller must ensure `cmd.args` and all nested pointers are valid for `'a`.
     #[inline] pub unsafe fn from_raw(cmd: NveCommandSlice) -> Self {
+        // SAFETY: Caller guarantees `cmd.args` and nested pointers are valid for `'a`.
         unsafe { Self::try_from_raw(cmd) }.unwrap_or(Self { opcode: cmd.opcode, args: &[] })
     }
     /// # Safety

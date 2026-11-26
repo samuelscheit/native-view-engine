@@ -479,11 +479,16 @@ fn leading_scheme(input: &str) -> Option<&str> {
     bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')).then_some(scheme)
 }
 
-fn parse_origin(url: &str) -> Option<(String, String, u16)> {
+fn parse_origin(url: &str) -> Option<(&str, &str, u16)> {
     let scheme_raw = leading_scheme(url)?;
     let after = url[scheme_raw.len()..].strip_prefix("://")?;
-    let scheme = scheme_raw.to_ascii_lowercase();
-    let default_port = match scheme.as_str() { "http" => 80u16, "https" => 443u16, _ => return None };
+    let (scheme, default_port) = if scheme_raw.eq_ignore_ascii_case("http") {
+        ("http", 80u16)
+    } else if scheme_raw.eq_ignore_ascii_case("https") {
+        ("https", 443u16)
+    } else {
+        return None;
+    };
     let authority = &after[..after.find(['/', '?', '#']).unwrap_or(after.len())];
     if authority.is_empty() || authority.contains('@') { return None; }
     let (host, port) = if let Some(end) = authority.rfind(']') {
@@ -497,11 +502,15 @@ fn parse_origin(url: &str) -> Option<(String, String, u16)> {
     } else {
         (authority, default_port)
     };
-    Some((scheme, host.to_ascii_lowercase(), port))
+    Some((scheme, host, port))
 }
 
 fn extract_same_origin_relative(href: &str, active_origin: &str) -> Option<String> {
-    if parse_origin(href)? != parse_origin(active_origin)? { return None; }
+    let (hs, hh, hp) = parse_origin(href)?;
+    let (as_, ah, ap) = parse_origin(active_origin)?;
+    if hs != as_ || hp != ap || !hh.eq_ignore_ascii_case(ah) {
+        return None;
+    }
     let rel = extract_relative_part(href);
     Some(if rel.starts_with('/') { rel.to_owned() } else { format!("/{rel}") })
 }

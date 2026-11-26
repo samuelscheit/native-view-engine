@@ -92,6 +92,7 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
     assert!(!app.state_snapshot().is_mobile_portrait());
 
     let resize_mobile = [NveDirectEvent::layout(1, ROOT_NODE_ID, 1000, 0.0, 0.0, 393.0, 852.0)];
+    // SAFETY: `resize_mobile` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&resize_mobile) }));
     assert!(app.state_snapshot().is_mobile_portrait());
     register_studio_tables();
@@ -139,6 +140,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         rect.x + rect.width * 0.5,
         rect.y + rect.height * 0.5,
     )];
+    // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
     assert!(snap_app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
     let f2_incremental = snap_app.render(2).to_vec();
 
@@ -149,6 +151,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     assert_eq!(r2.header.sequence, 2);
     assert_eq!(r2.payload, f2_incremental.as_slice());
 
+    // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
     assert!(snap_app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
     let f3_incremental = snap_app.render(3).to_vec();
     let p3 = NveWireFrame::new(NveWireKind::CommandDelta, 3, f3_incremental.clone())
@@ -280,10 +283,9 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
             0,
             false,
         )];
-        assert!(
-            app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }),
-            "keydown {key:?} not handled"
-        );
+        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
+        let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
+        assert!(app.dispatch_events(batch), "keydown {key:?} not handled");
         let frame = app.render(fid).to_vec();
         host.submit_nve2_frame(&frame).unwrap();
     };
@@ -296,10 +298,9 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
         let nid = find_in_store(host.store(), tid)
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let ev = [NveDirectEvent::text_change(1, nid, fid * 16_000, text)];
-        assert!(
-            app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }),
-            "text change on '{tid}' not handled"
-        );
+        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
+        let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
+        assert!(app.dispatch_events(batch), "text change on '{tid}' not handled");
         let frame = app.render(fid).to_vec();
         host.submit_nve2_frame(&frame).unwrap();
     };
@@ -412,15 +413,18 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
         16_000,
         "Persist across hot-swap",
     )];
+    // SAFETY: `ev_type` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_type) }));
     let f2 = app.render(2).to_vec();
     host.submit_nve2_frame(&f2).unwrap();
 
     let ev_submit = [NveDirectEvent::submit(1, new_task_nid, 32_000, "")];
+    // SAFETY: `ev_submit` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_submit) }));
     let _ = app.render(3);
 
     let eng_entries = [NveMapEntry::new("view", NveValue::from_str("engineering"))];
+    // SAFETY: `eng_entries` outlives the synchronous `set_props` call.
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&eng_entries) }));
     let f4 = app.render(4).to_vec();
     host.submit_nve2_frame(&f4).unwrap();
@@ -431,9 +435,11 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
         48_000,
         "Live typed message survives reload",
     )];
+    // SAFETY: `ev_chat` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_chat) }));
     let _ = app.render(5);
     let ev_chat_submit = [NveDirectEvent::submit(1, chat_nid, 64_000, "")];
+    // SAFETY: `ev_chat_submit` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_chat_submit) }));
     let _ = app.render(6);
 

@@ -109,37 +109,41 @@ impl SemanticElement {
     }
 
     pub fn parse(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "dialog" => Self::Dialog,
-            "details" => Self::Details,
-            "summary" => Self::Summary,
-            "form" => Self::Form,
-            "p" => Self::Paragraph,
-            "span" => Self::Span,
-            "strong" => Self::Strong,
-            "em" => Self::Em,
-            "s" => Self::Strike,
-            "code" => Self::Code,
-            "kbd" => Self::Kbd,
-            "br" => Self::Br,
-            "pre" => Self::Pre,
-            "table" => Self::Table,
-            "thead" => Self::Thead,
-            "tbody" => Self::Tbody,
-            "tr" => Self::Tr,
-            "th" => Self::Th,
-            "td" => Self::Td,
-            "nav" => Self::Nav,
-            "main" => Self::Main,
-            "article" => Self::Article,
-            "aside" => Self::Aside,
-            "header" => Self::Header,
-            "footer" => Self::Footer,
-            "section" => Self::Section,
-            "button" => Self::Button,
-            "label" => Self::Label,
-            _ => Self::Auto,
-        }
+        let s = raw.trim();
+        const TABLE: &[(&str, SemanticElement)] = &[
+            ("dialog", SemanticElement::Dialog),
+            ("details", SemanticElement::Details),
+            ("summary", SemanticElement::Summary),
+            ("form", SemanticElement::Form),
+            ("p", SemanticElement::Paragraph),
+            ("span", SemanticElement::Span),
+            ("strong", SemanticElement::Strong),
+            ("em", SemanticElement::Em),
+            ("s", SemanticElement::Strike),
+            ("code", SemanticElement::Code),
+            ("kbd", SemanticElement::Kbd),
+            ("br", SemanticElement::Br),
+            ("pre", SemanticElement::Pre),
+            ("table", SemanticElement::Table),
+            ("thead", SemanticElement::Thead),
+            ("tbody", SemanticElement::Tbody),
+            ("tr", SemanticElement::Tr),
+            ("th", SemanticElement::Th),
+            ("td", SemanticElement::Td),
+            ("nav", SemanticElement::Nav),
+            ("main", SemanticElement::Main),
+            ("article", SemanticElement::Article),
+            ("aside", SemanticElement::Aside),
+            ("header", SemanticElement::Header),
+            ("footer", SemanticElement::Footer),
+            ("section", SemanticElement::Section),
+            ("button", SemanticElement::Button),
+            ("label", SemanticElement::Label),
+        ];
+        TABLE
+            .iter()
+            .find_map(|&(name, tag)| s.eq_ignore_ascii_case(name).then_some(tag))
+            .unwrap_or(Self::Auto)
     }
 }
 

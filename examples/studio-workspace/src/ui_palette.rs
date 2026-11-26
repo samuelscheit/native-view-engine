@@ -64,6 +64,10 @@ pub struct CommandPaletteItem {
 /// Deterministic fuzzy matcher scoring case-insensitive substring & ordered subsequence hits.
 ///
 /// Returns `Some(score)` where higher is better, or `None` when `query` does not match `candidate`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "interactive command-palette fuzzy matcher lowercases query and candidate strings"
+)]
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     let q = query.trim().to_ascii_lowercase();
     if q.is_empty() {

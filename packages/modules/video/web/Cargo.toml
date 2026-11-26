@@ -8,3 +8,6 @@ license.workspace = true
 nve-backend-web = { workspace = true }
 nve-store = { workspace = true }
 nve-video = { workspace = true }
+
+[lints]
+workspace = true

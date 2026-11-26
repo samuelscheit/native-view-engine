@@ -158,12 +158,14 @@ impl SessionApp {
             Self::Studio(module) => {
                 let mut direct = Vec::with_capacity(events.len());
                 native_events_to_direct(events, &mut direct);
+                // SAFETY: `direct` borrows directly from `events`, which outlives this call.
                 module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&direct) })
             }
             #[cfg(feature = "app-kitchen-sink")]
             Self::KitchenSink(module) => {
                 let mut direct = Vec::with_capacity(events.len());
                 native_events_to_direct(events, &mut direct);
+                // SAFETY: `direct` borrows directly from `events`, which outlives this call.
                 module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&direct) })
             }
         }
@@ -268,6 +270,7 @@ impl WebAppSession {
                 viewport.width,
                 viewport.height,
             )];
+            // SAFETY: `layout_ev` is a stack-local slice containing no nested pointers.
             let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
         }
         (

@@ -64,10 +64,9 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
         )];
-        assert!(
-            app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }),
-            "press '{tid}' not handled"
-        );
+        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
+        let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
+        assert!(app.dispatch_events(batch), "press '{tid}' not handled");
         let frame = app.render(fid).to_vec();
         host.submit_nve2_frame(&frame)
             .expect("submit frame after press");
@@ -421,6 +420,7 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
         )];
+        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
         assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
         let frame = app.render(fid).to_vec();
         replica.submit_nve2_frame(&frame).unwrap();
@@ -441,6 +441,7 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
 
     let emitted = app.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
+    // SAFETY: `emitted` stays borrowed from `app` for the duration of `ev0`.
     let ev0 = unsafe { NveDirectEventRef::from_raw(&emitted[0]) };
     assert_eq!(ev0.kind(), Some(NativeEventKind::Custom));
     assert_eq!(ev0.name(), "layout_engine_changed");

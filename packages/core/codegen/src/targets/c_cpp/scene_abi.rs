@@ -17,13 +17,13 @@ use crate::schema::hybrid::HybridType;
 pub fn generate_c_scene_abi_h() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);
-    let render_node = spec.find_struct("NveRenderNode").unwrap();
-    let table_view = spec.find_struct("NveTableView").unwrap();
-    let scene_view = spec.find_struct("NveSceneView").unwrap();
-    let node_meta = spec.find_struct("NveNodeMeta").unwrap();
-    let node_size = render_node.expected_size.unwrap();
+    let render_node = spec.find_struct("NveRenderNode").expect("scene ABI defines NveRenderNode");
+    let table_view = spec.find_struct("NveTableView").expect("scene ABI defines NveTableView");
+    let scene_view = spec.find_struct("NveSceneView").expect("scene ABI defines NveSceneView");
+    let node_meta = spec.find_struct("NveNodeMeta").expect("scene ABI defines NveNodeMeta");
+    let node_size = render_node.expected_size.expect("NveRenderNode defines expected_size");
     let node_align = render_node.align.unwrap_or(NVE_RENDER_NODE_ALIGN);
-    let meta_size = node_meta.expected_size.unwrap();
+    let meta_size = node_meta.expected_size.expect("NveNodeMeta defines expected_size");
     let meta_align = node_meta.align.unwrap_or(NVE_NODE_META_ALIGN);
 
     let mut out = String::with_capacity(6144);
@@ -110,7 +110,7 @@ pub fn generate_c_scene_abi_h() -> String {
             "  {} {}; /* offset {} */",
             c_core_type(&f.ty),
             f.name,
-            f.offset.unwrap()
+            f.offset.expect("NveRenderNode field defines offset")
         );
     }
     let _ = writeln!(out, "}} NveRenderNode;");
@@ -141,7 +141,7 @@ pub fn generate_c_scene_abi_h() -> String {
                     "  {} {}[{len}]; /* offset {} */",
                     c_core_type(elem),
                     f.name,
-                    f.offset.unwrap()
+                    f.offset.expect("NveNodeMeta field defines offset")
                 );
             }
             _ => {
@@ -150,7 +150,7 @@ pub fn generate_c_scene_abi_h() -> String {
                     "  {} {}; /* offset {} */",
                     c_core_type(&f.ty),
                     f.name,
-                    f.offset.unwrap()
+                    f.offset.expect("NveNodeMeta field defines offset")
                 );
             }
         }
@@ -162,7 +162,7 @@ pub fn generate_c_scene_abi_h() -> String {
         "NVE_STATIC_ASSERT(sizeof(NveRenderNode) == {node_size}u, \"NveRenderNode must be 64 bytes\");"
     );
     for f in &render_node.fields {
-        let off = f.offset.unwrap();
+        let off = f.offset.expect("NveRenderNode field defines offset");
         let _ = writeln!(
             out,
             "NVE_STATIC_ASSERT(offsetof(NveRenderNode, {}) == {off}u, \"NveRenderNode.{} offset mismatch\");",
@@ -216,7 +216,7 @@ pub fn generate_c_scene_abi_h() -> String {
         "NVE_STATIC_ASSERT(sizeof(NveNodeMeta) == {meta_size}u, \"NveNodeMeta must be 64 bytes\");"
     );
     for f in &node_meta.fields {
-        let off = f.offset.unwrap();
+        let off = f.offset.expect("NveNodeMeta field defines offset");
         let _ = writeln!(
             out,
             "NVE_STATIC_ASSERT(offsetof(NveNodeMeta, {}) == {off}u, \"NveNodeMeta.{} offset mismatch\");",

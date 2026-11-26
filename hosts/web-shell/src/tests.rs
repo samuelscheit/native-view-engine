@@ -33,7 +33,7 @@ fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
 
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
     let node_id = find_node_by_test_id(session.store(), test_id)
-        .unwrap_or_else(|| panic!("expected mounted node with test_id='{test_id}'"));
+        .expect("expected mounted node with requested test_id");
     let mask = session
         .store()
         .try_row::<Interaction>(StoreNodeId(node_id))
@@ -52,8 +52,8 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
     });
     session
         .pump_events()
-        .unwrap()
-        .unwrap_or_else(|| panic!("pressing '{test_id}' should trigger an incremental frame"))
+        .expect("pump_events should succeed")
+        .expect("pressing test_id should trigger an incremental frame")
 }
 
 fn assert_valid_dom_html(html: &str) {
@@ -74,6 +74,7 @@ fn assert_valid_dom_html(html: &str) {
 
 fn assert_scene_view_matches_store(session: &WebAppSession) {
     let view = session.scene().view();
+    // SAFETY: `session.scene().view_ptr()` stays valid while `session` is immutably borrowed.
     let ptr_view = unsafe { *session.scene().view_ptr() };
     assert_eq!(view.schema_hash, NVE_SCENE_SCHEMA_HASH);
     assert_eq!(ptr_view.schema_hash, NVE_SCENE_SCHEMA_HASH);
@@ -81,6 +82,7 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
     assert_eq!(ptr_view.node_count, view.node_count);
     assert_eq!(ptr_view.nodes, view.nodes);
 
+    // SAFETY: `ptr_view` borrows `session.scene()` which remains alive and unmutated for `scene`.
     let scene = unsafe { NveSceneRef::from_raw(ptr_view) }
         .expect("scene_view_ptr must yield a valid NveSceneRef");
     let store = session.store();
@@ -137,9 +139,14 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
         let expected_text = store
             .try_row::<TextContent>(sid)
             .map_or("", |t| t.text());
-        assert_eq!(scene.node_text(rnode).unwrap(), expected_text);
+        assert_eq!(scene.node_text(rnode).expect("valid scene node UTF-8"), expected_text);
         let expected_children: Vec<NodeId> = children.iter().map(|c| c.raw()).collect();
-        assert_eq!(scene.node_children(rnode).unwrap(), expected_children.as_slice());
+        assert_eq!(
+            scene
+                .node_children(rnode)
+                .expect("valid scene node children"),
+            expected_children.as_slice()
+        );
     }
 }
 
@@ -353,14 +360,17 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
 fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
     let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
     let ptr_before = session.scene().view_ptr();
+    // SAFETY: `ptr_before` points to the session's stable `NveSceneView`.
     let empty_view = unsafe { *ptr_before };
     assert_eq!(empty_view.schema_hash, NVE_SCENE_SCHEMA_HASH);
     assert_eq!(empty_view.node_count, 0);
+    // SAFETY: `empty_view` borrows the unmutated empty scene table.
     let empty_ref = unsafe { NveSceneRef::from_raw(empty_view) }.unwrap();
     assert!(empty_ref.nodes().is_empty());
 
     session.render_initial().unwrap();
     assert_eq!(session.scene().view_ptr(), ptr_before);
+    // SAFETY: `ptr_before` remains valid across `render_initial()` (pointer stability invariant).
     let mounted_view = unsafe { *ptr_before };
     assert_eq!(mounted_view.frame_id, 1);
     assert_eq!(mounted_view.node_count as usize, session.node_count());

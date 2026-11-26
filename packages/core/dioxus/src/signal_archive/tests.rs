@@ -44,6 +44,7 @@ fn roundtrip_all_signal_value_types_and_bin_value() {
         NveMapEntry::new("count", NveValue::i64(-42)),
     ];
     let nve_val = NveValue::map(&map_entries);
+    // SAFETY: `map_entries` and nested backing slices outlive the synchronous `from_nve_value` call.
     let bin_val = SignalValue::from_nve_value(unsafe { nve_val.as_ref() }).unwrap();
 
     let mut table = SignalTableSnapshot::new(7);

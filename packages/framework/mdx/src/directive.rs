@@ -36,9 +36,14 @@ pub(crate) fn parse_directive_open(trimmed: &str, min_colons: usize) -> Option<D
         return None;
     }
     let attrs_raw = rest[name_end..].trim().to_string();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "MDX directive AST stores canonical lowercase directive name at parse time"
+    )]
+    let canonical_name = name.to_ascii_lowercase();
     Some(DirectiveHeader {
         colons,
-        name: name.to_ascii_lowercase(),
+        name: canonical_name,
         attrs_raw,
     })
 }

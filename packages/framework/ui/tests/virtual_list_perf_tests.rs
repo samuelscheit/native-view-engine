@@ -26,12 +26,14 @@ static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
+// SAFETY: Delegates directly to `std::alloc::System` while recording allocation metrics in lock-free atomics.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if TRACKING.load(Ordering::Relaxed) {
             ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
         }
+        // SAFETY: Caller upholds `GlobalAlloc::alloc` preconditions; delegated to `System`.
         unsafe { System.alloc(layout) }
     }
 
@@ -40,6 +42,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
             ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
         }
+        // SAFETY: Caller upholds `GlobalAlloc::alloc_zeroed` preconditions; delegated to `System`.
         unsafe { System.alloc_zeroed(layout) }
     }
 
@@ -48,10 +51,12 @@ unsafe impl GlobalAlloc for CountingAlloc {
             REALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             ALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
         }
+        // SAFETY: Caller upholds `GlobalAlloc::realloc` preconditions; delegated to `System`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Caller upholds `GlobalAlloc::dealloc` preconditions; delegated to `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 }

@@ -40,3 +40,6 @@ web-sys = { workspace = true, features = [
     "SvgElement",
     "VisualViewport",
 ] }
+
+[lints]
+workspace = true

@@ -109,6 +109,7 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
     assert_eq!(view.removed_count, 0);
     assert_eq!(view.text_slab_len as usize, slab_before + 3 * "updated".len());
 
+    // SAFETY: `view` borrows `table` which remains alive and unmutated for `reader`.
     let reader = unsafe { NveSceneRef::from_raw(view) }.expect("valid raw view");
     let dirty_ids: Vec<u32> = reader.dirty_nodes().map(|(_, n)| n.node_id).collect();
     assert_eq!(dirty_ids, vec![10, 42, 999]);
@@ -204,8 +205,10 @@ fn sync_frame_and_compaction_preserve_live_data() {
 fn raw_scene_ref_rejects_corrupt_views() {
     let mut view = NveSceneTable::new().as_view();
     view.schema_hash ^= 1;
+    // SAFETY: `from_raw` validates `schema_hash` before dereferencing any pointers.
+    let bad_hash = unsafe { NveSceneRef::from_raw(view) }.unwrap_err();
     assert_eq!(
-        unsafe { NveSceneRef::from_raw(view) }.unwrap_err(),
+        bad_hash,
         SceneError::SchemaHashMismatch {
             expected: NVE_SCENE_SCHEMA_HASH,
             actual: NVE_SCENE_SCHEMA_HASH ^ 1,
@@ -214,10 +217,9 @@ fn raw_scene_ref_rejects_corrupt_views() {
 
     let mut null_nodes = NveSceneTable::new().as_view();
     null_nodes.node_count = 1;
-    assert_eq!(
-        unsafe { NveSceneRef::from_raw(null_nodes) }.unwrap_err(),
-        SceneError::NullBufferPointer("nodes")
-    );
+    // SAFETY: `from_raw` validates non-null pointers before constructing slices.
+    let null_err = unsafe { NveSceneRef::from_raw(null_nodes) }.unwrap_err();
+    assert_eq!(null_err, SceneError::NullBufferPointer("nodes"));
 
     // Out-of-bounds text & invalid UTF-8 checks.
     let mut node = NveRenderNode::zeroed();
@@ -241,6 +243,7 @@ fn raw_scene_ref_rejects_corrupt_views() {
         removed_ids: std::ptr::null(),
         tables: std::ptr::null(),
     };
+    // SAFETY: `valid_view` points into live local stack buffers in this test.
     let reader = unsafe { NveSceneRef::from_raw(valid_view) }.unwrap();
     assert_eq!(
         reader.node_text(&reader.nodes()[0]).unwrap_err(),
@@ -252,6 +255,7 @@ fn raw_scene_ref_rejects_corrupt_views() {
         nodes: &node,
         ..valid_view
     };
+    // SAFETY: `oob_view` points into live local stack buffers; `node_text` bounds-checks before slicing.
     let oob_reader = unsafe { NveSceneRef::from_raw(oob_view) }.unwrap();
     assert_eq!(
         oob_reader.node_text(&oob_reader.nodes()[0]).unwrap_err(),

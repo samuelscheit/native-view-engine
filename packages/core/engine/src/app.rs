@@ -20,6 +20,10 @@ thread_local! {
 /// Formats a caught panic payload into a human-readable message.
 #[cold]
 #[inline(never)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "FFI catch_unwind panic payload boundary requires std::any::Any downcast"
+)]
 pub fn format_panic_payload(payload: &(dyn Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
@@ -183,6 +187,7 @@ macro_rules! export_nve_app {
                     return;
                 }
                 $crate::app::ffi_catch_unwind("NveSurfaceApi::destroy", (), || {
+                    // SAFETY: `handle` was allocated by `__nve_create` via `Box::into_raw` and is destroyed at most once.
                     unsafe { drop(Box::from_raw(handle as *mut $app_ty)) };
                 });
             }
@@ -198,6 +203,7 @@ macro_rules! export_nve_app {
                     "NveSurfaceApi::render",
                     NveBufferSlice::EMPTY,
                     || {
+                        // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                         let app = unsafe { &mut *(handle as *mut $app_ty) };
                         NveBufferSlice::from_slice(app.render(frame_id))
                     },
@@ -212,7 +218,9 @@ macro_rules! export_nve_app {
                     return 0;
                 }
                 $crate::app::ffi_catch_unwind("NveSurfaceApi::dispatch_events", 0, || {
+                    // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
+                    // SAFETY: Host guarantees `batch` points to valid `NveDirectEvent`s for this call.
                     let events = unsafe { NveEventBatchRef::from_raw(batch) };
                     u32::from(app.dispatch_events(events))
                 })
@@ -235,6 +243,7 @@ macro_rules! export_nve_app {
                         height: 0.0,
                     },
                     || {
+                        // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                         let app = unsafe { &mut *(handle as *mut $app_ty) };
                         app.measure(constraints)
                     },
@@ -254,6 +263,7 @@ macro_rules! export_nve_app {
                     "NveLayoutApi::hit_test",
                     NveGestureDisposition::PassThrough as u8,
                     || {
+                        // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                         let app = unsafe { &mut *(handle as *mut $app_ty) };
                         app.hit_test(x, y, pointer_phase) as u8
                     },
@@ -269,7 +279,9 @@ macro_rules! export_nve_app {
                     return 0;
                 }
                 $crate::app::ffi_catch_unwind("NveComponentApi::set_props", 0, || {
+                    // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
+                    // SAFETY: Host guarantees `entries..entries+count` is readable for this call.
                     let props = unsafe { NvePropsRef::from_raw_parts(entries, count) };
                     u32::from(app.set_props(props))
                 })
@@ -285,6 +297,7 @@ macro_rules! export_nve_app {
                     "NveComponentApi::drain_emitted_events",
                     NveEventBatch::EMPTY,
                     || {
+                        // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                         let app = unsafe { &mut *(handle as *mut $app_ty) };
                         NveEventBatch::from_slice(app.drain_emitted_events())
                     },
@@ -299,8 +312,11 @@ macro_rules! export_nve_app {
                     return 0;
                 }
                 $crate::app::ffi_catch_unwind("NveDevApi::apply_hot_patch", 0, || {
+                    // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
-                    let Ok(msg) = $crate::HotPatchMsg::from_bytes(unsafe { patch_nvp1.as_slice() })
+                    // SAFETY: Host guarantees `patch_nvp1` is readable for the duration of this call.
+                    let raw = unsafe { patch_nvp1.as_slice() };
+                    let Ok(msg) = $crate::HotPatchMsg::from_bytes(raw)
                     else {
                         return 0;
                     };
@@ -316,6 +332,7 @@ macro_rules! export_nve_app {
                     "NveDevApi::snapshot_state",
                     NveBufferSlice::EMPTY,
                     || {
+                        // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                         let app = unsafe { &mut *(handle as *mut $app_ty) };
                         NveBufferSlice::from_slice(app.snapshot_state())
                     },
@@ -330,8 +347,11 @@ macro_rules! export_nve_app {
                     return;
                 }
                 $crate::app::ffi_catch_unwind("NveDevApi::restore_state", (), || {
+                    // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
-                    app.restore_state(unsafe { state.as_slice() });
+                    // SAFETY: Host guarantees `state` is readable for the duration of this call.
+                    let bytes = unsafe { state.as_slice() };
+                    app.restore_state(bytes);
                 });
             }
 
@@ -343,10 +363,12 @@ macro_rules! export_nve_app {
                     return;
                 }
                 $crate::app::ffi_catch_unwind("NveHostApi::bind_host", (), || {
+                    // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
                     let bound = if callbacks.is_null() {
                         None
                     } else {
+                        // SAFETY: Non-null `callbacks` points to a valid `NveHostCallbacks` struct.
                         Some(unsafe { *callbacks })
                     };
                     app.bind_host(bound);
@@ -361,7 +383,9 @@ macro_rules! export_nve_app {
                     return 0;
                 }
                 $crate::app::ffi_catch_unwind("NveHostApi::dispatch_host_events", 0, || {
+                    // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
+                    // SAFETY: Host guarantees `batch` is readable for the duration of this call.
                     let bytes = unsafe { batch.as_slice() };
                     u32::from(app.dispatch_host_events(bytes))
                 })

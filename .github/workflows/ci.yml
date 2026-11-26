@@ -41,6 +41,15 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Run L2 hybrid lints (ast-grep + cargo-deny)
+        run: |
+          npm install -g @ast-grep/cli
+          ast-grep test && ast-grep scan
+          cargo deny check
+
       # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Install native dependencies
         if: false
@@ -65,7 +74,8 @@ jobs:
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
           cargo check -p nve-web-shell --target wasm32-unknown-unknown
-          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy --locked --workspace --lib --bins -- -D warnings
+          cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
           cargo run --locked -p nve-cli -- codegen abi
           cargo run --locked -p nve-cli -- codegen abi --check

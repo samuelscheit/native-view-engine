@@ -17,3 +17,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "store_bench"
 harness = false
+
+[lints]
+workspace = true

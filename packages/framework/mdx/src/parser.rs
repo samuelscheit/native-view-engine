@@ -446,7 +446,8 @@ impl<'a> ParseCtx<'a> {
         base_line: usize,
         depth: usize,
     ) -> (Block, usize) {
-        let first = parse_list_marker(lines[start]).unwrap();
+        let first = parse_list_marker(lines[start])
+            .expect("parse_list is only called when lines[start] has a list marker");
         let ordered = first.ordered;
         let start_num = first.number.unwrap_or(1);
         let base_indent = first.indent;

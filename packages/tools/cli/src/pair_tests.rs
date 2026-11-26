@@ -222,8 +222,8 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
             let mut transport = String::new();
             let mut peers = -1i64;
             for entry in entries {
-                let key = unsafe { entry.key.as_str() }.expect("valid utf8 prop key");
-                let val = unsafe { entry.value.as_ref() };
+                // SAFETY: `entries` and their string/value buffers stay live for this synchronous callback.
+                let (key, val) = unsafe { (entry.key.as_str().expect("valid utf8 prop key"), entry.value.as_ref()) };
                 match key {
                     "syncTransport" => {
                         if let Some(s) = val.as_str() {

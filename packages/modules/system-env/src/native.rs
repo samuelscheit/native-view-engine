@@ -34,6 +34,10 @@ pub fn parse_locale_tag(
         .unwrap_or(trimmed)
         .replace('_', "-");
     let parts: Vec<&str> = core.split('-').filter(|p| !p.is_empty()).collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "OS locale snapshot owns canonical lowercase language tag"
+    )]
     let language = parts
         .first()
         .map(|s| s.to_ascii_lowercase())
@@ -127,6 +131,7 @@ mod platform {
     }
 
     pub fn get_theme() -> Result<ThemeSnapshot, ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated AppKit/Foundation selectors.
         with_autorelease_pool(|| unsafe {
             let mut color_scheme = ColorScheme::Light;
             let app = NSApp;
@@ -199,6 +204,7 @@ mod platform {
     }
 
     pub fn get_locale() -> Result<LocaleSnapshot, ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated Foundation selectors.
         with_autorelease_pool(|| unsafe {
             let mut raw_tag = String::new();
             let locale_cls = cls(b"NSLocale\0");
@@ -269,6 +275,7 @@ mod platform {
         let val_name = to_wide_nul("AppsUseLightTheme");
         let mut light_val: u32 = 1;
         let mut size: u32 = std::mem::size_of::<u32>() as u32;
+        // SAFETY: `subkey` and `val_name` are NUL-terminated UTF-16 and `light_val`/`size` are valid out-pointers.
         let status = unsafe {
             RegGetValueW(
                 HKEY_CURRENT_USER,
@@ -298,6 +305,7 @@ mod platform {
 
     pub fn get_locale() -> Result<LocaleSnapshot, ServiceError> {
         let mut buf = [0u16; 85];
+        // SAFETY: `buf` has capacity `buf.len()` UTF-16 code units (>= LOCALE_NAME_MAX_LENGTH).
         let len = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
         let raw = if len > 1 {
             String::from_utf16_lossy(&buf[..(len as usize - 1)])
@@ -320,9 +328,11 @@ mod platform {
     use super::parse_locale_tag;
 
     pub fn get_theme() -> Result<ThemeSnapshot, ServiceError> {
-        let dark_hint = std::env::var("GTK_THEME")
-            .ok()
-            .is_some_and(|v| v.to_ascii_lowercase().contains("dark"));
+        let dark_hint = std::env::var("GTK_THEME").ok().is_some_and(|v| {
+            v.as_bytes()
+                .windows(4)
+                .any(|w| w.eq_ignore_ascii_case(b"dark"))
+        });
         Ok(ThemeSnapshot {
             color_scheme: if dark_hint {
                 ColorScheme::Dark

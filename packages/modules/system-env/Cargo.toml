@@ -8,4 +8,7 @@ description = "Standalone opt-in NVE live system theme & locale capability modul
 [dependencies]
 nve-abi = { workspace = true }
 nve-host-services = { workspace = true }
-nve-interop = { path = "../../core/interop", default-features = false, features = ["channel"] }
+nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false, features = ["channel"] }
+
+[lints]
+workspace = true

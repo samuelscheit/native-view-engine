@@ -58,6 +58,10 @@ impl TypedHostEvent {
     }
 
     #[inline]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "TypedHostEvent type-erased in-process event bus boundary"
+    )]
     pub fn downcast_ref<E: 'static>(&self) -> Option<&E> {
         self.payload.downcast_ref::<E>()
     }
@@ -155,6 +159,10 @@ impl TypedEventBus {
         let tid = TypeId::of::<E>();
         let sub_id = TypedEventSubscription(self.next_sub_id.fetch_add(1, Ordering::Relaxed));
         let callback: SubscriberFn = Arc::new(move |any: &dyn Any| {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "TypedEventBus subscriber dispatch downcasts per TypeId bucket"
+            )]
             if let Some(ev) = any.downcast_ref::<E>() {
                 handler(ev);
             }

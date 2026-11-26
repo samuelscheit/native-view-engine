@@ -8,3 +8,6 @@ description = "Sans-I/O NveWireFrame v2 protocol, compact NodePatchDelta codec, 
 [dependencies]
 nve-abi = { workspace = true }
 nve-engine = { workspace = true }
+
+[lints]
+workspace = true

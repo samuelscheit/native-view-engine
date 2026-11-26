@@ -63,6 +63,7 @@ mod platform {
     unsafe extern "C" {}
 
     pub fn read_text() -> Result<Option<String>, ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated AppKit class/selector names.
         with_autorelease_pool(|| unsafe {
             let pb_cls = cls(b"NSPasteboard\0");
             if pb_cls.is_null() {
@@ -79,6 +80,7 @@ mod platform {
     }
 
     pub fn write_text(text: &str) -> Result<(), ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated AppKit class/selector names.
         with_autorelease_pool(|| unsafe {
             let pb_cls = cls(b"NSPasteboard\0");
             if pb_cls.is_null() {
@@ -106,6 +108,7 @@ mod platform {
     }
 
     pub fn clear() -> Result<(), ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated AppKit class/selector names.
         with_autorelease_pool(|| unsafe {
             let pb_cls = cls(b"NSPasteboard\0");
             if pb_cls.is_null() {
@@ -150,6 +153,7 @@ mod platform {
     }
 
     pub fn read_text() -> Result<Option<String>, ServiceError> {
+        // SAFETY: Win32 clipboard APIs are called in balanced Open/Lock/Unlock/Close pairs.
         unsafe {
             if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0 {
                 return Ok(None);
@@ -178,6 +182,7 @@ mod platform {
     pub fn write_text(text: &str) -> Result<(), ServiceError> {
         let wide = to_wide_nul(text);
         let byte_len = wide.len() * 2;
+        // SAFETY: Allocates `byte_len` matching `wide`, copies into locked HGLOBAL, and balances CloseClipboard/GlobalFree on error.
         unsafe {
             if OpenClipboard(std::ptr::null_mut()) == 0 {
                 return Err(ServiceError::IoError("OpenClipboard failed".into()));
@@ -207,10 +212,12 @@ mod platform {
     }
 
     pub fn has_text() -> Result<bool, ServiceError> {
+        // SAFETY: Querying clipboard format availability has no pointer preconditions.
         Ok(unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) != 0 })
     }
 
     pub fn clear() -> Result<(), ServiceError> {
+        // SAFETY: Balanced OpenClipboard / EmptyClipboard / CloseClipboard sequence.
         unsafe {
             if OpenClipboard(std::ptr::null_mut()) == 0 {
                 return Err(ServiceError::IoError("OpenClipboard failed".into()));

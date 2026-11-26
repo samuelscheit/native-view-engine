@@ -138,7 +138,9 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
         DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows: 50 });
     let mut direct_web = WebBackend::new();
     direct_web.set_viewport(1, DEFAULT_VIEWPORT);
-    direct_surface.commit_to(1, &mut direct_web).unwrap();
+    direct_surface
+        .commit_to(1, &mut direct_web)
+        .expect("initial direct commit to web");
     let direct_btn = find_tick_node_id(direct_surface.store());
     let mut direct_frame = 1u64;
 
@@ -155,7 +157,7 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
             black_box(
                 direct_surface
                     .commit_to(direct_frame, &mut direct_web)
-                    .unwrap(),
+                    .expect("incremental direct commit to web"),
             )
         });
     });
@@ -167,7 +169,9 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
     wire_web.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
     {
         let init = wire_surface.render_nve2_slice(1);
-        wire_web.submit_nve2_frame(init).unwrap();
+        wire_web
+            .submit_nve2_frame(init)
+            .expect("initial wire commit to web");
     }
     let wire_btn = find_tick_node_id(wire_web.store());
     let mut wire_frame = 1u64;
@@ -183,7 +187,11 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
                 payload: EventPayload::Point { x: 10.0, y: 10.0 },
             }]);
             let bytes = wire_surface.render_nve2_slice(wire_frame);
-            black_box(wire_web.submit_nve2_frame(black_box(bytes)).unwrap())
+            black_box(
+                wire_web
+                    .submit_nve2_frame(black_box(bytes))
+                    .expect("incremental wire commit to web"),
+            )
         });
     });
 
@@ -204,7 +212,9 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
                     web.set_viewport(1, DEFAULT_VIEWPORT);
                     (surface, web)
                 },
-                |(mut surface, mut web)| black_box(surface.commit_to(1, &mut web).unwrap()),
+                |(mut surface, mut web)| {
+                    black_box(surface.commit_to(1, &mut web).expect("mount commit web"))
+                },
                 BatchSize::SmallInput,
             );
         });
@@ -221,7 +231,10 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
                 },
                 |(mut surface, mut web)| {
                     let bytes = surface.render_nve2_slice(1);
-                    black_box(web.submit_nve2_frame(black_box(bytes)).unwrap())
+                    black_box(
+                        web.submit_nve2_frame(black_box(bytes))
+                            .expect("mount wire web"),
+                    )
                 },
                 BatchSize::SmallInput,
             );
@@ -237,7 +250,11 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
                     (surface, headless)
                 },
                 |(mut surface, mut headless)| {
-                    black_box(surface.commit_to(1, &mut headless).unwrap())
+                    black_box(
+                        surface
+                            .commit_to(1, &mut headless)
+                            .expect("mount commit headless"),
+                    )
                 },
                 BatchSize::SmallInput,
             );
@@ -257,7 +274,11 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
                 },
                 |(mut surface, mut headless)| {
                     let bytes = surface.render_nve2_slice(1);
-                    black_box(headless.submit_nve2_frame(black_box(bytes)).unwrap())
+                    black_box(
+                        headless
+                            .submit_nve2_frame(black_box(bytes))
+                            .expect("mount wire headless"),
+                    )
                 },
                 BatchSize::SmallInput,
             );
@@ -279,7 +300,9 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
                 web.set_viewport(1, DEFAULT_VIEWPORT);
                 (surface, web)
             },
-            |(mut surface, mut web)| black_box(surface.commit_to(1, &mut web).unwrap()),
+            |(mut surface, mut web)| {
+                black_box(surface.commit_to(1, &mut web).expect("rich commit web"))
+            },
             BatchSize::SmallInput,
         );
     });
@@ -294,7 +317,10 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
             },
             |(mut surface, mut web)| {
                 let bytes = surface.render_nve2_slice(1);
-                black_box(web.submit_nve2_frame(black_box(bytes)).unwrap())
+                black_box(
+                    web.submit_nve2_frame(black_box(bytes))
+                        .expect("rich wire web"),
+                )
             },
             BatchSize::SmallInput,
         );
@@ -308,7 +334,9 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
                 skia.set_viewport(1, DEFAULT_VIEWPORT);
                 (surface, skia)
             },
-            |(mut surface, mut skia)| black_box(surface.commit_to(1, &mut skia).unwrap()),
+            |(mut surface, mut skia)| {
+                black_box(surface.commit_to(1, &mut skia).expect("rich commit skia"))
+            },
             BatchSize::SmallInput,
         );
     });
@@ -323,7 +351,10 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
             },
             |(mut surface, mut skia)| {
                 let bytes = surface.render_nve2_slice(1);
-                black_box(skia.submit_nve2_frame(black_box(bytes)).unwrap())
+                black_box(
+                    skia.submit_nve2_frame(black_box(bytes))
+                        .expect("rich wire skia"),
+                )
             },
             BatchSize::SmallInput,
         );

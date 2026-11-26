@@ -115,23 +115,28 @@ impl MultiBackendHarness {
     }
 
     pub fn press(&mut self, test_id: &str) {
-        let node_id = self
-            .find_by_test_id(test_id)
-            .unwrap_or_else(|| panic!("expected node with testID='{test_id}'\n{}", self.ascii()));
-        let rect = self
-            .headless
-            .layout_of(node_id)
-            .unwrap_or_else(|| panic!("missing layout rect for testID='{test_id}'"));
+        let node_id = self.find_by_test_id(test_id);
+        assert!(
+            node_id.is_some(),
+            "expected node with testID='{test_id}'\n{}",
+            self.ascii()
+        );
+        let node_id = node_id.expect("checked above");
+        let rect = self.headless.layout_of(node_id);
+        assert!(rect.is_some(), "missing layout rect for testID='{test_id}'");
+        let rect = rect.expect("checked above");
         assert!(
             rect.width > 0.0 && rect.height > 0.0,
             "zero-sized control '{test_id}': {rect:?}"
         );
         let cx = rect.x + rect.width * 0.5;
         let cy = rect.y + rect.height * 0.5;
-        let hit = self
-            .headless
-            .hit_test(self.surface.store(), cx, cy)
-            .unwrap_or_else(|| panic!("hit_test missed '{test_id}' at ({cx}, {cy}) rect={rect:?}"));
+        let hit = self.headless.hit_test(self.surface.store(), cx, cy);
+        assert!(
+            hit.is_some(),
+            "hit_test missed '{test_id}' at ({cx}, {cy}) rect={rect:?}"
+        );
+        let hit = hit.expect("checked above");
         assert_eq!(
             hit, node_id,
             "hit_test at center of '{test_id}' hit Node#{hit} instead of Node#{node_id}"
@@ -149,9 +154,13 @@ impl MultiBackendHarness {
     }
 
     pub fn type_text(&mut self, test_id: &str, text: &str) {
-        let node_id = self
-            .find_by_test_id(test_id)
-            .unwrap_or_else(|| panic!("expected textinput with testID='{test_id}'\n{}", self.ascii()));
+        let node_id = self.find_by_test_id(test_id);
+        assert!(
+            node_id.is_some(),
+            "expected textinput with testID='{test_id}'\n{}",
+            self.ascii()
+        );
+        let node_id = node_id.expect("checked above");
         let handled = self.surface.dispatch_events(&[NativeEvent {
             surface_id: 1,
             node_id,

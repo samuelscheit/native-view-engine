@@ -443,7 +443,8 @@ fn register_locked(desc: &'static TableDesc) -> Result<TableSlot, RegistryError>
 #[cold]
 pub fn register_static(desc: &'static TableDesc, cell: &AtomicU8, register: fn()) -> TableSlot {
     register();
-    let slot = register_locked(desc).unwrap_or_else(|e| panic!("NveTable `{}`: {e:?}", desc.name));
+    let slot = register_locked(desc)
+        .expect("NveTable static registration must succeed (unique key and <= 64 tables)");
     cell.store(slot.0, Ordering::Release);
     slot
 }

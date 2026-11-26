@@ -62,19 +62,23 @@ fn compare_store_taffy_vs_yoga(
     taffy_backend.set_viewport(1, viewport);
     yoga_backend.set_viewport(1, viewport);
 
-    taffy_backend.commit(store, changes).unwrap();
-    yoga_backend.commit(store, changes).unwrap();
+    taffy_backend
+        .commit(store, changes)
+        .expect("taffy parity commit");
+    yoga_backend
+        .commit(store, changes)
+        .expect("yoga parity commit");
 
     assert_eq!(taffy_backend.name(), "headless-taffy");
     assert_eq!(yoga_backend.name(), "headless-yoga");
 
     for &id in node_ids {
-        let tr = taffy_backend
-            .layout_of(id.raw())
-            .unwrap_or_else(|| panic!("[{label}] missing taffy rect for node #{}", id.raw()));
-        let yr = yoga_backend
-            .layout_of(id.raw())
-            .unwrap_or_else(|| panic!("[{label}] missing yoga rect for node #{}", id.raw()));
+        let tr = taffy_backend.layout_of(id.raw());
+        assert!(tr.is_some(), "[{label}] missing taffy rect for node #{}", id.raw());
+        let tr = tr.expect("checked above");
+        let yr = yoga_backend.layout_of(id.raw());
+        assert!(yr.is_some(), "[{label}] missing yoga rect for node #{}", id.raw());
+        let yr = yr.expect("checked above");
         assert_rect_parity(label, id, tr, yr);
     }
 }

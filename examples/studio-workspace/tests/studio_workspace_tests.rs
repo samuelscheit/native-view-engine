@@ -233,6 +233,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         NveMapEntry::new("syncCompression", NveValue::f64(7.2)),
         NveMapEntry::new("syncRttMs", NveValue::f64(0.8)),
     ];
+    // SAFETY: `direct_entries` outlives `direct_props`.
     let direct_props = unsafe { NvePropsRef::from_slice(&direct_entries) };
     assert!(app.set_props(direct_props));
     let _ = app.render(1);
@@ -274,6 +275,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     assert_eq!(snap.sync_telemetry.rtt_ms_tenths, 8);
 
     let green_entries = [NveMapEntry::new("accent", NveValue::from_str("green"))];
+    // SAFETY: `green_entries` outlives the synchronous `set_props` call.
     assert!(restored_app.set_props(unsafe { NvePropsRef::from_slice(&green_entries) }));
     assert_eq!(
         restored_app.state_snapshot().current.studio.accent,

@@ -113,20 +113,33 @@ impl From<io::Error> for ArenaError {
 /// bit patterns (e.g. `bool` or `NonZero*`), and have zero uninitialized padding bytes.
 pub unsafe trait ArenaPod: Copy + 'static {}
 
-// SAFETY: Fixed-width primitives and verified `#[repr(C)]` zero-padding handles below.
+// SAFETY: `u8` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for u8 {}
+// SAFETY: `i8` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for i8 {}
+// SAFETY: `u16` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for u16 {}
+// SAFETY: `i16` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for i16 {}
+// SAFETY: `u32` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for u32 {}
+// SAFETY: `i32` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for i32 {}
+// SAFETY: `u64` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for u64 {}
+// SAFETY: `i64` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for i64 {}
+// SAFETY: `f32` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for f32 {}
+// SAFETY: `f64` is a Copy + 'static primitive with no padding or invalid bit patterns.
 unsafe impl ArenaPod for f64 {}
+// SAFETY: `ArenaHeaderSlot` is `#[repr(C)]`, 64 bytes, zero padding, all bit patterns valid.
 unsafe impl ArenaPod for ArenaHeaderSlot {}
+// SAFETY: `TrustedUtf8Str` is `#[repr(C)]`, zero padding, two `u32` offsets.
 unsafe impl ArenaPod for TrustedUtf8Str {}
+// SAFETY: `OffsetPtr<T>` is `#[repr(C)]` holding a `u32` offset and `PhantomData`.
 unsafe impl<T: 'static> ArenaPod for OffsetPtr<T> {}
+// SAFETY: `OffsetSlice<T>` is `#[repr(C)]` holding two `u32` fields and `PhantomData`.
 unsafe impl<T: 'static> ArenaPod for OffsetSlice<T> {}
 
 /// 32-bit base-relative pointer inside [`MmapOffsetArena`]. Offset `0` represents null.

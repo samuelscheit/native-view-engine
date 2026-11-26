@@ -7,4 +7,7 @@ description = "Binary NVE_IFACE_HOST = 5 host-service transport, FFI client, bin
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-interop = { path = "../interop", default-features = false, features = ["channel"] }
+nve-interop = { version = "0.1.0", path = "../interop", default-features = false, features = ["channel"] }
+
+[lints]
+workspace = true

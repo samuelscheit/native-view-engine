@@ -258,10 +258,14 @@ pub fn run_heap_frame(node_count: usize, frame: u32) -> u64 {
         let y = ((i / 32) as f32) * 44.0 + (frame as f32 * 0.5);
 
         let l_len = format_node_label_buf(&mut label_buf, i, frame);
-        let label = std::str::from_utf8(&label_buf[..l_len]).unwrap().to_owned();
+        let label = std::str::from_utf8(&label_buf[..l_len])
+            .expect("format_node_label_buf emits ASCII")
+            .to_owned();
 
         let p_len = format_prop_str_buf(&mut prop_buf, i, frame);
-        let prop_text = std::str::from_utf8(&prop_buf[..p_len]).unwrap().to_owned();
+        let prop_text = std::str::from_utf8(&prop_buf[..p_len])
+            .expect("format_prop_str_buf emits ASCII")
+            .to_owned();
 
         let props = vec![
             HeapPropEntry {

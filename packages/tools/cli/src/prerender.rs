@@ -55,40 +55,42 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
     let measurer: Arc<dyn TextMeasurer> = CosmicTextEngine::shared();
     let t0 = Instant::now();
 
-    let (slug, schema_version, buf) = match opts.app.trim().to_ascii_lowercase().as_str() {
-        "studio" | "studio-workspace" | "nve-studio-workspace" => {
-            let mut app = StudioWorkspaceModule::create(1);
-            let buf = prerender_native_frame0_with_text_measurer(
-                &mut app,
-                1,
-                viewport,
-                STUDIO_SNAPSHOT_SCHEMA_VERSION,
-                "studio",
-                ColorRgba::rgb(11, 17, 32),
-                measurer,
-            )
-            .map_err(|e| format!("failed to prerender studio Frame-0: {e}"))?;
-            ("studio".to_string(), STUDIO_SNAPSHOT_SCHEMA_VERSION, buf)
-        }
-        "kitchen-sink" | "nve-example-kitchen-sink" => {
-            let mut app = KitchenSinkModule::create(1);
-            let buf = prerender_native_frame0_with_text_measurer(
-                &mut app,
-                1,
-                viewport,
-                KITCHEN_SINK_STATE_VERSION,
-                "kitchen-sink",
-                ColorRgba::rgb(15, 23, 42),
-                measurer,
-            )
-            .map_err(|e| format!("failed to prerender kitchen-sink Frame-0: {e}"))?;
-            ("kitchen-sink".to_string(), KITCHEN_SINK_STATE_VERSION, buf)
-        }
-        other => {
-            return Err(format!(
-                "unsupported --app '{other}' (expected 'studio' or 'kitchen-sink')"
-            ));
-        }
+    let app_arg = opts.app.trim();
+    let (slug, schema_version, buf) = if app_arg.eq_ignore_ascii_case("studio")
+        || app_arg.eq_ignore_ascii_case("studio-workspace")
+        || app_arg.eq_ignore_ascii_case("nve-studio-workspace")
+    {
+        let mut app = StudioWorkspaceModule::create(1);
+        let buf = prerender_native_frame0_with_text_measurer(
+            &mut app,
+            1,
+            viewport,
+            STUDIO_SNAPSHOT_SCHEMA_VERSION,
+            "studio",
+            ColorRgba::rgb(11, 17, 32),
+            measurer,
+        )
+        .map_err(|e| format!("failed to prerender studio Frame-0: {e}"))?;
+        ("studio".to_string(), STUDIO_SNAPSHOT_SCHEMA_VERSION, buf)
+    } else if app_arg.eq_ignore_ascii_case("kitchen-sink")
+        || app_arg.eq_ignore_ascii_case("nve-example-kitchen-sink")
+    {
+        let mut app = KitchenSinkModule::create(1);
+        let buf = prerender_native_frame0_with_text_measurer(
+            &mut app,
+            1,
+            viewport,
+            KITCHEN_SINK_STATE_VERSION,
+            "kitchen-sink",
+            ColorRgba::rgb(15, 23, 42),
+            measurer,
+        )
+        .map_err(|e| format!("failed to prerender kitchen-sink Frame-0: {e}"))?;
+        ("kitchen-sink".to_string(), KITCHEN_SINK_STATE_VERSION, buf)
+    } else {
+        return Err(format!(
+            "unsupported --app '{app_arg}' (expected 'studio' or 'kitchen-sink')"
+        ));
     };
 
     let scene = SceneRelocView::from_bytes(&buf, VerifyMode::Full)

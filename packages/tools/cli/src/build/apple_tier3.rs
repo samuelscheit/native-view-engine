@@ -129,14 +129,31 @@ impl AppleTier3Target {
     }
 
     pub fn parse(raw: &str) -> Result<Self, Tier3Error> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "tvos" | "aarch64-apple-tvos" => Ok(Self::Tvos),
-            "tvos-sim" | "aarch64-apple-tvos-sim" => Ok(Self::TvosSim),
-            "visionos" | "aarch64-apple-visionos" => Ok(Self::VisionOs),
-            "visionos-sim" | "aarch64-apple-visionos-sim" => Ok(Self::VisionOsSim),
-            "watchos" | "aarch64-apple-watchos" => Ok(Self::WatchOs),
-            "watchos-sim" | "aarch64-apple-watchos-sim" => Ok(Self::WatchOsSim),
-            _ => Err(Tier3Error::InvalidTarget(raw.to_owned())),
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("tvos") || s.eq_ignore_ascii_case("aarch64-apple-tvos") {
+            Ok(Self::Tvos)
+        } else if s.eq_ignore_ascii_case("tvos-sim")
+            || s.eq_ignore_ascii_case("aarch64-apple-tvos-sim")
+        {
+            Ok(Self::TvosSim)
+        } else if s.eq_ignore_ascii_case("visionos")
+            || s.eq_ignore_ascii_case("aarch64-apple-visionos")
+        {
+            Ok(Self::VisionOs)
+        } else if s.eq_ignore_ascii_case("visionos-sim")
+            || s.eq_ignore_ascii_case("aarch64-apple-visionos-sim")
+        {
+            Ok(Self::VisionOsSim)
+        } else if s.eq_ignore_ascii_case("watchos")
+            || s.eq_ignore_ascii_case("aarch64-apple-watchos")
+        {
+            Ok(Self::WatchOs)
+        } else if s.eq_ignore_ascii_case("watchos-sim")
+            || s.eq_ignore_ascii_case("aarch64-apple-watchos-sim")
+        {
+            Ok(Self::WatchOsSim)
+        } else {
+            Err(Tier3Error::InvalidTarget(raw.to_owned()))
         }
     }
 

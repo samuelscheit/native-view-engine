@@ -24,11 +24,15 @@ pub enum TextAlign {
 impl TextAlign {
     /// Parses a CSS `text-align` value (`left`, `start`, `center`, `right`, `end`).
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "left" | "start" => Some(Self::Left),
-            "center" => Some(Self::Center),
-            "right" | "end" => Some(Self::Right),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("left") || s.eq_ignore_ascii_case("start") {
+            Some(Self::Left)
+        } else if s.eq_ignore_ascii_case("center") {
+            Some(Self::Center)
+        } else if s.eq_ignore_ascii_case("right") || s.eq_ignore_ascii_case("end") {
+            Some(Self::Right)
+        } else {
+            None
         }
     }
 
@@ -51,17 +55,29 @@ pub fn parse_font_weight(raw: &str) -> Option<u16> {
     {
         return Some((n.round() as i32).clamp(100, 900) as u16);
     }
-    match trimmed.to_ascii_lowercase().as_str() {
-        "thin" | "hairline" => Some(100),
-        "extralight" | "ultralight" => Some(200),
-        "light" => Some(300),
-        "normal" | "regular" => Some(400),
-        "medium" => Some(500),
-        "semibold" | "demibold" => Some(600),
-        "bold" => Some(700),
-        "extrabold" | "ultrabold" => Some(800),
-        "black" | "heavy" => Some(900),
-        _ => None,
+    if trimmed.eq_ignore_ascii_case("thin") || trimmed.eq_ignore_ascii_case("hairline") {
+        Some(100)
+    } else if trimmed.eq_ignore_ascii_case("extralight")
+        || trimmed.eq_ignore_ascii_case("ultralight")
+    {
+        Some(200)
+    } else if trimmed.eq_ignore_ascii_case("light") {
+        Some(300)
+    } else if trimmed.eq_ignore_ascii_case("normal") || trimmed.eq_ignore_ascii_case("regular") {
+        Some(400)
+    } else if trimmed.eq_ignore_ascii_case("medium") {
+        Some(500)
+    } else if trimmed.eq_ignore_ascii_case("semibold") || trimmed.eq_ignore_ascii_case("demibold") {
+        Some(600)
+    } else if trimmed.eq_ignore_ascii_case("bold") {
+        Some(700)
+    } else if trimmed.eq_ignore_ascii_case("extrabold") || trimmed.eq_ignore_ascii_case("ultrabold")
+    {
+        Some(800)
+    } else if trimmed.eq_ignore_ascii_case("black") || trimmed.eq_ignore_ascii_case("heavy") {
+        Some(900)
+    } else {
+        None
     }
 }
 

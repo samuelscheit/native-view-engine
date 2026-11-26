@@ -170,8 +170,20 @@ impl CrdtWireFrame {
             return Err(CrdtWireError::ChecksumMismatch { expected, actual });
         }
 
-        let sender = PeerId(u64::from_le_bytes(bytes[10..18].try_into().unwrap()));
-        let vv_len = u32::from_le_bytes(bytes[18..22].try_into().unwrap()) as usize;
+        let le64 = |o: usize| {
+            u64::from_le_bytes([
+                bytes[o],
+                bytes[o + 1],
+                bytes[o + 2],
+                bytes[o + 3],
+                bytes[o + 4],
+                bytes[o + 5],
+                bytes[o + 6],
+                bytes[o + 7],
+            ])
+        };
+        let sender = PeerId(le64(10));
+        let vv_len = u32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]) as usize;
         if vv_len > MAX_VV_ENTRIES {
             return Err(CrdtWireError::LimitExceeded {
                 kind: "version_vector",
@@ -192,8 +204,8 @@ impl CrdtWireFrame {
         let mut vv = VersionVector::new();
         let mut off = 22usize;
         for _ in 0..vv_len {
-            let p = PeerId(u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()));
-            let s = u64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap());
+            let p = PeerId(le64(off));
+            let s = le64(off + 8);
             vv.set_max(p, s);
             off += 16;
         }

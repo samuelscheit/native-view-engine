@@ -9,3 +9,6 @@ nve-abi = { workspace = true }
 nve-hash = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

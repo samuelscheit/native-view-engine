@@ -13,3 +13,6 @@ nve-store = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }
+
+[lints]
+workspace = true

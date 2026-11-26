@@ -45,6 +45,7 @@ fn composition_events_roundtrip_event_ring_and_direct_ffi_batch() {
         NveDirectEvent::composition(1, 10, 300, NativeEventKind::CompositionEnd, "你好"),
     ];
     let batch = NveEventBatch::from_slice(&direct);
+    // SAFETY: `direct` stays alive for the lifetime of `view`.
     let view = unsafe { NveEventBatchRef::from_raw(batch) };
     assert_eq!(view.len(), 3);
     assert_eq!(view.get(0).unwrap().kind(), Some(NativeEventKind::CompositionStart));

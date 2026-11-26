@@ -71,63 +71,74 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+unwrap_used = "deny"
+panic = "deny"
+
 [workspace.dependencies]
-nve-hash = { path = "packages/core/hash" }
-nve-abi = { path = "packages/core/abi" }
-nve-store = { path = "packages/core/store" }
-nve-abi-macros = { path = "packages/core/abi-macros" }
-nve-components = { path = "packages/core/components" }
-nve-engine = { path = "packages/core/engine" }
-nve-layout-yoga = { path = "packages/core/layout-yoga" }
-nve-dioxus = { path = "packages/core/dioxus" }
-nve-codegen = { path = "packages/core/codegen" }
-nve-interop = { path = "packages/core/interop" }
-nve-host-services = { path = "packages/core/host-services" }
-nve-wire-core = { path = "packages/core/wire-core" }
-nve-wire = { path = "packages/core/wire" }
-nve-ui = { path = "packages/framework/ui" }
-nve-router = { path = "packages/framework/router" }
-nve-rpc = { path = "packages/framework/rpc" }
-nve-server = { path = "packages/framework/server" }
-nve-http-hyper = { path = "packages/framework/http-hyper" }
-nve-http-web = { path = "packages/framework/http-web" }
-nve-query = { path = "packages/framework/query" }
-nve-query-dioxus = { path = "packages/framework/query-dioxus" }
-nve-i18n = { path = "packages/framework/i18n" }
-nve-mdx = { path = "packages/framework/mdx" }
-nve-docs = { path = "packages/framework/docs" }
-nve-backend-headless = { path = "packages/backends/headless" }
-nve-backend-skia = { path = "packages/backends/skia" }
-nve-backend-web = { path = "packages/backends/web" }
-nve-blur = { path = "packages/modules/blur" }
-nve-blur-web = { path = "packages/modules/blur/web" }
-nve-camera = { path = "packages/modules/camera" }
-nve-camera-web = { path = "packages/modules/camera/web" }
-nve-canvas = { path = "packages/modules/canvas" }
-nve-canvas-web = { path = "packages/modules/canvas/web" }
-nve-canvas-skia = { path = "packages/modules/canvas/skia" }
-nve-clipboard = { path = "packages/modules/clipboard" }
-nve-svg = { path = "packages/modules/svg" }
-nve-svg-web = { path = "packages/modules/svg/web" }
-nve-svg-skia = { path = "packages/modules/svg/skia" }
-nve-video = { path = "packages/modules/video" }
-nve-video-web = { path = "packages/modules/video/web" }
-nve-web-element = { path = "packages/modules/web-element" }
-nve-web-element-web = { path = "packages/modules/web-element/web" }
-nve-web-html = { path = "packages/modules/web-html" }
-nve-web-html-web = { path = "packages/modules/web-html/web" }
-nve-webview = { path = "packages/modules/webview" }
-nve-webview-web = { path = "packages/modules/webview/web" }
-nve-filesystem = { path = "packages/modules/filesystem" }
-nve-secure-store = { path = "packages/modules/secure-store" }
-nve-linking = { path = "packages/modules/linking" }
-nve-system-env = { path = "packages/modules/system-env" }
-nve-haptics = { path = "packages/modules/haptics" }
-nve-skia-shell = { path = "hosts/skia-shell" }
-nve-example-kitchen-sink = { path = "examples/kitchen-sink", default-features = false }
-nve-studio-workspace = { path = "examples/studio-workspace", default-features = false }
-nve-example-issues-api = { path = "examples/fullstack-issues/api" }
-nve-example-issues-client = { path = "examples/fullstack-issues/client" }
+nve-hash = { version = "0.1.0", path = "packages/core/hash" }
+nve-abi = { version = "0.1.0", path = "packages/core/abi" }
+nve-store = { version = "0.1.0", path = "packages/core/store" }
+nve-abi-macros = { version = "0.1.0", path = "packages/core/abi-macros" }
+nve-components = { version = "0.1.0", path = "packages/core/components" }
+nve-engine = { version = "0.1.0", path = "packages/core/engine" }
+nve-layout-yoga = { version = "0.1.0", path = "packages/core/layout-yoga" }
+nve-dioxus = { version = "0.1.0", path = "packages/core/dioxus" }
+nve-codegen = { version = "0.1.0", path = "packages/core/codegen" }
+nve-interop = { version = "0.1.0", path = "packages/core/interop" }
+nve-host-services = { version = "0.1.0", path = "packages/core/host-services" }
+nve-wire-core = { version = "0.1.0", path = "packages/core/wire-core" }
+nve-wire = { version = "0.1.0", path = "packages/core/wire" }
+nve-ui = { version = "0.1.0", path = "packages/framework/ui" }
+nve-router = { version = "0.1.0", path = "packages/framework/router" }
+nve-rpc = { version = "0.1.0", path = "packages/framework/rpc" }
+nve-server = { version = "0.1.0", path = "packages/framework/server" }
+nve-http-hyper = { version = "0.1.0", path = "packages/framework/http-hyper" }
+nve-http-web = { version = "0.1.0", path = "packages/framework/http-web" }
+nve-query = { version = "0.1.0", path = "packages/framework/query" }
+nve-query-dioxus = { version = "0.1.0", path = "packages/framework/query-dioxus" }
+nve-i18n = { version = "0.1.0", path = "packages/framework/i18n" }
+nve-mdx = { version = "0.1.0", path = "packages/framework/mdx" }
+nve-docs = { version = "0.1.0", path = "packages/framework/docs" }
+nve-backend-headless = { version = "0.1.0", path = "packages/backends/headless" }
+nve-backend-skia = { version = "0.1.0", path = "packages/backends/skia" }
+nve-backend-web = { version = "0.1.0", path = "packages/backends/web" }
+nve-blur = { version = "0.1.0", path = "packages/modules/blur" }
+nve-blur-web = { version = "0.1.0", path = "packages/modules/blur/web" }
+nve-camera = { version = "0.1.0", path = "packages/modules/camera" }
+nve-camera-web = { version = "0.1.0", path = "packages/modules/camera/web" }
+nve-canvas = { version = "0.1.0", path = "packages/modules/canvas" }
+nve-canvas-web = { version = "0.1.0", path = "packages/modules/canvas/web" }
+nve-canvas-skia = { version = "0.1.0", path = "packages/modules/canvas/skia" }
+nve-clipboard = { version = "0.1.0", path = "packages/modules/clipboard" }
+nve-svg = { version = "0.1.0", path = "packages/modules/svg" }
+nve-svg-web = { version = "0.1.0", path = "packages/modules/svg/web" }
+nve-svg-skia = { version = "0.1.0", path = "packages/modules/svg/skia" }
+nve-video = { version = "0.1.0", path = "packages/modules/video" }
+nve-video-web = { version = "0.1.0", path = "packages/modules/video/web" }
+nve-web-element = { version = "0.1.0", path = "packages/modules/web-element" }
+nve-web-element-web = { version = "0.1.0", path = "packages/modules/web-element/web" }
+nve-web-html = { version = "0.1.0", path = "packages/modules/web-html" }
+nve-web-html-web = { version = "0.1.0", path = "packages/modules/web-html/web" }
+nve-webview = { version = "0.1.0", path = "packages/modules/webview" }
+nve-webview-web = { version = "0.1.0", path = "packages/modules/webview/web" }
+nve-filesystem = { version = "0.1.0", path = "packages/modules/filesystem" }
+nve-secure-store = { version = "0.1.0", path = "packages/modules/secure-store" }
+nve-linking = { version = "0.1.0", path = "packages/modules/linking" }
+nve-system-env = { version = "0.1.0", path = "packages/modules/system-env" }
+nve-haptics = { version = "0.1.0", path = "packages/modules/haptics" }
+nve-skia-shell = { version = "0.1.0", path = "hosts/skia-shell" }
+nve-example-kitchen-sink = { version = "0.1.0", path = "examples/kitchen-sink", default-features = false }
+nve-studio-workspace = { version = "0.1.0", path = "examples/studio-workspace", default-features = false }
+nve-example-issues-api = { version = "0.1.0", path = "examples/fullstack-issues/api" }
+nve-example-issues-client = { version = "0.1.0", path = "examples/fullstack-issues/client" }
 
 minicbor = { version = "2.3.1", default-features = false, features = ["alloc", "derive"] }
 http = "1.5.0"

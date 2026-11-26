@@ -105,23 +105,38 @@ pub fn decode_and_validate_slot(
     raw: &[u8; ARENA_HEADER_SLOT_SIZE],
     file_len: usize,
 ) -> Result<ArenaHeaderSlot, ArenaError> {
-    let magic: [u8; 8] = raw[0..8].try_into().unwrap();
+    let le32 = |o: usize| u32::from_le_bytes([raw[o], raw[o + 1], raw[o + 2], raw[o + 3]]);
+    let le64 = |o: usize| {
+        u64::from_le_bytes([
+            raw[o],
+            raw[o + 1],
+            raw[o + 2],
+            raw[o + 3],
+            raw[o + 4],
+            raw[o + 5],
+            raw[o + 6],
+            raw[o + 7],
+        ])
+    };
+    let magic: [u8; 8] = [
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ];
     if magic != ARENA_MAGIC {
         return Err(ArenaError::InvalidMagic);
     }
-    let version = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+    let version = le32(8);
     if version != ARENA_VERSION {
         return Err(ArenaError::UnsupportedVersion(version));
     }
-    let flags = u32::from_le_bytes(raw[12..16].try_into().unwrap());
-    let capacity = u32::from_le_bytes(raw[16..20].try_into().unwrap());
-    let used_bytes = u32::from_le_bytes(raw[20..24].try_into().unwrap());
-    let root_offset = u32::from_le_bytes(raw[24..28].try_into().unwrap());
-    let string_count = u32::from_le_bytes(raw[28..32].try_into().unwrap());
-    let generation = u64::from_le_bytes(raw[32..40].try_into().unwrap());
-    let header_checksum = u64::from_le_bytes(raw[40..48].try_into().unwrap());
-    let reserved0 = u64::from_le_bytes(raw[48..56].try_into().unwrap());
-    let reserved1 = u64::from_le_bytes(raw[56..64].try_into().unwrap());
+    let flags = le32(12);
+    let capacity = le32(16);
+    let used_bytes = le32(20);
+    let root_offset = le32(24);
+    let string_count = le32(28);
+    let generation = le64(32);
+    let header_checksum = le64(40);
+    let reserved0 = le64(48);
+    let reserved1 = le64(56);
 
     let expected_ck = compute_slot_checksum(raw);
     if header_checksum != expected_ck {
@@ -177,12 +192,13 @@ pub fn select_active_slot(bytes: &[u8]) -> Result<(usize, ArenaHeaderSlot), Aren
     if bytes.len() < ARENA_HEADER_REGION_SIZE {
         return Err(ArenaError::Truncated);
     }
-    let raw_a: &[u8; ARENA_HEADER_SLOT_SIZE] =
-        bytes[0..ARENA_HEADER_SLOT_SIZE].try_into().unwrap();
+    let raw_a: &[u8; ARENA_HEADER_SLOT_SIZE] = bytes[0..ARENA_HEADER_SLOT_SIZE]
+        .try_into()
+        .expect("slot A slice length equals ARENA_HEADER_SLOT_SIZE");
     let raw_b: &[u8; ARENA_HEADER_SLOT_SIZE] = bytes
         [ARENA_HEADER_SLOT_SIZE..ARENA_HEADER_REGION_SIZE]
         .try_into()
-        .unwrap();
+        .expect("slot B slice length equals ARENA_HEADER_SLOT_SIZE");
 
     let res_a = decode_and_validate_slot(raw_a, bytes.len());
     let res_b = decode_and_validate_slot(raw_b, bytes.len());

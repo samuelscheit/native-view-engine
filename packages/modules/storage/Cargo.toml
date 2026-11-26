@@ -8,3 +8,6 @@ description = "Standalone opt-in NVE crash-safe NVK2 binary KV store capability 
 [dependencies]
 nve-hash = { workspace = true }
 nve-host-services = { workspace = true }
+
+[lints]
+workspace = true

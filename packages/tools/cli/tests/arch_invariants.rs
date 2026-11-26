@@ -71,14 +71,20 @@ impl Stage {
         let Ok(raw) = std::env::var("NVE_STRICT_INVARIANTS") else {
             return false;
         };
-        let norm = raw.trim().to_ascii_lowercase();
-        if matches!(norm.as_str(), "1" | "true" | "all" | "yes") {
+        let trimmed = raw.trim();
+        if trimmed.eq_ignore_ascii_case("1")
+            || trimmed.eq_ignore_ascii_case("true")
+            || trimmed.eq_ignore_ascii_case("all")
+            || trimmed.eq_ignore_ascii_case("yes")
+        {
             return true;
         }
         let needle = match self {
             Self::Post1B1D => "1b1d",
             Self::Post1B1E => "1b1e",
         };
-        norm.split(',').any(|tok| tok.trim() == needle)
+        trimmed
+            .split(',')
+            .any(|tok| tok.trim().eq_ignore_ascii_case(needle))
     }
 }

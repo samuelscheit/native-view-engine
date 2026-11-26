@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 nve-hash = { workspace = true }
+
+[lints]
+workspace = true

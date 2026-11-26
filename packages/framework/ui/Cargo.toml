@@ -14,7 +14,7 @@ nve-abi = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-engine = { workspace = true }
 nve-i18n = { workspace = true }
-nve-interop = { path = "../../core/interop", default-features = false }
+nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false }
 nve-web-html = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }
@@ -45,3 +45,6 @@ required-features = ["virtual-list"]
 name = "virtual_list_bench"
 harness = false
 required-features = ["virtual-list"]
+
+[lints]
+workspace = true

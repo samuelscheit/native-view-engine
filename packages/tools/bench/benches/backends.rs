@@ -25,7 +25,13 @@ fn bench_headless_backend(c: &mut Criterion) {
                     replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
                     replica
                 },
-                |mut replica| black_box(replica.submit_nve2_frame(black_box(bytes)).unwrap()),
+                |mut replica| {
+                    black_box(
+                        replica
+                            .submit_nve2_frame(black_box(bytes))
+                            .expect("submit headless bench frame"),
+                    )
+                },
                 BatchSize::SmallInput,
             );
         });
@@ -37,7 +43,9 @@ fn bench_headless_backend(c: &mut Criterion) {
         let init_bytes = build_row_tree_cmd(rows, 1);
         let mut replica = StoreWireReplica::new(HeadlessBackend::new(), core_realization_order());
         replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
-        replica.submit_nve2_frame(&init_bytes).unwrap();
+        replica
+            .submit_nve2_frame(&init_bytes)
+            .expect("submit hit-test bench frame");
 
         hit_group.bench_with_input(BenchmarkId::new("rows", rows), &rows, |b, _| {
             let mut y = 10.0f32;
@@ -68,7 +76,9 @@ fn bench_skia_backend(c: &mut Criterion) {
                 replica
             },
             |mut replica| {
-                let stats = replica.submit_nve2_frame(black_box(&card_cmd)).unwrap();
+                let stats = replica
+                    .submit_nve2_frame(black_box(&card_cmd))
+                    .expect("submit skia card frame");
                 black_box((stats, replica.backend().display_list().ops.len()))
             },
             BatchSize::SmallInput,
@@ -77,7 +87,9 @@ fn bench_skia_backend(c: &mut Criterion) {
 
     let mut skia_card = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
     skia_card.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
-    skia_card.submit_nve2_frame(&card_cmd).unwrap();
+    skia_card
+        .submit_nve2_frame(&card_cmd)
+        .expect("submit skia card fixture");
     let mut card_buf = PixelBuffer::new(393, 852);
     group.bench_function("rasterize_card_393x852", |b| {
         b.iter(|| {
@@ -99,7 +111,9 @@ fn bench_skia_backend(c: &mut Criterion) {
                 replica
             },
             |mut replica| {
-                let stats = replica.submit_nve2_frame(black_box(&tree_cmd)).unwrap();
+                let stats = replica
+                    .submit_nve2_frame(black_box(&tree_cmd))
+                    .expect("submit skia tree frame");
                 black_box((stats, replica.backend().display_list().ops.len()))
             },
             BatchSize::SmallInput,
@@ -108,7 +122,9 @@ fn bench_skia_backend(c: &mut Criterion) {
 
     let mut skia_tree = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
     skia_tree.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
-    skia_tree.submit_nve2_frame(&tree_cmd).unwrap();
+    skia_tree
+        .submit_nve2_frame(&tree_cmd)
+        .expect("submit skia tree fixture");
     let mut tree_buf = PixelBuffer::new(393, 852);
     group.bench_function("rasterize_1000_nodes_393x852", |b| {
         b.iter(|| {
@@ -130,14 +146,20 @@ fn bench_web_backend(c: &mut Criterion) {
     feed_100.encode_initial(&mut frame_buf);
     let mut web_100 = StoreWireReplica::new(WebBackend::new(), core_realization_order());
     web_100.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
-    web_100.submit_nve2_frame(&frame_buf).unwrap();
+    web_100
+        .submit_nve2_frame(&frame_buf)
+        .expect("submit initial web_100 frame");
 
     let mut frame_id = 2u64;
     group.bench_function("incremental_dom_patch_10_nodes", |b| {
         b.iter(|| {
             frame_id += 1;
             feed_100.encode_patch(frame_id, 10, &mut frame_buf);
-            black_box(web_100.submit_nve2_frame(black_box(&frame_buf)).unwrap())
+            black_box(
+                web_100
+                    .submit_nve2_frame(black_box(&frame_buf))
+                    .expect("submit incremental web patch"),
+            )
         });
     });
 
@@ -148,7 +170,9 @@ fn bench_web_backend(c: &mut Criterion) {
     let init_500 = build_row_tree_cmd(500, 1);
     let mut web_500 = StoreWireReplica::new(WebBackend::new(), core_realization_order());
     web_500.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
-    web_500.submit_nve2_frame(&init_500).unwrap();
+    web_500
+        .submit_nve2_frame(&init_500)
+        .expect("submit initial web_500 frame");
 
     group.bench_function("render_html_500_rows", |b| {
         b.iter(|| black_box(web_500.backend().render_html(web_500.store())));
@@ -171,7 +195,13 @@ fn bench_taffy_vs_yoga(c: &mut Criterion) {
                     replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
                     replica
                 },
-                |mut replica| black_box(replica.submit_nve2_frame(black_box(bytes)).unwrap()),
+                |mut replica| {
+                    black_box(
+                        replica
+                            .submit_nve2_frame(black_box(bytes))
+                            .expect("submit taffy_static frame"),
+                    )
+                },
                 BatchSize::SmallInput,
             );
         });
@@ -187,7 +217,13 @@ fn bench_taffy_vs_yoga(c: &mut Criterion) {
                     replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
                     replica
                 },
-                |mut replica| black_box(replica.submit_nve2_frame(black_box(bytes)).unwrap()),
+                |mut replica| {
+                    black_box(
+                        replica
+                            .submit_nve2_frame(black_box(bytes))
+                            .expect("submit taffy_dyn_box frame"),
+                    )
+                },
                 BatchSize::SmallInput,
             );
         });
@@ -208,7 +244,11 @@ fn bench_taffy_vs_yoga(c: &mut Criterion) {
                             replica
                         },
                         |mut replica| {
-                            black_box(replica.submit_nve2_frame(black_box(bytes)).unwrap())
+                            black_box(
+                                replica
+                                    .submit_nve2_frame(black_box(bytes))
+                                    .expect("submit yoga bench frame"),
+                            )
                         },
                         BatchSize::SmallInput,
                     );

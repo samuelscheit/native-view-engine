@@ -49,8 +49,9 @@ struct DemoRoot {
     records: OffsetSlice<DemoRecord>,
 }
 
-// SAFETY: `#[repr(C)]` zero-padding POD structs composed solely of `ArenaPod` fields.
+// SAFETY: `#[repr(C)]` zero-padding POD struct composed solely of `ArenaPod` fields.
 unsafe impl ArenaPod for DemoRecord {}
+// SAFETY: `#[repr(C)]` zero-padding POD struct composed solely of `ArenaPod` fields.
 unsafe impl ArenaPod for DemoRoot {}
 
 #[test]

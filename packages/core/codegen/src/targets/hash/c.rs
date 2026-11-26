@@ -1,8 +1,6 @@
 //! C11 (`nve_hash.generated.h`, `static inline`) and constexpr C++20 (`nve_hash.generated.hpp`)
 //! XXH64 mirrors.
 
-use std::fmt::Write;
-
 use super::{banner, byte_list, HASH_VECTORS, STREAM_SPLITS};
 
 const C_BODY: &str = r#"#ifndef NVE_HASH_GENERATED_H
@@ -138,7 +136,7 @@ pub(super) fn generate_c_hash() -> String {
     for (i, v) in HASH_VECTORS.iter().enumerate() {
         if !v.bytes.is_empty() {
             let bytes = byte_list(v.bytes, |b| format!("0x{b:02X}u"));
-            writeln!(s, "  static const uint8_t v{i}[] = {{{bytes}}};").unwrap();
+            writeln!(s, "  static const uint8_t v{i}[] = {{{bytes}}};");
         }
     }
     s.push_str(
@@ -153,8 +151,7 @@ pub(super) fn generate_c_hash() -> String {
             v.seed,
             v.expected(),
             v.label
-        )
-        .unwrap();
+        );
     }
     let [a, b, c] = STREAM_SPLITS;
     write!(
@@ -185,9 +182,8 @@ pub(super) fn generate_c_hash() -> String {
 
 #endif /* NVE_HASH_GENERATED_H */
 "#
-    )
-    .unwrap();
-    s
+    );
+    s.into_string()
 }
 
 const CPP_BODY: &str = r#"#pragma once
@@ -365,23 +361,20 @@ constexpr uint64_t streamed(const std::array<uint8_t, N>& bytes, uint64_t seed) 
   return h.digest();
 }}
 "#
-    )
-    .unwrap();
+    );
     for v in HASH_VECTORS {
         let bytes = byte_list(v.bytes, |b| format!("0x{b:02X}u"));
         let (label, n, seed, exp) = (v.label, v.bytes.len(), v.seed, v.expected());
-        writeln!(s, "inline constexpr std::array<uint8_t, {n}> k_{label} = {{{bytes}}};").unwrap();
+        writeln!(s, "inline constexpr std::array<uint8_t, {n}> k_{label} = {{{bytes}}};");
         writeln!(
             s,
             "static_assert(xxh64(std::span<const uint8_t>(k_{label}), 0x{seed:016X}ULL) == 0x{exp:016X}ULL, \"XXH64 vector `{label}`\");"
-        )
-        .unwrap();
+        );
         writeln!(
             s,
             "static_assert(streamed(k_{label}, 0x{seed:016X}ULL) == 0x{exp:016X}ULL, \"XXH64 streamed vector `{label}`\");\n"
-        )
-        .unwrap();
+        );
     }
     s.push_str("}  // namespace hash_vectors\n\n}  // namespace nve\n");
-    s
+    s.into_string()
 }

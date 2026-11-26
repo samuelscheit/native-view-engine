@@ -75,17 +75,20 @@ unsafe extern "C" fn p2_create(surface_id: u32) -> NveAppHandle {
 
 unsafe extern "C" fn p_destroy(handle: NveAppHandle) {
     if !handle.is_null() {
+        // SAFETY: `handle` was allocated by `p1_create`/`p2_create` via `Box::into_raw`.
         unsafe { drop(Box::from_raw(handle as *mut MockPluginState)) };
     }
 }
 
 unsafe extern "C" fn p_render(handle: NveAppHandle, _frame_id: u64) -> NveBufferSlice {
+    // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
     st.frame_buf = encode_text_frame(&format!("{}:count={}", st.version_tag, st.counter));
     NveBufferSlice::from_slice(&st.frame_buf)
 }
 
 unsafe extern "C" fn p_dispatch(handle: NveAppHandle, _events: NveEventBatch) -> u32 {
+    // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
     st.counter += 1;
     1
@@ -110,8 +113,13 @@ unsafe extern "C" fn p_set_props(
     entries: *const NveMapEntry,
     count: u32,
 ) -> u32 {
-    let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    let props = unsafe { NvePropsRef::from_raw_parts(entries, count) };
+    // SAFETY: `NvePluginHost` passes a live exclusive handle and readable `entries[..count]`.
+    let (st, props) = unsafe {
+        (
+            &mut *(handle as *mut MockPluginState),
+            NvePropsRef::from_raw_parts(entries, count),
+        )
+    };
     if let Some(c) = props.get("counter").and_then(|v| v.as_i64()) {
         st.counter = c as u32;
         return 1;
@@ -120,6 +128,7 @@ unsafe extern "C" fn p_set_props(
 }
 
 unsafe extern "C" fn p_drain_events(handle: NveAppHandle) -> NveEventBatch {
+    // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
     st.out_events = vec![NveDirectEvent::press(st.surface_id, st.counter, 0, 0.0, 0.0)];
     NveEventBatch::from_slice(&st.out_events)
@@ -130,16 +139,17 @@ unsafe extern "C" fn p_hot_patch(_: NveAppHandle, _: NveBufferSlice) -> u32 {
 }
 
 unsafe extern "C" fn p_snapshot(handle: NveAppHandle) -> NveBufferSlice {
+    // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
     st.state_buf = st.counter.to_le_bytes().to_vec();
     NveBufferSlice::from_slice(&st.state_buf)
 }
 
 unsafe extern "C" fn p_restore(handle: NveAppHandle, state: NveBufferSlice) {
-    let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    let raw = unsafe { state.as_slice() };
-    if raw.len() == 4 {
-        st.counter = u32::from_le_bytes(raw.try_into().unwrap());
+    // SAFETY: `NvePluginHost` passes a live exclusive handle and readable `state` slice.
+    let (st, raw) = unsafe { (&mut *(handle as *mut MockPluginState), state.as_slice()) };
+    if let Ok(bytes) = <[u8; 4]>::try_from(raw) {
+        st.counter = u32::from_le_bytes(bytes);
     }
 }
 

@@ -132,20 +132,25 @@ pub(crate) fn format_response_headers(status: &str, mime: &str, content_len: usi
 }
 
 pub(crate) fn mime_type_for(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("html") => "text/html; charset=utf-8",
-        Some("js" | "mjs") => "application/javascript; charset=utf-8",
-        Some("wasm") => "application/wasm",
-        Some("css") => "text/css; charset=utf-8",
-        Some("xml") => "application/xml; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        _ => "application/octet-stream",
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return "application/octet-stream";
+    };
+    if ext.eq_ignore_ascii_case("html") {
+        "text/html; charset=utf-8"
+    } else if ext.eq_ignore_ascii_case("js") || ext.eq_ignore_ascii_case("mjs") {
+        "application/javascript; charset=utf-8"
+    } else if ext.eq_ignore_ascii_case("wasm") {
+        "application/wasm"
+    } else if ext.eq_ignore_ascii_case("css") {
+        "text/css; charset=utf-8"
+    } else if ext.eq_ignore_ascii_case("xml") {
+        "application/xml; charset=utf-8"
+    } else if ext.eq_ignore_ascii_case("svg") {
+        "image/svg+xml"
+    } else if ext.eq_ignore_ascii_case("png") {
+        "image/png"
+    } else {
+        "application/octet-stream"
     }
 }
 

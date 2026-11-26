@@ -1,8 +1,6 @@
 //! Dart (`nve_hash.generated.dart`) XXH64 mirror on `(lo, hi)` `u32` halves: bit-exact on the
 //! Dart VM and on the web (53-bit doubles), with zero `BigInt`.
 
-use std::fmt::Write;
-
 use super::{banner, byte_list, halves, HASH_VECTORS, STREAM_SPLITS};
 
 const BODY: &str = r#"import 'dart:convert' show utf8;
@@ -187,8 +185,7 @@ pub(super) fn generate_dart_hash() -> String {
             s,
             "  (bytes: <int>[{bytes}], seed: NveKey64(0x{sl:08X}, 0x{sh:08X}), expected: NveKey64(0x{el:08X}, 0x{eh:08X})), // {}",
             v.label
-        )
-        .unwrap();
+        );
     }
     let [a, b, c] = STREAM_SPLITS;
     write!(
@@ -218,7 +215,6 @@ bool nveHashVerifyTestVectors() {{
   return true;
 }}
 "#
-    )
-    .unwrap();
-    s
+    );
+    s.into_string()
 }

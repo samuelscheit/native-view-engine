@@ -228,7 +228,7 @@ fn generated_wire_file(suffix: &str) -> nve_codegen::GeneratedFile {
     generate_all_wire_codec_files()
         .into_iter()
         .find(|f| f.relative_path.ends_with(suffix))
-        .unwrap_or_else(|| panic!("missing generated wire codec file ending with {suffix}"))
+        .expect("generated wire codec file should exist for suffix")
 }
 
 #[test]

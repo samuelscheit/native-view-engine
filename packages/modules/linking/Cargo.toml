@@ -8,3 +8,6 @@ description = "Standalone opt-in NVE deep linking & external URL capability modu
 [dependencies]
 nve-abi = { workspace = true }
 nve-host-services = { workspace = true }
+
+[lints]
+workspace = true

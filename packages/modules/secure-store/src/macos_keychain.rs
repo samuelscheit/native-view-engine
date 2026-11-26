@@ -78,12 +78,14 @@ impl CfGuard {
 impl Drop for CfGuard {
     fn drop(&mut self) {
         if !self.0.is_null() {
+            // SAFETY: `self.0` is an owned CoreFoundation object created/retained by this guard.
             unsafe { CFRelease(self.0) };
         }
     }
 }
 
 fn cf_string(s: &str) -> Result<CfGuard, ServiceError> {
+    // SAFETY: `s.as_ptr()` is valid UTF-8 for `s.len()` bytes; CoreFoundation copies the bytes.
     let ptr = unsafe {
         CFStringCreateWithBytes(
             kCFAllocatorDefault,
@@ -98,11 +100,13 @@ fn cf_string(s: &str) -> Result<CfGuard, ServiceError> {
 }
 
 fn cf_data(bytes: &[u8]) -> Result<CfGuard, ServiceError> {
+    // SAFETY: `bytes.as_ptr()` is valid for `bytes.len()` bytes; CoreFoundation copies the buffer.
     let ptr = unsafe { CFDataCreate(kCFAllocatorDefault, bytes.as_ptr(), bytes.len() as isize) };
     CfGuard::new(ptr).ok_or_else(|| ServiceError::InternalError("CFDataCreate failed".into()))
 }
 
 fn new_cf_dict(cap: isize) -> Result<CfGuard, ServiceError> {
+    // SAFETY: Standard CoreFoundation type callbacks and allocator symbols.
     let dict = unsafe {
         CFDictionaryCreateMutable(
             kCFAllocatorDefault,
@@ -129,6 +133,7 @@ pub fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, ServiceError
     let acc_cf = cf_string(account)?;
     let query = new_cf_dict(5)?;
     let dict = query.as_ptr() as CfMutableDictionaryRef;
+    // SAFETY: All keys/values are valid CoreFoundation references; `dict` is a mutable CFDictionary.
     unsafe {
         CFDictionarySetValue(dict, kSecClass, kSecClassGenericPassword);
         CFDictionarySetValue(dict, kSecAttrService, svc_cf.as_ptr());
@@ -138,6 +143,7 @@ pub fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, ServiceError
     }
 
     let mut out: CfTypeRef = std::ptr::null();
+    // SAFETY: `query` is a valid Keychain query dictionary and `out` receives the retained CFDataRef.
     let status = unsafe { SecItemCopyMatching(query.as_ptr(), &mut out) };
     if status == ERR_SEC_ITEM_NOT_FOUND {
         return Ok(None);
@@ -148,15 +154,18 @@ pub fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, ServiceError
     let Some(data_guard) = CfGuard::new(out) else {
         return Ok(None);
     };
-    let len = unsafe { CFDataGetLength(data_guard.as_ptr()) };
-    if len <= 0 {
-        return Ok(Some(Vec::new()));
-    }
-    let ptr = unsafe { CFDataGetBytePtr(data_guard.as_ptr()) };
-    if ptr.is_null() {
-        return Ok(Some(Vec::new()));
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec();
+    // SAFETY: `kSecReturnData = kCFBooleanTrue` guarantees `out` is a valid CFDataRef kept alive by `data_guard`.
+    let bytes = unsafe {
+        let len = CFDataGetLength(data_guard.as_ptr());
+        if len <= 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let ptr = CFDataGetBytePtr(data_guard.as_ptr());
+        if ptr.is_null() {
+            return Ok(Some(Vec::new()));
+        }
+        std::slice::from_raw_parts(ptr, len as usize).to_vec()
+    };
     Ok(Some(bytes))
 }
 
@@ -167,14 +176,14 @@ pub fn set(service: &str, account: &str, secret: &[u8]) -> Result<(), ServiceErr
 
     let add_dict = new_cf_dict(4)?;
     let raw_add = add_dict.as_ptr() as CfMutableDictionaryRef;
-    unsafe {
+    // SAFETY: All keys/values are valid CoreFoundation references; `add_dict` is a valid Keychain attributes dict.
+    let status = unsafe {
         CFDictionarySetValue(raw_add, kSecClass, kSecClassGenericPassword);
         CFDictionarySetValue(raw_add, kSecAttrService, svc_cf.as_ptr());
         CFDictionarySetValue(raw_add, kSecAttrAccount, acc_cf.as_ptr());
         CFDictionarySetValue(raw_add, kSecValueData, data_cf.as_ptr());
-    }
-
-    let status = unsafe { SecItemAdd(add_dict.as_ptr(), std::ptr::null_mut()) };
+        SecItemAdd(add_dict.as_ptr(), std::ptr::null_mut())
+    };
     if status == ERR_SEC_SUCCESS {
         return Ok(());
     }
@@ -183,13 +192,14 @@ pub fn set(service: &str, account: &str, secret: &[u8]) -> Result<(), ServiceErr
         let raw_q = query.as_ptr() as CfMutableDictionaryRef;
         let update = new_cf_dict(1)?;
         let raw_u = update.as_ptr() as CfMutableDictionaryRef;
-        unsafe {
+        // SAFETY: `query` and `update` are valid mutable CFDictionaries populated with valid CF references.
+        let upd_status = unsafe {
             CFDictionarySetValue(raw_q, kSecClass, kSecClassGenericPassword);
             CFDictionarySetValue(raw_q, kSecAttrService, svc_cf.as_ptr());
             CFDictionarySetValue(raw_q, kSecAttrAccount, acc_cf.as_ptr());
             CFDictionarySetValue(raw_u, kSecValueData, data_cf.as_ptr());
-        }
-        let upd_status = unsafe { SecItemUpdate(query.as_ptr(), update.as_ptr()) };
+            SecItemUpdate(query.as_ptr(), update.as_ptr())
+        };
         return if upd_status == ERR_SEC_SUCCESS {
             Ok(())
         } else {
@@ -204,12 +214,13 @@ pub fn delete(service: &str, account: &str) -> Result<bool, ServiceError> {
     let acc_cf = cf_string(account)?;
     let query = new_cf_dict(3)?;
     let raw_q = query.as_ptr() as CfMutableDictionaryRef;
-    unsafe {
+    // SAFETY: `query` is a valid mutable CFDictionary populated with valid CoreFoundation references.
+    let status = unsafe {
         CFDictionarySetValue(raw_q, kSecClass, kSecClassGenericPassword);
         CFDictionarySetValue(raw_q, kSecAttrService, svc_cf.as_ptr());
         CFDictionarySetValue(raw_q, kSecAttrAccount, acc_cf.as_ptr());
-    }
-    let status = unsafe { SecItemDelete(query.as_ptr()) };
+        SecItemDelete(query.as_ptr())
+    };
     match status {
         ERR_SEC_SUCCESS => Ok(true),
         ERR_SEC_ITEM_NOT_FOUND => Ok(false),

@@ -30,3 +30,6 @@ crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
 nve-components = { workspace = true }
+
+[lints]
+workspace = true

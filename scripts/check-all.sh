@@ -372,6 +372,25 @@ suite_arch_invariants() {
   cargo test --locked -p nve-cli --test arch_invariants
 }
 
+suite_ast_grep() {
+  cd "$REPO_ROOT"
+  ast-grep test && ast-grep scan
+}
+
+suite_cargo_deny() {
+  cd "$REPO_ROOT"
+  cargo deny check
+}
+
+suite_rust_clippy() {
+  cd "$REPO_ROOT"
+  cargo clippy --locked --workspace --lib --bins -- -D warnings
+  cargo clippy --locked --workspace --all-targets -- -D warnings
+  if has_wasm_target; then
+    cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
+  fi
+}
+
 suite_rust_workspace() {
   cd "$REPO_ROOT"
   cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
@@ -630,6 +649,27 @@ if command -v cargo >/dev/null 2>&1; then
   run_suite "Arch invariants" suite_arch_invariants "cargo test --locked -p nve-cli --test arch_invariants"
 else
   skip_suite "Arch invariants" "cargo not found"
+fi
+
+# 0b. Polyglot AST lints (ast-grep)
+if command -v ast-grep >/dev/null 2>&1; then
+  run_suite "ast-grep lints" suite_ast_grep "ast-grep test && ast-grep scan"
+else
+  skip_suite "ast-grep lints" "ast-grep not found"
+fi
+
+# 0c. Dependency & license audit (cargo-deny)
+if command -v cargo-deny >/dev/null 2>&1; then
+  run_suite "cargo-deny audit" suite_cargo_deny "cargo deny check"
+else
+  skip_suite "cargo-deny audit" "cargo-deny not found"
+fi
+
+# 0d. Rust Clippy workspace lints
+if command -v cargo >/dev/null 2>&1; then
+  run_suite "Rust Clippy" suite_rust_clippy "--lib --bins + --all-targets + wasm32"
+else
+  skip_suite "Rust Clippy" "cargo not found"
 fi
 
 # 1. Rust workspace

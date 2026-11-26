@@ -54,8 +54,10 @@ impl SkiaTableSystem for MockSkiaMapSystem {
         payload: &[u8],
         events: &mut TableEventBus,
     ) {
-        if op == 1 && payload.len() == 4 {
-            let pin_id = u32::from_le_bytes(payload.try_into().unwrap());
+        if op == 1
+            && let Ok(bytes) = <[u8; 4]>::try_from(payload)
+        {
+            let pin_id = u32::from_le_bytes(bytes);
             events.emit::<MockSkiaMapTable, _>(1, node, 42, EVENT_PIN_TAPPED, PinTapped { pin_id });
         }
     }

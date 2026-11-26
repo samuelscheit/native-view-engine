@@ -39,14 +39,16 @@ fn bench_channel_bus(c: &mut Criterion) {
 
     for &subs in &[1usize, 8, 64] {
         let mut bus = NveChannelBus::new();
-        let ch_id = bus.ensure_channel("bench.telemetry").unwrap();
+        let ch_id = bus
+            .ensure_channel("bench.telemetry")
+            .expect("ensure bench channel");
         let counter = Arc::new(AtomicUsize::new(0));
         for i in 0..subs {
             let c_ref = Arc::clone(&counter);
             bus.subscribe_by_id(ch_id, Some(i as u32 + 1), false, move |msg| {
                 c_ref.fetch_add(msg.as_bytes().len(), Ordering::Relaxed);
             })
-            .unwrap();
+            .expect("subscribe bench channel");
         }
 
         group.throughput(Throughput::Elements(subs as u64));
@@ -60,7 +62,7 @@ fn bench_channel_bus(c: &mut Criterion) {
                         payload.clone(),
                         false,
                     )
-                    .unwrap();
+                    .expect("publish bench channel message");
                 black_box(delivered)
             });
         });
@@ -76,15 +78,15 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
     let outer = runtime
         .surfaces
         .register_root(FrameworkKind::Flutter, "OuterList", SurfaceEnvironment::default())
-        .unwrap();
+        .expect("register outer surface");
     let middle = runtime
         .surfaces
         .register_child(outer, FrameworkKind::Nve, "MiddleCarousel")
-        .unwrap();
+        .expect("register middle surface");
     let inner = runtime
         .surfaces
         .register_child(middle, FrameworkKind::ReactNativeFabric, "InnerFeed")
-        .unwrap();
+        .expect("register inner surface");
 
     runtime
         .gestures
@@ -97,7 +99,10 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
         GestureCapabilities::vertical_scroll(FrameworkKind::ReactNativeFabric),
     );
 
-    let chain = runtime.surfaces.ancestor_chain(inner).unwrap();
+    let chain = runtime
+        .surfaces
+        .ancestor_chain(inner)
+        .expect("resolve ancestor chain");
 
     group.bench_function("nested_scroll_sequence", |b| {
         let mut ptr_id = 1u32;
@@ -175,7 +180,7 @@ fn bench_intrinsic_layout_negotiation(c: &mut Criterion) {
     let surf = runtime
         .surfaces
         .register_root(FrameworkKind::Nve, "TextCard", SurfaceEnvironment::default())
-        .unwrap();
+        .expect("register text card surface");
     let surface = BenchTextSurface {
         chars: 140,
         char_width: 8.5,
@@ -187,7 +192,7 @@ fn bench_intrinsic_layout_negotiation(c: &mut Criterion) {
     runtime
         .layout
         .negotiate_surface(surf, &surface, proposal)
-        .unwrap();
+        .expect("warm layout cache");
 
     group.bench_function("cached_hit", |b| {
         b.iter(|| {
@@ -195,7 +200,7 @@ fn bench_intrinsic_layout_negotiation(c: &mut Criterion) {
                 runtime
                     .layout
                     .negotiate_surface(surf, &surface, black_box(proposal))
-                    .unwrap(),
+                    .expect("cached layout negotiate"),
             )
         });
     });
@@ -206,7 +211,12 @@ fn bench_intrinsic_layout_negotiation(c: &mut Criterion) {
             width = 200.0 + ((width - 199.0) % 240.0);
             runtime.layout.invalidate_surface(surf);
             let p = LayoutProposal::new(SizeConstraints::loose(width, 600.0), 3.0);
-            black_box(runtime.layout.negotiate_surface(surf, &surface, p).unwrap())
+            black_box(
+                runtime
+                    .layout
+                    .negotiate_surface(surf, &surface, p)
+                    .expect("uncached layout negotiate"),
+            )
         });
     });
 
@@ -272,7 +282,7 @@ fn bench_crdt_delta_encode(c: &mut Criterion) {
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("records", count), &count, |b, _| {
             b.iter(|| {
-                packet.encode_into(&mut scratch).unwrap();
+                packet.encode_into(&mut scratch).expect("encode CRDT delta");
                 black_box(scratch.len())
             });
         });
@@ -286,12 +296,13 @@ fn bench_crdt_delta_merge(c: &mut Criterion) {
 
     for &count in &[16usize, 128, 512] {
         let packet = build_crdt_bench_packet(count);
-        let wire_bytes = packet.encode().unwrap();
+        let wire_bytes = packet.encode().expect("encode CRDT delta fixture");
 
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("records", count), &count, |b, _| {
             b.iter(|| {
-                let decoded = NveCrdtDelta::decode(black_box(&wire_bytes)).unwrap();
+                let decoded =
+                    NveCrdtDelta::decode(black_box(&wire_bytes)).expect("decode CRDT delta");
                 let mut set = OrSet::new();
                 let mut reg = LwwRegister::default();
                 let mut counter = PnCounter::new();

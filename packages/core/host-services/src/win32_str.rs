@@ -14,9 +14,11 @@ pub fn to_wide_nul(s: &str) -> Vec<u16> {
 /// `ptr` must point to a valid NUL-terminated UTF-16 string.
 pub unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
     let mut len = 0usize;
+    // SAFETY: Caller guarantees `ptr` points to a valid NUL-terminated UTF-16 buffer.
     while unsafe { *ptr.add(len) } != 0 {
         len += 1;
     }
+    // SAFETY: `len` UTF-16 code units before the NUL terminator are readable and initialized.
     let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
     String::from_utf16_lossy(slice)
 }

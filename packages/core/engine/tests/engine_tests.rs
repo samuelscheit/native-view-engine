@@ -172,20 +172,21 @@ unsafe extern "C" {
 
 #[test]
 fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
-    // Unknown interface IDs return NULL.
+    // SAFETY: Exercises the locally exported `export_nve_app!` C ABI tables, null-handle guards,
+    // valid stack-backed FFI slices, and balanced create/destroy lifecycle.
     unsafe {
+        // Unknown interface IDs return NULL.
         assert!(nve_engine_test_get_interface(0).is_null());
         assert!(nve_engine_test_get_interface(999).is_null());
-    }
 
-    let surface = unsafe { *(nve_engine_test_get_interface(NVE_IFACE_SURFACE) as *const NveSurfaceApi) };
-    let layout = unsafe { *(nve_engine_test_get_interface(NVE_IFACE_LAYOUT) as *const NveLayoutApi) };
-    let component = unsafe { *(nve_engine_test_get_interface(NVE_IFACE_COMPONENT) as *const NveComponentApi) };
-    let dev = unsafe { *(nve_engine_test_get_interface(NVE_IFACE_DEV) as *const NveDevApi) };
+        let surface = *(nve_engine_test_get_interface(NVE_IFACE_SURFACE) as *const NveSurfaceApi);
+        let layout = *(nve_engine_test_get_interface(NVE_IFACE_LAYOUT) as *const NveLayoutApi);
+        let component =
+            *(nve_engine_test_get_interface(NVE_IFACE_COMPONENT) as *const NveComponentApi);
+        let dev = *(nve_engine_test_get_interface(NVE_IFACE_DEV) as *const NveDevApi);
 
-    // Null handle guards across every exported C ABI function must never dereference or panic.
-    let null = std::ptr::null_mut();
-    unsafe {
+        // Null handle guards across every exported C ABI function must never dereference or panic.
+        let null = std::ptr::null_mut();
         (surface.destroy)(null);
         assert_eq!((surface.render)(null, 1).len, 0);
         assert_eq!((surface.dispatch_events)(null, NveEventBatch::EMPTY), 0);
@@ -199,22 +200,20 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         assert_eq!((dev.apply_hot_patch)(null, NveBufferSlice::EMPTY), 0);
         assert_eq!((dev.snapshot_state)(null).len, 0);
         (dev.restore_state)(null, NveBufferSlice::EMPTY);
-    }
 
-    let handle = unsafe { (surface.create)(7) };
-    assert!(!handle.is_null());
+        let handle = (surface.create)(7);
+        assert!(!handle.is_null());
 
-    // Direct zero-copy event dispatch & props update via C ABI
-    let payload_entries = [NveMapEntry::new("ok", NveValue::bool(true))];
-    let direct_events = [NveDirectEvent::custom(
-        7,
-        42,
-        1234,
-        "onPing",
-        NveValue::map(&payload_entries),
-    )];
-    let prop_entries = [NveMapEntry::new("count", NveValue::i64(99))];
-    unsafe {
+        // Direct zero-copy event dispatch & props update via C ABI
+        let payload_entries = [NveMapEntry::new("ok", NveValue::bool(true))];
+        let direct_events = [NveDirectEvent::custom(
+            7,
+            42,
+            1234,
+            "onPing",
+            NveValue::map(&payload_entries),
+        )];
+        let prop_entries = [NveMapEntry::new("count", NveValue::i64(99))];
         assert_eq!(
             (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_events)),
             1
@@ -225,11 +224,9 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         );
         let emitted = (component.drain_emitted_events)(handle);
         assert_eq!(emitted.len, 1);
-    }
 
-    // Default NveApp::measure handles finite and infinite constraints properly.
-    let finite_size = unsafe {
-        (layout.measure)(
+        // Default NveApp::measure handles finite and infinite constraints properly.
+        let finite_size = (layout.measure)(
             handle,
             NveSizeConstraints {
                 min_w: 50.0,
@@ -237,12 +234,16 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
                 max_w: 300.0,
                 max_h: 500.0,
             },
-        )
-    };
-    assert_eq!(finite_size, NveIntrinsicSize { width: 300.0, height: 500.0 });
+        );
+        assert_eq!(
+            finite_size,
+            NveIntrinsicSize {
+                width: 300.0,
+                height: 500.0
+            }
+        );
 
-    let inf_size = unsafe {
-        (layout.measure)(
+        let inf_size = (layout.measure)(
             handle,
             NveSizeConstraints {
                 min_w: 64.0,
@@ -250,54 +251,67 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
                 max_w: f32::INFINITY,
                 max_h: f32::INFINITY,
             },
-        )
-    };
-    assert_eq!(inf_size, NveIntrinsicSize { width: 64.0, height: 48.0 });
-    assert_eq!(
-        NveGestureDisposition::from_u8(unsafe { (layout.hit_test)(handle, 0.0, 0.0, 1) }),
-        NveGestureDisposition::PassThrough
-    );
+        );
+        assert_eq!(
+            inf_size,
+            NveIntrinsicSize {
+                width: 64.0,
+                height: 48.0
+            }
+        );
+        assert_eq!(
+            NveGestureDisposition::from_u8((layout.hit_test)(handle, 0.0, 0.0, 1)),
+            NveGestureDisposition::PassThrough
+        );
 
-    // Valid TemplatePatch NVP1 frame routes cleanly -> returns 1.
-    let valid_patch = HotPatchMsg::TemplatePatch {
-        generation: 1,
-        template_id: "root".into(),
-        attr_updates: vec![("opacity".into(), "0.6".into())],
-        text_updates: vec![],
-        target_test_id: None,
-        node_path: vec![],
-        text_replacements: vec![],
+        // Valid TemplatePatch NVP1 frame routes cleanly -> returns 1.
+        let valid_patch = HotPatchMsg::TemplatePatch {
+            generation: 1,
+            template_id: "root".into(),
+            attr_updates: vec![("opacity".into(), "0.6".into())],
+            text_updates: vec![],
+            target_test_id: None,
+            node_path: vec![],
+            text_replacements: vec![],
+        }
+        .to_bytes();
+        assert_eq!(
+            (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&valid_patch)),
+            1
+        );
+
+        // Non-template patch returns 0.
+        let status_patch = HotPatchMsg::DevStatus {
+            message: "ping".into(),
+            latency_ms: 1,
+        }
+        .to_bytes();
+        assert_eq!(
+            (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&status_patch)),
+            0
+        );
+
+        // Garbage, JSON text and truncated frames are rejected with 0 before reaching the app.
+        let json_patch = br#"{"type":"template_patch","generation":1,"template_id":"root","attr_updates":[],"text_updates":[]}"#;
+        for bad in [
+            &[0xFFu8, 0xFE, 0x80][..],
+            &json_patch[..],
+            &valid_patch[..valid_patch.len() - 1],
+        ] {
+            assert_eq!(
+                (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(bad)),
+                0
+            );
+        }
+
+        // State snapshot & restore roundtrip.
+        let new_state = b"saved-v2";
+        (dev.restore_state)(handle, NveBufferSlice::from_slice(new_state));
+        let snapped = (dev.snapshot_state)(handle).as_slice().to_vec();
+        assert_eq!(snapped, new_state);
+
+        (surface.destroy)(handle);
     }
-    .to_bytes();
-    assert_eq!(
-        unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&valid_patch)) },
-        1
-    );
-
-    // Non-template patch returns 0.
-    let status_patch = HotPatchMsg::DevStatus {
-        message: "ping".into(),
-        latency_ms: 1,
-    }
-    .to_bytes();
-    assert_eq!(
-        unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&status_patch)) },
-        0
-    );
-
-    // Garbage, JSON text and truncated frames are rejected with 0 before reaching the app.
-    let json_patch = br#"{"type":"template_patch","generation":1,"template_id":"root","attr_updates":[],"text_updates":[]}"#;
-    for bad in [&[0xFFu8, 0xFE, 0x80][..], &json_patch[..], &valid_patch[..valid_patch.len() - 1]] {
-        assert_eq!(unsafe { (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(bad)) }, 0);
-    }
-
-    // State snapshot & restore roundtrip.
-    let new_state = b"saved-v2";
-    unsafe { (dev.restore_state)(handle, NveBufferSlice::from_slice(new_state)) };
-    let snapped = unsafe { (dev.snapshot_state)(handle).as_slice().to_vec() };
-    assert_eq!(snapped, new_state);
-
-    unsafe { (surface.destroy)(handle) };
 }
 
 // ============================================================================
@@ -554,38 +568,44 @@ unsafe extern "C" {
 
 #[test]
 fn export_nve_app_host_interface_bind_unbind_and_dispatch() {
-    let surface =
-        unsafe { *(nve_engine_host_test_get_interface(NVE_IFACE_SURFACE) as *const NveSurfaceApi) };
-    let host =
-        unsafe { *(nve_engine_host_test_get_interface(NVE_IFACE_HOST) as *const NveHostApi) };
+    // SAFETY: Exercises locally exported `export_nve_app!` surface and host C ABI tables with valid stack data and balanced lifecycle.
+    unsafe {
+        let surface = *(nve_engine_host_test_get_interface(NVE_IFACE_SURFACE)
+            as *const NveSurfaceApi);
+        let host =
+            *(nve_engine_host_test_get_interface(NVE_IFACE_HOST) as *const NveHostApi);
 
-    let handle = unsafe { (surface.create)(1) };
-    assert!(!handle.is_null());
+        let handle = (surface.create)(1);
+        assert!(!handle.is_null());
 
-    let cb = NveHostCallbacks {
-        host_ctx: 0x1234usize as *mut c_void,
-        invoke: None,
-        channel_publish: None,
-    };
-    unsafe { (host.bind_host)(handle, &cb) };
+        let cb = NveHostCallbacks {
+            host_ctx: 0x1234usize as *mut c_void,
+            invoke: None,
+            channel_publish: None,
+        };
+        (host.bind_host)(handle, &cb);
 
-    let mut payload = [0u8; 8];
-    payload[..4].copy_from_slice(&2u32.to_le_bytes());
+        let mut payload = [0u8; 8];
+        payload[..4].copy_from_slice(&2u32.to_le_bytes());
 
-    assert_eq!(
-        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(&payload)) },
-        1
-    );
-    assert_eq!(
-        unsafe { (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"bad")) },
-        0
-    );
-    let rendered = unsafe { (surface.render)(handle, 1).as_slice().to_vec() };
-    assert_eq!(rendered, format!("ctx={};batches=2", 0x1234usize).into_bytes());
+        assert_eq!(
+            (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(&payload)),
+            1
+        );
+        assert_eq!(
+            (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"bad")),
+            0
+        );
+        let rendered = (surface.render)(handle, 1).as_slice().to_vec();
+        assert_eq!(
+            rendered,
+            format!("ctx={};batches=2", 0x1234usize).into_bytes()
+        );
 
-    unsafe { (host.bind_host)(handle, std::ptr::null()) };
-    let rendered2 = unsafe { (surface.render)(handle, 2).as_slice().to_vec() };
-    assert_eq!(rendered2, b"ctx=0;batches=2");
+        (host.bind_host)(handle, std::ptr::null());
+        let rendered2 = (surface.render)(handle, 2).as_slice().to_vec();
+        assert_eq!(rendered2, b"ctx=0;batches=2");
 
-    unsafe { (surface.destroy)(handle) };
+        (surface.destroy)(handle);
+    }
 }

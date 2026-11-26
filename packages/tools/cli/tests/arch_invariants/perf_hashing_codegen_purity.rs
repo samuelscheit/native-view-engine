@@ -65,8 +65,11 @@ fn zero_fnv1a_repo_wide() {
 }
 
 pub fn line_has_fnv1a(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    let compact: String = lower.chars().filter(|c| *c != '_').collect();
+    let compact: String = line
+        .chars()
+        .filter(|c| *c != '_')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
     compact.contains("fnv1a")
         || compact.contains("fnv-1a")
         || compact.contains("fnvhashmap")

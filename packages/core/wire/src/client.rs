@@ -155,9 +155,9 @@ impl NveWireClient {
         })?;
         let client_cfg = build_quic_client_config(cert_hash)?;
         let bind_addr: SocketAddr = if addr.is_ipv6() {
-            "[::]:0".parse().unwrap()
+            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0))
         } else {
-            "0.0.0.0:0".parse().unwrap()
+            SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0))
         };
         let udp = std::net::UdpSocket::bind(bind_addr)
             .map_err(|e| NveWireTransportError::Io(e.to_string()))?;

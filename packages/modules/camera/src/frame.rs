@@ -271,7 +271,20 @@ impl CameraFrameDescriptor {
                 bytes.len() - CAMERA_FRAME_DESCRIPTOR_SIZE,
             ));
         }
-        let magic: [u8; 4] = bytes[0..4].try_into().unwrap();
+        let le32 = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+        let le64 = |o: usize| {
+            u64::from_le_bytes([
+                bytes[o],
+                bytes[o + 1],
+                bytes[o + 2],
+                bytes[o + 3],
+                bytes[o + 4],
+                bytes[o + 5],
+                bytes[o + 6],
+                bytes[o + 7],
+            ])
+        };
+        let magic: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
         if magic != CAMERA_FRAME_MAGIC {
             return Err(CameraCodecError::InvalidMagic(magic));
         }
@@ -280,10 +293,10 @@ impl CameraFrameDescriptor {
         }
         let pixel_format = CameraPixelFormat::from_u32(u32::from(bytes[5]))?;
         let rotation_deg = u16::from_le_bytes([bytes[6], bytes[7]]);
-        let width = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        let height = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-        let stride_bytes = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
-        let reserved = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
+        let width = le32(8);
+        let height = le32(12);
+        let stride_bytes = le32(16);
+        let reserved = le32(20);
         if reserved != 0 {
             return Err(CameraCodecError::InvalidEnum(
                 "CameraFrameReserved",
@@ -296,8 +309,8 @@ impl CameraFrameDescriptor {
             stride_bytes,
             pixel_format,
             rotation_deg,
-            timestamp_ns: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
-            native_handle_id: u64::from_le_bytes(bytes[32..40].try_into().unwrap()),
+            timestamp_ns: le64(24),
+            native_handle_id: le64(32),
         };
         desc.validate()?;
         Ok(desc)

@@ -98,11 +98,15 @@ impl<'a> WireReader<'a> {
     }
 
     fn read_u32(&mut self) -> Result<u32, HotPatchDecodeError> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+        let b = self.take(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
     fn read_u64(&mut self) -> Result<u64, HotPatchDecodeError> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+        let b = self.take(8)?;
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 
     fn read_count(&mut self) -> Result<usize, HotPatchDecodeError> {

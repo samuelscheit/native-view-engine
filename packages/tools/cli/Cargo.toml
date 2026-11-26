@@ -32,6 +32,9 @@ nve-backend-web = { workspace = true }
 nve-docs = { workspace = true }
 nve-mdx = { workspace = true }
 nve-skia-shell = { workspace = true }
-nve-docs-site = { path = "../../../examples/nve-docs-site", default-features = false }
+nve-docs-site = { version = "0.1.0", path = "../../../examples/nve-docs-site", default-features = false }
 nve-example-kitchen-sink = { workspace = true }
 nve-studio-workspace = { workspace = true }
+
+[lints]
+workspace = true

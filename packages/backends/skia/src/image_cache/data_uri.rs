@@ -14,7 +14,7 @@ pub fn decode_image_uri(src: &str) -> Result<DecodedImage, ImageDecodeError> {
             return Err(ImageDecodeError::InvalidDataUri);
         };
         let mut parts = meta.split(';');
-        let mime = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+        let mime = parts.next().unwrap_or("").trim();
         let mut is_base64 = false;
         let mut raw_w: Option<u32> = None;
         let mut raw_h: Option<u32> = None;
@@ -38,16 +38,16 @@ pub fn decode_image_uri(src: &str) -> Result<DecodedImage, ImageDecodeError> {
             ));
         }
         let decoded_bytes = decode_base64(payload)?;
-        return match mime.as_str() {
-            "image/png" => decode_png(&decoded_bytes),
-            "image/rgba" => {
-                let (Some(w), Some(h)) = (raw_w, raw_h) else {
-                    return Err(ImageDecodeError::InvalidDataUri);
-                };
-                DecodedImage::from_rgba(w, h, decoded_bytes)
-            }
-            other => Err(ImageDecodeError::UnsupportedFormat(other.to_string())),
-        };
+        if mime.eq_ignore_ascii_case("image/png") {
+            return decode_png(&decoded_bytes);
+        }
+        if mime.eq_ignore_ascii_case("image/rgba") {
+            let (Some(w), Some(h)) = (raw_w, raw_h) else {
+                return Err(ImageDecodeError::InvalidDataUri);
+            };
+            return DecodedImage::from_rgba(w, h, decoded_bytes);
+        }
+        return Err(ImageDecodeError::UnsupportedFormat(mime.to_string()));
     }
 
     if let Some(path_part) = strip_prefix_ascii_ci(trimmed, "file://") {

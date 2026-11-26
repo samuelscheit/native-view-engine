@@ -126,12 +126,11 @@ impl WebBackend {
                     #[cfg(feature = "hydrate")]
                     if was_ssr_candidate {
                         self.hydration_report.replaced_nodes += 1;
+                        let mut ssr_tag = adopted.tag_name();
+                        ssr_tag.make_ascii_lowercase();
                         self.hydration_report.mismatches.push(crate::HydrationMismatch {
                             node_id: id.raw(),
-                            reason: format!(
-                                "SSR <{}> != live <{tag}>",
-                                adopted.tag_name().to_ascii_lowercase()
-                            ),
+                            reason: format!("SSR <{ssr_tag}> != live <{tag}>"),
                         });
                     }
                     fresh
@@ -209,12 +208,11 @@ impl WebBackend {
                         #[cfg(feature = "hydrate")]
                         {
                             self.hydration_report.replaced_nodes += 1;
+                            let mut ssr_tag = stale_el.tag_name();
+                            ssr_tag.make_ascii_lowercase();
                             self.hydration_report.mismatches.push(crate::HydrationMismatch {
                                 node_id: raw_id,
-                                reason: format!(
-                                    "SSR <{}> missing from live NodeStore",
-                                    stale_el.tag_name().to_ascii_lowercase()
-                                ),
+                                reason: format!("SSR <{ssr_tag}> missing from live NodeStore"),
                             });
                         }
                     }

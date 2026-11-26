@@ -183,11 +183,14 @@ fn spawn_pair_and_wait_ready(extra_args: &[&str]) -> (ChildGuard, Vec<String>, R
     }
 
     let stderr_lines: Vec<String> = err_rx.try_iter().collect();
-    panic!(
-        "nve pair did not emit NVE_PAIR_READY within timeout.\nstdout:\n{}\nstderr:\n{}",
-        lines.join("\n"),
-        stderr_lines.join("\n")
-    );
+    #[expect(clippy::panic, reason = "integration test timeout diagnostic")]
+    {
+        panic!(
+            "nve pair did not emit NVE_PAIR_READY within timeout.\nstdout:\n{}\nstderr:\n{}",
+            lines.join("\n"),
+            stderr_lines.join("\n")
+        );
+    }
 }
 
 fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {

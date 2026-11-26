@@ -183,6 +183,7 @@ mod imp {
                     "MTKView pointer is null".to_string(),
                 ));
             }
+            // SAFETY: Non-null `mtk_view` checked above; caller guarantees a valid live `MTKView*` on the main thread.
             let mut surface = unsafe {
                 surfaces::wrap_mtk_view(
                     &mut self.direct_context,
@@ -361,8 +362,10 @@ mod imp {
                         let w = (drawable_size.width.round() as i32).max(1);
                         let h = (drawable_size.height.round() as i32).max(1);
                         let texture = drawable.texture();
-                        let texture_info =
-                            unsafe { mtl::TextureInfo::new(Retained::as_ptr(&texture) as mtl::Handle) };
+                        // SAFETY: `drawable` retains `texture` for the lifetime of the wrapped surface.
+                        let texture_info = unsafe {
+                            mtl::TextureInfo::new(Retained::as_ptr(&texture) as mtl::Handle)
+                        };
                         let backend_rt = backend_render_targets::make_mtl((w, h), &texture_info);
                         let surface = surfaces::wrap_backend_render_target(
                             &mut self.direct_context,
@@ -544,6 +547,7 @@ mod imp {
         let command_queue = device.newCommandQueue().ok_or_else(|| {
             GpuSurfaceError::DeviceUnavailable("MTLDevice::newCommandQueue returned None".to_string())
         })?;
+        // SAFETY: `device` and `command_queue` are valid retained Metal objects kept alive in `MetalPresenter`.
         let backend = unsafe {
             mtl::BackendContext::new(
                 Retained::as_ptr(&device) as mtl::Handle,
@@ -607,6 +611,7 @@ mod imp {
             #[cfg(target_os = "macos")]
             RawWindowHandle::AppKit(appkit) => {
                 let view_ptr = appkit.ns_view.as_ptr() as *mut NSView;
+                // SAFETY: Caller supplies a valid main-thread AppKit `NSView*` raw window handle.
                 let view = unsafe { view_ptr.as_ref() }.ok_or_else(|| {
                     GpuSurfaceError::WindowHandleError("AppKit ns_view pointer is null".to_string())
                 })?;
@@ -617,6 +622,7 @@ mod imp {
             #[cfg(target_os = "ios")]
             RawWindowHandle::UiKit(uikit) => {
                 let view_ptr = uikit.ui_view.as_ptr() as *mut UIView;
+                // SAFETY: Caller supplies a valid main-thread UiKit `UIView*` raw window handle.
                 let view = unsafe { view_ptr.as_ref() }.ok_or_else(|| {
                     GpuSurfaceError::WindowHandleError("UiKit ui_view pointer is null".to_string())
                 })?;

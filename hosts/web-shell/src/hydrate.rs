@@ -28,12 +28,23 @@ pub enum HydrateTrigger {
 
 impl HydrateTrigger {
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "load" | "eager" | "immediate" => Some(Self::Load),
-            "visible" | "viewport" => Some(Self::Visible),
-            "interaction" | "interact" | "event" => Some(Self::Interaction),
-            "idle" => Some(Self::Idle),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("load")
+            || s.eq_ignore_ascii_case("eager")
+            || s.eq_ignore_ascii_case("immediate")
+        {
+            Some(Self::Load)
+        } else if s.eq_ignore_ascii_case("visible") || s.eq_ignore_ascii_case("viewport") {
+            Some(Self::Visible)
+        } else if s.eq_ignore_ascii_case("interaction")
+            || s.eq_ignore_ascii_case("interact")
+            || s.eq_ignore_ascii_case("event")
+        {
+            Some(Self::Interaction)
+        } else if s.eq_ignore_ascii_case("idle") {
+            Some(Self::Idle)
+        } else {
+            None
         }
     }
 

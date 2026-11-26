@@ -172,6 +172,7 @@ pub unsafe extern "C" fn nve_wire_client_send_events(
         let slice = if event_len == 0 {
             &[]
         } else {
+            // SAFETY: Non-null `event_bytes` checked above; caller guarantees validity for `event_len` bytes.
             unsafe { std::slice::from_raw_parts(event_bytes, event_len) }
         };
         match handle.inner.send_events(slice) {
@@ -205,6 +206,7 @@ pub unsafe extern "C" fn nve_wire_client_send_datagram(
         let slice = if payload_len == 0 {
             &[]
         } else {
+            // SAFETY: Non-null `payload` checked above; caller guarantees validity for `payload_len` bytes.
             unsafe { std::slice::from_raw_parts(payload, payload_len) }
         };
         let frame = NveWireFrame::new(wire_kind, 0, slice.to_vec());
@@ -252,6 +254,7 @@ pub unsafe extern "C" fn nve_wire_client_metrics(
         // SAFETY: Valid pointers.
         let handle = unsafe { &*client };
         let m = handle.inner.metrics();
+        // SAFETY: Non-null `out_metrics` checked above; caller guarantees a valid writable pointer.
         unsafe {
             *out_metrics = NveWireMetricsC {
                 session_id: m.session_id,

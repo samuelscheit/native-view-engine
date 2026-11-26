@@ -106,7 +106,7 @@ fn bench_row_write_and_commit(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0.0f32;
             for &n in &nodes {
-                let nr = store.get(n).unwrap();
+                let nr = store.get(n).expect("live bench node");
                 let r = nr.row::<BenchBox>();
                 sum += r.opacity() + f32::from(r.bg().r());
                 sum += nr.children().len() as f32;
@@ -206,7 +206,7 @@ fn bench_nve2_roundtrip(c: &mut Criterion) {
     enc.encode(&store, &changes, &mut buf);
     {
         let mut rtx = replica.tx();
-        dec.apply(&mut rtx, &buf).unwrap();
+        dec.apply(&mut rtx, &buf).expect("decode initial bench wire frame");
         rtx.commit_into(&mut rep_changes);
     }
 
@@ -222,7 +222,7 @@ fn bench_nve2_roundtrip(c: &mut Criterion) {
             buf.clear();
             enc.encode(&store, &changes, &mut buf);
             let mut rtx = replica.tx();
-            dec.apply(&mut rtx, &buf).unwrap();
+            dec.apply(&mut rtx, &buf).expect("decode scalar bench wire frame");
             rtx.commit_into(&mut rep_changes);
             black_box(buf.len())
         });
@@ -250,7 +250,7 @@ fn bench_nve2_roundtrip(c: &mut Criterion) {
             buf.clear();
             enc.encode(&store, &changes, &mut buf);
             let mut rtx = replica.tx();
-            dec.apply(&mut rtx, &buf).unwrap();
+            dec.apply(&mut rtx, &buf).expect("decode mixed bench wire frame");
             rtx.commit_into(&mut rep_changes);
             black_box(buf.len())
         });

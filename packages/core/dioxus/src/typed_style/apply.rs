@@ -175,17 +175,7 @@ impl TypedStyle {
                 }
             }
             if let Some(ref fw) = self.font_weight {
-                let w: u16 = match fw.trim().to_ascii_lowercase().as_str() {
-                    "thin" => 100,
-                    "light" => 300,
-                    "normal" | "regular" => 400,
-                    "medium" => 500,
-                    "semibold" => 600,
-                    "bold" => 700,
-                    "extrabold" => 800,
-                    "black" => 900,
-                    other => other.parse::<u16>().unwrap_or(400).clamp(100, 900),
-                };
+                let w = nve_components::parse_font_weight(fw);
                 let cur_set = tx
                     .store()
                     .try_row::<Typography>(node)

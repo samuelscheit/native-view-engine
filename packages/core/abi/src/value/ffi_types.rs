@@ -30,6 +30,8 @@ pub(super) unsafe fn guarded_slice<'a, T>(ptr: *const T, len: usize) -> Option<&
     if byte_len > isize::MAX as usize {
         return None;
     }
+    // SAFETY: Non-null, alignment, and `isize::MAX` byte-length checks succeeded above;
+    // caller guarantees `ptr` points to `len` valid initialized `T` elements for `'a`.
     Some(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
@@ -62,6 +64,7 @@ impl NveStrSlice {
     /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime when `len > 0`.
     #[inline]
     pub unsafe fn try_as_bytes<'a>(self) -> Option<&'a [u8]> {
+        // SAFETY: Caller guarantees `self.ptr` is valid for `self.len` bytes for `'a`.
         unsafe { guarded_slice(self.ptr, self.len) }
     }
 
@@ -69,6 +72,7 @@ impl NveStrSlice {
     /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime.
     #[inline]
     pub unsafe fn as_bytes<'a>(self) -> &'a [u8] {
+        // SAFETY: Caller guarantees `self.ptr` is valid for `self.len` bytes for `'a`.
         unsafe { self.try_as_bytes() }.unwrap_or(&[])
     }
 
@@ -76,6 +80,7 @@ impl NveStrSlice {
     /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime.
     #[inline]
     pub unsafe fn as_str<'a>(self) -> Result<&'a str, DecodeError> {
+        // SAFETY: Caller guarantees `self.ptr` is valid for `self.len` bytes for `'a`.
         let bytes = unsafe { self.try_as_bytes() }.ok_or(DecodeError::Truncated)?;
         std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
     }
@@ -260,6 +265,7 @@ impl NveValue {
     /// must remain valid and immutable for `'a`.
     #[inline]
     pub unsafe fn as_ref<'a>(&'a self) -> NveValueRef<'a> {
+        // SAFETY: Caller guarantees all nested pointers reachable from `self` remain valid for `'a`.
         unsafe { NveValueRef::from_raw(self) }
     }
 }
@@ -357,6 +363,7 @@ impl NvePropSlice {
     /// Caller must ensure `entries` is valid for `len` initialized `NvePropEntry` items for `'a`.
     #[inline]
     pub unsafe fn try_as_slice<'a>(self) -> Option<&'a [NvePropEntry]> {
+        // SAFETY: Caller guarantees `self.entries` is valid for `self.len` `NvePropEntry`s for `'a`.
         unsafe { guarded_slice(self.entries, self.len as usize) }
     }
 
@@ -364,6 +371,7 @@ impl NvePropSlice {
     /// Caller must ensure `entries` is valid for `len` initialized `NvePropEntry` items for `'a`.
     #[inline]
     pub unsafe fn as_slice<'a>(self) -> &'a [NvePropEntry] {
+        // SAFETY: Caller guarantees `self.entries` is valid for `self.len` `NvePropEntry`s for `'a`.
         unsafe { self.try_as_slice() }.unwrap_or(&[])
     }
 }
@@ -417,6 +425,7 @@ impl NveCommandSlice {
     /// Caller must ensure `args` is valid for `arg_count` initialized `NveValue` items for `'a`.
     #[inline]
     pub unsafe fn try_args_slice<'a>(self) -> Option<&'a [NveValue]> {
+        // SAFETY: Caller guarantees `self.args` is valid for `self.arg_count` `NveValue`s for `'a`.
         unsafe { guarded_slice(self.args, self.arg_count as usize) }
     }
 
@@ -424,6 +433,7 @@ impl NveCommandSlice {
     /// Caller must ensure `args` is valid for `arg_count` initialized `NveValue` items for `'a`.
     #[inline]
     pub unsafe fn args_slice<'a>(self) -> &'a [NveValue] {
+        // SAFETY: Caller guarantees `self.args` is valid for `self.arg_count` `NveValue`s for `'a`.
         unsafe { self.try_args_slice() }.unwrap_or(&[])
     }
 }

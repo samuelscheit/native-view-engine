@@ -34,3 +34,6 @@ nve-backend-web = { workspace = true }
 nve-canvas-skia = { workspace = true }
 nve-canvas-web = { workspace = true }
 nve-web-html-web = { workspace = true }
+
+[lints]
+workspace = true

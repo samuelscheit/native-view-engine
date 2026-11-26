@@ -70,13 +70,19 @@ impl ImageFit {
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "cover" => Some(Self::Cover),
-            "contain" => Some(Self::Contain),
-            "fill" | "stretch" => Some(Self::Fill),
-            "none" | "center" => Some(Self::None),
-            "scale-down" | "scaledown" => Some(Self::ScaleDown),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("cover") {
+            Some(Self::Cover)
+        } else if s.eq_ignore_ascii_case("contain") {
+            Some(Self::Contain)
+        } else if s.eq_ignore_ascii_case("fill") || s.eq_ignore_ascii_case("stretch") {
+            Some(Self::Fill)
+        } else if s.eq_ignore_ascii_case("none") || s.eq_ignore_ascii_case("center") {
+            Some(Self::None)
+        } else if s.eq_ignore_ascii_case("scale-down") || s.eq_ignore_ascii_case("scaledown") {
+            Some(Self::ScaleDown)
+        } else {
+            None
         }
     }
 }
@@ -140,18 +146,29 @@ impl InputKind {
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "text" => Some(Self::Text),
-            "email" => Some(Self::Email),
-            "password" => Some(Self::Password),
-            "tel" => Some(Self::Tel),
-            "url" => Some(Self::Url),
-            "number" => Some(Self::Number),
-            "search" => Some(Self::Search),
-            "date" => Some(Self::Date),
-            "time" => Some(Self::Time),
-            "hidden" => Some(Self::Hidden),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("text") {
+            Some(Self::Text)
+        } else if s.eq_ignore_ascii_case("email") {
+            Some(Self::Email)
+        } else if s.eq_ignore_ascii_case("password") {
+            Some(Self::Password)
+        } else if s.eq_ignore_ascii_case("tel") {
+            Some(Self::Tel)
+        } else if s.eq_ignore_ascii_case("url") {
+            Some(Self::Url)
+        } else if s.eq_ignore_ascii_case("number") {
+            Some(Self::Number)
+        } else if s.eq_ignore_ascii_case("search") {
+            Some(Self::Search)
+        } else if s.eq_ignore_ascii_case("date") {
+            Some(Self::Date)
+        } else if s.eq_ignore_ascii_case("time") {
+            Some(Self::Time)
+        } else if s.eq_ignore_ascii_case("hidden") {
+            Some(Self::Hidden)
+        } else {
+            None
         }
     }
 }
