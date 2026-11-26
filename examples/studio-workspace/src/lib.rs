@@ -213,6 +213,36 @@ impl StudioWorkspaceModule {
         &self.surface
     }
 
+    /// Reconciles and flushes the workspace directly into `sink` via monomorphized [`nve_engine::RenderSink`]
+    /// with zero `CommandBuffer` encode/decode overhead.
+    pub fn flush_into<S: nve_engine::RenderSink>(
+        &mut self,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<nve_engine::BackendApplyStats, nve_engine::BackendError> {
+        let (_, stats) = self.flush_into_timed(frame_id, sink)?;
+        Ok(stats)
+    }
+
+    /// Timed variant of [`Self::flush_into`] returning `(reconcile_us, stats)`.
+    pub fn flush_into_timed<S: nve_engine::RenderSink>(
+        &mut self,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<(u64, nve_engine::BackendApplyStats), nve_engine::BackendError> {
+        if !self.mounted {
+            ui::set_pending_store(Arc::clone(&self.store));
+            ui::set_pending_host_services(Arc::clone(&self.host_services));
+            self.mounted = true;
+            let res = self.surface.flush_into_timed(frame_id, sink);
+            ui::clear_pending_store();
+            ui::clear_pending_host_services();
+            res
+        } else {
+            self.surface.flush_into_timed(frame_id, sink)
+        }
+    }
+
     pub fn state_snapshot(&self) -> WorkspaceState {
         self.store
             .lock()

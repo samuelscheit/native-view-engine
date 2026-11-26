@@ -1,91 +1,156 @@
-//! Frame flush, dirty-set coalescing, and inherited `Text` style propagation for `NveMutationWriter`.
+//! Frame flush, dirty-set coalescing, extended typed property flushing, and inherited `Text`
+//! style propagation for [`MutationTx`] / [`NveMutationWriter`].
 
-use nve_abi::{ComponentKind, NodeId, RawPropValue};
+use nve_abi::{ComponentKind, NodeId, RawPropValueRef};
+use nve_engine::{BackendApplyStats, BackendError, RenderSink};
 
-use super::{NveMutationWriter, TextStyleWalkEntry};
+use super::{
+    MutationTx, NveMutationWriter, TextStyleWalkEntry, EXT_BACKGROUND_FILL, EXT_CURSOR,
+    EXT_DRAW_LIST, EXT_LAYOUT_EXT, EXT_NATIVE_VIEW_PROPS, EXT_RESPONSIVE_RULES, EXT_SHOW_ON,
+    EXT_STATE_RULES, EXT_SVG, EXT_TRANSFORM, EXT_TRANSITIONS,
+};
 
-impl NveMutationWriter {
-    pub fn finish_frame(&mut self, sync_mount: bool) -> &[u8] {
+impl<S: RenderSink> MutationTx<'_, S> {
+    /// Flushes all coalesced structural, layout, style, event, and extended typed mutations
+    /// directly into `self.sink` and commits the frame.
+    pub fn finish_frame(self, sync_mount: bool) -> Result<BackendApplyStats, BackendError> {
+        let w = self.writer;
+        let sink = self.sink;
+
         // Ensure any `<NativeView>` node whose `__nve_native_kind` attribute was omitted still
-        // emits `CreateNode` before layout/style/children ops.
-        if !self.deferred_native_nodes.is_empty() {
-            let pending = std::mem::take(&mut self.deferred_native_nodes);
+        // emits `CreateNode` before layout/style/children/extended ops.
+        if !w.deferred_native_nodes.is_empty() {
+            let pending = std::mem::take(&mut w.deferred_native_nodes);
             for nid in pending {
-                self.ensure_native_node_created(nid, None);
+                w.ensure_native_node_created(sink, nid, None);
             }
         }
+
         // Propagate inherited text_color, font_size, font_weight, and text_align from styled Text
-        // parents to unstyled child Text leaves (Dioxus rsx! emits `text { nve_style: ..., "leaf" }`
-        // or `text { style: "...", "leaf" }` as parent Text -> child Text).
-        if !self.dirty_children.is_empty()
-            || !self.dirty_style.is_empty()
-            || !self.dirty_text_props.is_empty()
+        // parents to unstyled child Text leaves.
+        if !w.dirty_children.is_empty()
+            || !w.dirty_style.is_empty()
+            || !w.dirty_text_props.is_empty()
         {
-            self.style_sources.clear();
-            self.style_sources.extend_from_slice(&self.dirty_children);
-            self.style_sources.extend_from_slice(&self.dirty_style);
-            self.style_sources.extend_from_slice(&self.dirty_text_props);
-            self.style_sources.sort_unstable();
-            self.style_sources.dedup();
-            for i in 0..self.style_sources.len() {
-                let pid = self.style_sources[i];
-                self.propagate_text_style_down(pid);
+            w.style_sources.clear();
+            w.style_sources.extend_from_slice(&w.dirty_children);
+            w.style_sources.extend_from_slice(&w.dirty_style);
+            w.style_sources.extend_from_slice(&w.dirty_text_props);
+            w.style_sources.sort_unstable();
+            w.style_sources.dedup();
+            for i in 0..w.style_sources.len() {
+                let pid = w.style_sources[i];
+                w.propagate_text_style_down(sink, pid);
             }
-            self.style_sources.clear();
-            self.dirty_text_props.clear();
+            w.style_sources.clear();
+            w.dirty_text_props.clear();
         }
 
         // Coalesce all structural/style/layout mutations into one deterministic batch per frame
         // using persistent scratch Vecs sorted & deduped in place (zero per-frame heap allocs).
-        if !self.dirty_children.is_empty() {
-            self.dirty_children.sort_unstable();
-            self.dirty_children.dedup();
-            for &pid in &self.dirty_children {
-                if let Some(rec) = self.nodes.get(&pid) {
-                    self.builder.set_children(pid, &rec.children);
+        if !w.dirty_children.is_empty() {
+            w.dirty_children.sort_unstable();
+            w.dirty_children.dedup();
+            for &pid in &w.dirty_children {
+                if let Some(rec) = w.nodes.get(&pid) {
+                    sink.set_children(pid, &rec.children);
                 }
             }
-            self.dirty_children.clear();
+            w.dirty_children.clear();
         }
 
-        if !self.dirty_layout.is_empty() {
-            self.dirty_layout.sort_unstable();
-            self.dirty_layout.dedup();
-            for &nid in &self.dirty_layout {
-                if let Some(rec) = self.nodes.get(&nid) {
-                    self.builder.set_layout(nid, &rec.layout);
+        if !w.dirty_layout.is_empty() {
+            w.dirty_layout.sort_unstable();
+            w.dirty_layout.dedup();
+            for &nid in &w.dirty_layout {
+                if let Some(rec) = w.nodes.get(&nid) {
+                    sink.set_layout(nid, &rec.layout);
                 }
             }
-            self.dirty_layout.clear();
+            w.dirty_layout.clear();
         }
 
-        if !self.dirty_style.is_empty() {
-            self.dirty_style.sort_unstable();
-            self.dirty_style.dedup();
-            for &nid in &self.dirty_style {
-                if let Some(rec) = self.nodes.get(&nid) {
-                    self.builder.set_style(nid, &rec.style);
+        if !w.dirty_style.is_empty() {
+            w.dirty_style.sort_unstable();
+            w.dirty_style.dedup();
+            for &nid in &w.dirty_style {
+                if let Some(rec) = w.nodes.get(&nid) {
+                    sink.set_style(nid, &rec.style);
                 }
             }
-            self.dirty_style.clear();
+            w.dirty_style.clear();
         }
 
-        if !self.dirty_events.is_empty() {
-            self.dirty_events.sort_unstable();
-            self.dirty_events.dedup();
-            for &nid in &self.dirty_events {
-                if let Some(rec) = self.nodes.get(&nid) {
-                    self.builder.set_event_mask(nid, rec.event_mask);
+        if !w.dirty_events.is_empty() {
+            w.dirty_events.sort_unstable();
+            w.dirty_events.dedup();
+            for &nid in &w.dirty_events {
+                if let Some(rec) = w.nodes.get(&nid) {
+                    sink.set_event_mask(nid, rec.event_mask);
                 }
             }
-            self.dirty_events.clear();
+            w.dirty_events.clear();
         }
 
-        self.builder.commit(sync_mount);
-        self.builder.finish()
+        if !w.dirty_extended.is_empty() {
+            if w.dirty_extended.len() > 1 {
+                w.dirty_extended.sort_unstable();
+                w.dirty_extended.dedup();
+            }
+            for &nid in &w.dirty_extended {
+                let Some(rec) = w.nodes.get_mut(&nid) else {
+                    continue;
+                };
+                let Some(ext) = rec.extras.as_deref_mut() else {
+                    continue;
+                };
+                let mask = std::mem::take(&mut ext.dirty_ext_mask);
+                if mask == 0 {
+                    continue;
+                }
+                if (mask & EXT_LAYOUT_EXT) != 0 {
+                    sink.set_layout_ext(nid, ext.layout_ext.as_ref());
+                }
+                if (mask & EXT_TRANSFORM) != 0 {
+                    sink.set_transform(nid, ext.transform);
+                }
+                if (mask & EXT_CURSOR) != 0 {
+                    sink.set_cursor(nid, ext.cursor);
+                }
+                if (mask & EXT_STATE_RULES) != 0 {
+                    sink.set_state_rules(nid, &ext.state_rules);
+                }
+                if (mask & EXT_TRANSITIONS) != 0 {
+                    sink.set_transitions(nid, &ext.transitions);
+                }
+                if (mask & EXT_SHOW_ON) != 0 {
+                    sink.set_show_on(nid, ext.show_on);
+                }
+                if (mask & EXT_RESPONSIVE_RULES) != 0 {
+                    sink.set_responsive_rules(nid, &ext.responsive_rules);
+                }
+                if (mask & EXT_BACKGROUND_FILL) != 0 {
+                    sink.set_background_fill(nid, ext.background_fill.as_ref());
+                }
+                if (mask & EXT_SVG) != 0 {
+                    sink.set_svg(nid, ext.svg_picture.as_ref());
+                }
+                if (mask & EXT_DRAW_LIST) != 0 {
+                    sink.set_draw_list(nid, ext.draw_list.as_ref());
+                }
+                if (mask & EXT_NATIVE_VIEW_PROPS) != 0 {
+                    sink.set_native_view_props(nid, ext.native_props.as_ref());
+                }
+            }
+            w.dirty_extended.clear();
+        }
+
+        sink.commit_frame(sync_mount)
     }
+}
 
-    fn propagate_text_style_down(&mut self, root_parent_id: NodeId) {
+impl NveMutationWriter {
+    fn propagate_text_style_down<S: RenderSink>(&mut self, sink: &mut S, root_parent_id: NodeId) {
         self.style_walk_stack.clear();
         let Some(root) = self.nodes.get(&root_parent_id) else {
             return;
@@ -125,10 +190,8 @@ impl NveMutationWriter {
                         != entry.font_weight.as_deref()
                 {
                     match &entry.font_weight {
-                        Some(w) => self.builder.set_raw_prop_str(cid, "font-weight", w),
-                        None => self
-                            .builder
-                            .set_raw_prop(cid, "font-weight", &RawPropValue::Null),
+                        Some(w) => sink.set_raw_prop(cid, "font-weight", RawPropValueRef::String(w)),
+                        None => sink.set_raw_prop(cid, "font-weight", RawPropValueRef::Null),
                     }
                     if entry.font_weight.is_some() || child.extras.is_some() {
                         child.extras_mut().font_weight = entry.font_weight.clone();
@@ -139,10 +202,8 @@ impl NveMutationWriter {
                         != entry.text_align.as_deref()
                 {
                     match &entry.text_align {
-                        Some(a) => self.builder.set_raw_prop_str(cid, "text-align", a),
-                        None => self
-                            .builder
-                            .set_raw_prop(cid, "text-align", &RawPropValue::Null),
+                        Some(a) => sink.set_raw_prop(cid, "text-align", RawPropValueRef::String(a)),
+                        None => sink.set_raw_prop(cid, "text-align", RawPropValueRef::Null),
                     }
                     if entry.text_align.is_some() || child.extras.is_some() {
                         child.extras_mut().text_align = entry.text_align.clone();

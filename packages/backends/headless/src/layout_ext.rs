@@ -55,55 +55,6 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         true
     }
 
-    /// Bulk-synchronizes [`LayoutExt`] and [`Transform2D`] metadata from any producer (e.g.
-    /// `DioxusSurface`), recomputing layout once if any `layout_ext` changed and returning sorted
-    /// `NodeId`s whose metadata changed.
-    pub fn sync_layout_ext_from<'a>(
-        &mut self,
-        layout_exts: impl IntoIterator<Item = (NodeId, &'a LayoutExt)>,
-        transforms: impl IntoIterator<Item = (NodeId, Transform2D)>,
-    ) -> Vec<NodeId> {
-        let ext_map: HashMap<NodeId, &'a LayoutExt> = layout_exts.into_iter().collect();
-        let tf_map: HashMap<NodeId, Transform2D> = transforms.into_iter().collect();
-
-        let ids: Vec<NodeId> = self.nodes.values().map(|n| n.id).collect();
-        let mut dirty = Vec::new();
-        let mut layout_changed = false;
-
-        for id in ids {
-            let next_ext = ext_map
-                .get(&id)
-                .copied()
-                .filter(|e| !e.is_default())
-                .map(|e| Box::new(e.clone()));
-            let next_tf = tf_map.get(&id).copied();
-            let Some(node) = self.nodes.get_mut(id) else {
-                continue;
-            };
-            let mut changed = false;
-            if node.layout_ext != next_ext {
-                node.layout_ext = next_ext;
-                let ext_ref = node.layout_ext.as_deref();
-                self.layout.set_layout_ext(id, ext_ref);
-                layout_changed = true;
-                changed = true;
-            }
-            if node.transform != next_tf {
-                node.transform = next_tf;
-                changed = true;
-            }
-            if changed {
-                dirty.push(id);
-            }
-        }
-
-        if layout_changed {
-            self.recompute_layout();
-        }
-        dirty.sort_unstable();
-        dirty
-    }
-
     /// Resolves the effective inherited [`LayoutDirection`] for `node_id`.
     pub fn resolved_direction(&self, node_id: NodeId) -> LayoutDirection {
         let mut cur = Some(node_id);

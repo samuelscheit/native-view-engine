@@ -44,13 +44,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::{ColorRgba, NativeEvent, NodeId, SurfaceId, ROOT_NODE_ID};
+use nve_abi::{
+    ColorRgba, ComponentKind, FrameId, LayoutProps, NativeEvent, NodeId, RawPropValueRef,
+    StyleProps, SurfaceId, ROOT_NODE_ID,
+};
 use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
 use nve_components::canvas_ir::{DrawList, ImageResizeMode};
 use nve_components::native_view::{NativeCommand, TypedNativeViewCommand, TypedNativeViewProps};
 use nve_engine::{
-    BackendApplyStats, BackendError, LayoutEngine, LayoutRect, RenderBackend, TextMeasurer,
-    Viewport,
+    replay_command_buffer_into, BackendApplyStats, BackendError, LayoutEngine, LayoutRect,
+    RenderBackend, RenderSink, TextMeasurer, Viewport,
 };
 
 use display_list::{emit_node_into, InheritedTextStyle};
@@ -200,6 +203,7 @@ pub struct SkiaBackend<L: LayoutEngine = TaffyLayoutEngine> {
     pub(crate) last_virtual_scroll_y: HashMap<NodeId, f32>,
     pub(crate) focus: TextFocusState,
     pub(crate) motion: MotionDriver,
+    pub(crate) newly_tracked_transitions: Vec<NodeId>,
     pub(crate) sort_scratch: Vec<NodeId>,
 }
 
@@ -240,6 +244,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             last_virtual_scroll_y: HashMap::new(),
             focus: TextFocusState::default(),
             motion: MotionDriver::new(),
+            newly_tracked_transitions: Vec::new(),
             sort_scratch: Vec::new(),
         }
     }
@@ -271,6 +276,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             last_virtual_scroll_y: self.last_virtual_scroll_y,
             focus: self.focus,
             motion: self.motion,
+            newly_tracked_transitions: self.newly_tracked_transitions,
             sort_scratch: self.sort_scratch,
         };
         swapped.reconcile_scroll_offsets();
@@ -300,32 +306,10 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         }
     }
 
-    /// Bulk-synchronizes zero-serialization [`DrawList`]s from any producer
-    /// (e.g. `DioxusSurface::iter_draw_lists`), rebuilding the display list only when changed.
-    pub fn sync_draw_lists_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a DrawList)>,
-    ) {
-        if self.layout_tree.sync_draw_lists_from(entries) {
-            self.rebuild_display_list();
-        }
-    }
-
     /// Directly attaches or clears a zero-serialization [`BackgroundFill`] on `node_id` and
     /// rebuilds the display list if changed.
     pub fn set_node_background_fill(&mut self, node_id: NodeId, fill: Option<BackgroundFill>) {
         if self.layout_tree.set_node_background_fill(node_id, fill) {
-            self.rebuild_display_list();
-        }
-    }
-
-    /// Bulk-synchronizes zero-serialization [`BackgroundFill`]s from any producer
-    /// (e.g. `DioxusSurface::iter_background_fills`), rebuilding the display list only when changed.
-    pub fn sync_background_fills_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a BackgroundFill)>,
-    ) {
-        if self.layout_tree.sync_background_fills_from(entries) {
             self.rebuild_display_list();
         }
     }
@@ -338,17 +322,6 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         }
     }
 
-    /// Bulk-synchronizes zero-serialization [`SvgPicture`]s from any producer
-    /// (e.g. `DioxusSurface::iter_svg_pictures`), rebuilding the display list only when changed.
-    pub fn sync_svgs_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a SvgPicture)>,
-    ) {
-        if self.layout_tree.sync_svgs_from(entries) {
-            self.rebuild_display_list();
-        }
-    }
-
     /// Attaches or clears zero-serialization [`TypedNativeViewProps`] directly on `node_id`.
     pub fn set_native_view_props(
         &mut self,
@@ -356,14 +329,6 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         props: Option<TypedNativeViewProps>,
     ) {
         let _ = self.layout_tree.set_native_view_props(node_id, props);
-    }
-
-    /// Bulk-synchronizes zero-serialization [`TypedNativeViewProps`] from any producer.
-    pub fn sync_native_views_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a TypedNativeViewProps)>,
-    ) {
-        let _ = self.layout_tree.sync_native_views_from(entries);
     }
 
     /// Records a zero-serialization [`NativeCommand`] dispatched directly in-process.
@@ -429,23 +394,6 @@ impl<L: LayoutEngine> SkiaBackend<L> {
     pub fn set_node_transform(&mut self, id: NodeId, transform: Option<Transform2D>) {
         if self.layout_tree.set_node_transform(id, transform) {
             self.sync_motion_targets(&[id]);
-            self.rebuild_display_list();
-        }
-    }
-
-    /// Bulk-synchronizes [`LayoutExt`] and [`Transform2D`] metadata from any producer (e.g.
-    /// `DioxusSurface`), recomputing layout and rebuilding the display list when changed.
-    pub fn sync_layout_ext_from<'a>(
-        &mut self,
-        layout_exts: impl IntoIterator<Item = (NodeId, &'a LayoutExt)>,
-        transforms: impl IntoIterator<Item = (NodeId, Transform2D)>,
-    ) {
-        let dirty = self
-            .layout_tree
-            .sync_layout_ext_from(layout_exts, transforms);
-        if !dirty.is_empty() {
-            self.reconcile_scroll_offsets();
-            self.sync_motion_targets(&dirty);
             self.rebuild_display_list();
         }
     }
@@ -521,6 +469,126 @@ impl<L: LayoutEngine> SkiaBackend<L> {
     }
 }
 
+impl<L: LayoutEngine> SkiaBackend<L> {
+    fn finish_skia_frame(&mut self, mut stats: BackendApplyStats) -> BackendApplyStats {
+        let t_mount = Instant::now();
+        self.reconcile_scroll_offsets();
+        self.reconcile_focus_state();
+        if !self.newly_tracked_transitions.is_empty() {
+            let seeded = std::mem::take(&mut self.newly_tracked_transitions);
+            for id in seeded {
+                if let Some(style) = self.layout_tree.effective_style(id) {
+                    self.motion.seed_baseline(id, style);
+                }
+                let tf = self
+                    .layout_tree
+                    .effective_transform(id)
+                    .unwrap_or(Transform2D::IDENTITY);
+                self.motion.seed_transform_baseline(id, tf);
+            }
+        }
+        self.reconcile_motion_after_frame();
+        self.rebuild_display_list();
+        stats.mount_us = t_mount.elapsed().as_micros() as u64;
+        stats
+    }
+}
+
+impl<L: LayoutEngine> RenderSink for SkiaBackend<L> {
+    fn begin_frame(&mut self, surface_id: SurfaceId, frame_id: FrameId) {
+        self.newly_tracked_transitions.clear();
+        self.layout_tree.begin_frame(surface_id, frame_id);
+    }
+
+    fn create_node(&mut self, node_id: NodeId, kind: ComponentKind, custom_name: Option<&str>) {
+        self.layout_tree.create_node(node_id, kind, custom_name);
+    }
+
+    fn remove_node(&mut self, node_id: NodeId) {
+        self.layout_tree.remove_node(node_id);
+    }
+
+    fn set_children(&mut self, parent_id: NodeId, children: &[NodeId]) {
+        self.layout_tree.set_children(parent_id, children);
+    }
+
+    fn set_text(&mut self, node_id: NodeId, text: &str) {
+        self.layout_tree.set_text(node_id, text);
+    }
+
+    fn set_layout(&mut self, node_id: NodeId, layout: &LayoutProps) {
+        self.layout_tree.set_layout(node_id, layout);
+    }
+
+    fn set_style(&mut self, node_id: NodeId, style: &StyleProps) {
+        self.layout_tree.set_style(node_id, style);
+    }
+
+    fn set_raw_prop(&mut self, node_id: NodeId, key: &str, value: RawPropValueRef<'_>) {
+        self.layout_tree.set_raw_prop(node_id, key, value);
+    }
+
+    fn set_event_mask(&mut self, node_id: NodeId, mask: u64) {
+        self.layout_tree.set_event_mask(node_id, mask);
+    }
+
+    fn dispatch_command(&mut self, node_id: NodeId, command_name: &str, payload: &[u8]) {
+        self.layout_tree
+            .dispatch_command(node_id, command_name, payload);
+    }
+
+    fn set_layout_ext(&mut self, node_id: NodeId, ext: Option<&LayoutExt>) {
+        self.layout_tree.set_layout_ext(node_id, ext);
+    }
+
+    fn set_transform(&mut self, node_id: NodeId, transform: Option<Transform2D>) {
+        self.layout_tree.set_transform(node_id, transform);
+    }
+
+    fn set_cursor(&mut self, node_id: NodeId, cursor: Option<CursorKind>) {
+        self.layout_tree.set_cursor(node_id, cursor);
+    }
+
+    fn set_state_rules(&mut self, node_id: NodeId, rules: &[StateStyleRule]) {
+        self.layout_tree.set_state_rules(node_id, rules);
+    }
+
+    fn set_transitions(&mut self, node_id: NodeId, transitions: &[TransitionSpec]) {
+        let was_tracked = self.motion.has_transitions(node_id);
+        self.motion
+            .set_node_transitions(node_id, transitions.to_vec());
+        if !was_tracked && !transitions.is_empty() {
+            self.newly_tracked_transitions.push(node_id);
+        }
+    }
+
+    fn set_background_fill(&mut self, node_id: NodeId, fill: Option<&BackgroundFill>) {
+        self.layout_tree.set_background_fill(node_id, fill);
+    }
+
+    fn set_svg(&mut self, node_id: NodeId, svg: Option<&SvgPicture>) {
+        self.layout_tree.set_svg(node_id, svg);
+    }
+
+    fn set_draw_list(&mut self, node_id: NodeId, draw_list: Option<&DrawList>) {
+        self.layout_tree.set_draw_list(node_id, draw_list);
+    }
+
+    fn set_native_view_props(&mut self, node_id: NodeId, props: Option<&TypedNativeViewProps>) {
+        RenderSink::set_native_view_props(&mut self.layout_tree, node_id, props);
+    }
+
+    fn commit_frame(&mut self, sync_mount: bool) -> Result<BackendApplyStats, BackendError> {
+        let stats = self.layout_tree.commit_frame(sync_mount)?;
+        Ok(self.finish_skia_frame(stats))
+    }
+
+    fn finish_uncommitted(&mut self) -> Result<BackendApplyStats, BackendError> {
+        let stats = self.layout_tree.finish_uncommitted()?;
+        Ok(self.finish_skia_frame(stats))
+    }
+}
+
 impl<L: LayoutEngine> RenderBackend for SkiaBackend<L> {
     fn name(&self) -> &'static str {
         if cfg!(feature = "skia") {
@@ -536,14 +604,7 @@ impl<L: LayoutEngine> RenderBackend for SkiaBackend<L> {
     }
 
     fn submit_frame(&mut self, command_bytes: &[u8]) -> Result<BackendApplyStats, BackendError> {
-        let mut stats = self.layout_tree.submit_frame(command_bytes)?;
-        let t_mount = Instant::now();
-        self.reconcile_scroll_offsets();
-        self.reconcile_focus_state();
-        self.reconcile_motion_after_frame();
-        self.rebuild_display_list();
-        stats.mount_us = t_mount.elapsed().as_micros() as u64;
-        Ok(stats)
+        replay_command_buffer_into(command_bytes, self)
     }
 
     fn drain_events(&mut self) -> Vec<NativeEvent> {

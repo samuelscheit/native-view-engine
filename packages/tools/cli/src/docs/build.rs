@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use nve_backend_web::{SsrDocumentOptions, WebBackend};
 use nve_docs::DocsViewport;
-use nve_engine::RenderBackend;
 use nve_mdx::CompiledSite;
 
 use crate::docs::check::validate_content_dir;
@@ -226,15 +225,11 @@ fn emit_ssr_page(
         base_path,
         DocsViewport::desktop_default(),
         true,
-    )
-    .with_in_process_mode(true);
-    let (_, _, frame_bytes) = surface.render_frame(1);
+    );
     let mut backend = WebBackend::new();
-    backend
-        .submit_frame(&frame_bytes)
-        .map_err(|e| format!("SSR submit_frame failed for '{public_route}': {e}"))?;
-    backend.sync_draw_lists_from(surface.iter_draw_lists());
-    backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
+    surface
+        .flush_into(1, &mut backend)
+        .map_err(|e| format!("SSR flush_into failed for '{public_route}': {e}"))?;
 
     let ssr_preview = backend.render_ssr();
     let css_bytes = ssr_preview.base_css.len() + ssr_preview.style_css.len();
@@ -386,15 +381,11 @@ fn render_404_page(
         base_path,
         DocsViewport::desktop_default(),
         true,
-    )
-    .with_in_process_mode(true);
-    let (_, _, frame_bytes) = surface.render_frame(1);
+    );
     let mut backend = WebBackend::new();
-    backend
-        .submit_frame(&frame_bytes)
-        .map_err(|e| format!("SSR 404 submit_frame failed: {e}"))?;
-    backend.sync_draw_lists_from(surface.iter_draw_lists());
-    backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
+    surface
+        .flush_into(1, &mut backend)
+        .map_err(|e| format!("SSR 404 flush_into failed: {e}"))?;
     Ok(backend.render_ssr_document(&SsrDocumentOptions {
         title: "Native View Engine — Documentation".to_string(),
         description: Some("Native View Engine documentation".to_string()),

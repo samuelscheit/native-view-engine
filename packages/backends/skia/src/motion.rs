@@ -153,6 +153,12 @@ impl MotionDriver {
         !self.active.is_empty() || !self.active_transform.is_empty()
     }
 
+    /// Returns `true` when `id` currently has registered transition specs.
+    #[inline]
+    pub fn has_transitions(&self, id: NodeId) -> bool {
+        self.transitions.contains_key(&id)
+    }
+
     /// Returns the number of nodes with active in-flight transitions.
     #[inline]
     pub fn active_node_count(&self) -> usize {
@@ -371,23 +377,6 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             .effective_transform(id)
             .unwrap_or(Transform2D::IDENTITY);
         self.motion.seed_transform_baseline(id, tf);
-    }
-
-    /// Bulk-synchronizes typed [`TransitionSpec`] slices from any producer (e.g. `DioxusSurface`).
-    pub fn sync_transitions_from<'a>(
-        &mut self,
-        transitions: impl IntoIterator<Item = (NodeId, &'a [TransitionSpec])>,
-    ) {
-        let map: HashMap<NodeId, &'a [TransitionSpec]> = transitions.into_iter().collect();
-        let existing_ids: Vec<NodeId> = self.motion.transitions.keys().copied().collect();
-        for id in existing_ids {
-            if !map.contains_key(&id) {
-                self.motion.set_node_transitions(id, Vec::new());
-            }
-        }
-        for (id, specs) in map {
-            self.set_node_transitions(id, specs.to_vec());
-        }
     }
 
     /// Returns the currently rendered (interpolated) [`StyleProps`] for `node_id`.

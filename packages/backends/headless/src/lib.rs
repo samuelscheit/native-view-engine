@@ -114,6 +114,8 @@ pub struct HeadlessBackend<L: LayoutEngine = TaffyLayoutEngine> {
     pub(crate) pending_events: Vec<NativeEvent>,
     pub(crate) dispatched_commands: Vec<(NodeId, String, Vec<u8>)>,
     pub(crate) typed_dispatched_commands: Vec<(NodeId, TypedNativeViewCommand)>,
+    pub(crate) frame_error: Option<nve_engine::BackendError>,
+    pub(crate) frame_op_count: u32,
 }
 
 impl Default for HeadlessBackend<TaffyLayoutEngine> {
@@ -157,6 +159,8 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             pending_events: Vec::new(),
             dispatched_commands: Vec::new(),
             typed_dispatched_commands: Vec::new(),
+            frame_error: None,
+            frame_op_count: 0,
         };
         this.ensure_node(ROOT_NODE_ID, ComponentKind::Root, None);
         this
@@ -241,6 +245,8 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             pending_events: self.pending_events,
             dispatched_commands: self.dispatched_commands,
             typed_dispatched_commands: self.typed_dispatched_commands,
+            frame_error: None,
+            frame_op_count: 0,
         };
         swapped.recompute_layout();
         swapped

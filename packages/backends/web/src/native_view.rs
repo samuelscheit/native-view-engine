@@ -400,9 +400,14 @@ impl WebBackend {
         let _ = tag_changed;
     }
 
-    /// Applies zero-serialization [`TypedNativeViewProps`] directly to `node_id` without any
-    /// `NVNP` binary encoding or decoding.
-    pub fn set_native_view_props(&mut self, node_id: NodeId, props: &TypedNativeViewProps) {
+    /// Applies zero-serialization [`TypedNativeViewProps`] inside an active `RenderSink` frame,
+    /// recording dirty styles for the single end-of-frame flush.
+    pub(crate) fn apply_typed_native_view_props_in_frame(
+        &mut self,
+        node_id: NodeId,
+        props: &TypedNativeViewProps,
+        dirty_styles: &mut Vec<NodeId>,
+    ) {
         if !self
             .nodes
             .get(&node_id)
@@ -421,44 +426,15 @@ impl WebBackend {
         }
         let _ = apply_typed_props_to_state(state, props);
         let tag_changed = state.resolved_tag != prev;
-        let mut dirty = Vec::with_capacity(1);
-        self.finish_native_view_prop_update(node_id, tag_changed, &mut dirty);
-        if !dirty.is_empty() {
-            self.flush_or_queue_responsive_dirty(dirty);
-        }
+        self.finish_native_view_prop_update(node_id, tag_changed, dirty_styles);
     }
 
-    /// Bulk-synchronizes zero-serialization [`TypedNativeViewProps`] from any producer
-    /// (e.g. `DioxusSurface::iter_native_views`) in a single batched style flush.
-    pub fn sync_native_views_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a TypedNativeViewProps)>,
-    ) {
-        let mut dirty = Vec::new();
-        for (node_id, props) in entries {
-            if !self
-                .nodes
-                .get(&node_id)
-                .is_some_and(|n| n.kind == ComponentKind::Custom)
-            {
-                continue;
-            }
-            let state = self
-                .native_views
-                .entry(node_id)
-                .or_insert_with(|| NativeViewNodeState::new(props.kind().to_owned()));
-            let prev = state.resolved_tag.clone();
-            if state.kind != props.kind() {
-                state.kind = props.kind().to_owned();
-                resolve_kind_defaults(state);
-            }
-            let _ = apply_typed_props_to_state(state, props);
-            let tag_changed = state.resolved_tag != prev;
-            self.finish_native_view_prop_update(node_id, tag_changed, &mut dirty);
-        }
+    /// Applies zero-serialization [`TypedNativeViewProps`] directly to `node_id` without any
+    /// `NVNP` binary encoding or decoding.
+    pub fn set_native_view_props(&mut self, node_id: NodeId, props: &TypedNativeViewProps) {
+        let mut dirty = Vec::with_capacity(1);
+        self.apply_typed_native_view_props_in_frame(node_id, props, &mut dirty);
         if !dirty.is_empty() {
-            dirty.sort_unstable();
-            dirty.dedup();
             self.flush_or_queue_responsive_dirty(dirty);
         }
     }

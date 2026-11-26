@@ -1,10 +1,56 @@
 //! Deep integration tests for zero-serialization `TypedStyle` gradients (`linear_gradient`,
 //! `radial_gradient`, responsive `@media` & `:hover`/`:active` `StylePatch` gradients) and
-//! direct typed `<svg picture: SvgPictureAttr::from(...)>` attachment on `DioxusSurface`.
+//! direct typed `<svg picture: SvgPictureAttr::from(...)>` streaming into `RenderSink` and
+//! round-tripping through `BatchSink` + `replay_command_buffer_into`.
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, ComponentKind, FrameId, LayoutProps, NodeId, RawPropValueRef, StyleProps, SurfaceId};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
+use nve_engine::{replay_command_buffer_into, BackendApplyStats, BackendError, RenderSink};
+
+#[derive(Default)]
+struct GraphicsSink {
+    fills: Vec<(NodeId, BackgroundFill)>,
+    state_rules: Vec<(NodeId, Vec<StateStyleRule>)>,
+    responsive_rules: Vec<(NodeId, Vec<ResponsiveRule>)>,
+    svgs: Vec<(NodeId, SvgPicture)>,
+}
+
+impl RenderSink for GraphicsSink {
+    fn begin_frame(&mut self, _: SurfaceId, _: FrameId) {}
+    fn create_node(&mut self, _: NodeId, _: ComponentKind, _: Option<&str>) {}
+    fn remove_node(&mut self, _: NodeId) {}
+    fn set_children(&mut self, _: NodeId, _: &[NodeId]) {}
+    fn set_text(&mut self, _: NodeId, _: &str) {}
+    fn set_layout(&mut self, _: NodeId, _: &LayoutProps) {}
+    fn set_style(&mut self, _: NodeId, _: &StyleProps) {}
+    fn set_raw_prop(&mut self, _: NodeId, _: &str, _: RawPropValueRef<'_>) {}
+    fn set_event_mask(&mut self, _: NodeId, _: u64) {}
+    fn dispatch_command(&mut self, _: NodeId, _: &str, _: &[u8]) {}
+    fn set_background_fill(&mut self, node_id: NodeId, fill: Option<&BackgroundFill>) {
+        if let Some(f) = fill {
+            self.fills.push((node_id, f.clone()));
+        }
+    }
+    fn set_state_rules(&mut self, node_id: NodeId, rules: &[StateStyleRule]) {
+        if !rules.is_empty() {
+            self.state_rules.push((node_id, rules.to_vec()));
+        }
+    }
+    fn set_responsive_rules(&mut self, node_id: NodeId, rules: &[ResponsiveRule]) {
+        if !rules.is_empty() {
+            self.responsive_rules.push((node_id, rules.to_vec()));
+        }
+    }
+    fn set_svg(&mut self, node_id: NodeId, svg: Option<&SvgPicture>) {
+        if let Some(p) = svg {
+            self.svgs.push((node_id, p.clone()));
+        }
+    }
+    fn commit_frame(&mut self, _: bool) -> Result<BackendApplyStats, BackendError> {
+        Ok(BackendApplyStats::default())
+    }
+}
 
 fn rich_graphics_app() -> Element {
     let icon = SvgPicture::from_paths(24.0, 24.0, &["M4 12 L20 12 M14 6 L20 12 L14 18"]);
@@ -72,41 +118,44 @@ fn rich_graphics_app() -> Element {
     }
 }
 
-#[test]
-fn dioxus_surface_stores_typed_gradients_and_svg_pictures_with_zero_serialization() {
-    let mut surface = DioxusSurface::new(1, rich_graphics_app).with_in_process_mode(true);
-    let (_, _, bytes) = surface.render_frame(1);
-    assert!(!bytes.is_empty());
+fn assert_graphics_sink(sink: &GraphicsSink) {
+    assert_eq!(sink.fills.len(), 2, "expected linear card + radial badge fills");
+    assert!(sink.fills.iter().any(|(_, f)| matches!(f, BackgroundFill::Linear(lg) if (lg.angle_deg - 135.0).abs() < 1e-3 && lg.stops.len() == 2)));
+    assert!(sink.fills.iter().any(|(_, f)| matches!(f, BackgroundFill::Radial(rg) if (rg.center_x - 0.5).abs() < 1e-3 && rg.stops.len() == 2)));
 
-    let fills: Vec<_> = surface
-        .iter_background_fills()
-        .map(|(id, f)| (id, f.clone()))
-        .collect();
-    assert_eq!(fills.len(), 2, "expected linear card + radial badge fills");
-    assert!(fills.iter().any(|(_, f)| matches!(f, BackgroundFill::Linear(lg) if (lg.angle_deg - 135.0).abs() < 1e-3 && lg.stops.len() == 2)));
-    assert!(fills.iter().any(|(_, f)| matches!(f, BackgroundFill::Radial(rg) if (rg.center_x - 0.5).abs() < 1e-3 && rg.stops.len() == 2)));
-
-    // Hover & responsive patches retain typed BackgroundFill without stringification.
-    assert!(surface.iter_state_rules().any(|(_, rules)| {
+    assert!(sink.state_rules.iter().any(|(_, rules)| {
         rules.iter().any(|r| {
             r.state == InteractionState::HOVER
                 && matches!(r.patch.background_fill, Some(BackgroundFill::Linear(_)))
         })
     }));
-    assert!(surface.iter_responsive_rules().any(|(_, rules)| {
+    assert!(sink.responsive_rules.iter().any(|(_, rules)| {
         rules.iter().any(|r| {
             matches!(r.patch.background_fill, Some(BackgroundFill::Radial(_)))
         })
     }));
 
-    // Typed SvgPicture attached directly on `<svg>` node without stringifying/re-parsing.
-    let svgs: Vec<_> = surface
-        .iter_svg_pictures()
-        .map(|(id, pic)| (id, pic.clone()))
-        .collect();
-    assert_eq!(svgs.len(), 1);
-    let (svg_id, pic) = &svgs[0];
+    assert_eq!(sink.svgs.len(), 1);
+    let (_, pic) = &sink.svgs[0];
     assert_eq!(pic.view_box, (0.0, 0.0, 24.0, 24.0));
     assert_eq!(pic.shapes.len(), 1);
+}
+
+#[test]
+fn dioxus_surface_streams_typed_gradients_and_svg_directly_and_across_batch_sink() {
+    // 1. Direct in-process zero-serialization flush_into.
+    let mut surface = DioxusSurface::new(1, rich_graphics_app);
+    let mut direct_sink = GraphicsSink::default();
+    surface.flush_into(1, &mut direct_sink).unwrap();
+    assert_graphics_sink(&direct_sink);
+    let (svg_id, pic) = &direct_sink.svgs[0];
     assert_eq!(surface.node_svg_picture(*svg_id), Some(pic));
+
+    // 2. Cross-boundary BatchSink + replay_command_buffer_into preserves every extended prop!
+    let mut batch_surface = DioxusSurface::new(1, rich_graphics_app);
+    let (_, _, bytes) = batch_surface.render_frame(1);
+    assert!(!bytes.is_empty());
+    let mut replayed_sink = GraphicsSink::default();
+    replay_command_buffer_into(&bytes, &mut replayed_sink).unwrap();
+    assert_graphics_sink(&replayed_sink);
 }

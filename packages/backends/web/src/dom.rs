@@ -75,7 +75,9 @@ pub fn raw_prop_route(key: &str) -> RawPropRoute {
         RawPropRoute::NativeView
     } else if is_raw_style_prop(key) {
         RawPropRoute::Style
-    } else if matches!(key, "style" | "class" | "data-nve-id" | "data-nve-ssr-hash") {
+    } else if key.starts_with(nve_components::extended_wire::EXT_PROP_PREFIX)
+        || matches!(key, "style" | "class" | "data-nve-id" | "data-nve-ssr-hash")
+    {
         RawPropRoute::Reserved
     } else {
         RawPropRoute::Attribute

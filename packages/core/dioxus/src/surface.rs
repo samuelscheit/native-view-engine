@@ -1,4 +1,6 @@
-//! `DioxusSurface` lifecycle, zero-copy `render_frame_slice`, signal hydration, and hot-patch queueing.
+//! `DioxusSurface` lifecycle, monomorphized zero-overhead `flush_into<S: RenderSink>`,
+//! cross-boundary `BatchSink` (`render_frame_slice` / `render_frame`), signal hydration, and
+//! hot-patch queueing.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -14,7 +16,7 @@ use nve_components::native_view::TypedNativeViewProps;
 use nve_components::paint::BackgroundFill;
 use nve_components::svg::SvgPicture;
 use nve_components::transform::Transform2D;
-use nve_engine::HotPatchMsg;
+use nve_engine::{BackendApplyStats, BackendError, BatchSink, HotPatchMsg, RenderSink};
 
 use crate::signal_archive::{HydrationReport, SignalArchiveError, SignalRegistry};
 use crate::writer::NveMutationWriter;
@@ -47,7 +49,9 @@ impl FrameTimer {
     }
 }
 
-/// Complete Dioxus-backed surface producing batched `nve-abi` `CommandBuffer` frames.
+/// Non-generic Dioxus-backed surface flushing directly into any monomorphized [`RenderSink`]
+/// in-process (zero encode/decode, zero vtable) and lazily using [`BatchSink`] only when
+/// cross-boundary binary `CommandBuffer` output is requested.
 pub struct DioxusSurface {
     surface_id: SurfaceId,
     pub(crate) vdom: VirtualDom,
@@ -55,6 +59,7 @@ pub struct DioxusSurface {
     initialized: bool,
     pending_hot_patches: Vec<HotPatchMsg>,
     signal_registry: SignalRegistry,
+    batch_sink: Option<BatchSink>,
 }
 
 impl DioxusSurface {
@@ -66,6 +71,7 @@ impl DioxusSurface {
             initialized: false,
             pending_hot_patches: Vec::new(),
             signal_registry: SignalRegistry::new(1),
+            batch_sink: None,
         }
     }
 
@@ -116,158 +122,62 @@ impl DioxusSurface {
         &mut self.signal_registry
     }
 
-    /// Direct typed [`MediaQuery`] visibility gate stored on `node_id` (zero serialization).
     #[inline]
     pub fn node_show_on(&self, node_id: NodeId) -> Option<MediaQuery> {
         self.writer.node_show_on(node_id)
     }
 
-    /// Direct typed [`ResponsiveRule`] slice stored on `node_id` (zero serialization).
     #[inline]
     pub fn node_responsive_rules(&self, node_id: NodeId) -> &[ResponsiveRule] {
         self.writer.node_responsive_rules(node_id)
     }
 
-    /// Iterates over all active nodes with a declarative [`MediaQuery`] visibility gate.
-    #[inline]
-    pub fn iter_show_on(&self) -> impl Iterator<Item = (NodeId, MediaQuery)> + '_ {
-        self.writer.iter_show_on()
-    }
-
-    /// Iterates over all active nodes with one or more [`ResponsiveRule`] style overrides.
-    #[inline]
-    pub fn iter_responsive_rules(&self) -> impl Iterator<Item = (NodeId, &[ResponsiveRule])> + '_ {
-        self.writer.iter_responsive_rules()
-    }
-
-    /// Direct typed [`CursorKind`] stored on `node_id` (zero serialization).
     #[inline]
     pub fn node_cursor(&self, node_id: NodeId) -> Option<CursorKind> {
         self.writer.node_cursor(node_id)
     }
 
-    /// Direct typed [`StateStyleRule`] slice stored on `node_id` (zero serialization).
     #[inline]
     pub fn node_state_rules(&self, node_id: NodeId) -> &[StateStyleRule] {
         self.writer.node_state_rules(node_id)
     }
 
-    /// Iterates over all active nodes with an explicit [`CursorKind`].
-    #[inline]
-    pub fn iter_cursors(&self) -> impl Iterator<Item = (NodeId, CursorKind)> + '_ {
-        self.writer.iter_cursors()
-    }
-
-    /// Iterates over all active nodes with one or more interactive [`StateStyleRule`] overrides.
-    #[inline]
-    pub fn iter_state_rules(&self) -> impl Iterator<Item = (NodeId, &[StateStyleRule])> + '_ {
-        self.writer.iter_state_rules()
-    }
-
-    /// Direct typed [`TransitionSpec`] slice stored on `node_id` (zero serialization).
     #[inline]
     pub fn node_transitions(&self, node_id: NodeId) -> &[TransitionSpec] {
         self.writer.node_transitions(node_id)
     }
 
-    /// Iterates over all active nodes with one or more declarative [`TransitionSpec`]s.
-    #[inline]
-    pub fn iter_transitions(&self) -> impl Iterator<Item = (NodeId, &[TransitionSpec])> + '_ {
-        self.writer.iter_transitions()
-    }
-
-    /// Direct typed [`LayoutExt`] stored on `node_id` (zero serialization).
     #[inline]
     pub fn node_layout_ext(&self, node_id: NodeId) -> Option<&LayoutExt> {
         self.writer.node_layout_ext(node_id)
     }
 
-    /// Iterates over all active nodes with non-default [`LayoutExt`] metadata.
-    #[inline]
-    pub fn iter_layout_ext(&self) -> impl Iterator<Item = (NodeId, &LayoutExt)> + '_ {
-        self.writer.iter_layout_ext()
-    }
-
-    /// Direct typed [`Transform2D`] stored on `node_id` (zero serialization).
     #[inline]
     pub fn node_transform(&self, node_id: NodeId) -> Option<Transform2D> {
         self.writer.node_transform(node_id)
     }
 
-    /// Iterates over all active nodes with an explicit [`Transform2D`].
-    #[inline]
-    pub fn iter_transforms(&self) -> impl Iterator<Item = (NodeId, Transform2D)> + '_ {
-        self.writer.iter_transforms()
-    }
-
-    /// Enables or disables pure in-process mode (zero `NVE_DRAW1` and zero `NVNP` wire encoding
-    /// in `CommandBuffer`; backends receive direct typed [`DrawList`] & [`TypedNativeViewProps`]).
-    #[inline]
-    pub fn set_in_process_mode(&mut self, enabled: bool) {
-        self.writer.set_in_process_mode(enabled);
-    }
-
-    /// Builder-style variant of [`Self::set_in_process_mode`].
-    #[inline]
-    pub fn with_in_process_mode(mut self, enabled: bool) -> Self {
-        self.writer.set_in_process_mode(enabled);
-        self
-    }
-
-    #[inline]
-    pub fn in_process_mode(&self) -> bool {
-        self.writer.in_process_mode()
-    }
-
-    /// Direct zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) stored on `node_id`.
     #[inline]
     pub fn node_draw_list(&self, node_id: NodeId) -> Option<&DrawList> {
         self.writer.node_draw_list(node_id)
     }
 
-    /// Iterates over all active canvas nodes with a direct typed [`DrawList`].
-    #[inline]
-    pub fn iter_draw_lists(&self) -> impl Iterator<Item = (NodeId, &DrawList)> + '_ {
-        self.writer.iter_draw_lists()
-    }
-
-    /// Direct zero-serialization [`TypedNativeViewProps`] stored on `node_id`.
     #[inline]
     pub fn node_native_view_props(&self, node_id: NodeId) -> Option<&TypedNativeViewProps> {
         self.writer.node_native_view_props(node_id)
     }
 
-    /// Iterates over all active `<NativeView>` nodes with direct typed [`TypedNativeViewProps`].
-    #[inline]
-    pub fn iter_native_views(&self) -> impl Iterator<Item = (NodeId, &TypedNativeViewProps)> + '_ {
-        self.writer.iter_native_views()
-    }
-
-    /// Direct zero-serialization [`BackgroundFill`] stored on `node_id`.
     #[inline]
     pub fn node_background_fill(&self, node_id: NodeId) -> Option<&BackgroundFill> {
         self.writer.node_background_fill(node_id)
     }
 
-    /// Iterates over all active nodes with a direct typed [`BackgroundFill`].
-    #[inline]
-    pub fn iter_background_fills(&self) -> impl Iterator<Item = (NodeId, &BackgroundFill)> + '_ {
-        self.writer.iter_background_fills()
-    }
-
-    /// Direct zero-serialization [`SvgPicture`] stored on `node_id`.
     #[inline]
     pub fn node_svg_picture(&self, node_id: NodeId) -> Option<&SvgPicture> {
         self.writer.node_svg_picture(node_id)
     }
 
-    /// Iterates over all active nodes with a direct typed [`SvgPicture`].
-    #[inline]
-    pub fn iter_svg_pictures(&self) -> impl Iterator<Item = (NodeId, &SvgPicture)> + '_ {
-        self.writer.iter_svg_pictures()
-    }
-
-    /// Encodes all signals registered on this surface into a binary `NVE_SIG1` binary archive.
+    /// Encodes all signals registered on this surface into a binary `NVE_SIG1` archive.
     pub fn snapshot_signals(&self) -> Result<Vec<u8>, SignalArchiveError> {
         self.signal_registry.encode_full()
     }
@@ -278,43 +188,114 @@ impl DioxusSurface {
         self.signal_registry.hydrate_from_bytes(bytes)
     }
 
-    fn reconcile_frame(&mut self, frame_id: FrameId) {
-        self.writer.begin_frame(self.surface_id, frame_id);
-        if !self.initialized {
-            self.vdom.rebuild(&mut self.writer);
+    fn reconcile_into_parts<S: RenderSink>(
+        surface_id: SurfaceId,
+        vdom: &mut VirtualDom,
+        writer: &mut NveMutationWriter,
+        initialized: &mut bool,
+        pending_hot_patches: &mut Vec<HotPatchMsg>,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<(u64, BackendApplyStats), BackendError> {
+        let t_rec = FrameTimer::start();
+        let mut tx = writer.begin_tx(sink, surface_id, frame_id);
+        if !*initialized {
+            vdom.rebuild(&mut tx);
             // Flush any scopes dirtied during initial mount (e.g. an ErrorBoundary catching a
             // child's initial render error/panic) so frame 1 immediately emits the fallback UI.
-            self.vdom.render_immediate(&mut self.writer);
-            self.initialized = true;
+            vdom.render_immediate(&mut tx);
+            *initialized = true;
         } else {
-            self.vdom.render_immediate(&mut self.writer);
+            vdom.render_immediate(&mut tx);
             // Flush any follow-up scopes queued during render (e.g. an ErrorBoundary catching a
-            // child's `Result::Err` or panic during an incremental update, which queues its
-            // subscriber onto the runtime event channel without draining mid-pass).
-            self.vdom.render_immediate(&mut self.writer);
+            // child's `Result::Err` or panic during an incremental update).
+            vdom.render_immediate(&mut tx);
         }
-        for patch in self.pending_hot_patches.drain(..) {
-            self.writer.apply_hot_patch(&patch);
+        for patch in pending_hot_patches.drain(..) {
+            tx.writer.apply_hot_patch(tx.sink, &patch);
         }
-    }
-
-    /// Reconciles the `VirtualDom` and returns a zero-copy slice of the encoded binary
-    /// `CommandBuffer` valid until the next frame call.
-    pub fn render_frame_slice(&mut self, frame_id: FrameId) -> &[u8] {
-        self.reconcile_frame(frame_id);
-        self.writer.finish_frame(true)
-    }
-
-    /// Reconciles the `VirtualDom` and returns `(reconcile_us, encode_us, command_buffer_bytes)`.
-    pub fn render_frame(&mut self, frame_id: FrameId) -> (u64, u64, Vec<u8>) {
-        let t_rec = FrameTimer::start();
-        self.reconcile_frame(frame_id);
         let reconcile_us = t_rec.elapsed_us();
+        let stats = tx.finish_frame(true)?;
+        Ok((reconcile_us, stats))
+    }
 
+    /// Reconciles the `VirtualDom` and streams all core & extended typed mutations directly into
+    /// `sink` with zero binary encoding, zero decoding, and zero vtable indirection.
+    #[inline]
+    pub fn flush_into<S: RenderSink>(
+        &mut self,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<BackendApplyStats, BackendError> {
+        let (_, stats) = Self::reconcile_into_parts(
+            self.surface_id,
+            &mut self.vdom,
+            &mut self.writer,
+            &mut self.initialized,
+            &mut self.pending_hot_patches,
+            frame_id,
+            sink,
+        )?;
+        Ok(stats)
+    }
+
+    /// Timed variant of [`Self::flush_into`] returning `(reconcile_us, stats)` for `SurfaceRunner`
+    /// profiling.
+    #[inline]
+    pub fn flush_into_timed<S: RenderSink>(
+        &mut self,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<(u64, BackendApplyStats), BackendError> {
+        Self::reconcile_into_parts(
+            self.surface_id,
+            &mut self.vdom,
+            &mut self.writer,
+            &mut self.initialized,
+            &mut self.pending_hot_patches,
+            frame_id,
+            sink,
+        )
+    }
+
+    /// Reconciles the `VirtualDom` into the lazy cross-boundary [`BatchSink`] and returns a
+    /// zero-copy `CommandBuffer` slice valid until the next frame call.
+    pub fn render_frame_slice(&mut self, frame_id: FrameId) -> &[u8] {
+        let sink = self
+            .batch_sink
+            .get_or_insert_with(|| BatchSink::new(self.surface_id));
+        let _ = Self::reconcile_into_parts(
+            self.surface_id,
+            &mut self.vdom,
+            &mut self.writer,
+            &mut self.initialized,
+            &mut self.pending_hot_patches,
+            frame_id,
+            sink,
+        );
+        sink.bytes()
+    }
+
+    /// Reconciles the `VirtualDom` into the lazy cross-boundary [`BatchSink`] and returns
+    /// `(reconcile_us, encode_us, command_buffer_bytes)`.
+    pub fn render_frame(&mut self, frame_id: FrameId) -> (u64, u64, Vec<u8>) {
+        let sink = self
+            .batch_sink
+            .get_or_insert_with(|| BatchSink::new(self.surface_id));
         let t_enc = FrameTimer::start();
-        let bytes = self.writer.finish_frame(true).to_vec();
-        let encode_us = t_enc.elapsed_us();
-        (reconcile_us, encode_us, bytes)
+        let reconcile_us = Self::reconcile_into_parts(
+            self.surface_id,
+            &mut self.vdom,
+            &mut self.writer,
+            &mut self.initialized,
+            &mut self.pending_hot_patches,
+            frame_id,
+            sink,
+        )
+        .map_or(0, |(r, _)| r);
+        let total_us = t_enc.elapsed_us();
+        let encode_us = total_us.saturating_sub(reconcile_us);
+        (reconcile_us, encode_us, sink.to_vec())
     }
 
     pub fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {

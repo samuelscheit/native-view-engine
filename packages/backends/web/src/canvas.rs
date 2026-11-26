@@ -1,7 +1,6 @@
 //! `NVE_DRAW1` vector draw-list decoding and `CanvasRenderingContext2d` rendering for `<canvas>`
 //! (`ComponentKind::SkiaCanvas`) nodes in `nve-backend-web`.
 
-use nve_abi::hash::HashMap;
 use nve_abi::{NodeId, RawPropValue};
 use nve_components::canvas_ir::{CanvasOp, DrawList, DrawListDecoder, DrawListError};
 
@@ -49,46 +48,6 @@ impl WebBackend {
                 self.sync_dom_draw_ops_attr(node_id);
                 self.repaint_canvas_node(node_id);
             }
-        }
-    }
-
-    /// Bulk-synchronizes zero-serialization [`DrawList`]s from any producer
-    /// (e.g. `DioxusSurface::iter_draw_lists`), updating `data-nve-draw-ops` and repainting only
-    /// canvases whose draw list changed.
-    pub fn sync_draw_lists_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a DrawList)>,
-    ) {
-        let map: HashMap<NodeId, &'a DrawList> = entries.into_iter().collect();
-        #[cfg(target_arch = "wasm32")]
-        let mut dirty: Vec<NodeId> = Vec::new();
-        for (&id, el) in &mut self.nodes {
-            match map.get(&id).copied() {
-                Some(next) => {
-                    if !(el.draw_ops.ptr_eq(next) || el.draw_ops == *next) {
-                        el.draw_op_count = next.len();
-                        el.draw_ops = next.clone();
-                        #[cfg(target_arch = "wasm32")]
-                        dirty.push(id);
-                    }
-                }
-                None => {
-                    // Only clear nodes that weren't populated via wire `raw_props["drawList"]`.
-                    let has_wire_prop = el.raw_props.contains_key("drawList")
-                        || el.raw_props.contains_key("draw_list");
-                    if !has_wire_prop && !el.draw_ops.is_empty() {
-                        el.draw_op_count = 0;
-                        el.draw_ops = DrawList::empty();
-                        #[cfg(target_arch = "wasm32")]
-                        dirty.push(id);
-                    }
-                }
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        for nid in dirty {
-            self.sync_dom_draw_ops_attr(nid);
-            self.repaint_canvas_node(nid);
         }
     }
 }

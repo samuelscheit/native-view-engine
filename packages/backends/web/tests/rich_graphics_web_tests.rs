@@ -102,8 +102,8 @@ fn sync_hero_typed_metadata(web: &mut WebBackend) {
     web.set_node_layout_ext(3, Some(rtl_ext));
     web.set_node_responsive_rules(2, vec![media_rule]);
     web.set_node_state_rules(2, vec![hover_rule, active_rule]);
-    web.sync_background_fills_from([(2, &base_grad)]);
-    web.sync_svgs_from([(3, &icon)]);
+    web.set_node_background_fill(2, Some(base_grad));
+    web.set_node_svg(3, Some(icon));
 }
 
 #[test]

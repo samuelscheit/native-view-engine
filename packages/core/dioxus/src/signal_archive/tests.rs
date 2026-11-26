@@ -347,7 +347,10 @@ fn live_dioxus_signal_registers_snapshots_and_hydrates() {
 
     let mut vdom = VirtualDom::new(app);
     let mut writer = crate::NveMutationWriter::new(1);
-    vdom.rebuild(&mut writer);
+    let mut sink = nve_engine::BatchSink::new(1);
+    let mut tx = writer.begin_tx(&mut sink, 1, 1);
+    vdom.rebuild(&mut tx);
+    let _ = tx.finish_frame(true);
 
     assert!(CAPTURED.lock().unwrap().is_some());
     assert_eq!(*HYDRATED_VAL.lock().unwrap(), Some(19));

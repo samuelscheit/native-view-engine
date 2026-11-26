@@ -6,7 +6,7 @@
 //! `attr_updates` or text overwrites onto unrelated sibling nodes.
 
 use nve_abi::{ComponentKind, NodeId, ROOT_NODE_ID};
-use nve_engine::HotPatchMsg;
+use nve_engine::{HotPatchMsg, RenderSink};
 
 use crate::NveMutationWriter;
 
@@ -84,7 +84,7 @@ impl NveMutationWriter {
     }
 
     /// Applies a Tier-1 live template/style/text hot patch surgically to matching nodes (<10ms).
-    pub fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
+    pub fn apply_hot_patch<S: RenderSink>(&mut self, sink: &mut S, patch: &HotPatchMsg) -> bool {
         let HotPatchMsg::TemplatePatch {
             template_id,
             attr_updates,
@@ -149,7 +149,7 @@ impl NveMutationWriter {
 
                 for nid in targets {
                     self.record_text(nid, new_text);
-                    self.builder.set_text(nid, new_text);
+                    sink.set_text(nid, new_text);
                     matched_text_nodes.push(nid);
                     changed = true;
                 }
@@ -211,7 +211,7 @@ impl NveMutationWriter {
                 });
                 if let Some(nid) = target {
                     self.record_text(nid, text);
-                    self.builder.set_text(nid, text);
+                    sink.set_text(nid, text);
                     changed = true;
                 }
             }
@@ -256,7 +256,7 @@ impl NveMutationWriter {
 
             for (k, v) in attr_updates {
                 for &nid in &attr_targets {
-                    self.apply_str_attr(nid, k, v);
+                    self.apply_str_attr(sink, nid, k, v);
                     changed = true;
                 }
             }

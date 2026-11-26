@@ -100,7 +100,8 @@ pub use typed_style::{
     parse_flex_align, parse_flex_direction, parse_flex_justify, ShowOn, TypedStyle,
     NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR,
 };
-pub use writer::NveMutationWriter;
+pub use nve_engine::{BatchSink, RenderSink};
+pub use writer::{MutationTx, NveMutationWriter};
 
 use dioxus_core::Event;
 

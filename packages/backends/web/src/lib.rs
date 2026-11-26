@@ -18,6 +18,7 @@ mod dom;
 mod event_replay;
 mod events;
 mod frame;
+mod frame_ext;
 mod hot_patch;
 mod html;
 #[cfg(feature = "hydrate")]
@@ -212,6 +213,18 @@ pub struct WebBackend {
     pub(crate) surface_id: Rc<Cell<SurfaceId>>,
     pub(crate) viewport: Viewport,
     pub(crate) frame_counter: u64,
+    pub(crate) frame_op_count: u32,
+    pub(crate) frame_mutations: u32,
+    pub(crate) frame_replaced_existing: bool,
+    pub(crate) frame_dirty_styles: Vec<NodeId>,
+    #[cfg(feature = "hydrate")]
+    pub(crate) frame_hydrated_seen: Vec<NodeId>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) frame_dirty_canvases: Vec<NodeId>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) frame_dirty_svgs: Vec<NodeId>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) frame_dirty_dirs: Vec<NodeId>,
     pub(crate) nodes: HashMap<NodeId, MirrorElement>,
     #[cfg(any(
         feature = "nv-blur",
@@ -304,6 +317,18 @@ impl WebBackend {
             surface_id: Rc::new(Cell::new(1)),
             viewport: Viewport::default(),
             frame_counter: 0,
+            frame_op_count: 0,
+            frame_mutations: 0,
+            frame_replaced_existing: false,
+            frame_dirty_styles: Vec::new(),
+            #[cfg(feature = "hydrate")]
+            frame_hydrated_seen: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            frame_dirty_canvases: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            frame_dirty_svgs: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            frame_dirty_dirs: Vec::new(),
             nodes,
             #[cfg(any(
                 feature = "nv-blur",

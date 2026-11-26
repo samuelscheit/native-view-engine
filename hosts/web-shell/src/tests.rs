@@ -461,7 +461,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     let html_top = session.backend().render_html();
     assert!(html_top.contains("Rows #0..") || html_top.contains("STR-00001"));
 
-    // 6. Metrics view `<canvas>` decodes `NVE_DRAW1` draw list into typed `CanvasOp`s.
+    // 6. Metrics view `<canvas>` receives direct typed `DrawList` ops without raw `drawList` bytes.
     press_test_id(&mut session, "nav-metrics", 5000);
     let canvas_id = find_node_by_test_id(session.backend(), "metrics-sparkline-canvas")
         .expect("expected metrics-sparkline-canvas");
@@ -469,13 +469,13 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert_eq!(canvas_el.kind, ComponentKind::SkiaCanvas);
     assert!(
         canvas_el.draw_op_count > 3,
-        "expected decoded NVE_DRAW1 draw ops on metrics canvas, got {}",
+        "expected direct typed DrawList ops on metrics canvas, got {}",
         canvas_el.draw_op_count
     );
-    assert!(matches!(
-        canvas_el.raw_props.get("drawList"),
-        Some(RawPropValue::Bytes(_))
-    ));
+    assert!(
+        !canvas_el.raw_props.contains_key("drawList"),
+        "in-process RenderSink must not serialize drawList into raw_props"
+    );
 
     // 7. Dynamic viewport resize across 620pt mobile breakpoint and back to desktop.
     assert!(find_node_by_test_id(session.backend(), "desktop-sidebar").is_some());

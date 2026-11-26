@@ -1,11 +1,11 @@
 //! Integration tests for `signal_archive` 3-way hot-reload reconciliation and zero-serialization
-//! direct `TypedStyle` / `nve_show_on` storage on `NodeRecord` / `DioxusSurface`.
+//! direct `TypedStyle` / `nve_show_on` streaming via `RenderSink`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, ElementId, IntoAttributeValue, WriteMutations};
-use nve_abi::{Command, CommandDecoder, RawPropValue};
+use nve_abi::{ComponentKind, FrameId, LayoutProps, NodeId, RawPropValueRef, StyleProps, SurfaceId};
 use nve_components::media::{
     FlexWrap, MediaColorScheme, MediaQuery, Overflow, ResponsiveStylePatch, TextAlign,
 };
@@ -15,13 +15,37 @@ use nve_dioxus::{
     reconcile_signal_entry, DioxusSurface, NveMutationWriter, SignalRegistry, SignalTableSnapshot,
     SignalValue,
 };
+use nve_engine::{replay_command_buffer_into, BackendApplyStats, BackendError, RenderSink};
 
-fn decode_cmds(bytes: &[u8]) -> Vec<Command> {
-    CommandDecoder::new(bytes)
-        .expect("valid command buffer header")
-        .decode_all()
-        .expect("valid command buffer")
-        .1
+#[derive(Default)]
+struct MediaSink {
+    show_ons: Vec<(NodeId, Option<MediaQuery>)>,
+    responsive_rules: Vec<(NodeId, Vec<ResponsiveRule>)>,
+}
+
+impl RenderSink for MediaSink {
+    fn begin_frame(&mut self, _: SurfaceId, _: FrameId) {
+        self.show_ons.clear();
+        self.responsive_rules.clear();
+    }
+    fn create_node(&mut self, _: NodeId, _: ComponentKind, _: Option<&str>) {}
+    fn remove_node(&mut self, _: NodeId) {}
+    fn set_children(&mut self, _: NodeId, _: &[NodeId]) {}
+    fn set_text(&mut self, _: NodeId, _: &str) {}
+    fn set_layout(&mut self, _: NodeId, _: &LayoutProps) {}
+    fn set_style(&mut self, _: NodeId, _: &StyleProps) {}
+    fn set_raw_prop(&mut self, _: NodeId, _: &str, _: RawPropValueRef<'_>) {}
+    fn set_event_mask(&mut self, _: NodeId, _: u64) {}
+    fn dispatch_command(&mut self, _: NodeId, _: &str, _: &[u8]) {}
+    fn set_show_on(&mut self, node_id: NodeId, query: Option<MediaQuery>) {
+        self.show_ons.push((node_id, query));
+    }
+    fn set_responsive_rules(&mut self, node_id: NodeId, rules: &[ResponsiveRule]) {
+        self.responsive_rules.push((node_id, rules.to_vec()));
+    }
+    fn commit_frame(&mut self, _: bool) -> Result<BackendApplyStats, BackendError> {
+        Ok(BackendApplyStats::default())
+    }
 }
 
 #[test]
@@ -53,7 +77,6 @@ fn signal_archive_three_way_hot_reload_reconciliation() {
     assert_eq!(converged.kind, DivergenceKind::Converged);
     assert_eq!(converged.resolved, SignalValue::I64(25));
 
-    // End-to-end SignalRegistry::hydrate_hot_reload:
     let mut old_reg = SignalRegistry::new(1);
     let old_count = Rc::new(RefCell::new(0i64));
     let old_theme = Rc::new(RefCell::new("light".to_string()));
@@ -108,7 +131,7 @@ fn signal_archive_three_way_hot_reload_reconciliation() {
 }
 
 #[test]
-fn dioxus_surface_stores_typed_show_on_and_responsive_rules_with_zero_serialization() {
+fn dioxus_surface_streams_typed_show_on_and_responsive_rules_with_zero_serialization() {
     fn app() -> Element {
         let sidebar_style = TypedStyle::new()
             .width_px(260.0)
@@ -139,31 +162,18 @@ fn dioxus_surface_stores_typed_show_on_and_responsive_rules_with_zero_serializat
     }
 
     let mut surface = DioxusSurface::new(1, app);
-    let (_, _, frame_bytes) = surface.render_frame(1);
-    let cmds = decode_cmds(&frame_bytes);
+    let mut sink = MediaSink::default();
+    surface.flush_into(1, &mut sink).unwrap();
 
-    // Zero byte serialization in CommandBuffer for in-process responsive props!
-    assert!(!cmds.iter().any(|c| matches!(
-        c,
-        Command::SetRawProp {
-            key,
-            value: RawPropValue::Bytes(_),
-            ..
-        } if key == "nve-show-on" || key == "nve-media"
-    )));
+    sink.show_ons.sort_by_key(|(id, _)| *id);
+    assert_eq!(sink.show_ons.len(), 2);
+    assert_eq!(sink.show_ons[0].1, Some(MediaQuery::min_width(960)));
+    assert_eq!(sink.show_ons[1].1, Some(MediaQuery::max_width(959)));
+    assert_eq!(surface.node_show_on(sink.show_ons[0].0), Some(MediaQuery::min_width(960)));
 
-    // Direct zero-copy typed access via DioxusSurface getters!
-    let mut show_ons: Vec<_> = surface.iter_show_on().collect();
-    show_ons.sort_by_key(|(id, _)| *id);
-    assert_eq!(show_ons.len(), 2);
-    assert_eq!(show_ons[0].1, MediaQuery::min_width(960));
-    assert_eq!(show_ons[1].1, MediaQuery::max_width(959));
-    assert_eq!(surface.node_show_on(show_ons[0].0), Some(MediaQuery::min_width(960)));
-
-    let rules_entries: Vec<_> = surface.iter_responsive_rules().collect();
-    assert_eq!(rules_entries.len(), 1);
-    let (sidebar_id, rules) = rules_entries[0];
-    assert_eq!(sidebar_id, show_ons[0].0);
+    assert_eq!(sink.responsive_rules.len(), 1);
+    let (sidebar_id, ref rules) = sink.responsive_rules[0];
+    assert_eq!(sidebar_id, sink.show_ons[0].0);
     assert_eq!(rules.len(), 3);
     assert_eq!(rules[0].query, MediaQuery::compact());
     assert_eq!(
@@ -172,47 +182,61 @@ fn dioxus_surface_stores_typed_show_on_and_responsive_rules_with_zero_serializat
     );
     assert_eq!(rules[1].patch.font_weight, Some(600));
     assert_eq!(rules[2].query, MediaQuery::expanded());
-    assert_eq!(surface.node_responsive_rules(sidebar_id), rules);
+    assert_eq!(surface.node_responsive_rules(sidebar_id), rules.as_slice());
+
+    // Cross-boundary BatchSink + replay reproduces exact same responsive metadata.
+    let mut wire_surface = DioxusSurface::new(1, app);
+    let (_, _, bytes) = wire_surface.render_frame(1);
+    let mut replayed = MediaSink::default();
+    replay_command_buffer_into(&bytes, &mut replayed).unwrap();
+    replayed.show_ons.sort_by_key(|(id, _)| *id);
+    assert_eq!(replayed.show_ons, sink.show_ons);
+    assert_eq!(replayed.responsive_rules, sink.responsive_rules);
 }
 
 #[test]
 fn mutation_writer_handles_direct_media_query_composition_and_clearing() {
     let mut writer = NveMutationWriter::new(1);
-    writer.begin_frame(1, 1);
+    let mut sink = MediaSink::default();
 
-    writer.create_placeholder(ElementId(5));
-    writer.set_attribute(
+    let mut tx = writer.begin_tx(&mut sink, 1, 1);
+    tx.create_placeholder(ElementId(5));
+    tx.set_attribute(
         "nve-show-on",
         None,
         &AttributeValue::Any(Rc::new(MediaQuery::dark().and_min_width(768))),
         ElementId(5),
     );
-    let _ = writer.finish_frame(true);
+    tx.finish_frame(true).unwrap();
 
-    let (node_id, q) = writer.iter_show_on().next().expect("direct show_on stored");
-    assert_eq!(q, MediaQuery::dark().and_min_width(768));
-    assert_eq!(writer.node_show_on(node_id), Some(q));
+    assert_eq!(sink.show_ons.len(), 1);
+    let (node_id, q) = sink.show_ons[0];
+    assert_eq!(q, Some(MediaQuery::dark().and_min_width(768)));
+    assert_eq!(writer.node_show_on(node_id), q);
 
     // Applying a TypedStyle with its own show_on + responsive rules preserves explicit nve_show_on.
-    writer.begin_frame(1, 2);
+    let mut tx2 = writer.begin_tx(&mut sink, 1, 2);
     let styled = TypedStyle::new()
         .show_on(MediaQuery::expanded())
         .on_compact(ResponsiveStylePatch::new().gap(4.0));
-    writer.set_attribute(NVE_TYPED_STYLE_ATTR, None, &styled.into_value(), ElementId(5));
-    let _ = writer.finish_frame(true);
+    tx2.set_attribute(NVE_TYPED_STYLE_ATTR, None, &styled.into_value(), ElementId(5));
+    tx2.finish_frame(true).unwrap();
     assert_eq!(writer.node_show_on(node_id), Some(MediaQuery::dark().and_min_width(768)));
     assert_eq!(writer.node_responsive_rules(node_id).len(), 1);
 
     // Clearing explicit nve_show_on falls back cleanly to TypedStyle::show_on.
-    writer.begin_frame(1, 3);
-    writer.set_attribute("nve-show-on", None, &AttributeValue::None, ElementId(5));
-    let _ = writer.finish_frame(true);
+    let mut tx3 = writer.begin_tx(&mut sink, 1, 3);
+    tx3.set_attribute("nve-show-on", None, &AttributeValue::None, ElementId(5));
+    tx3.finish_frame(true).unwrap();
     assert_eq!(writer.node_show_on(node_id), Some(MediaQuery::expanded()));
+    assert_eq!(sink.show_ons, vec![(node_id, Some(MediaQuery::expanded()))]);
 
     // Clearing TypedStyle clears both show_on and responsive_rules.
-    writer.begin_frame(1, 4);
-    writer.set_attribute(NVE_TYPED_STYLE_ATTR, None, &AttributeValue::None, ElementId(5));
-    let _ = writer.finish_frame(true);
+    let mut tx4 = writer.begin_tx(&mut sink, 1, 4);
+    tx4.set_attribute(NVE_TYPED_STYLE_ATTR, None, &AttributeValue::None, ElementId(5));
+    tx4.finish_frame(true).unwrap();
     assert_eq!(writer.node_show_on(node_id), None);
     assert!(writer.node_responsive_rules(node_id).is_empty());
+    assert_eq!(sink.show_ons, vec![(node_id, None)]);
+    assert_eq!(sink.responsive_rules, vec![(node_id, vec![])]);
 }

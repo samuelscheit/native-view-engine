@@ -6,7 +6,6 @@
 
 use core::fmt::Write as _;
 
-use nve_abi::hash::HashMap;
 use nve_abi::num::{write_i64, write_u64};
 use nve_abi::{EdgeInsets, FlexAlign, FlexDirection, FlexJustify, NodeId};
 use nve_components::layout_ext::GridTrack;
@@ -432,43 +431,6 @@ impl WebBackend {
         if node.responsive_rules != rules {
             node.responsive_rules = rules;
             self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-
-    /// Bulk-synchronizes `show_on` visibility queries and `responsive_rules` slices from any
-    /// producer (e.g. `DioxusSurface`), clearing stale responsive metadata from nodes no longer
-    /// present and flushing updated classes & `@media` rules in a single batched pass.
-    pub fn sync_responsive_from<'a>(
-        &mut self,
-        show_on: impl IntoIterator<Item = (NodeId, MediaQuery)>,
-        rules: impl IntoIterator<Item = (NodeId, &'a [ResponsiveRule])>,
-    ) {
-        let show_map: HashMap<NodeId, MediaQuery> = show_on.into_iter().collect();
-        let rules_map: HashMap<NodeId, &'a [ResponsiveRule]> = rules.into_iter().collect();
-
-        let mut dirty: Vec<NodeId> = Vec::new();
-        for (&id, node) in &mut self.nodes {
-            let mut changed = false;
-            let next_show = show_map.get(&id).copied();
-            if node.show_on != next_show {
-                node.show_on = next_show;
-                changed = true;
-            }
-            let next_rules = rules_map.get(&id).copied().unwrap_or(&[]);
-            if node.responsive_rules.as_slice() != next_rules {
-                node.responsive_rules.clear();
-                node.responsive_rules.extend_from_slice(next_rules);
-                changed = true;
-            }
-            if changed {
-                dirty.push(id);
-            }
-        }
-
-        if !dirty.is_empty() {
-            dirty.sort_unstable();
-            dirty.dedup();
-            self.flush_or_queue_responsive_dirty(dirty);
         }
     }
 }

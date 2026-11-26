@@ -266,10 +266,8 @@ fn ssr_emits_media_rules_after_base_structural_rules_and_deduplicates_on_hydrati
         let mut client = WebBackend::hydrate_from_ssr(&ssr);
         assert_eq!(client.hydration_report().seeded_rule_count, ssr.rule_hashes.len());
         client.submit_frame(&frame).unwrap();
-        client.sync_responsive_from(
-            [(3, MediaQuery::expanded())],
-            [(2, responsive.as_slice())],
-        );
+        client.set_node_show_on(3, Some(MediaQuery::expanded()));
+        client.set_node_responsive_rules(2, responsive.to_vec());
         assert_eq!(client.stylesheet().pending_count(), 0);
         assert!(
             client.stylesheet().flushed_css_rules().is_empty(),
@@ -298,7 +296,7 @@ fn stylesheet_cache_flushes_structural_before_media_and_live_sync_updates_and_cl
     assert!(flushed[0].starts_with(".sabc123{"));
     assert!(flushed[1].starts_with("@media (max-width:1023.98px){.nve-m-"));
 
-    // 2. Live WebBackend `sync_responsive_from` attaches, updates, and clears metadata.
+    // 2. Live WebBackend setters attach, update, and clear responsive metadata.
     let mut b = CommandBufferBuilder::new(1, 1);
     b.create_node(2, ComponentKind::View, None);
     b.create_node(3, ComponentKind::View, None);
@@ -312,12 +310,14 @@ fn stylesheet_cache_flushes_structural_before_media_and_live_sync_updates_and_cl
         MediaQuery::compact(),
         ResponsiveStylePatch::new().gap(4.0),
     )];
-    web.sync_responsive_from([(2, MediaQuery::expanded())], [(3, r1.as_slice())]);
+    web.set_node_show_on(2, Some(MediaQuery::expanded()));
+    web.set_node_responsive_rules(3, r1.to_vec());
     assert!(web.node(2).unwrap().class_name.contains("nve-m-"));
     assert!(web.node(3).unwrap().class_name.contains("nve-m-"));
 
-    // Clearing via empty sync removes responsive classes from both nodes.
-    web.sync_responsive_from(std::iter::empty(), std::iter::empty::<(u32, &[ResponsiveRule])>());
+    // Clearing removes responsive classes from both nodes.
+    web.set_node_show_on(2, None);
+    web.set_node_responsive_rules(3, Vec::new());
     assert!(!web.node(2).unwrap().class_name.contains("nve-m-"));
     assert!(!web.node(3).unwrap().class_name.contains("nve-m-"));
 

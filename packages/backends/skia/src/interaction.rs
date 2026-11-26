@@ -38,24 +38,6 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         }
     }
 
-    /// Bulk-synchronizes typed [`CursorKind`] values and [`StateStyleRule`] slices from any
-    /// producer (e.g. `DioxusSurface`), rebuilding the `DisplayList` when any currently active
-    /// node's rules changed.
-    pub fn sync_interaction_from<'a>(
-        &mut self,
-        cursors: impl IntoIterator<Item = (NodeId, CursorKind)>,
-        state_rules: impl IntoIterator<Item = (NodeId, &'a [StateStyleRule])>,
-    ) {
-        let dirty = self.layout_tree.sync_interaction_from(cursors, state_rules);
-        if dirty
-            .iter()
-            .any(|&id| !self.layout_tree.interaction_state(id).is_empty())
-        {
-            self.sync_motion_targets(&dirty);
-            self.rebuild_display_list();
-        }
-    }
-
     /// Marks `id` disabled or enabled, clearing text focus if needed and rebuilding the display
     /// list when state changed.
     pub fn set_node_disabled(&mut self, id: NodeId, disabled: bool) -> Vec<NodeId> {

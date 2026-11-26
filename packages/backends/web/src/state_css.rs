@@ -7,7 +7,6 @@
 
 use core::fmt::Write as _;
 
-use nve_abi::hash::HashMap;
 use nve_abi::NodeId;
 use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
 
@@ -110,8 +109,8 @@ fn fnv1a_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
 
 /// Returns the static base-layer `(class_name, css_decl)` pair for a non-`Auto` [`CursorKind`],
 /// or `None` for [`CursorKind::Auto`]. Emitting cursors as dedicated zero-alloc base classes
-/// avoids multiplying structural `.s<hash>` rules and guarantees zero duplicate CSS rules when
-/// `sync_interaction_from` runs after `submit_frame` during hydration.
+/// avoids multiplying structural `.s<hash>` rules and guarantees zero duplicate CSS rules during
+/// hydration.
 #[inline]
 pub const fn format_cursor_rule(cursor: CursorKind) -> Option<(&'static str, &'static str)> {
     match cursor {
@@ -204,43 +203,6 @@ impl WebBackend {
         if node.state_rules != rules {
             node.state_rules = rules;
             self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-
-    /// Bulk-synchronizes typed [`CursorKind`] values and [`StateStyleRule`] slices from any
-    /// producer (e.g. `DioxusSurface`), clearing stale interaction metadata from nodes no longer
-    /// present and flushing updated classes & pseudo-state CSS rules in a single batched pass.
-    pub fn sync_interaction_from<'a>(
-        &mut self,
-        cursors: impl IntoIterator<Item = (NodeId, CursorKind)>,
-        state_rules: impl IntoIterator<Item = (NodeId, &'a [StateStyleRule])>,
-    ) {
-        let cursor_map: HashMap<NodeId, CursorKind> = cursors.into_iter().collect();
-        let rules_map: HashMap<NodeId, &'a [StateStyleRule]> = state_rules.into_iter().collect();
-
-        let mut dirty: Vec<NodeId> = Vec::new();
-        for (&id, node) in &mut self.nodes {
-            let mut changed = false;
-            let next_cursor = cursor_map.get(&id).copied();
-            if node.cursor != next_cursor {
-                node.cursor = next_cursor;
-                changed = true;
-            }
-            let next_rules = rules_map.get(&id).copied().unwrap_or(&[]);
-            if node.state_rules.as_slice() != next_rules {
-                node.state_rules.clear();
-                node.state_rules.extend_from_slice(next_rules);
-                changed = true;
-            }
-            if changed {
-                dirty.push(id);
-            }
-        }
-
-        if !dirty.is_empty() {
-            dirty.sort_unstable();
-            dirty.dedup();
-            self.flush_or_queue_responsive_dirty(dirty);
         }
     }
 }

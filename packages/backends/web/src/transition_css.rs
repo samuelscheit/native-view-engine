@@ -3,7 +3,6 @@
 
 use core::fmt::Write as _;
 
-use nve_abi::hash::HashMap;
 use nve_abi::num::write_u64;
 use nve_abi::NodeId;
 use nve_components::motion::TransitionSpec;
@@ -122,30 +121,6 @@ impl WebBackend {
         if node.transitions != transitions {
             node.transitions = transitions;
             self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-
-    /// Bulk-synchronizes typed [`TransitionSpec`] slices from any producer (e.g. `DioxusSurface`),
-    /// clearing stale transitions from nodes no longer present and flushing updated classes & CSS
-    /// rules in a single batched pass.
-    pub fn sync_transitions_from<'a>(
-        &mut self,
-        transitions: impl IntoIterator<Item = (NodeId, &'a [TransitionSpec])>,
-    ) {
-        let map: HashMap<NodeId, &'a [TransitionSpec]> = transitions.into_iter().collect();
-        let mut dirty: Vec<NodeId> = Vec::new();
-        for (&id, node) in &mut self.nodes {
-            let next = map.get(&id).copied().unwrap_or(&[]);
-            if node.transitions.as_slice() != next {
-                node.transitions.clear();
-                node.transitions.extend_from_slice(next);
-                dirty.push(id);
-            }
-        }
-        if !dirty.is_empty() {
-            dirty.sort_unstable();
-            dirty.dedup();
-            self.flush_or_queue_responsive_dirty(dirty);
         }
     }
 }

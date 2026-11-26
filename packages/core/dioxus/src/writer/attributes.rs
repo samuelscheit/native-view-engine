@@ -1,14 +1,16 @@
 //! Attribute application, direct zero-string-parse [`TypedStyle`] patching, deterministic
-//! `nve_style` + inline `style` override merging, and ARIA key canonicalization.
+//! `nve_style` + inline `style` override merging, extended-prop dirty tracking, and ARIA key
+//! canonicalization.
 
 use std::borrow::Cow;
 
 use dioxus_core::{AttributeValue, ElementId};
-use nve_abi::{CommandBufferBuilder, LayoutProps, NodeId, RawPropValue, RawPropValueRef, StyleProps};
+use nve_abi::{LayoutProps, NodeId, RawPropValueRef, StyleProps};
 use nve_components::{
     apply_typed_attr_with_raw, canonical_raw_style_key, AutofillHint, DrawList, DrawListDecoder,
     InputMode, MediaQuery, SvgPicture, DRAW_LIST_ATTR_PREFIX,
 };
+use nve_engine::RenderSink;
 use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
 
 use crate::hot_patch;
@@ -18,13 +20,19 @@ use crate::native_view::{
 use crate::svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
 use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
+use super::attr_keys::{canonical_a11y_attr_key, canonical_input_attr_key, sync_raw_style_prop};
+use super::{
+    mark_ext_dirty, NveMutationWriter, EXT_BACKGROUND_FILL, EXT_CURSOR, EXT_DRAW_LIST,
+    EXT_LAYOUT_EXT, EXT_NATIVE_VIEW_PROPS, EXT_RESPONSIVE_RULES, EXT_SHOW_ON, EXT_STATE_RULES,
+    EXT_SVG, EXT_TRANSFORM, EXT_TRANSITIONS,
+};
+
 const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
 
-use super::NveMutationWriter;
-
 impl NveMutationWriter {
-    pub(super) fn set_attribute_impl(
+    pub(super) fn set_attribute_impl<S: RenderSink>(
         &mut self,
+        sink: &mut S,
         name: &'static str,
         value: &AttributeValue,
         id: ElementId,
@@ -39,15 +47,21 @@ impl NveMutationWriter {
                     .get(&node_id)
                     .is_some_and(super::NodeRecord::deferred_native_create);
                 if was_deferred {
-                    self.ensure_native_node_created(node_id, Some(kind_str));
-                    self.builder
-                        .set_raw_prop_str(node_id, NATIVE_VIEW_KIND_PROP_KEY, kind_str);
+                    self.ensure_native_node_created(sink, node_id, Some(kind_str));
+                    sink.set_raw_prop(
+                        node_id,
+                        NATIVE_VIEW_KIND_PROP_KEY,
+                        RawPropValueRef::String(kind_str),
+                    );
                 } else if let Some(rec) = self.nodes.get_mut(&node_id)
                     && rec.extras().and_then(|e| e.native_kind.as_deref()) != Some(kind_str.as_str())
                 {
                     rec.extras_mut().native_kind = Some(kind_str.clone());
-                    self.builder
-                        .set_raw_prop_str(node_id, NATIVE_VIEW_KIND_PROP_KEY, kind_str);
+                    sink.set_raw_prop(
+                        node_id,
+                        NATIVE_VIEW_KIND_PROP_KEY,
+                        RawPropValueRef::String(kind_str),
+                    );
                 }
             }
             return;
@@ -57,34 +71,33 @@ impl NveMutationWriter {
             .get(&node_id)
             .is_some_and(super::NodeRecord::deferred_native_create)
         {
-            self.ensure_native_node_created(node_id, None);
+            self.ensure_native_node_created(sink, node_id, None);
         }
         match value {
-            AttributeValue::Text(s) => self.apply_str_attr(node_id, name, s),
+            AttributeValue::Text(s) => self.apply_str_attr(sink, node_id, name, s),
             AttributeValue::Float(f) => {
                 let mut s = String::new();
                 nve_abi::num::write_f64(&mut s, *f);
-                self.apply_str_attr(node_id, name, &s);
+                self.apply_str_attr(sink, node_id, name, &s);
             }
             AttributeValue::Int(i) => {
                 let mut s = String::new();
                 nve_abi::num::write_i64(&mut s, *i);
-                self.apply_str_attr(node_id, name, &s);
+                self.apply_str_attr(sink, node_id, name, &s);
             }
             AttributeValue::Bool(b) => {
                 let prop_name = canonical_a11y_attr_key(name)
                     .or_else(|| canonical_input_attr_key(name))
                     .unwrap_or(name);
-                self.builder
-                    .set_raw_prop(node_id, prop_name, &RawPropValue::Bool(*b));
+                sink.set_raw_prop(node_id, prop_name, RawPropValueRef::Bool(*b));
             }
             AttributeValue::None => {
                 if name == "style" {
-                    self.clear_inline_style(node_id);
+                    self.clear_inline_style(sink, node_id);
                     return;
                 }
                 if name == NVE_TYPED_STYLE_ATTR {
-                    self.clear_typed_style(node_id);
+                    self.clear_typed_style(sink, node_id);
                     return;
                 }
                 if name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR {
@@ -92,25 +105,29 @@ impl NveMutationWriter {
                         && let Some(ext) = rec.extras.as_deref_mut()
                     {
                         ext.explicit_show_on = None;
-                        ext.show_on = ext.typed_style.as_ref().and_then(|t| t.show_on);
+                        let next = ext.typed_style.as_ref().and_then(|t| t.show_on);
+                        if ext.show_on != next {
+                            ext.show_on = next;
+                            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
+                        }
                     }
                     return;
                 }
                 if matches!(name, "drawList" | "draw_list") {
                     if let Some(rec) = self.nodes.get_mut(&node_id)
                         && let Some(ext) = rec.extras.as_deref_mut()
+                        && ext.draw_list.take().is_some()
                     {
-                        ext.draw_list = None;
+                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_DRAW_LIST);
                     }
-                    if self.in_process_mode {
-                        return;
-                    }
+                    return;
                 }
                 if name == NVE_SVG_PICTURE_ATTR || name == "picture" {
                     if let Some(rec) = self.nodes.get_mut(&node_id)
                         && let Some(ext) = rec.extras.as_deref_mut()
+                        && ext.svg_picture.take().is_some()
                     {
-                        ext.svg_picture = None;
+                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SVG);
                     }
                     return;
                 }
@@ -121,8 +138,7 @@ impl NveMutationWriter {
                     .or_else(|| canonical_a11y_attr_key(name))
                     .or_else(|| canonical_input_attr_key(name))
                     .unwrap_or(name);
-                self.builder
-                    .set_raw_prop(node_id, prop_name, &RawPropValue::Null);
+                sink.set_raw_prop(node_id, prop_name, RawPropValueRef::Null);
             }
             AttributeValue::Any(any) => {
                 if name == NVE_TYPED_STYLE_ATTR
@@ -136,7 +152,7 @@ impl NveMutationWriter {
                     {
                         return;
                     }
-                    self.apply_typed_style(node_id, typed.clone());
+                    self.apply_typed_style(sink, node_id, typed.clone());
                 } else if (name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR)
                     && let Some(query) = any
                         .as_any()
@@ -147,7 +163,10 @@ impl NveMutationWriter {
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
                         let ext = rec.extras_mut();
                         ext.explicit_show_on = Some(query);
-                        ext.show_on = Some(query);
+                        if ext.show_on != Some(query) {
+                            ext.show_on = Some(query);
+                            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
+                        }
                     }
                 } else if let Some(draw_list) = any.as_any().downcast_ref::<DrawList>() {
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
@@ -160,11 +179,7 @@ impl NveMutationWriter {
                             return;
                         }
                         ext.draw_list = Some(draw_list.clone());
-                    }
-                    if !self.in_process_mode {
-                        let bytes = draw_list.to_nve_draw1_bytes();
-                        self.builder
-                            .set_raw_prop_ref(node_id, "drawList", RawPropValueRef::Bytes(&bytes));
+                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_DRAW_LIST);
                     }
                 } else if let Some(typed_nv) = any.as_any().downcast_ref::<NativeTypedPropsAttr>() {
                     if let Some(rec) = self.nodes.get_mut(&node_id) {
@@ -173,12 +188,12 @@ impl NveMutationWriter {
                             return;
                         }
                         ext.native_props = Some(typed_nv.0.clone());
-                    }
-                    if !self.in_process_mode
-                        && let Ok(bytes) = typed_nv.0.to_nvnp_bytes()
-                    {
-                        self.builder
-                            .set_raw_prop_ref(node_id, name, RawPropValueRef::Bytes(&bytes));
+                        mark_ext_dirty(
+                            &mut self.dirty_extended,
+                            ext,
+                            node_id,
+                            EXT_NATIVE_VIEW_PROPS,
+                        );
                     }
                 } else if name == NATIVE_VIEW_HANDLE_ATTR
                     && let Some(handle_attr) = any.as_any().downcast_ref::<NativeHandleAttr>()
@@ -214,13 +229,20 @@ impl NveMutationWriter {
                             return;
                         }
                         ext.svg_picture = Some(svg.clone());
+                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SVG);
                     }
                 } else if let Some(hint) = any.as_any().downcast_ref::<AutofillHint>() {
-                    self.builder
-                        .set_raw_prop_str(node_id, "autocomplete", hint.as_html_autocomplete());
+                    sink.set_raw_prop(
+                        node_id,
+                        "autocomplete",
+                        RawPropValueRef::String(hint.as_html_autocomplete()),
+                    );
                 } else if let Some(mode) = any.as_any().downcast_ref::<InputMode>() {
-                    self.builder
-                        .set_raw_prop_str(node_id, "inputmode", mode.as_html_inputmode());
+                    sink.set_raw_prop(
+                        node_id,
+                        "inputmode",
+                        RawPropValueRef::String(mode.as_html_inputmode()),
+                    );
                 }
             }
             AttributeValue::Listener(_) => {}
@@ -229,7 +251,12 @@ impl NveMutationWriter {
 
     /// Applies a [`TypedStyle`] directly into `NodeRecord` with zero string formatting and zero
     /// CSS parsing when no inline `style` override is present.
-    pub(crate) fn apply_typed_style(&mut self, node_id: NodeId, typed: TypedStyle) {
+    pub(crate) fn apply_typed_style<S: RenderSink>(
+        &mut self,
+        sink: &mut S,
+        node_id: NodeId,
+        typed: TypedStyle,
+    ) {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
@@ -238,23 +265,50 @@ impl NveMutationWriter {
             || ext.inline_style_override.is_some();
         let reset_style = ext.typed_style.as_ref().is_some_and(|t| t.has_style)
             || ext.inline_style_override.is_some();
-        ext.show_on = ext.explicit_show_on.or(typed.show_on);
-        ext.responsive_rules.clone_from(&typed.responsive);
-        ext.cursor = typed.cursor;
-        ext.state_rules.clone_from(&typed.state_rules);
-        ext.transitions.clone_from(&typed.transitions);
-        ext.layout_ext = typed
+
+        let next_show = ext.explicit_show_on.or(typed.show_on);
+        if ext.show_on != next_show {
+            ext.show_on = next_show;
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
+        }
+        if ext.responsive_rules != typed.responsive {
+            ext.responsive_rules.clone_from(&typed.responsive);
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_RESPONSIVE_RULES);
+        }
+        if ext.cursor != typed.cursor {
+            ext.cursor = typed.cursor;
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_CURSOR);
+        }
+        if ext.state_rules != typed.state_rules {
+            ext.state_rules.clone_from(&typed.state_rules);
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_STATE_RULES);
+        }
+        if ext.transitions != typed.transitions {
+            ext.transitions.clone_from(&typed.transitions);
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSITIONS);
+        }
+        let next_layout_ext = typed
             .layout_ext
             .as_deref()
             .filter(|e| !e.is_default())
             .cloned();
-        ext.transform = typed.transform;
-        ext.background_fill = typed.background_fill.clone();
+        if ext.layout_ext != next_layout_ext {
+            ext.layout_ext = next_layout_ext;
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_LAYOUT_EXT);
+        }
+        if ext.transform != typed.transform {
+            ext.transform = typed.transform;
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSFORM);
+        }
+        if ext.background_fill != typed.background_fill {
+            ext.background_fill = typed.background_fill.clone();
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_BACKGROUND_FILL);
+        }
         ext.typed_style = Some(typed);
-        self.recompute_typed_style(node_id, reset_layout, reset_style);
+        self.recompute_typed_style(sink, node_id, reset_layout, reset_style);
     }
 
-    fn clear_typed_style(&mut self, node_id: NodeId) {
+    fn clear_typed_style<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
@@ -266,18 +320,38 @@ impl NveMutationWriter {
         };
         let reset_layout = prev.has_layout || ext.inline_style_override.is_some();
         let reset_style = prev.has_style || ext.inline_style_override.is_some();
-        ext.show_on = ext.explicit_show_on;
-        ext.responsive_rules.clear();
-        ext.cursor = None;
-        ext.state_rules.clear();
-        ext.transitions.clear();
-        ext.layout_ext = None;
-        ext.transform = None;
-        ext.background_fill = None;
-        self.recompute_typed_style(node_id, reset_layout, reset_style);
+        if ext.show_on != ext.explicit_show_on {
+            ext.show_on = ext.explicit_show_on;
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
+        }
+        if !ext.responsive_rules.is_empty() {
+            ext.responsive_rules.clear();
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_RESPONSIVE_RULES);
+        }
+        if ext.cursor.take().is_some() {
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_CURSOR);
+        }
+        if !ext.state_rules.is_empty() {
+            ext.state_rules.clear();
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_STATE_RULES);
+        }
+        if !ext.transitions.is_empty() {
+            ext.transitions.clear();
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSITIONS);
+        }
+        if ext.layout_ext.take().is_some() {
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_LAYOUT_EXT);
+        }
+        if ext.transform.take().is_some() {
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSFORM);
+        }
+        if ext.background_fill.take().is_some() {
+            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_BACKGROUND_FILL);
+        }
+        self.recompute_typed_style(sink, node_id, reset_layout, reset_style);
     }
 
-    fn clear_inline_style(&mut self, node_id: NodeId) {
+    fn clear_inline_style<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
@@ -286,61 +360,75 @@ impl NveMutationWriter {
             .as_deref_mut()
             .is_some_and(|ext| ext.inline_style_override.take().is_some() && ext.typed_style.is_some());
         if should_recompute {
-            self.recompute_typed_style(node_id, true, true);
+            self.recompute_typed_style(sink, node_id, true, true);
         }
     }
 
-    fn recompute_typed_style(&mut self, node_id: NodeId, reset_layout: bool, reset_style: bool) {
+    fn recompute_typed_style<S: RenderSink>(
+        &mut self,
+        sink: &mut S,
+        node_id: NodeId,
+        reset_layout: bool,
+        reset_style: bool,
+    ) {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
         let prev_layout = rec.layout;
         let prev_style = rec.style;
 
-        let (mut next_layout, mut next_style, typed_has_style, mut next_fw, mut next_ta, mut next_bs, mut next_ov, mut next_of) =
-            if let Some(typed) = rec.extras().and_then(|e| e.typed_style.as_ref()) {
-                (
-                    if typed.has_layout {
-                        typed.layout
-                    } else if reset_layout {
-                        LayoutProps::default()
-                    } else {
-                        prev_layout
-                    },
-                    if typed.has_style {
-                        typed.style
-                    } else if reset_style {
-                        StyleProps::default()
-                    } else {
-                        prev_style
-                    },
-                    typed.has_style,
-                    typed.font_weight.clone(),
-                    typed.text_align.clone(),
-                    typed.box_shadow.clone(),
-                    typed.overflow.clone(),
-                    typed.object_fit.clone(),
-                )
-            } else {
-                (
-                    if reset_layout {
-                        LayoutProps::default()
-                    } else {
-                        prev_layout
-                    },
-                    if reset_style {
-                        StyleProps::default()
-                    } else {
-                        prev_style
-                    },
-                    false,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            };
+        let (
+            mut next_layout,
+            mut next_style,
+            typed_has_style,
+            mut next_fw,
+            mut next_ta,
+            mut next_bs,
+            mut next_ov,
+            mut next_of,
+        ) = if let Some(typed) = rec.extras().and_then(|e| e.typed_style.as_ref()) {
+            (
+                if typed.has_layout {
+                    typed.layout
+                } else if reset_layout {
+                    LayoutProps::default()
+                } else {
+                    prev_layout
+                },
+                if typed.has_style {
+                    typed.style
+                } else if reset_style {
+                    StyleProps::default()
+                } else {
+                    prev_style
+                },
+                typed.has_style,
+                typed.font_weight.clone(),
+                typed.text_align.clone(),
+                typed.box_shadow.clone(),
+                typed.overflow.clone(),
+                typed.object_fit.clone(),
+            )
+        } else {
+            (
+                if reset_layout {
+                    LayoutProps::default()
+                } else {
+                    prev_layout
+                },
+                if reset_style {
+                    StyleProps::default()
+                } else {
+                    prev_style
+                },
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
 
         let mut extra_raw: Vec<(String, String)> = Vec::new();
         if let Some(override_css) = rec.extras().and_then(|e| e.inline_style_override.as_deref()) {
@@ -372,7 +460,6 @@ impl NveMutationWriter {
             rec.set_has_explicit_style(true);
         }
 
-        let builder = &mut self.builder;
         let has_any_raw_style = next_fw.is_some()
             || next_ta.is_some()
             || next_bs.is_some()
@@ -381,11 +468,11 @@ impl NveMutationWriter {
             || rec.extras.is_some();
         let (fw_changed, ta_changed, has_fw, has_ta) = if has_any_raw_style {
             let ext = rec.extras_mut();
-            let fw_c = sync_raw_style_prop(builder, node_id, "font-weight", &mut ext.font_weight, next_fw);
-            let ta_c = sync_raw_style_prop(builder, node_id, "text-align", &mut ext.text_align, next_ta);
-            let _ = sync_raw_style_prop(builder, node_id, "box-shadow", &mut ext.box_shadow, next_bs);
-            let _ = sync_raw_style_prop(builder, node_id, "overflow", &mut ext.overflow, next_ov);
-            let _ = sync_raw_style_prop(builder, node_id, "object-fit", &mut ext.object_fit, next_of);
+            let fw_c = sync_raw_style_prop(sink, node_id, "font-weight", &mut ext.font_weight, next_fw);
+            let ta_c = sync_raw_style_prop(sink, node_id, "text-align", &mut ext.text_align, next_ta);
+            let _ = sync_raw_style_prop(sink, node_id, "box-shadow", &mut ext.box_shadow, next_bs);
+            let _ = sync_raw_style_prop(sink, node_id, "overflow", &mut ext.overflow, next_ov);
+            let _ = sync_raw_style_prop(sink, node_id, "object-fit", &mut ext.object_fit, next_of);
             (fw_c, ta_c, ext.font_weight.is_some(), ext.text_align.is_some())
         } else {
             (false, false, false, false)
@@ -394,7 +481,7 @@ impl NveMutationWriter {
         rec.set_has_explicit_text_align(has_ta);
 
         for (k, v) in extra_raw {
-            builder.set_raw_prop_str(node_id, &k, &v);
+            sink.set_raw_prop(node_id, &k, RawPropValueRef::String(&v));
         }
 
         if fw_changed || ta_changed {
@@ -402,7 +489,13 @@ impl NveMutationWriter {
         }
     }
 
-    pub(crate) fn apply_str_attr(&mut self, node_id: NodeId, name: &str, value: &str) {
+    pub(crate) fn apply_str_attr<S: RenderSink>(
+        &mut self,
+        sink: &mut S,
+        node_id: NodeId,
+        name: &str,
+        value: &str,
+    ) {
         if hot_patch::is_test_id_attr_name(name) {
             self.record_test_id(node_id, value);
         }
@@ -414,7 +507,7 @@ impl NveMutationWriter {
                     let ext = rec.extras_mut();
                     if ext.inline_style_override != next_override {
                         ext.inline_style_override = next_override;
-                        self.recompute_typed_style(node_id, true, true);
+                        self.recompute_typed_style(sink, node_id, true, true);
                     }
                     return;
                 }
@@ -429,7 +522,6 @@ impl NveMutationWriter {
             let mut text_prop_changed = false;
             let mut set_fw_flag = false;
             let mut set_ta_flag = false;
-            let builder = &mut self.builder;
             let extras_slot = &mut rec.extras;
             let handled = apply_typed_attr_with_raw(
                 &mut rec.layout,
@@ -468,7 +560,7 @@ impl NveMutationWriter {
                         }
                         _ => {}
                     }
-                    builder.set_raw_prop_str(node_id, raw_k, raw_v);
+                    sink.set_raw_prop(node_id, raw_k, RawPropValueRef::String(raw_v));
                 },
             );
             if set_fw_flag {
@@ -512,89 +604,17 @@ impl NveMutationWriter {
                 }
             }
         }
-        // Decode `nve-draw1;b64,...` attributes directly into binary `RawPropValue::Bytes`
-        // in one pass — eliminating any full-frame CommandBuffer decode+re-encode pass.
+        // Decode legacy `nve-draw1;b64,...` string attributes directly into binary `RawPropValueRef::Bytes`.
         if value.starts_with(DRAW_LIST_ATTR_PREFIX)
             && let Ok(raw_draw_bytes) = DrawListDecoder::decode_attr_bytes(value)
         {
-            self.builder
-                .set_raw_prop(node_id, name, &RawPropValue::Bytes(raw_draw_bytes));
+            sink.set_raw_prop(node_id, name, RawPropValueRef::Bytes(&raw_draw_bytes));
             return;
         }
         let prop_name = canonical_raw_style_key(name)
             .or_else(|| canonical_a11y_attr_key(name))
             .or_else(|| canonical_input_attr_key(name))
             .unwrap_or(name);
-        self.builder.set_raw_prop_str(node_id, prop_name, value);
-    }
-}
-
-#[inline]
-fn sync_raw_style_prop(
-    builder: &mut CommandBufferBuilder,
-    node_id: NodeId,
-    key: &str,
-    slot: &mut Option<Cow<'static, str>>,
-    next: Option<Cow<'static, str>>,
-) -> bool {
-    if slot.as_deref() == next.as_deref() {
-        return false;
-    }
-    match &next {
-        Some(v) => builder.set_raw_prop_str(node_id, key, v),
-        None => builder.set_raw_prop(node_id, key, &RawPropValue::Null),
-    }
-    *slot = next;
-    true
-}
-
-/// Canonicalizes ARIA state and focus attribute keys (kebab-case, snake_case, or camelCase)
-/// into their standard camelCase raw-prop wire names with zero binary ABI changes.
-#[inline]
-pub(crate) fn canonical_a11y_attr_key(name: &str) -> Option<&'static str> {
-    match name {
-        "tabIndex" | "tab-index" | "tab_index" => Some("tabIndex"),
-        "ariaChecked" | "aria-checked" | "aria_checked" => Some("ariaChecked"),
-        "ariaSelected" | "aria-selected" | "aria_selected" => Some("ariaSelected"),
-        "ariaExpanded" | "aria-expanded" | "aria_expanded" => Some("ariaExpanded"),
-        "ariaModal" | "aria-modal" | "aria_modal" => Some("ariaModal"),
-        "ariaLive" | "aria-live" | "aria_live" => Some("ariaLive"),
-        "ariaControls" | "aria-controls" | "aria_controls" => Some("ariaControls"),
-        "ariaLabelledBy" | "aria-labelledby" | "aria_labelledby" => Some("ariaLabelledBy"),
-        "ariaDescribedBy" | "aria-describedby" | "aria_describedby" => Some("ariaDescribedBy"),
-        "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => Some("ariaValueNow"),
-        "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => Some("ariaValueMin"),
-        "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => Some("ariaValueMax"),
-        "ariaActiveDescendant" | "aria-activedescendant" | "aria_activedescendant" => {
-            Some("ariaActiveDescendant")
-        }
-        "ariaAutoComplete" | "aria-autocomplete" | "aria_autocomplete" => Some("ariaAutoComplete"),
-        "ariaMultiSelectable" | "aria-multiselectable" | "aria_multiselectable" => {
-            Some("ariaMultiSelectable")
-        }
-        "ariaOrientation" | "aria-orientation" | "aria_orientation" => Some("ariaOrientation"),
-        "ariaInvalid" | "aria-invalid" | "aria_invalid" => Some("ariaInvalid"),
-        "ariaDisabled" | "aria-disabled" | "aria_disabled" => Some("ariaDisabled"),
-        _ => None,
-    }
-}
-
-/// Canonicalizes cross-platform text-input & native HTML5 semantic attribute keys into their
-/// canonical HTML/wire names (`autocomplete`, `inputmode`, `closedby`, `commandfor`,
-/// `popovertarget`, `popovertargetaction`, `novalidate`, `type`) with zero binary ABI changes.
-#[inline]
-pub(crate) fn canonical_input_attr_key(name: &str) -> Option<&'static str> {
-    match name {
-        "autocomplete" | "autoComplete" | "auto_complete" => Some("autocomplete"),
-        "inputmode" | "inputMode" | "input_mode" => Some("inputmode"),
-        "closedby" | "closedBy" | "closed_by" => Some("closedby"),
-        "commandfor" | "commandFor" | "command_for" => Some("commandfor"),
-        "popovertarget" | "popoverTarget" | "popover_target" => Some("popovertarget"),
-        "popovertargetaction" | "popoverTargetAction" | "popover_target_action" => {
-            Some("popovertargetaction")
-        }
-        "novalidate" | "noValidate" | "no_validate" => Some("novalidate"),
-        "button_type" | "input_type" => Some("type"),
-        _ => None,
+        sink.set_raw_prop(node_id, prop_name, RawPropValueRef::String(value));
     }
 }

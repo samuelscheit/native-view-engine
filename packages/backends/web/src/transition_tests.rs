@@ -82,7 +82,8 @@ fn web_backend_deduplicates_transitions_and_emits_reduced_motion_after_base() {
 
     let tr = [TransitionSpec::new(TransitionProperty::BackgroundColor, 160)
         .easing(EasingCurve::EaseOut)];
-    web.sync_transitions_from([(10, tr.as_slice()), (11, tr.as_slice())]);
+    web.set_node_transitions(10, tr.to_vec());
+    web.set_node_transitions(11, tr.to_vec());
     web.set_node_state_rules(
         10,
         vec![StateStyleRule::new(
@@ -118,8 +119,9 @@ fn web_backend_deduplicates_transitions_and_emits_reduced_motion_after_base() {
         .collect();
     assert_eq!(rm_rules.len(), 1);
 
-    // Clearing transitions via sync removes the transition class cleanly.
-    web.sync_transitions_from(std::iter::empty::<(u32, &[TransitionSpec])>());
+    // Clearing transitions removes the transition class cleanly.
+    web.set_node_transitions(10, Vec::new());
+    web.set_node_transitions(11, Vec::new());
     assert!(!web.node(10).unwrap().class_name.contains("nve-t-"));
 }
 
@@ -182,7 +184,7 @@ fn ssr_and_hydration_emit_and_seed_transition_and_reduced_motion_rules() {
     // rules are flushed on the client!
     let mut client = WebBackend::hydrate_from_ssr(&ssr);
     client.submit_frame(&frame).unwrap();
-    client.sync_transitions_from([(10, tr.as_slice())]);
+    client.set_node_transitions(10, tr.to_vec());
     assert!(
         client.stylesheet().flushed_css_rules().is_empty(),
         "hydrated client should not re-emit already SSR-seeded transition/reduced-motion rules: {:?}",

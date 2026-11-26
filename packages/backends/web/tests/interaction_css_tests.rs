@@ -247,8 +247,9 @@ fn ssr_and_stylesheet_cache_enforce_three_layer_cascade_and_hydration_dedup() {
         StateStyleRule::new(InteractionState::FOCUS, StylePatch::new().border_color(ColorRgba::rgb(99, 102, 241))),
         StateStyleRule::new(InteractionState::HOVER, StylePatch::new().bg(ColorRgba::rgb(59, 130, 246))),
     ];
-    server.sync_responsive_from(std::iter::empty(), [(2, media_rules.as_slice())]);
-    server.sync_interaction_from([(2, CursorKind::Grab)], [(2, state_rules.as_slice())]);
+    server.set_node_responsive_rules(2, media_rules.to_vec());
+    server.set_node_cursor(2, Some(CursorKind::Grab));
+    server.set_node_state_rules(2, state_rules.to_vec());
 
     let ssr = server.render_ssr();
     let lines: Vec<&str> = ssr.style_css.lines().collect();
@@ -281,8 +282,9 @@ fn ssr_and_stylesheet_cache_enforce_three_layer_cascade_and_hydration_dedup() {
         let mut client = WebBackend::hydrate_from_ssr(&ssr);
         assert_eq!(client.hydration_report().seeded_rule_count, ssr.rule_hashes.len());
         client.submit_frame(&frame).unwrap();
-        client.sync_responsive_from(std::iter::empty(), [(2, media_rules.as_slice())]);
-        client.sync_interaction_from([(2, CursorKind::Grab)], [(2, state_rules.as_slice())]);
+        client.set_node_responsive_rules(2, media_rules.to_vec());
+        client.set_node_cursor(2, Some(CursorKind::Grab));
+        client.set_node_state_rules(2, state_rules.to_vec());
         assert_eq!(client.stylesheet().pending_count(), 0);
         assert!(
             client.stylesheet().flushed_css_rules().is_empty(),
@@ -293,11 +295,9 @@ fn ssr_and_stylesheet_cache_enforce_three_layer_cascade_and_hydration_dedup() {
             assert!(client.node(2).unwrap().class_name.contains(h.as_str()));
         }
 
-        // Clearing via sync_interaction_from removes nve-s-* classes cleanly.
-        client.sync_interaction_from(
-            std::iter::empty(),
-            std::iter::empty::<(u32, &[StateStyleRule])>(),
-        );
+        // Clearing state rules removes nve-s-* classes cleanly.
+        client.set_node_cursor(2, None);
+        client.set_node_state_rules(2, Vec::new());
         assert!(!client.node(2).unwrap().class_name.contains("nve-s-"));
     }
 }

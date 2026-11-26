@@ -1,7 +1,6 @@
-//! Zero-serialization in-process [`DrawList`], [`TypedNativeViewProps`], and
-//! [`TypedNativeViewCommand`] synchronization for [`crate::HeadlessBackend`].
+//! Zero-serialization in-process [`DrawList`], [`TypedNativeViewProps`], [`BackgroundFill`],
+//! [`SvgPicture`], and [`TypedNativeViewCommand`] setters for [`crate::HeadlessBackend`].
 
-use nve_abi::hash::HashMap;
 use nve_abi::NodeId;
 use nve_components::canvas_ir::DrawList;
 use nve_components::native_view::{NativeCommand, TypedNativeViewCommand, TypedNativeViewProps};
@@ -30,37 +29,6 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         true
     }
 
-    /// Bulk-synchronizes zero-serialization [`DrawList`]s from any producer
-    /// (e.g. `DioxusSurface::iter_draw_lists`), clearing stale entries from nodes no longer present.
-    /// Returns `true` if any node's draw list changed.
-    pub fn sync_draw_lists_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a DrawList)>,
-    ) -> bool {
-        let map: HashMap<NodeId, &'a DrawList> = entries.into_iter().collect();
-        let mut changed = false;
-        for node in self.nodes.values_mut() {
-            match map.get(&node.id).copied() {
-                Some(next) => {
-                    if !node
-                        .draw_list
-                        .as_ref()
-                        .is_some_and(|prev| prev.ptr_eq(next) || prev == next)
-                    {
-                        node.draw_list = Some(next.clone());
-                        changed = true;
-                    }
-                }
-                None => {
-                    if node.draw_list.take().is_some() {
-                        changed = true;
-                    }
-                }
-            }
-        }
-        changed
-    }
-
     /// Directly attaches or clears zero-serialization [`TypedNativeViewProps`] on `id`.
     pub fn set_native_view_props(
         &mut self,
@@ -75,31 +43,6 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         }
         node.native_view_props = props;
         true
-    }
-
-    /// Bulk-synchronizes zero-serialization [`TypedNativeViewProps`] from any producer.
-    pub fn sync_native_views_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a TypedNativeViewProps)>,
-    ) -> bool {
-        let map: HashMap<NodeId, &'a TypedNativeViewProps> = entries.into_iter().collect();
-        let mut changed = false;
-        for node in self.nodes.values_mut() {
-            match map.get(&node.id).copied() {
-                Some(next) => {
-                    if node.native_view_props.as_ref() != Some(next) {
-                        node.native_view_props = Some(next.clone());
-                        changed = true;
-                    }
-                }
-                None => {
-                    if node.native_view_props.take().is_some() {
-                        changed = true;
-                    }
-                }
-            }
-        }
-        changed
     }
 
     /// Records a zero-serialization [`NativeCommand`] dispatched directly in-process.
@@ -136,33 +79,6 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         true
     }
 
-    /// Bulk-synchronizes zero-serialization [`BackgroundFill`]s from any producer
-    /// (e.g. `DioxusSurface::iter_background_fills`), clearing stale entries from removed nodes.
-    /// Returns `true` if any node's background fill changed.
-    pub fn sync_background_fills_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a BackgroundFill)>,
-    ) -> bool {
-        let map: HashMap<NodeId, &'a BackgroundFill> = entries.into_iter().collect();
-        let mut changed = false;
-        for node in self.nodes.values_mut() {
-            match map.get(&node.id).copied() {
-                Some(next) => {
-                    if node.background_fill.as_ref() != Some(next) {
-                        node.background_fill = Some(next.clone());
-                        changed = true;
-                    }
-                }
-                None => {
-                    if node.background_fill.take().is_some() {
-                        changed = true;
-                    }
-                }
-            }
-        }
-        changed
-    }
-
     /// Directly attaches or clears a zero-serialization [`SvgPicture`] on `id`.
     /// Returns `true` if the node's SVG picture changed.
     pub fn set_node_svg(&mut self, id: NodeId, svg: Option<SvgPicture>) -> bool {
@@ -179,36 +95,5 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         }
         node.svg = svg;
         true
-    }
-
-    /// Bulk-synchronizes zero-serialization [`SvgPicture`]s from any producer
-    /// (e.g. `DioxusSurface::iter_svg_pictures`), clearing stale entries from removed nodes.
-    /// Returns `true` if any node's SVG picture changed.
-    pub fn sync_svgs_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a SvgPicture)>,
-    ) -> bool {
-        let map: HashMap<NodeId, &'a SvgPicture> = entries.into_iter().collect();
-        let mut changed = false;
-        for node in self.nodes.values_mut() {
-            match map.get(&node.id).copied() {
-                Some(next) => {
-                    if !node
-                        .svg
-                        .as_ref()
-                        .is_some_and(|prev| prev.ptr_eq(next) || prev == next)
-                    {
-                        node.svg = Some(next.clone());
-                        changed = true;
-                    }
-                }
-                None => {
-                    if node.svg.take().is_some() {
-                        changed = true;
-                    }
-                }
-            }
-        }
-        changed
     }
 }

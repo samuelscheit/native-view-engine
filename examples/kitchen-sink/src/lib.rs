@@ -49,7 +49,6 @@ pub struct KitchenSinkModule {
     store: SharedKitchenSinkStore,
     surface: DioxusSurface,
     mounted: bool,
-    last_frame_buf: Vec<u8>,
     last_state_buf: Vec<u8>,
 }
 
@@ -62,11 +61,37 @@ impl KitchenSinkModule {
             .unwrap_or_default()
     }
 
-    /// Direct zero-serialization access to the underlying [`DioxusSurface`] so web/native hosts
-    /// can synchronize responsive `@media`, `:hover`/`:active`/`:focus-visible`, cursor, and
-    /// transition tables directly without wire encoding.
+    /// Direct zero-serialization access to the underlying [`DioxusSurface`].
     pub fn surface(&self) -> &DioxusSurface {
         &self.surface
+    }
+
+    /// Reconciles and flushes directly into `sink` via monomorphized [`nve_engine::RenderSink`]
+    /// with zero `CommandBuffer` encode/decode overhead.
+    pub fn flush_into<S: nve_engine::RenderSink>(
+        &mut self,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<nve_engine::BackendApplyStats, nve_engine::BackendError> {
+        let (_, stats) = self.flush_into_timed(frame_id, sink)?;
+        Ok(stats)
+    }
+
+    /// Timed variant of [`Self::flush_into`] returning `(reconcile_us, stats)`.
+    pub fn flush_into_timed<S: nve_engine::RenderSink>(
+        &mut self,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<(u64, nve_engine::BackendApplyStats), nve_engine::BackendError> {
+        if !self.mounted {
+            state::set_pending_store(Some(Arc::clone(&self.store)));
+            self.mounted = true;
+            let res = self.surface.flush_into_timed(frame_id, sink);
+            state::set_pending_store(None);
+            res
+        } else {
+            self.surface.flush_into_timed(frame_id, sink)
+        }
     }
 
     /// Returns the interactive counter value inside the Overview gallery.
@@ -98,24 +123,20 @@ impl NveApp for KitchenSinkModule {
             store: Arc::new(Mutex::new(initial)),
             surface: create_surface(surface_id),
             mounted: false,
-            last_frame_buf: Vec::new(),
             last_state_buf,
         }
     }
 
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let bytes = if !self.mounted {
+        if !self.mounted {
             state::set_pending_store(Some(Arc::clone(&self.store)));
             self.mounted = true;
-            let (_, _, bytes) = self.surface.render_frame(frame_id);
+            let slice = self.surface.render_frame_slice(frame_id);
             state::set_pending_store(None);
-            bytes
+            slice
         } else {
-            let (_, _, bytes) = self.surface.render_frame(frame_id);
-            bytes
-        };
-        self.last_frame_buf = bytes;
-        &self.last_frame_buf
+            self.surface.render_frame_slice(frame_id)
+        }
     }
 
     fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {

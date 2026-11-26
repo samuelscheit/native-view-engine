@@ -245,13 +245,8 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
         build_playgrounds(),
         ssr_services,
     );
-    let (_, _, frame_bytes) = ssr_surface.render_frame(1);
     let mut ssr_web = WebBackend::new();
-    ssr_web.submit_frame(&frame_bytes).expect("ssr submit_frame");
-    ssr_web.sync_responsive_from(
-        ssr_surface.iter_show_on(),
-        ssr_surface.iter_responsive_rules(),
-    );
+    ssr_surface.flush_into(1, &mut ssr_web).expect("ssr flush_into");
     let ssr = ssr_web.render_ssr();
     assert!(
         ssr.style_css.contains("@media (max-width:959.98px){.nve-m-"),

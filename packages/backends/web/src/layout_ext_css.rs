@@ -2,7 +2,6 @@
 //! [`LayoutExt`] (CSS Grid, `flex-basis`, `aspect-ratio`, `position` + insets, RTL logical
 //! spacing) and [`Transform2D`] in [`crate::WebBackend`].
 
-use nve_abi::hash::HashMap;
 use nve_abi::{Dimension, NodeId};
 use nve_components::layout_ext::{
     GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit, LayoutDirection,
@@ -286,57 +285,6 @@ impl WebBackend {
         if node.transform != transform {
             node.transform = transform;
             self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-
-    /// Bulk-synchronizes [`LayoutExt`] and [`Transform2D`] metadata from any producer (e.g.
-    /// `DioxusSurface`), updating live `dir` attributes and flushing changed CSS classes in one pass.
-    pub fn sync_layout_ext_from<'a>(
-        &mut self,
-        layout_exts: impl IntoIterator<Item = (NodeId, &'a LayoutExt)>,
-        transforms: impl IntoIterator<Item = (NodeId, Transform2D)>,
-    ) {
-        let ext_map: HashMap<NodeId, &'a LayoutExt> = layout_exts.into_iter().collect();
-        let tf_map: HashMap<NodeId, Transform2D> = transforms.into_iter().collect();
-
-        let mut dirty: Vec<NodeId> = Vec::new();
-        #[cfg(target_arch = "wasm32")]
-        let mut dir_dirty: Vec<NodeId> = Vec::new();
-
-        for (&id, node) in &mut self.nodes {
-            let mut changed = false;
-            let next_ext = ext_map
-                .get(&id)
-                .copied()
-                .filter(|e| !e.is_default())
-                .map(|e| Box::new(e.clone()));
-            if node.layout_ext != next_ext {
-                #[cfg(target_arch = "wasm32")]
-                if node_dir_attr(node.layout_ext.as_deref()) != node_dir_attr(next_ext.as_deref()) {
-                    dir_dirty.push(id);
-                }
-                node.layout_ext = next_ext;
-                changed = true;
-            }
-            let next_tf = tf_map.get(&id).copied();
-            if node.transform != next_tf {
-                node.transform = next_tf;
-                changed = true;
-            }
-            if changed {
-                dirty.push(id);
-            }
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        for id in dir_dirty {
-            self.sync_dom_dir_attr(id);
-        }
-
-        if !dirty.is_empty() {
-            dirty.sort_unstable();
-            dirty.dedup();
-            self.flush_or_queue_responsive_dirty(dirty);
         }
     }
 

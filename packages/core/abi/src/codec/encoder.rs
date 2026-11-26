@@ -361,6 +361,12 @@ impl CommandBufferBuilder {
         self.op_count += 1;
     }
 
+    /// Returns the raw backing buffer slice (call [`Self::finish`] first to finalize `op_count`).
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.buf
+    }
+
     /// Patches the op_count in the header and returns the finished byte slice.
     #[inline(always)]
     pub fn finish(&mut self) -> &[u8] {

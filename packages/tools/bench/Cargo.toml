@@ -44,3 +44,7 @@ harness = false
 [[bench]]
 name = "arena_and_mmap"
 harness = false
+
+[[bench]]
+name = "render_sink_handoff"
+harness = false

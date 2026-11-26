@@ -2,7 +2,7 @@
 //! `flex-basis`, `aspect-ratio`, `position: sticky/absolute`, RTL `dir="rtl"` + logical inline
 //! spacing, `Transform2D` (including `:hover` patches), SSR, `render_html`, and hydration parity.
 
-use nve_abi::{CommandBufferBuilder, ComponentKind, Dimension, LayoutProps, ROOT_NODE_ID};
+use nve_abi::{ComponentKind, Dimension, LayoutProps, ROOT_NODE_ID};
 use nve_backend_web::WebBackend;
 use nve_components::interaction::{InteractionState, StateStyleRule};
 use nve_components::layout_ext::{
@@ -11,26 +11,22 @@ use nve_components::layout_ext::{
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::style_patch::{Display, StylePatch};
 use nve_components::transform::Transform2D;
-use nve_engine::RenderBackend;
+use nve_engine::{BatchSink, RenderBackend, RenderSink};
 
-fn build_showcase_frame() -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::View, None);
-    b.create_node(3, ComponentKind::View, None);
-    b.create_node(4, ComponentKind::Pressable, None);
-    b.create_node(5, ComponentKind::View, None);
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.set_children(2, &[3, 4, 5]);
+fn emit_showcase_frame<S: RenderSink>(sink: &mut S) {
+    sink.begin_frame(1, 1);
+    sink.create_node(2, ComponentKind::View, None);
+    sink.create_node(3, ComponentKind::View, None);
+    sink.create_node(4, ComponentKind::Pressable, None);
+    sink.create_node(5, ComponentKind::View, None);
+    sink.set_children(ROOT_NODE_ID, &[2]);
+    sink.set_children(2, &[3, 4, 5]);
     let layout = LayoutProps::default();
-    b.set_layout(2, &layout);
-    b.set_layout(3, &layout);
-    b.set_layout(4, &layout);
-    b.set_layout(5, &layout);
-    b.commit(true);
-    b.finish().to_vec()
-}
+    sink.set_layout(2, &layout);
+    sink.set_layout(3, &layout);
+    sink.set_layout(4, &layout);
+    sink.set_layout(5, &layout);
 
-fn apply_showcase_sidecars(web: &mut WebBackend) {
     // Node 2: CSS Grid container with responsive @media 1-col -> 3-col switch
     let mut grid_ext = LayoutExt {
         display: Display::Grid,
@@ -71,36 +67,36 @@ fn apply_showcase_sidecars(web: &mut WebBackend) {
     rtl_ext.margin_inline.start = Some(8.0);
     rtl_ext.margin_inline.end = Some(4.0);
 
-    web.sync_layout_ext_from(
-        [
-            (2, &grid_ext),
-            (3, &sticky_ext),
-            (4, &card_ext),
-            (5, &rtl_ext),
-        ],
-        [(4, card_tf)],
-    );
+    sink.set_layout_ext(2, Some(&grid_ext));
+    sink.set_layout_ext(3, Some(&sticky_ext));
+    sink.set_layout_ext(4, Some(&card_ext));
+    sink.set_layout_ext(5, Some(&rtl_ext));
+    sink.set_transform(4, Some(card_tf));
 
     let media_rules = [ResponsiveRule::new(
         MediaQuery::expanded(),
         StylePatch::new().grid_cols([GridTrack::repeat_minmax_zero_fr(3)]),
     )];
-    web.sync_responsive_from(std::iter::empty(), [(2, media_rules.as_slice())]);
+    sink.set_responsive_rules(2, &media_rules);
 
     let hover_rules = [StateStyleRule::new(
         InteractionState::HOVER,
         StylePatch::new().translate(0.0, -4.0).scale(1.03).rotate(1.5),
     )];
-    web.sync_interaction_from(std::iter::empty(), [(4, hover_rules.as_slice())]);
+    sink.set_state_rules(4, &hover_rules);
+    sink.commit_frame(true).unwrap();
 }
 
 #[cfg(feature = "ssr")]
 #[test]
 fn web_emits_native_css_grid_media_switch_sticky_rtl_and_hover_transform() {
-    let bytes = build_showcase_frame();
+    // 0. Encode via BatchSink and submit through the binary wire path
+    let mut batch = BatchSink::new(1);
+    emit_showcase_frame(&mut batch);
+    let bytes = batch.into_bytes();
+
     let mut web = WebBackend::new();
     web.submit_frame(&bytes).unwrap();
-    apply_showcase_sidecars(&mut web);
 
     // 1. SSR output
     let ssr = web.render_ssr();
@@ -176,16 +172,20 @@ fn web_emits_native_css_grid_media_switch_sticky_rtl_and_hover_transform() {
     assert!(html.contains("padding-inline-start:24px;"));
     assert!(html.contains("transform:translate(0,4px);"));
 
-    // 3. Zero-mismatch hydration parity
+    // 3. Zero-mismatch hydration parity (both via BatchSink wire path and direct RenderSink)
     #[cfg(feature = "hydrate")]
     {
-        let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
-        hydrated.submit_frame(&bytes).unwrap();
-        apply_showcase_sidecars(&mut hydrated);
+        let mut hydrated_batch = WebBackend::hydrate_from_ssr(&ssr);
+        hydrated_batch.submit_frame(&bytes).unwrap();
+        assert!(hydrated_batch.hydration_report().mismatches.is_empty());
+        assert!(hydrated_batch.hydration_report().adopted_nodes >= 4);
+        assert_eq!(hydrated_batch.stylesheet().flushed_css_rules().len(), 0);
 
-        assert!(hydrated.hydration_report().mismatches.is_empty());
-        assert!(hydrated.hydration_report().adopted_nodes >= 4);
-        assert_eq!(hydrated.stylesheet().flushed_css_rules().len(), 0);
+        let mut hydrated_direct = WebBackend::hydrate_from_ssr(&ssr);
+        emit_showcase_frame(&mut hydrated_direct);
+        assert!(hydrated_direct.hydration_report().mismatches.is_empty());
+        assert!(hydrated_direct.hydration_report().adopted_nodes >= 4);
+        assert_eq!(hydrated_direct.stylesheet().flushed_css_rules().len(), 0);
     }
 }
 

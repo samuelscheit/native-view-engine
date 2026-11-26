@@ -1,7 +1,6 @@
 //! Zero-serialization CSS gradient emission, structural hashing, inline `<svg>` SSR/HTML
 //! emission, and live `wasm32` SVG DOM synchronization for [`crate::WebBackend`].
 
-use nve_abi::hash::HashMap;
 use nve_abi::{ColorRgba, NodeId, RawPropValue, StyleProps};
 use nve_components::paint::BackgroundFill;
 use nve_components::parse_color;
@@ -90,37 +89,6 @@ impl WebBackend {
         }
     }
 
-    /// Bulk-synchronizes zero-serialization [`BackgroundFill`]s from any producer
-    /// (e.g. `DioxusSurface::iter_background_fills`), clearing stale fills and flushing CSS in
-    /// one batched pass.
-    pub fn sync_background_fills_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a BackgroundFill)>,
-    ) {
-        let map: HashMap<NodeId, &'a BackgroundFill> = entries.into_iter().collect();
-        let mut dirty: Vec<NodeId> = Vec::new();
-        for (&id, node) in &mut self.nodes {
-            match map.get(&id).copied() {
-                Some(next) => {
-                    if node.background_fill.as_ref() != Some(next) {
-                        node.background_fill = Some(next.clone());
-                        dirty.push(id);
-                    }
-                }
-                None => {
-                    if node.background_fill.take().is_some() {
-                        dirty.push(id);
-                    }
-                }
-            }
-        }
-        if !dirty.is_empty() {
-            dirty.sort_unstable();
-            dirty.dedup();
-            self.flush_or_queue_responsive_dirty(dirty);
-        }
-    }
-
     /// Directly attaches or clears a zero-serialization [`SvgPicture`] on `id`.
     pub fn set_node_svg(&mut self, id: NodeId, svg: Option<SvgPicture>) {
         let Some(node) = self.nodes.get_mut(&id) else {
@@ -137,42 +105,6 @@ impl WebBackend {
         node.svg = svg;
         #[cfg(target_arch = "wasm32")]
         self.sync_dom_svg_node(id);
-    }
-
-    /// Bulk-synchronizes zero-serialization [`SvgPicture`]s from any producer
-    /// (e.g. `DioxusSurface::iter_svg_pictures`), updating live SVG DOM nodes on `wasm32`.
-    pub fn sync_svgs_from<'a>(
-        &mut self,
-        entries: impl IntoIterator<Item = (NodeId, &'a SvgPicture)>,
-    ) {
-        let map: HashMap<NodeId, &'a SvgPicture> = entries.into_iter().collect();
-        #[cfg(target_arch = "wasm32")]
-        let mut dirty: Vec<NodeId> = Vec::new();
-        for (&id, node) in &mut self.nodes {
-            match map.get(&id).copied() {
-                Some(next) => {
-                    if !node
-                        .svg
-                        .as_ref()
-                        .is_some_and(|prev| prev.ptr_eq(next) || prev == next)
-                    {
-                        node.svg = Some(next.clone());
-                        #[cfg(target_arch = "wasm32")]
-                        dirty.push(id);
-                    }
-                }
-                None => {
-                    if node.svg.take().is_some() {
-                        #[cfg(target_arch = "wasm32")]
-                        dirty.push(id);
-                    }
-                }
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        for id in dirty {
-            self.sync_dom_svg_node(id);
-        }
     }
 
     /// Synchronizes an attached [`SvgPicture`] onto the live browser DOM using strictly typed

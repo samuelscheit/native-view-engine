@@ -12,11 +12,13 @@ pub mod loader;
 pub mod mmap_arena;
 pub mod profiler;
 pub mod reloc;
+pub mod render_sink;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
 
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
+pub use render_sink::{replay_command_buffer_into, BatchSink, RenderSink};
 pub use frame_arena::{FrameArena, FRAME_ARENA_BASE_ALIGN};
 pub use hash::{xxh64, Xxh64Hasher};
 pub use hotreload::HotPatchMsg;
@@ -185,6 +187,30 @@ impl<B: RenderBackend> SurfaceRunner<B> {
             mutation_count: stats.mutation_count,
             reconcile_us,
             encode_us,
+            decode_us: stats.decode_us,
+            layout_us: stats.layout_us,
+            diff_us: stats.diff_us,
+            mount_us: stats.mount_us,
+        };
+        self.profiler.record(timing);
+        Ok(timing)
+    }
+
+    /// Flushes a frame directly into the backend via [`RenderSink`] with zero `CommandBuffer`
+    /// allocation, encode, or decode overhead, recording exact `FrameTiming` in `profiler`.
+    pub fn flush_direct<F>(&mut self, flush: F) -> Result<FrameTiming, BackendError>
+    where
+        B: RenderSink,
+        F: FnOnce(FrameId, &mut B) -> Result<(u64, BackendApplyStats), BackendError>,
+    {
+        let frame_id = self.next_frame_id();
+        let (reconcile_us, stats) = flush(frame_id, &mut self.backend)?;
+        let timing = FrameTiming {
+            frame_id,
+            op_count: stats.op_count,
+            mutation_count: stats.mutation_count,
+            reconcile_us,
+            encode_us: 0,
             decode_us: stats.decode_us,
             layout_us: stats.layout_us,
             diff_us: stats.diff_us,

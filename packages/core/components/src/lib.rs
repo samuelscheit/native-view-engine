@@ -4,6 +4,7 @@
 
 pub mod canvas_ir;
 pub mod client_hints;
+pub mod extended_wire;
 pub mod input_hints;
 pub mod interaction;
 pub mod keyboard;

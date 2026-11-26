@@ -474,9 +474,11 @@ fn press_test_id(
     let el_id = writer.element_id_of(node_id).expect("element id");
     let data: Rc<dyn Any> = Rc::new(PressEventData { x: 10.0, y: 10.0 });
     vdom.runtime().handle_event("press", Event::new(data, true), el_id);
-    writer.begin_frame(1, frame_id);
-    vdom.render_immediate(writer);
-    scene.apply(writer.finish_frame(true));
+    let mut sink = nve_dioxus::BatchSink::new(1);
+    let mut tx = writer.begin_tx(&mut sink, 1, frame_id);
+    vdom.render_immediate(&mut tx);
+    tx.finish_frame(true).unwrap();
+    scene.apply(sink.bytes());
 }
 
 #[test]
@@ -489,9 +491,11 @@ fn dioxus_e2e_router_provider_link_outlet_press_navigation_and_modal() {
     let mut writer = NveMutationWriter::new(1);
     let mut scene = WireScene::new();
 
-    writer.begin_frame(1, 1);
-    vdom.rebuild(&mut writer);
-    scene.apply(writer.finish_frame(true));
+    let mut sink = nve_dioxus::BatchSink::new(1);
+    let mut tx = writer.begin_tx(&mut sink, 1, 1);
+    vdom.rebuild(&mut tx);
+    tx.finish_frame(true).unwrap();
+    scene.apply(sink.bytes());
     assert!(scene.collect_texts().contains("Screen: Home (/)"));
 
     let (_, link_node) = scene.find_by_test_id("link-issue-42").expect("link node");
@@ -562,9 +566,11 @@ fn dioxus_e2e_tab_router_provider_preserves_stack_and_retap_pops_to_root() {
     let mut writer = NveMutationWriter::new(1);
     let mut scene = WireScene::new();
 
-    writer.begin_frame(1, 1);
-    vdom.rebuild(&mut writer);
-    scene.apply(writer.finish_frame(true));
+    let mut sink = nve_dioxus::BatchSink::new(1);
+    let mut tx = writer.begin_tx(&mut sink, 1, 1);
+    vdom.rebuild(&mut tx);
+    tx.finish_frame(true).unwrap();
+    scene.apply(sink.bytes());
     assert!(scene.collect_texts().contains("ActiveTab: Home"));
     assert!(scene.collect_texts().contains("Screen: Home (/)"));
 

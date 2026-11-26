@@ -51,7 +51,7 @@ fn skia_backend_consumes_direct_draw_list_with_zero_serialization_and_arc_identi
         .fill_rect(10.0, 10.0, 40.0, 40.0, ColorRgba::rgb(34, 197, 94))
         .fill_circle(75.0, 30.0, 12.0, ColorRgba::rgb(56, 189, 248));
     let draw_list = rec.finish();
-    backend.sync_draw_lists_from([(2, &draw_list)]);
+    backend.set_node_draw_list(2, Some(draw_list.clone()));
 
     let dl = backend.display_list();
     let canvas_ops = dl
@@ -100,7 +100,7 @@ fn skia_and_headless_backends_store_typed_native_view_props_and_commands() {
         tint: None,
     })
     .unwrap();
-    backend.sync_native_views_from([(2, &blur_props)]);
+    backend.set_native_view_props(2, Some(blur_props));
 
     let node2 = backend.layout_tree().node(2).expect("node 2 mounted");
     let stored = node2.native_view_props.as_ref().expect("typed props stored");

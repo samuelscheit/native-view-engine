@@ -399,13 +399,8 @@ fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
             let mut app = KitchenSinkModule::create(1);
             let mut web = WebBackend::new();
             web.set_viewport(1, vp);
-            let frame0 = app.render(1).to_vec();
-            web.submit_frame(&frame0)
-                .map_err(|e| format!("failed to submit kitchen-sink Frame-0 SSG: {e}"))?;
-            let surface = app.surface();
-            web.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
-            web.sync_interaction_from(surface.iter_cursors(), surface.iter_state_rules());
-            web.sync_transitions_from(surface.iter_transitions());
+            app.flush_into(1, &mut web)
+                .map_err(|e| format!("failed to flush kitchen-sink Frame-0 SSG: {e}"))?;
             web
         }
         _ => return Ok(None),

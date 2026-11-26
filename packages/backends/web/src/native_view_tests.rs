@@ -527,12 +527,10 @@ fn inprocess_zero_serialization_native_view_props_and_commands_bypass_nvnp_nvnc(
     )
     .unwrap();
 
-    backend.sync_native_views_from([
-        (2, &blur_typed),
-        (3, &webview_typed),
-        (4, &video_typed),
-        (5, &web_el_typed),
-    ]);
+    backend.set_native_view_props(2, &blur_typed);
+    backend.set_native_view_props(3, &webview_typed);
+    backend.set_native_view_props(4, &video_typed);
+    backend.set_native_view_props(5, &web_el_typed);
 
     let html = backend.render_ssr().html;
     assert!(html.contains("<iframe data-nve-id=\"3\""));

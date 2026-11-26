@@ -84,31 +84,17 @@ impl SessionApp {
         }
     }
 
-    fn render_frame(&mut self, frame_id: FrameId) -> (u64, u64, Vec<u8>) {
+    fn flush_into_timed<S: nve_engine::RenderSink>(
+        &mut self,
+        frame_id: FrameId,
+        sink: &mut S,
+    ) -> Result<(u64, nve_engine::BackendApplyStats), BackendError> {
         match self {
-            Self::Dioxus(surface) => surface.render_frame(frame_id),
+            Self::Dioxus(surface) => surface.flush_into_timed(frame_id, sink),
             #[cfg(feature = "app-studio")]
-            Self::Studio(module) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                let t0 = std::time::Instant::now();
-                let bytes = module.render(frame_id).to_vec();
-                #[cfg(not(target_arch = "wasm32"))]
-                let elapsed = t0.elapsed().as_micros() as u64;
-                #[cfg(target_arch = "wasm32")]
-                let elapsed = 0u64;
-                (elapsed, 0, bytes)
-            }
+            Self::Studio(module) => module.flush_into_timed(frame_id, sink),
             #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                let t0 = std::time::Instant::now();
-                let bytes = module.render(frame_id).to_vec();
-                #[cfg(not(target_arch = "wasm32"))]
-                let elapsed = t0.elapsed().as_micros() as u64;
-                #[cfg(target_arch = "wasm32")]
-                let elapsed = 0u64;
-                (elapsed, 0, bytes)
-            }
+            Self::KitchenSink(module) => module.flush_into_timed(frame_id, sink),
         }
     }
 
@@ -158,16 +144,6 @@ impl SessionApp {
             Self::Studio(module) => module.try_restore_state(bytes),
             #[cfg(feature = "app-kitchen-sink")]
             Self::KitchenSink(module) => module.try_restore_state(bytes),
-        }
-    }
-
-    fn surface(&self) -> &DioxusSurface {
-        match self {
-            Self::Dioxus(surface) => surface,
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.surface(),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.surface(),
         }
     }
 }
@@ -511,21 +487,11 @@ impl WebAppSession {
     }
 
     fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
-        let frame_id = self.runner.next_frame_id();
-        let (reconcile_us, encode_us, bytes) = self.app.render_frame(frame_id);
+        let app = &mut self.app;
         let timing = self
             .runner
-            .submit_recorded_frame(frame_id, reconcile_us, encode_us, &bytes)?;
-        {
-            let surface = self.app.surface();
-            let backend = self.runner.backend_mut();
-            backend.sync_draw_lists_from(surface.iter_draw_lists());
-            backend.sync_native_views_from(surface.iter_native_views());
-            backend.sync_responsive_from(surface.iter_show_on(), surface.iter_responsive_rules());
-            backend.sync_interaction_from(surface.iter_cursors(), surface.iter_state_rules());
-            backend.sync_transitions_from(surface.iter_transitions());
-        }
-        self.sync_scene(frame_id);
+            .flush_direct(|frame_id, backend| app.flush_into_timed(frame_id, backend))?;
+        self.sync_scene(timing.frame_id);
         Ok(timing)
     }
 }

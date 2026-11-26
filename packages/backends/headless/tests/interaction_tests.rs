@@ -94,7 +94,8 @@ fn headless_backend_tracks_pointer_touch_focus_disabled_unmount_and_cursors() {
                 .cursor(CursorKind::NotAllowed),
         ),
     ];
-    backend.sync_interaction_from([(4, CursorKind::RowResize)], [(2, btn_rules.as_slice())]);
+    backend.set_node_cursor(4, Some(CursorKind::RowResize));
+    backend.set_node_state_rules(2, btn_rules);
 
     // Idle state: base style & Auto cursor.
     assert_eq!(backend.active_cursor(), CursorKind::Auto);

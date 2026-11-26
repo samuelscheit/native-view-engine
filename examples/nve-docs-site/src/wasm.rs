@@ -42,15 +42,9 @@ struct DocsWebSession {
 impl DocsWebSession {
     fn render_next_frame(&mut self) -> Result<(), String> {
         self.frame_id = self.frame_id.saturating_add(1);
-        let bytes = self.surface.render_frame_slice(self.frame_id).to_vec();
-        self.backend
-            .submit_frame(&bytes)
-            .map_err(|e| format!("WebBackend submit_frame failed: {e}"))?;
-        self.backend.sync_draw_lists_from(self.surface.iter_draw_lists());
-        self.backend.sync_responsive_from(
-            self.surface.iter_show_on(),
-            self.surface.iter_responsive_rules(),
-        );
+        self.surface
+            .flush_into(self.frame_id, &mut self.backend)
+            .map_err(|e| format!("WebBackend flush_into failed: {e}"))?;
         Ok(())
     }
 
@@ -166,8 +160,7 @@ impl DocsWebSession {
             &self.base_path,
             viewport,
             dark,
-        )
-        .with_in_process_mode(true);
+        );
         self.render_next_frame()?;
         sync_document_theme(dark);
         sync_document_title(&self.last_route, &self.base_path);
@@ -401,8 +394,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         base_path,
         actual_vp,
         true,
-    )
-    .with_in_process_mode(true);
+    );
 
     let session = Rc::new(RefCell::new(DocsWebSession {
         base_path: base_path.to_string(),

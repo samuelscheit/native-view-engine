@@ -1,7 +1,6 @@
 //! Interactive pseudo-state tracking (`:hover`, `:focus`, `:focus-visible`, `:active`,
 //! `:disabled`) and [`CursorKind`] resolution integrated directly into [`crate::HeadlessBackend`].
 
-use nve_abi::hash::HashMap;
 use nve_abi::{ComponentKind, EventMask, LayoutProps, NodeId, StyleProps, ROOT_NODE_ID};
 use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
@@ -51,43 +50,6 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
         } else {
             false
         }
-    }
-
-    /// Bulk-synchronizes typed [`CursorKind`] values and [`StateStyleRule`] slices from any
-    /// producer (e.g. `DioxusSurface`), returning sorted deduplicated `NodeId`s whose metadata
-    /// changed.
-    pub fn sync_interaction_from<'a>(
-        &mut self,
-        cursors: impl IntoIterator<Item = (NodeId, CursorKind)>,
-        state_rules: impl IntoIterator<Item = (NodeId, &'a [StateStyleRule])>,
-    ) -> Vec<NodeId> {
-        let cursor_map: HashMap<NodeId, CursorKind> = cursors.into_iter().collect();
-        let rules_map: HashMap<NodeId, &'a [StateStyleRule]> = state_rules.into_iter().collect();
-
-        let ids: Vec<NodeId> = self.nodes.values().map(|n| n.id).collect();
-        let mut dirty = Vec::new();
-        for id in ids {
-            let Some(node) = self.nodes.get_mut(id) else {
-                continue;
-            };
-            let mut changed = false;
-            let next_cursor = cursor_map.get(&id).copied();
-            if node.cursor != next_cursor {
-                node.cursor = next_cursor;
-                changed = true;
-            }
-            let next_rules = rules_map.get(&id).copied().unwrap_or(&[]);
-            if node.state_rules.as_slice() != next_rules {
-                node.state_rules.clear();
-                node.state_rules.extend_from_slice(next_rules);
-                changed = true;
-            }
-            if changed {
-                dirty.push(id);
-            }
-        }
-        dirty.sort_unstable();
-        dirty
     }
 
     /// Marks `id` disabled or enabled in the [`InteractionTracker`], returning dirty `NodeId`s.
