@@ -367,6 +367,11 @@ detect_java_home() {
 
 # --- Suite definitions ------------------------------------------------------
 
+suite_arch_invariants() {
+  cd "$REPO_ROOT"
+  cargo test -p nve-cli --test arch_invariants
+}
+
 suite_rust_workspace() {
   cd "$REPO_ROOT"
   cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
@@ -597,6 +602,13 @@ if [ -n "$RN_DIR" ]; then
   printf '  RN Common  : %s\n' "$RN_DIR"
 else
   printf '  RN Common  : standalone (RN_REACT_COMMON_DIR not set)\n'
+fi
+
+# 0. Mechanical architectural invariants (runs in both --quick and full modes)
+if command -v cargo >/dev/null 2>&1; then
+  run_suite "Arch invariants" suite_arch_invariants "cargo test -p nve-cli --test arch_invariants"
+else
+  skip_suite "Arch invariants" "cargo not found"
 fi
 
 # 1. Rust workspace
