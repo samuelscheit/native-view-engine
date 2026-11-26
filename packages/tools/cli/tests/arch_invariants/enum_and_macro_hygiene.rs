@@ -251,13 +251,23 @@ pub fn scan_internal_enum_converters_in_str(
         let param_enums = find_internal_enums_in_types(params, internal_enums);
         let ok_ret_ty = unwrap_result_ok_type(ret_ty);
         let ret_enums = find_internal_enums_in_types(ok_ret_ty, internal_enums);
-        let param_has_bare_discriminant = params_have_bare_discriminant(params);
+        let single_discriminant = is_single_bare_discriminant_param(params);
+        let is_self_discriminant_fn = fn_name.starts_with("from_u")
+            || fn_name.starts_with("from_i")
+            || fn_name.starts_with("from_word")
+            || fn_name.starts_with("from_code")
+            || fn_name.starts_with("decode_")
+            || fn_name.starts_with("map_")
+            || fn_name.starts_with("convert_");
 
+        let ret_is_collection =
+            ok_ret_ty.contains("Vec<") || ok_ret_ty.contains('&') || ok_ret_ty.contains('[');
         let is_redundant_discriminant = !takes_self
-            && param_has_bare_discriminant
-            && (!ret_enums.is_empty() || contains_ident(ok_ret_ty, "Self"))
-            && !ok_ret_ty.contains('&');
-        let is_redundant_enum_to_enum = !param_enums.is_empty()
+            && !ret_is_collection
+            && ((single_discriminant && contains_ident(ok_ret_ty, "Self") && is_self_discriminant_fn)
+                || (!ret_enums.is_empty() && params_have_bare_discriminant(params)));
+        let is_redundant_enum_to_enum = !ret_is_collection
+            && !param_enums.is_empty()
             && !ret_enums.is_empty()
             && param_enums != ret_enums;
 
@@ -272,6 +282,22 @@ pub fn scan_internal_enum_converters_in_str(
             ));
         }
     }
+}
+
+/// Returns `true` iff the function takes exactly one parameter of bare integer type (`u8`/`u16`/`u32`/`i32`).
+fn is_single_bare_discriminant_param(params: &str) -> bool {
+    let mut parts = params.split(',').map(str::trim).filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    let Some((_name, ty)) = first.split_once(':') else {
+        return false;
+    };
+    let norm: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
+    matches!(norm.as_str(), "u8" | "u16" | "u32" | "i32")
 }
 
 /// Returns `true` iff any parameter type is literally a bare integer discriminant (`u8`, `u16`,

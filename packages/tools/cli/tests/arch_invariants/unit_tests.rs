@@ -463,12 +463,27 @@ fn unit_duplicate_enums_converters_and_strict_macro_rules() {
         "real Criterion + black_box bench must pass"
     );
 
-    // Byte-slice wire decoders returning Result<Struct, ErrorEnum> must NOT false-positive.
+    // Byte-slice wire decoders & multi-arg FFI/struct constructors must NOT false-positive.
     let wire_file = (
         "packages/core/abi/src/events.rs".to_string(),
-        "pub enum DecodeError { Bad }\npub fn decode_events(bytes: &[u8]) -> Result<Vec<Event>, DecodeError> { Ok(vec![]) }\n".to_string(),
+        r#"
+            pub enum DecodeError { Bad }
+            pub enum CanvasOp { Rect }
+            pub enum RawPropValue { Bytes }
+            pub fn decode_events(bytes: &[u8]) -> Result<Vec<Event>, DecodeError> { Ok(vec![]) }
+            pub fn decode_raw_prop(prop: &RawPropValue) -> Result<Vec<CanvasOp>, DecodeError> { Ok(vec![]) }
+            impl Foo {
+                pub unsafe fn from_raw_parts(ptr: *const u8, count: u32) -> Self { Self }
+                pub const fn from_args(opcode: u16, args: &[u32]) -> Self { Self }
+                pub fn from_captured(error: &DecodeError, reset_count: u32) -> Self { Self }
+            }
+        "#
+        .to_string(),
     );
     let mut v_wire = Vec::new();
     scan_duplicate_enums_and_converters(&[wire_file], &[], &mut v_wire);
-    assert!(v_wire.is_empty(), "byte-slice wire decoder returning DecodeError must not false-positive: {v_wire:?}");
+    assert!(
+        v_wire.is_empty(),
+        "wire decoders and multi-arg struct constructors must not false-positive: {v_wire:?}"
+    );
 }
