@@ -268,13 +268,16 @@ fn module_root_spec_purity_and_no_unscoped_skia_dev_deps() {
             for dep in &pkg.declared_deps {
                 if dep.kind == DepKind::Dev
                     && dep.target.is_none()
-                    && (dep.name == "skia-safe" || dep.name == "nve-backend-skia")
+                    && matches!(dep.name.as_str(), "skia-safe" | "nve-backend-skia" | "criterion")
                 {
                     violations.push(Violation::new(
                         &pkg.rel_manifest,
                         1,
                         format!("[dev-dependencies] {}", dep.name),
-                        "Unscoped skia dev-dependency breaks `wasm32 --all-targets`; gate under `[target.'cfg(not(target_arch = \"wasm32\"))'.dev-dependencies]`",
+                        format!(
+                            "Unscoped `{}` dev-dependency breaks `wasm32 --all-targets`; gate under `[target.'cfg(not(target_arch = \"wasm32\"))'.dev-dependencies]`",
+                            dep.name
+                        ),
                     ));
                 }
             }
@@ -282,7 +285,7 @@ fn module_root_spec_purity_and_no_unscoped_skia_dev_deps() {
     }
 
     assert_no_violations(
-        "Module root spec purity & no unscoped skia dev-deps",
+        "Module root spec purity & no unscoped wasm32-breaking dev-deps (skia, criterion)",
         &violations,
     );
 }
