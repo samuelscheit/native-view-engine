@@ -372,6 +372,7 @@ fn publish_table_views_and_table_event_bus_roundtrip() {
     let native = events[0].to_native_event(|_| b"ok".to_vec());
     let direct = native.as_direct_event();
     let batch = [direct];
+    // SAFETY: `batch` and `native` outlive `batch_ref` in this test.
     let batch_ref = unsafe { nve_abi::NveEventBatchRef::from_slice(&batch) };
     let decoded_direct = nve_abi::direct_event_to_native(batch_ref.get(0).unwrap()).unwrap();
     assert_eq!(decoded_direct, native);

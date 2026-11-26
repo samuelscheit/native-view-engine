@@ -40,6 +40,8 @@ unsafe fn guarded_slice<'a, T>(
     if byte_len > isize::MAX as usize {
         return Err(SceneError::BufferLengthOverflow(field));
     }
+    // SAFETY: Non-null, alignment, and `isize::MAX` byte-length invariants were checked above;
+    // caller guarantees `ptr` points to `count` initialized immutable `T` elements for `'a`.
     Ok(unsafe { std::slice::from_raw_parts(ptr, count) })
 }
 
@@ -57,15 +59,18 @@ impl<'a> NveSceneRef<'a> {
                 actual: view.schema_hash,
             });
         }
-        let nodes = unsafe { guarded_slice(view.nodes, view.node_count, "nodes")? };
-        let text_slab = unsafe { guarded_slice(view.text_slab, view.text_slab_len, "text_slab")? };
-        let children_slab =
-            unsafe { guarded_slice(view.children_slab, view.children_slab_len, "children_slab")? };
-        let dirty_indices =
-            unsafe { guarded_slice(view.dirty_indices, view.dirty_count, "dirty_indices")? };
-        let removed_ids =
-            unsafe { guarded_slice(view.removed_ids, view.removed_count, "removed_ids")? };
-        let tables = unsafe { guarded_slice(view.tables, view.table_count, "tables")? };
+        // SAFETY: Caller guarantees every non-empty pointer in `view` is valid and immutable for `'a`
+        // and covers its declared count; `guarded_slice` checks null, alignment, and length overflow.
+        let (nodes, text_slab, children_slab, dirty_indices, removed_ids, tables) = unsafe {
+            (
+                guarded_slice(view.nodes, view.node_count, "nodes")?,
+                guarded_slice(view.text_slab, view.text_slab_len, "text_slab")?,
+                guarded_slice(view.children_slab, view.children_slab_len, "children_slab")?,
+                guarded_slice(view.dirty_indices, view.dirty_count, "dirty_indices")?,
+                guarded_slice(view.removed_ids, view.removed_count, "removed_ids")?,
+                guarded_slice(view.tables, view.table_count, "tables")?,
+            )
+        };
 
         Ok(Self {
             frame_id: view.frame_id,

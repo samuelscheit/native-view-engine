@@ -12,3 +12,6 @@ nve-store = { workspace = true }
 
 [dev-dependencies]
 nve-engine = { workspace = true }
+
+[lints]
+workspace = true

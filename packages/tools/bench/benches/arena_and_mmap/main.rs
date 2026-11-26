@@ -59,7 +59,10 @@ fn bench_workload_a_build_and_write(c: &mut Criterion) {
             &tasks,
             |b, t| {
                 b.iter(|| {
-                    black_box(write_reloc_workspace(reloc_file.path(), black_box(t)).unwrap())
+                    black_box(
+                        write_reloc_workspace(reloc_file.path(), black_box(t))
+                            .expect("write reloc workspace"),
+                    )
                 })
             },
         );
@@ -77,7 +80,7 @@ fn bench_workload_a_build_and_write(c: &mut Criterion) {
                         black_box(t),
                         4096,
                     )
-                    .unwrap();
+                    .expect("populate mmap workspace arena");
                     black_box(arena.used_bytes())
                 });
             },
@@ -104,7 +107,7 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
         write_musli_workspace(musli_file.path(), &tasks);
 
         let reloc_file = TempFileGuard::new(&format!("cl_reloc_{label}"), "nvereloc");
-        write_reloc_workspace(reloc_file.path(), &tasks).unwrap();
+        write_reloc_workspace(reloc_file.path(), &tasks).expect("write reloc cold-load fixture");
 
         let arena_file = TempFileGuard::new(&format!("cl_arena_{label}"), "nvearena");
         {
@@ -115,8 +118,8 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
                 &tasks,
                 4096,
             )
-            .unwrap();
-            arena.sync_all().unwrap();
+            .expect("populate cold-load arena fixture");
+            arena.sync_all().expect("sync cold-load arena fixture");
         }
 
         group.bench_function(BenchmarkId::new("serde_json_read_decode", label), |b| {
@@ -155,7 +158,7 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("reloc_mmap_full_verify", label), |b| {
             b.iter(|| {
                 let ws = MmapRelocWorkspace::open(black_box(reloc_file.path()), VerifyMode::Full)
-                    .unwrap();
+                    .expect("open reloc mmap full verify");
                 black_box(ws.view().tasks().len())
             });
         });
@@ -164,7 +167,7 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
             b.iter(|| {
                 let ws =
                     MmapRelocWorkspace::open(black_box(reloc_file.path()), VerifyMode::HeaderOnly)
-                        .unwrap();
+                        .expect("open reloc mmap header only");
                 black_box(ws.view().tasks().len())
             });
         });
@@ -173,15 +176,16 @@ fn bench_workload_a_cold_load(c: &mut Criterion) {
             b.iter(|| {
                 // SAFETY: Fixture file was created by `write_reloc_workspace`.
                 let ws = unsafe { MmapRelocWorkspace::open_unchecked(black_box(reloc_file.path())) }
-                    .unwrap();
+                    .expect("open reloc mmap unchecked");
                 black_box(ws.view().tasks().len())
             });
         });
 
         group.bench_function(BenchmarkId::new("mmap_arena_reopen", label), |b| {
             b.iter(|| {
-                let arena = MmapOffsetArena::open(black_box(arena_file.path())).unwrap();
-                black_box(workspace_tasks(&arena).unwrap().len())
+                let arena = MmapOffsetArena::open(black_box(arena_file.path()))
+                    .expect("reopen mmap arena");
+                black_box(workspace_tasks(&arena).expect("read workspace tasks").len())
             });
         });
     }
@@ -209,10 +213,14 @@ fn bench_workload_a_random_read(c: &mut Criterion) {
         assert_eq!(random_read_musli_mmap(&musli_mmap, &indices), expected);
 
         let reloc_file = TempFileGuard::new(&format!("rr_reloc_{label}"), "nvereloc");
-        write_reloc_workspace(reloc_file.path(), &tasks).unwrap();
-        let reloc_ws = MmapRelocWorkspace::open(reloc_file.path(), VerifyMode::Full).unwrap();
+        write_reloc_workspace(reloc_file.path(), &tasks).expect("write reloc random-read fixture");
+        let reloc_ws = MmapRelocWorkspace::open(reloc_file.path(), VerifyMode::Full)
+            .expect("open reloc random-read fixture");
         assert_eq!(
-            reloc_ws.view().random_read_checksum(&indices).unwrap(),
+            reloc_ws
+                .view()
+                .random_read_checksum(&indices)
+                .expect("reloc random read checksum"),
             expected
         );
 
@@ -224,8 +232,11 @@ fn bench_workload_a_random_read(c: &mut Criterion) {
             &tasks,
             4096,
         )
-        .unwrap();
-        assert_eq!(random_read_workspace_arena(&arena, &indices).unwrap(), expected);
+        .expect("populate random-read arena fixture");
+        assert_eq!(
+            random_read_workspace_arena(&arena, &indices).expect("arena random read"),
+            expected
+        );
 
         group.bench_function(BenchmarkId::new("owned_vec_in_ram", label), |b| {
             b.iter(|| black_box(random_read_owned_tasks(black_box(&tasks), black_box(&indices))));
@@ -245,14 +256,17 @@ fn bench_workload_a_random_read(c: &mut Criterion) {
                     reloc_ws
                         .view()
                         .random_read_checksum(black_box(&indices))
-                        .unwrap(),
+                        .expect("reloc random read checksum"),
                 )
             });
         });
 
         group.bench_function(BenchmarkId::new("mmap_arena_zero_copy", label), |b| {
             b.iter(|| {
-                black_box(random_read_workspace_arena(&arena, black_box(&indices)).unwrap())
+                black_box(
+                    random_read_workspace_arena(&arena, black_box(&indices))
+                        .expect("arena random read"),
+                )
             });
         });
     }
@@ -329,7 +343,10 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
                         reloc_tasks[idx].priority = (step_r % 4) as u32;
                         reloc_tasks[idx].updated_at_ms += 1;
                     }
-                    black_box(write_reloc_workspace(reloc_file.path(), &reloc_tasks).unwrap())
+                    black_box(
+                        write_reloc_workspace(reloc_file.path(), &reloc_tasks)
+                            .expect("rewrite reloc workspace"),
+                    )
                 });
             });
 
@@ -341,7 +358,7 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
                 &base_tasks,
                 4096,
             )
-            .unwrap();
+            .expect("populate mutation arena");
             let mut step_a = 0u64;
             group.bench_function(BenchmarkId::new("mmap_arena_in_place", &param), |b| {
                 b.iter(|| {
@@ -355,7 +372,7 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
                             (step_a % 4) as u32,
                             1_800_000_000_000 + step_a as i64,
                         )
-                        .unwrap();
+                        .expect("mutate arena task in place");
                     }
                     black_box(last_off)
                 });
@@ -377,13 +394,15 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
                                 (step_ms % 4) as u32,
                                 1_800_000_000_000 + step_ms as i64,
                             )
-                            .unwrap();
+                            .expect("mutate arena task for msync");
                             min_off = min_off.min(off);
                             max_end = max_end.max(off + size_of::<ArenaTask>());
                         }
-                        arena.sync_range(min_off, max_end - min_off).unwrap();
+                        arena
+                            .sync_range(min_off, max_end - min_off)
+                            .expect("sync mutated arena range");
                         let root_ptr = arena.root_ptr::<WorkspaceRoot>();
-                        black_box(arena.commit_root(root_ptr).unwrap())
+                        black_box(arena.commit_root(root_ptr).expect("commit arena root"))
                     });
                 },
             );

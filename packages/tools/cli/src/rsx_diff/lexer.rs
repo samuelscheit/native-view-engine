@@ -62,7 +62,9 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
             continue;
         }
         if !b.is_ascii() {
-            let ch = src[pos..].chars().next().unwrap();
+            let Some(ch) = src[pos..].chars().next() else {
+                break;
+            };
             if ch.is_whitespace() {
                 pos += ch.len_utf8();
                 continue;
@@ -215,10 +217,14 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
         // 9. Identifiers / keywords.
         if is_ident_start(b) {
             let start = pos;
-            let ch = src[pos..].chars().next().unwrap();
+            let Some(ch) = src[pos..].chars().next() else {
+                break;
+            };
             pos += ch.len_utf8();
             while pos < len && is_ident_continue(bytes[pos]) {
-                let c = src[pos..].chars().next().unwrap();
+                let Some(c) = src[pos..].chars().next() else {
+                    break;
+                };
                 pos += c.len_utf8();
             }
             tokens.push(TokenKind::Ident(&src[start..pos]));
@@ -227,7 +233,9 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
         }
 
         // 10. Punctuation + delimiter balancing.
-        let ch = src[pos..].chars().next().unwrap();
+        let Some(ch) = src[pos..].chars().next() else {
+            break;
+        };
         let tok_idx = tokens.len();
         match ch {
             '{' | '(' | '[' => {
@@ -332,7 +340,9 @@ fn try_scan_char_literal(src: &str, quote_pos: usize) -> Result<Option<usize>, L
         }
         return Err(LexError::UnterminatedChar);
     }
-    let ch = src[pos..].chars().next().unwrap();
+    let Some(ch) = src[pos..].chars().next() else {
+        return Err(LexError::UnterminatedChar);
+    };
     let after_ch = pos + ch.len_utf8();
     if after_ch < len && bytes[after_ch] == b'\'' {
         return Ok(Some(after_ch + 1));

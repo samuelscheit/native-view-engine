@@ -425,7 +425,11 @@ fn HeroInteractiveCard() -> Element {
                                         let bg = if is_sel { theme.accent_surface } else { theme.surface };
                                         let fg = if is_sel { theme.accent } else { theme.muted };
                                         let bc = if is_sel { theme.accent } else { theme.border };
-                                        let host_tid = format!("hero-host-{}", h.to_ascii_lowercase().replace(' ', "-"));
+                                        let slug: String = h
+                                            .chars()
+                                            .map(|c| if c == ' ' { '-' } else { c.to_ascii_lowercase() })
+                                            .collect();
+                                        let host_tid = format!("hero-host-{slug}");
                                         rsx! {
                                             pressable {
                                                 key: "hero-host-{h}",

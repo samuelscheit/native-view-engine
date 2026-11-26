@@ -339,12 +339,28 @@ impl SyncTransportMode {
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "lan" | "quic" | "lan-quic" | "lan_quic" => Some(Self::LanQuic),
-            "usb" | "usb-mux" | "usb_mux" => Some(Self::UsbMux),
-            "relay" | "wss" | "relay-wss" | "relay_wss" => Some(Self::RelayWss),
-            "offline" | "none" => Some(Self::Offline),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("lan")
+            || s.eq_ignore_ascii_case("quic")
+            || s.eq_ignore_ascii_case("lan-quic")
+            || s.eq_ignore_ascii_case("lan_quic")
+        {
+            Some(Self::LanQuic)
+        } else if s.eq_ignore_ascii_case("usb")
+            || s.eq_ignore_ascii_case("usb-mux")
+            || s.eq_ignore_ascii_case("usb_mux")
+        {
+            Some(Self::UsbMux)
+        } else if s.eq_ignore_ascii_case("relay")
+            || s.eq_ignore_ascii_case("wss")
+            || s.eq_ignore_ascii_case("relay-wss")
+            || s.eq_ignore_ascii_case("relay_wss")
+        {
+            Some(Self::RelayWss)
+        } else if s.eq_ignore_ascii_case("offline") || s.eq_ignore_ascii_case("none") {
+            Some(Self::Offline)
+        } else {
+            None
         }
     }
 

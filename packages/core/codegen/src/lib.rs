@@ -14,6 +14,7 @@ pub mod frontend;
 pub mod naming;
 pub mod schema;
 pub mod targets;
+pub(crate) mod writer;
 
 use std::path::Path;
 

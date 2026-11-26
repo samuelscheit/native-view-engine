@@ -57,6 +57,7 @@ fn encode_bin_value_depth(
             out.extend_from_slice(&value.as_f64().unwrap_or(0.0).to_le_bytes());
         }
         NveValueTag::Str => {
+            // SAFETY: `tag` was validated as `Str` and `NveValueRef` guarantees valid nested pointers.
             let s = unsafe { value.raw.data.str_val.as_str()? };
             let b = s.as_bytes();
             let len = u32::try_from(b.len()).map_err(|_| DecodeError::Truncated)?;
@@ -101,6 +102,7 @@ fn encode_bin_value_depth(
             let payload_start = out.len();
             out.extend_from_slice(&count.to_le_bytes());
             for entry in map.entries {
+                // SAFETY: `NveMapRef` guarantees valid immutable entry key pointers for its lifetime.
                 let k = unsafe { entry.key.as_str()? };
                 let kb = k.as_bytes();
                 let klen = u32::try_from(kb.len()).map_err(|_| DecodeError::Truncated)?;

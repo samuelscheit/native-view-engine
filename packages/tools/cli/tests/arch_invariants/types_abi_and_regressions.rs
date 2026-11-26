@@ -111,9 +111,11 @@ pub fn scan_bare_primitive_domain_fields_in_str(rel: &str, src: &str, out: &mut 
         for field in &st.fields {
             if st.is_tuple {
                 // Tuple struct field name is positional ("0"), check struct name for domain suffix.
-                let is_domain_struct = DOMAIN_FIELD_SUFFIXES
-                    .iter()
-                    .any(|s| st.name.to_ascii_lowercase().ends_with(s));
+                let is_domain_struct = DOMAIN_FIELD_SUFFIXES.iter().any(|s| {
+                    st.name.len() >= s.len()
+                        && st.name.as_bytes()[st.name.len() - s.len()..]
+                            .eq_ignore_ascii_case(s.as_bytes())
+                });
                 if is_domain_struct && is_bare_or_wrapped_primitive(&field.ty) {
                     let snippet = lines.get(field.line.saturating_sub(1)).copied().unwrap_or("");
                     out.push(Violation::new(

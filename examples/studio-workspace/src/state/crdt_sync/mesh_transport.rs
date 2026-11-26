@@ -62,7 +62,7 @@ impl InMemoryMeshHub {
     pub fn register_peer(&self, peer: PeerId) -> InMemoryMeshTransport {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .inboxes
             .entry(peer)
             .or_default();
@@ -73,11 +73,14 @@ impl InMemoryMeshHub {
     }
 
     pub fn set_fault_config(&self, config: MeshFaultConfig) {
-        self.inner.lock().unwrap().faults = config;
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .faults = config;
     }
 
     pub fn set_peer_partitioned(&self, peer: PeerId, partitioned: bool) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if partitioned {
             g.partitioned_peers.insert(peer);
         } else {
@@ -87,7 +90,7 @@ impl InMemoryMeshHub {
 
     /// Splits the mesh into two isolated network partitions `group_a` and `group_b`.
     pub fn set_partition_groups(&self, group_a: &[PeerId], group_b: &[PeerId]) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.partition_groups = Some((
             group_a.iter().copied().collect(),
             group_b.iter().copied().collect(),
@@ -96,18 +99,27 @@ impl InMemoryMeshHub {
 
     /// Heals all peer-level and group-level network partitions.
     pub fn heal_all(&self) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.partitioned_peers.clear();
         g.partition_groups = None;
     }
 
     pub fn dropped_frames(&self) -> u64 {
-        self.inner.lock().unwrap().dropped_frames
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .dropped_frames
     }
 
     /// Directly injects arbitrary raw bytes into `to_peer`'s inbox (for corrupt/truncated wire tests).
     pub fn inject_raw_frame(&self, from_peer: PeerId, to_peer: PeerId, bytes: Vec<u8>) {
-        if let Some(q) = self.inner.lock().unwrap().inboxes.get_mut(&to_peer) {
+        if let Some(q) = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .inboxes
+            .get_mut(&to_peer)
+        {
             q.push_back((from_peer, bytes));
         }
     }
@@ -152,7 +164,7 @@ impl CrdtPeerTransport for InMemoryMeshTransport {
         target: Option<PeerId>,
         frame: Vec<u8>,
     ) -> Result<usize, CrdtTransportError> {
-        let mut g = self.hub.inner.lock().unwrap();
+        let mut g = self.hub.inner.lock().unwrap_or_else(|e| e.into_inner());
         let _ = g.bus.publish_bytes(
             TOPIC_CRDT_NVC1,
             None,
@@ -198,7 +210,7 @@ impl CrdtPeerTransport for InMemoryMeshTransport {
     }
 
     fn poll_incoming(&mut self) -> Vec<(PeerId, Vec<u8>)> {
-        let mut g = self.hub.inner.lock().unwrap();
+        let mut g = self.hub.inner.lock().unwrap_or_else(|e| e.into_inner());
         let reverse = g.faults.reorder_reverse;
         let mut out: Vec<(PeerId, Vec<u8>)> = g
             .inboxes
@@ -212,7 +224,7 @@ impl CrdtPeerTransport for InMemoryMeshTransport {
     }
 
     fn connected_peer_count(&self) -> usize {
-        let g = self.hub.inner.lock().unwrap();
+        let g = self.hub.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.inboxes
             .keys()
             .filter(|&&p| InMemoryMeshHub::can_communicate(&g, self.peer, p))
@@ -223,7 +235,7 @@ impl CrdtPeerTransport for InMemoryMeshTransport {
         self.hub
             .inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .partitioned_peers
             .contains(&self.peer)
     }
@@ -233,7 +245,7 @@ impl CrdtPeerTransport for InMemoryMeshTransport {
     }
 
     fn known_remote_peers(&self) -> Vec<PeerId> {
-        let g = self.hub.inner.lock().unwrap();
+        let g = self.hub.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.inboxes
             .keys()
             .copied()

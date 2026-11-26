@@ -177,21 +177,33 @@ pub(crate) fn parse_css_color(raw: &str) -> Option<ColorRgba> {
         };
     }
 
-    let lower = s.to_ascii_lowercase();
-    if let Some(inner) = lower
-        .strip_prefix("rgba(")
-        .or_else(|| lower.strip_prefix("rgb("))
-        .and_then(|rest| rest.strip_suffix(')'))
-    {
-        let normalized = inner.replace([',', '/'], " ");
-        let comps: Vec<&str> = normalized.split_whitespace().collect();
-        if comps.len() != 3 && comps.len() != 4 {
+    let rgb_inner = if s.len() >= 6 && s.as_bytes()[..5].eq_ignore_ascii_case(b"rgba(") {
+        s[5..].strip_suffix(')')
+    } else if s.len() >= 5 && s.as_bytes()[..4].eq_ignore_ascii_case(b"rgb(") {
+        s[4..].strip_suffix(')')
+    } else {
+        None
+    };
+    if let Some(inner) = rgb_inner {
+        let mut comps = [""; 4];
+        let mut count = 0usize;
+        for tok in inner.split(|c: char| c.is_ascii_whitespace() || c == ',' || c == '/') {
+            if tok.is_empty() {
+                continue;
+            }
+            if count == 4 {
+                return None;
+            }
+            comps[count] = tok;
+            count += 1;
+        }
+        if count != 3 && count != 4 {
             return None;
         }
         let r = parse_u8_channel(comps[0])?;
         let g = parse_u8_channel(comps[1])?;
         let b = parse_u8_channel(comps[2])?;
-        let a = if comps.len() == 4 {
+        let a = if count == 4 {
             parse_alpha_channel(comps[3])?
         } else {
             255
@@ -199,14 +211,20 @@ pub(crate) fn parse_css_color(raw: &str) -> Option<ColorRgba> {
         return Some(ColorRgba::rgba(r, g, b, a));
     }
 
-    match lower.as_str() {
-        "black" => Some(ColorRgba::BLACK),
-        "white" => Some(ColorRgba::WHITE),
-        "transparent" => Some(ColorRgba::TRANSPARENT),
-        "red" => Some(ColorRgba::rgb(239, 68, 68)),
-        "green" => Some(ColorRgba::rgb(34, 197, 94)),
-        "blue" => Some(ColorRgba::rgb(59, 130, 246)),
-        _ => None,
+    if s.eq_ignore_ascii_case("black") {
+        Some(ColorRgba::BLACK)
+    } else if s.eq_ignore_ascii_case("white") {
+        Some(ColorRgba::WHITE)
+    } else if s.eq_ignore_ascii_case("transparent") {
+        Some(ColorRgba::TRANSPARENT)
+    } else if s.eq_ignore_ascii_case("red") {
+        Some(ColorRgba::rgb(239, 68, 68))
+    } else if s.eq_ignore_ascii_case("green") {
+        Some(ColorRgba::rgb(34, 197, 94))
+    } else if s.eq_ignore_ascii_case("blue") {
+        Some(ColorRgba::rgb(59, 130, 246))
+    } else {
+        None
     }
 }
 

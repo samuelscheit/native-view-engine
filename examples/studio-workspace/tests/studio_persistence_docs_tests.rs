@@ -100,6 +100,7 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     register_studio_tables();
     let mut app = StudioWorkspaceModule::create(1);
     let metrics_entries = [NveMapEntry::new("view", NveValue::from_str("metrics"))];
+    // SAFETY: `metrics_entries` outlives the synchronous `set_props` call.
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&metrics_entries) }));
     let wire_bytes = app.render(1).to_vec();
 
@@ -334,6 +335,7 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
             NveMapEntry::new("accent", NveValue::from_str("green")),
             NveMapEntry::new("view", NveValue::from_str("docs")),
         ];
+        // SAFETY: `docs_entries` outlives the synchronous `set_props` call.
         assert!(app.set_props(unsafe { NvePropsRef::from_slice(&docs_entries) }));
         let _ = app.render(2);
         assert!(app.persist_store().expect("persist store").generation() >= 2);
@@ -430,6 +432,7 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
         0,
         false,
     )];
+    // SAFETY: `cmd_k` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&cmd_k) }));
     assert!(app.state_snapshot().palette.open);
 

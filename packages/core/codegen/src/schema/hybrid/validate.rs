@@ -302,11 +302,10 @@ impl HybridFileSpec {
 
 
 fn validate_ident(kind: &str, name: &str) -> Result<(), CodegenError> {
-    if name.is_empty() {
-        return Err(CodegenError::validation(format!("{kind} name cannot be empty")));
-    }
     let mut chars = name.chars();
-    let first = chars.next().unwrap();
+    let Some(first) = chars.next() else {
+        return Err(CodegenError::validation(format!("{kind} name cannot be empty")));
+    };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return Err(CodegenError::validation(format!(
             "invalid {kind} identifier '{name}': must start with ASCII letter or '_'"

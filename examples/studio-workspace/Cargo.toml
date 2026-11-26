@@ -26,7 +26,7 @@ nve-router = { workspace = true }
 nve-host-services = { workspace = true }
 nve-clipboard = { workspace = true }
 nve-system-env = { workspace = true }
-nve-ui = { path = "../../packages/framework/ui", default-features = false, features = ["virtual-list"] }
+nve-ui = { version = "0.1.0", path = "../../packages/framework/ui", default-features = false, features = ["virtual-list"] }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }
@@ -43,3 +43,6 @@ nve-canvas-skia = { workspace = true }
 nve-canvas-web = { workspace = true }
 nve-layout-yoga = { workspace = true }
 nve-web-html-web = { workspace = true }
+
+[lints]
+workspace = true

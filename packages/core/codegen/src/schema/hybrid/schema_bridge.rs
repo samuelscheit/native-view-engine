@@ -77,12 +77,8 @@ fn convert_enum(e: &AbiEnumDescriptor) -> HybridEnumSpec {
         .iter()
         .map(|v| HybridEnumVariant {
             name: v.name.to_owned(),
-            value: u32::try_from(v.value).unwrap_or_else(|_| {
-                panic!(
-                    "enum `{}::{}` discriminant {} cannot fit in u32 HybridEnumVariant",
-                    e.name, v.name, v.value
-                )
-            }),
+            value: u32::try_from(v.value)
+                .expect("colocated AbiEnumDescriptor variant discriminant must fit in u32"),
             doc: v.doc.map(str::to_owned),
         })
         .collect();
@@ -175,7 +171,7 @@ fn parse_abi_type(raw: &str) -> HybridType {
         let len = len_str
             .trim()
             .parse::<usize>()
-            .unwrap_or_else(|_| panic!("invalid fixed array length in ABI type `{s}`"));
+            .expect("colocated ABI fixed array length must be a valid usize");
         return HybridType::FixedArray {
             elem: Box::new(parse_abi_type(elem)),
             len,

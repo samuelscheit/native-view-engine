@@ -59,6 +59,7 @@ mod platform {
     unsafe extern "C" {}
 
     fn perform_ns_haptic(pattern: isize) -> Result<(), ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated AppKit class/selector names.
         with_autorelease_pool(|| unsafe {
             let mgr_cls = cls(b"NSHapticFeedbackManager\0");
             if mgr_cls.is_null() {

@@ -321,6 +321,7 @@ fn c_abi_client_connect_poll_send_events_and_destroy() {
     };
     assert_eq!(status, NVE_WIRE_OK);
     assert!(!handle.is_null());
+    // SAFETY: `handle` is a live client handle returned by `nve_wire_client_connect_uri` until `destroy` below.
     assert!(unsafe { nve_wire_client_is_connected(handle) });
 
     server.broadcast_command_delta(9, b"c-abi-delta").unwrap();
@@ -331,6 +332,7 @@ fn c_abi_client_connect_poll_send_events_and_destroy() {
     let mut len = 0usize;
     let mut got = false;
     for _ in 0..40 {
+        // SAFETY: `handle` is live and all out-pointers/buffer point to valid writable stack memory.
         let st = unsafe {
             nve_wire_client_poll_frame(handle, &mut kind, &mut seq, buf.as_mut_ptr(), buf.len(), &mut len)
         };
@@ -346,19 +348,20 @@ fn c_abi_client_connect_poll_send_events_and_destroy() {
     assert_eq!(&buf[..len], b"c-abi-delta");
 
     let ev = b"evt-batch";
-    assert_eq!(
-        unsafe { nve_wire_client_send_events(handle, ev.as_ptr(), ev.len()) },
-        NVE_WIRE_OK
-    );
+    // SAFETY: `handle` is live and `ev` is a readable slice of `ev.len()` bytes.
+    let send_status = unsafe { nve_wire_client_send_events(handle, ev.as_ptr(), ev.len()) };
+    assert_eq!(send_status, NVE_WIRE_OK);
     let inbound = server
         .recv_inbound_timeout(Duration::from_secs(2))
         .expect("server receives C ABI EventBatch");
     assert_eq!(inbound.frame.payload, ev);
 
     let mut metrics = NveWireMetricsC::default();
+    // SAFETY: `handle` is live and `metrics` is a valid writable out-pointer.
     assert_eq!(unsafe { nve_wire_client_metrics(handle, &mut metrics) }, NVE_WIRE_OK);
     assert_eq!(metrics.command_deltas_received, 1);
     assert_eq!(metrics.events_sent, 1);
 
+    // SAFETY: `handle` is destroyed once at the end of the test.
     unsafe { nve_wire_client_destroy(handle) };
 }

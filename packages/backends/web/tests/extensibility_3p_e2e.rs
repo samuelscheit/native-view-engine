@@ -170,6 +170,7 @@ fn third_party_mock_map_e2e_nve2_scene_view_events_and_web_fast_lane() {
         .expect("MockMapTable has publish flag");
     assert_eq!(map_view.row_count, 1);
     assert_eq!(map_view.words, MockMapTable::DESC.words() as u32);
+    // SAFETY: `map_view.rows` points to 1 valid `MockMapTable` row inside the live scene table.
     unsafe {
         let words = std::slice::from_raw_parts(map_view.rows, MockMapTable::DESC.words());
         assert!((f32::from_bits(words[0]) - 37.7749).abs() < 1e-4);
@@ -259,6 +260,7 @@ fn third_party_mock_map_e2e_nve2_scene_view_events_and_web_fast_lane() {
     );
     assert_eq!(direct.kind, NativeEventKind::TableEvent as u8);
     assert_eq!(direct.payload_tag, NveEventPayloadTag::TableEvent as u8);
+    // SAFETY: `direct` and its payload backing live across `direct_ref`.
     let direct_ref = unsafe { NveDirectEventRef::from_raw(&direct) };
     let roundtripped = direct_event_to_native(direct_ref).unwrap();
     assert_eq!(roundtripped.kind, NativeEventKind::TableEvent);

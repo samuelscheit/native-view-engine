@@ -117,10 +117,10 @@ pub fn generate_java_core_abi() -> String {
 pub fn generate_java_scene_buffer() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);
-    let render_node = spec.find_struct("NveRenderNode").unwrap();
-    let node_meta = spec.find_struct("NveNodeMeta").unwrap();
-    let node_size = render_node.expected_size.unwrap();
-    let meta_size = node_meta.expected_size.unwrap();
+    let render_node = spec.find_struct("NveRenderNode").expect("scene ABI defines NveRenderNode");
+    let node_meta = spec.find_struct("NveNodeMeta").expect("scene ABI defines NveNodeMeta");
+    let node_size = render_node.expected_size.expect("NveRenderNode defines expected_size");
+    let meta_size = node_meta.expected_size.expect("NveNodeMeta defines expected_size");
 
     let mut out = String::with_capacity(6144);
     let _ = writeln!(
@@ -180,7 +180,7 @@ pub fn generate_java_scene_buffer() -> String {
             out,
             "    public static final int OFFSET_{} = {};",
             snake_to_screaming(&f.name),
-            f.offset.unwrap()
+            f.offset.expect("NveRenderNode field defines offset")
         );
     }
     let _ = writeln!(out);
@@ -190,7 +190,7 @@ pub fn generate_java_scene_buffer() -> String {
             out,
             "    public static final int META_OFFSET_{} = {};",
             snake_to_screaming(&f.name),
-            f.offset.unwrap()
+            f.offset.expect("NveNodeMeta field defines offset")
         );
     }
     let _ = writeln!(out);

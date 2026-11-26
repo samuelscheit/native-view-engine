@@ -150,6 +150,7 @@ fn event_ring_and_direct_event_seeded_roundtrip_including_table_events() {
     native_events_to_direct(&events, &mut direct);
     assert_eq!(direct.len(), events.len());
     for (d, expected) in direct.iter().zip(&events) {
+        // SAFETY: `direct` borrows `events` which remain alive across this loop.
         let r = unsafe { NveDirectEventRef::from_raw(d) };
         assert_eq!(direct_event_to_native(r).as_ref(), Some(expected));
     }
@@ -169,8 +170,11 @@ fn event_ring_and_direct_event_seeded_roundtrip_including_table_events() {
 fn ffi_value_helpers_sanity() {
     let bytes = b"hello";
     let slice = NveBufferSlice::from_slice(bytes);
-    assert_eq!(unsafe { slice.as_slice() }, bytes);
-    assert!(unsafe { NveBufferSlice::EMPTY.as_slice() }.is_empty());
+    // SAFETY: `bytes` is a static slice and `EMPTY` has length 0.
+    unsafe {
+        assert_eq!(slice.as_slice(), bytes);
+        assert!(NveBufferSlice::EMPTY.as_slice().is_empty());
+    }
 
     let c = NveSizeConstraints::loose(320.0, 640.0);
     assert_eq!(c.min_w, 0.0);

@@ -22,7 +22,7 @@ pub fn write_generated_c_abi_headers(dir: &Path) {
             .strip_prefix("cxx/nve-fabric-bridge/include/")
         {
             std::fs::write(dir.join(fname), &file.content)
-                .unwrap_or_else(|e| panic!("write generated header {fname}: {e}"));
+                .expect("write generated header");
         }
     }
 }
@@ -51,7 +51,7 @@ pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -
         "src/nve_bin_value.dart",
     ] {
         std::fs::copy(src_lib.join(rel), dst_lib.join(rel))
-            .unwrap_or_else(|e| panic!("copy hosts/flutter-plugin/lib/{rel}: {e}"));
+            .expect("copy hosts/flutter-plugin/lib file");
     }
 
     for file in nve_codegen::generate_all_abi_files() {
@@ -61,7 +61,7 @@ pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -
                 std::fs::create_dir_all(parent).expect("create dart parent dir");
             }
             std::fs::write(&out_path, &file.content)
-                .unwrap_or_else(|e| panic!("write generated dart {rel}: {e}"));
+                .expect("write generated dart file");
         }
     }
 
@@ -79,7 +79,7 @@ pub fn assert_generated_file_naming_and_optional_disk_parity(
         let fname = Path::new(&file.relative_path)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap();
+            .expect("generated file name is valid UTF-8");
         if file.relative_path.ends_with(".java") {
             assert!(
                 file.relative_path.contains("/generated/"),
@@ -108,7 +108,7 @@ pub fn assert_generated_file_naming_and_optional_disk_parity(
         }
         if full_path.is_file() {
             let on_disk = std::fs::read_to_string(&full_path)
-                .unwrap_or_else(|e| panic!("read generated ABI file {}: {e}", full_path.display()))
+                .expect("read generated ABI file on disk")
                 .replace("\r\n", "\n");
             assert_eq!(
                 on_disk, file.content,
@@ -235,7 +235,7 @@ pub fn compile_and_run_cpp20(
 
     let run = Command::new(&cpp_exe)
         .output()
-        .unwrap_or_else(|e| panic!("execute {}: {e}", cpp_exe.display()));
+        .expect("execute compiled C++ test binary");
     assert!(
         run.status.success(),
         "C++20 execution failed ({}):\nstdout:\n{}\nstderr:\n{}",

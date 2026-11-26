@@ -10,3 +10,6 @@ nve-components = { workspace = true }
 nve-engine = { workspace = true }
 nve-store = { workspace = true }
 taffy = { workspace = true }
+
+[lints]
+workspace = true

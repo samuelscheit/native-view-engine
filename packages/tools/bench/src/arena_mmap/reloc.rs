@@ -36,8 +36,9 @@ pub struct TaskWorkspaceRoot {
     pub reserved: u64,
 }
 
-// SAFETY: Both types are `#[repr(C)]` with zero uninitialized padding bytes.
+// SAFETY: `TaskPod` is `#[repr(C)]` (64 bytes) with compile-time layout assertions and zero padding.
 unsafe impl ArenaPod for TaskPod {}
+// SAFETY: `TaskWorkspaceRoot` is `#[repr(C)]` (16 bytes) with compile-time layout assertions and zero padding.
 unsafe impl ArenaPod for TaskWorkspaceRoot {}
 
 const _: () = {
@@ -144,22 +145,21 @@ impl<'a> RelocWorkspaceView<'a> {
     /// [`build_reloc_workspace`].
     #[inline]
     pub unsafe fn from_bytes_unchecked(bytes: &'a [u8]) -> Self {
-        // SAFETY: Upheld by caller.
-        let view = unsafe { RelocView::from_bytes_unchecked(bytes) };
-        let root = unsafe {
-            &*bytes
+        // SAFETY: Caller guarantees `bytes` is a valid aligned `NVERELOC` workspace buffer produced by `build_reloc_workspace`.
+        let (view, tasks) = unsafe {
+            let view = RelocView::from_bytes_unchecked(bytes);
+            let root = &*bytes
                 .as_ptr()
                 .add(view.header().root_offset as usize)
-                .cast::<TaskWorkspaceRoot>()
-        };
-        let tasks = unsafe {
-            std::slice::from_raw_parts(
+                .cast::<TaskWorkspaceRoot>();
+            let tasks = std::slice::from_raw_parts(
                 bytes
                     .as_ptr()
                     .add(root.tasks.offset as usize)
                     .cast::<TaskPod>(),
                 root.tasks.len as usize,
-            )
+            );
+            (view, tasks)
         };
         Self {
             view,

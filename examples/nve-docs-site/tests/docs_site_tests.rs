@@ -41,8 +41,9 @@ impl InteractiveHarness {
     }
 
     fn find(&self, test_id: &str) -> NodeId {
-        self.maybe_find(test_id)
-            .unwrap_or_else(|| panic!("node with testID='{test_id}' not found"))
+        let found = self.maybe_find(test_id);
+        assert!(found.is_some(), "node with testID='{test_id}' not found");
+        found.expect("checked above")
     }
 
     fn maybe_find(&self, test_id: &str) -> Option<NodeId> {

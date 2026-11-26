@@ -33,13 +33,28 @@ pub enum NveWireTransportKind {
 
 impl NveWireTransportKind {
     pub fn parse(raw: &str) -> Result<Self, NveWireError> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "" | "auto" | "happy-eyeballs" => Ok(Self::Auto),
-            "quic" | "udp" => Ok(Self::Quic),
-            "wt" | "webtransport" | "h3" => Ok(Self::WebTransport),
-            "wss" | "tls" => Ok(Self::Wss),
-            "ws" | "tcp" | "websocket" => Ok(Self::Ws),
-            _ => Err(NveWireError::InvalidPayload("unknown transport kind")),
+        let s = raw.trim();
+        if s.is_empty()
+            || s.eq_ignore_ascii_case("auto")
+            || s.eq_ignore_ascii_case("happy-eyeballs")
+        {
+            Ok(Self::Auto)
+        } else if s.eq_ignore_ascii_case("quic") || s.eq_ignore_ascii_case("udp") {
+            Ok(Self::Quic)
+        } else if s.eq_ignore_ascii_case("wt")
+            || s.eq_ignore_ascii_case("webtransport")
+            || s.eq_ignore_ascii_case("h3")
+        {
+            Ok(Self::WebTransport)
+        } else if s.eq_ignore_ascii_case("wss") || s.eq_ignore_ascii_case("tls") {
+            Ok(Self::Wss)
+        } else if s.eq_ignore_ascii_case("ws")
+            || s.eq_ignore_ascii_case("tcp")
+            || s.eq_ignore_ascii_case("websocket")
+        {
+            Ok(Self::Ws)
+        } else {
+            Err(NveWireError::InvalidPayload("unknown transport kind"))
         }
     }
 

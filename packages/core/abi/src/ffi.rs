@@ -53,6 +53,7 @@ impl NveBufferSlice {
         if self.ptr.is_null() || self.len == 0 {
             &[]
         } else {
+            // SAFETY: Non-null and non-zero `len` checked above; caller guarantees `ptr` is valid for `len` bytes for `'a`.
             unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
         }
     }

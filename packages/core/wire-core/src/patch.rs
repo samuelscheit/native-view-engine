@@ -198,14 +198,18 @@ impl<'a> NveNodePatchDeltaView<'a> {
         let mut patches = Vec::with_capacity(patch_count);
         for i in 0..patch_count {
             let off = NVE_NODE_PATCH_DELTA_HEADER_SIZE + i * PATCH_BYTE_SIZE;
+            let le16 = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+            let le32 = |o: usize| {
+                u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+            };
             let p = NveNodePatch {
-                node_id: u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()),
-                field_tag: u16::from_le_bytes(bytes[off + 4..off + 6].try_into().unwrap()),
-                flags: u16::from_le_bytes(bytes[off + 6..off + 8].try_into().unwrap()),
-                value_lo: u32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap()),
-                value_hi: u32::from_le_bytes(bytes[off + 12..off + 16].try_into().unwrap()),
-                transition_ms: u32::from_le_bytes(bytes[off + 16..off + 20].try_into().unwrap()),
-                reserved: u32::from_le_bytes(bytes[off + 20..off + 24].try_into().unwrap()),
+                node_id: le32(off),
+                field_tag: le16(off + 4),
+                flags: le16(off + 6),
+                value_lo: le32(off + 8),
+                value_hi: le32(off + 12),
+                transition_ms: le32(off + 16),
+                reserved: le32(off + 20),
             };
             if p.field().is_none() || p.reserved != 0 {
                 return Err(NveWireError::InvalidPayload("invalid NveNodePatch field or reserved"));

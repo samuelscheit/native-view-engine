@@ -95,6 +95,7 @@ pub struct ReadOnlyMmap {
 
 // SAFETY: Mapping is read-only (`PAGE_READONLY` / `FILE_MAP_READ`) and immutable until Drop.
 unsafe impl Send for ReadOnlyMmap {}
+// SAFETY: Mapping is read-only (`PAGE_READONLY` / `FILE_MAP_READ`) and immutable until Drop.
 unsafe impl Sync for ReadOnlyMmap {}
 
 impl ReadOnlyMmap {
@@ -135,6 +136,7 @@ impl ReadOnlyMmap {
         let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, len) };
         if view.is_null() {
             let err = io::Error::last_os_error();
+            // SAFETY: `mapping` is a valid non-null handle returned by `CreateFileMappingW`.
             unsafe {
                 let _ = CloseHandle(mapping);
             }
@@ -176,11 +178,13 @@ impl ReadOnlyMmap {
 impl Drop for ReadOnlyMmap {
     fn drop(&mut self) {
         if self.len > 0 && !self.ptr.is_null() {
+            // SAFETY: `self.ptr` was returned by `MapViewOfFile` and has not been unmapped yet.
             unsafe {
                 let _ = UnmapViewOfFile(self.ptr as *const c_void);
             }
         }
         if !self.mapping.is_null() {
+            // SAFETY: `self.mapping` was returned by `CreateFileMappingW` and is closed once on drop.
             unsafe {
                 let _ = CloseHandle(self.mapping);
             }
@@ -278,6 +282,7 @@ impl ReadWriteMmap {
         let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, len) };
         if view.is_null() {
             let err = io::Error::last_os_error();
+            // SAFETY: `mapping` is a valid non-null handle returned by `CreateFileMappingW`.
             unsafe {
                 let _ = CloseHandle(mapping);
             }
@@ -375,11 +380,13 @@ impl Drop for ReadWriteMmap {
         } = &self.backing
         {
             if *len > 0 && !ptr.is_null() {
+                // SAFETY: `ptr` was returned by `MapViewOfFile` and is unmapped once on drop.
                 unsafe {
                     let _ = UnmapViewOfFile(*ptr as *const c_void);
                 }
             }
             if !mapping.is_null() {
+                // SAFETY: `mapping` was returned by `CreateFileMappingW` and is closed once on drop.
                 unsafe {
                     let _ = CloseHandle(*mapping);
                 }

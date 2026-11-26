@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use super::core_abi::{
     dart_core_ffi_annotation, dart_core_native_type, dart_core_struct_field_type,
 };
-use crate::naming::{to_camel_case, to_pascal_case};
+use crate::naming::{screaming_snake_to_camel_case, to_pascal_case};
 use crate::schema::hybrid::core_abi::{
     compute_scene_schema_hash, scene_abi_spec, snake_to_camel_preserve_leading,
 };
@@ -19,12 +19,12 @@ pub fn generate_dart_scene_abi() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);
     let signed_hash = schema_hash as i64;
-    let render_node = spec.find_struct("NveRenderNode").unwrap();
-    let table_view = spec.find_struct("NveTableView").unwrap();
-    let scene_view = spec.find_struct("NveSceneView").unwrap();
-    let node_meta = spec.find_struct("NveNodeMeta").unwrap();
-    let node_size = render_node.expected_size.unwrap();
-    let meta_size = node_meta.expected_size.unwrap();
+    let render_node = spec.find_struct("NveRenderNode").expect("scene ABI defines NveRenderNode");
+    let table_view = spec.find_struct("NveTableView").expect("scene ABI defines NveTableView");
+    let scene_view = spec.find_struct("NveSceneView").expect("scene ABI defines NveSceneView");
+    let node_meta = spec.find_struct("NveNodeMeta").expect("scene ABI defines NveNodeMeta");
+    let node_size = render_node.expected_size.expect("NveRenderNode defines expected_size");
+    let meta_size = node_meta.expected_size.expect("NveNodeMeta defines expected_size");
 
     let mut out = String::with_capacity(8192);
     let _ = writeln!(
@@ -64,7 +64,7 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out, "// Sentinel NveRenderNode::primary_slot value (plain container)");
     for c in &spec.consts {
         if c.name == "NVE_PRIMARY_SLOT_NONE" {
-            let dart_name = to_camel_case(&c.name.to_ascii_lowercase());
+            let dart_name = screaming_snake_to_camel_case(&c.name);
             let _ = writeln!(out, "const int {dart_name} = 0x{:02X};", c.value);
         }
     }
@@ -72,7 +72,7 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out, "// NveNodeMeta::flags bits & resize-mode shift/mask");
     for c in &spec.consts {
         if c.name.starts_with("NVE_META_") {
-            let dart_name = to_camel_case(&c.name.to_ascii_lowercase());
+            let dart_name = screaming_snake_to_camel_case(&c.name);
             if c.hex {
                 let _ = writeln!(out, "const int {dart_name} = 0x{:X};", c.value);
             } else {
@@ -87,7 +87,11 @@ pub fn generate_dart_scene_abi() -> String {
             "nveNodeOffset{}",
             to_pascal_case(f.name.trim_start_matches('_'))
         );
-        let _ = writeln!(out, "const int {const_name} = {};", f.offset.unwrap());
+        let _ = writeln!(
+            out,
+            "const int {const_name} = {};",
+            f.offset.expect("NveRenderNode field defines offset")
+        );
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "// Exact byte offsets within one 64-byte NveNodeMeta");
@@ -96,7 +100,11 @@ pub fn generate_dart_scene_abi() -> String {
             "nveMetaOffset{}",
             to_pascal_case(f.name.trim_start_matches('_'))
         );
-        let _ = writeln!(out, "const int {const_name} = {};", f.offset.unwrap());
+        let _ = writeln!(
+            out,
+            "const int {const_name} = {};",
+            f.offset.expect("NveNodeMeta field defines offset")
+        );
     }
     let _ = writeln!(out);
     let _ = writeln!(
@@ -117,7 +125,7 @@ pub fn generate_dart_scene_abi() -> String {
             out,
             "  external {} {dart_name}; // offset {}",
             dart_core_struct_field_type(&f.ty),
-            f.offset.unwrap()
+            f.offset.expect("NveRenderNode field defines offset")
         );
     }
     let _ = writeln!(out, "}}");
@@ -140,7 +148,7 @@ pub fn generate_dart_scene_abi() -> String {
                     out,
                     "  external ffi.Array<{}> {dart_name}; // offset {}",
                     dart_core_native_type(elem),
-                    f.offset.unwrap()
+                    f.offset.expect("NveNodeMeta field defines offset")
                 );
             }
             _ => {
@@ -151,7 +159,7 @@ pub fn generate_dart_scene_abi() -> String {
                     out,
                     "  external {} {dart_name}; // offset {}",
                     dart_core_struct_field_type(&f.ty),
-                    f.offset.unwrap()
+                    f.offset.expect("NveNodeMeta field defines offset")
                 );
             }
         }

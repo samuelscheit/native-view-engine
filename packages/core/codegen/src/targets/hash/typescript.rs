@@ -1,8 +1,6 @@
 //! TypeScript (`nve_hash.generated.ts`) XXH64 mirror on `(lo, hi)` `u32` halves: exact with plain
 //! `number`s (53-bit safe), zero `BigInt`. Erasable syntax only, so Node runs it directly.
 
-use std::fmt::Write;
-
 use super::{banner, byte_list, halves, HASH_VECTORS, STREAM_SPLITS};
 
 const BODY: &str = r#"
@@ -183,8 +181,7 @@ pub(super) fn generate_ts_hash() -> String {
             s,
             "  {{ bytes: [{bytes}], seed: new NveKey64(0x{sl:08x}, 0x{sh:08x}), expected: new NveKey64(0x{el:08x}, 0x{eh:08x}) }}, // {}",
             v.label
-        )
-        .unwrap();
+        );
     }
     let [a, b, c] = STREAM_SPLITS;
     write!(
@@ -209,7 +206,6 @@ export function nveHashVerifyTestVectors(): boolean {{
   }});
 }}
 "#
-    )
-    .unwrap();
-    s
+    );
+    s.into_string()
 }

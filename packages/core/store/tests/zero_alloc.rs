@@ -13,18 +13,22 @@ struct CountingAlloc;
 
 static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+// SAFETY: Delegates directly to `std::alloc::System` while incrementing an atomic allocation counter.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: Caller upholds `GlobalAlloc::alloc` preconditions; delegated to `System`.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Caller upholds `GlobalAlloc::dealloc` preconditions; delegated to `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: Caller upholds `GlobalAlloc::realloc` preconditions; delegated to `System`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }

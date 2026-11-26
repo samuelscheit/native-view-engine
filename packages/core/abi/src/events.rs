@@ -431,14 +431,23 @@ pub fn decode_events(bytes: &[u8]) -> Result<Vec<NativeEvent>, DecodeError> {
         *pos += n;
         Ok(s)
     };
+    let read_u16 = |pos: &mut usize| -> Result<u16, DecodeError> {
+        let b = take(pos, 2)?;
+        Ok(u16::from_le_bytes([b[0], b[1]]))
+    };
     let read_u32 = |pos: &mut usize| -> Result<u32, DecodeError> {
-        Ok(u32::from_le_bytes(take(pos, 4)?.try_into().unwrap()))
+        let b = take(pos, 4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
     let read_u64 = |pos: &mut usize| -> Result<u64, DecodeError> {
-        Ok(u64::from_le_bytes(take(pos, 8)?.try_into().unwrap()))
+        let b = take(pos, 8)?;
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     };
     let read_f32 = |pos: &mut usize| -> Result<f32, DecodeError> {
-        Ok(f32::from_le_bytes(take(pos, 4)?.try_into().unwrap()))
+        let b = take(pos, 4)?;
+        Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
 
     let count = read_u32(&mut pos)? as usize;
@@ -475,7 +484,7 @@ pub fn decode_events(bytes: &[u8]) -> Result<Vec<NativeEvent>, DecodeError> {
                 height: read_f32(&mut pos)?,
             },
             5 => {
-                let nlen = u16::from_le_bytes(take(&mut pos, 2)?.try_into().unwrap()) as usize;
+                let nlen = read_u16(&mut pos)? as usize;
                 let name = std::str::from_utf8(take(&mut pos, nlen)?)
                     .map_err(|_| DecodeError::InvalidUtf8)?
                     .to_owned();
@@ -487,11 +496,11 @@ pub fn decode_events(bytes: &[u8]) -> Result<Vec<NativeEvent>, DecodeError> {
                 let modifiers = take(&mut pos, 1)?[0];
                 let is_composing = take(&mut pos, 1)?[0] != 0;
                 let key_code = read_u32(&mut pos)?;
-                let klen = u16::from_le_bytes(take(&mut pos, 2)?.try_into().unwrap()) as usize;
+                let klen = read_u16(&mut pos)? as usize;
                 let key = std::str::from_utf8(take(&mut pos, klen)?)
                     .map_err(|_| DecodeError::InvalidUtf8)?
                     .to_owned();
-                let clen = u16::from_le_bytes(take(&mut pos, 2)?.try_into().unwrap()) as usize;
+                let clen = read_u16(&mut pos)? as usize;
                 let code = std::str::from_utf8(take(&mut pos, clen)?)
                     .map_err(|_| DecodeError::InvalidUtf8)?
                     .to_owned();

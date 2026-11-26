@@ -56,10 +56,18 @@ impl SharedServerState {
     ) -> (u32, mpsc::UnboundedReceiver<OutboundCommand>) {
         let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel();
-        if let Some(kf) = self.latest_keyframe.lock().unwrap().clone() {
+        if let Some(kf) = self
+            .latest_keyframe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
             let _ = tx.send(OutboundCommand::Stream(kf));
         }
-        self.peers.lock().unwrap().insert(session_id, (transport, tx));
+        self.peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id, (transport, tx));
         (session_id, rx)
     }
 
@@ -69,13 +77,16 @@ impl SharedServerState {
     ) -> Option<mpsc::UnboundedSender<OutboundCommand>> {
         self.peers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&session_id)
             .map(|(_, tx)| tx.clone())
     }
 
     pub(crate) fn unregister_peer(&self, session_id: u32) {
-        self.peers.lock().unwrap().remove(&session_id);
+        self.peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
     }
 
     pub(crate) fn verify_hello(
@@ -140,7 +151,11 @@ impl SharedServerState {
             NveWireKind::Bye => false,
             _ => {
                 if frame.kind == NveWireKind::KeyframeRequest
-                    && let Some(kf) = self.latest_keyframe.lock().unwrap().clone()
+                    && let Some(kf) = self
+                        .latest_keyframe
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone()
                 {
                     let _ = reply_tx.send(OutboundCommand::Stream(kf));
                 }
@@ -315,14 +330,18 @@ impl NveWireServer {
     }
 
     pub fn peer_count(&self) -> usize {
-        self.state.peers.lock().unwrap().len()
+        self.state
+            .peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     pub fn has_quic_peers(&self) -> bool {
         self.state
             .peers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .any(|(k, _)| matches!(k, NveWireTransportKind::Quic | NveWireTransportKind::WebTransport))
     }
@@ -354,9 +373,13 @@ impl NveWireServer {
     pub fn broadcast_frame(&self, frame: &NveWireFrame) -> Result<usize, NveWireTransportError> {
         let encoded = Bytes::from(frame.encode()?);
         if frame.kind == NveWireKind::SceneKeyframe || frame.kind == NveWireKind::CommandDelta {
-            *self.state.latest_keyframe.lock().unwrap() = Some(encoded.clone());
+            *self
+                .state
+                .latest_keyframe
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(encoded.clone());
         }
-        let peers = self.state.peers.lock().unwrap();
+        let peers = self.state.peers.lock().unwrap_or_else(|e| e.into_inner());
         let mut delivered = 0usize;
         for (_, tx) in peers.values() {
             if tx.send(OutboundCommand::Stream(encoded.clone())).is_ok() {
@@ -379,7 +402,7 @@ impl NveWireServer {
         let mut dgram_frame = frame.clone();
         dgram_frame.flags |= NVE_WIRE_FLAG_DATAGRAM;
         let encoded = Bytes::from(dgram_frame.encode()?);
-        let peers = self.state.peers.lock().unwrap();
+        let peers = self.state.peers.lock().unwrap_or_else(|e| e.into_inner());
         let mut delivered = 0usize;
         for (kind, tx) in peers.values() {
             let cmd = match kind {

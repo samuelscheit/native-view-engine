@@ -277,9 +277,11 @@ pub struct RelocSceneRoot {
     pub reserved: u64,
 }
 
-// SAFETY: All three scene structs are `#[repr(C)]` with zero implicit padding bytes.
+// SAFETY: `RelocLayoutProps` is `#[repr(C)]` with explicit padding and compile-time size/offset assertions.
 unsafe impl ArenaPod for RelocLayoutProps {}
+// SAFETY: `RelocSceneNode` is `#[repr(C)]` (128 bytes) with zero implicit padding.
 unsafe impl ArenaPod for RelocSceneNode {}
+// SAFETY: `RelocSceneRoot` is `#[repr(C)]` composed solely of `ArenaPod` fields with zero implicit padding.
 unsafe impl ArenaPod for RelocSceneRoot {}
 
 const _: () = {

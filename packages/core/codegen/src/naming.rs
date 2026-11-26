@@ -94,6 +94,34 @@ pub fn to_camel_case(input: &str) -> String {
     }
 }
 
+/// Converts a `SCREAMING_SNAKE_CASE` constant name into `camelCase` without allocating an
+/// intermediate lowercased `String`.
+pub fn screaming_snake_to_camel_case(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut capitalize_next = false;
+    for ch in input.chars() {
+        if !ch.is_ascii_alphanumeric() {
+            if !out.is_empty() {
+                capitalize_next = true;
+            }
+            continue;
+        }
+        if capitalize_next {
+            out.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    if out.is_empty() {
+        "unnamed".to_owned()
+    } else if out.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        format!("v{out}")
+    } else {
+        out
+    }
+}
+
 /// Strips a leading `on` prefix from an event name if followed by an uppercase letter
 /// (e.g. `onCountChange` -> `countChange`, `onChange` -> `change`).
 pub fn strip_on_prefix(event_name: &str) -> String {

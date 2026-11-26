@@ -295,6 +295,8 @@ impl FfiHostServices {
         let mut stack_buf = [0u8; FFI_STACK_BUF_SIZE];
         let mut out_len: usize = 0;
 
+        // SAFETY: `invoke_fn` and `host_ctx` were supplied via `bind_host`; `req_slice`, `stack_buf`,
+        // and `out_len` remain valid for the synchronous FFI invocation.
         let raw_status = unsafe {
             invoke_fn(
                 host_ctx,
@@ -328,6 +330,8 @@ impl FfiHostServices {
                 }
                 let mut heap_buf = vec![0u8; required];
                 let mut retry_len: usize = 0;
+                // SAFETY: `invoke_fn` and `host_ctx` were supplied via `bind_host`; `req_slice`,
+                // `heap_buf`, and `retry_len` remain valid for the synchronous retry invocation.
                 let retry_status = unsafe {
                     invoke_fn(
                         host_ctx,
@@ -407,6 +411,7 @@ impl HostServiceProvider for FfiHostServices {
             return Err(ServiceError::Unsupported);
         };
         let flags = if retain { NVE_CHANNEL_FLAG_RETAIN } else { 0 };
+        // SAFETY: `publish_fn` and `cb.host_ctx` were supplied via `bind_host`; `payload` stays valid for the call.
         let status = unsafe {
             publish_fn(
                 cb.host_ctx,

@@ -58,6 +58,7 @@ mod platform {
     unsafe extern "C" {}
 
     pub fn open_url(url: &str) -> Result<(), ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated AppKit/Foundation selectors.
         with_autorelease_pool(|| unsafe {
             let ns_url_cls = cls(b"NSURL\0");
             let ws_cls = cls(b"NSWorkspace\0");
@@ -84,6 +85,7 @@ mod platform {
     }
 
     pub fn can_open_url(url: &str) -> Result<bool, ServiceError> {
+        // SAFETY: Runs inside an active autorelease pool using static NUL-terminated AppKit/Foundation selectors.
         with_autorelease_pool(|| unsafe {
             let ns_url_cls = cls(b"NSURL\0");
             let ws_cls = cls(b"NSWorkspace\0");
@@ -129,6 +131,7 @@ mod platform {
     pub fn open_url(url: &str) -> Result<(), ServiceError> {
         let op = to_wide_nul("open");
         let target = to_wide_nul(url);
+        // SAFETY: `op` and `target` are valid NUL-terminated UTF-16 buffers live for the duration of the call.
         let rc = unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),

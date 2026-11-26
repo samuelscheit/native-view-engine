@@ -83,8 +83,9 @@ impl UiHarness {
     }
 
     pub fn find(&self, tid: &str) -> AbiNodeId {
-        self.maybe_find(tid)
-            .unwrap_or_else(|| panic!("expected node with testID='{tid}'"))
+        let found = self.maybe_find(tid);
+        assert!(found.is_some(), "expected node with testID='{tid}'");
+        found.expect("checked above")
     }
 
     pub fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {

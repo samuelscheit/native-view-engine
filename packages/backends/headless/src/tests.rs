@@ -61,6 +61,7 @@ fn headless_commit_layout_hit_test_scene_view_and_reloc_export() {
     let view = backend.publish_scene_view(&store, &changes, 1);
     assert_eq!(view.node_count, 4);
     assert!(view.table_count >= 2);
+    // SAFETY: `view` borrows `backend`'s published scene table with `node_count` valid nodes.
     let nodes = unsafe { std::slice::from_raw_parts(view.nodes, view.node_count as usize) };
     let root_node = nodes.iter().find(|n| n.node_id == NodeId::ROOT.raw()).unwrap();
     assert_eq!(root_node.primary_slot, NVE_PRIMARY_SLOT_NONE);
@@ -107,6 +108,7 @@ fn publish_scene_view_unifies_text_slab_across_render_nodes_and_table_views() {
     backend.commit(&store, &changes).unwrap();
     let view = backend.publish_scene_view(&store, &changes, 1);
 
+    // SAFETY: `view` borrows `backend`'s live scene table for the lifetime of `scene`.
     let scene = unsafe { nve_abi::NveSceneRef::from_raw(view) }.expect("valid NveSceneRef");
     let rn = scene
         .nodes()
@@ -125,8 +127,13 @@ fn publish_scene_view_unifies_text_slab_across_render_nodes_and_table_views() {
         .iter()
         .find(|t| t.key_lo == TextContent::KEY.lo() && t.key_hi == TextContent::KEY.hi())
         .expect("TextContent table view");
-    let rows = unsafe { std::slice::from_raw_parts(tv.rows, (tv.row_count * tv.words) as usize) };
-    let owners = unsafe { std::slice::from_raw_parts(tv.owners, tv.row_count as usize) };
+    // SAFETY: `tv` points into `store`'s live dense table buffers while `store` is immutably borrowed.
+    let (rows, owners) = unsafe {
+        (
+            std::slice::from_raw_parts(tv.rows, (tv.row_count * tv.words) as usize),
+            std::slice::from_raw_parts(tv.owners, tv.row_count as usize),
+        )
+    };
     let row_idx = owners
         .iter()
         .position(|&o| o == child.raw())

@@ -531,7 +531,9 @@ impl NodeStore {
         }
 
         for &(slot, start, dirty_count) in &ranges[..range_len] {
-            let col = self.columns[slot.0 as usize].as_ref().unwrap();
+            let Some(col) = self.columns[slot.0 as usize].as_ref() else {
+                continue;
+            };
             let row_count = col.row_count();
             let rows_ptr = if col.rows.is_empty() {
                 core::ptr::null()
@@ -546,6 +548,7 @@ impl NodeStore {
             let dirty_ptr = if dirty_count == 0 {
                 core::ptr::null()
             } else {
+                // SAFETY: `start` is within `dirty_buf` (captured before pushing `dirty_count > 0` items).
                 unsafe { dirty_buf.as_ptr().add(start) }
             };
             out.push(nve_abi::table::NveTableView {
@@ -580,15 +583,14 @@ impl NodeStore {
 
     pub(crate) fn column_mut(&mut self, slot: TableSlot) -> &mut Column {
         let slot_idx = slot.0 as usize;
-        if self.columns[slot_idx].is_none() {
+        self.columns[slot_idx].get_or_insert_with(|| {
             assert!(
                 slot_idx < table::MAX_STATIC_TABLE_SLOTS,
                 "cannot lazily allocate static column in dynamic slot {}",
                 slot.0
             );
-            self.columns[slot_idx] = Some(Column::new(TableMeta::Static(table::desc(slot))));
-        }
-        self.columns[slot_idx].as_mut().unwrap()
+            Column::new(TableMeta::Static(table::desc(slot)))
+        })
     }
 
     #[inline]

@@ -46,6 +46,7 @@ pub fn prerender_nve_app_frame0<A: NveApp>(
             viewport.width,
             viewport.height,
         )];
+        // SAFETY: `layout` is a stack-local slice containing no nested pointers.
         let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout) });
     }
     let frame_bytes = app.render(1).to_vec();

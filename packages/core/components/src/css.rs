@@ -133,12 +133,14 @@ pub fn parse_color(raw: &str) -> Option<ColorRgba> {
         };
     }
 
-    let lower = s.to_ascii_lowercase();
-    if let Some(inner) = lower
-        .strip_prefix("rgba(")
-        .or_else(|| lower.strip_prefix("rgb("))
-        .and_then(|rest| rest.strip_suffix(')'))
-    {
+    let rgb_inner = if s.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("rgba(")) {
+        s[5..].strip_suffix(')')
+    } else if s.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("rgb(")) {
+        s[4..].strip_suffix(')')
+    } else {
+        None
+    };
+    if let Some(inner) = rgb_inner {
         let normalized = inner.replace([',', '/'], " ");
         let comps: Vec<&str> = normalized.split_whitespace().collect();
         if comps.len() != 3 && comps.len() != 4 {
@@ -160,15 +162,31 @@ pub fn parse_color(raw: &str) -> Option<ColorRgba> {
         return Some(ColorRgba::rgba(r, g, b, a));
     }
 
-    match lower.as_str() {
-        "white" => Some(ColorRgba::WHITE),
-        "black" => Some(ColorRgba::BLACK),
-        "transparent" => Some(ColorRgba::TRANSPARENT),
-        "red" => Some(ColorRgba::rgb(239, 68, 68)),
-        "green" => Some(ColorRgba::rgb(34, 197, 94)),
-        "blue" => Some(ColorRgba::rgb(59, 130, 246)),
-        _ => None,
-    }
+    const NAMED: &[(&str, ColorRgba)] = &[
+        ("white", ColorRgba::WHITE),
+        ("black", ColorRgba::BLACK),
+        ("transparent", ColorRgba::TRANSPARENT),
+        ("red", ColorRgba::rgb(239, 68, 68)),
+        ("green", ColorRgba::rgb(34, 197, 94)),
+        ("blue", ColorRgba::rgb(59, 130, 246)),
+    ];
+    NAMED.iter().find_map(|&(n, c)| s.eq_ignore_ascii_case(n).then_some(c))
+}
+
+/// Parses a CSS font-weight keyword or numeric value (`100..=900`), returning `None` if invalid.
+pub fn try_parse_font_weight(raw: &str) -> Option<u16> {
+    const WEIGHTS: &[(&str, u16)] = &[
+        ("thin", 100), ("light", 300), ("normal", 400), ("regular", 400),
+        ("medium", 500), ("semibold", 600), ("bold", 700), ("extrabold", 800), ("black", 900),
+    ];
+    let s = raw.trim();
+    WEIGHTS.iter().find_map(|&(n, w)| s.eq_ignore_ascii_case(n).then_some(w))
+        .or_else(|| s.parse::<u16>().ok().map(|w| w.clamp(100, 900)))
+}
+
+/// Parses a CSS font-weight keyword or numeric value (`100..=900`), defaulting to `400`.
+pub fn parse_font_weight(raw: &str) -> u16 {
+    try_parse_font_weight(raw).unwrap_or(400)
 }
 
 /// Maps a canonical CSS property bitmask to its [`STYLE_LAYER_*`] bitmask.
@@ -468,18 +486,7 @@ fn parse_css_decl(key: &str, value: &str) -> Option<(u64, Option<ParsedDecl>)> {
             }
         }
         "font-size" | "fontSize" => parse_px(v).map(ParsedDecl::FontSize),
-        "font-weight" | "fontWeight" => match v.to_ascii_lowercase().as_str() {
-            "thin" => Some(100),
-            "light" => Some(300),
-            "normal" | "regular" => Some(400),
-            "medium" => Some(500),
-            "semibold" => Some(600),
-            "bold" => Some(700),
-            "extrabold" => Some(800),
-            "black" => Some(900),
-            other => other.parse::<u16>().ok().map(|w| w.clamp(100, 900)),
-        }
-        .map(ParsedDecl::FontWeight),
+        "font-weight" | "fontWeight" => try_parse_font_weight(v).map(ParsedDecl::FontWeight),
         "text-align" | "textAlign" => match v {
             "left" | "start" => Some(TextAlign::Left),
             "center" => Some(TextAlign::Center),

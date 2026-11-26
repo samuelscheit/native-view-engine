@@ -252,6 +252,10 @@ pub fn pack_typed<B: ?Sized + Send + Sync + 'static>(
 /// Returns `None` for cross-language FFI providers (`FfiHostServices`) or when a test fault is
 /// queued on `(service_id, method_id)`, allowing clients to fall back cleanly to `invoke_sync`.
 #[inline]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "HostServiceProvider typed-service registry resolves Arc<B> once by TypeId"
+)]
 pub fn resolve_typed<B: ?Sized + Send + Sync + 'static>(
     provider: &(impl HostServiceProvider + ?Sized),
     service_id: u32,

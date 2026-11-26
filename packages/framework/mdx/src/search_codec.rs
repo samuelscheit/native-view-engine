@@ -92,7 +92,7 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
     if bytes.len() < HEADER_BYTES + CHECKSUM_BYTES {
         return Err(SearchIndexError::TooShort);
     }
-    let magic: [u8; 4] = bytes[0..4].try_into().unwrap();
+    let magic: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
     if &magic != NVS2_MAGIC {
         return Err(SearchIndexError::InvalidMagic(magic));
     }
@@ -103,7 +103,16 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
 
     let payload_len = bytes.len() - CHECKSUM_BYTES;
     let payload = &bytes[..payload_len];
-    let expected_ck = u64::from_le_bytes(bytes[payload_len..].try_into().unwrap());
+    let expected_ck = u64::from_le_bytes([
+        bytes[payload_len],
+        bytes[payload_len + 1],
+        bytes[payload_len + 2],
+        bytes[payload_len + 3],
+        bytes[payload_len + 4],
+        bytes[payload_len + 5],
+        bytes[payload_len + 6],
+        bytes[payload_len + 7],
+    ]);
     let actual_ck = xxh64(payload, 0);
     if expected_ck != actual_ck {
         return Err(SearchIndexError::ChecksumMismatch {

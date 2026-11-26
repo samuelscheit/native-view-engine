@@ -17,3 +17,6 @@ cc = { workspace = true }
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
 nve-example-kitchen-sink = { workspace = true }
+
+[lints]
+workspace = true

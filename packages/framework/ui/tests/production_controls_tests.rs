@@ -133,7 +133,10 @@ fn combobox_state_keyboard_multi_select_custom_filter_and_ime_guard() {
 
     // Custom filter predicate (prefix-only match).
     single.set_query_with_filter("ru", |opt, q| {
-        opt.label.to_ascii_lowercase().starts_with(&q.to_ascii_lowercase())
+        opt.label
+            .as_bytes()
+            .get(..q.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(q.as_bytes()))
     });
     let labels: Vec<&str> = single
         .filtered_options()

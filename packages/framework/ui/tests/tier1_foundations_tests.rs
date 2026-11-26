@@ -84,8 +84,9 @@ impl DualHarness {
     }
 
     fn find(&self, tid: &str) -> AbiNodeId {
-        self.maybe_find(tid)
-            .unwrap_or_else(|| panic!("expected node with testID='{tid}'"))
+        let found = self.maybe_find(tid);
+        assert!(found.is_some(), "expected node with testID='{tid}'");
+        found.expect("checked above")
     }
 
     fn collect_text(&self, id: NodeId) -> String {
@@ -278,7 +279,10 @@ fn error_boundary_isolates_result_and_throw_errors_preserves_sibling_and_resets_
 #[component]
 fn PanickingChild(should_panic: Signal<bool>) -> Element {
     if should_panic() {
-        panic!("simulated subtree panic");
+        #[expect(clippy::panic, reason = "intentionally panics to verify ErrorBoundary recovery")]
+        {
+            panic!("simulated subtree panic");
+        }
     }
     rsx! {
         text { test_id: "panic-child-ok", "Recovered from panic" }

@@ -48,3 +48,6 @@ required-features = ["reconcile", "crdt"]
 [[test]]
 name = "window_manager_tests"
 required-features = ["window"]
+
+[lints]
+workspace = true

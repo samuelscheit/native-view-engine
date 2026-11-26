@@ -274,6 +274,7 @@ fn prerender_native_frame0_into<A: NveApp, L: StoreLayoutEngine>(
             viewport.width,
             viewport.height,
         )];
+        // SAFETY: `layout_ev` is a stack-local slice containing no nested pointers.
         let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
     }
 

@@ -1,0 +1,11 @@
+# Clippy workspace configuration for native-view-engine (L2 hybrid linting stack).
+# Note: Clippy does not merge nested clippy.toml files. Keep shared rules here.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "str::to_ascii_lowercase", reason = "allocates a String; prefer zero-alloc `eq_ignore_ascii_case`, `char::to_ascii_lowercase`, or annotate genuine cold owned boundaries with `#[expect(clippy::disallowed_methods, reason = \"...\")]`" },
+    { path = "std::any::Any::downcast_ref", reason = "per-node dynamic downcasts are banned; use typed handles/tables or annotate genuine type-erased boundaries with `#[expect(clippy::disallowed_methods, reason = \"...\")]`" },
+]

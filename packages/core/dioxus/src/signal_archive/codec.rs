@@ -49,7 +49,7 @@ fn read_u32_le(bytes: &[u8], pos: &mut usize) -> Result<u32, SignalArchiveError>
             actual: bytes.len(),
         })?;
     *pos = end;
-    Ok(u32::from_le_bytes(slice.try_into().unwrap()))
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
 #[inline]
@@ -65,7 +65,9 @@ fn read_u64_le(bytes: &[u8], pos: &mut usize) -> Result<u64, SignalArchiveError>
             actual: bytes.len(),
         })?;
     *pos = end;
-    Ok(u64::from_le_bytes(slice.try_into().unwrap()))
+    Ok(u64::from_le_bytes([
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ]))
 }
 
 #[inline]
@@ -167,18 +169,28 @@ fn decode_header(
             actual: bytes.len(),
         });
     }
-    let magic: [u8; 8] = bytes[0..8].try_into().unwrap();
+    let magic: [u8; 8] = [
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ];
     if magic != expected_magic {
         return Err(SignalArchiveError::InvalidMagic(magic));
     }
-    let format_version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let format_version = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
     if format_version != NVE_SIGNAL_ARCHIVE_VERSION {
         return Err(SignalArchiveError::UnsupportedFormatVersion(format_version));
     }
-    let schema_version = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-    let count = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
-    let stored_checksum =
-        u64::from_le_bytes(bytes[CHECKSUM_OFFSET..CHECKSUM_END].try_into().unwrap());
+    let schema_version = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let count = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
+    let stored_checksum = u64::from_le_bytes([
+        bytes[CHECKSUM_OFFSET],
+        bytes[CHECKSUM_OFFSET + 1],
+        bytes[CHECKSUM_OFFSET + 2],
+        bytes[CHECKSUM_OFFSET + 3],
+        bytes[CHECKSUM_OFFSET + 4],
+        bytes[CHECKSUM_OFFSET + 5],
+        bytes[CHECKSUM_OFFSET + 6],
+        bytes[CHECKSUM_OFFSET + 7],
+    ]);
     let computed_checksum = compute_container_checksum(bytes);
     if computed_checksum != stored_checksum {
         return Err(SignalArchiveError::ChecksumMismatch {

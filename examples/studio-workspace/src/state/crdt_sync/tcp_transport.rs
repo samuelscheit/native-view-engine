@@ -35,11 +35,8 @@ impl LoopbackTcpCrdtTransport {
     /// Binds a live dual-ALPN `NveWireServer` on `127.0.0.1:0` with `bearer_token`.
     pub fn bind(peer: PeerId, bearer_token: impl Into<String>) -> Result<Self, CrdtTransportError> {
         let token = bearer_token.into();
-        let cfg = NveWireServerConfig::new(
-            "127.0.0.1:0".parse().unwrap(),
-            "127.0.0.1:0".parse().unwrap(),
-            token.clone(),
-        );
+        let loopback = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+        let cfg = NveWireServerConfig::new(loopback, loopback, token.clone());
         let server = NveWireServer::bind_sync(cfg)?;
         Ok(Self {
             peer,

@@ -119,11 +119,9 @@ pub trait VideoSurfaceSpec {
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("workspace root 3 levels above CARGO_MANIFEST_DIR")
         .to_path_buf()
 }
 
@@ -791,7 +789,7 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
         }
     };
     let dart_tool = dir.join(".dart_tool");
-    std::fs::create_dir_all(&dart_tool).unwrap();
+    std::fs::create_dir_all(&dart_tool).expect("create temp .dart_tool dir");
     let config = format!(
         r#"{{
   "configVersion": 2,
@@ -814,7 +812,8 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
         to_file_uri(&canonical_dir),
         to_file_uri(&canonical_plugin),
     );
-    std::fs::write(dart_tool.join("package_config.json"), config).unwrap();
+    std::fs::write(dart_tool.join("package_config.json"), config)
+        .expect("write temp package_config.json");
 }
 
 #[test]

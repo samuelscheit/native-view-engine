@@ -36,18 +36,20 @@ pub fn is_safe_web_url(url: &str) -> bool {
         Some(idx) if cleaned.as_bytes()[idx] != b':' => return true,
         _ => {}
     }
-    let lower = cleaned.to_ascii_lowercase();
-    lower.starts_with("https://")
-        || lower.starts_with("http://")
-        || lower.starts_with("mailto:")
-        || lower.starts_with("tel:")
-        || lower.starts_with("blob:")
-        || lower.starts_with("data:image/png;")
-        || lower.starts_with("data:image/jpeg;")
-        || lower.starts_with("data:image/jpg;")
-        || lower.starts_with("data:image/webp;")
-        || lower.starts_with("data:image/gif;")
-        || lower.starts_with("data:image/avif;")
+    let has_prefix = |p: &str| {
+        cleaned.len() >= p.len() && cleaned.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
+    };
+    has_prefix("https://")
+        || has_prefix("http://")
+        || has_prefix("mailto:")
+        || has_prefix("tel:")
+        || has_prefix("blob:")
+        || has_prefix("data:image/png;")
+        || has_prefix("data:image/jpeg;")
+        || has_prefix("data:image/jpg;")
+        || has_prefix("data:image/webp;")
+        || has_prefix("data:image/gif;")
+        || has_prefix("data:image/avif;")
 }
 
 /// Security helper: validates an HTML element tag name (strict untrimmed ASCII alphabetic start,
@@ -57,32 +59,31 @@ pub fn is_safe_custom_tag(tag: &str) -> bool {
     if tag.is_empty() || tag.len() > 64 || tag.trim() != tag {
         return false;
     }
-    let lower = tag.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "script"
-            | "style"
-            | "object"
-            | "embed"
-            | "applet"
-            | "base"
-            | "meta"
-            | "link"
-            | "iframe"
-            | "frame"
-            | "frameset"
-            | "foreignobject"
-            | "animate"
-            | "set"
-            | "template"
-            | "noscript"
-            | "plaintext"
-            | "xmp"
-            | "textarea"
-            | "title"
-            | "svg"
-            | "math"
-    ) {
+    const BANNED_TAGS: &[&str] = &[
+        "script",
+        "style",
+        "object",
+        "embed",
+        "applet",
+        "base",
+        "meta",
+        "link",
+        "iframe",
+        "frame",
+        "frameset",
+        "foreignobject",
+        "animate",
+        "set",
+        "template",
+        "noscript",
+        "plaintext",
+        "xmp",
+        "textarea",
+        "title",
+        "svg",
+        "math",
+    ];
+    if BANNED_TAGS.iter().any(|b| tag.eq_ignore_ascii_case(b)) {
         return false;
     }
     let mut chars = tag.chars();
@@ -171,36 +172,37 @@ pub fn is_safe_web_attr(name: &str, value: &str) -> bool {
     {
         return false;
     }
-    let lower = name.to_ascii_lowercase();
-    if lower.starts_with("data-nve-")
-        && !matches!(
-            lower.as_str(),
-            "data-nve-island"
-                | "data-nve-hydrate"
-                | "data-nve-hard-nav"
-                | "data-nve-stream-slot"
-                | "data-nve-dirty"
-                | "data-nve-draft-restored"
-        )
+    const ALLOWED_NVE_ATTRS: &[&str] = &[
+        "data-nve-island",
+        "data-nve-hydrate",
+        "data-nve-hard-nav",
+        "data-nve-stream-slot",
+        "data-nve-dirty",
+        "data-nve-draft-restored",
+    ];
+    if name.len() >= 9
+        && name.as_bytes()[..9].eq_ignore_ascii_case(b"data-nve-")
+        && !ALLOWED_NVE_ATTRS.iter().any(|a| name.eq_ignore_ascii_case(a))
     {
         return false;
     }
-    if lower.starts_with("on")
-        || matches!(
-            lower.as_str(),
-            "is" | "srcdoc"
-                | "style"
-                | "class"
-                | "attributename"
-                | "to"
-                | "from"
-                | "values"
-                | "by"
-        )
+    const BANNED_ATTRS: &[&str] = &[
+        "is",
+        "srcdoc",
+        "style",
+        "class",
+        "attributename",
+        "to",
+        "from",
+        "values",
+        "by",
+    ];
+    if (name.len() >= 2 && name.as_bytes()[..2].eq_ignore_ascii_case(b"on"))
+        || BANNED_ATTRS.iter().any(|b| name.eq_ignore_ascii_case(b))
     {
         return false;
     }
-    if lower == "ping" {
+    if name.eq_ignore_ascii_case("ping") {
         let mut any = false;
         for tok in value.split_ascii_whitespace() {
             any = true;
@@ -210,21 +212,21 @@ pub fn is_safe_web_attr(name: &str, value: &str) -> bool {
         }
         return any;
     }
-    if matches!(
-        lower.as_str(),
-        "href"
-            | "src"
-            | "action"
-            | "formaction"
-            | "xlink:href"
-            | "poster"
-            | "cite"
-            | "data"
-            | "background"
-    ) {
+    const URL_ATTRS: &[&str] = &[
+        "href",
+        "src",
+        "action",
+        "formaction",
+        "xlink:href",
+        "poster",
+        "cite",
+        "data",
+        "background",
+    ];
+    if URL_ATTRS.iter().any(|u| name.eq_ignore_ascii_case(u)) {
         return is_safe_web_url(value);
     }
-    if lower == "srcset" {
+    if name.eq_ignore_ascii_case("srcset") {
         return is_safe_srcset(value);
     }
     true

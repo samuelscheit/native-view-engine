@@ -6,34 +6,54 @@
 use crate::state::{AccentTheme, ActiveView, LayoutEngineMode, SyncTransportMode, WorkspaceState};
 
 pub(crate) fn parse_accent(s: &str) -> Option<AccentTheme> {
-    match s.to_ascii_lowercase().as_str() {
-        "cyan" => Some(AccentTheme::Cyan),
-        "violet" => Some(AccentTheme::Violet),
-        "green" => Some(AccentTheme::Green),
-        "amber" => Some(AccentTheme::Amber),
-        _ => None,
+    if s.eq_ignore_ascii_case("cyan") {
+        Some(AccentTheme::Cyan)
+    } else if s.eq_ignore_ascii_case("violet") {
+        Some(AccentTheme::Violet)
+    } else if s.eq_ignore_ascii_case("green") {
+        Some(AccentTheme::Green)
+    } else if s.eq_ignore_ascii_case("amber") {
+        Some(AccentTheme::Amber)
+    } else {
+        None
     }
 }
 
 pub(crate) fn parse_layout_engine(s: &str) -> Option<LayoutEngineMode> {
-    match s.to_ascii_lowercase().as_str() {
-        "taffy" => Some(LayoutEngineMode::Taffy),
-        "yoga" => Some(LayoutEngineMode::Yoga),
-        _ => None,
+    if s.eq_ignore_ascii_case("taffy") {
+        Some(LayoutEngineMode::Taffy)
+    } else if s.eq_ignore_ascii_case("yoga") {
+        Some(LayoutEngineMode::Yoga)
+    } else {
+        None
     }
 }
 
 pub(crate) fn parse_active_view(s: &str) -> Option<ActiveView> {
-    match s.to_ascii_lowercase().as_str() {
-        "board" => Some(ActiveView::Board),
-        "engineering" => Some(ActiveView::ChannelEngineering),
-        "design" => Some(ActiveView::ChannelDesign),
-        "docs" | "doc" => Some(ActiveView::Docs),
-        "workbench" | "wb" | "preview" => Some(ActiveView::Workbench),
-        "stream" | "stream100k" | "100k" => Some(ActiveView::Stream100k),
-        "islands" | "island" => Some(ActiveView::Islands),
-        "metrics" => Some(ActiveView::Metrics),
-        _ => None,
+    if s.eq_ignore_ascii_case("board") {
+        Some(ActiveView::Board)
+    } else if s.eq_ignore_ascii_case("engineering") {
+        Some(ActiveView::ChannelEngineering)
+    } else if s.eq_ignore_ascii_case("design") {
+        Some(ActiveView::ChannelDesign)
+    } else if s.eq_ignore_ascii_case("docs") || s.eq_ignore_ascii_case("doc") {
+        Some(ActiveView::Docs)
+    } else if s.eq_ignore_ascii_case("workbench")
+        || s.eq_ignore_ascii_case("wb")
+        || s.eq_ignore_ascii_case("preview")
+    {
+        Some(ActiveView::Workbench)
+    } else if s.eq_ignore_ascii_case("stream")
+        || s.eq_ignore_ascii_case("stream100k")
+        || s.eq_ignore_ascii_case("100k")
+    {
+        Some(ActiveView::Stream100k)
+    } else if s.eq_ignore_ascii_case("islands") || s.eq_ignore_ascii_case("island") {
+        Some(ActiveView::Islands)
+    } else if s.eq_ignore_ascii_case("metrics") {
+        Some(ActiveView::Metrics)
+    } else {
+        None
     }
 }
 

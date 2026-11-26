@@ -104,8 +104,10 @@ mod platform {
     pub fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, ServiceError> {
         let target = cred_target(service, account);
         let mut out: *mut CredentialW = std::ptr::null_mut();
+        // SAFETY: `target` is NUL-terminated UTF-16 and `out` receives the credential allocation.
         let ok = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut out) };
         if ok == 0 {
+            // SAFETY: Thread-local Win32 last-error query after a failed API call.
             let err = unsafe { GetLastError() };
             return if err == ERROR_NOT_FOUND {
                 Ok(None)
@@ -113,6 +115,7 @@ mod platform {
                 Err(ServiceError::IoError(format!("CredReadW error {err}")))
             };
         }
+        // SAFETY: `CredReadW` succeeded so `out` points to a valid `CredentialW` until `CredFree`.
         let bytes = unsafe {
             let c = &*out;
             if c.credential_blob.is_null() || c.credential_blob_size == 0 {
@@ -122,6 +125,7 @@ mod platform {
                     .to_vec()
             }
         };
+        // SAFETY: `out` was allocated by `CredReadW` and is freed once here.
         unsafe { CredFree(out.cast()) };
         Ok(Some(bytes))
     }
@@ -151,9 +155,11 @@ mod platform {
             target_alias: std::ptr::null_mut(),
             user_name: user.as_mut_ptr(),
         };
+        // SAFETY: All pointers inside `cred` point into live local buffers for the duration of `CredWriteW`.
         if unsafe { CredWriteW(&cred, 0) } != 0 {
             Ok(())
         } else {
+            // SAFETY: Thread-local Win32 last-error query after `CredWriteW` failed.
             let err = unsafe { GetLastError() };
             Err(ServiceError::IoError(format!("CredWriteW error {err}")))
         }
@@ -161,9 +167,11 @@ mod platform {
 
     pub fn delete(service: &str, account: &str) -> Result<bool, ServiceError> {
         let target = cred_target(service, account);
+        // SAFETY: `target` is a valid NUL-terminated UTF-16 string.
         if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } != 0 {
             Ok(true)
         } else {
+            // SAFETY: Thread-local Win32 last-error query after `CredDeleteW` failed.
             let err = unsafe { GetLastError() };
             if err == ERROR_NOT_FOUND {
                 Ok(false)

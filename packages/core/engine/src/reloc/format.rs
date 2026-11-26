@@ -220,11 +220,15 @@ pub struct RelocBundleRoot {
     pub reserved: u64,
 }
 
-// SAFETY: All reloc handles and headers are `#[repr(C)]` with zero uninitialized padding.
+// SAFETY: `RelocHeader` is `#[repr(C)]` with compile-time layout assertions and zero padding.
 unsafe impl ArenaPod for RelocHeader {}
+// SAFETY: `RelocStr` is `#[repr(C)]` with two `u32` fields and zero padding.
 unsafe impl ArenaPod for RelocStr {}
+// SAFETY: `RelocBundleRoot` is `#[repr(C)]` composed solely of `ArenaPod` fields with zero padding.
 unsafe impl ArenaPod for RelocBundleRoot {}
+// SAFETY: `RelocPtr<T>` is `#[repr(C)]` holding an `i32` offset and `PhantomData`.
 unsafe impl<T: 'static> ArenaPod for RelocPtr<T> {}
+// SAFETY: `RelocSlice<T>` is `#[repr(C)]` holding an `i32` offset, `u32` len, and `PhantomData`.
 unsafe impl<T: 'static> ArenaPod for RelocSlice<T> {}
 
 const _: () = {

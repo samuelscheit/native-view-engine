@@ -44,6 +44,10 @@ struct Codec {
 
 static CODECS: RwLock<Vec<(u64, Codec)>> = RwLock::new(Vec::new());
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Track 1B-1d ResourceStore type-erased codec boundary"
+)]
 fn encode_erased<R: Resource>(v: &(dyn Any + Send + Sync), out: &mut Vec<u8>) {
     if let Some(r) = v.downcast_ref::<R>() {
         r.encode(out);
@@ -186,6 +190,10 @@ impl ResourceStore {
         self.scratch.clear();
         value.encode(&mut self.scratch);
         let hash = xxh64(&self.scratch, R::KIND.0);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "Track 1B-1d ResourceStore type-erased dedup boundary"
+        )]
         if let Some(&i) = self.dedup.get(&(R::KIND.0, hash))
             && let Some(e) = self.entries.get_mut(i as usize)
             && e.value.as_deref().is_some_and(|v| v.is::<R>())
@@ -269,6 +277,10 @@ impl ResourceStore {
 
     /// Typed value of `id`.
     #[inline]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Track 1B-1d ResourceStore type-erased read boundary"
+    )]
     pub fn get<R: Resource>(&self, id: ResourceId) -> Option<&R> {
         self.entries
             .get(id.0 as usize)?

@@ -1,4 +1,4 @@
-use std::fmt::Write as _;
+use crate::writer::CodeWriter;
 
 use super::*;
 
@@ -95,7 +95,7 @@ pub(super) fn rust_c_abi_param_type(ty: &HybridType, spec: &HybridFileSpec) -> S
         HybridType::Bytes => "NveBufferSlice".to_string(),
         HybridType::Value => "NveValue".to_string(),
         HybridType::Optional(inner) if inner.is_pod(spec) => {
-            format!("NveHybridOpt{}", inner.pod_opt_suffix().unwrap())
+            format!("NveHybridOpt{}", inner.pod_opt_suffix().expect("validated POD optional has suffix"))
         }
         _ => "NveBufferSlice".to_string(),
     }
@@ -117,7 +117,7 @@ pub(super) fn rust_c_abi_return_type(ty: &HybridType, spec: &HybridFileSpec) -> 
         | HybridType::Enum(_) => rust_c_abi_pod_type(ty),
         HybridType::Struct(_) if ty.is_pod(spec) => rust_c_abi_pod_type(ty),
         HybridType::Optional(inner) if inner.is_pod(spec) => {
-            format!("NveHybridOpt{}", inner.pod_opt_suffix().unwrap())
+            format!("NveHybridOpt{}", inner.pod_opt_suffix().expect("validated POD optional has suffix"))
         }
         _ => "NveHybridOwnedBytes".to_string(),
     }
@@ -137,7 +137,7 @@ pub(super) fn rust_c_abi_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> S
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::Struct(name) if ty.is_pod(spec) => format!("{name}::default()"),
         HybridType::Optional(inner) if inner.is_pod(spec) => {
-            let suffix = inner.pod_opt_suffix().unwrap();
+            let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
             let zero_inner = rust_c_abi_zero_value(inner, spec);
             format!("NveHybridOpt{suffix} {{ is_some: false, value: {zero_inner} }}")
         }
@@ -145,34 +145,34 @@ pub(super) fn rust_c_abi_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> S
     }
 }
 
-pub(super) fn emit_bin_write_expr(out: &mut String, indent: &str, buf: &str, expr: &str, ty: &HybridType) {
+pub(super) fn emit_bin_write_expr(out: &mut CodeWriter, indent: &str, buf: &str, expr: &str, ty: &HybridType) {
     match ty {
-        HybridType::Bool => writeln!(out, "{indent}nve_bin_codec::write_bool({buf}, *{expr});").unwrap(),
+        HybridType::Bool => writeln!(out, "{indent}nve_bin_codec::write_bool({buf}, *{expr});"),
         HybridType::U8 | HybridType::U16 | HybridType::Usize | HybridType::I32 | HybridType::U32 | HybridType::U64 => {
-            writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, (*{expr}) as i64);").unwrap()
+            writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, (*{expr}) as i64);")
         }
-        HybridType::I64 => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, *{expr});").unwrap(),
-        HybridType::F32 => writeln!(out, "{indent}nve_bin_codec::write_f64({buf}, (*{expr}) as f64);").unwrap(),
-        HybridType::F64 => writeln!(out, "{indent}nve_bin_codec::write_f64({buf}, *{expr});").unwrap(),
-        HybridType::Enum(_) => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, ({expr}).to_u32() as i64);").unwrap(),
-        HybridType::String => writeln!(out, "{indent}nve_bin_codec::write_str({buf}, ({expr}).as_str());").unwrap(),
-        HybridType::Bytes => writeln!(out, "{indent}nve_bin_codec::write_bytes({buf}, ({expr}).as_slice());").unwrap(),
-        HybridType::Struct(_) => writeln!(out, "{indent}({expr}).encode_bin({buf});").unwrap(),
-        HybridType::Value => writeln!(out, "{indent}({buf}).extend_from_slice(&({expr}).bin_bytes);").unwrap(),
+        HybridType::I64 => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, *{expr});"),
+        HybridType::F32 => writeln!(out, "{indent}nve_bin_codec::write_f64({buf}, (*{expr}) as f64);"),
+        HybridType::F64 => writeln!(out, "{indent}nve_bin_codec::write_f64({buf}, *{expr});"),
+        HybridType::Enum(_) => writeln!(out, "{indent}nve_bin_codec::write_i64({buf}, ({expr}).to_u32() as i64);"),
+        HybridType::String => writeln!(out, "{indent}nve_bin_codec::write_str({buf}, ({expr}).as_str());"),
+        HybridType::Bytes => writeln!(out, "{indent}nve_bin_codec::write_bytes({buf}, ({expr}).as_slice());"),
+        HybridType::Struct(_) => writeln!(out, "{indent}({expr}).encode_bin({buf});"),
+        HybridType::Value => writeln!(out, "{indent}({buf}).extend_from_slice(&({expr}).bin_bytes);"),
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}match {expr} {{").unwrap();
-            writeln!(out, "{indent}    Some(_opt_v) => {{").unwrap();
+            writeln!(out, "{indent}match {expr} {{");
+            writeln!(out, "{indent}    Some(_opt_v) => {{");
             emit_bin_write_expr(out, &format!("{indent}        "), buf, "_opt_v", inner);
-            writeln!(out, "{indent}    }}").unwrap();
-            writeln!(out, "{indent}    None => nve_bin_codec::write_null({buf}),").unwrap();
-            writeln!(out, "{indent}}}").unwrap();
+            writeln!(out, "{indent}    }}");
+            writeln!(out, "{indent}    None => nve_bin_codec::write_null({buf}),");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}nve_bin_codec::write_array({buf}, ({expr}).len(), |out| {{").unwrap();
-            writeln!(out, "{indent}    for _elem in ({expr}).iter() {{").unwrap();
+            writeln!(out, "{indent}nve_bin_codec::write_array({buf}, ({expr}).len(), |out| {{");
+            writeln!(out, "{indent}    for _elem in ({expr}).iter() {{");
             emit_bin_write_expr(out, &format!("{indent}        "), "out", "_elem", inner);
-            writeln!(out, "{indent}    }}").unwrap();
-            writeln!(out, "{indent}}});").unwrap();
+            writeln!(out, "{indent}    }}");
+            writeln!(out, "{indent}}});");
         }
         HybridType::Void
         | HybridType::Result { .. }
@@ -180,7 +180,7 @@ pub(super) fn emit_bin_write_expr(out: &mut String, indent: &str, buf: &str, exp
         | HybridType::MutPtr(_)
         | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {
-            writeln!(out, "{indent}nve_bin_codec::write_null({buf});").unwrap();
+            writeln!(out, "{indent}nve_bin_codec::write_null({buf});");
         }
     }
 }

@@ -8,3 +8,6 @@ description = "Standalone opt-in NVE file picker & standard OS paths capability 
 [dependencies]
 nve-abi = { workspace = true }
 nve-host-services = { workspace = true }
+
+[lints]
+workspace = true

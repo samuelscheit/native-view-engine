@@ -1,7 +1,5 @@
 //! Java (`dev.nve.android.generated.NveHash`) XXH64 mirror.
 
-use std::fmt::Write;
-
 use super::{banner, byte_list, HASH_VECTORS, STREAM_SPLITS};
 
 const BODY: &str = r#"package dev.nve.android.generated;
@@ -143,11 +141,11 @@ pub(super) fn generate_java_hash() -> String {
     s.push_str("\n    private static final byte[][] VECTOR_BYTES = {\n");
     for v in HASH_VECTORS {
         let bytes = byte_list(v.bytes, |b| format!("(byte) 0x{b:02X}"));
-        writeln!(s, "        {{{bytes}}}, // {}", v.label).unwrap();
+        writeln!(s, "        {{{bytes}}}, // {}", v.label);
     }
     s.push_str("    };\n    private static final long[][] VECTOR_SEED_EXPECTED = {\n");
     for v in HASH_VECTORS {
-        writeln!(s, "        {{0x{:016X}L, 0x{:016X}L}},", v.seed, v.expected()).unwrap();
+        writeln!(s, "        {{0x{:016X}L, 0x{:016X}L}},", v.seed, v.expected());
     }
     let [a, b, c] = STREAM_SPLITS;
     write!(
@@ -177,7 +175,6 @@ pub(super) fn generate_java_hash() -> String {
     }}
 }}
 "#
-    )
-    .unwrap();
-    s
+    );
+    s.into_string()
 }

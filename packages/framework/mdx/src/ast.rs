@@ -155,12 +155,23 @@ pub enum CalloutKind {
 
 impl CalloutKind {
     pub fn parse(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "tip" => Self::Tip,
-            "warning" | "warn" | "caution" => Self::Warning,
-            "danger" | "error" | "important" => Self::Danger,
-            "note" => Self::Note,
-            _ => Self::Info,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("tip") {
+            Self::Tip
+        } else if s.eq_ignore_ascii_case("warning")
+            || s.eq_ignore_ascii_case("warn")
+            || s.eq_ignore_ascii_case("caution")
+        {
+            Self::Warning
+        } else if s.eq_ignore_ascii_case("danger")
+            || s.eq_ignore_ascii_case("error")
+            || s.eq_ignore_ascii_case("important")
+        {
+            Self::Danger
+        } else if s.eq_ignore_ascii_case("note") {
+            Self::Note
+        } else {
+            Self::Info
         }
     }
 
@@ -186,11 +197,15 @@ pub enum HydrateStrategy {
 
 impl HydrateStrategy {
     pub fn parse(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "interaction" => Self::Interaction,
-            "load" => Self::Load,
-            "idle" => Self::Idle,
-            _ => Self::Visible,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("interaction") {
+            Self::Interaction
+        } else if s.eq_ignore_ascii_case("load") {
+            Self::Load
+        } else if s.eq_ignore_ascii_case("idle") {
+            Self::Idle
+        } else {
+            Self::Visible
         }
     }
 

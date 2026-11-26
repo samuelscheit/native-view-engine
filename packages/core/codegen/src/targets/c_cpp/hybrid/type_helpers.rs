@@ -1,4 +1,4 @@
-use std::fmt::Write as _;
+use crate::writer::CodeWriter;
 
 use super::*;
 
@@ -137,7 +137,7 @@ pub(super) fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         HybridType::Bytes => "NveBufferSlice".to_string(),
         HybridType::Value => "NveValue".to_string(),
         HybridType::Optional(inner) if inner.is_pod(spec) => {
-            format!("NveHybridOpt{}", inner.pod_opt_suffix().unwrap())
+            format!("NveHybridOpt{}", inner.pod_opt_suffix().expect("validated POD optional has suffix"))
         }
         _ => "NveBufferSlice".to_string(),
     }
@@ -159,15 +159,15 @@ pub(super) fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         | HybridType::Enum(_) => c_pod_type(ty),
         HybridType::Struct(_) if ty.is_pod(spec) => c_pod_type(ty),
         HybridType::Optional(inner) if inner.is_pod(spec) => {
-            format!("NveHybridOpt{}", inner.pod_opt_suffix().unwrap())
+            format!("NveHybridOpt{}", inner.pod_opt_suffix().expect("validated POD optional has suffix"))
         }
         _ => "NveHybridOwnedBytes".to_string(),
     }
 }
 
-pub(super) fn emit_cpp_bin_write(out: &mut String, indent: &str, w: &str, expr: &str, ty: &HybridType) {
+pub(super) fn emit_cpp_bin_write(out: &mut CodeWriter, indent: &str, w: &str, expr: &str, ty: &HybridType) {
     match ty {
-        HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});").unwrap(),
+        HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});"),
         HybridType::U8
         | HybridType::U16
         | HybridType::Usize
@@ -175,31 +175,31 @@ pub(super) fn emit_cpp_bin_write(out: &mut String, indent: &str, w: &str, expr: 
         | HybridType::U32
         | HybridType::I64
         | HybridType::U64 => {
-            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>({expr}));").unwrap();
+            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>({expr}));");
         }
         HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{w}.write_f64(static_cast<double>({expr}));").unwrap();
+            writeln!(out, "{indent}{w}.write_f64(static_cast<double>({expr}));");
         }
         HybridType::Enum(_) => {
-            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>(static_cast<uint32_t>({expr})));").unwrap();
+            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>(static_cast<uint32_t>({expr})));");
         }
-        HybridType::String => writeln!(out, "{indent}{w}.write_str({expr});").unwrap(),
-        HybridType::Bytes => writeln!(out, "{indent}{w}.write_bytes({expr});").unwrap(),
-        HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encode_bin({w});").unwrap(),
-        HybridType::Value => writeln!(out, "{indent}{w}.write_raw({expr}.bin_bytes);").unwrap(),
+        HybridType::String => writeln!(out, "{indent}{w}.write_str({expr});"),
+        HybridType::Bytes => writeln!(out, "{indent}{w}.write_bytes({expr});"),
+        HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encode_bin({w});"),
+        HybridType::Value => writeln!(out, "{indent}{w}.write_raw({expr}.bin_bytes);"),
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({expr}.has_value()) {{").unwrap();
+            writeln!(out, "{indent}if ({expr}.has_value()) {{");
             emit_cpp_bin_write(out, &format!("{indent}  "), w, &format!("(*{expr})"), inner);
-            writeln!(out, "{indent}}} else {{").unwrap();
-            writeln!(out, "{indent}  {w}.write_null();").unwrap();
-            writeln!(out, "{indent}}}").unwrap();
+            writeln!(out, "{indent}}} else {{");
+            writeln!(out, "{indent}  {w}.write_null();");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{w}.write_array(static_cast<uint32_t>({expr}.size()), [&](BinWriter& _aw) {{").unwrap();
-            writeln!(out, "{indent}  for (const auto& _elem : {expr}) {{").unwrap();
+            writeln!(out, "{indent}{w}.write_array(static_cast<uint32_t>({expr}.size()), [&](BinWriter& _aw) {{");
+            writeln!(out, "{indent}  for (const auto& _elem : {expr}) {{");
             emit_cpp_bin_write(out, &format!("{indent}    "), "_aw", "_elem", inner);
-            writeln!(out, "{indent}  }}").unwrap();
-            writeln!(out, "{indent}}});").unwrap();
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}}});");
         }
         HybridType::Void
         | HybridType::Result { .. }
@@ -207,50 +207,50 @@ pub(super) fn emit_cpp_bin_write(out: &mut String, indent: &str, w: &str, expr: 
         | HybridType::MutPtr(_)
         | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {
-            writeln!(out, "{indent}{w}.write_null();").unwrap();
+            writeln!(out, "{indent}{w}.write_null();");
         }
     }
 }
 
-pub(super) fn emit_cpp_bin_read(out: &mut String, indent: &str, r: &str, dst: &str, ty: &HybridType) {
+pub(super) fn emit_cpp_bin_read(out: &mut CodeWriter, indent: &str, r: &str, dst: &str, ty: &HybridType) {
     match ty {
-        HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.read_bool();").unwrap(),
-        HybridType::U8 => writeln!(out, "{indent}{dst} = static_cast<uint8_t>({r}.read_i64());").unwrap(),
-        HybridType::U16 => writeln!(out, "{indent}{dst} = static_cast<uint16_t>({r}.read_i64());").unwrap(),
-        HybridType::Usize => writeln!(out, "{indent}{dst} = static_cast<size_t>({r}.read_i64());").unwrap(),
-        HybridType::I32 => writeln!(out, "{indent}{dst} = static_cast<int32_t>({r}.read_i64());").unwrap(),
-        HybridType::U32 => writeln!(out, "{indent}{dst} = static_cast<uint32_t>({r}.read_i64());").unwrap(),
-        HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.read_i64();").unwrap(),
-        HybridType::U64 => writeln!(out, "{indent}{dst} = static_cast<uint64_t>({r}.read_i64());").unwrap(),
-        HybridType::F32 => writeln!(out, "{indent}{dst} = static_cast<float>({r}.read_f64());").unwrap(),
-        HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.read_f64();").unwrap(),
+        HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.read_bool();"),
+        HybridType::U8 => writeln!(out, "{indent}{dst} = static_cast<uint8_t>({r}.read_i64());"),
+        HybridType::U16 => writeln!(out, "{indent}{dst} = static_cast<uint16_t>({r}.read_i64());"),
+        HybridType::Usize => writeln!(out, "{indent}{dst} = static_cast<size_t>({r}.read_i64());"),
+        HybridType::I32 => writeln!(out, "{indent}{dst} = static_cast<int32_t>({r}.read_i64());"),
+        HybridType::U32 => writeln!(out, "{indent}{dst} = static_cast<uint32_t>({r}.read_i64());"),
+        HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.read_i64();"),
+        HybridType::U64 => writeln!(out, "{indent}{dst} = static_cast<uint64_t>({r}.read_i64());"),
+        HybridType::F32 => writeln!(out, "{indent}{dst} = static_cast<float>({r}.read_f64());"),
+        HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.read_f64();"),
         HybridType::Enum(e) => {
-            writeln!(out, "{indent}{dst} = static_cast<{e}>(static_cast<uint32_t>({r}.read_i64()));").unwrap();
+            writeln!(out, "{indent}{dst} = static_cast<{e}>(static_cast<uint32_t>({r}.read_i64()));");
         }
-        HybridType::String => writeln!(out, "{indent}{dst} = {r}.read_str();").unwrap(),
-        HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.read_bytes();").unwrap(),
-        HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}::decode_bin({r});").unwrap(),
-        HybridType::Value => writeln!(out, "{indent}{dst} = DynamicValue{{{r}.read_raw_value()}};").unwrap(),
+        HybridType::String => writeln!(out, "{indent}{dst} = {r}.read_str();"),
+        HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.read_bytes();"),
+        HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}::decode_bin({r});"),
+        HybridType::Value => writeln!(out, "{indent}{dst} = DynamicValue{{{r}.read_raw_value()}};"),
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({r}.read_null_if_present()) {{").unwrap();
-            writeln!(out, "{indent}  {dst} = std::nullopt;").unwrap();
-            writeln!(out, "{indent}}} else {{").unwrap();
-            writeln!(out, "{indent}  {} _opt_v{{}};", cpp_owned_type(inner)).unwrap();
+            writeln!(out, "{indent}if ({r}.read_null_if_present()) {{");
+            writeln!(out, "{indent}  {dst} = std::nullopt;");
+            writeln!(out, "{indent}}} else {{");
+            writeln!(out, "{indent}  {} _opt_v{{}};", cpp_owned_type(inner));
             emit_cpp_bin_read(out, &format!("{indent}  "), r, "_opt_v", inner);
-            writeln!(out, "{indent}  {dst} = std::move(_opt_v);").unwrap();
-            writeln!(out, "{indent}}}").unwrap();
+            writeln!(out, "{indent}  {dst} = std::move(_opt_v);");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{{").unwrap();
-            writeln!(out, "{indent}  const uint32_t _n = {r}.begin_array();").unwrap();
-            writeln!(out, "{indent}  {dst}.clear();").unwrap();
-            writeln!(out, "{indent}  {dst}.reserve(_n);").unwrap();
-            writeln!(out, "{indent}  for (uint32_t _i = 0; _i < _n; ++_i) {{").unwrap();
-            writeln!(out, "{indent}    {} _elem{{}};", cpp_owned_type(inner)).unwrap();
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  const uint32_t _n = {r}.begin_array();");
+            writeln!(out, "{indent}  {dst}.clear();");
+            writeln!(out, "{indent}  {dst}.reserve(_n);");
+            writeln!(out, "{indent}  for (uint32_t _i = 0; _i < _n; ++_i) {{");
+            writeln!(out, "{indent}    {} _elem{{}};", cpp_owned_type(inner));
             emit_cpp_bin_read(out, &format!("{indent}    "), r, "_elem", inner);
-            writeln!(out, "{indent}    {dst}.push_back(std::move(_elem));").unwrap();
-            writeln!(out, "{indent}  }}").unwrap();
-            writeln!(out, "{indent}}}").unwrap();
+            writeln!(out, "{indent}    {dst}.push_back(std::move(_elem));");
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Void
         | HybridType::Result { .. }
@@ -282,7 +282,7 @@ pub(super) fn cpp_prop_is_direct_nve_value(ty: &HybridType) -> bool {
 }
 
 pub(super) fn emit_cpp_fill_nve_value(
-    out: &mut String,
+    out: &mut CodeWriter,
     indent: &str,
     dst: &str,
     expr: &str,
@@ -291,15 +291,15 @@ pub(super) fn emit_cpp_fill_nve_value(
 ) {
     match ty {
         HybridType::Optional(inner) if cpp_prop_is_direct_nve_value(inner) => {
-            writeln!(out, "{indent}if ({expr}.has_value()) {{").unwrap();
+            writeln!(out, "{indent}if ({expr}.has_value()) {{");
             emit_cpp_fill_nve_value(out, &format!("{indent}  "), dst, &format!("(*{expr})"), inner, idx);
-            writeln!(out, "{indent}}} else {{").unwrap();
-            writeln!(out, "{indent}  {dst}.tag = NVE_VAL_NULL;").unwrap();
-            writeln!(out, "{indent}}}").unwrap();
+            writeln!(out, "{indent}}} else {{");
+            writeln!(out, "{indent}  {dst}.tag = NVE_VAL_NULL;");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Bool => {
-            writeln!(out, "{indent}{dst}.tag = NVE_VAL_BOOL;").unwrap();
-            writeln!(out, "{indent}{dst}.data.bool_val = {expr} ? 1u : 0u;").unwrap();
+            writeln!(out, "{indent}{dst}.tag = NVE_VAL_BOOL;");
+            writeln!(out, "{indent}{dst}.data.bool_val = {expr} ? 1u : 0u;");
         }
         HybridType::U8
         | HybridType::U16
@@ -308,36 +308,34 @@ pub(super) fn emit_cpp_fill_nve_value(
         | HybridType::U32
         | HybridType::I64
         | HybridType::U64 => {
-            writeln!(out, "{indent}{dst}.tag = NVE_VAL_I64;").unwrap();
-            writeln!(out, "{indent}{dst}.data.i64_val = static_cast<int64_t>({expr});").unwrap();
+            writeln!(out, "{indent}{dst}.tag = NVE_VAL_I64;");
+            writeln!(out, "{indent}{dst}.data.i64_val = static_cast<int64_t>({expr});");
         }
         HybridType::Enum(_) => {
-            writeln!(out, "{indent}{dst}.tag = NVE_VAL_I64;").unwrap();
-            writeln!(out, "{indent}{dst}.data.i64_val = static_cast<int64_t>(static_cast<uint32_t>({expr}));").unwrap();
+            writeln!(out, "{indent}{dst}.tag = NVE_VAL_I64;");
+            writeln!(out, "{indent}{dst}.data.i64_val = static_cast<int64_t>(static_cast<uint32_t>({expr}));");
         }
         HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{dst}.tag = NVE_VAL_F64;").unwrap();
-            writeln!(out, "{indent}{dst}.data.f64_val = static_cast<double>({expr});").unwrap();
+            writeln!(out, "{indent}{dst}.tag = NVE_VAL_F64;");
+            writeln!(out, "{indent}{dst}.data.f64_val = static_cast<double>({expr});");
         }
         HybridType::String => {
-            writeln!(out, "{indent}{dst}.tag = NVE_VAL_STR;").unwrap();
+            writeln!(out, "{indent}{dst}.tag = NVE_VAL_STR;");
             writeln!(
                 out,
                 "{indent}{dst}.data.str_val = NveStrSlice{{reinterpret_cast<const uint8_t*>({expr}.data()), {expr}.size()}};"
-            )
-            .unwrap();
+            );
         }
         HybridType::Bytes => {
-            writeln!(out, "{indent}{dst}.tag = NVE_VAL_BYTES;").unwrap();
+            writeln!(out, "{indent}{dst}.tag = NVE_VAL_BYTES;");
             writeln!(
                 out,
                 "{indent}{dst}.data.bytes_val = NveBufferSlice{{{expr}.data(), {expr}.size()}};"
-            )
-            .unwrap();
+            );
         }
         _ => {
-            writeln!(out, "{indent}{dst}.tag = NVE_VAL_BYTES;").unwrap();
-            writeln!(out, "{indent}{dst}.data.bytes_val = _prop_bin_{idx}.slice();").unwrap();
+            writeln!(out, "{indent}{dst}.tag = NVE_VAL_BYTES;");
+            writeln!(out, "{indent}{dst}.data.bytes_val = _prop_bin_{idx}.slice();");
         }
     }
 }

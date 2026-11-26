@@ -503,11 +503,13 @@ unsafe extern "C" fn skia_host_invoke(
     if host_ctx.is_null() {
         return NveHostStatus::InvalidArg.as_i32();
     }
-    let services = unsafe { &*(host_ctx as *const SkiaHostServices) };
-    let req_bytes = unsafe { request.as_slice() };
+    // SAFETY: `host_ctx` is a valid pinned `SkiaHostServices` pointer; `request` is valid for this callback.
+    let (services, req_bytes) =
+        unsafe { (&*(host_ctx as *const SkiaHostServices), request.as_slice()) };
     match services.invoke_raw(service_id, method_id, req_bytes) {
         Ok(InvokeResult::Ready(bytes)) => {
             if !out_len.is_null() {
+                // SAFETY: Caller provided a valid writable `out_len` pointer.
                 unsafe { *out_len = bytes.len() };
             }
             if bytes.len() > out_cap {
@@ -517,6 +519,7 @@ unsafe extern "C" fn skia_host_invoke(
                 if out_buf.is_null() {
                     return NveHostStatus::InvalidArg.as_i32();
                 }
+                // SAFETY: `out_buf` is non-null with capacity `out_cap >= bytes.len()` and non-overlapping.
                 unsafe {
                     std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, bytes.len());
                 }
@@ -525,6 +528,7 @@ unsafe extern "C" fn skia_host_invoke(
         }
         Ok(InvokeResult::Pending { .. }) => {
             if !out_len.is_null() {
+                // SAFETY: Caller provided a valid writable `out_len` pointer.
                 unsafe { *out_len = 0 };
             }
             NveHostStatus::Pending.as_i32()
@@ -542,8 +546,9 @@ unsafe extern "C" fn skia_host_channel_publish(
     if host_ctx.is_null() {
         return NveHostStatus::InvalidArg.as_i32();
     }
-    let services = unsafe { &*(host_ctx as *const SkiaHostServices) };
-    let bytes = unsafe { payload.as_slice() };
+    // SAFETY: `host_ctx` is a valid pinned `SkiaHostServices` pointer; `payload` is valid for this callback.
+    let (services, bytes) =
+        unsafe { (&*(host_ctx as *const SkiaHostServices), payload.as_slice()) };
     let retain = (flags & NVE_CHANNEL_FLAG_RETAIN) != 0;
     match services.channel_publish(channel_id, retain, bytes) {
         Ok(()) => NveHostStatus::Ok.as_i32(),

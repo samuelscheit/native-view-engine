@@ -34,6 +34,10 @@ impl StoreMutationTx<'_, '_> {
         };
 
         match value {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "Dioxus AttributeValue::Any boundary unpacks typed RSX attributes"
+            )]
             AttributeValue::Any(any) => {
                 if name == NVE_TYPED_STYLE_ATTR
                     && let Some(ts) = any.as_any().downcast_ref::<TypedStyle>()
@@ -336,13 +340,7 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Image>(node).alt(value);
             }
             "resizeMode" | "resize_mode" | "object-fit" | "objectFit" => {
-                let fit = match value.trim().to_ascii_lowercase().as_str() {
-                    "contain" => ImageFit::Contain,
-                    "stretch" | "fill" => ImageFit::Fill,
-                    "center" | "none" => ImageFit::None,
-                    "scale-down" | "scaledown" => ImageFit::ScaleDown,
-                    _ => ImageFit::Cover,
-                };
+                let fit = ImageFit::parse(value).unwrap_or(ImageFit::Cover);
                 self.tx.edit::<Image>(node).fit(fit);
             }
             "href" => {

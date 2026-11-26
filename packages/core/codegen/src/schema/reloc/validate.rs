@@ -123,13 +123,12 @@ impl RelocSchema {
 }
 
 fn validate_ident(kind: &str, name: &str) -> Result<(), CodegenError> {
-    if name.is_empty() {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
         return Err(CodegenError::validation(format!(
             "{kind} name cannot be empty"
         )));
-    }
-    let mut chars = name.chars();
-    let first = chars.next().unwrap();
+    };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return Err(CodegenError::validation(format!(
             "invalid {kind} identifier '{name}'"

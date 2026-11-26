@@ -1,7 +1,5 @@
 //! Swift (`NveHash.generated.swift`) XXH64 mirror.
 
-use std::fmt::Write;
-
 use super::{banner, byte_list, HASH_VECTORS, STREAM_SPLITS};
 
 const BODY: &str = r#"import Foundation
@@ -156,8 +154,7 @@ pub(super) fn generate_swift_hash() -> String {
             v.seed,
             v.expected(),
             v.label
-        )
-        .unwrap();
+        );
     }
     let [a, b, c] = STREAM_SPLITS;
     write!(
@@ -182,7 +179,6 @@ pub(super) fn generate_swift_hash() -> String {
     }}
 }}
 "#
-    )
-    .unwrap();
-    s
+    );
+    s.into_string()
 }

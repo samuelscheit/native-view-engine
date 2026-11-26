@@ -9,3 +9,6 @@ description = "Standalone opt-in TV spatial focus engine, remote action mapper, 
 default = []
 
 [dependencies]
+
+[lints]
+workspace = true

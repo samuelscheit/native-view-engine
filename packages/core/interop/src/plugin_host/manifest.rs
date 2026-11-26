@@ -136,21 +136,25 @@ pub(super) fn resolve_and_validate_tables(
     get_iface: NveGetInterfaceFn,
     req: PluginRequirement,
 ) -> Result<ResolvedTables, PluginError> {
-    let surface_ptr = catch_unwind(AssertUnwindSafe(|| unsafe {
-        get_iface(NVE_IFACE_SURFACE) as *const NveSurfaceApi
+    let surface_ptr = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: `get_iface` is a valid NVE C-ABI interface resolver returning a static vtable or null.
+        unsafe { get_iface(NVE_IFACE_SURFACE) as *const NveSurfaceApi }
     }))
     .map_err(|_| PluginError::PluginPanicked("nve_get_interface(NVE_IFACE_SURFACE)".into()))?;
 
     if surface_ptr.is_null() {
         return Err(PluginError::MissingSurfaceInterface);
     }
+    // SAFETY: `surface_ptr` is non-null and points to a valid static `NveSurfaceApi` table.
     let surface = unsafe { *surface_ptr };
 
     let layout = {
-        let p = catch_unwind(AssertUnwindSafe(|| unsafe {
-            get_iface(NVE_IFACE_LAYOUT) as *const NveLayoutApi
+        let p = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: `get_iface` is a valid NVE C-ABI interface resolver.
+            unsafe { get_iface(NVE_IFACE_LAYOUT) as *const NveLayoutApi }
         }))
         .map_err(|_| PluginError::PluginPanicked("nve_get_interface(NVE_IFACE_LAYOUT)".into()))?;
+        // SAFETY: `p` is non-null and points to a valid static `NveLayoutApi` table.
         (!p.is_null()).then(|| unsafe { *p })
     };
     if req.require_layout && layout.is_none() {
@@ -161,12 +165,14 @@ pub(super) fn resolve_and_validate_tables(
     }
 
     let component = {
-        let p = catch_unwind(AssertUnwindSafe(|| unsafe {
-            get_iface(NVE_IFACE_COMPONENT) as *const NveComponentApi
+        let p = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: `get_iface` is a valid NVE C-ABI interface resolver.
+            unsafe { get_iface(NVE_IFACE_COMPONENT) as *const NveComponentApi }
         }))
         .map_err(|_| {
             PluginError::PluginPanicked("nve_get_interface(NVE_IFACE_COMPONENT)".into())
         })?;
+        // SAFETY: `p` is non-null and points to a valid static `NveComponentApi` table.
         (!p.is_null()).then(|| unsafe { *p })
     };
     if req.require_component && component.is_none() {
@@ -177,10 +183,12 @@ pub(super) fn resolve_and_validate_tables(
     }
 
     let dev = {
-        let p = catch_unwind(AssertUnwindSafe(|| unsafe {
-            get_iface(NVE_IFACE_DEV) as *const NveDevApi
+        let p = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: `get_iface` is a valid NVE C-ABI interface resolver.
+            unsafe { get_iface(NVE_IFACE_DEV) as *const NveDevApi }
         }))
         .map_err(|_| PluginError::PluginPanicked("nve_get_interface(NVE_IFACE_DEV)".into()))?;
+        // SAFETY: `p` is non-null and points to a valid static `NveDevApi` table.
         (!p.is_null()).then(|| unsafe { *p })
     };
     if req.require_dev && dev.is_none() {

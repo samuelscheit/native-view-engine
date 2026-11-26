@@ -13,7 +13,7 @@ cdylib-export = []
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-backend-web = { path = "../../packages/backends/web", default-features = false, features = ["ssr", "hydrate"] }
+nve-backend-web = { version = "0.1.0", path = "../../packages/backends/web", default-features = false, features = ["ssr", "hydrate"] }
 nve-canvas = { workspace = true }
 nve-components = { workspace = true }
 nve-dioxus = { workspace = true }
@@ -23,13 +23,13 @@ nve-canvas-web = { workspace = true }
 nve-store = { workspace = true }
 nve-web-html = { workspace = true }
 nve-web-html-web = { workspace = true }
-nve-interop = { path = "../../packages/core/interop", default-features = false, features = ["crdt"] }
+nve-interop = { version = "0.1.0", path = "../../packages/core/interop", default-features = false, features = ["crdt"] }
 nve-mdx = { workspace = true }
 nve-router = { workspace = true }
 nve-host-services = { workspace = true }
 nve-clipboard = { workspace = true }
 nve-system-env = { workspace = true }
-nve-ui = { path = "../../packages/framework/ui", default-features = false, features = ["virtual-list"] }
+nve-ui = { version = "0.1.0", path = "../../packages/framework/ui", default-features = false, features = ["virtual-list"] }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }
 dioxus-signals = { workspace = true }
@@ -56,3 +56,6 @@ web-sys = { workspace = true, features = [
 nve-backend-headless = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-canvas-skia = { workspace = true }
+
+[lints]
+workspace = true

@@ -202,7 +202,11 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         if let Some(wid) = self.primary_window_id
             && self.windows.contains_key(&wid)
         {
-            return &mut self.windows.get_mut(&wid).unwrap().session;
+            return &mut self
+                .windows
+                .get_mut(&wid)
+                .expect("primary_window_id verified present in self.windows")
+                .session;
         }
         if let Some(primary) = self.primary_session.as_mut() {
             return primary;

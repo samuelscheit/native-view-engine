@@ -90,6 +90,7 @@ mod macos {
 
     impl AutoreleasePool {
         unsafe fn new() -> Self {
+            // SAFETY: Static Objective-C class/selector names matching AppKit/Foundation ABI.
             unsafe {
                 let cls = objc_getClass(c"NSAutoreleasePool".as_ptr());
                 if cls.is_null() {
@@ -114,6 +115,7 @@ mod macos {
     impl Drop for AutoreleasePool {
         fn drop(&mut self) {
             if !self.pool.is_null() {
+                // SAFETY: `self.pool` is a valid `NSAutoreleasePool` allocated in `Self::new`.
                 unsafe {
                     let msg_void: MsgSendVoid = transmute(objc_msgSend as *const ());
                     let drain_sel = sel_registerName(c"drain".as_ptr());
@@ -124,6 +126,7 @@ mod macos {
     }
 
     unsafe fn ns_string(bytes_nul: *const c_char) -> *mut c_void {
+        // SAFETY: Caller supplies a valid NUL-terminated UTF-8 C string inside an autorelease pool.
         unsafe {
             let cls = objc_getClass(c"NSString".as_ptr());
             if cls.is_null() {
@@ -136,6 +139,7 @@ mod macos {
     }
 
     unsafe fn general_pasteboard() -> *mut c_void {
+        // SAFETY: Static Objective-C class/selector names for `NSPasteboard.generalPasteboard`.
         unsafe {
             let cls = objc_getClass(c"NSPasteboard".as_ptr());
             if cls.is_null() {
@@ -151,6 +155,7 @@ mod macos {
 
     impl ClipboardProvider for MacOsClipboard {
         fn get_text(&mut self) -> Option<String> {
+            // SAFETY: Runs inside an active `NSAutoreleasePool` with static NUL-terminated AppKit selectors.
             unsafe {
                 let _pool = AutoreleasePool::new();
                 let pb = general_pasteboard();
@@ -181,6 +186,7 @@ mod macos {
             let Ok(c_text) = CString::new(text) else {
                 return false;
             };
+            // SAFETY: Runs inside an active `NSAutoreleasePool` with a valid NUL-terminated `c_text`.
             unsafe {
                 let _pool = AutoreleasePool::new();
                 let pb = general_pasteboard();
@@ -234,6 +240,7 @@ mod windows_impl {
 
     impl ClipboardProvider for WindowsClipboard {
         fn get_text(&mut self) -> Option<String> {
+            // SAFETY: Balanced OpenClipboard/GlobalLock/GlobalUnlock/CloseClipboard Win32 calls.
             unsafe {
                 if OpenClipboard(std::ptr::null_mut()) == 0 {
                     return None;
@@ -263,6 +270,7 @@ mod windows_impl {
         fn set_text(&mut self, text: &str) -> bool {
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             let byte_len = wide.len() * std::mem::size_of::<u16>();
+            // SAFETY: Allocates `byte_len` matching `wide`, copies into locked HGLOBAL, and balances CloseClipboard/GlobalFree on failure.
             unsafe {
                 if OpenClipboard(std::ptr::null_mut()) == 0 {
                     return false;

@@ -36,8 +36,12 @@ fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
 }
 
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
-    let node_id = find_node_by_test_id(session.store(), test_id)
-        .unwrap_or_else(|| panic!("expected mounted node with testID='{test_id}'"));
+    let node_id = find_node_by_test_id(session.store(), test_id);
+    assert!(
+        node_id.is_some(),
+        "expected mounted node with testID='{test_id}'"
+    );
+    let node_id = node_id.expect("checked above");
     let mask = session
         .store()
         .try_row::<Interaction>(StoreNodeId(node_id))
@@ -57,7 +61,7 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
     session
         .pump_events()
         .expect("event pump should succeed")
-        .unwrap_or_else(|| panic!("pressing '{test_id}' should trigger an incremental frame"))
+        .expect("pressing test_id should trigger an incremental frame")
 }
 
 fn assert_balanced_dom(html: &str) {

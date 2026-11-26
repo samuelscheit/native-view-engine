@@ -73,6 +73,10 @@ impl TypedTableEvent {
 
     /// Zero-cost typed downcast for in-process consumers.
     #[inline]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "TableEvent type-erased in-process payload boundary"
+    )]
     pub fn payload<P: 'static>(&self) -> Option<&P> {
         self.typed.as_deref()?.downcast_ref::<P>()
     }

@@ -105,7 +105,11 @@ fn direct_typed_key_pointer_wheel_roundtrip_zero_size_growth() {
     native_events_to_direct(&events, &mut direct);
     let roundtripped: Vec<NativeEvent> = direct
         .iter()
-        .map(|d| direct_event_to_native(unsafe { NveDirectEventRef::from_raw(d) }).unwrap())
+        .map(|d| {
+            // SAFETY: `direct` borrows `events` which remain alive across this map.
+            let raw = unsafe { NveDirectEventRef::from_raw(d) };
+            direct_event_to_native(raw).unwrap()
+        })
         .collect();
     assert_eq!(events, roundtripped);
 }

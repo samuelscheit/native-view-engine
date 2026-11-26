@@ -1,12 +1,12 @@
 //! Static Rust 2024 runtime primitives and `SlabBuilder` template emitted by `reloc::emit_rust`.
 
-use std::fmt::Write as _;
+use crate::writer::CodeWriter;
 
 use crate::schema::reloc::ir::{
     RelocSchema, RELOC_HEADER_ALIGN, RELOC_HEADER_SIZE, RELOC_SLICE_ALIGN, RELOC_SLICE_SIZE,
 };
 
-pub(super) fn emit_core_primitives(out: &mut String) {
+pub(super) fn emit_core_primitives(out: &mut CodeWriter) {
     writeln!(
         out,
         r#"/// Verification tier controlling zero-copy slab validation cost.
@@ -402,11 +402,10 @@ impl RelocVerify for RelocStr {{
     }}
 }}
 "#
-    )
-    .unwrap();
+    );
 }
 
-pub(super) fn emit_slab_builder(out: &mut String, schema: &RelocSchema, slab_align: usize) {
+pub(super) fn emit_slab_builder(out: &mut CodeWriter, schema: &RelocSchema, slab_align: usize) {
     let root = &schema.root;
     let word_align = slab_align.max(8);
     writeln!(
@@ -524,6 +523,5 @@ impl SlabBuilder {{
     }}
 }}
 "#
-    )
-    .unwrap();
+    );
 }

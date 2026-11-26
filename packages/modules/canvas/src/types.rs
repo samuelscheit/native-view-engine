@@ -58,12 +58,17 @@ impl ImageResizeMode {
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "cover" => Some(Self::Cover),
-            "contain" => Some(Self::Contain),
-            "stretch" => Some(Self::Stretch),
-            "center" => Some(Self::Center),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("cover") {
+            Some(Self::Cover)
+        } else if s.eq_ignore_ascii_case("contain") {
+            Some(Self::Contain)
+        } else if s.eq_ignore_ascii_case("stretch") {
+            Some(Self::Stretch)
+        } else if s.eq_ignore_ascii_case("center") {
+            Some(Self::Center)
+        } else {
+            None
         }
     }
 }

@@ -257,40 +257,41 @@ unsafe extern "C" fn mock_c_invoke(
     out_cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    let host = unsafe { &*(host_ctx as *const MockCAbiHost) };
-    host.invoke_calls.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: Test binds `host_ctx` to a live `Box<MockCAbiHost>` and `FfiHostServices` passes valid writable `out_len`/`out_buf`.
+    unsafe {
+        let host = &*(host_ctx as *const MockCAbiHost);
+        host.invoke_calls.fetch_add(1, Ordering::SeqCst);
 
-    match (service_id, method_id) {
-        (TEST_SERVICE_ECHO, 1) => {
-            unsafe { *out_len = 1 };
-            if out_cap < 1 {
-                return NveHostStatus::BufferTooSmall.as_i32();
+        match (service_id, method_id) {
+            (TEST_SERVICE_ECHO, 1) => {
+                *out_len = 1;
+                if out_cap < 1 {
+                    return NveHostStatus::BufferTooSmall.as_i32();
+                }
+                *out_buf = 1;
+                NveHostStatus::Ok.as_i32()
             }
-            unsafe { *out_buf = 1 };
-            NveHostStatus::Ok.as_i32()
-        }
-        (TEST_SERVICE_ECHO, 2) => {
-            let needed = host.large_payload.len();
-            unsafe { *out_len = needed };
-            if out_cap < needed {
-                return NveHostStatus::BufferTooSmall.as_i32();
-            }
-            unsafe {
+            (TEST_SERVICE_ECHO, 2) => {
+                let needed = host.large_payload.len();
+                *out_len = needed;
+                if out_cap < needed {
+                    return NveHostStatus::BufferTooSmall.as_i32();
+                }
                 std::ptr::copy_nonoverlapping(host.large_payload.as_ptr(), out_buf, needed);
+                NveHostStatus::Ok.as_i32()
             }
-            NveHostStatus::Ok.as_i32()
+            (TEST_SERVICE_ECHO, 3) => {
+                host.last_pending_req_id
+                    .store(request_id as usize, Ordering::SeqCst);
+                *out_len = 0;
+                NveHostStatus::Pending.as_i32()
+            }
+            (TEST_SERVICE_ECHO, 99) => {
+                *out_len = FFI_MAX_RESPONSE_BYTES + 1024;
+                NveHostStatus::BufferTooSmall.as_i32()
+            }
+            _ => NveHostStatus::Unsupported.as_i32(),
         }
-        (TEST_SERVICE_ECHO, 3) => {
-            host.last_pending_req_id
-                .store(request_id as usize, Ordering::SeqCst);
-            unsafe { *out_len = 0 };
-            NveHostStatus::Pending.as_i32()
-        }
-        (TEST_SERVICE_ECHO, 99) => {
-            unsafe { *out_len = FFI_MAX_RESPONSE_BYTES + 1024 };
-            NveHostStatus::BufferTooSmall.as_i32()
-        }
-        _ => NveHostStatus::Unsupported.as_i32(),
     }
 }
 
@@ -300,11 +301,16 @@ unsafe extern "C" fn mock_c_channel_publish(
     flags: u32,
     payload: NveBufferSlice,
 ) -> i32 {
-    let host = unsafe { &*(host_ctx as *const MockCAbiHost) };
-    let bytes = unsafe { payload.as_slice() }.to_vec();
+    // SAFETY: Test binds `host_ctx` to a live `Box<MockCAbiHost>` and `payload` is valid for this callback.
+    let (host, bytes) = unsafe {
+        (
+            &*(host_ctx as *const MockCAbiHost),
+            payload.as_slice().to_vec(),
+        )
+    };
     host.published_channels
         .lock()
-        .unwrap()
+        .expect("test published_channels mutex")
         .push((channel_id, (flags & NVE_CHANNEL_FLAG_RETAIN) != 0, bytes));
     NveHostStatus::Ok.as_i32()
 }
@@ -379,11 +385,11 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
     }
 
     unsafe extern "C" fn app_bind_host(handle: NveAppHandle, callbacks: *const NveHostCallbacks) {
-        let app = unsafe { &mut *(handle as *mut MiniHostApp) };
-        let bound = if callbacks.is_null() {
-            None
-        } else {
-            Some(unsafe { *callbacks })
+        // SAFETY: Test passes a valid `MiniHostApp` handle and optional `NveHostCallbacks` pointer.
+        let (app, bound) = unsafe {
+            let app = &mut *(handle as *mut MiniHostApp);
+            let bound = (!callbacks.is_null()).then(|| *callbacks);
+            (app, bound)
         };
         app.ffi.bind(bound);
     }
@@ -392,8 +398,8 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
         handle: NveAppHandle,
         batch: NveBufferSlice,
     ) -> u32 {
-        let app = unsafe { &mut *(handle as *mut MiniHostApp) };
-        let bytes = unsafe { batch.as_slice() };
+        // SAFETY: Test passes a valid `MiniHostApp` handle and live `batch` buffer slice.
+        let (app, bytes) = unsafe { (&mut *(handle as *mut MiniHostApp), batch.as_slice()) };
         app.dispatched_bytes += bytes.len();
         u32::from(!bytes.is_empty())
     }
@@ -411,6 +417,7 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
         }
     }
 
+    // SAFETY: `mini_get_interface` returns `&MINI_HOST_API` for `NVE_IFACE_HOST`.
     let host_api = unsafe { *(mini_get_interface(NVE_IFACE_HOST) as *const NveHostApi) };
     let mut app = Box::new(MiniHostApp {
         ffi: FfiHostServices::new(),
@@ -424,6 +431,7 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
     });
     let bridge = HostCallbackBridge::new(mem);
     let cbs = bridge.callbacks();
+    // SAFETY: `app_handle` points to `app` and `cbs` points to a valid `NveHostCallbacks`.
     unsafe { (host_api.bind_host)(app_handle, &cbs) };
 
     assert_eq!(
@@ -440,6 +448,7 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
     );
 
     let payload = [1u8, 2, 3, 4];
+    // SAFETY: `app_handle` and `payload` remain live for the synchronous FFI dispatch call.
     let dirty = unsafe {
         (host_api.dispatch_host_events)(app_handle, NveBufferSlice::from_slice(&payload))
     };
@@ -572,8 +581,11 @@ fn ffi_async_callback_concurrent_immediate_resolution_never_drops_or_hangs() {
         _out_cap: usize,
         out_len: *mut usize,
     ) -> i32 {
-        let host = unsafe { &*(host_ctx as *const RacingHost) };
-        unsafe { *out_len = 0 };
+        // SAFETY: Test binds `host_ctx` to a live `Box<RacingHost>` and `out_len` is writable.
+        let host = unsafe {
+            *out_len = 0;
+            &*(host_ctx as *const RacingHost)
+        };
         let payload = request_id.to_le_bytes().to_vec();
         if method_id == 1 {
             // Re-entrant synchronous resolution before returning Pending.

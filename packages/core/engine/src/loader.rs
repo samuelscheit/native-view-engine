@@ -60,6 +60,7 @@ impl StagedDylib {
         ));
         std::fs::copy(dylib_path, &loaded_copy).map_err(LoaderError::Io)?;
 
+        // SAFETY: Loading an NVE app `cdylib` staged on disk via `libloading`.
         let lib = match unsafe { Library::new(&loaded_copy) } {
             Ok(lib) => lib,
             Err(err) => {
@@ -67,6 +68,7 @@ impl StagedDylib {
                 return Err(LoaderError::Load(err));
             }
         };
+        // SAFETY: `nve_get_interface` conforms to the `NveGetInterfaceFn` C ABI signature.
         let get_interface: NveGetInterfaceFn = match unsafe {
             lib.get::<NveGetInterfaceFn>(b"nve_get_interface")
         } {
@@ -136,38 +138,39 @@ impl HotAppInstance {
         let staged = StagedDylib::load(dylib_path, "nve-hotswap", &format!("gen{generation}"))?;
         let get_iface = staged.get_interface();
 
-        let surface_ptr = unsafe { get_iface(NVE_IFACE_SURFACE) as *const NveSurfaceApi };
-        if surface_ptr.is_null() {
-            return Err(LoaderError::MissingSurfaceInterface);
-        }
-        let surface = unsafe { *surface_ptr };
+        // SAFETY: `get_iface` returns static, properly aligned NVE C-ABI vtable pointers (or null)
+        // that remain valid while `staged` keeps the dylib loaded; `surface.create` / `restore_state`
+        // obey the NVE surface/dev C ABI contract.
+        let (surface, layout, component, dev, host, handle) = unsafe {
+            let surface_ptr = get_iface(NVE_IFACE_SURFACE) as *const NveSurfaceApi;
+            if surface_ptr.is_null() {
+                return Err(LoaderError::MissingSurfaceInterface);
+            }
+            let surface = *surface_ptr;
 
-        let layout = {
-            let p = unsafe { get_iface(NVE_IFACE_LAYOUT) as *const NveLayoutApi };
-            (!p.is_null()).then(|| unsafe { *p })
-        };
-        let component = {
-            let p = unsafe { get_iface(NVE_IFACE_COMPONENT) as *const NveComponentApi };
-            (!p.is_null()).then(|| unsafe { *p })
-        };
-        let dev = {
-            let p = unsafe { get_iface(NVE_IFACE_DEV) as *const NveDevApi };
-            (!p.is_null()).then(|| unsafe { *p })
-        };
-        let host = {
-            let p = unsafe { get_iface(NVE_IFACE_HOST) as *const NveHostApi };
-            (!p.is_null()).then(|| unsafe { *p })
-        };
+            let layout_ptr = get_iface(NVE_IFACE_LAYOUT) as *const NveLayoutApi;
+            let layout = (!layout_ptr.is_null()).then(|| *layout_ptr);
 
-        let handle = unsafe { (surface.create)(surface_id) };
-        if handle.is_null() {
-            return Err(LoaderError::NullHandle);
-        }
-        if let (Some(dev_api), Some(state)) = (dev, prior_state)
-            && !state.is_empty()
-        {
-            unsafe { (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state)) };
-        }
+            let component_ptr = get_iface(NVE_IFACE_COMPONENT) as *const NveComponentApi;
+            let component = (!component_ptr.is_null()).then(|| *component_ptr);
+
+            let dev_ptr = get_iface(NVE_IFACE_DEV) as *const NveDevApi;
+            let dev = (!dev_ptr.is_null()).then(|| *dev_ptr);
+
+            let host_ptr = get_iface(NVE_IFACE_HOST) as *const NveHostApi;
+            let host = (!host_ptr.is_null()).then(|| *host_ptr);
+
+            let handle = (surface.create)(surface_id);
+            if handle.is_null() {
+                return Err(LoaderError::NullHandle);
+            }
+            if let (Some(dev_api), Some(state)) = (dev, prior_state)
+                && !state.is_empty()
+            {
+                (dev_api.restore_state)(handle, NveBufferSlice::from_slice(state));
+            }
+            (surface, layout, component, dev, host, handle)
+        };
 
         Ok(Self {
             staged: Some(staged),
@@ -203,24 +206,31 @@ impl HotAppInstance {
     ///
     /// The borrowed slice remains valid until the next `&mut self` call on this [`HotAppInstance`].
     pub fn render(&mut self, frame_id: u64) -> &[u8] {
+        // SAFETY: `self.handle` is live while `self` owns it; returned buffer stays valid until next `&mut self` call.
         unsafe { (self.surface.render)(self.handle, frame_id).as_slice() }
     }
 
     pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+        // SAFETY: `self.handle` is live and `events` slice stays valid for the duration of the FFI call.
         unsafe {
             (self.surface.dispatch_events)(self.handle, NveEventBatch::from_slice(events)) != 0
         }
     }
 
     pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
-        self.layout
-            .map(|api| unsafe { (api.measure)(self.handle, constraints) })
+        self.layout.map(|api| {
+            // SAFETY: `self.handle` is live and `api` was resolved from the same loaded dylib.
+            unsafe { (api.measure)(self.handle, constraints) }
+        })
     }
 
     pub fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
         match self.layout {
             Some(api) => {
-                NveGestureDisposition::from_u8(unsafe { (api.hit_test)(self.handle, x, y, pointer_phase) })
+                // SAFETY: `self.handle` is live and `api` was resolved from the same loaded dylib.
+                NveGestureDisposition::from_u8(unsafe {
+                    (api.hit_test)(self.handle, x, y, pointer_phase)
+                })
             }
             None => NveGestureDisposition::PassThrough,
         }
@@ -228,6 +238,7 @@ impl HotAppInstance {
 
     pub fn set_props(&mut self, entries: &[NveMapEntry]) -> bool {
         match self.component {
+            // SAFETY: `self.handle` is live and `entries` stays valid for the synchronous FFI call.
             Some(api) => unsafe {
                 (api.set_props)(
                     self.handle,
@@ -242,6 +253,7 @@ impl HotAppInstance {
     /// Drains outbound component events as a direct borrowed `NveDirectEvent` slice without copying.
     pub fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
         match self.component {
+            // SAFETY: `self.handle` is live; returned slice borrows from the module's buffer until next `&mut self` call.
             Some(api) => unsafe { (api.drain_emitted_events)(self.handle).as_slice() },
             None => &[],
         }
@@ -250,6 +262,7 @@ impl HotAppInstance {
     /// Forwards one binary `NVP1` hot-patch frame (as received from `nve dev`) to the module.
     pub fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
         match self.dev {
+            // SAFETY: `self.handle` is live and `patch_nvp1` stays valid for the synchronous FFI call.
             Some(api) => unsafe {
                 (api.apply_hot_patch)(self.handle, NveBufferSlice::from_slice(patch_nvp1)) != 0
             },
@@ -261,6 +274,7 @@ impl HotAppInstance {
     /// internal snapshot buffer without copying.
     pub fn snapshot_state(&mut self) -> &[u8] {
         match self.dev {
+            // SAFETY: `self.handle` is live; returned slice stays valid until the next `&mut self` call.
             Some(api) => unsafe { (api.snapshot_state)(self.handle).as_slice() },
             None => &[],
         }
@@ -279,6 +293,7 @@ impl HotAppInstance {
                 let ptr = callbacks
                     .as_ref()
                     .map_or(std::ptr::null(), |cb| cb as *const NveHostCallbacks);
+                // SAFETY: `self.handle` is live and `ptr` is null or points to the valid `NveHostCallbacks` copy.
                 unsafe { (api.bind_host)(self.handle, ptr) };
                 true
             }
@@ -289,6 +304,7 @@ impl HotAppInstance {
     /// Dispatches a host-event payload buffer via `NveHostApi::dispatch_host_events`.
     pub fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
         match self.host {
+            // SAFETY: `self.handle` is live and `batch` stays valid for the synchronous FFI call.
             Some(api) => unsafe {
                 (api.dispatch_host_events)(self.handle, NveBufferSlice::from_slice(batch)) != 0
             },
@@ -331,6 +347,7 @@ impl HotAppInstance {
 impl Drop for HotAppInstance {
     fn drop(&mut self) {
         if !self.handle.is_null() {
+            // SAFETY: `self.handle` was created by `self.surface.create` and is destroyed once before unloading `staged`.
             unsafe { (self.surface.destroy)(self.handle) };
             self.handle = std::ptr::null_mut();
         }

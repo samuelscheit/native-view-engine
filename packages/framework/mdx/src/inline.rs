@@ -232,7 +232,9 @@ fn parse_inlines_depth(
         }
 
         // Regular UTF-8 character.
-        let ch = rest.chars().next().unwrap();
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
         text_buf.push(ch);
         i += ch.len_utf8();
         if ch == '\n' {

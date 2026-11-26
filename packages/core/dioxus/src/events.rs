@@ -26,6 +26,7 @@ impl DioxusSurface {
         }
         let mut direct = Vec::with_capacity(events.len());
         native_events_to_direct(events, &mut direct);
+        // SAFETY: `direct` borrows directly from `events`, which outlives this call.
         let batch = unsafe { NveEventBatchRef::from_slice(&direct) };
         self.dispatch_direct_events(batch)
     }

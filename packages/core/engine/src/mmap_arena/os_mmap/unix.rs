@@ -80,6 +80,7 @@ pub struct ReadOnlyMmap {
 
 // SAFETY: Mapping is read-only (`PROT_READ | MAP_PRIVATE`) and immutable for its lifetime.
 unsafe impl Send for ReadOnlyMmap {}
+// SAFETY: Mapping is read-only (`PROT_READ | MAP_PRIVATE`) and safe to share across threads.
 unsafe impl Sync for ReadOnlyMmap {}
 
 impl ReadOnlyMmap {

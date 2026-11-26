@@ -383,6 +383,7 @@ impl NveEventBatch {
     /// Caller must ensure `ptr` is valid for `len` initialized `NveDirectEvent`s for `'a`.
     #[inline]
     pub unsafe fn try_as_slice<'a>(self) -> Option<&'a [NveDirectEvent]> {
+        // SAFETY: Caller guarantees `self.ptr` is valid for `self.len` `NveDirectEvent`s for `'a`.
         unsafe { guarded_slice(self.ptr, self.len as usize) }
     }
 
@@ -390,6 +391,7 @@ impl NveEventBatch {
     /// Caller must ensure `ptr` is valid for `len` initialized `NveDirectEvent`s for `'a`.
     #[inline]
     pub unsafe fn as_slice<'a>(self) -> &'a [NveDirectEvent] {
+        // SAFETY: Caller guarantees `self.ptr` is valid for `self.len` `NveDirectEvent`s for `'a`.
         unsafe { self.try_as_slice() }.unwrap_or(&[])
     }
 }

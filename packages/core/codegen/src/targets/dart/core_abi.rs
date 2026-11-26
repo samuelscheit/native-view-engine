@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 pub use super::scene_abi::generate_dart_scene_abi;
-use crate::naming::{to_camel_case, to_pascal_case};
+use crate::naming::{screaming_snake_to_camel_case, to_camel_case, to_pascal_case};
 use crate::schema::hybrid::core_abi::{
     core_abi_spec, format_enum_value, module_c_struct_name, HOST_STATUS_VARIANTS,
 };
@@ -125,7 +125,7 @@ pub fn generate_dart_core_abi() -> String {
 
     // Core constants
     for c in &spec.consts {
-        let dart_name = to_camel_case(&c.name.to_ascii_lowercase());
+        let dart_name = screaming_snake_to_camel_case(&c.name);
         if c.hex {
             let _ = writeln!(out, "const int {dart_name} = 0x{:X};", c.value);
         } else {

@@ -98,6 +98,10 @@ impl LocaleId {
                 reason: "primary language subtag must be 2-3 ASCII letters",
             });
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "BCP-47 canonical locale owns normalized lowercase language subtag"
+        )]
         let language = lang_raw.to_ascii_lowercase();
 
         let mut script: Option<String> = None;
@@ -133,6 +137,10 @@ impl LocaleId {
             }
 
             if is_valid_variant(subtag) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "BCP-47 canonical locale owns normalized lowercase variant subtag"
+                )]
                 let canonical_variant = subtag.to_ascii_lowercase();
                 if variants.contains(&canonical_variant) {
                     return Err(I18nError::InvalidLocale {

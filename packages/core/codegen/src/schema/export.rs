@@ -354,17 +354,38 @@ impl ExportTarget {
     }
 
     pub fn from_name(raw: &str) -> Result<Self, CodegenError> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "rn" | "react-native" | "react_native" | "fabric" => Ok(Self::ReactNative),
-            "flutter" | "dart" => Ok(Self::Flutter),
-            "swiftui" | "swift-ui" | "swift" | "ios" => Ok(Self::SwiftUi),
-            "compose" | "jetpack-compose" | "kotlin" | "android" => Ok(Self::Compose),
-            "web" | "web-component" | "web_component" | "wasm" | "custom-element" => {
-                Ok(Self::WebComponent)
-            }
-            other => Err(CodegenError::validation(format!(
-                "unknown export target '{other}'; expected one of: rn, flutter, swiftui, compose, web-component"
-            ))),
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("rn")
+            || s.eq_ignore_ascii_case("react-native")
+            || s.eq_ignore_ascii_case("react_native")
+            || s.eq_ignore_ascii_case("fabric")
+        {
+            Ok(Self::ReactNative)
+        } else if s.eq_ignore_ascii_case("flutter") || s.eq_ignore_ascii_case("dart") {
+            Ok(Self::Flutter)
+        } else if s.eq_ignore_ascii_case("swiftui")
+            || s.eq_ignore_ascii_case("swift-ui")
+            || s.eq_ignore_ascii_case("swift")
+            || s.eq_ignore_ascii_case("ios")
+        {
+            Ok(Self::SwiftUi)
+        } else if s.eq_ignore_ascii_case("compose")
+            || s.eq_ignore_ascii_case("jetpack-compose")
+            || s.eq_ignore_ascii_case("kotlin")
+            || s.eq_ignore_ascii_case("android")
+        {
+            Ok(Self::Compose)
+        } else if s.eq_ignore_ascii_case("web")
+            || s.eq_ignore_ascii_case("web-component")
+            || s.eq_ignore_ascii_case("web_component")
+            || s.eq_ignore_ascii_case("wasm")
+            || s.eq_ignore_ascii_case("custom-element")
+        {
+            Ok(Self::WebComponent)
+        } else {
+            Err(CodegenError::validation(format!(
+                "unknown export target '{s}'; expected one of: rn, flutter, swiftui, compose, web-component"
+            )))
         }
     }
 }

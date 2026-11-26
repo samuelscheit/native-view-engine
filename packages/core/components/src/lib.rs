@@ -72,8 +72,9 @@ pub use transform::{
 pub use css::{
     apply_css_attr_layers_status_to_tx, apply_css_attr_layers_to_tx, apply_css_attr_to_tx,
     apply_inline_style_layers_to_tx, css_attr_layer, css_key_bits, css_key_rank, dim_to_length,
-    parse_color, parse_dim, parse_px, prop_bits_to_layers, try_parse_dim, CssAttrResult,
-    STYLE_LAYER_ALL, STYLE_LAYER_LAYOUT, STYLE_LAYER_TYPOGRAPHY, STYLE_LAYER_VISUAL,
+    parse_color, parse_dim, parse_font_weight, parse_px, prop_bits_to_layers, try_parse_dim,
+    try_parse_font_weight, CssAttrResult, STYLE_LAYER_ALL, STYLE_LAYER_LAYOUT,
+    STYLE_LAYER_TYPOGRAPHY, STYLE_LAYER_VISUAL,
 };
 
 #[cfg(test)]

@@ -39,8 +39,9 @@ pub struct ArenaTask {
     pub tag: TrustedUtf8Str,
 }
 
-// SAFETY: `#[repr(C)]` zero-padding POD structs composed solely of `ArenaPod` fields.
+// SAFETY: `WorkspaceRoot` is `#[repr(C)]` (24 bytes) composed solely of `ArenaPod` fields with zero padding.
 unsafe impl ArenaPod for WorkspaceRoot {}
+// SAFETY: `ArenaTask` is `#[repr(C)]` (64 bytes) composed solely of `ArenaPod` fields with zero padding.
 unsafe impl ArenaPod for ArenaTask {}
 
 const _: () = {

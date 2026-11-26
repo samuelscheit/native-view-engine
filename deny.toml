@@ -30,10 +30,7 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
-# Temporarily "warn" because internal `[workspace.dependencies]` omit `version` and member
-# manifests omit `publish = false` (untouchable under the NodeStore zero-conflict boundary).
-# Flip to "deny" once root Cargo.toml adds `version = "0.1.0"` on internal path deps.
-wildcards = "warn"
+wildcards = "deny"
 highlight = "simplest-path"
 deny = [
     { crate = "fnv", reason = "Standardize on const fn xxh64 via nve-hash" },

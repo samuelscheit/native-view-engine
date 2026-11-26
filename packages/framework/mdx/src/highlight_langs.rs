@@ -24,24 +24,55 @@ impl Language {
         let Some(raw) = tag else {
             return Self::Plain;
         };
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "rs" | "rust" | "rsx" => Self::Rust,
-            "c" | "h" | "cpp" | "c++" | "cxx" | "cc" | "hpp" | "hxx" | "objc" | "objcpp"
-            | "objc++" | "mm" | "m" => Self::Cpp,
-            "swift" => Self::Swift,
-            "kt" | "kts" | "kotlin" => Self::Kotlin,
-            "java" => Self::Java,
-            "dart" => Self::Dart,
-            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "javascript" => {
-                Self::TypeScript
-            }
-            "sh" | "bash" | "zsh" | "shell" | "console" => Self::Shell,
-            "toml" => Self::Toml,
-            "json" | "jsonc" => Self::Json,
-            "cmake" | "cmakelists" => Self::Cmake,
-            "diff" | "patch" => Self::Diff,
-            _ => Self::Plain,
-        }
+        let s = raw.trim();
+        const TABLE: &[(&str, Language)] = &[
+            ("rs", Language::Rust),
+            ("rust", Language::Rust),
+            ("rsx", Language::Rust),
+            ("c", Language::Cpp),
+            ("h", Language::Cpp),
+            ("cpp", Language::Cpp),
+            ("c++", Language::Cpp),
+            ("cxx", Language::Cpp),
+            ("cc", Language::Cpp),
+            ("hpp", Language::Cpp),
+            ("hxx", Language::Cpp),
+            ("objc", Language::Cpp),
+            ("objcpp", Language::Cpp),
+            ("objc++", Language::Cpp),
+            ("mm", Language::Cpp),
+            ("m", Language::Cpp),
+            ("swift", Language::Swift),
+            ("kt", Language::Kotlin),
+            ("kts", Language::Kotlin),
+            ("kotlin", Language::Kotlin),
+            ("java", Language::Java),
+            ("dart", Language::Dart),
+            ("ts", Language::TypeScript),
+            ("tsx", Language::TypeScript),
+            ("js", Language::TypeScript),
+            ("jsx", Language::TypeScript),
+            ("mjs", Language::TypeScript),
+            ("cjs", Language::TypeScript),
+            ("typescript", Language::TypeScript),
+            ("javascript", Language::TypeScript),
+            ("sh", Language::Shell),
+            ("bash", Language::Shell),
+            ("zsh", Language::Shell),
+            ("shell", Language::Shell),
+            ("console", Language::Shell),
+            ("toml", Language::Toml),
+            ("json", Language::Json),
+            ("jsonc", Language::Json),
+            ("cmake", Language::Cmake),
+            ("cmakelists", Language::Cmake),
+            ("diff", Language::Diff),
+            ("patch", Language::Diff),
+        ];
+        TABLE
+            .iter()
+            .find_map(|&(name, lang)| s.eq_ignore_ascii_case(name).then_some(lang))
+            .unwrap_or(Self::Plain)
     }
 
     pub const fn supports_slash_comments(self) -> bool {

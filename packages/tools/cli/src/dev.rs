@@ -147,8 +147,13 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     let web_lock = Arc::new(RwLock::new(()));
     if rebuild_web {
         let web_bind = ws_bind_addr(&opts.host, opts.web_port);
-        let listener = TcpListener::bind(&web_bind)
-            .unwrap_or_else(|e| panic!("bind web-shell HTTP {web_bind}: {e}"));
+        let listener = match TcpListener::bind(&web_bind) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("error: failed to bind web-shell HTTP {web_bind}: {e}");
+                std::process::exit(1);
+            }
+        };
         let ws_port = opts.port;
         let redirect: static_http::Redirect =
             Arc::new(move |target, host| web_dev_redirect(target, host, ws_port));
@@ -177,10 +182,15 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     let ws_clients = Arc::clone(&clients);
     let bind_addr_thread = bind_addr.clone();
 
+    let ws_listener = match TcpListener::bind(&bind_addr_thread) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("error: failed to bind hot-reload WS {bind_addr_thread}: {e}");
+            std::process::exit(1);
+        }
+    };
     std::thread::spawn(move || {
-        let listener = TcpListener::bind(&bind_addr_thread)
-            .unwrap_or_else(|e| panic!("bind hot-reload WS {bind_addr_thread}: {e}"));
-        for stream in listener.incoming().flatten() {
+        for stream in ws_listener.incoming().flatten() {
             let _ = stream.set_nodelay(true);
             if let Ok(mut ws) = tungstenite::accept(stream) {
                 let status = HotPatchMsg::DevStatus {
@@ -188,7 +198,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                     latency_ms: 0,
                 };
                 let _ = ws.send(tungstenite::Message::Binary(status.to_bytes().into()));
-                ws_clients.lock().unwrap().push(ws);
+                ws_clients.lock().unwrap_or_else(|e| e.into_inner()).push(ws);
             }
         }
     });
@@ -196,7 +206,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     let broadcast_msg = |clients: &Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>>,
                          msg: &HotPatchMsg| {
         let payload = tungstenite::Message::Binary(msg.to_bytes().into());
-        let mut guard = clients.lock().unwrap();
+        let mut guard = clients.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
     };
 
@@ -235,7 +245,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                         dylib_for_build.display()
                     );
                     broadcast_msg(&clients, &msg);
-                    if let Some(tx) = pair_tx_slot.lock().unwrap().as_ref() {
+                    if let Some(tx) = pair_tx_slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                         let _ = tx.send(PairControlMsg::DylibReload(dylib_for_build.clone()));
                     }
                     true
@@ -264,7 +274,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
         ) {
             Ok((tx, banner)) => {
                 println!("{banner}");
-                *pair_tx_slot.lock().unwrap() = Some(tx);
+                *pair_tx_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
             }
             Err(err) => {
                 eprintln!("[pair] failed to start live pairing server: {err}");
@@ -375,7 +385,11 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                         *g = generation;
                     }
                     broadcast_msg(&clients_for_watch, &msg);
-                    if let Some(tx) = pair_tx_for_watch.lock().unwrap().as_ref() {
+                    if let Some(tx) = pair_tx_for_watch
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .as_ref()
+                    {
                         let _ = tx.send(PairControlMsg::Tier1Patch(msg.to_bytes()));
                     }
                     let status = HotPatchMsg::DevStatus {
@@ -399,7 +413,11 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     if opts.skia {
         std::thread::spawn(run_watch_loop);
         let preview_res = nve_skia_shell::run_desktop_preview(dylib_path, Some(client_ws_url));
-        if let Some(tx) = pair_tx_slot.lock().unwrap().as_ref() {
+        if let Some(tx) = pair_tx_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             let _ = tx.send(PairControlMsg::Shutdown);
         }
         if let Err(err) = preview_res {

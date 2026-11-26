@@ -126,21 +126,35 @@ impl CursorKind {
 
     /// Parses a CSS `cursor` keyword into [`CursorKind`] with zero allocations.
     pub fn parse_css(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "auto" => Some(Self::Auto),
-            "default" => Some(Self::Default),
-            "pointer" => Some(Self::Pointer),
-            "text" => Some(Self::Text),
-            "grab" => Some(Self::Grab),
-            "grabbing" => Some(Self::Grabbing),
-            "not-allowed" => Some(Self::NotAllowed),
-            "col-resize" => Some(Self::ColResize),
-            "row-resize" => Some(Self::RowResize),
-            "move" => Some(Self::Move),
-            "crosshair" => Some(Self::Crosshair),
-            "progress" => Some(Self::Progress),
-            "wait" => Some(Self::Wait),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if s.eq_ignore_ascii_case("default") {
+            Some(Self::Default)
+        } else if s.eq_ignore_ascii_case("pointer") {
+            Some(Self::Pointer)
+        } else if s.eq_ignore_ascii_case("text") {
+            Some(Self::Text)
+        } else if s.eq_ignore_ascii_case("grab") {
+            Some(Self::Grab)
+        } else if s.eq_ignore_ascii_case("grabbing") {
+            Some(Self::Grabbing)
+        } else if s.eq_ignore_ascii_case("not-allowed") {
+            Some(Self::NotAllowed)
+        } else if s.eq_ignore_ascii_case("col-resize") {
+            Some(Self::ColResize)
+        } else if s.eq_ignore_ascii_case("row-resize") {
+            Some(Self::RowResize)
+        } else if s.eq_ignore_ascii_case("move") {
+            Some(Self::Move)
+        } else if s.eq_ignore_ascii_case("crosshair") {
+            Some(Self::Crosshair)
+        } else if s.eq_ignore_ascii_case("progress") {
+            Some(Self::Progress)
+        } else if s.eq_ignore_ascii_case("wait") {
+            Some(Self::Wait)
+        } else {
+            None
         }
     }
 }

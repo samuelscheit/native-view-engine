@@ -180,7 +180,11 @@ fn zero_marketing_buzzword_zero_json() {
             continue;
         };
         for (line_idx, line) in content.lines().enumerate() {
-            if line.to_ascii_lowercase().contains(&needle) {
+            if line
+                .as_bytes()
+                .windows(needle.len())
+                .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+            {
                 violations.push(Violation::new(
                     rel,
                     line_idx + 1,
@@ -267,11 +271,12 @@ fn no_hardcoded_personal_endpoints_or_paths() {
 }
 
 pub fn detect_personal_endpoint_or_path(line: &str, is_test_or_doc: bool) -> Option<&'static str> {
-    let lower = line.to_ascii_lowercase();
-    if lower.contains(".ts.net")
-        || lower.contains("ngrok.io")
-        || lower.contains("trycloudflare.com")
-    {
+    let has_ci = |needle: &[u8]| {
+        line.as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle))
+    };
+    if has_ci(b".ts.net") || has_ci(b"ngrok.io") || has_ci(b"trycloudflare.com") {
         return Some("Hardcoded personal tunnel/Tailscale endpoint is forbidden");
     }
     if has_user_home_prefix(line, "/Users/")

@@ -1,12 +1,12 @@
 //! Static C++20 runtime primitives template emitted by `reloc::emit_cpp`.
 
-use std::fmt::Write as _;
+use crate::writer::CodeWriter;
 
 use crate::schema::reloc::ir::{
     RELOC_HEADER_ALIGN, RELOC_HEADER_SIZE, RELOC_SLICE_ALIGN, RELOC_SLICE_SIZE,
 };
 
-pub(super) fn emit_core_primitives(out: &mut String) {
+pub(super) fn emit_core_primitives(out: &mut CodeWriter) {
     writeln!(
         out,
         r#"enum class VerifyMode : uint8_t {{
@@ -302,6 +302,5 @@ struct RelocTraits<RelocStr> {{
 
 }} // namespace detail
 "#
-    )
-    .unwrap();
+    );
 }

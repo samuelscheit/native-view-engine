@@ -53,3 +53,6 @@ harness = false
 [[bench]]
 name = "render_sink_handoff"
 harness = false
+
+[lints]
+workspace = true

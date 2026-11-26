@@ -149,9 +149,12 @@ mod platform {
 
     fn known_folder(guid: &Guid) -> Option<String> {
         let mut ptr: *mut u16 = std::ptr::null_mut();
+        // SAFETY: `guid` is a valid KNOWNFOLDERID reference and `ptr` receives the allocated PWSTR.
         let hr = unsafe { SHGetKnownFolderPath(guid, 0, std::ptr::null_mut(), &mut ptr) };
         if hr == 0 && !ptr.is_null() {
+            // SAFETY: On S_OK with non-null `ptr`, `SHGetKnownFolderPath` returns a NUL-terminated UTF-16 string owned by CoTaskMem.
             let s = unsafe { wide_ptr_to_string(ptr) };
+            // SAFETY: `ptr` was allocated by `SHGetKnownFolderPath` and must be freed via `CoTaskMemFree`.
             unsafe { CoTaskMemFree(ptr.cast()) };
             Some(s)
         } else {

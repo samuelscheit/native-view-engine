@@ -835,7 +835,7 @@ impl SurfaceOrchestrator {
         // Attach to new parent / root list.
         let new_parent_env = match new_parent {
             Some(new_pid) => {
-                let new_p = self.surfaces.get_mut(&new_pid).unwrap();
+                let new_p = self.surfaces.get_mut(&new_pid).expect("validated new_parent exists");
                 new_p.children.push(surface_id);
                 Some(new_p.environment.clone())
             }

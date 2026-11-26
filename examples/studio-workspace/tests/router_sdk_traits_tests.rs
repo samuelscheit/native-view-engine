@@ -103,23 +103,25 @@ impl StudioHarness {
     }
 
     fn press(&mut self, test_id: &str) {
-        let node_id = self
-            .find_by_test_id(test_id)
-            .unwrap_or_else(|| panic!("missing testID='{test_id}'\n{}", self.ascii()));
-        let rect = self
-            .headless
-            .layout_of(node_id)
-            .unwrap_or_else(|| panic!("missing layout rect for '{test_id}'"));
+        let node_id = self.find_by_test_id(test_id);
+        assert!(
+            node_id.is_some(),
+            "missing testID='{test_id}'\n{}",
+            self.ascii()
+        );
+        let node_id = node_id.expect("checked above");
+        let rect = self.headless.layout_of(node_id);
+        assert!(rect.is_some(), "missing layout rect for '{test_id}'");
+        let rect = rect.expect("checked above");
         assert!(
             rect.width > 0.0 && rect.height > 0.0,
             "zero-sized control '{test_id}': {rect:?}"
         );
         let cx = rect.x + rect.width * 0.5;
         let cy = rect.y + rect.height * 0.5;
-        let hit = self
-            .headless
-            .hit_test(self.surface.store(), cx, cy)
-            .unwrap_or_else(|| panic!("hit_test missed '{test_id}' at ({cx}, {cy})"));
+        let hit = self.headless.hit_test(self.surface.store(), cx, cy);
+        assert!(hit.is_some(), "hit_test missed '{test_id}' at ({cx}, {cy})");
+        let hit = hit.expect("checked above");
         assert_eq!(hit, node_id, "hit_test mismatch for '{test_id}'");
 
         let handled = self.surface.dispatch_events(&[NativeEvent {
@@ -263,6 +265,7 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     let mut module = StudioWorkspaceModule::create(1);
     let _ = module.render(1);
     let entries = [NveMapEntry::new("route", NveValue::from_str("aether://studio/doc/2"))];
+    // SAFETY: `entries` outlives the synchronous `set_props` call.
     assert!(module.set_props(unsafe { NvePropsRef::from_slice(&entries) }));
     let snap = module.state_snapshot();
     assert_eq!(snap.current.active_view, ActiveView::Docs);
@@ -270,6 +273,7 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     assert_eq!(snap.current_route(), &StudioRoute::Doc { id: 2 });
 
     let stream_entries = [NveMapEntry::new("route", NveValue::from_str("/stream"))];
+    // SAFETY: `stream_entries` outlives the synchronous `set_props` call.
     assert!(module.set_props(unsafe { NvePropsRef::from_slice(&stream_entries) }));
     let snap2 = module.state_snapshot();
     assert_eq!(snap2.current.active_view, ActiveView::Stream100k);
@@ -325,6 +329,7 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     let _ = app.render(1);
     let dispatch_resize = |app: &mut StudioWorkspaceModule, w: f32, h: f32, ts: u64| {
         let ev = [NveDirectEvent::layout(1, ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
+        // SAFETY: `ev` stack array outlives the synchronous `dispatch_events` call.
         app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) })
     };
 

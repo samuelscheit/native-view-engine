@@ -256,12 +256,13 @@ impl DocsHarness {
     }
 
     pub fn find(&self, tid: &str) -> AbiNodeId {
-        self.maybe_find(tid).unwrap_or_else(|| {
-            panic!(
-                "expected node with testID='{tid}' in tree:\n{}",
-                self.backend.dump_tree(self.surface.store())
-            )
-        })
+        let found = self.maybe_find(tid);
+        assert!(
+            found.is_some(),
+            "expected node with testID='{tid}' in tree:\n{}",
+            self.backend.dump_tree(self.surface.store())
+        );
+        found.expect("checked above")
     }
 
     pub fn find_prefix(&self, prefix: &str) -> AbiNodeId {
@@ -276,7 +277,10 @@ impl DocsHarness {
             }
             stack.extend_from_slice(store.children(id));
         }
-        panic!("expected node with testID prefix '{prefix}'")
+        #[expect(clippy::panic, reason = "test helper fails when expected testID prefix is missing")]
+        {
+            panic!("expected node with testID prefix '{prefix}'")
+        }
     }
 
     pub fn find_matching(&self, pred: impl Fn(&str) -> bool) -> Option<AbiNodeId> {

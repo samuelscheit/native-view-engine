@@ -382,9 +382,9 @@ fn RouterE2eApp() -> Element {
 }
 
 fn press_test_id(surface: &mut DioxusSurface, scene: &mut Nve2Replica, test_id: &str, frame_id: u64) {
-    let node_id = scene
-        .find_by_test_id(test_id)
-        .unwrap_or_else(|| panic!("missing test_id {test_id}"));
+    let node_id = scene.find_by_test_id(test_id);
+    assert!(node_id.is_some(), "missing test_id {test_id}");
+    let node_id = node_id.expect("checked above");
     assert!(surface.dispatch_events(&[NativeEvent {
         surface_id: 1,
         node_id: node_id.raw(),

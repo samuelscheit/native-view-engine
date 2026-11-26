@@ -34,7 +34,8 @@ fn bench_nve2_wire_codec(c: &mut Criterion) {
                 |(mut store, mut dec, mut changes)| {
                     {
                         let mut tx = store.tx();
-                        dec.apply(&mut tx, black_box(bytes)).unwrap();
+                        dec.apply(&mut tx, black_box(bytes))
+                            .expect("decode valid bench wire frame");
                         tx.commit_into(&mut changes);
                     }
                     black_box(changes.created.len())
@@ -57,7 +58,7 @@ fn bench_event_ring_codec(c: &mut Criterion) {
             b.iter(|| black_box(encode_events(black_box(evs))));
         });
         group.bench_with_input(BenchmarkId::new("decode", count), &encoded, |b, bytes| {
-            b.iter(|| black_box(decode_events(black_box(bytes)).unwrap()));
+            b.iter(|| black_box(decode_events(black_box(bytes)).expect("decode valid bench events")));
         });
     }
     group.finish();
@@ -72,35 +73,46 @@ fn bench_ffi_interface_overhead(c: &mut Criterion) {
         assert!(!ptr.is_null());
         *ptr
     };
+    // SAFETY: `nve_bench_get_interface` exports a static `NveLayoutApi` table for `NVE_IFACE_LAYOUT`.
     let layout_api = unsafe {
         let ptr = nve_bench_get_interface(NVE_IFACE_LAYOUT) as *const NveLayoutApi;
         assert!(!ptr.is_null());
         *ptr
     };
+    // SAFETY: `surface_api.create` returns an opaque handle valid until `surface_api.destroy`.
     let handle = unsafe { (surface_api.create)(1) };
 
     group.bench_function("lookup_interface", |b| {
-        b.iter(|| unsafe { black_box(nve_bench_get_interface(black_box(NVE_IFACE_LAYOUT))) });
+        b.iter(|| {
+            // SAFETY: Static C ABI interface lookup with a valid interface id.
+            unsafe { black_box(nve_bench_get_interface(black_box(NVE_IFACE_LAYOUT))) }
+        });
     });
 
     let constraints = NveSizeConstraints::loose(393.0, 852.0);
     group.bench_function("scalar_measure", |b| {
-        b.iter(|| unsafe {
-            black_box((layout_api.measure)(
-                black_box(handle),
-                black_box(constraints),
-            ))
+        b.iter(|| {
+            // SAFETY: `handle` is live until destroyed after this benchmark group.
+            unsafe {
+                black_box((layout_api.measure)(
+                    black_box(handle),
+                    black_box(constraints),
+                ))
+            }
         });
     });
 
     group.bench_function("scalar_hit_test", |b| {
-        b.iter(|| unsafe {
-            black_box((layout_api.hit_test)(
-                black_box(handle),
-                black_box(120.0),
-                black_box(80.0),
-                black_box(1),
-            ))
+        b.iter(|| {
+            // SAFETY: `handle` is live until destroyed after this benchmark group.
+            unsafe {
+                black_box((layout_api.hit_test)(
+                    black_box(handle),
+                    black_box(120.0),
+                    black_box(80.0),
+                    black_box(1),
+                ))
+            }
         });
     });
 
@@ -108,10 +120,12 @@ fn bench_ffi_interface_overhead(c: &mut Criterion) {
         let mut frame = 1u64;
         b.iter(|| {
             frame += 1;
+            // SAFETY: `handle` is live until destroyed after this benchmark group.
             unsafe { black_box((surface_api.render)(black_box(handle), black_box(frame))) }
         });
     });
 
+    // SAFETY: `handle` was created by `surface_api.create` and is destroyed once here.
     unsafe { (surface_api.destroy)(handle) };
     group.finish();
 }
@@ -128,10 +142,13 @@ fn bench_zero_copy_value_read(c: &mut Criterion) {
         NveMapEntry::new("velocity", NveValue::array(&velocity)),
     ];
     let root = NveValue::map(&entries);
-    let encoded = encode_bin_value_to_vec(unsafe { root.as_ref() }).unwrap();
+    // SAFETY: `entries` and `velocity` outlive `root` for this entire function.
+    let encoded = encode_bin_value_to_vec(unsafe { root.as_ref() })
+        .expect("encode valid bench NveValue");
 
     group.bench_function("value_direct_ffi_read", |b| {
         b.iter(|| {
+            // SAFETY: Backing `entries` and `velocity` arrays stay live across all iterations.
             let v = unsafe { black_box(&root).as_ref() };
             let ev = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
             let x = v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.0);
@@ -148,7 +165,7 @@ fn bench_zero_copy_value_read(c: &mut Criterion) {
 
     group.bench_function("value_binary_view_read", |b| {
         b.iter(|| {
-            let v = BinValueView::parse(black_box(&encoded)).unwrap();
+            let v = BinValueView::parse(black_box(&encoded)).expect("parse valid bench BinValue");
             let ev = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
             let x = v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.0);
             let active = v.get("active").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -209,7 +226,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
                 text: label,
                 children,
             })
-            .unwrap();
+            .expect("upsert bench scene node");
     }
 
     // Mutate only 3 nodes out of 1000 for the incremental frame benchmark.
@@ -235,7 +252,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
                 text: "Counter: 42",
                 children: &[],
             })
-            .unwrap();
+            .expect("upsert dirty bench scene node");
     }
     let view = table.as_view();
     assert_eq!(view.node_count, 1000);
@@ -244,12 +261,14 @@ fn bench_scene_view_read(c: &mut Criterion) {
     group.throughput(Throughput::Elements(3));
     group.bench_function("scene_view_read_dirty_3_of_1000", |b| {
         b.iter(|| {
-            let scene = unsafe { NveSceneRef::from_raw(black_box(view)) }.unwrap();
+            // SAFETY: `table` remains alive and unmutated while `view` is borrowed.
+            let scene = unsafe { NveSceneRef::from_raw(black_box(view)) }
+                .expect("valid bench scene view");
             let mut acc_x = 0.0f32;
             let mut acc_text = 0usize;
             for (_, node) in scene.dirty_nodes() {
                 acc_x += node.x + node.width + node.opacity_f32();
-                acc_text += scene.node_text(node).unwrap().len();
+                acc_text += scene.node_text(node).expect("valid UTF-8 node text").len();
             }
             black_box((acc_x, acc_text))
         });
@@ -258,12 +277,14 @@ fn bench_scene_view_read(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1000));
     group.bench_function("scene_view_read_all_1000", |b| {
         b.iter(|| {
-            let scene = unsafe { NveSceneRef::from_raw(black_box(view)) }.unwrap();
+            // SAFETY: `table` remains alive and unmutated while `view` is borrowed.
+            let scene = unsafe { NveSceneRef::from_raw(black_box(view)) }
+                .expect("valid bench scene view");
             let mut acc_x = 0.0f32;
             let mut acc_text = 0usize;
             for node in scene.nodes() {
                 acc_x += node.x + node.width + node.opacity_f32();
-                acc_text += scene.node_text(node).unwrap().len();
+                acc_text += scene.node_text(node).expect("valid UTF-8 node text").len();
             }
             black_box((acc_x, acc_text))
         });

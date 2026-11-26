@@ -22,11 +22,9 @@ use nve_codegen::{
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("workspace root 3 levels above CARGO_MANIFEST_DIR")
         .to_path_buf()
 }
 

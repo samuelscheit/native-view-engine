@@ -197,7 +197,10 @@ pub fn assert_no_violations(invariant: &str, violations: &[Violation]) {
             violations.len() - 60
         ));
     }
-    panic!("{msg}");
+    #[expect(clippy::panic, reason = "architectural invariant assertion failure")]
+    {
+        panic!("{msg}");
+    }
 }
 
 pub fn assert_staged_violations(stage: Stage, invariant: &str, violations: &[Violation]) {
@@ -206,10 +209,11 @@ pub fn assert_staged_violations(stage: Stage, invariant: &str, violations: &[Vio
         return;
     }
     let report = std::env::var("NVE_REPORT_INVARIANTS").is_ok_and(|raw| {
-        matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "all"
-        )
+        let t = raw.trim();
+        t.eq_ignore_ascii_case("1")
+            || t.eq_ignore_ascii_case("true")
+            || t.eq_ignore_ascii_case("yes")
+            || t.eq_ignore_ascii_case("all")
     });
     if report {
         eprintln!(
@@ -314,6 +318,8 @@ pub fn is_binary_ext(rel: &str) -> bool {
         ".woff2", ".pdf", ".zip", ".gz", ".tar", ".mp4", ".mov", ".icns", ".jar", ".class",
         ".so", ".dylib", ".dll", ".a", ".o", ".rlib", ".svg", ".ppm",
     ];
-    let lower = rel.to_ascii_lowercase();
-    EXTS.iter().any(|ext| lower.ends_with(ext))
+    EXTS.iter().any(|ext| {
+        rel.len() >= ext.len()
+            && rel.as_bytes()[rel.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes())
+    })
 }

@@ -6,3 +6,6 @@ license.workspace = true
 description = "Zero-dependency no_std const-fn XXH64 and compile-time identity keys shared by every NVE crate and host."
 
 [dependencies]
+
+[lints]
+workspace = true

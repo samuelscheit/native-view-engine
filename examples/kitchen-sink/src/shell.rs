@@ -86,17 +86,21 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
     let mut search_query = use_signal(String::new);
-    let query_lower = search_query.read().trim().to_ascii_lowercase();
+    let query_owned = search_query.read().clone();
+    let query = query_owned.trim();
+    let contains_ci = |haystack: &str, needle: &str| -> bool {
+        haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+    };
 
-    let matching_sections: Vec<GallerySection> = if query_lower.is_empty() {
+    let matching_sections: Vec<GallerySection> = if query.is_empty() {
         vec![snap.active_section]
     } else {
         GallerySection::ALL
             .into_iter()
-            .filter(|sec| {
-                sec.label().to_ascii_lowercase().contains(&query_lower)
-                    || sec.keywords().contains(&query_lower)
-            })
+            .filter(|sec| contains_ci(sec.label(), query) || contains_ci(sec.keywords(), query))
             .collect()
     };
 
@@ -311,7 +315,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                     Button {
                         key: "{sec.id()}",
                         test_id: Some(format!("ks-mobile-tab-{}", sec.id())),
-                        variant: if query_lower.is_empty() && snap.active_section == sec {
+                        variant: if query.is_empty() && snap.active_section == sec {
                             ButtonVariant::Primary
                         } else {
                             ButtonVariant::Secondary
@@ -345,7 +349,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                             SidebarNavItem {
                                 key: "{sec.id()}",
                                 section: sec,
-                                active: query_lower.is_empty() && snap.active_section == sec,
+                                active: query.is_empty() && snap.active_section == sec,
                                 pseudo,
                                 on_select: move |_| {
                                     search_query.set(String::new());
@@ -385,7 +389,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                     view {
                         nve_style: main_pad_style,
 
-                        if !query_lower.is_empty() {
+                        if !query.is_empty() {
                             view {
                                 test_id: "ks-search-banner",
                                 style: "width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-radius: 10px; background-color: {bg_elevated}; border-width: 1px; border-color: {border_col};",

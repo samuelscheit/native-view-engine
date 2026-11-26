@@ -80,14 +80,33 @@ impl HybridTarget {
     }
 
     pub fn from_name(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "rust" | "rs" => Some(Self::Rust),
-            "cpp" | "c++" | "c" | "cxx" => Some(Self::Cpp),
-            "swift" => Some(Self::Swift),
-            "kotlin" | "kt" | "android" | "jni" => Some(Self::Kotlin),
-            "dart" | "flutter" => Some(Self::Dart),
-            "ts" | "typescript" | "wasm" | "web" => Some(Self::TypeScript),
-            _ => None,
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("rust") || s.eq_ignore_ascii_case("rs") {
+            Some(Self::Rust)
+        } else if s.eq_ignore_ascii_case("cpp")
+            || s.eq_ignore_ascii_case("c++")
+            || s.eq_ignore_ascii_case("c")
+            || s.eq_ignore_ascii_case("cxx")
+        {
+            Some(Self::Cpp)
+        } else if s.eq_ignore_ascii_case("swift") {
+            Some(Self::Swift)
+        } else if s.eq_ignore_ascii_case("kotlin")
+            || s.eq_ignore_ascii_case("kt")
+            || s.eq_ignore_ascii_case("android")
+            || s.eq_ignore_ascii_case("jni")
+        {
+            Some(Self::Kotlin)
+        } else if s.eq_ignore_ascii_case("dart") || s.eq_ignore_ascii_case("flutter") {
+            Some(Self::Dart)
+        } else if s.eq_ignore_ascii_case("ts")
+            || s.eq_ignore_ascii_case("typescript")
+            || s.eq_ignore_ascii_case("wasm")
+            || s.eq_ignore_ascii_case("web")
+        {
+            Some(Self::TypeScript)
+        } else {
+            None
         }
     }
 }

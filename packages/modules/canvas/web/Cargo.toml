@@ -14,3 +14,6 @@ nve-store = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = ["CanvasRenderingContext2d", "HtmlCanvasElement"] }
+
+[lints]
+workspace = true

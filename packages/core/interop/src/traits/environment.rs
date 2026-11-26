@@ -16,6 +16,10 @@ pub(crate) struct CustomTraitEntry {
 }
 
 impl CustomTraitEntry {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "CustomTraitEntry type-erased trait value equality boundary"
+    )]
     pub(crate) fn new<V: PartialEq + Send + Sync + 'static>(value: V) -> Self {
         Self {
             value: Arc::new(value),
@@ -43,6 +47,10 @@ pub(crate) struct CustomTraitMap {
 
 impl CustomTraitMap {
     #[inline]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "CustomTraitMap resolves typed TraitKey::Value by TypeId"
+    )]
     pub(crate) fn get<K: TraitKey>(&self) -> Option<&K::Value> {
         let tid = TypeId::of::<K>();
         let idx = self.entries.binary_search_by_key(&tid, |(k, _)| *k).ok()?;

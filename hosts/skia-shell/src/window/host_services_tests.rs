@@ -187,6 +187,7 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
     let invoke = cb.invoke.unwrap();
     let publish = cb.channel_publish.unwrap();
     let mut out_len = 0usize;
+    // SAFETY: Verifying null `host_ctx` guard with valid `out_len` pointer.
     let status_null_ctx = unsafe {
         invoke(
             std::ptr::null_mut(),
@@ -203,6 +204,7 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
         NveHostStatus::from_i32(status_null_ctx),
         NveHostStatus::InvalidArg
     );
+    // SAFETY: Verifying null `host_ctx` guard on `channel_publish` with empty slice.
     let status_null_pub =
         unsafe { publish(std::ptr::null_mut(), 1, 0, nve_abi::NveBufferSlice::EMPTY) };
     assert_eq!(
@@ -212,6 +214,7 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
 
     // Small buffer returns BufferTooSmall and writes exact #[repr(C)] ThemeSnapshot size (12B).
     let mut tiny = [0u8; 4];
+    // SAFETY: `cb.host_ctx` belongs to live `host`, and `tiny`/`out_len` are valid writable buffers.
     let status_small = unsafe {
         invoke(
             cb.host_ctx,
