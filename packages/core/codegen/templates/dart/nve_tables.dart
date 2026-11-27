@@ -42,3 +42,12 @@ abstract final class {{ t.ident }}Table {
 {%- endfor %}
 }
 {%- endfor %}
+{%- for s in value_sets %}
+
+/// `{{ s.name }}` field values.
+abstract final class Nve{{ s.name }} {
+{%- for (n, v) in s.values %}
+  static const int {{ dart::variant(n) }} = {{ v }};
+{%- endfor %}
+}
+{%- endfor %}

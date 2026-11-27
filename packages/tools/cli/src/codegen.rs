@@ -302,7 +302,7 @@ mod tests {
 
         assert!(run_codegen_abi(&tmp, true).is_err());
         let written = run_codegen_abi(&tmp, false).expect("write every host ABI file");
-        assert_eq!(written.len(), 16);
+        assert_eq!(written.len(), 18);
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("packages/core/host-ts/src/generated/nve_abi.generated.ts");

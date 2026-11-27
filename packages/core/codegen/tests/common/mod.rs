@@ -83,36 +83,6 @@ pub fn prepare_offline_nve_host_pkg(temp_dir: &Path) -> PathBuf {
     pkg_root
 }
 
-/// Materializes a self-contained offline `nve_flutter` Dart package under `temp_dir/nve_flutter_pkg`
-/// from the hand-written pure-Dart runtime sources (its generated bindings come from the
-/// [`prepare_offline_nve_host_pkg`] package), so `dart analyze` succeeds on a fresh checkout.
-pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -> PathBuf {
-    let pkg_root = temp_dir.join("nve_flutter_pkg");
-    let dst_lib = pkg_root.join("lib");
-    let dst_src = dst_lib.join("src");
-    std::fs::create_dir_all(&dst_src).expect("create temp nve_flutter_pkg/lib/src");
-
-    let src_lib = workspace_root.join("hosts/flutter-plugin/lib");
-    std::fs::write(
-        pkg_root.join("pubspec.yaml"),
-        "name: nve_flutter\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
-    )
-    .expect("write temp nve_flutter pubspec.yaml");
-
-    for rel in [
-        "nve_hybrid_runtime.dart",
-        "src/direct_ffi.dart",
-        "src/event_codec.dart",
-        "src/nve_bin_codec.dart",
-        "src/nve_bin_value.dart",
-    ] {
-        std::fs::copy(src_lib.join(rel), dst_lib.join(rel))
-            .expect("copy hosts/flutter-plugin/lib file");
-    }
-
-    pkg_root
-}
-
 /// Validates generated-file naming invariants (`.generated.` for non-Java, `generated/` package
 /// for Java) and checks byte-for-byte parity for any generated file currently materialized on disk.
 pub fn assert_generated_file_naming_and_optional_disk_parity(

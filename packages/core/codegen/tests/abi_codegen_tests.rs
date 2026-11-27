@@ -30,7 +30,7 @@ fn generation_is_deterministic_lf_only_and_lands_in_the_host_packages() {
         first, second,
         "ABI codegen must be byte-for-byte deterministic"
     );
-    assert_eq!(first.len(), 16);
+    assert_eq!(first.len(), 17);
     for f in &first {
         assert!(
             !f.content.contains('\r'),
@@ -83,7 +83,7 @@ fn templates_are_lf_only_and_under_650_lines() {
         }
     }
     // One template per generated file, plus the shared `c/records.h` macros.
-    assert_eq!(checked, 17, "one template per generated file");
+    assert_eq!(checked, 18, "one template per generated file");
 }
 
 /// Integer-valued numeric literals in JS / Dart source that are not exact JavaScript numbers:
@@ -309,7 +309,7 @@ fn dart_and_typescript_output_is_53_bit_safe() {
         );
         scanned += 1;
     }
-    assert_eq!(scanned, 7, "4 Dart + 3 TypeScript files");
+    assert_eq!(scanned, 8, "5 Dart + 3 TypeScript files");
 }
 
 #[test]

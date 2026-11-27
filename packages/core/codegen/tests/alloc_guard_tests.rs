@@ -84,8 +84,8 @@ fn table_files_allocation_ceiling() {
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
     );
     assert!(
-        allocs <= 2_800,
-        "tables took {allocs} allocations (ceiling 2800)"
+        allocs <= 4_000,
+        "tables took {allocs} allocations (ceiling 4000)"
     );
     assert!(
         bytes <= 5 * out,
@@ -103,8 +103,8 @@ fn every_host_file_allocation_ceiling() {
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
     assert!(
-        allocs <= 7_800,
-        "all files took {allocs} allocations (ceiling 7800)"
+        allocs <= 11_500,
+        "all files took {allocs} allocations (ceiling 11500)"
     );
     assert!(
         bytes <= 5 * out,

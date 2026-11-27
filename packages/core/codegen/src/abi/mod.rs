@@ -61,7 +61,7 @@ templates! {
     JavaVectors: "java/HashVectors.java" => vectors: [HashVector];
     DartAbiConst: "dart/nve_abi_const.dart" => m: AbiModel<'a>;
     DartAbiFfi: "dart/nve_abi_ffi.dart" => m: AbiModel<'a>;
-    DartTables: "dart/nve_tables.dart" => tables: [TableModel<'a>];
+    DartRuntimeAbi: "dart/nve_runtime_abi.dart" => m: RuntimeAbiModel<'a>;
     DartVectors: "dart/hash_vectors.dart" => vectors: [HashVector];
     TsAbi: "ts/nve_abi.ts" => m: AbiModel<'a>;
     TsTables: "ts/nve_tables.ts" => tables: [TableModel<'a>];
@@ -128,6 +128,10 @@ pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
             format!("{DART}/lib/src/generated/nve_abi_ffi.generated.dart"),
         )?,
         render(
+            &DartRuntimeAbi { m: &runtime },
+            format!("{DART}/lib/src/generated/nve_runtime_abi.generated.dart"),
+        )?,
+        render(
             &TsAbi { m: &m },
             format!("{TS}/src/generated/nve_abi.generated.ts"),
         )?,
@@ -169,6 +173,14 @@ struct SwiftTables<'a> {
     consts: &'a [ConstsModel],
 }
 
+/// Dart word-table mirror: field specs plus one `Nve<Set>` constant class per value set.
+#[derive(Template)]
+#[template(path = "dart/nve_tables.dart", escape = "none")]
+struct DartTables<'a> {
+    tables: &'a [TableModel<'a>],
+    value_sets: &'a [&'static ValueSetDesc],
+}
+
 /// Field specs, keys, and schema hashes of `tables` (plus the `consts` their fields hold) for every
 /// host runtime.
 pub fn generate_table_files(
@@ -194,7 +206,7 @@ pub fn generate_table_files(
             format!("{JAVA}/main/java/dev/nve/host/generated/NveTables.java"),
         )?,
         render(
-            &DartTables { tables },
+            &DartTables { tables, value_sets: &sets },
             format!("{DART}/lib/src/generated/nve_tables.generated.dart"),
         )?,
         render(
