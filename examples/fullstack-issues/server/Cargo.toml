@@ -30,7 +30,7 @@ nve-engine = { workspace = true }
 nve-store = { workspace = true }
 nve-web-html = { workspace = true }
 # The browser shell's issues session, to prove client and server register one plugin set.
-nve-web-shell = { path = "../../../hosts/web-shell", default-features = false, features = ["app-issues"] }
+nve-web-shell = { version = "0.1.0", path = "../../../hosts/web-shell", default-features = false, features = ["app-issues"] }
 axum = { workspace = true, features = ["http1", "tokio"] }
 minicbor = { workspace = true }
 http-body-util = { workspace = true }
