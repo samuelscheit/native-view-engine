@@ -11,7 +11,9 @@ public final class NveCoreTextMeasurer: NveTextMeasuring {
     public init() {}
 
     /// Fonts by `(size bits, weight, italic)`: layout measures every text node with a handful of styles.
+    /// Bounded: animated or arbitrary sizes must not grow it without limit.
     private var fonts: [UInt64: CTFont] = [:]
+    static let maxCachedFonts = 128
     private let lock = NSLock()
 
     func font(size: CGFloat, weight: UInt16, italic: Bool) -> CTFont? {
@@ -25,6 +27,7 @@ public final class NveCoreTextMeasurer: NveTextMeasuring {
         let descriptor = CTFontDescriptorCreateCopyWithAttributes(
             CTFontCopyFontDescriptor(system), [kCTFontTraitsAttribute: traits] as CFDictionary)
         let font = CTFontCreateWithFontDescriptor(descriptor, size, nil)
+        if fonts.count >= Self.maxCachedFonts { fonts.removeAll(keepingCapacity: true) }
         fonts[key] = font
         return font
     }
@@ -37,7 +40,9 @@ public final class NveCoreTextMeasurer: NveTextMeasuring {
         }
         let attributed = CFAttributedStringCreate(nil, text as CFString, [kCTFontAttributeName: font] as CFDictionary)!
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
-        let constraint = CGSize(width: maxWidth.isFinite ? maxWidth : .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        // A non-positive width (collapsed box) wraps nothing rather than one glyph per line.
+        let width = maxWidth.isFinite && maxWidth > 0 ? maxWidth : .greatestFiniteMagnitude
+        let constraint = CGSize(width: width, height: .greatestFiniteMagnitude)
         let size = CTFramesetterSuggestFrameSizeWithConstraints(framesetter, CFRange(location: 0, length: 0), nil, constraint, nil)
         return CGSize(width: ceil(size.width), height: ceil(size.height))
     }

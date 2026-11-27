@@ -4,9 +4,28 @@
 /// queries. Valid only inside the `withScene` scope that produced the reader.
 library;
 
+import 'dart:typed_data' show Uint8List;
 import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:nve_host/nve_host.dart';
+
+/// Visit marks of one recursive tree walk: [enter] admits each live slot once, so a corrupt frame
+/// whose children slab forms a cycle (or lists one child twice) ends after at most
+/// `nodeCapacity` visits instead of hanging the UI isolate.
+final class NveTreeWalk {
+  NveTreeWalk._(int capacity) : _seen = Uint8List(capacity);
+
+  final Uint8List _seen;
+
+  /// `true` the first time [index] (a valid slot) is entered in this walk.
+  bool enter(int index) {
+    if (index <= 0 || index >= _seen.length || _seen[index] != 0) {
+      return false;
+    }
+    _seen[index] = 1;
+    return true;
+  }
+}
 
 final class NveSceneTree {
   NveSceneTree(this.s)
@@ -24,6 +43,9 @@ final class NveSceneTree {
   /// Root slot index, or `-1` before the first published frame.
   int get root => s.indexOf(rootNodeId);
 
+  /// Fresh visit marks for one recursive walk over this frame.
+  NveTreeWalk walk() => NveTreeWalk._(s.nodeCapacity);
+
   /// Published (pre-scroll) rect of [index].
   Rect rectOf(int index) => Rect.fromLTWH(s.x(index), s.y(index), s.width(index), s.height(index));
 
@@ -33,10 +55,14 @@ final class NveSceneTree {
     return Offset(x, y);
   }
 
-  /// On-screen rect of [index]: its published rect minus every ancestor's scroll shift.
+  /// On-screen rect of [index]: its published rect minus every ancestor's scroll shift. The
+  /// parent walk is bounded by `nodeCapacity` (a corrupt cyclic parent chain cannot hang it).
   Rect visualRect(int index) {
     var shift = Offset.zero;
-    for (var p = s.indexOf(s.parentId(index)); p > 0; p = s.indexOf(s.parentId(p))) {
+    var prev = index;
+    for (var p = s.indexOf(s.parentId(index)), depth = 0;
+        p > 0 && p != prev && depth < s.nodeCapacity;
+        prev = p, p = s.indexOf(s.parentId(p)), depth++) {
       shift += scrollShift(p);
     }
     return rectOf(index).shift(-shift);
@@ -99,11 +125,11 @@ final class NveSceneTree {
   /// applied (they never move layout or hit-test boxes in the runtime either).
   int? deepestAt(Offset point, bool Function(int index) accept) {
     final r = root;
-    return r < 0 ? null : _deepestAt(r, point, Offset.zero, accept);
+    return r < 0 ? null : _deepestAt(walk(), r, point, Offset.zero, accept);
   }
 
-  int? _deepestAt(int index, Offset point, Offset shift, bool Function(int index) accept) {
-    if (isDisplayNone(index)) {
+  int? _deepestAt(NveTreeWalk w, int index, Offset point, Offset shift, bool Function(int index) accept) {
+    if (!w.enter(index) || isDisplayNone(index)) {
       return null;
     }
     final rect = rectOf(index).shift(-shift);
@@ -114,7 +140,7 @@ final class NveSceneTree {
     final kids = paintOrder(index);
     final childShift = shift + scrollShift(index);
     for (var i = kids.length - 1; i >= 0; i--) {
-      final hit = _deepestAt(kids[i], point, childShift, accept);
+      final hit = _deepestAt(w, kids[i], point, childShift, accept);
       if (hit != null) {
         return hit;
       }

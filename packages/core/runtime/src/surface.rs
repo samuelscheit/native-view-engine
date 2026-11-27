@@ -405,6 +405,23 @@ impl SurfaceRuntime {
         self.tick_shared(dt_s)
     }
 
+    /// Runs an owner-thread app mutation `f`; when it reports a change, schedules a re-render
+    /// and wakes the host so the next `tick` renders it (no mutation outside `tick` stalls).
+    pub(crate) fn render_if_changed(
+        &self,
+        f: impl FnOnce(&mut RuntimeInner) -> Result<bool, RuntimeError>,
+    ) -> Result<bool, RuntimeError> {
+        let changed = self.with_write(|inner| {
+            let changed = f(inner)?;
+            inner.state.needs_render |= changed;
+            Ok(changed)
+        })?;
+        if changed {
+            self.wake.trigger();
+        }
+        Ok(changed)
+    }
+
     pub(crate) fn tick_shared(&self, dt_s: f32) -> Result<bool, RuntimeError> {
         let dt = if dt_s.is_finite() && dt_s >= 0.0 {
             dt_s
@@ -430,13 +447,9 @@ impl SurfaceRuntime {
         &self,
         events: NveEventBatchRef<'_>,
     ) -> Result<bool, RuntimeError> {
-        self.with_write(|inner| {
+        self.render_if_changed(|inner| {
             if let Some(app) = inner.app.as_mut() {
-                let changed = app.dispatch_events(events);
-                if changed {
-                    inner.state.needs_render = true;
-                }
-                return Ok(changed);
+                return Ok(app.dispatch_events(events));
             }
             if let Some(pair) = inner.pair.as_ref() {
                 let _ = pair.send_events(events);

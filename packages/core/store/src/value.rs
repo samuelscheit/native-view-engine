@@ -286,6 +286,7 @@ macro_rules! value_set {
         const _: fn($ty) = |v| match v { $($ty::$variant)|+ => {} };
         Some(&$crate::__private::ValueSetDesc {
             name: stringify!($ty),
+            flags: false,
             values: &[$((stringify!($variant), $ty::$variant as u32)),+],
         })
     }};
@@ -310,12 +311,6 @@ macro_rules! word_enum {
         #[allow(dead_code)]
         impl $name {
             pub const ALL: &'static [$name] = &[$($name::$variant),+];
-            /// Variant names and values for generated host mirrors (`nve codegen abi`).
-            pub const DESC: $crate::__private::WordConstsDesc = $crate::__private::WordConstsDesc {
-                name: stringify!($name),
-                flags: false,
-                entries: &[$((stringify!($variant), $value)),+],
-            };
             #[inline(always)]
             pub const fn to_word(self) -> u32 { self as u32 }
             #[inline(always)]
@@ -335,6 +330,7 @@ macro_rules! word_enum {
             const VALUES: Option<&'static $crate::__private::ValueSetDesc> =
                 Some(&$crate::__private::ValueSetDesc {
                     name: stringify!($name),
+                    flags: false,
                     values: &[$((stringify!($variant), $value)),+],
                 });
             #[inline(always)]

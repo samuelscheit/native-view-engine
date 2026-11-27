@@ -18,15 +18,14 @@ use nve_abi::schema::{
     AbiEnumDescriptor, AbiFileDescriptor, NveEnumSchema, core_abi_descriptor, runtime_abi_descriptor,
     scene_abi_descriptor,
 };
-use nve_abi::table::{TableDesc, ValueSetDesc, WordConstsDesc};
+use nve_abi::table::{TableDesc, ValueSetDesc};
 
 use crate::error::CodegenError;
 use crate::schema::export::GeneratedFile;
 use model::{
-    AbiModel, ConstsModel, HashVector, RuntimeAbiModel, TableModel, consts_model, hash_vectors,
-    tables_model, value_sets,
+    AbiModel, HashVector, RuntimeAbiModel, TableModel, hash_vectors, tables_model, value_sets,
 };
-use spell::{c, dart, ts};
+use spell::{c, dart, swift, ts};
 
 const CORE: AbiFileDescriptor = core_abi_descriptor();
 const SCENE: AbiFileDescriptor = scene_abi_descriptor();
@@ -56,6 +55,7 @@ templates! {
     CAbi: "c/nve_abi.h" => m: AbiModel<'a>;
     CRuntimeAbi: "c/nve_runtime_abi.h" => m: RuntimeAbiModel<'a>;
     CVectors: "c/hash_vectors.h" => vectors: [HashVector];
+    SwiftAbiConsts: "swift/NveAbiConsts.swift" => m: AbiModel<'a>;
     SwiftVectors: "swift/HashVectors.swift" => vectors: [HashVector];
     JavaAbi: "java/NveAbi.java" => m: AbiModel<'a>;
     JavaTables: "java/NveTables.java" => tables: [TableModel<'a>];
@@ -76,7 +76,7 @@ pub fn abi_model() -> Result<AbiModel<'static>, CodegenError> {
 
 /// The runtime ABI model on top of `base` (`abi_model()`).
 pub fn runtime_abi_model(base: &AbiModel<'static>) -> Result<RuntimeAbiModel<'static>, CodegenError> {
-    RuntimeAbiModel::new(&RUNTIME, base)
+    RuntimeAbiModel::new(&RUNTIME, base, nve_abi::RUNTIME_CALLBACK_TYPEDEFS, nve_abi::RUNTIME_API_SLOTS)
 }
 
 /// Renders one template into a pre-sized buffer, ending in exactly one `\n` (Askama drops a
@@ -108,14 +108,18 @@ pub fn generate_c_abi_header() -> Result<String, CodegenError> {
     Ok(render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?.content)
 }
 
-/// Every Core + Scene ABI file (C, Java, Dart const + `dart:ffi`, TypeScript) plus the C runtime
-/// ABI header.
+/// Every Core + Scene ABI file (C, Swift constants, Java, Dart const + `dart:ffi`, TypeScript)
+/// plus the C runtime ABI header.
 pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
     let m = abi_model()?;
     let runtime = runtime_abi_model(&m)?;
     Ok(vec![
         render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?,
         render(&CRuntimeAbi { m: &runtime }, C_RUNTIME_ABI_HEADER.to_owned())?,
+        render(
+            &SwiftAbiConsts { m: &m },
+            format!("{SWIFT}/Sources/NveHost/NveAbiConsts.generated.swift"),
+        )?,
         render(
             &JavaAbi { m: &m },
             format!("{JAVA}/main/java/dev/nve/host/generated/NveAbi.java"),
@@ -166,12 +170,13 @@ impl<'a> CTables<'a> {
     }
 }
 
-/// Swift table header also carries the word enums and flag sets the table fields hold.
+/// Swift table mirror: field specs plus one `Nve<Set>` enum (variants) or namespace (flags) per
+/// value set.
 #[derive(Template)]
 #[template(path = "swift/NveTables.swift", escape = "none")]
 struct SwiftTables<'a> {
     tables: &'a [TableModel<'a>],
-    consts: &'a [ConstsModel],
+    value_sets: &'a [&'static ValueSetDesc],
 }
 
 /// Dart word-table mirror: field specs plus one `Nve<Set>` constant class per value set.
@@ -182,24 +187,18 @@ struct DartTables<'a> {
     value_sets: &'a [&'static ValueSetDesc],
 }
 
-/// Field specs, keys, and schema hashes of `tables` (plus the `consts` their fields hold) for every
-/// host runtime.
-pub fn generate_table_files(
-    tables: &[&TableDesc],
-    consts: &[&WordConstsDesc],
-) -> Result<Vec<GeneratedFile>, CodegenError> {
+/// Field specs, keys, schema hashes, and named field values of `tables` for every host runtime.
+pub fn generate_table_files(tables: &[&TableDesc]) -> Result<Vec<GeneratedFile>, CodegenError> {
     let t = tables_model(tables)?;
     let sets = value_sets(&t)?;
     let tables = t.as_slice();
-    let c = consts_model(consts)?;
-    let consts = c.as_slice();
     Ok(vec![
         render(
             &CTables::new(tables, &sets, None),
             format!("{CXX}/include/nve/generated/nve_tables.generated.h"),
         )?,
         render(
-            &SwiftTables { tables, consts },
+            &SwiftTables { tables, value_sets: &sets },
             format!("{SWIFT}/Sources/NveHost/NveTables.generated.swift"),
         )?,
         render(
@@ -259,12 +258,9 @@ pub fn generate_hash_vector_files() -> Result<Vec<GeneratedFile>, CodegenError> 
 }
 
 /// Every generated host file: ABI, `tables`, and the golden XXH64 vectors.
-pub fn generate_all_abi_files(
-    tables: &[&TableDesc],
-    consts: &[&WordConstsDesc],
-) -> Result<Vec<GeneratedFile>, CodegenError> {
+pub fn generate_all_abi_files(tables: &[&TableDesc]) -> Result<Vec<GeneratedFile>, CodegenError> {
     let mut files = generate_abi_files()?;
-    files.extend(generate_table_files(tables, consts)?);
+    files.extend(generate_table_files(tables)?);
     files.extend(generate_hash_vector_files()?);
     Ok(files)
 }

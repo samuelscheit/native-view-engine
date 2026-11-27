@@ -11,7 +11,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use nve_codegen::{generate_all_abi_files, generate_c_abi_header, generate_table_files};
-use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
+use nve_components::tables::CORE_TABLE_DESCS;
 
 struct CountingAlloc;
 
@@ -78,7 +78,7 @@ fn c_abi_header_allocation_ceiling() {
 
 #[test]
 fn table_files_allocation_ceiling() {
-    let (allocs, bytes, files) = counted(|| generate_table_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS));
+    let (allocs, bytes, files) = counted(|| generate_table_files(CORE_TABLE_DESCS));
     let out: usize = files.expect("tables").iter().map(|f| f.content.len()).sum();
     eprintln!(
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
@@ -96,7 +96,7 @@ fn table_files_allocation_ceiling() {
 
 #[test]
 fn every_host_file_allocation_ceiling() {
-    let (allocs, bytes, files) = counted(|| generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS));
+    let (allocs, bytes, files) = counted(|| generate_all_abi_files(CORE_TABLE_DESCS));
     let out: usize = files
         .expect("all files")
         .iter()
@@ -104,10 +104,8 @@ fn every_host_file_allocation_ceiling() {
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
     assert!(
-        // ~11.65k with the runtime ABI's `NveTableView` row index (2B-2 sync) and
-        // `NveRuntimeTextStyle` records emitted to C / Dart / Java.
-        allocs <= 12_000,
-        "all files took {allocs} allocations (ceiling 12000)"
+        allocs <= 11_500,
+        "all files took {allocs} allocations (ceiling 11500)"
     );
     assert!(
         bytes <= 5 * out,

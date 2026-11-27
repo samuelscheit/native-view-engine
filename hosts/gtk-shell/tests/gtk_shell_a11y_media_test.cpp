@@ -60,7 +60,8 @@ void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t>
 GtkAccessibleRole role_of(GtkWidget* w) { return gtk_accessible_get_accessible_role(GTK_ACCESSIBLE(w)); }
 
 void test_a11y_inputs_images_and_styles() {
-  const std::string tmp = (std::filesystem::temp_directory_path() / "nve_gtk_test_image.png").string();
+  const ScratchDir scratch("nve-gtk-a11y-media");
+  const std::string tmp = scratch.file("image.png");
   const std::vector<uint8_t> red = png(4, 3, h::rgba(255, 0, 0));
   { std::ofstream(tmp, std::ios::binary).write(reinterpret_cast<const char*>(red.data()), static_cast<std::streamsize>(red.size())); }
 
@@ -222,6 +223,17 @@ void test_a11y_inputs_images_and_styles() {
   app.w.set(kImgBad, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 64u);
   flush(host);
   NVE_CHECK(paintable(kImgBad) == paintable(kImgBytes) && host.texture_cache().hits() == 1u);
+  // Re-decode contract: an unrelated update keeps the applied texture without a cache lookup;
+  // the same id republished with new bytes (node row untouched) re-resolves it.
+  const uint64_t lookups = host.texture_cache().hits() + host.texture_cache().misses();
+  (void)app.w.set_str(kImgBytes, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_ALT, "red");
+  flush(host);
+  NVE_CHECK(host.texture_cache().hits() + host.texture_cache().misses() == lookups);
+  NVE_CHECK(gdk_paintable_get_intrinsic_width(paintable(kImgBytes)) == 4);
+  app.w.define_resource(61u, h::kImageSrcKind, h::encode_image_bytes(png(5, 2, h::rgba(0, 0, 255))));
+  flush(host);
+  NVE_CHECK(paintable(kImgBytes) != nullptr && gdk_paintable_get_intrinsic_width(paintable(kImgBytes)) == 5);
+  NVE_CHECK(gdk_paintable_get_intrinsic_width(paintable(kImgBad)) == 4);  // id 64 kept its bytes
 
   // --- Construct-only role change recreates the widget in place (same parent slot).
   GtkWidget* column = host.widget_for_node_id(kColumn);
@@ -242,7 +254,6 @@ void test_a11y_inputs_images_and_styles() {
   flush(host);
   NVE_CHECK(host.widget_for_node_id(kImgFile) == nullptr && host.view_count() == 11u);
   NVE_CHECK(host.active_css().find(cls) == std::string::npos);
-  std::filesystem::remove(tmp);
 }
 
 }  // namespace

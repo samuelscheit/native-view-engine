@@ -68,7 +68,7 @@ typedef NveRuntimeHandle = ffi.Pointer<ffi.Void>;
 {%- for f in m.callbacks %}
 
 /// `{{ f.name }}`: {{ spell::one_line(f.doc) }}
-typedef {{ dart::callback_stem(f.name) }}Native = {{ dart::c_fn(f.ret, f.params, false) }};
+typedef {{ dart::callback_stem(f.name) }}Native = {{ f.dart_native }};
 {%- endfor %}
 
 typedef NveRuntimeGetInterfaceNative = ffi.Pointer<NveRuntimeApi> Function(ffi.Uint32 abiVersion);
@@ -76,8 +76,8 @@ typedef NveRuntimeGetInterfaceDart = ffi.Pointer<NveRuntimeApi> Function(int abi
 {%- for f in m.slots %}
 
 /// `{{ f.name }}`: {{ spell::one_line(f.doc) }}
-typedef NveRuntime{{ spell::pascal(f.name) }}Native = {{ dart::c_fn(f.ret, f.params, false) }};
-typedef NveRuntime{{ spell::pascal(f.name) }}Dart = {{ dart::c_fn(f.ret, f.params, true) }};
+typedef NveRuntime{{ spell::pascal(f.name) }}Native = {{ f.dart_native }};
+typedef NveRuntime{{ spell::pascal(f.name) }}Dart = {{ f.dart }};
 {%- endfor %}
 
 /// Single `NveRuntimeApi` vtable returned by `nve_runtime_get_interface(abi_version)`.
@@ -91,4 +91,13 @@ final class NveRuntimeApi extends ffi.Struct {
 {%- for f in m.slots %}
   external ffi.Pointer<ffi.NativeFunction<NveRuntime{{ spell::pascal(f.name) }}Native>> {{ spell::camel(f.name) }};
 {%- endfor %}
+}
+
+/// `true` when `api` is non-null and every slot is set (version / hash are checked separately);
+/// mirrors C `nve_runtime_api_slots_complete`.
+bool runtimeApiSlotsComplete(ffi.Pointer<NveRuntimeApi> api) {
+  if (api == ffi.nullptr) return false;
+  final a = api.ref;
+  return {% for f in m.slots %}a.{{ spell::camel(f.name) }} != ffi.nullptr{% if !loop.last %} &&
+      {% endif %}{% endfor %};
 }

@@ -91,8 +91,9 @@ suite_host_java() {
 # Analyzer (fatal infos, avoid_js_rounded_ints), VM suite, then the same suite compiled to JS on node.
 # Runs in a source copy under $BUILD_ROOT: pub writes `.dart_tool/` and `pubspec.lock`, and the
 # developer's own copies in the repo must stay untouched.
-# Builds libnve_runtime (cdylib) plus the kitchen-sink app module it attaches and exports their
-# paths as NVE_RUNTIME_LIB / NVE_KITCHEN_SINK_LIB for the Dart and Flutter FFI suites.
+# Builds libnve_runtime (cdylib) plus the kitchen-sink and echo fixture app modules it attaches
+# and exports their paths as NVE_RUNTIME_LIB / NVE_KITCHEN_SINK_LIB / NVE_HOST_FIXTURE_APP_LIB for
+# the Dart and Flutter FFI suites.
 host_runtime_ffi_libs() {
   local target_dir="${CARGO_TARGET_DIR:-$HOST_RT_ROOT/target}/debug"
   local dylib
@@ -100,9 +101,10 @@ host_runtime_ffi_libs() {
     Darwin) dylib=dylib ;;
     *) dylib=so ;;
   esac
-  (cd "$HOST_RT_ROOT" && cargo build --locked -p nve-runtime -p nve-example-kitchen-sink) || return 1
+  (cd "$HOST_RT_ROOT" && cargo build --locked -p nve-runtime -p nve-example-kitchen-sink -p nve-host-fixtures) || return 1
   export NVE_RUNTIME_LIB="$target_dir/libnve_runtime.$dylib"
   export NVE_KITCHEN_SINK_LIB="$target_dir/libnve_example_kitchen_sink.$dylib"
+  export NVE_HOST_FIXTURE_APP_LIB="$target_dir/libnve_host_fixture_app.$dylib"
 }
 
 suite_host_dart() {

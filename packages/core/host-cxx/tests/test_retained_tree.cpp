@@ -60,6 +60,7 @@ void mount_column(Harness<A>& h) {
 
 void test_moved_only_nodes_get_move_not_update() {
   Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   mount_column(h);
   auto& v = h.rec.views;
@@ -85,6 +86,7 @@ void test_moved_only_nodes_get_move_not_update() {
 
 void test_adapters_without_move_fall_back_to_update() {
   Harness<Recorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   mount_column(h);
   auto& v = h.rec.views;
@@ -100,6 +102,7 @@ void test_adapters_without_move_fall_back_to_update() {
 /// `local` must still follow (spacer shrinks by 10 while the parent gains 10 of top padding).
 void test_parent_origin_move_refreshes_child_local() {
   Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   for (uint32_t id = 1u; id <= 5u; ++id) w.create(id);  // 2 column, 3 spacer, 4 p, 5 x
@@ -125,6 +128,7 @@ void test_parent_origin_move_refreshes_child_local() {
 /// y=20, so x moved into p2 keeps y=20 but its origin inside its parent drops from 20 to 0.
 void test_reparent_with_unchanged_absolute_rect() {
   Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   for (uint32_t id = 1u; id <= 5u; ++id) w.create(id);  // 2 column, 3 p1, 4 p2, 5 x
@@ -151,6 +155,7 @@ void test_reparent_with_unchanged_absolute_rect() {
 /// slots are reused by new generations. Every live node must still read its own row.
 void test_sparse_rows_survive_compaction_and_slot_reuse() {
   Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   std::map<uint32_t, std::string> expect;  // packed id -> text
@@ -216,6 +221,7 @@ struct SizeTaggedRecorder : MovingRecorder {
 
 void test_cascade_recreated_view_is_relinked() {
   Harness<SizeTaggedRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   for (uint32_t id = 1u; id <= 4u; ++id) w.create(id);  // 2 styled parent, 3 cascaded child, 4 grandchild
@@ -241,6 +247,7 @@ void test_cascade_recreated_view_is_relinked() {
 /// resync fully instead of applying only the latest frame's sets.
 void test_skipped_frame_resyncs_fully() {
   Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   mount_column(h);
   CHECK(h.w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "first"));
@@ -249,12 +256,46 @@ void test_skipped_frame_resyncs_fully() {
   CHECK(h.submit());
   (void)h.sync();
   CHECK(h.rec.views[3].text == "first" && h.rec.views[4].text == "second");
+  // The skipped frame's `dirty_resources` were never seen: no id-keyed cache may be kept.
+  const auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  if (guard) CHECK(!h.tree.resource_unchanged(guard->reader(), 0u, 0u));
+}
+
+/// Moving a container moves only its view: views are positioned relative to their parent, so its
+/// nested subtree (absolute rects shifted, parent-relative boxes unchanged) is not touched.
+void test_container_move_leaves_its_subtree_alone() {
+  Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
+  if (!h.host) return;
+  Nve2Writer& w = h.w;  // ROOT(1) -> column(2)[spacer(3), box(4)[row(5)[leaf(6), leaf(7)]]]
+  for (uint32_t id = 1u; id <= 7u; ++id) w.create(id);
+  w.set(2u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, length_points(100.0f));
+  set_height(w, 3u, 10.0f);
+  set_height(w, 6u, 5.0f);
+  set_height(w, 7u, 5.0f);
+  w.set_children(5u, std::vector<uint32_t>{6u, 7u});
+  w.set_children(4u, std::vector<uint32_t>{5u});
+  w.set_children(2u, std::vector<uint32_t>{3u, 4u});
+  w.set_children(1u, std::vector<uint32_t>{2u});
+  CHECK(h.submit());
+  CHECK(h.sync() == 7u);
+  auto& v = h.rec.views;
+  const NveLayoutRect leaf = v[7].local;
+  set_height(w, 3u, 30.0f);
+  CHECK(h.submit());
+  CHECK(h.sync() == 1u && v[3].updates == 2);  // the spacer
+  CHECK(h.rec.moves == 2 && v[2].moves == 1 && v[4].moves == 1);  // column (grew) and box (shifted)
+  CHECK(v[4].local.y == 30.0f);
+  for (const uint32_t id : {5u, 6u, 7u}) CHECK(v[id].moves == 0 && v[id].updates == 1);
+  CHECK(v[7].local.y == leaf.y && v[7].local.height == leaf.height);
 }
 
 /// A resource republished under the same id re-runs `update` on exactly the clean views that read
 /// it (image source, box shadows, a module-attached id), tracking re-pointed and destroyed users.
 void test_dirty_resource_updates_its_clean_users() {
   Harness<testing::ModuleRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   h.rec.module[5u] = 7u;  // node 5 also draws resource 7 (as a canvas would its draw list)
   Nve2Writer& w = h.w;
@@ -273,6 +314,17 @@ void test_dirty_resource_updates_its_clean_users() {
   std::vector<int> before = updates();
   CHECK(h.sync() == 3u);
   CHECK((updates() == std::vector<int>{before[0], before[1] + 1, before[2] + 1, before[3] + 1}));
+  {
+    // The adapter re-decode contract: same id, incremental sync, and not redefined this frame.
+    const auto guard = h.host->runtime().acquire_scene();
+    CHECK(guard.has_value());
+    if (!guard) return;
+    const RuntimeSceneReader& r = guard->reader();
+    CHECK(r.resource_dirty(7u) && !r.resource_dirty(8u) && !r.resource_dirty(0u) && !r.resource_dirty(UINT32_MAX));
+    CHECK(!h.tree.resource_unchanged(r, 7u, 7u));  // redefined
+    CHECK(h.tree.resource_unchanged(r, 8u, 8u));   // kept its bytes
+    CHECK(!h.tree.resource_unchanged(r, 8u, 7u));  // another id
+  }
 
   w.define_resource(8u, kBoxShadowsKind, encode_box_shadows(std::vector<BoxShadow>{BoxShadow{}, BoxShadow{}}));
   CHECK(h.submit());
@@ -309,6 +361,7 @@ void test_dirty_resource_updates_its_clean_users() {
 /// is the next one and no removals were published.
 void test_new_scene_epoch_runs_a_full_pass() {
   Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   using demo::CounterApp;
   mount_column(h);
@@ -348,6 +401,7 @@ struct Counter {
 /// node and a 1000-row shift must cost O(changed) adapter calls, and a warm sync allocates nothing.
 void test_ten_thousand_nodes_sync_is_o_changed() {
   Harness<Counter> h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   constexpr uint32_t kRows = 1000u, kNodes = 10000u, kFirstRow = 4u, kFirstLeaf = kFirstRow + kRows;
@@ -422,6 +476,7 @@ int main() {
   test_sparse_rows_survive_compaction_and_slot_reuse();
   test_cascade_recreated_view_is_relinked();
   test_skipped_frame_resyncs_fully();
+  test_container_move_leaves_its_subtree_alone();
   test_dirty_resource_updates_its_clean_users();
   test_new_scene_epoch_runs_a_full_pass();
   test_ten_thousand_nodes_sync_is_o_changed();

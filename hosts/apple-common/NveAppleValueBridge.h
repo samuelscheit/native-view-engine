@@ -23,7 +23,7 @@ class ValueArena {
     entries_.clear();
   }
   NveStrSlice str(std::string_view s);
-  NveBufferSlice bytes(const void *_Nonnull data, size_t len);
+  NveBufferSlice bytes(const void *_Nullable data, size_t len);
   NveValue *_Nonnull values(size_t n) { return values_.emplace_back(n).data(); }
   NveMapEntry *_Nonnull entries(size_t n) { return entries_.emplace_back(n).data(); }
 
@@ -40,13 +40,15 @@ NSString *_Nonnull nsstring_from_sv(std::string_view sv);
 NSString *_Nullable nsstring_or_nil_from_sv(std::string_view sv);
 
 /// Recursively converts `NSDictionary` / `NSArray` / `NSString` / `NSNumber` / `NSData` / `NSNull`
-/// into an arena-backed `NveValue` (depth-limited; unknown objects become null).
+/// into an arena-backed `NveValue`. `depth` counts container nesting (one per array / dictionary
+/// level); a value deeper than the limit, or an unknown object, becomes null.
 NveValue nve_value_from_objc_object(id _Nullable obj, ValueArena &arena, uint32_t depth = 0u);
 
 /// Recursively converts a borrowed `NveValue` into Foundation objects (`NSNull` for null).
 id _Nonnull objc_object_from_nve_value(const NveValue &value, uint32_t depth = 0u);
 
-/// Builds `NveMapEntry` props from a dictionary, keys sorted for deterministic order.
+/// Builds `NveMapEntry` props from a dictionary at nesting `depth`: only `NSString` keys (others
+/// are skipped, never compared), sorted for deterministic order; empty beyond the depth limit.
 std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *_Nonnull props, ValueArena &arena,
                                                      uint32_t depth = 0u);
 

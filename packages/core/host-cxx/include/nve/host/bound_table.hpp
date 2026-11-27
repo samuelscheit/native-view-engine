@@ -19,12 +19,6 @@
 
 namespace nve::host {
 
-/// Packed `NodeId` (`index:24 | generation:8`), as carried by rows, events, and `removed_ids`.
-[[nodiscard]] constexpr uint32_t node_index(uint32_t id) noexcept { return id & 0x00FFFFFFu; }
-[[nodiscard]] constexpr uint8_t node_generation(uint32_t id) noexcept { return static_cast<uint8_t>(id >> 24u); }
-[[nodiscard]] constexpr uint32_t make_node_id(uint32_t index, uint8_t generation) noexcept {
-  return (index & 0x00FFFFFFu) | (uint32_t{generation} << 24u);
-}
 /// The root is node index 1 / generation 0 (`NodeId::ROOT`).
 inline constexpr uint32_t kRootIndex = 1u;
 

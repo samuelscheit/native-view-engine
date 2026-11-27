@@ -35,7 +35,8 @@ class NveCanvasView extends LeafRenderObjectWidget {
     renderObject
       ..controller = controller
       ..devicePixelRatio = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1
-      ..backgroundColor = backgroundColor;
+      ..backgroundColor = backgroundColor
+      ..painter = painter;
   }
 }
 
@@ -66,8 +67,8 @@ class RenderNveCanvas extends RenderBox {
   NveCanvasController _controller;
   double _dpr;
   Color? _background;
-  final NveScenePainter _painter;
-  final bool _ownsPainter;
+  NveScenePainter _painter;
+  bool _ownsPainter;
   final NveCanvasSemanticsAssembler _semantics = NveCanvasSemanticsAssembler();
   final Map<int, _Gesture> _gestures = <int, _Gesture>{};
 
@@ -91,6 +92,22 @@ class RenderNveCanvas extends RenderBox {
       _dpr = value;
       markNeedsLayout();
     }
+  }
+
+  NveScenePainter get painter => _painter;
+
+  /// Swaps in a caller-owned [value], or (with `null`) a painter this render object owns; a
+  /// previously owned painter is disposed.
+  set painter(NveScenePainter? value) {
+    if (value == null ? _ownsPainter : identical(value, _painter)) {
+      return;
+    }
+    if (_ownsPainter) {
+      _painter.dispose();
+    }
+    _painter = value ?? NveScenePainter();
+    _ownsPainter = value == null;
+    markNeedsPaint();
   }
 
   set backgroundColor(Color? value) {

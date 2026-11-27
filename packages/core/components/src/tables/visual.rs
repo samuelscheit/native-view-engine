@@ -99,6 +99,7 @@ pub mod text_decoration {
     /// Host mirror names (`NVE_TEXT_DECORATION_*`).
     pub const VALUES: nve_store::ValueSetDesc = nve_store::ValueSetDesc {
         name: "TextDecoration",
+        flags: true,
         values: &[
             ("Underline", UNDERLINE as u32),
             ("Overline", OVERLINE as u32),
@@ -180,6 +181,7 @@ impl Typography {
     /// Host mirror names (`NVE_TYPOGRAPHY_SET_*`).
     pub const SET_VALUES: nve_store::ValueSetDesc = nve_store::ValueSetDesc {
         name: "TypographySet",
+        flags: true,
         values: &[
             ("Color", Self::SET_COLOR),
             ("FontSize", Self::SET_FONT_SIZE),

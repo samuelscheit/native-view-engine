@@ -18,7 +18,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace nve::gtk {
@@ -253,7 +252,7 @@ class NveGtkHost {
   host::RetainedTree<Adapter> tree_;
   Adapter adapter_{this};
   GtkTextureLruCache textures_{64u};
-  std::unordered_set<GtkNodeView*> dirty_scroll_extents_;
+  std::vector<GtkNodeView*> dirty_scroll_extents_;  // each once (`GtkNodeView::extents_dirty`)
   std::unordered_map<uint32_t, std::string> css_rules_;
   std::string active_css_;
   bool css_dirty_ = false;

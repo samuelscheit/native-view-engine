@@ -23,9 +23,6 @@ const int layoutRectFloats = 4;
 /// `u32` words per `NveScrollOffset` (`node_id`, `x` bits, `y` bits; 12 bytes).
 const int scrollOffsetWords = 3;
 
-/// Low bits of a raw `NodeId` holding its slot index (`index: 24 | generation: 8`).
-const int nodeIndexMask = 0xFFFFFF;
-
 /// Raw `NodeId` of every surface root (index 1, generation 0).
 const int rootNodeId = 1;
 
@@ -58,7 +55,9 @@ final class RuntimeSceneReader {
     Uint32List? scrollOffsets,
     this.sceneEpoch = 0,
     Uint32List? dirtyResources,
+    Uint32List? movedIndices,
   })  : _rows = rows,
+        movedIndices = movedIndices ?? Uint32List(0),
         dirtyResources = dirtyResources ?? Uint32List(0),
         _rects = rects,
         _scroll = scrollOffsets ?? Uint32List(0),
@@ -92,9 +91,11 @@ final class RuntimeSceneReader {
         throw SceneException(SceneErrorKind.missingSlab, 'node $i children [$off, +$len) outside slab ($childLen)');
       }
     }
-    for (final index in dirtyIndices) {
-      if (index >= nodeCapacity) {
-        throw SceneException(SceneErrorKind.missingSlab, 'dirty index $index >= capacity $nodeCapacity');
+    for (final (what, indices) in [('dirty', dirtyIndices), ('moved', this.movedIndices)]) {
+      for (final index in indices) {
+        if (index >= nodeCapacity) {
+          throw SceneException(SceneErrorKind.missingSlab, '$what index $index >= capacity $nodeCapacity');
+        }
       }
     }
     for (final t in this.tables) {
@@ -126,6 +127,10 @@ final class RuntimeSceneReader {
   /// Node indices modified on [frameId] (all `< nodeCapacity`).
   final Uint32List dirtyIndices;
 
+  /// Live node indices not in [dirtyIndices] whose geometry alone changed on [frameId] (absolute
+  /// rect, or origin relative to the parent's): re-apply only position / size (all `< nodeCapacity`).
+  final Uint32List movedIndices;
+
   /// Raw `NodeId`s removed on [frameId].
   final Uint32List removedIds;
 
@@ -145,7 +150,6 @@ final class RuntimeSceneReader {
   final Uint32List _scroll;
   late final Float32List _scrollF;
   final List<TableReader?> _bySlot;
-  final Map<int, Int32List> _sparseIndex = <int, Int32List>{};
 
   Uint8List get textSlab => _text;
 
@@ -266,33 +270,53 @@ final class RuntimeSceneReader {
 
   /// Row of node [index] in [table], or `-1` when the table is absent or not attached to it.
   ///
-  /// Dense rows are node indices; sparse rows resolve through an owner index built once per
-  /// frame on first use (O(rows)), then O(1).
-  int rowOf(TableReader? table, int index) {
-    if (table == null || !hasTable(index, table.slot)) {
-      return -1;
-    }
-    if (!table.isSparse) {
-      return index < table.rowCount ? index : -1;
-    }
-    final map = _sparseIndex[table.slot] ??= _buildSparseIndex(table);
-    return index < map.length ? map[index] : -1;
-  }
-
-  Int32List _buildSparseIndex(TableReader table) {
-    final map = Int32List(nodeCapacity)..fillRange(0, nodeCapacity, -1);
-    for (var r = 0; r < table.rowCount; r++) {
-      final index = table.owner(r) & nodeIndexMask;
-      if (index < nodeCapacity) {
-        map[index] = r;
-      }
-    }
-    return map;
-  }
+  /// O(1): dense rows are node indices, sparse rows resolve through the published row index.
+  int rowOf(TableReader? table, int index) =>
+      table == null || !hasTable(index, table.slot) ? -1 : table.rowOfNode(index) ?? -1;
 
   /// Text of `str` field [field] in [row] of [table].
   String str(TableReader table, int row, FieldSpec field) {
     final (offset, len) = table.str(row, field);
     return text(offset, len);
+  }
+}
+
+/// Content versions of published resources across observed frames, for host caches keyed by
+/// resource content (decoded images): a version stays stable while the resource's bytes do and is
+/// never reused, so a stale decode (or a failed one) never answers for new bytes.
+///
+/// Folds `scene_epoch` + per-frame `dirty_resources` in: a new epoch, or a frame gap (the
+/// skipped frames' dirty lists are gone), drops every version; otherwise exactly the dirty ids.
+/// Zero hashing: invalidation costs O(dirty ids) per frame.
+final class ResourceVersions {
+  /// Shared by every instance, so versions of different sessions / painters never collide in one
+  /// shared cache.
+  static int _next = 0;
+
+  final Map<int, int> _versions = <int, int>{};
+  int _epoch = -1;
+  Key64? _frame;
+
+  /// Folds in one published frame (repeat calls for the same frame are no-ops).
+  void observe(int sceneEpoch, Key64 frameId, Uint32List dirtyResources) {
+    final last = _frame;
+    if (last == frameId && sceneEpoch == _epoch) {
+      return;
+    }
+    if (sceneEpoch != _epoch || last == null || !_follows(frameId, last)) {
+      _versions.clear();
+    } else {
+      dirtyResources.forEach(_versions.remove);
+    }
+    _epoch = sceneEpoch;
+    _frame = frameId;
+  }
+
+  /// Version of [resourceId]'s current bytes.
+  int versionOf(int resourceId) => _versions[resourceId] ??= ++_next;
+
+  static bool _follows(Key64 next, Key64 prev) {
+    final lo = (prev.lo + 1) & 0xFFFFFFFF;
+    return next.lo == lo && next.hi == (lo == 0 ? (prev.hi + 1) & 0xFFFFFFFF : prev.hi);
   }
 }

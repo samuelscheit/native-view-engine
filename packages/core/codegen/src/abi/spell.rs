@@ -227,59 +227,89 @@ pub mod dart {
         }
     }
 
-    /// `(dart:ffi native, Dart-side)` types of one C type spelling from a runtime slot signature
-    /// (`const NveMapEntry*`, `uint32_t`, `NveRuntimeWakeFn`, `NveBufferSlice`).
-    pub fn c_type(spelling: &str) -> (String, String) {
-        let c = spelling.trim();
-        let c = c.strip_prefix("const ").unwrap_or(c).trim();
-        let c = c.strip_prefix("struct ").unwrap_or(c).trim();
-        if let Some(pointee) = c.strip_suffix('*') {
-            let ptr = format!("ffi.Pointer<{}>", c_type(pointee).0);
-            return (ptr.clone(), ptr);
-        }
-        let pair = |native: &str, dart: &str| (native.to_owned(), dart.to_owned());
-        match c {
-            "void" => pair("ffi.Void", "void"),
-            "int32_t" => pair("ffi.Int32", "int"),
-            "uint8_t" => pair("ffi.Uint8", "int"),
-            "uint16_t" => pair("ffi.Uint16", "int"),
-            "uint32_t" => pair("ffi.Uint32", "int"),
-            "uint64_t" => pair("ffi.Uint64", "int"),
-            "int64_t" => pair("ffi.Int64", "int"),
-            "size_t" => pair("ffi.Size", "int"),
-            "float" => pair("ffi.Float", "double"),
-            "double" => pair("ffi.Double", "double"),
-            callback if callback.ends_with("Fn") => {
-                let ty = format!(
-                    "ffi.Pointer<ffi.NativeFunction<{}Native>>",
-                    callback.trim_end_matches("Fn")
-                );
-                (ty.clone(), ty)
-            }
-            named => pair(named, named),
-        }
+    /// The named C types a runtime signature may spell besides scalars and pointers.
+    pub struct CNames<'a> {
+        /// Records and opaque typedefs (`NveBufferSlice`, `NveRuntimeHandle`).
+        pub records: std::collections::BTreeSet<&'a str>,
+        /// Function-pointer typedefs (`NveRuntimeWakeFn`); each has a Dart `<Stem>Native` typedef.
+        pub callbacks: std::collections::BTreeSet<&'a str>,
     }
 
-    /// `RET Function(T name, …)` of a C signature: `dart:ffi` native types, or the Dart-side
-    /// types of its `asFunction` form when `dart_side`.
-    pub fn c_fn(ret: &str, params: &str, dart_side: bool) -> String {
-        let pick = |c: &str| {
-            let (native, dart) = c_type(c);
-            if dart_side { dart } else { native }
-        };
-        let list: Vec<String> = params
-            .split(',')
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map(|p| {
-                let split = p
-                    .rfind(|ch: char| ch.is_whitespace() || ch == '*')
-                    .unwrap_or(0);
-                let (ty, name) = p.split_at(split + 1);
-                format!("{} {}", pick(ty), to_camel_case(name.trim()))
-            })
-            .collect();
-        format!("{} Function({})", pick(ret), list.join(", "))
+    impl CNames<'_> {
+        /// `(dart:ffi native, Dart-side)` types of one C type spelling (`const NveMapEntry*`,
+        /// `uint32_t`, `NveRuntimeWakeFn`, `const char* const*`); `Err` for any type the runtime
+        /// ABI does not declare, so no signature silently renders as an unresolved Dart name.
+        pub fn c_type(&self, spelling: &str) -> Result<(String, String), String> {
+            let c = spelling.trim();
+            let c = c.strip_prefix("const ").unwrap_or(c).trim_start();
+            let c = c.strip_prefix("struct ").unwrap_or(c).trim_start();
+            if let Some(pointee) = c.strip_suffix('*') {
+                // `T* const*`: the `const` qualifies the inner pointer, not the pointee type.
+                let pointee = pointee.trim_end();
+                let pointee = match pointee.strip_suffix("const") {
+                    Some(inner) if inner.ends_with([' ', '*']) => inner,
+                    _ => pointee,
+                };
+                let ptr = format!("ffi.Pointer<{}>", self.c_type(pointee)?.0);
+                return Ok((ptr.clone(), ptr));
+            }
+            let pair = |native: &str, dart: &str| Ok((native.to_owned(), dart.to_owned()));
+            match c {
+                "void" => pair("ffi.Void", "void"),
+                "bool" => pair("ffi.Bool", "bool"),
+                "char" => pair("ffi.Char", "int"),
+                "int8_t" => pair("ffi.Int8", "int"),
+                "int16_t" => pair("ffi.Int16", "int"),
+                "int32_t" => pair("ffi.Int32", "int"),
+                "int64_t" => pair("ffi.Int64", "int"),
+                "uint8_t" => pair("ffi.Uint8", "int"),
+                "uint16_t" => pair("ffi.Uint16", "int"),
+                "uint32_t" => pair("ffi.Uint32", "int"),
+                "uint64_t" => pair("ffi.Uint64", "int"),
+                "size_t" => pair("ffi.Size", "int"),
+                "float" => pair("ffi.Float", "double"),
+                "double" => pair("ffi.Double", "double"),
+                callback if self.callbacks.contains(callback) => {
+                    let ty = format!("ffi.Pointer<ffi.NativeFunction<{}Native>>", callback_stem(callback));
+                    Ok((ty.clone(), ty))
+                }
+                named if self.records.contains(named) => pair(named, named),
+                unknown => Err(format!("unknown C type `{unknown}`")),
+            }
+        }
+
+        /// `RET Function(T name, …)` of a C signature: `dart:ffi` native types, or the Dart-side
+        /// types of its `asFunction` form when `dart_side`. `params` is `void` or a list of named
+        /// parameters; a by-value `void` parameter or an unnamed one is an `Err`.
+        pub fn c_fn(&self, ret: &str, params: &str, dart_side: bool) -> Result<String, String> {
+            let pick = |c: &str| -> Result<String, String> {
+                let (native, dart) = self.c_type(c)?;
+                Ok(if dart_side { dart } else { native })
+            };
+            let params = params.trim();
+            let list = if params == "void" || params.is_empty() {
+                Vec::new()
+            } else {
+                params
+                    .split(',')
+                    .map(|p| {
+                        let p = p.trim();
+                        let split = p.rfind(|ch: char| ch.is_whitespace() || ch == '*').map_or(0, |i| i + 1);
+                        let (ty, name) = p.split_at(split);
+                        let named = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                        if !named || ty.trim().is_empty() {
+                            return Err(format!("parameter `{p}` needs a type and a name"));
+                        }
+                        if ty.trim() == "void" {
+                            return Err(format!("parameter `{p}` is `void`"));
+                        }
+                        Ok(format!("{} {}", pick(ty)?, to_camel_case(name)))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            Ok(format!("{} Function({})", pick(ret)?, list.join(", ")))
+        }
     }
 
     /// Dart typedef stem of a C callback typedef (`NveRuntimeWakeFn` -> `NveRuntimeWake`).
@@ -296,6 +326,25 @@ pub mod dart {
             | "return" | "do" | "if" | "else" | "for" | "while" => format!("{id}Value"),
             _ => id,
         }
+    }
+}
+
+pub mod swift {
+    use super::*;
+
+    /// Swift enum case / static constant name: `lowerCamel`, with a trailing `_` for Swift
+    /// keywords (and `none`, which would shadow `Optional.none`).
+    pub fn variant(name: &str) -> String {
+        const RESERVED: &[&str] = &[
+            "Any", "Self", "as", "break", "case", "catch", "class", "continue", "default", "defer",
+            "deinit", "do", "else", "enum", "extension", "fallthrough", "false", "for", "func",
+            "guard", "if", "import", "in", "init", "inout", "internal", "is", "let", "nil", "none",
+            "operator", "private", "protocol", "public", "repeat", "rethrows", "return", "self",
+            "static", "struct", "subscript", "super", "switch", "throw", "throws", "true", "try",
+            "typealias", "var", "where", "while",
+        ];
+        let id = to_camel_case(name);
+        if RESERVED.contains(&id.as_str()) { format!("{id}_") } else { id }
     }
 }
 

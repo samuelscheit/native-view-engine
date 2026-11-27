@@ -1,6 +1,7 @@
 /// Typography resolution and color conversion over a published runtime scene: one inherited
-/// [NveTextStyle] per node, following the native backends' rule (a `Typography` field applies when
-/// its `set` bit is on or it differs from the default; otherwise the parent's value flows down).
+/// [NveTextStyle] per node, following the host rule (`nve::host::inherit_text_style`): a
+/// `Typography` field applies exactly when its `set` bit is on; otherwise the parent's value
+/// flows down, whatever the row's default bits hold.
 library;
 
 import 'package:flutter/painting.dart';
@@ -54,29 +55,28 @@ final class NveTextStyle {
     }
     final t = table!;
     final set = t.u32(row, TypographyTable.set);
+    if (set == 0) {
+      return this;
+    }
     bool has(int bit) => set & bit != 0;
-    final rawColor = t.color(row, TypographyTable.color).packed;
-    final rawSize = t.f32(row, TypographyTable.fontSize);
-    final rawWeight = t.u32(row, TypographyTable.fontWeight);
-    final size = has(NveTypographySet.fontSize) || (rawSize - 16).abs() > 1e-4 ? rawSize : fontSize;
+    final rawSize = has(NveTypographySet.fontSize) ? t.f32(row, TypographyTable.fontSize) : fontSize;
+    final size = rawSize.isFinite && rawSize > 0 ? rawSize : fontSize;
     final lh = t.length(row, TypographyTable.lineHeight);
     final family = has(NveTypographySet.fontFamily) ? s.str(t, row, TypographyTable.fontFamily) : fontFamily;
     return NveTextStyle(
-      color: has(NveTypographySet.color) || rawColor != nveDefaultTextColor ? rawColor : color,
+      color: has(NveTypographySet.color) ? t.color(row, TypographyTable.color).packed : color,
       fontSize: size,
-      fontWeight: has(NveTypographySet.fontWeight) || rawWeight != 400 ? rawWeight : fontWeight,
+      fontWeight: has(NveTypographySet.fontWeight) ? t.u32(row, TypographyTable.fontWeight) : fontWeight,
       italic: has(NveTypographySet.fontStyle)
           ? t.enumValue(row, TypographyTable.fontStyle) != NveFontStyle.normal
           : italic,
-      textAlign: has(NveTypographySet.textAlign) || t.enumValue(row, TypographyTable.textAlign) != NveTextAlign.start
-          ? t.enumValue(row, TypographyTable.textAlign)
-          : textAlign,
+      textAlign: has(NveTypographySet.textAlign) ? t.enumValue(row, TypographyTable.textAlign) : textAlign,
       fontFamily: family == null || family.isEmpty ? null : family,
       letterSpacing: has(NveTypographySet.letterSpacing) ? t.f32(row, TypographyTable.letterSpacing) : letterSpacing,
       lineHeight: has(NveTypographySet.lineHeight)
           ? switch (lh.unit) {
-              LengthUnit.points => lh.value,
-              LengthUnit.percent => size * lh.value / 100,
+              LengthUnit.points => lh.value.isFinite && lh.value > 0 ? lh.value : null,
+              LengthUnit.percent => lh.value.isFinite && lh.value > 0 ? size * lh.value / 100 : null,
               LengthUnit.auto => null,
             }
           : lineHeight,
