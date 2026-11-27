@@ -12,9 +12,9 @@ Binary, compile-time-verified multi-target code generator for `native-view-engin
 | `schema/` | All IRs, `#[repr(C)]` layout computation, semantic validation, deterministic XXH64 schema hashing, and colocated `AbiFileDescriptor` bridges: |
 | `schema/export.rs` | Shared export & RN IR (`GeneratedFile`, `NveExportSpec`, `ParsedRnSpec`, `RnComponentSpec`, `TurboModuleSpec`, `ExportTarget`, output bundles). |
 | `schema/hybrid/` | Hybrid FFI IR (`mod.rs`, `file_spec.rs`, `validate.rs`), colocated `#[derive(NveAbi)]` descriptor bridge (`schema_bridge.rs`), and Core/Scene ABI specs & hashes (`core_abi.rs`). |
-| `frontend/` | All input specification lexers and recursive-descent parsers: |
+| `frontend/` | All input specification parsers: |
 | `frontend/rn_spec/` | React Native Fabric `*NativeComponent.{ts,js}` & TurboModule `Native*.{ts,js}` lexer and parser (`mod.rs`, `lexer.rs`, `syntax.rs`, `calls.rs`, `lowering.rs`). |
-| `frontend/hybrid_rust/` | Pure-Rust declarative Hybrid FFI `.rs` lexer and parser (`mod.rs`, `lexer.rs`, `items.rs`, `traits.rs`). |
+| `frontend/hybrid_spec/` | Declarative Hybrid FFI `.rs` spec parser on `syn` 2 (`mod.rs` items & attributes, `types.rs` types & literals). |
 | `targets/` | One cohesive directory per output language, plus unified multi-target dispatchers in `targets/mod.rs` (`generate_all_abi_files`, `generate_hybrid_target`/`generate_hybrid_all`, `generate_import_rn`, `generate_export_rn`): |
 | `targets/c_cpp/` | C11 / C++20 / ObjC++ emitters: Core & Scene ABI (`core_abi.rs`), RN import adapter (`import_rn.rs`), RN Fabric C++/iOS/Windows exports (`export_rn_cpp.rs`, `export_rn_ios.rs`, `export_rn_windows.rs`), and Hybrid FFI (`hybrid/`). |
 | `targets/rust/` | Rust emitters: RN import `nve-dioxus` bindings (`import_rn/`), and Hybrid FFI types/vtables/codecs (`hybrid/`). |

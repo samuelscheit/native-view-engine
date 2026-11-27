@@ -2684,8 +2684,10 @@ dependencies = [
  "criterion",
  "nve-abi",
  "nve-hash",
+ "proc-macro2",
  "serde",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]

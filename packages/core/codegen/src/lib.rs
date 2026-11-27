@@ -3,7 +3,7 @@
 //! Organized as a compiler pipeline:
 //! - [`schema`]: Intermediate representations, layout computation, validation, and colocated
 //!   `#[derive(NveAbi)]` descriptor bridges (`export`, `hybrid`).
-//! - [`frontend`]: Input specification lexers and parsers (`rn_spec`, `hybrid_rust`).
+//! - [`frontend`]: Input specification parsers (`rn_spec`, and `hybrid_spec` on `syn` 2).
 //! - [`targets`]: Output-language code emitters (`c_cpp`, `rust`, `swift`, `kotlin_java`, `dart`,
 //!   `typescript`) plus unified multi-target dispatchers.
 //!

@@ -8,6 +8,9 @@ license.workspace = true
 nve-abi = { workspace = true }
 nve-hash = { workspace = true }
 serde = { workspace = true }
+# Hybrid `.rs` spec frontend; `span-locations` gives parse errors real line/column numbers.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["full"] }
 
 [dev-dependencies]
 # Round-trip tests of the `NveExportSpec` serde derives (JSON loading itself lives in `nve-cli`).
