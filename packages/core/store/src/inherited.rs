@@ -21,6 +21,9 @@ use crate::value::WordValue;
 /// - `Self::DESC.inherited` is `true` and word `0` is the `__explicit: u32` mask.
 /// - `Self::Words` has length equal to `Self::DESC.words()`.
 /// - `default_words()` matches `Self::DESC.defaults` with word `0 == 0`.
+/// - `inherit_only` preserves inherited fields from `parent`, resets `#[no_inherit]` fields to
+///   `Self::DESC.defaults`, and masks word `0` with `Self::INHERITED_FIELD_MASK` without
+///   introducing invalid string/resource words.
 /// - `resolve_inherited_arrays` blends every field's words/bitfields according to `own[0]`
 ///   without out-of-bounds access or invalid string/resource words.
 pub unsafe trait InheritedTable: NveTable {

@@ -138,6 +138,7 @@ struct BenchTypo {
     #[effect(measure)]
     font_family: Str,
     #[effect(measure)]
+    #[no_inherit]
     max_lines: Option<u32>,
 }
 

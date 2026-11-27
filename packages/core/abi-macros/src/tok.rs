@@ -77,6 +77,29 @@ pub(crate) fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {
     }
 }
 
+fn skip_generic_args(tokens: &[Tok], pos: &mut usize) -> bool {
+    if !is_punct(tokens, *pos, '<') {
+        return false;
+    }
+    let mut i = *pos + 1;
+    let mut depth = 1usize;
+    while i < tokens.len() && depth > 0 {
+        match &tokens[i] {
+            Tok::Punct('<', _) => depth += 1,
+            Tok::Punct('>', _) => depth -= 1,
+            Tok::Ident(_) | Tok::Literal(_) | Tok::Group(_, _) => {}
+            Tok::Punct(':' | ',' | '\'' | '_' | '&', _) => {}
+            Tok::Punct(_, _) => return false,
+        }
+        i += 1;
+    }
+    if depth != 0 {
+        return false;
+    }
+    *pos = i;
+    true
+}
+
 fn is_pure_path(tokens: &[Tok]) -> bool {
     if tokens.is_empty() {
         return false;
@@ -93,11 +116,27 @@ fn is_pure_path(tokens: &[Tok]) -> bool {
             return false;
         }
         i += 1;
+        if is_punct(tokens, i, '<') && !skip_generic_args(tokens, &mut i) {
+            return false;
+        }
         if i == tokens.len() {
             return true;
         }
         if is_colon2(tokens, i) {
             i += 2;
+            if is_punct(tokens, i, '<') {
+                if !skip_generic_args(tokens, &mut i) {
+                    return false;
+                }
+                if i == tokens.len() {
+                    return true;
+                }
+                if is_colon2(tokens, i) {
+                    i += 2;
+                } else {
+                    return false;
+                }
+            }
         } else {
             return false;
         }
@@ -126,10 +165,6 @@ fn render_tokens_impl(tokens: &[Tok], paren_invisible: bool) -> String {
                             || matches!(inner.as_slice(), [Tok::Ident(_) | Tok::Literal(_)])
                             || (idx >= 2 && is_colon2(tokens, idx - 2))
                             || is_colon2(tokens, idx + 1)
-                            || matches!(
-                                tokens.get(idx + 1),
-                                Some(Tok::Group(Delim::Paren | Delim::Brace, _))
-                            )
                             || is_pure_path(inner);
                         if paren_invisible && !skip_paren {
                             ("(", ")")

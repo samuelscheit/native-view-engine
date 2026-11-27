@@ -350,7 +350,7 @@ fn macro_rules_default_expr_precedence_word_count_scope_and_nonzero_opt() {
     // `Option<NonZeroU8|NonZeroU16|NonZeroU32|NonZero<u16>>` defaults pack cleanly.
     const WORD_COUNT: u32 = 42;
     macro_rules! def_table {
-        ($a:expr, $t:ty, $p:path, $var:ident) => {
+        ($a:expr, $cond:expr, $t:ty, $p:path, $var:ident) => {
             #[allow(dead_code)]
             #[derive(crate::NveTable)]
             #[nve_table(name = "test.packing.macro_prec", storage = "sparse")]
@@ -358,6 +358,9 @@ fn macro_rules_default_expr_precedence_word_count_scope_and_nonzero_opt() {
                 #[effect(paint)]
                 #[default($a * 2)]
                 mul: u32,
+                #[effect(paint)]
+                #[default(if false && $cond { 1u32 } else { 2u32 })]
+                if_prec: u32,
                 #[effect(paint)]
                 #[default(WORD_COUNT)]
                 from_const: u32,
@@ -382,11 +385,16 @@ fn macro_rules_default_expr_precedence_word_count_scope_and_nonzero_opt() {
             }
         };
     }
-    def_table!(1 + 2, MacroConstHolder, core::num::NonZeroU16, C);
+    def_table!(1 + 2, false || true, MacroConstHolder, core::num::NonZeroU16, C);
 
     let store = NodeStore::new();
     let r = store.row::<MacroPrecTable>(NodeId::ROOT);
     assert_eq!(r.mul(), 6, "(1 + 2) * 2 must equal 6, not 1 + (2 * 2) = 5");
+    assert_eq!(
+        r.if_prec(),
+        2,
+        "if false && (false || true) must evaluate to 2, not (false && false) || true == 1"
+    );
     assert_eq!(r.from_const(), 42);
     assert_eq!(r.from_ty_const(), 77);
     assert_eq!(r.nz_lines(), NonZeroU16::new(3));
@@ -394,8 +402,8 @@ fn macro_rules_default_expr_precedence_word_count_scope_and_nonzero_opt() {
     assert_eq!(r.nz8(), NonZeroU8::new(9));
     assert_eq!(r.nz32(), NonZeroU32::new(123456));
     assert_eq!(r.nz_generic(), NonZero::new(7));
-    assert_eq!(MacroPrecTable::DESC.fields[3].bits, 16);
-    assert_eq!(MacroPrecTable::DESC.fields[5].bits, 8);
-    assert_eq!(MacroPrecTable::DESC.fields[6].bits, 32);
-    assert_eq!(MacroPrecTable::DESC.fields[7].bits, 16);
+    assert_eq!(MacroPrecTable::DESC.fields[4].bits, 16);
+    assert_eq!(MacroPrecTable::DESC.fields[6].bits, 8);
+    assert_eq!(MacroPrecTable::DESC.fields[7].bits, 32);
+    assert_eq!(MacroPrecTable::DESC.fields[8].bits, 16);
 }

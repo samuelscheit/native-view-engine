@@ -274,6 +274,54 @@ fn derive_nve_table_emits_no_inherit_mask_nonzero_generic_and_delim_none_paths()
     ];
     assert_eq!(render_expr_tokens(&arith), "(1 + 2) * 2");
 
+    // `$cond` before `{ ... }` in `if false && $cond { 1u32 } else { 2u32 }` MUST still be
+    // parenthesized so `false && false || true` does not flip precedence.
+    let if_cond = vec![
+        Tok::Ident("if".into()),
+        Tok::Ident("false".into()),
+        Tok::Punct('&', true),
+        Tok::Punct('&', false),
+        Tok::Group(
+            Delim::None,
+            vec![
+                Tok::Ident("false".into()),
+                Tok::Punct('|', true),
+                Tok::Punct('|', false),
+                Tok::Ident("true".into()),
+            ],
+        ),
+        Tok::Group(Delim::Brace, vec![Tok::Literal("1u32".into())]),
+        Tok::Ident("else".into()),
+        Tok::Group(Delim::Brace, vec![Tok::Literal("2u32".into())]),
+    ];
+    assert_eq!(
+        render_expr_tokens(&if_cond),
+        "if false && (false || true) {1u32} else {2u32}"
+    );
+
+    // Pure generic/turbofish paths inside Delim::None before `(...)` or `{...}` skip parens.
+    let turbo_path = vec![
+        Tok::Group(
+            Delim::None,
+            vec![
+                Tok::Ident("Option".into()),
+                Tok::Punct(':', true),
+                Tok::Punct(':', false),
+                Tok::Punct('<', false),
+                Tok::Ident("u16".into()),
+                Tok::Punct('>', false),
+                Tok::Punct(':', true),
+                Tok::Punct(':', false),
+                Tok::Ident("Some".into()),
+            ],
+        ),
+        Tok::Group(Delim::Paren, vec![Tok::Literal("3".into())]),
+    ];
+    assert_eq!(
+        render_expr_tokens(&turbo_path),
+        "Option :: < u16 > :: Some (3)"
+    );
+
     // `#[no_inherit]` + `Option<core::num::NonZero<u16>>` + const finiteness check for f32.
     let src = r#"
         #[nve_table(name = "t.no_inh", storage = "sparse", inherited)]
