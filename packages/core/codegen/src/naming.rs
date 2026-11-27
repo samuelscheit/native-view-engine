@@ -3,23 +3,25 @@
 /// Converts `PascalCase`, `camelCase`, `kebab-case`, or acronym-prefixed names
 /// (e.g. `RCTModalHostView`, `testID`, `portrait-upside-down`) into `snake_case`.
 pub fn to_snake_case(input: &str) -> String {
-    let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len() + 8);
     let mut prev_was_underscore = true;
+    let mut prev: Option<char> = None;
+    let mut chars = input.chars().peekable();
 
-    for (i, &ch) in chars.iter().enumerate() {
+    while let Some(ch) = chars.next() {
         if !ch.is_ascii_alphanumeric() {
             if !prev_was_underscore && !out.is_empty() {
                 out.push('_');
                 prev_was_underscore = true;
             }
+            prev = Some(ch);
             continue;
         }
         if ch.is_ascii_uppercase() {
-            let prev_is_lower_or_digit = i > 0
-                && (chars[i - 1].is_ascii_lowercase() || chars[i - 1].is_ascii_digit());
-            let next_is_lower = i + 1 < chars.len() && chars[i + 1].is_ascii_lowercase();
-            let prev_is_upper = i > 0 && chars[i - 1].is_ascii_uppercase();
+            let prev_is_lower_or_digit =
+                prev.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit());
+            let next_is_lower = chars.peek().is_some_and(char::is_ascii_lowercase);
+            let prev_is_upper = prev.is_some_and(|p| p.is_ascii_uppercase());
             if !out.is_empty()
                 && !prev_was_underscore
                 && (prev_is_lower_or_digit || (prev_is_upper && next_is_lower))
@@ -32,6 +34,7 @@ pub fn to_snake_case(input: &str) -> String {
             out.push(ch.to_ascii_lowercase());
             prev_was_underscore = false;
         }
+        prev = Some(ch);
     }
 
     while out.ends_with('_') {
@@ -81,16 +84,41 @@ pub fn to_pascal_case(input: &str) -> String {
 
 /// Converts an identifier into `camelCase`.
 pub fn to_camel_case(input: &str) -> String {
-    let pascal = to_pascal_case(input);
-    let mut chars = pascal.chars();
-    match chars.next() {
-        None => "unnamed".to_owned(),
-        Some(first) => {
-            let mut out = String::with_capacity(pascal.len());
-            out.push(first.to_ascii_lowercase());
-            out.push_str(chars.as_str());
-            out
+    let mut out = String::with_capacity(input.len());
+    let mut capitalize_next = false;
+    let mut prev_was_lower = false;
+
+    for ch in input.chars() {
+        if !ch.is_ascii_alphanumeric() {
+            if !out.is_empty() {
+                capitalize_next = true;
+            }
+            prev_was_lower = false;
+            continue;
         }
+        if out.is_empty() {
+            out.push(ch.to_ascii_lowercase());
+            capitalize_next = false;
+            prev_was_lower = false;
+        } else if capitalize_next {
+            out.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+            prev_was_lower = false;
+        } else if ch.is_ascii_uppercase() && prev_was_lower {
+            out.push(ch);
+            prev_was_lower = false;
+        } else {
+            out.push(ch);
+            prev_was_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        }
+    }
+
+    if out.is_empty() {
+        "unnamed".to_owned()
+    } else if out.as_bytes()[0].is_ascii_digit() {
+        format!("v{out}")
+    } else {
+        out
     }
 }
 
@@ -403,4 +431,55 @@ pub fn escape_ts_single_quoted(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{to_camel_case, to_pascal_case, to_snake_case};
+
+    #[test]
+    fn snake_case_handles_acronyms_separators_and_unicode() {
+        for (input, expected) in [
+            ("", "unnamed"),
+            ("___", "unnamed"),
+            ("RCTModalHostView", "rct_modal_host_view"),
+            ("testID", "test_id"),
+            ("portrait-upside-down", "portrait_upside_down"),
+            ("foo1Bar", "foo1_bar"),
+            ("a__b___", "a_b"),
+            ("aéB", "a_b"),
+            ("ABé", "ab"),
+        ] {
+            assert_eq!(to_snake_case(input), expected, "input={input:?}");
+        }
+    }
+
+    #[test]
+    fn camel_case_matches_lowercased_pascal_case() {
+        for input in [
+            "",
+            "___",
+            "a",
+            "A",
+            "ABc",
+            "foo_bar",
+            "foo__bar_",
+            "_foo",
+            "1foo",
+            "1Foo",
+            "1foo_bar",
+            "_1_a",
+            "aéB",
+            "éa",
+            "testID",
+        ] {
+            let pascal = to_pascal_case(input);
+            let mut chars = pascal.chars();
+            let expected = match chars.next() {
+                None => "unnamed".to_owned(),
+                Some(first) => format!("{}{}", first.to_ascii_lowercase(), chars.as_str()),
+            };
+            assert_eq!(to_camel_case(input), expected, "input={input:?}");
+        }
+    }
 }

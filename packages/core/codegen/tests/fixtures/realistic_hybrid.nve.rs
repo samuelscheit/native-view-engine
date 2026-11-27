@@ -45,6 +45,17 @@ pub struct SignedPayload {
     pub nonce: Option<u64>,
 }
 
+/// A record whose field names shadow the generated codec's parameters and locals (`w`, `mark`,
+/// `r`, `count`), with a nested sequence.
+#[nve_hybrid_struct]
+pub struct Cursor {
+    pub mark: u32,
+    pub w: Vec<u8>,
+    pub r: Option<String>,
+    pub count: u32,
+    pub grid: Vec<Vec<i32>>,
+}
+
 /// High-performance binary native crypto module.
 #[nve_hybrid_module(name = "Crypto")]
 pub trait CryptoSpec {
@@ -55,8 +66,13 @@ pub trait CryptoSpec {
     fn verify_payload(&self, payload: SignedPayload) -> Result<bool, String>;
     fn find_nonce(&self, label: &str, hint: Option<u64>) -> Option<u64>;
     fn lookup_payload(&self, id: u32) -> Option<SignedPayload>;
-    fn batch_sign(&self, inputs: Vec<String>, algo: HashAlgorithm) -> Result<Vec<SignedPayload>, String>;
+    fn batch_sign(
+        &self,
+        inputs: Vec<String>,
+        algo: HashAlgorithm,
+    ) -> Result<Vec<SignedPayload>, String>;
     fn inspect_dynamic(&self, meta: NveValue) -> NveValue;
+    fn transpose(&self, cursor: Cursor) -> Cursor;
     fn reset_cache(&mut self) -> Result<(), String>;
 }
 
@@ -77,6 +93,9 @@ pub trait VideoSurfaceSpec {
 
     #[prop(default = None)]
     fn poster_url(&self) -> Option<String>;
+
+    #[prop(default = None)]
+    fn focus_point(&self) -> Option<FramePoint>;
 
     #[event]
     fn on_progress(&self, position_ms: u64, duration_ms: u64);

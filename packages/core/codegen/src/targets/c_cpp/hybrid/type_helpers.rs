@@ -50,7 +50,7 @@ pub(super) fn cpp_param_type(ty: &HybridType) -> String {
     match ty {
         HybridType::String => "std::string_view".to_string(),
         HybridType::Bytes => "std::span<const uint8_t>".to_string(),
-        HybridType::Value => "NveValue".to_string(),
+        HybridType::Value => "const DynamicValue&".to_string(),
         HybridType::Struct(name) => format!("const {name}&"),
         HybridType::Optional(inner) => format!("const std::optional<{}>&", cpp_owned_type(inner)),
         HybridType::Vec(inner) => format!("const std::vector<{}>&", cpp_owned_type(inner)),
@@ -167,159 +167,6 @@ pub(super) fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     }
 }
 
-pub(crate) fn emit_cpp_bin_write(
-    out: &mut CodeWriter,
-    indent: &str,
-    w: &str,
-    expr: &str,
-    ty: &HybridType,
-) {
-    match ty {
-        HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});"),
-        HybridType::U8
-        | HybridType::U16
-        | HybridType::Usize
-        | HybridType::I32
-        | HybridType::U32
-        | HybridType::I64
-        | HybridType::U64 => {
-            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>({expr}));");
-        }
-        HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{w}.write_f64(static_cast<double>({expr}));");
-        }
-        HybridType::Enum(_) => {
-            writeln!(
-                out,
-                "{indent}{w}.write_i64(static_cast<int64_t>(static_cast<uint32_t>({expr})));"
-            );
-        }
-        HybridType::String => writeln!(out, "{indent}{w}.write_str({expr});"),
-        HybridType::Bytes => writeln!(out, "{indent}{w}.write_bytes({expr});"),
-        HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encode_bin({w});"),
-        HybridType::Value => writeln!(out, "{indent}{w}.raw({expr}.bytes());"),
-        HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({expr}.has_value()) {{");
-            emit_cpp_bin_write(out, &format!("{indent}  "), w, &format!("(*{expr})"), inner);
-            writeln!(out, "{indent}}} else {{");
-            writeln!(out, "{indent}  {w}.write_null();");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Vec(inner) => {
-            // Nesting depth names the locals, so a nested sequence never shadows its parent's.
-            let d = indent.len();
-            writeln!(out, "{indent}{{");
-            writeln!(
-                out,
-                "{indent}  const auto _mark{d} = {w}.begin_array(static_cast<uint32_t>({expr}.size()));"
-            );
-            writeln!(out, "{indent}  for (const auto& _elem{d} : {expr}) {{");
-            emit_cpp_bin_write(
-                out,
-                &format!("{indent}    "),
-                w,
-                &format!("_elem{d}"),
-                inner,
-            );
-            writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}  {w}.end(_mark{d});");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {
-            writeln!(out, "{indent}{w}.write_null();");
-        }
-    }
-}
-
-pub(crate) fn emit_cpp_bin_read(
-    out: &mut CodeWriter,
-    indent: &str,
-    r: &str,
-    dst: &str,
-    ty: &HybridType,
-) {
-    match ty {
-        HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.read_bool();"),
-        HybridType::U8 => writeln!(out, "{indent}{dst} = static_cast<uint8_t>({r}.read_i64());"),
-        HybridType::U16 => writeln!(
-            out,
-            "{indent}{dst} = static_cast<uint16_t>({r}.read_i64());"
-        ),
-        HybridType::Usize => writeln!(out, "{indent}{dst} = static_cast<size_t>({r}.read_i64());"),
-        HybridType::I32 => writeln!(out, "{indent}{dst} = static_cast<int32_t>({r}.read_i64());"),
-        HybridType::U32 => writeln!(
-            out,
-            "{indent}{dst} = static_cast<uint32_t>({r}.read_i64());"
-        ),
-        HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.read_i64();"),
-        HybridType::U64 => writeln!(
-            out,
-            "{indent}{dst} = static_cast<uint64_t>({r}.read_i64());"
-        ),
-        HybridType::F32 => writeln!(out, "{indent}{dst} = static_cast<float>({r}.read_f64());"),
-        HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.read_f64();"),
-        HybridType::Enum(e) => {
-            writeln!(
-                out,
-                "{indent}{dst} = static_cast<{e}>(static_cast<uint32_t>({r}.read_i64()));"
-            );
-        }
-        HybridType::String => writeln!(out, "{indent}{dst} = std::string({r}.read_str());"),
-        HybridType::Bytes => {
-            writeln!(out, "{indent}{{");
-            writeln!(out, "{indent}  const auto _span = {r}.read_bytes();");
-            writeln!(out, "{indent}  {dst}.assign(_span.begin(), _span.end());");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}::decode_bin({r});"),
-        HybridType::Value => {
-            writeln!(out, "{indent}{{");
-            writeln!(
-                out,
-                "{indent}  auto _dv = DynamicValue::from_bytes({r}.read_raw_value());"
-            );
-            writeln!(
-                out,
-                "{indent}  if (!_dv) throw std::runtime_error(\"malformed NveBinValue\");"
-            );
-            writeln!(out, "{indent}  {dst} = std::move(*_dv);");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({r}.read_null()) {{");
-            writeln!(out, "{indent}  {dst} = std::nullopt;");
-            writeln!(out, "{indent}}} else {{");
-            writeln!(out, "{indent}  {} _opt_v{{}};", cpp_owned_type(inner));
-            emit_cpp_bin_read(out, &format!("{indent}  "), r, "_opt_v", inner);
-            writeln!(out, "{indent}  {dst} = std::move(_opt_v);");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{{");
-            writeln!(out, "{indent}  const uint32_t _n = {r}.begin_array();");
-            writeln!(out, "{indent}  {dst}.clear();");
-            writeln!(out, "{indent}  {dst}.reserve(_n);");
-            writeln!(out, "{indent}  for (uint32_t _i = 0; _i < _n; ++_i) {{");
-            writeln!(out, "{indent}    {} _elem{{}};", cpp_owned_type(inner));
-            emit_cpp_bin_read(out, &format!("{indent}    "), r, "_elem", inner);
-            writeln!(out, "{indent}    {dst}.push_back(std::move(_elem));");
-            writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {}
-    }
-}
-
 pub(super) fn cpp_prop_is_direct_nve_value(ty: &HybridType) -> bool {
     match ty {
         HybridType::Bool
@@ -407,6 +254,18 @@ pub(super) fn emit_cpp_fill_nve_value(
                 out,
                 "{indent}{dst}.data.bytes_val = NveBufferSlice{{{expr}.data(), {expr}.size()}};"
             );
+        }
+        // An absent non-direct option is `Null` itself, never an encoded null inside `Bytes`.
+        HybridType::Optional(_) => {
+            writeln!(out, "{indent}if ({expr}.has_value()) {{");
+            writeln!(out, "{indent}  {dst}.tag = NVE_VAL_BYTES;");
+            writeln!(
+                out,
+                "{indent}  {dst}.data.bytes_val = to_slice(_prop_bin_{idx});"
+            );
+            writeln!(out, "{indent}}} else {{");
+            writeln!(out, "{indent}  {dst}.tag = NVE_VAL_NULL;");
+            writeln!(out, "{indent}}}");
         }
         _ => {
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_BYTES;");

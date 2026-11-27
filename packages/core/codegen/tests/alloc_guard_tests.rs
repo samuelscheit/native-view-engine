@@ -4,8 +4,8 @@
 //! `HybridFileSpec` bridge), and every template renders into one pre-sized buffer. What remains are
 //! the small per-name `String`s of the spelling helpers: codegen is a cold build step, so those
 //! are not worth a zero-allocation rewrite. The ceilings sit ~25% above the measured counts
-//! (C header 1,420 / tables 5,268 / all files 11,539), so reintroducing an owned intermediate spec (thousands of
-//! allocations) fails here. Byte totals count every buffer growth (ceiling 5x the output).
+//! (C header 1,173 / tables 2,209 / all files 6,199), so reintroducing an owned intermediate spec
+//! or per-field validation churn fails here. Byte totals count every buffer growth (ceiling 5x the output).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -66,8 +66,8 @@ fn c_abi_header_allocation_ceiling() {
         header.len()
     );
     assert!(
-        allocs <= 1_800,
-        "C header took {allocs} allocations (ceiling 1800)"
+        allocs <= 1_500,
+        "C header took {allocs} allocations (ceiling 1500)"
     );
     assert!(
         bytes <= 5 * header.len(),
@@ -84,8 +84,8 @@ fn table_files_allocation_ceiling() {
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
     );
     assert!(
-        allocs <= 6_600,
-        "tables took {allocs} allocations (ceiling 6600)"
+        allocs <= 2_800,
+        "tables took {allocs} allocations (ceiling 2800)"
     );
     assert!(
         bytes <= 5 * out,
@@ -103,8 +103,8 @@ fn every_host_file_allocation_ceiling() {
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
     assert!(
-        allocs <= 14_500,
-        "all files took {allocs} allocations (ceiling 14500)"
+        allocs <= 7_800,
+        "all files took {allocs} allocations (ceiling 7800)"
     );
     assert!(
         bytes <= 5 * out,

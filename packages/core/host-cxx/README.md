@@ -11,10 +11,13 @@ keys, and field specs.
 | `nve/host/xxh64.hpp` | C++20 | `nve::host::Xxh64Hasher` and `xxh64()` (`constexpr`); `const_id()` / `Key64::of()` are `consteval` and reject non-UTF-8 names at compile time (runtime names: `nve_key64_of`, which returns 0 for invalid UTF-8) |
 | `nve/host/utf8.h` | C11 / C++20 | Allocation-free strict UTF-8 validation (same acceptance as Rust `str::from_utf8`) |
 | `nve/host/table_word.h` | C11 / C++20 | `NveFieldKind`, `NveFieldSpec`, `nve_field_valid` / `nve_field_fits`, field / `Length` / RGBA word decoding; every bit helper is total (an invalid range reads 0, never a UB shift) |
-| `nve/host/bin_codec.hpp` | C++20 | `BinReader` / `BinWriter`: bounds-checked LE primitives plus the tagged `NveBinValue` format, with sticky errors, no exceptions, and zero heap allocations on read |
+| `nve/host/bin_codec.hpp` | C++20 | `BinReader` / `BinWriter`: bounds-checked LE primitives plus the tagged `NveBinValue` format, with sticky errors (`to_string(BinError)` names them), no exceptions, and zero heap allocations on read |
+| `nve/host/utf16.hpp` | C++20 | Strict `utf16_to_utf8` / `utf8_to_utf16` (lone surrogates and invalid UTF-8 are `nullopt`) |
 | `nve/host/table_reader.hpp` | C++20 | `TableReader` over any `NveTableView`-shaped struct (`std::optional` on every read; specs that do not fit the row read `nullopt`); `field()` is `consteval` and rejects invalid specs at compile time |
 | `nve/host/scene_reader.hpp` | C++20 | `SceneReader<View>` over the generated `NveSceneView`. It validates once, then does O(1) bounds-checked reads. |
-| `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue`; with `bin_codec.hpp`, the runtime of every generated C++ hybrid client and JNI glue (`nve codegen hybrid`) |
+| `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue` (`from_bytes` validates a buffer, `read` a reader's next value with sticky errors); with `bin_codec.hpp`, the runtime of every generated C++ hybrid client and JNI glue (`nve codegen hybrid`) |
+| `nve/host/value_tree.hpp` | C++20 (+ generated ABI header) | `NveValueTree`: the C `NveValue` view of a `DynamicValue`, for C signatures that take `NveValue` |
+| `nve/host/jni.hpp` | C++20 (+ `<jni.h>`) | CheckJNI-clean helpers of the generated JNI glue: `throw_java_exception`, strict `direct_buffer_span`, `to_jbyte_array`, and UTF-16 (never Modified UTF-8) `utf8_of` / `java_string` |
 
 `BinWriter` records `InvalidUtf8` for strings that are not well-formed UTF-8, and `TooLarge` for a
 length above `u32`; a rejected write leaves no bytes at all. `end(mark)` records `InvalidMark`
@@ -24,7 +27,9 @@ when the mark:
 - is already closed;
 - does not point just past an `Array` / `Map` tag.
 
-While validating, `BinReader` bounds every child read by its container's end, as Rust does.
+`BinReader` bounds every child read by its container's end, as Rust does: while validating, and
+between `begin_array()` / `begin_map()` (which return a `ReadMark` with the entry count) and
+`end(mark)`, which also requires the payload to have been read exactly (`TrailingBytes`).
 
 The readers are templates over the generated structs, so the node record layout is never
 hard-coded here. A codegen change to `NveRenderNode` / `NveEvent` needs no edit in this package.

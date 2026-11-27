@@ -45,8 +45,13 @@ pub(super) fn find<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a Attribu
     outer(attrs).find(|a| is_named(a, name))
 }
 
-pub(super) fn has(attrs: &[Attribute], name: &str) -> bool {
-    find(attrs, name).is_some()
+/// Outer member / field attribute spelled exactly `#[name]` (`#[a::prop]` is not `#[prop]`).
+pub(super) fn find_member<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a Attribute> {
+    outer(attrs).find(|a| a.path().is_ident(name))
+}
+
+pub(super) fn has_member(attrs: &[Attribute], name: &str) -> bool {
+    find_member(attrs, name).is_some()
 }
 
 /// `#[cfg]` / `#[cfg_attr]` would silently keep or drop declarations: the frontend never
@@ -123,18 +128,31 @@ const STANDARD_ATTRS: &[&str] = &[
 /// Tool namespaces whose attributes (`#[rustfmt::skip]`, `#[clippy::...]`) are harmless.
 const TOOL_NAMESPACES: &[&str] = &["rustfmt", "clippy"];
 
-/// The attributes on a trait member / record field / variant: standard Rust attributes, plus each
-/// of `allowed` at most once. Anything else (`#[porp]`, a misplaced `#[offset]`) is an error.
+/// The attributes on a trait member / record field / variant / parameter: standard Rust
+/// attributes, plus each of `allowed` (single identifiers) at most once. `misplaced` names
+/// attributes valid elsewhere, with the message explaining where. Anything else (`#[porp]`, a
+/// misplaced `#[offset]`, `#[clippy::prop]`) is an error; the first offending attribute in source
+/// order is the one reported.
 pub(super) fn check_member_attrs(
     attrs: &[Attribute],
     allowed: &[&str],
+    misplaced: &[(&str, &str)],
     what: &str,
 ) -> Result<(), CodegenError> {
     let mut seen: Vec<String> = Vec::new();
     for a in attrs {
         reject_cfg(a)?;
         let path = a.path();
+        let last = path
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
+        // A tool attribute is harmless, unless it is spelled like a member attribute.
+        let member_like =
+            allowed.contains(&last.as_str()) || misplaced.iter().any(|(m, _)| *m == last);
         let tool = path.segments.len() > 1
+            && !member_like
             && path
                 .segments
                 .first()
@@ -145,6 +163,9 @@ pub(super) fn check_member_attrs(
                 .is_some_and(|i| STANDARD_ATTRS.iter().any(|s| i == *s))
         {
             continue;
+        }
+        if let Some((_, message)) = misplaced.iter().find(|(m, _)| path.is_ident(m)) {
+            return Err(error_at(a.span(), *message));
         }
         // Member attributes are single identifiers: `#[doc::prop]` is not `#[prop]`.
         let name = path
@@ -200,7 +221,7 @@ fn doc_text(raw: &str) -> String {
             }
         })
         .collect();
-    lines.join("\n").trim().to_owned()
+    lines.join("\n").trim_matches('\n').to_owned()
 }
 
 /// `a::b` for an attribute path in an error message.
@@ -384,7 +405,7 @@ pub(super) fn repr(attrs: &[Attribute]) -> Result<Repr, CodegenError> {
 
 /// `#[offset(N)]` / `#[offset64(N)]` on a record field.
 pub(super) fn offset(attrs: &[Attribute], name: &str) -> Result<Option<usize>, CodegenError> {
-    let Some(attr) = find(attrs, name) else {
+    let Some(attr) = find_member(attrs, name) else {
         return Ok(None);
     };
     let lit: LitInt = attr.parse_args().map_err(|e| {

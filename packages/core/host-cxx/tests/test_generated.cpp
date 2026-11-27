@@ -4,6 +4,9 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <span>
+#include <vector>
 #include <string_view>
 
 #include "check.h"
@@ -11,6 +14,7 @@
 #include "nve/generated/nve_tables.generated.h"
 #include "nve/host/scene_reader.hpp"
 #include "nve/host/table_reader.hpp"
+#include "nve/host/value_tree.hpp"
 
 namespace {
 
@@ -88,7 +92,59 @@ void test_generated_str_field() {
 
 }  // namespace
 
+void test_value_tree_mirrors_the_dynamic_value() {
+  // {"k": [1, "\xC3\xA9", null, true, 1.5, b"\xFF"]}
+  nve::host::BinWriter w;
+  const auto map = w.begin_map(1);
+  w.write_map_key("k");
+  const auto arr = w.begin_array(6);
+  w.write_i64(1);
+  w.write_str("\xC3\xA9");
+  w.write_null();
+  w.write_bool(true);
+  w.write_f64(1.5);
+  const uint8_t ff = 0xFF;
+  w.write_bytes(std::span<const uint8_t>(&ff, 1));
+  w.end(arr);
+  w.end(map);
+  const std::optional<nve::host::DynamicValue> v = nve::host::DynamicValue::from_bytes(w.bytes());
+  CHECK(v.has_value());
+  const nve::host::NveValueTree tree(*v);
+  const NveValue& root = tree.root();
+  CHECK(root.tag == NVE_VAL_MAP && root.data.map_val.len == 1u);
+  const NveMapEntry& e = root.data.map_val.ptr[0];
+  CHECK(std::string_view(reinterpret_cast<const char*>(e.key.ptr), e.key.len) == "k");
+  CHECK(e.value.tag == NVE_VAL_ARRAY && e.value.data.array_val.len == 6u);
+  const NveValue* items = e.value.data.array_val.ptr;
+  CHECK(items[0].tag == NVE_VAL_I64 && items[0].data.i64_val == 1);
+  CHECK(items[1].tag == NVE_VAL_STR && items[1].data.str_val.len == 2u);
+  CHECK(items[2].tag == NVE_VAL_NULL);
+  CHECK(items[3].tag == NVE_VAL_BOOL && items[3].data.bool_val == 1u);
+  CHECK(items[4].tag == NVE_VAL_F64 && items[4].data.f64_val == 1.5);
+  CHECK(items[5].tag == NVE_VAL_BYTES && items[5].data.bytes_val.len == 1u && items[5].data.bytes_val.ptr[0] == 0xFF);
+  // Deep nesting keeps every container slice valid (children append while parents are open).
+  nve::host::BinWriter deep;
+  std::vector<nve::host::BinWriter::Mark> marks;
+  for (int i = 0; i < 40; ++i) {
+    marks.push_back(deep.begin_array(2));
+    deep.write_i64(i);
+  }
+  deep.write_null();
+  for (auto it = marks.rbegin(); it != marks.rend(); ++it) deep.end(*it);
+  const std::optional<nve::host::DynamicValue> dv = nve::host::DynamicValue::from_bytes(deep.bytes());
+  CHECK(dv.has_value());
+  const nve::host::NveValueTree deep_tree(*dv);
+  const NveValue* node = &deep_tree.root();
+  for (int i = 0; i < 40; ++i) {
+    CHECK(node->tag == NVE_VAL_ARRAY && node->data.array_val.len == 2u);
+    CHECK(node->data.array_val.ptr[0].data.i64_val == i);
+    node = &node->data.array_val.ptr[1];
+  }
+  CHECK(node->tag == NVE_VAL_NULL);
+}
+
 int main() {
+  test_value_tree_mirrors_the_dynamic_value();
   test_scene_over_generated_structs();
   test_generated_str_field();
   if (g_failures != 0) {

@@ -4,14 +4,19 @@
 //! 1. `<Stem>HybridAbi.generated.h`: pure C11 header including `nve_abi.generated.h`, declaring
 //!    `NVE_HYBRID_<NAME>_INTERFACE_ID`, `NVE_HYBRID_<NAME>_SCHEMA_HASH`, `#[repr(C)]` POD
 //!    structs/enums, `NveHybridOwnedBytes`, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`.
-//! 2. `<Stem>HybridSpec.generated.hpp`: C++20 `namespace nve::hybrid` with `enum class`, native structs,
-//!    compact binary `NveBinValue` reader/writer, Nitro-style abstract `class Hybrid<Name>Spec`,
-//!    and zero-overhead RAII `class <Name>Client` resolving `nve_get_interface` + checking
-//!    `schema_hash` on construction.
+//! 2. `<Stem>HybridSpec.generated.hpp`: C++20 `namespace nve::hybrid` with `enum class`, native
+//!    structs with `NveBinValue` `encode_bin` / `decode_bin` over the static `nve::host_cxx`
+//!    runtime (`packages/core/host-cxx`), Nitro-style abstract `class Hybrid<Name>Spec`, and RAII
+//!    `class <Name>Client` resolving `nve_get_interface` + checking `schema_hash` on construction.
 
+mod bin_emitter;
 mod client_emitter;
 mod codec_emitter;
-pub(crate) mod type_helpers;
+mod type_helpers;
+
+// The JNI glue includes the C++ client, so it reuses its codec emitters.
+pub(crate) use bin_emitter::{emit_cpp_bin_read, emit_cpp_bin_write};
+pub(crate) use type_helpers::cpp_owned_type;
 
 use crate::writer::CodeWriter;
 use codec_emitter::emit_cpp20_spec;

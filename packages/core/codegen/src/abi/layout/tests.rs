@@ -153,3 +153,40 @@ fn type_spellings() {
     assert!(Ty::parse("Option<fn()>").is_err());
     assert!(Ty::parse("[u8; x]").is_err());
 }
+
+/// A slab-aligned record (`align(64)`, size-neutral) embedded by value, also only as an array
+/// element and with no aliases at all, changes the containing C layout: it is an error.
+#[test]
+fn slab_alignment_embedded_through_an_array_is_rejected() {
+    static SLAB_IN_ARRAY: [AbiRecordDescriptor; 2] = [
+        AbiRecordDescriptor::Struct(AbiStructDescriptor {
+            name: "Slab",
+            doc: None,
+            size: 64,
+            align: 64,
+            explicit_align: Some(64),
+            expected_size: None,
+            expected_size_64: None,
+            fields: &[field("words", "[u64; 8]", 0, None)],
+        }),
+        AbiRecordDescriptor::Struct(AbiStructDescriptor {
+            name: "Holder",
+            doc: None,
+            size: 128,
+            align: 64,
+            explicit_align: None,
+            expected_size: None,
+            expected_size_64: None,
+            fields: &[field("slabs", "[Slab; 2]", 0, None)],
+        }),
+    ];
+    static F: AbiFileDescriptor = file(&SLAB_IN_ARRAY);
+    let message = layout_records(&[&F])
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("`align(64)` changes the C layout"),
+        "{message}"
+    );
+}

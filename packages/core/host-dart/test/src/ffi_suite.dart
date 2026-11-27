@@ -1,5 +1,5 @@
 // VM-only (imports `dart:ffi`): the generated `ffi.Struct`s have exactly the generated sizes of the
-// running data model (64-bit, ILP32, or i386).
+// running data model (64-bit, or ILP32 with 8-byte u64 fields such as Windows IA32 / ARM32).
 import 'dart:ffi' as ffi;
 
 import 'package:nve_host/nve_host.dart';
@@ -9,9 +9,11 @@ import 'check.dart';
 
 void runFfi(Check c) {
   final abi = ffi.Abi.current();
-  final model = ffi.sizeOf<ffi.Pointer<ffi.Void>>() == 8
-      ? 0
-      : (abi == ffi.Abi.linuxIA32 || abi == ffi.Abi.androidIA32 || abi == ffi.Abi.windowsIA32 ? 2 : 1);
+  if (abi == ffi.Abi.linuxIA32 || abi == ffi.Abi.androidIA32) {
+    // i386 System V is C-only (see `nveAbiRecordSizes`): Dart cannot over-align `NveDirectEvent`.
+    return;
+  }
+  final model = ffi.sizeOf<ffi.Pointer<ffi.Void>>() == 8 ? 0 : 1;
   final measured = <String, int>{
     'NveBufferSlice': ffi.sizeOf<NveBufferSlice>(),
     'NveStrSlice': ffi.sizeOf<NveStrSlice>(),

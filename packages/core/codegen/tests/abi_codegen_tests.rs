@@ -106,7 +106,7 @@ fn inexact_js_literals(source: &str) -> Vec<String> {
                 i += skip + source[i + skip..].chars().next().map_or(1, char::len_utf8);
             }
             i += 1;
-        } else if bytes[i].is_ascii_digit() && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || matches!(bytes[i - 1], b'_' | b'.'))) {
+        } else if literal_start(bytes, i) {
             let end = numeric_literal_len(rest);
             let token = &rest[..end];
             if !js_exact_integer(token) {
@@ -120,17 +120,43 @@ fn inexact_js_literals(source: &str) -> Vec<String> {
     out
 }
 
+/// A numeric literal starts at `i`: a digit, or a `.` before a digit (`.5`), that does not continue
+/// an identifier, a number, or a member access (`a.0`, `x.5`, `1..2`).
+fn literal_start(bytes: &[u8], i: usize) -> bool {
+    let prev_ok = i == 0
+        || !(bytes[i - 1].is_ascii_alphanumeric()
+            || matches!(bytes[i - 1], b'_' | b'.' | b')' | b']'));
+    match bytes[i] {
+        b'0'..=b'9' => prev_ok,
+        b'.' => prev_ok && bytes.get(i + 1).is_some_and(u8::is_ascii_digit),
+        _ => false,
+    }
+}
+
 /// Length of the numeric literal `s` starts with: digits / letters / `_`, one `.` fraction, and a
 /// signed decimal exponent (`1.5e+20`).
 fn numeric_literal_len(s: &str) -> usize {
     let b = s.as_bytes();
-    let word = |from: usize| from + s[from..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(s.len() - from);
-    let mut end = word(0);
+    let word = |from: usize| {
+        from + s[from..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(s.len() - from)
+    };
+    // `.5e20` starts at its dot.
+    let mut end = word(usize::from(s.starts_with('.')));
     let hex = s.starts_with("0x") || s.starts_with("0X");
-    if !hex && b.get(end) == Some(&b'.') && b.get(end + 1).is_some_and(u8::is_ascii_digit) {
+    // `1.5`, and `1.e20` (an exponent right after the dot).
+    let fraction = b.get(end + 1).is_some_and(u8::is_ascii_digit)
+        || (matches!(b.get(end + 1), Some(b'e' | b'E'))
+            && b.get(end + 2)
+                .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'+' | b'-')));
+    if !hex && !s.starts_with('.') && b.get(end) == Some(&b'.') && fraction {
         end = word(end + 1);
     }
-    if !hex && matches!(b.get(end - 1), Some(b'e' | b'E')) && matches!(b.get(end), Some(b'+' | b'-')) {
+    if !hex
+        && matches!(b.get(end - 1), Some(b'e' | b'E'))
+        && matches!(b.get(end), Some(b'+' | b'-'))
+    {
         end = word(end + 1);
     }
     end
@@ -144,19 +170,30 @@ fn js_exact_integer(token: &str) -> bool {
         return false;
     }
     let digits = token.replace('_', "");
-    if let Some(hex) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+    if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
         return u128::from_str_radix(hex, 16).is_ok_and(|v| v < LIMIT);
     }
     let (mantissa, exponent) = digits.split_once(['e', 'E']).unwrap_or((&digits, "0"));
     let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let (Ok(m), Ok(e)) = (format!("{int}{frac}").parse::<u128>(), exponent.parse::<i32>()) else {
+    let (Ok(m), Ok(e)) = (
+        format!("{int}{frac}").parse::<u128>(),
+        exponent.parse::<i32>(),
+    ) else {
         return false;
     };
     // value = m * 10^(e - frac digits)
-    let Ok(frac_len) = i32::try_from(frac.len()) else { return false };
-    let scale = e - frac_len;
+    let Ok(frac_len) = i32::try_from(frac.len()) else {
+        return false;
+    };
+    let scale = e.saturating_sub(frac_len);
     if scale >= 0 {
-        return 10u128.checked_pow(scale.unsigned_abs()).and_then(|p| m.checked_mul(p)).is_some_and(|v| v < LIMIT);
+        return 10u128
+            .checked_pow(scale.unsigned_abs())
+            .and_then(|p| m.checked_mul(p))
+            .is_some_and(|v| v < LIMIT);
     }
     match 10u128.checked_pow(scale.unsigned_abs()) {
         // Integral only when the division is exact; a true fraction is not an integer literal.
@@ -167,25 +204,77 @@ fn js_exact_integer(token: &str) -> bool {
 
 #[test]
 fn the_53_bit_scanner_catches_what_it_must() {
-    assert_eq!(inexact_js_literals("const a = 9007199254740991; // 9007199254740992"), Vec::<String>::new());
-    assert_eq!(inexact_js_literals("const s = '0xFFFFFFFFFFFFFFFF'; /* 1n */"), Vec::<String>::new());
-    assert_eq!(inexact_js_literals("x = 9007199254740992;"), ["9007199254740992"]);
-    assert_eq!(inexact_js_literals("x = 0x20000000000000;"), ["0x20000000000000"]);
+    assert_eq!(
+        inexact_js_literals("const a = 9007199254740991; // 9007199254740992"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        inexact_js_literals("const s = '0xFFFFFFFFFFFFFFFF'; /* 1n */"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        inexact_js_literals("x = 9007199254740992;"),
+        ["9007199254740992"]
+    );
+    assert_eq!(
+        inexact_js_literals("x = 0x20000000000000;"),
+        ["0x20000000000000"]
+    );
     assert_eq!(inexact_js_literals("x = 0xFFn;"), ["0xFFn"]);
-    assert_eq!(inexact_js_literals("x = 0xFFFFFFFFFFFFFFFE;"), ["0xFFFFFFFFFFFFFFFE"]);
-    assert_eq!(inexact_js_literals("x = 0xE0000000000000;"), ["0xE0000000000000"]);
-    assert_eq!(inexact_js_literals("x = 0x2000000000000E + 0xEF46DB3751D8E999;"), ["0x2000000000000E", "0xEF46DB3751D8E999"]);
-    assert_eq!(inexact_js_literals("x = 0xDEADBEEF + 1e3 + 0.5 + 1e-3 + 1.5e2 + 9.007199254740991e15;"), Vec::<String>::new());
+    assert_eq!(
+        inexact_js_literals("x = 0xFFFFFFFFFFFFFFFE;"),
+        ["0xFFFFFFFFFFFFFFFE"]
+    );
+    assert_eq!(
+        inexact_js_literals("x = 0xE0000000000000;"),
+        ["0xE0000000000000"]
+    );
+    assert_eq!(
+        inexact_js_literals("x = 0x2000000000000E + 0xEF46DB3751D8E999;"),
+        ["0x2000000000000E", "0xEF46DB3751D8E999"]
+    );
+    assert_eq!(
+        inexact_js_literals("x = 0xDEADBEEF + 1e3 + 0.5 + 1e-3 + 1.5e2 + 9.007199254740991e15;"),
+        Vec::<String>::new()
+    );
     assert_eq!(
         inexact_js_literals("x = 1e20 + 1E+16 + 9.1e15 + 1_0e15 + 123456789012345678.0 + 1e300;"),
-        ["1e20", "1E+16", "9.1e15", "1_0e15", "123456789012345678.0", "1e300"]
+        [
+            "1e20",
+            "1E+16",
+            "9.1e15",
+            "1_0e15",
+            "123456789012345678.0",
+            "1e300"
+        ]
     );
-    assert_eq!(inexact_js_literals("x = 0.12345678901234567890 + 1.5e-40;"), Vec::<String>::new());
+    assert_eq!(
+        inexact_js_literals("x = 0.12345678901234567890 + 1.5e-40;"),
+        Vec::<String>::new()
+    );
+    // An exponent right after the dot, and a literal that starts with its dot.
+    assert_eq!(
+        inexact_js_literals("x = 1.e20 + .5e20 + .5 + 1.e3 + a.0 + x.5e20;"),
+        ["1.e20", ".5e20"]
+    );
+    assert_eq!(
+        inexact_js_literals("x = 1e2147483647 + 1e-2147483648;"),
+        ["1e2147483647"]
+    );
     // Escapes skip whole (multi-byte) characters; an escape at the end of input is not a panic.
-    assert_eq!(inexact_js_literals("s = '\\é9007199254740993' + \"\\\"\" + 9007199254740993;"), ["9007199254740993"]);
+    assert_eq!(
+        inexact_js_literals("s = '\\é9007199254740993' + \"\\\"\" + 9007199254740993;"),
+        ["9007199254740993"]
+    );
     assert_eq!(inexact_js_literals("s = '\\"), Vec::<String>::new());
-    assert_eq!(inexact_js_literals("x = 999999999999999999999999999999999999999999;").len(), 1);
-    assert_eq!(inexact_js_literals("x = a1234567890123456789 + 1.5;"), Vec::<String>::new());
+    assert_eq!(
+        inexact_js_literals("x = 999999999999999999999999999999999999999999;").len(),
+        1
+    );
+    assert_eq!(
+        inexact_js_literals("x = a1234567890123456789 + 1.5;"),
+        Vec::<String>::new()
+    );
 }
 
 /// Every integer literal in Dart / TypeScript output stays below 2^53 (JavaScript numbers are
@@ -193,12 +282,30 @@ fn the_53_bit_scanner_catches_what_it_must() {
 #[test]
 fn dart_and_typescript_output_is_53_bit_safe() {
     let mut scanned = 0;
-    for f in all_files().iter().filter(|f| f.relative_path.ends_with(".dart") || f.relative_path.ends_with(".ts")) {
-        for banned in ["getUint64", "getInt64", "setUint64", "setInt64", "BigInt", "Number("] {
-            assert!(!f.content.contains(banned), "{} emits `{banned}`", f.relative_path);
+    for f in all_files()
+        .iter()
+        .filter(|f| f.relative_path.ends_with(".dart") || f.relative_path.ends_with(".ts"))
+    {
+        for banned in [
+            "getUint64",
+            "getInt64",
+            "setUint64",
+            "setInt64",
+            "BigInt",
+            "Number(",
+        ] {
+            assert!(
+                !f.content.contains(banned),
+                "{} emits `{banned}`",
+                f.relative_path
+            );
         }
         let inexact = inexact_js_literals(&f.content);
-        assert!(inexact.is_empty(), "{}: literals not exact in JavaScript: {inexact:?}", f.relative_path);
+        assert!(
+            inexact.is_empty(),
+            "{}: literals not exact in JavaScript: {inexact:?}",
+            f.relative_path
+        );
         scanned += 1;
     }
     assert_eq!(scanned, 7, "4 Dart + 3 TypeScript files");
@@ -369,12 +476,19 @@ fn generated_c_headers_compile_on_every_data_model() {
     static EMPTY: TableDesc = table("nve.empty", &[0, 0, 0], &[]);
     for (name, tables) in [("zero_tables", &[][..]), ("zero_fields", &[&EMPTY][..])] {
         let files = generate_table_files(tables).expect("degenerate table set");
-        let header = files.iter().find(|f| f.relative_path.ends_with(".h")).expect("tables header");
+        let header = files
+            .iter()
+            .find(|f| f.relative_path.ends_with(".h"))
+            .expect("tables header");
         let sub = dir.join(name).join("nve/generated");
         std::fs::create_dir_all(&sub).expect("degenerate dir");
         // The header includes the runtime relative to itself (`../host/table_word.h`).
-        common::copy_tree(&repo_root().join("packages/core/host-cxx/include/nve/host"), &dir.join(name).join("nve/host"));
-        std::fs::write(sub.join("nve_tables.generated.h"), &header.content).expect("degenerate header");
+        common::copy_tree(
+            &repo_root().join("packages/core/host-cxx/include/nve/host"),
+            &dir.join(name).join("nve/host"),
+        );
+        std::fs::write(sub.join("nve_tables.generated.h"), &header.content)
+            .expect("degenerate header");
         std::fs::write(
             dir.join(name).join("check.c"),
             "#include <nve/generated/nve_tables.generated.h>\nint f(void) { return (int)NVE_TABLE_COUNT; }\n",
@@ -400,7 +514,10 @@ fn generated_c_headers_compile_on_every_data_model() {
         (&dir.join("zero_tables"), &[]),
         (&dir.join("zero_fields"), &[]),
     ];
-    for (target, (include, defines)) in targets.iter().flat_map(|t| variants.iter().map(move |v| (*t, *v))) {
+    for (target, (include, defines)) in targets
+        .iter()
+        .flat_map(|t| variants.iter().map(move |v| (*t, *v)))
+    {
         let src = include.join("check.c");
         for (driver, std) in [("clang", "-std=c11"), ("clang++", "-std=c++20")] {
             let mut cmd = Command::new(driver);
@@ -408,7 +525,8 @@ fn generated_c_headers_compile_on_every_data_model() {
             if let Some(t) = target {
                 // A macOS `SDKROOT` would otherwise be applied to the cross target.
                 cmd.env_remove("SDKROOT");
-                cmd.arg(format!("--target={t}")).args(["-ffreestanding", "-Wno-incompatible-sysroot"]);
+                cmd.arg(format!("--target={t}"))
+                    .args(["-ffreestanding", "-Wno-incompatible-sysroot"]);
             }
             if driver == "clang++" {
                 cmd.args(["-x", "c++"]);
@@ -418,7 +536,15 @@ fn generated_c_headers_compile_on_every_data_model() {
                 }
             }
             let out = cmd
-                .args([std, "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-pedantic", "-I"])
+                .args([
+                    std,
+                    "-fsyntax-only",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-pedantic",
+                    "-I",
+                ])
                 .arg(include)
                 .arg(&src)
                 .output()
@@ -443,22 +569,42 @@ fn generated_c_headers_compile_on_every_data_model() {
 fn record_layouts_match_rustc_on_every_data_model() {
     use nve_codegen::abi::layout::Model;
     let model = nve_codegen::abi::abi_model().expect("ABI model");
-    let required = std::env::var_os("CI").is_some() || std::env::var_os("NVE_REQUIRE_CROSS").is_some();
-    let rustc = Command::new("rustc").arg("-vV").output().expect("run rustc -vV");
+    let required =
+        std::env::var_os("CI").is_some() || std::env::var_os("NVE_REQUIRE_CROSS").is_some();
+    let rustc = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("run rustc -vV");
     let rustc = String::from_utf8_lossy(&rustc.stdout).into_owned();
-    let host = rustc.lines().find_map(|l| l.strip_prefix("host: ")).expect("rustc host triple").to_owned();
+    let host = rustc
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .expect("rustc host triple")
+        .to_owned();
     let targets = [
         ("i686-linux-android", Model::I386),
         ("armv7-linux-androideabi", Model::P32),
         ("wasm32-unknown-unknown", Model::P32),
         (host.as_str(), Model::host()),
     ];
-    let installed = Command::new("rustup").args(["target", "list", "--installed"]).output();
-    let installed = installed.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let installed = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output();
+    let installed = installed
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
     let installed = format!("{installed}\n{host}");
     // A per-run crate (parallel runs never share sources) with a shared, incremental target dir.
     let base = repo_root().join("target/nve-abi-layout-check");
     let dir = base.join(format!("run-{}", std::process::id()));
+    // Removed however the test ends (a failed assert included), so runs never leave crates behind.
+    struct RemoveOnDrop(std::path::PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = RemoveOnDrop(dir.clone());
     std::fs::create_dir_all(dir.join("src")).expect("check crate dir");
     // The workspace lockfile pins `nve-abi`'s dependencies to the versions the workspace uses.
     // (`--locked` cannot apply: Cargo prunes the workspace's other packages from this root's lock.)
@@ -476,11 +622,16 @@ fn record_layouts_match_rustc_on_every_data_model() {
     let mut checked = 0;
     for (target, data_model) in targets {
         if !installed.lines().any(|l| l.trim() == target) {
-            assert!(!required, "Rust target {target} is not installed (CI / NVE_REQUIRE_CROSS)");
+            assert!(
+                !required,
+                "Rust target {target} is not installed (CI / NVE_REQUIRE_CROSS)"
+            );
             eprintln!("SKIP: Rust target {target} not installed");
             continue;
         }
-        let mut asserts = String::from("#![no_std]\n#![allow(unused_imports)]\nuse nve_abi::*;\nuse nve_abi::table::NveTableView;\n");
+        let mut asserts = String::from(
+            "#![no_std]\n#![allow(unused_imports)]\nuse nve_abi::*;\nuse nve_abi::table::NveTableView;\n",
+        );
         for r in &model.records {
             let rust_align = r.align.at(data_model).max(r.slab_align.unwrap_or(1));
             asserts += &format!(
@@ -500,7 +651,14 @@ fn record_layouts_match_rustc_on_every_data_model() {
         }
         std::fs::write(dir.join("src/lib.rs"), asserts).expect("write asserts");
         let out = Command::new(env!("CARGO"))
-            .args(["check", "--offline", "--quiet", "--target", target, "--manifest-path"])
+            .args([
+                "check",
+                "--offline",
+                "--quiet",
+                "--target",
+                target,
+                "--manifest-path",
+            ])
             .arg(dir.join("Cargo.toml"))
             .env("CARGO_TARGET_DIR", base.join("target"))
             .output()
@@ -512,7 +670,6 @@ fn record_layouts_match_rustc_on_every_data_model() {
         );
         checked += 1;
     }
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(checked > 0 || !required, "no data model was checked");
 }
 
@@ -522,35 +679,60 @@ fn record_layouts_match_rustc_on_every_data_model() {
 #[test]
 fn cnveabi_module_is_defined_once() {
     if !common::tool_available("swiftc") {
-        assert!(std::env::var_os("NVE_REQUIRE_SWIFT").is_none(), "swiftc is required (NVE_REQUIRE_SWIFT)");
+        assert!(
+            std::env::var_os("NVE_REQUIRE_SWIFT").is_none(),
+            "swiftc is required (NVE_REQUIRE_SWIFT)"
+        );
         eprintln!("SKIP: swiftc not found");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("nve_cnveabi_once_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    common::write_generated_c_abi_headers(&dir);
-    for map in ["packages/core/host-cxx/include/module.modulemap", "packages/core/host-swift/Sources/CNveAbi/include/module.modulemap"] {
-        let text = std::fs::read_to_string(repo_root().join(map)).expect("module map");
-        let definitions = text.lines().filter(|l| l.trim_start().starts_with("module CNveAbi")).count();
-        let expected = usize::from(map.contains("host-cxx"));
-        assert_eq!(definitions, expected, "{map} must {} define `CNveAbi`", if expected == 1 { "" } else { "not" });
+    let cxx = repo_root().join("packages/core/host-cxx/include");
+    let swift = repo_root().join("packages/core/host-swift/Sources/CNveAbi/include");
+    assert!(
+        cxx.join("nve/generated/nve_abi.generated.h").exists(),
+        "run `cargo run --locked -p nve-cli -- codegen abi` first"
+    );
+    for (dir, expected) in [(&cxx, 1), (&swift, 0)] {
+        let map = dir.join("module.modulemap");
+        let text = std::fs::read_to_string(&map).expect("module map");
+        let definitions = text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("module CNveAbi"))
+            .count();
+        assert_eq!(
+            definitions,
+            expected,
+            "{} defines `CNveAbi` {definitions} times",
+            map.display()
+        );
     }
-    std::fs::copy(repo_root().join("packages/core/host-cxx/include/module.modulemap"), dir.join("module.modulemap"))
-        .expect("stage module map");
-    let swift_map_dir = dir.join("swift");
-    std::fs::create_dir_all(&swift_map_dir).expect("swift map dir");
-    std::fs::write(swift_map_dir.join("module.modulemap"), "extern module CNveAbi \"../module.modulemap\"\n").expect("extern map");
-    let src = dir.join("m.swift");
-    std::fs::write(&src, "import CNveAbi\nlet version: UInt32 = NVE_ABI_VERSION\n").expect("swift source");
-    let out = Command::new("swiftc")
-        .arg("-typecheck")
-        .arg("-I")
-        .arg(&dir)
-        .arg("-I")
-        .arg(&swift_map_dir)
-        .arg(&src)
-        .output()
-        .expect("run swiftc");
-    assert!(out.status.success(), "swiftc rejected the two maps:\n{}", String::from_utf8_lossy(&out.stderr));
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch = std::env::temp_dir().join(format!("nve_cnveabi_once_{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("scratch dir");
+    let src = scratch.join("m.swift");
+    std::fs::write(
+        &src,
+        "import CNveAbi\nlet version: UInt32 = NVE_ABI_VERSION\n",
+    )
+    .expect("swift source");
+    // The real maps, in both search orders: whichever Clang finds first, `CNveAbi` is one module.
+    for (first, second) in [(&cxx, &swift), (&swift, &cxx)] {
+        let out = Command::new("swiftc")
+            .args(["-typecheck", "-module-cache-path"])
+            .arg(scratch.join("module-cache"))
+            .arg("-I")
+            .arg(first)
+            .arg("-I")
+            .arg(second)
+            .arg(&src)
+            .output()
+            .expect("run swiftc");
+        assert!(
+            out.status.success(),
+            "swiftc -I {} -I {} rejected the two maps:\n{}",
+            first.display(),
+            second.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
 }

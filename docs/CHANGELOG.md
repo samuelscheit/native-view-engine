@@ -41,6 +41,40 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
   - **Drift guard**: `nve-arch-invariants` checks every mirrored constant and golden XXH64 digest against `nve_abi`, `nve_store`, and `nve_hash`. A second check keeps the binary-value validators allocation-free (no view, copy, or decode).
   - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` went from 21 to 16 artifacts here; Batch 2A (commit 3) then reorganized it into the 15 host files listed below.
   - **Zero runtime `serde_json` in core**: `NveExportSpec` JSON loading moved into `nve-cli`. `PENDING_CLEANUP_SERDE_JSON` and `PENDING_CLEANUP_PERSONAL_PATHS` are empty.
+  - **Pass-1 / Pass-2 fixes of 4d, 4e, 5a-cxx (commit 4f)**
+    - **Hybrid spec depth bound:**
+      - Counts restart wherever `syn` provably holds no earlier token: `;`, list `,` outside `<..>` and closures, and file-level item bodies and attributes.
+      - The cap is 2 Ki tokens: one fixed 132 MiB worker thread, lexed once. The 3,000-const, 3,000-member and 1,000-field specs now parse.
+      - The stack size is checked against every recursive form at the cap.
+    - **Hybrid spec frontend:**
+      - Member attributes are matched by single identifier (`#[clippy::prop]` is rejected).
+      - Parameter and receiver attributes are checked.
+      - The first offending attribute in source order is the one reported.
+      - `Option<Option<T>>` and `Option<Value>` are rejected as ambiguous.
+    - **ABI codegen:**
+      - Slab-aligned records are found through arrays.
+      - Enums are rejected in C signatures.
+      - Table spellings are collision-checked as `camelCase` and `SCREAMING_SNAKE`, against Dart `Object` members too, in a single flat buffer per table (bringing `generate_table_files` down from 5,268 to 2,209 allocations and `generate_all_abi_files` from 11,539 to 6,199).
+      - Dart FFI sizes cover 64-bit and ILP32 (Windows IA32 included); i386 System V is C-only.
+    - **host-cxx:**
+      - `begin_*` returns a `ReadMark` that confines reads until `end(mark)`.
+      - New: `read_checked_value`, `DynamicValue::read`, `to_string(BinError)`.
+      - New headers: `value_tree.hpp`, `utf16.hpp`, and `jni.hpp`, the former JNI prelude.
+    - **C++ hybrid client:**
+      - Fields are accessed via `this->`, so fields named `w` or `mark` compile.
+      - Locals are depth-suffixed, so `Vec<Vec<T>>` decodes.
+      - Decoders are sticky and confined, unknown fixed arrays are skipped, and buffers must be fully consumed.
+      - Peer buffers are RAII-freed and read without copies.
+      - `Value` parameters are `const DynamicValue&`, passed as an `NveValueTree`.
+      - `setProps` uses a `std::array`; absent non-direct options are sent as `Null`.
+    - **JNI glue:**
+      - Null props are now `NVE_VAL_NULL`; before, every optional prop failed on Android.
+      - Strings cross as UTF-16 rather than Modified UTF-8.
+      - Direct buffers are strict, every exception kind is converted, and parameters are spelled `arg_*`.
+    - **Tests:**
+      - The JNI glue is linked and run against the Rust provider on a fake `JNIEnv`.
+      - The C++ e2e covers dynamic values, nested sequences, invalid UTF-8 and null props.
+      - Missing clang fails under CI.
   - **C++ hybrid clients on host-cxx (commit 5a-cxx)**
     - The generated C++20 hybrid header no longer carries its own copied `NveBinValue` codec prelude.
       - It includes `<nve/host/bin_codec.hpp>` / `<nve/host/hybrid_runtime.hpp>`.

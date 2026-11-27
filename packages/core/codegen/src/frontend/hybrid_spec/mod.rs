@@ -40,8 +40,8 @@ use types::{convert_type, error_at, ident, is_hex, syn_error, unsigned};
 /// [`HybridFileSpec`].
 pub fn parse_hybrid_rust_spec(source: &str) -> Result<HybridFileSpec, CodegenError> {
     let body = source.strip_prefix('\u{feff}').unwrap_or(source);
-    stack::on_sized_stack(body, |body| {
-        let mut file = parse_tokens(body)?;
+    stack::parse_on_stack(body, |tokens| {
+        let mut file = parse_tokens(tokens, body)?;
         file.resolve_named_types();
         file.validate()?;
         Ok(file)
@@ -55,9 +55,12 @@ pub fn parse_hybrid_rust_spec_file(path: &Path) -> Result<HybridFileSpec, Codege
     parse_hybrid_rust_spec(&source)
 }
 
-/// Lowers `body` (on a [`stack::on_sized_stack`] thread: `syn` recurses).
-fn parse_tokens(body: &str) -> Result<HybridFileSpec, CodegenError> {
-    let ast: syn::File = syn::parse2(stack::lex(body)?).map_err(|e| syn_error(&e, body))?;
+/// Parses and lowers the lexed `body` (on the [`stack::parse_on_stack`] thread: `syn` recurses).
+fn parse_tokens(
+    tokens: proc_macro2::TokenStream,
+    body: &str,
+) -> Result<HybridFileSpec, CodegenError> {
+    let ast: syn::File = syn::parse2(tokens).map_err(|e| syn_error(&e, body))?;
     let mut file = HybridFileSpec::default();
     attrs::check_markers(
         &ast.attrs,

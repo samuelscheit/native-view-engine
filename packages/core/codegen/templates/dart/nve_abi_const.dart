@@ -61,11 +61,13 @@ abstract final class {{ r.name }}Layout {
 }
 {%- endfor %}
 
-/// Size of every ABI record, by name, on each data model `dart:ffi` runs on: what `sizeOf` must
-/// report there (`[64-bit, ILP32 with 8-byte u64 fields, i386 System V]`).
+/// Size of every ABI record, by name, on each data model the Dart bindings support: what
+/// `dart:ffi`'s `sizeOf` must report there (`[64-bit, ILP32 with 8-byte u64 fields]`). i386
+/// System V (Linux / Android IA32, 4-byte u64 fields) is C-only: Dart `ffi.Struct` cannot
+/// reproduce `NVE_ALIGNAS(8)` there.
 const Map<String, List<int>> nveAbiRecordSizes = {
 {%- for r in m.records %}
-  '{{ r.name }}': [{{ r.size.p64() }}, {{ r.size.p32() }}, {{ r.size.i386() }}],
+  '{{ r.name }}': [{{ r.size.p64() }}, {{ r.size.p32() }}],
 {%- endfor %}
 };
 

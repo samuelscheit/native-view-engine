@@ -1,5 +1,6 @@
 use crate::writer::CodeWriter;
 
+use super::bin_emitter::{emit_cpp_bin_read, emit_cpp_bin_write, emit_cpp_struct_codec};
 use super::type_helpers::*;
 use super::*;
 
@@ -80,43 +81,7 @@ pub(super) fn emit_cpp_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: 
         writeln!(out);
     }
 
-    // Compact binary NveBinValue encode/decode for every struct
-    writeln!(out, "  void encode_bin(BinWriter& w) const {{");
-    writeln!(
-        out,
-        "    const auto mark = w.begin_map({}u);",
-        s.fields.len()
-    );
-    for f in &s.fields {
-        let fname = cpp_ident(&f.name);
-        let key_lit = escape_c_like_string(&f.name);
-        writeln!(out, "    w.write_map_key(\"{key_lit}\");");
-        emit_cpp_bin_write(out, "    ", "w", &fname, &f.ty);
-    }
-    writeln!(out, "    w.end(mark);");
-    writeln!(out, "  }}");
-    writeln!(out);
-
-    writeln!(out, "  static {} decode_bin(BinReader& r) {{", s.name);
-    writeln!(out, "    {} out{{}};", s.name);
-    writeln!(out, "    const uint32_t count = r.begin_map();");
-    writeln!(out, "    for (uint32_t i = 0; i < count && r.ok(); ++i) {{");
-    writeln!(out, "      const auto key = r.read_map_key();");
-    for (idx, f) in s.fields.iter().enumerate() {
-        let fname = cpp_ident(&f.name);
-        let key_lit = escape_c_like_string(&f.name);
-        let cond = if idx == 0 { "if" } else { "else if" };
-        writeln!(out, "      {cond} (key == \"{key_lit}\") {{");
-        emit_cpp_bin_read(out, "        ", "r", &format!("out.{fname}"), &f.ty);
-        writeln!(out, "      }}");
-    }
-    writeln!(out, "      else {{");
-    writeln!(out, "        r.skip_value();");
-    writeln!(out, "      }}");
-    writeln!(out, "    }}");
-    writeln!(out, "    return out;");
-    writeln!(out, "  }}");
-
+    emit_cpp_struct_codec(out, s);
     writeln!(out, "}};");
     writeln!(out);
 }
@@ -321,34 +286,29 @@ pub(super) fn emit_cpp_client(
     writeln!(out, " private:");
     writeln!(
         out,
-        "  std::string take_string(NveHybridOwnedBytes raw) const {{"
+        "  OwnedBytes own(NveHybridOwnedBytes raw) const noexcept {{ return OwnedBytes(raw, vtable_->free_bytes); }}"
     );
-    writeln!(out, "    if (!raw.ptr || raw.len == 0) {{");
-    writeln!(out, "      if (raw.ptr) {{ vtable_->free_bytes(raw); }}");
-    writeln!(out, "      return {{}};");
-    writeln!(out, "    }}");
+    writeln!(out);
     writeln!(
         out,
-        "    std::string out(reinterpret_cast<const char*>(raw.ptr), raw.len);"
+        "  std::string take_string(NveHybridOwnedBytes raw) const {{"
     );
-    writeln!(out, "    vtable_->free_bytes(raw);");
-    writeln!(out, "    return out;");
+    writeln!(out, "    const OwnedBytes owned = own(raw);");
+    writeln!(
+        out,
+        "    return std::string(reinterpret_cast<const char*>(owned.span().data()), owned.span().size());"
+    );
     writeln!(out, "  }}");
     writeln!(out);
     writeln!(
         out,
         "  std::vector<uint8_t> take_bytes(NveHybridOwnedBytes raw) const {{"
     );
-    writeln!(out, "    if (!raw.ptr || raw.len == 0) {{");
-    writeln!(out, "      if (raw.ptr) {{ vtable_->free_bytes(raw); }}");
-    writeln!(out, "      return {{}};");
-    writeln!(out, "    }}");
+    writeln!(out, "    const OwnedBytes owned = own(raw);");
     writeln!(
         out,
-        "    std::vector<uint8_t> out(raw.ptr, raw.ptr + raw.len);"
+        "    return std::vector<uint8_t>(owned.span().begin(), owned.span().end());"
     );
-    writeln!(out, "    vtable_->free_bytes(raw);");
-    writeln!(out, "    return out;");
     writeln!(out, "  }}");
     writeln!(out);
     writeln!(out, "  const NveHybrid{pascal}VTable* vtable_ = nullptr;");
@@ -369,8 +329,11 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
         writeln!(out);
         return;
     }
-    writeln!(out, "    std::vector<NveMapEntry> entries;");
-    writeln!(out, "    entries.reserve({}u);", v.props.len());
+    writeln!(
+        out,
+        "    std::array<NveMapEntry, {}u> entries{{}};",
+        v.props.len()
+    );
     // Keep any scratch BinWriters alive for the duration of set_props_direct.
     for (idx, p) in v.props.iter().enumerate() {
         if !cpp_prop_is_direct_nve_value(&p.ty) {
@@ -384,7 +347,7 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
         let pname = cpp_ident(&p.name);
         let key_lit = escape_c_like_string(&p.name);
         writeln!(out, "    {{");
-        writeln!(out, "      NveMapEntry entry{{}};");
+        writeln!(out, "      NveMapEntry& entry = entries[{idx}u];");
         writeln!(
             out,
             "      entry.key = NveStrSlice{{reinterpret_cast<const uint8_t*>(\"{key_lit}\"), {}u}};",
@@ -398,7 +361,6 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
             &p.ty,
             idx,
         );
-        writeln!(out, "      entries.push_back(entry);");
         writeln!(out, "    }}");
     }
     writeln!(
@@ -479,7 +441,10 @@ pub(super) fn emit_cpp_client_method(
                 );
                 call_args.push(format!("_arg_{idx}"));
             }
-            HybridType::Value => call_args.push(pname),
+            HybridType::Value => {
+                writeln!(out, "    const NveValueTree _arg_{idx}({pname});");
+                call_args.push(format!("_arg_{idx}.root()"));
+            }
             other => {
                 let wname = format!("_arg_w_{idx}");
                 writeln!(out, "    BinWriter {wname};");
@@ -564,9 +529,10 @@ pub(super) fn emit_cpp_return_decode(
             writeln!(out, "{indent}return take_bytes({var});");
         }
         HybridType::Value => {
+            writeln!(out, "{indent}const OwnedBytes _owned = own({var});");
             writeln!(
                 out,
-                "{indent}auto _dv = DynamicValue::from_bytes(take_bytes({var}));"
+                "{indent}auto _dv = DynamicValue::from_bytes(_owned.span());"
             );
             writeln!(
                 out,
@@ -592,11 +558,12 @@ pub(super) fn emit_cpp_return_decode(
             }
         }
         other => {
-            writeln!(out, "{indent}const auto _bytes = take_bytes({var});");
-            writeln!(out, "{indent}BinReader _r(_bytes);");
+            // Decoded straight from the peer's buffer, freed however this scope ends.
+            writeln!(out, "{indent}const OwnedBytes _owned = own({var});");
+            writeln!(out, "{indent}BinReader _r(_owned.span());");
             writeln!(out, "{indent}{} _out{{}};", cpp_owned_type(other));
             emit_cpp_bin_read(out, indent, "_r", "_out", other);
-            writeln!(out, "{indent}require_ok(_r);");
+            writeln!(out, "{indent}require_done(_r);");
             writeln!(out, "{indent}return _out;");
         }
     }

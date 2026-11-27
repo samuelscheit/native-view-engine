@@ -10,7 +10,9 @@ use crate::naming::{screaming_snake_to_camel_case, to_camel_case, to_pascal_case
 
 /// `SCREAMING_SNAKE` of a Rust identifier (`NveValueTag` -> `NVE_VALUE_TAG`, `hit_test` -> `HIT_TEST`).
 pub fn screaming(name: &str) -> String {
-    to_snake_case(name).to_ascii_uppercase()
+    let mut s = to_snake_case(name);
+    s.make_ascii_uppercase();
+    s
 }
 
 /// `lowerCamel` of a snake / SCREAMING identifier (`NVE_ABI_MAGIC` -> `nveAbiMagic`). A leading `_`

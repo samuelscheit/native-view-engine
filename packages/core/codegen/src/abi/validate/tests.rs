@@ -266,15 +266,12 @@ fn enums_void_and_alignment_are_rejected_wherever_they_hide() {
     assert_eq!(error(&ENUM_PTR), "<accepted>");
 
     static UNIT_PARAM: AbiFileDescriptor = file(&[], &[], &[], &[function(&[param("()")], "()")]);
-    rejects(
-        &UNIT_PARAM,
-        "`C::f`: `()` is only valid as a return type or pointee",
-    );
+    rejects(&UNIT_PARAM, "`C::f`: `()` is only valid as a return type");
     static VOID_RETURN: AbiFileDescriptor = file(&[], &[], &[], &[function(&[], "c_void")]);
-    rejects(&VOID_RETURN, "`c_void` is only valid");
+    rejects(&VOID_RETURN, "`c_void` is only valid behind a pointer");
     static UNIT_POINTEE: AbiFileDescriptor =
         file(&[], &[], &[], &[function(&[param("*const ()")], "()")]);
-    rejects(&UNIT_POINTEE, "`()` is only valid");
+    rejects(&UNIT_POINTEE, "`()` is only valid as a return type");
     static VOID_PTR: AbiFileDescriptor = file(
         &[],
         &[],
@@ -282,6 +279,13 @@ fn enums_void_and_alignment_are_rejected_wherever_they_hide() {
         &[function(&[param("*mut c_void")], "*const c_void")],
     );
     assert_eq!(error(&VOID_PTR), "<accepted>");
+
+    // Enums never cross a C signature: by value or behind a pointer.
+    static ENUM_PARAM: AbiFileDescriptor =
+        file(&[], &[E_U8], &[], &[function(&[param("E")], "()")]);
+    rejects(&ENUM_PARAM, "uses enum `E`");
+    static ENUM_PTR_RET: AbiFileDescriptor = file(&[], &[E_U8], &[], &[function(&[], "*const E")]);
+    rejects(&ENUM_PTR_RET, "uses enum `E`");
 
     static ALIGN_0: AbiFileDescriptor = file(
         &[],
@@ -373,6 +377,13 @@ fn table_names_and_fields_are_valid_in_every_target() {
         ("where", "reserved word `where`"),
         ("words", "collides with a generated table member"),
         ("schema_hash", "collides with a generated table member"),
+        ("hash_code", "collides with a generated table member"),
+        ("to_string", "collides with a generated table member"),
+        (
+            "key_",
+            "collides with a generated table member (`key`) as `key`",
+        ),
+        ("schema__hash", "collides with a generated table member"),
     ] {
         let fields = Box::leak(Box::new([u32_field(field)]));
         let message = super::table(&table("nve.t", fields))
@@ -380,7 +391,41 @@ fn table_names_and_fields_are_valid_in_every_target() {
         assert!(message.contains(why), "{field}: {message}");
     }
     static TWICE: [FieldDesc; 2] = [u32_field("x"), u32_field("x")];
+    // Distinct field names whose target spellings collide.
+    for (a, b, spelling) in [("foo_bar", "foo__bar", "fooBar"), ("foo_1", "foo1", "foo1")] {
+        let fields = Box::leak(Box::new([u32_field(a), u32_field(b)]));
+        let message = super::table(&table("nve.t", fields))
+            .map_or_else(|e| e.to_string(), |()| String::new());
+        assert!(
+            message.contains(&format!(
+                "collides with another field (`{a}`) as `{spelling}`"
+            )),
+            "{message}"
+        );
+    }
+    let segment =
+        super::table(&table("nve.1x", &[])).map_or_else(|e| e.to_string(), |()| String::new());
+    assert!(segment.contains("name segment `1x`"), "{segment}");
     let twice =
         super::table(&table("nve.t", &TWICE)).map_or_else(|e| e.to_string(), |()| String::new());
     assert!(twice.contains("declared twice"), "{twice}");
+
+    // Constant `GENERATED_TABLE_MEMBERS` table and allocation-free `push_snake_camel` stay exact.
+    for &(snake, camel) in super::GENERATED_TABLE_MEMBERS {
+        assert!(super::is_snake_ident(snake), "{snake}");
+        assert_eq!(super::super::spell::camel(snake), camel);
+    }
+    for sample in [
+        "a",
+        "key_",
+        "schema__hash",
+        "foo_1",
+        "foo_1_a",
+        "foo_1a",
+        "a___b___",
+    ] {
+        let mut buf = String::new();
+        super::push_snake_camel(sample, &mut buf);
+        assert_eq!(buf, super::super::spell::camel(sample), "{sample}");
+    }
 }

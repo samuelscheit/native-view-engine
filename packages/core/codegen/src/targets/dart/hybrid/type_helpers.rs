@@ -220,7 +220,9 @@ pub(super) fn dart_default_value(
             (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
             (HybridDefaultValue::UInt(u), _) => u.to_string(),
             (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-            (HybridDefaultValue::String(s), _) => format!("'{}'", escape_dart_single_quoted_string(s)),
+            (HybridDefaultValue::String(s), _) => {
+                format!("'{}'", escape_dart_single_quoted_string(s))
+            }
             (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
                 format!("{enum_name}.{}", dart_ident(variant))
             }
@@ -277,7 +279,13 @@ pub(super) fn dart_default_value(
     }
 }
 
-pub(super) fn emit_dart_bin_write(out: &mut CodeWriter, indent: &str, w: &str, expr: &str, ty: &HybridType) {
+pub(super) fn emit_dart_bin_write(
+    out: &mut CodeWriter,
+    indent: &str,
+    w: &str,
+    expr: &str,
+    ty: &HybridType,
+) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr});"),
         HybridType::U8
@@ -317,7 +325,13 @@ pub(super) fn emit_dart_bin_write(out: &mut CodeWriter, indent: &str, w: &str, e
     }
 }
 
-pub(super) fn emit_dart_bin_read(out: &mut CodeWriter, indent: &str, r: &str, dst: &str, ty: &HybridType) {
+pub(super) fn emit_dart_bin_read(
+    out: &mut CodeWriter,
+    indent: &str,
+    r: &str,
+    dst: &str,
+    ty: &HybridType,
+) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool();"),
         HybridType::U8
@@ -337,7 +351,10 @@ pub(super) fn emit_dart_bin_read(out: &mut CodeWriter, indent: &str, r: &str, ds
         HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.readBytes();"),
         HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}.decodeBin({r});"),
         HybridType::Value => {
-            writeln!(out, "{indent}{dst} = NveHybridDynamicValue({r}.readRawValue());")
+            writeln!(
+                out,
+                "{indent}{dst} = NveHybridDynamicValue({r}.readRawValue());"
+            )
         }
         HybridType::Optional(inner) => {
             writeln!(out, "{indent}if ({r}.readNullIfPresent()) {{");

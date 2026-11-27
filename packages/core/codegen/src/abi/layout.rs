@@ -254,8 +254,8 @@ pub struct RecordLayout<'a> {
     pub size: Width,
     pub align: Width,
     pub fields: Vec<FieldLayout<'a>>,
-    /// Rust `#[repr(C, align(N))]` that C must reproduce with `_Alignas(N)` / `alignas(N)`: it
-    /// changes the size on some data model, or the record is embedded by value in another one.
+    /// Rust `#[repr(C, align(N <= 16))]`, reproduced in C with `NVE_ALIGNAS(N)` (`_Alignas` /
+    /// `alignas`) whenever it exceeds some data model's natural alignment.
     pub alignas: Option<usize>,
     /// Rust `align(N)` that only aligns Rust-owned slabs (it changes no size and no containing
     /// layout), so C keeps the natural alignment Swift's ClangImporter imports as a plain value.
@@ -363,18 +363,19 @@ fn embedded_by_value<'a>(files: &[&'a AbiFileDescriptor]) -> BTreeSet<&'a str> {
         };
         for f in fields {
             let mut ty = Ty::parse(f.abi_type());
-            // Arrays and alias chains (bounded by the alias count, so a cycle cannot loop).
+            // Alias chains are bounded by the alias count, so a cycle cannot loop; arrays are
+            // peeled without spending that budget.
             for _ in 0..=aliases.len() {
-                match ty {
-                    Ok(Ty::Array { elem, .. }) => ty = Ty::parse(elem),
-                    Ok(Ty::Named(name)) => match aliases.get(name) {
-                        Some(target) => ty = Ty::parse(target),
-                        None => {
-                            out.insert(name);
-                            break;
-                        }
-                    },
-                    _ => break,
+                while let Ok(Ty::Array { elem, .. }) = ty {
+                    ty = Ty::parse(elem);
+                }
+                let Ok(Ty::Named(name)) = ty else { break };
+                match aliases.get(name) {
+                    Some(target) => ty = Ty::parse(target),
+                    None => {
+                        out.insert(name);
+                        break;
+                    }
                 }
             }
         }
@@ -482,7 +483,7 @@ fn check_against_rustc(
     }
     // C reproduces Rust's alignment, except a slab-only `align(N)` (`slab_align`).
     let c_align = layout.align.at(host);
-    if c_align != align && layout.slab_align != Some(align) {
+    if c_align.max(layout.slab_align.unwrap_or(1)) != align {
         return fail(format!("alignment {c_align} != rustc {align}"));
     }
     if expected_size.is_some_and(|n| layout.size.fixed() != Some(n)) {

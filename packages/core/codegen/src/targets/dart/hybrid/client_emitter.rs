@@ -1,7 +1,7 @@
 use crate::writer::CodeWriter;
 
-use super::*;
 use super::type_helpers::*;
+use super::*;
 
 pub(super) fn emit_dart_client(
     out: &mut CodeWriter,
@@ -12,8 +12,14 @@ pub(super) fn emit_dart_client(
     view: Option<&HybridViewSpec>,
     spec: &HybridFileSpec,
 ) {
-    writeln!(out, "class {pascal}HybridClient implements Hybrid{pascal}Spec {{");
-    writeln!(out, "  static const int interfaceId = 0x{interface_id:08X};");
+    writeln!(
+        out,
+        "class {pascal}HybridClient implements Hybrid{pascal}Spec {{"
+    );
+    writeln!(
+        out,
+        "  static const int interfaceId = 0x{interface_id:08X};"
+    );
     writeln!(
         out,
         "  static const int schemaHash = {};",
@@ -54,7 +60,10 @@ pub(super) fn emit_dart_client(
 
     writeln!(out, "  {pascal}HybridClient._(this._vtable)");
     writeln!(out, "      : _handle = ffi.nullptr,");
-    writeln!(out, "        _destroy = _vtable.ref.destroy.asFunction<_NveDestroyDart>(),");
+    writeln!(
+        out,
+        "        _destroy = _vtable.ref.destroy.asFunction<_NveDestroyDart>(),"
+    );
     writeln!(
         out,
         "        _allocBytes = _vtable.ref.allocBytes.asFunction<_NveAllocBytesDart>(),"
@@ -79,10 +88,16 @@ pub(super) fn emit_dart_client(
         "      throw StateError('NVE hybrid schema hash mismatch for {pascal}');"
     );
     writeln!(out, "    }}");
-    writeln!(out, "    final createFn = _vtable.ref.create.asFunction<_NveCreateDart>();");
+    writeln!(
+        out,
+        "    final createFn = _vtable.ref.create.asFunction<_NveCreateDart>();"
+    );
     writeln!(out, "    _handle = createFn();");
     writeln!(out, "    if (_handle == ffi.nullptr) {{");
-    writeln!(out, "      throw StateError('failed to create {pascal} hybrid instance');");
+    writeln!(
+        out,
+        "      throw StateError('failed to create {pascal} hybrid instance');"
+    );
     writeln!(out, "    }}");
     writeln!(out, "  }}");
     writeln!(out);
@@ -107,10 +122,19 @@ pub(super) fn emit_dart_client(
     out.push_str(&methods_body);
 
     if methods_body.contains("_copyToNative(") {
-        writeln!(out, "  NveHybridOwnedBytes _copyToNative(List<int> bytes) {{");
-        writeln!(out, "    if (bytes.isEmpty) return ffi.Struct.create<NveHybridOwnedBytes>();");
+        writeln!(
+            out,
+            "  NveHybridOwnedBytes _copyToNative(List<int> bytes) {{"
+        );
+        writeln!(
+            out,
+            "    if (bytes.isEmpty) return ffi.Struct.create<NveHybridOwnedBytes>();"
+        );
         writeln!(out, "    final buf = _allocBytes(bytes.length);");
-        writeln!(out, "    buf.ptr.asTypedList(bytes.length).setAll(0, bytes);");
+        writeln!(
+            out,
+            "    buf.ptr.asTypedList(bytes.length).setAll(0, bytes);"
+        );
         writeln!(out, "    return buf;");
         writeln!(out, "  }}");
         writeln!(out);
@@ -119,8 +143,14 @@ pub(super) fn emit_dart_client(
     if methods_body.contains("_takeString(") {
         writeln!(out, "  String _takeString(NveHybridOwnedBytes raw) {{");
         writeln!(out, "    try {{");
-        writeln!(out, "      if (raw.ptr == ffi.nullptr || raw.len == 0) return '';");
-        writeln!(out, "      return utf8.decode(raw.ptr.asTypedList(raw.len));");
+        writeln!(
+            out,
+            "      if (raw.ptr == ffi.nullptr || raw.len == 0) return '';"
+        );
+        writeln!(
+            out,
+            "      return utf8.decode(raw.ptr.asTypedList(raw.len));"
+        );
         writeln!(out, "    }} finally {{");
         writeln!(out, "      if (raw.ptr != ffi.nullptr) _freeBytes(raw);");
         writeln!(out, "    }}");
@@ -131,8 +161,14 @@ pub(super) fn emit_dart_client(
     if methods_body.contains("_takeBytes(") {
         writeln!(out, "  Uint8List _takeBytes(NveHybridOwnedBytes raw) {{");
         writeln!(out, "    try {{");
-        writeln!(out, "      if (raw.ptr == ffi.nullptr || raw.len == 0) return Uint8List(0);");
-        writeln!(out, "      return Uint8List.fromList(raw.ptr.asTypedList(raw.len));");
+        writeln!(
+            out,
+            "      if (raw.ptr == ffi.nullptr || raw.len == 0) return Uint8List(0);"
+        );
+        writeln!(
+            out,
+            "      return Uint8List.fromList(raw.ptr.asTypedList(raw.len));"
+        );
         writeln!(out, "    }} finally {{");
         writeln!(out, "      if (raw.ptr != ffi.nullptr) _freeBytes(raw);");
         writeln!(out, "    }}");
@@ -142,7 +178,12 @@ pub(super) fn emit_dart_client(
     writeln!(out);
 }
 
-pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, expr: &str, ty: &HybridType) {
+pub(super) fn emit_dart_direct_prop_write(
+    out: &mut CodeWriter,
+    key_lit: &str,
+    expr: &str,
+    ty: &HybridType,
+) {
     match ty {
         HybridType::Bool => writeln!(out, "    builder.writeBool('{key_lit}', {expr});"),
         HybridType::U8
@@ -176,7 +217,10 @@ pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, e
                 writeln!(out, "    builder.writeInt64('{key_lit}', {expr});")
             }
             HybridType::Enum(_) => {
-                writeln!(out, "    builder.writeInt64('{key_lit}', {expr}?.rawValue);")
+                writeln!(
+                    out,
+                    "    builder.writeInt64('{key_lit}', {expr}?.rawValue);"
+                )
             }
             HybridType::F32 | HybridType::F64 => {
                 writeln!(out, "    builder.writeDouble('{key_lit}', {expr});")
@@ -194,7 +238,10 @@ pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, e
                 writeln!(out, "    }} else {{");
                 writeln!(out, "      final _bw = NveBinWriter();");
                 emit_dart_bin_write(out, "      ", "_bw", &format!("_opt_{expr}"), other);
-                writeln!(out, "      builder.writeBytes('{key_lit}', _bw.takeBytes());");
+                writeln!(
+                    out,
+                    "      builder.writeBytes('{key_lit}', _bw.takeBytes());"
+                );
                 writeln!(out, "    }}");
             }
         },
@@ -202,7 +249,10 @@ pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, e
             writeln!(out, "    {{");
             writeln!(out, "      final _bw = NveBinWriter();");
             emit_dart_bin_write(out, "      ", "_bw", expr, other);
-            writeln!(out, "      builder.writeBytes('{key_lit}', _bw.takeBytes());");
+            writeln!(
+                out,
+                "      builder.writeBytes('{key_lit}', _bw.takeBytes());"
+            );
             writeln!(out, "    }}");
         }
     }
@@ -213,9 +263,15 @@ pub(super) fn emit_dart_set_props(out: &mut CodeWriter, pascal: &str, _v: &Hybri
     writeln!(out, "  void setProps({pascal}Props props) {{");
     writeln!(out, "    final st = NveDirectPropsWriter.withEncodedProps(");
     writeln!(out, "      props,");
-    writeln!(out, "      (entriesPtr, count) => _setPropsDirect(_handle, entriesPtr, count),");
+    writeln!(
+        out,
+        "      (entriesPtr, count) => _setPropsDirect(_handle, entriesPtr, count),"
+    );
     writeln!(out, "    );");
-    writeln!(out, "    if (st != nveHybridOk) throw StateError('setProps failed on {pascal}');");
+    writeln!(
+        out,
+        "    if (st != nveHybridOk) throw StateError('setProps failed on {pascal}');"
+    );
     writeln!(out, "  }}");
     writeln!(out);
 }
@@ -241,8 +297,12 @@ pub(super) fn emit_dart_client_method(
     let mut args = vec!["_handle".to_string()];
     for (idx, p) in m.params.iter().enumerate() {
         let pname = dart_ident(&p.name);
-        if let (HybridType::Optional(inner), Some(suffix)) = (&p.ty, p.ty.optional_pod_suffix(spec)) {
-            writeln!(out, "      final _o{idx} = ffi.Struct.create<NveHybridOpt{suffix}>();");
+        if let (HybridType::Optional(inner), Some(suffix)) = (&p.ty, p.ty.optional_pod_suffix(spec))
+        {
+            writeln!(
+                out,
+                "      final _o{idx} = ffi.Struct.create<NveHybridOpt{suffix}>();"
+            );
             writeln!(out, "      if ({pname} != null) {{");
             writeln!(out, "        _o{idx}.isSome = true;");
             match inner.as_ref() {
@@ -268,19 +328,31 @@ pub(super) fn emit_dart_client_method(
             HybridType::Enum(_) => args.push(format!("{pname}.rawValue")),
             HybridType::Struct(_) if p.ty.is_pod(spec) => args.push(format!("{pname}.toAbi()")),
             HybridType::String => {
-                writeln!(out, "      final _b{idx} = _copyToNative(utf8.encode({pname}));");
+                writeln!(
+                    out,
+                    "      final _b{idx} = _copyToNative(utf8.encode({pname}));"
+                );
                 writeln!(out, "      tempBufs.add(_b{idx});");
-                writeln!(out, "      final _s{idx} = ffi.Struct.create<NveStrSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;");
+                writeln!(
+                    out,
+                    "      final _s{idx} = ffi.Struct.create<NveStrSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;"
+                );
                 args.push(format!("_s{idx}"));
             }
             HybridType::Bytes => {
                 writeln!(out, "      final _b{idx} = _copyToNative({pname});");
                 writeln!(out, "      tempBufs.add(_b{idx});");
-                writeln!(out, "      final _s{idx} = ffi.Struct.create<NveBufferSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;");
+                writeln!(
+                    out,
+                    "      final _s{idx} = ffi.Struct.create<NveBufferSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;"
+                );
                 args.push(format!("_s{idx}"));
             }
             HybridType::Value => {
-                writeln!(out, "      final _b{idx} = _copyToNative({pname}.binBytes);");
+                writeln!(
+                    out,
+                    "      final _b{idx} = _copyToNative({pname}.binBytes);"
+                );
                 writeln!(out, "      tempBufs.add(_b{idx});");
                 writeln!(out, "      final _v{idx} = ffi.Struct.create<NveValue>();");
                 writeln!(out, "      _v{idx}.tag = 5;");
@@ -291,9 +363,15 @@ pub(super) fn emit_dart_client_method(
             other => {
                 writeln!(out, "      final _w{idx} = NveBinWriter();");
                 emit_dart_bin_write(out, "      ", &format!("_w{idx}"), &pname, other);
-                writeln!(out, "      final _b{idx} = _copyToNative(_w{idx}.takeBytes());");
+                writeln!(
+                    out,
+                    "      final _b{idx} = _copyToNative(_w{idx}.takeBytes());"
+                );
                 writeln!(out, "      tempBufs.add(_b{idx});");
-                writeln!(out, "      final _s{idx} = ffi.Struct.create<NveBufferSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;");
+                writeln!(
+                    out,
+                    "      final _s{idx} = ffi.Struct.create<NveBufferSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;"
+                );
                 args.push(format!("_s{idx}"));
             }
         }
@@ -307,20 +385,32 @@ pub(super) fn emit_dart_client_method(
             let has_ok = !matches!(ok.as_ref(), HybridType::Void);
             if has_ok {
                 let ok_native = dart_native_value_type(ok, spec);
-                writeln!(out, "      final _okSlot = _allocBytes(ffi.sizeOf<{ok_native}>());");
+                writeln!(
+                    out,
+                    "      final _okSlot = _allocBytes(ffi.sizeOf<{ok_native}>());"
+                );
                 writeln!(out, "      tempBufs.add(_okSlot);");
                 writeln!(out, "      final _okPtr = _okSlot.ptr.cast<{ok_native}>();");
                 args.push("_okPtr".to_string());
             }
-            writeln!(out, "      final _errSlot = _allocBytes(ffi.sizeOf<NveHybridOwnedBytes>());");
+            writeln!(
+                out,
+                "      final _errSlot = _allocBytes(ffi.sizeOf<NveHybridOwnedBytes>());"
+            );
             writeln!(out, "      tempBufs.add(_errSlot);");
-            writeln!(out, "      final _errPtr = _errSlot.ptr.cast<NveHybridOwnedBytes>();");
+            writeln!(
+                out,
+                "      final _errPtr = _errSlot.ptr.cast<NveHybridOwnedBytes>();"
+            );
             args.push("_errPtr".to_string());
 
             writeln!(out, "      final _status = fn({});", args.join(", "));
             writeln!(out, "      if (_status != nveHybridOk) {{");
             writeln!(out, "        final _msg = _takeString(_errPtr.ref);");
-            writeln!(out, "        throw StateError(_msg.isEmpty ? 'hybrid call failed' : _msg);");
+            writeln!(
+                out,
+                "        throw StateError(_msg.isEmpty ? 'hybrid call failed' : _msg);"
+            );
             writeln!(out, "      }}");
             if has_ok {
                 let read_expr = dart_read_ptr_expr("_okPtr", ok, spec);
@@ -335,7 +425,10 @@ pub(super) fn emit_dart_client_method(
     }
 
     writeln!(out, "    }} finally {{");
-    writeln!(out, "      for (final b in tempBufs) {{ if (b.ptr != ffi.nullptr) _freeBytes(b); }}");
+    writeln!(
+        out,
+        "      for (final b in tempBufs) {{ if (b.ptr != ffi.nullptr) _freeBytes(b); }}"
+    );
     writeln!(out, "    }}");
     writeln!(out, "  }}");
     writeln!(out);
@@ -386,7 +479,10 @@ pub(super) fn emit_dart_return_decode(
         HybridType::String => writeln!(out, "{indent}return _takeString({var});"),
         HybridType::Bytes => writeln!(out, "{indent}return _takeBytes({var});"),
         HybridType::Value => {
-            writeln!(out, "{indent}return NveHybridDynamicValue(_takeBytes({var}));")
+            writeln!(
+                out,
+                "{indent}return NveHybridDynamicValue(_takeBytes({var}));"
+            )
         }
         HybridType::Optional(inner) if inner.is_pod(spec) => {
             writeln!(out, "{indent}if (!{var}.isSome) return null;");
@@ -408,4 +504,3 @@ pub(super) fn emit_dart_return_decode(
         }
     }
 }
-

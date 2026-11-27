@@ -160,6 +160,27 @@ pub fn assert_generated_file_naming_and_optional_disk_parity(
     }
 }
 
+/// Whether `tool` runs. A missing tool returns `false` (the caller skips), unless the test run
+/// requires it: `NVE_REQUIRE_<TOOL>` (`swiftc` -> `NVE_REQUIRE_SWIFTC`), and for `clang` /
+/// `clang++` also `NVE_REQUIRE_CLANG` or `CI` (every CI image has clang). Then the test fails.
+pub fn require_tool(tool: &str) -> bool {
+    if tool_available(tool) {
+        return true;
+    }
+    let var = format!(
+        "NVE_REQUIRE_{}",
+        tool.to_uppercase().replace('+', "X").replace('-', "_")
+    );
+    let clang = tool.starts_with("clang")
+        && (std::env::var_os("NVE_REQUIRE_CLANG").is_some() || std::env::var_os("CI").is_some());
+    assert!(
+        std::env::var_os(&var).is_none() && !clang,
+        "`{tool}` is required ({var} / CI) but was not found"
+    );
+    eprintln!("SKIP: `{tool}` not found");
+    false
+}
+
 pub fn tool_available(tool: &str) -> bool {
     Command::new(tool)
         .arg("--version")

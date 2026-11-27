@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nve_codegen::{
-    generate_hybrid_all, generate_hybrid_target, parse_hybrid_rust_spec, CodegenError,
-    HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec,
-    HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec,
-    HybridStructSpec, HybridTarget, HybridType, HybridViewSpec, NVE_HYBRID_INTERFACE_ID_BASE,
+    CodegenError, HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec,
+    HybridFieldSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec,
+    HybridPropSpec, HybridStructSpec, HybridTarget, HybridType, HybridViewSpec,
+    NVE_HYBRID_INTERFACE_ID_BASE, generate_hybrid_all, generate_hybrid_target,
+    parse_hybrid_rust_spec,
 };
 
 /// Realistic multi-item declarative Rust spec exercising every supported feature:
@@ -22,6 +23,8 @@ use nve_codegen::{
 /// - `#[nve_hybrid_view(name = "VideoSurface")]` covering typed `#[prop]` with defaults,
 ///   typed `#[event]`, and imperative `#[method]`
 const REALISTIC_HYBRID_SPEC: &str = include_str!("fixtures/realistic_hybrid.nve.rs");
+/// A functional fake `<jni.h>` (`JNIEnv` records thrown exceptions), so JNI glue compiles and runs.
+const FAKE_JNI_H: &str = include_str!("fixtures/fake_jni.h");
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -43,11 +46,9 @@ fn temp_test_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// Whether `tool` runs; a missing tool skips the caller, unless `CI` / `NVE_REQUIRE_<TOOL>` is set.
 fn tool_available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
+    common::require_tool(tool)
 }
 
 /// Locates `libnve_abi-*.rlib` and all Cargo dependency search directories across both classic
@@ -186,23 +187,24 @@ fn parses_realistic_multi_item_rust_spec_accurately() {
     assert_eq!(spec.enums[1].variants[2].value, 10);
     assert_eq!(spec.enums[1].variants[3].value, 11);
 
-    assert_eq!(spec.structs.len(), 3);
+    assert_eq!(spec.structs.len(), 4);
     assert!(spec.find_struct("FramePoint").unwrap().is_pod(&spec));
     assert!(spec.find_struct("DigestHeader").unwrap().is_pod(&spec));
     assert!(!spec.find_struct("SignedPayload").unwrap().is_pod(&spec));
+    assert!(!spec.find_struct("Cursor").unwrap().is_pod(&spec));
 
     assert_eq!(spec.modules.len(), 1);
     let crypto = &spec.modules[0];
     assert_eq!(crypto.name, "Crypto");
     assert_eq!(crypto.trait_name, "CryptoSpec");
-    assert_eq!(crypto.methods.len(), 10);
+    assert_eq!(crypto.methods.len(), 11);
     assert!(crypto.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
 
     assert_eq!(spec.views.len(), 1);
     let video = &spec.views[0];
     assert_eq!(video.name, "VideoSurface");
     assert_eq!(video.trait_name, "VideoSurfaceSpec");
-    assert_eq!(video.props.len(), 5);
+    assert_eq!(video.props.len(), 6);
     assert_eq!(video.events.len(), 2);
     assert_eq!(video.methods.len(), 2);
     assert!(video.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
@@ -385,9 +387,18 @@ fn programmatic_rust_dsl_spec_matches_parsed_spec() {
     dsl.validate().expect("programmatic spec should validate");
     let outputs = generate_hybrid_all(&dsl, HybridTarget::ALL).expect("generate all targets");
     assert_eq!(outputs.len(), 6);
-    assert_eq!(outputs[0].files[0].relative_path, "mini_math_hybrid.generated.rs");
-    assert_eq!(outputs[1].files[0].relative_path, "MiniMathHybridAbi.generated.h");
-    assert_eq!(outputs[1].files[1].relative_path, "MiniMathHybridSpec.generated.hpp");
+    assert_eq!(
+        outputs[0].files[0].relative_path,
+        "mini_math_hybrid.generated.rs"
+    );
+    assert_eq!(
+        outputs[1].files[0].relative_path,
+        "MiniMathHybridAbi.generated.h"
+    );
+    assert_eq!(
+        outputs[1].files[1].relative_path,
+        "MiniMathHybridSpec.generated.hpp"
+    );
 }
 
 #[test]
@@ -477,7 +488,10 @@ fn rejects_negative_and_malformed_specs() {
         }
         "#,
     );
-    assert!(tree_ok.is_ok(), "Vec<Self> should be valid, got {tree_ok:?}");
+    assert!(
+        tree_ok.is_ok(),
+        "Vec<Self> should be valid, got {tree_ok:?}"
+    );
 
     // 9. Invalid prop default type mismatch
     assert!(matches!(
@@ -523,7 +537,6 @@ fn real_compiler_verifies_c11_and_cpp20_headers() {
     common::write_generated_c_abi_headers(&dir);
     cpp_out.write_to_dir(&dir).unwrap();
 
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
     let abi_h = dir.join("CryptoHybridAbi.generated.h");
 
     // 1. Verify pure C11 header directly (`-x c-header`) AND included from a C11 translation unit
@@ -552,7 +565,6 @@ int _check_c11(const NveHybridCryptoVTable* vt) {
             "-fsyntax-only",
         ])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&abi_h)
         .output()
         .expect("run clang on generated C11 header");
@@ -566,7 +578,6 @@ int _check_c11(const NveHybridCryptoVTable* vt) {
     let c_tu_check = Command::new("clang")
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&c_driver)
         .output()
         .expect("run clang on C11 driver");
@@ -600,7 +611,6 @@ void _check_instantiation(const NveHybridCryptoVTable* cvt, const NveHybridVideo
     let cpp_check = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&cpp_driver)
         .output()
         .expect("run clang++ on generated C++20 header");
@@ -614,48 +624,11 @@ void _check_instantiation(const NveHybridCryptoVTable* cvt, const NveHybridVideo
     // 3. Also compile-check generated C++20 JNI glue (`CryptoHybridJni.cpp`) against a standard JNI stub header
     let kt_out = generate_hybrid_target(&spec, HybridTarget::Kotlin).unwrap();
     kt_out.write_to_dir(&dir).unwrap();
-    std::fs::write(
-        dir.join("jni.h"),
-        r#"#pragma once
-#include <cstdint>
-#define JNIEXPORT
-#define JNICALL
-#define JNI_FALSE 0
-#define JNI_TRUE 1
-typedef uint8_t jboolean;
-typedef int8_t jbyte;
-typedef int32_t jint;
-typedef int64_t jlong;
-typedef float jfloat;
-typedef double jdouble;
-typedef int32_t jsize;
-struct _jobject {};
-typedef _jobject* jobject;
-struct _jclass : _jobject {};
-typedef _jclass* jclass;
-struct _jstring : _jobject {};
-typedef _jstring* jstring;
-struct _jbyteArray : _jobject {};
-typedef _jbyteArray* jbyteArray;
-struct JNIEnv {
-  jclass FindClass(const char*);
-  jint ThrowNew(jclass, const char*);
-  void* GetDirectBufferAddress(jobject);
-  jlong GetDirectBufferCapacity(jobject);
-  jbyteArray NewByteArray(jsize);
-  void SetByteArrayRegion(jbyteArray, jsize, jsize, const jbyte*);
-  const char* GetStringUTFChars(jstring, jboolean*);
-  void ReleaseStringUTFChars(jstring, const char*);
-  jstring NewStringUTF(const char*);
-};
-"#,
-    )
-    .unwrap();
+    std::fs::write(dir.join("jni.h"), FAKE_JNI_H).unwrap();
 
     let jni_check = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(dir.join("CryptoHybridJni.generated.cpp"))
         .output()
         .expect("run clang++ on generated JNI C++20 glue");
@@ -685,7 +658,8 @@ fn swift_direct_runtime_files() -> Vec<PathBuf> {
 
 fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
     let flutter_plugin_root = common::prepare_offline_nve_flutter_pkg(dir, &workspace_root());
-    let canonical_plugin = std::fs::canonicalize(&flutter_plugin_root).unwrap_or(flutter_plugin_root);
+    let canonical_plugin =
+        std::fs::canonicalize(&flutter_plugin_root).unwrap_or(flutter_plugin_root);
     let host_root = common::prepare_offline_nve_host_pkg(dir);
     let canonical_host = std::fs::canonicalize(&host_root).unwrap_or(host_root);
     let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -761,7 +735,6 @@ fn real_compiler_verifies_swift_direct_c_interop() {
     cpp_out.write_to_dir(&dir).unwrap();
     swift_out.write_to_dir(&dir).unwrap();
 
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
     let abi_h = dir.join("CryptoHybridAbi.generated.h");
     let swift_file = dir.join("CryptoHybridSpec.generated.swift");
 
@@ -771,9 +744,7 @@ fn real_compiler_verifies_swift_direct_c_interop() {
         .arg("-import-objc-header")
         .arg(&abi_h)
         .arg("-I")
-        .arg(&dir)
-        .arg("-I")
-        .arg(&nve_inc);
+        .arg(&dir);
     for runtime_file in swift_direct_runtime_files() {
         swift_cmd.arg(runtime_file);
     }
@@ -895,6 +866,17 @@ impl CryptoHybrid for MyCrypto {
         }).collect())
     }
     fn inspect_dynamic(&mut self, meta: NveHybridValue) -> NveHybridValue { meta }
+    fn transpose(&mut self, cursor: Cursor) -> Cursor {
+        let cols = cursor.grid.first().map_or(0, Vec::len);
+        let grid = (0..cols).map(|c| cursor.grid.iter().map(|row| row[c]).collect()).collect();
+        Cursor {
+            mark: cursor.mark + 1,
+            w: cursor.w.iter().rev().copied().collect(),
+            r: cursor.r.map(|s| s.to_uppercase()),
+            count: cursor.count * 2,
+            grid,
+        }
+    }
     fn reset_cache(&mut self) -> Result<(), String> { Ok(()) }
 }
 
@@ -1276,7 +1258,11 @@ fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
         .arg(&hybrid_rlib)
         .output()
         .expect("compile crypto_hybrid rlib");
-    assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
+    assert!(
+        st.status.success(),
+        "{}",
+        String::from_utf8_lossy(&st.stderr)
+    );
 
     // 2. Compile a Rust staticlib exporting `nve_get_interface` backed by `build_crypto_vtable` & `build_video_surface_vtable`
     let provider_rs = dir.join("provider.rs");
@@ -1343,6 +1329,17 @@ impl CryptoHybrid for LiveCrypto {
         }).collect())
     }
     fn inspect_dynamic(&mut self, meta: NveHybridValue) -> NveHybridValue { meta }
+    fn transpose(&mut self, cursor: Cursor) -> Cursor {
+        let cols = cursor.grid.first().map_or(0, Vec::len);
+        let grid = (0..cols).map(|c| cursor.grid.iter().map(|row| row[c]).collect()).collect();
+        Cursor {
+            mark: cursor.mark + 1,
+            w: cursor.w.iter().rev().copied().collect(),
+            r: cursor.r.map(|s| s.to_uppercase()),
+            count: cursor.count * 2,
+            grid,
+        }
+    }
     fn reset_cache(&mut self) -> Result<(), String> { Ok(()) }
 }
 
@@ -1359,7 +1356,14 @@ impl VideoSurfaceHybrid for LiveVideo {
         if !self.props.muted || self.seek_pos != 9876 {
             return Err("unexpected view state".to_string());
         }
-        Ok(vec![at_point.x as u8, at_point.y as u8, self.props.source_url.len() as u8])
+        let mut frame = vec![at_point.x as u8, at_point.y as u8, self.props.source_url.len() as u8];
+        if let Some(focus) = self.props.focus_point {
+            frame.push(focus.x as u8);
+        }
+        if let Some(poster) = &self.props.poster_url {
+            frame.push(poster.len() as u8);
+        }
+        Ok(frame)
     }
 }
 
@@ -1467,6 +1471,53 @@ int main() {
   video.seek(9876u);
   auto frame = video.captureFrame(FramePoint{5.0f, 9.0f});
   assert(frame.size() == 3 && frame[0] == 5 && frame[1] == 9 && frame[2] == 24);
+  // Absent non-direct options cross as `Null`; present ones as their encoding.
+  props.posterUrl = "p.png";
+  props.focusPoint = FramePoint{7.0f, 0.0f};
+  video.setProps(props);
+  frame = video.captureFrame(FramePoint{5.0f, 9.0f});
+  assert(frame.size() == 5 && frame[3] == 7 && frame[4] == 5);
+  props.posterUrl = std::nullopt;
+  props.focusPoint = std::nullopt;
+  video.setProps(props);
+  assert(video.captureFrame(FramePoint{5.0f, 9.0f}).size() == 3);
+
+  // A dynamic value crosses as an `NveValue` tree and comes back byte-identical.
+  BinWriter dw;
+  const auto dmap = dw.begin_map(2);
+  dw.write_map_key("k");
+  const auto darr = dw.begin_array(3);
+  dw.write_i64(1);
+  dw.write_str("x");
+  dw.write_null();
+  dw.end(darr);
+  dw.write_map_key("f");
+  dw.write_f64(2.5);
+  dw.end(dmap);
+  const auto meta = DynamicValue::from_bytes(dw.bytes());
+  assert(meta.has_value());
+  assert(crypto.inspectDynamic(*meta) == *meta);
+
+  // Field names shadowing codec names (`w`, `mark`, `r`, `count`) and a nested sequence.
+  Cursor cursor;
+  cursor.mark = 1u;
+  cursor.w = {1, 2, 3};
+  cursor.r = "ab";
+  cursor.count = 4u;
+  cursor.grid = {{1, 2, 3}, {4, 5, 6}};
+  const Cursor t = crypto.transpose(cursor);
+  assert(t.mark == 2u && t.count == 8u && t.r == std::optional<std::string>("AB"));
+  assert((t.w == std::vector<uint8_t>{3, 2, 1}));
+  assert((t.grid == std::vector<std::vector<int32_t>>{{1, 4}, {2, 5}, {3, 6}}));
+
+  // Invalid UTF-8 never crosses the ABI: the encoding fails before the call.
+  bool utf8_caught = false;
+  try {
+    (void)crypto.batchSign({"\xff"}, HashAlgorithm::Sha256);
+  } catch (const std::runtime_error& e) {
+    utf8_caught = std::string(e.what()).find("InvalidUtf8") != std::string::npos;
+  }
+  assert(utf8_caught);
   return 0;
 }
 "#,
@@ -1474,12 +1525,10 @@ int main() {
     .unwrap();
 
     common::write_generated_c_abi_headers(&dir);
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
     let cpp_bin = dir.join("cpp_e2e_bin");
     let cpp_link = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&cpp_main)
         .arg(&staticlib)
         .arg("-o")
@@ -1503,8 +1552,47 @@ int main() {
         String::from_utf8_lossy(&run.stderr)
     );
 
+    // 4. The Android JNI glue, linked against the same Rust staticlib and *run* on a fake `JNIEnv`
+    //    that records what Java would see (pending exceptions, arrays, strings).
+    generate_hybrid_target(&spec, HybridTarget::Kotlin)
+        .unwrap()
+        .write_to_dir(&dir)
+        .unwrap();
+    std::fs::write(dir.join("jni.h"), FAKE_JNI_H).unwrap();
+    let jni_main = dir.join("jni_main.cpp");
+    std::fs::write(&jni_main, JNI_HARNESS_CPP).unwrap();
+    let jni_bin = dir.join("jni_e2e_bin");
+    let jni_link = Command::new("clang++")
+        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])
+        .arg(format!("-I{}", dir.display()))
+        .arg(&jni_main)
+        .arg(dir.join("CryptoHybridJni.generated.cpp"))
+        .arg(&staticlib)
+        .arg("-o")
+        .arg(&jni_bin)
+        .output()
+        .expect("link the JNI glue against the Rust staticlib");
+    assert!(
+        jni_link.status.success(),
+        "JNI glue <-> Rust link failed:\n{}",
+        String::from_utf8_lossy(&jni_link.stderr)
+    );
+    let jni_run = Command::new(&jni_bin)
+        .output()
+        .expect("run the JNI harness");
+    assert!(
+        jni_run.status.success(),
+        "JNI harness failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&jni_run.stdout),
+        String::from_utf8_lossy(&jni_run.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Drives the generated JNI entry points like the Kotlin client does (direct buffers, Java
+/// strings), against the live Rust provider, through every success and error path.
+const JNI_HARNESS_CPP: &str = include_str!("fixtures/jni_harness.cpp");
 
 #[test]
 fn explicit_interface_id_and_fixed_layout_static_asserts_work_in_hybrid_pipeline() {
@@ -1631,7 +1719,6 @@ pub trait SafeBannerSpec {
     // 4. Rust + C++20: verify real compilers accept the emitted code cleanly!
     let rust_out = generate_hybrid_target(&spec, HybridTarget::Rust).unwrap();
     let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
 
     if tool_available("clang++") {
         let dir = temp_test_dir("adversarial_cpp");
@@ -1653,7 +1740,6 @@ void check() {
         let out = Command::new("clang++")
             .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
             .arg(format!("-I{}", dir.display()))
-            .arg(format!("-I{}", nve_inc.display()))
             .arg(&driver)
             .output()
             .expect("clang++ adversarial hybrid cpp");
@@ -1676,9 +1762,7 @@ void check() {
             .arg("-import-objc-header")
             .arg(dir.join("SafeBannerHybridAbi.generated.h"))
             .arg("-I")
-            .arg(&dir)
-            .arg("-I")
-            .arg(&nve_inc);
+            .arg(&dir);
         for runtime_file in swift_direct_runtime_files() {
             swift_cmd.arg(runtime_file);
         }
@@ -1752,7 +1836,10 @@ void check() {
 #[test]
 fn fuzz_hybrid_parser_never_panics_on_adversarial_and_truncated_inputs() {
     // 1. Sampled UTF-8 prefix truncations across the entire realistic hybrid spec
-    let indices: Vec<usize> = REALISTIC_HYBRID_SPEC.char_indices().map(|(i, _)| i).collect();
+    let indices: Vec<usize> = REALISTIC_HYBRID_SPEC
+        .char_indices()
+        .map(|(i, _)| i)
+        .collect();
     for (step, &byte_idx) in indices.iter().enumerate() {
         if step % 3 == 0 || byte_idx + 64 >= REALISTIC_HYBRID_SPEC.len() {
             let _ = parse_hybrid_rust_spec(&REALISTIC_HYBRID_SPEC[..byte_idx]);
@@ -1787,7 +1874,10 @@ fn fuzz_hybrid_parser_never_panics_on_adversarial_and_truncated_inputs() {
         "pub(crate".to_owned(),
     ];
     for case in &edge_cases {
-        assert!(parse_hybrid_rust_spec(case).is_err(), "must be rejected: {case}");
+        assert!(
+            parse_hybrid_rust_spec(case).is_err(),
+            "must be rejected: {case}"
+        );
     }
 
     // 3. 1,200 deterministic PRNG adversarial token streams

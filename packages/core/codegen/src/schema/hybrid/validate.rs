@@ -430,6 +430,14 @@ fn validate_type(
                     "{ctx}: Option<Result<...>> is not supported across FFI"
                 )));
             }
+            // `None` is encoded as `Null`, which an inner `Option` / dynamic value can hold too:
+            // `Some(None)` / `Some(null)` would decode as `None`.
+            if matches!(inner.as_ref(), HybridType::Optional(_) | HybridType::Value) {
+                return Err(CodegenError::validation(format!(
+                    "{ctx}: Option<{}> is ambiguous on the wire (its `None` and `Some(null)` both encode as null)",
+                    inner.canonical_signature()
+                )));
+            }
             validate_type(inner, false, enum_map, struct_map, alias_names, ctx)
         }
         HybridType::Vec(inner) => {

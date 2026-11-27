@@ -56,7 +56,7 @@ pub(super) fn parse_enum(
     // discriminant may follow.
     let mut next: Option<u32> = Some(0);
     for v in &e.variants {
-        attrs::check_member_attrs(&v.attrs, &[], "an enum variant")?;
+        attrs::check_member_attrs(&v.attrs, &[], &[], "an enum variant")?;
         if !matches!(v.fields, syn::Fields::Unit) {
             return Err(error_at(
                 v.fields.span(),
@@ -122,7 +122,7 @@ pub(super) fn parse_record<'a>(
     };
     let mut out = Vec::new();
     for f in fields {
-        attrs::check_member_attrs(&f.attrs, &["offset", "offset64"], "a record field")?;
+        attrs::check_member_attrs(&f.attrs, &["offset", "offset64"], &[], "a record field")?;
         let Some(field_name) = &f.ident else {
             return Err(error_at(f.span(), "hybrid struct fields must be named"));
         };
@@ -186,10 +186,27 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
         .unwrap_or_else(|| strip_spec_suffix(&trait_name));
     let explicit_interface_id = args.u32("interface_id")?;
     let doc = attrs::docs(&t.attrs);
-    let (member_attrs, what): (&[&str], _) = if module.is_some() {
-        (&["optional"], "a module member")
+    // This trait kind's member attributes, and the other kind's with the message naming the mix-up.
+    const PROP_EVENT: &str =
+        "#[prop] / #[event] are only valid inside #[nve_hybrid_view], not #[nve_hybrid_module]";
+    const METHOD: &str = "#[method] is only valid inside #[nve_hybrid_view]";
+    const OPTIONAL: &str = "#[optional] is only valid inside #[nve_hybrid_module]";
+    let (member_attrs, misplaced, what): (&[&str], &[(&str, &str)], _) = if module.is_some() {
+        (
+            &["optional"],
+            &[
+                ("prop", PROP_EVENT),
+                ("event", PROP_EVENT),
+                ("method", METHOD),
+            ],
+            "a module member",
+        )
     } else {
-        (&["prop", "event", "method"], "a view member")
+        (
+            &["prop", "event", "method"],
+            &[("optional", OPTIONAL)],
+            "a view member",
+        )
     };
     let mut methods = Vec::new();
     let (mut props, mut events) = (Vec::new(), Vec::new());
@@ -206,21 +223,9 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
                 "hybrid trait methods are declarations only (no default body)",
             ));
         }
-        attrs::check_member_attrs(&f.attrs, member_attrs, what).map_err(|e| {
-            // Name the real mistake for view-only / module-only member attributes.
-            match (module.is_some(), attrs::find(&f.attrs, "prop").or(attrs::find(&f.attrs, "event"))) {
-                (true, Some(a)) => error_at(
-                    attrs::span(a),
-                    "#[prop] / #[event] are only valid inside #[nve_hybrid_view], not #[nve_hybrid_module]",
-                ),
-                _ => match (module.is_none(), attrs::find(&f.attrs, "optional")) {
-                    (true, Some(a)) => error_at(attrs::span(a), "#[optional] is only valid inside #[nve_hybrid_module]"),
-                    _ => e,
-                },
-            }
-        })?;
+        attrs::check_member_attrs(&f.attrs, member_attrs, misplaced, what)?;
         for flag in ["event", "method", "optional"] {
-            if let Some(a) = attrs::find(&f.attrs, flag) {
+            if let Some(a) = attrs::find_member(&f.attrs, flag) {
                 Args::parse(a, keys::NONE)?;
             }
         }
@@ -231,12 +236,12 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
             ));
         }
         let sig = signature(&f.sig, attrs::docs(&f.attrs), Receiver::Allowed)?;
-        let prop = attrs::find(&f.attrs, "prop");
-        let event = attrs::find(&f.attrs, "event");
+        let prop = attrs::find_member(&f.attrs, "prop");
+        let event = attrs::find_member(&f.attrs, "event");
         let roles = [
             prop.is_some(),
             event.is_some(),
-            attrs::has(&f.attrs, "method"),
+            attrs::has_member(&f.attrs, "method"),
         ];
         if roles.iter().filter(|r| **r).count() > 1 {
             return Err(error_at(
@@ -247,7 +252,7 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
         if module.is_some() {
             // (`check_member_attrs` already rejected `#[prop]` / `#[event]` here.)
             methods.push(HybridMethodSpec {
-                optional: attrs::has(&f.attrs, "optional"),
+                optional: attrs::has_member(&f.attrs, "optional"),
                 ..sig
             });
         } else if let Some(a) = prop {
@@ -389,6 +394,11 @@ pub(super) fn signature(
     let mut params = Vec::new();
     let mut has_self = false;
     for input in &sig.inputs {
+        let input_attrs = match input {
+            FnArg::Receiver(r) => &r.attrs,
+            FnArg::Typed(t) => &t.attrs,
+        };
+        attrs::check_member_attrs(input_attrs, &[], &[], "a parameter")?;
         match input {
             FnArg::Receiver(r) if receiver == Receiver::Forbidden => {
                 return Err(error_at(r.span(), "C functions cannot take `self`"));

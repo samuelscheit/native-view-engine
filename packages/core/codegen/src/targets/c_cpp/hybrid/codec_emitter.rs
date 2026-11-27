@@ -11,10 +11,12 @@ pub(super) fn emit_cpp20_spec(spec: &HybridFileSpec, abi_header: &str) -> String
     );
     writeln!(out, "#pragma once");
     writeln!(out);
+    writeln!(out, "#include <algorithm>");
     writeln!(out, "#include <array>");
     writeln!(out, "#include <cstddef>");
     writeln!(out, "#include <cstdint>");
     writeln!(out, "#include <cstring>");
+    writeln!(out, "#include <limits>");
     writeln!(out, "#include <optional>");
     writeln!(out, "#include <span>");
     writeln!(out, "#include <stdexcept>");
@@ -25,6 +27,7 @@ pub(super) fn emit_cpp20_spec(spec: &HybridFileSpec, abi_header: &str) -> String
     writeln!(out, "#include \"{abi_header}\"");
     writeln!(out, "#include <nve/host/bin_codec.hpp>");
     writeln!(out, "#include <nve/host/hybrid_runtime.hpp>");
+    writeln!(out, "#include <nve/host/value_tree.hpp>");
     writeln!(out);
     writeln!(out, "namespace nve::hybrid {{");
     writeln!(out);
@@ -59,6 +62,7 @@ pub(super) fn emit_cpp_bin_codec(out: &mut CodeWriter) {
     writeln!(out, "using nve::host::BinReader;");
     writeln!(out, "using nve::host::BinWriter;");
     writeln!(out, "using nve::host::DynamicValue;");
+    writeln!(out, "using nve::host::NveValueTree;");
     writeln!(out);
     writeln!(
         out,
@@ -74,7 +78,7 @@ pub(super) fn emit_cpp_bin_codec(out: &mut CodeWriter) {
     );
     writeln!(
         out,
-        "  if (!w.ok()) throw std::runtime_error(\"NveBinValue encoding failed\");"
+        "  if (!w.ok()) throw std::runtime_error(std::string(\"NveBinValue encoding failed: \") + nve::host::to_string(w.error()));"
     );
     writeln!(out, "  return w.bytes();");
     writeln!(out, "}}");
@@ -90,13 +94,42 @@ pub(super) fn emit_cpp_bin_codec(out: &mut CodeWriter) {
     writeln!(out);
     writeln!(
         out,
-        "/// Throws when decoding hit malformed or truncated `NveBinValue` bytes."
+        "/// Throws unless `r` decoded its whole buffer without error (like Rust `BinValueView::parse`)."
     );
-    writeln!(out, "inline void require_ok(const BinReader& r) {{");
+    writeln!(out, "inline void require_done(const BinReader& r) {{");
     writeln!(
         out,
-        "  if (!r.ok()) throw std::runtime_error(\"malformed NveBinValue\");"
+        "  if (!r.ok()) throw std::runtime_error(std::string(\"malformed NveBinValue: \") + nve::host::to_string(r.error()));"
+    );
+    writeln!(
+        out,
+        "  if (!r.at_end()) throw std::runtime_error(\"malformed NveBinValue: trailing bytes\");"
     );
     writeln!(out, "}}");
+    writeln!(out);
+    writeln!(
+        out,
+        "/// A peer-allocated `NveHybridOwnedBytes`, freed however the owning scope ends."
+    );
+    writeln!(out, "class OwnedBytes {{");
+    writeln!(out, " public:");
+    writeln!(
+        out,
+        "  OwnedBytes(NveHybridOwnedBytes raw, void (*free_bytes)(NveHybridOwnedBytes)) noexcept : raw_(raw), free_(free_bytes) {{}}"
+    );
+    writeln!(out, "  OwnedBytes(const OwnedBytes&) = delete;");
+    writeln!(out, "  OwnedBytes& operator=(const OwnedBytes&) = delete;");
+    writeln!(
+        out,
+        "  ~OwnedBytes() {{ if (raw_.ptr && free_) free_(raw_); }}"
+    );
+    writeln!(
+        out,
+        "  std::span<const uint8_t> span() const noexcept {{ return raw_.ptr ? std::span<const uint8_t>(raw_.ptr, raw_.len) : std::span<const uint8_t>(); }}"
+    );
+    writeln!(out, " private:");
+    writeln!(out, "  NveHybridOwnedBytes raw_;");
+    writeln!(out, "  void (*free_)(NveHybridOwnedBytes);");
+    writeln!(out, "}};");
     writeln!(out, "#endif // NVE_HYBRID_CPP_COMMON_DEFINED");
 }
