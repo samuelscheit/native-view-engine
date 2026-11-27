@@ -23,6 +23,11 @@ impl ProcId {
     }
 
     #[inline]
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
     pub const fn raw(self) -> u64 {
         self.0
     }

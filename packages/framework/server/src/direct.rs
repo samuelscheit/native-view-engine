@@ -1,14 +1,15 @@
 //! In-process [`nve_rpc::Transport`] (`DirectTransport`) for SSR loaders and integration tests.
 
+use bytes::Bytes;
 use http::header::CONTENT_TYPE;
-use http::{HeaderMap, HeaderName, HeaderValue, Method, Request};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use nve_rpc::{
-    format_rpc_path, BoxFuture, CborCodec, CodecFormat, MaybeSend, MaybeSync, RawCall, RawReply,
-    Transport, TransportError,
+    format_rpc_path, BoxFuture, CborCodec, CodecFormat, Effect, MaybeSend, MaybeSync, RawCall,
+    RawReply, RpcStatus, Transport, TransportError,
 };
 
 use crate::auth::{make_bearer_header, AuthResolver};
-use crate::response::parse_rpc_http_reply;
+use crate::response::{parse_rpc_http_reply, protocol_error_response};
 use crate::server::Server;
 
 #[derive(Clone)]
@@ -121,7 +122,7 @@ where
     A: AuthResolver<S, U>,
     C: CodecFormat,
 {
-    fn call_raw<'a>(&'a self, req: RawCall<'a>) -> BoxFuture<'a, Result<RawReply, TransportError>> {
+    fn call_raw<'a>(&'a self, req: RawCall) -> BoxFuture<'a, Result<RawReply, TransportError>> {
         let proc_name = req.name;
         let content_type = req.content_type;
         let body = req.body;
@@ -161,5 +162,62 @@ where
             let (parts, body) = resp.into_parts();
             parse_rpc_http_reply(parts.status, &parts.headers, body)
         })
+    }
+}
+
+impl<S, U, A, C> Server<S, U, A, C>
+where
+    S: Clone + MaybeSend + MaybeSync + 'static,
+    U: Clone + MaybeSend + MaybeSync + 'static,
+    A: AuthResolver<S, U>,
+    C: Clone + MaybeSend + MaybeSync + 'static,
+{
+    pub(crate) async fn execute_trusted_direct(
+        &self,
+        proc_name: &str,
+        content_type: &str,
+        headers: HeaderMap,
+        principal_override: Option<U>,
+        allow_actions: bool,
+        body: Bytes,
+    ) -> Result<Response<Bytes>, TransportError>
+    where
+        C: CodecFormat,
+    {
+        if !content_type.eq_ignore_ascii_case(C::CONTENT_TYPE) {
+            return Ok(protocol_error_response(
+                RpcStatus::UnsupportedMediaType,
+                "unsupported RPC Content-Type",
+            ));
+        }
+        if body.len() > self.inner.config.max_body_bytes {
+            return Ok(protocol_error_response(
+                RpcStatus::PayloadTooLarge,
+                "request body exceeds configured max_body_bytes",
+            ));
+        }
+        let Some(entry_idx) = self.inner.registry.lookup_index(proc_name) else {
+            return Ok(protocol_error_response(
+                RpcStatus::NotFound,
+                "unknown RPC procedure",
+            ));
+        };
+        // Enforce Action guard against the registry's authoritative metadata rather than
+        // trusting the caller-supplied `RawCall.effect`.
+        if self.inner.registry.entry_at(entry_idx).effect == Effect::Action && !allow_actions {
+            return Err(TransportError::new(
+                "trusted DirectTransport blocks Action calls by default to prevent GET-triggered SSR mutations; use allow_trusted_actions(true) or DirectTransport::strict_http()",
+            ));
+        }
+        let principal = match principal_override {
+            Some(p) => p,
+            None => match self.resolve_principal(&headers).await {
+                Ok(p) => p,
+                Err(err) => return Ok(err.into_response()),
+            },
+        };
+        Ok(self
+            .execute_rpc_entry(entry_idx, principal, headers, body)
+            .await)
     }
 }

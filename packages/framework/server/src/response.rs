@@ -4,13 +4,13 @@
 use std::borrow::Cow;
 
 use bytes::Bytes;
-use http::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, LOCATION};
+use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, LOCATION};
 use http::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use nve_rpc::{
-    encode_protocol_error_json, format_invalidate_sink, parse_invalidate_header, CodecError,
-    CodecFormat, FieldErrors, FormPairs, InvalidateParse, RawReply, RpcCodec, RpcStatus, TagSink,
-    TransportError, CONTENT_TYPE_ERROR_JSON, ERROR_KIND_DOMAIN, ERROR_KIND_FORM_VALIDATION,
-    ERROR_KIND_PROTOCOL, HEADER_ERROR_KIND, HEADER_INVALIDATE,
+    classify_http_reply, encode_protocol_error_json, format_invalidate_sink, CodecError,
+    CodecFormat, FieldErrors, FormPairs, RawReply, RpcStatus, TagSink, TransportError,
+    CONTENT_TYPE_ERROR_JSON, ERROR_KIND_DOMAIN, ERROR_KIND_FORM_VALIDATION, ERROR_KIND_PROTOCOL,
+    HEADER_ERROR_KIND, HEADER_INVALIDATE,
 };
 
 use crate::registry::RpcHandlerOutcome;
@@ -107,83 +107,34 @@ pub(crate) fn outcome_to_rpc_response<C: CodecFormat>(
     }
 }
 
-pub(crate) fn form_outcome_to_response<C>(
-    codec: &C,
-    outcome: FormOutcome,
-    wants_cbor: bool,
-) -> Response<Bytes>
-where
-    C: CodecFormat + RpcCodec<FieldErrors>,
-{
+pub(crate) fn form_outcome_to_response(outcome: FormOutcome) -> Response<Bytes> {
     match outcome {
-        FormOutcome::Redirect {
-            location,
-            invalidated,
-        } => {
-            if wants_cbor {
-                // Script-enhanced callers (`Accept: application/cbor`) receive `204 No Content`
-                // with `Location` and `Nve-Invalidate` so browser `fetch` can read the headers
-                // without opaque-redirect stripping.
-                let mut builder = Response::builder()
-                    .status(StatusCode::NO_CONTENT)
-                    .header(LOCATION, location)
-                    .header(CACHE_CONTROL, "no-store");
-                if let Some(hdr) = format_invalidate_sink(&invalidated) {
-                    builder = builder.header(&HDR_INVALIDATE, hdr);
-                }
-                builder.body(Bytes::new()).unwrap_or_else(|_| {
-                    protocol_error_response(RpcStatus::Internal, "failed to build form response")
-                })
-            } else {
-                Response::builder()
-                    .status(StatusCode::SEE_OTHER)
-                    .header(LOCATION, location)
-                    .header(CACHE_CONTROL, "no-store")
-                    .body(Bytes::new())
-                    .unwrap_or_else(|_| {
-                        protocol_error_response(RpcStatus::Internal, "failed to build redirect")
-                    })
-            }
-        }
-        FormOutcome::ValidationFailed { errors, .. } => {
-            if wants_cbor {
-                let mut buf = Vec::with_capacity(64);
-                match codec.encode_into(&errors, &mut buf) {
-                    Ok(()) => typed_error_response(
-                        RpcStatus::Unprocessable,
-                        C::CONTENT_TYPE,
-                        ERROR_KIND_FORM_VALIDATION,
-                        Bytes::from(buf),
-                    ),
-                    Err(_) => {
-                        protocol_error_response(RpcStatus::Unprocessable, &errors.to_string())
-                    }
-                }
-            } else {
-                Response::builder()
-                    .status(StatusCode::UNPROCESSABLE_ENTITY)
-                    .header(CONTENT_TYPE, CONTENT_TYPE_TEXT_PLAIN_UTF8)
-                    .header(&HDR_ERROR_KIND, ERROR_KIND_FORM_VALIDATION)
-                    .header(CACHE_CONTROL, "no-store")
-                    .body(Bytes::from(errors.to_string()))
-                    .unwrap_or_else(|_| {
-                        protocol_error_response(RpcStatus::Unprocessable, "validation failed")
-                    })
-            }
-        }
-        FormOutcome::DomainError { status, body } => {
-            if wants_cbor {
-                typed_error_response(status, C::CONTENT_TYPE, ERROR_KIND_DOMAIN, body)
-            } else {
-                let http_status = clamp_error_http_status(status);
-                Response::builder()
-                    .status(http_status)
-                    .header(CONTENT_TYPE, CONTENT_TYPE_TEXT_PLAIN_UTF8)
-                    .header(&HDR_ERROR_KIND, ERROR_KIND_DOMAIN)
-                    .header(CACHE_CONTROL, "no-store")
-                    .body(Bytes::from_static(status.code_str().as_bytes()))
-                    .unwrap_or_else(|_| protocol_error_response(status, status.code_str()))
-            }
+        FormOutcome::Redirect { location, .. } => Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header(LOCATION, location)
+            .header(CACHE_CONTROL, "no-store")
+            .body(Bytes::new())
+            .unwrap_or_else(|_| {
+                protocol_error_response(RpcStatus::Internal, "failed to build redirect")
+            }),
+        FormOutcome::ValidationFailed { errors, .. } => Response::builder()
+            .status(StatusCode::UNPROCESSABLE_ENTITY)
+            .header(CONTENT_TYPE, CONTENT_TYPE_TEXT_PLAIN_UTF8)
+            .header(&HDR_ERROR_KIND, ERROR_KIND_FORM_VALIDATION)
+            .header(CACHE_CONTROL, "no-store")
+            .body(Bytes::from(errors.to_string()))
+            .unwrap_or_else(|_| {
+                protocol_error_response(RpcStatus::Unprocessable, "validation failed")
+            }),
+        FormOutcome::DomainError { status, .. } => {
+            let http_status = clamp_error_http_status(status);
+            Response::builder()
+                .status(http_status)
+                .header(CONTENT_TYPE, CONTENT_TYPE_TEXT_PLAIN_UTF8)
+                .header(&HDR_ERROR_KIND, ERROR_KIND_DOMAIN)
+                .header(CACHE_CONTROL, "no-store")
+                .body(Bytes::from_static(status.code_str().as_bytes()))
+                .unwrap_or_else(|_| protocol_error_response(status, status.code_str()))
         }
         FormOutcome::ProtocolError(resp) => *resp,
     }
@@ -255,58 +206,7 @@ pub fn parse_rpc_http_reply(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<RawReply, TransportError> {
-    let error_kind = headers.get(&HDR_ERROR_KIND).and_then(|v| v.to_str().ok());
-    let is_domain_error = error_kind.is_some_and(|v| v.eq_ignore_ascii_case(ERROR_KIND_DOMAIN));
-    let is_protocol_error = error_kind.is_some_and(|v| v.eq_ignore_ascii_case(ERROR_KIND_PROTOCOL));
-    let mut invalidated_tags = Vec::new();
-    let mut invalidate_all = false;
-    for hdr in headers.get_all(&HDR_INVALIDATE) {
-        let Ok(raw) = hdr.to_str() else {
-            invalidate_all = true;
-            invalidated_tags.clear();
-            break;
-        };
-        match parse_invalidate_header(raw, &mut invalidated_tags) {
-            Ok(InvalidateParse::Tags) => {}
-            Ok(InvalidateParse::All) | Err(_) => {
-                invalidate_all = true;
-                invalidated_tags.clear();
-                break;
-            }
-        }
-    }
-    Ok(RawReply {
-        http_status: status.as_u16(),
-        is_domain_error,
-        is_protocol_error,
-        invalidated_tags,
-        invalidate_all,
-        body,
-    })
-}
-
-pub(crate) fn accepts_cbor(headers: &HeaderMap, codec_content_type: &str) -> bool {
-    for val in headers.get_all(ACCEPT) {
-        let Ok(raw) = val.to_str() else {
-            continue;
-        };
-        for item in raw.split(',') {
-            let mut parts = item.split(';');
-            let essence = parts.next().unwrap_or("").trim();
-            if !essence.eq_ignore_ascii_case(codec_content_type) {
-                continue;
-            }
-            let rejected_by_q = parts.any(|param| {
-                let Some((k, v)) = param.split_once('=') else {
-                    return false;
-                };
-                k.trim().eq_ignore_ascii_case("q")
-                    && v.trim().parse::<f32>().is_ok_and(|q| q <= 0.0)
-            });
-            if !rejected_by_q {
-                return true;
-            }
-        }
-    }
-    false
+    let error_kind = headers.get(&HDR_ERROR_KIND).map(HeaderValue::as_bytes);
+    let invalidate = headers.get_all(&HDR_INVALIDATE).iter().map(HeaderValue::as_bytes);
+    Ok(classify_http_reply(status.as_u16(), error_kind, invalidate, body))
 }

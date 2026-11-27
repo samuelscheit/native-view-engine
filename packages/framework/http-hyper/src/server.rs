@@ -15,7 +15,7 @@ use hyper::body::Body;
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
-use nve_rpc::{CborCodec, CodecFormat, FieldErrors, RpcCodec, RpcStatus};
+use nve_rpc::{CborCodec, CodecFormat, RpcStatus};
 use nve_server::{protocol_error_response, AuthResolver, Server};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -125,39 +125,51 @@ where
     S: Clone + Send + Sync + 'static,
     U: Clone + Send + Sync + 'static,
     A: AuthResolver<S, U>,
-    C: CodecFormat + RpcCodec<FieldErrors>,
+    C: CodecFormat,
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: core::fmt::Display,
 {
     let (mut parts, body) = req.into_parts();
 
-    // 1. Preflight route, method, CSRF, Content-Type, and auth BEFORE polling any body bytes.
+    // 1. Preflight route, method, CSRF/CORS, Content-Type, and auth BEFORE polling any body bytes.
     let prepared = match server.preflight_request(&mut parts, nested_rpc).await {
         Ok(p) => p,
-        Err(err) => return Ok(err.into_response().map(Full::new)),
+        Err(err) => {
+            let mut resp = err.into_response();
+            server.apply_cors_headers(&parts.headers, &mut resp);
+            return Ok(resp.map(Full::new));
+        }
     };
 
-    // 2. Collect bounded body under a hard deadline.
-    let max_bytes = server.config().max_body_bytes;
-    let bytes = match collect_body_limited_timeout(body, max_bytes, body_read_timeout).await {
-        Ok(b) => b,
-        Err(BodyReadError::TooLarge { .. }) => {
-            return Ok(protocol_error_response(
-                RpcStatus::PayloadTooLarge,
-                "request body exceeds configured max_body_bytes",
-            )
-            .map(Full::new));
+    // 2. Skip body polling entirely for bodyless preflights (e.g. OPTIONS CORS).
+    let bytes = if prepared.needs_body() {
+        let max_bytes = server.config().max_body_bytes;
+        match collect_body_limited_timeout(body, max_bytes, body_read_timeout).await {
+            Ok(b) => b,
+            Err(BodyReadError::TooLarge { .. }) => {
+                let mut resp = protocol_error_response(
+                    RpcStatus::PayloadTooLarge,
+                    "request body exceeds configured max_body_bytes",
+                );
+                server.apply_prepared_cors_headers(&prepared, &mut resp);
+                return Ok(resp.map(Full::new));
+            }
+            Err(BodyReadError::Timeout { .. }) => {
+                let mut resp = protocol_error_response(
+                    RpcStatus::RequestTimeout,
+                    "request body read timed out",
+                );
+                server.apply_prepared_cors_headers(&prepared, &mut resp);
+                return Ok(resp.map(Full::new));
+            }
+            Err(BodyReadError::Stream(msg)) => {
+                let mut resp = protocol_error_response(RpcStatus::InvalidArgument, &msg);
+                server.apply_prepared_cors_headers(&prepared, &mut resp);
+                return Ok(resp.map(Full::new));
+            }
         }
-        Err(BodyReadError::Timeout { .. }) => {
-            return Ok(protocol_error_response(
-                RpcStatus::RequestTimeout,
-                "request body read timed out",
-            )
-            .map(Full::new));
-        }
-        Err(BodyReadError::Stream(msg)) => {
-            return Ok(protocol_error_response(RpcStatus::InvalidArgument, &msg).map(Full::new));
-        }
+    } else {
+        Bytes::new()
     };
 
     let resp = server.execute_prepared(prepared, bytes).await;
@@ -169,7 +181,7 @@ where
     S: Clone + Send + Sync + 'static,
     U: Clone + Send + Sync + 'static,
     A: AuthResolver<S, U>,
-    C: CodecFormat + RpcCodec<FieldErrors>,
+    C: CodecFormat,
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: core::fmt::Display,
 {
@@ -192,7 +204,7 @@ where
     S: Clone + Send + Sync + 'static,
     U: Clone + Send + Sync + 'static,
     A: AuthResolver<S, U>,
-    C: CodecFormat + RpcCodec<FieldErrors>,
+    C: CodecFormat,
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: core::fmt::Display,
 {
@@ -339,7 +351,7 @@ where
     S: Clone + Send + Sync + 'static,
     U: Clone + Send + Sync + 'static,
     A: AuthResolver<S, U>,
-    C: CodecFormat + RpcCodec<FieldErrors>,
+    C: CodecFormat,
     F: Future<Output = ()>,
 {
     serve_service_with_shutdown(listener, NveHyperService::new(server), shutdown).await

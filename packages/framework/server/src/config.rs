@@ -3,6 +3,7 @@
 
 use nve_rpc::{Action, Procedure, DEFAULT_MAX_FORM_FIELDS, DEFAULT_RPC_PREFIX};
 
+use crate::cors::CorsPolicy;
 use crate::csrf::validate_same_origin_redirect;
 
 /// Server-configured progressive HTML `<form method="post">` route bound to a registered
@@ -65,6 +66,9 @@ pub struct ServerConfig {
     /// Optional server-owned progressive HTML form routes dispatched automatically by
     /// [`crate::Server::handle_request`] and [`crate::Server::preflight_request`].
     pub form_routes: Vec<FormRoute>,
+    /// Optional opt-in CORS policy for preflighted cross-origin binary RPC endpoints
+    /// (`POST /rpc/*` + `OPTIONS`). Disabled (`None`) by default.
+    pub cors: Option<CorsPolicy>,
 }
 
 impl ServerConfig {
@@ -77,6 +81,12 @@ impl ServerConfig {
         self.form_routes.push(FormRoute::new::<P>(path, success_redirect));
         self
     }
+
+    /// Enables opt-in CORS preflight and `Access-Control-*` headers for binary RPC routes.
+    pub fn with_cors(mut self, cors: CorsPolicy) -> Self {
+        self.cors = Some(cors);
+        self
+    }
 }
 
 impl Default for ServerConfig {
@@ -86,6 +96,7 @@ impl Default for ServerConfig {
             max_body_bytes: 1024 * 1024,
             max_form_fields: DEFAULT_MAX_FORM_FIELDS,
             form_routes: Vec::new(),
+            cors: None,
         }
     }
 }

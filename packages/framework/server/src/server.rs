@@ -5,21 +5,23 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http::header::COOKIE;
-use http::{HeaderMap, Method, Request, Response};
+use http::header::{CONTENT_TYPE, COOKIE};
+use http::{HeaderMap, HeaderName, Method, Request, Response};
 use nve_rpc::{
-    CborCodec, CodecFormat, Effect, FieldErrors, FormPairs, MaybeSend, MaybeSync, RpcCodec,
-    RpcStatus, TransportError, CONTENT_TYPE_FORM_URLENCODED,
+    CborCodec, CodecFormat, Effect, FormPairs, MaybeSend, MaybeSync, RpcStatus,
+    CONTENT_TYPE_FORM_URLENCODED,
 };
 
-use crate::auth::AuthResolver;
+use crate::auth::{extract_bearer_token_strict, AuthResolver};
 use crate::config::{normalize_prefix, strip_rpc_prefix, FormRoute, ServerConfig};
-use crate::csrf::CsrfPolicy;
+use crate::csrf::{single_header_str, CsrfPolicy};
 use crate::registry::{Cx, FormHandlerOutcome, RpcRegistry, TagCollector};
 use crate::response::{
-    accepts_cbor, form_outcome_to_response, outcome_to_rpc_response, protocol_error_response,
-    FormOutcome, PreflightError,
+    form_outcome_to_response, outcome_to_rpc_response, protocol_error_response, FormOutcome,
+    PreflightError,
 };
+
+const HDR_SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
 static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -32,24 +34,35 @@ static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 pub struct PreparedRequest<U> {
     server_id: u64,
     entry_idx: usize,
-    principal: U,
+    principal: Option<U>,
     headers: HeaderMap,
+    cors_origin_idx: Option<usize>,
     kind: PreparedKind,
+}
+
+impl<U> PreparedRequest<U> {
+    /// Returns `false` when the prepared response needs no HTTP request body (e.g. an `OPTIONS`
+    /// CORS preflight) so streaming adapters can skip body polling entirely.
+    #[inline]
+    pub fn needs_body(&self) -> bool {
+        !matches!(self.kind, PreparedKind::CorsPreflight { .. })
+    }
 }
 
 #[derive(Debug)]
 enum PreparedKind {
     Rpc,
     Form { route_idx: usize },
+    CorsPreflight { origin_idx: usize },
 }
 
-struct ServerInner<S, U, A, C> {
+pub(crate) struct ServerInner<S, U, A, C> {
     server_id: u64,
     state: S,
-    registry: RpcRegistry<S, U, C>,
+    pub(crate) registry: RpcRegistry<S, U, C>,
     auth: A,
     csrf: CsrfPolicy,
-    config: ServerConfig,
+    pub(crate) config: ServerConfig,
     rpc_prefix_clean: String,
 }
 
@@ -58,7 +71,7 @@ struct ServerInner<S, U, A, C> {
 /// Works identically inside `nve-http-hyper`, mounted in `axum::Router::nest_service` or
 /// `route_service`, in-process via [`crate::DirectTransport`], or compiled to `wasm32-wasip2`.
 pub struct Server<S, U, A, C = CborCodec> {
-    inner: Arc<ServerInner<S, U, A, C>>,
+    pub(crate) inner: Arc<ServerInner<S, U, A, C>>,
 }
 
 impl<S, U, A, C> Clone for Server<S, U, A, C> {
@@ -140,6 +153,27 @@ where
         &self.inner.registry
     }
 
+    /// Applies opt-in CORS response headers when `ServerConfig::cors` is enabled and `req_headers`
+    /// contains a single allowed `Origin`. Safe to call on error responses (`401`, `404`, `413`,
+    /// `408`) so browsers expose error statuses and `Nve-Error-Kind` instead of opaque `TypeError`.
+    pub fn apply_cors_headers(&self, req_headers: &HeaderMap, resp: &mut Response<Bytes>) {
+        if let Some(cors) = &self.inner.config.cors {
+            cors.apply_if_allowed(req_headers, resp);
+        }
+    }
+
+    /// Applies opt-in CORS response headers carried on a validated [`PreparedRequest`] (e.g. when
+    /// a streaming adapter hits a `413` or `408` body read error after preflight).
+    pub fn apply_prepared_cors_headers(
+        &self,
+        prepared: &PreparedRequest<U>,
+        resp: &mut Response<Bytes>,
+    ) {
+        if let (Some(cors), Some(origin_idx)) = (&self.inner.config.cors, prepared.cors_origin_idx) {
+            cors.apply_origin_headers(origin_idx, resp);
+        }
+    }
+
     /// Resolves route, method (`POST`), CSRF, `Content-Type`, registry entry, and principal
     /// BEFORE reading the HTTP request body.
     ///
@@ -192,19 +226,90 @@ where
             ));
         };
 
+        if parts.method == Method::OPTIONS
+            && let Some(cors) = &self.inner.config.cors
+        {
+            let origin_idx = cors
+                .check_preflight(&parts.headers)
+                .map_err(|reason| PreflightError::protocol(RpcStatus::PermissionDenied, reason))?;
+            return Ok(PreparedRequest {
+                server_id: self.inner.server_id,
+                entry_idx: 0,
+                principal: None,
+                headers: HeaderMap::new(),
+                cors_origin_idx: Some(origin_idx),
+                kind: PreparedKind::CorsPreflight { origin_idx },
+            });
+        }
+
         if parts.method != Method::POST {
             return Err(PreflightError::method_not_allowed(
                 "RPC endpoints require HTTP POST",
             ));
         }
 
-        let verdict = self
-            .inner
-            .csrf
-            .check_content_type_and_origin(&parts.method, &parts.headers, C::CONTENT_TYPE)
-            .map_err(|rej| PreflightError::protocol(rej.status, rej.reason))?;
-        if verdict.bypassed_via_bearer {
-            parts.headers.remove(COOKIE);
+        let cors_origin_idx = if let Some(cors) = &self.inner.config.cors {
+            cors.match_origin(&parts.headers).map_err(|_| {
+                PreflightError::protocol(
+                    RpcStatus::PermissionDenied,
+                    "duplicate or invalid Origin header",
+                )
+            })?
+        } else {
+            None
+        };
+
+        if cors_origin_idx.is_some() {
+            // Opt-in CORS allows cross-origin requests ONLY for non-simple binary RPC media types
+            // (which force a browser CORS preflight), while still rejecting duplicate headers and
+            // stripping Cookie when Authorization: Bearer is present.
+            let raw_ct = single_header_str(&parts.headers, CONTENT_TYPE)
+                .map_err(|_| {
+                    PreflightError::protocol(
+                        RpcStatus::UnsupportedMediaType,
+                        "duplicate or invalid Content-Type header",
+                    )
+                })?
+                .ok_or_else(|| {
+                    PreflightError::protocol(
+                        RpcStatus::UnsupportedMediaType,
+                        "missing Content-Type header",
+                    )
+                })?;
+            let essence = raw_ct.split(';').next().unwrap_or("").trim();
+            if !essence.eq_ignore_ascii_case(C::CONTENT_TYPE) {
+                return Err(PreflightError::protocol(
+                    RpcStatus::UnsupportedMediaType,
+                    "unexpected Content-Type media type",
+                ));
+            }
+            let _ = single_header_str(&parts.headers, &HDR_SEC_FETCH_SITE).map_err(|_| {
+                PreflightError::protocol(
+                    RpcStatus::PermissionDenied,
+                    "duplicate or invalid Sec-Fetch-Site header",
+                )
+            })?;
+            match extract_bearer_token_strict(&parts.headers) {
+                Ok(Some(_)) => {
+                    parts.headers.remove(COOKIE);
+                }
+                Err(_) => {
+                    return Err(PreflightError::protocol(
+                        RpcStatus::PermissionDenied,
+                        "duplicate or invalid Authorization header",
+                    ));
+                }
+                Ok(None) => {}
+            }
+        } else {
+            let verdict = self
+                .inner
+                .csrf
+                .check_content_type_and_origin(&parts.method, &parts.headers, C::CONTENT_TYPE)
+                .map_err(|rej| PreflightError::protocol(rej.status, rej.reason))?;
+            if verdict.bypassed_via_bearer {
+                parts.headers.remove(COOKIE);
+            }
         }
 
         let Some(entry_idx) = self.inner.registry.lookup_index(proc_name) else {
@@ -218,8 +323,9 @@ where
         Ok(PreparedRequest {
             server_id: self.inner.server_id,
             entry_idx,
-            principal,
+            principal: Some(principal),
             headers: core::mem::take(&mut parts.headers),
+            cors_origin_idx,
             kind: PreparedKind::Rpc,
         })
     }
@@ -274,8 +380,9 @@ where
         Ok(PreparedRequest {
             server_id: self.inner.server_id,
             entry_idx,
-            principal,
+            principal: Some(principal),
             headers,
+            cors_origin_idx: None,
             kind: PreparedKind::Form { route_idx },
         })
     }
@@ -287,7 +394,7 @@ where
         body: Bytes,
     ) -> Response<Bytes>
     where
-        C: CodecFormat + RpcCodec<FieldErrors>,
+        C: CodecFormat,
     {
         if prepared.server_id != self.inner.server_id {
             return protocol_error_response(
@@ -295,22 +402,41 @@ where
                 "PreparedRequest does not belong to this Server instance",
             );
         }
+
+        if let PreparedKind::CorsPreflight { origin_idx } = prepared.kind {
+            return match &self.inner.config.cors {
+                Some(cors) => cors.preflight_response(origin_idx),
+                None => protocol_error_response(RpcStatus::Internal, "CORS policy unavailable"),
+            };
+        }
+
         if body.len() > self.inner.config.max_body_bytes {
-            return protocol_error_response(
+            let mut resp = protocol_error_response(
                 RpcStatus::PayloadTooLarge,
                 "request body exceeds configured max_body_bytes",
             );
+            self.apply_prepared_cors_headers(&prepared, &mut resp);
+            return resp;
         }
+
+        let Some(principal) = prepared.principal else {
+            return protocol_error_response(
+                RpcStatus::Internal,
+                "missing principal on prepared request",
+            );
+        };
 
         match prepared.kind {
             PreparedKind::Rpc => {
-                self.execute_rpc_entry(
-                    prepared.entry_idx,
-                    prepared.principal,
-                    prepared.headers,
-                    body,
-                )
-                .await
+                let mut resp = self
+                    .execute_rpc_entry(prepared.entry_idx, principal, prepared.headers, body)
+                    .await;
+                if let (Some(cors), Some(origin_idx)) =
+                    (&self.inner.config.cors, prepared.cors_origin_idx)
+                {
+                    cors.apply_origin_headers(origin_idx, &mut resp);
+                }
+                resp
             }
             PreparedKind::Form { route_idx } => {
                 let Some(route) = self.inner.config.form_routes.get(route_idx) else {
@@ -319,30 +445,34 @@ where
                         "invalid prepared form route index",
                     );
                 };
-                let wants_cbor = accepts_cbor(&prepared.headers, C::CONTENT_TYPE);
                 let outcome = self
                     .execute_form_entry(
                         prepared.entry_idx,
-                        prepared.principal,
+                        principal,
                         prepared.headers,
                         body,
                         route.success_redirect(),
                     )
                     .await;
-                form_outcome_to_response(self.inner.registry.codec(), outcome, wants_cbor)
+                form_outcome_to_response(outcome)
             }
+            PreparedKind::CorsPreflight { .. } => unreachable!("handled above"),
         }
     }
 
     /// Unified sans-I/O request handler dispatching both `/rpc/*` and registered `FormRoute`s.
     pub async fn handle_request(&self, req: Request<Bytes>) -> Response<Bytes>
     where
-        C: CodecFormat + RpcCodec<FieldErrors>,
+        C: CodecFormat,
     {
         let (mut parts, body) = req.into_parts();
         let prepared = match self.preflight_request(&mut parts, false).await {
             Ok(p) => p,
-            Err(err) => return err.into_response(),
+            Err(err) => {
+                let mut resp = err.into_response();
+                self.apply_cors_headers(&parts.headers, &mut resp);
+                return resp;
+            }
         };
         self.execute_prepared(prepared, body).await
     }
@@ -355,26 +485,18 @@ where
         let (mut parts, body) = req.into_parts();
         let prepared = match self.preflight_rpc_parts(&mut parts, false).await {
             Ok(p) => p,
-            Err(err) => return err.into_response(),
+            Err(err) => {
+                let mut resp = err.into_response();
+                self.apply_cors_headers(&parts.headers, &mut resp);
+                return resp;
+            }
         };
-        if body.len() > self.inner.config.max_body_bytes {
-            return protocol_error_response(
-                RpcStatus::PayloadTooLarge,
-                "request body exceeds configured max_body_bytes",
-            );
-        }
-        self.execute_rpc_entry(
-            prepared.entry_idx,
-            prepared.principal,
-            prepared.headers,
-            body,
-        )
-        .await
+        self.execute_prepared(prepared, body).await
     }
 
     /// Executes a progressive 0-JS HTML `<form method="post">` submission for a validated
     /// [`FormRoute`] and returns a typed [`FormOutcome`] (preserving submitted [`FormPairs`] +
-    /// [`FieldErrors`] for SSR HTML re-rendering).
+    /// [`nve_rpc::FieldErrors`] for SSR HTML re-rendering).
     pub async fn execute_form_action(
         &self,
         route: &FormRoute,
@@ -396,56 +518,7 @@ where
             .await
     }
 
-    pub(crate) async fn execute_trusted_direct(
-        &self,
-        proc_name: &str,
-        content_type: &str,
-        headers: HeaderMap,
-        principal_override: Option<U>,
-        allow_actions: bool,
-        body: Bytes,
-    ) -> Result<Response<Bytes>, TransportError>
-    where
-        C: CodecFormat,
-    {
-        if !content_type.eq_ignore_ascii_case(C::CONTENT_TYPE) {
-            return Ok(protocol_error_response(
-                RpcStatus::UnsupportedMediaType,
-                "unsupported RPC Content-Type",
-            ));
-        }
-        if body.len() > self.inner.config.max_body_bytes {
-            return Ok(protocol_error_response(
-                RpcStatus::PayloadTooLarge,
-                "request body exceeds configured max_body_bytes",
-            ));
-        }
-        let Some(entry_idx) = self.inner.registry.lookup_index(proc_name) else {
-            return Ok(protocol_error_response(
-                RpcStatus::NotFound,
-                "unknown RPC procedure",
-            ));
-        };
-        // Enforce Action guard against the registry's authoritative metadata rather than
-        // trusting the caller-supplied `RawCall.effect`.
-        if self.inner.registry.entry_at(entry_idx).effect == Effect::Action && !allow_actions {
-            return Err(TransportError::new(
-                "trusted DirectTransport blocks Action calls by default to prevent GET-triggered SSR mutations; use allow_trusted_actions(true) or DirectTransport::strict_http()",
-            ));
-        }
-        let principal = match principal_override {
-            Some(p) => p,
-            None => match self.resolve_principal(&headers).await {
-                Ok(p) => p,
-                Err(err) => return Ok(err.into_response()),
-            },
-        };
-        Ok(self
-            .execute_rpc_entry(entry_idx, principal, headers, body)
-            .await)
-    }
-
-    async fn resolve_principal(&self, headers: &HeaderMap) -> Result<U, PreflightError> {
+    pub(crate) async fn resolve_principal(&self, headers: &HeaderMap) -> Result<U, PreflightError> {
         if let Some(res) = self.inner.auth.try_resolve_sync(&self.inner.state, headers) {
             return res.map_err(|err| PreflightError::protocol(err.status, err.message));
         }
@@ -456,7 +529,7 @@ where
             .map_err(|err| PreflightError::protocol(err.status, err.message))
     }
 
-    async fn execute_rpc_entry(
+    pub(crate) async fn execute_rpc_entry(
         &self,
         entry_idx: usize,
         principal: U,

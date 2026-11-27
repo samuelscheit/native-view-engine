@@ -7,10 +7,11 @@ use bytes::Bytes;
 use nve_rpc::{
     call_with_codec, decode_protocol_error_json, encode_protocol_error_json,
     format_invalidate_header, format_invalidate_sink, format_rpc_path, is_valid_procedure_name,
-    parse_invalidate_header, Action, BoxFuture, CborCodec, EffectKind, InvalidateParse, ProcId,
-    Procedure, Query, RawCall, RawReply, RpcCodec, RpcError, RpcStatus, Tag64, TagSink, Transport,
-    TransportError, INVALIDATE_ALL_WILDCARD, MAX_INVALIDATE_HEADER_SEGMENTS,
-    MAX_INVALIDATE_HEADER_TAGS, STATUS_TABLE,
+    classify_http_reply, parse_invalidate_header, Action, BoxFuture, CborCodec, EffectKind,
+    InvalidateParse, ProcId, Procedure, Query, RawCall, RawReply, ReplyKind, RpcCodec, RpcError,
+    RpcStatus, Tag64, TagSink, Transport, TransportError, TransportErrorKind,
+    INVALIDATE_ALL_WILDCARD, MAX_INVALIDATE_HEADER_SEGMENTS, MAX_INVALIDATE_HEADER_TAGS,
+    STATUS_TABLE,
 };
 
 use crate::{DemoError, GetIssue, IssueV1, RenameIssue};
@@ -236,7 +237,7 @@ fn call_with_codec_rejects_buggy_200_domain_error_as_domain_err() {
     impl Transport for Buggy200DomainTransport {
         fn call_raw<'a>(
             &'a self,
-            _req: RawCall<'a>,
+            _req: RawCall,
         ) -> BoxFuture<'a, Result<RawReply, TransportError>> {
             Box::pin(async {
                 let mut err_bytes = Vec::new();
@@ -245,8 +246,7 @@ fn call_with_codec_rejects_buggy_200_domain_error_as_domain_err() {
                     .unwrap();
                 Ok(RawReply {
                     http_status: 200,
-                    is_domain_error: true,
-                    is_protocol_error: false,
+                    kind: ReplyKind::Domain,
                     invalidated_tags: Vec::new(),
                     invalidate_all: false,
                     body: Bytes::from(err_bytes),
@@ -254,6 +254,14 @@ fn call_with_codec_rejects_buggy_200_domain_error_as_domain_err() {
             })
         }
     }
+
+    // Verify classify_http_reply handles all 4 ReplyKinds and retryability classification.
+    let fv = classify_http_reply(422, Some(b"form-validation"), [], Bytes::from_static(b"bad"));
+    assert_eq!(fv.kind, ReplyKind::FormValidation);
+    assert!(TransportError::network("down").is_retryable());
+    assert!(TransportError::timeout("slow").is_retryable());
+    assert!(!TransportError::cancelled("abort").is_retryable());
+    assert_eq!(TransportError::redirect("302").kind, TransportErrorKind::Redirect);
 
     let codec = CborCodec::default();
     let arg = 1u64;

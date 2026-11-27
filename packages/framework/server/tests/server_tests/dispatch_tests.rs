@@ -2,16 +2,20 @@
 //! trusted-SSR vs strict-HTTP enforcement, and progressive 0-JS form action negotiation tests.
 
 use bytes::Bytes;
-use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN};
+use http::header::{
+    ACCEPT, ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_ORIGIN,
+    ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, AUTHORIZATION, CONTENT_TYPE,
+    COOKIE, LOCATION, ORIGIN, VARY,
+};
 use http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use nve_rpc::{
-    call, CborCodec, CborLimits, FieldErrors, Procedure, RpcCodec, RpcError, RpcStatus, Tag64,
+    call, CborCodec, CborLimits, Procedure, ReplyKind, RpcCodec, RpcError, RpcStatus, Tag64,
     CONTENT_TYPE_CBOR, CONTENT_TYPE_FORM_URLENCODED, ERROR_KIND_FORM_VALIDATION, HEADER_ERROR_KIND,
     HEADER_INVALIDATE, MAX_INVALIDATE_HEADER_TAGS,
 };
 use nve_server::{
-    parse_rpc_http_reply, protocol_error_response, AnonymousAuth, CsrfPolicy, Cx, DirectTransport,
-    FormOutcome, FormRoute, RpcRegistry, RpcRegistryBuilder, Server, ServerConfig,
+    parse_rpc_http_reply, protocol_error_response, AnonymousAuth, CorsPolicy, CsrfPolicy, Cx,
+    DirectTransport, FormOutcome, FormRoute, RpcRegistry, RpcRegistryBuilder, Server, ServerConfig,
 };
 
 use crate::{block_on, build_test_server, BulkTouch, DemoAuth, DemoErr, Ping, Rename, RenameReq};
@@ -247,7 +251,7 @@ fn direct_transport_supports_trusted_ssr_and_strict_http_modes() {
     ))
     .unwrap();
     assert_eq!(wrong_ct_reply.http_status, StatusCode::UNSUPPORTED_MEDIA_TYPE.as_u16());
-    assert!(wrong_ct_reply.is_protocol_error);
+    assert_eq!(wrong_ct_reply.kind, ReplyKind::Protocol);
 
     // Pre-authenticated trusted transport with explicit `allow_trusted_actions(true)`.
     let principal_transport =
@@ -303,29 +307,12 @@ fn form_action_negotiates_0js_browser_text_vs_cbor_and_enforces_limits() {
     assert_eq!(ok_resp.headers().get(LOCATION).unwrap(), "/issues/7");
     assert!(!ok_resp.headers().contains_key(HEADER_INVALIDATE));
 
-    // 1b. Script-enhanced form submission (`Accept: application/cbor`) returns `204 No Content`
-    //     with readable `Location` and `Nve-Invalidate` headers (not an opaque 303 redirect).
-    let ok_cbor_req = Request::builder()
-        .method(Method::POST)
-        .uri("/forms/rename")
-        .header(ACCEPT, CONTENT_TYPE_CBOR)
-        .header(CONTENT_TYPE, CONTENT_TYPE_FORM_URLENCODED)
-        .header(ORIGIN, "https://app.example.com")
-        .header("sec-fetch-site", "same-origin")
-        .header(COOKIE, "nve_session=web-cookie")
-        .body(Bytes::from_static(b"id=7&title=Fetch+Enhanced"))
-        .unwrap();
-    let ok_cbor_resp = block_on(server.handle_request(ok_cbor_req));
-    assert_eq!(ok_cbor_resp.status(), StatusCode::NO_CONTENT);
-    assert_eq!(ok_cbor_resp.headers().get(LOCATION).unwrap(), "/issues/7");
-    assert!(ok_cbor_resp.headers().contains_key(HEADER_INVALIDATE));
-
-    // 2. 0-JS browser validation failure (`Accept: application/cbor;q=0, text/html`) respects
-    //    `q=0` and returns `text/plain` (NEVER binary CBOR).
+    // 2. 0-JS browser validation failure returns `422 text/plain` + `Nve-Error-Kind: form-validation`
+    //    regardless of `Accept` (hydrated WASM & Native use local `FormDecode` + CBOR RPC).
     let browser_bad = Request::builder()
         .method(Method::POST)
         .uri("/forms/rename")
-        .header(ACCEPT, "application/cbor;q=0, text/html,application/xhtml+xml")
+        .header(ACCEPT, "text/html,application/xhtml+xml")
         .header(CONTENT_TYPE, CONTENT_TYPE_FORM_URLENCODED)
         .header(ORIGIN, "https://app.example.com")
         .header(COOKIE, "nve_session=web-cookie")
@@ -344,27 +331,6 @@ fn form_action_negotiates_0js_browser_text_vs_cbor_and_enforces_limits() {
     assert!(core::str::from_utf8(browser_resp.body())
         .unwrap()
         .contains("title"));
-
-    // 3. Enhanced CBOR caller (`Accept: application/cbor`) gets CBOR `FieldErrors` + `form-validation` kind.
-    let cbor_bad = Request::builder()
-        .method(Method::POST)
-        .uri("/forms/rename")
-        .header(ACCEPT, CONTENT_TYPE_CBOR)
-        .header(CONTENT_TYPE, CONTENT_TYPE_FORM_URLENCODED)
-        .header(ORIGIN, "https://app.example.com")
-        .header(COOKIE, "nve_session=web-cookie")
-        .body(Bytes::from_static(b"id=nope&title="))
-        .unwrap();
-    let cbor_resp = block_on(server.handle_request(cbor_bad));
-    assert_eq!(cbor_resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        cbor_resp.headers().get(HEADER_ERROR_KIND).unwrap(),
-        ERROR_KIND_FORM_VALIDATION
-    );
-    let field_errs: FieldErrors = CborCodec::default()
-        .decode_bounded(cbor_resp.body())
-        .unwrap();
-    assert_eq!(field_errs.len(), 2);
 
     // 4. `execute_form_action` takes a sealed `&FormRoute` and preserves submitted `FormPairs`
     //    for SSR HTML re-rendering.
@@ -453,4 +419,118 @@ fn form_action_negotiates_0js_browser_text_vs_cbor_and_enforces_limits() {
         }
         other => panic!("expected ProtocolError(415) for non-form action, got {other:?}"),
     }
+}
+
+#[test]
+fn opt_in_cors_policy_handles_preflight_rpc_errors_and_blocks_cross_site_forms() {
+    let mut reg = RpcRegistry::<(), String>::builder();
+    reg.register::<Ping, _, _>(|_cx: Cx<(), String>, n: u64| async move { Ok(n + 1) });
+    reg.register_with_form::<Rename, _, _>(|cx: Cx<(), String>, req: crate::RenameReq| async move {
+        Ok(crate::RenameRes {
+            id: req.id,
+            title: req.title,
+            actor: cx.principal,
+        })
+    });
+    let server = Server::new(
+        (),
+        reg.build(),
+        DemoAuth,
+        CsrfPolicy::allow_origins(["https://api.example.com"]),
+        ServerConfig::default()
+            .with_form_route::<Rename>("/forms/rename", "/issues/7")
+            .with_cors(CorsPolicy::allow_origins(["http://localhost:8080"])),
+    );
+
+    // 1. Allowed OPTIONS preflight -> 204 with exact Origin + Expose-Headers + Vary.
+    let preflight_ok = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(ORIGIN, "http://localhost:8080")
+        .header(ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .body(Bytes::new())
+        .unwrap();
+    let resp = block_on(server.handle_request(preflight_ok));
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        resp.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+        "http://localhost:8080"
+    );
+    assert_eq!(
+        resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(),
+        "nve-error-kind, nve-invalidate"
+    );
+    assert_eq!(
+        resp.headers().get(ACCESS_CONTROL_ALLOW_CREDENTIALS).unwrap(),
+        "true"
+    );
+    assert!(resp.headers().get(VARY).is_some());
+
+    // 2. Disallowed OPTIONS preflight -> 403 with NO Access-Control-Allow-Origin.
+    let preflight_bad = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(ORIGIN, "https://evil.example.com")
+        .header(ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .body(Bytes::new())
+        .unwrap();
+    let bad_resp = block_on(server.handle_request(preflight_bad));
+    assert_eq!(bad_resp.status(), StatusCode::FORBIDDEN);
+    assert!(!bad_resp.headers().contains_key(ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    // 3. Cross-origin preflighted CBOR RPC (`Sec-Fetch-Site: cross-site`) succeeds AND exposes headers.
+    let mut body = Vec::new();
+    CborCodec::default().encode_into(&41u64, &mut body).unwrap();
+    let rpc_ok = Request::builder()
+        .method(Method::POST)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+        .header(ORIGIN, "http://localhost:8080")
+        .header("sec-fetch-site", "cross-site")
+        .header(COOKIE, "nve_session=web-cookie")
+        .body(Bytes::from(body))
+        .unwrap();
+    let rpc_resp = block_on(server.handle_request(rpc_ok));
+    assert_eq!(rpc_resp.status(), StatusCode::OK);
+    assert_eq!(
+        rpc_resp.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+        "http://localhost:8080"
+    );
+    assert_eq!(
+        rpc_resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(),
+        "nve-error-kind, nve-invalidate"
+    );
+
+    // 4. Auth failure (401) from allowed CORS origin STILL carries ACAO + Expose-Headers so
+    //    browsers don't turn 401 into an opaque TypeError.
+    let rpc_unauth = Request::builder()
+        .method(Method::POST)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+        .header(ORIGIN, "http://localhost:8080")
+        .header("sec-fetch-site", "cross-site")
+        .body(Bytes::from_static(&[0x01]))
+        .unwrap();
+    let unauth_resp = block_on(server.handle_request(rpc_unauth));
+    assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        unauth_resp.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+        "http://localhost:8080"
+    );
+
+    // 5. Cross-site HTML `<form>` POST (CORS simple request, no preflight) MUST STILL BE BLOCKED
+    //    even for origins allowed in `CorsPolicy`!
+    let cross_form = Request::builder()
+        .method(Method::POST)
+        .uri("/forms/rename")
+        .header(CONTENT_TYPE, CONTENT_TYPE_FORM_URLENCODED)
+        .header(ORIGIN, "http://localhost:8080")
+        .header("sec-fetch-site", "cross-site")
+        .header(COOKIE, "nve_session=web-cookie")
+        .body(Bytes::from_static(b"id=7&title=CSRF"))
+        .unwrap();
+    assert_eq!(
+        block_on(server.handle_request(cross_form)).status(),
+        StatusCode::FORBIDDEN
+    );
 }

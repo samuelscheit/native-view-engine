@@ -23,8 +23,7 @@ use nve_example_issues_server::store::IssueStore;
 use nve_example_issues_server::{build_issues_server, IssuesHttpService};
 use nve_http_hyper::{serve_service_with_shutdown, HyperTransport};
 use nve_rpc::{
-    call, CacheTag, CborCodec, RpcCodec, RpcError, RpcStatus, CONTENT_TYPE_CBOR,
-    CONTENT_TYPE_FORM_URLENCODED, ERROR_KIND_FORM_VALIDATION, HEADER_ERROR_KIND,
+    call, CacheTag, CborCodec, RpcCodec, RpcError, RpcStatus, CONTENT_TYPE_FORM_URLENCODED,
 };
 use nve_server::DirectTransport;
 use tokio::net::TcpListener;
@@ -250,24 +249,6 @@ async fn fullstack_issues_end_to_end_native_web_0js_and_mobile_skew() {
     assert_eq!(
         form_bad_html_resp.headers().get(CONTENT_TYPE).unwrap(),
         "text/plain; charset=utf-8"
-    );
-
-    // Blank title with `Accept: application/cbor` -> 422 CBOR + `form-validation`.
-    let form_bad_cbor = Request::builder()
-        .method(Method::POST)
-        .uri(format!("{origin}/issues/rename"))
-        .header(ACCEPT, CONTENT_TYPE_CBOR)
-        .header(CONTENT_TYPE, CONTENT_TYPE_FORM_URLENCODED)
-        .header(COOKIE, &cookie_hdr)
-        .header(ORIGIN, &origin)
-        .header("sec-fetch-site", "same-origin")
-        .body(Full::new(Bytes::from_static(b"id=2&title=+++")))
-        .unwrap();
-    let form_bad_cbor_resp = raw_client.request(form_bad_cbor).await.unwrap();
-    assert_eq!(form_bad_cbor_resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        form_bad_cbor_resp.headers().get(HEADER_ERROR_KIND).unwrap(),
-        ERROR_KIND_FORM_VALIDATION
     );
 
     let form_csrf = Request::builder()

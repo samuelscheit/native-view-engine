@@ -1,0 +1,15 @@
+[package]
+name = "nve-http-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal-WASM browser FetchTransport, BrowserClock, and visibility/online lifecycle bridge for nve-rpc and nve-query."
+
+[dependencies]
+nve-rpc = { workspace = true }
+nve-query = { workspace = true }
+bytes = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }

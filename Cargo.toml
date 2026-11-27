@@ -21,6 +21,8 @@ members = [
     "packages/framework/rpc",
     "packages/framework/server",
     "packages/framework/http-hyper",
+    "packages/framework/http-web",
+    "packages/framework/query",
     "packages/framework/i18n",
     "packages/framework/mdx",
     "packages/framework/docs",
@@ -67,6 +69,8 @@ nve-router = { path = "packages/framework/router" }
 nve-rpc = { path = "packages/framework/rpc" }
 nve-server = { path = "packages/framework/server" }
 nve-http-hyper = { path = "packages/framework/http-hyper" }
+nve-http-web = { path = "packages/framework/http-web" }
+nve-query = { path = "packages/framework/query" }
 nve-i18n = { path = "packages/framework/i18n" }
 nve-mdx = { path = "packages/framework/mdx" }
 nve-docs = { path = "packages/framework/docs" }
@@ -124,6 +128,7 @@ unicode-segmentation = "1.13.3"
 winit = "0.30.13"
 softbuffer = "0.4.8"
 wasm-bindgen = "0.2.130"
+js-sys = "0.3.107"
 web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlElement", "CssStyleDeclaration", "Window", "Text", "Node", "MouseEvent", "EventTarget", "Event", "WebSocket", "MessageEvent", "console"] }
 criterion = "0.8.2"
 

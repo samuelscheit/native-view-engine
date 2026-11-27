@@ -3,6 +3,7 @@
 pub mod cbor;
 pub mod form;
 pub mod procedure;
+pub mod protocol_json;
 pub mod status;
 pub mod tag;
 pub mod transport;
@@ -18,9 +19,10 @@ pub use procedure::{
     Procedure, Query, PROC_ID_SEED,
 };
 pub use status::{
-    decode_protocol_error_json, encode_protocol_error_json, CodecError, DomainStatus, RpcError,
-    RpcStatus, TransportError, CONTENT_TYPE_ERROR_JSON, ERROR_KIND_DOMAIN,
-    ERROR_KIND_FORM_VALIDATION, ERROR_KIND_PROTOCOL, HEADER_ERROR_KIND, STATUS_TABLE,
+    decode_protocol_error_json, encode_protocol_error_json, validate_bearer_token, CodecError,
+    DomainStatus, RpcError, RpcStatus, TransportError, TransportErrorKind, CONTENT_TYPE_ERROR_JSON,
+    ERROR_KIND_DOMAIN, ERROR_KIND_FORM_VALIDATION, ERROR_KIND_PROTOCOL, HEADER_ERROR_KIND,
+    STATUS_TABLE,
 };
 pub use tag::{
     format_invalidate_header, format_invalidate_header_into, format_invalidate_sink,
@@ -28,6 +30,7 @@ pub use tag::{
     INVALIDATE_ALL_WILDCARD, MAX_INVALIDATE_HEADER_SEGMENTS, MAX_INVALIDATE_HEADER_TAGS, TAG_SEED,
 };
 pub use transport::{
-    call, call_with_codec, format_rpc_path, format_rpc_path_into, BoxFuture, CallReply, MaybeSend,
-    MaybeSync, RawCall, RawReply, Transport, DEFAULT_RPC_PREFIX,
+    call, call_with_codec, classify_http_reply, decode_reply, encode_args, format_rpc_path,
+    format_rpc_path_into, BoxFuture, CallReply, MaybeSend, MaybeSync, RawCall, RawReply,
+    ReplyKind, Transport, DEFAULT_RPC_PREFIX,
 };

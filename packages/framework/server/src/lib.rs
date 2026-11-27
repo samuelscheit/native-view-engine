@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod cors;
 pub mod csrf;
 pub mod direct;
 pub mod registry;
@@ -13,6 +14,7 @@ pub use auth::{
     AnonymousAuth, AuthCredential, AuthError, AuthResolver,
 };
 pub use config::{FormRoute, ServerConfig};
+pub use cors::CorsPolicy;
 pub use csrf::{
     build_session_cookie, validate_same_origin_redirect, CsrfPolicy, CsrfVerdict, PolicyRejection,
 };

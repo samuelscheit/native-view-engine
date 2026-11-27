@@ -2656,6 +2656,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-http-web"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "js-sys",
+ "nve-query",
+ "nve-rpc",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "nve-i18n"
 version = "0.1.0"
 dependencies = [
@@ -2695,6 +2706,17 @@ dependencies = [
 [[package]]
 name = "nve-mdx"
 version = "0.1.0"
+
+[[package]]
+name = "nve-query"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "minicbor",
+ "nve-hash",
+ "nve-rpc",
+]
 
 [[package]]
 name = "nve-router"

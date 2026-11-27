@@ -122,14 +122,12 @@ fn trim_ascii_ows(mut bytes: &[u8]) -> &[u8] {
 
 /// Builds a validated `Authorization: Bearer <token>` header value shared across transports.
 pub fn make_bearer_header(token: &str) -> Result<HeaderValue, TransportError> {
-    if token.is_empty() || token.bytes().any(|b| b <= 0x20 || b >= 0x7f) {
-        return Err(TransportError::new("invalid bearer token characters"));
-    }
+    nve_rpc::validate_bearer_token(token)?;
     let mut s = String::with_capacity(7 + token.len());
     s.push_str("Bearer ");
     s.push_str(token);
     HeaderValue::from_str(&s)
-        .map_err(|err| TransportError::new(format!("invalid bearer token: {err}")))
+        .map_err(|err| TransportError::config(format!("invalid bearer token: {err}")))
 }
 
 /// Error returned by an [`AuthResolver`] when rejecting a request before handler execution.

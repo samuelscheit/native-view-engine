@@ -304,6 +304,13 @@ impl DomainStatus for ApiError {
             Self::Validation(_) | Self::Unknown(_) => RpcStatus::Unprocessable,
         }
     }
+
+    fn field_errors(&self) -> Option<&FieldErrors> {
+        match self {
+            Self::Validation(errs) => Some(errs),
+            Self::NotFound(_) | Self::Unknown(_) => None,
+        }
+    }
 }
 
 /// Strongly typed zero-allocation cache invalidation tags for `examples/fullstack-issues`.

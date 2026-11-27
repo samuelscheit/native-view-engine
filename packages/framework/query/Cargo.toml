@@ -1,0 +1,21 @@
+[package]
+name = "nve-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sans-I/O data-oriented query/action cache with Tag64 invalidation, in-flight deduplication, rebaseable optimistic layers, and Slice 1c hydration hooks."
+
+[dependencies]
+nve-rpc = { workspace = true }
+nve-hash = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+minicbor = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "query_bench"
+harness = false

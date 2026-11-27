@@ -462,3 +462,89 @@ async fn collect_body_limited_zero_allocs_on_single_frame_and_size_hint_reject()
     let timed = collect_body_limited_timeout(StalledBody, 1024, Duration::from_millis(20)).await;
     assert!(matches!(timed, Err(BodyReadError::Timeout { .. })));
 }
+
+#[tokio::test]
+async fn hyper_transport_background_runtime_works_on_non_tokio_thread_and_cors_options_skips_body() {
+    let mut reg = RpcRegistry::<(), ()>::builder();
+    reg.register::<Echo, _, _>(|_cx: Cx<(), ()>, req: EchoReq| async move {
+        Ok(EchoRes { text: req.text })
+    });
+    let server = Server::new(
+        (),
+        reg.build(),
+        AnonymousAuth,
+        CsrfPolicy::allow_origins(["http://127.0.0.1"]),
+        ServerConfig::default()
+            .with_cors(nve_server::CorsPolicy::allow_origins(["http://localhost:8080"])),
+    );
+
+    // 1. CORS OPTIONS preflight MUST NOT poll the body (`PanicIfPolledBody`).
+    let svc = NveHyperService::new(server.clone());
+    let opt_req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/rpc/hyper.v1.Echo/Call")
+        .header(ORIGIN, "http://localhost:8080")
+        .header(http::header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .body(PanicIfPolledBody)
+        .unwrap();
+    let opt_resp = svc.call(opt_req).await.unwrap();
+    assert_eq!(opt_resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        opt_resp
+            .headers()
+            .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .unwrap(),
+        "http://localhost:8080"
+    );
+
+    // 2. Start loopback Hyper server and call it from a plain `std::thread` with ZERO ambient
+    //    Tokio runtime (simulating Skia's synchronous `winit` UI thread).
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = oneshot::channel::<()>();
+    let srv_task = tokio::spawn(async move {
+        serve_rpc_with_shutdown(listener, server, async {
+            let _ = rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let base_url = format!("http://{addr}");
+    let (res_tx, res_rx) = oneshot::channel();
+    let ui_thread = std::thread::spawn(move || {
+        // Confirm zero ambient Tokio runtime on this thread!
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let client = HyperTransport::new(base_url)
+            .with_bearer_token("native-skia-token")
+            .unwrap()
+            .with_background_runtime()
+            .unwrap();
+        let req = EchoReq {
+            text: "from-winit-thread".into(),
+        };
+        let mut fut = std::pin::pin!(call::<Echo>(&client, &req));
+        let thread = std::thread::current();
+        struct ThreadWake(std::thread::Thread);
+        impl std::task::Wake for ThreadWake {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = std::task::Waker::from(std::sync::Arc::new(ThreadWake(thread)));
+        let mut cx = Context::from_waker(&waker);
+        let res = loop {
+            match fut.as_mut().poll(&mut cx) {
+                Poll::Ready(res) => break res,
+                Poll::Pending => std::thread::park(),
+            }
+        };
+        let _ = res_tx.send(res);
+    });
+    let reply = res_rx.await.expect("UI thread must report result").unwrap();
+    ui_thread.join().expect("plain UI thread must not panic");
+    assert_eq!(reply.value.text, "from-winit-thread");
+
+    let _ = tx.send(());
+    srv_task.await.unwrap();
+}

@@ -8,6 +8,7 @@ description = "Thin Hyper HTTP/1.1 server adapter (tower_service::Service mounta
 [features]
 default = ["server", "client"]
 server = [
+    "dep:nve-server",
     "hyper/server",
     "hyper/http1",
     "hyper-util/http1",
@@ -25,7 +26,7 @@ client = [
 
 [dependencies]
 nve-rpc = { workspace = true }
-nve-server = { workspace = true }
+nve-server = { workspace = true, optional = true }
 http = { workspace = true }
 bytes = { workspace = true }
 hyper = { workspace = true }

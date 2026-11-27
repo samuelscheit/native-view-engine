@@ -228,7 +228,7 @@ impl CsrfPolicy {
 }
 
 #[inline]
-fn single_header_str<K: AsHeaderName>(
+pub(crate) fn single_header_str<K: AsHeaderName>(
     headers: &HeaderMap,
     name: K,
 ) -> Result<Option<&str>, &'static str> {
@@ -244,7 +244,7 @@ fn single_header_str<K: AsHeaderName>(
 
 /// Normalizes and validates an origin string (`scheme://host[:port]` with default `:80`/`:443`
 /// stripped and ASCII lowercased).
-fn canonicalize_origin(raw: &str) -> Result<String, &'static str> {
+pub(crate) fn canonicalize_origin(raw: &str) -> Result<String, &'static str> {
     let trimmed = raw.trim().trim_end_matches('/');
     let (scheme, rest, default_port) = if let Some(rest) = strip_prefix_ignore_ascii_case(trimmed, "https://") {
         ("https://", rest, "443")
@@ -285,7 +285,7 @@ fn canonicalize_origin(raw: &str) -> Result<String, &'static str> {
 
 /// Zero-allocation comparison between a pre-canonicalized allowed origin and an incoming
 /// `Origin` header (normalizing optional default `:80`/`:443` ports and ASCII case).
-fn origin_matches_canonical(allowed: &str, incoming: &str) -> bool {
+pub(crate) fn origin_matches_canonical(allowed: &str, incoming: &str) -> bool {
     let incoming = incoming.trim_end_matches('/');
     if allowed.eq_ignore_ascii_case(incoming) {
         return true;

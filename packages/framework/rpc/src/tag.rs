@@ -44,6 +44,12 @@ pub enum InvalidateParse {
 pub struct Tag64(pub u64);
 
 impl Tag64 {
+    /// Reconstructs a [`Tag64`] from a raw 64-bit wire value (e.g. binary hydration snapshots).
+    #[inline]
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
     /// Compile-time static tag key (e.g. `Tag64::of("issues.list")`).
     #[inline]
     pub const fn of(name: &str) -> Self {
