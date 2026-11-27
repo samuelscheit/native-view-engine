@@ -14,5 +14,12 @@ dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "dioxus_bench"
+harness = false
+
 [lints]
 workspace = true

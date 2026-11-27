@@ -244,8 +244,7 @@ fn benchmarks_and_counting_alloc_coverage() {
         "nve-store ships colocated bench & nve-store + nve-backend-headless ship CountingAlloc",
         &report.active_nodestore,
     );
-    assert_staged_violations(
-        Stage::Post1B1D,
+    assert_no_violations(
         "Core & backend crates ship colocated benchmarks",
         &report.core_backend_benches,
     );

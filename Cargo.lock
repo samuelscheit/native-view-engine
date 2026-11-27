@@ -2470,6 +2470,7 @@ dependencies = [
 name = "nve-abi"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi-macros",
  "nve-hash",
  "rustc-hash",
@@ -2493,6 +2494,7 @@ dependencies = [
 name = "nve-backend-headless"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-components",
  "nve-engine",
@@ -2507,6 +2509,7 @@ dependencies = [
  "ash",
  "base64",
  "cosmic-text",
+ "criterion",
  "flate2",
  "nve-abi",
  "nve-backend-headless",
@@ -2531,6 +2534,7 @@ name = "nve-backend-web"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "criterion",
  "nve-abi",
  "nve-components",
  "nve-engine",
@@ -2675,6 +2679,7 @@ dependencies = [
 name = "nve-codegen"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-hash",
  "serde",
@@ -2685,6 +2690,7 @@ dependencies = [
 name = "nve-components"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-hash",
  "nve-store",
@@ -2694,6 +2700,7 @@ dependencies = [
 name = "nve-dioxus"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "dioxus-core",
  "dioxus-core-macro",
  "dioxus-signals",
@@ -2764,6 +2771,7 @@ dependencies = [
 name = "nve-engine"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "libloading 0.9.1",
  "nve-abi",
  "nve-components",
@@ -2864,11 +2872,15 @@ dependencies = [
 [[package]]
 name = "nve-hash"
 version = "0.1.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "nve-host-services"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-interop",
 ]
@@ -2913,6 +2925,7 @@ dependencies = [
 name = "nve-interop"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-components",
  "nve-engine",
@@ -2925,6 +2938,7 @@ name = "nve-layout-yoga"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "criterion",
  "nve-abi",
  "nve-backend-headless",
  "nve-components",
@@ -3305,6 +3319,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "bytes",
+ "criterion",
  "crossbeam-channel",
  "futures-util",
  "getrandom 0.4.3",
@@ -3327,6 +3342,7 @@ dependencies = [
 name = "nve-wire-core"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-engine",
 ]

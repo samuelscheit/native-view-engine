@@ -18,5 +18,12 @@ cc = { workspace = true }
 nve-backend-headless = { workspace = true }
 nve-example-kitchen-sink = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "layout_yoga_bench"
+harness = false
+
 [lints]
 workspace = true

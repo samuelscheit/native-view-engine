@@ -33,6 +33,14 @@ serde = { workspace = true }
 [dev-dependencies]
 nve-store = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "interop_bench"
+harness = false
+required-features = ["gesture", "channel"]
+
 [[test]]
 name = "crdt_property_tests"
 required-features = ["crdt"]
