@@ -134,8 +134,9 @@ public struct RuntimeSceneReader<View: RuntimeSceneViewABI> {
     public let childrenSlab: UnsafeBufferPointer<UInt32>
     /// Slot indices created, or whose row, tables or children changed on `frameId`.
     public let dirtyIndices: UnsafeBufferPointer<UInt32>
-    /// Live slot indices not in `dirtyIndices` whose geometry alone changed on `frameId` (absolute
-    /// rect, or origin relative to the parent's): re-apply only position / size.
+    /// Live slot indices not in `dirtyIndices` whose box relative to the parent's rect (origin,
+    /// width, height) changed on `frameId`: re-apply only position / size. A moved node's
+    /// descendants are not listed (their parent-relative boxes held; `rects` are still absolute).
     public let movedIndices: UnsafeBufferPointer<UInt32>
     /// Raw `NodeId`s removed on `frameId`.
     public let removedIds: UnsafeBufferPointer<UInt32>

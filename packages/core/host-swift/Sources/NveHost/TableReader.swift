@@ -135,8 +135,10 @@ public struct TableReader {
     /// Sparse tables: `row + 1` per node index of each page (0 = no row).
     public let rowIndexPages: UnsafeBufferPointer<UInt32>
 
-    /// `nil` when `rows` cannot hold `rowCount * words` words or `owners` is short. A partial tail
-    /// page of `rowIndexPages` is dropped (unreachable), as C++ `TableReader::make` does.
+    /// `nil` when `rows` cannot hold `rowCount * words` words, `owners` is short, or a sparse table
+    /// (owners) with rows has no row index with at least one whole page (its rows could never
+    /// resolve). A partial tail page of `rowIndexPages` is dropped (unreachable), as C++
+    /// `TableReader::make` does.
     public init?(
         key: Key64, slot: UInt32, words: Int, rowCount: Int,
         rows: UnsafeBufferPointer<UInt32>, owners: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0),
@@ -145,7 +147,8 @@ public struct TableReader {
         rowIndexPages: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0)
     ) {
         guard (1...maxTableWords).contains(words), rowCount >= 0, rows.count / words >= rowCount,
-              owners.isEmpty || owners.count >= rowCount
+              owners.isEmpty || owners.count >= rowCount,
+              owners.isEmpty || rowCount == 0 || (!rowIndexDir.isEmpty && rowIndexPages.count >= pageLen)
         else { return nil }
         self.key = key
         self.slot = slot

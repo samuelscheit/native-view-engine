@@ -21,6 +21,13 @@ namespace nve::host {
 using FieldSpec = NveFieldSpec;
 using FieldKind = NveFieldKind;
 
+/// Packed `NodeId` (`index:24 | generation:8`), as carried by rows, owners, events, and `removed_ids`.
+[[nodiscard]] constexpr uint32_t node_index(uint32_t id) noexcept { return id & 0x00FFFFFFu; }
+[[nodiscard]] constexpr uint8_t node_generation(uint32_t id) noexcept { return static_cast<uint8_t>(id >> 24u); }
+[[nodiscard]] constexpr uint32_t make_node_id(uint32_t index, uint8_t generation) noexcept {
+  return node_index(index) | (uint32_t{generation} << 24u);
+}
+
 namespace detail {
 /// Deliberately not `constexpr`: reaching it during constant evaluation is a compile error.
 void field_spec_is_invalid();
@@ -78,8 +85,9 @@ class TableReader {
  public:
   TableReader() = default;
 
-  /// Returns `std::nullopt` when the spans cannot hold `row_count * words` rows (or the owners).
-  /// `row_index_pages` is truncated to whole `NVE_ROW_INDEX_PAGE_LEN` pages.
+  /// Returns `std::nullopt` when the spans cannot hold `row_count * words` rows (or the owners), or
+  /// when a sparse table (owners) with rows publishes no row index: its rows could never be
+  /// resolved. `row_index_pages` is truncated to whole `NVE_ROW_INDEX_PAGE_LEN` pages.
   [[nodiscard]] static std::optional<TableReader> make(Key64 key, uint32_t slot, uint32_t words, uint32_t row_count,
                                                        std::span<const uint32_t> rows,
                                                        std::span<const uint32_t> owners,
@@ -89,6 +97,9 @@ class TableReader {
     if (words == 0u || words > NVE_MAX_TABLE_WORDS) return std::nullopt;
     if (rows.size() / words < row_count) return std::nullopt;
     if (!owners.empty() && owners.size() < row_count) return std::nullopt;
+    if (!owners.empty() && row_count > 0u && (row_index_dir.empty() || row_index_pages.size() < kPageLen)) {
+      return std::nullopt;
+    }
     TableReader t;
     t.key_ = key;
     t.slot_ = slot;
@@ -216,7 +227,7 @@ class TableReader {
   /// Row of `owner` (raw `NodeId` for sparse tables, node index for dense ones) in O(1).
   [[nodiscard]] std::optional<uint32_t> row_of(uint32_t owner_id) const noexcept {
     if (owners_.empty()) return row_of_node(owner_id);
-    const std::optional<uint32_t> r = row_of_node(owner_id & 0x00FFFFFFu);
+    const std::optional<uint32_t> r = row_of_node(node_index(owner_id));
     return r && owners_[*r] == owner_id ? r : std::nullopt;
   }
 

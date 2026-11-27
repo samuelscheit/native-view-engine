@@ -75,7 +75,8 @@ class RuntimeSceneReader {
   [[nodiscard]] std::span<const NveLayoutRect> rects() const noexcept { return rects_; }
   /// Live nodes whose content (row, tables, children) changed or that were created.
   [[nodiscard]] std::span<const uint32_t> dirty_indices() const noexcept { return dirty_; }
-  /// Live nodes, disjoint from `dirty_indices`, whose absolute rect or parent-relative origin changed.
+  /// Live nodes, disjoint from `dirty_indices`, whose box relative to their parent's rect (origin,
+  /// width, height) changed. A moved node's descendants are not listed (their local boxes held).
   [[nodiscard]] std::span<const uint32_t> moved_indices() const noexcept { return moved_; }
   [[nodiscard]] std::span<const uint32_t> removed_ids() const noexcept { return removed_; }
   [[nodiscard]] std::span<const uint32_t> children_slab() const noexcept { return children_; }
@@ -83,8 +84,12 @@ class RuntimeSceneReader {
   [[nodiscard]] uint32_t table_count() const noexcept { return static_cast<uint32_t>(tables_.size()); }
   /// Visual scroll shifts sorted by `node_id`; subtract from descendants' (pre-scroll) rects.
   [[nodiscard]] std::span<const NveScrollOffset> scroll_offsets() const noexcept { return scroll_; }
-  /// Live resource ids (re)defined on this frame, sorted: drop host caches keyed by them.
+  /// Live resource ids (re)defined on this frame, strictly ascending: drop host caches keyed by them.
   [[nodiscard]] std::span<const uint32_t> dirty_resources() const noexcept { return dirty_resources_; }
+  /// Whether resource `id` was (re)defined on this frame (O(log n); ascending order checked on open).
+  [[nodiscard]] bool resource_dirty(uint32_t id) const noexcept {
+    return std::binary_search(dirty_resources_.begin(), dirty_resources_.end(), id);
+  }
 
   /// Visual shift of scroll container `node_id` (`{0, 0}` when not scrolled; O(log n)).
   [[nodiscard]] NveScrollOffset scroll_offset(uint32_t node_id) const noexcept {
@@ -201,11 +206,14 @@ class RuntimeSceneReader {
     for (uint32_t i = 0u; i < v->table_count; ++i) {
       if (!TableReader::from_view(v->tables[i])) return SceneError::InvalidTable;
     }
-    // `scroll_offset()` binary-searches, so ids must be strictly ascending (no duplicates).
+    // `scroll_offset()` and `resource_dirty()` binary-search: ids must be strictly ascending.
     for (uint32_t i = 1u; i < v->scroll_count; ++i) {
       if (v->scroll_offsets[i - 1u].node_id >= v->scroll_offsets[i].node_id) {
         return SceneError::UnsortedScrollOffsets;
       }
+    }
+    for (uint32_t i = 1u; i < v->dirty_resource_count; ++i) {
+      if (v->dirty_resources[i - 1u] >= v->dirty_resources[i]) return SceneError::UnsortedDirtyResources;
     }
     return SceneError::None;
   }
