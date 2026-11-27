@@ -54,6 +54,10 @@ static ROLE: ValueSetDesc = ValueSetDesc { name: "Mode", values: &[("Off", 0), (
 static ROLE_OTHER: ValueSetDesc = ValueSetDesc { name: "Mode", values: &[("Off", 0), ("Auto", 1)] };
 static WIDE: ValueSetDesc = ValueSetDesc { name: "Wide", values: &[("Big", 4)] };
 static DUP: ValueSetDesc = ValueSetDesc { name: "Dup", values: &[("FooBar", 0), ("foo_bar", 1)] };
+static ARIA: ValueSetDesc = ValueSetDesc { name: "Aria", values: &[("RoleSwitch", 0)] };
+static ARIA_ROLE: ValueSetDesc = ValueSetDesc { name: "AriaRole", values: &[("Switch", 0)] };
+static TABLE_SET: ValueSetDesc = ValueSetDesc { name: "TableVisual", values: &[("Key", 0)] };
+static EMPTY: ValueSetDesc = ValueSetDesc { name: "Empty", values: &[] };
 
 const fn field(name: &'static str, shift: u8, bits: u8, values: &'static ValueSetDesc) -> FieldDesc {
     FieldDesc { name, kind: FieldKind::Enum, word: 0, shift, bits, effects: 0, values: Some(values) }
@@ -78,12 +82,22 @@ static SAME_TWICE: TableDesc = table("nve.same", &[field("a", 0, 2, &ROLE), fiel
 static CONFLICT: TableDesc = table("nve.conflict", &[field("a", 0, 2, &ROLE), field("b", 2, 2, &ROLE_OTHER)]);
 static TOO_WIDE: TableDesc = table("nve.too_wide", &[field("a", 0, 2, &WIDE)]);
 static DUPLICATE: TableDesc = table("nve.duplicate", &[field("a", 0, 2, &DUP)]);
+static ACROSS: TableDesc = table("nve.across", &[field("a", 0, 2, &ARIA), field("b", 2, 2, &ARIA_ROLE)]);
+static TABLE_NS: TableDesc = table("nve.table_ns", &[field("a", 0, 2, &TABLE_SET)]);
+static NO_VALUES: TableDesc = table("nve.no_values", &[field("a", 0, 2, &EMPTY)]);
 
 #[test]
 fn value_sets_are_deduplicated_and_validated() {
     let h = module_header(&[&SAME_TWICE]).expect("shared set");
     assert_eq!(h.matches("#define NVE_MODE_ON 1u").count(), 1);
-    for (t, why) in [(&CONFLICT, "defined twice differently"), (&TOO_WIDE, "exceeds field"), (&DUPLICATE, "duplicate name")] {
+    for (t, why) in [
+        (&CONFLICT, "defined twice differently"),
+        (&TOO_WIDE, "exceeds field"),
+        (&DUPLICATE, "duplicate name"),
+        (&ACROSS, "NVE_ARIA_ROLE_SWITCH"),
+        (&TABLE_NS, "outside `TABLE*`"),
+        (&NO_VALUES, "at least one value"),
+    ] {
         match module_header(&[t]) {
             Err(CodegenError::Validation(m)) => assert!(m.contains(why), "{}: {m}", t.name),
             other => panic!("{}: expected `{why}`, got {other:?}", t.name),

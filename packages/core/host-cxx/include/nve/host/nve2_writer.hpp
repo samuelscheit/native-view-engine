@@ -12,6 +12,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <span>
@@ -54,9 +55,7 @@ class Nve2Writer {
   /// Removes `node` (descendants go with it on the receiver) and forgets its rows.
   void remove(uint32_t node) {
     removes_.push_back(node);
-    for (auto it = rows_.begin(); it != rows_.end();) {
-      it = static_cast<uint32_t>(it->first) == node ? rows_.erase(it) : std::next(it);
-    }
+    for (uint32_t slot = 0; slot < declared_.size(); ++slot) rows_.erase(row_key(slot, node));
     for (auto& [slot, nodes] : detaches_) nodes.erase(node);
   }
 
@@ -170,12 +169,17 @@ class Nve2Writer {
     std::vector<uint8_t> bytes;
   };
 
-  static uint64_t row_key(uint8_t slot, uint32_t node) noexcept { return (uint64_t{slot} << 32u) | node; }
+  static uint64_t row_key(uint32_t slot, uint32_t node) noexcept { return (uint64_t{slot} << 32u) | node; }
+
+  /// Wire table slots are `u8`: a session declares at most 256 tables (a static, programmer-
+  /// controlled set), so exceeding it is a bug, not an input error.
+  static constexpr size_t kMaxTables = 256u;
 
   uint8_t declare(const NveTableDesc& t) {
     for (size_t i = 0; i < declared_.size(); ++i) {
       if (declared_[i]->key == t.key) return static_cast<uint8_t>(i);
     }
+    if (declared_.size() == kMaxTables) std::abort();
     declared_.push_back(&t);
     new_decls_.push_back(static_cast<uint8_t>(declared_.size() - 1u));
     return static_cast<uint8_t>(declared_.size() - 1u);
@@ -273,9 +277,9 @@ class Nve2Writer {
   }
 
   void emit_rows() {
-    for (uint8_t slot = 0; slot < declared_.size(); ++slot) {
+    for (uint32_t slot = 0; slot < declared_.size(); ++slot) {
       const auto lo = rows_.lower_bound(row_key(slot, 0u));
-      const auto hi = rows_.lower_bound(row_key(static_cast<uint8_t>(slot + 1u), 0u));
+      const auto hi = rows_.lower_bound(row_key(slot + 1u, 0u));
       uint32_t patches = 0u;
       uint32_t strings = 0u;
       for (auto it = lo; it != hi; ++it) {

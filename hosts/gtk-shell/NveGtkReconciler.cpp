@@ -157,8 +157,6 @@ GtkNodeView* NveGtkHost::Adapter::create(const host::NodeData& node) {
   v->widget = new_widget(v->kind, gtk_internal::accessible_role(node));
   g_object_ref_sink(v->widget);
   g_object_set_data(G_OBJECT(v->widget), kViewKey, v);
-  const std::string generic = "nve-node-" + std::to_string(node.id);
-  gtk_widget_add_css_class(v->widget, generic.c_str());
   gtk_widget_add_css_class(v->widget, host->scoped_class(node.id).c_str());
   switch (v->kind) {
     case WidgetKind::Fixed: v->content = v->widget; break;

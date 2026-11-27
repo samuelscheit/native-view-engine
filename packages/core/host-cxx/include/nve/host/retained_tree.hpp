@@ -11,14 +11,20 @@
 //   void set_children(const NodeData& parent, Handle* parent_view /* null for root */,
 //                     std::span<Handle* const> kids);           // in scene child order
 //
-// The first sync (and any `frame_id` regression, e.g. a new app) visits every live node;
+// The first sync, any `frame_id` regression, and any change of `source_generation` (pass
+// `HostSession::source_generation()`: a new app or pairing replaces the scene without removals)
+// visit every live node, keeping views whose node, generation and tag still match;
 // afterwards only `removed_ids`, `dirty_indices` (row, tables, children, or layout rect changed),
 // and descendants whose inherited typography changed. Views are keyed by node index and checked
 // against the packed `NodeId` generation, so a recycled slot recreates its view.
+//
+// `NodeData` (and its `TextStyle::font_family`) borrows the scene: it is valid only inside the
+// adapter call. The tree itself keeps no view into the scene across syncs.
 #pragma once
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "bound_table.hpp"
@@ -33,14 +39,16 @@ class RetainedTree {
   using Handle = typename Adapter::Handle;
 
   /// Reconciles `scene` (bound into `tables`); returns the number of views created or updated.
-  size_t sync(const RuntimeSceneReader& scene, SceneTables& tables, Adapter& adapter) {
+  size_t sync(const RuntimeSceneReader& scene, SceneTables& tables, Adapter& adapter,
+              uint64_t source_generation = 0u) {
+    const bool full = !initialized_ || scene.frame_id() < last_frame_ || source_generation != source_generation_;
+    if (!full && scene.frame_id() == last_frame_) return 0u;  // this frame is already mirrored
+    source_generation_ = source_generation;
     tables.bind(scene);
     if (++epoch_ == 0u) {
-      for (Entry& e : entries_) e.stamp = 0u;
+      for (Entry& e : entries_) e.stamp = e.resolved = e.linked = 0u;
       epoch_ = 1u;
     }
-    const bool full = !initialized_ || scene.frame_id() < last_frame_;
-    if (!full && scene.frame_id() == last_frame_) return 0u;  // this frame is already mirrored
     initialized_ = true;
     last_frame_ = scene.frame_id();
     if (entries_.size() < scene.node_capacity()) entries_.resize(scene.node_capacity());
@@ -84,7 +92,7 @@ class RetainedTree {
     return updated_;
   }
 
-  /// Destroys every view (e.g. before attaching a new app).
+  /// Destroys every view.
   void clear(Adapter& adapter) {
     for (uint32_t i = 0; i < entries_.size(); ++i) {
       if (entries_[i].live) destroy(i, adapter);
@@ -99,12 +107,6 @@ class RetainedTree {
     return i < entries_.size() && entries_[i].live && entries_[i].id == id && i != kRootIndex
                ? &entries_[i].handle
                : nullptr;
-  }
-
-  /// Resolved text style last applied to node `id` (`nullptr` when unknown).
-  [[nodiscard]] const TextStyle* text_style(uint32_t id) const noexcept {
-    const uint32_t i = node_index(id);
-    return i < entries_.size() && entries_[i].live && entries_[i].id == id ? &entries_[i].applied : nullptr;
   }
 
   [[nodiscard]] size_t size() const noexcept {
@@ -122,9 +124,22 @@ class RetainedTree {
     uint32_t linked = 0u;    // last epoch its children were handed to the adapter
     bool live = false;
     Handle handle{};
-    TextStyle style;    // resolved this epoch
-    TextStyle applied;  // last style handed to the adapter
+    TextStyle style;             // resolved in epoch `resolved` (borrows that sync's scene)
+    TextStyle applied;           // last style handed to the adapter, without `font_family`
+    std::string applied_family;  // ... whose family is owned here
   };
+
+  [[nodiscard]] static bool same_applied(const Entry& e, const TextStyle& s) noexcept {
+    TextStyle bare = s;
+    bare.font_family = {};
+    return e.applied == bare && e.applied_family == s.font_family;
+  }
+
+  static void store_applied(Entry& e, const TextStyle& s) {
+    e.applied = s;
+    e.applied.font_family = {};
+    e.applied_family.assign(s.font_family);
+  }
 
   void destroy(uint32_t i, Adapter& adapter) {
     Entry& e = entries_[i];
@@ -157,7 +172,7 @@ class RetainedTree {
     e.stamp = epoch_;
     const TextStyle style = resolve_style(scene, tables, i);
     const NodeData node = read_node(scene, tables, i, style);
-    const bool style_changed = !e.live || !(e.applied == style);
+    const bool style_changed = !e.live || !same_applied(e, style);
     if (i == kRootIndex) {
       adapter.update_root(node);
       e.id = node.id;
@@ -174,7 +189,7 @@ class RetainedTree {
       }
       adapter.update(e.handle, node);
     }
-    e.applied = style;
+    store_applied(e, style);
     ++updated_;
     if (style_changed) {
       for (const uint32_t child : node.children) cascade_.push_back(node_index(child));
@@ -184,7 +199,7 @@ class RetainedTree {
   void sync_children(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
     Entry& e = entries_[i];
     if (!e.live) return;
-    const NodeData node = read_node(scene, tables, i, e.style);
+    const NodeData node = read_node(scene, tables, i, resolve_style(scene, tables, i));
     kids_.clear();
     for (const uint32_t child : node.children) {
       if (Handle* h = find(child)) kids_.push_back(h);
@@ -199,6 +214,7 @@ class RetainedTree {
   std::vector<uint32_t> chain_;
   std::vector<Handle*> kids_;
   uint64_t last_frame_ = 0u;
+  uint64_t source_generation_ = 0u;
   uint32_t epoch_ = 0u;
   size_t updated_ = 0u;
   bool initialized_ = false;
