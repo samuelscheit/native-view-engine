@@ -57,8 +57,6 @@ Default posture is skepticism: nothing is graded above L1 without verified real 
    - **Resolved**: `"Zero-JSON"` marketing copy was stripped repo-wide (0 hits outside `CHANGELOG.md`/`quality-audit.md`/`AGENTS.md`), and production `serde_json` was removed from `packages/core/engine` (moved to `[dev-dependencies]` only), `packages/core/interop`, `examples/studio-workspace`, and `hosts/skia-shell` (leaving `serde_json` only in build/dev tools `nve-codegen`, `nve-cli`, `nve-bench`, and `nve-engine` dev-deps).
    - **Still open**: Real RN Fabric ShadowTree mounting (`cxx/nve-fabric-bridge/src/fabric_c_api.cpp:143-159`) is still `old_root.clone({})` (a no-op stub), and `cxx/build-fabric` compiles with `NVE_WITH_RN_FABRIC=OFF`.
 
-> **Workspace Hygiene Note:** An untracked **7.6 GB** OpenJ9 JVM dump (`core.20261125.032910.85615.0001.dmp` + `javacore.*.txt` + `Snap.*.trc`) is sitting in `hosts/android-shell/` and should be deleted.
-
 ---
 
 ## 1. `packages/core/*`
