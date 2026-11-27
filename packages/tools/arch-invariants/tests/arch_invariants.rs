@@ -90,32 +90,46 @@ fn framework_rpc_and_server_layer_purity() {
 // Cross-file `syn` AST invariants
 // ============================================================================
 
+/// Enforces [INV:no-duplicate-enum-match-arms].
+#[test]
+fn no_duplicate_enum_match_arms_workspace_wide() {
+    let idx = repo_index();
+    let report = ast_enums::check_duplicate_enum_match_arms(idx);
+    assert_no_violations(
+        "Zero new duplicated enum match/assignment tables (same-file & cross-file, same-direction & mirrored) and zero stale baseline entries",
+        &report.active_violations,
+    );
+    assert_staged_violations(
+        Stage::Post1B1D,
+        "Pre-existing allowlisted duplicate enum match/assignment tables",
+        &report.allowlisted_violations,
+    );
+}
+
 #[test]
 fn cross_file_enums_converters_and_match_tables() {
     let idx = repo_index();
-    let mut core_owned = Vec::new();
-    let mut backend_owned = Vec::new();
+    let all_owned = ast_enums::collect_workspace_prod_rs(idx);
     let mut violations = Vec::new();
 
-    for rel in idx.rs_files_under("packages") {
-        if is_test_or_bench_rs(&rel) || is_self_invariant_file(&rel) {
-            continue;
-        }
-        let Some(parsed) = idx.parse_rust(&rel) else {
-            continue;
-        };
-        ast_enums::scan_match_tables(&rel, &parsed.raw, &parsed.ast, &mut violations);
-        if rel.starts_with("packages/core/") {
-            core_owned.push((rel, parsed));
-        } else if rel.starts_with("packages/backends/") {
-            backend_owned.push((rel, parsed));
+    for (rel, parsed) in &all_owned {
+        if rel.starts_with("packages/") {
+            ast_enums::scan_match_tables(rel, &parsed.raw, &parsed.ast, &mut violations);
         }
     }
 
-    let core_refs: Vec<_> = core_owned.iter().map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast)).collect();
-    let backend_refs: Vec<_> = backend_owned.iter().map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast)).collect();
-    assert!(!core_refs.is_empty() && !backend_refs.is_empty());
-    ast_enums::scan_duplicate_enums_and_converters(&core_refs, &backend_refs, &mut violations);
+    let core_refs: Vec<_> = all_owned
+        .iter()
+        .filter(|(r, _)| r.starts_with("packages/core/"))
+        .map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast))
+        .collect();
+    let other_refs: Vec<_> = all_owned
+        .iter()
+        .filter(|(r, _)| !r.starts_with("packages/core/"))
+        .map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast))
+        .collect();
+    assert!(!core_refs.is_empty() && !other_refs.is_empty());
+    ast_enums::scan_duplicate_enums_and_converters(&core_refs, &other_refs, &mut violations);
 
     assert_staged_violations(
         Stage::Post1B1D,
