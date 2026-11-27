@@ -646,10 +646,17 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
     let dart_out = generate_hybrid_target(&spec, HybridTarget::Dart).unwrap();
     let dart_src = &dart_out.files[0].content;
 
-    // Verify generated Dart reuses the shared Flutter runtime instead of duplicating codecs/structs.
-    assert!(dart_src.contains("import 'package:nve_flutter/nve_hybrid_runtime.dart';"));
-    assert!(dart_src.contains("implements NveDirectEncodable"));
-    assert!(dart_src.contains("NveDirectPropsWriter.withEncodedProps"));
+    // Verify generated Dart reuses the static `package:nve_host` runtime instead of duplicating codecs/structs.
+    assert!(dart_src.contains("import 'package:nve_host/nve_host.dart';"));
+    assert!(dart_src.contains("import 'package:nve_host/nve_host_ffi.dart';"));
+    assert!(
+        !dart_src.contains("package:nve_flutter"),
+        "generated Dart hybrid client must depend on package:nve_host, not package:nve_flutter"
+    );
+    assert!(dart_src.contains("implements HybridPropsEncodable"));
+    assert!(dart_src.contains("HybridPropsWriter.withEncodedProps"));
+    assert!(dart_src.contains("NveValueTree.fromDynamic"));
+    assert!(dart_src.contains("writeDynamicValue('metadata', metadata)"));
     assert!(
         !dart_src.contains("class NveBinWriter"),
         "generated Dart must not duplicate NveBinWriter"
@@ -662,6 +669,10 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
         !dart_src.contains("final class NveMapEntry"),
         "generated Dart must not duplicate core ABI FFI structs"
     );
+    assert!(
+        !dart_src.contains("_NveGetInterfaceNative"),
+        "generated Dart must reuse static FFI typedefs from package:nve_host"
+    );
 
     if !common::require_tool("dart") {
         return;
@@ -672,7 +683,7 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
     std::fs::create_dir_all(&lib_dir).unwrap();
     dart_out.write_to_dir(&lib_dir).unwrap();
 
-    // Minimal pubspec + offline package_config.json resolving `package:nve_flutter/` to disk.
+    // Minimal pubspec + offline package_config.json resolving `package:nve_host/` to disk.
     std::fs::write(
         dir.join("pubspec.yaml"),
         "name: nve_hybrid_check\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",

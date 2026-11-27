@@ -1,12 +1,14 @@
 //! Flutter / Dart (`dart:ffi`) target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits a standalone, binary FFI, zero-external-package Dart file (`<stem>_hybrid.generated.dart`):
-//! - Uses only Dart SDK (`dart:convert` UTF-8, `dart:ffi`, `dart:typed_data`)
-//! - Exact `ffi.Struct` definitions for `NveStrSlice`, `NveBufferSlice`, `NveHybridOwnedBytes`,
-//!   `NveValue`, `NveMapEntry`, POD structs, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`
-//! - `abstract interface class Hybrid<Name>Spec`
-//! - `class <Name>HybridClient` resolving `nve_get_interface`, verifying `schemaHash`,
-//!   and managing transient scratch buffers via the vtable's `allocBytes` / `freeBytes`.
+//! Emits a binary `dart:ffi` binding file (`<stem>_hybrid.generated.dart`) backed by the static
+//! zero-dependency `package:nve_host` runtime (`packages/core/host-dart`):
+//! - Reuses `BinReader`, `BinWriter`, `DynamicValue`, `Key64`, `HybridStatus`, `HybridException`
+//!   (`package:nve_host/nve_host.dart`) and `HybridOwnedBytes`, `HybridArena`, `NveValueTree`,
+//!   `HybridPropsEncodable`, `HybridPropsBuilder`, `HybridPropsWriter`, plus core ABI structs and
+//!   vtable typedefs (`package:nve_host/nve_host_ffi.dart`)
+//! - Emits POD `ffi.Struct`s, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`
+//! - Emits `abstract interface class Hybrid<Name>Spec` and `class <Name>HybridClient` verifying
+//!   `abiVersion` + `schemaHash` and using scoped `HybridArena.using` for leak-free FFI calls.
 
 mod client_emitter;
 mod type_helpers;
@@ -26,7 +28,7 @@ use crate::schema::hybrid::{
     HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION,
 };
 
-/// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and the shared `package:nve_flutter/nve_hybrid_runtime.dart`.
+/// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and `package:nve_host`.
 pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
     let stem = spec.stem_snake();
@@ -77,18 +79,26 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     );
     writeln!(
         out,
-        "// Binary direct dart:ffi vtable bindings sharing `package:nve_flutter/nve_hybrid_runtime.dart`."
+        "// Binary direct dart:ffi vtable bindings sharing `package:nve_host`."
+    );
+    writeln!(
+        out,
+        "// ignore_for_file: no_leading_underscores_for_local_identifiers"
     );
     writeln!(out);
-    if body.contains("utf8.") {
-        writeln!(out, "import 'dart:convert' show utf8;");
+    if body.contains("ffi.") {
+        writeln!(out, "import 'dart:ffi' as ffi;");
     }
-    writeln!(out, "import 'dart:ffi' as ffi;");
     if body.contains("Uint8List") {
         writeln!(out, "import 'dart:typed_data';");
     }
-    writeln!(out);
-    writeln!(out, "import 'package:nve_flutter/nve_hybrid_runtime.dart';");
+    if body.contains("ffi.") || body.contains("Uint8List") {
+        writeln!(out);
+    }
+    writeln!(out, "import 'package:nve_host/nve_host.dart';");
+    if uses_nve_host_ffi(&body) {
+        writeln!(out, "import 'package:nve_host/nve_host_ffi.dart';");
+    }
     writeln!(out);
     out.push_str(&body);
 
@@ -98,6 +108,28 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     }])
 }
 
+fn uses_nve_host_ffi(body: &str) -> bool {
+    [
+        "HybridOwnedBytes",
+        "HybridCreateNative",
+        "HybridDestroyNative",
+        "HybridAllocBytesNative",
+        "HybridFreeBytesNative",
+        "HybridSetPropsDirectNative",
+        "HybridPropsEncodable",
+        "HybridPropsBuilder",
+        "HybridPropsWriter",
+        "HybridArena",
+        "NveValueTree",
+        "NveStrSlice",
+        "NveBufferSlice",
+        "NveValue",
+        "NveMapEntry",
+    ]
+    .iter()
+    .any(|sym| body.contains(sym))
+}
+
 fn emit_dart_common(out: &mut CodeWriter, spec: &HybridFileSpec) {
     writeln!(
         out,
@@ -105,36 +137,10 @@ fn emit_dart_common(out: &mut CodeWriter, spec: &HybridFileSpec) {
     );
     writeln!(
         out,
-        "const int nveHybridFileSchemaHash = {};",
-        dart_u64_const(spec.file_schema_hash())
+        "const Key64 nveHybridFileSchemaHash = {};",
+        dart_key64_const(spec.file_schema_hash())
     );
-    writeln!(out, "const int nveHybridOk = 0;");
     writeln!(out);
-
-    writeln!(
-        out,
-        r#"typedef _NveGetInterfaceNative = ffi.Pointer<ffi.Void> Function(ffi.Uint32);
-typedef _NveGetInterfaceDart = ffi.Pointer<ffi.Void> Function(int);
-typedef _NveCreateNative = ffi.Pointer<ffi.Void> Function();
-typedef _NveCreateDart = ffi.Pointer<ffi.Void> Function();
-typedef _NveDestroyNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
-typedef _NveDestroyDart = void Function(ffi.Pointer<ffi.Void>);
-typedef _NveAllocBytesNative = NveHybridOwnedBytes Function(ffi.Size);
-typedef _NveAllocBytesDart = NveHybridOwnedBytes Function(int);
-typedef _NveFreeBytesNative = ffi.Void Function(NveHybridOwnedBytes);
-typedef _NveFreeBytesDart = void Function(NveHybridOwnedBytes);
-typedef _NveSetPropsDirectNative = ffi.Int32 Function(
-  ffi.Pointer<ffi.Void>,
-  ffi.Pointer<NveMapEntry>,
-  ffi.Uint32,
-);
-typedef _NveSetPropsDirectDart = int Function(
-  ffi.Pointer<ffi.Void>,
-  ffi.Pointer<NveMapEntry>,
-  int,
-);
-"#
-    );
 }
 
 fn emit_dart_enum(out: &mut CodeWriter, e: &HybridEnumSpec) {
@@ -210,73 +216,79 @@ fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
         writeln!(out, "  NveHybrid{} toAbi() {{", s.name);
         writeln!(
             out,
-            "    final raw = ffi.Struct.create<NveHybrid{}>();",
+            "    final _nveRaw = ffi.Struct.create<NveHybrid{}>();",
             s.name
         );
         for f in &s.fields {
             let fname = dart_ident(&f.name);
             match &f.ty {
-                HybridType::Enum(_) => writeln!(out, "    raw.{fname} = {fname}.rawValue;"),
-                HybridType::Struct(_) => writeln!(out, "    raw.{fname} = {fname}.toAbi();"),
-                _ => writeln!(out, "    raw.{fname} = {fname};"),
+                HybridType::Enum(_) => writeln!(out, "    _nveRaw.{fname} = {fname}.rawValue;"),
+                HybridType::Struct(_) => writeln!(out, "    _nveRaw.{fname} = {fname}.toAbi();"),
+                _ => writeln!(out, "    _nveRaw.{fname} = {fname};"),
             }
         }
-        writeln!(out, "    return raw;");
+        writeln!(out, "    return _nveRaw;");
         writeln!(out, "  }}");
         writeln!(out);
         writeln!(
             out,
-            "  factory {}.fromAbi(NveHybrid{} raw) => {}(",
+            "  factory {}.fromAbi(NveHybrid{} _nveRaw) => {}(",
             s.name, s.name, s.name
         );
         for f in &s.fields {
             let fname = dart_ident(&f.name);
             match &f.ty {
-                HybridType::Enum(e) => writeln!(out, "    {fname}: {e}.fromRaw(raw.{fname}),"),
-                HybridType::Struct(st) => writeln!(out, "    {fname}: {st}.fromAbi(raw.{fname}),"),
-                _ => writeln!(out, "    {fname}: raw.{fname},"),
+                HybridType::Enum(e) => {
+                    writeln!(out, "    {fname}: {e}.fromRaw(_nveRaw.{fname}),")
+                }
+                HybridType::Struct(st) => {
+                    writeln!(out, "    {fname}: {st}.fromAbi(_nveRaw.{fname}),")
+                }
+                _ => writeln!(out, "    {fname}: _nveRaw.{fname},"),
             }
         }
         writeln!(out, "  );");
     }
 
     writeln!(out);
-    writeln!(out, "  void encodeBin(NveBinWriter w) {{");
-    writeln!(out, "    w.writeMap({}, (mw) {{", s.fields.len());
+    writeln!(out, "  void encodeBin(BinWriter _nveW) {{");
+    writeln!(out, "    final _nveMark = _nveW.beginMap({});", s.fields.len());
     for f in &s.fields {
         let fname = dart_ident(&f.name);
         let key_lit = escape_dart_single_quoted_string(&f.name);
-        writeln!(out, "      mw.writeMapKey('{key_lit}');");
-        // `this.`: a field named like the writer (`w`, `mw`) must not resolve to it.
-        emit_dart_bin_write(out, "      ", "mw", &format!("this.{fname}"), &f.ty);
+        writeln!(out, "    _nveW.writeMapKey('{key_lit}');");
+        emit_dart_bin_write(out, "    ", "_nveW", &fname, &f.ty);
     }
-    writeln!(out, "    }});");
+    writeln!(out, "    _nveW.end(_nveMark);");
     writeln!(out, "  }}");
     writeln!(out);
 
-    writeln!(out, "  factory {}.decodeBin(NveBinReader r) {{", s.name);
-    for f in &s.fields {
-        let fname = dart_ident(&f.name);
+    writeln!(out, "  factory {}.decodeBin(BinReader _nveR) {{", s.name);
+    for (idx, f) in s.fields.iter().enumerate() {
         let def = dart_default_value(&f.ty, None, spec);
-        writeln!(out, "    {} _{fname} = {def};", dart_type(&f.ty));
+        if def == "null" {
+            writeln!(out, "    {} _nveF{idx};", dart_type(&f.ty));
+        } else {
+            writeln!(out, "    {} _nveF{idx} = {def};", dart_type(&f.ty));
+        }
     }
-    writeln!(out, "    final count = r.beginMap();");
-    writeln!(out, "    for (var i = 0; i < count; i++) {{");
-    writeln!(out, "      switch (r.readMapKey()) {{");
-    for f in &s.fields {
-        let fname = dart_ident(&f.name);
+    writeln!(out, "    _nveR.readMapScope<void>((_nveCount) {{");
+    writeln!(out, "      for (var _nveI = 0; _nveI < _nveCount; _nveI++) {{");
+    writeln!(out, "        switch (_nveR.readMapKey()) {{");
+    for (idx, f) in s.fields.iter().enumerate() {
         let key_lit = escape_dart_single_quoted_string(&f.name);
-        writeln!(out, "        case '{key_lit}':");
-        emit_dart_bin_read(out, "          ", "r", &format!("_{fname}"), &f.ty);
+        writeln!(out, "          case '{key_lit}':");
+        emit_dart_bin_read(out, "            ", "_nveR", &format!("_nveF{idx}"), &f.ty);
     }
-    writeln!(out, "        default:");
-    writeln!(out, "          r.skipValue();");
+    writeln!(out, "          default:");
+    writeln!(out, "            _nveR.skipValue();");
+    writeln!(out, "        }}");
     writeln!(out, "      }}");
-    writeln!(out, "    }}");
+    writeln!(out, "    }});");
     writeln!(out, "    return {}(", s.name);
-    for f in &s.fields {
+    for (idx, f) in s.fields.iter().enumerate() {
         let fname = dart_ident(&f.name);
-        writeln!(out, "      {fname}: _{fname},");
+        writeln!(out, "      {fname}: _nveF{idx},");
     }
     writeln!(out, "    );");
     writeln!(out, "  }}");
@@ -309,7 +321,7 @@ fn emit_dart_module(out: &mut CodeWriter, m: &HybridModuleSpec, spec: &HybridFil
 fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpec) {
     let pascal = to_pascal_case(&v.name);
 
-    writeln!(out, "class {pascal}Props implements NveDirectEncodable {{");
+    writeln!(out, "class {pascal}Props implements HybridPropsEncodable {{");
     for p in &v.props {
         let pname = dart_ident(&p.name);
         writeln!(out, "  final {} {pname};", dart_type(&p.ty));
@@ -319,8 +331,12 @@ fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpe
     for p in &v.props {
         let pname = dart_ident(&p.name);
         let def = dart_default_value(&p.ty, p.default_value.as_ref(), spec);
-        if dart_is_const_expr(&p.ty, p.default_value.as_ref()) {
-            write!(out, "this.{pname} = {def}, ");
+        if dart_is_const_expr(&p.ty, p.default_value.as_ref(), spec) {
+            if def == "null" {
+                write!(out, "this.{pname}, ");
+            } else {
+                write!(out, "this.{pname} = {def}, ");
+            }
         } else {
             write!(out, "{}? {pname}, ", dart_type_non_nullable(&p.ty));
         }
@@ -329,7 +345,7 @@ fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpe
     let non_const_inits: Vec<String> = v
         .props
         .iter()
-        .filter(|p| !dart_is_const_expr(&p.ty, p.default_value.as_ref()))
+        .filter(|p| !dart_is_const_expr(&p.ty, p.default_value.as_ref(), spec))
         .map(|p| {
             let pname = dart_ident(&p.name);
             let def = dart_default_value(&p.ty, p.default_value.as_ref(), spec);
@@ -346,11 +362,11 @@ fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpe
     writeln!(out, "  int get directPropCount => {};", v.props.len());
     writeln!(out);
     writeln!(out, "  @override");
-    writeln!(out, "  void encodeDirect(NveDirectPropsBuilder builder) {{");
-    for p in &v.props {
+    writeln!(out, "  void encodeDirect(HybridPropsBuilder _nveB) {{");
+    for (idx, p) in v.props.iter().enumerate() {
         let pname = dart_ident(&p.name);
         let key_lit = escape_dart_single_quoted_string(&p.name);
-        emit_dart_direct_prop_write(out, &key_lit, &pname, &p.ty);
+        emit_dart_direct_prop_write(out, &key_lit, &pname, &p.ty, idx);
     }
     writeln!(out, "  }}");
     writeln!(out, "}}");
@@ -418,8 +434,8 @@ fn emit_dart_vtable_struct(
                 native_params.push(ptr_ty.clone());
                 dart_params.push(ptr_ty);
             }
-            native_params.push("ffi.Pointer<NveHybridOwnedBytes>".to_string());
-            dart_params.push("ffi.Pointer<NveHybridOwnedBytes>".to_string());
+            native_params.push("ffi.Pointer<HybridOwnedBytes>".to_string());
+            dart_params.push("ffi.Pointer<HybridOwnedBytes>".to_string());
         }
         writeln!(
             out,
@@ -432,7 +448,9 @@ fn emit_dart_vtable_struct(
             dart_params.join(", ")
         );
     }
-    writeln!(out);
+    if !methods.is_empty() {
+        writeln!(out);
+    }
 
     writeln!(
         out,
@@ -446,24 +464,24 @@ fn emit_dart_vtable_struct(
     writeln!(out, "  external int schemaHash;");
     writeln!(
         out,
-        "  external ffi.Pointer<ffi.NativeFunction<_NveCreateNative>> create;"
+        "  external ffi.Pointer<ffi.NativeFunction<HybridCreateNative>> create;"
     );
     writeln!(
         out,
-        "  external ffi.Pointer<ffi.NativeFunction<_NveDestroyNative>> destroy;"
+        "  external ffi.Pointer<ffi.NativeFunction<HybridDestroyNative>> destroy;"
     );
     writeln!(
         out,
-        "  external ffi.Pointer<ffi.NativeFunction<_NveAllocBytesNative>> allocBytes;"
+        "  external ffi.Pointer<ffi.NativeFunction<HybridAllocBytesNative>> allocBytes;"
     );
     writeln!(
         out,
-        "  external ffi.Pointer<ffi.NativeFunction<_NveFreeBytesNative>> freeBytes;"
+        "  external ffi.Pointer<ffi.NativeFunction<HybridFreeBytesNative>> freeBytes;"
     );
     if is_view {
         writeln!(
             out,
-            "  external ffi.Pointer<ffi.NativeFunction<_NveSetPropsDirectNative>> setPropsDirect;"
+            "  external ffi.Pointer<ffi.NativeFunction<HybridSetPropsDirectNative>> setPropsDirect;"
         );
     }
     for m in methods {

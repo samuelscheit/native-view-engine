@@ -32,6 +32,8 @@ already-closed mark is rejected, and a rejected write leaves no bytes.
 | `src/table_reader.dart` | `FieldKind`, `FieldSpec`, `LengthValue`, `Rgba`, `TableReader` |
 | `src/scene_reader.dart` | `SceneReader` over slabs or over wasm32 linear memory via a generated `SceneLayout` |
 | `src/hybrid_runtime.dart` | `HybridStatus`, `HostStatus`, `HybridException`, `DynamicValue` |
+| `src/hybrid_ffi.dart` | Native `dart:ffi` hybrid vtable typedefs, `HybridOwnedBytes`, `HybridArena`, owned-bytes helpers (`nve_host_ffi.dart`) |
+| `src/value_tree.dart` | Native `NveValueTree` FFI tree builder and `HybridPropsBuilder` / `HybridPropsWriter` (`nve_host_ffi.dart`) |
 
 ## Generated data
 

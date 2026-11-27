@@ -151,6 +151,14 @@ final class BinReader {
   /// Entry count of a map; read each entry as [readMapKey] then a value.
   int beginMap() => _openContainer(BinTag.map, 5).$1;
 
+  /// Opens an array, runs [body] with reads clamped to the array's payload, restores the outer
+  /// limit, and throws [BinErrorKind.trailingBytes] if [body] leaves unconsumed bytes.
+  T readArrayScope<T>(T Function(int count) body) => _readContainerScope(BinTag.array, 1, body);
+
+  /// Opens a map, runs [body] with reads clamped to the map's payload, restores the outer limit,
+  /// and throws [BinErrorKind.trailingBytes] if [body] leaves unconsumed bytes.
+  T readMapScope<T>(T Function(int count) body) => _readContainerScope(BinTag.map, 5, body);
+
   String readMapKey() => utf8String(_length());
 
   /// Skips one value in O(1).
@@ -178,6 +186,20 @@ final class BinReader {
     final start = _pos;
     skipValue();
     return Uint8List.sublistView(bytes, start, _pos);
+  }
+
+  /// Fully validates and consumes the next value, returning a view of its encoded bytes.
+  Uint8List readCheckedValue() {
+    final start = _pos;
+    checkValue();
+    return Uint8List.sublistView(bytes, start, _pos);
+  }
+
+  /// Throws [BinErrorKind.trailingBytes] unless every byte up to the active limit was consumed.
+  void requireDone() {
+    if (!isAtEnd) {
+      throw BinCodecException(BinErrorKind.trailingBytes, '$remaining trailing bytes');
+    }
   }
 
   /// Fully validates and consumes the next value (Rust `BinValueView::parse` rules).
@@ -231,6 +253,22 @@ final class BinReader {
       throw _truncated(count);
     }
     return (count, end);
+  }
+
+  T _readContainerScope<T>(BinTag tag, int minEntryBytes, T Function(int count) body) {
+    final (count, end) = _openContainer(tag, minEntryBytes);
+    final outer = _limit;
+    _limit = end;
+    final T result;
+    try {
+      result = body(count);
+    } finally {
+      _limit = outer;
+    }
+    if (_pos != end) {
+      throw BinCodecException(BinErrorKind.trailingBytes, '${end - _pos} bytes');
+    }
+    return result;
   }
 
   void _checkValue(int depth) {
