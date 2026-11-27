@@ -1,349 +1,259 @@
+// nve-qt-shell: runs an NVE app (built-in counter demo, a `cdylib`, or a paired `nve dev` server)
+// in a native Qt 6 window (`QWidget` host, or `--quick` for the Qt Quick scene-graph host),
+// persisting the app's state across launches (window close, SIGINT / SIGTERM, shutdown).
 #include "NveQtWidget.hpp"
 
 #ifdef NVE_QT_HAS_QUICK
 #include "NveQtQuickItem.hpp"
+
 #include <QQmlComponent>
 #include <QQuickView>
-#include <QQuickWindow>
-#include <QUrl>
 #endif
 
+#include <nve/host/app_state.hpp>
+#include <nve/host/demo_counter_app.hpp>
+
 #include <QApplication>
+#include <QEvent>
 #include <QObject>
-#include <QString>
+#include <QSocketNotifier>
+#include <QWindow>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <csignal>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
-#include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <initializer_list>
+#include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
-#include <vector>
 
 namespace {
 
-/// Minimal built-in interactive NVE demo used when `nve_qt_shell` is launched without a dylib.
-class BuiltinQtDemoApp {
+using nve::qt::QtHost;
+namespace app_state = nve::host::app_state;
+
+struct LaunchOptions {
+  std::string dylib_path;
+  std::string pair_uri;
+  std::string pair_token;
+  std::string state_path;
+  uint32_t schema_version = 1u;
+  bool no_state = false;
+  bool reset_state = false;
+  bool quick = false;
+  int width = 640;
+  int height = 420;
+};
+
+/// Saves the app state when the window closes, else at shutdown (a quit without a close: signals,
+/// `QApplication::quit`).
+class StatePersister final : public QObject {
  public:
-  explicit BuiltinQtDemoApp(uint32_t sid) : surface_id_(sid) {}
+  StatePersister(QtHost& host, const LaunchOptions& options) : host_(host), options_(options) {}
 
-  static NveAppHandle create(uint32_t sid) { return new BuiltinQtDemoApp(sid); }
-  static void destroy(NveAppHandle h) { delete static_cast<BuiltinQtDemoApp*>(h); }
-
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<BuiltinQtDemoApp*>(h);
-    self->encode_frame(frame_id);
-    return NveBufferSlice{self->cmd_buf_.data(), self->cmd_buf_.size()};
+  void persist(const char* trigger) {
+    if (options_.no_state || options_.state_path.empty() || host_.is_paired()) return;
+    if (host_.save_state(options_.state_path, options_.schema_version)) {
+      saved_ = true;
+      std::cerr << "[nve-qt-shell] saved app state to " << options_.state_path << " (" << trigger << ")\n";
+    }
+  }
+  void persist_unless_saved(const char* trigger) {
+    if (!saved_) persist(trigger);
   }
 
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<BuiltinQtDemoApp*>(h);
-    if (batch.ptr == nullptr) {
-      return 0;
-    }
-    for (uint32_t i = 0; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4) {
-        ++self->count_;
-        return 1;
-      }
-    }
-    return 0;
-  }
-
-  static NveBufferSlice snapshot_state(NveAppHandle h) {
-    auto* self = static_cast<BuiltinQtDemoApp*>(h);
-    self->state_buf_ = std::to_string(self->count_);
-    return NveBufferSlice{
-        reinterpret_cast<const uint8_t*>(self->state_buf_.data()),
-        self->state_buf_.size(),
-    };
-  }
-
-  static void restore_state(NveAppHandle h, NveBufferSlice state) {
-    auto* self = static_cast<BuiltinQtDemoApp*>(h);
-    if (state.ptr == nullptr || state.len == 0u) {
-      return;
-    }
-    const std::string raw(reinterpret_cast<const char*>(state.ptr), state.len);
-    self->count_ = std::atoi(raw.c_str());
-  }
-
-  static const void* get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{
-        .create = &create,
-        .destroy = &destroy,
-        .render = &render,
-        .dispatch_events = &dispatch_events,
-    };
-    static const NveDevApi kDev{
-        .apply_hot_patch = nullptr,
-        .snapshot_state = &snapshot_state,
-        .restore_state = &restore_state,
-    };
-    if (interface_id == NVE_IFACE_SURFACE) {
-      return &kSurface;
-    }
-    if (interface_id == NVE_IFACE_DEV) {
-      return &kDev;
-    }
-    return nullptr;
+ protected:
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (event->type() == QEvent::Close) persist("window-close");
+    return QObject::eventFilter(watched, event);
   }
 
  private:
-  template <typename T>
-  void push(T v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    cmd_buf_.insert(cmd_buf_.end(), p, p + sizeof(T));
-  }
-
-  void push_dim(uint8_t tag, float val) {
-    push<uint8_t>(tag);
-    push<float>(val);
-  }
-
-  void push_insets(float t, float r, float b, float l) {
-    push<float>(t);
-    push<float>(r);
-    push<float>(b);
-    push<float>(l);
-  }
-
-  void encode_frame(uint64_t frame_id) {
-    cmd_buf_.clear();
-    uint32_t ops = 0;
-
-    push<uint32_t>(NVE_ABI_MAGIC);
-    push<uint16_t>(NVE_ABI_VERSION);
-    push<uint16_t>(0);
-    push<uint32_t>(surface_id_);
-    push<uint64_t>(frame_id);
-    push<uint32_t>(0);
-
-    auto create_node = [&](uint32_t id, uint16_t kind) {
-      push<uint8_t>(NVE_OP_CREATE_NODE);
-      push<uint32_t>(id);
-      push<uint16_t>(kind);
-      push<uint16_t>(0);
-      ++ops;
-    };
-
-    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
-      push<uint8_t>(NVE_OP_SET_CHILDREN);
-      push<uint32_t>(parent);
-      push<uint32_t>(static_cast<uint32_t>(kids.size()));
-      for (uint32_t k : kids) {
-        push<uint32_t>(k);
-      }
-      ++ops;
-    };
-
-    auto set_text = [&](uint32_t id, const std::string& txt) {
-      push<uint8_t>(NVE_OP_SET_TEXT);
-      push<uint32_t>(id);
-      push<uint32_t>(static_cast<uint32_t>(txt.size()));
-      cmd_buf_.insert(cmd_buf_.end(), txt.begin(), txt.end());
-      ++ops;
-    };
-
-    auto set_style = [&](uint32_t id, uint32_t bg, uint32_t fg, float radius, float font_size) {
-      push<uint8_t>(NVE_OP_SET_STYLE);
-      push<uint32_t>(id);
-      push<uint32_t>(bg);
-      push<uint32_t>(fg);
-      push<uint32_t>(0u);
-      push<float>(0.0f);
-      push<float>(radius);
-      push<float>(1.0f);
-      push<float>(font_size);
-      push<int32_t>(0);
-      ++ops;
-    };
-
-    auto set_layout =
-        [&](uint32_t id, uint8_t wtag, float w, uint8_t htag, float h, float pad, float gap) {
-          push<uint8_t>(NVE_OP_SET_LAYOUT);
-          push<uint32_t>(id);
-          push_dim(wtag, w);
-          push_dim(htag, h);
-          push_dim(0, 0.0f);
-          push_dim(0, 0.0f);
-          push_dim(0, 0.0f);
-          push_dim(0, 0.0f);
-          push<uint8_t>(0); // Column
-          push<uint8_t>(1); // Center
-          push<uint8_t>(2); // Center
-          push<float>(0.0f);
-          push<float>(1.0f);
-          push<float>(gap);
-          push_insets(pad, pad, pad, pad);
-          push_insets(0.0f, 0.0f, 0.0f, 0.0f);
-          ++ops;
-        };
-
-    create_node(2, NVE_COMP_VIEW);
-    create_node(3, NVE_COMP_TEXT);
-    create_node(4, NVE_COMP_PRESSABLE);
-    create_node(5, NVE_COMP_TEXT);
-
-    set_children(NVE_ROOT_NODE_ID, {2});
-    set_children(2, {3, 4});
-    set_children(4, {5});
-
-    set_layout(2, 2, 100.0f, 2, 100.0f, 24.0f, 16.0f);
-    set_style(2, 0xFF2A170Fu, 0xFFFFFFFFu, 0.0f, 16.0f); // #0f172a
-
-    set_text(3, "NVE Qt 6 Host Shell — Count: " + std::to_string(count_));
-    set_style(3, 0x00000000u, 0xFFFFFFFFu, 0.0f, 24.0f);
-
-    set_layout(4, 1, 200.0f, 1, 48.0f, 12.0f, 0.0f);
-    set_style(4, 0xFFEB6325u, 0xFFFFFFFFu, 12.0f, 16.0f); // #2563eb
-
-    set_text(5, "Click to Increment");
-    set_style(5, 0x00000000u, 0xFFFFFFFFu, 0.0f, 16.0f);
-
-    push<uint8_t>(NVE_OP_COMMIT);
-    push<uint8_t>(1);
-    ++ops;
-
-    std::memcpy(cmd_buf_.data() + 20, &ops, sizeof(uint32_t));
-  }
-
-  uint32_t surface_id_{1};
-  int count_{0};
-  std::vector<uint8_t> cmd_buf_;
-  std::string state_buf_;
+  QtHost& host_;
+  const LaunchOptions& options_;
+  bool saved_ = false;
 };
 
-#ifdef NVE_QT_HAS_QUICK
-int runQuickShell(
-    QApplication& app,
-    const QString& dylib_path,
-    const QString& pair_connect,
-    const QString& pair_token,
-    const QString& pair_transport,
-    int width,
-    int height) {
-  nve::qt::NveQtQuickItem::registerQmlType();
+#if defined(__unix__) || defined(__APPLE__)
+int g_signal_fds[2] = {-1, -1};
 
-  QQuickView view;
-  view.setTitle(QStringLiteral("NVE Qt Quick GPU Host Shell"));
-  view.setResizeMode(QQuickView::SizeRootObjectToView);
-  view.resize(width, height);
+void on_termination_signal(int) {
+  const char byte = 1;
+  (void)!::write(g_signal_fds[1], &byte, 1);  // async-signal-safe: hand over to the event loop
+}
 
-  const QUrl qml_url;
-  QQmlComponent component(view.engine());
-  component.setData(QByteArrayLiteral("import Nve 1.0\nNveSurface {}\n"), qml_url);
-  QObject* root_obj = component.create(view.rootContext());
-  auto* surface = qobject_cast<nve::qt::NveQtQuickItem*>(root_obj);
-  if (surface == nullptr) {
-    std::cerr << "[nve-qt-shell] Failed to create QML NveSurface: "
-              << component.errorString().toStdString() << "\n";
-    delete root_obj;
-    return 1;
-  }
-
-  view.setContent(qml_url, &component, root_obj);
-  surface->setSize(QSizeF(width, height));
-  view.show();
-
-  if (!pair_connect.isEmpty()) {
-    QString err_msg;
-    if (!surface->connectPaired(pair_connect, pair_token, pair_transport, 1u, &err_msg)) {
-      std::cerr << "Failed to connect paired client to '" << pair_connect.toStdString()
-                << "': " << err_msg.toStdString() << "\n";
-      return 1;
-    }
-    view.setTitle(QStringLiteral("NVE Qt Quick GPU Host Shell (Paired: %1)").arg(pair_connect));
-  } else if (!dylib_path.isEmpty()) {
-    int err_code = 0;
-    QString err_msg;
-    if (!surface->loadDylib(dylib_path, 1, &err_code, &err_msg)) {
-      std::cerr << "Failed to load NVE dylib '" << dylib_path.toStdString()
-                << "' (code " << err_code << "): " << err_msg.toStdString() << "\n";
-      return 1;
-    }
-  } else {
-    if (!surface->attachInterface(&BuiltinQtDemoApp::get_interface, 1)) {
-      std::cerr << "Failed to attach built-in NVE Qt demo app\n";
-      return 1;
-    }
-  }
-
-  return app.exec();
+/// SIGINT / SIGTERM: quit on the UI thread (self-pipe + `QSocketNotifier`); `run` then persists.
+std::unique_ptr<QSocketNotifier> install_signal_handlers() {
+  if (::socketpair(AF_UNIX, SOCK_STREAM, 0, g_signal_fds) != 0) return nullptr;
+  auto notifier = std::make_unique<QSocketNotifier>(g_signal_fds[0], QSocketNotifier::Read);
+  QObject::connect(notifier.get(), &QSocketNotifier::activated, notifier.get(), [n = notifier.get()] {
+    n->setEnabled(false);
+    char byte = 0;
+    (void)!::read(g_signal_fds[0], &byte, 1);
+    std::cerr << "[nve-qt-shell] terminating on signal\n";
+    QApplication::quit();
+  });
+  struct sigaction sa {};
+  sa.sa_handler = &on_termination_signal;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART;
+  ::sigaction(SIGINT, &sa, nullptr);
+  ::sigaction(SIGTERM, &sa, nullptr);
+  return notifier;
 }
 #endif
 
-} // namespace
+/// Starts the requested app source; on a pairing or load failure runs the built-in demo with
+/// persistence disabled (the fallback must neither restore nor overwrite another app's state).
+void start_app(QtHost& host, LaunchOptions& o, const std::function<void(const std::string&)>& set_title) {
+  const auto builtin = [&] { (void)host.attach_interface(&nve::host::demo::CounterApp::get_interface); };
+  if (!o.pair_uri.empty()) {
+    std::string error;
+    if (host.connect_paired(o.pair_uri, o.pair_token, &error)) {
+      set_title("paired: " + o.pair_uri);
+    } else {
+      std::cerr << "[nve-qt-shell] pairing with '" << o.pair_uri << "' failed: " << error << "\n";
+      builtin();
+      o.no_state = true;
+    }
+  } else if (!o.dylib_path.empty()) {
+    nve::host::ModuleError code = nve::host::ModuleError::None;
+    std::string error;
+    if (!host.load_dylib(o.dylib_path, &code, &error)) {
+      std::cerr << "[nve-qt-shell] loading '" << o.dylib_path << "' failed (" << static_cast<int>(code)
+                << "): " << error << "\n";
+      builtin();
+      o.no_state = true;
+    }
+  } else {
+    builtin();
+  }
+  std::error_code ec;
+  if (!o.no_state && !o.state_path.empty() && std::filesystem::exists(o.state_path, ec) &&
+      host.restore_state(o.state_path, o.schema_version)) {
+    std::cerr << "[nve-qt-shell] restored app state from " << o.state_path << "\n";
+  }
+}
+
+/// Runs the event loop for `host` shown in `window`, persisting state on close, signal, shutdown.
+int run(QApplication& qapp, QtHost& host, QObject& window, LaunchOptions& o) {
+  StatePersister persister(host, o);
+  window.installEventFilter(&persister);
+#if defined(__unix__) || defined(__APPLE__)
+  const std::unique_ptr<QSocketNotifier> signal_notifier = install_signal_handlers();
+#endif
+  const int status = qapp.exec();
+  persister.persist_unless_saved("shutdown");
+  window.removeEventFilter(&persister);
+  return status;
+}
+
+int run_widgets(QApplication& qapp, LaunchOptions& o) {
+  const QString base = QStringLiteral("NVE Qt 6 Host Shell");
+  nve::qt::NveQtWidget window(
+      nve::qt::QtHostConfig{.width = static_cast<float>(o.width), .height = static_cast<float>(o.height)});
+  window.setWindowTitle(base);
+  start_app(window.host(), o, [&](const std::string& suffix) {
+    window.setWindowTitle(base + QStringLiteral(" (") + QString::fromStdString(suffix) + QStringLiteral(")"));
+  });
+  window.show();
+  return run(qapp, window.host(), window, o);
+}
+
+#ifdef NVE_QT_HAS_QUICK
+int run_quick(QApplication& qapp, LaunchOptions& o) {
+  nve::qt::NveQtQuickItem::registerQmlType();
+  const QString base = QStringLiteral("NVE Qt Quick Host Shell");
+  QQuickView view;
+  view.setTitle(base);
+  view.setResizeMode(QQuickView::SizeRootObjectToView);
+  view.resize(o.width, o.height);
+  QQmlComponent component(view.engine());
+  component.setData(QByteArrayLiteral("import Nve 1.0\nNveSurface {}\n"), QUrl());
+  std::unique_ptr<QObject> root(component.create(view.rootContext()));
+  auto* surface = qobject_cast<nve::qt::NveQtQuickItem*>(root.get());
+  if (surface == nullptr) {
+    std::cerr << "[nve-qt-shell] creating the QML NveSurface failed: " << component.errorString().toStdString() << "\n";
+    return 1;
+  }
+  view.setContent(QUrl(), &component, root.release());
+  surface->setSize(QSizeF(o.width, o.height));
+  start_app(surface->host(), o, [&](const std::string& suffix) {
+    view.setTitle(base + QStringLiteral(" (") + QString::fromStdString(suffix) + QStringLiteral(")"));
+  });
+  view.show();
+  return run(qapp, surface->host(), view, o);
+}
+#endif
+
+void print_usage(const char* argv0) {
+  std::cout << "Usage: " << argv0
+            << " [--quick] [--dylib <libapp.dylib|.so|.dll>] [--pair <nve://|quic://|wt://|ws(s)://...>]"
+               " [--pair-token <token>] [--state <file>] [--no-state] [--reset-state] [--schema <ver>]"
+               " [--width W] [--height H]\n"
+               "Env: NVE_STATE_DISABLE=1, NVE_STATE_PATH=<file>, NVE_RESET_STATE=1\n";
+}
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
-  QApplication app(argc, argv);
-
-  bool use_quick = false;
-  QString dylib_path;
-  QString pair_connect;
-  QString pair_token;
-  QString pair_transport;
-  int width = 640;
-  int height = 420;
+  QApplication qapp(argc, argv);
+  LaunchOptions o;
   for (int i = 1; i < argc; ++i) {
-    if (std::strcmp(argv[i], "--quick") == 0) {
-      use_quick = true;
-    } else if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
-      dylib_path = QString::fromUtf8(argv[++i]);
-    } else if (std::strcmp(argv[i], "--pair-connect") == 0 && i + 1 < argc) {
-      pair_connect = QString::fromUtf8(argv[++i]);
-    } else if (std::strcmp(argv[i], "--pair-token") == 0 && i + 1 < argc) {
-      pair_token = QString::fromUtf8(argv[++i]);
-    } else if (std::strcmp(argv[i], "--pair-transport") == 0 && i + 1 < argc) {
-      pair_transport = QString::fromUtf8(argv[++i]);
-    } else if (std::strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
-      width = std::max(120, std::atoi(argv[++i]));
-    } else if (std::strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
-      height = std::max(120, std::atoi(argv[++i]));
-    } else if (argv[i][0] != '-' && dylib_path.isEmpty()) {
-      dylib_path = QString::fromUtf8(argv[i]);
+    const auto is = [&](const char* flag) { return std::strcmp(argv[i], flag) == 0; };
+    const bool has_value = i + 1 < argc;
+    if (is("--help") || is("-h")) {
+      print_usage(argv[0]);
+      return 0;
+    } else if (is("--quick")) {
+      o.quick = true;
+    } else if (is("--no-state")) {
+      o.no_state = true;
+    } else if (is("--reset-state")) {
+      o.reset_state = true;
+    } else if (is("--dylib") && has_value) {
+      o.dylib_path = argv[++i];
+    } else if (is("--pair") && has_value) {
+      o.pair_uri = argv[++i];
+    } else if (is("--pair-token") && has_value) {
+      o.pair_token = argv[++i];
+    } else if (is("--state") && has_value) {
+      o.state_path = argv[++i];
+    } else if (is("--schema") && has_value) {
+      o.schema_version = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
+    } else if (is("--width") && has_value) {
+      o.width = std::max(1, std::atoi(argv[++i]));
+    } else if (is("--height") && has_value) {
+      o.height = std::max(1, std::atoi(argv[++i]));
+    } else {
+      std::cerr << "[nve-qt-shell] unknown argument '" << argv[i] << "'\n";
+      print_usage(argv[0]);
+      return 2;
     }
   }
+  // `NVE_STATE_DISABLE` / `NVE_STATE_PATH` / `NVE_RESET_STATE` are honored by `resolve_path`.
+  if (!o.no_state && o.state_path.empty() && o.pair_uri.empty()) {
+    o.state_path = app_state::resolve_path(o.dylib_path.empty() ? "nve-qt-shell-builtin" : o.dylib_path);
+  }
+  o.no_state = o.no_state || o.state_path.empty();
+  if (o.reset_state && !o.state_path.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(o.state_path, ec);
+  }
 
-  if (use_quick) {
+  if (o.quick) {
 #ifdef NVE_QT_HAS_QUICK
-    return runQuickShell(
-        app, dylib_path, pair_connect, pair_token, pair_transport, width, height);
+    return run_quick(qapp, o);
 #else
-    std::cerr << "[nve-qt-shell] Error: --quick requested, but this binary was built without Qt6::Quick.\n";
+    std::cerr << "[nve-qt-shell] --quick needs a build with Qt6::Quick\n";
     return 1;
 #endif
   }
-
-  nve::qt::NveQtWidget window;
-  window.setWindowTitle(QStringLiteral("NVE Qt 6 Host Shell"));
-  window.resize(width, height);
-  window.show();
-
-  if (!pair_connect.isEmpty()) {
-    QString err_msg;
-    if (!window.connectPaired(pair_connect, pair_token, pair_transport, 1u, &err_msg)) {
-      std::cerr << "Failed to connect paired client to '" << pair_connect.toStdString()
-                << "': " << err_msg.toStdString() << "\n";
-      return 1;
-    }
-    window.setWindowTitle(QStringLiteral("NVE Qt 6 Host Shell (Paired: %1)").arg(pair_connect));
-  } else if (!dylib_path.isEmpty()) {
-    int err_code = 0;
-    QString err_msg;
-    if (!window.loadDylib(dylib_path, 1, &err_code, &err_msg)) {
-      std::cerr << "Failed to load NVE dylib '" << dylib_path.toStdString()
-                << "' (code " << err_code << "): " << err_msg.toStdString() << "\n";
-      return 1;
-    }
-  } else {
-    if (!window.attachInterface(&BuiltinQtDemoApp::get_interface, 1)) {
-      std::cerr << "Failed to attach built-in NVE Qt demo app\n";
-      return 1;
-    }
-  }
-
-  return app.exec();
+  return run_widgets(qapp, o);
 }

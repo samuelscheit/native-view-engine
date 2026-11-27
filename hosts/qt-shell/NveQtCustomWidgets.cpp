@@ -1,443 +1,282 @@
+// The widgets a `NveQtWidget` node view is made of: the painted node frame, the outer-shadow
+// sibling, and the two text inputs.
 #include "NveQtWidgetInternal.hpp"
 
-#include <QGraphicsOpacityEffect>
+#include <QFocusEvent>
+#include <QInputMethodEvent>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPainterPath>
-#include <QPen>
+#include <QRegion>
 
 #include <algorithm>
-#include <cstring>
-#include <utility>
 
 namespace nve::qt {
 
-void applyWidgetOpacity(QWidget* widget, float opacity) {
-  const float clamped = std::clamp(opacity, 0.0f, 1.0f);
-  auto* existing = qobject_cast<QGraphicsOpacityEffect*>(widget->graphicsEffect());
-  if (clamped >= 0.999f) {
-    if (existing != nullptr) {
-      widget->setGraphicsEffect(nullptr);
-    }
-    return;
-  }
-  if (existing == nullptr) {
-    existing = new QGraphicsOpacityEffect(widget);
-    widget->setGraphicsEffect(existing);
-  }
-  existing->setOpacity(static_cast<qreal>(clamped));
+namespace {
+
+const NodeSemantics& no_semantics() {
+  static const NodeSemantics kNone;
+  return kNone;
 }
 
-// -----------------------------------------------------------------------------
-// NveQtBoxWidget
-// -----------------------------------------------------------------------------
+bool wants(const QtNodeView* view, NveEventKind kind) noexcept {
+  return view != nullptr && !view->sem.disabled && (view->event_mask & host::event_bit(kind)) != 0u;
+}
 
-NveQtBoxWidget::NveQtBoxWidget(uint32_t node_id, PressHandler on_press, QWidget* parent)
-    : QWidget(parent), node_id_(node_id), on_press_(std::move(on_press)) {
-  setAutoFillBackground(false);
+}  // namespace
+
+// --- NveQtNodeWidget ---------------------------------------------------------------------------
+
+NveQtNodeWidget::NveQtNodeWidget(QtNodeView* view, QWidget* parent) : QWidget(parent), view_(view) {
   setAttribute(Qt::WA_NoSystemBackground, true);
-  setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(node_id));
-}
-
-void NveQtBoxWidget::applyStyle(const NveRenderNode& node, bool interactive) {
-  const QColor next_bg = qcolorFromRgba(node.bg_rgba);
-  const QColor next_border = qcolorFromRgba(node.border_rgba);
-  const float next_bw = std::max(0.0f, node.border_width);
-  const float next_br = std::max(0.0f, node.border_radius);
-  const float next_opacity = opacityFromU8(node.opacity_u8);
-
-  const bool visual_changed = (bg_color_ != next_bg) || (border_color_ != next_border) ||
-                              (border_width_ != next_bw) || (border_radius_ != next_br) ||
-                              (opacity_ != next_opacity);
-
-  bg_color_ = next_bg;
-  border_color_ = next_border;
-  border_width_ = next_bw;
-  border_radius_ = next_br;
-  opacity_ = next_opacity;
-
-  setInteractive(interactive);
-
-  if (visual_changed) {
-    update();
-  }
-}
-
-void NveQtBoxWidget::setInteractive(bool interactive) {
-  if (interactive_ != interactive) {
-    interactive_ = interactive;
-    if (interactive_) {
-      setCursor(Qt::PointingHandCursor);
-    } else {
-      unsetCursor();
-    }
-  }
-}
-
-void NveQtBoxWidget::paintEvent(QPaintEvent* /*event*/) {
-  const bool has_bg = bg_color_.alpha() > 0;
-  const bool has_border = (border_width_ > 0.0f) && (border_color_.alpha() > 0);
-  if (!has_bg && !has_border) {
-    return;
-  }
-
-  QPainter painter(this);
-  painter.setRenderHint(QPainter::Antialiasing, true);
-  if (opacity_ < 0.999f) {
-    painter.setOpacity(static_cast<qreal>(opacity_));
-  }
-
-  const QRectF bounds(rect());
-  if (bounds.width() <= 0.0 || bounds.height() <= 0.0) {
-    return;
-  }
-
-  const qreal max_r = std::min(bounds.width(), bounds.height()) * 0.5;
-  const qreal radius = std::clamp(static_cast<qreal>(border_radius_), 0.0, max_r);
-
-  if (has_bg) {
-    QPainterPath fill_path;
-    fill_path.addRoundedRect(bounds, radius, radius);
-    painter.fillPath(fill_path, bg_color_);
-  }
-
-  if (has_border) {
-    const qreal half_pen = static_cast<qreal>(border_width_) * 0.5;
-    const QRectF stroke_rect = bounds.adjusted(half_pen, half_pen, -half_pen, -half_pen);
-    if (stroke_rect.width() > 0.0 && stroke_rect.height() > 0.0) {
-      const qreal stroke_r = std::max<qreal>(0.0, radius - half_pen);
-      QPen pen(border_color_, static_cast<qreal>(border_width_));
-      pen.setJoinStyle(Qt::RoundJoin);
-      painter.setPen(pen);
-      painter.setBrush(Qt::NoBrush);
-      painter.drawRoundedRect(stroke_rect, stroke_r, stroke_r);
-    }
-  }
-}
-
-void NveQtBoxWidget::mousePressEvent(QMouseEvent* event) {
-  if (interactive_ && event->button() == Qt::LeftButton) {
-    pressed_ = true;
-    event->accept();
-    return;
-  }
-  event->ignore();
-}
-
-void NveQtBoxWidget::mouseReleaseEvent(QMouseEvent* event) {
-  if (interactive_ && event->button() == Qt::LeftButton) {
-    const bool was_pressed = pressed_;
-    pressed_ = false;
-    const QPointF pos = event->position();
-    event->accept();
-    if (was_pressed && rect().contains(pos.toPoint()) && on_press_) {
-      auto cb = on_press_;
-      const uint32_t id = node_id_;
-      cb(id, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
-    }
-    return;
-  }
-  event->ignore();
-}
-
-// -----------------------------------------------------------------------------
-// NveQtImageWidget
-// -----------------------------------------------------------------------------
-
-NveQtImageWidget::NveQtImageWidget(uint32_t node_id, PressHandler on_press, QWidget* parent)
-    : QWidget(parent), node_id_(node_id), on_press_(std::move(on_press)) {
   setAutoFillBackground(false);
-  setAttribute(Qt::WA_NoSystemBackground, true);
-  setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(node_id));
-  setProperty(kImageDecodedProperty, false);
-  setProperty(kImageResizeModeProperty, static_cast<int>(ImageResizeMode::Cover));
+  setFocusPolicy(Qt::NoFocus);
 }
 
-void NveQtImageWidget::applyNode(
-    const NveRenderNode& node,
-    std::string_view src,
-    ImageResizeMode resize_mode,
-    bool interactive) {
-  const QColor next_bg = qcolorFromRgba(node.bg_rgba);
-  const QColor next_border = qcolorFromRgba(node.border_rgba);
-  const float next_bw = std::max(0.0f, node.border_width);
-  const float next_br = std::max(0.0f, node.border_radius);
-  const float next_opacity = opacityFromU8(node.opacity_u8);
-
-  bool changed = (bg_color_ != next_bg) || (border_color_ != next_border) ||
-                 (border_width_ != next_bw) || (border_radius_ != next_br) ||
-                 (opacity_ != next_opacity) || (resize_mode_ != resize_mode);
-
-  bg_color_ = next_bg;
-  border_color_ = next_border;
-  border_width_ = next_bw;
-  border_radius_ = next_br;
-  opacity_ = next_opacity;
-  resize_mode_ = resize_mode;
-  setProperty(kImageResizeModeProperty, static_cast<int>(resize_mode_));
-
-  if (image_src_ != src) {
-    image_src_.assign(src.data(), src.size());
-    pixmap_ = NveQtImageCache::shared().getPixmap(image_src_);
-    setProperty(kImageSrcProperty, detail::qstringFromUtf8(image_src_));
-    setProperty(kImageDecodedProperty, !pixmap_.isNull());
-    setProperty(kImageSizeProperty, pixmap_.size());
-    changed = true;
-  }
-
-  setInteractive(interactive);
-  if (changed) {
-    update();
-  }
+void NveQtNodeWidget::set_visual(const BoxVisual& visual, const QRectF& content_box, bool clip_rounded) {
+  if (visual == visual_ && content_box == content_box_ && clip_rounded == clip_rounded_) return;
+  const bool mask_changed = clip_rounded != clip_rounded_ || visual.radius != visual_.radius;
+  visual_ = visual;
+  content_box_ = content_box;
+  clip_rounded_ = clip_rounded;
+  if (mask_changed) update_mask();
+  update();
 }
 
-void NveQtImageWidget::setResizeMode(ImageResizeMode resize_mode) {
-  if (resize_mode_ != resize_mode) {
-    resize_mode_ = resize_mode;
-    setProperty(kImageResizeModeProperty, static_cast<int>(resize_mode_));
-    update();
-  }
+void NveQtNodeWidget::set_text(const QString& text, const QtTextStyle& style) {
+  if (content_ == NodeContent::Text && text == text_ && style == style_) return;
+  content_ = NodeContent::Text;
+  text_ = text;
+  style_ = style;
+  update();
 }
 
-void NveQtImageWidget::setInteractive(bool interactive) {
-  if (interactive_ != interactive) {
-    interactive_ = interactive;
-    if (interactive_) {
-      setCursor(Qt::PointingHandCursor);
-    } else {
-      unsetCursor();
-    }
-  }
+void NveQtNodeWidget::set_image(const QImage& image, uint8_t fit) {
+  if (content_ == NodeContent::Image && fit == fit_ && image.cacheKey() == image_.cacheKey()) return;
+  content_ = NodeContent::Image;
+  image_ = image;
+  fit_ = fit;
+  update();
 }
 
-void NveQtImageWidget::paintEvent(QPaintEvent* /*event*/) {
-  const QRectF bounds(rect());
-  if (bounds.width() <= 0.0 || bounds.height() <= 0.0) {
-    return;
-  }
-
-  const bool has_bg = bg_color_.alpha() > 0;
-  const bool has_img = !pixmap_.isNull();
-  const bool has_border = (border_width_ > 0.0f) && (border_color_.alpha() > 0);
-  if (!has_bg && !has_img && !has_border) {
-    return;
-  }
-
-  QPainter painter(this);
-  painter.setRenderHint(QPainter::Antialiasing, true);
-  painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-  if (opacity_ < 0.999f) {
-    painter.setOpacity(static_cast<qreal>(opacity_));
-  }
-
-  const qreal max_r = std::min(bounds.width(), bounds.height()) * 0.5;
-  const qreal radius = std::clamp(static_cast<qreal>(border_radius_), 0.0, max_r);
-
-  painter.save();
-  if (radius > 0.0) {
-    QPainterPath clip_path;
-    clip_path.addRoundedRect(bounds, radius, radius);
-    painter.setClipPath(clip_path);
-  } else {
-    painter.setClipRect(bounds);
-  }
-
-  if (has_bg) {
-    painter.fillRect(bounds, bg_color_);
-  }
-
-  if (has_img) {
-    QRectF dst_rect;
-    QRectF src_rect;
-    if (computeImageDrawRects(
-            resize_mode_,
-            bounds,
-            QSizeF(pixmap_.width(), pixmap_.height()),
-            dst_rect,
-            src_rect)) {
-      painter.drawPixmap(dst_rect, pixmap_, src_rect);
-    }
-  }
-  painter.restore();
-
-  if (has_border) {
-    const qreal half_pen = static_cast<qreal>(border_width_) * 0.5;
-    const QRectF stroke_rect = bounds.adjusted(half_pen, half_pen, -half_pen, -half_pen);
-    if (stroke_rect.width() > 0.0 && stroke_rect.height() > 0.0) {
-      const qreal stroke_r = std::max<qreal>(0.0, radius - half_pen);
-      QPen pen(border_color_, static_cast<qreal>(border_width_));
-      pen.setJoinStyle(Qt::RoundJoin);
-      painter.setPen(pen);
-      painter.setBrush(Qt::NoBrush);
-      painter.drawRoundedRect(stroke_rect, stroke_r, stroke_r);
-    }
-  }
-}
-
-void NveQtImageWidget::mousePressEvent(QMouseEvent* event) {
-  if (interactive_ && event->button() == Qt::LeftButton) {
-    pressed_ = true;
-    event->accept();
-    return;
-  }
-  event->ignore();
-}
-
-void NveQtImageWidget::mouseReleaseEvent(QMouseEvent* event) {
-  if (interactive_ && event->button() == Qt::LeftButton) {
-    const bool was_pressed = pressed_;
-    pressed_ = false;
-    const QPointF pos = event->position();
-    event->accept();
-    if (was_pressed && rect().contains(pos.toPoint()) && on_press_) {
-      auto cb = on_press_;
-      const uint32_t id = node_id_;
-      cb(id, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
-    }
-    return;
-  }
-  event->ignore();
-}
-
-// -----------------------------------------------------------------------------
-// NveQtCanvasWidget
-// -----------------------------------------------------------------------------
-
-NveQtCanvasWidget::NveQtCanvasWidget(
-    uint32_t nodeId,
-    PressHandler onPress,
-    QWidget* parent)
-    : QWidget(parent), node_id_(nodeId), on_press_(std::move(onPress)) {
-  setAutoFillBackground(false);
-  setAttribute(Qt::WA_NoSystemBackground, true);
-  setProperty(kNodeIdProperty, QVariant::fromValue<qulonglong>(nodeId));
-}
-
-bool NveQtCanvasWidget::setDrawListBytes(std::span<const uint8_t> bytes) {
-  if (draw_list_bytes_.size() == bytes.size() &&
-      (bytes.empty() ||
-       std::memcmp(draw_list_bytes_.data(), bytes.data(), bytes.size()) == 0)) {
-    return false;
-  }
-  draw_list_bytes_.assign(bytes.begin(), bytes.end());
-  ++redraw_request_count_;
+bool NveQtNodeWidget::set_draw_list(std::span<const uint8_t> bytes) {
+  if (content_ == NodeContent::Canvas && std::ranges::equal(bytes, draw_list_)) return false;
+  content_ = NodeContent::Canvas;
+  draw_list_.assign(bytes.begin(), bytes.end());
   update();
   return true;
 }
 
-void NveQtCanvasWidget::applyNode(
-    const NveRenderNode& node,
-    std::span<const uint8_t> drawListBytes,
-    bool interactive) {
-  const QColor next_bg = qcolorFromRgba(node.bg_rgba);
-  const QColor next_border = qcolorFromRgba(node.border_rgba);
-  const float next_bw = std::max(0.0f, node.border_width);
-  const float next_br = std::max(0.0f, node.border_radius);
-  const float next_opacity = opacityFromU8(node.opacity_u8);
+void NveQtNodeWidget::clear_content() {
+  if (content_ == NodeContent::None) return;
+  content_ = NodeContent::None;
+  text_.clear();
+  image_ = QImage();
+  draw_list_.clear();
+  update();
+}
 
-  const bool style_changed = (bg_color_ != next_bg) || (border_color_ != next_border) ||
-                             (border_width_ != next_bw) || (border_radius_ != next_br) ||
-                             (opacity_ != next_opacity);
+const NodeSemantics& NveQtNodeWidget::semantics() const noexcept {
+  return view_ != nullptr ? view_->sem : no_semantics();
+}
 
-  bg_color_ = next_bg;
-  border_color_ = next_border;
-  border_width_ = next_bw;
-  border_radius_ = next_br;
-  opacity_ = next_opacity;
+void NveQtNodeWidget::activate() {
+  if (view_ != nullptr) view_activate(view_, QPointF(width() * 0.5, height() * 0.5));
+}
 
-  setInteractive(interactive);
-
-  const bool bytes_changed = setDrawListBytes(drawListBytes);
-  if (!bytes_changed && style_changed) {
-    ++redraw_request_count_;
-    update();
+void NveQtNodeWidget::update_mask() {
+  // `overflow: hidden` with rounded corners clips the node's own painting and its children.
+  if (clip_rounded_ && visual_.radius > 0.0 && width() > 0 && height() > 0) {
+    setMask(QRegion(rounded_path(QRectF(rect()), visual_.radius).toFillPolygon().toPolygon()));
+  } else {
+    clearMask();
   }
 }
 
-void NveQtCanvasWidget::setInteractive(bool interactive) {
-  if (interactive_ != interactive) {
-    interactive_ = interactive;
-    if (interactive_) {
-      setCursor(Qt::PointingHandCursor);
-    } else {
-      unsetCursor();
-    }
-  }
+void NveQtNodeWidget::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  if (clip_rounded_) update_mask();
 }
 
-void NveQtCanvasWidget::paintEvent(QPaintEvent* /*event*/) {
-  const QRectF bounds(rect());
-  if (bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+void NveQtNodeWidget::paintEvent(QPaintEvent*) {
+  const QRectF box(rect());
+  QPainter p(this);
+  p.setRenderHint(QPainter::Antialiasing, true);
+  paint_box_background(p, box, visual_);
+  switch (content_) {
+    case NodeContent::Text:
+      p.save();
+      p.setClipPath(rounded_path(box, visual_.radius), Qt::IntersectClip);
+      (void)layout_text(text_, style_, content_box_.width(), &p, content_box_.topLeft());
+      p.restore();
+      break;
+    case NodeContent::Image: paint_image(p, content_box_, visual_.radius, image_, fit_); break;
+    case NodeContent::Canvas:
+      p.save();
+      p.setClipPath(rounded_path(box, visual_.radius), Qt::IntersectClip);
+      (void)paint_draw_list(p, content_box_, draw_list_);
+      p.restore();
+      break;
+    case NodeContent::None: break;
+  }
+  paint_box_border(p, box, visual_);
+}
+
+void NveQtNodeWidget::mousePressEvent(QMouseEvent* event) {
+  const bool activatable = view_ != nullptr && view_->sem.activatable && !view_->sem.disabled;
+  if (event->button() != Qt::LeftButton || !activatable) {
+    event->ignore();  // bubbles to the nearest pressable ancestor widget
     return;
   }
-
-  const bool has_bg = bg_color_.alpha() > 0;
-  const bool has_draw_list = !draw_list_bytes_.empty();
-  const bool has_border = (border_width_ > 0.0f) && (border_color_.alpha() > 0);
-  if (!has_bg && !has_draw_list && !has_border) {
-    return;
-  }
-
-  QPainter painter(this);
-  painter.setRenderHint(QPainter::Antialiasing, true);
-  if (opacity_ < 0.999f) {
-    painter.setOpacity(static_cast<qreal>(opacity_));
-  }
-
-  const qreal max_r = std::min(bounds.width(), bounds.height()) * 0.5;
-  const qreal radius = std::clamp(static_cast<qreal>(border_radius_), 0.0, max_r);
-
-  painter.save();
-  if (radius > 0.0) {
-    QPainterPath clip_path;
-    clip_path.addRoundedRect(bounds, radius, radius);
-    painter.setClipPath(clip_path);
-  }
-  if (has_bg) {
-    painter.fillRect(bounds, bg_color_);
-  }
-  if (has_draw_list) {
-    (void)renderDrawListToPainter(painter, bounds, draw_list_bytes_);
-  }
-  painter.restore();
-
-  if (has_border) {
-    const qreal half_pen = static_cast<qreal>(border_width_) * 0.5;
-    const QRectF stroke_rect = bounds.adjusted(half_pen, half_pen, -half_pen, -half_pen);
-    if (stroke_rect.width() > 0.0 && stroke_rect.height() > 0.0) {
-      const qreal stroke_r = std::max<qreal>(0.0, radius - half_pen);
-      QPen pen(border_color_, static_cast<qreal>(border_width_));
-      pen.setJoinStyle(Qt::RoundJoin);
-      painter.setPen(pen);
-      painter.setBrush(Qt::NoBrush);
-      painter.drawRoundedRect(stroke_rect, stroke_r, stroke_r);
-    }
-  }
+  pressed_ = true;
+  if (view_->sem.focusable) setFocus(Qt::MouseFocusReason);
+  event->accept();
 }
 
-void NveQtCanvasWidget::mousePressEvent(QMouseEvent* event) {
-  if (interactive_ && event->button() == Qt::LeftButton) {
-    pressed_ = true;
+void NveQtNodeWidget::mouseReleaseEvent(QMouseEvent* event) {
+  if (event->button() != Qt::LeftButton || !pressed_) {
+    event->ignore();
+    return;
+  }
+  pressed_ = false;
+  event->accept();
+  if (view_ != nullptr && rect().contains(event->position().toPoint())) view_activate(view_, event->position());
+}
+
+void NveQtNodeWidget::mouseMoveEvent(QMouseEvent* event) {
+  if (wants(view_, NVE_EVENT_POINTER_MOVE)) view_hover(view_, NVE_EVENT_POINTER_MOVE, event->position());
+  QWidget::mouseMoveEvent(event);
+}
+
+void NveQtNodeWidget::enterEvent(QEnterEvent* event) {
+  view_hover(view_, NVE_EVENT_POINTER_ENTER, event->position());
+  QWidget::enterEvent(event);
+}
+
+void NveQtNodeWidget::leaveEvent(QEvent* event) {
+  view_hover(view_, NVE_EVENT_POINTER_LEAVE, QPointF());
+  QWidget::leaveEvent(event);
+}
+
+void NveQtNodeWidget::focusInEvent(QFocusEvent* event) {
+  QWidget::focusInEvent(event);
+  view_focus(view_, true);
+}
+
+void NveQtNodeWidget::focusOutEvent(QFocusEvent* event) {
+  QWidget::focusOutEvent(event);
+  view_focus(view_, false);
+}
+
+void NveQtNodeWidget::keyPressEvent(QKeyEvent* event) {
+  const bool activation_key =
+      event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space;
+  if (activation_key && view_ != nullptr && view_->sem.activatable && !view_->sem.disabled) {
     event->accept();
+    activate();
     return;
   }
-  event->ignore();
+  QWidget::keyPressEvent(event);
 }
 
-void NveQtCanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
-  if (interactive_ && event->button() == Qt::LeftButton) {
-    const bool was_pressed = pressed_;
-    pressed_ = false;
-    const QPointF pos = event->position();
-    event->accept();
-    if (was_pressed && rect().contains(pos.toPoint()) && on_press_) {
-      auto cb = on_press_;
-      const uint32_t id = node_id_;
-      cb(id, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
-    }
-    return;
-  }
-  event->ignore();
+// --- NveQtShadowWidget -------------------------------------------------------------------------
+
+NveQtShadowWidget::NveQtShadowWidget(QWidget* parent) : QWidget(parent) {
+  setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  setAttribute(Qt::WA_NoSystemBackground, true);
+  setFocusPolicy(Qt::NoFocus);
 }
 
-} // namespace nve::qt
+void NveQtShadowWidget::set_shadow(const BoxVisual& visual, const QRectF& box) {
+  const QRectF area = box.marginsAdded(outer_shadow_margins(visual.shadows));
+  const QRect px(QPoint(static_cast<int>(std::floor(area.left())), static_cast<int>(std::floor(area.top()))),
+                 QPoint(static_cast<int>(std::ceil(area.right())) - 1, static_cast<int>(std::ceil(area.bottom())) - 1));
+  if (visual == visual_ && box == box_ && geometry() == px) return;
+  visual_ = visual;
+  box_ = box;
+  setGeometry(px);
+  update();
+}
+
+void NveQtShadowWidget::paintEvent(QPaintEvent*) {
+  QPainter p(this);
+  paint_outer_shadows(p, box_.translated(-QPointF(pos())), visual_.radius, visual_.shadows);
+}
+
+// --- Text inputs -------------------------------------------------------------------------------
+
+NveQtLineEdit::NveQtLineEdit(QtNodeView* view, QWidget* parent) : QLineEdit(parent), view_(view) {
+  setAttribute(Qt::WA_InputMethodEnabled, true);
+  setFrame(false);
+  connect(this, &QLineEdit::textEdited, this, [this](const QString&) {
+    if (view_ != nullptr && !composing_) view_->host->on_text_edited(*view_);
+  });
+  connect(this, &QLineEdit::returnPressed, this, [this] {
+    if (view_ != nullptr && !composing_) view_->host->on_submit(*view_);
+  });
+}
+
+void NveQtLineEdit::inputMethodEvent(QInputMethodEvent* event) {
+  composing_ = !event->preeditString().isEmpty();
+  const bool commits = !event->commitString().isEmpty() || event->replacementLength() > 0;
+  QLineEdit::inputMethodEvent(event);
+  if (commits && !composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
+}
+
+void NveQtLineEdit::focusInEvent(QFocusEvent* event) {
+  QLineEdit::focusInEvent(event);
+  view_focus(view_, true);
+}
+
+void NveQtLineEdit::focusOutEvent(QFocusEvent* event) {
+  QLineEdit::focusOutEvent(event);
+  view_focus(view_, false);
+}
+
+void NveQtLineEdit::enterEvent(QEnterEvent* event) {
+  view_hover(view_, NVE_EVENT_POINTER_ENTER, event->position());
+  QLineEdit::enterEvent(event);
+}
+
+void NveQtLineEdit::leaveEvent(QEvent* event) {
+  view_hover(view_, NVE_EVENT_POINTER_LEAVE, QPointF());
+  QLineEdit::leaveEvent(event);
+}
+
+NveQtTextEdit::NveQtTextEdit(QtNodeView* view, QWidget* parent) : QPlainTextEdit(parent), view_(view) {
+  setAttribute(Qt::WA_InputMethodEnabled, true);
+  setFrameShape(QFrame::NoFrame);
+  setLineWrapMode(QPlainTextEdit::WidgetWidth);
+  connect(this, &QPlainTextEdit::textChanged, this, [this] {
+    if (view_ != nullptr && !composing_ && !view_->text.writing()) view_->host->on_text_edited(*view_);
+  });
+}
+
+void NveQtTextEdit::inputMethodEvent(QInputMethodEvent* event) {
+  composing_ = !event->preeditString().isEmpty();
+  QPlainTextEdit::inputMethodEvent(event);
+  if (!composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
+}
+
+void NveQtTextEdit::focusInEvent(QFocusEvent* event) {
+  QPlainTextEdit::focusInEvent(event);
+  view_focus(view_, true);
+}
+
+void NveQtTextEdit::focusOutEvent(QFocusEvent* event) {
+  QPlainTextEdit::focusOutEvent(event);
+  view_focus(view_, false);
+}
+
+void NveQtTextEdit::enterEvent(QEnterEvent* event) {
+  view_hover(view_, NVE_EVENT_POINTER_ENTER, event->position());
+  QPlainTextEdit::enterEvent(event);
+}
+
+void NveQtTextEdit::leaveEvent(QEvent* event) {
+  view_hover(view_, NVE_EVENT_POINTER_LEAVE, QPointF());
+  QPlainTextEdit::leaveEvent(event);
+}
+
+}  // namespace nve::qt

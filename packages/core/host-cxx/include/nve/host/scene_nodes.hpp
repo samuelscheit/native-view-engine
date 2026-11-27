@@ -321,14 +321,15 @@ struct SceneTables {
   // against the containing block's width on every side, as in CSS and the runtime's layout.
   {
     const NveLayoutRect* p = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr;
-    const float basis = p != nullptr ? p->width : n.rect.width;  // the root's block is the viewport
+    const float basis = p != nullptr ? sealed_rect(*p).width : n.rect.width;  // the root's block is the viewport
     const RowRef l = t.layout.at(index);
     const auto pad = [&](NveFieldSpec f) {
       const LengthValue v = l.length(f);
-      const float px = v.unit == NVE_LENGTH_POINTS ? v.value : v.unit == NVE_LENGTH_PERCENT ? basis * v.value / 100.0f : 0.0f;
-      return std::isfinite(px) && px > 0.0f ? px : 0.0f;
+      return extent(v.unit == NVE_LENGTH_POINTS    ? v.value
+                    : v.unit == NVE_LENGTH_PERCENT ? basis * v.value / 100.0f
+                                                   : 0.0f);
     };
-    const float border = std::isfinite(n.visual.border_width) && n.visual.border_width > 0.0f ? n.visual.border_width : 0.0f;
+    const float border = n.visual.border_width;  // sealed above
     const float left = border + pad(NVE_TABLE_LAYOUT_PADDING_LEFT);
     const float top = border + pad(NVE_TABLE_LAYOUT_PADDING_TOP);
     const float right = border + pad(NVE_TABLE_LAYOUT_PADDING_RIGHT);

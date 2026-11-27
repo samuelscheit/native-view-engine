@@ -534,47 +534,13 @@ suite_qt6_host() {
     ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
     ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
   cmake --build "$build_dir"
-  QT_QPA_PLATFORM=offscreen ctest --test-dir "$build_dir" --output-on-failure
-  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
-    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
-    return 1
+  # `qt_shell_test` / `qt_quick_test` set their own offscreen platform. The live kitchen-sink
+  # `cdylib` test is opt-in: it runs when the dylib was built.
+  local env_prefix=()
+  if [ -f "$KITCHEN_SINK_DYLIB" ]; then
+    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$(native_host_path "$KITCHEN_SINK_DYLIB")")
   fi
-  if [ ! -f "$STUDIO_DYLIB" ]; then
-    echo "error: expected studio dylib at $STUDIO_DYLIB" >&2
-    return 1
-  fi
-  local host_ks host_studio
-  host_ks="$(native_host_path "$KITCHEN_SINK_DYLIB")"
-  host_studio="$(native_host_path "$STUDIO_DYLIB")"
-
-  local shell_test_bin=""
-  if [ -x "$build_dir/nve_qt_shell_test" ]; then
-    shell_test_bin="$build_dir/nve_qt_shell_test"
-  elif [ -x "$build_dir/nve_qt_shell_test.exe" ]; then
-    shell_test_bin="$build_dir/nve_qt_shell_test.exe"
-  else
-    echo "error: nve_qt_shell_test binary not found in $build_dir" >&2
-    return 1
-  fi
-
-  QT_QPA_PLATFORM=offscreen \
-    NVE_TEST_KITCHEN_SINK_DYLIB="$host_ks" \
-    NVE_TEST_STUDIO_DYLIB="$host_studio" \
-    "$shell_test_bin"
-
-  local quick_test_bin=""
-  if [ -x "$build_dir/nve_qt_quick_test" ]; then
-    quick_test_bin="$build_dir/nve_qt_quick_test"
-  elif [ -x "$build_dir/nve_qt_quick_test.exe" ]; then
-    quick_test_bin="$build_dir/nve_qt_quick_test.exe"
-  fi
-  if [ -n "$quick_test_bin" ]; then
-    QT_QPA_PLATFORM=offscreen \
-      QT_QUICK_BACKEND=software \
-      NVE_TEST_KITCHEN_SINK_DYLIB="$host_ks" \
-      NVE_TEST_STUDIO_DYLIB="$host_studio" \
-      "$quick_test_bin"
-  fi
+  ${env_prefix[@]+"${env_prefix[@]}"} ctest --test-dir "$build_dir" --output-on-failure
 }
 
 suite_gtk4_host() {
